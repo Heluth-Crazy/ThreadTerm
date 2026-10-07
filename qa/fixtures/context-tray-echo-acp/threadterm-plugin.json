@@ -1,0 +1,16 @@
+{
+  "schemaVersion": 1,
+  "id": "context-tray-echo-acp",
+  "name": "Context tray Echo (QA fixture)",
+  "version": "0.1.0",
+  "publisher": "ThreadTerm QA",
+  "description": "Isolated ACP Echo fixture for context tray QA.",
+  "homepage": "https://example.invalid/context-tray-echo",
+  "contributes": { "agents": [{
+    "id": "context-tray-echo", "name": "Context tray Echo", "icon": "icon.svg",
+    "command": "node", "args": ["{pluginDir}/agent.mjs"], "versionArgs": ["--version"],
+    "terminal": { "args": [], "resumeArgs": ["--resume", "{sessionId}"] },
+    "chat": { "protocol": "acp", "args": ["--acp"] }, "signIn": { "args": ["login"] },
+    "homepage": "https://example.invalid/context-tray-echo"
+  }] }
+}

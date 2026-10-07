@@ -11,6 +11,8 @@ import type { FileCommentsHost } from '../fileCommentsHost';
 import { sameCommentVersion, type CommentScope } from '../reviewComments';
 import { CommentForm, PendingComments, useFileComments } from './FileComments';
 import '../workbench/workbench.css';
+import { ContextSendAction } from './ContextSendAction';
+import type { ContextItem } from '../chatContext';
 
 const PAGE = 100;
 const SCOPE_KEY = 'threadterm.workbench.historyScope';
@@ -138,6 +140,7 @@ export function GitHistoryView({projectId, worktreePath, path, focusCommit, zh, 
      <strong>{info.subject}</strong>
      <span className="wb-commit-meta">{info.authorName} &lt;{info.authorEmail}&gt; · {new Date(info.authoredAt).toLocaleString()} · <code title={info.hash}>{info.hash.slice(0, 10)}</code>
       <button type="button" className="icon-btn" title={text('Copy commit hash', '复制提交哈希')} aria-label={text('Copy commit hash', '复制提交哈希')} onClick={() => void navigator.clipboard.writeText(info.hash)}><Icon name="export"/></button></span>
+     {commentsHost?.attachContext && <ContextSendAction host={commentsHost} item={{kind:'commit', id:crypto.randomUUID(), sha:info.hash, subject:info.subject} satisfies ContextItem} zh={zh} label={text('Send to agent', '发送给 Agent')} testId="history-send-to-agent"/>}
      {detail?.body && <pre className="wb-commit-body">{detail.body}</pre>}
     </header>
     <div className="wb-commit-files" role="list">

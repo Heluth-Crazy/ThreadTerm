@@ -30,6 +30,9 @@ import { isChatImage, readClipboardImage, selectChatImageAttachments, validateCh
 import './chat-images.css';
 import { queueComposerMode } from '../chatQueue';
 import { ChatQueue as ChatQueuePanel } from './ChatQueue';
+import { useChatContext } from '../useChatContext';
+import { ContextMessage, ContextTray } from './ContextTray';
+import { contextError } from '../contextErrors';
 
 function ThinkingPart({ part, streaming, copy, openFile }: { part: ChatPart; streaming: boolean; copy: (en: string, zh: string) => string; openFile?: (reference: FileReference) => void }) {
   const [open, setOpen] = useState(streaming);
@@ -371,6 +374,7 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession }
   const [draftLoaded,setDraftLoaded]=useState(false);
   const [historyLoaded, setHistoryLoaded] = useState(false);
   const [historyFailed, setHistoryFailed] = useState(false);
+  const context = useChatContext(session.id, zh, setError);
   const [link, setLink] = useState(() => emptyLink(session.id, "disconnected"));
   const connection = link.connection;
   const [connectSlow, setConnectSlow] = useState(false);
@@ -433,6 +437,7 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession }
   useEffect(() => registerChatInputTarget(session.id, {
     visible: () => Boolean(composeRef.current && !composeRef.current.disabled && composeRef.current.getClientRects().length > 0),
     attachImages: incoming => attachImagesRef.current(incoming),
+    attachContext: context.attach,
     insert: (reference) => {
       const area = composeRef.current;
       const next = insertAtCaret(currentText.current, area?.selectionStart ?? currentText.current.length, reference);
@@ -649,7 +654,9 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession }
     return()=>clearTimeout(timer);
   },[text,writable,recovery,draftFailed]);
   async function submit(event: FormEvent) {
-    event.preventDefault();const value=text.trim(),epoch=leaseSessionId.current === session.id ? lease.current : undefined;
+    event.preventDefault();let value:string;
+    try { value=context.serialize(text.trim()); } catch(caught) { setError(contextError(caught,zh)); return; }
+    const epoch=leaseSessionId.current === session.id ? lease.current : undefined;
     const queueing = queueComposerMode(Boolean(activeTurnId(itemsRef.current, session.status)), queue);
     if((!value&&!images.length)||queue?.sessionId!==session.id||imageReading||epoch===undefined||!writable||!draftLoaded||busy||(!queueing&&(firstResponseWaitRef.current||activeTurnId(itemsRef.current,session.status))))return;
     const submittingLifecycle = lifecycle.current;
@@ -662,7 +669,7 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession }
         const nextQueue = await request('chat.queue.add', {sessionId:session.id, text:value, ...(images.length ? {images} : {}), operationId:token, leaseEpoch:epoch});
         if (lifecycle.current !== submittingLifecycle) return;
         setQueue(nextQueue);
-        changeText(''); setImages([]);
+        changeText(''); setImages([]); context.clear();
         try { localStorage.removeItem(imageDraftKey); } catch { /* The accepted queue item is already durable. */ }
         await persistCompose('', epoch);
       } catch (caught) {
@@ -690,7 +697,7 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession }
         if (hasVisibleAssistantResponse(itemsRef.current, sent.turnId)) clearFirstResponseWait(token);
       }
       changeText('');
-      setImages([]);
+      setImages([]); context.clear();
       try { localStorage.removeItem(imageDraftKey); } catch { /* The accepted message is already durable. */ }
       await persistCompose('',epoch);
     }catch(caught){
@@ -878,7 +885,7 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession }
             {label && <strong>{label}</strong>}
             {body ? codexMarkdown
               ? <FileLinkedMarkdown sanitizedHtml={renderCodexMarkdown(body)} references={part.fileReferences} openFile={openFile} />
-              : <div className="v3-message-text"><FileLinkedText text={body} openFile={openFile} /></div>
+              : item.role === 'user' ? <ContextMessage text={body} zh={zh}>{value => <div className="v3-message-text"><FileLinkedText text={value} openFile={openFile} /></div>}</ContextMessage> : <div className="v3-message-text"><FileLinkedText text={body} openFile={openFile} /></div>
               : null}
             {!codexMarkdown && <FileReferenceChips references={part.fileReferences} visibleText={body} openFile={openFile} />}
           </>}
@@ -923,7 +930,7 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession }
       {submissionPreview && !items.some(item => item.role === 'user' && item.turnId === submissionPreview.token) && <article className={`v3-chat-message user is-native is-${session.provider} chat-pending-submission`} aria-label={copy('Message being sent', '正在发送的消息')}>
         <div className="chat-part text">
           {!!submissionPreview.images.length && <div className="chat-message-images">{submissionPreview.images.map((image, index) => <img key={index} src={image} alt={`${copy('Pasted image', '已粘贴图片')} ${index + 1}`} />)}</div>}
-          {!!submissionPreview.text && <div className="v3-message-text">{submissionPreview.text}</div>}
+          {!!submissionPreview.text && <ContextMessage text={submissionPreview.text} zh={zh}>{value => <div className="v3-message-text">{value}</div>}</ContextMessage>}
         </div>
       </article>}
       {firstResponseWait && <div className="chat-first-response-wait" role="status" aria-live="polite" aria-label={submissionPreview && busy ? copy('Sending…', '正在发送…') : copy("Thinking", "思考中")}><span>{submissionPreview && busy ? copy('Sending…', '正在发送…') : copy("Thinking", "思考中")}</span><span className="chat-first-response-dots" aria-hidden="true"><i /><i /><i /></span></div>}
@@ -955,6 +962,7 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession }
       </div>}
       <label className="sr-only" htmlFor={`chat-message-${session.id}`}>{copy('Message', '消息')}</label>
       {!!images.length && !submissionPreview && <div className="chat-image-draft" aria-label={copy('Image attachments', '图片附件')}>{images.map((image, index) => <figure key={index}><img src={image} alt={`${copy('Pasted image', '已粘贴图片')} ${index + 1}`} /><button type="button" disabled={busy || imageReading || !writable} aria-label={`${copy('Remove image', '移除图片')} ${index + 1}`} onClick={() => updateImages(images.filter((_, imageIndex) => imageIndex !== index))}>×</button></figure>)}<span className="chat-image-draft-note">{copy('Images saved on this device', '图片已保存在此设备')}</span></div>}
+      {!submissionPreview && <ContextTray items={context.items} text={text} zh={zh} onRemove={context.remove} disabled={busy || imageReading || !writable} />}
       <textarea id={`chat-message-${session.id}`} ref={composeRef} value={submissionPreview ? '' : text} onChange={event => { changeText(event.target.value); setSlashIndex(0); }} onPaste={pasteImages} onKeyDown={onComposeKey} placeholder={copy('Message the provider, or type / for commands', '发送消息，或输入 / 唤出命令')} rows={1} disabled={busy || ended || !writable || overlay === "full" || !draftLoaded} />
       <div className="chat-compose-bar">
         <div className="chat-compose-left">
@@ -972,7 +980,7 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession }
             <Icon name="chevD" className="chat-model-chev" />
           </button>}
           {liveTurn && <button type="button" className="chat-compose-send is-stop" disabled={!writable || busy} onClick={() => void cancel(liveTurn)} aria-label={copy('Stop', '停止')} title={copy('Stop', '停止')}><span className="chat-stop-square" /></button>}
-          <button className={`chat-compose-send${queueMode ? ' is-queue' : ''}`} type="submit" disabled={(!text.trim() && !images.length) || queue?.sessionId !== session.id || imageReading || busy || !writable || !draftLoaded || draftFailed || recovery !== undefined} aria-label={busy ? copy('Sending…', '正在发送…') : queueMode ? copy('Queue', '加入队列') : copy('Send', '发送')}>{queueMode ? copy('Queue', '加入队列') : <Icon name="arrowUp" />}</button>
+          <button className={`chat-compose-send${queueMode ? ' is-queue' : ''}`} type="submit" disabled={(!text.trim() && !images.length && !context.items.length) || queue?.sessionId !== session.id || imageReading || busy || !writable || !draftLoaded || draftFailed || recovery !== undefined} aria-label={busy ? copy('Sending…', '正在发送…') : queueMode ? copy('Queue', '加入队列') : copy('Send', '发送')}>{queueMode ? copy('Queue', '加入队列') : <Icon name="arrowUp" />}</button>
         </div>
       </div>
     </form>

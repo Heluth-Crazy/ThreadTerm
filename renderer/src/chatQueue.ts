@@ -1,4 +1,5 @@
 import type { ChatQueue, ChatQueueItem } from '@threadterm/protocol';
+import { parseContext } from './chatContext';
 
 /** The composer queues while a turn is live, and keeps adding to a paused queue. */
 export function queueComposerMode(liveTurn: boolean, queue: ChatQueue | undefined): boolean {
@@ -6,7 +7,8 @@ export function queueComposerMode(liveTurn: boolean, queue: ChatQueue | undefine
 }
 
 export function queueItemSummary(item: Pick<ChatQueueItem, 'text' | 'images'>, zh = false): string {
-  const line = item.text.split(/\r?\n/, 1)[0]?.trim() || (zh ? '仅图片' : 'Images only');
+  const parsed = parseContext(item.text);
+  const line = (parsed?.text ?? item.text).split(/\r?\n/, 1)[0]?.trim() || (parsed ? (zh ? '仅上下文' : 'Context only') : (zh ? '仅图片' : 'Images only'));
   return item.images.length ? `${line} · ${zh ? `${item.images.length} 张图片` : `${item.images.length} image${item.images.length === 1 ? '' : 's'}`}` : line;
 }
 

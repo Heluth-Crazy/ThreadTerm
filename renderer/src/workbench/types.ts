@@ -6,6 +6,7 @@ export type WorkbenchScope = { projectId:string; worktreePath?:string; rootPath:
 
 /** Host callbacks; content always opens through the host's tab/pane rules. */
 export type WorkbenchActions = {
+ comments?:import('../fileCommentsHost').FileCommentsHost;
  /** Opens an existing agent session through the host's current workspace rules. */
  openSession?:(sessionId:string) => void;
  openFile:(path:string, position?:{line?:number;column?:number}) => void;

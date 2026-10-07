@@ -25,6 +25,7 @@ import {
   appendTerminalOutputTail,
   hasTentativeAiCompletionPrompt,
 } from "./terminalCompletionHint";
+import { TerminalContextAction } from './TerminalContextAction';
 
 type Props = { sessionId: string; provider: ProviderId; theme: "light" | "dark"; terminalCompatibility: unknown; session?: Session; onConfigure?: () => void; onCloseView?: () => void; onChanged?: () => void; onOpenSession?: (id: string) => void; resumeCapture?: "preassigned" | "none" };
 // A failed screen recovery is shown once, in the overlay: a plain-language reason for the
@@ -600,6 +601,7 @@ export function TerminalSurface({ sessionId, provider, theme, terminalCompatibil
     {(hasSelection || (selectionFile && openFileRef.current)) && <div className="terminal-selection-actions">
       {selectionFile && openFileRef.current && <button type="button" className="terminal-open-selection" onClick={() => openFileRef.current?.(selectionFile)} title={selectionFile.path}>{zh ? '打开所选文件' : 'Open selected file'}</button>}
       {hasSelection&&<button type="button" className="terminal-inspect-selection" onClick={()=>setInspected(terminalRef.current?.getSelection()??'')}>{zh?'检查选区':'Inspect selection'}</button>}
+      {hasSelection && <TerminalContextAction session={session} selection={() => terminalRef.current?.getSelection() ?? ''} zh={zh} />}
     </div>}
     {inspected!==undefined&&<BlockInspector sessionId={sessionId} text={inspected} onClose={()=>setInspected(undefined)}/>}
     {unread > 0 && <button className="terminal-new-output" onClick={() => {terminalRef.current?.scrollToBottom();setUnread(0);}}>{zh ? `${unread} 批新输出 · 回到底部` : `${unread} new ${unread === 1 ? 'update' : 'updates'} · Back to bottom`}</button>}
