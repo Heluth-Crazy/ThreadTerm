@@ -188,6 +188,14 @@ pub fn record(
   let quiet=match &delegation {Some(link)=>crate::delegation::parent_turn_active(tx,&link.parent_session_id)?,None=>false};
   let mut routed_to_parent=false;
   match kind {
+   "chat.subagent" => {
+    record_subagent(tx, session_id, turn, data, false, &now)?;
+    return Ok(());
+   }
+   "chat.subagent.item" => {
+    record_subagent(tx, session_id, turn, data, true, &now)?;
+    return Ok(());
+   }
    "message.user"=>{
     complete_streaming_items(tx,session_id,&now)?;
     let mut part=json!({"type":"text","text":data.get("text").and_then(Value::as_str).unwrap_or("")});
@@ -318,6 +326,204 @@ pub fn record(
   if status.is_some()||usage.is_some() {tx.execute("INSERT INTO outbox(event,data,created_at) VALUES ('state.changed',?,?)",params![serde_json::to_string(&json!({"sessionId":session_id,"kind":kind}))?,now])?;}
   Ok(())
  })
+}
+
+fn terminal_subagent_status(status: &str) -> bool {
+    matches!(status, "completed" | "failed" | "cancelled")
+}
+
+fn truncate_subagent_string(value: &mut Value, limit: usize) {
+    if let Some(text) = value.as_str() {
+        if text.chars().count() > limit {
+            const SUFFIX: &str = "…[truncated]";
+            *value = json!(format!(
+                "{}{}",
+                text.chars()
+                    .take(limit - SUFFIX.chars().count())
+                    .collect::<String>(),
+                SUFFIX
+            ));
+        }
+    }
+}
+
+pub(crate) fn subagent_activity_label(item: &ChatItem) -> String {
+    for part in &item.parts {
+        if part.get("type").and_then(Value::as_str) != Some("tool") {
+            continue;
+        }
+        for path in [
+            "/data/command",
+            "/data/input/command",
+            "/data/rawInput/command",
+            "/data/file_path",
+            "/data/path",
+            "/data/filePath",
+            "/data/input/file_path",
+            "/data/input/path",
+            "/data/input/filePath",
+            "/data/rawInput/file_path",
+            "/data/rawInput/path",
+            "/data/rawInput/filePath",
+            "/toolName",
+            "/data/title",
+        ] {
+            if let Some(label) = part
+                .pointer(path)
+                .and_then(Value::as_str)
+                .filter(|s| !s.trim().is_empty())
+            {
+                return label.trim().to_owned();
+            }
+        }
+    }
+    for part in &item.parts {
+        match part.get("type").and_then(Value::as_str) {
+            Some("text") => {
+                if let Some(line) = part
+                    .get("text")
+                    .and_then(Value::as_str)
+                    .and_then(|s| s.lines().find(|line| !line.trim().is_empty()))
+                {
+                    return line.trim().to_owned();
+                }
+            }
+            Some("thinking") => return "Thinking".into(),
+            _ => {}
+        }
+    }
+    String::new()
+}
+
+fn record_subagent(
+    tx: &rusqlite::Transaction<'_>,
+    session: &str,
+    turn: Option<&str>,
+    data: &Value,
+    transcript_item: bool,
+    now: &str,
+) -> Result<()> {
+    let Some(key) = data
+        .get("key")
+        .and_then(Value::as_str)
+        .filter(|key| !key.is_empty())
+    else {
+        return Ok(());
+    };
+    let id = format!("{session}:assistant:subagent:{key}");
+    let previous = crate::db::subagent_card_tx(tx, session, key)?;
+    let provider: String =
+        tx.query_row("SELECT provider FROM sessions WHERE id=?", [session], |r| {
+            r.get(0)
+        })?;
+    let mut card = previous.clone().unwrap_or_else(|| ChatItem {
+        id: id.clone(),
+        role: "assistant".into(),
+        parts: Vec::new(),
+        created_at: now.into(),
+        turn_id: turn.map(str::to_owned),
+        elapsed_ms: None,
+    });
+    let mut info = card.parts.first().and_then(|part| part.get("data")).filter(|v| v.is_object()).cloned()
+        .unwrap_or_else(|| json!({"key":key,"provider":provider,"status":"running","transcript":"live","startedAt":now}));
+    if transcript_item {
+        let Some(raw) = data.get("item") else {
+            return Ok(());
+        };
+        let Some(item_id) = raw.get("id").and_then(Value::as_str) else {
+            return Ok(());
+        };
+        let item = ChatItem {
+            id: item_id.into(),
+            role: raw
+                .get("role")
+                .and_then(Value::as_str)
+                .unwrap_or("assistant")
+                .into(),
+            parts: raw
+                .get("parts")
+                .and_then(Value::as_array)
+                .cloned()
+                .unwrap_or_default(),
+            created_at: raw
+                .get("createdAt")
+                .and_then(Value::as_str)
+                .unwrap_or(now)
+                .into(),
+            turn_id: turn.map(str::to_owned),
+            elapsed_ms: None,
+        };
+        let rev = crate::db::upsert_subagent_item(
+            tx,
+            session,
+            key,
+            &item,
+            data.get("merge").and_then(Value::as_bool) == Some(true),
+        )?;
+        let (item_count, tool_count, newest, truncated) =
+            crate::db::subagent_item_projection_tx(tx, session, key)?;
+        info["itemCount"] = json!(item_count);
+        info["toolCount"] = json!(tool_count);
+        info["lastActivity"] = json!(newest
+            .as_ref()
+            .map(subagent_activity_label)
+            .unwrap_or_default());
+        info["rev"] = json!(rev);
+        if truncated {
+            info["truncated"] = json!(true);
+        }
+    } else if let Some(patch) = data.get("info").and_then(Value::as_object) {
+        let terminal = info
+            .get("status")
+            .and_then(Value::as_str)
+            .is_some_and(terminal_subagent_status);
+        let reopen = data.get("reopen").and_then(Value::as_bool) == Some(true);
+        for (field, value) in patch {
+            if field == "status" && value.as_str() == Some("running") && terminal && !reopen {
+                continue;
+            }
+            info[field] = value.clone();
+        }
+    }
+    info["key"] = json!(key);
+    if info.get("startedAt").is_none_or(Value::is_null) {
+        info["startedAt"] = json!(now);
+    }
+    if info
+        .get("status")
+        .and_then(Value::as_str)
+        .is_some_and(terminal_subagent_status)
+        && info.get("endedAt").is_none_or(Value::is_null)
+    {
+        info["endedAt"] = json!(now);
+    }
+    for (field, limit) in [
+        ("description", 300),
+        ("prompt", 4000),
+        ("summary", 8000),
+        ("lastActivity", 200),
+    ] {
+        if let Some(value) = info.get_mut(field) {
+            truncate_subagent_string(value, limit);
+        }
+    }
+    crate::db::bound_json(&mut info);
+    card.parts = vec![json!({"type":"subagent","toolId":key,"status":info["status"],"data":info})];
+    if previous.as_ref() == Some(&card) {
+        return Ok(());
+    }
+    tx.execute(
+        "INSERT INTO chat_items(id,session_id,turn_id,kind,data,created_at) VALUES (?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET data=excluded.data",
+        params![id, session, card.turn_id, "message", serde_json::to_string(&card)?, card.created_at],
+    )?;
+    tx.execute(
+        "INSERT INTO outbox(event,data,created_at) VALUES ('chat.item',?,?)",
+        params![
+            serde_json::to_string(&json!({"sessionId":session,"item":card}))?,
+            now
+        ],
+    )?;
+    Ok(())
 }
 
 fn project_activity(
@@ -626,6 +832,291 @@ fn expire_pending_parts_matching(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn subagent_info(db: &Database) -> Value {
+        db.subagent_card("s", "child").unwrap().unwrap().parts[0]["data"].clone()
+    }
+
+    #[test]
+    fn subagent_card_merges_preserves_terminal_status_and_reopens() {
+        for status in ["completed", "failed", "cancelled"] {
+            let db = db();
+            record(&db, "s", Some("first"), "chat.subagent", &json!({"key":"child","info":{"agentType":"explore","description":"task","transcript":"live"}})).unwrap();
+            let original = db.subagent_card("s", "child").unwrap().unwrap();
+            assert_eq!(original.id, "s:assistant:subagent:child");
+            assert_eq!(original.parts.len(), 1);
+            assert_eq!(original.parts[0]["type"], "subagent");
+            assert_eq!(original.parts[0]["toolId"], "child");
+            assert_eq!(subagent_info(&db)["provider"], "codex");
+            assert_eq!(subagent_info(&db)["status"], "running");
+            assert!(subagent_info(&db)["startedAt"].as_str().is_some());
+            record(
+                &db,
+                "s",
+                Some("second"),
+                "chat.subagent",
+                &json!({"key":"child","info":{"status":status,"summary":"result"}}),
+            )
+            .unwrap();
+            let ended = subagent_info(&db)["endedAt"].clone();
+            assert!(ended.as_str().is_some());
+            record(
+                &db,
+                "s",
+                Some("second"),
+                "chat.subagent",
+                &json!({"key":"child","info":{"status":"running","name":"child name"}}),
+            )
+            .unwrap();
+            let card = db.subagent_card("s", "child").unwrap().unwrap();
+            assert_eq!(card.parts[0]["status"], status);
+            assert_eq!(card.turn_id, original.turn_id);
+            assert_eq!(card.created_at, original.created_at);
+            assert_eq!(subagent_info(&db)["description"], "task");
+            record(&db, "s", Some("second"), "chat.subagent", &json!({"key":"child","info":{"provider":"adapter-provider"}})).unwrap();
+            assert_eq!(subagent_info(&db)["provider"], "adapter-provider");
+            assert_eq!(subagent_info(&db)["endedAt"], ended);
+            assert_eq!(
+                db.transaction(|tx| Ok(tx.query_row(
+                    "SELECT turn_id FROM chat_items WHERE id=?",
+                    [&card.id],
+                    |r| r.get::<_, String>(0)
+                )?))
+                .unwrap(),
+                "first"
+            );
+            let revision = db.snapshot().unwrap().revision;
+            record(
+                &db,
+                "s",
+                Some("second"),
+                "chat.subagent",
+                &json!({"key":"child","info":{"status":"running","name":"child name"}}),
+            )
+            .unwrap();
+            assert!(
+                db.events_after(revision).unwrap().is_empty(),
+                "unchanged card is silent"
+            );
+            record(
+                &db,
+                "s",
+                Some("second"),
+                "chat.subagent",
+                &json!({"key":"child","reopen":true,"info":{"status":"running"}}),
+            )
+            .unwrap();
+            assert_eq!(subagent_info(&db)["status"], "running");
+        }
+    }
+
+    #[test]
+    fn subagent_unknown_item_creates_placeholder_without_parent_side_effects() {
+        let db = db();
+        record(&db, "s", Some("parent"), "chat.turn.started", &json!({})).unwrap();
+        let before = db.session_by_id("s").unwrap().unwrap();
+        let revision = db.snapshot().unwrap().revision;
+        record(&db, "s", Some("parent"), "chat.subagent.item", &json!({"key":"child","usage":{"inputTokens":12,"outputTokens":34},"item":{"id":"message","role":"assistant","parts":[{"type":"text","text":"\nWorking\nMore"}]}})).unwrap();
+        let info = subagent_info(&db);
+        assert_eq!(info["status"], "running");
+        assert_eq!(info["transcript"], "live");
+        assert_eq!(info["itemCount"], 1);
+        assert_eq!(info["toolCount"], 0);
+        assert_eq!(info["lastActivity"], "Working");
+        assert_eq!(info["rev"], 1);
+        let after = db.session_by_id("s").unwrap().unwrap();
+        assert_eq!(before.status, after.status);
+        assert_eq!(before.updated_at, after.updated_at);
+        assert_eq!(before.activity, after.activity);
+        let events = db.events_after(revision).unwrap();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].1, "chat.item");
+        assert!(db.snapshot().unwrap().inbox.is_empty());
+        assert_eq!(
+            db.transaction(|tx| Ok(tx.query_row(
+                "SELECT COUNT(*) FROM usage_records",
+                [],
+                |r| r.get::<_, i64>(0)
+            )?))
+            .unwrap(),
+            0
+        );
+        let revision = db.snapshot().unwrap().revision;
+        record(
+            &db,
+            "s",
+            Some("other"),
+            "chat.subagent",
+            &json!({"key":"child","usage":{"inputTokens":99},"info":{"status":"failed"}}),
+        )
+        .unwrap();
+        assert_eq!(db.events_after(revision).unwrap().len(), 1);
+        assert_eq!(
+            db.session_by_id("s").unwrap().unwrap().activity,
+            before.activity
+        );
+    }
+
+    #[test]
+    fn subagent_tool_results_merge_and_counts_follow_newest_inserted_item() {
+        let db = db();
+        for item in [
+            json!({"id":"tool-row","role":"tool","parts":[{"type":"tool","toolId":"tool-1","toolName":"Bash","status":"running","data":{"input":{"command":"rg needle"}}}]}),
+            json!({"id":"newest","role":"assistant","parts":[{"type":"text","text":"Newest activity"}]}),
+        ] {
+            record(
+                &db,
+                "s",
+                Some("first"),
+                "chat.subagent.item",
+                &json!({"key":"child","item":item}),
+            )
+            .unwrap();
+        }
+        record(&db, "s", Some("later"), "chat.subagent.item", &json!({"key":"child","merge":true,"item":{"id":"tool-row","role":"tool","parts":[{"type":"tool","toolId":"tool-1","status":"complete","data":{"output":"done"}}]}})).unwrap();
+        let info = subagent_info(&db);
+        assert_eq!(info["itemCount"], 2);
+        assert_eq!(info["toolCount"], 1);
+        assert_eq!(info["rev"], 3);
+        assert_eq!(info["lastActivity"], "Newest activity");
+        let (items, rev, truncated) = db.subagent_items_after("s", "child", 2).unwrap();
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].id, "tool-row");
+        assert_eq!(items[0].parts.len(), 1);
+        assert_eq!(items[0].parts[0]["toolName"], "Bash");
+        assert_eq!(items[0].parts[0]["status"], "complete");
+        assert_eq!(rev, 3);
+        assert!(!truncated);
+        assert_eq!(
+            db.subagent_card("s", "child")
+                .unwrap()
+                .unwrap()
+                .turn_id
+                .as_deref(),
+            Some("first")
+        );
+        record(&db, "s", None, "chat.subagent.item", &json!({"key":"child","item":{"id":"tool-row","role":"assistant","parts":[{"type":"thinking"}]}})).unwrap();
+        assert_eq!(subagent_info(&db)["toolCount"], 0);
+        assert_eq!(
+            db.subagent_items_after("s", "child", 0).unwrap().0[0].parts,
+            vec![json!({"type":"thinking"})]
+        );
+    }
+
+    #[test]
+    fn subagent_transcript_cap_drops_lowest_seq_and_retains_truncation() {
+        let db = db();
+        for index in 0..501 {
+            record(&db, "s", Some("turn"), "chat.subagent.item", &json!({"key":"child","item":{"id":format!("item-{index}"),"role":"assistant","parts":[{"type":"text","text":format!("step-{index}")} ]}})).unwrap();
+        }
+        let (items, rev, truncated) = db.subagent_items_after("s", "child", 0).unwrap();
+        assert_eq!(items.len(), 500);
+        assert_eq!(items[0].id, "item-1");
+        assert_eq!(items[499].id, "item-500");
+        assert_eq!(rev, 501);
+        assert!(truncated);
+        let info = subagent_info(&db);
+        assert_eq!(info["itemCount"], 500);
+        assert_eq!(info["lastActivity"], "step-500");
+        assert_eq!(info["truncated"], true);
+        record(
+            &db,
+            "s",
+            None,
+            "chat.subagent",
+            &json!({"key":"child","info":{"status":"completed"}}),
+        )
+        .unwrap();
+        assert!(db.subagent_items_after("s", "child", 501).unwrap().2);
+        assert!(db
+            .subagent_items_after("s", "child", 501)
+            .unwrap()
+            .0
+            .is_empty());
+    }
+
+    #[test]
+    fn subagent_strings_and_part_count_are_bounded() {
+        let db = db();
+        let mut ascii = json!({"output":"x".repeat(20 * 1024)});
+        crate::db::bound_json(&mut ascii);
+        assert_eq!(ascii["output"].as_str().unwrap().len(), 16 * 1024);
+        assert!(ascii["output"].as_str().unwrap().ends_with("…[truncated]"));
+        let long = "界".repeat(20 * 1024);
+        record(&db, "s", None, "chat.subagent", &json!({"key":"child","info":{"description":long,"prompt":long,"summary":long,"lastActivity":long}})).unwrap();
+        for (field, limit) in [
+            ("description", 300),
+            ("prompt", 4000),
+            ("summary", 8000),
+            ("lastActivity", 200),
+        ] {
+            let info = subagent_info(&db);
+            let text = info[field].as_str().unwrap();
+            assert!(text.chars().count() <= limit);
+            assert!(text.len() <= 16 * 1024);
+            assert!(text.ends_with("…[truncated]"));
+        }
+        let parts = vec![json!({"type":"tool","data":{"nested":[{"output":long}]}}); 65];
+        record(
+            &db,
+            "s",
+            None,
+            "chat.subagent.item",
+            &json!({"key":"child","item":{"id":"bounded","role":"tool","parts":parts}}),
+        )
+        .unwrap();
+        let items = db.subagent_items_after("s", "child", 0).unwrap().0;
+        assert_eq!(items[0].parts.len(), 64);
+        let text = items[0].parts[0]["data"]["nested"][0]["output"]
+            .as_str()
+            .unwrap();
+        assert!(text.len() <= 16 * 1024);
+        assert!(text.ends_with("…[truncated]"));
+    }
+
+    #[test]
+    fn subagent_activity_labels_cover_command_path_text_and_thinking() {
+        for (part, expected) in [
+            (
+                json!({"type":"tool","toolName":"Bash","data":{"command":"cargo check"}}),
+                "cargo check",
+            ),
+            (
+                json!({"type":"tool","data":{"rawInput":{"command":"ls"}}}),
+                "ls",
+            ),
+            (
+                json!({"type":"tool","data":{"input":{"file_path":"src/lib.rs"}}}),
+                "src/lib.rs",
+            ),
+            (
+                json!({"type":"tool","toolName":"Read","data":{"title":"fallback"}}),
+                "Read",
+            ),
+            (
+                json!({"type":"tool","data":{"title":"fallback"}}),
+                "fallback",
+            ),
+            (
+                json!({"type":"text","text":"\n \nFirst line\nSecond line"}),
+                "First line",
+            ),
+            (
+                json!({"type":"thinking","text":"private reasoning"}),
+                "Thinking",
+            ),
+        ] {
+            let item = ChatItem {
+                id: "i".into(),
+                role: "assistant".into(),
+                parts: vec![part],
+                created_at: "now".into(),
+                turn_id: None,
+                elapsed_ms: None,
+            };
+            assert_eq!(subagent_activity_label(&item), expected);
+        }
+    }
 
     #[test]
     fn approval_resolution_keeps_sibling_waiting_and_ignores_late_unknown_replies() {

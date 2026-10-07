@@ -191,7 +191,7 @@ export class ClaudeSession {
     } finally { this.ended = true; this.activeOperationId = null; this.cancelPermissions('Session closed'); }
   }
 
-  requestPermission(toolName, input, { signal, suggestions } = {}) {
+  requestPermission(toolName, input, { signal, suggestions, toolUseID, agentID } = {}) {
     if (this.closed || this.ended) return Promise.resolve({ behavior: 'deny', message: 'Session closed' });
     if (this.threadTermTools && THREADTERM_TOOLS.has(toolName)) return Promise.resolve({ behavior: 'allow', updatedInput: input });
     const requestId = `${this.cardId}-permission-${this.nextRequest++}`;
@@ -220,7 +220,11 @@ export class ClaudeSession {
       if (entry.signal?.aborted) { entry.abort(); return; }
       entry.signal?.addEventListener('abort', entry.abort, { once: true });
       entry.published = true;
-      this.write(event(this.cardId, 'session.request', { requestId, toolName, input, suggestions, operationId, sessionId }));
+      this.write(event(this.cardId, 'session.request', {
+        requestId, toolName, input, suggestions, operationId, sessionId,
+        ...(typeof agentID === 'string' ? { agentId: agentID } : {}),
+        ...(typeof toolUseID === 'string' ? { toolUseId: toolUseID } : {}),
+      }));
     });
   }
 

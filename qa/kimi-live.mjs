@@ -14,7 +14,7 @@ import { electron } from './lib/desktop1.mjs';
 import { build as esbuild } from 'esbuild';
 import { build as viteBuild } from 'vite';
 
-const scenarios = ['probe', 'chat', 'terminal', 'resume', 'delegation', 'history', 'queue'];
+const scenarios = ['probe', 'chat', 'terminal', 'resume', 'delegation', 'history', 'queue', 'subagent'];
 const [scenario, ...flags] = process.argv.slice(2);
 assert.ok(scenarios.includes(scenario) && flags.every(flag => ['--rebuild', '--keep'].includes(flag)),
   `usage: node qa/kimi-live.mjs <${scenarios.join('|')}> [--rebuild] [--keep]`);
@@ -91,7 +91,13 @@ async function prepare() {
   await rm(work, { recursive: true, force: true, maxRetries: 10, retryDelay: 250 });
   await mkdir(work);
   await mkdir(join(scratch, 'plugins'));
-  await writeFile(join(work, 'README.md'), '# Isolated Kimi live QA\nOnly operate in this fixture. No commits, extra agents, trust, login or update actions.\n');
+  if (scenario === 'subagent') {
+    await writeFile(join(work, 'alpha.txt'), 'alpha\n');
+    await writeFile(join(work, 'beta.txt'), 'beta\n');
+    await writeFile(join(work, 'notes.md'), '# Notes\n');
+  } else {
+    await writeFile(join(work, 'README.md'), '# Isolated Kimi live QA\nOnly operate in this fixture. No commits, extra agents, trust, login or update actions.\n');
+  }
   // A real fixture Git repository, without touching or committing the user's repository.
   const found = execFileSync('where', ['git'], { encoding: 'utf8', windowsHide: true, timeout: 5000 }).split(/\r?\n/).filter(Boolean);
   const git = found.find(path => /\\cmd\\git\.exe$/i.test(path)) ?? found[0];
@@ -435,6 +441,57 @@ try {
       assert.equal((await chatItems(row.id)).filter(item => item.role === 'user').length, 0);
       await shot('01-probe-connected.png');
       check('Probe submitted no prompts');
+    } else if (scenario === 'subagent') {
+      const before = new Set((await chatItems(row.id)).map(item => item.id));
+      const prompt = 'Use an explore subagent (your Agent tool) to list the files in this folder and report how many there are. Do not edit anything. Then reply with just the number.';
+      const composer = host(row.id).locator('.chat-compose-shell textarea');
+      await composer.fill(prompt);
+      await host(row.id).locator('.chat-compose-send[type=submit]').click();
+      const started = Date.now();
+      let runningShot = false;
+      const completed = await until(async () => {
+        await approvals(row.id, undefined);
+        const items = await chatItems(row.id);
+        const user = items.find(item => !before.has(item.id) && item.role === 'user');
+        const state = await session(row.id);
+        const cards = items.flatMap(item => item.parts.filter(part => part.type === 'subagent'));
+        if (!runningShot && cards.some(part => part.data?.status === 'running')) {
+          await shot('subagent-running.png');
+          runningShot = true;
+        }
+        if (!user?.turnId || state?.activity?.turnId !== user.turnId || !['idle', 'awaiting_input'].includes(state.activity.state)) return false;
+        return { items, cards, durationMs: Date.now() - started };
+      }, 'Kimi subagent turn completes', 360_000);
+      report.subagent = { durationMs: completed.durationMs, cardCount: completed.cards.length,
+        status: completed.cards.map(part => part.data?.status), transcriptItems: 0, transcriptTools: 0 };
+      assert.equal(completed.cards.length, 1, 'exactly one chat item part has type subagent');
+      const data = completed.cards[0].data;
+      assert.equal(data.status, 'completed');
+      assert.ok(typeof data.summary === 'string' && data.summary.trim().length > 0, 'subagent summary is non-empty');
+      assert.equal(data.native?.kind, 'kimi-agent');
+      assert.match(data.native?.id ?? '', /^agent-\d+$/);
+      assert.equal(data.transcript, 'native');
+      assert.equal(completed.items.flatMap(item => item.parts).filter(part => part.type === 'tool'
+        && String(part.toolName ?? '').startsWith('Launching ')).length, 0, 'no Launching tool parts remain');
+      const transcript = await request('chat.subagent.read', { sessionId: row.id, key: data.key });
+      assert.ok(!transcript.error, transcript.error ?? 'native transcript has no error');
+      assert.ok(transcript.items.length > 0, 'native transcript contains items');
+      const toolCount = transcript.items.flatMap(item => item.parts).filter(part => part.type === 'tool').length;
+      assert.ok(toolCount > 0, 'native transcript contains at least one tool part');
+      report.subagent.transcriptItems = transcript.items.length;
+      report.subagent.transcriptTools = toolCount;
+      const card = host(row.id).locator('article.chat-subagent-card');
+      await card.waitFor();
+      await until(async () => (await card.locator('details').evaluate(element => element.open)) === false, 'subagent card is collapsed');
+      await shot('subagent-card.png');
+      await card.locator('details > summary').click();
+      await card.locator('.chat-subagent-transcript').waitFor();
+      await until(async () => await card.locator('.chat-subagent-transcript .chat-tool-entry').count() > 0,
+        'expanded subagent transcript renders its tool part', 30_000);
+      await shot('subagent-expanded.png');
+      report.subagent.status = data.status;
+      report.subagent.key = data.key;
+      check('Native Kimi subagent card completes with a readable tool transcript');
     } else if (scenario === 'delegation') {
       const parentSource = await readFile(join(root, 'runtime/src/delegation.rs'), 'utf8');
       // The list literal after `=`; the Rust type `[&str; N]` before it contains a `;`.

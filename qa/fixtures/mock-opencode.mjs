@@ -177,6 +177,40 @@ const server = http.createServer((req, res) => {
           setTimeout(() => json({}), 300);
           return;
         }
+        if (text === 'fixture-subagent-task') {
+          // Exercise the task lifecycle: bind the announced child via running
+          // task metadata, stream its transcript and wait for its permission
+          // reply before completing the task and parent turn.
+          const childID = `ses_child_${++seq}`;
+          const messageID = `msg_task_${++seq}`;
+          const taskPart = (status, output) => ({
+            id: `prt_task_${messageID}`,
+            messageID,
+            sessionID: id,
+            type: 'tool',
+            tool: 'task',
+            callID: 'call_task_1',
+            state: {
+              title: 'Inspect the fixture',
+              input: { description: 'Inspect the fixture', prompt: 'Read the fixture files', subagent_type: 'explore' },
+              status,
+              ...(status === 'completed' ? { output } : {}),
+              metadata: { sessionId: childID },
+            },
+          });
+          state.sessions[`${dir}|${childID}`] = { id: childID, messages: [], busy: true, parentID: id };
+          state.childTask = { parentID: id, childID, messageID };
+          save();
+          json({});
+          setTimeout(() => {
+            emit(dir, 'session.created', { sessionID: childID, info: { id: childID, directory: dir, parentID: id } });
+            emit(dir, 'message.part.updated', { sessionID: id, part: taskPart('running') });
+            emit(dir, 'message.part.updated', { sessionID: childID, part: { id: 'prt_child_text', messageID: 'msg_child_1', sessionID: childID, type: 'text', text: 'Child inspected the fixture.', time: { start: 1 } } });
+            emit(dir, 'message.part.updated', { sessionID: childID, part: { id: 'prt_child_tool', messageID: 'msg_child_1', sessionID: childID, type: 'tool', tool: 'read', callID: 'tool_child_1', state: { status: 'completed', input: { path: 'fixture.txt' }, output: 'fixture contents' }, time: { start: 2 } } });
+            emit(dir, 'permission.asked', { sessionID: childID, id: 'per_child_task', permission: 'bash', patterns: ['type fixture.txt'], metadata: {}, always: [] });
+          }, 20);
+          return;
+        }
         if (text === 'fixture-early-permission-http-fail') {
           emit(dir, 'permission.asked', { sessionID: id, id: 'per_early_fail', permission: 'bash', patterns: ['echo'], metadata: {}, always: [] });
           setTimeout(() => json({ error: 'native action may already be waiting' }, 503), 300);
@@ -238,8 +272,32 @@ const server = http.createServer((req, res) => {
       req.on('data', c => body += c);
       req.on('end', () => {
         const reply = JSON.parse(body).response ?? 'reject';
+        if (permissionMatch[1] === 'per_child_task') {
+          if (!id.startsWith('ses_child_')) return json({ error: 'child permission was posted to the wrong session' }, 409);
+          state.childPermissionApproved = { sessionID: id, reply };
+          save();
+        }
         json({});
-        setTimeout(() => emit(dir, 'permission.replied', { sessionID: id, requestID: permissionMatch[1], reply }), 30);
+        setTimeout(() => {
+          emit(dir, 'permission.replied', { sessionID: id, requestID: permissionMatch[1], reply });
+          if (permissionMatch[1] === 'per_child_task') {
+            const child = sessionOf(dir, id);
+            if (child) child.busy = false;
+            const parent = state.childTask && sessionOf(dir, state.childTask.parentID);
+            if (parent) {
+              emit(dir, 'message.part.updated', { sessionID: parent.id, part: {
+                id: `prt_task_${state.childTask.messageID}`, messageID: state.childTask.messageID, sessionID: parent.id,
+                type: 'tool', tool: 'task', callID: 'call_task_1', state: {
+                  title: 'Inspect the fixture', input: { description: 'Inspect the fixture', prompt: 'Read the fixture files', subagent_type: 'explore' },
+                  status: 'completed', output: 'Child found the fixture contents.', metadata: { sessionId: id },
+                },
+              } });
+              parent.busy = false;
+              emit(dir, 'session.idle', { sessionID: parent.id });
+            }
+            save();
+          }
+        }, 30);
       });
       return;
     }

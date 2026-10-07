@@ -28,8 +28,10 @@ export function ChatApprovalCard({
   // delegating agent decides, or the user does once that agent's turn is over
   // (escalated, or the request arrived after the turn had ended).
   const delegation = (part.data as { delegation?: { route?: string } } | undefined)?.delegation;
+  const subagent = (part.data as { subagent?: { label?: string } } | undefined)?.subagent;
   return (
     <div className={`chat-approval-card ${part.status ?? "pending"}${delegation?.route === "parent" ? " is-delegated" : ""}`}>
+      {subagent && <span className="chat-subagent-chip">{copy("Subagent", "子代理")} · {subagent.label || copy("Subagent", "子代理")}</span>}
       <strong>{title}</strong>
       {data.requestType && <small className="chat-approval-type">{data.requestType}</small>}
       {part.status === "pending" && delegation?.route === "parent" && <p className="chat-approval-delegated">{copy("The agent that delegated this session decides this request. You can still answer it yourself.", "此请求由委派这个会话的代理决定。你也可以直接处理。")}</p>}

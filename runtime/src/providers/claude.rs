@@ -10,6 +10,7 @@ use super::{
 use chrono::{TimeZone, Utc};
 use serde_json::{json, Value};
 use std::{
+    collections::{HashMap, HashSet, VecDeque},
     path::{Path, PathBuf},
     sync::{Arc, Mutex, OnceLock},
     time::Duration,
@@ -38,7 +39,23 @@ impl WorkerLiveness {
 
 /// Latest Chat options and command menu published by the sidecar (`session.ui`).
 #[derive(Clone, Default)]
-pub(crate) struct ClaudeUi(Arc<Mutex<Option<Value>>>);
+pub(crate) struct ClaudeUi(Arc<Mutex<Option<Value>>>, Arc<Mutex<ClaudeSubagents>>);
+
+#[derive(Default)]
+struct ClaudeSubagents {
+    agents: HashMap<String, ClaudeSubagent>,
+    tasks: HashMap<String, String>,
+    task_agents: HashMap<String, String>,
+    ignored_tasks: HashSet<String>,
+    pending_tasks: VecDeque<Value>,
+}
+
+struct ClaudeSubagent {
+    root: String,
+    task_id: Option<String>,
+    backgrounded: bool,
+    label: String,
+}
 
 impl ClaudeUi {
     fn replace(&self, ui: &Value) {
@@ -722,6 +739,401 @@ fn claude_worker_path() -> Option<PathBuf> {
     candidates.into_iter().find(|path| path.is_file())
 }
 
+fn claude_agent_tool(block: &Value) -> bool {
+    matches!(
+        block.get("name").and_then(Value::as_str),
+        Some("Agent" | "Task")
+    )
+}
+
+fn claude_agent_info(id: &str, input: &Value, transcript: &str) -> Value {
+    let mut info = json!({"agentType":input.get("subagent_type").and_then(Value::as_str).unwrap_or("general-purpose"),
+        "background":input.get("run_in_background").and_then(Value::as_bool)==Some(true),
+        "native":{"kind":"claude-agent","id":id},"transcript":transcript,"status":"running"});
+    for field in ["description", "prompt"] {
+        if let Some(value) = input.get(field).filter(|value| value.is_string()) {
+            info[field] = value.clone();
+        }
+    }
+    info
+}
+
+fn claude_result_text(content: &Value) -> String {
+    content.as_str().map(ToOwned::to_owned).unwrap_or_else(|| {
+        content
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|block| block.get("text").and_then(Value::as_str))
+            .collect::<Vec<_>>()
+            .join("\n")
+    })
+}
+
+fn claude_task_usage(message: &Value, info: &mut Value) {
+    if let Some(usage) = message.get("usage").filter(|usage| usage.is_object()) {
+        let mut mapped = json!({});
+        for (source, target) in [
+            ("total_tokens", "totalTokens"),
+            ("tool_uses", "toolUses"),
+            ("duration_ms", "durationMs"),
+        ] {
+            if let Some(value) = usage.get(source).filter(|value| value.is_number()) {
+                mapped[target] = value.clone();
+            }
+        }
+        info["usage"] = mapped;
+    }
+}
+
+impl ClaudeSubagents {
+    fn root(&self, id: &str) -> String {
+        self.agents
+            .get(id)
+            .map(|agent| agent.root.clone())
+            .unwrap_or_else(|| id.to_owned())
+    }
+
+    fn bind_agent(&mut self, id: &str, root: &str, input: &Value) -> Vec<(&'static str, Value)> {
+        let agent = self
+            .agents
+            .entry(id.into())
+            .or_insert_with(|| ClaudeSubagent {
+                root: root.into(),
+                task_id: None,
+                backgrounded: false,
+                label: "Subagent".into(),
+            });
+        agent.root = root.into();
+        agent.backgrounded |= input.get("run_in_background").and_then(Value::as_bool) == Some(true);
+        if let Some(label) = input.get("description").and_then(Value::as_str) {
+            agent.label = label.into();
+        }
+        let mut task_ids: HashSet<String> = self
+            .task_agents
+            .iter()
+            .filter(|(_, agent)| agent.as_str() == id)
+            .map(|(task, _)| task.clone())
+            .collect();
+        for task in &task_ids {
+            self.tasks.insert(task.clone(), root.into());
+        }
+        // A task can precede the completed Agent block that tells us its
+        // ancestry. Hold those updates until binding so no inner card leaks out.
+        let pending = std::mem::take(&mut self.pending_tasks);
+        task_ids.extend(
+            pending
+                .iter()
+                .filter(|message| message.get("tool_use_id").and_then(Value::as_str) == Some(id))
+                .filter_map(|message| {
+                    message
+                        .get("task_id")
+                        .and_then(Value::as_str)
+                        .map(ToOwned::to_owned)
+                }),
+        );
+        let mut events = Vec::new();
+        for message in pending {
+            if message.get("tool_use_id").and_then(Value::as_str) == Some(id)
+                || message
+                    .get("task_id")
+                    .and_then(Value::as_str)
+                    .is_some_and(|task| task_ids.contains(task))
+            {
+                events.extend(self.task_events(&message));
+            } else {
+                self.pending_tasks.push_back(message);
+            }
+        }
+        events
+    }
+
+    /// The reader owns one state for its entire session, including background
+    /// task notifications received after the parent operation has ended.
+    fn message_events(&mut self, message: &Value) -> (Vec<(&'static str, Value)>, bool) {
+        let mut events = Vec::new();
+        let kind = message.get("type").and_then(Value::as_str).unwrap_or("");
+        if let Some(parent) = message.get("parent_tool_use_id").filter(|id| !id.is_null()) {
+            let Some(parent) = parent.as_str() else {
+                return (events, true);
+            };
+            if !matches!(kind, "assistant" | "user") {
+                return (events, true);
+            }
+            let root = self.root(parent);
+            let message_id = message
+                .get("uuid")
+                .or_else(|| message.pointer("/message/id"))
+                .and_then(Value::as_str);
+            for (index, block) in message
+                .pointer("/message/content")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .take(64)
+                .enumerate()
+            {
+                let block_kind = block.get("type").and_then(Value::as_str).unwrap_or("");
+                if block_kind == "tool_use" && claude_agent_tool(block) {
+                    if let Some(id) = block.get("id").and_then(Value::as_str) {
+                        events.extend(self.bind_agent(
+                            id,
+                            &root,
+                            block.get("input").unwrap_or(&Value::Null),
+                        ));
+                    }
+                }
+                match block_kind {
+                    "text" | "thinking" => {
+                        if let (Some(id), Some(text)) = (
+                            message_id,
+                            block
+                                .get(if block_kind == "thinking" {
+                                    "thinking"
+                                } else {
+                                    "text"
+                                })
+                                .and_then(Value::as_str),
+                        ) {
+                            // No merge: snapshots without toolId must replace.
+                            events.push(("chat.subagent.item", json!({"key":root,"item":{"id":format!("{id}:{index}"),
+                                "role":kind,"parts":[{"type":block_kind,"text":text,"status":"complete"}]}})));
+                        }
+                    }
+                    "tool_use" | "tool_result" => {
+                        let single =
+                            json!({"parent_tool_use_id":parent,"message":{"content":[block]}});
+                        for (id, part) in claude_message_tool_parts(&single) {
+                            events.push(("chat.subagent.item", json!({"key":root,"merge":true,
+                                "item":{"id":id,"role":if block_kind=="tool_result" {"tool"} else {kind},"parts":[part]}})));
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            return (events, true);
+        }
+        if kind == "system"
+            && message
+                .get("subtype")
+                .and_then(Value::as_str)
+                .is_some_and(|subtype| subtype.starts_with("task_"))
+        {
+            return (self.task_events(message), true);
+        }
+        if matches!(kind, "assistant" | "user") {
+            for block in message
+                .pointer("/message/content")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .take(64)
+            {
+                match block.get("type").and_then(Value::as_str) {
+                    Some("tool_use") if claude_agent_tool(block) => {
+                        let Some(id) = block.get("id").and_then(Value::as_str) else {
+                            continue;
+                        };
+                        let input = block.get("input").unwrap_or(&Value::Null);
+                        let info = claude_agent_info(id, input, "live");
+                        let pending = self.bind_agent(id, id, input);
+                        let agent = self.agents.get_mut(id).expect("just bound agent");
+                        // task_started may already have supplied background state.
+                        agent.backgrounded |= info["background"] == true;
+                        agent.label = input
+                            .get("description")
+                            .and_then(Value::as_str)
+                            .unwrap_or("Subagent")
+                            .into();
+                        let mut info = info;
+                        info["background"] = json!(agent.backgrounded);
+                        events.push(("chat.subagent", json!({"key":agent.root,"info":info})));
+                        events.extend(pending);
+                    }
+                    Some("tool_result") => {
+                        let Some(agent) = block
+                            .get("tool_use_id")
+                            .and_then(Value::as_str)
+                            .and_then(|id| self.agents.get(id))
+                        else {
+                            continue;
+                        };
+                        let info = if agent.backgrounded {
+                            json!({"lastActivity":"Running in background"})
+                        } else {
+                            json!({"status":if block.get("is_error").and_then(Value::as_bool)==Some(true) {"failed"} else {"completed"},
+                                "summary":claude_result_text(block.get("content").unwrap_or(&Value::Null))})
+                        };
+                        events.push(("chat.subagent", json!({"key":agent.root,"info":info})));
+                    }
+                    _ => {}
+                }
+            }
+        }
+        (events, false)
+    }
+
+    fn task_events(&mut self, message: &Value) -> Vec<(&'static str, Value)> {
+        let Some(task_id) = message.get("task_id").and_then(Value::as_str) else {
+            return Vec::new();
+        };
+        if message.get("skip_transcript").and_then(Value::as_bool) == Some(true)
+            || message.get("ambient").and_then(Value::as_bool) == Some(true)
+        {
+            self.ignored_tasks.insert(task_id.into());
+        }
+        if self.ignored_tasks.contains(task_id) {
+            return Vec::new();
+        }
+        let subtype = message.get("subtype").and_then(Value::as_str).unwrap_or("");
+        if !matches!(
+            subtype,
+            "task_started" | "task_progress" | "task_updated" | "task_notification"
+        ) {
+            return Vec::new();
+        }
+        let tool_id = message.get("tool_use_id").and_then(Value::as_str);
+        if subtype == "task_started"
+            && message.get("task_type").and_then(Value::as_str) != Some("local_agent")
+            && message
+                .get("subagent_type")
+                .and_then(Value::as_str)
+                .is_none()
+            && tool_id.is_none()
+        {
+            self.ignored_tasks.insert(task_id.into());
+            return Vec::new();
+        }
+        let pending_tool = tool_id.or_else(|| {
+            self.pending_tasks
+                .iter()
+                .find(|pending| pending.get("task_id").and_then(Value::as_str) == Some(task_id))
+                .and_then(|pending| pending.get("tool_use_id").and_then(Value::as_str))
+        });
+        if pending_tool.is_some_and(|id| !self.agents.contains_key(id))
+            && !(subtype == "task_started"
+                && message.get("spawn_depth").and_then(Value::as_u64) == Some(1))
+        {
+            // Bound speculative ordering state. Unmatched tasks must not
+            // manufacture root cards; the SDK normally sends the block next.
+            if self.pending_tasks.len() == 200 {
+                self.pending_tasks.pop_front();
+            }
+            self.pending_tasks.push_back(message.clone());
+            return Vec::new();
+        }
+        let key = tool_id
+            .map(|id| self.root(id))
+            .or_else(|| self.tasks.get(task_id).cloned())
+            .or_else(|| (subtype == "task_started").then(|| task_id.into()));
+        let Some(key) = key else {
+            return Vec::new();
+        };
+        let id = tool_id
+            .map(ToOwned::to_owned)
+            .or_else(|| self.task_agents.get(task_id).cloned())
+            .unwrap_or_else(|| key.clone());
+        let nested = id != key;
+        self.tasks.insert(task_id.into(), key.clone());
+        self.task_agents.insert(task_id.into(), id.clone());
+        let agent = self.agents.entry(id).or_insert_with(|| ClaudeSubagent {
+            root: key.clone(),
+            task_id: None,
+            backgrounded: false,
+            label: "Subagent".into(),
+        });
+        agent.task_id = Some(task_id.into());
+        let mut info = json!({});
+        let mut reopen = false;
+        match subtype {
+            "task_started" => {
+                if let Some(background) = message.get("is_backgrounded").and_then(Value::as_bool) {
+                    agent.backgrounded = background;
+                    info["background"] = json!(background);
+                }
+                info["status"] = json!("running");
+                info["transcript"] = json!("live");
+                info["native"] = json!({"kind":"claude-agent","id":key});
+                for (source, target) in [
+                    ("subagent_type", "agentType"),
+                    ("description", "description"),
+                    ("prompt", "prompt"),
+                    ("spawn_depth", "depth"),
+                ] {
+                    if let Some(value) = message.get(source) {
+                        info[target] = value.clone();
+                    }
+                }
+                if let Some(label) = message.get("description").and_then(Value::as_str) {
+                    agent.label = label.into();
+                }
+            }
+            "task_progress" => {
+                claude_task_usage(message, &mut info);
+                if let Some(activity) = message
+                    .get("summary")
+                    .and_then(Value::as_str)
+                    .filter(|s| !s.is_empty())
+                    .or_else(|| message.get("last_tool_name").and_then(Value::as_str))
+                {
+                    info["lastActivity"] = json!(activity);
+                }
+            }
+            "task_updated" => {
+                let patch = message.get("patch").unwrap_or(&Value::Null);
+                if let Some(status) = patch.get("status").and_then(Value::as_str) {
+                    info["status"] = json!(match status {
+                        "running" | "pending" | "paused" => "running",
+                        "completed" => "completed",
+                        "failed" => "failed",
+                        "killed" => "cancelled",
+                        _ => "unknown",
+                    });
+                    reopen = status == "running";
+                    if status == "failed" {
+                        if let Some(error) = patch.get("error").and_then(Value::as_str) {
+                            info["summary"] = json!(error);
+                        }
+                    }
+                }
+                if let Some(description) = patch.get("description").and_then(Value::as_str) {
+                    info["description"] = json!(description);
+                    agent.label = description.into();
+                }
+                if let Some(background) = patch.get("is_backgrounded").and_then(Value::as_bool) {
+                    agent.backgrounded = background;
+                    info["background"] = json!(background);
+                }
+            }
+            "task_notification" => {
+                info["status"] = json!(match message.get("status").and_then(Value::as_str) {
+                    Some("completed") => "completed",
+                    Some("failed") => "failed",
+                    Some("stopped") => "cancelled",
+                    _ => "unknown",
+                });
+                if let Some(summary) = message.get("summary").and_then(Value::as_str) {
+                    info["summary"] = json!(summary);
+                }
+                claude_task_usage(message, &mut info);
+            }
+            _ => return Vec::new(),
+        }
+        // Inner tasks contribute activity to their root, never settle/reopen it
+        // or replace its title, prompt, usage or native identity.
+        if nested {
+            info = json!({"lastActivity":info.get("lastActivity").cloned().unwrap_or_else(|| json!(
+                if matches!(subtype, "task_notification") { "Nested agent finished" } else { "Nested agent activity" }))});
+            reopen = false;
+        }
+        let mut data = json!({"key":key,"info":info});
+        if reopen {
+            data["reopen"] = json!(true);
+        }
+        vec![("chat.subagent", data)]
+    }
+}
+
 fn emit_claude_message(
     events: &crate::provider_events::Sender,
     session_id: &str,
@@ -809,6 +1221,19 @@ fn emit_claude_message(
             .and_then(Value::as_str)
             .unwrap_or("unknown");
         let choices = claude_approval_choices(&raw);
+        let mut payload = approval_payload(approval_id,"claude","session.request",raw.get("title").and_then(Value::as_str).unwrap_or("Permission request"),&raw,&choices,turn_id,true);
+        if let Some(agent_id) = raw.get("agentId").and_then(Value::as_str) {
+            let mut subagent = json!({"agentId":agent_id,"label":"Subagent"});
+            if let Ok(state) = ui.1.lock() {
+                if let Some(key) = state.tasks.get(agent_id) {
+                    subagent["key"] = json!(key);
+                    if let Some(agent) = state.task_agents.get(agent_id).and_then(|id| state.agents.get(id)) {
+                        subagent["label"] = json!(agent.label);
+                    }
+                }
+            }
+            payload["subagent"] = subagent;
+        }
         emit_scoped(
             events,
             "claude",
@@ -820,7 +1245,7 @@ fn emit_claude_message(
                 "approvalId":approval_id,
                 "request":raw,
                 "choices":choices,
-                "part":{"type":"approval","approvalId":approval_id,"status":"pending","data":approval_payload(approval_id,"claude","session.request",raw.get("title").and_then(Value::as_str).unwrap_or("Permission request"),&raw,&choices,turn_id,true)}
+                "part":{"type":"approval","approvalId":approval_id,"status":"pending","data":payload}
             }),
             worker_token,
         );
@@ -888,6 +1313,14 @@ fn emit_claude_message(
     }
     if ev == "session.event" {
         let message = raw.get("message").cloned().unwrap_or(Value::Null);
+        let (subagent_events, handled) = ui.1.lock().map(|mut state| state.message_events(&message))
+            .unwrap_or_else(|_| (Vec::new(), message.get("parent_tool_use_id").is_some_and(|id| !id.is_null())));
+        for (kind, data) in subagent_events {
+            emit_scoped(events, "claude", session_id, native_id.as_deref(), turn_id, kind, data, worker_token);
+        }
+        if handled {
+            return;
+        }
         let text = message
             .get("event")
             .and_then(|e| e.get("delta"))
@@ -916,6 +1349,9 @@ fn emit_claude_message(
             // tool blocks. Never turn their text blocks into a second copy of
             // the already-streamed answer; merge each tool by its native id.
             for (tool_id, part) in claude_message_tool_parts(&message) {
+                if ui.1.lock().ok().is_some_and(|state| state.agents.contains_key(&tool_id)) {
+                    continue;
+                }
                 emit_scoped(
                     events,
                     "claude",
@@ -1020,6 +1456,11 @@ fn claude_message_tool_parts(message: &Value) -> Vec<(String, Value)> {
         .take(64)
         .filter_map(|block| {
             let kind = block.get("type")?.as_str()?;
+            if kind == "tool_use" && claude_agent_tool(block)
+                && message.get("parent_tool_use_id").is_none_or(Value::is_null)
+            {
+                return None;
+            }
             let tool_id = match kind {
                 "tool_use" => block.get("id")?.as_str()?,
                 "tool_result" => block.get("tool_use_id")?.as_str()?,
@@ -1076,13 +1517,26 @@ fn claude_history_item(row: Value) -> Option<Value> {
 }
 
 fn claude_transcript(raw: &[Value]) -> Vec<Value> {
+    let agents: HashSet<&str> = raw.iter().filter_map(|entry| entry.pointer("/message/content").and_then(Value::as_array))
+        .flatten().filter(|block| block.get("type").and_then(Value::as_str)==Some("tool_use") && claude_agent_tool(block))
+        .filter_map(|block| block.get("id").and_then(Value::as_str)).collect();
     raw.iter().enumerate().filter_map(|(index, entry)| {
+        if entry.get("parent_tool_use_id").is_some_and(|id| !id.is_null()) { return None; }
         let message = entry.get("message")?;
         let role = entry.get("type").or_else(|| message.get("role")).and_then(Value::as_str)?;
         if !matches!(role, "user"|"assistant") { return None; }
         let parts = message.get("content").and_then(Value::as_array).map(|content| content.iter().filter_map(|part| {
             match part.get("type").and_then(Value::as_str) {
                 Some("text") => Some(json!({"type":"text","text":part.get("text").and_then(Value::as_str).unwrap_or_default()})),
+                Some("tool_use") if claude_agent_tool(part) => {
+                    let id = part.get("id").and_then(Value::as_str)?;
+                    let mut info = claude_agent_info(id, part.get("input").unwrap_or(&Value::Null), "none");
+                    info["key"] = json!(id);
+                    info["provider"] = json!("claude");
+                    info["status"] = json!("unknown");
+                    Some(json!({"type":"subagent","toolId":id,"status":"unknown","data":info}))
+                }
+                Some("tool_result") if part.get("tool_use_id").and_then(Value::as_str).is_some_and(|id| agents.contains(id)) => None,
                 Some(kind) => {
                     let mut tool = json!({"type":"tool","toolName":kind,"data":part});
                     insert_optional(
@@ -1107,6 +1561,519 @@ fn claude_transcript(raw: &[Value]) -> Vec<Value> {
 mod tests {
     use super::*;
     use std::time::Duration;
+
+    struct SubagentReplay {
+        events: crate::provider_events::Sender,
+        receiver: tokio::sync::broadcast::Receiver<super::super::ProviderEvent>,
+        native: Mutex<Option<String>>,
+        ui: ClaudeUi,
+        liveness: WorkerLiveness,
+    }
+
+    impl SubagentReplay {
+        fn new() -> Self {
+            let (events, receiver) = crate::provider_events::tap_channel(128);
+            Self {
+                events,
+                receiver,
+                native: Mutex::new(Some("native".into())),
+                ui: ClaudeUi::default(),
+                liveness: WorkerLiveness::default(),
+            }
+        }
+        fn raw(&mut self, raw: Value) -> Vec<super::super::ProviderEvent> {
+            emit_claude_message(
+                &self.events,
+                "s",
+                &self.native,
+                &self.liveness,
+                &self.ui,
+                Some("worker"),
+                raw,
+            );
+            let mut all = Vec::new();
+            while let Ok(event) = self.receiver.try_recv() {
+                all.push(event);
+            }
+            assert!(all
+                .iter()
+                .all(|event| event.worker_token.as_deref() == Some("worker")
+                    && event.native_id.as_deref() == Some("native")));
+            assert!(!self.liveness.ended());
+            all
+        }
+        fn message(&mut self, message: Value) -> Vec<super::super::ProviderEvent> {
+            self.raw(json!({"ev":"session.event","cardId":"s","sessionId":"native","operationId":"turn","message":message}))
+        }
+        fn spawn(&mut self, name: &str, background: bool) -> Vec<super::super::ProviderEvent> {
+            self.message(json!({"type":"assistant","parent_tool_use_id":null,"message":{"content":[
+                {"type":"tool_use","id":"agent","name":name,"input":{"description":"Inspect Rust","prompt":"Find the bug",
+                    "subagent_type":"explore","run_in_background":background}}
+            ]}}))
+        }
+        fn task(&mut self, subtype: &str, fields: Value) -> Vec<super::super::ProviderEvent> {
+            let mut message = json!({"type":"system","subtype":subtype,"task_id":"task"});
+            for (key, value) in fields.as_object().unwrap() {
+                message[key] = value.clone();
+            }
+            self.message(message)
+        }
+    }
+
+    #[test]
+    fn parent_agent_and_task_spawns_and_results_are_cards_not_tools() {
+        for name in ["Agent", "Task"] {
+            for failed in [false, true] {
+                let mut replay = SubagentReplay::new();
+                let all = replay.spawn(name, false);
+                let cards: Vec<_> = all
+                    .iter()
+                    .filter(|event| event.kind == "chat.subagent")
+                    .collect();
+                assert_eq!(cards.len(), 1);
+                assert_eq!(cards[0].data["key"], "agent");
+                assert_eq!(
+                    cards[0].data["info"],
+                    json!({"agentType":"explore","description":"Inspect Rust","prompt":"Find the bug",
+                    "background":false,"native":{"kind":"claude-agent","id":"agent"},"transcript":"live","status":"running"})
+                );
+                assert!(all.iter().all(|event| event.data.get("part").is_none()));
+                let all = replay.message(json!({"type":"user","message":{"content":[
+                    {"type":"tool_result","tool_use_id":"agent","is_error":failed,"content":[{"type":"text","text":"Final report"}]},
+                    {"type":"tool_result","tool_use_id":"read","content":"ordinary result"}
+                ]}}));
+                assert_eq!(all[0].kind, "chat.subagent");
+                assert_eq!(
+                    all[0].data["info"]["status"],
+                    if failed { "failed" } else { "completed" }
+                );
+                assert_eq!(all[0].data["info"]["summary"], "Final report");
+                let parts: Vec<_> = all
+                    .iter()
+                    .filter_map(|event| event.data.get("part"))
+                    .collect();
+                assert_eq!(parts.len(), 1);
+                assert_eq!(parts[0]["toolId"], "read");
+                assert_eq!(replay.native.lock().unwrap().as_deref(), Some("native"));
+            }
+        }
+    }
+
+    #[test]
+    fn child_snapshots_replace_text_and_merge_native_tool_parts() {
+        let mut replay = SubagentReplay::new();
+        replay.spawn("Agent", false);
+        let message = json!({"type":"assistant","uuid":"child-uuid","parent_tool_use_id":"agent","message":{"id":"shared-id","content":[
+            {"type":"text","text":"Child report"}, {"type":"thinking","thinking":"Child thought"},
+            {"type":"tool_use","id":"read","name":"Read","input":{"file_path":"src/a.rs"}}
+        ]}});
+        for _ in 0..2 {
+            let all = replay.message(message.clone());
+            assert_eq!(all.len(), 3);
+            assert!(all
+                .iter()
+                .all(|event| event.kind == "chat.subagent.item" && event.data["key"] == "agent"));
+            assert_eq!(all[0].data["item"]["id"], "child-uuid:0");
+            assert_eq!(all[1].data["item"]["id"], "child-uuid:1");
+            assert_eq!(all[1].data["item"]["parts"][0]["type"], "thinking");
+            assert!(all[0].data.get("merge").is_none() && all[1].data.get("merge").is_none());
+            assert_eq!(all[2].data["merge"], true);
+            assert_eq!(all[2].data["item"]["id"], "read");
+            assert_eq!(all[2].data["item"]["parts"][0]["toolName"], "Read");
+        }
+        let all = replay.message(json!({"type":"user","parent_tool_use_id":"agent","message":{"id":"user-id","content":[
+            {"type":"text","text":"Child user"}, {"type":"tool_result","tool_use_id":"read","is_error":true,"content":"bad"}
+        ]}}));
+        assert_eq!(all[0].data["item"]["id"], "user-id:0");
+        assert_eq!(all[0].data["item"]["role"], "user");
+        assert!(all[0].data.get("merge").is_none());
+        assert_eq!(all[1].data["item"]["id"], "read");
+        assert_eq!(all[1].data["item"]["parts"][0]["status"], "failed");
+        assert_eq!(all[1].data["merge"], true);
+    }
+
+    #[test]
+    fn nested_agent_messages_and_tasks_use_root_without_settling_it() {
+        let mut replay = SubagentReplay::new();
+        replay.spawn("Agent", false);
+        let all = replay.message(
+            json!({"type":"assistant","parent_tool_use_id":"agent","message":{"content":[
+                {"type":"tool_use","id":"inner","name":"Task","input":{"description":"Nested"}}
+            ]}}),
+        );
+        assert_eq!(all[0].kind, "chat.subagent.item");
+        assert_eq!(all[0].data["key"], "agent");
+        let all = replay.message(json!({"type":"assistant","parent_tool_use_id":"inner","uuid":"deep","message":{"content":[{"type":"text","text":"Deep report"}]}}));
+        assert_eq!(all[0].data["key"], "agent");
+        for (subtype, fields) in [
+            (
+                "task_started",
+                json!({"tool_use_id":"inner","task_type":"local_agent","description":"Nested","spawn_depth":2}),
+            ),
+            ("task_updated", json!({"patch":{"status":"completed"}})),
+            (
+                "task_notification",
+                json!({"status":"completed","summary":"Inner done"}),
+            ),
+        ] {
+            let all = replay.task(subtype, fields);
+            assert_eq!(all.len(), 1);
+            assert_eq!(all[0].data["key"], "agent");
+            assert!(all[0].data["info"].get("status").is_none());
+            assert!(all[0].data["info"].get("description").is_none());
+            assert!(all[0].data.get("reopen").is_none());
+        }
+    }
+
+    #[test]
+    fn task_events_before_agent_blocks_wait_for_root_binding() {
+        for depth in [Value::Null, json!(2)] {
+            let mut replay = SubagentReplay::new();
+            replay.spawn("Agent", false);
+            assert!(replay
+                .task(
+                    "task_started",
+                    json!({"tool_use_id":"inner","task_type":"local_agent","spawn_depth":depth,
+                "description":"Nested task"})
+                )
+                .is_empty());
+            assert!(replay
+                .task("task_progress", json!({"last_tool_name":"Read"}))
+                .is_empty());
+            assert!(replay
+                .task("task_updated", json!({"patch":{"status":"completed"}}))
+                .is_empty());
+            let all = replay.message(json!({"type":"assistant","parent_tool_use_id":"agent","message":{"content":[
+                {"type":"tool_use","id":"inner","name":"Task","input":{"description":"Nested task"}}
+            ]}}));
+            assert_eq!(all.len(), 4);
+            assert!(all.iter().all(|event| event.data["key"] == "agent"));
+            assert!(all
+                .iter()
+                .filter(|event| event.kind == "chat.subagent")
+                .all(|event| event.data["info"].get("status").is_none()));
+            let all = replay.message(json!({"type":"assistant","parent_tool_use_id":"inner","uuid":"later","message":{"content":[{"type":"text","text":"Deep report"}]}}));
+            assert_eq!(all[0].data["key"], "agent");
+            let all = replay.task(
+                "task_notification",
+                json!({"status":"completed","summary":"Done"}),
+            );
+            assert_eq!(all[0].data["key"], "agent");
+            assert!(all[0].data["info"].get("status").is_none());
+            let all = replay.raw(json!({"ev":"session.request","cardId":"s","requestId":"inner-permission","agentId":"task","toolName":"Read"}));
+            assert_eq!(
+                all[0].data["part"]["data"]["subagent"],
+                json!({"agentId":"task","key":"agent","label":"Nested task"})
+            );
+        }
+        let mut replay = SubagentReplay::new();
+        assert!(replay
+            .task(
+                "task_started",
+                json!({"tool_use_id":"agent","task_type":"local_agent","is_backgrounded":true})
+            )
+            .is_empty());
+        assert!(replay
+            .task(
+                "task_notification",
+                json!({"status":"completed","summary":"Early result"})
+            )
+            .is_empty());
+        let all = replay.spawn("Agent", false);
+        let cards: Vec<_> = all
+            .iter()
+            .filter(|event| event.kind == "chat.subagent")
+            .collect();
+        assert_eq!(cards.len(), 3);
+        assert_eq!(cards[0].data["info"]["background"], true);
+        assert_eq!(cards[2].data["info"]["status"], "completed");
+        assert_eq!(cards[2].data["info"]["summary"], "Early result");
+        let mut depth_one = SubagentReplay::new();
+        let all = depth_one.task(
+            "task_started",
+            json!({"tool_use_id":"agent","task_type":"local_agent","spawn_depth":1}),
+        );
+        assert_eq!(all[0].data["key"], "agent");
+        let mut bounded = ClaudeSubagents::default();
+        for index in 0..201 {
+            bounded.task_events(
+                &json!({"type":"system","subtype":"task_started","task_id":format!("task-{index}"),
+                "tool_use_id":format!("unknown-{index}"),"task_type":"local_agent"}),
+            );
+        }
+        assert_eq!(bounded.pending_tasks.len(), 200);
+    }
+
+    #[test]
+    fn background_agent_waits_for_notification_after_parent_turn_ends() {
+        for initially_background in [false, true] {
+            let mut replay = SubagentReplay::new();
+            replay.spawn("Agent", initially_background);
+            let all = replay.task("task_started", json!({"tool_use_id":"agent","task_type":"local_agent","subagent_type":"explore",
+                "description":"Inspect Rust","prompt":"Find the bug","is_backgrounded":initially_background,"spawn_depth":1}));
+            assert_eq!(all[0].data["key"], "agent");
+            assert_eq!(all[0].data["info"]["depth"], 1);
+            replay.task("task_updated", json!({"patch":{"is_backgrounded":true}}));
+            let all = replay.message(json!({"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"agent","content":"running in the background"}]}}));
+            assert_eq!(
+                all[0].data["info"],
+                json!({"lastActivity":"Running in background"})
+            );
+            assert!(all.iter().all(|event| event.data.get("part").is_none()));
+            replay.raw(json!({"ev":"session.status","cardId":"s","phase":"idle","operationId":"turn","status":"completed"}));
+            let all = replay.raw(json!({"ev":"session.event","cardId":"s","message":{"type":"system","subtype":"task_notification","task_id":"task",
+                "status":"completed","summary":"Real completion","usage":{"total_tokens":200,"tool_uses":3,"duration_ms":500}}}));
+            assert_eq!(all.len(), 1);
+            assert_eq!(all[0].kind, "chat.subagent");
+            assert_eq!(all[0].turn_id, None);
+            assert_eq!(all[0].data["info"]["status"], "completed");
+            assert_eq!(all[0].data["info"]["summary"], "Real completion");
+            assert_eq!(
+                all[0].data["info"]["usage"],
+                json!({"totalTokens":200,"toolUses":3,"durationMs":500})
+            );
+        }
+    }
+
+    #[test]
+    fn task_progress_statuses_fallback_keys_and_ambient_filtering() {
+        let mut replay = SubagentReplay::new();
+        let all = replay.task(
+            "task_started",
+            json!({"task_type":"local_agent","description":"Fallback"}),
+        );
+        assert_eq!(all[0].data["key"], "task");
+        let all = replay.task("task_progress", json!({"usage":{"total_tokens":10,"tool_uses":2,"duration_ms":9},"last_tool_name":"Read"}));
+        assert_eq!(all[0].data["info"]["lastActivity"], "Read");
+        assert_eq!(
+            all[0].data["info"]["usage"],
+            json!({"totalTokens":10,"toolUses":2,"durationMs":9})
+        );
+        let all = replay.task(
+            "task_progress",
+            json!({"summary":"Reviewing Rust","last_tool_name":"Read"}),
+        );
+        assert_eq!(all[0].data["info"]["lastActivity"], "Reviewing Rust");
+        for (status, expected, reopen) in [
+            ("running", "running", true),
+            ("completed", "completed", false),
+            ("failed", "failed", false),
+            ("killed", "cancelled", false),
+            ("paused", "running", false),
+            ("pending", "running", false),
+            ("new-status", "unknown", false),
+        ] {
+            let all = replay.task(
+                "task_updated",
+                json!({"patch":{"status":status,"error":"Task failed"}}),
+            );
+            assert_eq!(all[0].data["info"]["status"], expected);
+            assert_eq!(
+                all[0].data.get("reopen").and_then(Value::as_bool) == Some(true),
+                reopen
+            );
+            assert_eq!(
+                all[0].data["info"].get("summary").is_some(),
+                status == "failed"
+            );
+        }
+        for (status, expected) in [
+            ("completed", "completed"),
+            ("failed", "failed"),
+            ("stopped", "cancelled"),
+            ("new-status", "unknown"),
+        ] {
+            let all = replay.task(
+                "task_notification",
+                json!({"status":status,"summary":"Done"}),
+            );
+            assert_eq!(all[0].data["info"]["status"], expected);
+        }
+        for fields in [
+            json!({"skip_transcript":true,"tool_use_id":"hidden"}),
+            json!({"ambient":true,"tool_use_id":"hidden"}),
+            json!({"task_type":"local_bash"}),
+        ] {
+            let mut hidden = SubagentReplay::new();
+            assert!(hidden.task("task_started", fields).is_empty());
+            assert!(hidden
+                .task(
+                    "task_progress",
+                    json!({"tool_use_id":"hidden","summary":"Ignore"})
+                )
+                .is_empty());
+            assert!(hidden
+                .task(
+                    "task_notification",
+                    json!({"tool_use_id":"hidden","status":"completed"})
+                )
+                .is_empty());
+        }
+        assert!(SubagentReplay::new()
+            .task("task_updated", json!({"patch":{"status":"running"}}))
+            .is_empty());
+    }
+
+    #[test]
+    fn child_stream_deltas_never_become_parent_deltas() {
+        let mut replay = SubagentReplay::new();
+        for kind in ["stream_event", "tool_progress"] {
+            assert!(replay.message(json!({"type":kind,"parent_tool_use_id":"unknown-child","event":{"delta":{"text":"leaked"}}})).is_empty());
+        }
+        let all = replay.message(json!({"type":"stream_event","parent_tool_use_id":null,"event":{"delta":{"text":"Parent answer"}}}));
+        assert_eq!(all.len(), 1);
+        assert_eq!(all[0].kind, "chat.delta");
+        assert_eq!(all[0].data["part"]["text"], "Parent answer");
+        let all = replay.message(json!({"type":"assistant","parent_tool_use_id":"unknown-child","uuid":"early","message":{"content":[{"type":"text","text":"Early child"}]}}));
+        assert_eq!(all[0].data["key"], "unknown-child");
+    }
+
+    #[test]
+    fn subagent_permissions_resolve_known_task_and_label_unknown_agent() {
+        let mut replay = SubagentReplay::new();
+        replay.spawn("Agent", false);
+        replay.task(
+            "task_started",
+            json!({"tool_use_id":"agent","task_type":"local_agent","description":"Inspect Rust"}),
+        );
+        for (agent_id, expected) in [
+            (
+                "task",
+                json!({"agentId":"task","key":"agent","label":"Inspect Rust"}),
+            ),
+            ("unknown", json!({"agentId":"unknown","label":"Subagent"})),
+        ] {
+            let all = replay.raw(json!({"ev":"session.request","cardId":"s","requestId":"permission","operationId":"turn",
+                "agentId":agent_id,"toolUseId":"read","toolName":"Read","input":{"file_path":"a.rs"}}));
+            assert_eq!(all.len(), 1);
+            assert_eq!(all[0].kind, "chat.approval");
+            assert_eq!(all[0].data["part"]["data"]["subagent"], expected);
+            assert_eq!(all[0].data["request"]["toolUseId"], "read");
+        }
+        let all = replay.raw(json!({"ev":"session.request","cardId":"s","requestId":"parent-permission","toolName":"Read"}));
+        assert!(all[0].data["part"]["data"].get("subagent").is_none());
+    }
+
+    #[test]
+    fn history_agent_and_task_spawns_have_static_subagent_parts() {
+        for name in ["Agent", "Task"] {
+            let items = claude_transcript(&[
+                json!({"type":"assistant","uuid":"spawn","message":{"content":[
+                    {"type":"tool_use","id":"agent","name":name,"input":{"description":"Old task"}},
+                    {"type":"tool_use","id":"read","name":"Read","input":{}}
+                ]}}),
+                json!({"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"agent","content":"done"}]}}),
+                json!({"type":"assistant","parent_tool_use_id":"agent","message":{"content":[{"type":"text","text":"child"}]}}),
+            ]);
+            let part = &items[0]["parts"][0];
+            assert_eq!(part["type"], "subagent");
+            assert_eq!(part["toolId"], "agent");
+            assert_eq!(part["data"]["transcript"], "none");
+            assert_eq!(part["data"]["agentType"], "general-purpose");
+            assert_eq!(items[0]["parts"][1]["type"], "tool");
+            assert_eq!(items[1]["parts"], json!([]));
+            assert_eq!(items.len(), 2);
+        }
+    }
+
+    #[test]
+    fn subagent_replay_projects_bounded_rows_without_parent_lifecycle_side_effects() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = crate::db::Database::open(&dir.path().join("subagents.sqlite")).unwrap();
+        db.transaction(|tx| {
+            tx.execute("INSERT INTO sessions(id,title,provider,mode,status,created_at,updated_at) VALUES ('s','test','claude','chat','running','now','now')", [])?;
+            Ok(())
+        }).unwrap();
+        crate::chat_projection::record(
+            &db,
+            "s",
+            Some("turn"),
+            "message.user",
+            &json!({"text":"Parent prompt"}),
+        )
+        .unwrap();
+        let project = |events: Vec<super::super::ProviderEvent>| {
+            for event in events {
+                crate::chat_projection::record(
+                    &db,
+                    "s",
+                    event.turn_id.as_deref(),
+                    &event.kind,
+                    &event.data,
+                )
+                .unwrap();
+            }
+        };
+        let mut replay = SubagentReplay::new();
+        project(replay.spawn("Agent", true));
+        for text in ["Initial text", "Authoritative text"] {
+            project(replay.message(json!({"type":"assistant","uuid":"snapshot","parent_tool_use_id":"agent","message":{"content":[
+                {"type":"text","text":text}, {"type":"thinking","thinking":"Thought"},
+                {"type":"tool_use","id":"read","name":"Read","input":{"file_path":"src/a.rs"}}
+            ]}})));
+        }
+        project(replay.message(
+            json!({"type":"user","parent_tool_use_id":"agent","message":{"content":[
+                {"type":"tool_result","tool_use_id":"read","content":"File output"}
+            ]}}),
+        ));
+        let (items, rev, _) = db.subagent_items_after("s", "agent", 0).unwrap();
+        assert_eq!(items.len(), 3);
+        assert_eq!(rev, 7);
+        assert_eq!(items[0].parts.len(), 1);
+        assert_eq!(items[0].parts[0]["text"], "Authoritative text");
+        assert_eq!(items[1].parts.len(), 1);
+        assert_eq!(items[2].parts.len(), 1);
+        assert_eq!(items[2].parts[0]["toolName"], "Read");
+        assert_eq!(items[2].parts[0]["status"], "complete");
+        assert_eq!(items[2].parts[0]["data"]["content"], "File output");
+        let card = db.subagent_card("s", "agent").unwrap().unwrap();
+        assert_eq!(card.parts[0]["data"]["itemCount"], 3);
+        assert_eq!(card.parts[0]["data"]["toolCount"], 1);
+        project(replay.task(
+            "task_started",
+            json!({"tool_use_id":"agent","task_type":"local_agent","is_backgrounded":true}),
+        ));
+        project(replay.message(
+            json!({"type":"assistant","parent_tool_use_id":"agent","message":{"content":[
+                {"type":"tool_use","id":"inner","name":"Agent","input":{}}
+            ]}}),
+        ));
+        project(replay.task(
+            "task_started",
+            json!({"task_id":"inner-task","tool_use_id":"inner","task_type":"local_agent"}),
+        ));
+        project(replay.task(
+            "task_notification",
+            json!({"task_id":"inner-task","status":"completed","summary":"Nested result"}),
+        ));
+        assert_eq!(
+            db.subagent_card("s", "agent").unwrap().unwrap().parts[0]["status"],
+            "running"
+        );
+        assert_eq!(db.session_by_id("s").unwrap().unwrap().status, "running");
+        project(replay.raw(json!({"ev":"session.status","cardId":"s","phase":"idle","operationId":"turn","status":"completed"})));
+        let parent = db.session_by_id("s").unwrap().unwrap();
+        project(replay.raw(json!({"ev":"session.event","cardId":"s","message":{"type":"system","subtype":"task_notification",
+            "task_id":"task","status":"completed","summary":"Final background result","usage":{"total_tokens":100}}})));
+        let after = db.session_by_id("s").unwrap().unwrap();
+        assert_eq!(after.status, parent.status);
+        assert_eq!(
+            serde_json::to_value(after.activity).unwrap(),
+            serde_json::to_value(parent.activity).unwrap()
+        );
+        let card = db.subagent_card("s", "agent").unwrap().unwrap();
+        assert_eq!(card.turn_id.as_deref(), Some("turn"));
+        assert_eq!(card.parts[0]["status"], "completed");
+        assert_eq!(card.parts[0]["data"]["summary"], "Final background result");
+        db.transaction(|tx| {
+            let count: i64 =
+                tx.query_row("SELECT COUNT(*) FROM usage_records", [], |row| row.get(0))?;
+            assert_eq!(count, 0, "child usage must not become parent usage");
+            Ok(())
+        })
+        .unwrap();
+    }
 
     #[test]
     fn sdk_tool_use_and_failed_result_keep_native_id_without_duplicate_text() {

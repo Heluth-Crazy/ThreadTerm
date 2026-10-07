@@ -13,7 +13,7 @@ use rand::RngCore;
 use reqwest::blocking::{Client, Response};
 use serde_json::{json, Value};
 use std::{
-    collections::{HashMap, HashSet},
+    collections::{HashMap, HashSet, VecDeque},
     io::{self, BufRead, BufReader},
     net::TcpListener,
     process::Child,
@@ -511,6 +511,8 @@ impl OpenCodeServer {
             assembly,
             permissions: Arc::clone(&self.permissions),
             settled_permissions: Arc::new(Mutex::new(HashSet::new())),
+            subagents: Mutex::new(OpenCodeSubagents::default()),
+            permission_sessions: Mutex::new(HashMap::new()),
             native_turn_observed: AtomicBool::new(false),
             stopped: Arc::clone(&self.stopped),
             event_gate: Arc::clone(&self.event_gate),
@@ -792,6 +794,17 @@ impl ChatSession for OpenCodeChat {
             ));
         }
         drop(known);
+        let permission_session = self
+            .sse_target
+            .permission_sessions
+            .lock()
+            .map_err(|_| {
+                ProviderError::new("provider_internal", "OpenCode permission session lock poisoned")
+            })?
+            .get(approval_id)
+            .cloned()
+            .unwrap_or_else(|| self.native_id.clone());
+        validate_native_id(&permission_session)?;
         drop(commit);
         let response = match map_allow_deny_choice(choice_id)? {
             "allow" => "once",
@@ -799,7 +812,7 @@ impl ChatSession for OpenCodeChat {
         };
         let sent = self.server.request(
             reqwest::Method::POST,
-            &format!("/session/{}/permissions/{approval_id}", self.native_id),
+            &format!("/session/{permission_session}/permissions/{approval_id}"),
             Some(json!({"response":response})),
         );
         if let Err(error) = sent {
@@ -1014,7 +1027,430 @@ fn native_message_parts(
             }
             Ok((part_id.to_owned(), opencode_chat_part(part)))
         })
-        .collect()
+        .collect::<Result<Vec<_>, ProviderError>>()
+        .map(|parts: Vec<(String, Value)>| {
+            parts
+                .into_iter()
+                .filter(|(_, part)| !part.get("data").is_some_and(opencode_task_part))
+                .collect()
+        })
+}
+
+const MAX_PENDING_CHILD_EVENTS: usize = 200;
+
+#[derive(Default)]
+struct OpenCodeSubagents {
+    children: HashMap<String, String>,
+    pending_children: HashMap<String, VecDeque<Value>>,
+    task_calls: HashMap<String, Option<String>>,
+    parents: HashMap<String, String>,
+    roles: HashMap<(String, String), String>,
+    labels: HashMap<String, String>,
+    turns: HashMap<String, Option<String>>,
+}
+
+impl OpenCodeSubagents {
+    fn buffer(&mut self, child: &str, raw: Value) {
+        let pending = self.pending_children.entry(child.into()).or_default();
+        if pending.len() == MAX_PENDING_CHILD_EVENTS {
+            pending.pop_front();
+        }
+        pending.push_back(raw);
+    }
+
+    fn bind(&mut self, child: &str, key: &str) -> Vec<Value> {
+        let mut children = VecDeque::from([child.to_owned()]);
+        let mut pending = Vec::new();
+        let mut seen = HashSet::new();
+        while let Some(child) = children.pop_front() {
+            if !seen.insert(child.clone()) {
+                continue;
+            }
+            self.children.insert(child.clone(), key.into());
+            if let Some(events) = self.pending_children.remove(&child) {
+                pending.extend(events);
+            }
+            children.extend(
+                self.parents
+                    .iter()
+                    .filter_map(|(id, parent)| (parent == &child).then_some(id.clone())),
+            );
+        }
+        pending
+    }
+}
+
+fn opencode_task_part(part: &Value) -> bool {
+    part.get("type").and_then(Value::as_str) == Some("subtask")
+        || (part.get("type").and_then(Value::as_str) == Some("tool")
+            && part.get("tool").and_then(Value::as_str) == Some("task"))
+}
+
+fn opencode_event_session<'a>(event_type: &str, properties: &'a Value) -> Option<&'a str> {
+    properties
+        .get("sessionID")
+        .or_else(|| properties.get("sessionId"))
+        .and_then(Value::as_str)
+        .or_else(|| {
+            properties
+                .pointer("/info/sessionID")
+                .and_then(Value::as_str)
+        })
+        .or_else(|| {
+            properties
+                .pointer("/part/sessionID")
+                .and_then(Value::as_str)
+        })
+        .or_else(|| {
+            matches!(event_type, "session.created" | "session.updated")
+                .then(|| properties.pointer("/info/id").and_then(Value::as_str))
+                .flatten()
+        })
+}
+
+// All helpers below commit under event_gate; flushing never re-enters that gate.
+fn emit_opencode_subagent(target: &EventTarget, kind: &str, key: &str, data: Value) {
+    let turn = target
+        .subagents
+        .lock()
+        .ok()
+        .and_then(|state| state.turns.get(key).cloned())
+        .flatten();
+    emit_scoped(
+        &target.events,
+        "opencode",
+        &target.threadterm_session,
+        Some(&target.native_id),
+        turn.as_deref(),
+        kind,
+        data,
+        Some(&target.worker_token),
+    );
+}
+
+fn opencode_task_update(
+    target: &EventTarget,
+    part: &Value,
+    root: Option<&str>,
+    turn: Option<&str>,
+) {
+    let Some(call) = (if part.get("type").and_then(Value::as_str) == Some("subtask") {
+        part.get("id")
+    } else {
+        part.get("callID")
+    })
+    .and_then(Value::as_str) else {
+        return;
+    };
+    let key = root.unwrap_or(call);
+    let state = part.get("state").unwrap_or(part);
+    let input = state.get("input").unwrap_or(part);
+    let child = state.pointer("/metadata/sessionId").and_then(Value::as_str);
+    let mut info = json!({"transcript":"live","status":match state.get("status").and_then(Value::as_str) {
+        Some("completed") => "completed", Some("error") => "failed",
+        Some("pending" | "running") | None => "running", _ => "unknown",
+    }});
+    for (field, value) in [
+        (
+            "agentType",
+            input.get("subagent_type").or_else(|| part.get("agent")),
+        ),
+        (
+            "description",
+            input.get("description").or_else(|| state.get("title")),
+        ),
+        ("prompt", input.get("prompt")),
+    ] {
+        insert_optional(
+            &mut info,
+            field,
+            value.filter(|value| !value.is_null()).cloned(),
+        );
+    }
+    if let Some(child) = child {
+        info["native"] = json!({"kind":"opencode-session","id":child});
+    }
+    if state.get("status").and_then(Value::as_str) == Some("completed") {
+        insert_optional(&mut info, "summary", state.get("output").cloned());
+    } else if state.get("status").and_then(Value::as_str) == Some("error") {
+        insert_optional(&mut info, "summary", state.get("error").cloned());
+    }
+    let pending = {
+        let Ok(mut subagents) = target.subagents.lock() else {
+            return;
+        };
+        let binding = subagents.task_calls.entry(call.into()).or_default();
+        if let Some(child) = child {
+            *binding = Some(child.into());
+        }
+        subagents
+            .turns
+            .entry(key.into())
+            .or_insert_with(|| turn.map(str::to_owned));
+        if root.is_none() {
+            if let Some(label) = info
+                .get("description")
+                .or_else(|| info.get("agentType"))
+                .and_then(Value::as_str)
+            {
+                subagents.labels.insert(key.into(), label.into());
+            }
+        }
+        child
+            .map(|child| subagents.bind(child, key))
+            .unwrap_or_default()
+    };
+    if root.is_none() {
+        emit_opencode_subagent(target, "chat.subagent", key, json!({"key":key,"info":info}));
+    }
+    for event in pending {
+        emit_opencode_child_event(target, event);
+    }
+}
+
+fn emit_opencode_child_event(target: &EventTarget, raw: Value) {
+    let payload = raw.get("payload").unwrap_or(&raw);
+    let properties = payload.get("properties").unwrap_or(payload);
+    let kind = payload
+        .get("type")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    let Some(child) = opencode_event_session(kind, properties) else {
+        return;
+    };
+    let Some(key) = target
+        .subagents
+        .lock()
+        .ok()
+        .and_then(|state| state.children.get(child).cloned())
+    else {
+        return;
+    };
+    match kind {
+        "message.updated" => {
+            let info = properties.get("info").unwrap_or(properties);
+            if let (Some(id), Some(role)) = (
+                info.get("id").and_then(Value::as_str),
+                info.get("role").and_then(Value::as_str),
+            ) {
+                if matches!(role, "user" | "assistant" | "tool") {
+                    if let Ok(mut state) = target.subagents.lock() {
+                        state.roles.insert((child.into(), id.into()), role.into());
+                    }
+                }
+            }
+        }
+        "message.part.updated" => {
+            let Some(part) = properties.get("part") else {
+                return;
+            };
+            if opencode_task_part(part) {
+                opencode_task_update(target, part, Some(&key), None);
+                return;
+            }
+            let (Some(message), Some(id)) = (
+                part.get("messageID").and_then(Value::as_str),
+                part.get("id").and_then(Value::as_str),
+            ) else {
+                return;
+            };
+            let role = target
+                .subagents
+                .lock()
+                .ok()
+                .and_then(|state| state.roles.get(&(child.into(), message.into())).cloned())
+                .unwrap_or_else(|| "assistant".into());
+            let normalized = opencode_chat_part(part);
+            let merge = normalized.get("type").and_then(Value::as_str) == Some("tool");
+            let mut data = json!({"key":key,"item":{"id":format!("{message}:{id}"),"role":role,"parts":[normalized]}});
+            if merge {
+                data["merge"] = json!(true);
+            }
+            emit_opencode_subagent(target, "chat.subagent.item", &key, data);
+        }
+        "session.error" => {
+            let error = properties.get("error").unwrap_or(properties);
+            let text = error
+                .pointer("/data/message")
+                .or_else(|| error.get("message"))
+                .and_then(Value::as_str)
+                .map(str::to_owned)
+                .unwrap_or_else(|| error.to_string());
+            let id = payload.get("id").and_then(Value::as_str).unwrap_or("error");
+            emit_opencode_subagent(
+                target,
+                "chat.subagent.item",
+                &key,
+                json!({"key":key,"item":{"id":format!("{child}:{id}"),"role":"assistant","parts":[{"type":"error","text":text,"data":error}]}}),
+            );
+        }
+        "permission.asked" | "permission.updated" => {
+            let turn = target
+                .subagents
+                .lock()
+                .ok()
+                .and_then(|state| state.turns.get(&key).cloned())
+                .flatten();
+            opencode_permission_asked(target, kind, properties, child, Some(&key), turn);
+        }
+        "permission.replied" => opencode_permission_replied(target, properties, child, &raw, None),
+        _ => {}
+    }
+}
+
+fn opencode_permission_asked(
+    target: &EventTarget,
+    event_type: &str,
+    properties: &Value,
+    session: &str,
+    subagent: Option<&str>,
+    turn: Option<String>,
+) {
+    // Real 1.18 frames carry the PermissionRequest flat in properties.
+    let permission = match properties.get("permission") {
+        Some(value) if value.is_object() => value,
+        _ => properties,
+    };
+    let Some(id) = permission.get("id").and_then(Value::as_str) else {
+        return;
+    };
+    if target
+        .settled_permissions
+        .lock()
+        .ok()
+        .is_some_and(|settled| settled.contains(id))
+    {
+        return;
+    }
+    let asked_turn = match target.permissions.lock() {
+        Ok(mut permissions) => {
+            if let Some(asked_turn) = permissions.get(id) {
+                if event_type == "permission.asked" {
+                    return;
+                }
+                // A different session may not update an existing request.
+                if target
+                    .permission_sessions
+                    .lock()
+                    .ok()
+                    .and_then(|sessions| sessions.get(id).cloned())
+                    .is_some_and(|owner| owner != session)
+                {
+                    return;
+                }
+                asked_turn.clone()
+            } else {
+                if let Ok(mut sessions) = target.permission_sessions.lock() {
+                    sessions.insert(id.into(), session.into());
+                } else {
+                    return;
+                }
+                permissions.insert(id.into(), turn.clone());
+                turn
+            }
+        }
+        Err(_) => return,
+    };
+    let mut data = approval_payload(
+        id,
+        "opencode",
+        "permission.asked",
+        permission
+            .get("title")
+            .and_then(Value::as_str)
+            .or_else(|| permission.get("permission").and_then(Value::as_str))
+            .unwrap_or("Permission request"),
+        permission,
+        &allow_deny_choices(),
+        asked_turn.as_deref(),
+        true,
+    );
+    if let Some(key) = subagent {
+        let label = target
+            .subagents
+            .lock()
+            .ok()
+            .and_then(|state| state.labels.get(key).cloned())
+            .unwrap_or_else(|| "Subagent".into());
+        data["subagent"] = json!({"key":key,"label":label});
+    }
+    emit_scoped(
+        &target.events,
+        "opencode",
+        &target.threadterm_session,
+        Some(&target.native_id),
+        asked_turn.as_deref(),
+        "chat.approval",
+        json!({"approvalId":id,"request":permission,
+            "choices":allow_deny_choices(),"part":{"type":"approval","approvalId":id,"status":"pending","data":data}}),
+        Some(&target.worker_token),
+    );
+}
+
+fn opencode_permission_replied(
+    target: &EventTarget,
+    properties: &Value,
+    session: &str,
+    raw: &Value,
+    turn: Option<&str>,
+) {
+    let request_id = properties.get("requestID").and_then(Value::as_str);
+    if request_id.is_some_and(|id| {
+        target
+            .permission_sessions
+            .lock()
+            .ok()
+            .and_then(|sessions| sessions.get(id).cloned())
+            .is_some_and(|owner| owner != session)
+    }) {
+        return;
+    }
+    let known = request_id.and_then(|id| {
+        target
+            .permissions
+            .lock()
+            .ok()
+            .and_then(|mut permissions| permissions.remove(id))
+    });
+    match (request_id, known) {
+        (Some(id), Some(asked_turn)) => {
+            if let Ok(mut settled) = target.settled_permissions.lock() {
+                settled.insert(id.into());
+            }
+            if let Ok(mut sessions) = target.permission_sessions.lock() {
+                sessions.remove(id);
+            }
+            let reply = properties
+                .get("reply")
+                .and_then(Value::as_str)
+                .unwrap_or("unknown");
+            let status = match reply {
+                "once" | "always" | "reject" => "resolved",
+                "cancelled" | "canceled" => "expired",
+                _ => "outcomeUnknown",
+            };
+            emit_scoped(
+                &target.events,
+                "opencode",
+                &target.threadterm_session,
+                Some(&target.native_id),
+                asked_turn.as_deref(),
+                "chat.approval.resolved",
+                json!({"approvalId":id,"status":status,"outcome":reply}),
+                Some(&target.worker_token),
+            );
+        }
+        _ => emit_scoped(
+            &target.events,
+            "opencode",
+            &target.threadterm_session,
+            Some(&target.native_id),
+            turn,
+            "provider.event",
+            json!({"raw":raw,"note":if request_id.is_some() {"permission reply for an unknown or settled request"} else {"permission reply without a request id"}}),
+            Some(&target.worker_token),
+        ),
+    }
 }
 
 /// The state an SSE event may touch: everything except the transport reader.
@@ -1028,6 +1464,8 @@ struct EventTarget {
     assembly: Arc<Mutex<OpenCodeAssembly>>,
     permissions: Arc<Mutex<HashMap<String, Option<String>>>>,
     settled_permissions: Arc<Mutex<HashSet<String>>>,
+    subagents: Mutex<OpenCodeSubagents>,
+    permission_sessions: Mutex<HashMap<String, String>>,
     native_turn_observed: AtomicBool,
     stopped: Arc<AtomicBool>,
     event_gate: Arc<Mutex<()>>,
@@ -1232,6 +1670,9 @@ fn expire_stream_locked(
         .lock()
         .map(|mut permissions| std::mem::take(&mut *permissions))
         .unwrap_or_default();
+    if let Ok(mut sessions) = target.permission_sessions.lock() {
+        sessions.clear();
+    }
     for (approval_id, asked_turn) in pending {
         emit_scoped(
             &target.events,
@@ -1366,32 +1807,51 @@ fn emit_opencode_event(target: &EventTarget, raw: Value) {
         .and_then(Value::as_str)
         .unwrap_or("provider.event");
 
-    // Attribution gate: an event must name this exact native session before it
-    // may touch the chat. Foreign sessions (including unknown sub-agent
-    // sessions) and global events that name no session are never projected.
-    let event_session = properties
-        .get("sessionID")
-        .or_else(|| properties.get("sessionId"))
-        .and_then(Value::as_str)
-        .or_else(|| {
-            properties
-                .get("info")
-                .and_then(|v| v.get("sessionID"))
-                .and_then(Value::as_str)
-        })
-        .or_else(|| {
-            properties
-                .get("part")
-                .and_then(|v| v.get("sessionID"))
-                .and_then(Value::as_str)
-        });
-    if event_session != Some(target.native_id.as_str()) {
+    // Global events never project. Foreign events wait for proven task/session
+    // ownership; only bound descendants may enter the subagent transcript.
+    let Some(event_session) = opencode_event_session(event_type, properties) else {
         return;
-    }
+    };
     let Ok(commit_guard) = target.event_gate.lock() else {
         return;
     };
     if target.stopped.load(Ordering::SeqCst) || !target.liveness.load(Ordering::SeqCst) {
+        return;
+    }
+    if event_session != target.native_id {
+        let pending = {
+            let Ok(mut state) = target.subagents.lock() else {
+                return;
+            };
+            if matches!(event_type, "session.created" | "session.updated") {
+                if let Some(parent) = properties.pointer("/info/parentID").and_then(Value::as_str) {
+                    state.parents.insert(event_session.into(), parent.into());
+                }
+            }
+            let root = state.children.get(event_session).cloned().or_else(|| {
+                state
+                    .parents
+                    .get(event_session)
+                    .and_then(|parent| state.children.get(parent))
+                    .cloned()
+            });
+            if let Some(root) = root {
+                state.bind(event_session, &root)
+            } else {
+                if matches!(
+                    event_type,
+                    "message.updated" | "message.part.updated" | "session.error"
+                        | "permission.asked" | "permission.updated" | "permission.replied"
+                ) {
+                    state.buffer(event_session, raw.clone());
+                }
+                return;
+            }
+        };
+        for event in pending {
+            emit_opencode_child_event(target, event);
+        }
+        emit_opencode_child_event(target, raw);
         return;
     }
     let native_id = Some(target.native_id.as_str());
@@ -1409,6 +1869,18 @@ fn emit_opencode_event(target: &EventTarget, raw: Value) {
             ) else {
                 return;
             };
+            if opencode_task_part(&part) {
+                // Remove any cached representation, including one seeded from
+                // native history. Task activity belongs only to its card.
+                if let Ok(mut assembly) = target.assembly.lock() {
+                    if let Some(message) = assembly.messages.get_mut(message_id) {
+                        message.parts.remove(part_id);
+                        message.order.retain(|id| id != part_id);
+                    }
+                }
+                opencode_task_update(target, &part, None, turn.as_deref());
+                return;
+            }
             drop(commit_guard);
             let snapshot = match target.assembled_parts(message_id, |assembly| {
                 assembly.apply_full_part(message_id, part_id, opencode_chat_part(&part))
@@ -1482,114 +1954,10 @@ fn emit_opencode_event(target: &EventTarget, raw: Value) {
             );
         }
         "permission.asked" | "permission.updated" => {
-            // Real 1.18 frames carry the PermissionRequest flat in properties;
-            // older fixtures nested it under `permission`.
-            let permission = match properties.get("permission") {
-                Some(value) if value.is_object() => value,
-                _ => properties,
-            };
-            let Some(approval_id) = permission.get("id").and_then(Value::as_str) else {
-                return;
-            };
-            if target
-                .settled_permissions
-                .lock()
-                .ok()
-                .is_some_and(|settled| settled.contains(approval_id))
-            {
-                return;
-            }
-            let asked_turn = match target.permissions.lock() {
-                Ok(mut permissions) => {
-                    if let Some(asked_turn) = permissions.get(approval_id) {
-                        if event_type == "permission.asked" {
-                            return;
-                        }
-                        asked_turn.clone()
-                    } else {
-                        permissions.insert(approval_id.to_owned(), turn.clone());
-                        turn.clone()
-                    }
-                }
-                Err(_) => return,
-            };
-            emit_scoped(
-                &target.events,
-                "opencode",
-                &target.threadterm_session,
-                native_id,
-                asked_turn.as_deref(),
-                "chat.approval",
-                json!({
-                    "approvalId":approval_id,
-                    "request":permission,
-                    "choices":allow_deny_choices(),
-                    "part":{"type":"approval","approvalId":approval_id,"status":"pending","data":approval_payload(approval_id,"opencode","permission.asked",permission.get("title").and_then(Value::as_str).or_else(||permission.get("permission").and_then(Value::as_str)).unwrap_or("Permission request"),permission,&allow_deny_choices(),asked_turn.as_deref(),true)}
-                }),
-                Some(&target.worker_token),
-            );
+            opencode_permission_asked(target, event_type, properties, &target.native_id, None, turn);
         }
         "permission.replied" => {
-            let request_id = properties.get("requestID").and_then(Value::as_str);
-            let known = request_id.and_then(|id| {
-                target
-                    .permissions
-                    .lock()
-                    .ok()
-                    .and_then(|mut permissions| permissions.remove(id))
-            });
-            match (request_id, known) {
-                (Some(id), Some(asked_turn)) => {
-                    if let Ok(mut settled) = target.settled_permissions.lock() {
-                        settled.insert(id.to_owned());
-                    }
-                    let reply = properties
-                        .get("reply")
-                        .and_then(Value::as_str)
-                        .unwrap_or("unknown");
-                    let status = match reply {
-                        "once" | "always" | "reject" => "resolved",
-                        "cancelled" | "canceled" => "expired",
-                        _ => "outcomeUnknown",
-                    };
-                    emit_scoped(
-                        &target.events,
-                        "opencode",
-                        &target.threadterm_session,
-                        native_id,
-                        asked_turn.as_deref(),
-                        "chat.approval.resolved",
-                        json!({"approvalId":id,"status":status,"outcome":reply}),
-                        Some(&target.worker_token),
-                    );
-                }
-                (Some(_), None) => {
-                    // Unknown or already-settled request: diagnose, never close
-                    // a batch of cards by guessing.
-                    emit_scoped(
-                        &target.events,
-                        "opencode",
-                        &target.threadterm_session,
-                        native_id,
-                        turn.as_deref(),
-                        "provider.event",
-                        json!({"raw":raw,"note":"permission reply for an unknown or settled request"}),
-                        Some(&target.worker_token),
-                    );
-                }
-                (None, _) => {
-                    emit_scoped(
-                        &target.events,
-                        "opencode",
-                        &target.threadterm_session,
-                        native_id,
-                        turn.as_deref(),
-                        "provider.event",
-                        json!({"raw":raw,"note":"permission reply without a request id"}),
-                        Some(&target.worker_token),
-                    );
-                }
-            }
+            opencode_permission_replied(target, properties, &target.native_id, &raw, turn.as_deref());
         }
         "session.idle" => {
             let completed = target.active.lock().ok().and_then(|mut value| value.take());
@@ -1679,6 +2047,9 @@ fn opencode_chat_part(part: &Value) -> Value {
 }
 
 fn opencode_history_item(row: &Value, cwd: Option<&str>) -> Option<Value> {
+    if row.get("parentID").is_some_and(|value| !value.is_null()) {
+        return None;
+    }
     let id = row.get("id")?.as_str()?;
     let directory = row.get("directory").and_then(Value::as_str);
     if cwd.is_some() && directory != cwd {
@@ -1824,6 +2195,8 @@ mod tests {
             assembly: Default::default(),
             permissions: Default::default(),
             settled_permissions: Default::default(),
+            subagents: Default::default(),
+            permission_sessions: Default::default(),
             native_turn_observed: AtomicBool::new(false),
             stopped: Arc::new(AtomicBool::new(false)),
             event_gate: Arc::new(Mutex::new(())),
@@ -1834,6 +2207,622 @@ mod tests {
             username: String::new(),
             password: String::new(),
         }
+    }
+
+    fn task_frame(call: &str, status: &str, child: Option<&str>) -> Value {
+        let mut state = json!({"status":status,"title":"Inspect files","input":{
+            "description":"Inspect files","subagent_type":"explore","prompt":"Find the entry point"},
+            "output":"Found main.rs","error":"Task failed"});
+        if let Some(child) = child {
+            state["metadata"] = json!({"sessionId":child});
+        }
+        frame(
+            "message.part.updated",
+            json!({"part":{"sessionID":"native-1","messageID":"parent-msg",
+            "id":format!("part-{call}"),"type":"tool","tool":"task","callID":call,"state":state}}),
+        )
+    }
+
+    fn child_part(child: &str, id: &str, kind: &str, text: &str) -> Value {
+        frame(
+            "message.part.updated",
+            json!({"part":{"sessionID":child,"messageID":"child-msg",
+            "id":id,"type":kind,"text":text}}),
+        )
+    }
+
+    #[test]
+    fn task_lifecycle_projects_cards_with_summary_and_error_without_parent_tools() {
+        let db = projection_db();
+        let (events, mut rx) = crate::provider_events::tap_channel(32);
+        let target = event_target(&events, Arc::new(Mutex::new(Some("turn-1".into()))));
+        for status in ["pending", "running", "completed"] {
+            emit_opencode_event(
+                &target,
+                task_frame("call-1", status, (status != "pending").then_some("child-1")),
+            );
+            let event = rx.try_recv().unwrap();
+            assert_eq!(event.kind, "chat.subagent");
+            assert_eq!(event.data["key"], "call-1");
+            assert_eq!(
+                event.data["info"]["status"],
+                if status == "completed" {
+                    "completed"
+                } else {
+                    "running"
+                }
+            );
+            db.record_provider_event("chat-s", event.turn_id.as_deref(), &event.kind, &event.data)
+                .unwrap();
+        }
+        emit_opencode_event(&target, task_frame("call-2", "error", None));
+        drain(&db, &mut rx, "chat-s");
+        let cards = db.chat_items("chat-s").unwrap();
+        assert_eq!(cards.len(), 2);
+        let first = cards
+            .iter()
+            .find(|item| item.parts[0]["data"]["key"] == "call-1")
+            .unwrap();
+        assert_eq!(first.parts[0]["type"], "subagent");
+        assert_eq!(first.parts[0]["data"]["summary"], "Found main.rs");
+        assert_eq!(first.parts[0]["data"]["native"]["id"], "child-1");
+        assert_eq!(first.parts[0]["data"]["agentType"], "explore");
+        assert_eq!(first.parts[0]["data"]["prompt"], "Find the entry point");
+        let failed = cards
+            .iter()
+            .find(|item| item.parts[0]["data"]["key"] == "call-2")
+            .unwrap();
+        assert_eq!(failed.parts[0]["data"]["status"], "failed");
+        assert_eq!(failed.parts[0]["data"]["summary"], "Task failed");
+        assert_eq!(target.active.lock().unwrap().as_deref(), Some("turn-1"));
+        assert_eq!(
+            target.subagents.lock().unwrap().task_calls["call-1"].as_deref(),
+            Some("child-1")
+        );
+    }
+
+    #[test]
+    fn child_snapshots_before_and_after_binding_replace_text_and_merge_tools() {
+        let db = projection_db();
+        let (events, mut rx) = crate::provider_events::tap_channel(32);
+        let target = event_target(&events, Arc::new(Mutex::new(Some("turn-1".into()))));
+        emit_opencode_event(
+            &target,
+            frame(
+                "session.created",
+                json!({"info":{"id":"child-1","parentID":"native-1"}}),
+            ),
+        );
+        emit_opencode_event(
+            &target,
+            frame(
+                "message.updated",
+                json!({"info":{"id":"child-msg","sessionID":"child-1","role":"user"}}),
+            ),
+        );
+        emit_opencode_event(&target, child_part("child-1", "text", "text", "before"));
+        emit_opencode_event(
+            &target,
+            child_part("child-1", "thought", "reasoning", "first thought"),
+        );
+        assert!(rx.try_recv().is_err());
+        emit_opencode_event(&target, task_frame("call-1", "running", Some("child-1")));
+        emit_opencode_event(&target, child_part("child-1", "text", "text", "after"));
+        emit_opencode_event(
+            &target,
+            child_part("child-1", "thought", "reasoning", "final thought"),
+        );
+        for status in ["running", "completed"] {
+            emit_opencode_event(
+                &target,
+                frame(
+                    "message.part.updated",
+                    json!({"part":{"sessionID":"child-1","messageID":"child-msg",
+                "id":"shell","type":"tool","tool":"bash","callID":"tool-call","state":{"status":status,"input":{"command":"echo hello"},"output":"hello"}}}),
+                ),
+            );
+        }
+        emit_opencode_event(
+            &target,
+            frame(
+                "message.part.delta",
+                json!({"sessionID":"child-1","messageID":"child-msg","partID":"text","field":"text","delta":"ignored"}),
+            ),
+        );
+        while let Ok(event) = rx.try_recv() {
+            assert!(matches!(
+                event.kind.as_str(),
+                "chat.subagent" | "chat.subagent.item"
+            ));
+            assert_eq!(event.native_id.as_deref(), Some("native-1"));
+            if event.kind == "chat.subagent.item" {
+                assert_eq!(event.data["key"], "call-1");
+                assert_eq!(event.data["item"]["role"], "user");
+                let tool = event.data["item"]["parts"][0]["type"] == "tool";
+                assert_eq!(
+                    event.data.get("merge").and_then(Value::as_bool),
+                    tool.then_some(true)
+                );
+            }
+            db.record_provider_event("chat-s", event.turn_id.as_deref(), &event.kind, &event.data)
+                .unwrap();
+        }
+        let (items, _, _) = db.subagent_items_after("chat-s", "call-1", 0).unwrap();
+        assert_eq!(items.len(), 3);
+        assert!(items.iter().all(|item| item.parts.len() == 1));
+        assert_eq!(items[0].id, "child-msg:text");
+        assert_eq!(items[0].parts[0]["text"], "after");
+        assert_eq!(items[1].parts[0]["text"], "final thought");
+        assert_eq!(items[2].parts[0]["status"], "completed");
+        assert_eq!(target.active.lock().unwrap().as_deref(), Some("turn-1"));
+    }
+
+    #[test]
+    fn unbound_child_buffer_drops_oldest_and_ignores_deltas() {
+        let (events, mut rx) = crate::provider_events::tap_channel(256);
+        let target = event_target(&events, Arc::new(Mutex::new(None)));
+        for index in 0..205 {
+            emit_opencode_event(
+                &target,
+                child_part(
+                    "child-1",
+                    &format!("part-{index}"),
+                    "text",
+                    &index.to_string(),
+                ),
+            );
+            emit_opencode_event(
+                &target,
+                frame(
+                    "message.part.delta",
+                    json!({"sessionID":"child-1","delta":"ignored"}),
+                ),
+            );
+        }
+        assert_eq!(
+            target.subagents.lock().unwrap().pending_children["child-1"].len(),
+            200
+        );
+        assert!(rx.try_recv().is_err());
+        emit_opencode_event(&target, task_frame("call-1", "running", Some("child-1")));
+        assert_eq!(rx.try_recv().unwrap().kind, "chat.subagent");
+        assert_eq!(rx.try_recv().unwrap().data["item"]["parts"][0]["text"], "5");
+        let rest = std::iter::from_fn(|| rx.try_recv().ok()).collect::<Vec<_>>();
+        assert_eq!(rest.len(), 199);
+        assert!(target.subagents.lock().unwrap().pending_children.is_empty());
+    }
+
+    #[test]
+    fn nested_session_registration_and_inner_tasks_keep_the_root_key() {
+        let (events, mut rx) = crate::provider_events::tap_channel(32);
+        let target = event_target(&events, Arc::new(Mutex::new(Some("turn-1".into()))));
+        // Descendant creation can precede the root's task metadata.
+        emit_opencode_event(
+            &target,
+            frame(
+                "session.created",
+                json!({"info":{"id":"nested-1","parentID":"child-1"}}),
+            ),
+        );
+        emit_opencode_event(
+            &target,
+            child_part("nested-1", "early", "text", "nested early"),
+        );
+        emit_opencode_event(&target, task_frame("root-call", "running", Some("child-1")));
+        emit_opencode_event(
+            &target,
+            frame(
+                "session.updated",
+                json!({"info":{"id":"nested-2","parentID":"child-1"}}),
+            ),
+        );
+        emit_opencode_event(
+            &target,
+            child_part("nested-2", "later", "text", "nested later"),
+        );
+        let mut inner = task_frame("inner-call", "completed", Some("nested-3"));
+        inner["payload"]["properties"]["part"]["sessionID"] = json!("child-1");
+        emit_opencode_event(&target, inner);
+        emit_opencode_event(
+            &target,
+            child_part("nested-3", "tool-child", "text", "inner task"),
+        );
+        let all = std::iter::from_fn(|| rx.try_recv().ok()).collect::<Vec<_>>();
+        assert_eq!(all.len(), 4);
+        assert_eq!(all[0].kind, "chat.subagent");
+        assert!(all.iter().all(|event| event.data["key"] == "root-call"));
+        assert!(all[1..]
+            .iter()
+            .all(|event| event.kind == "chat.subagent.item"));
+        assert_eq!(
+            target.subagents.lock().unwrap().children["nested-3"],
+            "root-call"
+        );
+        assert_eq!(target.active.lock().unwrap().as_deref(), Some("turn-1"));
+    }
+
+    #[test]
+    fn subtask_cards_and_native_snapshots_exclude_spawn_parts() {
+        let (events, mut rx) = crate::provider_events::tap_channel(16);
+        let target = event_target(&events, Arc::new(Mutex::new(Some("turn-1".into()))));
+        let subtask = json!({"id":"subtask-part","sessionID":"native-1","messageID":"parent-msg",
+            "type":"subtask","agent":"explore","description":"Inspect files","prompt":"Read the code"});
+        emit_opencode_event(
+            &target,
+            frame("message.part.updated", json!({"part":subtask})),
+        );
+        let card = rx.try_recv().unwrap();
+        assert_eq!(card.kind, "chat.subagent");
+        assert_eq!(card.data["key"], "subtask-part");
+        assert_eq!(card.data["info"]["agentType"], "explore");
+        let task = task_frame("call-1", "running", None)["payload"]["properties"]["part"].clone();
+        let text = json!({"id":"parent-text","sessionID":"native-1","messageID":"parent-msg","type":"text","text":"Parent answer"});
+        let row =
+            json!({"info":{"id":"parent-msg","sessionID":"native-1"},"parts":[task,subtask,text]});
+        let normalized = native_message_parts(&row, "parent-msg", "native-1").unwrap();
+        assert_eq!(normalized.len(), 1);
+        assert_eq!(normalized[0].1["text"], "Parent answer");
+        emit_opencode_event(&target, task_frame("call-1", "running", None));
+        rx.try_recv().unwrap();
+        emit_opencode_event(&target, frame("message.part.updated", json!({"part":text})));
+        let snapshot = rx.try_recv().unwrap();
+        assert_eq!(snapshot.kind, "chat.item");
+        assert_eq!(snapshot.data["parts"].as_array().unwrap().len(), 1);
+        assert_eq!(snapshot.data["parts"][0]["text"], "Parent answer");
+    }
+
+    #[test]
+    fn child_errors_idle_and_foreign_events_cannot_settle_parent_or_permissions() {
+        let (events, mut rx) = crate::provider_events::tap_channel(32);
+        let target = event_target(&events, Arc::new(Mutex::new(Some("turn-1".into()))));
+        emit_opencode_event(&target, task_frame("call-1", "running", Some("child-1")));
+        rx.try_recv().unwrap();
+        target.native_turn_observed.store(false, Ordering::SeqCst);
+        emit_opencode_event(
+            &target,
+            frame(
+                "session.error",
+                json!({"sessionID":"child-1","error":{"name":"UnknownError","data":{"message":"child failed"}}}),
+            ),
+        );
+        let event = rx.try_recv().unwrap();
+        assert_eq!(event.kind, "chat.subagent.item");
+        assert_eq!(event.data["item"]["parts"][0]["type"], "error");
+        assert_eq!(event.data["item"]["parts"][0]["text"], "child failed");
+        emit_opencode_event(
+            &target,
+            frame("session.idle", json!({"sessionID":"child-1"})),
+        );
+        for kind in [
+            "session.error",
+            "session.idle",
+            "permission.asked",
+            "permission.replied",
+        ] {
+            emit_opencode_event(
+                &target,
+                frame(
+                    kind,
+                    json!({"sessionID":"foreign","id":"foreign-per","requestID":"foreign-per"}),
+                ),
+            );
+        }
+        emit_opencode_event(
+            &target,
+            child_part("foreign", "foreign-part", "text", "foreign text"),
+        );
+        emit_opencode_event(
+            &target,
+            frame(
+                "session.created",
+                json!({"info":{"id":"foreign","parentID":"other-root"}}),
+            ),
+        );
+        assert!(rx.try_recv().is_err());
+        assert!(target.permissions.lock().unwrap().is_empty());
+        assert_eq!(target.active.lock().unwrap().as_deref(), Some("turn-1"));
+        assert!(!target.native_turn_observed.load(Ordering::SeqCst));
+        target.stopped.store(true, Ordering::SeqCst);
+        emit_opencode_event(&target, child_part("child-1", "late", "text", "after stop"));
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn history_hides_children_but_accepts_null_or_absent_parent() {
+        for parent in [json!("native-1"), json!("")] {
+            assert!(opencode_history_item(
+                &json!({"id":"child","directory":"/a","parentID":parent}),
+                Some("/a")
+            )
+            .is_none());
+        }
+        assert!(opencode_history_item(
+            &json!({"id":"root","directory":"/a","parentID":null}),
+            Some("/a")
+        )
+        .is_some());
+        assert!(
+            opencode_history_item(&json!({"id":"root","directory":"/a"}), Some("/a")).is_some()
+        );
+    }
+
+    #[test]
+    fn child_permission_round_trip_posts_to_child_and_resolves_original_turn() {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let address = listener.local_addr().unwrap();
+        let (request_tx, request_rx) = mpsc::sync_channel(1);
+        let responder = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+            let mut request = Vec::new();
+            let mut chunk = [0u8; 1024];
+            loop {
+                let count = stream.read(&mut chunk).unwrap();
+                assert!(count > 0);
+                request.extend_from_slice(&chunk[..count]);
+                if request
+                    .windows(4)
+                    .position(|window| window == b"\r\n\r\n")
+                    .is_some_and(|end| {
+                        let headers = String::from_utf8_lossy(&request[..end]);
+                        let length = headers
+                            .lines()
+                            .find_map(|line| {
+                                line.to_ascii_lowercase()
+                                    .strip_prefix("content-length:")
+                                    .and_then(|value| value.trim().parse::<usize>().ok())
+                            })
+                            .unwrap_or(0);
+                        request.len() >= end + 4 + length
+                    })
+                {
+                    break;
+                }
+            }
+            request_tx
+                .send(String::from_utf8(request).unwrap())
+                .unwrap();
+            stream
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}")
+                .unwrap();
+        });
+        let (events, mut rx) = crate::provider_events::tap_channel(32);
+        let active = Arc::new(Mutex::new(Some("turn-1".into())));
+        let target = Arc::new(event_target(&events, Arc::clone(&active)));
+        emit_opencode_event(
+            &target,
+            frame(
+                "permission.asked",
+                json!({"id":"per_child","sessionID":"child-1","permission":"bash","patterns":["*"],"metadata":{},"always":[]}),
+            ),
+        );
+        assert!(rx.try_recv().is_err());
+        emit_opencode_event(&target, task_frame("call-1", "running", Some("child-1")));
+        assert_eq!(rx.try_recv().unwrap().kind, "chat.subagent");
+        let asked = rx.try_recv().unwrap();
+        assert_eq!(asked.kind, "chat.approval");
+        assert_eq!(
+            asked.data["part"]["data"]["subagent"],
+            json!({"key":"call-1","label":"Inspect files"})
+        );
+        assert_eq!(asked.turn_id.as_deref(), Some("turn-1"));
+        assert_eq!(
+            target.permission_sessions.lock().unwrap()["per_child"],
+            "child-1"
+        );
+        *active.lock().unwrap() = Some("turn-2".into());
+        emit_opencode_event(
+            &target,
+            frame(
+                "permission.updated",
+                json!({"id":"per_child","sessionID":"child-1","permission":"bash"}),
+            ),
+        );
+        assert_eq!(rx.try_recv().unwrap().turn_id.as_deref(), Some("turn-1"));
+        // A parent/foreign reply cannot settle a child's permission.
+        emit_opencode_event(
+            &target,
+            frame(
+                "permission.replied",
+                json!({"sessionID":"native-1","requestID":"per_child","reply":"once"}),
+            ),
+        );
+        assert!(rx.try_recv().is_err());
+        assert!(target.permissions.lock().unwrap().contains_key("per_child"));
+
+        // An inert shell keeps is_alive() true for the real approve() path;
+        // this test never discovers or starts an OpenCode executable.
+        #[cfg(windows)]
+        let spec = CommandSpec::from_path(
+            std::path::PathBuf::from(std::env::var_os("SystemRoot").unwrap())
+                .join("System32/WindowsPowerShell/v1.0/powershell.exe"),
+            vec![
+                "-NoProfile".into(),
+                "-Command".into(),
+                "Start-Sleep -Seconds 30".into(),
+            ],
+        )
+        .unwrap();
+        #[cfg(not(windows))]
+        let spec = CommandSpec::from_path(
+            std::path::PathBuf::from("/bin/sh"),
+            vec!["-c".into(), "sleep 30".into()],
+        )
+        .unwrap();
+        let (child, job) = spawn_managed_service(&spec, None, &[]).unwrap();
+        let server = OpenCodeServer {
+            base_url: format!("http://{address}"),
+            cwd: String::new(),
+            username: String::new(),
+            password: String::new(),
+            client: Client::builder()
+                .timeout(Duration::from_secs(5))
+                .build()
+                .unwrap(),
+            child: Arc::new(Mutex::new(child)),
+            stopped: Arc::clone(&target.stopped),
+            event_gate: Arc::clone(&target.event_gate),
+            active_turn: Arc::clone(&active),
+            permissions: Arc::clone(&target.permissions),
+            events: events.clone(),
+            threadterm_session: "chat-s".into(),
+            worker_token: "test-worker".into(),
+            _job: job,
+        };
+        let mut chat = OpenCodeChat {
+            server,
+            session_id: "chat-s".into(),
+            native_id: "native-1".into(),
+            events,
+            sse_target: Arc::clone(&target),
+            worker_token: "test-worker".into(),
+        };
+        assert_eq!(
+            chat.approve("wrong-turn", "per_child", "allow", "op-wrong")
+                .unwrap_err()
+                .code,
+            "approval_not_pending"
+        );
+        let approved = chat.approve("turn-1", "per_child", "allow", "op-1");
+        // Always retire the inert shell before any assertion can unwind.
+        chat.server.stopped.store(true, Ordering::SeqCst);
+        {
+            let mut child = chat.server.child.lock().unwrap();
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+        approved.unwrap();
+        let request = request_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        assert!(
+            request.starts_with("POST /session/child-1/permissions/per_child?"),
+            "{request}"
+        );
+        assert!(request.contains("\"response\":\"once\""));
+        responder.join().unwrap();
+        target.stopped.store(false, Ordering::SeqCst);
+        emit_opencode_event(
+            &target,
+            frame(
+                "permission.replied",
+                json!({"sessionID":"child-1","requestID":"per_child","reply":"once"}),
+            ),
+        );
+        let resolved = rx.try_recv().unwrap();
+        assert_eq!(resolved.kind, "chat.approval.resolved");
+        assert_eq!(resolved.turn_id.as_deref(), Some("turn-1"));
+        assert!(target.permissions.lock().unwrap().is_empty());
+        assert!(target.permission_sessions.lock().unwrap().is_empty());
+        assert_eq!(active.lock().unwrap().as_deref(), Some("turn-2"));
+        // Suppress a disposal HTTP request when the test server has exited.
+        chat.server.stopped.store(true, Ordering::SeqCst);
+    }
+
+    #[test]
+    fn child_permissions_expire_and_late_updates_do_not_reopen_them() {
+        let (events, mut rx) = crate::provider_events::tap_channel(16);
+        let target = event_target(&events, Arc::new(Mutex::new(Some("turn-1".into()))));
+        emit_opencode_event(&target, task_frame("call-1", "running", Some("child-1")));
+        rx.try_recv().unwrap();
+        emit_opencode_event(
+            &target,
+            frame(
+                "permission.asked",
+                json!({"id":"per_child","sessionID":"child-1","permission":"bash"}),
+            ),
+        );
+        assert_eq!(rx.try_recv().unwrap().kind, "chat.approval");
+        emit_opencode_event(
+            &target,
+            frame(
+                "permission.replied",
+                json!({"sessionID":"child-1","requestID":"per_child","reply":"reject"}),
+            ),
+        );
+        assert_eq!(rx.try_recv().unwrap().kind, "chat.approval.resolved");
+        emit_opencode_event(
+            &target,
+            frame(
+                "permission.updated",
+                json!({"id":"per_child","sessionID":"child-1","permission":"bash"}),
+            ),
+        );
+        assert!(rx.try_recv().is_err());
+        emit_opencode_event(
+            &target,
+            frame(
+                "permission.asked",
+                json!({"id":"per_pending","sessionID":"child-1","permission":"bash"}),
+            ),
+        );
+        rx.try_recv().unwrap();
+        expire_stream(&target, "test_expiry", "stream lost");
+        let expired = rx.try_recv().unwrap();
+        assert_eq!(expired.kind, "chat.approval.resolved");
+        assert_eq!(expired.data["status"], "expired");
+        assert!(target.permission_sessions.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn parallel_tasks_preserve_parent_text_tools_and_independent_child_ownership() {
+        let db = projection_db();
+        let (events, mut rx) = crate::provider_events::tap_channel(32);
+        let target = event_target(&events, Arc::new(Mutex::new(Some("turn-1".into()))));
+        let parent_text = |text: &str| {
+            frame(
+                "message.part.updated",
+                json!({"part":{
+            "id":"parent-text","messageID":"parent-msg","sessionID":"native-1","type":"text","text":text}}),
+            )
+        };
+        emit_opencode_event(&target, parent_text("Parent before"));
+        emit_opencode_event(&target, task_frame("call-a", "running", None));
+        emit_opencode_event(&target, task_frame("call-b", "running", None));
+        emit_opencode_event(&target, child_part("child-b", "text", "text", "B"));
+        emit_opencode_event(&target, child_part("child-a", "text", "text", "A"));
+        emit_opencode_event(&target, task_frame("call-b", "running", Some("child-b")));
+        emit_opencode_event(&target, task_frame("call-a", "running", Some("child-a")));
+        emit_opencode_event(
+            &target,
+            frame(
+                "message.part.updated",
+                json!({"part":{
+            "id":"parent-tool","messageID":"parent-msg","sessionID":"native-1","type":"tool","tool":"bash",
+            "state":{"status":"completed","input":{"command":"echo parent"},"output":"parent"}}}),
+            ),
+        );
+        emit_opencode_event(&target, parent_text("Parent after"));
+        drain(&db, &mut rx, "chat-s");
+        assert_eq!(projected_texts(&db, "chat-s"), ["Parent after"]);
+        let items = db.chat_items("chat-s").unwrap();
+        let parent = items
+            .iter()
+            .find(|item| item.parts.iter().any(|part| part["type"] == "text"))
+            .unwrap();
+        assert_eq!(parent.parts.len(), 2);
+        assert_eq!(parent.parts[1]["toolId"], "parent-tool");
+        assert_eq!(parent.parts[1]["toolName"], "bash");
+        assert_eq!(parent.parts[1]["status"], "completed");
+        assert_eq!(
+            items
+                .iter()
+                .filter(|item| item.parts[0]["type"] == "subagent")
+                .count(),
+            2
+        );
+        for (key, expected) in [("call-a", "A"), ("call-b", "B")] {
+            let (child, _, _) = db.subagent_items_after("chat-s", key, 0).unwrap();
+            assert_eq!(child.len(), 1);
+            assert_eq!(child[0].parts[0]["text"], expected);
+        }
+        assert_eq!(target.active.lock().unwrap().as_deref(), Some("turn-1"));
+        emit_opencode_event(
+            &target,
+            frame("session.idle", json!({"sessionID":"native-1"})),
+        );
+        assert_eq!(rx.try_recv().unwrap().kind, "chat.turn.completed");
+        assert!(target.active.lock().unwrap().is_none());
     }
 
     #[test]

@@ -10,13 +10,13 @@ use super::{
         version_probe, CommandSpec, EnvelopeStyle, JsonLineProcess, JsonLineResponder,
     },
     emit_bound as emit, ChatSession, ChatToolServer, ProviderAdapter, ProviderCapability,
-    ProviderError, ScopedProviderEvents, TerminalCommand,
+    NativeSessionRef, ProviderError, ScopedProviderEvents, TerminalCommand,
 };
 use crate::plugins::{AgentDescriptor, TerminalConfig};
 use chrono::Utc;
 use serde_json::{json, Value};
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     sync::{
         atomic::{AtomicBool, Ordering},
         Arc, Mutex,
@@ -317,7 +317,34 @@ impl ProviderAdapter for AcpAdapter {
             json!({"sessionId":native_id,"cwd":cwd,"mcpServers":[]}),
         )?;
         let raw = captured.lock().map(|v| v.clone()).unwrap_or_default();
-        Ok(Value::Array(acp_transcript(&raw)))
+        Ok(Value::Array(acp_transcript_for_provider(&self.descriptor.id, &raw)))
+    }
+
+    fn subagent_transcript(
+        &self,
+        session: &NativeSessionRef,
+        info: &Value,
+    ) -> Result<Vec<Value>, ProviderError> {
+        if self.descriptor.id != "kimi" {
+            return Err(ProviderError::new(
+                "unsupported",
+                "This agent does not expose subagent transcripts",
+            ));
+        }
+        // Same home precedence as kimi_plan_usage (its resolver is private).
+        let home = std::env::var("KIMI_CODE_HOME")
+            .ok()
+            .map(|value| value.trim().trim_end_matches('/').to_owned())
+            .filter(|value| !value.is_empty())
+            .map(std::path::PathBuf::from)
+            .or_else(|| {
+                std::env::var_os("USERPROFILE")
+                    .or_else(|| std::env::var_os("HOME"))
+                    .map(std::path::PathBuf::from)
+                    .map(|home| home.join(".kimi-code"))
+            })
+            .ok_or_else(|| ProviderError::new("history_unavailable", "Kimi home is unavailable"))?;
+        kimi_subagent_transcript(&home, session, info)
     }
 
     fn open_chat(
@@ -463,6 +490,8 @@ struct PermissionRequest {
 
 #[derive(Clone, Default)]
 struct AcpUiState {
+    subagent_calls: HashMap<String, Value>,
+    parent_tool_calls: HashSet<String>,
     options: Vec<Value>,
     commands: Vec<Value>,
     config_generation: u64,
@@ -1290,6 +1319,33 @@ fn find_session_cwd(
     Ok(None)
 }
 
+fn acp_permission_subagent(params: &Value, state: &AcpUiState) -> Option<Value> {
+    if params
+        .get("toolCallId")
+        .and_then(Value::as_str)
+        .is_some_and(|tool_call_id| state.parent_tool_calls.contains(tool_call_id))
+    {
+        return None;
+    }
+
+    let mut running = state.subagent_calls.iter().filter(|(_, info)| {
+        info.get("status").and_then(Value::as_str) == Some("running")
+    });
+    let (key, info) = running.next()?;
+    let label = info
+        .get("description")
+        .and_then(Value::as_str)
+        .filter(|description| !description.is_empty())
+        .or_else(|| info.get("agentType").and_then(Value::as_str))
+        .filter(|agent_type| !agent_type.is_empty())
+        .unwrap_or("Subagent");
+    if running.next().is_some() {
+        Some(json!({"label":"Subagent"}))
+    } else {
+        Some(json!({"key":key,"label":label}))
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn emit_acp_message(
     events: &ScopedProviderEvents,
@@ -1302,6 +1358,17 @@ fn emit_acp_message(
     ui: &Mutex<AcpUiState>,
     raw: Value,
 ) {
+    if raw.get("method").and_then(Value::as_str) == Some("session/update") {
+        if let Some(event_session) = raw.pointer("/params/sessionId").and_then(Value::as_str) {
+            if native.lock().ok().and_then(|value| value.clone()).as_deref()
+                .is_some_and(|parent| parent != event_session)
+            {
+                #[cfg(debug_assertions)]
+                eprintln!("[acp debug] {provider}: dropping foreign session/update");
+                return;
+            }
+        }
+    }
     let native_id = raw
         .get("params")
         .and_then(|p| p.get("sessionId"))
@@ -1338,7 +1405,7 @@ fn emit_acp_message(
                 },
             );
         }
-        let payload = approval_payload(
+        let mut payload = approval_payload(
             &approval_id,
             provider,
             "session/request_permission",
@@ -1348,6 +1415,13 @@ fn emit_acp_message(
             turn_id.as_deref(),
             !choices.is_empty(),
         );
+        if let Some(subagent) = ui
+            .lock()
+            .ok()
+            .and_then(|state| acp_permission_subagent(&params, &state))
+        {
+            payload["subagent"] = subagent;
+        }
         emit(
             events,
             provider,
@@ -1457,6 +1531,23 @@ fn emit_acp_message(
     } else {
         "provider.event"
     };
+    if event_kind == "chat.item" {
+        let subagent = ui.lock().ok().and_then(|mut state| {
+            let (key, info) = acp_subagent_update(provider, update, &mut state.subagent_calls)?;
+            let retract = state.parent_tool_calls.remove(&key);
+            Some((key, info, retract))
+        });
+        if let Some((key, info, retract)) = subagent {
+            if retract {
+                // Replace the previously projected tool snapshot, using its native id.
+                emit(events, provider, session_id, native_id.as_deref(), turn_id.as_deref(),
+                    "chat.item", json!({"item":{"id":key},"parts":[]}));
+            }
+            emit(events, provider, session_id, native_id.as_deref(), turn_id.as_deref(),
+                "chat.subagent", json!({"key":key,"info":info}));
+            return;
+        }
+    }
     emit(
         events,
         provider,
@@ -1468,6 +1559,9 @@ fn emit_acp_message(
     );
     if event_kind == "chat.item" {
         if let Some((tool_id, part)) = acp_tool_part(update, kind) {
+            if let Ok(mut state) = ui.lock() {
+                state.parent_tool_calls.insert(tool_id.clone());
+            }
             emit(
                 events,
                 provider,
@@ -1479,6 +1573,307 @@ fn emit_acp_message(
             );
         }
     }
+}
+
+fn acp_subagent_update(
+    provider: &str,
+    update: &Value,
+    calls: &mut HashMap<String, Value>,
+) -> Option<(String, Value)> {
+    let key = update.get("toolCallId").and_then(Value::as_str)?;
+    let input = update.get("rawInput").unwrap_or(&Value::Null);
+    let title_agent = (provider == "kimi")
+        .then(|| {
+            let title = update.get("title")?.as_str()?.strip_prefix("Launching ")?;
+            let (agent_type, description) = title.split_once(" agent: ")?;
+            (!agent_type.is_empty()
+                && !agent_type.chars().any(char::is_whitespace)
+                && !description.is_empty()
+                && !description.contains(['\n', '\r']))
+            .then_some((agent_type, description))
+        })
+        .flatten();
+    let agent_type = input
+        .get("subagent_type")
+        .and_then(Value::as_str)
+        .or_else(|| title_agent.map(|(agent_type, _)| agent_type));
+    let kimi_agent = provider == "kimi" && update.get("title").and_then(Value::as_str) == Some("Agent");
+    if !calls.contains_key(key) && input.get("subagent_type").is_none() && title_agent.is_none() && !kimi_agent {
+        return None;
+    }
+    let info = calls
+        .entry(key.to_owned())
+        .or_insert_with(|| json!({"provider":provider,"status":"running","transcript":"none"}));
+    if let Some(agent_type) = agent_type {
+        info["agentType"] = json!(agent_type);
+    }
+    for field in ["description", "prompt"] {
+        if let Some(value) = input.get(field).filter(|value| value.is_string()) {
+            info[field] = value.clone();
+        }
+    }
+    if info.get("description").and_then(Value::as_str).is_none_or(str::is_empty) {
+        if let Some((_, description)) = title_agent {
+            info["description"] = json!(description);
+        }
+    }
+    let result = acp_subagent_result_text(update);
+    if provider == "kimi" && !result.is_empty() {
+        let patch = kimi_subagent_result(&result);
+        for (field, value) in patch.as_object().into_iter().flatten() {
+            info[field] = value.clone();
+        }
+    }
+    match update.get("status").and_then(Value::as_str) {
+        Some("failed" | "error") => info["status"] = json!("failed"),
+        Some("completed" | "complete" | "success") if info["status"] == "running" => {
+            info["status"] = json!("completed");
+        }
+        _ => {}
+    }
+    if !result.is_empty() && info.get("summary").is_none() {
+        info["summary"] = json!(result);
+    }
+    crate::db::bound_json(info);
+    Some((key.to_owned(), info.clone()))
+}
+
+fn acp_subagent_result_text(update: &Value) -> String {
+    if let Some(output) = update.get("rawOutput") {
+        if let Some(text) = output
+            .as_str()
+            .or_else(|| output.get("text").and_then(Value::as_str))
+        {
+            if !text.is_empty() {
+                return text.to_owned();
+            }
+        }
+    }
+    update
+        .get("content")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|entry| entry.pointer("/content/text").and_then(Value::as_str))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn kimi_subagent_result(text: &str) -> Value {
+    let mut info = json!({});
+    let (header, summary) = text
+        .split_once("[summary]")
+        .map(|(h, s)| (h, Some(s.trim())))
+        .unwrap_or((text, None));
+    let mut status = None;
+    let mut stop_reason = None;
+    for line in header.lines() {
+        let Some((field, value)) = line.trim().split_once(':') else {
+            continue;
+        };
+        let value = value.trim();
+        if value.is_empty() {
+            continue;
+        }
+        match field {
+            "agent_id" => {
+                info["native"] = json!({"kind":"kimi-agent","id":value});
+                info["transcript"] = json!("native");
+            }
+            "actual_subagent_type" => info["agentType"] = json!(value),
+            "status" => status = Some(value),
+            "stop_reason" => stop_reason = Some(value),
+            _ => {}
+        }
+    }
+    if let Some(status) = status.or(stop_reason) {
+        info["status"] = json!(match status {
+            "completed" | "complete" | "success" => "completed",
+            "failed" | "error" => "failed",
+            "cancelled" | "canceled" | "stopped" | "interrupted" | "killed" => "cancelled",
+            "pending" | "running" | "in_progress" => "running",
+            _ => "unknown",
+        });
+    }
+    if let Some(summary) = summary {
+        info["summary"] = json!(summary);
+    }
+    info
+}
+
+fn kimi_subagent_transcript(
+    home: &std::path::Path,
+    session: &NativeSessionRef,
+    info: &Value,
+) -> Result<Vec<Value>, ProviderError> {
+    use std::io::{Read, Seek, SeekFrom};
+    let agent_id = info
+        .pointer("/native/id")
+        .and_then(Value::as_str)
+        .filter(|_| info.pointer("/native/kind").and_then(Value::as_str) == Some("kimi-agent"))
+        .ok_or_else(|| ProviderError::new("invalid_native_id", "Kimi agent id is unavailable"))?;
+    for id in [session.native_id.as_str(), agent_id] {
+        if id.is_empty()
+            || id.len() > 512
+            || !id
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || "-_".contains(c))
+        {
+            return Err(ProviderError::new(
+                "invalid_native_id",
+                "Invalid Kimi transcript identity",
+            ));
+        }
+    }
+    let io_error =
+        |error: std::io::Error| ProviderError::new("history_unavailable", error.to_string());
+    let sessions = home.join("sessions");
+    let root = sessions.canonicalize().map_err(io_error)?;
+    for entry in std::fs::read_dir(&sessions).map_err(io_error)? {
+        let entry = entry.map_err(io_error)?;
+        let path = entry
+            .path()
+            .join(&session.native_id)
+            .join("agents")
+            .join(agent_id)
+            .join("wire.jsonl");
+        if !path.is_file() {
+            continue;
+        }
+        let path = path.canonicalize().map_err(io_error)?;
+        if !path.starts_with(&root) {
+            return Err(ProviderError::new(
+                "history_unavailable",
+                "Kimi transcript is outside its session directory",
+            ));
+        }
+        let mut file = std::fs::File::open(path).map_err(io_error)?;
+        const LIMIT: u64 = 4 * 1024 * 1024;
+        let start = file
+            .metadata()
+            .map_err(io_error)?
+            .len()
+            .saturating_sub(LIMIT);
+        file.seek(SeekFrom::Start(start)).map_err(io_error)?;
+        let mut bytes = Vec::new();
+        file.take(LIMIT).read_to_end(&mut bytes).map_err(io_error)?;
+        let tail = if start > 0 {
+            bytes
+                .iter()
+                .position(|byte| *byte == b'\n')
+                .map(|end| &bytes[end + 1..])
+                .unwrap_or(&[])
+        } else {
+            &bytes
+        };
+        return Ok(kimi_wire_transcript(tail));
+    }
+    Err(ProviderError::new(
+        "history_unavailable",
+        "Kimi subagent transcript was not found",
+    ))
+}
+
+fn kimi_wire_transcript(bytes: &[u8]) -> Vec<Value> {
+    let mut items: Vec<Value> = Vec::new();
+    let mut prompt_seen = false;
+    for (index, line) in bytes.split(|byte| *byte == b'\n').enumerate() {
+        let Ok(record) = serde_json::from_slice::<Value>(line) else {
+            continue;
+        };
+        let event = if record["type"] == "context.append_loop_event" {
+            record.get("event").unwrap_or(&record)
+        } else {
+            &record
+        };
+        let kind = event
+            .get("type")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        let mut role = "assistant";
+        let mut id = format!("kimi-wire-{index}");
+        let part = match kind {
+            "turn.prompt" if !prompt_seen => {
+                prompt_seen = true;
+                role = "user";
+                let text = record
+                    .get("input")
+                    .and_then(Value::as_array)
+                    .into_iter()
+                    .flatten()
+                    .filter(|part| part["type"] == "text")
+                    .filter_map(|part| part.get("text").and_then(Value::as_str))
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                json!({"type":"text","text":text})
+            }
+            "content.part" => {
+                let part = &event["part"];
+                match part["type"].as_str() {
+                    Some("text") => {
+                        json!({"type":"text","text":part["text"].as_str().unwrap_or_default()})
+                    }
+                    Some("think") => {
+                        json!({"type":"thinking","text":part["think"].as_str().unwrap_or_default()})
+                    }
+                    _ => continue,
+                }
+            }
+            "tool.call" | "tool.result" => {
+                let Some(tool_id) = event.get("toolCallId").and_then(Value::as_str) else {
+                    continue;
+                };
+                role = "tool";
+                id = format!("kimi-tool-{tool_id}");
+                if kind == "tool.call" {
+                    json!({"type":"tool","toolId":tool_id,"toolName":event["name"],"status":"running",
+                        "data":{"args":event["args"],"display":event["display"]}})
+                } else {
+                    let status = if event.pointer("/result/isError").and_then(Value::as_bool)
+                        == Some(true)
+                    {
+                        "failed"
+                    } else {
+                        "complete"
+                    };
+                    let output = event
+                        .pointer("/result/output")
+                        .cloned()
+                        .unwrap_or(Value::Null);
+                    if let Some(item) = items.iter_mut().find(|item| item["id"] == id) {
+                        let part = &mut item["parts"][0];
+                        part["status"] = json!(status);
+                        part["data"]["output"] = output;
+                        crate::db::bound_json(item);
+                        continue;
+                    }
+                    json!({"type":"tool","toolId":tool_id,"status":status,"data":{"output":output}})
+                }
+            }
+            "turn.ended" if event["reason"] == "failed" => {
+                let text = event
+                    .pointer("/error/message")
+                    .and_then(Value::as_str)
+                    .or_else(|| event.get("error").and_then(Value::as_str))
+                    .unwrap_or("Kimi subagent failed");
+                json!({"type":"error","text":text})
+            }
+            _ => continue,
+        };
+        let created = record
+            .get("time")
+            .and_then(Value::as_i64)
+            .and_then(chrono::DateTime::<Utc>::from_timestamp_millis)
+            .map(|time| time.to_rfc3339())
+            .unwrap_or_else(|| Utc::now().to_rfc3339());
+        let mut item = json!({"id":id,"role":role,"parts":[part],"createdAt":created});
+        crate::db::bound_json(&mut item);
+        items.push(item);
+        if items.len() > 500 {
+            items.remove(0);
+        }
+    }
+    items
 }
 
 fn acp_tool_part(update: &Value, kind: &str) -> Option<(String, Value)> {
@@ -1858,9 +2253,15 @@ fn acp_history_item(provider: &str, row: &Value) -> Option<Value> {
     Some(item)
 }
 
+#[cfg(test)]
 fn acp_transcript(raw: &[Value]) -> Vec<Value> {
+    acp_transcript_for_provider("gemini", raw)
+}
+
+fn acp_transcript_for_provider(provider: &str, raw: &[Value]) -> Vec<Value> {
     let mut transcript = Vec::new();
     let mut last_message = None;
+    let mut subagents = HashMap::new();
     for (index, message) in raw.iter().enumerate() {
         let Some(update) = message.get("params").and_then(|params| params.get("update")) else {
             continue;
@@ -1872,6 +2273,22 @@ fn acp_transcript(raw: &[Value]) -> Vec<Value> {
         else {
             continue;
         };
+        if kind.contains("tool_call") || kind.contains("toolCall") {
+            if let Some((key, mut info)) = acp_subagent_update(provider, update, &mut subagents) {
+                // History snapshots can also discover a spawn after its first tool frame.
+                transcript.retain(|item: &Value| item["id"] != format!("acp-tool-{key}"));
+                info["key"] = json!(key);
+                info["transcript"] = json!("none");
+                let part = json!({"type":"subagent","toolId":key,"status":info["status"],"data":info});
+                if let Some(item) = transcript.iter_mut().find(|item: &&mut Value| item["id"] == format!("acp-subagent-{key}")) {
+                    item["parts"] = json!([part]);
+                } else {
+                    transcript.push(json!({"id":format!("acp-subagent-{key}"),"role":"assistant","parts":[part],"createdAt":Utc::now().to_rfc3339()}));
+                }
+                last_message = None;
+                continue;
+            }
+        }
         if let Some((tool_id, part)) = acp_tool_part(update, kind) {
             crate::file_references::upsert_history_tool(
                 &mut transcript,
@@ -1981,6 +2398,391 @@ fn kimi_terminal_cwd(cwd: &str) -> std::borrow::Cow<'_, str> {
 mod tests {
     use super::*;
     use crate::plugins::PluginRegistry;
+
+    #[test]
+    fn subagent_result_headers_map_status_identity_and_summary() {
+        for (native_status, expected) in [
+            ("completed", "completed"),
+            ("failed", "failed"),
+            ("stopped", "cancelled"),
+            ("running", "running"),
+            ("future", "unknown"),
+        ] {
+            let info = kimi_subagent_result(&format!("agent_id: agent-1\r\nactual_subagent_type: coder\r\nstatus: {native_status}\r\nstop_reason: completed\r\n\r\n[summary]\r\nDone.\nstatus: failed"));
+            assert_eq!(info["status"], expected);
+            assert_eq!(info["agentType"], "coder");
+            assert_eq!(info["native"], json!({"kind":"kimi-agent","id":"agent-1"}));
+            assert_eq!(info["transcript"], "native");
+            assert_eq!(info["summary"], "Done.\nstatus: failed");
+        }
+        assert_eq!(
+            kimi_subagent_result("stop_reason: interrupted")["status"],
+            "cancelled"
+        );
+        assert_eq!(kimi_subagent_result("ordinary output"), json!({}));
+        let mut calls = HashMap::new();
+        acp_subagent_update("kimi", &json!({"toolCallId":"raw-only",
+            "rawInput":{"subagent_type":"explore"}}), &mut calls).unwrap();
+        let (_, info) = acp_subagent_update("kimi", &json!({"toolCallId":"raw-only",
+            "rawOutput":"agent_id: agent-2\nactual_subagent_type: coder\nstatus: completed\n[summary]\nRaw result"}),
+            &mut calls).unwrap();
+        assert_eq!(info["native"]["id"], "agent-2");
+        assert_eq!(info["transcript"], "native");
+        assert_eq!(info["agentType"], "coder");
+        assert_eq!(info["status"], "completed");
+        assert_eq!(info["summary"], "Raw result");
+    }
+
+    #[test]
+    fn subagent_detection_is_provider_scoped_and_remembers_sparse_updates() {
+        for provider in ["kimi", "gemini", "plugin"] {
+            let mut calls = HashMap::new();
+            let title = json!({"toolCallId":"a","title":"Launching coder agent: Review"});
+            assert_eq!(
+                acp_subagent_update(provider, &title, &mut calls).is_some(),
+                provider == "kimi"
+            );
+            let launch = json!({"toolCallId":"b","rawInput":{"subagent_type":"explore","description":"Inspect","prompt":"Read code"}});
+            let (_, info) = acp_subagent_update(provider, &launch, &mut calls).unwrap();
+            assert_eq!(info["agentType"], "explore");
+            assert_eq!(info["prompt"], "Read code");
+            assert_eq!(info["transcript"], "none");
+            let (_, info) = acp_subagent_update(
+                provider,
+                &json!({"toolCallId":"b","status":"failed"}),
+                &mut calls,
+            )
+            .unwrap();
+            assert_eq!(info["status"], "failed");
+            assert_eq!(info["description"], "Inspect");
+            assert!(
+                acp_subagent_update(provider, &json!({"toolCallId":"unknown"}), &mut calls)
+                    .is_none()
+            );
+        }
+        for title in [
+            "Launching two words agent: task",
+            "Launching coder agent: ",
+            "prefix Launching coder agent: task",
+            "Launching coder agent: task\nextra",
+        ] {
+            assert!(acp_subagent_update(
+                "kimi",
+                &json!({"toolCallId":"a","title":title}),
+                &mut HashMap::new()
+            )
+            .is_none());
+        }
+        let (_, info) = acp_subagent_update("kimi", &json!({"toolCallId":"blank",
+            "title":"Launching coder agent: Review","rawInput":{"description":""}}),
+            &mut HashMap::new()).unwrap();
+        assert_eq!(info["description"], "Review");
+    }
+
+    #[test]
+    fn kimi_agent_first_frame_with_partial_input_is_a_card() {
+        let (sender, mut receiver) = crate::provider_events::tap_channel(16);
+        let events = ScopedProviderEvents::new(sender, "worker");
+        let native = Mutex::new(Some("native".to_owned()));
+        let active = Mutex::new(Some("parent-turn".to_owned()));
+        let permissions = Mutex::new(HashMap::new());
+        let think = Mutex::new(false);
+        let ui = Mutex::new(AcpUiState::default());
+        let first = json!({"method":"session/update","params":{"sessionId":"native","update":{
+            "sessionUpdate":"tool_call","toolCallId":"a","title":"Agent","rawInput":{"description":"Review"}}}});
+        emit_acp_message(&events, "kimi", "parent", &native, &active, &permissions, &think, &ui, first.clone());
+        let event = receiver.try_recv().unwrap();
+        assert_eq!(event.kind, "chat.subagent");
+        assert_eq!(event.data["key"], "a");
+        assert_eq!(event.data["info"]["description"], "Review");
+        assert!(receiver.try_recv().is_err());
+        assert!(ui.lock().unwrap().parent_tool_calls.is_empty());
+        let history = acp_transcript_for_provider("kimi", &[first]);
+        assert_eq!(history.len(), 1);
+        assert_eq!(history[0]["parts"][0]["type"], "subagent");
+        let mut calls = HashMap::new();
+        assert!(acp_subagent_update("gemini", &json!({"toolCallId":"a","title":"Agent"}), &mut calls).is_none());
+    }
+
+    #[test]
+    fn acp_late_subagent_detection_retracts_the_projected_parent_tool() {
+        for provider in ["kimi", "gemini", "custom"] {
+            let (sender, mut receiver) = crate::provider_events::tap_channel(16);
+            let events = ScopedProviderEvents::new(sender, "worker");
+            let native = Mutex::new(Some("native".to_owned()));
+            let active = Mutex::new(Some("parent-turn".to_owned()));
+            let permissions = Mutex::new(HashMap::new());
+            let think = Mutex::new(false);
+            let ui = Mutex::new(AcpUiState::default());
+            let root = tempfile::tempdir().unwrap();
+            let db = crate::db::Database::open(&root.path().join("late.sqlite")).unwrap();
+            db.transaction(|tx| {
+                tx.execute("INSERT INTO sessions(id,title,provider,mode,status,created_at,updated_at) VALUES ('parent','test',?,'chat','running','now','now')", [provider])?;
+                Ok(())
+            }).unwrap();
+            let updates = [
+                json!({"sessionUpdate":"tool_call","toolCallId":"a","title":"Task","rawInput":{"description":"Review"}}),
+                json!({"sessionUpdate":"tool_call_update","toolCallId":"a","rawInput":{"subagent_type":"explore","prompt":"Inspect"}}),
+                json!({"sessionUpdate":"tool_call_update","toolCallId":"a","status":"completed"}),
+            ];
+            let frames: Vec<_> = updates.iter().map(|update| json!({"method":"session/update","params":{"sessionId":"native","update":update}})).collect();
+            for (index, frame) in frames.iter().enumerate() {
+                emit_acp_message(&events, provider, "parent", &native, &active, &permissions, &think, &ui, frame.clone());
+                let mut emitted = Vec::new();
+                while let Ok(event) = receiver.try_recv() {
+                    assert_eq!(event.worker_token.as_deref(), Some("worker"));
+                    assert_eq!(event.turn_id.as_deref(), Some("parent-turn"));
+                    crate::chat_projection::record(&db, "parent", event.turn_id.as_deref(), &event.kind, &event.data).unwrap();
+                    emitted.push(event);
+                }
+                if index == 0 {
+                    assert_eq!(emitted.len(), 2);
+                    assert_eq!(emitted[1].data["part"]["type"], "tool");
+                } else if index == 1 {
+                    assert_eq!(emitted.len(), 2);
+                    assert_eq!(emitted[0].kind, "chat.item");
+                    assert_eq!(emitted[0].data["item"]["id"], "a");
+                    assert_eq!(emitted[0].data["parts"], json!([]));
+                    assert_eq!(emitted[1].kind, "chat.subagent");
+                } else {
+                    assert_eq!(emitted.len(), 1);
+                    assert_eq!(emitted[0].kind, "chat.subagent");
+                }
+            }
+            db.transaction(|tx| {
+                let tool: String = tx.query_row("SELECT data FROM chat_items WHERE id='parent:assistant:a'", [], |row| row.get(0))?;
+                assert_eq!(serde_json::from_str::<Value>(&tool).unwrap()["parts"], json!([]));
+                let card: String = tx.query_row("SELECT data FROM chat_items WHERE id='parent:assistant:subagent:a'", [], |row| row.get(0))?;
+                assert_eq!(serde_json::from_str::<Value>(&card).unwrap()["parts"][0]["data"]["status"], "completed");
+                Ok(())
+            }).unwrap();
+            assert_eq!(active.lock().unwrap().as_deref(), Some("parent-turn"));
+            assert!(ui.lock().unwrap().parent_tool_calls.is_empty());
+            let history = acp_transcript_for_provider(provider, &frames);
+            assert_eq!(history.len(), 1);
+            assert_eq!(history[0]["parts"][0]["type"], "subagent");
+        }
+    }
+
+    #[test]
+    fn subagent_live_and_history_replace_tools_through_completion() {
+        let (sender, mut receiver) = crate::provider_events::tap_channel(32);
+        let events = ScopedProviderEvents::new(sender, "worker");
+        let native = Mutex::new(Some("native".to_owned()));
+        let active = Mutex::new(Some("parent-turn".to_owned()));
+        let permissions = Mutex::new(HashMap::new());
+        let think = Mutex::new(false);
+        let ui = Mutex::new(AcpUiState::default());
+        let updates = [
+            json!({"sessionUpdate":"tool_call","toolCallId":"a","title":"Launching coder agent: Review","rawInput":{"prompt":"Inspect"}}),
+            json!({"sessionUpdate":"tool_call_update","toolCallId":"a","status":"in_progress"}),
+            json!({"sessionUpdate":"tool_call_update","toolCallId":"a","status":"completed","content":[{"type":"content","content":{"type":"text","text":"agent_id: agent-1\nactual_subagent_type: coder\nstatus: completed\nstop_reason: completed\n[summary]\nDone"}}]}),
+            json!({"sessionUpdate":"tool_call_update","toolCallId":"a","status":"completed","rawOutput":"agent_id: agent-1\nactual_subagent_type: coder\nstatus: completed\nstop_reason: completed\n[summary]\nDone"}),
+            json!({"sessionUpdate":"tool_call_update","toolCallId":"a","status":"failed"}),
+        ];
+        let raw: Vec<_> = updates.iter().map(|update| json!({"method":"session/update","params":{"sessionId":"native","update":update}})).collect();
+        for frame in &raw {
+            emit_acp_message(
+                &events,
+                "kimi",
+                "parent",
+                &native,
+                &active,
+                &permissions,
+                &think,
+                &ui,
+                frame.clone(),
+            );
+            let event = receiver.try_recv().unwrap();
+            assert_eq!(event.kind, "chat.subagent");
+            assert_eq!(event.data["key"], "a");
+            assert_eq!(event.worker_token.as_deref(), Some("worker"));
+            assert_eq!(event.native_id.as_deref(), Some("native"));
+            assert_eq!(event.turn_id.as_deref(), Some("parent-turn"));
+            assert!(receiver.try_recv().is_err());
+        }
+        let info = &ui.lock().unwrap().subagent_calls["a"];
+        assert_eq!(info["transcript"], "native");
+        assert_eq!(info["summary"], "Done");
+        assert_eq!(info["status"], "failed");
+        assert_eq!(active.lock().unwrap().as_deref(), Some("parent-turn"));
+        let history = acp_transcript_for_provider("kimi", &raw);
+        assert_eq!(history.len(), 1);
+        let part = &history[0]["parts"][0];
+        assert_eq!(part["type"], "subagent");
+        assert_eq!(part["status"], "failed");
+        assert_eq!(part["data"]["transcript"], "none");
+        assert_eq!(part["data"]["native"]["id"], "agent-1");
+        assert_eq!(part["data"]["prompt"], "Inspect");
+        assert_eq!(
+            acp_transcript_for_provider("gemini", &raw)[0]["parts"][0]["type"],
+            "tool"
+        );
+    }
+
+    #[test]
+    fn foreign_acp_updates_do_not_project_or_mutate_parent_state() {
+        for provider in ["kimi", "gemini"] {
+            let (sender, mut receiver) = crate::provider_events::tap_channel(32);
+            let events = ScopedProviderEvents::new(sender, "worker");
+            let native = Mutex::new(Some("parent".to_owned()));
+            let active = Mutex::new(Some("turn".to_owned()));
+            let permissions = Mutex::new(HashMap::new());
+            let think = Mutex::new(false);
+            let ui = Mutex::new(AcpUiState::default());
+            for update in [
+                json!({"sessionUpdate":"agent_message_chunk","content":{"text":"child"}}),
+                json!({"sessionUpdate":"tool_call","toolCallId":"child","rawInput":{"subagent_type":"coder"}}),
+                json!({"sessionUpdate":"config_options_update","configOptions":[{"id":"child"}]}),
+            ] {
+                emit_acp_message(
+                    &events,
+                    provider,
+                    "s",
+                    &native,
+                    &active,
+                    &permissions,
+                    &think,
+                    &ui,
+                    json!({"method":"session/update","params":{"sessionId":"child","update":update}}),
+                );
+            }
+            assert!(receiver.try_recv().is_err());
+            assert!(ui.lock().unwrap().subagent_calls.is_empty());
+            assert_eq!(ui.lock().unwrap().config_generation, 0);
+            assert_eq!(active.lock().unwrap().as_deref(), Some("turn"));
+            for session in [Some("parent"), None] {
+                let mut params = json!({"update":{"sessionUpdate":"agent_message_chunk","content":{"text":"parent"}}});
+                if let Some(session) = session {
+                    params["sessionId"] = json!(session);
+                }
+                emit_acp_message(
+                    &events,
+                    provider,
+                    "s",
+                    &native,
+                    &active,
+                    &permissions,
+                    &think,
+                    &ui,
+                    json!({"method":"session/update","params":params}),
+                );
+                assert_eq!(receiver.try_recv().unwrap().kind, "chat.delta");
+            }
+        }
+    }
+
+    const KIMI_WIRE: &[u8] = include_bytes!("../../tests/fixtures/kimi-subagent-wire.jsonl");
+
+    #[test]
+    fn kimi_redacted_wire_maps_prompt_thinking_tools_output_and_error() {
+        let items = kimi_wire_transcript(KIMI_WIRE);
+        assert_eq!(
+            items.iter().filter(|item| item["role"] == "user").count(),
+            1
+        );
+        let parts: Vec<_> = items.iter().map(|item| &item["parts"][0]).collect();
+        assert!(parts
+            .iter()
+            .any(|part| part["type"] == "thinking" && part["text"] == "Inspecting the example."));
+        let tool = parts.iter().find(|part| part["type"] == "tool").unwrap();
+        assert_eq!(tool["toolName"], "Read");
+        assert_eq!(tool["status"], "complete");
+        assert_eq!(tool["data"]["args"]["path"], "src/example.rs");
+        assert_eq!(tool["data"]["output"], "Example file contents.");
+        assert!(parts
+            .iter()
+            .any(|part| part["type"] == "error" && part["text"] == "Redacted provider error."));
+    }
+
+    #[test]
+    fn kimi_wire_caps_items_bounds_strings_and_merges_failed_tool_results() {
+        let mut bytes = KIMI_WIRE.to_vec();
+        bytes.extend_from_slice(b"not json\n");
+        bytes.extend_from_slice(
+            b"{\"type\":\"turn.prompt\",\"input\":[{\"type\":\"text\",\"text\":\"second\"}]}\n",
+        );
+        bytes.extend_from_slice(b"{\"type\":\"context.append_loop_event\",\"event\":{\"type\":\"tool.result\",\"toolCallId\":\"tool-redacted\",\"result\":{\"isError\":true,\"output\":\"failure\"}}}\n");
+        let items = kimi_wire_transcript(&bytes);
+        assert_eq!(
+            items.iter().filter(|item| item["role"] == "user").count(),
+            1
+        );
+        let tool = items
+            .iter()
+            .find(|item| item["parts"][0]["type"] == "tool")
+            .unwrap();
+        assert_eq!(tool["parts"][0]["status"], "failed");
+        for index in 0..501 {
+            let record = json!({"type":"context.append_loop_event","event":{"type":"content.part","part":{"type":"text","text":if index == 500 { "界".repeat(20000) } else { index.to_string() }}}});
+            bytes.extend_from_slice(record.to_string().as_bytes());
+            bytes.push(b'\n');
+        }
+        let items = kimi_wire_transcript(&bytes);
+        assert_eq!(items.len(), 500);
+        assert_eq!(items[0]["parts"][0]["text"], "1");
+        let text = items.last().unwrap()["parts"][0]["text"].as_str().unwrap();
+        assert!(text.len() <= 16 * 1024);
+        assert!(text.ends_with("[truncated]"));
+    }
+
+    #[test]
+    fn kimi_native_reader_finds_session_bounds_tail_and_rejects_path_ids() {
+        use std::io::Write;
+        let home = tempfile::tempdir().unwrap();
+        let path = home
+            .path()
+            .join("sessions/wd_fixture/session_uuid/agents/agent-1/wire.jsonl");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, KIMI_WIRE).unwrap();
+        let session = NativeSessionRef {
+            native_id: "session_uuid".into(),
+            cwd: "unused".into(),
+        };
+        let info = json!({"native":{"kind":"kimi-agent","id":"agent-1"}});
+        assert_eq!(
+            kimi_subagent_transcript(home.path(), &session, &info).unwrap(),
+            kimi_wire_transcript(KIMI_WIRE)
+        );
+        // The call can fall outside the bounded tail while its result survives.
+        let mut file = std::fs::File::create(&path).unwrap();
+        file.write_all(KIMI_WIRE).unwrap();
+        file.write_all(&vec![b'x'; 4 * 1024 * 1024]).unwrap();
+        file.write_all(b"\n{\"type\":\"context.append_loop_event\",\"event\":{\"type\":\"tool.result\",\"toolCallId\":\"orphan\",\"result\":{\"output\":\"tail result\"}}}\n").unwrap();
+        drop(file);
+        let items = kimi_subagent_transcript(home.path(), &session, &info).unwrap();
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0]["parts"][0]["toolId"], "orphan");
+        assert_eq!(items[0]["parts"][0]["status"], "complete");
+        assert_eq!(items[0]["parts"][0]["data"]["output"], "tail result");
+        let mut file = std::fs::File::create(&path).unwrap();
+        file.write_all(
+            b"{\"type\":\"turn.prompt\",\"input\":[{\"type\":\"text\",\"text\":\"old\"}]}\n",
+        )
+        .unwrap();
+        file.write_all(&vec![b'x'; 4 * 1024 * 1024]).unwrap();
+        file.write_all(b"\n").unwrap();
+        file.write_all(KIMI_WIRE).unwrap();
+        drop(file);
+        assert_eq!(
+            kimi_subagent_transcript(home.path(), &session, &info).unwrap(),
+            kimi_wire_transcript(KIMI_WIRE)
+        );
+        for id in ["../agent-1", "..", "a/b", "C:evil", ""] {
+            assert!(kimi_subagent_transcript(
+                home.path(),
+                &session,
+                &json!({"native":{"kind":"kimi-agent","id":id}})
+            )
+            .is_err());
+        }
+        assert!(kimi_subagent_transcript(
+            home.path(),
+            &session,
+            &json!({"native":{"kind":"kimi-agent","id":"missing"}})
+        )
+        .is_err());
+    }
 
     fn gemini(events: crate::provider_events::Sender) -> AcpAdapter {
         let data_dir = tempfile::tempdir().unwrap();
@@ -2093,6 +2895,37 @@ mod tests {
         assert!(gemini(events).scopes_chat_events());
     }
 
+    #[test]
+    fn acp_subagent_permissions_label_only_unmatched_calls_while_agents_run() {
+        let mut state = AcpUiState::default();
+        state.subagent_calls.insert(
+            "agent-call".into(),
+            json!({"status":"running","description":"Review the change","agentType":"coder"}),
+        );
+        let single = acp_permission_subagent(&json!({"toolCallId":"child-tool"}), &state).unwrap();
+        assert_eq!(single, json!({"key":"agent-call","label":"Review the change"}));
+
+        state.subagent_calls.insert(
+            "other-agent".into(),
+            json!({"status":"running","description":"Inspect tests","agentType":"explore"}),
+        );
+        assert_eq!(
+            acp_permission_subagent(&json!({"toolCallId":"child-tool"}), &state),
+            Some(json!({"label":"Subagent"}))
+        );
+
+        state.parent_tool_calls.insert("parent-tool".into());
+        assert_eq!(
+            acp_permission_subagent(&json!({"toolCallId":"parent-tool"}), &state),
+            None
+        );
+
+        state.subagent_calls.clear();
+        assert_eq!(
+            acp_permission_subagent(&json!({"toolCallId":"child-tool"}), &state),
+            None
+        );
+    }
     #[test]
     fn acp_native_notification_paths_keep_the_worker_token() {
         for provider in ["kimi", "gemini"] {

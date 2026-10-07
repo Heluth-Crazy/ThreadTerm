@@ -19,6 +19,8 @@ import { activeTurnId, chatCanControl, formatChatDuration, itemShowsStreaming, m
 import { groupCodexTranscript, type CodexTurn } from "../codexTranscript";
 import { groupToolActivity, toolEntriesForItems, withoutToolParts, type ToolActivityEntry } from "../toolActivity";
 import { ToolActivity } from './ToolActivity';
+import { SubagentCard } from './SubagentCard';
+import { isSubagentPart, subagentInfo, subagentItemsOf, subagentTitle } from '../subagentActivity';
 import { createCodexStreamQueue } from "../codexStream";
 import { FileLinkedMarkdown, FileLinkedText, FileReferenceChips } from './FileReferenceText';
 import { parseMarkdownFileReference } from '../fileReferences';
@@ -857,12 +859,24 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession }
     }
   }
   const usageCards = useMemo(() => usageCardsForItems(session.provider, items), [session.provider, items]);
-  function renderItem(item: ChatItem) {
-      const usage = usageCards.get(item.id);
+  function renderItem(item: ChatItem, nested = false) {
+      if (!item.parts.length) return null;
+      if (!nested && item.parts.some(isSubagentPart)) return <Fragment key={item.id}>
+        {item.parts.map((part, index) => {
+          if (!isSubagentPart(part)) return <Fragment key={`part-${index}`}>{renderItem({ ...item, parts: [part] })}</Fragment>;
+          const info = subagentInfo(part);
+          return info ? <SubagentCard key={`${session.id}:${info.key}`} sessionId={session.id} info={info} copy={copy} zh={zh} renderItem={renderItem} openFile={openFile} /> : null;
+        })}
+      </Fragment>;
+      const usage = nested ? undefined : usageCards.get(item.id);
       if (usage) return <article className={`v3-chat-message assistant is-native is-${session.provider} is-usage`} key={item.id}><UsageCard model={usage} zh={zh} /></article>;
       const live = itemShowsStreaming(item, items);
       return <article className={`v3-chat-message ${item.role} is-native is-${session.provider}`} key={item.id}>
       {item.parts.filter(part => shouldRenderPart(part) || (Array.isArray(asRecord(part.data).images) && (asRecord(part.data).images as unknown[]).some(isChatImage))).map((part, index) => {
+        if (isSubagentPart(part)) {
+          const info = subagentInfo(part);
+          return <p className="chat-subagent-nested" key={`subagent-${index}`}>{info ? subagentTitle(info, copy) : copy('Subagent', '子代理')}</p>;
+        }
         if (part.type === "thinking") return <ThinkingPart key={`thinking-${index}`} part={part} streaming={live && part.status === "streaming"} copy={copy} openFile={openFile} />;
         if (part.type === "status" && asRecord(part.data).kind === "providerRetry") {
           const retry = asRecord(part.data), state = asString(retry.state, "retrying");
@@ -909,20 +923,34 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession }
     const displayTurn = activeTurnId(items, session.status);
     const active = group.items.some(item => item.turnId && item.turnId === displayTurn);
     const awaitingApproval = active && session.status === 'waiting' && group.items.some(item => item.parts.some(part => part.type === 'approval' && part.status === 'pending'));
-    const drawer = (entries: ToolActivityEntry[]) => <ToolActivity key={`${group.id}-tools`} entries={entries} active={active} awaitingApproval={awaitingApproval} provider={session.provider} copy={copy} openFile={openFile} />;
+    const drawer = (entries: ToolActivityEntry[], id = `${group.id}-tools`) => <ToolActivity key={id} entries={entries} active={active} awaitingApproval={awaitingApproval} provider={session.provider} copy={copy} openFile={openFile} />;
     if (group.elapsedMs == null) {
-      return groupToolActivity(group.response).map(entry => entry.type === 'tools'
-        ? drawer(entry.tools)
-        : <Fragment key={entry.id}>{renderItem(entry.item)}</Fragment>);
+      // Subagents are chronology boundaries, while intervening parent text keeps
+      // the existing single-drawer policy. Preserve the first drawer's turn key.
+      const segments: ChatItem[][] = [[]];
+      for (const item of group.response) {
+        segments[segments.length - 1]!.push(item);
+        if (item.parts.some(isSubagentPart)) segments.push([]);
+      }
+      let drawerIndex = 0;
+      return segments.flatMap(rows => groupToolActivity(rows)).map(entry => entry.type === 'tools'
+        ? drawer(entry.tools, drawerIndex++ ? `${group.id}-tools-${drawerIndex}` : `${group.id}-tools`)
+        : <Fragment key={entry.item.parts.some(isSubagentPart) ? `${entry.item.id}-subagent` : entry.id}>{renderItem(entry.item)}</Fragment>);
     }
     const tools = toolEntriesForItems(group.items);
-    const activity = withoutToolParts(group.activity), response = withoutToolParts(group.response);
+    const subagents = subagentItemsOf(group.items);
+    const withoutSubagents = (rows: ChatItem[]) => rows.flatMap(item => {
+      const parts = item.parts.filter(part => !isSubagentPart(part));
+      return parts.length ? [{ ...item, parts }] : [];
+    });
+    const activity = withoutSubagents(withoutToolParts(group.activity)), response = withoutSubagents(withoutToolParts(group.response));
     return [
       !group.response.some(item => usageCards.has(item.id)) && (activity.length ? <details className="codex-work" key={`${group.id}-work`}>
         <summary><span className="codex-work-label">{formatChatDuration(group.elapsedMs, zh)}<Icon name="chevR" /></span></summary>
-        <div className="codex-work-body">{activity.length ? activity.map(renderItem) : <p className="dim">{copy('No additional activity recorded.', '没有记录额外的过程。')}</p>}</div>
+        <div className="codex-work-body">{activity.length ? activity.map(item => renderItem(item)) : <p className="dim">{copy('No additional activity recorded.', '没有记录额外的过程。')}</p>}</div>
       </details> : <p className="chat-duration" key={`${group.id}-work`}>{formatChatDuration(group.elapsedMs, zh)}</p>),
       tools.length ? drawer(tools) : null,
+      ...subagents.map(item => <Fragment key={`${item.id}-subagent`}>{renderItem(item)}</Fragment>),
       ...response.map(item => <Fragment key={`${item.id}-response`}>{renderItem(item)}</Fragment>),
     ];
   }
