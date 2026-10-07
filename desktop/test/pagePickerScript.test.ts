@@ -76,7 +76,7 @@ function mockPage() {
   const document = { documentElement: html, activeElement: button, title: 'Test page', createElement: () => {
     const element = new MockElement(); element.focus = () => { document.activeElement = element; }; return element;
   }, querySelectorAll: matches, querySelector: (selector: string) => matches(selector)[0] || null,
-    elementsFromPoint: () => [html.children.at(-1)!, pointer, card, body, html] };
+    elementsFromPoint: () => [pointer, card, body, html] };
   button.focus = () => { document.activeElement = button; };
   return { html, body, card, button, pageWindow, frames, setPointer: (element: MockElement) => { pointer = element; },
     overlay: () => html.children.at(-1)!,
@@ -84,10 +84,17 @@ function mockPage() {
     globals: { window: pageWindow, document, Element: MockElement, HTMLElement: MockElement, innerWidth: 800, innerHeight: 600, location: { href: 'https://example.com/' }, requestAnimationFrame: (callback: () => void) => { frames.push(callback); }, getComputedStyle: (element: MockElement) => ({ display: element.display, overflowX: element.overflowX, overflowY: element.overflowY }) },
   };
 }
-function execute(action: 'pick' | 'cancel' | 'mark', target?: { selector?: string; rect?: { x: number; y: number; width: number; height: number } }, flash?: boolean) {
-  const source = pagePickerSource(action, target, flash);
+function execute(action: 'pick' | 'cancel' | 'mark' | 'at', target?: { selector?: string; rect?: { x: number; y: number; width: number; height: number } }, flash?: boolean, point?: { x: number; y: number }) {
+  const source = pagePickerSource(action, target, flash, point);
   return new Function(`return ${source};`)();
 }
+
+test('pointer pick returns the element under the context-menu coordinate without adding an overlay', async () => withPage(async fixture => {
+  const pick = execute('at', undefined, undefined, { x: 50, y: 50 }) as { target: { selector: string; text: string } };
+  assert.equal(pick.target.selector, '#save');
+  assert.equal(pick.target.text, 'Save & confirm');
+  assert.equal(fixture.html.children.length, 1);
+}));
 
 test('closed overlay swallows events, selects keyboard parent and waits two clean frames', async () => withPage(async fixture => {
   const picking = execute('pick') as Promise<{ target: { selector: string; label: string } }>;

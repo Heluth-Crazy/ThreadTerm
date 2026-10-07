@@ -29,8 +29,10 @@ import { fileSelectionKey, visibleSessionLayout, workspaceNavigationLayout, work
 import "./workspace-parity.css";
 import { FILE_DRAG_TYPE, readFileDrag } from "../fileDrag";
 import type { FileCommentsHost } from "../fileCommentsHost";
-import type { WorkbenchActions } from '../workbench/types';
+import { absolutePath, type WorkbenchActions } from '../workbench/types';
 import { sameCanonicalScope } from '../projectScope';
+import { isDocumentPinned, sessionDocumentError } from '../sessionDocuments';
+import { fileTabMenuItems } from '../contextMenuSurfaceItems';
 
 type Props = {
   layout: PaneLayout;
@@ -185,7 +187,8 @@ export function PaneWorkspace({ layout, sessions, onChange, theme, terminalCompa
   const companionFiles=workspaceTabs(visibleLayout).filter(item=>item.tab.kind!=='session'&&item.tab.ownerSessionId===ownerSessionId&&Boolean(ownerSessionId));
   const toolbar=<WorkspaceTabBar layout={navigationLayout} sessions={sessions} active={workspaceNavigationTarget(layout,focused)} busy={closing}
    onActivate={target=>void activateTab(target)}
-   onClose={(target,mode)=>void closeTabs(target,mode)} onReorder={(paneId,from,to)=>{const visible=workspaceTabs(workspaceNavigationLayout(latest.current)).filter(item=>item.paneId===paneId);const all=workspaceTabs(latest.current).filter(item=>item.paneId===paneId);const source=all.findIndex(item=>item.tab.id===visible[from]?.tab.id),destination=all.findIndex(item=>item.tab.id===visible[to]?.tab.id);if(source>=0&&destination>=0)commit(reorderTab(latest.current,paneId,source,destination));}}>
+   onClose={(target,mode)=>void closeTabs(target,mode)} onReorder={(paneId,from,to)=>{const visible=workspaceTabs(workspaceNavigationLayout(latest.current)).filter(item=>item.paneId===paneId);const all=workspaceTabs(latest.current).filter(item=>item.paneId===paneId);const source=all.findIndex(item=>item.tab.id===visible[from]?.tab.id),destination=all.findIndex(item=>item.tab.id===visible[to]?.tab.id);if(source>=0&&destination>=0)commit(reorderTab(latest.current,paneId,source,destination));}}
+   fileMenuItems={item=>{const documents=workbench?.sessionDocuments;const matchingDocuments=documents&&item.projectId===documents.projectId&&sameCanonicalScope(item.worktreePath??documents.projectRoot,documents.rootPath)?documents:undefined;const root=item.worktreePath??matchingDocuments?.projectRoot;const pinned=Boolean(matchingDocuments&&isDocumentPinned(matchingDocuments.documents,item.path));const plansLabel=matchingDocuments?(zh?(pinned?'从计划与文档中移除':'添加到计划与文档'):(pinned?'Remove from Plans & docs':'Add to Plans & docs')):undefined;return fileTabMenuItems({zh,canSend:Boolean(workbench?.sendToAgent),plansLabel,canCopy:Boolean(root)}).map(menu=>({...menu,disabled:menu.id==='workspace-tab-plans-docs'&&Boolean(matchingDocuments?.loading||matchingDocuments?.error),reason:menu.id==='workspace-tab-plans-docs'&&matchingDocuments?.error?sessionDocumentError(matchingDocuments.error,zh):menu.id==='workspace-tab-plans-docs'&&matchingDocuments?.loading?(zh?'正在加载计划与文档。':'Plans & docs are loading.'):undefined,onSelect:menu.id==='workspace-tab-send-file'?()=>workbench?.sendToAgent?.({projectId:item.projectId,worktreePath:item.worktreePath,path:item.path}):menu.id==='workspace-tab-plans-docs'?()=>matchingDocuments?.toggle(item.path):menu.id==='workspace-tab-copy-path'?()=>{if(root)return navigator.clipboard.writeText(absolutePath(root,item.path));}:undefined,testId:menu.id}));}}>
    <div className="workspace-primary-actions" ref={setPrimaryHost}/>
    {companionFiles.length>0&&<button type="button" className="icon-btn" aria-label={zh?'会话文件':'Open session files'} title={zh?'会话文件':'Open session files'} aria-pressed={Boolean(focused&&focused.tab.kind!=='session'&&focused.tab.ownerSessionId===ownerSessionId)} onClick={()=>{
     const target=companionFiles.find(item=>item.tab.id===fileSelections.current.get(fileSelectionKey(ownerSessionId,item.paneId)))??companionFiles[0];

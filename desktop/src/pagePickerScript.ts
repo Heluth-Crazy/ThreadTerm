@@ -1,10 +1,11 @@
 import type { PageTargetRef } from '@threadterm/protocol';
 /** Runs inside the untrusted preview frame. Keep every helper inside this function: it is sent with toString(). */
 export function pagePickerScript(
-  action: 'pick' | 'cancel' | 'mark',
+  action: 'pick' | 'cancel' | 'mark' | 'at',
   target?: PageTargetRef,
   flash?: boolean,
-): Promise<unknown> | boolean {
+  point?: { x: number; y: number },
+): unknown {
   const key = Symbol.for('threadterm.pagePicker');
   type Control = {
     cancel?: () => void;
@@ -272,6 +273,18 @@ export function pagePickerScript(
     w[key] = { ...old, mark, clear };
     return mark(target, flash);
   }
+  if (action === 'at') {
+    old?.cancel?.();
+    old?.clear?.();
+    if (!point || !Number.isFinite(point.x) || !Number.isFinite(point.y)) return null;
+    const element = document.elementsFromPoint(point.x, point.y).find((value) => value instanceof Element);
+    return element ? {
+      url: location.href,
+      title: clean(document.title, 200),
+      viewport: { width: innerWidth, height: innerHeight },
+      target: picked(element),
+    } : null;
+  }
   old?.cancel?.();
   old?.clear?.();
   return new Promise((resolve) => {
@@ -472,6 +485,9 @@ export function pagePickerScript(
     paint(under(point.x, point.y));
   });
 }
-export function pagePickerSource(action: 'pick' | 'cancel' | 'mark', target?: PageTargetRef, flash?: boolean): string {
-  return `(${pagePickerScript.toString()})(${JSON.stringify(action)},${JSON.stringify(target)},${JSON.stringify(flash)})`;
+export function pagePickerSource(action: 'pick' | 'cancel' | 'mark' | 'at', target?: PageTargetRef, flash?: boolean, point?: { x: number; y: number }): string {
+  const encoded = (value: unknown) => JSON.stringify(value) ?? 'undefined';
+  const args = [encoded(action), encoded(target), encoded(flash)];
+  if (point) args.push(JSON.stringify(point));
+  return `(${pagePickerScript.toString()})(${args.join(',')})`;
 }

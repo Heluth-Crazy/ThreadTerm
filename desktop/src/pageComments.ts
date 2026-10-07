@@ -180,7 +180,49 @@ async function pickPageTarget(event: IpcMainInvokeEvent, value: unknown): Promis
   }
 }
 
+async function previewFrameInfo(sender: WebContents, name: string): Promise<{ rect: PageRect; staticFrame: boolean } | undefined> {
+  const source = `(()=>{const f=[...document.querySelectorAll('iframe')].find(v=>v.name===${JSON.stringify(name)});if(!f)return null;const r=f.getBoundingClientRect();return {rect:{x:r.x,y:r.y,width:r.width,height:r.height},staticFrame:f.src.startsWith('about:srcdoc')||f.hasAttribute('srcdoc')};})()`;
+  try { const value = await sender.mainFrame.executeJavaScript(source, false) as { rect?: unknown; staticFrame?: unknown }; return typeof value?.staticFrame === 'boolean' ? { rect: pageRect(value.rect), staticFrame: value.staticFrame } : undefined; } catch { return undefined; }
+}
+
 export function registerPageComments(assertTrustedRenderer: (event: IpcMainInvokeEvent) => void): void {
+  app.on('web-contents-created', (_event, contents) => {
+    let latestContext = 0;
+    contents.on('context-menu', (_menuEvent, params) => {
+      const frame = params.frame;
+      if (!frame || frame.detached || frame.parent !== contents.mainFrame || !validPageFrameName(frame.name) || !contents.mainFrame.framesInSubtree.includes(frame)) return;
+      const frameName = frame.name;
+      const dipX = Number(params.x), dipY = Number(params.y), zoom = contents.getZoomFactor();
+      // Chromium supplies context-menu positions in DIP (WebLocalFrameImpl::ShowContextMenu); DOM rects are CSS px.
+      if (!Number.isFinite(dipX) || !Number.isFinite(dipY) || !Number.isFinite(zoom) || zoom <= 0) return;
+      const x = dipX / zoom, y = dipY / zoom;
+      const sequence = ++latestContext, frameUrl = frame.url;
+      let cancelled = false;
+      const navigating = (details: Electron.Event<Electron.WebContentsDidStartNavigationEventParams>) => {
+        if (!details.isSameDocument && (details.isMainFrame || details.frame === frame)) cancelled = true;
+      };
+      const navigated = (_event: Electron.Event, _url: string, _code: number, _status: string, main: boolean, pid: number, rid: number) => {
+        if (main || pid === frame.processId && rid === frame.routingId) cancelled = true;
+      };
+      const current = () => !cancelled && sequence === latestContext && !contents.isDestroyed() && !frame.detached && frame.name === frameName && frame.url === frameUrl && frame.parent === contents.mainFrame && contents.mainFrame.framesInSubtree.includes(frame);
+      contents.on('did-start-navigation', navigating);
+      contents.on('did-frame-navigate', navigated);
+      void (async () => {
+        const info = await previewFrameInfo(contents, frameName), rect = info?.rect;
+        if (!current() || !rect || x < rect.x || y < rect.y || x > rect.x + rect.width || y > rect.y + rect.height) return;
+        const selectionText = typeof params.selectionText === 'string' ? params.selectionText.replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f]/g, ' ').slice(0, 10000) : '';
+        if (info.staticFrame) { contents.send('threadterm:page-context-menu', { frameName, x, y, staticFrame: true, selectionText }); return; }
+        const pick = sanitizePagePick(await frame.executeJavaScript(pagePickerSource('at', undefined, undefined, { x: x - rect.x, y: y - rect.y }), false));
+        if (!pick || !current()) return;
+        const shot = await captureShot(contents, rect, pick);
+        if (!current()) { if (shot) await deletePageShots([shot.id]); return; }
+        contents.send('threadterm:page-context-menu', { frameName, x, y, pick: { ...pick, ...(shot ? { shot } : {}) }, selectionText });
+      })().catch(() => undefined).finally(() => {
+        contents.removeListener('did-start-navigation', navigating);
+        contents.removeListener('did-frame-navigate', navigated);
+      });
+    });
+  });
   ipcMain.handle('threadterm:pick-page-target', async (event, request: unknown) => { assertTrustedRenderer(event); return pickPageTarget(event, request); });
   ipcMain.handle('threadterm:cancel-page-pick', async (event, name: unknown) => {
     assertTrustedRenderer(event);
@@ -200,5 +242,9 @@ export function registerPageComments(assertTrustedRenderer: (event: IpcMainInvok
   });
   ipcMain.handle('threadterm:read-page-shot', async (event, id: unknown) => { assertTrustedRenderer(event); return readPageShot(id); });
   ipcMain.handle('threadterm:delete-page-shots', async (event, ids: unknown) => { assertTrustedRenderer(event); return deletePageShots(ids); });
+  ipcMain.handle('threadterm:select-all-page-text', async (event, name: unknown) => {
+    assertTrustedRenderer(event); const frame = findFrame(event.sender, name); if (!frame || frame.parent !== event.sender.mainFrame) return false;
+    return frame.executeJavaScript(`(()=>{const s=getSelection();if(!s)return false;const r=document.createRange();r.selectNodeContents(document.body);s.removeAllRanges();s.addRange(r);return true;})()`, false).then(value => value === true, () => false);
+  });
   void cleanupPageShots().catch(() => undefined);
 }

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState, type KeyboardEvent, type MouseEvent } from 'react';
 import type { GitCommitDetail, GitCommitInfo, GitTextPair } from '@threadterm/protocol';
 import { request } from '../bridge';
 import { Icon } from './PrototypeIcon';
@@ -11,8 +11,10 @@ import type { FileCommentsHost } from '../fileCommentsHost';
 import { sameCommentVersion, type CommentScope } from '../reviewComments';
 import { CommentForm, PendingComments, useFileComments } from './FileComments';
 import '../workbench/workbench.css';
-import { ContextSendAction } from './ContextSendAction';
+import { ContextSendAction, sendContextToAgent } from './ContextSendAction';
 import type { ContextItem } from '../chatContext';
+import { showContextMenu } from './ContextMenu';
+import { historyCommitMenuItems, historyVersionMenuItems } from '../contextMenuSurfaceItems';
 
 const PAGE = 100;
 const SCOPE_KEY = 'threadterm.workbench.historyScope';
@@ -57,6 +59,25 @@ export function GitHistoryView({projectId, worktreePath, path, focusCommit, zh, 
  const all = !path && allBranches;
  const graph = useMemo(() => path ? undefined : commitGraph(commits), [commits, path]);
  const text = (en:string, cn:string) => zh ? cn : en;
+ const copy = (value:string) => void navigator.clipboard.writeText(value).catch(error => setIssue(workbenchError(error, zh)));
+ const commitMenu = (value:GitCommitInfo, event:{clientX:number;clientY:number;currentTarget:HTMLElement}) => showContextMenu({x:event.clientX, y:event.clientY, restoreFocus:event.currentTarget, items:historyCommitMenuItems({zh,canSend:Boolean(commentsHost?.attachContext)}).map(item => ({...item,testId:item.id,onSelect:item.id === 'history-send-to-agent' ? () => commentsHost?.attachContext && sendContextToAgent({host:commentsHost, context:{kind:'commit', id:crypto.randomUUID(), sha:value.hash, subject:value.subject} satisfies ContextItem, zh}) : item.id === 'history-copy-commit-hash' ? () => copy(value.hash) : undefined}))});
+ const fileDiffMenu = (event:{clientX:number;clientY:number;currentTarget:HTMLElement}, selectedLines:MergeSelection|undefined = selection, hasSelection=Boolean(selectedLines?.text), copySelection?:()=>Promise<void>) => {const commentReason=!commentScope || !version ? text('Comments are unavailable for this file version.', '此文件版本无法评论。') : !selectedLines ? text('Select lines on either side first.', '请先在任一侧选中行。') : draft ? text('Finish the current comment first.', '请先完成当前评论。') : undefined;showContextMenu({x:event.clientX, y:event.clientY, restoreFocus:event.currentTarget, items:historyVersionMenuItems({zh,startLine:selectedLines?.startLine,endLine:selectedLines?.endLine,canComment:Boolean(commentScope && version && selectedLines && !draft),commentReason,hasText:hasSelection,path:file?.path}).map(item => ({...item,testId:item.id,onSelect:item.id === 'history-comment-lines' ? () => selectedLines && setDraft(selectedLines) : item.id === 'history-copy-selection' ? () => copySelection ? copySelection() : selectedLines && copy(selectedLines.text) : item.id === 'history-copy-path' ? () => file && copy(file.path) : undefined}))});};
+ const onCommitContext = (event:MouseEvent<HTMLDivElement>) => {
+  const element = (event.target as HTMLElement).closest<HTMLElement>('[data-commit-hash]');
+  if(!element || !event.currentTarget.contains(element)) return;
+  const value = commits.find(candidate => candidate.hash === element.dataset.commitHash);
+  if(!value) return;
+  event.preventDefault(); setSelected(value.hash); commitMenu(value, {clientX:event.clientX, clientY:event.clientY, currentTarget:element});
+ };
+ const onCommitKey = (event:KeyboardEvent<HTMLDivElement>) => {
+  if(event.key !== 'ContextMenu' && !(event.key === 'F10' && event.shiftKey)) return;
+  const element = (event.target as HTMLElement).closest<HTMLElement>('[data-commit-hash]');
+  if(!element || !event.currentTarget.contains(element)) return;
+  const value = commits.find(candidate => candidate.hash === element.dataset.commitHash);
+  if(!value) return;
+  event.preventDefault(); const rect = element.getBoundingClientRect(); setSelected(value.hash);
+  commitMenu(value, {clientX:rect.left + Math.min(16, rect.width / 2), clientY:rect.top + Math.min(16, rect.height / 2), currentTarget:element});
+ };
  const loadPage = async (skip:number) => {
   const ticket = skip ? pageGeneration.current : ++pageGeneration.current;
   setLoading(true);
@@ -113,7 +134,7 @@ export function GitHistoryView({projectId, worktreePath, path, focusCommit, zh, 
  const marks = useMemo(() => !version || !pair ? [] : comments.filter(comment => comment.path === pair.path && sameCommentVersion(comment.version, version))
   .map(({side, startLine, endLine}) => ({side, startLine, endLine})), [comments, pair, version?.commit]);
  return <section className={`wb-history${graph ? ' graph' : ''}`} aria-label={path ? text(`History of ${path}`, `${path} 的历史`) : text('Git history', 'Git 历史')}>
-  <div className="wb-history-list" role="listbox" aria-label={text('Commits', '提交')}>
+  <div className="wb-history-list" role="listbox" aria-label={text('Commits', '提交')} onContextMenu={onCommitContext} onKeyDown={onCommitKey}>
    <header className="wb-history-title"><Icon name="clock"/><strong>{path ? baseName(path) : text('History', '提交历史')}</strong>{path && <span className="wb-dir" title={path}>{parentPath(path)}</span>}
     {!path && <div className="seg wb-history-scope" role="radiogroup" aria-label={text('History scope', '历史范围')}>
      <button type="button" role="radio" aria-checked={!allBranches} className={`seg-btn${allBranches ? '' : ' active'}`} onClick={() => chooseScope(false)}>{text('Current branch', '当前分支')}</button>
@@ -121,7 +142,7 @@ export function GitHistoryView({projectId, worktreePath, path, focusCommit, zh, 
     </div>}</header>
    {notice && <p className="wb-notice" role="status">{notice}</p>}
    {issue && <p className="wb-issue" role="alert">{issue}<button type="button" className="icon-btn" aria-label={text('Dismiss', '关闭提示')} onClick={() => setIssue(undefined)}><Icon name="close"/></button></p>}
-   {commits.map((commit, index) => <button type="button" role="option" aria-selected={commit.hash === selected} key={commit.hash}
+   {commits.map((commit, index) => <button type="button" role="option" aria-selected={commit.hash === selected} key={commit.hash} data-commit-hash={commit.hash}
     className={`wb-commit-row${commit.hash === selected ? ' selected' : ''}`} onClick={() => setSelected(commit.hash)}>
     {graph ? <GraphCell row={graph.rows[index]} width={graph.width} head={commit.refs.some(ref => ref === 'HEAD' || ref.startsWith('HEAD -> '))}/>
      : <span className={`wb-lane${commit.parents.length > 1 ? ' merge' : ''}`} aria-hidden="true"/>}
@@ -139,7 +160,7 @@ export function GitHistoryView({projectId, worktreePath, path, focusCommit, zh, 
     <header className="wb-commit-head">
      <strong>{info.subject}</strong>
      <span className="wb-commit-meta">{info.authorName} &lt;{info.authorEmail}&gt; · {new Date(info.authoredAt).toLocaleString()} · <code title={info.hash}>{info.hash.slice(0, 10)}</code>
-      <button type="button" className="icon-btn" title={text('Copy commit hash', '复制提交哈希')} aria-label={text('Copy commit hash', '复制提交哈希')} onClick={() => void navigator.clipboard.writeText(info.hash)}><Icon name="export"/></button></span>
+      <button type="button" className="icon-btn" title={text('Copy commit hash', '复制提交哈希')} aria-label={text('Copy commit hash', '复制提交哈希')} onClick={() => copy(info.hash)}><Icon name="export"/></button></span>
      {commentsHost?.attachContext && <ContextSendAction host={commentsHost} item={{kind:'commit', id:crypto.randomUUID(), sha:info.hash, subject:info.subject} satisfies ContextItem} zh={zh} label={text('Send to agent', '发送给 Agent')} testId="history-send-to-agent"/>}
      {detail?.body && <pre className="wb-commit-body">{detail.body}</pre>}
     </header>
@@ -155,7 +176,7 @@ export function GitHistoryView({projectId, worktreePath, path, focusCommit, zh, 
      {commentScope && version && pair && draft && <CommentForm scope={commentScope} path={pair.path} version={version} selection={draft} zh={zh} onCancel={() => setDraft(undefined)} onAdded={() => setDraft(undefined)}/>}
      {commentScope && commentsHost && <PendingComments scope={commentScope} host={commentsHost} comments={comments} zh={zh}/>}
      {pair?.binary ? <p className="tt-editor-state">{text('Binary file — no text diff.', '二进制文件，无法显示文本对比。')}</p>
-      : pair ? <MergeEditor path={pair.path} oldText={pair.oldText} newText={pair.newText} readOnly onChange={() => {}} onSave={() => {}} onSelection={commentScope ? setSelection : undefined} marks={commentScope ? marks : undefined}/>
+      : pair ? <MergeEditor path={pair.path} oldText={pair.oldText} newText={pair.newText} readOnly onChange={() => {}} onSave={() => {}} onSelection={commentScope ? setSelection : undefined} onContextMenu={({x,y,selection,hasSelection,target,copy}) => fileDiffMenu({clientX:x, clientY:y, currentTarget:target}, selection, hasSelection, copy)} marks={commentScope ? marks : undefined}/>
       : file ? <p className="tt-editor-state">{text('Loading diff…', '正在读取对比…')}</p> : null}
     </div>
    </> : <p className="tt-editor-state">{selected ? text('Loading commit…', '正在读取提交…') : text('Select a commit.', '选择一个提交。')}</p>}

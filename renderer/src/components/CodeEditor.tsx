@@ -282,6 +282,7 @@ export function CodeEditor({
   onBlameCommit,
   onSendToAgent,
   onSelection,
+  onContextMenu,
   marks,
 }: {
   path: string;
@@ -299,6 +300,7 @@ export function CodeEditor({
   onSendToAgent?: (lines: EditorSelectionLines) => void;
   /** Comment capture and line marks are installed only when selection reporting is enabled at mount. */
   onSelection?: (selection: CodeSelection) => void;
+  onContextMenu?: (menu: { x: number; y: number; selection: CodeSelection; hasSelection: boolean; target: HTMLElement; copy: () => Promise<void>; cut: () => Promise<void>; paste: () => Promise<void>; selectAll: () => void }) => void;
   marks?: readonly CodeMark[];
 }) {
   const host = useRef<HTMLDivElement>(null);
@@ -311,6 +313,8 @@ export function CodeEditor({
   send.current = onSendToAgent;
   const selected = useRef(onSelection);
   selected.current = onSelection;
+  const contextMenu = useRef(onContextMenu);
+  contextMenu.current = onContextMenu;
   const blameCommit = useRef(onBlameCommit);
   blameCommit.current = onBlameCommit;
   const compartments = useRef({
@@ -339,6 +343,24 @@ export function CodeEditor({
         readOnly ? [] : completion,
         EditorState.readOnly.of(readOnly),
         EditorView.editable.of(comments || !readOnly),
+        EditorView.domEventHandlers({
+          contextmenu(event, editor) {
+            const at = editor.posAtCoords({ x: event.clientX, y: event.clientY });
+            if (at == null) return false;
+            const range = editor.state.selection.main;
+            if (at < range.from || at > range.to) editor.dispatch({ selection: EditorSelection.single(at) });
+            const current = editor.state.selection.main;
+            const first = editor.state.doc.lineAt(current.from);
+            let last = editor.state.doc.lineAt(current.to);
+            if (current.to > current.from && current.to === last.from && last.number > first.number) last = editor.state.doc.line(last.number - 1);
+            const selection = { startLine: first.number, endLine: last.number, text: editor.state.sliceDoc(first.from, last.to) };
+            selected.current?.(selection);
+            const hasSelection = current.from !== current.to;
+            const selectedText = editor.state.sliceDoc(current.from, current.to);
+            contextMenu.current?.({ x: event.clientX, y: event.clientY, selection, hasSelection, target: editor.contentDOM, copy: () => navigator.clipboard.writeText(selectedText), cut: async () => { if (!readOnly && hasSelection) { await navigator.clipboard.writeText(selectedText); editor.dispatch({ changes: { from: current.from, to: current.to, insert: '' } }); } }, paste: async () => { if (!readOnly) { const text = await navigator.clipboard.readText(); editor.dispatch({ changes: { from: current.from, to: current.to, insert: text } }); } }, selectAll: () => editor.dispatch({ selection: EditorSelection.create([EditorSelection.range(0, editor.state.doc.length)]) }) });
+            return Boolean(contextMenu.current);
+          },
+        }),
         EditorView.theme({
           "&": {
             height: "100%",
@@ -402,6 +424,8 @@ export function CodeEditor({
               return true;
             },
           },
+          { key: "Shift-F10", run: (editor) => { const range = editor.state.selection.main; const first = editor.state.doc.lineAt(range.from); let last = editor.state.doc.lineAt(range.to); if (range.to > range.from && range.to === last.from && last.number > first.number) last = editor.state.doc.line(last.number - 1); const selection = { startLine: first.number, endLine: last.number, text: editor.state.sliceDoc(first.from, last.to) }; const point = editor.coordsAtPos(range.head); contextMenu.current?.({ x: point?.left ?? editor.contentDOM.getBoundingClientRect().left, y: point?.bottom ?? editor.contentDOM.getBoundingClientRect().bottom, selection, hasSelection: range.from !== range.to, target: editor.contentDOM, copy: () => navigator.clipboard.writeText(editor.state.sliceDoc(range.from, range.to)), cut: async () => { if (!readOnly && range.from !== range.to) { const text = editor.state.sliceDoc(range.from, range.to); await navigator.clipboard.writeText(text); editor.dispatch({ changes: { from: range.from, to: range.to, insert: '' } }); } }, paste: async () => { if (!readOnly) { const text = await navigator.clipboard.readText(); editor.dispatch({ changes: { from: range.from, to: range.to, insert: text } }); } }, selectAll: () => editor.dispatch({ selection: EditorSelection.create([EditorSelection.range(0, editor.state.doc.length)]) }) }); return Boolean(contextMenu.current); }, preventDefault: true },
+          { key: "ContextMenu", run: (editor) => { editor.contentDOM.dispatchEvent(new KeyboardEvent("keydown", { key: "F10", shiftKey: true, bubbles: true, cancelable: true })); return true; }, preventDefault: true },
         ]),
         EditorView.updateListener.of((update) => {
           if (update.docChanged) changed.current(update.state.doc.toString());

@@ -1,8 +1,7 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent, type MouseEvent, type ReactNode } from 'react';
 import type { FileEntry } from '@threadterm/protocol';
 import { operationId, request } from '../bridge';
 import { Icon } from './PrototypeIcon';
-import { CatalogPopover } from './CatalogActions';
 import { SurfaceDialog } from './SurfaceDialog';
 import { decorationIndex } from '../workbench/gitDecorations';
 import { workbenchError } from '../workbench/errors';
@@ -11,6 +10,8 @@ import { WbIcon } from '../workbench/icons';
 import { FILE_DRAG_TYPE, fileDragData } from '../fileDrag';
 import { absolutePath, baseName, coveredBy, joinPath, parentPath, scopeParams, type GitState, type WorkbenchActions, type WorkbenchScope } from '../workbench/types';
 import { isDocumentPinned, sessionDocumentError } from '../sessionDocuments';
+import { showContextMenu } from './ContextMenu';
+import { explorerFileMenuItems } from '../contextMenuSurfaceItems';
 
 type Editing = { mode:'rename'|'file'|'directory'; dir:string; target?:string; value:string; error?:string };
 type Row = { entry:FileEntry; depth:number };
@@ -23,7 +24,6 @@ export function ExplorerView({scope, actions, git, zh, activePath, focusKey, too
  const [expanded, setExpanded] = useState<Set<string>>(() => new Set(['']));
  const [selected, setSelected] = useState<string>();
  const [editing, setEditing] = useState<Editing>();
- const [menu, setMenu] = useState<{anchor:HTMLElement;entry?:FileEntry}>();
  const [confirm, setConfirm] = useState<{path:string;kind:FileEntry['kind'];permanent:boolean}>();
  const [issue, setIssue] = useState<string>();
  const [busy, setBusy] = useState(false);
@@ -54,7 +54,6 @@ export function ExplorerView({scope, actions, git, zh, activePath, focusKey, too
  // Git status refreshes (focus, polling, mutations) also refresh the visible folders.
  useEffect(() => { if(git.status) void refresh(); }, [git.status]);
  useEffect(() => { if(focusKey) treeRef.current?.querySelector<HTMLElement>('[data-path][tabindex="0"]')?.focus(); }, [focusKey]);
- useEffect(() => menu && sessionDocuments ? sessionDocuments.retain() : undefined, [Boolean(menu), sessionDocuments?.retain]);
 
  // Reveal the active editor file by expanding its ancestors.
  useEffect(() => {
@@ -87,12 +86,12 @@ export function ExplorerView({scope, actions, git, zh, activePath, focusKey, too
  };
  const beginCreate = (mode:'file'|'directory', entry?:FileEntry) => {
   const dir = !entry ? '' : entry.kind === 'directory' ? entry.path : parentPath(entry.path);
-  setMenu(undefined); setIssue(undefined);
+  setIssue(undefined);
   if(dir && !expanded.has(dir)) void toggle(dir);
   setEditing({mode, dir, value:''});
  };
  const beginRename = (entry:FileEntry) => {
-  setMenu(undefined); setIssue(undefined);
+  setIssue(undefined);
   if(!guardDirty(entry.path, 'rename')) return;
   setEditing({mode:'rename', dir:parentPath(entry.path), target:entry.path, value:entry.name});
  };
@@ -140,15 +139,15 @@ export function ExplorerView({scope, actions, git, zh, activePath, focusKey, too
   } finally { setBusy(false); }
  };
  const beginDelete = (entry:FileEntry) => {
-  setMenu(undefined); setIssue(undefined);
+  setIssue(undefined);
   if(!guardDirty(entry.path, 'delete')) return;
   setConfirm({path:entry.path, kind:entry.kind, permanent:false});
  };
- const copy = (value:string) => { setMenu(undefined); void navigator.clipboard.writeText(value).catch(error => setIssue(workbenchError(error, zh))); };
+ const copy = (value:string) => { void navigator.clipboard.writeText(value).catch(error => setIssue(workbenchError(error, zh))); };
  const toggleSessionDocument = async (path:string) => {
   if(!sessionDocuments || busy || sessionDocuments.loading) return;
   setBusy(true); setIssue(undefined);
-  try { await sessionDocuments.toggle(path); setMenu(undefined); }
+  try { await sessionDocuments.toggle(path); }
   catch(error) { setIssue(sessionDocumentError(error, zh)); }
   finally { setBusy(false); }
  };
@@ -163,7 +162,41 @@ export function ExplorerView({scope, actions, git, zh, activePath, focusKey, too
   else if(event.key === 'Enter') { event.preventDefault(); if(entry.kind === 'directory') void toggle(entry.path); else actions.openFile(entry.path); }
   else if(event.key === 'F2') { event.preventDefault(); beginRename(entry); }
   else if(event.key === 'Delete') { event.preventDefault(); beginDelete(entry); }
-  else if((event.key === 'F10' && event.shiftKey) || event.key === 'ContextMenu') { event.preventDefault(); setMenu({anchor:event.currentTarget, entry}); }
+  else if((event.key === 'F10' && event.shiftKey) || event.key === 'ContextMenu') { event.preventDefault(); const rect=event.currentTarget.getBoundingClientRect(); openExplorerMenu(entry, {clientX:rect.left+Math.min(16, rect.width/2), clientY:rect.top+Math.min(16, rect.height/2), currentTarget:event.currentTarget}); }
+ };
+
+ const openExplorerMenu = (entry:FileEntry|undefined, event:{clientX:number;clientY:number;currentTarget:HTMLElement}) => {
+  if(!entry) {
+   showContextMenu({x:event.clientX, y:event.clientY, restoreFocus:event.currentTarget, items:[
+    {id:'explorer-new-file', label:text('New file…', '新建文件…'), icon:<Icon name="file"/>, onSelect:() => beginCreate('file'), testId:'explorer-new-file'},
+    {id:'explorer-new-folder', label:text('New folder…', '新建文件夹…'), icon:<Icon name="folder"/>, onSelect:() => beginCreate('directory'), testId:'explorer-new-folder'},
+   ]});
+   return;
+  }
+  const isFile = entry?.kind === 'file';
+  const changed = entry && (git.status?.changes ?? []).some(change => change.path === entry.path);
+  const pinned = Boolean(isFile && sessionDocuments && entry && isDocumentPinned(sessionDocuments.documents, entry.path));
+  showContextMenu({x:event.clientX, y:event.clientY, restoreFocus:event.currentTarget, items:[
+   {id:'explorer-new-file', label:text('New file…', '新建文件…'), icon:<Icon name="file"/>, onSelect:() => beginCreate('file', entry), testId:'explorer-new-file'},
+   {id:'explorer-new-folder', label:text('New folder…', '新建文件夹…'), icon:<Icon name="folder"/>, onSelect:() => beginCreate('directory', entry), testId:'explorer-new-folder'},
+   ...([
+    {separator:true, label:''},
+    ...(isFile && actions.openBeside ? [{id:'explorer-open-beside', label:text('Open beside session', '在会话旁打开'), icon:<Icon name="split"/>, onSelect:() => actions.openBeside?.(entry.path), testId:'explorer-open-beside'}] : []),
+    ...(isFile && changed ? [{id:'explorer-open-changes', label:text('Open changes', '查看更改'), icon:<Icon name="split"/>, onSelect:() => actions.openDiff(entry.path, false), testId:'explorer-open-changes'}] : []),
+    ...explorerFileMenuItems({zh,canHistory:Boolean(isFile && actions.openHistory),canSend:Boolean(isFile && actions.sendToAgent),plansLabel:isFile && sessionDocuments ? text(pinned ? 'Remove from Plans & docs' : 'Add to Plans & docs', pinned ? '从计划与文档中移除' : '添加到计划与文档') : undefined}).map(item=>({...item,disabled:item.id==='explorer-plans-docs'&&(busy || sessionDocuments?.loading || Boolean(sessionDocumentIssue)),reason:item.id==='explorer-plans-docs'?sessionDocumentIssue:undefined,onSelect:item.id==='explorer-file-history'?()=>actions.openHistory?.(entry.path):item.id==='explorer-send-to-agent'?()=>actions.sendToAgent?.({path:entry.path}):item.id==='explorer-plans-docs'?()=>void toggleSessionDocument(entry.path):item.id==='explorer-copy-path'?()=>copy(absolutePath(scope.rootPath,entry.path)):undefined,testId:item.id})),
+    {id:'explorer-copy-relative-path', label:text('Copy relative path', '复制相对路径'), icon:<Icon name="export"/>, onSelect:() => copy(entry.path), testId:'explorer-copy-relative-path'},
+    {separator:true, label:''},
+    {id:'explorer-rename', label:text('Rename…', '重命名…'), icon:<Icon name="file"/>, shortcut:'F2', onSelect:() => beginRename(entry), testId:'explorer-rename'},
+    {id:'explorer-delete', label:text('Delete…', '删除…'), icon:<Icon name="trash"/>, shortcut:'Del', danger:true, onSelect:() => beginDelete(entry), testId:'explorer-delete'},
+   ]),
+  ]});
+ };
+ const onTreeContext = (event:MouseEvent<HTMLDivElement>) => {
+  const element = (event.target as HTMLElement).closest<HTMLElement>('[data-path]');
+  if(!element || !event.currentTarget.contains(element)) return;
+  const entry = rows.find(row => row.entry.path === element.dataset.path)?.entry;
+  if(!entry) return;
+  event.preventDefault(); setSelected(entry.path); openExplorerMenu(entry, {clientX:event.clientX, clientY:event.clientY, currentTarget:element});
  };
 
  const editRow = (depth:number):ReactNode => editing && editing.mode !== 'rename' ? <div className="wb-tree-row editing" style={{paddingLeft:8 + depth * 14}}>
@@ -185,7 +218,7 @@ export function ExplorerView({scope, actions, git, zh, activePath, focusKey, too
  return <div className="wb-explorer">
   {toolbarHost ? createPortal(tools, toolbarHost) : <div className="wb-view-actions">{tools}</div>}
   {(issue ?? sessionDocumentIssue) && <p className="wb-issue" role="alert">{issue ?? sessionDocumentIssue}<button type="button" className="icon-btn" aria-label={text('Dismiss', '关闭提示')} onClick={() => setIssue(undefined)}><Icon name="close"/></button></p>}
-  <div className="wb-tree" role="tree" aria-label={text('Files', '文件')} ref={treeRef}>
+  <div className="wb-tree" role="tree" aria-label={text('Files', '文件')} ref={treeRef} onContextMenu={onTreeContext}>
    {editing && editing.dir === '' && editRow(0)}
    {rows.map((row, index) => {
     const {entry, depth} = row;
@@ -207,7 +240,6 @@ export function ExplorerView({scope, actions, git, zh, activePath, focusKey, too
       className={`wb-tree-row${selected === entry.path ? ' selected' : ''}${decoration ? ` tone-${decoration.tone}` : folderTone ? ` tone-${folderTone} folder-tone` : ''}`}
       style={{paddingLeft:8 + depth * 14}} title={entry.path}
       onClick={() => { setSelected(entry.path); if(isDir) void toggle(entry.path); else actions.openFile(entry.path); }}
-      onContextMenu={event => { event.preventDefault(); setSelected(entry.path); setMenu({anchor:event.currentTarget, entry}); }}
       // Same reference as "Send to agent", dropped on a session pane; only where that action exists.
       draggable={entry.kind === 'file' && !!actions.sendToAgent}
       onDragStart={event => { if(entry.kind !== 'file' || !actions.sendToAgent) return; event.dataTransfer.setData(FILE_DRAG_TYPE, fileDragData({projectId:scope.projectId, worktreePath:scope.worktreePath, path:entry.path})); event.dataTransfer.effectAllowed = 'copy'; }}
@@ -224,30 +256,6 @@ export function ExplorerView({scope, actions, git, zh, activePath, focusKey, too
    })}
    {!rows.length && !editing && <p className="wb-empty">{text('This folder is empty.', '此文件夹为空。')}</p>}
   </div>
-  {menu && <CatalogPopover anchor={menu.anchor} label={menu.entry?.name ?? text('Files', '文件')} onClose={() => setMenu(undefined)}>
-   {(() => {
-    const entry = menu.entry, isFile = entry?.kind === 'file';
-    const changed = entry && (git.status?.changes ?? []).some(change => change.path === entry.path);
-    const pinned = Boolean(isFile && sessionDocuments && entry && isDocumentPinned(sessionDocuments.documents, entry.path));
-    return <>
-     <button type="button" role="menuitem" className="menu-item" onClick={() => beginCreate('file', entry)}><Icon name="file"/>{text('New file…', '新建文件…')}</button>
-     <button type="button" role="menuitem" className="menu-item" onClick={() => beginCreate('directory', entry)}><Icon name="folder"/>{text('New folder…', '新建文件夹…')}</button>
-     {entry && <>
-      <div className="menu-sep"/>
-      {isFile && actions.openBeside && <button type="button" role="menuitem" className="menu-item" onClick={() => { setMenu(undefined); actions.openBeside?.(entry.path); }}><Icon name="split"/>{text('Open beside session', '在会话旁打开')}</button>}
-      {isFile && changed && <button type="button" role="menuitem" className="menu-item" onClick={() => { setMenu(undefined); actions.openDiff(entry.path, false); }}><Icon name="split"/>{text('Open changes', '查看更改')}</button>}
-      {isFile && actions.openHistory && <button type="button" role="menuitem" className="menu-item" onClick={() => { setMenu(undefined); actions.openHistory?.(entry.path); }}><Icon name="clock"/>{text('File history', '文件历史')}</button>}
-      {isFile && actions.sendToAgent && <button type="button" role="menuitem" className="menu-item" onClick={() => { setMenu(undefined); actions.sendToAgent?.({path:entry.path}); }}><Icon name="spark"/>{text('Send to agent', '发送给 Agent')}</button>}
-      {isFile && sessionDocuments && <button type="button" role="menuitem" className="menu-item" disabled={busy || sessionDocuments.loading || Boolean(sessionDocumentIssue)} onClick={() => void toggleSessionDocument(entry.path)}><Icon name="bookmark"/>{text(pinned ? 'Remove from Plans & docs' : 'Add to Plans & docs', pinned ? '从计划与文档中移除' : '添加到计划与文档')}</button>}
-      <button type="button" role="menuitem" className="menu-item" onClick={() => copy(absolutePath(scope.rootPath, entry.path))}><Icon name="export"/>{text('Copy path', '复制路径')}</button>
-      <button type="button" role="menuitem" className="menu-item" onClick={() => copy(entry.path)}><Icon name="export"/>{text('Copy relative path', '复制相对路径')}</button>
-      <div className="menu-sep"/>
-      <button type="button" role="menuitem" className="menu-item" onClick={() => beginRename(entry)}><Icon name="file"/>{text('Rename…', '重命名…')}<kbd>F2</kbd></button>
-      <button type="button" role="menuitem" className="menu-item danger" onClick={() => beginDelete(entry)}><Icon name="trash"/>{text('Delete…', '删除…')}<kbd>Del</kbd></button>
-     </>}
-    </>;
-   })()}
-  </CatalogPopover>}
   {confirm && <SurfaceDialog size="sm" icon="trash" title={confirm.permanent ? text('Delete permanently?', '永久删除？') : text('Move to Recycle Bin?', '移到回收站？')} subtitle={confirm.path}
    onClose={() => { if(!busy) setConfirm(undefined); }}
    footer={<>

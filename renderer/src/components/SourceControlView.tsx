@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { useEffect, useMemo, useRef, useState, type KeyboardEvent, type MouseEvent, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import { WbIcon } from '../workbench/icons';
 import type { GitBranches, GitChange } from '@threadterm/protocol';
@@ -8,9 +8,11 @@ import { CatalogPopover } from './CatalogActions';
 import { SurfaceDialog } from './SurfaceDialog';
 import { changeGroups, decorationFor, type ChangeGroup } from '../workbench/gitDecorations';
 import { workbenchError } from '../workbench/errors';
-import { baseName, parentPath, scopeParams, type GitState, type WorkbenchActions, type WorkbenchScope } from '../workbench/types';
-import { ContextSendAction } from './ContextSendAction';
+import { absolutePath, baseName, parentPath, scopeParams, type GitState, type WorkbenchActions, type WorkbenchScope } from '../workbench/types';
+import { ContextSendAction, sendContextToAgent } from './ContextSendAction';
 import { changedFileContext } from './GitContextActions';
+import { showContextMenu } from './ContextMenu';
+import { sourceControlMenuItems } from '../contextMenuSurfaceItems';
 
 type Confirm =
  | {kind:'discard';paths:string[];untracked:number}
@@ -51,6 +53,30 @@ export function SourceControlView({scope, actions, git, zh, compact = false, too
  const stage = (paths:string[]) => run('stage', () => request('git.stage', {...params, paths, operationId:operationId()}));
  const unstage = (paths:string[]) => run('unstage', () => request('git.unstage', {...params, paths, operationId:operationId()}));
  const discard = (changes:GitChange[]) => setConfirm({kind:'discard', paths:changes.map(change => change.path), untracked:changes.filter(change => change.untracked).length});
+ const openChange = (change:GitChange, group:ChangeGroup) => group === 'conflicts' ? actions.openFile(change.path) : actions.openDiff(change.path, group === 'staged');
+ const changeMenu = (change:GitChange, group:ChangeGroup, event:{clientX:number;clientY:number;currentTarget:HTMLElement}) => {
+  const staged = group === 'staged';
+  showContextMenu({x:event.clientX, y:event.clientY, restoreFocus:event.currentTarget, items:sourceControlMenuItems({zh, staged, conflict:group === 'conflicts', discardable:group === 'changes' || group === 'untracked', busy:Boolean(busy), canSend:Boolean(actions.comments?.attachContext)}).map(item => ({...item, testId:item.id, onSelect:item.id === 'source-control-send-diff' ? async () => actions.comments?.attachContext && sendContextToAgent({host:actions.comments, context:await changedFileContext(params, change.path, staged, zh), zh, sourceRoot:scope.rootPath}) : item.id === 'source-control-unstage' ? () => void unstage([change.path]) : item.id === 'source-control-stage' ? () => void stage([change.path]) : item.id === 'source-control-open-changes' ? () => openChange(change, group) : item.id === 'source-control-copy-path' ? () => navigator.clipboard.writeText(absolutePath(scope.rootPath, change.path)) : item.id === 'source-control-discard' ? () => discard([change]) : undefined}))});
+ };
+ const onChangeContext = (event:MouseEvent<HTMLDivElement>) => {
+  const target = event.target as HTMLElement;
+  const element = target.closest<HTMLElement>('[data-change-path][data-change-group]');
+  if(!element || !event.currentTarget.contains(element)) return;
+  const group = element.dataset.changeGroup as ChangeGroup;
+  const change = groups[group]?.find(candidate => candidate.path === element.dataset.changePath);
+  if(!change) return;
+  event.preventDefault();
+  changeMenu(change, group, {clientX:event.clientX, clientY:event.clientY, currentTarget:element});
+ };
+ const onChangeKey = (event:KeyboardEvent<HTMLDivElement>) => {
+  if(event.key !== 'ContextMenu' && !(event.key === 'F10' && event.shiftKey)) return;
+  const element = (event.target as HTMLElement).closest<HTMLElement>('[data-change-path][data-change-group]');
+  if(!element || !event.currentTarget.contains(element)) return;
+  const group = element.dataset.changeGroup as ChangeGroup, change = groups[group]?.find(candidate => candidate.path === element.dataset.changePath);
+  if(!change) return;
+  event.preventDefault(); const rect = element.getBoundingClientRect();
+  changeMenu(change, group, {clientX:rect.left + Math.min(16, rect.width / 2), clientY:rect.top + Math.min(16, rect.height / 2), currentTarget:element});
+ };
  const commit = async (mode:'commit'|'push'|'amend') => {
   const trimmed = message.trim();
   if(!trimmed) { messageRef.current?.focus(); setIssue(text('Write a commit message first.', '请先填写提交说明。')); return; }
@@ -108,9 +134,9 @@ export function SourceControlView({scope, actions, git, zh, compact = false, too
  const row = (change:GitChange, group:ChangeGroup) => {
   const decoration = decorationFor(change, group);
   const staged = group === 'staged';
-  return <div key={`${group}:${change.path}`} className={`wb-change-row tone-${decoration.tone}`} role="listitem">
+  return <div key={`${group}:${change.path}`} className={`wb-change-row tone-${decoration.tone}`} role="listitem" data-change-path={change.path} data-change-group={group}>
    <button type="button" className="wb-change-open" title={change.originalPath ? `${change.originalPath} → ${change.path}` : change.path}
-    onClick={() => group === 'conflicts' ? actions.openFile(change.path) : actions.openDiff(change.path, staged)}>
+    onClick={() => openChange(change, group)}>
     <Icon name="file"/><span className="wb-name">{baseName(change.path)}</span><span className="wb-dir">{parentPath(change.path)}</span>
    </button>
    <span className="wb-row-actions">
@@ -166,7 +192,7 @@ export function SourceControlView({scope, actions, git, zh, compact = false, too
   {busy && busy !== 'commit' && <p className="wb-summary" aria-live="polite">{text('Working…', '正在执行…')}</p>}
   {issue && <p className="wb-issue" role="alert">{issue}<button type="button" className="icon-btn" aria-label={text('Dismiss', '关闭提示')} onClick={() => setIssue(undefined)}><Icon name="close"/></button></p>}
   {notice && !issue && <p className="wb-notice" aria-live="polite">{notice}</p>}
-  <div className="wb-changes">
+  <div className="wb-changes" onContextMenu={onChangeContext} onKeyDown={onChangeKey}>
    {section('conflicts', text('Merge conflicts', '合并冲突'), null)}
    {section('staged', text('Staged changes', '已暂存的更改'), <button type="button" className="icon-btn" title={text('Unstage all', '全部取消暂存')} aria-label={text('Unstage all', '全部取消暂存')} disabled={!!busy} onClick={() => void unstage(groups.staged.map(change => change.path))}><WbIcon name="minus"/></button>)}
    {section('changes', text('Changes', '更改'), <>

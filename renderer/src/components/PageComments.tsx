@@ -32,8 +32,9 @@ export function usePageCommentPreview(url:string, scope?:CommentScope, host?:Fil
   catch(error){if(current===generation.current){pickingRef.current=false;setPicking(false);fail(error);}}
  };
  const added=()=>{ if(pickRef.current)clear();pickRef.current=undefined;setPick(undefined);setPickScopeKey('');requestAnimationFrame(()=>commentButton.current?.focus()); };
+ const acceptPick=(next:PagePick)=>{if(!enabled)return;generation.current++;if(pickingRef.current)void cancelPagePick(frameName).catch(fail);if(pickRef.current)discard(pickRef.current);pickingRef.current=false;setPicking(false);pickRef.current=next;setPickScopeKey(scopeKey);setCurrentUrl(next.url);setPick(next);void markPageTarget({frameName,target:pageTargetRef(next.target)}).catch(fail);};
  useEffect(()=>{if(!picking)return;const key=(event:KeyboardEvent)=>{if(event.key==='Escape'){event.preventDefault();cancel();}};addEventListener('keydown',key);return()=>removeEventListener('keydown',key);},[picking]);
- return {enabled,frameName,iframe,commentButton,picking,pick,pickScopeKey,scopeKey,issue,begin,cancel,added,discard};
+ return {enabled,frameName,iframe,commentButton,picking,pick,pickScopeKey,scopeKey,issue,begin,cancel,added,discard,acceptPick};
 }
 
 export function PageCommentControls({preview,zh}:{preview:ReturnType<typeof usePageCommentPreview>;zh:boolean}) {

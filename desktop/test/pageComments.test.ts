@@ -25,8 +25,9 @@ writeFileSync(join(shots, 'unowned.txt'), 'preserve');
 
 const electronPath = require.resolve('electron');
 const cached = require.cache[electronPath];
+let webContentsCreated: ((event: unknown, contents: EventEmitter) => void) | undefined;
 require.cache[electronPath] = { exports: {
-  app: { getPath: () => profile },
+  app: { getPath: () => profile, on: (name: string, listener: (event: unknown, contents: EventEmitter) => void) => { if (name === 'web-contents-created') webContentsCreated = listener; } },
   ipcMain: { handle: (channel: string, handler: Handler) => handlers.set(channel, handler) },
   BrowserWindow: { fromWebContents: () => ({ getContentSize: () => [1200, 900] }) },
 } } as NodeModule;
@@ -46,7 +47,8 @@ async function invoke(channel: string, event: unknown, ...args: unknown[]): Prom
 
 function fixture() {
   const executions: Array<{ source: string; done: (value: unknown) => void }> = [];
-  const frame = { parent: {}, detached: false, name: 'tt-preview-abcdefgh', processId: 2, routingId: 3,
+  const parent = { framesInSubtree: [] as unknown[] };
+  const frame = { parent, detached: false, name: 'tt-preview-abcdefgh', processId: 2, routingId: 3,
     executeJavaScript: (source: string) => new Promise<unknown>(done => {
       executions.push({ source, done });
       if (source.endsWith('("cancel",undefined,undefined)')) done(true);
@@ -62,7 +64,7 @@ function fixture() {
     toJPEG: (q: number) => { jpegQualities.push(q); return Buffer.from('jpeg'); },
   });
   const sender = Object.assign(new EventEmitter(), { id: Math.random(), isDestroyed: () => false,
-    mainFrame: { framesInSubtree: [frame] }, getZoomFactor: () => 1.25,
+    mainFrame: Object.assign(parent, { framesInSubtree: [frame] }), getZoomFactor: () => 1.25,
     capturePage: async (rect: unknown) => { captureRects.push(rect); return image(); },
   });
   return { frame, sender, executions, captureRects, jpegQualities, event: { sender, trusted: true } };
@@ -76,7 +78,7 @@ function pick() {
 const frameRect = { x: 100, y: 50, width: 800, height: 600 };
 
 test('every page-comment IPC authenticates the calling renderer', async () => {
-  for (const channel of ['pick-page-target', 'cancel-page-pick', 'mark-page-target', 'read-page-shot', 'delete-page-shots']) {
+  for (const channel of ['pick-page-target', 'cancel-page-pick', 'mark-page-target', 'read-page-shot', 'delete-page-shots', 'select-all-page-text']) {
     await assert.rejects(invoke(channel, { trusted: false }), /Untrusted renderer/);
   }
 });
@@ -147,6 +149,107 @@ test('larger screenshots use JPEG q85 with a JPEG q70 thumbnail', async () => {
   assert.deepEqual(sizes, [{ width: 240, height: 135, quality: 'good' }]);
   assert.equal(await invoke('read-page-shot', event, result.shot.id), 'data:image/jpeg;base64,anBlZw==');
   await invoke('delete-page-shots', event, [result.shot.id]);
+});
+
+test('select-all page text only executes in the calling named direct preview frame', async () => {
+  const { event, frame } = fixture(); let source = '';
+  frame.executeJavaScript = async (value: string) => { source = value; return true; };
+  assert.equal(await invoke('select-all-page-text', event, frame.name), true);
+  assert.match(source, /selectNodeContents\(document\.body\)/);
+  assert.equal(await invoke('select-all-page-text', event, 'tt-preview-otherone'), false);
+});
+
+test('preview context menu converts window coordinates to the offset iframe and ignores other frames', async () => {
+  await registered;
+  const sent: unknown[] = [];
+  const mainFrame = { framesInSubtree: [] as unknown[], executeJavaScript: async () => ({ rect: { x: 100, y: 50, width: 800, height: 600 }, staticFrame: false }) };
+  const frame = { parent: mainFrame, detached: false, name: 'tt-preview-abcdefgh', executeJavaScript: async (source: string) => {
+    assert.match(source, /\{"x":40,"y":50\}/);
+    return pick();
+  } };
+  const other = { parent: mainFrame, detached: false, name: 'tt-preview-otherone', executeJavaScript: async () => pick() };
+  // Native positions are DIP; divide by page zoom before comparing with the trusted CSS iframe rect.
+  const contents = Object.assign(new EventEmitter(), { isDestroyed: () => false, getZoomFactor: () => 1.25,
+    mainFrame: Object.assign(mainFrame, { framesInSubtree: [frame] }),
+    capturePage: async () => ({ isEmpty: () => true }), send: (_channel: string, value: unknown) => sent.push(value) });
+  webContentsCreated?.({}, contents);
+  contents.emit('context-menu', {}, { frame, x: 175, y: 125 });
+  await new Promise(done => setImmediate(done)); await new Promise(done => setImmediate(done));
+  assert.equal((sent[0] as { frameName: string }).frameName, frame.name);
+  contents.emit('context-menu', {}, { frame: other, x: 175, y: 125 });
+  await new Promise(done => setImmediate(done));
+  assert.equal(sent.length, 1);
+});
+
+async function contextFixture(staticFrame = false) {
+  await registered;
+  const value = fixture(), sent: Array<{ staticFrame?: boolean; selectionText: string; pick?: { target: { text?: string }; shot?: { id: string } } }> = [];
+  Object.assign(value.frame, { url: staticFrame ? 'about:srcdoc' : 'https://example.com/' });
+  value.frame.executeJavaScript = async (source: string) => { value.executions.push({ source, done: () => {} }); return pick(); };
+  Object.assign(value.sender.mainFrame, { executeJavaScript: async () => ({ rect: frameRect, staticFrame }) });
+  const sender = Object.assign(value.sender, { send: (_channel: string, payload: (typeof sent)[number]) => sent.push(payload) });
+  webContentsCreated?.({}, sender);
+  return { ...value, sender, sent };
+}
+
+async function settleContexts(sender: EventEmitter) {
+  for (let tries = 0; tries < 200 && sender.listenerCount('did-start-navigation'); tries++) await new Promise(done => setTimeout(done, 5));
+  assert.equal(sender.listenerCount('did-start-navigation'), 0, 'completed context requests release navigation listeners');
+  assert.equal(sender.listenerCount('did-frame-navigate'), 0);
+}
+
+test('saved srcdoc HTML sends a regular preview event without a live pick or screenshot', async () => {
+  const { sender, frame, sent, executions, captureRects } = await contextFixture(true);
+  sender.emit('context-menu', {}, { frame, x: 175, y: 125, selectionText: 'Saved HTML\nselected text\u0000' });
+  await settleContexts(sender);
+  assert.equal(sent.length, 1);
+  assert.equal(sent[0].staticFrame, true);
+  assert.equal(sent[0].pick, undefined);
+  assert.equal(sent[0].selectionText, 'Saved HTML\nselected text ');
+  assert.equal(executions.length, 0, 'static preview bypasses the strict live HTTP page picker');
+  assert.equal(captureRects.length, 0);
+});
+
+test('nested frames cannot imitate a direct preview frame for context menus or select-all', async () => {
+  const { sender, frame, sent, executions } = await contextFixture();
+  Object.assign(frame, { parent: {} });
+  sender.emit('context-menu', {}, { frame, x: 175, y: 125 });
+  await new Promise(done => setImmediate(done));
+  assert.equal(sent.length, 0);
+  assert.equal(executions.length, 0);
+  assert.equal(await invoke('select-all-page-text', { sender, trusted: true }, frame.name), false);
+});
+
+test('navigation during a context capture drops the event and deletes its late screenshot', async () => {
+  const { sender, frame, sent } = await contextFixture();
+  const before = (await readdir(shots)).sort(), capture = sender.capturePage;
+  let finish!: (image: Awaited<ReturnType<typeof capture>>) => void;
+  sender.capturePage = () => new Promise(done => { finish = done; });
+  sender.emit('context-menu', {}, { frame, x: 175, y: 125 });
+  await new Promise(done => setImmediate(done));
+  assert.equal(typeof finish, 'function');
+  sender.emit('did-start-navigation', { frame, isMainFrame: false, isSameDocument: false });
+  finish(await capture({}));
+  await settleContexts(sender);
+  assert.equal(sent.length, 0);
+  assert.deepEqual((await readdir(shots)).sort(), before);
+});
+
+test('the latest preview right-click wins when earlier picker results finish later', async () => {
+  const { sender, frame, sent } = await contextFixture();
+  const pending: Array<(value: unknown) => void> = [];
+  frame.executeJavaScript = () => new Promise(done => pending.push(done));
+  sender.emit('context-menu', {}, { frame, x: 175, y: 125 });
+  await new Promise(done => setImmediate(done));
+  sender.emit('context-menu', {}, { frame, x: 185, y: 135 });
+  await new Promise(done => setImmediate(done));
+  assert.equal(pending.length, 2);
+  const second = pick(); Object.assign(second.target, { text: 'Second element' });
+  pending[1](second); pending[0](pick());
+  await settleContexts(sender);
+  assert.equal(sent.length, 1);
+  assert.equal(sent[0].pick?.target.text, 'Second element');
+  if (sent[0].pick?.shot) await invoke('delete-page-shots', { sender, trusted: true }, [sent[0].pick.shot.id]);
 });
 
 test('oversized JPEG captures are downscaled before they are persisted', async () => {
