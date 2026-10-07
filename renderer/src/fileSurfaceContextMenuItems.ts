@@ -43,13 +43,14 @@ export function diffSurfaceMenuItems(options: CommentOptions & { prefix: 'editor
   ];
 }
 
-export function renderedPreviewMenuItems(options: { zh: boolean; hasSelection: boolean; send?: Action; source?: Action; copy: Action; selectAll: Action }): ContextMenuItem[] {
+export function renderedPreviewMenuItems(options: { zh: boolean; hasSelection: boolean; send?: Action; source?: Action; copy: Action; selectAll?: Action }): ContextMenuItem[] {
   const text = (en: string, zh: string) => menuText(options.zh, en, zh);
   return [
     { id: 'file-preview-send', label: text('Send file to agent', '将文件发送给 Agent'), disabled: !options.send, reason: !options.send ? text('Open a Chat session in this workspace first.', '请先在此工作区打开一个聊天会话。') : undefined, onSelect: options.send, testId: 'file-preview-context-send-file' },
     { id: 'file-preview-source', label: text('Show source', '查看源代码'), disabled: !options.source, reason: !options.source ? text('Source is unavailable.', '源代码不可用。') : undefined, onSelect: options.source, testId: 'file-preview-context-show-source' },
     separator,
     { id: 'file-preview-copy', label: text('Copy', '复制'), shortcut: 'Ctrl+C', disabled: !options.hasSelection, reason: !options.hasSelection ? text('Select text first.', '请先选择文本。') : undefined, onSelect: options.copy, testId: 'file-preview-context-copy' },
-    { id: 'file-preview-select-all', label: text('Select all', '全选'), shortcut: 'Ctrl+A', onSelect: options.selectAll, testId: 'file-preview-context-select-all' },
+    // A saved-HTML frame runs no scripts (sandbox), so only the Markdown preview can select all from here.
+    ...(options.selectAll ? [{ id: 'file-preview-select-all', label: text('Select all', '全选'), shortcut: 'Ctrl+A', onSelect: options.selectAll, testId: 'file-preview-context-select-all' }] : []),
   ];
 }

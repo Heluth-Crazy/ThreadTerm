@@ -30,4 +30,3 @@ export const markPageTarget = (request: { frameName: string; target?: PageTarget
 export const readPageShot = (shotId: string) => facade().readPageShot(shotId);
 export const deletePageShots = (shotIds: string[]) => facade().deletePageShots(shotIds);
 export const onPageContextMenu = (listener: (value: { frameName: string; x: number; y: number; pick?: PagePick; staticFrame?: boolean; selectionText: string }) => void) => facade().onPageContextMenu(listener);
-export const selectAllPageText = (frameName: string) => facade().selectAllPageText(frameName);

@@ -242,9 +242,5 @@ export function registerPageComments(assertTrustedRenderer: (event: IpcMainInvok
   });
   ipcMain.handle('threadterm:read-page-shot', async (event, id: unknown) => { assertTrustedRenderer(event); return readPageShot(id); });
   ipcMain.handle('threadterm:delete-page-shots', async (event, ids: unknown) => { assertTrustedRenderer(event); return deletePageShots(ids); });
-  ipcMain.handle('threadterm:select-all-page-text', async (event, name: unknown) => {
-    assertTrustedRenderer(event); const frame = findFrame(event.sender, name); if (!frame || frame.parent !== event.sender.mainFrame) return false;
-    return frame.executeJavaScript(`(()=>{const s=getSelection();if(!s)return false;const r=document.createRange();r.selectNodeContents(document.body);s.removeAllRanges();s.addRange(r);return true;})()`, false).then(value => value === true, () => false);
-  });
   void cleanupPageShots().catch(() => undefined);
 }

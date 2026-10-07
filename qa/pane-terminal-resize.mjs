@@ -64,7 +64,7 @@ const emitFrame = (sessionId, cols) => {
   cursors[sessionId] = at + data.byteLength;
   void listener({ sessionId, cursor: at, data, gap: false });
 };
-window.threadterm = {
+window.threadterm = {onPageContextMenu:()=>()=>{},
   platform: 'win32',
   windowsPty: { backend: 'conpty', buildNumber: 22631 },
   onEvent: () => () => {},

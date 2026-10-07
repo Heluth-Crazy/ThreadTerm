@@ -78,7 +78,7 @@ function pick() {
 const frameRect = { x: 100, y: 50, width: 800, height: 600 };
 
 test('every page-comment IPC authenticates the calling renderer', async () => {
-  for (const channel of ['pick-page-target', 'cancel-page-pick', 'mark-page-target', 'read-page-shot', 'delete-page-shots', 'select-all-page-text']) {
+  for (const channel of ['pick-page-target', 'cancel-page-pick', 'mark-page-target', 'read-page-shot', 'delete-page-shots']) {
     await assert.rejects(invoke(channel, { trusted: false }), /Untrusted renderer/);
   }
 });
@@ -151,13 +151,6 @@ test('larger screenshots use JPEG q85 with a JPEG q70 thumbnail', async () => {
   await invoke('delete-page-shots', event, [result.shot.id]);
 });
 
-test('select-all page text only executes in the calling named direct preview frame', async () => {
-  const { event, frame } = fixture(); let source = '';
-  frame.executeJavaScript = async (value: string) => { source = value; return true; };
-  assert.equal(await invoke('select-all-page-text', event, frame.name), true);
-  assert.match(source, /selectNodeContents\(document\.body\)/);
-  assert.equal(await invoke('select-all-page-text', event, 'tt-preview-otherone'), false);
-});
 
 test('preview context menu converts window coordinates to the offset iframe and ignores other frames', async () => {
   await registered;
@@ -217,7 +210,6 @@ test('nested frames cannot imitate a direct preview frame for context menus or s
   await new Promise(done => setImmediate(done));
   assert.equal(sent.length, 0);
   assert.equal(executions.length, 0);
-  assert.equal(await invoke('select-all-page-text', { sender, trusted: true }, frame.name), false);
 });
 
 test('navigation during a context capture drops the event and deletes its late screenshot', async () => {

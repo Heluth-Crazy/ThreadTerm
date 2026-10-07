@@ -24,7 +24,7 @@ const drafts=new Map(); let revision=0;
 window.qa={calls:[],subscriptions:{},terminals:[],saved:undefined};
 const originalOpen=Terminal.prototype.open;
 Terminal.prototype.open=function(element){window.qa.terminals.push({terminal:this,element});return originalOpen.call(this,element);};
-window.threadterm={platform:'win32',windowsPty:{backend:'conpty',buildNumber:22631},onEvent:()=>()=>{},openExternal:async()=>{},
+window.threadterm={onPageContextMenu:()=>()=>{},platform:'win32',windowsPty:{backend:'conpty',buildNumber:22631},onEvent:()=>()=>{},openExternal:async()=>{},
  subscribeOutput:async(id,cursor,listener)=>{window.qa.subscriptions[id]=(window.qa.subscriptions[id]??0)+1;listener({sessionId:id,cursor:0,data:new TextEncoder().encode('Session '+id+' ready\\r\\n')});return()=>{};},
  request:async(method,params)=>{window.qa.calls.push({method,params});
   if(method==='workspace.save'){if(params.expectedRevision!==revision)throw Error('workspace.save revision was not serialized');revision++;window.qa.saved={...params.layout};return{id:'workspace',revision};}

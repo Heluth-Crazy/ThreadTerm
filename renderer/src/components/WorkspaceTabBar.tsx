@@ -18,7 +18,7 @@ export function WorkspaceTabBar({layout,sessions,active,busy,onActivate,onClose,
  const [fade,setFade]=useState('');
  const tabs=workspaceTabs(layout);
  const openMenu=(target:WorkspaceTabTarget,event:{clientX:number;clientY:number;currentTarget:HTMLElement})=>{const tab=tabs.find(item=>item.paneId===target.paneId&&item.tab.id===target.tabId)?.tab;const fileItems=tab&&isFileTab(tab)?fileMenuItems?.(tab)??[]:[];const blocked=busy?(zh?'正在关闭标签。':'A tab is closing.'):undefined;showContextMenu({x:event.clientX,y:event.clientY,restoreFocus:event.currentTarget.querySelector<HTMLElement>('.workspace-tab-select')??event.currentTarget,items:[...fileItems,...(fileItems.length?[{separator:true,label:''}]:[]),...(['current','others','all'] as const).map(mode=>({id:`workspace-tab-close-${mode}`,label:zh?({current:'关闭当前',others:'关闭其他',all:'关闭所有'}[mode]):({current:'Close current',others:'Close others',all:'Close all'}[mode]),disabled:busy||(mode==='others'&&tabs.length<2),reason:blocked??(mode==='others'&&tabs.length<2?(zh?'没有其他标签可关闭。':'There are no other tabs to close.'):undefined),onSelect:()=>onClose(target,mode),testId:`workspace-tab-close-${mode}`}))]});};
- const onTabContext=(event:MouseEvent<HTMLDivElement>)=>{const element=(event.target as HTMLElement).closest<HTMLElement>('[data-workspace-tab]');if(!element||!event.currentTarget.contains(element))return;event.preventDefault();openMenu({paneId:element.dataset.paneId!,tabId:element.dataset.tabId!},{clientX:event.clientX,clientY:event.clientY,currentTarget:element});};
+ const onTabContext=(event:MouseEvent<HTMLDivElement>)=>{const element=(event.target as HTMLElement).closest<HTMLElement>('[data-workspace-tab]');if(!element||!event.currentTarget.contains(element))return;event.preventDefault();openMenu({paneId:element.dataset.tabPaneId!,tabId:element.dataset.tabId!},{clientX:event.clientX,clientY:event.clientY,currentTarget:element});};
  const onTabKey=(event:KeyboardEvent<HTMLButtonElement>,target:WorkspaceTabTarget)=>{
   if(event.key==='ContextMenu'||(event.shiftKey&&event.key==='F10')){event.preventDefault();const rect=event.currentTarget.getBoundingClientRect();openMenu(target,{clientX:rect.left+Math.min(16,rect.width/2),clientY:rect.top+Math.min(16,rect.height/2),currentTarget:event.currentTarget});}
   if(['ArrowLeft','ArrowRight','Home','End'].includes(event.key)){
@@ -60,8 +60,8 @@ export function WorkspaceTabBar({layout,sessions,active,busy,onActivate,onClose,
     const label=tab.kind==='session'?title:contentTitle(tab,zh).label;
     const selected=active?.paneId===paneId&&active.tabId===tab.id;
     const target={paneId,tabId:tab.id};
-    return <div className={`workspace-tab${selected?' active':''}`} key={`${paneId}:${tab.id}`} data-workspace-tab data-pane-id={paneId} data-tab-id={tab.id}>
-     <button type="button" className="workspace-tab-select" role="tab" aria-selected={selected} tabIndex={selected||(!active&&index===0)?0:-1} data-workspace-tab data-pane-id={paneId} data-tab-id={tab.id}
+    return <div className={`workspace-tab${selected?' active':''}`} key={`${paneId}:${tab.id}`} data-workspace-tab data-tab-pane-id={paneId} data-tab-id={tab.id}>
+     <button type="button" className="workspace-tab-select" role="tab" aria-selected={selected} tabIndex={selected||(!active&&index===0)?0:-1} data-workspace-tab data-tab-pane-id={paneId} data-tab-id={tab.id}
       title={title} aria-label={title} draggable
       onClick={()=>onActivate(target)}
       onKeyDown={event=>onTabKey(event,target)}

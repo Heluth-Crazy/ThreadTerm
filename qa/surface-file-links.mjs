@@ -37,7 +37,7 @@ Terminal.prototype.registerLinkProvider=function(provider){
   callback(links);
  })}});
 };
-window.threadterm={
+window.threadterm={onPageContextMenu:()=>()=>{},
  windowsPty:{backend:'conpty',buildNumber:22631},
  request:async(method,params)=>{
   if(method.startsWith('terminal.')||method.startsWith('session.'))window.terminalRequests.push({method,params});

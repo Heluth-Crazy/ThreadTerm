@@ -77,7 +77,6 @@ const bridge: ThreadTermBridge = {
     ipcRenderer.on('threadterm:page-context-menu', handler);
     return () => ipcRenderer.removeListener('threadterm:page-context-menu', handler);
   },
-  selectAllPageText: (frameName) => ipcRenderer.invoke('threadterm:select-all-page-text', frameName) as Promise<boolean>,
   openPluginsFolder: () => ipcRenderer.invoke('threadterm:open-plugins-folder') as Promise<void>,
   openDirectory: (projectId, worktreeId) => ipcRenderer.invoke('threadterm:open-directory', projectId, worktreeId) as Promise<void>,
   desktopPreferences: () => ipcRenderer.invoke('threadterm:desktop-preferences') as Promise<{ shortcuts: Record<string, string> }>,

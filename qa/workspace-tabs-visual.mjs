@@ -20,7 +20,7 @@ const files={'note.ts':'first\\nsecond\\nthird\\nfourth\\n','other.ts':'other'};
 const drafts=new Map();window.qaCalls=[];window.qaSubscriptions={};window.qaSaved=initial;window.qaBack=0;
 window.qaTerminals=[];const originalOpen=Terminal.prototype.open;
 Terminal.prototype.open=function(element){window.qaTerminals.push({terminal:this,element});return originalOpen.call(this,element);};
-window.threadterm={platform:'win32',windowsPty:{backend:'conpty',buildNumber:22631},onEvent:()=>()=>{},openExternal:async()=>{},
+window.threadterm={onPageContextMenu:()=>()=>{},platform:'win32',windowsPty:{backend:'conpty',buildNumber:22631},onEvent:()=>()=>{},openExternal:async()=>{},
  subscribeOutput:async(id,cursor,listener)=>{window.qaSubscriptions[id]=(window.qaSubscriptions[id]??0)+1;listener({sessionId:id,cursor:0,data:new TextEncoder().encode('Session '+id+' ready\\r\\nD:/fixture/note.ts:3:2\\r\\n')});return()=>{};},
  request:async(method,params)=>{window.qaCalls.push({method,params});
   if(method==='workspace.save'){window.qaSaved=params.layout;return{...params,id:'workspace',revision:(params.expectedRevision??0)+1};}
