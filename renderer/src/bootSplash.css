@@ -17,6 +17,8 @@
   color-scheme:dark;
 }
 #boot-splash[data-chrome="native"], #root:has(.app-shell.is-maximized) ~ #boot-splash { inset:0; border:0; border-radius:0; }
+/* Once the app is ready and the screen fades out, clicks reach the shell already visible beneath it. */
+#boot-splash[data-phase="exit"], #boot-splash[data-phase="done"] { pointer-events:none; }
 #boot-splash .bs-stage { position:absolute; inset:0; transform-origin:50% 43%; }
 #boot-splash .bs-atmosphere { position:absolute; inset:0; background:radial-gradient(ellipse at 50% 43%, rgba(116,136,238,.08), transparent 49%); }
 #boot-splash .bs-grain { position:absolute; inset:0; opacity:.025; background-image:url("data:image/svg+xml,%3Csvg viewBox='0 0 180 180' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.9' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Cpath filter='url(%23n)' opacity='.6' d='M0 0h180v180H0z'/%3E%3C/svg%3E"); }
