@@ -4,7 +4,7 @@ use super::{
         command_output, find_executable, history_page, insert_optional, spawn_managed_service,
         validate_native_id, version_probe, CommandSpec,
     },
-    emit_scoped, ChatSession, ProviderAdapter, ProviderCapability, ProviderError, ProviderEvent,
+    emit_scoped, ChatSession, ProviderAdapter, ProviderCapability, ProviderError,
     TerminalCommand,
 };
 use base64::Engine;
@@ -24,13 +24,16 @@ use std::{
     thread,
     time::{Duration, Instant},
 };
+#[cfg(test)]
+use super::ProviderEvent;
+#[cfg(test)]
 use tokio::sync::broadcast;
 
 pub struct OpenCodeAdapter {
-    events: broadcast::Sender<ProviderEvent>,
+    events: crate::provider_events::Sender,
 }
 impl OpenCodeAdapter {
-    pub fn new(events: broadcast::Sender<ProviderEvent>) -> Self {
+    pub fn new(events: crate::provider_events::Sender) -> Self {
         Self { events }
     }
 }
@@ -108,7 +111,7 @@ impl ProviderAdapter for OpenCodeAdapter {
     fn prepare_terminal(&self, cwd: &str) -> Result<Option<String>, ProviderError> {
         // Create through the authenticated local native API. No prompt/turn
         // is sent, and the terminal subsequently opens this exact session.
-        let server = OpenCodeServer::start(cwd, "terminal-prepare", broadcast::channel(1).0, "")?;
+        let server = OpenCodeServer::start(cwd, "terminal-prepare", crate::provider_events::tap_channel(1).0, "")?;
         let session =
             server.json(server.request(reqwest::Method::POST, "/session", Some(json!({})))?)?;
         let id = session.get("id").and_then(Value::as_str).ok_or_else(|| {
@@ -259,7 +262,7 @@ struct OpenCodeServer {
     event_gate: Arc<Mutex<()>>,
     active_turn: Arc<Mutex<Option<String>>>,
     permissions: Arc<Mutex<HashMap<String, Option<String>>>>,
-    events: broadcast::Sender<ProviderEvent>,
+    events: crate::provider_events::Sender,
     threadterm_session: String,
     worker_token: String,
     _job: crate::job::SessionJob,
@@ -282,7 +285,7 @@ impl OpenCodeServer {
     fn start(
         cwd: &str,
         threadterm_session: &str,
-        events: broadcast::Sender<ProviderEvent>,
+        events: crate::provider_events::Sender,
         worker_token: &str,
     ) -> Result<Self, ProviderError> {
         let port = TcpListener::bind(("127.0.0.1", 0))
@@ -594,7 +597,7 @@ struct OpenCodeChat {
     server: OpenCodeServer,
     session_id: String,
     native_id: String,
-    events: broadcast::Sender<ProviderEvent>,
+    events: crate::provider_events::Sender,
     sse_target: Arc<EventTarget>,
     worker_token: String,
 }
@@ -1020,7 +1023,7 @@ struct EventTarget {
     threadterm_session: String,
     native_id: String,
     worker_token: String,
-    events: broadcast::Sender<ProviderEvent>,
+    events: crate::provider_events::Sender,
     active: Arc<Mutex<Option<String>>>,
     assembly: Arc<Mutex<OpenCodeAssembly>>,
     permissions: Arc<Mutex<HashMap<String, Option<String>>>>,
@@ -1723,7 +1726,7 @@ mod tests {
     use std::io::{Read, Write};
     #[test]
     fn terminal_identity_is_prepared_through_native_session_api() {
-        let adapter = OpenCodeAdapter::new(broadcast::channel(1).0);
+        let adapter = OpenCodeAdapter::new(crate::provider_events::tap_channel(1).0);
         assert_eq!(
             adapter.terminal_capture(),
             super::super::TerminalCapture::PreAssigned
@@ -1809,7 +1812,7 @@ mod tests {
     }
 
     fn event_target(
-        events: &broadcast::Sender<ProviderEvent>,
+        events: &crate::provider_events::Sender,
         active: Arc<Mutex<Option<String>>>,
     ) -> EventTarget {
         EventTarget {
@@ -1870,7 +1873,7 @@ mod tests {
 
     #[test]
     fn sse_expiry_and_explicit_stop_are_single_terminal_transitions() {
-        let (events, mut rx) = broadcast::channel(16);
+        let (events, mut rx) = crate::provider_events::tap_channel(16);
         let target = event_target(&events, Arc::new(Mutex::new(Some("turn-1".into()))));
         target
             .permissions
@@ -1891,7 +1894,7 @@ mod tests {
         assert!(!target.liveness.load(Ordering::SeqCst));
         assert!(target.permissions.lock().unwrap().is_empty());
 
-        let (stop_events, mut stop_rx) = broadcast::channel(4);
+        let (stop_events, mut stop_rx) = crate::provider_events::tap_channel(4);
         let stopped = event_target(&stop_events, Arc::new(Mutex::new(Some("turn-2".into()))));
         stopped.stopped.store(true, Ordering::SeqCst);
         expire_stream(&stopped, "event_stream_silent", "ignored after stop");
@@ -1900,7 +1903,7 @@ mod tests {
 
     #[test]
     fn refreshed_frame_wins_over_a_watchdog_waiting_for_the_commit_gate() {
-        let (events, mut rx) = broadcast::channel(8);
+        let (events, mut rx) = crate::provider_events::tap_channel(8);
         let target = Arc::new(event_target(&events, Arc::new(Mutex::new(None))));
         let clock = Arc::new(Mutex::new(Instant::now() - Duration::from_secs(36)));
         let gate = target.event_gate.lock().unwrap();
@@ -1935,7 +1938,7 @@ mod tests {
             let response = format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len());
             stream.write_all(response.as_bytes()).unwrap();
         });
-        let (events, mut rx) = broadcast::channel(16);
+        let (events, mut rx) = crate::provider_events::tap_channel(16);
         let mut target = event_target(&events, Arc::new(Mutex::new(Some("turn-1".into()))));
         target.base_url = format!("http://{address}");
         target
@@ -2015,7 +2018,7 @@ mod tests {
 
     #[test]
     fn foreign_session_events_never_touch_this_chat() {
-        let (events, _rx) = broadcast::channel(16);
+        let (events, _rx) = crate::provider_events::tap_channel(16);
         let active = Arc::new(Mutex::new(Some("turn-1".to_owned())));
         let target = event_target(&events, Arc::clone(&active));
         emit_opencode_event(
@@ -2034,7 +2037,7 @@ mod tests {
 
     #[test]
     fn foreign_and_stopped_events_cannot_project_or_settle_this_turn() {
-        let (events, mut rx) = broadcast::channel(16);
+        let (events, mut rx) = crate::provider_events::tap_channel(16);
         let active = Arc::new(Mutex::new(Some("turn-1".to_owned())));
         let target = event_target(&events, Arc::clone(&active));
         for raw in [
@@ -2068,7 +2071,7 @@ mod tests {
 
     #[test]
     fn replied_permission_cannot_be_reopened_by_late_update() {
-        let (events, mut rx) = broadcast::channel(16);
+        let (events, mut rx) = crate::provider_events::tap_channel(16);
         let target = event_target(&events, Arc::new(Mutex::new(Some("turn-1".to_owned()))));
         emit_opencode_event(
             &target,
@@ -2111,7 +2114,7 @@ mod tests {
 
     #[test]
     fn repeated_ask_keeps_original_turn_identity() {
-        let (events, mut rx) = broadcast::channel(16);
+        let (events, mut rx) = crate::provider_events::tap_channel(16);
         let active = Arc::new(Mutex::new(Some("turn-original".to_owned())));
         let target = event_target(&events, Arc::clone(&active));
         let asked = frame(
@@ -2137,7 +2140,7 @@ mod tests {
 
     #[test]
     fn permission_replies_distinguish_rejection_cancellation_and_unknown() {
-        let (events, mut rx) = broadcast::channel(32);
+        let (events, mut rx) = crate::provider_events::tap_channel(32);
         let db = projection_db();
         let target = event_target(&events, Arc::new(Mutex::new(Some("turn-1".to_owned()))));
         for (id, reply) in [
@@ -2177,7 +2180,7 @@ mod tests {
 
     #[test]
     fn two_distinct_messages_and_two_parts_of_one_message_all_survive() {
-        let (events, mut rx) = broadcast::channel(16);
+        let (events, mut rx) = crate::provider_events::tap_channel(16);
         let db = projection_db();
         let active = Arc::new(Mutex::new(Some("turn-1".to_owned())));
         let target = event_target(&events, Arc::clone(&active));
@@ -2215,7 +2218,7 @@ mod tests {
 
     #[test]
     fn deltas_then_full_snapshot_update_one_part_without_duplicates() {
-        let (events, mut rx) = broadcast::channel(16);
+        let (events, mut rx) = crate::provider_events::tap_channel(16);
         let db = projection_db();
         let active = Arc::new(Mutex::new(Some("turn-1".to_owned())));
         let target = event_target(&events, Arc::clone(&active));
@@ -2262,7 +2265,7 @@ mod tests {
 
     #[test]
     fn text_tool_reasoning_and_later_text_keep_native_part_order() {
-        let (events, mut rx) = broadcast::channel(16);
+        let (events, mut rx) = crate::provider_events::tap_channel(16);
         let db = projection_db();
         let target = event_target(&events, Arc::new(Mutex::new(Some("turn-1".to_owned()))));
         for part in [
@@ -2295,7 +2298,7 @@ mod tests {
 
     #[test]
     fn permission_replied_resolves_only_the_matching_card() {
-        let (events, mut rx) = broadcast::channel(16);
+        let (events, mut rx) = crate::provider_events::tap_channel(16);
         let db = projection_db();
         let active = Arc::new(Mutex::new(Some("turn-1".to_owned())));
         let target = event_target(&events, Arc::clone(&active));

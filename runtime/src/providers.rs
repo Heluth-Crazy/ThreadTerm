@@ -16,6 +16,7 @@ mod opencode;
 
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use crate::provider_events::{self, ProjectionReceiver, Sender as ProviderEventSender};
 use std::{
     collections::HashMap,
     sync::{Arc, Condvar, Mutex, RwLock},
@@ -511,7 +512,8 @@ pub struct Providers {
     chats: Mutex<HashMap<String, ChatSlot>>,
     connect_wait: Condvar,
     capability_cache: Arc<Mutex<CapabilityCache>>,
-    events: broadcast::Sender<ProviderEvent>,
+    events: ProviderEventSender,
+    projection_events: Mutex<Option<ProjectionReceiver>>,
     network: network::NetworkSettings,
     tool_servers: RwLock<Option<ToolServerResolver>>,
 }
@@ -539,13 +541,13 @@ fn probe_capabilities(adapters: &[Arc<dyn ProviderAdapter>]) -> Vec<Value> {
 
 impl Providers {
     pub fn new() -> Self {
-        let providers = Self::native();
+        let providers = Self::native(&std::env::temp_dir());
         providers.rebuild_plugins(crate::plugins::PluginRegistry::bundled());
         providers
     }
 
-    fn native() -> Self {
-        let (events, _) = broadcast::channel(1_024);
+    fn native(spool_dir: &std::path::Path) -> Self {
+        let (events, projection_events) = provider_events::channel(spool_dir);
         let network = network::NetworkSettings::default();
         let adapters: Vec<Arc<dyn ProviderAdapter>> = vec![
             Arc::new(codex::CodexAdapter::new(events.clone())),
@@ -554,11 +556,11 @@ impl Providers {
             Arc::new(opencode::OpenCodeAdapter::new(events.clone())),
             Arc::new(grok::GrokAdapter::new(events.clone(), network.clone())),
         ];
-        Self::from_adapters(events, adapters, network)
+        Self::from_adapters(events, projection_events, adapters, network)
     }
 
     pub fn with_plugins(data_dir: &std::path::Path, settings: &Value) -> Self {
-        let providers = Self::native();
+        let providers = Self::native(data_dir);
         providers.rebuild_plugins(crate::plugins::PluginRegistry::discover(data_dir, settings));
         providers
     }
@@ -603,7 +605,8 @@ impl Providers {
     }
 
     fn from_adapters(
-        events: broadcast::Sender<ProviderEvent>,
+        events: ProviderEventSender,
+        projection_events: ProjectionReceiver,
         adapters: Vec<Arc<dyn ProviderAdapter>>,
         network: network::NetworkSettings,
     ) -> Self {
@@ -617,6 +620,7 @@ impl Providers {
             connect_wait: Condvar::new(),
             capability_cache: Arc::new(Mutex::new(CapabilityCache::default())),
             events,
+            projection_events: Mutex::new(Some(projection_events)),
             network,
             tool_servers: RwLock::new(None),
         }
@@ -636,8 +640,19 @@ impl Providers {
 
     #[cfg(test)]
     pub(crate) fn for_test(adapters: Vec<Arc<dyn ProviderAdapter>>) -> Self {
-        let (events, _) = broadcast::channel(1_024);
-        Self::from_adapters(events, adapters, network::NetworkSettings::default())
+        let (events, projection_events) = provider_events::channel(&std::env::temp_dir());
+        Self::from_adapters(
+            events,
+            projection_events,
+            adapters,
+            network::NetworkSettings::default(),
+        )
+    }
+
+    /// Takes the sole reliable projection receiver. Broadcast subscribers are
+    /// observation taps and may lag without affecting this queue.
+    pub(crate) fn take_projection_events(&self) -> Option<ProjectionReceiver> {
+        self.projection_events.lock().ok()?.take()
     }
 
     pub fn configure_network(&self, settings: &Value) -> Result<(), ProviderError> {
@@ -1289,12 +1304,12 @@ impl Drop for Providers {
 /// asynchronous callback cannot accidentally adopt a replacement worker token.
 #[derive(Clone)]
 pub(crate) struct ScopedProviderEvents {
-    events: broadcast::Sender<ProviderEvent>,
+    events: ProviderEventSender,
     worker_token: String,
 }
 
 impl ScopedProviderEvents {
-    pub(crate) fn new(events: broadcast::Sender<ProviderEvent>, worker_token: &str) -> Self {
+    pub(crate) fn new(events: ProviderEventSender, worker_token: &str) -> Self {
         Self {
             events,
             worker_token: worker_token.to_owned(),
@@ -1324,7 +1339,7 @@ pub(crate) fn emit_bound(
 }
 
 pub(crate) fn emit(
-    events: &broadcast::Sender<ProviderEvent>,
+    events: &ProviderEventSender,
     provider: &str,
     session_id: &str,
     native_id: Option<&str>,
@@ -1339,7 +1354,7 @@ pub(crate) fn emit(
 
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn emit_scoped(
-    events: &broadcast::Sender<ProviderEvent>,
+    events: &ProviderEventSender,
     provider: &str,
     session_id: &str,
     native_id: Option<&str>,

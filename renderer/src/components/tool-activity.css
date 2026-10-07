@@ -1,0 +1,23 @@
+.chat-tool-activity { margin:0; min-width:0; }
+.chat-tool-activity > summary { display:flex; align-items:center; flex-wrap:wrap; gap:7px; max-width:100%; cursor:pointer; list-style:none; font-size:13px; line-height:1.5; padding:3px 0; }
+.chat-tool-activity > summary::-webkit-details-marker { display:none; }
+.chat-tool-activity > summary > .ico { width:15px; height:15px; color:var(--muted); flex:none; }
+.chat-tool-current-action { flex:1 1 160px; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.chat-tool-current-action.is-running { color:var(--text); }
+.chat-tool-count, .chat-tool-active-count, .chat-tool-failed-count { flex:none; font-size:11px; color:var(--muted); }
+.chat-tool-failed-count, .chat-tool-failures, .chat-tool-entry.is-failed .chat-tool-entry-status, .chat-tool-entry.is-cancelled .chat-tool-entry-status { color:var(--danger,var(--text)); }
+.chat-tool-activity > summary:focus-visible { outline:2px solid var(--primary); outline-offset:3px; border-radius:4px; }
+.chat-tool-activity[open] > summary > .chat-tool-chevron { transform:rotate(90deg); }
+.chat-tool-recent { margin:6px 0 0 22px; color:var(--muted); font-size:12px; overflow-wrap:anywhere; }
+.chat-tool-entries { margin-top:8px; }
+.chat-tool-entry { min-width:0; padding:10px 0 10px 20px; border-left:1px solid var(--border); }
+.chat-tool-entry + .chat-tool-entry { border-top:1px solid var(--border); }
+.chat-tool-entry-label { display:flex; align-items:center; gap:7px; font-size:12px; }
+.chat-tool-entry-label > .ico { width:14px; height:14px; color:var(--muted); flex:none; }
+.chat-tool-step { flex:none; color:var(--muted); min-width:14px; }
+.chat-tool-entry-label > strong { overflow-wrap:anywhere; font-weight:500; }
+.chat-tool-entry-status { margin-left:auto; flex:none; color:var(--muted); font-size:11px; }
+.chat-tool-entry-detail { margin-top:5px; color:var(--muted); font-size:12px; overflow-wrap:anywhere; }
+.chat-tool-entry pre { max-width:100%; margin:7px 0 0; padding:8px 10px; overflow:auto; color:var(--muted); font:11px/1.45 var(--mono,ui-monospace,SFMono-Regular,Consolas,monospace); white-space:pre-wrap; overflow-wrap:anywhere; }
+.chat-tool-failures { margin-top:6px; font-size:12px; overflow-wrap:anywhere; }
+.chat-tool-failures p { margin:3px 0; }

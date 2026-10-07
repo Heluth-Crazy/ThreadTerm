@@ -9,7 +9,7 @@ use super::{
         CommandSpec, EnvelopeStyle, JsonLineProcess, JsonLineResponder,
     },
     acp_mcp_servers, approve_threadterm_tool, emit_bound as emit, ChatSession, ChatToolServer,
-    ProviderAdapter, ProviderCapability, ProviderError, ProviderEvent, ScopedProviderEvents,
+    ProviderAdapter, ProviderCapability, ProviderError, ScopedProviderEvents,
     TerminalCommand,
 };
 use chrono::Utc;
@@ -19,6 +19,9 @@ use std::{
     sync::{Arc, Condvar, Mutex},
     time::{Duration, Instant},
 };
+#[cfg(test)]
+use super::ProviderEvent;
+#[cfg(test)]
 use tokio::sync::broadcast;
 
 const GROK_SLASH_COMMANDS: &[(&str, &str)] = &[
@@ -44,13 +47,13 @@ const GROK_PERMISSION_MODES: &[(&str, &str)] = &[
 ];
 
 pub struct GrokAdapter {
-    events: broadcast::Sender<ProviderEvent>,
+    events: crate::provider_events::Sender,
     network: super::network::NetworkSettings,
 }
 
 impl GrokAdapter {
     pub fn new(
-        events: broadcast::Sender<ProviderEvent>,
+        events: crate::provider_events::Sender,
         network: super::network::NetworkSettings,
     ) -> Self {
         Self { events, network }
@@ -2004,7 +2007,7 @@ mod tests {
     #[test]
     fn preassigned_identity_does_not_parse_exit_output() {
         let adapter = GrokAdapter::new(
-            broadcast::channel(1).0,
+            crate::provider_events::tap_channel(1).0,
             crate::providers::network::NetworkSettings::default(),
         );
         assert_eq!(
@@ -2084,7 +2087,7 @@ mod tests {
     }
 
     fn usage_reply_fixture() -> (GrokUsageReply, broadcast::Receiver<ProviderEvent>) {
-        let (events, receiver) = broadcast::channel(16);
+        let (events, receiver) = crate::provider_events::tap_channel(16);
         let events = ScopedProviderEvents::new(events, "test-worker");
         (
             GrokUsageReply {
@@ -2122,7 +2125,7 @@ mod tests {
 
     #[test]
     fn grok_native_notification_paths_keep_the_worker_token() {
-        let (sender, mut receiver) = broadcast::channel(32);
+        let (sender, mut receiver) = crate::provider_events::tap_channel(32);
         let events = ScopedProviderEvents::new(sender, "old-worker");
         let native = Mutex::new(Some("native".to_owned()));
         let active = Mutex::new(Some("turn".to_owned()));

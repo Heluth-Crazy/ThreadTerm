@@ -185,9 +185,10 @@ impl Database {
     }
     pub fn mark_chat_degraded(&self, session_id: Option<&str>, reason: &str) -> Result<()> {
         self.transaction(|tx| {
-            tx.execute("UPDATE sessions SET status='error',updated_at=? WHERE read_only=0 AND mode='chat' AND status IN ('starting','running','idle','waiting') AND (? IS NULL OR id=?)",params![now(),session_id,session_id])?;
+            // Lost transcript updates do not stop a native worker. Preserve its
+            // running/waiting state and Stop target instead of exposing a new send.
             emit(tx,"runtime.degraded",json!({"area":"chat","sessionId":session_id,"reason":reason}))?;
-            emit(tx,"state.changed",json!({"kind":"chat.degraded"}))
+            Ok(())
         })
     }
     pub fn claim_external_operation(&self, operation_id: &str) -> Result<bool> {
@@ -603,7 +604,9 @@ impl Database {
                 let owner:Option<String>=tx.query_row("SELECT other.id FROM sessions other JOIN sessions current ON current.id=? WHERE other.provider=current.provider AND other.native_id=? AND other.id<>? LIMIT 1",params![id,native_id,id],|r|r.get(0)).optional()?;
                 if let Some(owner)=owner{return Err(anyhow!("native_session_exists:{owner}"));}
             }
-            tx.execute("UPDATE sessions SET worktree_path=COALESCE(?,worktree_path),native_id=COALESCE(?,native_id) WHERE id=?",params![cwd,native_id,id])?;
+            // Most worker events carry the identity already bound at connection.
+            // Preserve conflict checks without dirtying a SQLite page each time.
+            tx.execute("UPDATE sessions SET worktree_path=COALESCE(?,worktree_path),native_id=COALESCE(?,native_id) WHERE id=? AND ((? IS NOT NULL AND worktree_path IS NOT ?) OR (? IS NOT NULL AND native_id IS NOT ?))",params![cwd,native_id,id,cwd,cwd,native_id,native_id])?;
             Ok(())
         })
     }
@@ -1731,6 +1734,57 @@ fn merge(base: &mut Value, patch: &Value) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn repeated_worker_identity_binding_does_not_rewrite_session() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Database::open(&dir.path().join("db.sqlite")).unwrap();
+        let session = db.create_session(CreateSession {
+            project_id: None, title: None, provider: "codex", mode: "chat",
+            native_id: None, operation_id: "bind-once",
+        }).unwrap();
+        db.transaction(|tx| {
+            tx.execute_batch("CREATE TABLE binding_writes(n INTEGER); INSERT INTO binding_writes VALUES(0); CREATE TEMP TRIGGER count_binding AFTER UPDATE OF native_id,worktree_path ON sessions BEGIN UPDATE binding_writes SET n=n+1; END;")?;
+            Ok(())
+        }).unwrap();
+        db.bind_session(&session.id, Some("cwd-a"), Some("native-a")).unwrap();
+        for _ in 0..100 { db.bind_session(&session.id, None, Some("native-a")).unwrap(); }
+        db.bind_session(&session.id, Some("cwd-b"), None).unwrap();
+        db.bind_session(&session.id, None, None).unwrap();
+        assert!(db.bind_session(&session.id, None, Some("native-b")).is_err());
+        let writes: i64 = db.transaction(|tx| Ok(tx.query_row("SELECT n FROM binding_writes", [], |row| row.get(0))?)).unwrap();
+        assert_eq!(writes, 2);
+        assert_eq!(db.session_by_id(&session.id).unwrap().unwrap().native_id.as_deref(), Some("native-a"));
+    }
+
+    #[test]
+    fn transcript_degradation_preserves_live_sessions_and_turn_activity() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Database::open(&dir.path().join("db.sqlite")).unwrap();
+        let mut sessions = Vec::new();
+        for (index, status) in ["running", "waiting", "idle"].iter().enumerate() {
+            let session = db.create_session(CreateSession {
+                project_id: None, title: None, provider: "codex", mode: "chat",
+                native_id: None, operation_id: &format!("degraded-{index}"),
+            }).unwrap();
+            db.record_provider_event(&session.id, Some("active-turn"), "message.user", &json!({"text":"work"})).unwrap();
+            db.set_session_status(&session.id, status, None).unwrap();
+            sessions.push((session.id, status.to_string()));
+        }
+        db.mark_chat_degraded(None, "lost updates").unwrap();
+        db.mark_chat_degraded(Some(&sessions[0].0), "failed projection").unwrap();
+        for (id, status) in &sessions {
+            assert_eq!(db.session_by_id(id).unwrap().unwrap().status, *status);
+            let activity = db.transaction(|tx| session_activity_tx(tx, id)).unwrap().unwrap();
+            assert_eq!(activity.state, "running");
+            assert_eq!(activity.turn_id.as_deref(), Some("active-turn"));
+        }
+        let warnings: Vec<_> = db.events_after(0).unwrap().into_iter()
+            .filter(|(_, event, _)| event == "runtime.degraded").collect();
+        assert_eq!(warnings.len(), 2);
+        assert!(warnings[0].2["sessionId"].is_null());
+        assert_eq!(warnings[1].2["sessionId"], sessions[0].0);
+    }
     fn history_item(id: &str, text: &str) -> ChatItem {
         ChatItem {
             id: id.into(),
