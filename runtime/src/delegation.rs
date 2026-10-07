@@ -150,6 +150,9 @@ pub fn tool_server_resolver(
             return None;
         }
         let command = mcp_executable.as_ref()?;
+        if crate::agent_review::is_reviewer(&db, session_id).unwrap_or(true) {
+            return None;
+        }
         // A delegated session never delegates; on any lookup error, no tools.
         match db.session_by_id(session_id) {
             Ok(Some(session)) if session.mode == "chat" && session.delegation.is_none() => {}

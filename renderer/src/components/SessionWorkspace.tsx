@@ -254,6 +254,7 @@ export function SessionWorkspace({session,data,theme,onBack,onSelect,onProject,o
  };
  const workbenchActions:WorkbenchActions|undefined=workbenchScope&&project?{
   openFile:(file,position)=>void openScopedFile({projectId:project.id,worktreePath:path,path:file,kind:previewKind(file),line:position?.line,column:position?.column}).catch(fail),
+  openSession:onSelect,
   openBeside:file=>void openScopedFile({projectId:project.id,worktreePath:path,path:file,kind:previewKind(file),ownerSessionId:previewSessionId}).catch(fail),
   openDiff:(file,staged)=>void openScopedFile({projectId:project.id,worktreePath:path,path:file,kind:'diff',staged}).catch(fail),
   openHistory:file=>openHistory({projectId:project.id,worktreePath:path,path:file}),

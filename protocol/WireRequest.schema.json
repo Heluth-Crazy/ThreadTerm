@@ -2723,6 +2723,112 @@
       ],
       "additionalProperties": false
     },
+    "RequestParams<\"agentReview.start\">": {
+      "type": "object",
+      "properties": {
+        "sessionId": {
+          "type": "string"
+        },
+        "agent": {
+          "$ref": "#/definitions/ProviderId"
+        },
+        "scope": {
+          "$ref": "#/definitions/AgentReviewScope"
+        },
+        "operationId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "sessionId",
+        "agent",
+        "scope",
+        "operationId"
+      ],
+      "additionalProperties": false
+    },
+    "AgentReviewScope": {
+      "anyOf": [
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "checkpoints"
+            },
+            "from": {
+              "type": "string"
+            },
+            "to": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "from"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "uncommitted"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "additionalProperties": false
+        }
+      ],
+      "description": "Independent agent review (Agent Changes): a fresh Chat of the chosen agent reviews a snapshot of a session's changes, captured when the review starts. `checkpoints` is the `review.changes` range (`to` omitted: the current files); `uncommitted` is the worktree against git HEAD, untracked files included."
+    },
+    "RequestParams<\"agentReview.list\">": {
+      "type": "object",
+      "properties": {
+        "sessionId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "sessionId"
+      ],
+      "additionalProperties": false
+    },
+    "RequestParams<\"agentReview.mark\">": {
+      "type": "object",
+      "properties": {
+        "reviewId": {
+          "type": "string"
+        },
+        "findingIds": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "state": {
+          "type": "string",
+          "enum": [
+            "open",
+            "added",
+            "dismissed"
+          ]
+        },
+        "operationId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "reviewId",
+        "findingIds",
+        "state",
+        "operationId"
+      ],
+      "additionalProperties": false
+    },
     "RequestParams<\"worktree.list\">": {
       "type": "object",
       "properties": {
@@ -5972,6 +6078,84 @@
         },
         "params": {
           "$ref": "#/definitions/RequestParams%3C%22review.checkpoint%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "params"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "agentReview.start"
+        },
+        "params": {
+          "$ref": "#/definitions/RequestParams%3C%22agentReview.start%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "params"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "agentReview.list"
+        },
+        "params": {
+          "$ref": "#/definitions/RequestParams%3C%22agentReview.list%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "params"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "agentReview.mark"
+        },
+        "params": {
+          "$ref": "#/definitions/RequestParams%3C%22agentReview.mark%22%3E"
         }
       },
       "required": [

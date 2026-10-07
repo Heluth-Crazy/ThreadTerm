@@ -556,6 +556,9 @@ impl RuntimeService {
             )? {
                 return Ok(result);
             }
+            if request.method.starts_with("agentReview.") {
+                return crate::agent_review::dispatch(&self.db, &self.providers, &request.method, &request.params, &|create| self.create_session(&parse(create)?, None));
+            }
             match request.method.as_str() {
                 "inbox.read" => {
                     #[derive(Deserialize)]

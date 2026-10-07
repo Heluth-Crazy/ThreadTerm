@@ -1,7 +1,7 @@
 import { validateWireRequest, validateWireSuccess } from './generated-validators.js';
 export const PROTOCOL_VERSION = 1 as const;
-/** Semantic contract for Chat approvals (`choiceId`), connection status, the agent registry and Quick Launch. Framing/HMAC still use PROTOCOL_VERSION. */
-export const PROTOCOL_CONTRACT = 5 as const;
+/** Semantic contract for Chat approvals (`choiceId`), connection status, the agent registry, Quick Launch, prompt queues and agent reviews. Framing/HMAC still use PROTOCOL_VERSION. */
+export const PROTOCOL_CONTRACT = 6 as const;
 export const MAX_FRAME_BYTES = 8 * 1024 * 1024;
 /** Agents that ship with ThreadTerm (native adapters, or `shell` / `custom` commands). */
 export type BuiltinProviderId = 'codex'|'claude'|'kimi'|'gemini'|'opencode'|'shell'|'grok'|'custom';
@@ -271,6 +271,13 @@ export interface RequestMap {
  'review.diff': [{sessionId:string;from:string;to?:string;path:string},ReviewDiff];
  'review.revert': [{sessionId:string;checkpointId:string;paths:string[];expectedFingerprints:Record<string,string|null>;operationId:string},{restored:string[];recycled:string[]}];
  'review.checkpoint': [{sessionId:string;kind:'manual'|'baseline';operationId:string},ReviewCheckpoint];
+ /** Starts a reviewer Chat of `agent` in the session's worktree with the captured changes. No lease: the reviewed session
+  * is not written. Errors: unknown_agent, agent_unavailable, checkpoint_not_found, not_a_git_worktree, no_changes,
+  * agent_review_limit (3 reviews of one session starting or running). */
+ 'agentReview.start': [{sessionId:string;agent:ProviderId;scope:AgentReviewScope;operationId:string},AgentReview];
+ /** Newest first, at most 20. A finished reviewer's last reply is parsed once, and again only after it answers again. */
+ 'agentReview.list': [{sessionId:string},AgentReview[]];
+ 'agentReview.mark': [{reviewId:string;findingIds:string[];state:'open'|'added'|'dismissed';operationId:string},AgentReview];
  'worktree.list': [{projectId:string},Worktree[]];
  'worktree.create': [{projectId:string;path:string;branch:string;createBranch:boolean;operationId:string},Worktree];
  'worktree.remove': [{id:string;operationId:string},null];
@@ -319,7 +326,7 @@ export interface ThreadTermBridge {
  exportDiagnostics():Promise<string|null>;
  scheduleElectronCacheCleanup(schedule:boolean):Promise<{scheduled:boolean;available:boolean;result?:string}>;
 }
-export const METHODS = ['filesystem.resolve','session.launch.read','catalog.visibility.list','catalog.visibility.update','session.resume','session.organize','git.merge','git.merge.abort','project.catalog.list','project.update','worktree.branches','worktree.relocate','session.rerun','git.fetch','git.pull','git.push','session.config.read','session.config.save','session.retry.read','session.retry.update','chat.draft.read','chat.draft.save','device.status','device.enable','device.disable','device.pairing.create','device.pairing.cancel','device.list','device.rename','device.renew','device.revoke','git.stage','git.unstage','git.commit','filesystem.image','chat.snapshot','terminal.read','session.lookup','session.present','chat.read','data.status','data.backup','data.relocation.status','data.relocation.prepare','data.relocation.cancel','settings.export','settings.import.preview','settings.import.apply','preset.list','preset.save','preset.delete','usage.query','runtime.health','terminal.host','runtime.shutdown','runtime.snapshot','project.add','project.remove','session.create','history.import','session.stop','session.update','session.attention.acknowledge','session.claim','session.renew','session.release','terminal.input','terminal.resize','settings.update','provider.list','plugin.list','plugin.setEnabled','plugin.reload','chat.queue.read','chat.queue.add','chat.queue.update','chat.queue.remove','chat.queue.move','chat.queue.pause','chat.queue.resume','chat.queue.send','quickLaunch.list','quickLaunch.save','quickLaunch.delete','quickLaunch.run','history.list','history.read','chat.send','chat.cancel','chat.approve','chat.options','chat.option.set','chat.connection','chat.connect','filesystem.list','filesystem.read','filesystem.write','draft.list','draft.put','draft.delete','git.status','git.diff','worktree.list','worktree.create','worktree.remove','workspace.save','workspace.delete','inbox.read','git.index.write','git.discard','git.checkout','git.branch.delete','git.branches','git.log','git.commit.show','git.commit.diff','git.blame','filesystem.create','filesystem.rename','filesystem.delete','filesystem.files','filesystem.search','review.list','review.changes','review.diff','review.revert','review.checkpoint'] as const satisfies readonly Method[];
+export const METHODS = ['filesystem.resolve','session.launch.read','catalog.visibility.list','catalog.visibility.update','session.resume','session.organize','git.merge','git.merge.abort','project.catalog.list','project.update','worktree.branches','worktree.relocate','session.rerun','git.fetch','git.pull','git.push','session.config.read','session.config.save','session.retry.read','session.retry.update','chat.draft.read','chat.draft.save','device.status','device.enable','device.disable','device.pairing.create','device.pairing.cancel','device.list','device.rename','device.renew','device.revoke','git.stage','git.unstage','git.commit','filesystem.image','chat.snapshot','terminal.read','session.lookup','session.present','chat.read','data.status','data.backup','data.relocation.status','data.relocation.prepare','data.relocation.cancel','settings.export','settings.import.preview','settings.import.apply','preset.list','preset.save','preset.delete','usage.query','runtime.health','terminal.host','runtime.shutdown','runtime.snapshot','project.add','project.remove','session.create','history.import','session.stop','session.update','session.attention.acknowledge','session.claim','session.renew','session.release','terminal.input','terminal.resize','settings.update','provider.list','plugin.list','plugin.setEnabled','plugin.reload','chat.queue.read','chat.queue.add','chat.queue.update','chat.queue.remove','chat.queue.move','chat.queue.pause','chat.queue.resume','chat.queue.send','quickLaunch.list','quickLaunch.save','quickLaunch.delete','quickLaunch.run','history.list','history.read','chat.send','chat.cancel','chat.approve','chat.options','chat.option.set','chat.connection','chat.connect','filesystem.list','filesystem.read','filesystem.write','draft.list','draft.put','draft.delete','git.status','git.diff','worktree.list','worktree.create','worktree.remove','workspace.save','workspace.delete','inbox.read','git.index.write','git.discard','git.checkout','git.branch.delete','git.branches','git.log','git.commit.show','git.commit.diff','git.blame','filesystem.create','filesystem.rename','filesystem.delete','filesystem.files','filesystem.search','review.list','review.changes','review.diff','review.revert','review.checkpoint','agentReview.start','agentReview.list','agentReview.mark'] as const satisfies readonly Method[];
 const stringFields: Partial<Record<Method,readonly string[]>> = {
  'filesystem.resolve':['sessionId','path'],
  'session.launch.read':['sessionId'],
@@ -354,6 +361,7 @@ const stringFields: Partial<Record<Method,readonly string[]>> = {
  'git.branches':['projectId'],'git.log':['projectId'],'git.commit.show':['projectId','commit'],'git.commit.diff':['projectId','commit','path'],'git.blame':['projectId','path'],
  'filesystem.create':['projectId','path','kind','operationId'],'filesystem.rename':['projectId','path','newPath','operationId'],'filesystem.delete':['projectId','path','operationId'],'filesystem.files':['projectId'],'filesystem.search':['projectId','query'],
  'review.list':['sessionId'],'review.changes':['sessionId','from'],'review.diff':['sessionId','from','path'],'review.revert':['sessionId','checkpointId','operationId'],'review.checkpoint':['sessionId','kind','operationId'],
+ 'agentReview.start':['sessionId','agent','operationId'],'agentReview.list':['sessionId'],'agentReview.mark':['reviewId','state','operationId'],
 };
 export function isRecord(value:unknown):value is Record<string,unknown> { return typeof value==='object' && value!==null && !Array.isArray(value); }
 export function validateRequest(method:unknown,params:unknown):asserts method is Method {
@@ -440,6 +448,12 @@ export function validateRequest(method:unknown,params:unknown):asserts method is
   if((params.id===undefined)!==(params.expectedRevision===undefined)||(params.expectedRevision!==undefined&&(!Number.isSafeInteger(params.expectedRevision)||Number(params.expectedRevision)<1))) throw new Error('Invalid command revision');
  }
  if(m==='quickLaunch.delete'&&(!Number.isSafeInteger(params.expectedRevision)||Number(params.expectedRevision)<1)) throw new Error('Invalid command revision');
+ if(m==='agentReview.start') {
+  if(!/^[a-z][a-z0-9-]{1,31}$/.test(String(params.agent))) throw new Error('Invalid agent');
+  const scope=params.scope, id=(value:unknown)=>typeof value==='string'&&value.length>0&&value.length<=200;
+  if(!isRecord(scope)||(scope.kind==='checkpoints'?!id(scope.from)||(scope.to!==undefined&&!id(scope.to)):scope.kind!=='uncommitted')) throw new Error('Invalid review scope');
+ }
+ if(m==='agentReview.mark'&&(!Array.isArray(params.findingIds)||params.findingIds.length<1||params.findingIds.length>100||params.findingIds.some(id=>typeof id!=='string'||!id))) throw new Error('Invalid findings');
  const maxLimit=m==='terminal.read'?(params.tail===true?8192:1024*1024):200;
  if(params.limit!==undefined&&(!Number.isInteger(params.limit)||Number(params.limit)<1||Number(params.limit)>maxLimit)) throw new Error('Invalid page limit');
 }
@@ -519,6 +533,20 @@ export interface ReviewState { available:boolean; reason?:string; projectId?:str
 export interface ReviewFile { path:string; status:'A'|'M'|'D' }
 /** exists/fingerprint describe the current working file when `to` is omitted. */
 export interface ReviewDiff { path:string; oldText:string; newText:string; binary:boolean; exists:boolean; fingerprint?:string }
+/** Independent agent review (Agent Changes): a fresh Chat of the chosen agent reviews a snapshot of a session's changes,
+ * captured when the review starts. `checkpoints` is the `review.changes` range (`to` omitted: the current files);
+ * `uncommitted` is the worktree against git HEAD, untracked files included. */
+export type AgentReviewScope = {kind:'checkpoints';from:string;to?:string}|{kind:'uncommitted'};
+export type AgentReviewSeverity = 'high'|'medium'|'low'|'info';
+/** `path` is relative to the reviewed worktree root and `line` 1-based in the current file; both absent for a general finding. */
+export interface AgentReviewFinding { id:string; severity:AgentReviewSeverity; path?:string; line?:number; title:string; body:string; state:'open'|'added'|'dismissed' }
+/** `files`: changed files in the snapshot. `truncated`: files left out of the reviewer's prompt by the size budget.
+ * `instructions`: `.threadterm/review.md` from the worktree root, or the built-in review prompt.
+ * `findings` once the reviewer's turn completed and its last reply ended in a valid ```threadterm-review block;
+ * `unparsed` when that reply had none (the user opens the reviewer's reply instead). */
+export interface AgentReview { id:string; sessionId:string; reviewerSessionId:string; agent:ProviderId; scope:AgentReviewScope;
+ state:'starting'|'running'|'completed'|'failed'; files:number; truncated:string[]; instructions:'repository'|'built-in';
+ createdAt:string; updatedAt:string; error?:string; findings?:AgentReviewFinding[]; unparsed?:boolean }
 export interface Worktree { id:string; projectId:string; path:string; branch:string|null; head:string; isMain:boolean; locked:boolean; missing:boolean; upstream?:string; lastCommit?:CommitSummary }
 export type ContentRef = {id:string;kind:'session';sessionId:string}|{id:string;kind:'file'|'diff'|'preview';projectId:string;worktreePath?:string;path:string;assetKind?:'text'|'image';ownerSessionId?:string;staged?:boolean}|{id:string;kind:'history';projectId:string;worktreePath?:string;path?:string;ownerSessionId?:undefined;assetKind?:undefined}|{id:string;kind:'review';projectId:string;worktreePath?:string;path:string;sessionId:string;checkpointId:string;toCheckpointId?:string;ownerSessionId?:undefined;assetKind?:undefined}|{id:string;kind:'web';url:string;ownerSessionId?:undefined;projectId?:undefined;worktreePath?:undefined;path?:undefined;assetKind?:undefined};
 export type PaneLayout = {kind:'pane';id:string;tabs:ContentRef[];activeTabId:string|null}|{kind:'split';id:string;direction:'horizontal'|'vertical';ratio:number;first:PaneLayout;second:PaneLayout};

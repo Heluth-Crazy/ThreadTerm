@@ -1,14 +1,16 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { WbIcon } from '../workbench/icons';
-import type { ReviewCheckpoint, ReviewFile, ReviewState, Session } from '@threadterm/protocol';
-import { operationId, request } from '../bridge';
+import type { AgentReview, AgentReviewScope, ProviderCapability, ReviewCheckpoint, ReviewFile, ReviewState, Session } from '@threadterm/protocol';
+import { operationId, request, subscribeEvents } from '../bridge';
 import { AgentIcon, Icon } from './PrototypeIcon';
 import { SurfaceDialog } from './SurfaceDialog';
 import { Select } from './ui/Select';
 import { relativeTime } from './CodeEditor';
 import { workbenchError } from '../workbench/errors';
 import { baseName, FILES_CHANGED_EVENT, notifyFilesChanged, parentPath, type WorkbenchActions } from '../workbench/types';
+import { agentReviewError, defaultReviewAgent } from '../agentReview';
+import { AgentReviewSection } from './AgentReview';
 
 const kindLabel = (checkpoint:ReviewCheckpoint, zh:boolean) => ({
  turn:zh ? '对话回合' : 'Turn',
@@ -35,7 +37,16 @@ export function AgentChangesView({sessions, activeSessionId, actions, zh, visibl
  const [issue, setIssue] = useState<string>();
  const [busy, setBusy] = useState(false);
  const [confirm, setConfirm] = useState<{checkpoint:ReviewCheckpoint;files:ReviewFile[];expected:Record<string,string|null>}>();
+ const [reviews, setReviews] = useState<AgentReview[]>([]);
+ const [reviewDialog, setReviewDialog] = useState(false);
+ const [reviewAgent, setReviewAgent] = useState('');
+ const [reviewScope, setReviewScope] = useState<'turns'|'session'|'uncommitted'>('session');
+ const [providers, setProviders] = useState<ProviderCapability[]>([]);
  const generation = useRef(0);
+ const reviewGeneration = useRef(0), reviewSessionId = useRef(sessionId), visibleRef = useRef(visible);
+ const reviewerIds = useRef<Set<string>>(new Set());
+ const [anchorRevision, setAnchorRevision] = useState(0);
+ visibleRef.current = visible;
  const text = (en:string, cn:string) => zh ? cn : en;
  useEffect(() => { if(activeSessionId && sessions.some(session => session.id === activeSessionId)) setSessionId(activeSessionId); }, [activeSessionId]);
  useEffect(() => { if(!sessionId || !sessions.some(session => session.id === sessionId)) setSessionId(sessions[0]?.id); }, [sessions]);
@@ -53,18 +64,33 @@ export function AgentChangesView({sessions, activeSessionId, actions, zh, visibl
     const changes = await request('review.changes', {sessionId, from:head.id});
     if(ticket === generation.current) setLatest(changes.files);
    } else setLatest(undefined);
-  } catch(error) { if(ticket === generation.current) { setIssue(workbenchError(error, zh)); setState(undefined); setLatest(undefined); } }
+   } catch(error) { if(ticket === generation.current) { setIssue(workbenchError(error, zh)); setState(undefined); setLatest(undefined); } }
  }, [sessionId]);
- useEffect(() => { setTurns({}); setOpen(new Set()); setState(undefined); setLatest(undefined); void load(); }, [sessionId]);
- // Agents edit files outside ThreadTerm's control; refresh while the view is visible.
+ const loadAgentReviews = useCallback(async () => {
+  if(!visible || !sessionId) return;
+  const ticket = ++reviewGeneration.current, requested = sessionId;
+  try {
+   const value = await request('agentReview.list', {sessionId});
+   if(ticket !== reviewGeneration.current || !visibleRef.current || reviewSessionId.current !== requested) return;
+   reviewerIds.current = new Set(value.map(review => review.reviewerSessionId));
+   setReviews(value);
+  } catch(error) { if(ticket === reviewGeneration.current && visibleRef.current && reviewSessionId.current === requested) setIssue(workbenchError(error, zh)); }
+ }, [sessionId, visible, zh]);
+ useEffect(() => { reviewSessionId.current=sessionId; reviewGeneration.current++; reviewerIds.current=new Set(); setReviews([]); setTurns({}); setOpen(new Set()); setState(undefined); setLatest(undefined); void load(); }, [sessionId]);
+ // The reviewer's rows are event driven. The existing file-refresh timer never calls agentReview.list.
  useEffect(() => {
   if(!visible) return;
-  void load();
+  void load(); void loadAgentReviews();
   const timer = setInterval(() => { if(document.visibilityState === 'visible') void load(); }, 5000);
-  const changed = () => void load();
+  const changed = () => { setAnchorRevision(value=>value+1); void load(); };
   addEventListener(FILES_CHANGED_EVENT, changed);
-  return () => { clearInterval(timer); removeEventListener(FILES_CHANGED_EVENT, changed); };
- }, [visible, load]);
+  const unsubscribe = subscribeEvents(event => {
+   const data = event.data as {kind?:unknown;sessionId?:unknown}|undefined;
+   if(event.event === 'state.changed' && data?.kind === 'agentReview' && data.sessionId === sessionId) void loadAgentReviews();
+   if((event.event === 'session.status' || event.event === 'session.activity') && reviewerIds.current.has(String(data?.sessionId ?? ''))) void loadAgentReviews();
+  });
+  return () => { clearInterval(timer); removeEventListener(FILES_CHANGED_EVENT, changed); unsubscribe(); };
+ }, [visible, load, loadAgentReviews, sessionId]);
  const toggleTurn = async (checkpoint:ReviewCheckpoint, next?:ReviewCheckpoint) => {
   const id = checkpoint.id;
   setOpen(current => { const value = new Set(current); if(value.has(id)) value.delete(id); else value.add(id); return value; });
@@ -106,14 +132,39 @@ export function AgentChangesView({sessions, activeSessionId, actions, zh, visibl
     expected[file.path] = current.exists ? current.fingerprint ?? null : null;
    }
    setConfirm({checkpoint, files, expected});
-  } catch(error) { setIssue(workbenchError(error, zh)); }
+  } catch(error) { setIssue(agentReviewError(error, zh)); }
   finally { setBusy(false); }
  };
  const session = sessions.find(candidate => candidate.id === sessionId);
+ const ready = checkpoints.filter(checkpoint => checkpoint.status === 'ready');
+ const selectedCheckpoint = checkpoints.find(checkpoint => open.has(checkpoint.id) && checkpoint.status === 'ready');
+ const canReview = Boolean(session && (ready.length || state?.available));
+ const openAgentReview = async () => {
+  if(!session) return;
+  setBusy(true);
+  try {
+   const available = await request('provider.list', {});
+   setProviders(available);
+   setReviewAgent(defaultReviewAgent(available, session.provider) ?? '');
+   setReviewScope(selectedCheckpoint ? 'turns' : ready.length ? 'session' : 'uncommitted');
+   setReviewDialog(true);
+  } catch(error) { setIssue(workbenchError(error, zh)); }
+  finally { setBusy(false); }
+ };
+ const startAgentReview = async () => {
+  if(!session || !reviewAgent || (reviewScope !== 'uncommitted' && !ready.length)) return;
+  const selectedIndex = selectedCheckpoint ? checkpoints.indexOf(selectedCheckpoint) : -1;
+  const next = selectedIndex > 0 ? checkpoints.slice(0, selectedIndex).reverse().find(checkpoint => checkpoint.status === 'ready') : undefined;
+  const scope:AgentReviewScope = reviewScope === 'uncommitted' ? {kind:'uncommitted'} : {kind:'checkpoints', from:reviewScope === 'turns' && selectedCheckpoint ? selectedCheckpoint.id : ready.at(-1)?.id ?? ready[0].id, ...(reviewScope === 'turns' && next ? {to:next.id} : {})};
+  setBusy(true);
+  try { await request('agentReview.start', {sessionId:session.id, agent:reviewAgent, scope, operationId:operationId()}); setReviewDialog(false); await loadAgentReviews(); }
+  catch(error) { setIssue(agentReviewError(error, zh)); }
+  finally { setBusy(false); }
+ };
  const openReview = (checkpoint:ReviewCheckpoint, path:string, next?:ReviewCheckpoint) => {
   if(sessionId) actions.openReview?.({sessionId, checkpointId:checkpoint.id, ...(next ? {toCheckpointId:next.id} : {}), path});
  };
- const toolbar = toolbarHost ? createPortal(<button type="button" className="icon-btn" title={text('Refresh', '刷新')} aria-label={text('Refresh', '刷新')} disabled={!sessionId} onClick={() => void load()}><WbIcon name="refresh"/></button>, toolbarHost) : null;
+ const toolbar = toolbarHost ? createPortal(<><button type="button" className="btn btn-sm" data-testid="agent-review-start" disabled={!canReview || busy} onClick={() => void openAgentReview()}>{text('Review with agent', '请智能体审查')}</button><button type="button" className="icon-btn" title={text('Refresh', '刷新')} aria-label={text('Refresh', '刷新')} disabled={!sessionId} onClick={() => void load()}><WbIcon name="refresh"/></button></>, toolbarHost) : null;
  if(!sessions.length) return <div className="wb-review"><div className="wb-empty-state"><Icon name="spark"/><strong>{text('No sessions in this workspace', '此工作区没有会话')}</strong><p>{text('Start an agent session to review what it changes.', '启动 Agent 会话后即可审查其改动。')}</p></div></div>;
  return <div className="wb-review">
   {toolbar}
@@ -160,11 +211,13 @@ export function AgentChangesView({sessions, activeSessionId, actions, zh, visibl
      </div>;
     })}
    </div>}
+   {session && <AgentReviewSection reviews={reviews} session={session} root={state.worktreePath} zh={zh} scopeLabels={Object.fromEntries(checkpoints.map(checkpoint => [checkpoint.id, checkpoint.label ?? kindLabel(checkpoint, zh)]))} anchorRevision={anchorRevision} onChanged={() => void loadAgentReviews()} onOpenReviewer={actions.openSession}/>}
   </>}
   {confirm && <SurfaceDialog size="sm" icon="trash" title={confirm.files.length > 1 ? text(`Revert ${confirm.files.length} files?`, `还原 ${confirm.files.length} 个文件？`) : text('Revert file?', '还原文件？')}
    subtitle={confirm.files.map(file => file.path).join(', ')} onClose={() => { if(!busy) setConfirm(undefined); }}
    footer={<><button type="button" className="btn" disabled={busy} onClick={() => setConfirm(undefined)}>{text('Cancel', '取消')}</button><button type="button" className="btn btn-danger" disabled={busy} onClick={() => void revert()}>{text('Revert', '还原')}</button></>}>
    <p>{text('Files return to their content at the checkpoint. Files created since then move to the Recycle Bin; deleted files are restored. A file that changes again before you confirm is left untouched.', '文件将恢复为检查点时的内容；之后新建的文件移到回收站，被删除的文件会恢复。确认前若文件再次变化，将不会被覆盖。')}</p>
   </SurfaceDialog>}
+  {reviewDialog && <SurfaceDialog title={text('Review with agent', '请智能体审查')} icon="spark" size="sm" className="agent-review-start-dialog" onClose={() => { if(!busy) setReviewDialog(false); }} footer={<><button type="button" className="btn" disabled={busy} onClick={() => setReviewDialog(false)}>{text('Cancel', '取消')}</button><button type="button" className="btn btn-primary" disabled={busy || !reviewAgent} onClick={() => void startAgentReview()}>{text('Start review', '开始审查')}</button></>}><div className="agent-review-dialog" data-testid="agent-review-dialog"><label>{text('Reviewer agent', '审查智能体')}<Select value={reviewAgent} onChange={event => setReviewAgent(event.target.value)}>{providers.filter(provider => provider.installed && provider.chat).map(provider => <option key={provider.id} value={provider.id}>{provider.name}</option>)}</Select></label><fieldset><legend>{text('What to review', '审查范围')}</legend>{selectedCheckpoint && <label><input type="radio" name="agent-review-scope" checked={reviewScope === 'turns'} onChange={() => setReviewScope('turns')}/><span>{text('Selected turn', '选中的回合')}<small>{text('Only the changes of the expanded checkpoint.', '仅审查展开的检查点中的改动。')}</small></span></label>}{ready.length > 0 && <label><input type="radio" name="agent-review-scope" checked={reviewScope === 'session'} onChange={() => setReviewScope('session')}/><span>{text('Whole session', '整个会话')}<small>{text('Everything changed since the first checkpoint.', '自第一个检查点以来的全部改动。')}</small></span></label>}{state?.available && <label><input type="radio" name="agent-review-scope" checked={reviewScope === 'uncommitted'} onChange={() => setReviewScope('uncommitted')}/><span>{text('Uncommitted changes', '未提交的改动')}<small>{text('The worktree against its last commit, new files included.', '工作树相对最近一次提交的改动，包括新文件。')}</small></span></label>}</fieldset><p className="agent-review-dialog-note">{text('The reviewer gets a snapshot of these changes and is asked not to edit files.', '审查智能体会收到这些改动的快照，并被要求不要编辑文件。')}</p>{issue&&<p className="wb-issue" role="alert">{issue}</p>}</div></SurfaceDialog>}
  </div>;
 }

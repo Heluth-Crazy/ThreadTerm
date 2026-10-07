@@ -718,6 +718,99 @@ fn revert(db: &Database, session_id: &str, object: &Map<String, Value>) -> Resul
     Ok(result)
 }
 
+/// One immutable file in an independent review snapshot. `None` means omitted
+/// by the checkpoint capture bound, rather than an empty change.
+#[derive(Debug)]
+pub(crate) struct ReviewFile {
+    pub path: String,
+    pub status: String,
+    pub diff: Option<String>,
+    pub binary: bool,
+}
+
+/// Drain a read-only Git diff without retaining more than the remaining prompt
+/// budget. Overflow drops the whole file; draining keeps the child from blocking
+/// on a full pipe. Like run_git, this never takes optional index locks.
+pub(crate) fn bounded_unified_diff(root: &Path, args: &[&str], env: &[(&str, &OsStr)], limit: usize, deadline: Instant) -> Result<Option<String>> {
+    use std::{io::Read, process::{Command, Stdio}};
+    if Instant::now() >= deadline { return Ok(None); }
+    let mut command = Command::new("git");
+    command.arg("-C").arg(root).args(["-c", "core.quotepath=off"]).args(args)
+        .env("GIT_TERMINAL_PROMPT", "0").env("GIT_OPTIONAL_LOCKS", "0")
+        .stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
+    for (key, value) in env { command.env(key, value); }
+    #[cfg(windows)] { use std::os::windows::process::CommandExt; command.creation_flags(0x0800_0000); }
+    let mut child = command.spawn()?;
+    let mut stdout = child.stdout.take().ok_or_else(|| anyhow!("git_failed"))?;
+    let mut stderr = child.stderr.take().ok_or_else(|| anyhow!("git_failed"))?;
+    let output = std::thread::spawn(move || {
+        let mut bytes = Vec::new();
+        (&mut stdout).take(limit as u64 + 1).read_to_end(&mut bytes)?;
+        std::io::copy(&mut stdout, &mut std::io::sink())?;
+        Ok::<_,std::io::Error>(bytes)
+    });
+    let errors = std::thread::spawn(move || {
+        let mut bytes = Vec::new();
+        (&mut stderr).take(8192).read_to_end(&mut bytes)?;
+        std::io::copy(&mut stderr, &mut std::io::sink())?;
+        Ok::<_,std::io::Error>(bytes)
+    });
+    let status = loop {
+        if let Some(status) = child.try_wait()? { break status; }
+        if Instant::now() >= deadline { let _ = child.kill(); let _ = child.wait(); return Ok(None); }
+        std::thread::sleep(Duration::from_millis(5));
+    };
+    let bytes = output.join().map_err(|_| anyhow!("git_failed"))??;
+    let errors = errors.join().map_err(|_| anyhow!("git_failed"))??;
+    if !status.success() { return Err(anyhow!("git_failed: {}",String::from_utf8_lossy(&errors).trim())); }
+    Ok((bytes.len() <= limit).then(|| String::from_utf8_lossy(&bytes).into_owned()))
+}
+
+pub(crate) fn binary_diff_paths(numstat: &[u8]) -> std::collections::HashSet<String> {
+    String::from_utf8_lossy(numstat).split('\0').filter_map(|record| {
+        record.strip_prefix("-\t-\t").map(str::to_owned)
+    }).collect()
+}
+
+/// Capture once, then diff the two trees using the checkpoint's private object
+/// store. No per-file re-snapshot, and no writes to the repository's index/refs.
+pub(crate) fn unified_snapshot(db: &Database, session_id: &str, from_id: &str, to_id: Option<&str>) -> Result<Vec<ReviewFile>> {
+    let scope = session_scope(db, session_id)?.ok_or_else(|| anyhow!("review_unavailable"))?;
+    let (from, mut extra) = ready_tree(&checkpoint_row(db, session_id, from_id)?)?;
+    let store = Store::open(db, &scope.root)?;
+    let deadline = Instant::now() + REVIEW_BUDGET;
+    let (to, skipped) = match to_id {
+        Some(id) => {
+            let (tree, stores) = ready_tree(&checkpoint_row(db, session_id, id)?)?;
+            extra.extend(stores);
+            let skipped = checkpoint_json(db, id)?["skipped"].as_array().cloned().unwrap_or_default();
+            (tree, skipped.into_iter().filter_map(|v| v.as_str().map(str::to_owned)).collect::<Vec<_>>())
+        }
+        None => { let snapshot = store.snapshot(deadline)?; (snapshot.tree, snapshot.skipped) }
+    };
+    let env = store.env(None, &extra)?;
+    let borrowed: Vec<_> = env.iter().map(|(key,value)| (*key,value.as_os_str())).collect();
+    let relative = format!("--relative={}", store.prefix);
+    let binary_paths = binary_diff_paths(&store.run(&["diff", "--numstat", "-z", "--no-ext-diff", "--no-textconv", "--no-renames", &relative, &from, &to], &env, None, deadline)?);
+    let (mut remaining, mut exhausted) = (crate::agent_review::DIFF_BUDGET, false);
+    let mut files = Vec::new();
+    for file in store.changes(&from, &to, &extra, deadline)? {
+        let path = file["path"].as_str().unwrap().to_owned();
+        let full_path = format!("{}{}", store.prefix, path);
+        let binary = binary_paths.contains(&path);
+        let diff = if binary { Some(String::new()) } else if exhausted { None } else {
+            bounded_unified_diff(&store.top, &["diff", "--no-ext-diff", "--no-textconv", "--no-renames", "--no-color", &relative, &from, &to, "--", &full_path], &borrowed, remaining, deadline)?
+        };
+        files.push(crate::agent_review::retain_file(ReviewFile { path, status: file["status"].as_str().unwrap().to_owned(), diff, binary }, &mut remaining, &mut exhausted));
+    }
+    for path in skipped {
+        if !files.iter().any(|file| file.path == path) {
+            files.push(ReviewFile { path, status: "M".into(), diff: None, binary: false });
+        }
+    }
+    Ok(files)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

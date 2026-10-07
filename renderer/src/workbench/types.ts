@@ -6,6 +6,8 @@ export type WorkbenchScope = { projectId:string; worktreePath?:string; rootPath:
 
 /** Host callbacks; content always opens through the host's tab/pane rules. */
 export type WorkbenchActions = {
+ /** Opens an existing agent session through the host's current workspace rules. */
+ openSession?:(sessionId:string) => void;
  openFile:(path:string, position?:{line?:number;column?:number}) => void;
  /** Opens the file as a preview owned by the active session (hidden when switching sessions). */
  openBeside?:(path:string) => void;
