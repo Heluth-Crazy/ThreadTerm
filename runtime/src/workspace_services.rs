@@ -107,10 +107,10 @@ pub fn dispatch(db: &Database, method: &str, params: &Value) -> Result<Option<Va
     Ok(Some(result))
 }
 
-/// Resolves an existing cwd to its closest registered project/worktree root.
-/// The closest root wins so nested registered projects cannot be attributed to
-/// an outer project selected by a stale client.
-pub fn workspace_root_for_cwd(db: &Database, project_id: &str, cwd: &str) -> Result<PathBuf> {
+fn closest_roots_for_cwd(
+    db: &Database,
+    cwd: &str,
+) -> Result<Vec<(String, PathBuf, String)>> {
     let cwd = Path::new(cwd)
         .canonicalize()
         .map_err(|_| anyhow!("invalid_cwd"))?;
@@ -148,27 +148,55 @@ pub fn workspace_root_for_cwd(db: &Database, project_id: &str, cwd: &str) -> Res
         if closest.is_empty() {
             return Err(anyhow!("cwd_not_in_registered_project"));
         }
-        // A nested registered project wins over another project's worktree at
-        // the same path. Duplicate string forms of one directory are the same
-        // project choice, not an ambiguity.
-        let project_matches: Vec<(String, PathBuf)> = closest
-            .iter()
-            .filter(|(_, _, kind)| kind == "project")
-            .map(|(id, path, _)| (id.clone(), path.clone()))
-            .collect();
-        let allowed = if project_matches.is_empty() {
-            closest
-                .iter()
-                .map(|(id, path, _)| (id.clone(), path.clone()))
-                .collect::<Vec<_>>()
-        } else {
-            project_matches
-        };
-        let Some((_, root)) = allowed.iter().find(|(id, _)| id == project_id) else {
-            return Err(anyhow!("selected_project_mismatch"));
-        };
-        Ok(root.clone())
+        Ok(closest)
     })
+}
+
+fn closest_project_roots(closest: &[(String, PathBuf, String)]) -> Vec<(String, PathBuf)> {
+    // A nested registered project wins over another project's worktree at
+    // the same path. Duplicate string forms of one directory are the same
+    // project choice, not an ambiguity.
+    let project_matches: Vec<(String, PathBuf)> = closest
+        .iter()
+        .filter(|(_, _, kind)| kind == "project")
+        .map(|(id, path, _)| (id.clone(), path.clone()))
+        .collect();
+    if project_matches.is_empty() {
+        closest
+            .iter()
+            .map(|(id, path, _)| (id.clone(), path.clone()))
+            .collect()
+    } else {
+        project_matches
+    }
+}
+
+/// Resolves an existing cwd to its closest registered project/worktree root.
+/// The closest root wins so nested registered projects cannot be attributed to
+/// an outer project selected by a stale client.
+pub fn workspace_root_for_cwd(db: &Database, project_id: &str, cwd: &str) -> Result<PathBuf> {
+    let closest = closest_roots_for_cwd(db, cwd)?;
+    let allowed = closest_project_roots(&closest);
+    let Some((_, root)) = allowed.iter().find(|(id, _)| id == project_id) else {
+        return Err(anyhow!("selected_project_mismatch"));
+    };
+    Ok(root.clone())
+}
+
+/// Finds the project that uniquely owns the closest registered root for cwd.
+pub fn project_for_cwd(db: &Database, cwd: &str) -> Result<Option<String>> {
+    let closest = match closest_roots_for_cwd(db, cwd) {
+        Ok(closest) => closest,
+        Err(error) if error.to_string() == "cwd_not_in_registered_project" => return Ok(None),
+        Err(error) => return Err(error),
+    };
+    let allowed = closest_project_roots(&closest);
+    let projects = allowed
+        .into_iter()
+        .map(|(id, _)| id)
+        .collect::<HashSet<_>>();
+    Ok((projects.len() == 1)
+        .then(|| projects.into_iter().next().expect("one project")))
 }
 
 /// Resolve a renderer-provided file candidate against the source session's
@@ -1756,6 +1784,91 @@ mod tests {
             workspace_root_for_cwd(&db, &outer_project.id, nested.to_str().unwrap()).unwrap(),
             nested.canonicalize().unwrap()
         );
+        assert_eq!(
+            project_for_cwd(&db, nested.to_str().unwrap()).unwrap(),
+            Some(outer_project.id)
+        );
+    }
+    #[test]
+    fn project_for_cwd_uses_the_unique_closest_project() {
+        let temp = tempfile::tempdir().unwrap();
+        let outer = temp.path().join("outer");
+        let nested = outer.join("nested");
+        let outside = temp.path().join("outside");
+        fs::create_dir_all(nested.join("src")).unwrap();
+        fs::create_dir_all(&outside).unwrap();
+        let db = Database::open(&temp.path().join("db.sqlite")).unwrap();
+        initialize(&db).unwrap();
+        let outer_project = db
+            .add_project(outer.to_str().unwrap(), Some("outer"), "attribution-outer")
+            .unwrap();
+        db.transaction(|tx| {
+            tx.execute(
+                "INSERT INTO worktrees(id,project_id,path,branch,head,is_main,locked) VALUES('attribution-wt',?,?, 'main','head',0,0)",
+                params![outer_project.id, nested.to_str().unwrap()],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(
+            project_for_cwd(&db, nested.join("src").to_str().unwrap()).unwrap(),
+            Some(outer_project.id.clone())
+        );
+        let nested_project = db
+            .add_project(nested.to_str().unwrap(), Some("nested"), "attribution-nested")
+            .unwrap();
+        assert_eq!(
+            project_for_cwd(&db, nested.join("src").to_str().unwrap()).unwrap(),
+            Some(nested_project.id)
+        );
+        assert_eq!(
+            project_for_cwd(&db, outside.to_str().unwrap()).unwrap(),
+            None
+        );
+        let spelled = format!("{}{}", nested.to_str().unwrap(), std::path::MAIN_SEPARATOR);
+        db.add_project(&spelled, Some("duplicate"), "attribution-duplicate")
+            .unwrap();
+        assert_eq!(
+            project_for_cwd(&db, nested.to_str().unwrap()).unwrap(),
+            None
+        );
+        assert_eq!(
+            project_for_cwd(&db, outer.to_str().unwrap()).unwrap(),
+            Some(outer_project.id)
+        );
+    }
+    #[test]
+    fn project_for_cwd_rejects_ambiguous_worktree_roots() {
+        let temp = tempfile::tempdir().unwrap();
+        let first_root = temp.path().join("first");
+        let second_root = temp.path().join("second");
+        let worktree = temp.path().join("worktree");
+        fs::create_dir_all(&first_root).unwrap();
+        fs::create_dir_all(&second_root).unwrap();
+        fs::create_dir_all(&worktree).unwrap();
+        let db = Database::open(&temp.path().join("db.sqlite")).unwrap();
+        initialize(&db).unwrap();
+        let first = db
+            .add_project(first_root.to_str().unwrap(), Some("first"), "ambiguous-first")
+            .unwrap();
+        let second = db
+            .add_project(second_root.to_str().unwrap(), Some("second"), "ambiguous-second")
+            .unwrap();
+        let alternate = format!("{}{}", worktree.to_str().unwrap(), std::path::MAIN_SEPARATOR);
+        db.transaction(|tx| {
+            tx.execute(
+                "INSERT INTO worktrees(id,project_id,path,branch,head,is_main,locked) VALUES('ambiguous-wt-1',?,?, 'main','head',0,0)",
+                params![first.id, worktree.to_str().unwrap()],
+            )?;
+            tx.execute(
+                "INSERT INTO worktrees(id,project_id,path,branch,head,is_main,locked) VALUES('ambiguous-wt-2',?,?, 'main','head',0,0)",
+                params![second.id, alternate],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(project_for_cwd(&db, worktree.to_str().unwrap()).unwrap(), None);
+        assert!(project_for_cwd(&db, &worktree.join("missing").to_string_lossy()).is_err());
     }
     #[test]
     fn dispatch_fences_files_and_revisions() {

@@ -1856,27 +1856,104 @@ fn acp_history_item(provider: &str, row: &Value) -> Option<Value> {
 }
 
 fn acp_transcript(raw: &[Value]) -> Vec<Value> {
-    let entries: Vec<Value> = raw.iter().enumerate().filter_map(|(index, message)| {
-        let update = message.get("params")?.get("update")?;
-        let kind = update.get("sessionUpdate").or_else(|| update.get("type"))?.as_str()?;
+    let mut transcript = Vec::new();
+    let mut last_message = None;
+    for (index, message) in raw.iter().enumerate() {
+        let Some(update) = message.get("params").and_then(|params| params.get("update")) else {
+            continue;
+        };
+        let Some(kind) = update
+            .get("sessionUpdate")
+            .or_else(|| update.get("type"))
+            .and_then(Value::as_str)
+        else {
+            continue;
+        };
         if let Some((tool_id, part)) = acp_tool_part(update, kind) {
-            return Some(json!({"id":format!("acp-tool-{tool_id}"),"role":"tool","parts":[part],"createdAt":Utc::now().to_rfc3339()}));
+            crate::file_references::upsert_history_tool(
+                &mut transcript,
+                json!({"id":format!("acp-tool-{tool_id}"),"role":"tool","parts":[part],"createdAt":Utc::now().to_rfc3339()}),
+            );
+            last_message = None;
+            continue;
         }
         let content = update.get("content").unwrap_or(update);
-        let text = content.get("text").and_then(Value::as_str)?;
+        let Some(text) = content.get("text").and_then(Value::as_str) else {
+            continue;
+        };
         let part_type = acp_part_type(kind).unwrap_or("text");
-        let role = if kind.contains("user") { "user" } else if kind.contains("thought") || kind.contains("Thought") || kind.contains("agent") || kind.contains("assistant") { "assistant" } else { return None; };
-        Some(json!({"id":format!("acp-{index}"),"role":role,"parts":[{"type":part_type,"text":text}],"createdAt":Utc::now().to_rfc3339()}))
-    }).collect();
-    let mut transcript = Vec::with_capacity(entries.len());
-    for entry in entries {
-        if entry.get("role").and_then(Value::as_str) == Some("tool") {
-            crate::file_references::upsert_history_tool(&mut transcript, entry);
+        let role = if kind.contains("user") {
+            "user"
+        } else if kind.contains("thought")
+            || kind.contains("Thought")
+            || kind.contains("agent")
+            || kind.contains("assistant")
+        {
+            "assistant"
         } else {
-            transcript.push(entry);
+            continue;
+        };
+        let text = if role == "user" {
+            strip_acp_system_reminders(text)
+        } else {
+            text.to_owned()
+        };
+        if text.is_empty() {
+            continue;
+        }
+        if let Some(existing) = last_message
+            .and_then(|entry: usize| transcript.get_mut(entry))
+            .filter(|entry| entry.get("role").and_then(Value::as_str) == Some(role))
+        {
+            append_acp_part(existing, part_type, &text);
+        } else {
+            transcript.push(json!({"id":format!("acp-{index}"),"role":role,"parts":[{"type":part_type,"text":text}],"createdAt":Utc::now().to_rfc3339()}));
+            last_message = Some(transcript.len() - 1);
         }
     }
     transcript
+}
+
+fn strip_acp_system_reminders(text: &str) -> String {
+    const OPEN: &str = "<system-reminder>";
+    const CLOSE: &str = "</system-reminder>";
+
+    let mut result = String::new();
+    let mut remainder = text;
+    let mut stripped = false;
+    while let Some(start) = remainder.find(OPEN) {
+        result.push_str(&remainder[..start]);
+        let after_open = &remainder[start + OPEN.len()..];
+        let Some(end) = after_open.find(CLOSE) else {
+            result.push_str(&remainder[start..]);
+            return if stripped {
+                result.trim().to_owned()
+            } else {
+                text.to_owned()
+            };
+        };
+        stripped = true;
+        remainder = &after_open[end + CLOSE.len()..];
+    }
+    result.push_str(remainder);
+    if stripped {
+        result.trim().to_owned()
+    } else {
+        text.to_owned()
+    }
+}
+
+fn append_acp_part(item: &mut Value, part_type: &str, text: &str) {
+    let Some(parts) = item.get_mut("parts").and_then(Value::as_array_mut) else {
+        return;
+    };
+    if let Some(last) = parts.last_mut().filter(|part| part["type"] == part_type) {
+        if let Some(Value::String(existing)) = last.get_mut("text") {
+            existing.push_str(text);
+            return;
+        }
+    }
+    parts.push(json!({"type":part_type,"text":text}));
 }
 
 fn kimi_terminal_cwd(cwd: &str) -> std::borrow::Cow<'_, str> {
@@ -2804,5 +2881,76 @@ createInterface({{ input: process.stdin, crlfDelay: Infinity }}).on('line', line
         }
         assert!(kimi_command_guidance("usage").is_none());
         assert!(kimi_command_guidance("nonsense").is_none());
+    }
+
+    #[test]
+    fn transcript_drops_reminder_only_user_chunk() {
+        let transcript = acp_transcript(&[json!({
+            "params":{"update":{"sessionUpdate":"user_message_chunk","content":{"text":"<system-reminder>private</system-reminder>"}}}
+        })]);
+        assert!(transcript.is_empty());
+    }
+
+    #[test]
+    fn transcript_keeps_user_text_around_reminder() {
+        let transcript = acp_transcript(&[json!({
+            "params":{"update":{"sessionUpdate":"user_message_chunk","content":{"text":"  Hello <system-reminder>private</system-reminder> world  "}}}
+        })]);
+        assert_eq!(transcript[0]["parts"][0]["text"], "Hello  world");
+        let streamed = acp_transcript(&[
+            json!({"params":{"update":{"sessionUpdate":"user_message_chunk","content":{"text":"hello "}}}}),
+            json!({"params":{"update":{"sessionUpdate":"user_message_chunk","content":{"text":"world"}}}}),
+        ]);
+        assert_eq!(streamed[0]["parts"][0]["text"], "hello world");
+        assert_eq!(
+            strip_acp_system_reminders(
+                "keep <system-reminder>private</system-reminder> <system-reminder>unfinished"
+            ),
+            "keep  <system-reminder>unfinished"
+        );
+    }
+
+    #[test]
+    fn transcript_merges_chunked_thinking_and_text_reply() {
+        let transcript = acp_transcript(&[
+            json!({"params":{"update":{"sessionUpdate":"agent_thought_chunk","content":{"text":"plan "}}}}),
+            json!({"params":{"update":{"sessionUpdate":"agent_thought_chunk","content":{"text":"more"}}}}),
+            json!({"params":{"update":{"sessionUpdate":"agent_message_chunk","content":{"text":"answer"}}}}),
+            json!({"params":{"update":{"sessionUpdate":"agent_message_chunk","content":{"text":" "}}}}),
+            json!({"params":{"update":{"sessionUpdate":"agent_message_chunk","content":{"text":"reply"}}}}),
+            json!({"params":{"update":{"sessionUpdate":"agent_message_chunk","content":{"text":""}}}}),
+        ]);
+        assert_eq!(transcript.len(), 1);
+        assert_eq!(transcript[0]["id"], "acp-0");
+        assert_eq!(transcript[0]["parts"], json!([
+            {"type":"thinking","text":"plan more"},
+            {"type":"text","text":"answer reply"},
+        ]));
+    }
+
+    #[test]
+    fn transcript_preserves_user_assistant_alternation() {
+        let transcript = acp_transcript(&[
+            json!({"params":{"update":{"sessionUpdate":"user_message_chunk","content":{"text":"one"}}}}),
+            json!({"params":{"update":{"sessionUpdate":"agent_message_chunk","content":{"text":"two"}}}}),
+            json!({"params":{"update":{"sessionUpdate":"user_message_chunk","content":{"text":"three"}}}}),
+        ]);
+        assert_eq!(transcript.len(), 3);
+        assert_eq!(transcript[0]["role"], "user");
+        assert_eq!(transcript[1]["role"], "assistant");
+        assert_eq!(transcript[2]["role"], "user");
+    }
+
+    #[test]
+    fn transcript_tool_call_splits_assistant_chunks() {
+        let transcript = acp_transcript(&[
+            json!({"params":{"update":{"sessionUpdate":"agent_message_chunk","content":{"text":"before"}}}}),
+            json!({"params":{"update":{"sessionUpdate":"tool_call","toolCallId":"tool-1","title":"Read"}}}),
+            json!({"params":{"update":{"sessionUpdate":"agent_message_chunk","content":{"text":"after"}}}}),
+        ]);
+        assert_eq!(transcript.len(), 3);
+        assert_eq!(transcript[0]["parts"][0]["text"], "before");
+        assert_eq!(transcript[1]["role"], "tool");
+        assert_eq!(transcript[2]["parts"][0]["text"], "after");
     }
 }

@@ -1466,6 +1466,11 @@ impl RuntimeService {
         if let Some(project_id) = p.project_id.as_deref() {
             crate::workspace_services::workspace_root_for_cwd(&self.db, project_id, &p.cwd)?;
         }
+        let project_id = p.project_id.or_else(|| {
+            crate::workspace_services::project_for_cwd(&self.db, &p.cwd)
+                .ok()
+                .flatten()
+        });
         // Read the provider-owned record before creating a local owner. This does
         // not start a PTY or provider turn; the stored card remains read-only.
         let transcript: Vec<crate::domain::ChatItem> =
@@ -1473,7 +1478,7 @@ impl RuntimeService {
         let (session, _) = self
             .db
             .import_history_session(crate::db::ImportHistorySession {
-                project_id: p.project_id.as_deref(),
+                project_id: project_id.as_deref(),
                 title: p.title.as_deref(),
                 provider: &p.provider,
                 mode: &p.mode,

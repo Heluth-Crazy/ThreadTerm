@@ -1,0 +1,16 @@
+{
+  "schemaVersion": 1,
+  "id": "history-echo-acp",
+  "name": "History Echo (QA fixture)",
+  "version": "0.1.0",
+  "publisher": "ThreadTerm QA",
+  "description": "Isolated ACP fixture that replays native history supplied by QA.",
+  "homepage": "https://example.invalid/history-echo",
+  "contributes": { "agents": [{
+    "id": "history-echo", "name": "History Echo", "icon": "icon.svg",
+    "command": "node", "args": ["{pluginDir}/agent.mjs"], "versionArgs": ["--version"],
+    "terminal": { "args": [], "resumeArgs": ["--resume", "{sessionId}"] },
+    "chat": { "protocol": "acp", "args": ["--acp"] }, "signIn": { "args": ["login"] },
+    "homepage": "https://example.invalid/history-echo"
+  }] }
+}
