@@ -1,7 +1,7 @@
 import { validateWireRequest, validateWireSuccess } from './generated-validators.js';
 export const PROTOCOL_VERSION = 1 as const;
-/** Semantic contract for Chat approvals (`choiceId`), connection status, the agent registry, Quick Launch, prompt queues, agent reviews and worktree setup. Framing/HMAC still use PROTOCOL_VERSION. */
-export const PROTOCOL_CONTRACT = 7 as const;
+/** Semantic contract for Chat approvals (`choiceId`), connection status, the agent registry, Quick Launch, prompt queues, agent reviews, worktree setup and session documents. Framing/HMAC still use PROTOCOL_VERSION. */
+export const PROTOCOL_CONTRACT = 8 as const;
 export const MAX_FRAME_BYTES = 8 * 1024 * 1024;
 /** Agents that ship with ThreadTerm (native adapters, or `shell` / `custom` commands). */
 export type BuiltinProviderId = 'codex'|'claude'|'kimi'|'gemini'|'opencode'|'shell'|'grok'|'custom';
@@ -298,6 +298,12 @@ export interface RequestMap {
  /** Newest first, at most 20. A finished reviewer's last reply is parsed once, and again only after it answers again. */
  'agentReview.list': [{sessionId:string},AgentReview[]];
  'agentReview.mark': [{reviewId:string;findingIds:string[];state:'open'|'added'|'dismissed';operationId:string},AgentReview];
+ /** In pin order. */
+ 'session.documents.list': [{sessionId:string},SessionDocument[]];
+ /** Pins a file inside the session's worktree (≤ 2 MiB; at most 20 pins → `too_many_documents`; `not_a_file`,
+  * `path_outside_root`). Pinning a pinned file changes nothing. Both return the whole list. */
+ 'session.documents.pin': [{sessionId:string;path:string;operationId:string},SessionDocument[]];
+ 'session.documents.unpin': [{sessionId:string;path:string;operationId:string},SessionDocument[]];
  'worktree.list': [{projectId:string},Worktree[]];
  'worktree.create': [{projectId:string;path:string;branch:string;createBranch:boolean;operationId:string},Worktree];
  'worktree.remove': [{id:string;operationId:string},null];
@@ -346,7 +352,7 @@ export interface ThreadTermBridge {
  exportDiagnostics():Promise<string|null>;
  scheduleElectronCacheCleanup(schedule:boolean):Promise<{scheduled:boolean;available:boolean;result?:string}>;
 }
-export const METHODS = ['filesystem.resolve','session.launch.read','catalog.visibility.list','catalog.visibility.update','session.resume','session.organize','git.merge','git.merge.abort','project.catalog.list','project.update','worktree.branches','worktree.relocate','session.rerun','git.fetch','git.pull','git.push','session.config.read','session.config.save','session.retry.read','session.retry.update','chat.draft.read','chat.draft.save','device.status','device.enable','device.disable','device.pairing.create','device.pairing.cancel','device.list','device.rename','device.renew','device.revoke','git.stage','git.unstage','git.commit','filesystem.image','chat.snapshot','terminal.read','session.lookup','session.present','chat.read','data.status','data.backup','data.relocation.status','data.relocation.prepare','data.relocation.cancel','settings.export','settings.import.preview','settings.import.apply','preset.list','preset.save','preset.delete','usage.query','runtime.health','terminal.host','runtime.shutdown','runtime.snapshot','project.add','project.remove','session.create','history.import','session.stop','session.update','session.attention.acknowledge','session.claim','session.renew','session.release','terminal.input','terminal.resize','settings.update','provider.list','plugin.list','plugin.setEnabled','plugin.reload','chat.queue.read','chat.queue.add','chat.queue.update','chat.queue.remove','chat.queue.move','chat.queue.pause','chat.queue.resume','chat.queue.send','quickLaunch.list','quickLaunch.save','quickLaunch.delete','quickLaunch.run','quickLaunch.setup.read','quickLaunch.setup.save','quickLaunch.setup.run','quickLaunch.setup.status','history.list','history.read','chat.send','chat.cancel','chat.approve','chat.options','chat.option.set','chat.connection','chat.connect','filesystem.list','filesystem.read','filesystem.write','draft.list','draft.put','draft.delete','git.status','git.diff','worktree.list','worktree.create','worktree.remove','workspace.save','workspace.delete','inbox.read','git.index.write','git.discard','git.checkout','git.branch.delete','git.branches','git.log','git.commit.show','git.commit.diff','git.blame','filesystem.create','filesystem.rename','filesystem.delete','filesystem.files','filesystem.search','review.list','review.changes','review.diff','review.revert','review.checkpoint','agentReview.start','agentReview.list','agentReview.mark'] as const satisfies readonly Method[];
+export const METHODS = ['filesystem.resolve','session.launch.read','catalog.visibility.list','catalog.visibility.update','session.resume','session.organize','git.merge','git.merge.abort','project.catalog.list','project.update','worktree.branches','worktree.relocate','session.rerun','git.fetch','git.pull','git.push','session.config.read','session.config.save','session.retry.read','session.retry.update','chat.draft.read','chat.draft.save','device.status','device.enable','device.disable','device.pairing.create','device.pairing.cancel','device.list','device.rename','device.renew','device.revoke','git.stage','git.unstage','git.commit','filesystem.image','chat.snapshot','terminal.read','session.lookup','session.present','chat.read','data.status','data.backup','data.relocation.status','data.relocation.prepare','data.relocation.cancel','settings.export','settings.import.preview','settings.import.apply','preset.list','preset.save','preset.delete','usage.query','runtime.health','terminal.host','runtime.shutdown','runtime.snapshot','project.add','project.remove','session.create','history.import','session.stop','session.update','session.attention.acknowledge','session.claim','session.renew','session.release','terminal.input','terminal.resize','settings.update','provider.list','plugin.list','plugin.setEnabled','plugin.reload','chat.queue.read','chat.queue.add','chat.queue.update','chat.queue.remove','chat.queue.move','chat.queue.pause','chat.queue.resume','chat.queue.send','quickLaunch.list','quickLaunch.save','quickLaunch.delete','quickLaunch.run','quickLaunch.setup.read','quickLaunch.setup.save','quickLaunch.setup.run','quickLaunch.setup.status','history.list','history.read','chat.send','chat.cancel','chat.approve','chat.options','chat.option.set','chat.connection','chat.connect','filesystem.list','filesystem.read','filesystem.write','draft.list','draft.put','draft.delete','git.status','git.diff','worktree.list','worktree.create','worktree.remove','workspace.save','workspace.delete','inbox.read','git.index.write','git.discard','git.checkout','git.branch.delete','git.branches','git.log','git.commit.show','git.commit.diff','git.blame','filesystem.create','filesystem.rename','filesystem.delete','filesystem.files','filesystem.search','review.list','review.changes','review.diff','review.revert','review.checkpoint','agentReview.start','agentReview.list','agentReview.mark','session.documents.list','session.documents.pin','session.documents.unpin'] as const satisfies readonly Method[];
 const stringFields: Partial<Record<Method,readonly string[]>> = {
  'filesystem.resolve':['sessionId','path'],
  'session.launch.read':['sessionId'],
@@ -382,6 +388,7 @@ const stringFields: Partial<Record<Method,readonly string[]>> = {
  'filesystem.create':['projectId','path','kind','operationId'],'filesystem.rename':['projectId','path','newPath','operationId'],'filesystem.delete':['projectId','path','operationId'],'filesystem.files':['projectId'],'filesystem.search':['projectId','query'],
  'review.list':['sessionId'],'review.changes':['sessionId','from'],'review.diff':['sessionId','from','path'],'review.revert':['sessionId','checkpointId','operationId'],'review.checkpoint':['sessionId','kind','operationId'],
  'agentReview.start':['sessionId','agent','operationId'],'agentReview.list':['sessionId'],'agentReview.mark':['reviewId','state','operationId'],
+ 'session.documents.list':['sessionId'],'session.documents.pin':['sessionId','path','operationId'],'session.documents.unpin':['sessionId','path','operationId'],
 };
 export function isRecord(value:unknown):value is Record<string,unknown> { return typeof value==='object' && value!==null && !Array.isArray(value); }
 export function validateRequest(method:unknown,params:unknown):asserts method is Method {
@@ -480,6 +487,8 @@ export function validateRequest(method:unknown,params:unknown):asserts method is
   if(!isRecord(scope)||(scope.kind==='checkpoints'?!id(scope.from)||(scope.to!==undefined&&!id(scope.to)):scope.kind!=='uncommitted')) throw new Error('Invalid review scope');
  }
  if(m==='agentReview.mark'&&(!Array.isArray(params.findingIds)||params.findingIds.length<1||params.findingIds.length>100||params.findingIds.some(id=>typeof id!=='string'||!id))) throw new Error('Invalid findings');
+ // Relative to the session's worktree root: no drive, no leading separator, no `..` segment.
+ if((m==='session.documents.pin'||m==='session.documents.unpin')&&(!pathOk(params.path)||/^[\\/]|^[A-Za-z]:|(^|[\\/])\.\.([\\/]|$)/.test(String(params.path)))) throw new Error('Invalid path');
  const maxLimit=m==='terminal.read'?(params.tail===true?8192:1024*1024):200;
  if(params.limit!==undefined&&(!Number.isInteger(params.limit)||Number(params.limit)<1||Number(params.limit)>maxLimit)) throw new Error('Invalid page limit');
 }
@@ -559,6 +568,10 @@ export interface ReviewState { available:boolean; reason?:string; projectId?:str
 export interface ReviewFile { path:string; status:'A'|'M'|'D' }
 /** exists/fingerprint describe the current working file when `to` is omitted. */
 export interface ReviewDiff { path:string; oldText:string; newText:string; binary:boolean; exists:boolean; fingerprint?:string }
+/** A plan, spec or research note pinned to a session ("Plans & docs" in Session details). `path` is relative to the
+ * session's worktree root with `/` separators. `title` is the first Markdown heading of a .md/.markdown file. `missing`
+ * when the file is gone; it stays listed until unpinned. */
+export interface SessionDocument { path:string; title?:string; pinnedAt:string; missing?:boolean }
 /** Independent agent review (Agent Changes): a fresh Chat of the chosen agent reviews a snapshot of a session's changes,
  * captured when the review starts. `checkpoints` is the `review.changes` range (`to` omitted: the current files);
  * `uncommitted` is the worktree against git HEAD, untracked files included. */

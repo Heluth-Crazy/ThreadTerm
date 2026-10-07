@@ -10,6 +10,7 @@ import { createPortal } from 'react-dom';
 import { WbIcon } from '../workbench/icons';
 import { FILE_DRAG_TYPE, fileDragData } from '../fileDrag';
 import { absolutePath, baseName, coveredBy, joinPath, parentPath, scopeParams, type GitState, type WorkbenchActions, type WorkbenchScope } from '../workbench/types';
+import { isDocumentPinned, sessionDocumentError } from '../sessionDocuments';
 
 type Editing = { mode:'rename'|'file'|'directory'; dir:string; target?:string; value:string; error?:string };
 type Row = { entry:FileEntry; depth:number };
@@ -28,6 +29,8 @@ export function ExplorerView({scope, actions, git, zh, activePath, focusKey, too
  const [busy, setBusy] = useState(false);
  const treeRef = useRef<HTMLDivElement>(null);
  const expandedRef = useRef(expanded); expandedRef.current = expanded;
+ const sessionDocuments = actions.sessionDocuments;
+ const sessionDocumentIssue = sessionDocuments?.error;
  const text = (en:string, cn:string) => zh ? cn : en;
  const params = scopeParams(scope);
  const decorations = useMemo(() => decorationIndex(git.status?.changes ?? []), [git.status]);
@@ -51,6 +54,7 @@ export function ExplorerView({scope, actions, git, zh, activePath, focusKey, too
  // Git status refreshes (focus, polling, mutations) also refresh the visible folders.
  useEffect(() => { if(git.status) void refresh(); }, [git.status]);
  useEffect(() => { if(focusKey) treeRef.current?.querySelector<HTMLElement>('[data-path][tabindex="0"]')?.focus(); }, [focusKey]);
+ useEffect(() => menu && sessionDocuments ? sessionDocuments.retain() : undefined, [Boolean(menu), sessionDocuments?.retain]);
 
  // Reveal the active editor file by expanding its ancestors.
  useEffect(() => {
@@ -141,6 +145,13 @@ export function ExplorerView({scope, actions, git, zh, activePath, focusKey, too
   setConfirm({path:entry.path, kind:entry.kind, permanent:false});
  };
  const copy = (value:string) => { setMenu(undefined); void navigator.clipboard.writeText(value).catch(error => setIssue(workbenchError(error, zh))); };
+ const toggleSessionDocument = async (path:string) => {
+  if(!sessionDocuments || busy || sessionDocuments.loading) return;
+  setBusy(true); setIssue(undefined);
+  try { await sessionDocuments.toggle(path); setMenu(undefined); }
+  catch(error) { setIssue(sessionDocumentError(error, zh)); }
+  finally { setBusy(false); }
+ };
 
  const onKey = (event:KeyboardEvent<HTMLDivElement>, row:Row, index:number) => {
   const focusRow = (next:number) => { const target = rows[Math.max(0, Math.min(rows.length - 1, next))]; if(target) { setSelected(target.entry.path); treeRef.current?.querySelector<HTMLElement>(`[data-path="${CSS.escape(target.entry.path)}"]`)?.focus(); } };
@@ -173,7 +184,7 @@ export function ExplorerView({scope, actions, git, zh, activePath, focusKey, too
  </>;
  return <div className="wb-explorer">
   {toolbarHost ? createPortal(tools, toolbarHost) : <div className="wb-view-actions">{tools}</div>}
-  {issue && <p className="wb-issue" role="alert">{issue}<button type="button" className="icon-btn" aria-label={text('Dismiss', '关闭提示')} onClick={() => setIssue(undefined)}><Icon name="close"/></button></p>}
+  {(issue ?? sessionDocumentIssue) && <p className="wb-issue" role="alert">{issue ?? sessionDocumentIssue}<button type="button" className="icon-btn" aria-label={text('Dismiss', '关闭提示')} onClick={() => setIssue(undefined)}><Icon name="close"/></button></p>}
   <div className="wb-tree" role="tree" aria-label={text('Files', '文件')} ref={treeRef}>
    {editing && editing.dir === '' && editRow(0)}
    {rows.map((row, index) => {
@@ -217,6 +228,7 @@ export function ExplorerView({scope, actions, git, zh, activePath, focusKey, too
    {(() => {
     const entry = menu.entry, isFile = entry?.kind === 'file';
     const changed = entry && (git.status?.changes ?? []).some(change => change.path === entry.path);
+    const pinned = Boolean(isFile && sessionDocuments && entry && isDocumentPinned(sessionDocuments.documents, entry.path));
     return <>
      <button type="button" role="menuitem" className="menu-item" onClick={() => beginCreate('file', entry)}><Icon name="file"/>{text('New file…', '新建文件…')}</button>
      <button type="button" role="menuitem" className="menu-item" onClick={() => beginCreate('directory', entry)}><Icon name="folder"/>{text('New folder…', '新建文件夹…')}</button>
@@ -226,6 +238,7 @@ export function ExplorerView({scope, actions, git, zh, activePath, focusKey, too
       {isFile && changed && <button type="button" role="menuitem" className="menu-item" onClick={() => { setMenu(undefined); actions.openDiff(entry.path, false); }}><Icon name="split"/>{text('Open changes', '查看更改')}</button>}
       {isFile && actions.openHistory && <button type="button" role="menuitem" className="menu-item" onClick={() => { setMenu(undefined); actions.openHistory?.(entry.path); }}><Icon name="clock"/>{text('File history', '文件历史')}</button>}
       {isFile && actions.sendToAgent && <button type="button" role="menuitem" className="menu-item" onClick={() => { setMenu(undefined); actions.sendToAgent?.({path:entry.path}); }}><Icon name="spark"/>{text('Send to agent', '发送给 Agent')}</button>}
+      {isFile && sessionDocuments && <button type="button" role="menuitem" className="menu-item" disabled={busy || sessionDocuments.loading || Boolean(sessionDocumentIssue)} onClick={() => void toggleSessionDocument(entry.path)}><Icon name="bookmark"/>{text(pinned ? 'Remove from Plans & docs' : 'Add to Plans & docs', pinned ? '从计划与文档中移除' : '添加到计划与文档')}</button>}
       <button type="button" role="menuitem" className="menu-item" onClick={() => copy(absolutePath(scope.rootPath, entry.path))}><Icon name="export"/>{text('Copy path', '复制路径')}</button>
       <button type="button" role="menuitem" className="menu-item" onClick={() => copy(entry.path)}><Icon name="export"/>{text('Copy relative path', '复制相对路径')}</button>
       <div className="menu-sep"/>

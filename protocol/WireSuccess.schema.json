@@ -4056,6 +4056,47 @@
     "RequestResult<\"agentReview.mark\">": {
       "$ref": "#/definitions/AgentReview"
     },
+    "RequestResult<\"session.documents.list\">": {
+      "type": "array",
+      "items": {
+        "$ref": "#/definitions/SessionDocument"
+      }
+    },
+    "SessionDocument": {
+      "type": "object",
+      "properties": {
+        "path": {
+          "type": "string"
+        },
+        "title": {
+          "type": "string"
+        },
+        "pinnedAt": {
+          "type": "string"
+        },
+        "missing": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "path",
+        "pinnedAt"
+      ],
+      "additionalProperties": false,
+      "description": "A plan, spec or research note pinned to a session (\"Plans & docs\" in Session details). `path` is relative to the session's worktree root with `/` separators. `title` is the first Markdown heading of a .md/.markdown file. `missing` when the file is gone; it stays listed until unpinned."
+    },
+    "RequestResult<\"session.documents.pin\">": {
+      "type": "array",
+      "items": {
+        "$ref": "#/definitions/SessionDocument"
+      }
+    },
+    "RequestResult<\"session.documents.unpin\">": {
+      "type": "array",
+      "items": {
+        "$ref": "#/definitions/SessionDocument"
+      }
+    },
     "RequestResult<\"worktree.list\">": {
       "type": "array",
       "items": {
@@ -7426,6 +7467,84 @@
         },
         "result": {
           "$ref": "#/definitions/RequestResult%3C%22agentReview.mark%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "result"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "session.documents.list"
+        },
+        "result": {
+          "$ref": "#/definitions/RequestResult%3C%22session.documents.list%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "result"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "session.documents.pin"
+        },
+        "result": {
+          "$ref": "#/definitions/RequestResult%3C%22session.documents.pin%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "result"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "session.documents.unpin"
+        },
+        "result": {
+          "$ref": "#/definitions/RequestResult%3C%22session.documents.unpin%22%3E"
         }
       },
       "required": [

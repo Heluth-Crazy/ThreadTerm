@@ -1,0 +1,23 @@
+.ins-block.session-documents { min-width:0; max-width:100%; }
+.session-documents .session-documents-head { display:flex; align-items:center; gap:8px; margin-bottom:8px; min-width:0; }
+.session-documents .session-documents-head h3 { flex:1; min-width:0; margin:0; white-space:nowrap; }
+.session-documents .session-documents-head > button { flex:none; font-size:12px; white-space:nowrap; }
+.session-documents .session-documents-count { color:var(--muted); font-weight:400; margin-left:4px; }
+.session-documents .session-document-row { display:flex; align-items:center; gap:6px; min-width:0; width:100%; border-radius:var(--radius); }
+.session-documents .session-document-row:hover,.session-documents .session-document-row:focus-within { background:var(--soft); }
+.session-documents .session-document-open { display:flex; align-items:center; gap:8px; flex:1; min-width:0; padding:7px 2px; border:0; background:transparent; color:var(--text); text-align:left; border-radius:var(--radius); cursor:pointer; }
+.session-documents .session-document-open > svg { flex:none; width:16px; height:16px; color:var(--muted); }
+.session-documents .session-document-label { display:flex; flex-direction:column; gap:3px; min-width:0; flex:1; overflow:hidden; }
+.session-documents .session-document-label > b,.session-documents .session-document-label > span { display:block; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; line-height:1.35; }
+.session-documents .session-document-label > b { font-size:13px; font-weight:600; }
+.session-documents .session-document-label > span { font-size:11px; color:var(--muted); }
+.session-documents .session-document-unpin { flex:none; width:24px; height:24px; opacity:0; }
+.session-documents .session-document-row:hover .session-document-unpin,.session-documents .session-document-row:focus-within .session-document-unpin,.session-documents .missing .session-document-unpin { opacity:1; }
+.session-documents .session-document-open:focus-visible,.session-documents button:focus-visible { outline:2px solid var(--primary); outline-offset:-2px; }
+.session-documents .missing .session-document-open { color:var(--muted); cursor:default; opacity:1; }
+.session-documents .session-document-missing { flex:none; padding:2px 5px; font-size:10px; color:var(--muted); white-space:nowrap; }
+.session-documents .session-documents-empty { font-size:12px; line-height:1.5; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.session-documents .session-documents-error { font-size:12px; overflow-wrap:anywhere; color:var(--text); }
+.session-documents .session-document-suggestions { margin-top:12px; }
+.session-documents .session-document-suggestions h4 { margin:0 0 4px; color:var(--muted); font-size:11px; font-weight:500; }
+.session-documents .session-document-pin { flex:none; font-size:12px; white-space:nowrap; }

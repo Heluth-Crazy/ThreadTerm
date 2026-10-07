@@ -1,4 +1,4 @@
-import type { GitStatus } from '@threadterm/protocol';
+import type { GitStatus, SessionDocument } from '@threadterm/protocol';
 import type { AgentReference } from './agentReference';
 
 /** A registered project root or worktree the side bar operates on. */
@@ -17,6 +17,15 @@ export type WorkbenchActions = {
  openReview?:(target:{sessionId:string;checkpointId:string;toCheckpointId?:string;path:string}) => void;
  /** Absent when no agent session can receive a reference. */
  sendToAgent?:(reference:AgentReference) => void;
+ /** Pinned plan and research documents for the active session that owns this workbench scope. */
+ sessionDocuments?:{
+  documents:readonly SessionDocument[];
+  loading:boolean;
+  error?:string;
+  toggle:(path:string)=>Promise<void>;
+  /** Starts a shared demand-driven document-list subscription and returns its release callback. */
+  retain:()=>()=>void;
+ };
  /** Paths with unsaved editor changes; rename/delete refuse to touch them. */
  dirtyPaths:() => string[];
  renamed:(from:string, to:string) => void;

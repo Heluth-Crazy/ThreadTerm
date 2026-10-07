@@ -25,6 +25,7 @@ import { WbIcon } from "../workbench/icons";
 import { stageChunk, unstageChunk, withLineBreaks } from "../workbench/indexEdit";
 import { workbenchError } from "../workbench/errors";
 import { coveredBy, type WorkbenchActions } from "../workbench/types";
+import { isDocumentPinned, sessionDocumentError } from "../sessionDocuments";
 
 type View = "file" | "diff" | "preview";
 type Props = {
@@ -54,6 +55,8 @@ type Props = {
   rootPath?: string;
   onSendToAgent?: (target: { path: string; startLine?: number; endLine?: number }) => void;
   onOpenHistory?: (target: { path?: string; commit?: string }) => void;
+  /** Present only for file tabs in the active session's worktree. */
+  sessionDocuments?: WorkbenchActions["sessionDocuments"];
   comments?: FileCommentsHost;
 };
 const message = (error: unknown) =>
@@ -83,6 +86,7 @@ function FileWorkspaceInstance({
   rootPath,
   onSendToAgent,
   onOpenHistory,
+  sessionDocuments,
   comments: commentsHost,
 }: Props) {
   const scope = { projectId, worktreePath };
@@ -113,6 +117,7 @@ function FileWorkspaceInstance({
   const mergeEditor = useRef<MergeEditorHandle>(null);
   const [issue, setIssue] = useState<string>();
   const [busy, setBusy] = useState(false);
+  const [documentPinning, setDocumentPinning] = useState(false);
   const [draftStatus, setDraftStatus] = useState<
     "saved" | "saving" | "unsaved" | "conflict"
   >("saved");
@@ -138,6 +143,22 @@ function FileWorkspaceInstance({
   const generation = useRef(0);
   const dirty = !!document && text !== document.content;
   const zh = globalThis.document.documentElement.lang === "zh-CN";
+  const pinnedDocument = document && sessionDocuments && isDocumentPinned(sessionDocuments.documents, document.path);
+  const sessionDocumentIssue = sessionDocuments?.error;
+  const needsSessionDocuments = Boolean(sessionDocuments && document && !image);
+  useEffect(() => needsSessionDocuments ? sessionDocuments?.retain() : undefined, [needsSessionDocuments, sessionDocuments?.retain]);
+  const toggleSessionDocument = async () => {
+    if (!document || !sessionDocuments || documentPinning || sessionDocuments.loading) return;
+    setDocumentPinning(true);
+    setIssue(undefined);
+    try {
+      await sessionDocuments.toggle(document.path);
+    } catch (error) {
+      setIssue(sessionDocumentError(error, zh));
+    } finally {
+      setDocumentPinning(false);
+    }
+  };
   const commentScope = useMemo(() => {
     const root = worktreePath ?? commentsHost?.projectRoot(projectId);
     return commentsHost && root ? { projectId, root } : undefined;
@@ -837,6 +858,19 @@ function FileWorkspaceInstance({
                     <Icon name="spark" />
                   </button>
                 )}
+                {sessionDocuments && !image && (
+                  <button
+                    type="button"
+                    className="icon-btn"
+                    aria-pressed={Boolean(pinnedDocument)}
+                    disabled={sessionDocuments.loading || documentPinning || Boolean(sessionDocumentIssue)}
+                    title={pinnedDocument ? (zh ? "从计划与文档中移除" : "Remove from Plans & docs") : (zh ? "添加到计划与文档（会话详情）" : "Add to Plans & docs (Session details)")}
+                    aria-label={pinnedDocument ? (zh ? "从计划与文档中移除" : "Remove from Plans & docs") : (zh ? "添加到计划与文档（会话详情）" : "Add to Plans & docs (Session details)")}
+                    onClick={() => void toggleSessionDocument()}
+                  >
+                    <Icon name="bookmark" />
+                  </button>
+                )}
                 {view === "file" && commentScope && commentsHost && !image && (
                   <button type="button" className="btn btn-sm" disabled={dirty || !commentSelection || Boolean(commentDraft)} title={dirty ? (zh ? "请先保存或放弃修改：修改会让行号变化。" : "Save or discard your edits first: they move the lines.") : !commentSelection ? (zh ? "请先选中行（或将光标放在某行）" : "Select lines (or put the cursor on a line) first") : commentDraft ? (zh ? "请先完成当前评论" : "Finish the current comment first") : zh ? `评论 ${fileCommentPlace({path:document.path, version:plainCommentVersion, ...commentSelection}, {fileRoot:commentScope.root, sessionRoot:commentScope.root}, zh)}` : `Comment on ${fileCommentPlace({path:document.path, version:plainCommentVersion, ...commentSelection}, {fileRoot:commentScope.root, sessionRoot:commentScope.root}, zh)}`} onClick={() => commentSelection && setCommentDraft(commentSelection)}>{zh ? "评论" : "Comment"}</button>
                 )}
@@ -902,6 +936,19 @@ function FileWorkspaceInstance({
                         : "Baseline is read-only; current file is editable"}
                   </span>
                   <span className="grow" />
+                  {sessionDocuments && !image && (
+                    <button
+                      type="button"
+                      className="icon-btn"
+                      aria-pressed={Boolean(pinnedDocument)}
+                      disabled={sessionDocuments.loading || documentPinning || Boolean(sessionDocumentIssue)}
+                      title={pinnedDocument ? (zh ? "从计划与文档中移除" : "Remove from Plans & docs") : (zh ? "添加到计划与文档（会话详情）" : "Add to Plans & docs (Session details)")}
+                      aria-label={pinnedDocument ? (zh ? "从计划与文档中移除" : "Remove from Plans & docs") : (zh ? "添加到计划与文档（会话详情）" : "Add to Plans & docs (Session details)")}
+                      onClick={() => void toggleSessionDocument()}
+                    >
+                      <Icon name="bookmark" />
+                    </button>
+                  )}
                   {diff && !diff.binary && hunkCount > 0 && (
                     <span className="wb-hunk-nav" role="group" aria-label={zh ? "更改块" : "Hunks"}>
                       <button type="button" className="icon-btn" aria-label={zh ? "上一个更改块" : "Previous hunk"} onClick={() => moveHunk(-1)}><WbIcon name="chev-up" /></button>
@@ -1111,9 +1158,9 @@ function FileWorkspaceInstance({
             </div>
           </>
         )}
-        {issue && (
+        {(issue ?? sessionDocumentIssue) && (
           <div role="alert" className="tt-editor-conflict">
-            {issue}
+            {issue ?? sessionDocumentIssue}
             {document && (
               <button
                 onClick={() =>
