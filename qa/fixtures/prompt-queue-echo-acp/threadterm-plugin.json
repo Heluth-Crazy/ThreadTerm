@@ -1,0 +1,23 @@
+{
+  "schemaVersion": 1,
+  "id": "prompt-queue-echo-acp",
+  "name": "Prompt queue Echo (QA fixture)",
+  "version": "0.1.0",
+  "publisher": "ThreadTerm QA",
+  "description": "Isolated ACP Echo fixture for prompt-queue QA.",
+  "homepage": "https://example.invalid/echo",
+  "contributes": {
+    "agents": [{
+      "id": "queue-echo",
+      "name": "Queue Echo",
+      "icon": "icon.svg",
+      "command": "node",
+      "args": ["{pluginDir}/agent.mjs"],
+      "versionArgs": ["--version"],
+      "terminal": { "args": [], "resumeArgs": ["--resume", "{sessionId}"] },
+      "chat": { "protocol": "acp", "args": ["--acp"] },
+      "signIn": { "args": ["login"] },
+      "homepage": "https://example.invalid/echo"
+    }]
+  }
+}

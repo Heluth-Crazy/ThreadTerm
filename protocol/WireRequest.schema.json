@@ -1353,6 +1353,196 @@
       ],
       "additionalProperties": false
     },
+    "RequestParams<\"chat.queue.read\">": {
+      "type": "object",
+      "properties": {
+        "sessionId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "sessionId"
+      ],
+      "additionalProperties": false
+    },
+    "RequestParams<\"chat.queue.add\">": {
+      "type": "object",
+      "properties": {
+        "sessionId": {
+          "type": "string"
+        },
+        "text": {
+          "type": "string"
+        },
+        "images": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "operationId": {
+          "type": "string"
+        },
+        "leaseEpoch": {
+          "type": "number"
+        }
+      },
+      "required": [
+        "sessionId",
+        "text",
+        "operationId",
+        "leaseEpoch"
+      ],
+      "additionalProperties": false
+    },
+    "RequestParams<\"chat.queue.update\">": {
+      "type": "object",
+      "properties": {
+        "sessionId": {
+          "type": "string"
+        },
+        "itemId": {
+          "type": "string"
+        },
+        "text": {
+          "type": "string"
+        },
+        "expectedRevision": {
+          "type": "number"
+        },
+        "operationId": {
+          "type": "string"
+        },
+        "leaseEpoch": {
+          "type": "number"
+        }
+      },
+      "required": [
+        "sessionId",
+        "itemId",
+        "text",
+        "expectedRevision",
+        "operationId",
+        "leaseEpoch"
+      ],
+      "additionalProperties": false
+    },
+    "RequestParams<\"chat.queue.remove\">": {
+      "type": "object",
+      "properties": {
+        "sessionId": {
+          "type": "string"
+        },
+        "itemId": {
+          "type": "string"
+        },
+        "operationId": {
+          "type": "string"
+        },
+        "leaseEpoch": {
+          "type": "number"
+        }
+      },
+      "required": [
+        "sessionId",
+        "itemId",
+        "operationId",
+        "leaseEpoch"
+      ],
+      "additionalProperties": false
+    },
+    "RequestParams<\"chat.queue.move\">": {
+      "type": "object",
+      "properties": {
+        "sessionId": {
+          "type": "string"
+        },
+        "itemId": {
+          "type": "string"
+        },
+        "toIndex": {
+          "type": "number"
+        },
+        "operationId": {
+          "type": "string"
+        },
+        "leaseEpoch": {
+          "type": "number"
+        }
+      },
+      "required": [
+        "sessionId",
+        "itemId",
+        "toIndex",
+        "operationId",
+        "leaseEpoch"
+      ],
+      "additionalProperties": false
+    },
+    "RequestParams<\"chat.queue.pause\">": {
+      "type": "object",
+      "properties": {
+        "sessionId": {
+          "type": "string"
+        },
+        "operationId": {
+          "type": "string"
+        },
+        "leaseEpoch": {
+          "type": "number"
+        }
+      },
+      "required": [
+        "sessionId",
+        "operationId",
+        "leaseEpoch"
+      ],
+      "additionalProperties": false
+    },
+    "RequestParams<\"chat.queue.resume\">": {
+      "type": "object",
+      "properties": {
+        "sessionId": {
+          "type": "string"
+        },
+        "operationId": {
+          "type": "string"
+        },
+        "leaseEpoch": {
+          "type": "number"
+        }
+      },
+      "required": [
+        "sessionId",
+        "operationId",
+        "leaseEpoch"
+      ],
+      "additionalProperties": false
+    },
+    "RequestParams<\"chat.queue.send\">": {
+      "type": "object",
+      "properties": {
+        "sessionId": {
+          "type": "string"
+        },
+        "itemId": {
+          "type": "string"
+        },
+        "operationId": {
+          "type": "string"
+        },
+        "leaseEpoch": {
+          "type": "number"
+        }
+      },
+      "required": [
+        "sessionId",
+        "itemId",
+        "operationId",
+        "leaseEpoch"
+      ],
+      "additionalProperties": false
+    },
     "RequestParams<\"quickLaunch.list\">": {
       "type": "object",
       "properties": {
@@ -4274,6 +4464,214 @@
         },
         "params": {
           "$ref": "#/definitions/RequestParams%3C%22plugin.reload%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "params"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "chat.queue.read"
+        },
+        "params": {
+          "$ref": "#/definitions/RequestParams%3C%22chat.queue.read%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "params"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "chat.queue.add"
+        },
+        "params": {
+          "$ref": "#/definitions/RequestParams%3C%22chat.queue.add%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "params"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "chat.queue.update"
+        },
+        "params": {
+          "$ref": "#/definitions/RequestParams%3C%22chat.queue.update%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "params"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "chat.queue.remove"
+        },
+        "params": {
+          "$ref": "#/definitions/RequestParams%3C%22chat.queue.remove%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "params"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "chat.queue.move"
+        },
+        "params": {
+          "$ref": "#/definitions/RequestParams%3C%22chat.queue.move%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "params"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "chat.queue.pause"
+        },
+        "params": {
+          "$ref": "#/definitions/RequestParams%3C%22chat.queue.pause%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "params"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "chat.queue.resume"
+        },
+        "params": {
+          "$ref": "#/definitions/RequestParams%3C%22chat.queue.resume%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "params"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "chat.queue.send"
+        },
+        "params": {
+          "$ref": "#/definitions/RequestParams%3C%22chat.queue.send%22%3E"
         }
       },
       "required": [

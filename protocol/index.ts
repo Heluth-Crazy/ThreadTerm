@@ -1,7 +1,7 @@
 import { validateWireRequest, validateWireSuccess } from './generated-validators.js';
 export const PROTOCOL_VERSION = 1 as const;
 /** Semantic contract for Chat approvals (`choiceId`), connection status, the agent registry and Quick Launch. Framing/HMAC still use PROTOCOL_VERSION. */
-export const PROTOCOL_CONTRACT = 4 as const;
+export const PROTOCOL_CONTRACT = 5 as const;
 export const MAX_FRAME_BYTES = 8 * 1024 * 1024;
 /** Agents that ship with ThreadTerm (native adapters, or `shell` / `custom` commands). */
 export type BuiltinProviderId = 'codex'|'claude'|'kimi'|'gemini'|'opencode'|'shell'|'grok'|'custom';
@@ -33,6 +33,12 @@ export interface QuickLaunchCommand { id:string; projectId:string; revision:numb
 /** The launch snapshot of a run; editing or deleting the command later does not change it. */
 export interface SessionRun { commandId:string; name:string; kind:QuickLaunchKind; shell:QuickLaunchShell; /** The first local http(s) URL this run printed (`output`), else the command's fallback (`configured`). */ url?:string; urlSource?:'output'|'configured';
  /** The user asked to stop it: an exit after this reads as "Stopped", not as a failure. */ stopRequested?:boolean }
+/** Prompt queue (Chat): messages written while the agent works wait here; the runtime sends them in order, one per
+ * finished turn, through the same path as chat.send. Never while paused, disconnected, mid-turn or awaiting an approval. */
+export interface ChatQueueItem { id:string; text:string; images:string[]; revision:number; createdAt:string; updatedAt:string;
+ /** `sending`: handed to the provider. `failed`: not sent, or its outcome is unknown — the queue paused; never resent automatically. */
+ state:'queued'|'sending'|'failed'; error?:string }
+export interface ChatQueue { sessionId:string; paused:boolean; pauseReason?:'user'|'stopped'|'failed'|'restarted'|'disconnected'; items:ChatQueueItem[] }
 export interface SessionConfig { sessionId:string; revision:number; provider:ProviderId; mode:SessionMode; cwd:string; projectId?:string; title?:string; executable?:string; args:string[]; sourceSessionId?:string }
 export interface SessionRetryAttempt { id:string; sourceSessionId:string; attempt:number; dueAt:string; status:'pending'|'claimed'|'cancelled'|'completed'|'exhausted'; operationId:string; createdAt:string }
 export interface SessionRetryState { sessionId:string; revision:number; enabled:boolean; maxRetries:number; delaySeconds:number; attempts:SessionRetryAttempt[] }
@@ -200,6 +206,17 @@ export interface RequestMap {
  'plugin.list': [{},PluginList];
  'plugin.setEnabled': [{pluginId:string;enabled:boolean;operationId:string},PluginList];
  'plugin.reload': [{operationId:string},PluginList];
+ 'chat.queue.read': [{sessionId:string},ChatQueue];
+ /** Mutations need the Chat write lease (like chat.send); each returns the whole queue. ≤ 20 items. */
+ 'chat.queue.add': [{sessionId:string;text:string;images?:string[];operationId:string;leaseEpoch:number},ChatQueue];
+ 'chat.queue.update': [{sessionId:string;itemId:string;text:string;expectedRevision:number;operationId:string;leaseEpoch:number},ChatQueue];
+ 'chat.queue.remove': [{sessionId:string;itemId:string;operationId:string;leaseEpoch:number},ChatQueue];
+ 'chat.queue.move': [{sessionId:string;itemId:string;toIndex:number;operationId:string;leaseEpoch:number},ChatQueue];
+ 'chat.queue.pause': [{sessionId:string;operationId:string;leaseEpoch:number},ChatQueue];
+ /** Unpauses and sends the next item when the agent is idle. */
+ 'chat.queue.resume': [{sessionId:string;operationId:string;leaseEpoch:number},ChatQueue];
+ /** Moves the item to the front, unpauses, and sends it when the agent is idle. */
+ 'chat.queue.send': [{sessionId:string;itemId:string;operationId:string;leaseEpoch:number},ChatQueue];
  'quickLaunch.list': [{projectId:string},QuickLaunchCommand[]];
  /** Creates (no `id`) or replaces a command (`id` + `expectedRevision`; a stale revision fails with `revision_conflict`). */
  'quickLaunch.save': [{projectId:string;id?:string;expectedRevision?:number;name:string;command:string;shell:QuickLaunchShell;cwd:string;kind:QuickLaunchKind;env:QuickLaunchEnvVar[];previewUrl?:string;operationId:string},QuickLaunchCommand];
@@ -302,7 +319,7 @@ export interface ThreadTermBridge {
  exportDiagnostics():Promise<string|null>;
  scheduleElectronCacheCleanup(schedule:boolean):Promise<{scheduled:boolean;available:boolean;result?:string}>;
 }
-export const METHODS = ['filesystem.resolve','session.launch.read','catalog.visibility.list','catalog.visibility.update','session.resume','session.organize','git.merge','git.merge.abort','project.catalog.list','project.update','worktree.branches','worktree.relocate','session.rerun','git.fetch','git.pull','git.push','session.config.read','session.config.save','session.retry.read','session.retry.update','chat.draft.read','chat.draft.save','device.status','device.enable','device.disable','device.pairing.create','device.pairing.cancel','device.list','device.rename','device.renew','device.revoke','git.stage','git.unstage','git.commit','filesystem.image','chat.snapshot','terminal.read','session.lookup','session.present','chat.read','data.status','data.backup','data.relocation.status','data.relocation.prepare','data.relocation.cancel','settings.export','settings.import.preview','settings.import.apply','preset.list','preset.save','preset.delete','usage.query','runtime.health','terminal.host','runtime.shutdown','runtime.snapshot','project.add','project.remove','session.create','history.import','session.stop','session.update','session.attention.acknowledge','session.claim','session.renew','session.release','terminal.input','terminal.resize','settings.update','provider.list','plugin.list','plugin.setEnabled','plugin.reload','quickLaunch.list','quickLaunch.save','quickLaunch.delete','quickLaunch.run','history.list','history.read','chat.send','chat.cancel','chat.approve','chat.options','chat.option.set','chat.connection','chat.connect','filesystem.list','filesystem.read','filesystem.write','draft.list','draft.put','draft.delete','git.status','git.diff','worktree.list','worktree.create','worktree.remove','workspace.save','workspace.delete','inbox.read','git.index.write','git.discard','git.checkout','git.branch.delete','git.branches','git.log','git.commit.show','git.commit.diff','git.blame','filesystem.create','filesystem.rename','filesystem.delete','filesystem.files','filesystem.search','review.list','review.changes','review.diff','review.revert','review.checkpoint'] as const satisfies readonly Method[];
+export const METHODS = ['filesystem.resolve','session.launch.read','catalog.visibility.list','catalog.visibility.update','session.resume','session.organize','git.merge','git.merge.abort','project.catalog.list','project.update','worktree.branches','worktree.relocate','session.rerun','git.fetch','git.pull','git.push','session.config.read','session.config.save','session.retry.read','session.retry.update','chat.draft.read','chat.draft.save','device.status','device.enable','device.disable','device.pairing.create','device.pairing.cancel','device.list','device.rename','device.renew','device.revoke','git.stage','git.unstage','git.commit','filesystem.image','chat.snapshot','terminal.read','session.lookup','session.present','chat.read','data.status','data.backup','data.relocation.status','data.relocation.prepare','data.relocation.cancel','settings.export','settings.import.preview','settings.import.apply','preset.list','preset.save','preset.delete','usage.query','runtime.health','terminal.host','runtime.shutdown','runtime.snapshot','project.add','project.remove','session.create','history.import','session.stop','session.update','session.attention.acknowledge','session.claim','session.renew','session.release','terminal.input','terminal.resize','settings.update','provider.list','plugin.list','plugin.setEnabled','plugin.reload','chat.queue.read','chat.queue.add','chat.queue.update','chat.queue.remove','chat.queue.move','chat.queue.pause','chat.queue.resume','chat.queue.send','quickLaunch.list','quickLaunch.save','quickLaunch.delete','quickLaunch.run','history.list','history.read','chat.send','chat.cancel','chat.approve','chat.options','chat.option.set','chat.connection','chat.connect','filesystem.list','filesystem.read','filesystem.write','draft.list','draft.put','draft.delete','git.status','git.diff','worktree.list','worktree.create','worktree.remove','workspace.save','workspace.delete','inbox.read','git.index.write','git.discard','git.checkout','git.branch.delete','git.branches','git.log','git.commit.show','git.commit.diff','git.blame','filesystem.create','filesystem.rename','filesystem.delete','filesystem.files','filesystem.search','review.list','review.changes','review.diff','review.revert','review.checkpoint'] as const satisfies readonly Method[];
 const stringFields: Partial<Record<Method,readonly string[]>> = {
  'filesystem.resolve':['sessionId','path'],
  'session.launch.read':['sessionId'],
@@ -321,7 +338,7 @@ const stringFields: Partial<Record<Method,readonly string[]>> = {
  'session.update':['sessionId','operationId'],'session.attention.acknowledge':['sessionId','operationId'],'session.claim':['sessionId','clientId'],'session.release':['sessionId'],
  'session.renew':['sessionId'],
  'terminal.input':['sessionId','data'],'terminal.resize':['sessionId'],
- 'settings.update':['operationId'],'plugin.setEnabled':['pluginId','operationId'],'plugin.reload':['operationId'],'quickLaunch.list':['projectId'],'quickLaunch.save':['projectId','name','command','shell','kind','operationId'],'quickLaunch.delete':['id','operationId'],'quickLaunch.run':['commandId','cwd','operationId'],'history.list':['provider'],'history.read':['provider','nativeId'],
+ 'settings.update':['operationId'],'plugin.setEnabled':['pluginId','operationId'],'plugin.reload':['operationId'],'chat.queue.read':['sessionId'],'chat.queue.add':['sessionId','text','operationId'],'chat.queue.update':['sessionId','itemId','text','operationId'],'chat.queue.remove':['sessionId','itemId','operationId'],'chat.queue.move':['sessionId','itemId','operationId'],'chat.queue.pause':['sessionId','operationId'],'chat.queue.resume':['sessionId','operationId'],'chat.queue.send':['sessionId','itemId','operationId'],'quickLaunch.list':['projectId'],'quickLaunch.save':['projectId','name','command','shell','kind','operationId'],'quickLaunch.delete':['id','operationId'],'quickLaunch.run':['commandId','cwd','operationId'],'history.list':['provider'],'history.read':['provider','nativeId'],
  'chat.send':['sessionId','text','operationId'],'chat.cancel':['sessionId','turnId'],
  'chat.approve':['sessionId','turnId','approvalId','choiceId','operationId'],
  'chat.options':['sessionId'],'chat.option.set':['sessionId','optionId','value','operationId'],
@@ -345,7 +362,7 @@ export function validateRequest(method:unknown,params:unknown):asserts method is
  if(!validateWireRequest({v:1,id:'boundary',method,params})) throw new Error('Request does not match the protocol schema');
  const m=method as Method;
  for(const key of stringFields[m]??[]) {
-  const imageOnlyText=m==='chat.send'&&key==='text'&&Array.isArray(params.images)&&params.images.length>0;
+  const imageOnlyText=(m==='chat.send'||m==='chat.queue.add')&&key==='text'&&Array.isArray(params.images)&&params.images.length>0;
   if(typeof params[key]!=='string'||(key!=='data'&&!imageOnlyText&&params[key]==='')) throw new Error(`Invalid ${key}`);
  }
  if(m==='device.pairing.create'&&!['readonly','fullcontrol'].includes(String(params.permission))) throw new Error('Invalid device permission');
@@ -359,7 +376,7 @@ export function validateRequest(method:unknown,params:unknown):asserts method is
  }
  if(m==='session.stop'&&params.force!==undefined&&typeof params.force!=='boolean') throw new Error('Invalid force');
  if('leaseEpoch' in params && (!Number.isSafeInteger(params.leaseEpoch)||Number(params.leaseEpoch)<1)) throw new Error('Invalid leaseEpoch');
- if(['session.renew','session.release','terminal.input','terminal.resize','chat.send','chat.cancel','chat.approve','chat.option.set','chat.connect'].includes(m)&&!('leaseEpoch' in params)) throw new Error('Missing leaseEpoch');
+ if(['session.renew','session.release','terminal.input','terminal.resize','chat.send','chat.queue.add','chat.queue.update','chat.queue.remove','chat.queue.move','chat.queue.pause','chat.queue.resume','chat.queue.send','chat.cancel','chat.approve','chat.option.set','chat.connect'].includes(m)&&!('leaseEpoch' in params)) throw new Error('Missing leaseEpoch');
  if(m==='terminal.resize') for(const key of ['cols','rows']) if(!Number.isInteger(params[key])||Number(params[key])<1||Number(params[key])>1000) throw new Error(`Invalid ${key}`);
  if(m==='session.create'||m==='history.import'||m==='session.config.save') {
   // Shape only: the runtime's agent registry (built-ins + enabled plugins) decides whether the agent exists.
@@ -407,6 +424,9 @@ export function validateRequest(method:unknown,params:unknown):asserts method is
   if(params.cursor!==undefined&&(!Number.isSafeInteger(params.cursor)||Number(params.cursor)<0)) throw new Error('Invalid output cursor');
   if(params.tail===true&&params.cursor!==undefined) throw new Error('tail and cursor are mutually exclusive');
  }
+ if(m==='chat.queue.move'&&(!Number.isInteger(params.toIndex)||Number(params.toIndex)<0||Number(params.toIndex)>19)) throw new Error('Invalid queue position');
+ if(m==='chat.queue.update'&&(!Number.isSafeInteger(params.expectedRevision)||Number(params.expectedRevision)<1)) throw new Error('Invalid queue item revision');
+ if((m==='chat.queue.add'||m==='chat.queue.update')&&String(params.text).length>1024*1024) throw new Error('Invalid text');
  if(m==='quickLaunch.save') {
   const name=String(params.name).trim(),command=String(params.command);
   if(!name||[...name].length>80||/[\u0000-\u001f\u007f]/.test(name)) throw new Error('Invalid command name');

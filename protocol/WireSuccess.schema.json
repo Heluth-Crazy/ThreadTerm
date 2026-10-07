@@ -2180,6 +2180,112 @@
     "RequestResult<\"plugin.reload\">": {
       "$ref": "#/definitions/PluginList"
     },
+    "RequestResult<\"chat.queue.read\">": {
+      "$ref": "#/definitions/ChatQueue"
+    },
+    "ChatQueue": {
+      "type": "object",
+      "properties": {
+        "sessionId": {
+          "type": "string"
+        },
+        "paused": {
+          "type": "boolean"
+        },
+        "pauseReason": {
+          "type": "string",
+          "enum": [
+            "user",
+            "stopped",
+            "failed",
+            "restarted",
+            "disconnected"
+          ]
+        },
+        "items": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/ChatQueueItem"
+          }
+        }
+      },
+      "required": [
+        "sessionId",
+        "paused",
+        "items"
+      ],
+      "additionalProperties": false
+    },
+    "ChatQueueItem": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "text": {
+          "type": "string"
+        },
+        "images": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "revision": {
+          "type": "number"
+        },
+        "createdAt": {
+          "type": "string"
+        },
+        "updatedAt": {
+          "type": "string"
+        },
+        "state": {
+          "type": "string",
+          "enum": [
+            "queued",
+            "sending",
+            "failed"
+          ],
+          "description": "`sending`: handed to the provider. `failed`: not sent, or its outcome is unknown — the queue paused; never resent automatically."
+        },
+        "error": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "text",
+        "images",
+        "revision",
+        "createdAt",
+        "updatedAt",
+        "state"
+      ],
+      "additionalProperties": false,
+      "description": "Prompt queue (Chat): messages written while the agent works wait here; the runtime sends them in order, one per finished turn, through the same path as chat.send. Never while paused, disconnected, mid-turn or awaiting an approval."
+    },
+    "RequestResult<\"chat.queue.add\">": {
+      "$ref": "#/definitions/ChatQueue"
+    },
+    "RequestResult<\"chat.queue.update\">": {
+      "$ref": "#/definitions/ChatQueue"
+    },
+    "RequestResult<\"chat.queue.remove\">": {
+      "$ref": "#/definitions/ChatQueue"
+    },
+    "RequestResult<\"chat.queue.move\">": {
+      "$ref": "#/definitions/ChatQueue"
+    },
+    "RequestResult<\"chat.queue.pause\">": {
+      "$ref": "#/definitions/ChatQueue"
+    },
+    "RequestResult<\"chat.queue.resume\">": {
+      "$ref": "#/definitions/ChatQueue"
+    },
+    "RequestResult<\"chat.queue.send\">": {
+      "$ref": "#/definitions/ChatQueue"
+    },
     "RequestResult<\"quickLaunch.list\">": {
       "type": "array",
       "items": {
@@ -5313,6 +5419,214 @@
         },
         "result": {
           "$ref": "#/definitions/RequestResult%3C%22plugin.reload%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "result"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "chat.queue.read"
+        },
+        "result": {
+          "$ref": "#/definitions/RequestResult%3C%22chat.queue.read%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "result"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "chat.queue.add"
+        },
+        "result": {
+          "$ref": "#/definitions/RequestResult%3C%22chat.queue.add%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "result"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "chat.queue.update"
+        },
+        "result": {
+          "$ref": "#/definitions/RequestResult%3C%22chat.queue.update%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "result"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "chat.queue.remove"
+        },
+        "result": {
+          "$ref": "#/definitions/RequestResult%3C%22chat.queue.remove%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "result"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "chat.queue.move"
+        },
+        "result": {
+          "$ref": "#/definitions/RequestResult%3C%22chat.queue.move%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "result"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "chat.queue.pause"
+        },
+        "result": {
+          "$ref": "#/definitions/RequestResult%3C%22chat.queue.pause%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "result"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "chat.queue.resume"
+        },
+        "result": {
+          "$ref": "#/definitions/RequestResult%3C%22chat.queue.resume%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "result"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "chat.queue.send"
+        },
+        "result": {
+          "$ref": "#/definitions/RequestResult%3C%22chat.queue.send%22%3E"
         }
       },
       "required": [

@@ -1,7 +1,7 @@
 import { ClipboardEvent, FormEvent, Fragment, KeyboardEvent, useContext, useEffect, useMemo, useRef, useState } from "react";
 import DOMPurify from "dompurify";
 import { marked } from "marked";
-import type { ChatPart, ChatSessionOption, ChatSlashCommand, ChatUiState, FileReference, Session } from "@threadterm/protocol";
+import type { ChatPart, ChatQueue, ChatSessionOption, ChatSlashCommand, ChatUiState, FileReference, Session } from "@threadterm/protocol";
 import { ChatItem, openExternal, operationId, request, subscribeEvents } from "../bridge";
 import { restoreChat, upsertChatItem } from "../chatState";
 import { acquireControl } from '../controlLease';
@@ -28,6 +28,8 @@ import { insertAtCaret } from '../workbench/agentReference';
 import "./chat-network-notice.css";
 import { isChatImage, readClipboardImage, selectChatImageAttachments, validateChatImages } from '../chatImages';
 import './chat-images.css';
+import { queueComposerMode } from '../chatQueue';
+import { ChatQueue as ChatQueuePanel } from './ChatQueue';
 
 function ThinkingPart({ part, streaming, copy, openFile }: { part: ChatPart; streaming: boolean; copy: (en: string, zh: string) => string; openFile?: (reference: FileReference) => void }) {
   const [open, setOpen] = useState(streaming);
@@ -350,6 +352,7 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession }
   const canControl = chatCanControl(session);
   const ended = isEnded(session);
   const [items, setItems] = useState<ChatItem[]>([]); const [text, setText] = useState(""); const [busy, setBusy] = useState(false); const [error, setError] = useState<string>(); const [controlIssue, setControlIssue] = useState<string>(); const [controllable, setControllable] = useState(false);
+  const [queue, setQueue] = useState<ChatQueue>();
   // Presentation only: keep the recoverable draft until runtime acceptance.
   // This preview never becomes a canonical ChatItem or an active-turn source.
   const [submissionPreview, setSubmissionPreview] = useState<{ token: string; text: string; images: string[] }>();
@@ -460,7 +463,7 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession }
     transportGeneration.current = 0;
     clearFirstResponseWait();
     setSubmissionPreview(undefined);
-    setItems([]); setText(''); setBusy(false); setDraftLoaded(false); setHistoryLoaded(false); setHistoryFailed(false); setLink(emptyLink(session.id, canControl && !ended ? "connecting" : "unavailable")); setConnectSlow(false); setError(undefined);draftReady.current=false;writer.current=undefined;setDraftFailed(false);setRecovery(undefined);setMenuOpen(null);setApprovalBusy(undefined);
+    setItems([]); setText(''); setBusy(false); setQueue(undefined); setDraftLoaded(false); setHistoryLoaded(false); setHistoryFailed(false); setLink(emptyLink(session.id, canControl && !ended ? "connecting" : "unavailable")); setConnectSlow(false); setError(undefined);draftReady.current=false;writer.current=undefined;setDraftFailed(false);setRecovery(undefined);setMenuOpen(null);setApprovalBusy(undefined);
     const unsubscribe = subscribeEvents(event => {
       if (disposed || !event.data || typeof event.data !== 'object') return;
       const data = event.data as { sessionId?: string; item?: ChatItem; reason?: string };
@@ -647,9 +650,26 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession }
   },[text,writable,recovery,draftFailed]);
   async function submit(event: FormEvent) {
     event.preventDefault();const value=text.trim(),epoch=leaseSessionId.current === session.id ? lease.current : undefined;
-    if((!value&&!images.length)||imageReading||epoch===undefined||!writable||!draftLoaded||busy||firstResponseWaitRef.current||activeTurnId(itemsRef.current,session.status))return;
+    const queueing = queueComposerMode(Boolean(activeTurnId(itemsRef.current, session.status)), queue);
+    if((!value&&!images.length)||queue?.sessionId!==session.id||imageReading||epoch===undefined||!writable||!draftLoaded||busy||(!queueing&&(firstResponseWaitRef.current||activeTurnId(itemsRef.current,session.status))))return;
     const submittingLifecycle = lifecycle.current;
     const token = operationId();
+    if (queueing) {
+      setBusy(true); setError(undefined);
+      try {
+        await persistCompose(text, epoch);
+        if (lifecycle.current !== submittingLifecycle) return;
+        const nextQueue = await request('chat.queue.add', {sessionId:session.id, text:value, ...(images.length ? {images} : {}), operationId:token, leaseEpoch:epoch});
+        if (lifecycle.current !== submittingLifecycle) return;
+        setQueue(nextQueue);
+        changeText(''); setImages([]);
+        try { localStorage.removeItem(imageDraftKey); } catch { /* The accepted queue item is already durable. */ }
+        await persistCompose('', epoch);
+      } catch (caught) {
+        if (lifecycle.current === submittingLifecycle) setError(asUserError(caught, copy('Message was not queued.', '消息未能加入队列。')));
+      } finally { if (lifecycle.current === submittingLifecycle) setBusy(false); }
+      return;
+    }
     const pendingStart = { token, sessionUpdatedAt: session.updatedAt };
     setSubmissionPreview({ token, text: value, images });
     firstResponseWaitRef.current = pendingStart;
@@ -741,6 +761,7 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession }
   }
   async function cancel(turnId:string){const epoch=leaseSessionId.current===session.id?lease.current:undefined;if(!writable||epoch===undefined)return;const pending=firstResponseWaitRef.current;if(pending?.turnId===turnId)clearFirstResponseWait(pending.token);try{await request("chat.cancel",{sessionId:session.id,turnId,leaseEpoch:epoch})}catch(caught){setError(caught instanceof Error?caught.message:"Cancellation failed.")}}
   const liveTurn = ended ? undefined : activeTurnId(items, session.status);
+  const queueMode = queueComposerMode(Boolean(liveTurn), queue);
   const modelOption = ui.options.find(option => /model/i.test(option.id) || /model/i.test(option.name));
   const thinkingOption = ui.options.find(option => option !== modelOption && (/think/i.test(option.id) || /think/i.test(option.name) || /reason/i.test(option.id)));
   const modeOption = ui.options.find(option => option !== modelOption && option !== thinkingOption && (/mode/i.test(option.id) || /mode/i.test(option.name)));
@@ -915,6 +936,7 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession }
     </div>}
     {draftFailed && <button className="btn" disabled={!writable} onClick={() => void retryDraft()}>{copy('Retry draft save', '重试保存草稿')}</button>}
     {error && <p className="surface-error" role="alert">{error}</p>}
+    <ChatQueuePanel sessionId={session.id} queue={queue} leaseEpoch={leaseSessionId.current === session.id ? lease.current : undefined} writable={writable} idle={!liveTurn} onChange={setQueue} onIssue={message => setError(message)} zh={zh} />
     <form className="chat-compose chat-compose-shell" data-v3-chat-form={session.id} onSubmit={submit} inert={overlay === "full" || undefined}>
       {slash !== undefined && <div className="chat-slash" role="listbox" aria-label={copy("Commands", "命令")}>
         {slashCommands.length ? slashCommands.map((command, index) => <button type="button" role="option" aria-selected={index === slashIndex} className={index === slashIndex ? "active" : ""} key={command.name} onMouseEnter={() => setSlashIndex(index)} onClick={() => applySlash(command)}>
@@ -949,9 +971,8 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession }
             {thinkingOption && <span className="chat-model-think">{shortThinking(thinkingOption, zh)}</span>}
             <Icon name="chevD" className="chat-model-chev" />
           </button>}
-          {liveTurn
-            ? <button type="button" className="chat-compose-send is-stop" disabled={!writable || busy} onClick={() => void cancel(liveTurn)} aria-label={copy('Stop', '停止')} title={copy('Stop', '停止')}><span className="chat-stop-square" /></button>
-            : <button className="chat-compose-send" type="submit" disabled={(!text.trim() && !images.length) || imageReading || busy || !writable || !draftLoaded || draftFailed || recovery !== undefined} aria-label={busy ? copy('Sending…', '正在发送…') : copy('Send', '发送')}><Icon name="arrowUp" /></button>}
+          {liveTurn && <button type="button" className="chat-compose-send is-stop" disabled={!writable || busy} onClick={() => void cancel(liveTurn)} aria-label={copy('Stop', '停止')} title={copy('Stop', '停止')}><span className="chat-stop-square" /></button>}
+          <button className={`chat-compose-send${queueMode ? ' is-queue' : ''}`} type="submit" disabled={(!text.trim() && !images.length) || queue?.sessionId !== session.id || imageReading || busy || !writable || !draftLoaded || draftFailed || recovery !== undefined} aria-label={busy ? copy('Sending…', '正在发送…') : queueMode ? copy('Queue', '加入队列') : copy('Send', '发送')}>{queueMode ? copy('Queue', '加入队列') : <Icon name="arrowUp" />}</button>
         </div>
       </div>
     </form>
