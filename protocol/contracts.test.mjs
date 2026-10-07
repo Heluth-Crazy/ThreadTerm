@@ -265,7 +265,18 @@ test('worktree setup saves an ordered unique list of up to 20 commands and runs 
  assert.throws(()=>validateResult('quickLaunch.setup.run',{...run,state:'paused'}));
  assert.throws(()=>validateResult('quickLaunch.setup.run',{...run,trigger:'startup'}));
  validateResult('quickLaunch.run',{existing:false,session:{id:'t1',title:'Install',provider:'custom',mode:'terminal',status:'running',createdAt:'t',updatedAt:'t',run:{commandId:'install',name:'Install',kind:'task',shell:'cmd',setup:{runId:'s',step:0,total:2}}}});
- assert.equal(PROTOCOL_CONTRACT,7);
+});
+
+test('session documents pin relative paths inside the worktree and list exact rows',()=>{
+ validateRequest('session.documents.list',{sessionId:'s'});
+ for(const path of ['docs/plan.md','notes.txt','.trellis/plan.md','a\\b.md','docs/..hidden.md'])
+  for(const m of ['session.documents.pin','session.documents.unpin']) validateRequest(m,{sessionId:'s',path,operationId:'o'});
+ for(const path of ['','../x.md','docs/../../x.md','a\\..\\b.md','/etc/plan.md','\\server\\share.md','C:\\repo\\plan.md','c:plan.md','a\0b'])
+  assert.throws(()=>validateRequest('session.documents.pin',{sessionId:'s',path,operationId:'o'}),/Invalid path/,JSON.stringify(path));
+ assert.throws(()=>validateRequest('session.documents.pin',{sessionId:'s',path:'docs/plan.md'}),/Invalid operationId|protocol schema/);
+ validateResult('session.documents.list',[{path:'docs/plan.md',title:'Checkout plan',pinnedAt:'t'},{path:'notes.txt',pinnedAt:'t',missing:true}]);
+ assert.throws(()=>validateResult('session.documents.pin',[{path:'docs/plan.md',pinnedAt:'t',size:3}]));
+ assert.equal(PROTOCOL_CONTRACT,8);
 });
 
 test('quick launch commands are bounded: relative cwd inside the root, known shells, unique env names, revisioned updates',()=>{

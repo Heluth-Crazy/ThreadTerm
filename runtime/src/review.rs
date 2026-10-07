@@ -473,6 +473,9 @@ pub fn capture_launch_in_background(db: std::sync::Arc<Database>, session_id: St
 }
 
 pub fn dispatch(db: &Database, method: &str, params: &Value) -> Result<Option<Value>> {
+    if let Some(result) = crate::session_documents::dispatch(db, method, params)? {
+        return Ok(Some(result));
+    }
     if !matches!(
         method,
         "review.list" | "review.changes" | "review.diff" | "review.revert" | "review.checkpoint"

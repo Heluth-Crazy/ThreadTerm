@@ -12,6 +12,9 @@ import { canSplitPaneArea, fileViewPlacement, visibleSessionLayout } from '../se
 import { PaneWorkspace, type PaneWorkbench } from './PaneWorkspace';
 import { WorkbenchSideBar, type WorkbenchCommand, type WorkbenchView } from './WorkbenchSideBar';
 import { QuickOpen, invalidateQuickOpen } from './QuickOpen';
+import { SessionDocuments } from './SessionDocuments';
+import { useSessionDocuments } from '../useSessionDocuments';
+import { sessionDocumentError } from '../sessionDocuments';
 import { dirtyPathsInScope } from '../dirtyEditors';
 import { formatAgentReference, referencePath } from '../workbench/agentReference';
 import { workbenchError } from '../workbench/errors';
@@ -68,6 +71,7 @@ export function SessionWorkspace({session,data,theme,onBack,onSelect,onProject,o
  const [trees,setTrees]=useState<Worktree[]>([]),[git,setGit]=useState<GitStatus>();
  const [workbenchCommand,setWorkbenchCommand]=useState<WorkbenchCommand>(),[quickOpen,setQuickOpen]=useState(false),[historyFocus,setHistoryFocus]=useState<{tabId:string;commit:string;key:string}>();
  const [inspector,setInspector]=useState(pendingCommands.length>0);
+ const [pinPicker,setPinPicker]=useState(false);
  const [picker,setPicker]=useState<{mode:'switch'|'add'|'fill';paneId?:string}>(),[query,setQuery]=useState(''),[allProjects,setAllProjects]=useState(false);
  const [commandTarget,setCommandTarget]=useState(session.id),[commandNotice,setCommandNotice]=useState<string>();
  useEffect(()=>{if(pendingCommands.length)setInspector(true);},[pendingCommands]);
@@ -183,6 +187,10 @@ export function SessionWorkspace({session,data,theme,onBack,onSelect,onProject,o
  const previewKind=(file:string,assetKind?:'text'|'image')=>assetKind==='image'||/\.(md|png|jpe?g|gif|webp)$/i.test(file)?'preview' as const:'file' as const;
  // Workbench (side bar, history, review, send-to-agent). Files opened here are ownerless top-level tabs.
  const workbenchScope:WorkbenchScope|undefined=project&&path?{projectId:project.id,worktreePath:path,rootPath:path}:undefined;
+ const documentsSession=data.sessions.find(candidate=>candidate.id===previewSessionId)??session;
+ const documentsRoot=documentsSession.worktreePath??data.projects.find(candidate=>candidate.id===documentsSession.projectId)?.path;
+ const documents=useSessionDocuments(documentsSession.id,zh);
+ const canPin=documentsSession.projectId===project?.id&&sameCanonicalScope(documentsRoot,path);
  const openWorkbenchTab=(tab:ContentRef,same:(candidate:ContentRef)=>boolean)=>{
   const existing=workspaceTabs(latestLayout.current).find(item=>same(item.tab));
   let target=existing;
@@ -253,6 +261,7 @@ export function SessionWorkspace({session,data,theme,onBack,onSelect,onProject,o
   insert:insertIntoSession,notice:setCommentNotice,
  };
  const workbenchActions:WorkbenchActions|undefined=workbenchScope&&project?{
+  sessionDocuments:canPin?documents:undefined,
   openFile:(file,position)=>void openScopedFile({projectId:project.id,worktreePath:path,path:file,kind:previewKind(file),line:position?.line,column:position?.column}).catch(fail),
   openSession:onSelect,
   openBeside:file=>void openScopedFile({projectId:project.id,worktreePath:path,path:file,kind:previewKind(file),ownerSessionId:previewSessionId}).catch(fail),
@@ -275,6 +284,7 @@ export function SessionWorkspace({session,data,theme,onBack,onSelect,onProject,o
   },
  }:undefined;
  const paneWorkbench:PaneWorkbench={
+  sessionDocuments:canPin&&project&&documentsRoot?{...documents,projectId:project.id,rootPath:documentsRoot,projectRoot:project.path}:undefined,
   sendToAgent,openHistory,comments:commentsHost,commentScope:project&&path?{projectId:project.id,root:path}:undefined,
   // Like review/history tabs: an independent tab placed beside the sessions, one per address.
   openWeb:url=>{if(isWebTabUrl(url))openWorkbenchTab({id:crypto.randomUUID(),kind:'web',url},candidate=>candidate.kind==='web'&&candidate.url===url);},
@@ -333,6 +343,7 @@ export function SessionWorkspace({session,data,theme,onBack,onSelect,onProject,o
    </div>{inspector&&<aside className="inspector" aria-label={zh?'会话详情面板':'Session details'}><div className="ins-head">{zh?'会话详情':'Session details'}</div><div className="ins-scroll">
     {pendingCommands.length>0&&<div className="ins-block pcol-ctx-sec"><h3>{zh?'待审阅命令':'Commands to review'}</h3><p className="note">{zh?'点击命令填入目标终端；不会自动按回车或替换已有输入。':'Insert a command into the target terminal, then review it before pressing Enter.'}</p><label>{zh?'目标会话':'Target session'}<Select value={commandTarget} onChange={event=>setCommandTarget(event.target.value)}>{data.sessions.filter(candidate=>candidate.mode==='terminal'&&working(candidate)&&(sessionIdsIn(layout).includes(candidate.id)||candidate.id===session.id)).map(candidate=><option key={candidate.id} value={candidate.id}>{candidate.title}</option>)}</Select></label>{pendingCommands.map((command,index)=><button type="button" className="cmd-opt" key={index} title={zh?'填入终端（不执行）':'Insert into terminal without executing'} onClick={()=>fillCommand(command)}>{command}</button>)}{commandNotice&&<p className="note" role="status">{commandNotice}</p>}<button className="btn-subtle" onClick={onClearCommands}>{zh?'清空待审阅命令':'Clear command list'}</button></div>}
     <div className="ins-block"><h3>{zh?'会话信息':'Session information'}</h3><span className={`chip st-${state}`}>{stateLabel}</span><p>{session.title}</p><p className="mono dim-s">{displayPath(path)}</p><button className="btn" onClick={()=>setConfigOpen(true)}>{zh?'配置':'Configure'}</button></div>
+    {canPin&&project&&<SessionDocuments key={documentsSession.id} sessionId={documentsSession.id} zh={zh} state={documents} onPick={()=>setPinPicker(true)} openFile={file=>void openScopedFile({projectId:project.id,worktreePath:path,path:file,kind:'file'}).catch(fail)}/>}
     <div className="ins-block"><h3>{zh?'重点关注':'Following'}</h3><button className="btn" onClick={follow} aria-pressed={session.followed}><Icon name="star"/>{zh?(session.followed?'已关注 · 点击取消':'关注此会话'):(session.followed?'Following · Unfollow':'Follow session')}</button></div>
     <div className="ins-block runtime-session-actions"><SessionActions session={session}/><button className="btn" onClick={()=>setFullscreen(value=>!value)}>{zh?'全屏终端':'Fullscreen terminal'}</button></div>
    </div></aside>}</div>
@@ -340,5 +351,6 @@ export function SessionWorkspace({session,data,theme,onBack,onSelect,onProject,o
   {picker&&<SurfaceDialog title={zh?(picker.mode==='switch'?'切换会话':picker.mode==='add'?'选择并排会话':'选择会话'):(picker.mode==='switch'?'Switch session':picker.mode==='add'?'Choose session for split':'Choose session')} onClose={cancelPicker} size="sm"><div className="switcher"><div className="tools"><div className="input-wrap"><Icon name="search"/><input autoFocus value={query} onChange={event=>setQuery(event.target.value)} placeholder={zh?'搜索会话':'Search sessions'}/></div>{picker.mode==='switch'&&<Select value={allProjects?'all':'tree'} onChange={event=>setAllProjects(event.target.value==='all')}><option value="tree">{zh?'当前工作树':'Current worktree'}</option><option value="all">{zh?'全部项目':'All projects'}</option></Select>}</div><div className="switcher-list">{available.filter(s=>`${s.title} ${s.provider}`.toLowerCase().includes(query.toLowerCase())).map(s=><button className="switcher-row" key={s.id} onClick={()=>{if(picker.mode==='switch'){setPicker(undefined);onSelect(s.id);}else if(picker.mode==='add')addSessionPane(s);else fillPane(s);}}><AgentIcon provider={s.provider}/>{s.title}<small>{providerName(s.provider)}</small></button>)}</div>{!available.length&&<p className="note">{zh?'没有其他可选会话。':'No other sessions are available.'}</p>}</div></SurfaceDialog>}
   {configOpen&&<SessionConfigDialog session={session} data={data} onClose={()=>setConfigOpen(false)} onRerun={onSelect}/>}
   {quickOpen&&workbenchScope&&workbenchActions&&<QuickOpen scope={workbenchScope} zh={zh} onClose={()=>setQuickOpen(false)} onOpen={(file,position)=>workbenchActions.openFile(file,position)}/>}
+  {pinPicker&&canPin&&workbenchScope&&<QuickOpen mode="pick" scope={workbenchScope} zh={zh} onClose={()=>setPinPicker(false)} onOpen={file=>{void documents.pin(file).catch(error=>setIssue(sessionDocumentError(error,zh)));}}/>}
  </section>;
 }

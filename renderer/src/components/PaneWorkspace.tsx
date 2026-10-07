@@ -29,6 +29,8 @@ import { fileSelectionKey, visibleSessionLayout, workspaceNavigationLayout, work
 import "./workspace-parity.css";
 import { FILE_DRAG_TYPE, readFileDrag } from "../fileDrag";
 import type { FileCommentsHost } from "../fileCommentsHost";
+import type { WorkbenchActions } from '../workbench/types';
+import { sameCanonicalScope } from '../projectScope';
 
 type Props = {
   layout: PaneLayout;
@@ -64,6 +66,8 @@ export type PaneWorkbench = {
   commentScope?:{projectId:string;root:string};
   /** One-shot request to select a commit in a history tab (blame click). */
   historyFocus?:{tabId:string;commit:string;key:string};
+  /** Documents for the active session, limited to this session's project/worktree root. */
+  sessionDocuments?:{projectId:string;rootPath:string;projectRoot?:string} & NonNullable<WorkbenchActions['sessionDocuments']>;
 };
 export function PaneWorkspace({ layout, sessions, onChange, theme, terminalCompatibility, providers = [], onSessionChanged, onOpenSession, ownerSessionId, onPickSession,toolbarHost,onEmpty,onActiveSession,onInteraction,onFileReference,focusTarget,fileReveal,onOpenPath,workbench }: Props) {
   const zh=useTranslation().locale==='zh-CN';
@@ -388,6 +392,7 @@ function Pane({
       assetKind={item.assetKind}
       editorId={editorId(node.id, item)}
       ownerSessionId={item.ownerSessionId}
+      sessionDocuments={workbench?.sessionDocuments && item.projectId === workbench.sessionDocuments.projectId && sameCanonicalScope(item.worktreePath ?? workbench.sessionDocuments.projectRoot, workbench.sessionDocuments.rootPath) ? workbench.sessionDocuments : undefined}
       previewNavigation={item.ownerSessionId?{
         activeId:item.id,
         files:workspaceTabs(layout).flatMap(candidate=>isFileTab(candidate.tab)&&candidate.tab.ownerSessionId===item.ownerSessionId?[{id:candidate.tab.id,path:candidate.tab.path,kind:candidate.tab.kind}]:[]),
