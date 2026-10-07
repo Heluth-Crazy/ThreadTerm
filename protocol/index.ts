@@ -348,7 +348,6 @@ export interface ThreadTermBridge {
  deletePageShots(shotIds:string[]):Promise<void>;
   /** Desktop preview element menu. This is an Electron-only event and never reaches the runtime. */
   onPageContextMenu(listener:(value:{frameName:string;x:number;y:number;pick?:PagePick;staticFrame?:boolean;selectionText:string})=>void):()=>void;
-  selectAllPageText(frameName:string):Promise<boolean>;
  openDirectory(projectId:string,worktreeId?:string):Promise<void>;
  desktopPreferences():Promise<{shortcuts:Record<string,string>}>;
  testNotification():Promise<{sent:boolean;reason?:string}>;

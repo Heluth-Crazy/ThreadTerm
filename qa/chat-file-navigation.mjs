@@ -41,7 +41,7 @@ const toolPart={type:'tool',toolName:'Read',status:'failed',text:'Read failed',f
 const listeners=new Set();let pointerTarget;
 window.qaCalls=[];window.qaSaved=initial;window.qaEvents=0;window.qaPwned=0;window.qaPointerEvents=[];
 for(const type of ['pointerdown','mousedown','pointerup','mouseup','click'])addEventListener(type,event=>{const target=event.target instanceof Element?event.target.closest('button[data-file-reference]'):null;if(!target)return;if(type==='pointerdown')pointerTarget=target;window.qaPointerEvents.push({type,text:target.textContent,reference:target.getAttribute('data-file-reference'),sameNode:target===pointerTarget});},true);
-window.threadterm={platform:'win32',windowsPty:{backend:'conpty',buildNumber:22631},openExternal:async()=>{},subscribeOutput:async()=>()=>{},onEvent:listener=>{window.qaEvents++;listeners.add(listener);return()=>listeners.delete(listener);},
+window.threadterm={onPageContextMenu:()=>()=>{},platform:'win32',windowsPty:{backend:'conpty',buildNumber:22631},openExternal:async()=>{},subscribeOutput:async()=>()=>{},onEvent:listener=>{window.qaEvents++;listeners.add(listener);return()=>listeners.delete(listener);},
  request:async(method,params)=>{window.qaCalls.push({method,params});
   if(method==='chat.snapshot')return{revision:1,items:[{id:'answer',role:'assistant',createdAt:'now',parts:[{type:'text',text:answerText},toolPart]}]};
   if(method==='chat.draft.read')return{text:'draft stays',revision:0};
@@ -54,6 +54,8 @@ window.threadterm={platform:'win32',windowsPty:{backend:'conpty',buildNumber:226
   if(method==='filesystem.list')return Object.keys(files).map(path=>({path,name:path.split('/').at(-1),kind:'file'}));
   if(method==='git.status')return{branch:'main',changes:[],ahead:0,behind:0};
   if(method==='draft.list')return[];
+  if(method==='chat.queue.read')return{sessionId:params.sessionId,paused:false,items:[]};
+  if(method==='session.documents.list')return[];
   if(method==='filesystem.resolve'){
    if(params.path==='./missing.ts')throw Error('file_reference_not_found');
    const path=params.path.includes('AGENTS.md')?'AGENTS.md':params.path.includes('main.ts')?'src/main.ts':params.path.includes('README.md')?'README.md':params.path.includes('sample.md')?'sample.md':params.path.includes('updated.md')?'updated.md':'tool.ts';
@@ -92,7 +94,9 @@ try{
   assert.deepEqual(absolute.params,{sessionId:'chat-'+provider,path:'D:\\project\\ThreadTerm\\AGENTS.md',line:12});
   assert.equal(await composer.inputValue(),'draft stays');
   assert.equal(await page.evaluate(()=>window.qaChatNode?.isConnected),true);
-  assert.deepEqual(await page.evaluate(()=>({snapshots:window.qaCalls.filter(call=>call.method==='chat.snapshot').length,events:window.qaEvents})),before);
+  // The Chat is not remounted: no second snapshot and the same node. (The opened file view legitimately adds its own
+  // event subscription, e.g. Plans & docs state, so the raw subscription count is not a remount signal.)
+  assert.equal(await page.evaluate(()=>window.qaCalls.filter(call=>call.method==='chat.snapshot').length),before.snapshots);
   assert.equal(await page.evaluate(()=>window.qaPwned),0);
   assert.equal(await page.locator('[id$="evil-img"]').getAttribute('onerror'),null);
   assert.equal(await page.locator('[id$="js-link"]').getAttribute('href'),null);
@@ -127,7 +131,7 @@ try{
   assert.equal(await composer.inputValue(),'draft stays');
   assert.equal(await composer.evaluate(element=>element===window.qaOriginalComposer),true);
   assert.equal(await page.evaluate(id=>window.qaCalls.filter(call=>call.method==='chat.snapshot'&&call.params.sessionId===id).length,'chat-'+provider),1);
-  assert.equal(await page.evaluate(()=>window.qaEvents),before.events+1);
+  // Same composer element and one snapshot prove the Chat survived; file views add their own event subscriptions.
   assert.equal(await page.getByRole('tab',{name:'AGENTS.md',exact:true}).count(),0,'restored chat companion remains local, not global');
   if(provider!=='codex')continue;
 

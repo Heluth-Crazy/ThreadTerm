@@ -21,7 +21,7 @@ import './renderer/src/styles.css';
 const calls=[];let resolveOldDraft;
 const files={A:{'same.ts':'one\\ntwo\\nthree\\nfour\\n'},old:{'same.ts':'OLD_DISK\\n'},B:{'same.ts':'B_DISK\\n'},};
 window.qa={calls,resolveOldDraft:()=>resolveOldDraft?.([{path:'same.ts',content:'OLD_DRAFT',baseFingerprint:'old',id:'old',revision:1}]),setBDisk:value=>files.B['same.ts']=value,conflict:false};
-window.threadterm={platform:'win32',windowsPty:{backend:'conpty',buildNumber:22631},onEvent:()=>()=>{},openExternal:async()=>{},request:async(method,params)=>{
+window.threadterm={onPageContextMenu:()=>()=>{},platform:'win32',windowsPty:{backend:'conpty',buildNumber:22631},onEvent:()=>()=>{},openExternal:async()=>{},request:async(method,params)=>{
  calls.push({method,params}); const scope=params.projectId;
  if(method==='filesystem.list')return Object.keys(files[scope]??{}).map(path=>({path,name:path,kind:'file'}));
  if(method==='git.status')return{branch:'fixture',changes:[],ahead:0,behind:0};
