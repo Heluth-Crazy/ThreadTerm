@@ -1,5 +1,6 @@
 import type { GitStatus, SessionDocument } from '@threadterm/protocol';
 import type { AgentReference } from './agentReference';
+import { displayPath } from '../projectScope';
 
 /** A registered project root or worktree the side bar operates on. */
 export type WorkbenchScope = { projectId:string; worktreePath?:string; rootPath:string };
@@ -44,9 +45,10 @@ export const scopeParams = (scope:Pick<WorkbenchScope,'projectId'|'worktreePath'
 export const joinPath = (dir:string, name:string) => dir ? `${dir}/${name}` : name;
 export const parentPath = (path:string) => path.includes('/') ? path.slice(0, path.lastIndexOf('/')) : '';
 export const baseName = (path:string) => path.slice(path.lastIndexOf('/') + 1);
+/** The path a user copies: never the runtime's extended-length `\\?\` / `//?/` form. */
 export const absolutePath = (root:string, path:string) => {
  const separator = root.includes('\\') ? '\\' : '/';
- return `${root.replace(/[\\/]+$/, '')}${separator}${path.split('/').join(separator)}`;
+ return displayPath(`${root.replace(/[\\/]+$/, '')}${separator}${path.split('/').join(separator)}`);
 };
 /** True when `path` is `target` or lies inside the folder `target`. */
 export const coveredBy = (path:string, target:string) => path === target || path.startsWith(`${target}/`);

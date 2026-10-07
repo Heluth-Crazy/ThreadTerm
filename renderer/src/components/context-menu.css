@@ -1,0 +1,15 @@
+.popover.app-context-menu {
+  position:fixed; z-index:1200; box-sizing:border-box; width:max-content; min-width:min(232px,calc(100vw - 16px)); max-width:calc(100vw - 16px); max-height:calc(100vh - 16px); overflow:auto;
+  padding:5px; border:1px solid var(--border); border-radius:var(--radius-overlay,12px); background:var(--surface); color:var(--text); box-shadow:var(--shadow); font-size:12px;
+}
+.app-context-menu .app-context-item { display:flex; align-items:center; gap:9px; box-sizing:border-box; width:100%; height:auto; min-height:30px; padding:6px 9px; border:0; border-radius:6px; background:transparent; color:inherit; font:inherit; text-align:left; cursor:pointer; }
+.app-context-menu .app-context-item:hover:not([aria-disabled="true"]), .app-context-menu .app-context-item:focus-visible { background:var(--soft,var(--raised)); }
+.app-context-menu .app-context-item:focus-visible { outline:2px solid var(--primary); outline-offset:-2px; }
+.app-context-menu .app-context-item[aria-disabled="true"] { color:var(--muted); cursor:default; opacity:.65; }
+.app-context-menu .app-context-item.danger { color:var(--danger); }
+.app-context-icon { display:flex; align-items:center; justify-content:center; flex:0 0 16px; width:16px; color:var(--muted); }
+.app-context-icon .ico { width:15px; height:15px; }
+.app-context-item.danger .app-context-icon { color:inherit; }
+.app-context-label { flex:1; min-width:0; max-width:340px; line-height:1.45; overflow-wrap:anywhere; }
+.app-context-menu kbd { flex:none; margin-left:15px; padding:0 5px; border:1px solid var(--border); border-radius:4px; color:var(--muted); font:10px/16px var(--mono,monospace); white-space:nowrap; }
+.app-context-separator { height:1px; margin:5px 4px; background:var(--border); }

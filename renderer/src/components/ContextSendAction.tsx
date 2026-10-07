@@ -10,6 +10,12 @@ import { referencePath } from '../workbench/agentReference';
 type PendingContext = { host: FileCommentsHost; context: ContextItem; zh: boolean; sourceRoot?: string };
 let showDialog: ((pending: PendingContext) => void) | undefined;
 
+/** Shared entry for toolbar buttons and context menus; receiver selection stays in one dialog. */
+export async function sendContextToAgent(request: PendingContext) {
+  if (showDialog) showDialog(request);
+  else await attach(request, request.host.defaultReceiverId ?? request.host.receivers[0]?.id ?? '');
+}
+
 async function attach({ host, context, zh, sourceRoot }: PendingContext, receiverId: string) {
   const receiver = host.receivers.find(value => value.id === receiverId);
   if (!receiver || !host.attachContext) throw new Error(zh ? '请先在此工作区打开一个聊天会话。' : 'Open a Chat session in this workspace first.');
@@ -38,8 +44,7 @@ export function ContextSendAction({ host, item, zh, label, iconOnly = false, tes
     try {
       const context = typeof item === 'function' ? await item() : item;
       const request = { host, context, zh, sourceRoot };
-      if (showDialog) showDialog(request);
-      else await attach(request, host.defaultReceiverId ?? host.receivers[0]?.id ?? '');
+      await sendContextToAgent(request);
     } catch (error) { host.notice?.(contextError(error, zh)); }
     finally { pending.current = false; }
   };

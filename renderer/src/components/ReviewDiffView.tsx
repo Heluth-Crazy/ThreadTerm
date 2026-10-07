@@ -11,6 +11,8 @@ import { workbenchError } from '../workbench/errors';
 import { registerDirtyEditor } from '../dirtyEditors';
 import { notifyFilesChanged } from '../workbench/types';
 import { WbIcon } from '../workbench/icons';
+import { showContextMenu } from './ContextMenu';
+import { diffSurfaceMenuItems } from '../fileSurfaceContextMenuItems';
 import '../workbench/workbench.css';
 
 /** Checkpoint → current file (editable, hunk revert + fenced save) or checkpoint → next checkpoint (read-only).
@@ -86,7 +88,13 @@ export function ReviewDiffView({projectId, worktreePath, path, sessionId, checkp
   } catch(error) { setIssue(workbenchError(error, zh)); }
   finally { setBusy(false); }
  };
- return <section className="tt-diff-shell wb-review-diff">
+ const openContextMenu=(menu:{x:number;y:number;selection:MergeSelection;hasSelection:boolean;target:HTMLElement;copy:()=>Promise<void>})=>{
+  const selected=menu.selection;
+  const canComment=Boolean(scope&&comments&&selected&&!busy&&!dirty&&!draft);
+  const reason=dirty?copy('Save or discard your edits first: they move the lines.','请先保存或放弃修改：修改会让行号变化。'):busy?copy('Wait for the current file action to finish.','请等待当前文件操作完成。'):draft?copy('Finish the current comment first.','请先完成当前评论。'):copy('Comments are unavailable in this workspace.','此工作区无法添加评论。');
+  showContextMenu({x:menu.x,y:menu.y,restoreFocus:menu.target,items:diffSurfaceMenuItems({prefix:'review-diff',zh,lines:selected,canComment,commentReason:reason,comment:()=>setDraft(selected),hasSelection:menu.hasSelection,copy:menu.copy,copyPath:()=>navigator.clipboard.writeText(path)})});
+ };
+ return <section className="tt-diff-shell wb-review-diff" data-testid="review-diff-surface">
   <div className="file-bar">
    <Icon name="spark"/>
    <span className="path" title={path}>{path}</span>
@@ -111,7 +119,7 @@ export function ReviewDiffView({projectId, worktreePath, path, sessionId, checkp
     {!diff.exists && live && <p className="wb-notice">{copy('This file was deleted after the checkpoint.', '此文件在检查点之后被删除。')}</p>}
     {!diff.oldText && diff.exists && <p className="wb-notice">{copy('This file was created after the checkpoint.', '此文件在检查点之后创建。')}</p>}
     {diff.exists && diff.oldText === diff.newText && !dirty && <p className="wb-notice">{copy('No differences: the file matches the checkpoint.', '没有差异：文件与检查点一致。')}</p>}
-    <MergeEditor ref={editor} path={path} oldText={diff.oldText} newText={editable ? text : diff.newText} readOnly={!editable} onChange={setText} onSave={() => void save()} onChunks={setChunks} onSelection={scope ? setSelection : undefined} marks={scope ? marks : undefined}/>
+    <MergeEditor ref={editor} path={path} oldText={diff.oldText} newText={editable ? text : diff.newText} readOnly={!editable} onChange={setText} onSave={() => void save()} onChunks={setChunks} onSelection={scope ? setSelection : undefined} onContextMenu={openContextMenu} marks={scope ? marks : undefined}/>
    </> : !issue && <p className="tt-editor-state">{copy('Loading…', '正在读取…')}</p>}
   {closePrompt && <SurfaceDialog size="sm" icon="file" title={copy('Save changes to this file?', '保存此文件的更改？')} subtitle={path} onClose={() => void settleClose('cancel')}
    footer={<><button type="button" className="btn" onClick={() => void settleClose('cancel')}>{copy('Cancel', '取消')}</button><button type="button" className="btn" onClick={() => void settleClose('discard')}>{copy('Discard', '放弃更改')}</button><button type="button" className="btn btn-primary" disabled={busy} onClick={() => void settleClose('save')}>{copy('Save', '保存')}</button></>}>

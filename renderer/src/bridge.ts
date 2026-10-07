@@ -1,4 +1,4 @@
-import type { PageRect, PageTargetRef, ChatItem, Method, NativeHistoryItem, OutputChunk, ProviderId, RequestParams, RequestResult, RuntimeEvent, Snapshot } from "@threadterm/protocol";
+import type { PagePick, PageRect, PageTargetRef, ChatItem, Method, NativeHistoryItem, OutputChunk, ProviderId, RequestParams, RequestResult, RuntimeEvent, Snapshot } from "@threadterm/protocol";
 export type { ChatItem, NativeHistoryItem, ProviderId, Snapshot } from "@threadterm/protocol";
 
 function facade() { return window.threadterm; }
@@ -29,3 +29,5 @@ export const cancelPagePick = (frameName: string) => facade().cancelPagePick(fra
 export const markPageTarget = (request: { frameName: string; target?: PageTargetRef; flash?: boolean }) => facade().markPageTarget(request);
 export const readPageShot = (shotId: string) => facade().readPageShot(shotId);
 export const deletePageShots = (shotIds: string[]) => facade().deletePageShots(shotIds);
+export const onPageContextMenu = (listener: (value: { frameName: string; x: number; y: number; pick?: PagePick; staticFrame?: boolean; selectionText: string }) => void) => facade().onPageContextMenu(listener);
+export const selectAllPageText = (frameName: string) => facade().selectAllPageText(frameName);

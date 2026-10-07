@@ -1,11 +1,13 @@
-import { useState } from 'react';
-import { openExternal } from '../bridge';
+import { useEffect, useState } from 'react';
+import { deletePageShots, onPageContextMenu, openExternal } from '../bridge';
 import type { FileCommentsHost } from '../fileCommentsHost';
 import type { CommentScope } from '../reviewComments';
 import { Icon } from './PrototypeIcon';
 import { WbIcon } from '../workbench/icons';
 import { PageCommentControls, PageCommentForm, usePageCommentPreview } from './PageComments';
 import { PendingComments, useReviewComments } from './FileComments';
+import { showContextMenu } from './ContextMenu';
+import { webContextMenuItems } from '../webContextMenuItems';
 import '../workbench/workbench.css';
 
 /** A web page opened from a terminal link, in a tab beside its session. Same sandbox as the development-address
@@ -16,6 +18,10 @@ export function WebPreview({url, zh, commentScope, commentsHost}:{url:string;zh:
  const preview=usePageCommentPreview(url,commentScope,commentsHost,zh);
  const comments=useReviewComments(commentScope);
  const copy = (en:string, cn:string) => zh ? cn : en;
+ useEffect(()=>onPageContextMenu(({frameName,x,y,pick})=>{
+  if(frameName!==preview.frameName||!pick)return;
+  showContextMenu({x,y,restoreFocus:preview.iframe.current,onDismiss:selected=>{if(selected?.testId!=='web-preview-comment-element'&&pick.shot)void deletePageShots([pick.shot.id]).catch(()=>undefined);},items:webContextMenuItems({pick,zh,enabled:preview.enabled,comment:()=>preview.acceptPick(pick),reload:()=>{preview.cancel(false);setLoad(value=>value+1);},copy:()=>navigator.clipboard.writeText(pick.target.type==='element' ? (pick.target.text ?? '') : '')})});
+ }),[preview.frameName,preview.acceptPick,zh]);
  return <section className="wb-web-preview">
   <div className="file-bar">
    <Icon name="popout"/>

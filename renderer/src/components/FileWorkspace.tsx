@@ -26,6 +26,10 @@ import { stageChunk, unstageChunk, withLineBreaks } from "../workbench/indexEdit
 import { workbenchError } from "../workbench/errors";
 import { coveredBy, type WorkbenchActions } from "../workbench/types";
 import { isDocumentPinned, sessionDocumentError } from "../sessionDocuments";
+import { showContextMenu } from "./ContextMenu";
+import { diffSurfaceMenuItems, sourceEditorMenuItems } from "../fileSurfaceContextMenuItems";
+import { changedFileContext } from "./GitContextActions";
+import { sendContextToAgent } from "./ContextSendAction";
 
 type View = "file" | "diff" | "preview";
 type Props = {
@@ -255,6 +259,20 @@ function FileWorkspaceInstance({
   useEffect(() => {
     if (dirty) setCommentDraft(undefined);
   }, [dirty]);
+  const openEditorContextMenu = (menu: { x: number; y: number; selection: { side?: "old" | "new"; startLine: number; endLine: number; text: string }; hasSelection?: boolean; target: HTMLElement; copy?: () => Promise<void>; cut?: () => Promise<void>; paste?: () => Promise<void>; selectAll?: () => void }, kind: "file" | "diff") => {
+    const { selection, x, y, target } = menu;
+    const canComment = Boolean(commentScope && commentsHost && selection && !busy && !dirty && !commentDraft);
+    const reason = dirty
+      ? (zh ? "请先保存或放弃修改：修改会让行号变化。" : "Save or discard your edits first: they move the lines.")
+      : busy
+        ? (zh ? "请等待当前文件操作完成。" : "Wait for the current file action to finish.")
+      : commentDraft
+        ? (zh ? "请先完成当前评论。" : "Finish the current comment first.")
+        : (zh ? "此工作区无法添加评论。" : "Comments are unavailable in this workspace.");
+    const common = {zh,lines:selection,canComment,commentReason:reason,comment:()=>setCommentDraft(kind === "file" ? {side:"new",...selection} : selection as MergeSelection)};
+    const sourceItems = kind === "diff" ? diffSurfaceMenuItems({...common,prefix:"editor",hasSelection:Boolean(menu.hasSelection),sendDiff:commentsHost?.attachContext?async()=>sendContextToAgent({host:commentsHost,context:await changedFileContext(scope,document!.path,staged,zh),zh,sourceRoot:worktreePath??rootPath??commentsHost.projectRoot(projectId)}):undefined,copy:menu.copy ?? (()=>navigator.clipboard.writeText(selection.text)),copyPath:()=>navigator.clipboard.writeText(document!.path)}) : sourceEditorMenuItems({...common,hasSelection:Boolean(menu.hasSelection),readOnly:Boolean(document?.readonly),send:onSendToAgent?()=>onSendToAgent({path:document!.path,...(menu.hasSelection?{startLine:selection.startLine,endLine:selection.endLine}:{})}):undefined,plans:sessionDocuments?()=>void toggleSessionDocument():undefined,pinned:Boolean(pinnedDocument),plansDisabled:Boolean(sessionDocuments?.loading||documentPinning||sessionDocumentIssue),plansReason:sessionDocumentIssue?(zh?"计划与文档当前不可用。":"Plans & docs is unavailable."):undefined,history:onOpenHistory?()=>onOpenHistory({path:document!.path}):undefined,copy:menu.copy??(()=>navigator.clipboard.writeText(selection.text)),cut:menu.cut??(()=>{}),paste:menu.paste??(()=>{}),selectAll:menu.selectAll??(()=>{}),copyPath:()=>navigator.clipboard.writeText(document!.path),copyReference:()=>navigator.clipboard.writeText(`${document!.path}:${selection.startLine}-${selection.endLine}`)});
+    showContextMenu({ x, y, restoreFocus: target, items: sourceItems });
+  };
   async function refreshGit() {
     await gitState.refresh();
   }
@@ -912,7 +930,7 @@ function FileWorkspaceInstance({
               <PendingComments scope={commentScope} host={commentsHost} comments={fileComments} zh={zh} />
             </>}
             {view === "diff" ? (
-              <section className="tt-diff-shell">
+                <section className="tt-diff-shell" data-testid="file-diff-surface">
                 <div className="file-bar">
                   {embeddedNavigation()}
                   {!embedded && (
@@ -1037,6 +1055,7 @@ function FileWorkspaceInstance({
                     onSave={() => void saveFile()}
                     onChunks={setHunkCount}
                     onSelection={commentScope ? setCommentSelection : undefined}
+                    onContextMenu={(menu) => openEditorContextMenu(menu, "diff")}
                     marks={commentScope ? diffCommentMarks : undefined}
                   />
                 ) : (
@@ -1055,6 +1074,8 @@ function FileWorkspaceInstance({
                 embedded={embedded}
                 commentScope={commentScope}
                 commentsHost={commentsHost}
+                onShowSource={() => setView("file")}
+                onSendToAgent={onSendToAgent ? () => onSendToAgent({ path: document.path }) : undefined}
               />
             ) : (
               <>
@@ -1111,7 +1132,7 @@ function FileWorkspaceInstance({
                   )}
                 </div>
                 }
-                <section className="tt-editor-shell">
+                <section className="tt-editor-shell" data-testid="file-editor-surface">
                   <CodeEditor
                     path={document.path}
                     value={text}
@@ -1125,6 +1146,7 @@ function FileWorkspaceInstance({
                     onBlameCommit={onOpenHistory ? (commit) => onOpenHistory({ path: document.path, commit }) : undefined}
                     onSendToAgent={onSendToAgent ? (lines) => onSendToAgent({ path: document.path, ...lines }) : undefined}
                     onSelection={commentScope ? (selection) => setCommentSelection({ side: "new", ...selection }) : undefined}
+                    onContextMenu={(menu) => openEditorContextMenu(menu, "file")}
                     marks={commentScope ? plainCommentMarks : undefined}
                   />
                 </section>

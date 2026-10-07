@@ -8,6 +8,7 @@ import {
   type RequestParams,
   type RequestResult,
   type ThreadTermBridge,
+  type PagePick,
 } from '@threadterm/protocol';
 
 const bridge: ThreadTermBridge = {
@@ -68,6 +69,15 @@ const bridge: ThreadTermBridge = {
   markPageTarget: (request) => ipcRenderer.invoke('threadterm:mark-page-target', request),
   readPageShot: (shotId) => ipcRenderer.invoke('threadterm:read-page-shot', shotId),
   deletePageShots: (shotIds) => ipcRenderer.invoke('threadterm:delete-page-shots', shotIds),
+  onPageContextMenu: (listener) => {
+    const handler = (_event: Electron.IpcRendererEvent, value: unknown) => {
+      if (!isRecord(value) || typeof value.frameName !== 'string' || !/^tt-preview-[a-z0-9-]{8,64}$/.test(value.frameName) || typeof value.x !== 'number' || !Number.isFinite(value.x) || typeof value.y !== 'number' || !Number.isFinite(value.y) || (!isPagePick(value.pick) && value.staticFrame !== true)) return;
+      listener({ frameName: value.frameName, x: value.x, y: value.y, ...(isPagePick(value.pick) ? { pick: value.pick } : { staticFrame: true }), selectionText: typeof value.selectionText === 'string' && value.selectionText.length <= 10000 ? value.selectionText : '' });
+    };
+    ipcRenderer.on('threadterm:page-context-menu', handler);
+    return () => ipcRenderer.removeListener('threadterm:page-context-menu', handler);
+  },
+  selectAllPageText: (frameName) => ipcRenderer.invoke('threadterm:select-all-page-text', frameName) as Promise<boolean>,
   openPluginsFolder: () => ipcRenderer.invoke('threadterm:open-plugins-folder') as Promise<void>,
   openDirectory: (projectId, worktreeId) => ipcRenderer.invoke('threadterm:open-directory', projectId, worktreeId) as Promise<void>,
   desktopPreferences: () => ipcRenderer.invoke('threadterm:desktop-preferences') as Promise<{ shortcuts: Record<string, string> }>,
@@ -85,4 +95,10 @@ function isOutputChunk(value: unknown): value is OutputChunk {
     && Number(value.cursor) >= 0
     && value.data instanceof Uint8Array
     && (value.gap === undefined || typeof value.gap === 'boolean');
+}
+
+function isPagePick(value: unknown): value is PagePick {
+  if (!isRecord(value) || typeof value.url !== 'string' || typeof value.title !== 'string' || !isRecord(value.viewport) || !isRecord(value.target)) return false;
+  const viewport = value.viewport, target = value.target;
+  return Number.isFinite(viewport.width) && Number.isFinite(viewport.height) && (target.type === 'area' || target.type === 'element');
 }

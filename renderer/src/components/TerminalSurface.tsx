@@ -26,6 +26,7 @@ import {
   hasTentativeAiCompletionPrompt,
 } from "./terminalCompletionHint";
 import { TerminalContextAction } from './TerminalContextAction';
+import { useTerminalContextMenu } from './TerminalContextMenu';
 
 type Props = { sessionId: string; provider: ProviderId; theme: "light" | "dark"; terminalCompatibility: unknown; session?: Session; onConfigure?: () => void; onCloseView?: () => void; onChanged?: () => void; onOpenSession?: (id: string) => void; resumeCapture?: "preassigned" | "none" };
 // A failed screen recovery is shown once, in the overlay: a plain-language reason for the
@@ -166,6 +167,7 @@ export function TerminalSurface({ sessionId, provider, theme, terminalCompatibil
     setSawControl({ key: sawControl.key, value: true });
   }
   const unknownGeometry = Boolean(session) && !isLive(session) && !fixedSize && !sawControl.value;
+  useTerminalContextMenu(host, terminalRef, session, zh);
   useEffect(() => { completionHintsRef.current = completionHints; if (!completionHints) setCompletionHint(false); }, [completionHints]);
   useEffect(() => {
     const previous = startupGenerationRef.current;

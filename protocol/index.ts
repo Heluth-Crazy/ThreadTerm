@@ -346,6 +346,9 @@ export interface ThreadTermBridge {
  /** The full screenshot of a pick as a data URL (for Chat image attachments); undefined when it was removed. */
  readPageShot(shotId:string):Promise<string|undefined>;
  deletePageShots(shotIds:string[]):Promise<void>;
+  /** Desktop preview element menu. This is an Electron-only event and never reaches the runtime. */
+  onPageContextMenu(listener:(value:{frameName:string;x:number;y:number;pick?:PagePick;staticFrame?:boolean;selectionText:string})=>void):()=>void;
+  selectAllPageText(frameName:string):Promise<boolean>;
  openDirectory(projectId:string,worktreeId?:string):Promise<void>;
  desktopPreferences():Promise<{shortcuts:Record<string,string>}>;
  testNotification():Promise<{sent:boolean;reason?:string}>;
