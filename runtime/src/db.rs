@@ -17,6 +17,7 @@ use uuid::Uuid;
 pub struct Database {
     connection: Mutex<Connection>,
     path: PathBuf,
+    quiet_terminal_exits: std::sync::atomic::AtomicBool,
 }
 
 impl Database {
@@ -42,6 +43,7 @@ impl Database {
              CREATE TABLE IF NOT EXISTS output_chunks (session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE, start_cursor INTEGER NOT NULL, data BLOB NOT NULL, PRIMARY KEY(session_id,start_cursor));
              CREATE TABLE IF NOT EXISTS deferred_codex_launches (session_id TEXT PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE, phase TEXT NOT NULL, error_code TEXT, error_message TEXT, cwd TEXT);
              CREATE TABLE IF NOT EXISTS chat_items (id TEXT PRIMARY KEY, session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE, turn_id TEXT, kind TEXT NOT NULL, data TEXT NOT NULL, created_at TEXT NOT NULL);
+             CREATE INDEX IF NOT EXISTS chat_items_session ON chat_items(session_id, created_at, id);
              CREATE TABLE IF NOT EXISTS chat_drafts (session_id TEXT PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE, revision INTEGER NOT NULL, text TEXT NOT NULL);
              CREATE TABLE IF NOT EXISTS session_organization (session_id TEXT PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE, data TEXT NOT NULL);
              CREATE TABLE IF NOT EXISTS session_activity (session_id TEXT PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE, state TEXT NOT NULL, revision INTEGER NOT NULL, turn_id TEXT, reason TEXT);
@@ -130,7 +132,11 @@ impl Database {
         Ok(Self {
             connection: Mutex::new(connection),
             path: path.to_owned(),
+            quiet_terminal_exits: std::sync::atomic::AtomicBool::new(false),
         })
+    }
+    pub fn begin_shutdown(&self) {
+        self.quiet_terminal_exits.store(true, std::sync::atomic::Ordering::Release);
     }
     pub fn path(&self) -> &Path {
         &self.path
@@ -1066,7 +1072,7 @@ impl Database {
             let data=json!({"sessionId":id,"status":status,"previousStatus":previous,"exitCode":exit_code});
             emit(tx,"session.status",data.clone())?;
             emit(tx,"state.changed",data)?;
-            if mode=="terminal"&&status=="exited"&&previous!="exited"&&!crate::quick_launch::stop_requested_tx(tx,id)? {
+            if mode=="terminal"&&status=="exited"&&previous!="exited"&&!self.quiet_terminal_exits.load(std::sync::atomic::Ordering::Acquire)&&!crate::quick_launch::quiet_exit_tx(tx,id,exit_code)? {
                 let kind=match exit_code{Some(0)=>"completed",Some(_)=>"failed",None=>"interrupted"};
                 tx.execute("INSERT OR IGNORE INTO inbox(id,session_id,kind,data,resolved,created_at) VALUES (?,?,?,?,1,?)",params![format!("{id}:exit"),id,kind,json!({"exitCode":exit_code}).to_string(),now()])?;
             }
@@ -2706,5 +2712,20 @@ mod tests {
             .to_string()
             .contains("attention_approval_pending"));
         assert_eq!(db.session_by_id(&session.id).unwrap().unwrap().activity.unwrap(), pending);
+    }
+    #[test]
+    fn chat_items_of_one_session_are_read_through_an_index() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Database::open(&dir.path().join("db.sqlite")).unwrap();
+        let plan: Vec<String> = db
+            .transaction(|tx| {
+                let mut statement = tx.prepare("EXPLAIN QUERY PLAN SELECT data FROM chat_items WHERE session_id=? ORDER BY created_at,id")?;
+                let rows = statement.query_map(["s"], |row| row.get::<_, String>(3))?;
+                Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+            })
+            .unwrap();
+        // A table scan would read every Chat's items to show one; the index also supplies the order.
+        assert!(plan.iter().any(|step| step.contains("USING INDEX chat_items_session")), "{plan:?}");
+        assert!(!plan.iter().any(|step| step.contains("TEMP B-TREE")), "{plan:?}");
     }
 }

@@ -709,12 +709,22 @@ pub(crate) fn request_stop(db: &Database, id: &str) -> Result<()> {
     })
 }
 
-/// A run the user asked to stop ends quietly: its exit is not a "needs you" inbox item.
-pub(crate) fn stop_requested_tx(tx: &Transaction<'_>, session_id: &str) -> Result<bool> {
+/// User-stopped runs and successful setup steps end quietly: neither needs an Inbox item.
+pub(crate) fn quiet_exit_tx(
+    tx: &Transaction<'_>,
+    session_id: &str,
+    exit_code: Option<i32>,
+) -> Result<bool> {
     Ok(tx
-        .query_row("SELECT stop_requested FROM quick_launch_runs WHERE session_id=?", [session_id], |r| r.get::<_, i64>(0))
+        .query_row(
+            "SELECT stop_requested, json_type(snapshot_json,'$.setup') IS NOT NULL FROM quick_launch_runs WHERE session_id=?",
+            [session_id],
+            |r| Ok((r.get::<_, i64>(0)?, r.get::<_, bool>(1)?)),
+        )
         .optional()?
-        .is_some_and(|flag| flag != 0))
+        .is_some_and(|(stop_requested, setup)| {
+            stop_requested != 0 || (setup && matches!(exit_code, Some(0) | None))
+        }))
 }
 
 fn expand(value: &str, inherited: &[(String, String)]) -> String {

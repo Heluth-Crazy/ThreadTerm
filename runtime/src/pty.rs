@@ -357,14 +357,53 @@ impl PtyManager {
         if let Err(error) = crate::quick_launch::mark_setup_runs_interrupted(db) {
             eprintln!("Worktree setup shutdown recovery failed: {error}");
         }
-        let ids: Vec<_> = self
+        db.begin_shutdown();
+        let mut sessions: Vec<_> = self
             .sessions
             .lock()
             .ok()
-            .map(|v| v.keys().cloned().collect())
+            .map(|mut registry| registry.drain().map(|(id, live)| (id, live, None)).collect())
             .unwrap_or_default();
-        for id in ids {
-            let _ = self.stop(db, &id, false);
+        // Every terminal gets the interrupt before we wait on a single shared grace period.
+        // Removing ownership first fences the normal exit waiters from finalizing these sessions.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        for (_, live, _) in &sessions {
+            if let Ok(mut writer) = live.writer.lock() {
+                let _ = writer.write_all(&[3]);
+                let _ = writer.flush();
+            }
+        }
+        loop {
+            for (_, live, exit) in &mut sessions {
+                if exit.is_none() {
+                    if let Ok(mut child) = live.child.lock() {
+                        if let Ok(Some(status)) = child.try_wait() {
+                            *exit = Some(status.exit_code() as i32);
+                        }
+                    }
+                }
+            }
+            if sessions.iter().all(|(_, _, exit)| exit.is_some()) || std::time::Instant::now() >= deadline {
+                break;
+            }
+            thread::sleep(std::time::Duration::from_millis(20));
+        }
+        for (id, live, exit) in sessions {
+            if exit.is_none() {
+                if let Ok(mut job) = live.job.lock() {
+                    drop(job.take());
+                }
+                if let Ok(mut child) = live.child.lock() {
+                    let _ = child.kill();
+                }
+            }
+            // Never wait on a reader or a killed child during runtime teardown.
+            if let Err(error) = db.set_session_status(&id, "exited", exit) {
+                eprintln!("PTY shutdown for {id} could not be finalized: {error}");
+            }
+            if let Err(error) = crate::quick_launch::setup_terminal_exited(db, &id, exit, true) {
+                eprintln!("Worktree setup shutdown for {id} failed: {error}");
+            }
         }
     }
     fn live(&self, id: &str) -> Result<Arc<LivePty>> {
@@ -674,6 +713,50 @@ mod tests {
             "force stop must not remove another session"
         );
         manager.stop(&db, &second.id, true).unwrap();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn shutdown_stops_idle_terminals_with_one_grace_and_no_inbox() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Arc::new(Database::open(&dir.path().join("runtime.sqlite")).unwrap());
+        let manager = PtyManager::new(Arc::new(OutputStore::default()));
+        let mut ids = Vec::new();
+        for index in 0..3 {
+            let session = db.create_session(CreateSession {
+                project_id: None, title: None, provider: "shell", mode: "terminal",
+                native_id: None, operation_id: &format!("shutdown-{index}"),
+            }).unwrap();
+            manager.launch(Arc::clone(&db), &session.id, dir.path().to_str().unwrap(),
+                Some("cmd.exe"), &["/Q".into(), "/K".into(), "prompt READY$G".into()]).unwrap();
+            ids.push(session.id);
+        }
+        let deadline = Instant::now() + Duration::from_secs(10);
+        for id in &ids {
+            loop {
+                let output: Vec<u8> = db.output_from(id, 0, 1 << 20).unwrap()
+                    .into_iter().flat_map(|(_, bytes)| bytes).collect();
+                if String::from_utf8_lossy(&output).contains("READY>") { break; }
+                assert!(Instant::now() < deadline, "idle shell did not become ready");
+                thread::sleep(Duration::from_millis(20));
+            }
+        }
+        let started = Instant::now();
+        manager.terminate_all(&db);
+        assert!(started.elapsed() < Duration::from_secs(4), "shutdown took {:?}", started.elapsed());
+        for id in &ids {
+            assert_eq!(db.session_by_id(id).unwrap().unwrap().status, "exited");
+            assert!(manager.live(id).is_err());
+        }
+        assert!(db.snapshot().unwrap().inbox.is_empty());
+        // Shutdown quieting belongs to this database, never to other runtimes in the process.
+        let other = Database::open(&dir.path().join("other.sqlite")).unwrap();
+        let session = other.create_session(CreateSession {
+            project_id: None, title: None, provider: "shell", mode: "terminal",
+            native_id: None, operation_id: "ordinary-failure",
+        }).unwrap();
+        other.set_session_status(&session.id, "exited", Some(1)).unwrap();
+        assert_eq!(other.snapshot().unwrap().inbox.len(), 1);
     }
 
     #[test]

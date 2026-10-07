@@ -384,3 +384,47 @@ fn delegate_worktree_creation_starts_the_same_setup_hook() {
     wait_setup_state(&runtime, &project, "cancelled");
     runtime.shutdown();
 }
+
+#[cfg(windows)]
+#[test]
+fn completed_setup_steps_do_not_add_inbox_items() {
+    let (root, db) = setup_test_db();
+    let project = setup_project(&db, root.path(), "setup-quiet-inbox-completed-project");
+    let runtime = setup_service(root.path(), Arc::clone(&db));
+    let first = save_command(&runtime, &project, "first", "exit /b 0", "task", "setup-quiet-inbox-completed-first");
+    let second = save_command(&runtime, &project, "second", "exit /b 0", "task", "setup-quiet-inbox-completed-second");
+    save_setup(&runtime, &project, &[first["id"].as_str().unwrap().into(), second["id"].as_str().unwrap().into()], 0, "setup-quiet-inbox-completed-configure");
+
+    runtime.dispatch("setup-test", setup_rpc("quickLaunch.setup.run", json!({"projectId":project,"cwd":root.path().to_string_lossy(),"operationId":"setup-quiet-inbox-completed-run"}), "setup-quiet-inbox-completed-run")).unwrap();
+    let completed = wait_setup_state(&runtime, &project, "completed");
+    assert_eq!(completed["sessionIds"].as_array().unwrap().len(), 2);
+    for session_id in completed["sessionIds"].as_array().unwrap() {
+        let count: i64 = db.transaction(|tx| Ok(tx.query_row("SELECT COUNT(*) FROM inbox WHERE session_id=?", [session_id.as_str().unwrap()], |row| row.get(0))?)).unwrap();
+        assert_eq!(count, 0, "completed setup step must not add an Inbox item");
+    }
+    runtime.shutdown();
+}
+
+#[cfg(windows)]
+#[test]
+fn failed_setup_step_adds_only_its_failed_inbox_item() {
+    let (root, db) = setup_test_db();
+    let project = setup_project(&db, root.path(), "setup-quiet-inbox-failed-project");
+    let runtime = setup_service(root.path(), Arc::clone(&db));
+    let first = save_command(&runtime, &project, "first", "exit /b 0", "task", "setup-quiet-inbox-failed-first");
+    let second = save_command(&runtime, &project, "second", "exit /b 7", "task", "setup-quiet-inbox-failed-second");
+    save_setup(&runtime, &project, &[first["id"].as_str().unwrap().into(), second["id"].as_str().unwrap().into()], 0, "setup-quiet-inbox-failed-configure");
+
+    runtime.dispatch("setup-test", setup_rpc("quickLaunch.setup.run", json!({"projectId":project,"cwd":root.path().to_string_lossy(),"operationId":"setup-quiet-inbox-failed-run"}), "setup-quiet-inbox-failed-run")).unwrap();
+    let failed = wait_setup_state(&runtime, &project, "failed");
+    let sessions = failed["sessionIds"].as_array().unwrap();
+    assert_eq!(sessions.len(), 2);
+    let inbox: Vec<(String, String)> = db.transaction(|tx| {
+        let mut statement = tx.prepare("SELECT session_id,kind FROM inbox WHERE session_id IN (?,?)")?;
+        let rows = statement.query_map([sessions[0].as_str().unwrap(), sessions[1].as_str().unwrap()], |row| Ok((row.get(0)?, row.get(1)?)))?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }).unwrap();
+    assert_eq!(inbox.len(), 1);
+    assert_eq!(inbox[0], (sessions[1].as_str().unwrap().to_owned(), "failed".to_owned()));
+    runtime.shutdown();
+}
