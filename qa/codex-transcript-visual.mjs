@@ -18,10 +18,10 @@ import { I18nProvider } from './renderer/src/i18n';
 import './renderer/src/styles.css';
 const text = text => ({type:'text',text});
 const row = (id,parts,extra={}) => ({id,role:'assistant',turnId:'t1',createdAt:'now',parts,...extra});
-const items = [row('u',[text('测试消息')],{role:'user'}),
-  row('a',[text('我先加载项目的 Trellis 会话指引，确认当前工作区状态。')]),
+const items = [row('u',[text('Test message')],{role:'user'}),
+  row('a',[text('I will inspect the project instructions before continuing.')]),
   row('tool',[{type:'tool',toolName:'commandExecution',status:'completed',data:{command:'Get-Content AGENTS.md',output:'Project instructions'}}]),
-  row('answer',[text('收到，测试消息正常。此次对话需要创建一个 **Trellis 任务**吗？')]),
+  row('answer',[text('The test message completed successfully.')]),
   row('done',[],{elapsedMs:22000})];
 let listener;
 window.threadterm = {onEvent: cb => {listener=cb; return ()=>{};},request:async method => {
@@ -46,11 +46,11 @@ try {
   await page.locator('.codex-work > summary').waitFor();
   const bubble = page.locator('.is-codex.user');
   const geometry = await bubble.evaluate(el => ({ height: el.getBoundingClientRect().height, text: el.innerText }));
-  assert.equal(geometry.text, '测试消息');
+  assert.equal(geometry.text, 'Test message');
   assert.equal(geometry.height, 44, 'shared 24px line height plus 20px vertical padding; no phantom Markdown newline');
   assert.equal(await page.locator('.codex-work').getAttribute('open'), null);
   assert.equal(await page.locator('.codex-work-body').isVisible(), false);
-  assert.equal(await page.locator('.codex-turn > .assistant').innerText(), '收到，测试消息正常。此次对话需要创建一个 Trellis 任务吗？');
+  assert.equal(await page.locator('.codex-turn > .assistant').filter({hasText:'The test message completed successfully.'}).innerText(), 'The test message completed successfully.');
   for (const theme of ['light', 'dark']) {
     await page.evaluate(theme => document.documentElement.dataset.theme = theme, theme);
     for (const width of [1280, 1440, 1920]) {
@@ -59,7 +59,7 @@ try {
       await page.locator('.codex-work > summary').focus();
       await page.keyboard.press('Enter');
       assert.equal(await page.locator('.codex-work-body').isVisible(), true);
-      assert.equal(await page.locator('.codex-tool-disclosure summary').innerText(), '已运行命令');
+      assert.match(await page.locator('.chat-tool-current-action').textContent() ?? '', /Tool activity|工具执行/i);
       await page.screenshot({path:join(out,`${theme}-${width}-expanded.png`)});
       await page.keyboard.press('Space');
       assert.equal(await page.locator('.codex-work-body').isVisible(), false);
@@ -67,16 +67,16 @@ try {
     }
   }
   await page.locator('.codex-work > summary').click();
-  await page.locator('.codex-tool-disclosure summary').click();
-  assert.equal(await page.locator('.codex-tool-disclosure pre').isVisible(), true);
+  await page.locator('.chat-tool-activity > summary').click();
+  assert.equal(await page.locator('.chat-tool-entry pre').isVisible(), true);
   // State survives transcript updates, and intentional user line breaks survive.
-  await page.evaluate(() => window.qaUpdate({id:'u2',role:'user',turnId:'t2',createdAt:'now',parts:[{type:'text',text:'第一行\n第二行'}]}));
+  await page.evaluate(() => window.qaUpdate({id:'u2',role:'user',turnId:'t2',createdAt:'now',parts:[{type:'text',text:'First line\nSecond line'}]}));
   await page.locator('.is-codex.user').nth(1).waitFor();
-  assert.equal(await page.locator('.is-codex.user').nth(1).innerText(), '第一行\n第二行');
+  assert.equal(await page.locator('.is-codex.user').nth(1).innerText(), 'First line\nSecond line');
   assert.equal(await page.locator('.codex-work-body').isVisible(), true);
   const liveTool = {id:'live-tool',role:'assistant',turnId:'t2',createdAt:'now',parts:[{type:'tool',toolName:'commandExecution',toolId:'live',status:'running',text:'Live output'}]};
   await page.evaluate(item => window.qaUpdate(item), liveTool);
-  const liveDetails = page.locator('.codex-tool-disclosure').last();
+  const liveDetails = page.locator('.chat-tool-activity').last();
   await liveDetails.waitFor();
   assert.equal(await liveDetails.evaluate(el => el.open), false, 'running tools start collapsed');
   await liveDetails.locator('summary').click();
@@ -88,7 +88,7 @@ try {
   await page.waitForTimeout(100);
   assert.equal(await liveDetails.evaluate(el => el.open), false, 'stream updates do not reopen details');
   assert.deepEqual(errors, []);
-  await writeFile(join(out, 'report.json'), JSON.stringify({passed:true,geometry,checks:['collapsed/expanded','keyboard Enter/Space','tool details','update preserves expansion','intentional newlines','no horizontal overflow','1280/1440/1920 light/dark'],scratch},null,2));
+  await writeFile(join(out, 'report.json'), JSON.stringify({passed:true,geometry,checks:['collapsed/expanded','keyboard Enter/Space','generic tool activity','update preserves expansion','intentional newlines','no horizontal overflow','1280/1440/1920 light/dark'],scratch},null,2));
   console.log(JSON.stringify({passed:true,out,geometry}));
 } finally {
   if (app) await app.close();

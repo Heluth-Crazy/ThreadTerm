@@ -8,7 +8,7 @@ use super::{
         CommandSpec, EnvelopeStyle, JsonLineProcess, JsonLineResponder,
     },
     emit_scoped, ChatSession, ChatToolServer, ProviderAdapter, ProviderCapability, ProviderError,
-    ProviderEvent, TerminalCommand,
+    TerminalCommand,
 };
 use chrono::{TimeZone, Utc};
 use serde_json::{json, Value};
@@ -17,14 +17,15 @@ use std::{
     sync::{Arc, Condvar, Mutex},
     time::{Duration, Instant},
 };
+#[cfg(test)]
 use tokio::sync::broadcast;
 
 pub struct CodexAdapter {
-    events: broadcast::Sender<ProviderEvent>,
+    events: crate::provider_events::Sender,
 }
 
 impl CodexAdapter {
-    pub fn new(events: broadcast::Sender<ProviderEvent>) -> Self {
+    pub fn new(events: crate::provider_events::Sender) -> Self {
         Self { events }
     }
 
@@ -435,7 +436,7 @@ struct CodexChat {
     active_turn: CodexTurnState,
     session_id: String,
     cwd: String,
-    events: broadcast::Sender<ProviderEvent>,
+    events: crate::provider_events::Sender,
     ui: Arc<Mutex<CodexUiState>>,
     worker_token: String,
 }
@@ -2135,7 +2136,7 @@ fn capitalize(value: &str) -> String {
 }
 
 fn emit_chat_ui(
-    events: &broadcast::Sender<ProviderEvent>,
+    events: &crate::provider_events::Sender,
     session_id: &str,
     native_id: Option<&str>,
     ui: &Mutex<CodexUiState>,
@@ -2163,7 +2164,7 @@ fn emit_chat_ui(
 }
 
 fn emit_codex_status_item(
-    events: &broadcast::Sender<ProviderEvent>,
+    events: &crate::provider_events::Sender,
     session_id: &str,
     native_id: &str,
     request: CodexStatusCommand<'_>,
@@ -2275,7 +2276,7 @@ fn wait_for_codex_native_turn(
 
 #[allow(clippy::too_many_arguments)]
 fn emit_codex_message(
-    events: &broadcast::Sender<ProviderEvent>,
+    events: &crate::provider_events::Sender,
     session_id: &str,
     native: &Mutex<Option<String>>,
     approvals: &Mutex<HashMap<String, PendingCodexApproval>>,
@@ -2290,6 +2291,17 @@ fn emit_codex_message(
         .get("method")
         .and_then(Value::as_str)
         .unwrap_or("provider.event");
+    // app-server emits legacy codex/event/* notifications alongside its typed
+    // API. Command output chunks are also superseded by item/completed's
+    // aggregatedOutput. Neither is projected; forwarding them saturated the
+    // shared queue and discarded real approvals/completions during large tools.
+    // Filter before touching turn state. Server requests must still be answered.
+    if raw.get("id").is_none()
+        && (method.starts_with("codex/event/")
+            || matches!(method, "item/commandExecution/outputDelta" | "item/fileChange/outputDelta"))
+    {
+        return;
+    }
     let params = raw.get("params").cloned().unwrap_or_else(|| raw.clone());
     let provider_turn_id = params
         .get("turnId")
@@ -2498,7 +2510,12 @@ fn emit_codex_message(
         "turn/completed" | "thread/compacted" => "chat.turn.completed",
         "error" => "chat.error",
         "serverRequest/resolved" => "chat.approval.resolved",
-        _ => "provider.event",
+        // Usage is persisted from its raw payload by the shared projection.
+        // Other UI-only notifications were already adopted above; unknown
+        // native notices have no stable projection contract and must not fill
+        // the durability queue.
+        "thread/tokenUsage/updated" => "provider.event",
+        _ => return,
     };
     let mut data = match method {
         "item/agentMessage/delta" => json!({
@@ -2739,6 +2756,36 @@ mod tests {
     use super::*;
 
     #[test]
+    fn large_command_output_notifications_do_not_displace_transcript_or_completion() {
+        let (events, mut received) = crate::provider_events::tap_channel(16);
+        let native = Mutex::new(Some("native-thread".to_owned()));
+        let approvals = Mutex::new(HashMap::new());
+        let active_turn = new_codex_turn_state();
+        active_turn.0.lock().unwrap().replace(ActiveCodexTurn {
+            public_id: "public-turn".into(), native_id: None,
+            assistant_item_id: None, started_at: Instant::now(),
+        });
+        let ui = Mutex::new(CodexUiState::default());
+        let responder = Mutex::new(None);
+        let emit = |raw| emit_codex_message(&events, "session", &native, &approvals,
+            &active_turn, &ui, &responder, "worker", raw);
+        emit(json!({"method":"turn/started","params":{"turn":{"id":"native-turn"}}}));
+        for index in 0..8192 {
+            emit(json!({"method":"item/commandExecution/outputDelta","params":{"itemId":"command","delta":"x".repeat(128)}}));
+            emit(json!({"method":"codex/event/exec_command_output_delta","params":{"delta":"x".repeat(128),"sequence":index}}));
+        }
+        emit(json!({"method":"item/completed","params":{"item":{"id":"command","type":"commandExecution","status":"completed","aggregatedOutput":"x".repeat(1024*1024)}}}));
+        emit(json!({"method":"item/agentMessage/delta","params":{"itemId":"answer","delta":"done"}}));
+        emit(json!({"method":"turn/completed","params":{"turn":{"id":"native-turn","status":"completed"}}}));
+        let observed: Vec<_> = std::iter::from_fn(|| received.try_recv().ok()).collect();
+        assert_eq!(observed.iter().map(|event| event.kind.as_str()).collect::<Vec<_>>(),
+            ["chat.turn.started", "chat.item", "chat.delta", "chat.turn.completed"]);
+        assert_eq!(observed[1].data["raw"]["params"]["item"]["aggregatedOutput"].as_str().unwrap().len(), 1024*1024);
+        assert_eq!(observed[2].data["part"]["text"], "done");
+        assert!(active_turn.0.lock().unwrap().is_none());
+    }
+
+    #[test]
     fn failed_version_probe_keeps_its_specific_error() {
         assert_eq!(
             codex_capability_reason(false, "unknown", Some("version probe timed out".into())),
@@ -2752,7 +2799,7 @@ mod tests {
 
     #[test]
     fn native_reader_producers_keep_the_reserved_worker_token() {
-        let (events, mut received) = broadcast::channel(16);
+        let (events, mut received) = crate::provider_events::tap_channel(16);
         let native = Mutex::new(Some("native-1".to_owned()));
         let approvals = Mutex::new(HashMap::new());
         let active_turn = new_codex_turn_state();
@@ -2762,7 +2809,7 @@ mod tests {
             json!({"method":"turn/started","params":{"turn":{"id":"native-turn"}}}),
             json!({"id":99,"method":"item/commandExecution/requestApproval","params":{"command":"echo qa"}}),
             json!({"method":"thread/settings/updated","params":{"threadSettings":{"model":"qa-model"}}}),
-            json!({"kind":"process.error","message":"fake reader EOF"}),
+            json!({"method":"thread/tokenUsage/updated","params":{"tokenUsage":{"last":{"inputTokens":1,"outputTokens":2}}}}),
         ] {
             emit_codex_message(
                 &events,
@@ -2822,7 +2869,7 @@ mod tests {
             Arc::new(|_| {}),
         )
         .unwrap();
-        let (events, mut received) = broadcast::channel(32);
+        let (events, mut received) = crate::provider_events::tap_channel(32);
         let active_turn = new_codex_turn_state();
         let mut chat = CodexChat {
             process,
@@ -2977,7 +3024,7 @@ mod tests {
     fn terminal_output_never_becomes_codex_identity_evidence() {
         // Codex identity is obtained only from app-server thread/start. There
         // is intentionally no output parser that could bind spoofed text.
-        let adapter = CodexAdapter::new(broadcast::channel(1).0);
+        let adapter = CodexAdapter::new(crate::provider_events::tap_channel(1).0);
         assert_eq!(
             adapter.terminal_capture(),
             super::super::TerminalCapture::PreAssigned
@@ -2986,7 +3033,7 @@ mod tests {
 
     #[test]
     fn precreated_thread_id_launches_codex_resume_without_output_parsing() {
-        let adapter = CodexAdapter::new(broadcast::channel(1).0);
+        let adapter = CodexAdapter::new(crate::provider_events::tap_channel(1).0);
         let id = "01a0be7e-b463-7bd0-8d12-c184185b3a0f";
         let command = adapter.terminal_command(None, Some(id)).unwrap();
         assert!(command
@@ -3246,7 +3293,7 @@ mod tests {
 
     #[test]
     fn status_item_marks_requested_command_without_dropping_report_data() {
-        let (events, mut receiver) = broadcast::channel(4);
+        let (events, mut receiver) = crate::provider_events::tap_channel(4);
         let ui = Arc::new(Mutex::new(CodexUiState {
             status: CodexStatusState {
                 account: json!({"account":{"type":"chatgpt","planType":"prolite"}}),

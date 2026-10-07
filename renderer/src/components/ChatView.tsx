@@ -16,7 +16,9 @@ import { UsageCard } from './UsageCard';
 import { usageCardsForItems } from '../usageCard';
 import { connectionStatusText, emptyLink, overlayKind, reduceChatLink } from "../chatConnection";
 import { activeTurnId, chatCanControl, formatChatDuration, itemShowsStreaming, matchSlashCommands, partBody, partLabel, shouldRenderPart, slashQuery } from "../chatPresentation";
-import { groupCodexTranscript } from "../codexTranscript";
+import { groupCodexTranscript, type CodexTurn } from "../codexTranscript";
+import { groupToolActivity, toolEntriesForItems, withoutToolParts, type ToolActivityEntry } from "../toolActivity";
+import { ToolActivity } from './ToolActivity';
 import { createCodexStreamQueue } from "../codexStream";
 import { FileLinkedMarkdown, FileLinkedText, FileReferenceChips } from './FileReferenceText';
 import { parseMarkdownFileReference } from '../fileReferences';
@@ -901,6 +903,29 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession }
       })}
     </article>;
   }
+  function renderTurn(group: CodexTurn) {
+    // Display activity follows runtime liveness even in a read-only observer;
+    // it is independent of whether this window owns the control lease.
+    const displayTurn = activeTurnId(items, session.status);
+    const active = group.items.some(item => item.turnId && item.turnId === displayTurn);
+    const awaitingApproval = active && session.status === 'waiting' && group.items.some(item => item.parts.some(part => part.type === 'approval' && part.status === 'pending'));
+    const drawer = (entries: ToolActivityEntry[]) => <ToolActivity key={`${group.id}-tools`} entries={entries} active={active} awaitingApproval={awaitingApproval} provider={session.provider} copy={copy} openFile={openFile} />;
+    if (group.elapsedMs == null) {
+      return groupToolActivity(group.response).map(entry => entry.type === 'tools'
+        ? drawer(entry.tools)
+        : <Fragment key={entry.id}>{renderItem(entry.item)}</Fragment>);
+    }
+    const tools = toolEntriesForItems(group.items);
+    const activity = withoutToolParts(group.activity), response = withoutToolParts(group.response);
+    return [
+      !group.response.some(item => usageCards.has(item.id)) && (activity.length ? <details className="codex-work" key={`${group.id}-work`}>
+        <summary><span className="codex-work-label">{formatChatDuration(group.elapsedMs, zh)}<Icon name="chevR" /></span></summary>
+        <div className="codex-work-body">{activity.length ? activity.map(renderItem) : <p className="dim">{copy('No additional activity recorded.', '没有记录额外的过程。')}</p>}</div>
+      </details> : <p className="chat-duration" key={`${group.id}-work`}>{formatChatDuration(group.elapsedMs, zh)}</p>),
+      tools.length ? drawer(tools) : null,
+      ...response.map(item => <Fragment key={`${item.id}-response`}>{renderItem(item)}</Fragment>),
+    ];
+  }
   return <section className={`chat-view v3-session-chat${overlay === "full" ? " is-connecting" : ""}`} data-provider={session.provider} data-testid={`session-chat-${session.id}`} aria-label={copy('Structured chat', '图形聊天')}>
     {ended && <p className="chat-history-note" role="note">{copy('Session ended · history is read-only.', '会话已结束 · 历史记录只读。')}</p>}
     <DelegationPanel session={session} delegates={delegates} delegatedBy={delegatedBy} onOpenSession={onOpenSession} copy={copy} zh={zh} />
@@ -928,11 +953,7 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession }
       if (chatViewports.size > 50) { const oldest = chatViewports.keys().next(); if (!oldest.done) chatViewports.delete(oldest.value); }
       chatViewports.set(session.id, { top: el.scrollTop, follow });
     }}>{items.length ? groupCodexTranscript(items, session.provider === "codex").map(group => <section className="codex-turn chat-turn" key={group.id}>
-      {group.elapsedMs != null && !group.response.some(item => usageCards.has(item.id)) && <details className="codex-work" key={`${group.id}-work`}>
-        <summary><span className="codex-work-label">{formatChatDuration(group.elapsedMs, zh)}<Icon name="chevR" /></span></summary>
-        <div className="codex-work-body">{group.activity.length ? group.activity.map(renderItem) : <p className="dim">{copy('No additional activity recorded.', '没有记录额外的过程。')}</p>}</div>
-      </details>}
-      {group.response.map(renderItem)}
+      {renderTurn(group)}
     </section>) : firstResponseWait ? null : <div className="empty v3-empty"><strong>{copy('No messages yet.', '暂无消息。')}</strong><p>{copy('Send a message to start working with this provider.', '发送消息，开始与此提供方协作。')}</p></div>}
       {submissionPreview && !items.some(item => item.role === 'user' && item.turnId === submissionPreview.token) && <article className={`v3-chat-message user is-native is-${session.provider} chat-pending-submission`} aria-label={copy('Message being sent', '正在发送的消息')}>
         <div className="chat-part text">

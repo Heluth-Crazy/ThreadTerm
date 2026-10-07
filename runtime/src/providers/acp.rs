@@ -10,7 +10,7 @@ use super::{
         version_probe, CommandSpec, EnvelopeStyle, JsonLineProcess, JsonLineResponder,
     },
     emit_bound as emit, ChatSession, ChatToolServer, ProviderAdapter, ProviderCapability,
-    ProviderError, ProviderEvent, ScopedProviderEvents, TerminalCommand,
+    ProviderError, ScopedProviderEvents, TerminalCommand,
 };
 use crate::plugins::{AgentDescriptor, TerminalConfig};
 use chrono::Utc;
@@ -23,16 +23,19 @@ use std::{
     },
     time::Duration,
 };
+#[cfg(test)]
+use super::ProviderEvent;
+#[cfg(test)]
 use tokio::sync::broadcast;
 
 pub struct AcpAdapter {
     descriptor: AgentDescriptor,
     kimi_native: bool,
-    events: broadcast::Sender<ProviderEvent>,
+    events: crate::provider_events::Sender,
 }
 
 impl AcpAdapter {
-    pub fn kimi(events: broadcast::Sender<ProviderEvent>) -> Self {
+    pub fn kimi(events: crate::provider_events::Sender) -> Self {
         Self {
             descriptor: AgentDescriptor {
                 id: "kimi".into(),
@@ -58,7 +61,7 @@ impl AcpAdapter {
 
     pub fn from_descriptor(
         descriptor: AgentDescriptor,
-        events: broadcast::Sender<ProviderEvent>,
+        events: crate::provider_events::Sender,
     ) -> Self {
         Self {
             descriptor,
@@ -1979,7 +1982,7 @@ mod tests {
     use super::*;
     use crate::plugins::PluginRegistry;
 
-    fn gemini(events: broadcast::Sender<ProviderEvent>) -> AcpAdapter {
+    fn gemini(events: crate::provider_events::Sender) -> AcpAdapter {
         let data_dir = tempfile::tempdir().unwrap();
         let registry = PluginRegistry::discover_with_roots(data_dir.path(), &json!({}), &[]);
         let descriptor = registry
@@ -1993,7 +1996,7 @@ mod tests {
     #[test]
     fn kimi_and_gemini_tool_updates_keep_native_identity_and_file_candidates() {
         for provider in ["kimi", "gemini"] {
-            let (sender, mut receiver) = broadcast::channel(16);
+            let (sender, mut receiver) = crate::provider_events::tap_channel(16);
             let events = ScopedProviderEvents::new(sender, "worker");
             let native = Mutex::new(Some("native".to_owned()));
             let active = Mutex::new(Some("turn".to_owned()));
@@ -2085,7 +2088,7 @@ mod tests {
             assert_eq!(event.kind, expected_kind);
             assert_eq!(event.worker_token.as_deref(), Some("test-worker"));
         }
-        let (events, _) = broadcast::channel(4);
+        let (events, _) = crate::provider_events::tap_channel(4);
         assert!(AcpAdapter::kimi(events.clone()).scopes_chat_events());
         assert!(gemini(events).scopes_chat_events());
     }
@@ -2093,7 +2096,7 @@ mod tests {
     #[test]
     fn acp_native_notification_paths_keep_the_worker_token() {
         for provider in ["kimi", "gemini"] {
-            let (sender, mut receiver) = broadcast::channel(32);
+            let (sender, mut receiver) = crate::provider_events::tap_channel(32);
             let events = ScopedProviderEvents::new(sender, "old-worker");
             let native = Mutex::new(Some("native".to_owned()));
             let active = Mutex::new(Some("turn".to_owned()));
@@ -2156,7 +2159,7 @@ mod tests {
         let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../qa/fixtures/fake-acp-settings.cjs");
         let spec = CommandSpec::provider("node", &[fixture.to_str().unwrap()]).unwrap();
-        let (events, _) = broadcast::channel(32);
+        let (events, _) = crate::provider_events::tap_channel(32);
         let events = ScopedProviderEvents::new(events, "test-worker");
         let native = Arc::new(Mutex::new(Some("qa-acp-settings-session".to_owned())));
         let active_turn = Arc::new(Mutex::new(None));
@@ -2297,7 +2300,7 @@ mod tests {
     }
 
     fn usage_reply_fixture() -> (UsageReplyContext, broadcast::Receiver<ProviderEvent>) {
-        let (events, receiver) = broadcast::channel(16);
+        let (events, receiver) = crate::provider_events::tap_channel(16);
         let events = ScopedProviderEvents::new(events, "test-worker");
         let context = UsageReplyContext {
             events,
@@ -2425,7 +2428,7 @@ mod tests {
     #[ignore = "starts installed Kimi in a temporary workspace and queries real usage, no LLM turn"]
     fn kimi_usage_roundtrip_timing_probe() {
         let cwd = tempfile::tempdir().unwrap();
-        let (events, mut receiver) = broadcast::channel(256);
+        let (events, mut receiver) = crate::provider_events::tap_channel(256);
         let adapter = AcpAdapter::kimi(events);
         let started = std::time::Instant::now();
         let mut chat = adapter
@@ -2500,20 +2503,20 @@ mod tests {
     }
     #[test]
     fn kimi_prepares_identity_through_acp_while_gemini_remains_unverified() {
-        let adapter = AcpAdapter::kimi(broadcast::channel(1).0);
+        let adapter = AcpAdapter::kimi(crate::provider_events::tap_channel(1).0);
         assert_eq!(
             adapter.terminal_capture(),
             super::super::TerminalCapture::PreAssigned
         );
         assert_eq!(
-            gemini(broadcast::channel(1).0).terminal_capture(),
+            gemini(crate::provider_events::tap_channel(1).0).terminal_capture(),
             super::super::TerminalCapture::None
         );
     }
 
     #[test]
     fn bundled_gemini_descriptor_keeps_its_acp_and_terminal_commands() {
-        let adapter = gemini(broadcast::channel(1).0);
+        let adapter = gemini(crate::provider_events::tap_channel(1).0);
         assert_eq!(adapter.id(), "gemini");
         assert_eq!(adapter.descriptor.command, "gemini");
         assert_eq!(
@@ -2538,7 +2541,7 @@ mod tests {
         #[cfg(not(windows))]
         let executable = directory.path().join("kimi-test");
         std::fs::write(&executable, "placeholder").unwrap();
-        let mut adapter = AcpAdapter::kimi(broadcast::channel(1).0);
+        let mut adapter = AcpAdapter::kimi(crate::provider_events::tap_channel(1).0);
         adapter.descriptor.command = executable.to_string_lossy().into_owned();
 
         let command = adapter.terminal_command(None, Some("native-123")).unwrap();
@@ -2633,7 +2636,7 @@ createInterface({{ input: process.stdin, crlfDelay: Infinity }}).on('line', line
             Arc::new(|_| {}),
         )
         .unwrap();
-        let (events, _) = broadcast::channel(16);
+        let (events, _) = crate::provider_events::tap_channel(16);
         Some(AcpChat {
             provider: "kimi".into(),
             process,

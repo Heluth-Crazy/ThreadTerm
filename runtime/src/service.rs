@@ -203,6 +203,34 @@ pub(crate) fn approve_chat_request(
     Ok(Value::Null)
 }
 
+/// Coalesce only deltas with identical routing and non-text metadata. In
+/// particular native item/part indexes and worker tokens must never cross.
+fn merge_projection_delta(prior: &mut ProviderEvent, next: &ProviderEvent) -> bool {
+    if prior.kind != "chat.delta" || next.kind != "chat.delta"
+        || prior.provider != next.provider || prior.session_id != next.session_id
+        || prior.native_id != next.native_id || prior.turn_id != next.turn_id
+        || prior.worker_token != next.worker_token {
+        return false;
+    }
+    let text = |data: &Value| data.pointer("/part/text").or_else(|| data.get("text"))
+        .and_then(Value::as_str).map(str::to_owned);
+    let (Some(left), Some(right)) = (text(&prior.data), text(&next.data)) else { return false; };
+    if left.len() + right.len() > 64 * 1024 { return false; }
+    let metadata = |data: &Value| {
+        let mut data = data.clone();
+        if let Some(part) = data.get_mut("part").and_then(Value::as_object_mut) { part.remove("text"); }
+        if let Some(object) = data.as_object_mut() { object.remove("text"); }
+        if let Some(params) = data.pointer_mut("/raw/params").and_then(Value::as_object_mut) { params.remove("delta"); }
+        data
+    };
+    if metadata(&prior.data) != metadata(&next.data) { return false; }
+    let joined = Value::String(left + &right);
+    if let Some(target) = prior.data.pointer_mut("/part/text") { *target = joined.clone(); }
+    else { prior.data["text"] = joined.clone(); }
+    if let Some(target) = prior.data.pointer_mut("/raw/params/delta") { *target = joined; }
+    true
+}
+
 fn project_provider_event(db: &Database, providers: &Providers, event: &ProviderEvent) -> bool {
     let accepted = providers.with_current_event(event, || {
         if let Err(error) = db.bind_session(&event.session_id, None, event.native_id.as_deref()) {
@@ -239,6 +267,16 @@ fn project_provider_event(db: &Database, providers: &Providers, event: &Provider
     accepted == Some(true)
 }
 
+fn report_projection_failure(db: &Database, queues: &crate::chat_queue::ChatQueues, reason: &str) {
+    queues.projection_failed(db);
+    eprintln!("chat event projection stopped: {reason}");
+    let warning = format!("Chat updates could not be read; reconnect the runtime and reload native history ({reason})");
+    let warning: String = warning.chars().take(240).collect();
+    if let Err(error) = db.mark_chat_degraded(None, &warning) {
+        eprintln!("could not persist projection diagnostic: {error}");
+    }
+}
+
 impl RuntimeService {
     pub fn new(config: RuntimeConfig, db: Arc<Database>) -> Self {
         crate::chat_queue::initialize(&db).expect("initialize durable prompt queues");
@@ -260,25 +298,51 @@ impl RuntimeService {
             config.clone(),
             crate::delegation::default_mcp_executable(),
         ));
-        let mut events = providers.subscribe();
+        let mut events = providers.take_projection_events().expect("new provider projection receiver");
         let event_db = Arc::clone(&db);
         let event_providers = Arc::clone(&providers);
         let event_queues = Arc::clone(&chat_queues);
         std::thread::spawn(move || loop {
             match events.blocking_recv() {
                 Ok(event) => {
-                    if project_provider_event(&event_db, &event_providers, &event) {
-                        event_queues.provider_event(&event_db, &event_providers, &event);
+                    // Drain a bounded burst before taking the provider/DB locks.
+                    // Only adjacent compatible text deltas combine; approvals,
+                    // completions and worker generations keep their exact order.
+                    let mut batch_bytes = event.data.to_string().len();
+                    let mut batch = vec![event];
+                    let mut failure = None;
+                    for _ in 1..256 {
+                        if batch_bytes >= 4 * 1024 * 1024 { break; }
+                        let event = match events.try_recv() {
+                            Ok(event) => event,
+                            Err(crate::provider_events::TryRecvError::Failed(reason)) => {
+                                event_queues.projection_failed(&event_db);
+                                failure = Some(reason);
+                                break;
+                            }
+                            Err(_) => break,
+                        };
+                        batch_bytes += event.data.to_string().len();
+                        if !merge_projection_delta(batch.last_mut().unwrap(), &event) {
+                            batch.push(event);
+                        }
+                    }
+                    for event in batch {
+                        if project_provider_event(&event_db, &event_providers, &event) {
+                            event_queues.provider_event(&event_db, &event_providers, &event);
+                        }
+                    }
+                    if let Some(reason) = failure {
+                        report_projection_failure(&event_db, &event_queues, &reason);
+                        break;
                     }
                 }
-                Err(tokio::sync::broadcast::error::RecvError::Lagged(count)) => {
-                    // Lost updates leave turn state uncertain: queued prompts must not be sent on a guess.
+                Err(crate::provider_events::RecvError::Closed) => {
                     event_queues.projection_failed(&event_db);
-                    eprintln!("chat projection lost {count} provider updates");
-                    if let Err(error)=event_db.mark_chat_degraded(None,"Chat update buffer overflowed; reload native history to verify the transcript") { eprintln!("could not persist degraded state: {error}"); }
+                    break;
                 }
-                Err(tokio::sync::broadcast::error::RecvError::Closed) => {
-                    event_queues.projection_failed(&event_db);
+                Err(crate::provider_events::RecvError::Failed(reason)) => {
+                    report_projection_failure(&event_db, &event_queues, &reason);
                     break;
                 }
             }
@@ -2929,6 +2993,42 @@ mod tests {
 
 #[cfg(test)]
 mod chat_lifecycle_tests;
+
+#[cfg(test)]
+mod projection_batch_tests {
+    use super::*;
+
+    fn delta(text: &str) -> ProviderEvent {
+        ProviderEvent {
+            provider: "codex".into(), session_id: "session".into(),
+            native_id: Some("thread".into()), turn_id: Some("turn".into()),
+            worker_token: Some("worker".into()), kind: "chat.delta".into(),
+            data: json!({"part":{"type":"text","text":text},"raw":{"method":"item/agentMessage/delta","params":{"itemId":"item","delta":text}}}),
+        }
+    }
+
+    #[test]
+    fn adjacent_deltas_preserve_text_and_routing_boundaries() {
+        let mut event = delta("one");
+        assert!(merge_projection_delta(&mut event, &delta("two")));
+        assert_eq!(event.data["part"]["text"], "onetwo");
+        assert_eq!(event.data["raw"]["params"]["delta"], "onetwo");
+        for boundary in ["worker", "session", "turn", "item", "part", "approval"] {
+            let mut next = delta("three");
+            match boundary {
+                "worker" => next.worker_token = Some("new-worker".into()),
+                "session" => next.session_id = "other".into(),
+                "turn" => next.turn_id = Some("other".into()),
+                "item" => next.data["raw"]["params"]["itemId"] = json!("other"),
+                "part" => next.data["part"]["type"] = json!("thinking"),
+                _ => next.kind = "chat.approval".into(),
+            }
+            assert!(!merge_projection_delta(&mut event, &next), "{boundary}");
+        }
+        assert!(!merge_projection_delta(&mut event, &delta(&"x".repeat(64 * 1024))));
+        assert_eq!(event.data["part"]["text"], "onetwo");
+    }
+}
 
 #[cfg(test)]
 mod chat_image_tests {

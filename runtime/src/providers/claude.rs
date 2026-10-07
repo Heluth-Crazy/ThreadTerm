@@ -5,7 +5,7 @@ use super::{
         version_probe, CommandSpec, EnvelopeStyle, JsonLineProcess,
     },
     emit_scoped, ChatSession, ChatToolServer, ProviderAdapter, ProviderCapability, ProviderError,
-    ProviderEvent, TerminalCommand,
+    TerminalCommand,
 };
 use chrono::{TimeZone, Utc};
 use serde_json::{json, Value};
@@ -14,10 +14,9 @@ use std::{
     sync::{Arc, Mutex, OnceLock},
     time::Duration,
 };
-use tokio::sync::broadcast;
 
 pub struct ClaudeAdapter {
-    events: broadcast::Sender<ProviderEvent>,
+    events: crate::provider_events::Sender,
 }
 
 /// Tracks whether the SDK query inside a Claude sidecar has ended. The host
@@ -66,7 +65,7 @@ impl ClaudeUi {
 }
 
 impl ClaudeAdapter {
-    pub fn new(events: broadcast::Sender<ProviderEvent>) -> Self {
+    pub fn new(events: crate::provider_events::Sender) -> Self {
         Self { events }
     }
 
@@ -440,7 +439,7 @@ struct ClaudeChat {
     native_id: Option<String>,
     liveness: WorkerLiveness,
     ui: ClaudeUi,
-    events: broadcast::Sender<ProviderEvent>,
+    events: crate::provider_events::Sender,
     worker_token: Option<String>,
 }
 
@@ -724,7 +723,7 @@ fn claude_worker_path() -> Option<PathBuf> {
 }
 
 fn emit_claude_message(
-    events: &broadcast::Sender<ProviderEvent>,
+    events: &crate::provider_events::Sender,
     session_id: &str,
     native: &Mutex<Option<String>>,
     liveness: &WorkerLiveness,
@@ -1111,7 +1110,7 @@ mod tests {
 
     #[test]
     fn sdk_tool_use_and_failed_result_keep_native_id_without_duplicate_text() {
-        let (events, mut receiver) = broadcast::channel(16);
+        let (events, mut receiver) = crate::provider_events::tap_channel(16);
         let native = Mutex::new(Some("native".to_owned()));
         let liveness = WorkerLiveness::default();
         for message in [
@@ -1207,7 +1206,7 @@ mod tests {
 
     #[test]
     fn request_cancelled_maps_to_a_targeted_expired_resolution() {
-        let (events, mut rx) = broadcast::channel(16);
+        let (events, mut rx) = crate::provider_events::tap_channel(16);
         let native = Mutex::new(Some("native-1".to_owned()));
         let liveness = WorkerLiveness::default();
         emit_claude_message(
@@ -1236,7 +1235,7 @@ mod tests {
 
     #[test]
     fn closed_and_error_phases_mark_the_worker_ended() {
-        let (events, _rx) = broadcast::channel(16);
+        let (events, _rx) = crate::provider_events::tap_channel(16);
         let native = Mutex::new(None);
         let liveness = WorkerLiveness::default();
         assert!(!liveness.ended());
@@ -1275,7 +1274,7 @@ mod tests {
 
     #[test]
     fn mismatched_native_identity_cannot_replace_a_resumed_binding() {
-        let (events, mut rx) = broadcast::channel(16);
+        let (events, mut rx) = crate::provider_events::tap_channel(16);
         let native = Mutex::new(Some("native-original".to_owned()));
         let liveness = WorkerLiveness::default();
         emit_claude_message(
@@ -1301,7 +1300,7 @@ mod tests {
 
     #[test]
     fn host_fatal_ends_liveness_with_the_original_worker_token() {
-        let (events, mut rx) = broadcast::channel(16);
+        let (events, mut rx) = crate::provider_events::tap_channel(16);
         let native = Mutex::new(None);
         let liveness = WorkerLiveness::default();
         emit_claude_message(
@@ -1389,7 +1388,7 @@ createInterface({{ input: process.stdin, crlfDelay: Infinity }}).on('line', line
         // A slow handshake must delay open_chat instead of reporting ready early.
         let ok_host = fake_host(dir.path(), "ok", 400);
         environment.set("THREADTERM_CLAUDE_SDK_HOST", &ok_host);
-        let adapter = ClaudeAdapter::new(broadcast::channel(16).0);
+        let adapter = ClaudeAdapter::new(crate::provider_events::tap_channel(16).0);
         let started = std::time::Instant::now();
         let mut chat = adapter.open_chat("card-ok", &cwd, None).unwrap();
         assert!(
@@ -1479,7 +1478,7 @@ createInterface({{ input: process.stdin, crlfDelay: Infinity }}).on('line', line
         // Options, approvals and blocked commands over the real sidecar pipes.
         let options_host = fake_host(dir.path(), "options", 0);
         environment.set("THREADTERM_CLAUDE_SDK_HOST", &options_host);
-        let (sender, mut receiver) = broadcast::channel(64);
+        let (sender, mut receiver) = crate::provider_events::tap_channel(64);
         let adapter = ClaudeAdapter::new(sender);
         let mut chat = adapter.open_chat("card-options", &cwd, None).unwrap();
         let ui = chat.ui_state();
@@ -1625,7 +1624,7 @@ createInterface({{ input: process.stdin, crlfDelay: Infinity }}).on('line', line
 
     #[test]
     fn approval_card_and_ui_updates_carry_claude_choices_and_state() {
-        let (events, mut rx) = broadcast::channel(16);
+        let (events, mut rx) = crate::provider_events::tap_channel(16);
         let native = Mutex::new(Some("native".to_owned()));
         let liveness = WorkerLiveness::default();
         let ui = ClaudeUi::default();
@@ -1675,7 +1674,7 @@ createInterface({{ input: process.stdin, crlfDelay: Infinity }}).on('line', line
     }
 
     fn visible_text(raw: Value) -> Vec<(Option<String>, String)> {
-        let (events, mut rx) = broadcast::channel(16);
+        let (events, mut rx) = crate::provider_events::tap_channel(16);
         emit_claude_message(
             &events,
             "card-1",
@@ -1756,7 +1755,7 @@ createInterface({{ input: process.stdin, crlfDelay: Infinity }}).on('line', line
             Ok(())
         })
         .unwrap();
-        let (events, mut rx) = broadcast::channel(16);
+        let (events, mut rx) = crate::provider_events::tap_channel(16);
         let native = Mutex::new(Some("native".to_owned()));
         let (liveness, ui) = (WorkerLiveness::default(), ClaudeUi::default());
         let mut activity_after = |turn: &str, status: &str| {

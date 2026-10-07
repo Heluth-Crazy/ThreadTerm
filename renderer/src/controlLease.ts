@@ -4,9 +4,9 @@ type LeaseApi = {
   release: (id: string, epoch: number) => Promise<unknown>;
 };
 export function createLeasePool(api: LeaseApi, renewEveryMs = 10_000) {
-  type Entry = { refs: number; ready: Promise<number>; closing?: Promise<void>; timer?: ReturnType<typeof setInterval>; listeners: Set<() => void>; dead?: boolean };
+  type Entry = { refs: number; ready: Promise<number>; renewing?: Promise<void>; closing?: Promise<void>; timer?: ReturnType<typeof setInterval>; listeners: Set<() => void>; dead?: boolean };
   const entries = new Map<string, Entry>();
-  return async function acquire(id: string, onLost: () => void): Promise<{epoch:number;release():void}> {
+  return async function acquire(id: string, onLost: () => void): Promise<{epoch:number;check():Promise<void>;release():void}> {
     let entry = entries.get(id);
     if (entry?.closing) { await entry.closing; return acquire(id, onLost); }
     if (entry?.dead) { entries.delete(id); entry = undefined; }
@@ -16,7 +16,13 @@ export function createLeasePool(api: LeaseApi, renewEveryMs = 10_000) {
       const created = entry;
       void created.ready.then(epoch => {
         if (created.dead) return;
-        created.timer = setInterval(() => void api.renew(id, epoch).catch(() => {
+        created.timer = setInterval(() => void check(created, id, epoch).catch(() => undefined), renewEveryMs);
+      }).catch(() => { if (entries.get(id) === created) entries.delete(id); });
+    }
+    function check(created: Entry, id: string, epoch: number): Promise<void> {
+      if (created.dead || !created.refs) return Promise.reject(new Error('stale_lease'));
+      if (created.renewing) return created.renewing;
+      const renewing = Promise.resolve().then(() => api.renew(id, epoch)).then(() => undefined).catch(error => {
           if (created.dead) return;
           created.dead = true;
           clearInterval(created.timer);
@@ -24,8 +30,10 @@ export function createLeasePool(api: LeaseApi, renewEveryMs = 10_000) {
           const listeners = [...created.listeners];
           created.listeners.clear();
           for (const listener of listeners) listener();
-        }), renewEveryMs);
-      }).catch(() => { if (entries.get(id) === created) entries.delete(id); });
+          throw error;
+      }).finally(() => { if (created.renewing === renewing) created.renewing = undefined; });
+      created.renewing = renewing;
+      return renewing;
     }
     const current = entry;
     current.refs++; current.listeners.add(onLost);
@@ -33,7 +41,7 @@ export function createLeasePool(api: LeaseApi, renewEveryMs = 10_000) {
     try { epoch = await current.ready; }
     catch (error) { current.refs--; current.listeners.delete(onLost); throw error; }
     let released = false;
-    return {epoch, release() {
+    return {epoch, check: () => released ? Promise.reject(new Error('stale_lease')) : check(current, id, epoch), release() {
       if (released) return;
       released = true; current.listeners.delete(onLost); current.refs--;
       if (current.dead || current.refs) return;

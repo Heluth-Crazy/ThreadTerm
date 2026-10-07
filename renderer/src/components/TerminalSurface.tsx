@@ -3,8 +3,9 @@ import { Terminal } from "@xterm/xterm";
 import { WebLinksAddon } from '@xterm/addon-web-links';
 import "@xterm/xterm/css/xterm.css";
 import { useContext, useEffect, useLayoutEffect, useRef, useState } from "react";
-import { openExternal, operationId, outputSubscription, request } from "../bridge";
+import { openExternal, operationId, outputSubscription, request, subscribeEvents } from "../bridge";
 import { acquireControl } from '../controlLease';
+import { createTerminalControl, type TerminalControlState } from '../terminalControl';
 import { registerTerminalInputTarget } from '../terminalInputTargets';
 import { useTranslation } from '../i18n';
 import { terminalTheme } from '../terminalTheme';
@@ -105,6 +106,8 @@ export function TerminalSurface({ sessionId, provider, theme, terminalCompatibil
   const zh = locale === 'zh-CN';
   const host = useRef<HTMLDivElement>(null); const terminalRef = useRef<Terminal | undefined>(undefined);
   const controlRef = useRef<((enabled: boolean) => void) | undefined>(undefined);
+  const retryControlRef = useRef<(() => void) | undefined>(undefined);
+  const [controlState, setControlState] = useState<TerminalControlState>({ phase: 'disabled' });
   const [issue, setIssue] = useState<string>();
   const [unread, setUnread] = useState(0);
   const [selectedLink, setSelectedLink] = useState<string>();
@@ -189,7 +192,7 @@ export function TerminalSurface({ sessionId, provider, theme, terminalCompatibil
   useEffect(() => { if (terminalRef.current) terminalRef.current.options.theme = terminalTheme(theme); }, [theme]);
   useEffect(() => {
     const element = host.current; if (!element) return;
-    let disposed = false; let unsubscribeOutput: (() => void) | undefined; let leaseEpoch: number | undefined; let releaseControl: (() => void) | undefined;
+    let disposed = false; let unsubscribeOutput: (() => void) | undefined; let leaseEpoch: number | undefined;
     let replayAborted = false;
     let replayTimer: number | undefined;
     let replayCursor = 0;
@@ -205,7 +208,6 @@ export function TerminalSurface({ sessionId, provider, theme, terminalCompatibil
       setReplay({ key: replayKey, phase: "failed" });
     };
     const pendingWrites = new Set<() => void>();
-    let controlGeneration = 0;
     let resizeRetried: string | undefined;
     const resizeFailureNote = "Terminal resize was rejected; the provider may keep using the previous size until the next successful resize.";
     const terminal = new Terminal({ ...(fixedSize ? { cols: fixedSize.cols, rows: fixedSize.rows } : {}), cursorBlink: true, fontFamily: '"Cascadia Code", Consolas, monospace', fontSize: 13, lineHeight: 1.35, minimumContrastRatio: 4.5, scrollback: 10000, scrollOnEraseInDisplay: false, windowsPty: window.threadterm.windowsPty, theme: terminalTheme(theme) });
@@ -294,23 +296,47 @@ export function TerminalSurface({ sessionId, provider, theme, terminalCompatibil
     };
     let replayComplete = false;
     const observer = new ResizeObserver(resize); observer.observe(element);
-    const dataDisposable = terminal.onData((data) => { if (leaseEpoch && !disposed) void request("terminal.input", { sessionId, data, leaseEpoch }).catch((error: unknown) => !disposed && setIssue(error instanceof Error ? error.message : "Input was rejected.")); });
+    const dataDisposable = terminal.onData((data) => { if (leaseEpoch && !disposed) void request("terminal.input", { sessionId, data, leaseEpoch }).catch((error: unknown) => {
+      if (disposed) return;
+      setIssue(error instanceof Error ? error.message : "Input was rejected.");
+      // Validate/recover ownership, but never replay uncertain keystrokes or commands.
+      if (/stale_lease|lease_missing|lease.*expired/i.test(String(error))) retryControl();
+    }); });
     const unregisterInput = registerTerminalInputTarget(sessionId, { visible: () => !disposed && element.getClientRects().length > 0, insert: text => {
       if (!leaseEpoch || disposed || terminal.options.disableStdin) throw new Error('terminal_control_unavailable');
       terminal.focus(); terminal.paste(text);
     } });
-    const setControl = (enabled: boolean) => {
-      const generation = ++controlGeneration;
-      releaseControl?.(); releaseControl = undefined; leaseEpoch = undefined; resizeScheduler.reset(); resizeRetried = undefined;
-      if (!disposed) terminal.options.disableStdin = true;
-      if (!enabled || disposed) return;
-      void acquireControl(sessionId, () => {
-        if (!disposed && generation === controlGeneration) {leaseEpoch = undefined; terminal.options.disableStdin = true; setIssue('Terminal control expired. Reopen the session to reacquire it.');}
-      }).then(claim => {
-        if (disposed || generation !== controlGeneration) {claim.release(); return;}
-        releaseControl = claim.release; leaseEpoch = claim.epoch; terminal.options.disableStdin = false; resize(); terminal.focus();
-      }).catch(error => {if (!disposed && generation === controlGeneration) setIssue(`Read-only view: ${error instanceof Error ? error.message : String(error)}`);});
+    let transportUp = true, controlEverReady = false;
+    let resizeEpoch: number | undefined;
+    const control = createTerminalControl(onLost => acquireControl(sessionId, onLost), state => {
+      if (disposed) return;
+      leaseEpoch = state.phase === 'ready' ? state.epoch : undefined;
+      terminal.options.disableStdin = state.phase !== 'ready';
+      if (resizeEpoch !== state.epoch) { resizeEpoch = state.epoch; resizeScheduler.reset(); resizeRetried = undefined; }
+      setControlState(state);
+      if (state.phase === 'ready') {
+        setIssue(current => current && /stale_lease|lease_missing|lease.*expired/i.test(current) ? undefined : current);
+        resize(); if (!controlEverReady) { controlEverReady = true; terminal.focus(); }
+      }
+    });
+    const setControl = (enabled: boolean) => control.setEnabled(enabled && transportUp && !disposed);
+    const retryControl = () => { if (transportUp && !disposed && canControlRef.current && !replayAborted) void control.retry(); };
+    retryControlRef.current = retryControl;
+    const wakeControl = () => {
+      if (document.visibilityState === 'visible' && transportUp && !disposed && canControlRef.current && !replayAborted) void control.wake();
     };
+    window.addEventListener('focus', wakeControl);
+    document.addEventListener('visibilitychange', wakeControl);
+    const unsubscribeControl = subscribeEvents(event => {
+      if (disposed || event.event !== 'runtime.transport') return;
+      const state = (event.data as { state?: string })?.state;
+      if (state === 'disconnected' || state === 'incompatible') {
+        transportUp = false; control.setEnabled(false);
+        if (canControlRef.current) setControlState({ phase: state === 'incompatible' ? 'incompatible' : 'recovering' });
+      } else if (state === 'reconnected') {
+        transportUp = true; setControl(canControlRef.current && !replayAborted);
+      }
+    });
     controlRef.current = setControl;
     replayTimer = window.setInterval(() => {
       if (!replayComplete && Date.now() - replayLastProgress >= REPLAY_STALL_MS) {
@@ -418,7 +444,7 @@ export function TerminalSurface({ sessionId, provider, theme, terminalCompatibil
         failReplay(message.includes("terminal_history_gap") ? "gap" : "error", message);
       }
     })();
-    return () => { disposed = true; resumeFrameProbeRef.current?.dispose(); resumeFrameProbeRef.current = undefined; window.clearInterval(replayTimer); for (const settle of pendingWrites) settle(); setControl(false); unregisterInput(); observer.disconnect(); resizeScheduler.dispose(); dataDisposable.dispose(); scrollDisposable.dispose(); selectionDisposable.dispose(); fileLinkDisposable.dispose(); fileLinkHitArea?.dispose(); fileLinkInteraction.dispose(); unsubscribeOutput?.(); terminal.dispose(); if (terminalRef.current === terminal) terminalRef.current = undefined; if (nativeCursorRef.current === nativeCursor) nativeCursorRef.current = undefined; if (controlRef.current === setControl) controlRef.current = undefined; };
+    return () => { disposed = true; control.dispose(); unsubscribeControl(); window.removeEventListener('focus', wakeControl); document.removeEventListener('visibilitychange', wakeControl); if (retryControlRef.current === retryControl) retryControlRef.current = undefined; resumeFrameProbeRef.current?.dispose(); resumeFrameProbeRef.current = undefined; window.clearInterval(replayTimer); for (const settle of pendingWrites) settle(); unregisterInput(); observer.disconnect(); resizeScheduler.dispose(); dataDisposable.dispose(); scrollDisposable.dispose(); selectionDisposable.dispose(); fileLinkDisposable.dispose(); fileLinkHitArea?.dispose(); fileLinkInteraction.dispose(); unsubscribeOutput?.(); terminal.dispose(); if (terminalRef.current === terminal) terminalRef.current = undefined; if (nativeCursorRef.current === nativeCursor) nativeCursorRef.current = undefined; if (controlRef.current === setControl) controlRef.current = undefined; };
   }, [provider, sessionId, replayAttempt]);
   useEffect(() => {
     const setControl = controlRef.current;
@@ -610,6 +636,13 @@ export function TerminalSurface({ sessionId, provider, theme, terminalCompatibil
     {completionHints && completionHint && <p className="terminal-completion-hint" role="status">{zh ? "可能已准备好输入" : "Possibly ready for input"}</p>}
     {selectedLink && <div className="terminal-link-actions"><span title={selectedLink}>{selectedLink}</span>{surface?.openWeb && isWebTabUrl(selectedLink) && <button onClick={() => { surface.openWeb?.(selectedLink); setSelectedLink(undefined); }}>{zh ? '在预览中打开' : 'Open in preview'}</button>}<button onClick={() => void openExternal(selectedLink).catch(error => setIssue(String(error)))}>{zh ? '在浏览器中打开' : 'Open in browser'}</button><button onClick={() => void navigator.clipboard.writeText(selectedLink).catch(error => setIssue(String(error)))}>{zh ? '复制链接' : 'Copy link'}</button><button onClick={() => setSelectedLink(undefined)}>{zh ? '关闭' : 'Close'}</button></div>}
     {issue && !replayFailed && <div className="surface-error" role="alert">{issue}</div>}
+    {canControl && !replayFailed && controlState.phase !== 'ready' && controlState.phase !== 'disabled' && <div className="terminal-control-note" role="status">
+      <span>{controlState.phase === 'recovering' ? (zh ? '正在恢复终端输入…' : 'Restoring terminal input…')
+        : controlState.phase === 'incompatible' ? (zh ? '终端连接协议不兼容，请更新应用。' : 'Terminal connection is incompatible. Update the application.')
+        : controlState.phase === 'blocked' ? (zh ? '另一个窗口正在控制此终端。' : 'Another window controls this terminal.')
+          : (zh ? '终端输入暂不可用，可以在此重试。' : 'Terminal input is unavailable. Retry here.')}</span>
+      {['blocked', 'failed'].includes(controlState.phase) && <button type="button" className="btn" onClick={() => retryControlRef.current?.()}>{zh ? '重试输入连接' : 'Retry input connection'}</button>}
+    </div>}
     {(replaying || replayFailed || launchFailed || (launchPending && !showTerminal)) && <div className={`term-loading-overlay${replaying ? " term-replaying" : ""}${replayFailed || launchFailed ? " is-failed" : ""}`} role={replayFailed || launchFailed ? "alert" : "status"} aria-live="polite" aria-label={replayFailed ? (zh ? "无法显示终端画面" : "Couldn't show the terminal screen") : loadingStatus}>
       <div className="chat-connect-center">
         <AgentLoadingMark provider={provider} active={!replayFailed && !launchFailed} />
