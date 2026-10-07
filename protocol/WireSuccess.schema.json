@@ -3739,6 +3739,183 @@
     "RequestResult<\"review.checkpoint\">": {
       "$ref": "#/definitions/ReviewCheckpoint"
     },
+    "RequestResult<\"agentReview.start\">": {
+      "$ref": "#/definitions/AgentReview"
+    },
+    "AgentReview": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "sessionId": {
+          "type": "string"
+        },
+        "reviewerSessionId": {
+          "type": "string"
+        },
+        "agent": {
+          "$ref": "#/definitions/ProviderId"
+        },
+        "scope": {
+          "$ref": "#/definitions/AgentReviewScope"
+        },
+        "state": {
+          "type": "string",
+          "enum": [
+            "starting",
+            "running",
+            "completed",
+            "failed"
+          ]
+        },
+        "files": {
+          "type": "number"
+        },
+        "truncated": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "instructions": {
+          "type": "string",
+          "enum": [
+            "repository",
+            "built-in"
+          ]
+        },
+        "createdAt": {
+          "type": "string"
+        },
+        "updatedAt": {
+          "type": "string"
+        },
+        "error": {
+          "type": "string"
+        },
+        "findings": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/AgentReviewFinding"
+          }
+        },
+        "unparsed": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "id",
+        "sessionId",
+        "reviewerSessionId",
+        "agent",
+        "scope",
+        "state",
+        "files",
+        "truncated",
+        "instructions",
+        "createdAt",
+        "updatedAt"
+      ],
+      "additionalProperties": false,
+      "description": "`files`: changed files in the snapshot. `truncated`: files left out of the reviewer's prompt by the size budget. `instructions`: `.threadterm/review.md` from the worktree root, or the built-in review prompt. `findings` once the reviewer's turn completed and its last reply ended in a valid ```threadterm-review block; `unparsed` when that reply had none (the user opens the reviewer's reply instead)."
+    },
+    "AgentReviewScope": {
+      "anyOf": [
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "checkpoints"
+            },
+            "from": {
+              "type": "string"
+            },
+            "to": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "from"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "uncommitted"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "additionalProperties": false
+        }
+      ],
+      "description": "Independent agent review (Agent Changes): a fresh Chat of the chosen agent reviews a snapshot of a session's changes, captured when the review starts. `checkpoints` is the `review.changes` range (`to` omitted: the current files); `uncommitted` is the worktree against git HEAD, untracked files included."
+    },
+    "AgentReviewFinding": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "severity": {
+          "$ref": "#/definitions/AgentReviewSeverity"
+        },
+        "path": {
+          "type": "string"
+        },
+        "line": {
+          "type": "number"
+        },
+        "title": {
+          "type": "string"
+        },
+        "body": {
+          "type": "string"
+        },
+        "state": {
+          "type": "string",
+          "enum": [
+            "open",
+            "added",
+            "dismissed"
+          ]
+        }
+      },
+      "required": [
+        "id",
+        "severity",
+        "title",
+        "body",
+        "state"
+      ],
+      "additionalProperties": false,
+      "description": "`path` is relative to the reviewed worktree root and `line` 1-based in the current file; both absent for a general finding."
+    },
+    "AgentReviewSeverity": {
+      "type": "string",
+      "enum": [
+        "high",
+        "medium",
+        "low",
+        "info"
+      ]
+    },
+    "RequestResult<\"agentReview.list\">": {
+      "type": "array",
+      "items": {
+        "$ref": "#/definitions/AgentReview"
+      }
+    },
+    "RequestResult<\"agentReview.mark\">": {
+      "$ref": "#/definitions/AgentReview"
+    },
     "RequestResult<\"worktree.list\">": {
       "type": "array",
       "items": {
@@ -6927,6 +7104,84 @@
         },
         "result": {
           "$ref": "#/definitions/RequestResult%3C%22review.checkpoint%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "result"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "agentReview.start"
+        },
+        "result": {
+          "$ref": "#/definitions/RequestResult%3C%22agentReview.start%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "result"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "agentReview.list"
+        },
+        "result": {
+          "$ref": "#/definitions/RequestResult%3C%22agentReview.list%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "result"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "agentReview.mark"
+        },
+        "result": {
+          "$ref": "#/definitions/RequestResult%3C%22agentReview.mark%22%3E"
         }
       },
       "required": [

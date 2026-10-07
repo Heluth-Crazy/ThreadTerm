@@ -221,7 +221,32 @@ test('prompt queue mutations need the Chat lease and bounded positions; image-on
  for(const m of ['chat.queue.pause','chat.queue.resume']) validateRequest(m,lease);
  validateRequest('chat.queue.send',{...lease,itemId:'i'});
  validateResult('chat.queue.read',{sessionId:'s',paused:true,pauseReason:'restarted',items:[{id:'i',text:'t',images:[],revision:1,createdAt:'c',updatedAt:'u',state:'failed',error:'e'}]});
- assert.equal(PROTOCOL_CONTRACT,5);
+});
+
+test('agent reviews take a shape-checked agent and a checkpoint or uncommitted scope; marks and results are bounded and exact',()=>{
+ const base={sessionId:'s',agent:'codex',operationId:'o'};
+ validateRequest('agentReview.start',{...base,scope:{kind:'checkpoints',from:'c1'}});
+ validateRequest('agentReview.start',{...base,scope:{kind:'checkpoints',from:'c1',to:'c2'}});
+ validateRequest('agentReview.start',{...base,agent:'qwen-code',scope:{kind:'uncommitted'}});
+ for(const scope of [{kind:'checkpoints'},{kind:'checkpoints',from:''},{kind:'checkpoints',from:'c',to:''},{kind:'session'},{kind:'uncommitted',from:'c'},null,'uncommitted'])
+  assert.throws(()=>validateRequest('agentReview.start',{...base,scope}),/Invalid review scope|protocol schema/,JSON.stringify(scope));
+ for(const agent of ['','Codex','../x']) assert.throws(()=>validateRequest('agentReview.start',{...base,agent,scope:{kind:'uncommitted'}}),/Invalid agent/);
+ assert.throws(()=>validateRequest('agentReview.start',{sessionId:'s',agent:'codex',scope:{kind:'uncommitted'}}),/Invalid operationId|protocol schema/);
+ validateRequest('agentReview.list',{sessionId:'s'});
+ validateRequest('agentReview.mark',{reviewId:'r',findingIds:['f1','f2'],state:'added',operationId:'o'});
+ for(const findingIds of [[],[''],Array.from({length:101},(_,index)=>`f${index}`)])
+  assert.throws(()=>validateRequest('agentReview.mark',{reviewId:'r',findingIds,state:'dismissed',operationId:'o'}),/Invalid findings|protocol schema/);
+ assert.throws(()=>validateRequest('agentReview.mark',{reviewId:'r',findingIds:['f'],state:'done',operationId:'o'}),/protocol schema/);
+ const started={id:'r',sessionId:'s',reviewerSessionId:'rs',agent:'claude',scope:{kind:'checkpoints',from:'c1'},state:'starting',files:2,truncated:[],instructions:'built-in',createdAt:'t',updatedAt:'t'};
+ validateResult('agentReview.start',started);
+ const findings=[{id:'f1',severity:'high',path:'src/a.ts',line:12,title:'Null deref',body:'x may be null',state:'open'},{id:'f2',severity:'info',title:'General',body:'b',state:'added'}];
+ const completed={...started,state:'completed',truncated:['big.json'],instructions:'repository',findings};
+ validateResult('agentReview.list',[completed,{...started,id:'r2',state:'failed',error:'agent_unavailable'},{...started,id:'r3',state:'completed',scope:{kind:'uncommitted'},unparsed:true}]);
+ validateResult('agentReview.mark',completed);
+ assert.throws(()=>validateResult('agentReview.list',[{...completed,findings:[{...findings[0],severity:'critical'}]}]));
+ assert.throws(()=>validateResult('agentReview.list',[{...completed,findings:[{...findings[0],state:'resolved'}]}]));
+ assert.throws(()=>validateResult('agentReview.start',{...started,extra:1}));
+ assert.equal(PROTOCOL_CONTRACT,6);
 });
 
 test('quick launch commands are bounded: relative cwd inside the root, known shells, unique env names, revisioned updates',()=>{

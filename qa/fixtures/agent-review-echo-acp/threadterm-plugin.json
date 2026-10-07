@@ -1,0 +1,34 @@
+{
+  "schemaVersion": 1,
+  "id": "agent-review-echo-acp",
+  "name": "Agent review Echo (QA fixture)",
+  "version": "0.1.0",
+  "publisher": "ThreadTerm QA",
+  "description": "Isolated ACP Echo fixture for the independent agent review QA.",
+  "homepage": "https://example.invalid/echo",
+  "contributes": {
+    "agents": [{
+      "id": "implementation-echo",
+      "name": "Implementation Echo",
+      "icon": "icon.svg",
+      "command": "node",
+      "args": ["{pluginDir}/agent.mjs"],
+      "versionArgs": ["--version"],
+      "terminal": { "args": [], "resumeArgs": ["--resume", "{sessionId}"] },
+      "chat": { "protocol": "acp", "args": ["--acp"] },
+      "signIn": { "args": ["login"] },
+      "homepage": "https://example.invalid/echo"
+    }, {
+      "id": "review-echo",
+      "name": "Review Echo",
+      "icon": "icon.svg",
+      "command": "node",
+      "args": ["{pluginDir}/agent.mjs"],
+      "versionArgs": ["--version"],
+      "terminal": { "args": [], "resumeArgs": ["--resume", "{sessionId}"] },
+      "chat": { "protocol": "acp", "args": ["--acp"] },
+      "signIn": { "args": ["login"] },
+      "homepage": "https://example.invalid/echo"
+    }]
+  }
+}
