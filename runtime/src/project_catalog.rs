@@ -1,13 +1,14 @@
 //! Durable project presentation metadata and read-only Git catalog discovery.
-use crate::{db::Database, domain::SessionOrganization};
+use crate::{
+    db::Database,
+    domain::SessionOrganization,
+    git_read::{plain_path, run_git, LOCAL_TIMEOUT},
+};
 use anyhow::{anyhow, Result};
 use chrono::Utc;
 use rusqlite::{params, OptionalExtension, Transaction};
 use serde_json::{json, Value};
-use std::{
-    path::{Component, Path, PathBuf},
-    process::Command,
-};
+use std::path::{Component, Path, PathBuf};
 
 pub fn initialize(db: &Database) -> Result<()> {
     db.transaction(|tx| { tx.execute_batch("CREATE TABLE IF NOT EXISTS project_catalog_metadata (project_id TEXT PRIMARY KEY REFERENCES projects(id) ON DELETE CASCADE, revision INTEGER NOT NULL DEFAULT 0, pinned INTEGER NOT NULL DEFAULT 0, sort_order INTEGER NOT NULL DEFAULT 0); CREATE TABLE IF NOT EXISTS catalog_visibility (kind TEXT NOT NULL, item_id TEXT NOT NULL, visibility TEXT NOT NULL, revision INTEGER NOT NULL, PRIMARY KEY(kind,item_id));")?; Ok(()) })
@@ -25,13 +26,15 @@ pub fn dispatch(db: &Database, method: &str, params: &Value) -> Result<Option<Va
     let object = params
         .as_object()
         .ok_or_else(|| anyhow!("invalid_request"))?;
-    let value = db.transaction(|tx| match method {
-        "project.catalog.list" => catalog(tx),
-        "project.update" => update(tx, object, method),
-        "catalog.visibility.list" => visibility_list(tx),
-        "catalog.visibility.update" => visibility_update(tx, object, method),
-        _ => unreachable!(),
-    })?;
+    let value = match method {
+        "project.catalog.list" => catalog_with_git(db, git_catalog),
+        "project.update" => update_with_git(db, object, method, git_catalog),
+        _ => db.transaction(|tx| match method {
+            "catalog.visibility.list" => visibility_list(tx),
+            "catalog.visibility.update" => visibility_update(tx, object, method),
+            _ => unreachable!(),
+        }),
+    }?;
     Ok(Some(value))
 }
 fn visibility_list(tx: &Transaction<'_>) -> Result<Value> {
@@ -275,7 +278,7 @@ fn scope_components(value: &str) -> Option<Vec<String>> {
     }
     Some(components)
 }
-fn catalog(tx: &Transaction<'_>) -> Result<Value> {
+fn catalog(tx: &Transaction<'_>) -> Result<Vec<Value>> {
     let mut stmt=tx.prepare("SELECT p.id,p.name,p.path,p.created_at,COALESCE(m.revision,0),COALESCE(m.pinned,0),COALESCE(m.sort_order,0) FROM projects p LEFT JOIN project_catalog_metadata m ON m.project_id=p.id ORDER BY COALESCE(m.pinned,0) DESC,COALESCE(m.sort_order,0),p.name,p.id")?;
     let rows = stmt.query_map([], |row| {
         Ok((
@@ -291,21 +294,70 @@ fn catalog(tx: &Transaction<'_>) -> Result<Value> {
     let mut out = Vec::new();
     for row in rows {
         let (id, name, path, created, revision, pinned, order) = row?;
-        out.push(json!({"id":id,"name":name,"path":path,"createdAt":created,"revision":revision,"pinned":pinned!=0,"sortOrder":order,"git":git_catalog(Path::new(&path))}));
+        out.push(json!({"id":id,"name":name,"path":path,"createdAt":created,"revision":revision,"pinned":pinned!=0,"sortOrder":order}));
     }
-    Ok(json!(out))
+    Ok(out)
 }
-fn update(tx: &Transaction<'_>, p: &serde_json::Map<String, Value>, method: &str) -> Result<Value> {
+fn catalog_with_git(db: &Database, mut read_git: impl FnMut(&Path) -> Value) -> Result<Value> {
+    // Capture one coherent metadata snapshot, then release SQLite before Git.
+    let mut entries = db.transaction(catalog)?;
+    for entry in &mut entries {
+        let path = entry["path"]
+            .as_str()
+            .ok_or_else(|| anyhow!("invalid_project"))?;
+        let git = read_git(Path::new(path));
+        entry["git"] = git;
+    }
+    Ok(json!(entries))
+}
+fn expected_revision(p: &serde_json::Map<String, Value>) -> Result<i64> {
+    p.get("expectedRevision")
+        .and_then(Value::as_i64)
+        .filter(|n| *n >= 0)
+        .ok_or_else(|| anyhow!("invalid_revision"))
+}
+fn update_with_git(
+    db: &Database,
+    p: &serde_json::Map<String, Value>,
+    method: &str,
+    read_git: impl FnOnce(&Path) -> Value,
+) -> Result<Value> {
+    let (replay, path) = db.transaction(|tx| {
+        let id = req(p, "id")?;
+        let op = req(p, "operationId")?;
+        if let Some(value) = operation(tx, op)? {
+            return Ok((Some(value), String::new()));
+        }
+        let expected = expected_revision(p)?;
+        let (path, revision): (String, i64) = tx.query_row(
+            "SELECT p.path,COALESCE(m.revision,0) FROM projects p LEFT JOIN project_catalog_metadata m ON m.project_id=p.id WHERE p.id=?",
+            [id], |row| Ok((row.get(0)?, row.get(1)?)),
+        )?;
+        if revision != expected {
+            return Err(anyhow!("revision_conflict"));
+        }
+        Ok((None, path))
+    })?;
+    if let Some(value) = replay {
+        return Ok(value);
+    }
+    // Keep the mutation and its exact replay result atomic; Git only reads the
+    // immutable registered root before that transaction, never while holding it.
+    let git = read_git(Path::new(&path));
+    db.transaction(|tx| update(tx, p, method, &git))
+}
+fn update(
+    tx: &Transaction<'_>,
+    p: &serde_json::Map<String, Value>,
+    method: &str,
+    git: &Value,
+) -> Result<Value> {
     let id = req(p, "id")?;
     let op = req(p, "operationId")?;
     if let Some(value) = operation(tx, op)? {
         return Ok(value);
     }
-    let expected = p
-        .get("expectedRevision")
-        .and_then(Value::as_i64)
-        .filter(|n| *n >= 0)
-        .ok_or_else(|| anyhow!("invalid_revision"))?;
+    let expected = expected_revision(p)?;
     let current:(String,String,i64,i64,i64)=tx.query_row("SELECT p.name,p.path,COALESCE(m.revision,0),COALESCE(m.pinned,0),COALESCE(m.sort_order,0) FROM projects p LEFT JOIN project_catalog_metadata m ON m.project_id=p.id WHERE p.id=?",[id],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?)))?;
     if current.2 != expected {
         return Err(anyhow!("revision_conflict"));
@@ -336,7 +388,7 @@ fn update(tx: &Transaction<'_>, p: &serde_json::Map<String, Value>, method: &str
         tx.query_row("SELECT created_at FROM projects WHERE id=?", [id], |row| {
             row.get(0)
         })?;
-    let value = json!({"id":id,"name":name,"path":current.1,"createdAt":created_at,"revision":expected+1,"pinned":pinned!=0,"sortOrder":order,"git":git_catalog(Path::new(&current.1))});
+    let value = json!({"id":id,"name":name,"path":current.1,"createdAt":created_at,"revision":expected+1,"pinned":pinned!=0,"sortOrder":order,"git":git});
     complete(tx, op, method, &value)?;
     Ok(value)
 }
@@ -366,17 +418,8 @@ fn git_catalog(root: &Path) -> Value {
     result
 }
 fn git(root: &Path, args: &[&str]) -> Result<String> {
-    let mut command = Command::new("git");
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        command.creation_flags(0x0800_0000);
-    }
-    let out = command.args(args).current_dir(root).output()?;
-    if !out.status.success() {
-        return Err(anyhow!("git_failed"));
-    }
-    Ok(String::from_utf8(out.stdout)?.trim().to_owned())
+    let out = run_git(&plain_path(root), args, &[], None, LOCAL_TIMEOUT)?;
+    Ok(String::from_utf8(out)?.trim().to_owned())
 }
 fn req<'a>(p: &'a serde_json::Map<String, Value>, k: &str) -> Result<&'a str> {
     p.get(k)
@@ -460,6 +503,80 @@ mod tests {
             .find(|entry| entry["kind"] == "session" && entry["id"] == session_id)
             .unwrap()
             .clone()
+    }
+
+    #[test]
+    fn catalog_git_enrichment_releases_sqlite_and_keeps_a_coherent_snapshot() {
+        use std::sync::mpsc;
+        use std::time::Duration;
+        let (_dir, db, project, _) = visibility_fixture();
+        let (entered_tx, entered_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        let (written_tx, written_rx) = mpsc::channel();
+        std::thread::scope(|scope| {
+            let db_ref = &db;
+            let reader = scope.spawn(move || {
+                catalog_with_git(db_ref, |_| {
+                    entered_tx.send(()).unwrap();
+                    release_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+                    json!({"available":true,"branch":"main"})
+                })
+            });
+            entered_rx.recv_timeout(Duration::from_secs(3)).unwrap();
+            scope.spawn(|| {
+                let result = db.transaction(|tx| {
+                    tx.execute(
+                        "UPDATE projects SET name='Updated during Git' WHERE id=?",
+                        [&project.id],
+                    )?;
+                    Ok(())
+                });
+                written_tx.send(result).unwrap();
+            });
+            let progressed = written_rx.recv_timeout(Duration::from_secs(1));
+            // Release the reader even on regression so the test cannot deadlock.
+            release_tx.send(()).unwrap();
+            progressed
+                .expect("Git enrichment held the SQLite connection")
+                .unwrap();
+            let snapshot = reader.join().unwrap().unwrap();
+            assert_eq!(snapshot[0]["name"], "Project");
+            assert_eq!(snapshot[0]["git"]["branch"], "main");
+        });
+        let latest = catalog_with_git(&db, |_| json!({"available":false})).unwrap();
+        assert_eq!(latest[0]["name"], "Updated during Git");
+    }
+
+    #[test]
+    fn project_update_rechecks_revision_after_git_and_replays_without_git() {
+        let (_dir, db, project, _) = visibility_fixture();
+        let pending =
+            json!({"id":project.id,"name":"Pending","expectedRevision":0,"operationId":"pending"});
+        let racing =
+            json!({"id":project.id,"name":"Winner","expectedRevision":0,"operationId":"winner"});
+        let expected_git = json!({"available":true,"branch":"main"});
+        let error = update_with_git(&db, pending.as_object().unwrap(), "project.update", |_| {
+            let committed =
+                update_with_git(&db, racing.as_object().unwrap(), "project.update", |_| {
+                    expected_git.clone()
+                })
+                .unwrap();
+            assert_eq!(committed["revision"], 1);
+            json!({"available":false})
+        })
+        .unwrap_err();
+        assert_eq!(error.to_string(), "revision_conflict");
+        let replay = update_with_git(&db, racing.as_object().unwrap(), "project.update", |_| {
+            panic!("an accepted operation must not run Git again")
+        })
+        .unwrap();
+        assert_eq!(replay["name"], "Winner");
+        assert_eq!(replay["revision"], 1);
+        assert_eq!(replay["git"], expected_git);
+        assert!(db
+            .transaction(|tx| operation(tx, "pending"))
+            .unwrap()
+            .is_none());
     }
 
     #[test]
