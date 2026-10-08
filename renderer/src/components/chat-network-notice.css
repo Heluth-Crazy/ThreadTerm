@@ -21,7 +21,7 @@
 .dialog.sheet.chat-repair-dialog .dlg-foot { flex:none!important; padding:12px 20px 16px!important; }
 .chat-repair-confirm { display:grid; gap:12px; font-size:13px; line-height:1.55; }
 .chat-repair-confirm p { margin:0; overflow-wrap:anywhere; }
-@media (max-width:520px) { .chat-repair-banner { align-items:stretch; flex-direction:column; gap:10px; } .chat-repair-banner .btn { width:100%; } }
+@media (max-width:520px) { .chat-repair-banner { align-items:stretch; flex-direction:column; gap:10px; } .chat-repair-banner > div { flex:0 0 auto; } .chat-repair-banner .btn { width:100%; } }
 .file-reference-link { display:inline; max-width:100%; padding:0; border:0; border-bottom:1px dotted currentColor; border-radius:0; background:none; color:var(--primary, #4f59c8); font:inherit; text-align:left; text-decoration:none; overflow-wrap:anywhere; cursor:pointer; }
 .file-reference-link:hover { border-bottom-style:solid; }
 .file-reference-link:focus-visible { outline:2px solid var(--primary, #4f59c8); outline-offset:2px; border-radius:2px; }
