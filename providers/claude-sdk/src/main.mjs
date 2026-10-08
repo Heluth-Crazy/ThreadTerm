@@ -54,6 +54,7 @@ async function handle(request) {
     case 'session.send': get(request.cardId).send(request.text, request.operationId); return {};
     case 'session.interrupt': await get(request.cardId).interrupt(); return {};
     case 'session.decision': get(request.cardId).decide(request.requestId, request.behavior); return {};
+    case 'session.answer': get(request.cardId).answer(request.requestId, request.values); return {};
     case 'session.set_option': return { ui: await get(request.cardId).setOption(request.optionId, request.value) };
     case 'session.stop': { const session = sessions.get(request.cardId); sessions.delete(request.cardId); if (session) await session.stop(); return {}; }
     default: throw new Error(`unhandled op: ${request.op}`);

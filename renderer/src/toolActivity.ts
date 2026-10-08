@@ -13,6 +13,26 @@ const string = (value: unknown): string | undefined => typeof value === 'string'
 const compact = (value: string | undefined): string | undefined => value?.replace(/\s+/g, ' ').slice(0, 160);
 const hiddenSubagentTool = (part: ChatPart): boolean => part.toolName === 'subAgentActivity' || part.toolName === 'collabAgentToolCall';
 
+/** Native question calls have a dedicated answer card, so the transport row is redundant. */
+export function hiddenQuestionTool(part: ChatPart): boolean {
+  const data = record(part.data);
+  const xaiTool = record(record(data._meta)['x.ai/tool']);
+  const questionName = (value: unknown): boolean => {
+    const normalized = string(value)?.toLowerCase().replace(/[\s_-]/g, '');
+    return normalized === 'askuser' || normalized === 'askuserquestion' || normalized === 'askinguserquestions' || normalized === 'question';
+  };
+  return questionName(part.toolName) || questionName(data.title) || questionName(xaiTool.name) || questionName(xaiTool.label)
+    || string(xaiTool.kind) === 'ask_user';
+}
+
+const hiddenTool = (part: ChatPart): boolean => hiddenSubagentTool(part) || hiddenQuestionTool(part);
+
+export function toolActivityWaitingLabel(awaitingQuestion: boolean, awaitingApproval: boolean, copy: Copy): string | undefined {
+  if (awaitingQuestion) return copy('Waiting for your answer', '等待你的回答');
+  if (awaitingApproval) return copy('Waiting for approval', '等待批准');
+  return undefined;
+}
+
 function toolEntry(item: ChatItem, part: ChatPart, index: number): ToolActivityEntry {
   return { id: `${item.id}:${part.toolId ? `tool:${part.toolId}` : `part:${index}`}`, itemId: item.id, part };
 }
@@ -23,7 +43,7 @@ export function toolEntriesForItems(items: readonly ChatItem[]): ToolActivityEnt
   for (const item of items) {
     if (item.role === 'user' || item.role === 'system') continue;
     item.parts.forEach((part, index) => {
-      if (part.type !== 'tool' || hiddenSubagentTool(part)) return;
+      if (part.type !== 'tool' || hiddenTool(part)) return;
       const entry = toolEntry(item, part, index);
       if (ids.has(entry.id)) entry.id += `:${index}`;
       ids.add(entry.id);
@@ -39,6 +59,24 @@ export function withoutToolParts(items: readonly ChatItem[]): ChatItem[] {
     const parts = item.parts.filter(part => part.type !== 'tool');
     return parts.length ? [{ ...item, parts }] : [];
   });
+}
+
+/** Completed interactions belong before the final reply, even if an adapter updated an older text row late. */
+export function orderCompletedTurnItems(items: readonly ChatItem[]): ChatItem[] {
+  let finalIndex = -1;
+  for (let index = items.length - 1; index >= 0; index--) {
+    const item = items[index]!;
+    if (item.role === 'assistant' && item.parts.some(part => part.type === 'text' && part.text)) { finalIndex = index; break; }
+  }
+  if (finalIndex < 0) return [...items];
+  const final = items[finalIndex]!;
+  const late = items.slice(finalIndex + 1);
+  const interactions = late.filter(item => item.parts.some(part => part.type === 'approval'));
+  const remainder = late.filter(item => !item.parts.some(part => part.type === 'approval'));
+  const approvals = final.parts.filter(part => part.type === 'approval');
+  if (!approvals.length && !interactions.length) return [...items];
+  const orderedFinal = approvals.length ? { ...final, parts: [...approvals, ...final.parts.filter(part => part.type !== 'approval')] } : final;
+  return [...items.slice(0, finalIndex), ...interactions, orderedFinal, ...remainder];
 }
 
 /** One chronological tool list; classification never changes grouping/order. */
@@ -65,7 +103,7 @@ export function groupToolActivity(items: readonly ChatItem[]): ToolPresentation[
       }
     };
     item.parts.forEach((part, index) => {
-      if (part.type === 'tool' && hiddenSubagentTool(part)) return;
+      if (part.type === 'tool' && hiddenTool(part)) return;
       if (part.type !== 'tool') {
         if (!parts.length) start = index;
         parts.push(part);

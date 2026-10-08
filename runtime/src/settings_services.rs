@@ -1276,6 +1276,9 @@ mod tests {
             },
         );
         assert!(!relocation_blocks(&config, "plugin.list").unwrap());
+        // Both interaction responses are mutations, never relocation-safe reads.
+        assert!(relocation_blocks(&config, "chat.approve").unwrap());
+        assert!(relocation_blocks(&config, "chat.answer").unwrap());
         assert!(relocation_blocks(&config, "plugin.setEnabled").unwrap());
         assert!(relocation_blocks(&config, "plugin.reload").unwrap());
         release_relocation(&config).unwrap();

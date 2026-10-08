@@ -1131,6 +1131,8 @@ mod tests {
             "review.revert",
             "chat.read",
             "chat.subagent.read",
+            "chat.approve",
+            "chat.answer",
             "history.list",
             "device.list",
             "device.pairing.cancel",

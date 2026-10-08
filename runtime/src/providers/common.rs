@@ -20,6 +20,81 @@ use std::{
 
 pub const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 
+/// ACP streams have no native message id. Keep text on either side of a
+/// parent interaction in separate items, while retaining the legacy first id.
+#[derive(Clone, Default)]
+pub(super) struct ChatTextSegments {
+    turn: Option<String>,
+    segment: u64,
+}
+
+impl ChatTextSegments {
+    pub fn sync_turn(&mut self, turn: Option<&str>) {
+        if self.turn.as_deref() != turn {
+            self.turn = turn.map(str::to_owned);
+            self.segment = 0;
+        }
+    }
+
+    pub fn advance(&mut self, turn: Option<&str>) {
+        // Late cards from an older subagent must not split the current turn.
+        if turn.is_some() && self.turn.as_deref() == turn {
+            self.segment += 1;
+        }
+    }
+
+    pub fn item_id(&self, turn: Option<&str>) -> Option<String> {
+        let turn = turn?;
+        (self.segment > 0 && self.turn.as_deref() == Some(turn))
+            .then(|| format!("{turn}:seg:{}", self.segment))
+    }
+}
+
+#[cfg(test)]
+pub(super) fn assert_segmented_turn_projection(
+    session: &str,
+    provider: &str,
+    turn: &str,
+    events: &[super::ProviderEvent],
+) {
+    let root = tempfile::tempdir().unwrap();
+    let db = crate::db::Database::open(&root.path().join("segments.sqlite")).unwrap();
+    db.transaction(|tx| {
+        tx.execute("INSERT INTO sessions(id,title,provider,mode,status,created_at,updated_at) VALUES (?,'test',?,'chat','running','now','now')", [session, provider])?;
+        Ok(())
+    }).unwrap();
+    for event in events {
+        crate::chat_projection::record(&db, session, event.turn_id.as_deref(), &event.kind, &event.data).unwrap();
+    }
+    // Native completion may be observed twice. All segments settle, with a
+    // single turn-scoped notice, independent of the last text item's id.
+    for _ in 0..2 {
+        crate::chat_projection::record(&db, session, Some(turn), "chat.turn.completed", &json!({"elapsedMs":42})).unwrap();
+    }
+    let items = db.chat_items(session).unwrap();
+    let texts: Vec<_> = items.iter().flat_map(|item| item.parts.iter()
+        .filter(|part| part["type"] == "text").map(move |part| (item, part))).collect();
+    assert_eq!(texts.len(), 2);
+    assert_eq!(texts[0].1["text"], "Before");
+    assert_eq!(texts[1].1["text"], "After");
+    assert_eq!(texts[0].0.id, format!("{session}:assistant:{turn}"));
+    assert!(texts[1].0.id.starts_with(&format!("{session}:assistant:{turn}:seg:")));
+    assert!(items.iter().all(|item| item.turn_id.as_deref() == Some(turn)));
+    assert!(items.iter().flat_map(|item| &item.parts).all(|part| part["status"] != "streaming"));
+    for (index, item) in items.iter().enumerate() {
+        if item.parts.iter().any(|part| part["type"] == "approval" || part["type"] == "subagent") {
+            let before = items.iter().position(|item| item.id == texts[0].0.id).unwrap();
+            let after = items.iter().position(|item| item.id == texts[1].0.id).unwrap();
+            assert!(before < index && index < after);
+        }
+    }
+    db.transaction(|tx| {
+        let count: u64 = tx.query_row("SELECT count(*) FROM inbox WHERE session_id=? AND kind='reply' AND id=?", rusqlite::params![session, format!("{session}:reply:{turn}")], |row| row.get(0))?;
+        assert_eq!(count, 1);
+        Ok(())
+    }).unwrap();
+}
+
 #[derive(Debug, Clone, Copy)]
 pub enum EnvelopeStyle {
     JsonRpc2,

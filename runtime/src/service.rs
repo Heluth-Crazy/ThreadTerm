@@ -193,6 +193,9 @@ pub(crate) fn approve_chat_request(
     if let Some(result) = db.operation(operation_id)? {
         return Ok(result);
     }
+    if question_request_data(db, session_id, turn_id, approval_id, false)?.is_some() {
+        return Err(crate::providers::ProviderError::new("answer_required", "Use chat.answer for this question").into());
+    }
     if !db.claim_external_operation(operation_id)? {
         return Err(anyhow::anyhow!("operation_outcome_unknown"));
     }
@@ -200,6 +203,65 @@ pub(crate) fn approve_chat_request(
         .chat_approve(session_id, turn_id, approval_id, choice_id, operation_id)
         .map_err(anyhow::Error::from)?;
     db.complete_null_operation(operation_id, "chat.approve")?;
+    Ok(Value::Null)
+}
+
+/// Read the canonical approval part; native adapters still own the pending map.
+fn question_request_data(
+    db: &Database,
+    session_id: &str,
+    turn_id: &str,
+    approval_id: &str,
+    require_pending: bool,
+) -> Result<Option<Value>> {
+    for item in db.chat_items(session_id)? {
+        for part in item.parts {
+            if part["type"] != "approval" || part["approvalId"].as_str() != Some(approval_id) { continue; }
+            if part.pointer("/data/interaction").and_then(Value::as_str) != Some("question") {
+                if require_pending { return Err(crate::providers::ProviderError::new("answer_invalid", "This part is not a question").into()); }
+                return Ok(None);
+            }
+            if require_pending && (item.turn_id.as_deref() != Some(turn_id) || part["status"] != "pending") {
+                return Err(crate::providers::ProviderError::new("approval_expired", "This question is no longer pending for this turn").into());
+            }
+            return Ok(Some(part["data"].clone()));
+        }
+    }
+    if require_pending {
+        Err(crate::providers::ProviderError::new("approval_expired", "This question is no longer pending").into())
+    } else { Ok(None) }
+}
+
+fn answer_chat_request(
+    db: &Database,
+    providers: &Providers,
+    session_id: &str,
+    turn_id: &str,
+    approval_id: &str,
+    response: &Value,
+    operation_id: &str,
+) -> Result<Value> {
+    use sha2::{Digest, Sha256};
+    db.require_interactive(session_id)?;
+    // Reuse the operation binding, without persisting raw (possibly secret)
+    // values. The caller has already fenced the current lease; lease renewal
+    // is not part of the identity of an answer.
+    let mut fingerprint = Sha256::new();
+    fingerprint.update(operation_id.as_bytes());
+    fingerprint.update(serde_json::to_vec(response)?);
+    db.bind_operation(operation_id, "chat.answer", &json!({
+        "sessionId":session_id,"turnId":turn_id,"approvalId":approval_id,
+        "responseFingerprint":format!("{:x}", fingerprint.finalize())
+    }))?;
+    if let Some(result) = db.operation(operation_id)? { return Ok(result); }
+    let data = question_request_data(db, session_id, turn_id, approval_id, true)?
+        .ok_or_else(|| anyhow::anyhow!("answer_invalid"))?;
+    crate::chat_questions::validate_response(&data, response)?;
+    if !db.claim_external_operation(operation_id)? {
+        return Err(anyhow::anyhow!("operation_outcome_unknown"));
+    }
+    providers.chat_answer(session_id, turn_id, approval_id, response, operation_id)?;
+    db.complete_null_operation(operation_id, "chat.answer")?;
     Ok(Value::Null)
 }
 
@@ -540,7 +602,7 @@ impl RuntimeService {
                 ));
             }
             // lookup references an existing operation; it does not reserve one.
-            if request.method != "session.lookup" {
+            if request.method != "session.lookup" && request.method != "chat.answer" {
                 if let Some(operation_id) =
                     request.params.get("operationId").and_then(Value::as_str)
                 {
@@ -967,6 +1029,14 @@ impl RuntimeService {
                         &p.choice_id,
                         &p.operation_id,
                     )
+                }
+                "chat.answer" => {
+                    let p: ChatAnswer = parse(&request.params)?;
+                    self.leases.require(&self.db, &p.session_id, principal, p.lease_epoch)?;
+                    if [&p.session_id, &p.turn_id, &p.approval_id, &p.operation_id].iter().any(|s| s.is_empty()) {
+                        return Err(crate::providers::ProviderError::new("answer_invalid", "Question identifiers must not be empty").into());
+                    }
+                    answer_chat_request(&self.db, &self.providers, &p.session_id, &p.turn_id, &p.approval_id, &p.response, &p.operation_id)
                 }
                 "chat.options" => {
                     let p: ChatRead = parse(&request.params)?;
@@ -2102,6 +2172,16 @@ struct ChatApprove {
     operation_id: String,
 }
 #[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ChatAnswer {
+    session_id: String,
+    turn_id: String,
+    approval_id: String,
+    lease_epoch: i64,
+    operation_id: String,
+    response: Value,
+}
+#[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct ChatConnect {
     session_id: String,
@@ -3167,6 +3247,8 @@ mod tests {
 
 #[cfg(test)]
 mod chat_lifecycle_tests;
+#[cfg(test)]
+mod question_tests;
 
 #[cfg(test)]
 mod projection_batch_tests {

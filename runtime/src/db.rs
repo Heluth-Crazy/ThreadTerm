@@ -1715,8 +1715,17 @@ fn collect_workspaces(conn: &Connection) -> Result<Vec<Value>> {
     }).collect()
 }
 fn collect_inbox(conn: &Connection) -> Result<Vec<Value>> {
-    let mut stmt=conn.prepare("SELECT inbox.id,inbox.session_id,inbox.kind,sessions.title,inbox.created_at,inbox.read FROM inbox JOIN sessions ON sessions.id=inbox.session_id WHERE inbox.kind!='reply' ORDER BY inbox.created_at DESC,inbox.id")?;
-    let rows=stmt.query_map([], |r| Ok(json!({"id":r.get::<_,String>(0)?,"sessionId":r.get::<_,String>(1)?,"kind":r.get::<_,String>(2)?,"title":r.get::<_,String>(3)?,"createdAt":r.get::<_,String>(4)?,"read":r.get::<_,bool>(5)?})))?;
+    let mut stmt=conn.prepare("SELECT inbox.id,inbox.session_id,inbox.kind,sessions.title,inbox.created_at,inbox.read,inbox.data FROM inbox JOIN sessions ON sessions.id=inbox.session_id WHERE inbox.kind!='reply' ORDER BY inbox.created_at DESC,inbox.id")?;
+    let rows=stmt.query_map([], |r| {
+        let mut title=r.get::<_,String>(3)?;
+        if let Ok(data)=serde_json::from_str::<Value>(&r.get::<_,String>(6)?) {
+            let payload=data.pointer("/part/data").unwrap_or(&data);
+            if payload["interaction"]=="question" {
+                if let Some(question)=payload.pointer("/form/questions/0/question").and_then(Value::as_str).filter(|text| !text.is_empty()) {title=question.to_owned();}
+            }
+        }
+        Ok(json!({"id":r.get::<_,String>(0)?,"sessionId":r.get::<_,String>(1)?,"kind":r.get::<_,String>(2)?,"title":title,"createdAt":r.get::<_,String>(4)?,"read":r.get::<_,bool>(5)?}))
+    })?;
     rows.collect::<rusqlite::Result<Vec<_>>>()
         .map_err(Into::into)
 }

@@ -1,34 +1,49 @@
 import type { ChatApprovalChoice, ChatPart } from "@threadterm/protocol";
 import { approvalButtonsEnabled, approvalData, choiceLabel, scopeLabel } from "../chatApproval";
+import { ChatQuestionCard } from "./ChatQuestionCard";
+import type { ChatInteractionForm, QuestionResponse } from "../chatQuestion";
+import './subagent-card.css';
 
 export function ChatApprovalCard({
   part,
   submitting,
   writable,
   onChoose,
+  onAnswer,
   copy,
 }: {
   part: ChatPart;
   submitting?: string;
   writable: boolean;
   onChoose: (choiceId: string) => void;
+  onAnswer?: (response: QuestionResponse) => void;
   copy: (en: string, zh: string) => string;
 }) {
   const data = approvalData(part);
   const expired = part.status === "expired" || part.status === "outcomeUnknown" || part.status === "failed";
-  const resolved = part.status === "resolved";
+  const resolved = part.status === "resolved" || part.status === "answered" || part.status === "dismissed";
   const enabled = approvalButtonsEnabled(part, writable) && !submitting;
   if (!data) {
     return <p className="chat-approval-stale">{copy("This older approval cannot be acted on. Reload the live session to review current requests.", "这条旧审批无法操作。请同步当前会话后再查看新的请求。")}</p>;
   }
   const title = data.title || copy("Approval required", "需要批准");
   const unsupported = data.interaction === "userInput" || data.submittable === false;
+  const question = (part.data as { interaction?: string; form?: ChatInteractionForm; answerable?: boolean; answerSummary?: Record<string, string>; isBlocking?: boolean; autoResolutionMs?: number } | undefined);
   const details = detailsText(data.details);
   // Set by the runtime on a delegated session's requests (agent delegation): the
   // delegating agent decides, or the user does once that agent's turn is over
   // (escalated, or the request arrived after the turn had ended).
   const delegation = (part.data as { delegation?: { route?: string } } | undefined)?.delegation;
   const subagent = (part.data as { subagent?: { label?: string } } | undefined)?.subagent;
+  if (question?.interaction === "question" && question.form) return <div className={`chat-approval-card chat-question-wrapper ${part.status ?? "pending"}`}>
+    <div className="chat-question-header">
+      <svg className="chat-question-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" aria-hidden="true"><path d="M8 9a4 4 0 0 1 8 0c0 3-4 3-4 6"/><circle cx="12" cy="12" r="10"/><path d="M12 18h.01"/></svg>
+      <span className="chat-question-header-chip">{question.form.kind === "questions" && question.form.questions.length === 1 ? question.form.questions[0].header || copy("Question", "问题") : question.form.kind === "form" ? copy("Form", "表单") : question.form.kind === "url" ? copy("Action required", "需要操作") : copy("Questions", "问题")}</span>
+      {subagent && <span className="chat-subagent-chip">{copy("Subagent", "子代理")} · {subagent.label || copy("Subagent", "子代理")}</span>}
+      {(resolved || expired) && <span className="chat-question-status">{expired ? copy("Inactive", "已失效") : part.status === "dismissed" ? copy("Dismissed", "已忽略") : copy("Answered", "已回答")}</span>}
+    </div>
+    <ChatQuestionCard form={question.form} answerable={question.answerable !== false} resolved={resolved} dismissed={part.status === "dismissed"} summary={question.answerSummary} writable={writable && !expired} submitting={Boolean(submitting)} onAnswer={onAnswer} copy={copy} nonBlocking={question.isBlocking === false} autoResolutionMs={question.autoResolutionMs} inactiveMessage={expired ? copy("This question is no longer active.", "此问题已失效。") : undefined} />
+  </div>;
   return (
     <div className={`chat-approval-card ${part.status ?? "pending"}${delegation?.route === "parent" ? " is-delegated" : ""}`}>
       {subagent && <span className="chat-subagent-chip">{copy("Subagent", "子代理")} · {subagent.label || copy("Subagent", "子代理")}</span>}

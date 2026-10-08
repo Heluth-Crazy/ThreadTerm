@@ -7,12 +7,13 @@ use super::{
     approve_threadterm_tool,
     common::{
         command_output, encode_approval_id, history_page, insert_optional, validate_native_id,
-        version_probe, CommandSpec, EnvelopeStyle, JsonLineProcess, JsonLineResponder,
+        version_probe, ChatTextSegments, CommandSpec, EnvelopeStyle, JsonLineProcess, JsonLineResponder,
     },
     emit_bound as emit, ChatSession, ChatToolServer, ProviderAdapter, ProviderCapability,
     NativeSessionRef, ProviderError, ScopedProviderEvents, TerminalCommand,
 };
 use crate::plugins::{AgentDescriptor, TerminalConfig};
+use crate::chat_questions::answer_summary;
 use chrono::Utc;
 use serde_json::{json, Value};
 use std::{
@@ -485,11 +486,13 @@ struct PermissionRequest {
     rpc_id: Value,
     turn_id: Option<String>,
     choices: Vec<ApprovalChoice>,
+    question_data: Option<Value>,
     state: PendingApprovalState,
 }
 
 #[derive(Clone, Default)]
 struct AcpUiState {
+    text_segments: ChatTextSegments,
     subagent_calls: HashMap<String, Value>,
     parent_tool_calls: HashSet<String>,
     options: Vec<Value>,
@@ -1132,6 +1135,65 @@ impl ChatSession for AcpChat {
         }
     }
 
+    fn answer(
+        &mut self,
+        turn_id: &str,
+        approval_id: &str,
+        response: &Value,
+        operation_id: &str,
+    ) -> Result<(), ProviderError> {
+        let mut permissions = self
+            .permissions
+            .lock()
+            .map_err(|_| ProviderError::new("provider_internal", "ACP permission lock poisoned"))?;
+        let pending = permissions.get_mut(approval_id).ok_or_else(|| {
+            ProviderError::new("approval_not_pending", "ACP question is unknown or already resolved")
+        })?;
+        let Some(question_data) = pending.question_data.as_ref() else {
+            return Err(ProviderError::new("answer_invalid", "interaction is not a Kimi question"));
+        };
+        let active_turn = self.active_turn.lock().ok().and_then(|value| value.clone());
+        validate_turn(pending.turn_id.as_deref(), active_turn.as_deref(), turn_id)?;
+        let (choice_id, status) = kimi_question_choice(&pending.choices, response)?;
+        let summary = answer_summary(question_data, response);
+        match pending.state.begin_submit(operation_id) {
+            Ok(()) => {}
+            Err(error) if error.code == "approval_duplicate" => return Ok(()),
+            Err(error) => return Err(error),
+        }
+        let rpc_id = pending.rpc_id.clone();
+        drop(permissions);
+        if self.active_turn.lock().ok().and_then(|value| value.clone()).as_deref() != Some(turn_id) {
+            return Err(ProviderError::new("approval_stale", "approval is not bound to a live turn"));
+        }
+        let outcome = json!({"outcome":{"outcome":"selected","optionId":choice_id}});
+        let result = self.process.respond(rpc_id, outcome);
+        let mut permissions = self
+            .permissions
+            .lock()
+            .map_err(|_| ProviderError::new("provider_internal", "ACP permission lock poisoned"))?;
+        match result {
+            Ok(()) => {
+                permissions.remove(approval_id);
+                emit(&self.events, &self.provider, &self.session_id, Some(&self.native_id), Some(turn_id),
+                    "chat.approval.resolved",
+                    json!({"approvalId":approval_id,"status":status,"outcome":"submitted","answerSummary":summary}));
+                Ok(())
+            }
+            Err(error) if write_failed_not_sent(&error) => {
+                if let Some(pending) = permissions.get_mut(approval_id) { pending.state.clear_submit(); }
+                Err(error)
+            }
+            Err(error) => {
+                if let Some(pending) = permissions.get_mut(approval_id) { pending.state.mark_unknown(); }
+                emit(&self.events, &self.provider, &self.session_id, Some(&self.native_id), Some(turn_id),
+                    "chat.approval.resolved",
+                    json!({"approvalId":approval_id,"status":"outcomeUnknown","outcome":"unknown"}));
+                Err(ProviderError::new("approval_outcome_unknown", error.message))
+            }
+        }
+    }
+
     fn stop(&mut self) -> Result<(), ProviderError> {
         let turn = self.active_turn.lock().ok().and_then(|v| v.clone());
         if let Some(turn) = turn {
@@ -1391,6 +1453,10 @@ fn emit_acp_message(
         .and_then(Value::as_str)
         .map(ToOwned::to_owned)
         .or_else(|| active_turn.lock().ok().and_then(|value| value.clone()));
+    let active = active_turn.lock().ok().and_then(|value| value.clone());
+    if let Ok(mut state) = ui.lock() {
+        state.text_segments.sync_turn(active.as_deref());
+    }
     if method == "session/request_permission" && raw.get("id").is_some() {
         let rpc_id = raw.get("id").cloned().unwrap_or(Value::Null);
         let approval_id = encode_approval_id(&rpc_id);
@@ -1400,6 +1466,7 @@ fn emit_acp_message(
             .cloned()
             .unwrap_or_default();
         let choices = acp_choices(&options);
+        let question_data = kimi_question_payload(provider, &params, &options);
         if let Ok(mut values) = permissions.lock() {
             values.insert(
                 approval_id.clone(),
@@ -1407,6 +1474,7 @@ fn emit_acp_message(
                     rpc_id,
                     turn_id: turn_id.clone(),
                     choices: choices.clone(),
+                    question_data: question_data.clone(),
                     state: PendingApprovalState::default(),
                 },
             );
@@ -1421,12 +1489,20 @@ fn emit_acp_message(
             turn_id.as_deref(),
             !choices.is_empty(),
         );
+        if let Some(question_data) = question_data {
+            payload["interaction"] = json!("question");
+            payload["answerable"] = json!(true);
+            payload["form"] = question_data["form"].clone();
+        }
         if let Some(subagent) = ui
             .lock()
             .ok()
             .and_then(|state| acp_permission_subagent(&params, &state))
         {
             payload["subagent"] = subagent;
+        }
+        if let Ok(mut state) = ui.lock() {
+            state.text_segments.advance(turn_id.as_deref());
         }
         emit(
             events,
@@ -1488,6 +1564,7 @@ fn emit_acp_message(
                 "thinking",
                 text,
                 &raw,
+                ui,
             );
             return;
         }
@@ -1514,6 +1591,7 @@ fn emit_acp_message(
                             part_type,
                             &piece,
                             &raw,
+                            ui,
                         );
                     }
                     return;
@@ -1528,6 +1606,7 @@ fn emit_acp_message(
                 "text",
                 text,
                 &raw,
+                ui,
             );
             return;
         }
@@ -1538,6 +1617,9 @@ fn emit_acp_message(
         "provider.event"
     };
     if event_kind == "chat.item" {
+        if let Ok(mut state) = ui.lock() {
+            state.text_segments.advance(turn_id.as_deref());
+        }
         let subagent = ui.lock().ok().and_then(|mut state| {
             let (key, info) = acp_subagent_update(provider, update, &mut state.subagent_calls)?;
             let retract = state.parent_tool_calls.remove(&key);
@@ -1578,6 +1660,74 @@ fn emit_acp_message(
                 json!({"item":{"id":tool_id},"merge":true,"part":part}),
             );
         }
+    }
+}
+
+fn kimi_question_payload(provider: &str, params: &Value, options: &[Value]) -> Option<Value> {
+    if provider != "kimi" {
+        return None;
+    }
+    let mut labels = Vec::new();
+    let mut ids = HashSet::new();
+    let mut skip_count = 0;
+    for option in options {
+        let id = option.get("optionId")?.as_str()?;
+        if !ids.insert(id) {
+            return None;
+        }
+        if id == "q0_skip" {
+            skip_count += 1;
+            continue;
+        }
+        let suffix = id.strip_prefix("q0_opt_")?;
+        if suffix.is_empty() || !suffix.chars().all(|character| character.is_ascii_digit()) {
+            return None;
+        }
+        let label = option.get("name").and_then(Value::as_str)?;
+        if label.trim().is_empty() || labels.iter().any(|existing: &String| existing == label) {
+            return None;
+        }
+        labels.push(label.to_owned());
+    }
+    if labels.is_empty() || skip_count != 1 {
+        return None;
+    }
+    // Kimi's bridge (acp-server handleQuestion) titles the call "AskUserQuestion" and carries the question text
+    // as the first text content block; the rawInput fallbacks cover other shapes.
+    let question = params.pointer("/toolCall/content/0/content/text")
+        .filter(|value| value.as_str().is_some_and(|text| !text.trim().is_empty()))
+        .or_else(|| params.pointer("/toolCall/rawInput/question"))
+        .or_else(|| params.pointer("/toolCall/rawInput/questions/0/question"))
+        .or_else(|| params.pointer("/rawInput/question"))
+        .or_else(|| params.pointer("/rawInput/questions/0/question"))
+        .or_else(|| params.pointer("/toolCall/rawInput"))
+        .or_else(|| params.get("rawInput"))
+        .and_then(Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .or_else(|| params.pointer("/toolCall/title").and_then(Value::as_str))
+        .or_else(|| params.get("title").and_then(Value::as_str))?;
+    Some(json!({"interaction":"question","answerable":true,"form":{"kind":"questions","questions":[{
+        "id":"q0","question":question,"options":labels.into_iter().map(|label| json!({"label":label})).collect::<Vec<_>>(),
+        "multiSelect":false,"allowOther":false,"secret":false
+    }]}}))
+}
+
+fn kimi_question_choice(
+    choices: &[ApprovalChoice],
+    response: &Value,
+) -> Result<(String, &'static str), ProviderError> {
+    match response.get("action").and_then(Value::as_str) {
+        Some("dismiss") => Ok((find_choice(choices, "q0_skip")?.choice_id.clone(), "dismissed")),
+        Some("submit") => {
+            let label = response.pointer("/values/q0/0").and_then(Value::as_str).ok_or_else(|| {
+                ProviderError::new("answer_invalid", "Kimi question needs one selected option")
+            })?;
+            let choice = choices.iter().find(|choice| {
+                choice.choice_id.starts_with("q0_opt_") && choice.label == label
+            }).ok_or_else(|| ProviderError::new("answer_invalid", "Kimi answer is not an offered option"))?;
+            Ok((choice.choice_id.clone(), "answered"))
+        }
+        _ => Err(ProviderError::new("answer_invalid", "Expected submit or dismiss")),
     }
 }
 
@@ -1921,7 +2071,12 @@ fn emit_chat_delta(
     part_type: &str,
     text: &str,
     raw: &Value,
+    ui: &Mutex<AcpUiState>,
 ) {
+    let mut data = json!({"part":{"type":part_type,"text":text,"status":"streaming"},"raw":raw});
+    if let Some(id) = ui.lock().ok().and_then(|state| state.text_segments.item_id(turn_id)) {
+        data["item"] = json!({"id":id});
+    }
     emit(
         events,
         provider,
@@ -1929,7 +2084,7 @@ fn emit_chat_delta(
         native_id,
         turn_id,
         "chat.delta",
-        json!({"part":{"type":part_type,"text":text,"status":"streaming"},"raw":raw}),
+        data,
     );
 }
 
@@ -2408,6 +2563,45 @@ mod tests {
     use crate::plugins::PluginRegistry;
 
     #[test]
+    fn acp_replay_splits_text_at_parent_interactions() {
+        for provider in ["kimi", "gemini", "custom"] {
+            for boundary in ["tool", "permission", "question", "subagent"] {
+                let (sender, mut receiver) = crate::provider_events::tap_channel(32);
+                let events = ScopedProviderEvents::new(sender, "segment-worker");
+                let native = Mutex::new(Some("native".to_owned()));
+                let active = Mutex::new(Some("turn".to_owned()));
+                let permissions = Mutex::new(HashMap::new());
+                let think = Mutex::new(false);
+                let ui = Mutex::new(AcpUiState::default());
+                let update = |kind: &str, text: &str| json!({"method":"session/update","params":{
+                    "sessionId":"native","update":{"sessionUpdate":kind,"content":{"text":text}}}});
+                let frame = match boundary {
+                    "permission" => json!({"id":1,"method":"session/request_permission","params":{
+                        "sessionId":"native","toolCall":{"title":"Read"},"options":[{"optionId":"allow","kind":"allow_once","name":"Allow"}]}}),
+                    "question" => serde_json::from_str::<Value>(include_str!("../../tests/fixtures/kimi-question-bridge.jsonl").lines()
+                        .find(|line| line.contains("session/request_permission")).unwrap()).unwrap(),
+                    _ => json!({"method":"session/update","params":{"sessionId":"native","update":{
+                        "sessionUpdate":"tool_call","toolCallId":"call","title":"Read",
+                        "rawInput":if boundary == "subagent" { json!({"subagent_type":"explore","description":"Inspect"}) } else { json!({}) }}}}),
+                };
+                for frame in [update("agent_message_chunk", "Before"), frame,
+                    update("agent_thought_chunk", "Thinking after"), update("agent_message_chunk", "After")] {
+                    emit_acp_message(&events, provider, "segments", &native, &active, &permissions, &think, &ui, frame);
+                }
+                let emitted: Vec<_> = std::iter::from_fn(|| receiver.try_recv().ok()).collect();
+                let deltas: Vec<_> = emitted.iter().filter(|event| event.kind == "chat.delta").collect();
+                assert!(deltas[0].data.get("item").is_none());
+                assert_eq!(deltas[1].data["item"]["id"], "turn:seg:1");
+                assert_eq!(deltas[2].data["item"], deltas[1].data["item"]);
+                super::super::common::assert_segmented_turn_projection("segments", provider, "turn", &emitted);
+                *active.lock().unwrap() = Some("next".into());
+                emit_acp_message(&events, provider, "segments", &native, &active, &permissions, &think, &ui, update("agent_message_chunk", "Next"));
+                assert!(receiver.try_recv().unwrap().data.get("item").is_none());
+            }
+        }
+    }
+
+    #[test]
     fn chat_ui_event_matches_acp_ui_state() {
         let (sender, mut receiver) = crate::provider_events::tap_channel(1);
         let events = ScopedProviderEvents::new(sender, "worker");
@@ -2697,6 +2891,70 @@ mod tests {
     }
 
     const KIMI_WIRE: &[u8] = include_bytes!("../../tests/fixtures/kimi-subagent-wire.jsonl");
+    const KIMI_QUESTION_BRIDGE: &[u8] = include_bytes!("../../tests/fixtures/kimi-question-bridge.jsonl");
+
+    #[test]
+    fn kimi_ask_user_question_bridge_is_a_question_only_for_kimi() {
+        let raw = serde_json::from_slice::<Value>(KIMI_QUESTION_BRIDGE).unwrap();
+        let emit_request = |provider: &str, raw: Value| {
+            let (sender, mut receiver) = crate::provider_events::tap_channel(4);
+            let events = ScopedProviderEvents::new(sender, "worker");
+            let native = Mutex::new(Some("kimi-question-session".to_owned()));
+            let active = Mutex::new(Some("turn".to_owned()));
+            let permissions = Mutex::new(HashMap::new());
+            let ui = Mutex::new(AcpUiState::default());
+            emit_acp_message(&events, provider, "session", &native, &active, &permissions, &Mutex::new(false), &ui, raw);
+            (receiver.try_recv().unwrap(), permissions)
+        };
+        let (event, permissions) = emit_request("kimi", raw.clone());
+        let data = &event.data["part"]["data"];
+        assert_eq!(event.kind, "chat.approval");
+        assert_eq!(data["interaction"], "question");
+        assert_eq!(data["form"]["kind"], "questions");
+        assert_eq!(data["form"]["questions"][0]["question"], "Which release channel should I use?");
+        assert_eq!(data["form"]["questions"][0]["options"], json!([{"label":"Stable"},{"label":"Preview"}]));
+        assert_eq!(data["form"]["questions"][0]["multiSelect"], false);
+        assert_eq!(data["form"]["questions"][0]["allowOther"], false);
+        assert_eq!(permissions.lock().unwrap().values().next().unwrap().question_data.as_ref().unwrap()["form"], data["form"]);
+        let locked_permissions = permissions.lock().unwrap();
+        let choices = &locked_permissions.values().next().unwrap().choices;
+        let (choice, status) = kimi_question_choice(choices, &json!({"action":"submit","values":{"q0":["Preview"]}})).unwrap();
+        assert_eq!(status, "answered");
+        assert_eq!(json!({"outcome":{"outcome":"selected","optionId":choice}}), json!({"outcome":{"outcome":"selected","optionId":"q0_opt_1"}}));
+        let (choice, status) = kimi_question_choice(choices, &json!({"action":"dismiss"})).unwrap();
+        assert_eq!(status, "dismissed");
+        assert_eq!(json!({"outcome":{"outcome":"selected","optionId":choice}}), json!({"outcome":{"outcome":"selected","optionId":"q0_skip"}}));
+
+        let (generic, _) = emit_request("gemini", raw.clone());
+        assert_eq!(generic.data["part"]["data"]["interaction"], "permission");
+        assert!(generic.data["part"]["data"].get("form").is_none());
+
+        let mut spaced = raw.clone();
+        spaced["params"]["options"][0]["name"] = json!(" Sapphire ");
+        let (spaced, permissions) = emit_request("kimi", spaced);
+        assert_eq!(spaced.data["part"]["data"]["form"]["questions"][0]["options"][0]["label"], " Sapphire ");
+        let locked_permissions = permissions.lock().unwrap();
+        let choices = &locked_permissions.values().next().unwrap().choices;
+        assert_eq!(kimi_question_choice(choices, &json!({"action":"submit","values":{"q0":[" Sapphire "]}})).unwrap().0, "q0_opt_0");
+
+        let mut malformed = raw.clone();
+        malformed["params"]["options"][1]["optionId"] = json!("q1_opt_1");
+        let (generic, _) = emit_request("kimi", malformed);
+        assert_eq!(generic.data["part"]["data"]["interaction"], "permission");
+        assert!(generic.data["part"]["data"].get("form").is_none());
+
+        let mut duplicate = raw.clone();
+        duplicate["params"]["options"][1]["optionId"] = json!("q0_opt_0");
+        let (generic, _) = emit_request("kimi", duplicate);
+        assert_eq!(generic.data["part"]["data"]["interaction"], "permission");
+
+        let mut title_only = raw;
+        title_only["params"]["toolCall"]["rawInput"] = Value::Null;
+        title_only["params"]["toolCall"]["content"] = Value::Null;
+        title_only["params"]["toolCall"]["title"] = json!("Title fallback question");
+        let (title_only, _) = emit_request("kimi", title_only);
+        assert_eq!(title_only.data["part"]["data"]["form"]["questions"][0]["question"], "Title fallback question");
+    }
 
     #[test]
     fn kimi_redacted_wire_maps_prompt_thinking_tools_output_and_error() {

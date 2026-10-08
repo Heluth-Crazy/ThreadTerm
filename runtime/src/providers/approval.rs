@@ -179,14 +179,7 @@ pub fn codex_choices(method: &str, params: &Value) -> (Vec<ApprovalChoice>, bool
             ],
             true,
         ),
-        "mcpServer/elicitation/request" => (
-            vec![
-                choice("accept", "Accept", "allow", "once"),
-                choice("decline", "Decline", "deny", "once"),
-            ],
-            true,
-        ),
-        "item/tool/requestUserInput" => {
+        "mcpServer/elicitation/request" | "item/tool/requestUserInput" => {
             let _ = params;
             (Vec::new(), false)
         }
@@ -241,17 +234,9 @@ pub fn codex_response(
             };
             Ok(json!({"permissions": permissions, "scope": scope}))
         }
-        "mcpServer/elicitation/request" => {
-            let action = match choice_id {
-                "accept" => "accept",
-                "decline" => "decline",
-                _ => return invalid_codex(choice_id),
-            };
-            Ok(json!({"action": action}))
-        }
-        "item/tool/requestUserInput" => Err(ProviderError::new(
+        "mcpServer/elicitation/request" | "item/tool/requestUserInput" => Err(ProviderError::new(
             "approval_unsupported",
-            "Codex user-input requests cannot be answered as permission choices",
+            "Codex questions must be answered with chat.answer",
         )),
         _ => Err(ProviderError::new(
             "approval_unsupported",
@@ -279,9 +264,228 @@ pub fn approval_payload(
         "details": details,
         "choices": choices,
         "turnId": turn_id,
-        "interaction": if request_type == "item/tool/requestUserInput" { "userInput" } else if request_type.contains("elicitation") { "elicitation" } else { "permission" },
+        "interaction": "permission",
         "submittable": submittable
     })
+}
+
+/// Maps the two Codex server request families that collect user input into
+/// ThreadTerm's shared question-card contract.  The stored native params are
+/// deliberately retained by the adapter, so `codex_answer` can reconstruct
+/// the exact app-server response without trusting renderer-supplied metadata.
+pub fn codex_question_payload(method: &str, params: &Value) -> Value {
+    let mut payload = match method {
+        "item/tool/requestUserInput" => {
+            let questions = params
+                .get("questions")
+                .and_then(Value::as_array)
+                .map(|questions| {
+                    questions
+                        .iter()
+                        .filter_map(|question| {
+                            let id = question.get("id").and_then(Value::as_str)?;
+                            let text = question.get("question").and_then(Value::as_str)?;
+                            let options = question
+                                .get("options")
+                                .and_then(Value::as_array)
+                                .map(|options| {
+                                    options
+                                        .iter()
+                                        .filter_map(|option| {
+                                            Some(json!({
+                                                "label": option.get("label")?.as_str()?,
+                                                "description": option.get("description").and_then(Value::as_str),
+                                            }))
+                                        })
+                                        .collect::<Vec<_>>()
+                                })
+                                .unwrap_or_default();
+                            let allow_other = question
+                                .get("isOther")
+                                .and_then(Value::as_bool)
+                                .unwrap_or(false)
+                                || options.is_empty();
+                            Some(json!({
+                                "id": id,
+                                "header": question.get("header").and_then(Value::as_str),
+                                "question": text,
+                                "options": options,
+                                "multiSelect": false,
+                                "allowOther": allow_other,
+                                "secret": question.get("isSecret").and_then(Value::as_bool).unwrap_or(false),
+                            }))
+                        })
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default();
+            json!({
+                "interaction":"question",
+                "form":{"kind":"questions","questions":questions},
+                "answerable":true,
+                "isBlocking":params.get("isBlocking").and_then(Value::as_bool).unwrap_or(true),
+                "autoResolutionMs":params.get("autoResolutionMs").cloned().unwrap_or(Value::Null),
+            })
+        }
+        "mcpServer/elicitation/request" => codex_elicitation_payload(params),
+        _ => json!({"interaction":"question","answerable":false}),
+    };
+    omit_null_optional_fields(&mut payload);
+    payload
+}
+
+pub fn codex_answer(method: &str, params: &Value, response: &Value) -> Result<Value, ProviderError> {
+    let action = response.get("action").and_then(Value::as_str).ok_or_else(|| {
+        ProviderError::new("answer_invalid", "question response has no action")
+    })?;
+    match (method, action) {
+        ("item/tool/requestUserInput", "dismiss") => Ok(json!({"answers":{}})),
+        ("item/tool/requestUserInput", "submit") => {
+            let values = response.get("values").and_then(Value::as_object).ok_or_else(|| {
+                ProviderError::new("answer_invalid", "question response has no values")
+            })?;
+            let answers = values.iter().map(|(id, value)| {
+                let selected = value.as_array().cloned().unwrap_or_default();
+                (id.clone(), json!({"answers":selected}))
+            }).collect::<serde_json::Map<_, _>>();
+            Ok(json!({"answers":answers}))
+        }
+        ("mcpServer/elicitation/request", "dismiss") => Ok(json!({"action":"decline"})),
+        ("mcpServer/elicitation/request", "submit") => {
+            let mode = params.get("mode").and_then(Value::as_str);
+            if mode == Some("url") {
+                Ok(json!({"action":"accept"}))
+            } else {
+                Ok(json!({"action":"accept","content":response.get("values").cloned().unwrap_or_else(|| json!({}))}))
+            }
+        }
+        _ => Err(ProviderError::new("answer_invalid", "unsupported Codex question response")),
+    }
+}
+
+fn codex_elicitation_payload(params: &Value) -> Value {
+    let mode = params.get("mode").and_then(Value::as_str);
+    let message = params.get("message").and_then(Value::as_str).unwrap_or_default();
+    if mode == Some("url") {
+        return json!({
+            "interaction":"question", "answerable": params.get("url").and_then(Value::as_str).is_some(),
+            "form":{"kind":"url","message":message,"url":params.get("url").and_then(Value::as_str).unwrap_or_default()}
+        });
+    }
+    let supported_mode = matches!(mode, Some("form" | "openai/form" | "openaiForm"));
+    let schema = params.get("requestedSchema");
+    if !supported_mode
+        || schema.and_then(Value::as_object).is_none()
+        || schema.and_then(|value| value.get("type")).and_then(Value::as_str) != Some("object")
+    {
+        return json!({"interaction":"question","answerable":false,"form":{"kind":"form","message":message,"fields":[]}});
+    }
+    let required_values = match schema.and_then(|value| value.get("required")) {
+        None | Some(Value::Null) => Vec::new(),
+        Some(Value::Array(values)) => match values.iter().map(Value::as_str).collect::<Option<Vec<_>>>() {
+            Some(values) => values,
+            None => return json!({"interaction":"question","answerable":false,"form":{"kind":"form","message":message,"fields":[]}}),
+        },
+        Some(_) => return json!({"interaction":"question","answerable":false,"form":{"kind":"form","message":message,"fields":[]}}),
+    };
+    let required = required_values.iter().copied().collect::<std::collections::HashSet<_>>();
+    let Some(properties) = params.pointer("/requestedSchema/properties").and_then(Value::as_object) else {
+        return json!({"interaction":"question","answerable":false,"form":{"kind":"form","message":message,"fields":[]}});
+    };
+    let mut answerable = !required.iter().any(|id| !properties.contains_key(*id));
+    let fields = properties.iter().filter_map(|(id, schema)| {
+        let field = codex_form_field(id, schema, required.contains(id.as_str()));
+        if field.is_none() { answerable = false; }
+        field
+    }).collect::<Vec<_>>();
+    json!({"interaction":"question","answerable":answerable,"form":{"kind":"form","message":message,"fields":fields}})
+}
+
+fn omit_null_optional_fields(value: &mut Value) {
+    match value {
+        Value::Object(object) => {
+            object.retain(|_, value| !value.is_null());
+            for value in object.values_mut() {
+                omit_null_optional_fields(value);
+            }
+        }
+        Value::Array(values) => {
+            for value in values {
+                omit_null_optional_fields(value);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn codex_form_field(id: &str, schema: &Value, required: bool) -> Option<Value> {
+    let source_type = schema.get("type").and_then(Value::as_str)?;
+    if has_unsupported_schema_keywords(schema, source_type) {
+        return None;
+    }
+    let mut field = json!({
+        "id":id, "title":schema.get("title").and_then(Value::as_str),
+        "description":schema.get("description").and_then(Value::as_str), "required":required,
+        "default":schema.get("default").cloned().unwrap_or(Value::Null),
+        "minimum":schema.get("minimum").cloned().unwrap_or(Value::Null),
+        "maximum":schema.get("maximum").cloned().unwrap_or(Value::Null),
+        "minLength":schema.get("minLength").cloned().unwrap_or(Value::Null),
+        "maxLength":schema.get("maxLength").cloned().unwrap_or(Value::Null),
+        "format":schema.get("format").cloned().unwrap_or(Value::Null),
+        "minItems":schema.get("minItems").cloned().unwrap_or(Value::Null),
+        "maxItems":schema.get("maxItems").cloned().unwrap_or(Value::Null),
+    });
+    match source_type {
+        "string" => {
+            if let Some(raw_options) = schema.get("oneOf").or_else(|| schema.get("enum")) {
+                let mut options = codex_options(raw_options)?;
+                if raw_options == schema.get("enum").unwrap_or(&Value::Null) {
+                    if let Some(names) = schema.get("enumNames").and_then(Value::as_array) {
+                        if names.len() != options.len() { return None; }
+                        for (option, name) in options.iter_mut().zip(names) {
+                            *option.get_mut("label")? = Value::String(name.as_str()?.to_owned());
+                        }
+                    }
+                }
+                field["type"] = json!("enum");
+                field["options"] = json!(options);
+            } else {
+                field["type"] = json!("string");
+            }
+        }
+        "number" | "integer" | "boolean" => field["type"] = json!(source_type),
+        "array" => {
+            let options = codex_options(
+                schema
+                    .pointer("/items/anyOf")
+                    .or_else(|| schema.pointer("/items/enum"))?,
+            )?;
+            field["type"] = json!("multiEnum"); field["options"] = json!(options);
+        }
+        _ => return None,
+    }
+    Some(field)
+}
+
+fn has_unsupported_schema_keywords(schema: &Value, source_type: &str) -> bool {
+    let allowed: &[&str] = match source_type {
+        "string" => &["type", "title", "description", "default", "enum", "enumNames", "oneOf", "minLength", "maxLength", "format"],
+        "number" | "integer" => &["type", "title", "description", "default", "minimum", "maximum"],
+        "boolean" => &["type", "title", "description", "default"],
+        "array" => &["type", "title", "description", "default", "items", "minItems", "maxItems"],
+        _ => return true,
+    };
+    schema.as_object().is_none_or(|object| object.keys().any(|key| !allowed.contains(&key.as_str())))
+}
+
+fn codex_options(value: &Value) -> Option<Vec<Value>> {
+    match value {
+        Value::Array(values) => values.iter().map(|value| match value {
+            Value::String(value) => Some(json!({"value":value,"label":value})),
+            Value::Object(value) => Some(json!({"value":value.get("const")?.as_str()?,"label":value.get("title").and_then(Value::as_str).unwrap_or(value.get("const")?.as_str()?)})),
+            _ => None,
+        }).collect(),
+        _ => None,
+    }
 }
 
 pub fn write_failed_not_sent(error: &ProviderError) -> bool {
@@ -474,6 +678,43 @@ mod tests {
                 .code,
             "approval_unsupported"
         );
+    }
+
+    #[test]
+    fn codex_question_mapping_handles_null_options_and_native_responses() {
+        let payload = codex_question_payload("item/tool/requestUserInput", &json!({
+            "isBlocking":false,"autoResolutionMs":1000,
+            "questions":[{"id":"q0","header":"Pick","question":"Which?","options":null,"isSecret":true}]
+        }));
+        assert_eq!(payload["interaction"], "question");
+        assert_eq!(payload["form"]["questions"][0]["options"], json!([]));
+        assert_eq!(payload["form"]["questions"][0]["allowOther"], true);
+        assert_eq!(payload["form"]["questions"][0]["secret"], true);
+        assert_eq!(payload["isBlocking"], false);
+        assert_eq!(codex_answer("item/tool/requestUserInput", &json!({}), &json!({"action":"submit","values":{"q0":["x"]}})).unwrap(), json!({"answers":{"q0":{"answers":["x"]}}}));
+        assert_eq!(codex_answer("item/tool/requestUserInput", &json!({}), &json!({"action":"dismiss"})).unwrap(), json!({"answers":{}}));
+    }
+
+    #[test]
+    fn codex_elicitation_maps_form_and_rejects_unrepresentable_schema() {
+        let params = json!({"mode":"form","message":"Configure","requestedSchema":{"type":"object","required":["name"],"properties":{"name":{"type":"string","minLength":2,"maxLength":8,"format":"email"},"count":{"type":"integer","minimum":1,"maximum":3},"enabled":{"type":"boolean"},"colour":{"type":"string","oneOf":[{"const":"blue","title":"Blue"}]},"tags":{"type":"array","items":{"enum":["one","two"]},"minItems":1,"maxItems":2}}}});
+        let payload = codex_question_payload("mcpServer/elicitation/request", &params);
+        assert_eq!(payload["answerable"], true);
+        let fields = payload.pointer("/form/fields").and_then(Value::as_array).unwrap();
+        assert_eq!(fields.iter().find(|field| field["id"] == "colour").unwrap()["type"], "enum");
+        assert_eq!(fields.iter().find(|field| field["id"] == "tags").unwrap()["type"], "multiEnum");
+        for mode in ["openai/form", "openaiForm"] {
+            let mut alias = params.clone();
+            alias["mode"] = json!(mode);
+            assert_eq!(codex_question_payload("mcpServer/elicitation/request", &alias)["answerable"], true);
+        }
+        assert_eq!(codex_answer("mcpServer/elicitation/request", &params, &json!({"action":"submit","values":{"name":"x"}})).unwrap(), json!({"action":"accept","content":{"name":"x"}}));
+        let unsupported = codex_question_payload("mcpServer/elicitation/request", &json!({"mode":"form","message":"x","requestedSchema":{"type":"object","properties":{"nested":{"type":"object"}}}}));
+        assert_eq!(unsupported["answerable"], false);
+        let vendor_malformed = codex_question_payload("mcpServer/elicitation/request", &json!({"mode":"openai/form","message":"x","requestedSchema":{"properties":{}}}));
+        assert_eq!(vendor_malformed["answerable"], false);
+        assert_eq!(codex_answer("mcpServer/elicitation/request", &params, &json!({"action":"dismiss"})).unwrap(), json!({"action":"decline"}));
+        assert_eq!(codex_answer("mcpServer/elicitation/request", &json!({"mode":"url"}), &json!({"action":"submit","values":{}})).unwrap(), json!({"action":"accept"}));
     }
 
     #[test]

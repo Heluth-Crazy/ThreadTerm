@@ -523,6 +523,55 @@ impl ChatSession for ClaudeChat {
         );
         Ok(())
     }
+    fn answer(
+        &mut self,
+        turn_id: &str,
+        approval_id: &str,
+        response: &Value,
+        _operation_id: &str,
+    ) -> Result<(), ProviderError> {
+        let values = response.get("values").cloned().unwrap_or(Value::Null);
+        self.process.sidecar_request(
+            "session.answer",
+            json!({"cardId":self.session_id,"requestId":approval_id,"values":values}),
+        )?;
+        let status = if response.get("action").and_then(Value::as_str) == Some("dismiss") {
+            "dismissed"
+        } else {
+            "answered"
+        };
+        let answer_summary = values.as_object().map(|values| {
+            let values = values
+                .iter()
+                .map(|(id, value)| {
+                    let text = value
+                        .as_array()
+                        .map(|values| {
+                            values
+                                .iter()
+                                .filter_map(Value::as_str)
+                                .collect::<Vec<_>>()
+                                .join(", ")
+                        })
+                        .or_else(|| value.as_str().map(ToOwned::to_owned))
+                        .unwrap_or_else(|| value.to_string());
+                    (id.clone(), Value::String(text))
+                })
+                .collect::<serde_json::Map<_, _>>();
+            Value::Object(values)
+        });
+        emit_scoped(
+            &self.events,
+            "claude",
+            &self.session_id,
+            self.native_id.as_deref(),
+            Some(turn_id),
+            "chat.approval.resolved",
+            json!({"approvalId":approval_id,"status":status,"outcome":"submitted","answerSummary":answer_summary}),
+            self.worker_token.as_deref(),
+        );
+        Ok(())
+    }
     fn stop(&mut self) -> Result<(), ProviderError> {
         self.process
             .sidecar_request("session.stop", json!({"cardId":self.session_id}))?;
@@ -602,6 +651,47 @@ fn claude_approval_choices(request: &Value) -> Vec<ApprovalChoice> {
     }
     choices.push(choice("deny", "Deny", "deny", "once"));
     choices
+}
+
+fn claude_question_payload(request: &Value) -> Value {
+    let questions = request
+        .pointer("/question/questions")
+        .and_then(Value::as_array)
+        .map(|questions| {
+            questions
+                .iter()
+                .enumerate()
+                .filter_map(|(index, question)| {
+                    let question = question.as_object()?;
+                    let question_text = question.get("question")?.as_str()?;
+                    let header = question.get("header")?.as_str()?;
+                    let options = question
+                        .get("options")
+                        .and_then(Value::as_array)
+                        .map(|options| {
+                            options
+                                .iter()
+                                .filter_map(|option| {
+                                    let option = option.as_object()?;
+                                    let label = option.get("label")?.as_str()?;
+                                    let mut value = json!({"label":label});
+                                    if let Some(description) =
+                                        option.get("description").and_then(Value::as_str)
+                                    {
+                                        value["description"] = json!(description);
+                                    }
+                                    Some(value)
+                                })
+                                .collect::<Vec<_>>()
+                        })
+                        .unwrap_or_default();
+                    Some(json!({"id":format!("q{index}"),"header":header,"question":question_text,"options":options,
+                        "multiSelect":question.get("multiSelect").and_then(Value::as_bool).unwrap_or(false),"allowOther":true,"secret":false}))
+                })
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    json!({"interaction":"question","answerable":!questions.is_empty(),"form":{"kind":"questions","questions":questions}})
 }
 
 /// Same text as the sidecar's signed-out handshake error.
@@ -1220,8 +1310,40 @@ fn emit_claude_message(
             .get("requestId")
             .and_then(Value::as_str)
             .unwrap_or("unknown");
-        let choices = claude_approval_choices(&raw);
-        let mut payload = approval_payload(approval_id,"claude","session.request",raw.get("title").and_then(Value::as_str).unwrap_or("Permission request"),&raw,&choices,turn_id,true);
+        let is_question = raw.get("question").is_some();
+        let choices = if is_question {
+            Vec::new()
+        } else {
+            claude_approval_choices(&raw)
+        };
+        let title = raw
+            .pointer("/question/questions/0/header")
+            .and_then(Value::as_str)
+            .or_else(|| raw.get("title").and_then(Value::as_str))
+            .unwrap_or("Permission request");
+        let mut payload = if is_question {
+            let mut payload = claude_question_payload(&raw);
+            payload["approvalId"] = json!(approval_id);
+            payload["provider"] = json!("claude");
+            payload["method"] = json!("session.request");
+            payload["title"] = json!(title);
+            payload["raw"] = raw.clone();
+            if let Some(turn_id) = turn_id {
+                payload["turnId"] = json!(turn_id);
+            }
+            payload
+        } else {
+            approval_payload(
+                approval_id,
+                "claude",
+                "session.request",
+                title,
+                &raw,
+                &choices,
+                turn_id,
+                true,
+            )
+        };
         if let Some(agent_id) = raw.get("agentId").and_then(Value::as_str) {
             let mut subagent = json!({"agentId":agent_id,"label":"Subagent"});
             if let Ok(state) = ui.1.lock() {
@@ -1972,6 +2094,35 @@ mod tests {
         }
         let all = replay.raw(json!({"ev":"session.request","cardId":"s","requestId":"parent-permission","toolName":"Read"}));
         assert!(all[0].data["part"]["data"].get("subagent").is_none());
+    }
+
+    #[test]
+    fn ask_user_question_maps_questions_and_keeps_the_subagent_label() {
+        let mut replay = SubagentReplay::new();
+        replay.spawn("Agent", false);
+        replay.task(
+            "task_started",
+            json!({"tool_use_id":"agent","task_type":"local_agent","description":"Inspect Rust"}),
+        );
+        let all = replay.raw(json!({"ev":"session.request","cardId":"s","requestId":"question","operationId":"turn",
+            "agentId":"task","toolName":"AskUserQuestion","question":{"questions":[
+                {"header":"Colour","question":"Which colour?","options":[{"label":"Blue","description":"Recommended"}]},
+                {"header":"Tools","question":"Which tools?","options":[{"label":"Read"}],"multiSelect":true}
+            ]}}));
+        assert_eq!(all.len(), 1);
+        let part = &all[0].data["part"];
+        assert_eq!(part["data"]["interaction"], "question");
+        assert_eq!(
+            part["data"]["form"]["questions"][0],
+            json!({"id":"q0","header":"Colour","question":"Which colour?","options":[{"label":"Blue","description":"Recommended"}],"multiSelect":false,"allowOther":true,"secret":false})
+        );
+        assert_eq!(part["data"]["form"]["questions"][1]["id"], "q1");
+        assert_eq!(part["data"]["form"]["questions"][1]["multiSelect"], true);
+        assert_eq!(
+            part["data"]["subagent"],
+            json!({"agentId":"task","key":"agent","label":"Inspect Rust"})
+        );
+        assert_eq!(all[0].data["choices"], json!([]));
     }
 
     #[test]

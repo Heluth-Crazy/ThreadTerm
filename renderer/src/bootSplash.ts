@@ -4,6 +4,9 @@
 import { agentIconMarkup } from "./components/PrototypeIcon";
 import {
   SPLASH_AGENTS,
+  SPLASH_EXIT,
+  SPLASH_FINALE,
+  SPLASH_GATE,
   advanceClock,
   agentOffset,
   clamp,
@@ -71,6 +74,7 @@ function startBootSplash(root: HTMLElement): { settle: (outcome: SplashOutcome) 
   let size: SplashSize = { width: root.clientWidth, height: root.clientHeight };
   let clock: SplashClock = startClock(reduced);
   let ambient = 0, previous = 0, frame = 0, shownStatus: SplashStatus | undefined, shownPhase = "", lit = false;
+  let finished = false, exitFallback: ReturnType<typeof setTimeout> | undefined;
 
   const resize = () => {
     size = { width: root.clientWidth, height: root.clientHeight };
@@ -154,11 +158,22 @@ function startBootSplash(root: HTMLElement): { settle: (outcome: SplashOutcome) 
     frame = requestAnimationFrame(tick);
   };
   const finish = () => {
+    if (finished) return;
+    finished = true;
+    if (exitFallback !== undefined) clearTimeout(exitFallback);
     cancelAnimationFrame(frame);
     observer.disconnect();
     root.remove();
   };
   render();
   frame = requestAnimationFrame(tick);
-  return { settle: (outcome) => { clock = settleClock(clock, outcome); } };
+  return { settle: (outcome) => {
+    if (finished || clock.outcome) return;
+    clock = settleClock(clock, outcome);
+    // Occluded windows can stop rAF entirely. Allow the remaining choreography plus a
+    // small margin, then remove the overlay even if no animation frame arrived.
+    const remainingIntro = outcome === "ready" ? Math.max(0, SPLASH_GATE - clock.t) : 0;
+    const finale = outcome === "ready" && !reduced ? SPLASH_FINALE : 0;
+    exitFallback = setTimeout(finish, remainingIntro + finale + SPLASH_EXIT + 300);
+  } };
 }

@@ -156,7 +156,26 @@ export interface ChatApprovalChoice {
  scope:ChatApprovalScope;
  description?:string;
 }
-export type ChatApprovalOutcome = 'pending'|'submitting'|'resolved'|'expired'|'failed'|'outcomeUnknown';
+export type ChatApprovalOutcome = 'pending'|'submitting'|'resolved'|'answered'|'dismissed'|'expired'|'failed'|'outcomeUnknown';
+export interface ChatQuestion {
+ id:string; header?:string; question:string;
+ options:{label:string;description?:string}[];
+ multiSelect:boolean; allowOther:boolean; secret:boolean;
+}
+export interface ChatFormField {
+ id:string; title?:string; description?:string;
+ type:'string'|'number'|'integer'|'boolean'|'enum'|'multiEnum'; required:boolean;
+ options?:{value:string;label:string}[]; default?:unknown; secret?:boolean;
+ minimum?:number; maximum?:number; minLength?:number; maxLength?:number;
+ minItems?:number; maxItems?:number; format?:'email'|'uri'|'date'|'date-time';
+}
+export type ChatInteractionForm =
+ | {kind:'questions';questions:ChatQuestion[]}
+ | {kind:'form';message:string;fields:ChatFormField[]}
+ | {kind:'url';message:string;url:string};
+export type ChatAnswerResponse =
+ | {action:'submit';values:Record<string,string[]|string|number|boolean>}
+ | {action:'dismiss'};
 export interface ChatApprovalData {
  approvalId:string;
  sessionId?:string;
@@ -166,7 +185,12 @@ export interface ChatApprovalData {
  title?:string;
  details?:unknown;
  choices:ChatApprovalChoice[];
- interaction?:'permission'|'userInput'|'elicitation'|'unknown';
+ interaction?:'permission'|'userInput'|'elicitation'|'question'|'unknown';
+ form?:ChatInteractionForm;
+ answerable?:boolean;
+ answerSummary?:Record<string,string>;
+ isBlocking?:boolean;
+ autoResolutionMs?:number;
  submittable?:boolean;
 }
 export interface RuntimeError { code:string; message:string; details?:unknown }
@@ -277,6 +301,7 @@ export interface RequestMap {
  'chat.send': [{sessionId:string;text:string;images?:string[];operationId:string;leaseEpoch:number},{turnId:string}];
  'chat.cancel': [{sessionId:string;turnId:string;leaseEpoch:number},null];
  'chat.approve': [{sessionId:string;turnId:string;approvalId:string;choiceId:string;leaseEpoch:number;operationId:string},null];
+ 'chat.answer': [{sessionId:string;turnId:string;approvalId:string;leaseEpoch:number;operationId:string;response:ChatAnswerResponse},null];
  'chat.options': [{sessionId:string},ChatUiState];
  'chat.option.set': [{sessionId:string;optionId:string;value:string;leaseEpoch:number;operationId:string},ChatUiState];
  'chat.connection': [{sessionId:string},ChatConnectionState];
@@ -381,7 +406,7 @@ export interface ThreadTermBridge {
  exportDiagnostics():Promise<string|null>;
  scheduleElectronCacheCleanup(schedule:boolean):Promise<{scheduled:boolean;available:boolean;result?:string}>;
 }
-export const METHODS = ['filesystem.resolve','session.launch.read','catalog.visibility.list','catalog.visibility.update','session.resume','session.organize','git.merge','git.merge.abort','project.catalog.list','project.update','worktree.branches','worktree.relocate','session.rerun','git.fetch','git.pull','git.push','session.config.read','session.config.save','session.retry.read','session.retry.update','chat.draft.read','chat.draft.save','device.status','device.enable','device.disable','device.pairing.create','device.pairing.cancel','device.list','device.rename','device.renew','device.revoke','git.stage','git.unstage','git.commit','filesystem.image','chat.snapshot','terminal.read','session.lookup','session.present','chat.read','chat.subagent.read','data.status','data.backup','data.relocation.status','data.relocation.prepare','data.relocation.cancel','settings.export','settings.import.preview','settings.import.apply','preset.list','preset.save','preset.delete','usage.query','runtime.health','terminal.host','runtime.shutdown','runtime.snapshot','project.add','project.remove','session.create','history.import','session.stop','session.update','session.attention.acknowledge','session.claim','session.renew','session.release','terminal.input','terminal.resize','settings.update','provider.list','plugin.list','plugin.setEnabled','plugin.reload','chat.queue.read','chat.queue.add','chat.queue.update','chat.queue.remove','chat.queue.move','chat.queue.pause','chat.queue.resume','chat.queue.send','quickLaunch.list','quickLaunch.save','quickLaunch.delete','quickLaunch.run','quickLaunch.setup.read','quickLaunch.setup.save','quickLaunch.setup.run','quickLaunch.setup.status','history.list','history.read','chat.send','chat.cancel','chat.approve','chat.options','chat.option.set','chat.connection','chat.connect','filesystem.list','filesystem.read','filesystem.write','draft.list','draft.put','draft.delete','git.status','git.diff','worktree.list','worktree.create','worktree.remove','workspace.save','workspace.delete','inbox.read','git.index.write','git.discard','git.checkout','git.branch.delete','git.branches','git.log','git.commit.show','git.commit.diff','git.blame','filesystem.create','filesystem.rename','filesystem.delete','filesystem.files','filesystem.search','review.list','review.changes','review.diff','review.revert','review.checkpoint','agentReview.start','agentReview.list','agentReview.mark','session.documents.list','session.documents.pin','session.documents.unpin'] as const satisfies readonly Method[];
+export const METHODS = ['filesystem.resolve','session.launch.read','catalog.visibility.list','catalog.visibility.update','session.resume','session.organize','git.merge','git.merge.abort','project.catalog.list','project.update','worktree.branches','worktree.relocate','session.rerun','git.fetch','git.pull','git.push','session.config.read','session.config.save','session.retry.read','session.retry.update','chat.draft.read','chat.draft.save','device.status','device.enable','device.disable','device.pairing.create','device.pairing.cancel','device.list','device.rename','device.renew','device.revoke','git.stage','git.unstage','git.commit','filesystem.image','chat.snapshot','terminal.read','session.lookup','session.present','chat.read','chat.subagent.read','data.status','data.backup','data.relocation.status','data.relocation.prepare','data.relocation.cancel','settings.export','settings.import.preview','settings.import.apply','preset.list','preset.save','preset.delete','usage.query','runtime.health','terminal.host','runtime.shutdown','runtime.snapshot','project.add','project.remove','session.create','history.import','session.stop','session.update','session.attention.acknowledge','session.claim','session.renew','session.release','terminal.input','terminal.resize','settings.update','provider.list','plugin.list','plugin.setEnabled','plugin.reload','chat.queue.read','chat.queue.add','chat.queue.update','chat.queue.remove','chat.queue.move','chat.queue.pause','chat.queue.resume','chat.queue.send','quickLaunch.list','quickLaunch.save','quickLaunch.delete','quickLaunch.run','quickLaunch.setup.read','quickLaunch.setup.save','quickLaunch.setup.run','quickLaunch.setup.status','history.list','history.read','chat.send','chat.cancel','chat.approve','chat.answer','chat.options','chat.option.set','chat.connection','chat.connect','filesystem.list','filesystem.read','filesystem.write','draft.list','draft.put','draft.delete','git.status','git.diff','worktree.list','worktree.create','worktree.remove','workspace.save','workspace.delete','inbox.read','git.index.write','git.discard','git.checkout','git.branch.delete','git.branches','git.log','git.commit.show','git.commit.diff','git.blame','filesystem.create','filesystem.rename','filesystem.delete','filesystem.files','filesystem.search','review.list','review.changes','review.diff','review.revert','review.checkpoint','agentReview.start','agentReview.list','agentReview.mark','session.documents.list','session.documents.pin','session.documents.unpin'] as const satisfies readonly Method[];
 const stringFields: Partial<Record<Method,readonly string[]>> = {
  'filesystem.resolve':['sessionId','path'],
  'session.launch.read':['sessionId'],
@@ -404,6 +429,7 @@ const stringFields: Partial<Record<Method,readonly string[]>> = {
  'settings.update':['operationId'],'plugin.setEnabled':['pluginId','operationId'],'plugin.reload':['operationId'],'chat.queue.read':['sessionId'],'chat.queue.add':['sessionId','text','operationId'],'chat.queue.update':['sessionId','itemId','text','operationId'],'chat.queue.remove':['sessionId','itemId','operationId'],'chat.queue.move':['sessionId','itemId','operationId'],'chat.queue.pause':['sessionId','operationId'],'chat.queue.resume':['sessionId','operationId'],'chat.queue.send':['sessionId','itemId','operationId'],'quickLaunch.list':['projectId'],'quickLaunch.save':['projectId','name','command','shell','kind','operationId'],'quickLaunch.delete':['id','operationId'],'quickLaunch.run':['commandId','cwd','operationId'],'quickLaunch.setup.read':['projectId'],'quickLaunch.setup.save':['projectId','operationId'],'quickLaunch.setup.run':['projectId','cwd','operationId'],'quickLaunch.setup.status':['projectId'],'history.list':['provider'],'history.read':['provider','nativeId'],
  'chat.send':['sessionId','text','operationId'],'chat.cancel':['sessionId','turnId'],
  'chat.approve':['sessionId','turnId','approvalId','choiceId','operationId'],
+ 'chat.answer':['sessionId','turnId','approvalId','operationId'],
  'chat.options':['sessionId'],'chat.option.set':['sessionId','optionId','value','operationId'],
  'chat.connection':['sessionId'],'chat.connect':['sessionId','operationId'],
  'filesystem.list':['projectId'], 'filesystem.read':['projectId','path'],
@@ -441,7 +467,7 @@ export function validateRequest(method:unknown,params:unknown):asserts method is
  }
  if(m==='session.stop'&&params.force!==undefined&&typeof params.force!=='boolean') throw new Error('Invalid force');
  if('leaseEpoch' in params && (!Number.isSafeInteger(params.leaseEpoch)||Number(params.leaseEpoch)<1)) throw new Error('Invalid leaseEpoch');
- if(['session.renew','session.release','terminal.input','terminal.resize','chat.send','chat.queue.add','chat.queue.update','chat.queue.remove','chat.queue.move','chat.queue.pause','chat.queue.resume','chat.queue.send','chat.cancel','chat.approve','chat.option.set','chat.connect'].includes(m)&&!('leaseEpoch' in params)) throw new Error('Missing leaseEpoch');
+ if(['session.renew','session.release','terminal.input','terminal.resize','chat.send','chat.queue.add','chat.queue.update','chat.queue.remove','chat.queue.move','chat.queue.pause','chat.queue.resume','chat.queue.send','chat.cancel','chat.approve','chat.answer','chat.option.set','chat.connect'].includes(m)&&!('leaseEpoch' in params)) throw new Error('Missing leaseEpoch');
  if(m==='terminal.resize') for(const key of ['cols','rows']) if(!Number.isInteger(params[key])||Number(params[key])<1||Number(params[key])>1000) throw new Error(`Invalid ${key}`);
  if(m==='session.create'||m==='history.import'||m==='session.config.save') {
   // Shape only: the runtime's agent registry (built-ins + enabled plugins) decides whether the agent exists.

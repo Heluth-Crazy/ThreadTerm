@@ -7,7 +7,7 @@ import { copyFile, mkdtemp, mkdir, readFile, writeFile } from 'node:fs/promises'
 import { existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
-import { connectPeer } from './pipe-client.mjs';
+import { connectSubagentPeer as connectPeer } from './lib/subagent-peer.mjs';
 
 const pause = ms => new Promise(done => setTimeout(done, ms));
 const unique = () => randomUUID();
@@ -83,6 +83,16 @@ try {
     }
   }
   assert.ok(peer, 'isolated runtime authenticated');
+  // Pipe Peer dispatches replies by arrival order. Keep the periodic lease
+  // renewal behind the foreground request so a slow reconnect cannot let one
+  // request consume the other's reply.
+  const request = peer.request.bind(peer);
+  let requestTail = Promise.resolve();
+  peer.request = (...args) => {
+    const queued = requestTail.then(() => request(...args));
+    requestTail = queued.catch(() => {});
+    return queued;
+  };
   const created = await peer.request('session.create', { cwd, title: 'OpenCode fixture', provider: 'opencode', mode: 'chat', operationId: unique() });
   sessionId = created.id;
   leaseEpoch = (await peer.request('session.claim', { sessionId, clientId })).leaseEpoch;

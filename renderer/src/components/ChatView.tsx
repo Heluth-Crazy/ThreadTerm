@@ -1,7 +1,7 @@
 import { ClipboardEvent, FormEvent, Fragment, KeyboardEvent, useContext, useEffect, useMemo, useRef, useState } from "react";
 import DOMPurify from "dompurify";
 import { marked } from "marked";
-import type { ChatPart, ChatQueue, ChatSessionOption, ChatSlashCommand, ChatUiState, FileReference, Session } from "@threadterm/protocol";
+import type { ChatAnswerResponse, ChatPart, ChatQueue, ChatSessionOption, ChatSlashCommand, ChatUiState, FileReference, Session } from "@threadterm/protocol";
 import { ChatItem, openExternal, operationId, request, subscribeEvents } from "../bridge";
 import { beginResync, chatUiFromEvent, completeResync, upsertChatItem, type ChatResync } from "../chatState";
 import { acquireControl } from '../controlLease';
@@ -17,7 +17,7 @@ import { usageCardsForItems } from '../usageCard';
 import { connectionStatusText, emptyLink, overlayKind, reduceChatLink } from "../chatConnection";
 import { activeTurnId, chatCanControl, formatChatDuration, itemShowsStreaming, matchSlashCommands, partBody, partLabel, shouldRenderPart, slashQuery } from "../chatPresentation";
 import { groupCodexTranscript, type CodexTurn } from "../codexTranscript";
-import { groupToolActivity, toolEntriesForItems, withoutToolParts, type ToolActivityEntry } from "../toolActivity";
+import { groupToolActivity, orderCompletedTurnItems, toolEntriesForItems, withoutToolParts, type ToolActivityEntry } from "../toolActivity";
 import { ToolActivity } from './ToolActivity';
 import { SubagentCard } from './SubagentCard';
 import { isSubagentPart, subagentInfo, subagentItemsOf, subagentTitle } from '../subagentActivity';
@@ -811,6 +811,19 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession }
     }
   }
   async function cancel(turnId:string){const epoch=leaseSessionId.current===session.id?lease.current:undefined;if(!writable||epoch===undefined)return;const pending=firstResponseWaitRef.current;if(pending?.turnId===turnId)clearFirstResponseWait(pending.token);try{await request("chat.cancel",{sessionId:session.id,turnId,leaseEpoch:epoch})}catch(caught){setError(caught instanceof Error?caught.message:"Cancellation failed.")}}
+  async function answer(turnId: string, approvalId: string, response: ChatAnswerResponse) {
+    const epoch = leaseSessionId.current === session.id ? lease.current : undefined;
+    if (!writable || epoch === undefined || approvalBusy) return;
+    const key = `${approvalId}:${response.action}`;
+    setApprovalBusy(key);
+    try {
+      await request("chat.answer", { sessionId: session.id, turnId, approvalId, response, leaseEpoch: epoch, operationId: operationId() });
+    } catch (caught) {
+      setError(asUserError(caught, copy("Answer was not recorded.", "回答未能记录。")));
+    } finally {
+      setApprovalBusy(current => current === key ? undefined : current);
+    }
+  }
   const liveTurn = ended ? undefined : activeTurnId(items, session.status);
   const queueMode = queueComposerMode(Boolean(liveTurn), queue);
   const modelOption = ui.options.find(option => /model/i.test(option.id) || /model/i.test(option.name));
@@ -926,7 +939,7 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession }
           if (statusRows) return <KimiStatusCard key={`kstatus-${index}`} rows={statusRows} zh={zh} copy={copy} />;
         }
         if (part.type === "approval") return <div className={`chat-part approval v3-tool-card ${part.status ?? ""}`} key={`${part.type}-${index}`}>
-          <ChatApprovalCard part={part} writable={writable && !busy} submitting={approvalBusy?.startsWith(`${part.approvalId ?? ""}:`) ? approvalBusy.slice((part.approvalId ?? "").length + 1) : undefined} onChoose={choiceId => { if (item.turnId && part.approvalId) void approval(item.turnId, part.approvalId, choiceId); }} copy={copy} />
+          <ChatApprovalCard part={part} writable={writable && !busy} submitting={approvalBusy?.startsWith(`${part.approvalId ?? ""}:`) ? approvalBusy.slice((part.approvalId ?? "").length + 1) : undefined} onChoose={choiceId => { if (item.turnId && part.approvalId) void approval(item.turnId, part.approvalId, choiceId); }} onAnswer={response => { if (item.turnId && part.approvalId) void answer(item.turnId, part.approvalId, response); }} copy={copy} />
         </div>;
         const label = partLabel(part, copy);
         const localizedText = asRecord(asRecord(part.data).localizedText);
@@ -956,7 +969,8 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession }
     const displayTurn = activeTurnId(items, session.status);
     const active = group.items.some(item => item.turnId && item.turnId === displayTurn);
     const awaitingApproval = active && session.status === 'waiting' && group.items.some(item => item.parts.some(part => part.type === 'approval' && part.status === 'pending'));
-    const drawer = (entries: ToolActivityEntry[], id = `${group.id}-tools`) => <ToolActivity key={id} entries={entries} active={active} awaitingApproval={awaitingApproval} provider={session.provider} copy={copy} openFile={openFile} />;
+    const awaitingQuestion = awaitingApproval && group.items.some(item => item.parts.some(part => part.type === 'approval' && part.status === 'pending' && asRecord(part.data).interaction === 'question'));
+    const drawer = (entries: ToolActivityEntry[], id = `${group.id}-tools`) => <ToolActivity key={id} entries={entries} active={active} awaitingApproval={awaitingApproval} awaitingQuestion={awaitingQuestion} provider={session.provider} copy={copy} openFile={openFile} />;
     if (group.elapsedMs == null) {
       // Subagents are chronology boundaries, while intervening parent text keeps
       // the existing single-drawer policy. Preserve the first drawer's turn key.
@@ -976,7 +990,8 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession }
       const parts = item.parts.filter(part => !isSubagentPart(part));
       return parts.length ? [{ ...item, parts }] : [];
     });
-    const activity = withoutSubagents(withoutToolParts(group.activity)), response = withoutSubagents(withoutToolParts(group.response));
+    const activity = withoutSubagents(withoutToolParts(group.activity));
+    const response = orderCompletedTurnItems(withoutSubagents(withoutToolParts(group.response)));
     return [
       !group.response.some(item => usageCards.has(item.id)) && (activity.length ? <details className="codex-work" key={`${group.id}-work`}>
         <summary><span className="codex-work-label">{formatChatDuration(group.elapsedMs, zh)}<Icon name="chevR" /></span></summary>

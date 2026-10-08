@@ -77,6 +77,23 @@ test('preload rejects unknown methods and unauthenticated control writes',()=>{
  validateRequest('chat.connect',{sessionId:'s',leaseEpoch:1,operationId:'o'});
  assert.throws(()=>validateRequest('chat.connect',{sessionId:'s',operationId:'o'}));
 });
+test('chat.answer carries a typed question response and always requires the active chat lease',()=>{
+ const base={sessionId:'s',turnId:'turn',approvalId:'question',leaseEpoch:1,operationId:'answer'};
+ assert.ok(METHODS.includes('chat.answer'));
+ validateRequest('chat.answer',{...base,response:{action:'submit',values:{color:['Blue'],count:2,enabled:true}}});
+ validateRequest('chat.answer',{...base,response:{action:'dismiss'}});
+ for(const response of [
+  {action:'submit'},
+  {action:'submit',values:null},
+  {action:'submit',values:{color:[2]}},
+  {action:'submit',values:{color:{label:'Blue'}}},
+  {action:'dismiss',values:{}},
+  {action:'accept',values:{}},
+ ]) assert.throws(()=>validateRequest('chat.answer',{...base,response}),undefined,JSON.stringify(response));
+ for(const patch of [
+  {leaseEpoch:undefined}, {leaseEpoch:0}, {operationId:''}, {approvalId:''}, {turnId:''},
+ ]) assert.throws(()=>validateRequest('chat.answer',{...base,...patch,response:{action:'dismiss'}}));
+});
 test('mutation boundary requires conflict and idempotency fields',()=>{
  validateRequest('catalog.visibility.list',{});
  validateRequest('catalog.visibility.update',{kind:'session',id:'s',visibility:'archived',expectedRevision:0,operationId:'visibility'});
