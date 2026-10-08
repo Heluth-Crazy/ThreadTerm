@@ -293,8 +293,33 @@ fn merge_projection_delta(prior: &mut ProviderEvent, next: &ProviderEvent) -> bo
     true
 }
 
+fn qa_projection_sessions() -> &'static Mutex<HashMap<String, bool>> {
+    static SESSIONS: OnceLock<Mutex<HashMap<String, bool>>> = OnceLock::new();
+    SESSIONS.get_or_init(Mutex::default)
+}
+
+fn qa_fail_projection(session_id: &str) -> bool {
+    if !cfg!(debug_assertions) || std::env::var("THREADTERM_V3_RELOCATION_QA").as_deref() != Ok("1") { return false; }
+    if let Ok(mut sessions) = qa_projection_sessions().lock() {
+        if let Some(failed) = sessions.get_mut(session_id) {
+            if !*failed { *failed = true; return true; }
+        }
+    }
+    false
+}
+
+fn qa_projection_failed(session_id: &str) -> bool {
+    if !cfg!(debug_assertions) { return false; }
+    qa_projection_sessions().lock().is_ok_and(|mut sessions| sessions.get(session_id) == Some(&true) && sessions.remove(session_id).is_some())
+}
+
 fn project_provider_event(db: &Database, providers: &Providers, event: &ProviderEvent) -> bool {
     let accepted = providers.with_current_event(event, || {
+        let injected_failure = event.provider != "runtime" && qa_fail_projection(&event.session_id);
+        if injected_failure {
+            let _ = db.mark_chat_degraded(Some(&event.session_id), "QA: Chat update could not be persisted; transcript may be incomplete");
+            return false;
+        }
         if let Err(error) = db.bind_session(&event.session_id, None, event.native_id.as_deref()) {
             eprintln!("chat bind failed for {}: {error}", event.session_id);
             let _ = crate::chat_queue::pause(db, &event.session_id, "failed");
@@ -329,17 +354,63 @@ fn project_provider_event(db: &Database, providers: &Providers, event: &Provider
     accepted == Some(true)
 }
 
-fn report_projection_failure(db: &Database, queues: &crate::chat_queue::ChatQueues, reason: &str) {
+fn report_projection_failure(db: &Database, providers: &Providers, queues: &crate::chat_queue::ChatQueues, reason: &str) {
+    let affected = providers.registered_chat_sessions();
     queues.projection_failed(db);
     eprintln!("chat event projection stopped: {reason}");
     let warning = format!("Chat updates could not be read; reconnect the runtime and reload native history ({reason})");
     let warning: String = warning.chars().take(240).collect();
-    if let Err(error) = db.mark_chat_degraded(None, &warning) {
+    if let Err(error) = db.mark_chat_degraded_for_sessions(&affected, &warning) {
         eprintln!("could not persist projection diagnostic: {error}");
     }
 }
 
+// Deduplicate only simultaneous retries of one operation. This does not gate
+// sends, worker lifecycle, or different repairs, and holds no SQLite lock.
+fn repair_operation_lock(database_path: &std::path::Path, operation_id: &str) -> Result<Arc<Mutex<()>>> {
+    type Flights = HashMap<(std::path::PathBuf, String), Weak<Mutex<()>>>;
+    static FLIGHTS: OnceLock<Mutex<Flights>> = OnceLock::new();
+    let mut flights = FLIGHTS.get_or_init(Mutex::default).lock()
+        .map_err(|_| anyhow::anyhow!("provider_internal"))?;
+    flights.retain(|_, flight| flight.strong_count() > 0);
+    let key = (database_path.to_owned(), operation_id.to_owned());
+    if let Some(flight) = flights.get(&key).and_then(Weak::upgrade) { return Ok(flight); }
+    let flight = Arc::new(Mutex::new(()));
+    flights.insert(key, Arc::downgrade(&flight));
+    Ok(flight)
+}
+
 impl RuntimeService {
+    fn repair_chat_history(&self, principal: &str, p: &ChatRepair) -> Result<Value> {
+        if p.session_id.is_empty() || p.operation_id.is_empty() || p.lease_epoch < 1 {
+            return Err(anyhow::anyhow!("invalid_request"));
+        }
+        // Authorization precedes request binding and completed-receipt replay.
+        self.leases.require(&self.db, &p.session_id, principal, p.lease_epoch)?;
+        self.db.bind_operation(&p.operation_id, "chat.repair", &json!({"sessionId":p.session_id}))?;
+        let flight = repair_operation_lock(&self.config.database_path, &p.operation_id)?;
+        let _retry = flight.lock().map_err(|_| anyhow::anyhow!("provider_internal"))?;
+        self.leases.require(&self.db, &p.session_id, principal, p.lease_epoch)?;
+        if let Some(result) = self.db.operation(&p.operation_id)? { return Ok(result); }
+        let session = self.db.session_by_id(&p.session_id)?.ok_or_else(|| anyhow::anyhow!("session_not_found"))?;
+        let available = self.providers.history_reader_available(&session.provider);
+        let capture = self.providers.with_chat_repair_state(&p.session_id, |worker| {
+            self.db.transaction(|tx| crate::chat_repair::capture(tx, &p.session_id, &worker, available))
+        })?;
+        // The only native call. Neither SQLite nor the registry is locked here.
+        let history = self.providers.history_read(&capture.provider, &capture.native_id)?;
+        let items: Vec<crate::domain::ChatItem> = serde_json::from_value(history)
+            .map_err(|_| anyhow::anyhow!("invalid_history_transcript"))?;
+        let plan = crate::chat_repair::prepare(&capture, &items)?;
+        let available = self.providers.history_reader_available(&capture.provider);
+        self.providers.with_chat_repair_state(&p.session_id, |worker| {
+            self.db.transaction(|tx| Ok(serde_json::to_value(crate::chat_repair::commit(
+                tx, &capture, &plan, &worker, available,
+                crate::chat_repair::RepairCommitContext { principal, lease_epoch: p.lease_epoch, operation_id: &p.operation_id },
+            )?)?))
+        })
+    }
+
     pub fn new(config: RuntimeConfig, db: Arc<Database>) -> Self {
         crate::chat_queue::initialize(&db).expect("initialize durable prompt queues");
         let chat_queues = Arc::new(crate::chat_queue::ChatQueues::default());
@@ -378,7 +449,9 @@ impl RuntimeService {
                         let event = match events.try_recv() {
                             Ok(event) => event,
                             Err(crate::provider_events::TryRecvError::Failed(reason)) => {
-                                event_queues.projection_failed(&event_db);
+                                // Capture/mark workers at failure detection,
+                                // before drained lifecycle events can unregister them.
+                                report_projection_failure(&event_db, &event_providers, &event_queues, &reason);
                                 failure = Some(reason);
                                 break;
                             }
@@ -392,10 +465,11 @@ impl RuntimeService {
                     for event in batch {
                         if project_provider_event(&event_db, &event_providers, &event) {
                             event_queues.provider_event(&event_db, &event_providers, &event);
+                        } else if qa_projection_failed(&event.session_id) {
+                            report_projection_failure(&event_db, &event_providers, &event_queues, "QA injected projection ingress failure");
                         }
                     }
-                    if let Some(reason) = failure {
-                        report_projection_failure(&event_db, &event_queues, &reason);
+                    if failure.is_some() {
                         break;
                     }
                 }
@@ -404,7 +478,7 @@ impl RuntimeService {
                     break;
                 }
                 Err(crate::provider_events::RecvError::Failed(reason)) => {
-                    report_projection_failure(&event_db, &event_queues, &reason);
+                    report_projection_failure(&event_db, &event_providers, &event_queues, &reason);
                     break;
                 }
             }
@@ -602,7 +676,7 @@ impl RuntimeService {
                 ));
             }
             // lookup references an existing operation; it does not reserve one.
-            if request.method != "session.lookup" && request.method != "chat.answer" {
+            if request.method != "session.lookup" && request.method != "chat.answer" && request.method != "chat.repair" {
                 if let Some(operation_id) =
                     request.params.get("operationId").and_then(Value::as_str)
                 {
@@ -1003,8 +1077,28 @@ impl RuntimeService {
                 "chat.snapshot" => {
                     let p: ChatRead = parse(&request.params)?;
                     self.db.acknowledge_session_replies(&p.session_id)?;
-                    let (items, revision) = self.db.chat_snapshot(&p.session_id)?;
-                    Ok(json!({"items":items,"revision":revision}))
+                    let session = self.db.session_by_id(&p.session_id)?.ok_or_else(|| anyhow::anyhow!("session_not_found"))?;
+                    let available = self.providers.history_reader_available(&session.provider);
+                    self.providers.with_chat_repair_state(&p.session_id, |worker| {
+                        self.db.transaction(|tx| {
+                            let mut snapshot = crate::chat_repair::snapshot(tx, &p.session_id, &worker, available)?;
+                            if self.chat_queues.ingress_failed() { snapshot.repair.ingress_failed = Some(true); }
+                            Ok(serde_json::to_value(snapshot)?)
+                        })
+                    })
+                }
+                "chat.repair" => {
+                    let p: ChatRepair = parse(&request.params)?;
+                    self.repair_chat_history(principal, &p)
+                }
+                "qa.chat.projection.fail" => {
+                    let p: ChatRead = parse(&request.params)?;
+                    if !cfg!(debug_assertions) || std::env::var("THREADTERM_V3_RELOCATION_QA").as_deref() != Ok("1") {
+                        return Err(anyhow::anyhow!("unknown_method"));
+                    }
+                    if self.db.session_by_id(&p.session_id)?.is_none() { return Err(anyhow::anyhow!("session_not_found")); }
+                    qa_projection_sessions().lock().map_err(|_| anyhow::anyhow!("provider_internal"))?.insert(p.session_id, false);
+                    Ok(Value::Null)
                 }
                 "chat.cancel" => {
                     let p: ChatCancel = parse(&request.params)?;
@@ -1967,6 +2061,8 @@ fn file_reference_rpc_error(failure: anyhow::Error) -> RpcError {
 }
 fn map_error(message: &str) -> RpcError {
     let code = match message {
+        value if value.starts_with("chat_repair_unavailable:") => "chat_repair_unavailable",
+        value if value.starts_with("invalid_history_transcript:") => "invalid_history_transcript",
         value if value.starts_with("operation_conflict:") => "operation_conflict",
         value if value.starts_with("native_session_exists:") => "native_session_exists",
         "lease_held" => "lease_held",
@@ -1985,12 +2081,17 @@ fn map_error(message: &str) -> RpcError {
         "runtime_stopping" => "runtime_stopping",
         "cwd_required" | "cwd_missing_choose_relocation" => "cwd_missing",
         "native_identity_conflict" => "native_identity_conflict",
+        "chat_repair_unavailable" | "chat_busy" | "chat_repair_superseded" | "invalid_history_transcript" => message,
         "operation_outcome_unknown" => "operation_outcome_unknown",
         value if crate::delegation::ERROR_CODES.contains(&value) => value,
         value if crate::quick_launch::ERROR_CODES.contains(&value) => value,
         _ => "invalid_request",
     };
-    error(code, message)
+    let mut failure = error(code, message);
+    if code == "chat_repair_unavailable" {
+        failure.details = message.strip_prefix("chat_repair_unavailable:").map(|reason| json!({"reason":reason}));
+    }
+    failure
 }
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -2106,6 +2207,13 @@ struct ChatSend {
     images: Option<Vec<String>>,
     operation_id: String,
     lease_epoch: i64,
+}
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ChatRepair {
+    session_id: String,
+    lease_epoch: i64,
+    operation_id: String,
 }
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -3249,6 +3357,8 @@ mod tests {
 mod chat_lifecycle_tests;
 #[cfg(test)]
 mod question_tests;
+#[cfg(test)]
+mod repair_tests;
 
 #[cfg(test)]
 mod projection_batch_tests {
@@ -3285,7 +3395,8 @@ mod projection_batch_tests {
             Err(crate::provider_events::RecvError::Failed(reason)) => reason,
             other => panic!("expected sticky ingress failure, got {other:?}"),
         };
-        report_projection_failure(&db, &queues, &reason);
+        let providers = Arc::new(Providers::for_test(vec![]));
+        report_projection_failure(&db, &providers, &queues, &reason);
         let warnings: Vec<_> = db.events_after(0).unwrap().into_iter()
             .filter(|(_, event, _)| event == "runtime.degraded").collect();
         assert_eq!(warnings.len(), 1);
@@ -3301,7 +3412,6 @@ mod projection_batch_tests {
         assert_eq!(db.session_by_id(&session.id).unwrap().unwrap().status, "running");
         let leases = LeaseManager::default();
         let epoch = leases.claim(&db, &session.id, "desktop").unwrap();
-        let providers = Arc::new(Providers::for_test(vec![]));
         let error = queues.dispatch(&db, &providers, &leases, "desktop", "chat.queue.resume", &json!({
             "sessionId":session.id,"leaseEpoch":epoch,"operationId":"fallback-resume",
         })).unwrap_err();

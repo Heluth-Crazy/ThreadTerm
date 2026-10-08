@@ -11,6 +11,7 @@ pub mod agent_review;
 mod chat_queue;
 #[cfg(test)]
 mod chat_queue_tests;
+pub(crate) mod chat_repair;
 pub mod conpty;
 pub mod db;
 pub mod delegation;
@@ -48,8 +49,8 @@ pub mod windows_security;
 pub mod workspace_services;
 
 pub const PROTOCOL_VERSION: u32 = 1;
-/// Semantic contract for Chat, Quick Launch, prompt queues, agent reviews, worktree setup and session documents. Wire HMAC still uses PROTOCOL_VERSION.
-pub const PROTOCOL_CONTRACT: u32 = 8;
+/// Semantic contract includes explicit native-history repair and snapshot integrity. Wire HMAC still uses PROTOCOL_VERSION.
+pub const PROTOCOL_CONTRACT: u32 = 9;
 pub const RUNTIME_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 pub mod local_client;

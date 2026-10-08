@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import type { ChatItem } from '@threadterm/protocol';
-import { beginResync, chatUiFromEvent, completeResync } from './chatState';
+import { beginResync, chatUiFromEvent, completeResync, nextRepairRevision } from './chatState';
 import { createCodexStreamQueue } from './codexStream';
 
 const item = (id: string, text = id): ChatItem => ({ id, role: 'assistant', parts: [{ type: 'text', text }], createdAt: 'now' });
@@ -43,6 +43,13 @@ test('snapshot failure keeps current items and applies buffered events in sequen
   const resync = beginResync('s', 2);
   resync.buffered.push({ seq: 12, item: item('a', 'latest') }, { seq: 11, item: item('a', 'earlier') }, { seq: 13, item: item('b') });
   assert.deepEqual(completeResync(resync, 's', 2, [item('a'), item('kept')]), [item('a', 'latest'), item('kept'), item('b')]);
+});
+
+test('repair state changes only start one newer revision fence', () => {
+  assert.equal(nextRepairRevision(7, 8), 8);
+  assert.equal(nextRepairRevision(8, 8), undefined);
+  assert.equal(nextRepairRevision(8, 7), undefined);
+  assert.equal(nextRepairRevision(8, '9'), undefined);
 });
 
 test('disposing the pre-resync Codex stream cancels queued snapshots and resets deduplication', () => {

@@ -7,6 +7,7 @@ import { useTranslation } from '../i18n';
 import { displayPath, sameCanonicalScope } from '../projectScope';
 import { Icon } from './PrototypeIcon';
 import { SurfaceDialog } from './SurfaceDialog';
+import { CHAT_REPAIR_CHANGED, chatRepairAvailability, requestChatRepair } from '../chatRepair';
 import './catalog-active-delete-dialog.css';
 import './project-catalog.css';
 import { canAcknowledgeActivity } from '../sessionActivity';
@@ -29,11 +30,14 @@ export function CatalogActions({target,projects,trees,sessions,visibility,onChan
   const {locale}=useTranslation(),zh=locale==='zh-CN',text=(en:string,cn:string)=>zh?cn:en;
   const [anchor,setAnchor]=useState<HTMLElement>(),[dialog,setDialog]=useState<Dialog>(),[sessionsToEnd,setSessionsToEnd]=useState<Session[]>(),[deleteNotice,setDeleteNotice]=useState<DeleteNotice>();
   const [name,setName]=useState(target.name),[issue,setIssue]=useState<string>(),[busy,setBusy]=useState(false),locked=useRef(false);
+  const [,setRepairVersion]=useState(0);
   const menuOpenChange=useRef(onMenuOpenChange),ownsOpenMenu=useRef(false);menuOpenChange.current=onMenuOpenChange;
   useEffect(()=>()=>{if(ownsOpenMenu.current)menuOpenChange.current?.(false);},[]);
   const project=projects.find(row=>row.id===target.projectId),session=target.kind==='session'?sessions.find(row=>row.id===target.id):undefined;
   const entry=visibility.find(row=>row.kind===target.kind&&row.id===target.id);
   const archived=entry?.visibility==='archived'||Boolean(session?.archived);
+  const repair=session&&session.mode==='chat'?chatRepairAvailability(session.id):undefined;
+  useEffect(()=>{const changed=(event:Event)=>{if((event as CustomEvent<{sessionId?:string}>).detail?.sessionId===target.id)setRepairVersion(version=>version+1);};addEventListener(CHAT_REPAIR_CHANGED,changed);return()=>removeEventListener(CHAT_REPAIR_CHANGED,changed);},[target.id]);
   const scopedSessions=sessionsInCatalogScope(target,sessions,project?.path),activeSessions=scopedSessions.filter(isActiveSession),deleteActiveSessions=sessionsToEnd??activeSessions;
   const close=()=>{setAnchor(undefined);ownsOpenMenu.current=false;onMenuOpenChange?.(false);};
   const run=async(action:()=>Promise<void>)=>{if(locked.current)return;locked.current=true;setBusy(true);setIssue(undefined);try{await action();}catch(error){setIssue(error instanceof Error?error.message:String(error));}finally{locked.current=false;setBusy(false);}};
@@ -110,6 +114,7 @@ export function CatalogActions({target,projects,trees,sessions,visibility,onChan
       <div className="menu-sep"/>
       {target.kind!=='session'&&onNewSession&&item(text('New terminal','新建终端'),'plus',()=>{close();onNewSession(target.projectId,target.path);})}
       {session&&<>
+        {repair?.offered&&<button type="button" role="menuitem" className="menu-item" disabled={busy||!repair.writable} title={repair.writable?undefined:text('Take control of this chat to repair it.','请先取得此对话的控制权，再修复。')} onClick={()=>{requestChatRepair(session.id);close();}}><Icon name="refresh"/>{text('Repair from native history','从原生历史修复')}</button>}
         {canAcknowledgeActivity(session)&&item(text('Mark handled','标记已处理'),'check',()=>void run(acknowledgeAttention))}
         {item(session.followed?text('Unfollow','取消关注'):text('Follow','关注'),'star',()=>void run(async()=>{await request('session.update',{sessionId:session.id,followed:!session.followed,operationId:operationId()});onChanged();close();}))}
         {item(session.bookmarked?text('Remove bookmark','移除书签'):text('Bookmark','添加书签'),'bookmark',()=>void run(()=>organize({bookmarked:!session.bookmarked})))}

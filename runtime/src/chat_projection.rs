@@ -168,7 +168,10 @@ pub fn record(
     data: &Value,
 ) -> Result<()> {
     db.transaction(|tx| {
-  let now=Utc::now().to_rfc3339();
+  let wall_now=Utc::now();
+  let latest:Option<String>=tx.query_row("SELECT MAX(created_at) FROM chat_items WHERE session_id=?",[session_id],|row|row.get(0))?;
+  let timestamp=latest.as_deref().and_then(|value|chrono::DateTime::parse_from_rfc3339(value).ok()).map(|value|value.with_timezone(&Utc)+chrono::Duration::nanoseconds(1)).filter(|value|value>&wall_now).unwrap_or(wall_now);
+  let now=timestamp.to_rfc3339();
   let turn=turn_id.or_else(||data.pointer("/raw/params/turn/id").and_then(Value::as_str)).or_else(||data.pointer("/raw/params/turnId").and_then(Value::as_str));
   let turn_key=turn.unwrap_or("current");
   let raw_item=data.get("item").or_else(||data.pointer("/raw/params/item"));

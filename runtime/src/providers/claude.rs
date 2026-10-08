@@ -1731,6 +1731,22 @@ mod tests {
         assert_eq!(event.data, expected);
     }
 
+    #[test]
+    fn repair_fixture_normalizes_claude_sdk_history() {
+        let fixture: Value = serde_json::from_str(include_str!(
+            "../../tests/fixtures/repair-native-history.json"
+        ))
+        .unwrap();
+        let items = claude_transcript(fixture["claude"].as_array().unwrap());
+        assert_eq!(
+            items
+                .iter()
+                .map(|item| item["id"].as_str().unwrap())
+                .collect::<Vec<_>>(),
+            vec!["repair-claude-user", "repair-claude-assistant"]
+        );
+    }
+
     struct SubagentReplay {
         events: crate::provider_events::Sender,
         receiver: tokio::sync::broadcast::Receiver<super::super::ProviderEvent>,

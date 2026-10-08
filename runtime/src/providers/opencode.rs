@@ -2505,6 +2505,22 @@ mod tests {
             "ok"
         );
     }
+
+    #[test]
+    fn repair_fixture_normalizes_opencode_export() {
+        let fixture: Value = serde_json::from_str(include_str!(
+            "../../tests/fixtures/repair-native-history.json"
+        ))
+        .unwrap();
+        let items = opencode_transcript(&fixture["opencode"]);
+        assert_eq!(
+            items
+                .iter()
+                .map(|item| item["id"].as_str().unwrap())
+                .collect::<Vec<_>>(),
+            vec!["repair-opencode-user", "repair-opencode-assistant"]
+        );
+    }
     #[test]
     fn normalizes_live_parts_to_the_public_chat_contract() {
         let text = opencode_chat_part(&json!({

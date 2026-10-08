@@ -2,6 +2,21 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {validateRequest,validateResult,validateLayout,METHODS,isRuntimeEvent,PROTOCOL_CONTRACT,PROTOCOL_VERSION,protocolIncompatibleReason} from './index.ts';
 
+test('chat repair is a leased rebuild with bounded integer counts and snapshot integrity',()=>{
+ const request={sessionId:'s',leaseEpoch:1,operationId:'repair'};
+ validateRequest('chat.repair',request);
+ for(const patch of [{sessionId:''},{operationId:''},{leaseEpoch:0},{leaseEpoch:1.5},{leaseEpoch:undefined},{nativeId:'injected'},{mode:'merge'}]) assert.throws(()=>validateRequest('chat.repair',{...request,...patch}));
+ const result={sessionId:'s',mode:'rebuild',added:2,updated:0,removed:1,expired:1,total:2,revision:10};
+ validateResult('chat.repair',result);
+ for(const key of ['added','updated','removed','expired','total','revision']) for(const value of [-1,0.5,Infinity,Number.MAX_SAFE_INTEGER+1]) assert.throws(()=>validateResult('chat.repair',{...result,[key]:value}));
+ assert.throws(()=>validateResult('chat.repair',{...result,mode:'merge'}));
+ assert.throws(()=>validateResult('chat.repair',{...result,sessionId:''}));
+ validateResult('chat.snapshot',{items:[],revision:10,repair:{offered:true,mode:'rebuild',degraded:true,ingressFailed:true}});
+ assert.throws(()=>validateResult('chat.snapshot',{items:[],revision:10,repair:{offered:true,mode:'rebuild',degraded:true,ingressFailed:'true'}}));
+ validateResult('chat.snapshot',{items:[],revision:10,repair:{offered:false,reason:'history_unavailable',degraded:false}});
+ assert.throws(()=>validateResult('chat.snapshot',{items:[],revision:10,repair:{offered:false,reason:'reader_start_required',degraded:false}}));
+});
+
 test('chat allows image-only input while retaining empty-message and type guards',()=>{
  const base={sessionId:'s',text:'',operationId:'image-op',leaseEpoch:1};
  assert.throws(()=>validateRequest('chat.send',base),/Invalid text/);
@@ -293,7 +308,7 @@ test('session documents pin relative paths inside the worktree and list exact ro
  assert.throws(()=>validateRequest('session.documents.pin',{sessionId:'s',path:'docs/plan.md'}),/Invalid operationId|protocol schema/);
  validateResult('session.documents.list',[{path:'docs/plan.md',title:'Checkout plan',pinnedAt:'t'},{path:'notes.txt',pinnedAt:'t',missing:true}]);
  assert.throws(()=>validateResult('session.documents.pin',[{path:'docs/plan.md',pinnedAt:'t',size:3}]));
- assert.equal(PROTOCOL_CONTRACT,8);
+ assert.equal(PROTOCOL_CONTRACT,9);
 });
 
 test('quick launch commands are bounded: relative cwd inside the root, known shells, unique env names, revisioned updates',()=>{

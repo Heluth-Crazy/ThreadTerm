@@ -3853,6 +3853,25 @@ mod tests {
         assert!(item.get("cwd").is_none());
         assert!(item["updatedAt"].is_string());
     }
+
+    #[test]
+    fn repair_fixture_normalizes_kimi_and_generic_acp_history() {
+        let fixture: Value = serde_json::from_str(include_str!(
+            "../../tests/fixtures/repair-native-history.json"
+        ))
+        .unwrap();
+        let frames = fixture["acp"].as_array().unwrap();
+        for provider in ["kimi", "gemini"] {
+            let items = acp_transcript_for_provider(provider, frames);
+            assert_eq!(
+                items
+                    .iter()
+                    .map(|item| item["role"].as_str().unwrap())
+                    .collect::<Vec<_>>(),
+                vec!["user", "assistant", "tool"]
+            );
+        }
+    }
     #[test]
     fn maps_thought_chunks_to_thinking_parts() {
         assert_eq!(acp_part_type("agent_thought_chunk"), Some("thinking"));

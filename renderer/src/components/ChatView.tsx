@@ -1,9 +1,9 @@
-import { ClipboardEvent, FormEvent, Fragment, KeyboardEvent, useContext, useEffect, useMemo, useRef, useState } from "react";
+import { ClipboardEvent, FormEvent, Fragment, KeyboardEvent, useContext, useEffect, useId, useMemo, useRef, useState } from "react";
 import DOMPurify from "dompurify";
 import { marked } from "marked";
 import type { ChatAnswerResponse, ChatPart, ChatQueue, ChatSessionOption, ChatSlashCommand, ChatUiState, FileReference, Session } from "@threadterm/protocol";
 import { ChatItem, openExternal, operationId, request, subscribeEvents } from "../bridge";
-import { beginResync, chatUiFromEvent, completeResync, upsertChatItem, type ChatResync } from "../chatState";
+import { beginResync, chatUiFromEvent, completeResync, nextRepairRevision, upsertChatItem, type ChatResync } from "../chatState";
 import { acquireControl } from '../controlLease';
 import { createDraftWriter } from '../chatDraft';
 import { useTranslation } from '../i18n';
@@ -37,6 +37,10 @@ import { ChatQueue as ChatQueuePanel } from './ChatQueue';
 import { useChatContext } from '../useChatContext';
 import { ContextMessage, ContextTray } from './ContextTray';
 import { contextError } from '../contextErrors';
+import { CHAT_REPAIR_REQUEST, setChatRepairAvailability, type ChatRepairAvailability } from '../chatRepair';
+import { SurfaceDialog } from './SurfaceDialog';
+
+type RepairNotice = { kind: 'rebuilt'; total: number } | { kind: 'unchanged' | 'superseded' | 'failed' };
 
 function ThinkingPart({ part, streaming, copy, openFile }: { part: ChatPart; streaming: boolean; copy: (en: string, zh: string) => string; openFile?: (reference: FileReference) => void }) {
   const [open, setOpen] = useState(streaming);
@@ -359,6 +363,7 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession }
   const openFile = surface?.openFile;
   const zh = locale === 'zh-CN';
   const copy = (en: string, cn: string) => zh ? cn : en;
+  const repairDescriptionId = useId();
   // A clicked http(s) link in the transcript: the same actions as the terminal's link bar, as a menu at the link.
   const [linkMenu, setLinkMenu] = useState<{ anchor: HTMLElement; url: string }>();
   const [linkIssue, setLinkIssue] = useState<string>();
@@ -366,6 +371,12 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession }
   const canControl = chatCanControl(session);
   const ended = isEnded(session);
   const [items, setItems] = useState<ChatItem[]>([]); const [text, setText] = useState(""); const [busy, setBusy] = useState(false); const [error, setError] = useState<string>(); const [controlIssue, setControlIssue] = useState<string>(); const [controllable, setControllable] = useState(false);
+  const [repair, setRepair] = useState<ChatRepairAvailability>();
+  const [repairDialog, setRepairDialog] = useState(false);
+  const [repairBusy, setRepairBusy] = useState(false);
+  const [repairNotice, setRepairNotice] = useState<RepairNotice>();
+  const [ingressFailed, setIngressFailed] = useState(false);
+  const [repairFollowup, setRepairFollowup] = useState(false);
   const [queue, setQueue] = useState<ChatQueue>();
   // Presentation only: keep the recoverable draft until runtime acceptance.
   // This preview never becomes a canonical ChatItem or an active-turn source.
@@ -480,26 +491,58 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession }
       })
       : undefined;
     let codexStream = newCodexStream();
+    let repairRevision = -1;
+    let integrityError: string | undefined;
+    let ingressWasFailed = false;
     transportGeneration.current = 0;
     optionsGeneration.current = undefined;
     uiUpdates.current = 0;
     const isCurrent = (generation: number) => !disposed && lifecycle.current === sessionLifecycle
       && transportGeneration.current === generation;
-    const finishResync = (generation: number, transcript?: { items: ChatItem[]; revision: number }) => {
+    const finishResync = (generation: number, transcript?: { items: ChatItem[]; revision: number; repair?: ChatRepairAvailability }) => {
       if (!isCurrent(generation)) return;
       const completed = resync;
       if (!completed || completed.generation !== generation) return;
       resync = undefined;
       setItems(current => completeResync(completed, session.id, generation, current, transcript) ?? current);
+      if (transcript) {
+        setRepair(transcript.repair); setChatRepairAvailability(session.id, repairDescriptionId, transcript.repair);
+        if (transcript.repair) {
+          ingressWasFailed = Boolean(transcript.repair.ingressFailed); setIngressFailed(ingressWasFailed);
+          if (!ingressWasFailed) setRepairFollowup(false);
+        }
+        if (transcript.repair && !transcript.repair.degraded) {
+          const repairedIssue = integrityError;
+          if (repairedIssue) setError(current => current === repairedIssue ? undefined : current);
+          integrityError = undefined;
+          if (repairRevision >= 0 && ingressWasFailed) setRepairFollowup(true);
+        }
+      }
       setHistoryLoaded(true); setHistoryFailed(!transcript);
+    };
+    const refreshRepair = () => {
+      const generation = transportGeneration.current;
+      void request('chat.snapshot', { sessionId: session.id }).then(snapshot => {
+        if (!isCurrent(generation)) return;
+        setRepair(snapshot.repair); setChatRepairAvailability(session.id, repairDescriptionId, snapshot.repair);
+        if (snapshot.repair) {
+          ingressWasFailed = Boolean(snapshot.repair.ingressFailed); setIngressFailed(ingressWasFailed);
+          if (!ingressWasFailed) setRepairFollowup(false);
+        }
+      }).catch(() => undefined);
     };
     clearFirstResponseWait();
     setSubmissionPreview(undefined);
-    setItems([]); setText(''); setBusy(false); setQueue(undefined); setDraftLoaded(false); setHistoryLoaded(false); setHistoryFailed(false); setLink(emptyLink(session.id, canControl && !ended ? "connecting" : "unavailable")); setConnectSlow(false); setError(undefined);draftReady.current=false;writer.current=undefined;setDraftFailed(false);setRecovery(undefined);setMenuOpen(null);setApprovalBusy(undefined);
+    setItems([]); setText(''); setBusy(false); setQueue(undefined); setDraftLoaded(false); setHistoryLoaded(false); setHistoryFailed(false); setLink(emptyLink(session.id, canControl && !ended ? "connecting" : "unavailable")); setConnectSlow(false); setError(undefined); setRepair(undefined); setRepairDialog(false); setRepairBusy(false); setRepairNotice(undefined); setIngressFailed(false); setRepairFollowup(false); setChatRepairAvailability(session.id, repairDescriptionId, undefined);draftReady.current=false;writer.current=undefined;setDraftFailed(false);setRecovery(undefined);setMenuOpen(null);setApprovalBusy(undefined);
     const unsubscribe = subscribeEvents(event => {
       if (disposed || !event.data || typeof event.data !== 'object') return;
       const data = event.data as { sessionId?: string; item?: ChatItem; reason?: string };
-      if (event.event === 'runtime.degraded' && (!data.sessionId || data.sessionId === session.id)) setError(data.reason ?? 'Chat updates are incomplete.');
+      if (event.event === 'runtime.degraded' && (!data.sessionId || data.sessionId === session.id)) {
+        if (!data.sessionId) { ingressWasFailed = true; setIngressFailed(true); }
+        integrityError = data.reason ?? 'Chat updates are incomplete.';
+        setError(integrityError);
+        refreshRepair();
+      }
       if (event.event === 'runtime.transport') {
         const transport = event.data as { state?: string; epoch?: string };
         if (transport.state === 'disconnected' || transport.state === 'incompatible') {
@@ -533,12 +576,30 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession }
       }
       if (event.event === 'chat.connection' && data.sessionId === session.id) {
         setLink(current => reduceChatLink(current, { type: 'event', snapshot: { ...current.connection, ...(event.data as object), runtimeEpoch: event.epoch, sessionId: session.id }, epoch: event.epoch }));
+        refreshRepair();
       }
       if (event.event === 'chat.ui' && data.sessionId === session.id) {
         uiUpdates.current += 1;
         const next = event.data as ChatUiState & { sessionId?: string };
         setUi(chatUiFromEvent(next));
       }
+      if (event.event === 'state.changed' && data.sessionId === session.id && (event.data as { kind?: unknown }).kind === 'chat.repair') {
+        const changed = event.data as { revision?: unknown };
+        const revision = nextRepairRevision(repairRevision, changed.revision ?? event.seq);
+        if (revision === undefined) return;
+        repairRevision = revision;
+        const generation = ++transportGeneration.current;
+        codexStream?.dispose(); codexStream = newCodexStream();
+        resync = beginResync(session.id, generation, resync);
+        void request('chat.snapshot', { sessionId: session.id }).then(snapshot => {
+          finishResync(generation, snapshot);
+        }).catch(caught => {
+          finishResync(generation);
+          if (isCurrent(generation)) setError(asUserError(caught, copy('Could not synchronize repaired history. Reopen this view to retry.', '无法同步已修复的历史。请重新打开此视图后重试。')));
+        });
+        return;
+      }
+      if (event.event === 'state.changed' && data.sessionId === session.id && ['chat.turn.completed', 'chat.error'].includes(String((event.data as { kind?: unknown }).kind))) refreshRepair();
       if (event.event !== 'chat.item' || data.sessionId !== session.id || !data.item) return;
       if (resync) resync.buffered.push({seq: event.seq, item: data.item});
       else if (codexStream) codexStream.push(data.item);
@@ -553,8 +614,14 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession }
     void request('chat.snapshot', {sessionId: session.id}).then(transcript => {
       finishResync(0, transcript);
     }).catch(caught => { finishResync(0); if (isCurrent(0)) setError(String(caught)); });
+    const onRepairRequest = (event: Event) => {
+      const detail = (event as CustomEvent<{ sessionId?: string; owner?: string }>).detail;
+      if (detail?.sessionId === session.id && detail.owner === repairDescriptionId) setRepairDialog(true);
+    };
+    addEventListener(CHAT_REPAIR_REQUEST, onRepairRequest);
     return () => {
       disposed = true; unsubscribe();
+      removeEventListener(CHAT_REPAIR_REQUEST, onRepairRequest); setChatRepairAvailability(session.id, repairDescriptionId, undefined);
       codexStream?.dispose();
       const control = sessionLifecycle.control;
       const draftWriter = sessionLifecycle.writer;
@@ -617,7 +684,7 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession }
       } finally { taking = false; }
     }
     reclaimRef.current = () => { autoTries = 0; taking = false; void take(); };
-    if (canControl) void take();
+    if (canControl || (session.readOnly && session.mode === 'chat' && session.status !== 'exited')) void take();
     return () => {
       disposed = true;
       lease.current = undefined; leaseSessionId.current = undefined;
@@ -626,9 +693,16 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession }
       if (sessionLifecycle?.flushOnExit) void sessionLifecycle.flushOnExit.finally(release);
       else release();
     };
-  }, [canControl, session.id]);
+  }, [canControl, session.id, session.mode, session.readOnly, session.status]);
   const connected = connection.phase === "ready" && link.transport === "up";
   const writable = canControl && controllable && connected && leaseSessionId.current === session.id && lease.current !== undefined;
+  const repairWritable = controllable && leaseSessionId.current === session.id && lease.current !== undefined;
+  const repairHasLiveTurn = !ended && Boolean(activeTurnId(items, session.status));
+  useEffect(() => {
+    if (repair) setChatRepairAvailability(session.id, repairDescriptionId, {
+      ...repair, offered: repair.offered && !repairHasLiveTurn, writable: repairWritable,
+    });
+  }, [repair, session.id, repairDescriptionId, repairWritable, repairHasLiveTurn]);
   useEffect(() => {
     let disposed = false;
     if (!canControl || ended) {
@@ -826,6 +900,32 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession }
     }
   }
   const liveTurn = ended ? undefined : activeTurnId(items, session.status);
+  const repairOffered = Boolean(repair?.offered && !liveTurn);
+  const repairDisabled = !repairOffered || !repairWritable || repairBusy;
+  const repairDisabledReason = liveTurn || repair?.reason === 'busy'
+    ? copy('Stop the current turn before repairing.', '请先停止当前回合，再修复。')
+    : !repairWritable ? copy('Take control of this chat to repair it.', '请先取得此对话的控制权，再修复。')
+    : repair?.reason === 'unknown_activity' ? copy('Stop the session before repairing its history.', '请先停止会话，再修复历史。')
+    : repair?.reason === 'history_unavailable' ? copy("This agent's saved history can't be read.", '无法读取此代理保存的历史。')
+    : undefined;
+  const beginRepair = () => { if (!repairDisabled) setRepairDialog(true); };
+  async function confirmRepair() {
+    const epoch = leaseSessionId.current === session.id ? lease.current : undefined;
+    if (!repairOffered || !repairWritable || epoch === undefined || repairBusy) return;
+    const repairLifecycle = lifecycle.current;
+    setRepairBusy(true); setRepairNotice(undefined);
+    try {
+      const result = await request('chat.repair', { sessionId: session.id, leaseEpoch: epoch, operationId: operationId() });
+      if (lifecycle.current !== repairLifecycle) return;
+      setRepairNotice(result.added === 0 && result.updated === 0 && result.removed === 0
+        ? { kind: 'unchanged' } : { kind: 'rebuilt', total: result.total });
+      setRepairDialog(false); if (ingressFailed) setRepairFollowup(true);
+    } catch (caught) {
+      if (lifecycle.current !== repairLifecycle) return;
+      const message = String(caught);
+      setRepairNotice({ kind: message.includes('chat_repair_superseded') ? 'superseded' : 'failed' });
+    } finally { if (lifecycle.current === repairLifecycle) setRepairBusy(false); }
+  }
   const queueMode = queueComposerMode(Boolean(liveTurn), queue);
   const modelOption = ui.options.find(option => /model/i.test(option.id) || /model/i.test(option.name));
   const thinkingOption = ui.options.find(option => option !== modelOption && (/think/i.test(option.id) || /think/i.test(option.name) || /reason/i.test(option.id)));
@@ -1016,6 +1116,11 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession }
   return <section className={`chat-view v3-session-chat${overlay === "full" ? " is-connecting" : ""}`} data-provider={session.provider} data-testid={`session-chat-${session.id}`} aria-label={copy('Structured chat', '图形聊天')}>
     {ended && <p className="chat-history-note" role="note">{copy('Session ended · history is read-only.', '会话已结束 · 历史记录只读。')}</p>}
     <DelegationPanel session={session} delegates={delegates} delegatedBy={delegatedBy} onOpenSession={onOpenSession} copy={copy} zh={zh} />
+    {repair?.degraded && !liveTurn && repair.reason !== 'busy' && <section className="chat-repair-banner" role="status" aria-label={copy('Chat history may be incomplete', '对话记录可能不完整')}>
+      <div><strong>{copy('Chat history may be incomplete', '对话记录可能不完整')}</strong><p>{copy("Some chat updates could not be saved. Repair from the agent's native history when the turn has stopped.", '部分对话更新未能保存。回合停止后，可从代理的原生历史修复。')}</p>{repair.diagnostic && <small>{repair.diagnostic}</small>}</div>
+      <button type="button" className="btn" disabled={repairDisabled} title={repairDisabledReason} onClick={beginRepair}>{copy('Repair from native history', '从原生历史修复')}</button>
+    </section>}
+    {repairFollowup && <p className="chat-repair-notice" role="status">{copy('History repaired. Queued prompts stay paused until ThreadTerm restarts.', '历史已修复。排队的提示词将保持暂停，直到 ThreadTerm 重启。')}</p>}
     {overlay === "banner" && <ChatConnectOverlay provider={session.provider} phase={connection.phase} slow={false} error={connection.error} variant="banner" onRetry={retryConnection} copy={copy} transportDown={link.transport !== "up"} />}
     {ui.loadState === "error" && ui.error && <p className="surface-error" role="alert">{ui.error.message} <button type="button" className="btn" disabled={!writable} onClick={() => void request("chat.options", { sessionId: session.id }).then(setUi).catch(caught => setUi(current => ({ ...current, loadState: "error", error: { code: "options_failed", message: asUserError(caught, copy("Options could not be loaded.", "无法读取选项。")) } })))}>{copy("Retry options", "重试读取选项")}</button></p>}
     {historyFailed && <p className="surface-error" role="alert">{copy("History could not be loaded.", "无法加载历史。")}</p>}
@@ -1059,7 +1164,13 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession }
       <button className="btn" onClick={() => { setRecovery(undefined); try { localStorage.removeItem(recoveryKey); } catch {} }}>{copy('Keep saved draft', '保留已保存草稿')}</button>
     </div>}
     {draftFailed && <button className="btn" disabled={!writable} onClick={() => void retryDraft()}>{copy('Retry draft save', '重试保存草稿')}</button>}
-    {error && <p className="surface-error" role="alert">{error}</p>}
+    {/* The repair banner already shows this integrity diagnostic; don't repeat it below. */}
+    {error && !(repair?.degraded && !liveTurn && repair.reason !== 'busy' && error === repair.diagnostic) && <p className="surface-error" role="alert">{error}</p>}
+    {repairNotice && <p className="chat-repair-notice" role="status">{repairNotice.kind === 'rebuilt'
+      ? copy(`History rebuilt from the agent's record: ${repairNotice.total} messages.`, `已根据代理记录重建历史：共 ${repairNotice.total} 条消息。`)
+      : repairNotice.kind === 'unchanged' ? copy("History already matches the agent's saved record.", '历史已与代理保存的记录一致。')
+      : repairNotice.kind === 'superseded' ? copy('This chat changed during repair. Review it and try again.', '修复期间此对话发生了变化。请检查后重试。')
+      : copy('Could not repair history. The local transcript is unchanged.', '未能修复历史。本地对话记录未更改。')}</p>}
     <ChatQueuePanel sessionId={session.id} queue={queue} leaseEpoch={leaseSessionId.current === session.id ? lease.current : undefined} writable={writable} idle={!liveTurn} onChange={setQueue} onIssue={message => setError(message)} zh={zh} />
     <form className="chat-compose chat-compose-shell" data-v3-chat-form={session.id} onSubmit={submit} inert={overlay === "full" || undefined}>
       {slash !== undefined && <div className="chat-slash" role="listbox" aria-label={copy("Commands", "命令")}>
@@ -1102,5 +1213,6 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession }
       </div>
     </form>
     {overlay === "full" && <ChatConnectOverlay provider={session.provider} phase={connection.phase} slow={connectSlow} error={connection.error} variant="full" onRetry={connection.phase === "failed" && link.transport === "up" ? retryConnection : undefined} copy={copy} transportDown={link.transport !== "up"} />}
+    {repairDialog && <SurfaceDialog title={copy('Repair chat history?', '修复对话记录？')} subtitle={session.title} icon="refresh" size="sm" className="chat-repair-dialog" descriptionId={repairDescriptionId} onClose={() => { if (!repairBusy) setRepairDialog(false); }} footer={<><button autoFocus className="btn" disabled={repairBusy} onClick={() => setRepairDialog(false)}>{copy('Cancel', '取消')}</button><button className="btn btn-primary" disabled={repairBusy} onClick={() => void confirmRepair()}>{repairBusy ? copy('Repairing…', '正在修复…') : copy('Repair history', '修复历史')}</button></>}><div id={repairDescriptionId} className="chat-repair-confirm"><p>{copy("The local transcript will be replaced by the agent's saved record. Some local details may be lost: tool details, subagent cards, question answers, usage and timings. A backup of the current transcript is kept, and pending requests will expire.", '本地对话记录将被代理保存的记录替换。部分本地细节可能丢失：工具详情、子代理卡片、问题回答、用量和耗时。当前记录会保留一份备份，待处理的请求将过期。')}</p><p>{copy('Queued prompts, drafts and review checkpoints are not changed.', '排队的提示词、草稿和审查检查点不受影响。')}</p><p className="note">{copy('This only reads the agent\'s saved history. It does not send a prompt or continue the conversation.', '此操作仅读取代理保存的历史，不会发送提示词，也不会继续对话。')}</p></div></SurfaceDialog>}
   </section>;
 }

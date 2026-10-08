@@ -88,7 +88,7 @@ mod tests {
 
     #[test]
     fn registry_contract_rejects_contract_two() {
-        assert_eq!(PROTOCOL_CONTRACT, 8);
+        assert_eq!(PROTOCOL_CONTRACT, 9);
         assert!(
             require_peer_contract(&json!({"protocol":1,"contract":2}), ContractRole::Runtime)
                 .is_err()

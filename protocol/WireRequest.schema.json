@@ -324,6 +324,26 @@
       ],
       "additionalProperties": false
     },
+    "RequestParams<\"chat.repair\">": {
+      "type": "object",
+      "properties": {
+        "sessionId": {
+          "type": "string"
+        },
+        "leaseEpoch": {
+          "type": "number"
+        },
+        "operationId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "sessionId",
+        "leaseEpoch",
+        "operationId"
+      ],
+      "additionalProperties": false
+    },
     "RequestParams<\"chat.draft.read\">": {
       "type": "object",
       "properties": {
@@ -3734,6 +3754,32 @@
         },
         "params": {
           "$ref": "#/definitions/RequestParams%3C%22chat.snapshot%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "params"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "chat.repair"
+        },
+        "params": {
+          "$ref": "#/definitions/RequestParams%3C%22chat.repair%22%3E"
         }
       },
       "required": [

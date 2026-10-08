@@ -1,7 +1,7 @@
 import { validateWireRequest, validateWireSuccess } from './generated-validators.js';
 export const PROTOCOL_VERSION = 1 as const;
-/** Semantic contract for Chat approvals (`choiceId`), connection status, the agent registry, Quick Launch, prompt queues, agent reviews, worktree setup and session documents. Framing/HMAC still use PROTOCOL_VERSION. */
-export const PROTOCOL_CONTRACT = 8 as const;
+/** Semantic contract includes explicit native-history repair and snapshot integrity. Framing/HMAC still use PROTOCOL_VERSION. */
+export const PROTOCOL_CONTRACT = 9 as const;
 export const MAX_FRAME_BYTES = 8 * 1024 * 1024;
 /** Agents that ship with ThreadTerm (native adapters, or `shell` / `custom` commands). */
 export type BuiltinProviderId = 'codex'|'claude'|'kimi'|'gemini'|'opencode'|'shell'|'grok'|'custom';
@@ -92,6 +92,26 @@ export interface FileReference { path:string; line?:number; column?:number }
 export interface ResolvedFileReference extends FileScope, FileReference { kind:'text'|'image' }
 export interface ChatPart { type:'text'|'thinking'|'tool'|'approval'|'usage'|'error'|'status'|'subagent'; text?:string; toolName?:string; toolId?:string; approvalId?:string; status?:string; data?:unknown; fileReferences?:FileReference[] }
 export interface ChatItem { id:string; role:'user'|'assistant'|'system'|'tool'; parts:ChatPart[]; createdAt:string; turnId?:string; elapsedMs?:number }
+/** Runtime-authored, on-demand availability. Integrity is durable; repair never resumes an agent or queue. */
+export interface ChatRepairAvailability {
+ offered:boolean;
+ mode?:'rebuild';
+ reason?:'healthy'|'busy'|'unknown_activity'|'missing_native_id'|'history_unavailable'|'session_unavailable';
+ degraded:boolean;
+ diagnostic?:string;
+ /** Global ingress failure permanently fences queued dispatch until restart. */
+ ingressFailed?:boolean;
+}
+export interface ChatRepairResult {
+ sessionId:string;
+ mode:'rebuild';
+ added:number;
+ updated:number;
+ removed:number;
+ expired:number;
+ total:number;
+ revision:number;
+}
 export type SubagentStatus = 'running'|'completed'|'failed'|'cancelled'|'unknown';
 export type SubagentTranscript = 'live'|'native'|'none';
 export interface SubagentInfo {
@@ -222,7 +242,8 @@ export interface RequestMap {
  'session.present': [{sessionId:string;placement:'workspace'|'window';presentation:'background'|'focused';workspacePath?:string;operationId:string},{queued:boolean}];
  'chat.read': [{sessionId:string},ChatItem[]];
  'chat.subagent.read': [{sessionId:string;key:string;afterRev?:number},SubagentTranscriptRead];
- 'chat.snapshot': [{sessionId:string},{items:ChatItem[];revision:number}];
+ 'chat.snapshot': [{sessionId:string},{items:ChatItem[];revision:number;repair:ChatRepairAvailability}];
+ 'chat.repair': [{sessionId:string;leaseEpoch:number;operationId:string},ChatRepairResult];
  'chat.draft.read': [{sessionId:string},{text:string;revision:number}];
  'chat.draft.save': [{sessionId:string;text:string;expectedRevision:number;leaseEpoch:number;operationId:string},{text:string;revision:number}];
  'data.status': [{},DataStatus];
@@ -406,7 +427,7 @@ export interface ThreadTermBridge {
  exportDiagnostics():Promise<string|null>;
  scheduleElectronCacheCleanup(schedule:boolean):Promise<{scheduled:boolean;available:boolean;result?:string}>;
 }
-export const METHODS = ['filesystem.resolve','session.launch.read','catalog.visibility.list','catalog.visibility.update','session.resume','session.organize','git.merge','git.merge.abort','project.catalog.list','project.update','worktree.branches','worktree.relocate','session.rerun','git.fetch','git.pull','git.push','session.config.read','session.config.save','session.retry.read','session.retry.update','chat.draft.read','chat.draft.save','device.status','device.enable','device.disable','device.pairing.create','device.pairing.cancel','device.list','device.rename','device.renew','device.revoke','git.stage','git.unstage','git.commit','filesystem.image','chat.snapshot','terminal.read','session.lookup','session.present','chat.read','chat.subagent.read','data.status','data.backup','data.relocation.status','data.relocation.prepare','data.relocation.cancel','settings.export','settings.import.preview','settings.import.apply','preset.list','preset.save','preset.delete','usage.query','runtime.health','terminal.host','runtime.shutdown','runtime.snapshot','project.add','project.remove','session.create','history.import','session.stop','session.update','session.attention.acknowledge','session.claim','session.renew','session.release','terminal.input','terminal.resize','settings.update','provider.list','plugin.list','plugin.setEnabled','plugin.reload','chat.queue.read','chat.queue.add','chat.queue.update','chat.queue.remove','chat.queue.move','chat.queue.pause','chat.queue.resume','chat.queue.send','quickLaunch.list','quickLaunch.save','quickLaunch.delete','quickLaunch.run','quickLaunch.setup.read','quickLaunch.setup.save','quickLaunch.setup.run','quickLaunch.setup.status','history.list','history.read','chat.send','chat.cancel','chat.approve','chat.answer','chat.options','chat.option.set','chat.connection','chat.connect','filesystem.list','filesystem.read','filesystem.write','draft.list','draft.put','draft.delete','git.status','git.diff','worktree.list','worktree.create','worktree.remove','workspace.save','workspace.delete','inbox.read','git.index.write','git.discard','git.checkout','git.branch.delete','git.branches','git.log','git.commit.show','git.commit.diff','git.blame','filesystem.create','filesystem.rename','filesystem.delete','filesystem.files','filesystem.search','review.list','review.changes','review.diff','review.revert','review.checkpoint','agentReview.start','agentReview.list','agentReview.mark','session.documents.list','session.documents.pin','session.documents.unpin'] as const satisfies readonly Method[];
+export const METHODS = ['chat.repair','filesystem.resolve','session.launch.read','catalog.visibility.list','catalog.visibility.update','session.resume','session.organize','git.merge','git.merge.abort','project.catalog.list','project.update','worktree.branches','worktree.relocate','session.rerun','git.fetch','git.pull','git.push','session.config.read','session.config.save','session.retry.read','session.retry.update','chat.draft.read','chat.draft.save','device.status','device.enable','device.disable','device.pairing.create','device.pairing.cancel','device.list','device.rename','device.renew','device.revoke','git.stage','git.unstage','git.commit','filesystem.image','chat.snapshot','terminal.read','session.lookup','session.present','chat.read','chat.subagent.read','data.status','data.backup','data.relocation.status','data.relocation.prepare','data.relocation.cancel','settings.export','settings.import.preview','settings.import.apply','preset.list','preset.save','preset.delete','usage.query','runtime.health','terminal.host','runtime.shutdown','runtime.snapshot','project.add','project.remove','session.create','history.import','session.stop','session.update','session.attention.acknowledge','session.claim','session.renew','session.release','terminal.input','terminal.resize','settings.update','provider.list','plugin.list','plugin.setEnabled','plugin.reload','chat.queue.read','chat.queue.add','chat.queue.update','chat.queue.remove','chat.queue.move','chat.queue.pause','chat.queue.resume','chat.queue.send','quickLaunch.list','quickLaunch.save','quickLaunch.delete','quickLaunch.run','quickLaunch.setup.read','quickLaunch.setup.save','quickLaunch.setup.run','quickLaunch.setup.status','history.list','history.read','chat.send','chat.cancel','chat.approve','chat.answer','chat.options','chat.option.set','chat.connection','chat.connect','filesystem.list','filesystem.read','filesystem.write','draft.list','draft.put','draft.delete','git.status','git.diff','worktree.list','worktree.create','worktree.remove','workspace.save','workspace.delete','inbox.read','git.index.write','git.discard','git.checkout','git.branch.delete','git.branches','git.log','git.commit.show','git.commit.diff','git.blame','filesystem.create','filesystem.rename','filesystem.delete','filesystem.files','filesystem.search','review.list','review.changes','review.diff','review.revert','review.checkpoint','agentReview.start','agentReview.list','agentReview.mark','session.documents.list','session.documents.pin','session.documents.unpin'] as const satisfies readonly Method[];
 const stringFields: Partial<Record<Method,readonly string[]>> = {
  'filesystem.resolve':['sessionId','path'],
  'session.launch.read':['sessionId'],
@@ -419,6 +440,7 @@ const stringFields: Partial<Record<Method,readonly string[]>> = {
  'chat.read':['sessionId'],
  'chat.subagent.read':['sessionId','key'],
  'chat.snapshot':['sessionId'],
+ 'chat.repair':['sessionId','operationId'],
  'data.backup':['targetPath','operationId'],'data.relocation.prepare':['targetPath','operationId'],'data.relocation.cancel':['preparedOperationId','operationId'],'settings.import.preview':['bundle'],'settings.import.apply':['bundle','operationId'],'preset.save':['name','operationId'],'preset.delete':['id','operationId'],
  'runtime.shutdown':['operationId'],
  'project.add':['path','operationId'],'project.remove':['id','operationId'],
@@ -467,7 +489,7 @@ export function validateRequest(method:unknown,params:unknown):asserts method is
  }
  if(m==='session.stop'&&params.force!==undefined&&typeof params.force!=='boolean') throw new Error('Invalid force');
  if('leaseEpoch' in params && (!Number.isSafeInteger(params.leaseEpoch)||Number(params.leaseEpoch)<1)) throw new Error('Invalid leaseEpoch');
- if(['session.renew','session.release','terminal.input','terminal.resize','chat.send','chat.queue.add','chat.queue.update','chat.queue.remove','chat.queue.move','chat.queue.pause','chat.queue.resume','chat.queue.send','chat.cancel','chat.approve','chat.answer','chat.option.set','chat.connect'].includes(m)&&!('leaseEpoch' in params)) throw new Error('Missing leaseEpoch');
+ if(['session.renew','session.release','terminal.input','terminal.resize','chat.send','chat.queue.add','chat.queue.update','chat.queue.remove','chat.queue.move','chat.queue.pause','chat.queue.resume','chat.queue.send','chat.cancel','chat.approve','chat.answer','chat.repair','chat.option.set','chat.connect'].includes(m)&&!('leaseEpoch' in params)) throw new Error('Missing leaseEpoch');
  if(m==='terminal.resize') for(const key of ['cols','rows']) if(!Number.isInteger(params[key])||Number(params[key])<1||Number(params[key])>1000) throw new Error(`Invalid ${key}`);
  if(m==='session.create'||m==='history.import'||m==='session.config.save') {
   // Shape only: the runtime's agent registry (built-ins + enabled plugins) decides whether the agent exists.
@@ -550,6 +572,10 @@ export function validateRequest(method:unknown,params:unknown):asserts method is
 }
 export function validateResult<M extends Method>(method:M,result:unknown):asserts result is RequestResult<M> {
  if(!validateWireSuccess({v:1,id:'boundary',method,result})) throw new Error(`Invalid runtime result for ${method}`);
+ if(method==='chat.repair'&&isRecord(result)) {
+  if(!result.sessionId) throw new Error('Invalid repair sessionId');
+  for(const key of ['added','updated','removed','expired','total','revision']) if(!Number.isSafeInteger(result[key])||Number(result[key])<0) throw new Error(`Invalid repair ${key}`);
+ }
 }
 /** A page a `web` tab may show: an absolute http(s) URL of at most 2048 characters, no whitespace or control characters. */
 export function isWebPreviewUrl(value:unknown):value is string {

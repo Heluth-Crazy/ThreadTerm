@@ -290,6 +290,12 @@ function registerIpc(): void {
     if (process.env.THREADTERM_V3_RELOCATION_QA !== '1' || app.isPackaged) throw new Error('QA control resume is unavailable');
     if (!runtimeFor(event).resumeControlForQa()) throw new Error('Runtime control pipe is not paused');
   });
+  ipcMain.handle('threadterm:qa-fail-chat-projection', (event, sessionId: unknown) => {
+    assertTrustedRenderer(event);
+    if (process.env.THREADTERM_V3_RELOCATION_QA !== '1' || app.isPackaged) throw new Error('QA projection failure is unavailable');
+    if (typeof sessionId !== 'string' || !sessionId || sessionId.length > 256) throw new Error('Invalid QA session');
+    return runtimeFor(event).failChatProjectionForQa(sessionId);
+  });
   ipcMain.handle('threadterm:subscribe-output', async (event, sessionId: unknown, cursor: unknown, id: unknown) => {
     assertTrustedRenderer(event);
     if (typeof sessionId !== 'string' || !sessionId || !Number.isSafeInteger(cursor) || Number(cursor) < 0 || typeof id !== 'string' || !id) throw new Error('Invalid output subscription');

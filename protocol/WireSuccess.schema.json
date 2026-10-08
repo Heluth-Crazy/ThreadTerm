@@ -710,10 +710,97 @@
         },
         "revision": {
           "type": "number"
+        },
+        "repair": {
+          "$ref": "#/definitions/ChatRepairAvailability"
         }
       },
       "required": [
         "items",
+        "revision",
+        "repair"
+      ],
+      "additionalProperties": false
+    },
+    "ChatRepairAvailability": {
+      "type": "object",
+      "properties": {
+        "offered": {
+          "type": "boolean"
+        },
+        "mode": {
+          "type": "string",
+          "const": "rebuild"
+        },
+        "reason": {
+          "type": "string",
+          "enum": [
+            "healthy",
+            "busy",
+            "unknown_activity",
+            "missing_native_id",
+            "history_unavailable",
+            "session_unavailable"
+          ]
+        },
+        "degraded": {
+          "type": "boolean"
+        },
+        "diagnostic": {
+          "type": "string"
+        },
+        "ingressFailed": {
+          "type": "boolean",
+          "description": "Global ingress failure permanently fences queued dispatch until restart."
+        }
+      },
+      "required": [
+        "offered",
+        "degraded"
+      ],
+      "additionalProperties": false,
+      "description": "Runtime-authored, on-demand availability. Integrity is durable; repair never resumes an agent or queue."
+    },
+    "RequestResult<\"chat.repair\">": {
+      "$ref": "#/definitions/ChatRepairResult"
+    },
+    "ChatRepairResult": {
+      "type": "object",
+      "properties": {
+        "sessionId": {
+          "type": "string"
+        },
+        "mode": {
+          "type": "string",
+          "const": "rebuild"
+        },
+        "added": {
+          "type": "number"
+        },
+        "updated": {
+          "type": "number"
+        },
+        "removed": {
+          "type": "number"
+        },
+        "expired": {
+          "type": "number"
+        },
+        "total": {
+          "type": "number"
+        },
+        "revision": {
+          "type": "number"
+        }
+      },
+      "required": [
+        "sessionId",
+        "mode",
+        "added",
+        "updated",
+        "removed",
+        "expired",
+        "total",
         "revision"
       ],
       "additionalProperties": false
@@ -4757,6 +4844,32 @@
         },
         "result": {
           "$ref": "#/definitions/RequestResult%3C%22chat.snapshot%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "result"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "chat.repair"
+        },
+        "result": {
+          "$ref": "#/definitions/RequestResult%3C%22chat.repair%22%3E"
         }
       },
       "required": [
