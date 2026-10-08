@@ -3,7 +3,7 @@ import DOMPurify from "dompurify";
 import { marked } from "marked";
 import type { ChatPart, ChatQueue, ChatSessionOption, ChatSlashCommand, ChatUiState, FileReference, Session } from "@threadterm/protocol";
 import { ChatItem, openExternal, operationId, request, subscribeEvents } from "../bridge";
-import { restoreChat, upsertChatItem } from "../chatState";
+import { beginResync, chatUiFromEvent, completeResync, upsertChatItem, type ChatResync } from "../chatState";
 import { acquireControl } from '../controlLease';
 import { createDraftWriter } from '../chatDraft';
 import { useTranslation } from '../i18n';
@@ -391,6 +391,8 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession }
   const [connectSlow, setConnectSlow] = useState(false);
   const connectInFlight = useRef(false);
   const transportGeneration = useRef(0);
+  const optionsGeneration = useRef<number | undefined>(undefined);
+  const uiUpdates = useRef(0);
   const [ui, setUi] = useState<ChatUiState>({ options: [], commands: [] });
   const [images, setImages] = useState<string[]>([]);
   const imagesRef=useRef(images); imagesRef.current=images;
@@ -467,16 +469,29 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession }
     } catch (caught) { setError(String(caught)); }
   }
   useEffect(() => {
-    let disposed = false, loading = true;
+    let disposed = false;
     const sessionLifecycle: ChatLifecycle = {sessionId: session.id};
     lifecycle.current = sessionLifecycle;
-    const buffered: {seq: number; item: ChatItem}[] = [];
-    const codexStream = session.provider === "codex"
+    let resync: ChatResync | undefined = beginResync(session.id, 0);
+    const newCodexStream = () => session.provider === "codex"
       ? createCodexStreamQueue((item) => {
         if (!disposed) setItems(current => upsertChatItem(current, item));
       })
       : undefined;
+    let codexStream = newCodexStream();
     transportGeneration.current = 0;
+    optionsGeneration.current = undefined;
+    uiUpdates.current = 0;
+    const isCurrent = (generation: number) => !disposed && lifecycle.current === sessionLifecycle
+      && transportGeneration.current === generation;
+    const finishResync = (generation: number, transcript?: { items: ChatItem[]; revision: number }) => {
+      if (!isCurrent(generation)) return;
+      const completed = resync;
+      if (!completed || completed.generation !== generation) return;
+      resync = undefined;
+      setItems(current => completeResync(completed, session.id, generation, current, transcript) ?? current);
+      setHistoryLoaded(true); setHistoryFailed(!transcript);
+    };
     clearFirstResponseWait();
     setSubmissionPreview(undefined);
     setItems([]); setText(''); setBusy(false); setQueue(undefined); setDraftLoaded(false); setHistoryLoaded(false); setHistoryFailed(false); setLink(emptyLink(session.id, canControl && !ended ? "connecting" : "unavailable")); setConnectSlow(false); setError(undefined);draftReady.current=false;writer.current=undefined;setDraftFailed(false);setRecovery(undefined);setMenuOpen(null);setApprovalBusy(undefined);
@@ -493,23 +508,38 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession }
         }
         if (transport.state === 'reconnected') {
           const generation = ++transportGeneration.current;
+          // Dispose also cancels the timer and dedup cache from the old stream.
+          codexStream?.dispose(); codexStream = newCodexStream();
+          resync = beginResync(session.id, generation, resync);
+          optionsGeneration.current = generation;
+          const uiRevision = uiUpdates.current;
           const epoch = typeof transport.epoch === 'string' ? transport.epoch : event.epoch;
           setLink(current => reduceChatLink(current, { type: 'transport-up', epoch }));
           reclaimRef.current();
+          const syncError = (caught: unknown) => {
+            if (isCurrent(generation)) setError(asUserError(caught, copy('Could not synchronize the connection. Reopen this view to retry.', '无法同步连接状态，请重新打开此视图重试。')));
+          };
+          void request('chat.snapshot', { sessionId: session.id }).then(snapshot => {
+            finishResync(generation, snapshot);
+          }).catch(caught => { finishResync(generation); syncError(caught); });
+          void request('chat.options', { sessionId: session.id }).then(snapshot => {
+            if (isCurrent(generation) && uiUpdates.current === uiRevision) setUi(chatUiFromEvent(snapshot));
+          }).catch(caught => { if (uiUpdates.current === uiRevision) syncError(caught); });
           void request('chat.connection', { sessionId: session.id }).then(snapshot => {
-            if (!disposed) setLink(current => reduceChatLink(current, { type: 'snapshot', snapshot, transportGeneration: generation, resync: true }));
-          }).catch(caught => { if (!disposed && transportGeneration.current === generation) setError(asUserError(caught, copy('Could not synchronize the connection. Reopen this view to retry.', '无法同步连接状态，请重新打开此视图重试。'))); });
+            if (isCurrent(generation)) setLink(current => reduceChatLink(current, { type: 'snapshot', snapshot, transportGeneration: generation, resync: true }));
+          }).catch(syncError);
         }
       }
       if (event.event === 'chat.connection' && data.sessionId === session.id) {
         setLink(current => reduceChatLink(current, { type: 'event', snapshot: { ...current.connection, ...(event.data as object), runtimeEpoch: event.epoch, sessionId: session.id }, epoch: event.epoch }));
       }
       if (event.event === 'chat.ui' && data.sessionId === session.id) {
+        uiUpdates.current += 1;
         const next = event.data as ChatUiState & { sessionId?: string };
-        setUi({ options: Array.isArray(next.options) ? next.options : [], commands: Array.isArray(next.commands) ? next.commands : [], loadState: "ready" });
+        setUi(chatUiFromEvent(next));
       }
       if (event.event !== 'chat.item' || data.sessionId !== session.id || !data.item) return;
-      if (loading) buffered.push({seq: event.seq, item: data.item});
+      if (resync) resync.buffered.push({seq: event.seq, item: data.item});
       else if (codexStream) codexStream.push(data.item);
       else setItems(current => upsertChatItem(current, data.item!));
     });
@@ -520,9 +550,8 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession }
       try { const local = localStorage.getItem(recoveryKey); if (local !== null && local !== draft.text && local !== currentText.current) setRecovery(local); } catch { /* Runtime draft is still available. */ }
     }).catch(caught=>{if(!disposed){setError(`Draft could not be loaded: ${String(caught)}`);setDraftFailed(true);setDraftLoaded(true);}});
     void request('chat.snapshot', {sessionId: session.id}).then(transcript => {
-      if (disposed) return;
-      setItems(restoreChat(transcript, buffered)); loading = false; setHistoryLoaded(true);
-    }).catch(caught => { if (!disposed) { loading = false; setHistoryLoaded(true); setHistoryFailed(true); setItems(buffered.reduce((items, event) => upsertChatItem(items, event.item), [] as ChatItem[])); setError(String(caught)); } });
+      finishResync(0, transcript);
+    }).catch(caught => { finishResync(0); if (isCurrent(0)) setError(String(caught)); });
     return () => {
       disposed = true; unsubscribe();
       codexStream?.dispose();
@@ -633,8 +662,12 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession }
   useEffect(() => {
     if (!connected) return;
     let disposed = false;
-    void request("chat.options", { sessionId: session.id }).then(next => { if (!disposed) setUi(next); }).catch(caught => {
-      if (!disposed) setUi(current => ({ ...current, loadState: "error", error: { code: "options_failed", message: asUserError(caught, copy("Options could not be loaded.", "无法读取选项。")) } }));
+    const generation = transportGeneration.current;
+    if (optionsGeneration.current === generation) return;
+    optionsGeneration.current = generation;
+    const uiRevision = uiUpdates.current;
+    void request("chat.options", { sessionId: session.id }).then(next => { if (!disposed && generation === transportGeneration.current && uiUpdates.current === uiRevision) setUi(chatUiFromEvent(next)); }).catch(caught => {
+      if (!disposed && generation === transportGeneration.current && uiUpdates.current === uiRevision) setUi(current => ({ ...current, loadState: "error", error: { code: "options_failed", message: asUserError(caught, copy("Options could not be loaded.", "无法读取选项。")) } }));
     });
     return () => { disposed = true; };
   }, [connected, session.id, zh]);

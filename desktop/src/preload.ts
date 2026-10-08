@@ -86,6 +86,12 @@ const bridge: ThreadTermBridge = {
 };
 
 contextBridge.exposeInMainWorld('threadterm', bridge);
+if (process.env.THREADTERM_V3_RELOCATION_QA === '1') {
+  contextBridge.exposeInMainWorld('threadtermQa', {
+    dropControl: (): Promise<void> => ipcRenderer.invoke('threadterm:qa-drop-control') as Promise<void>,
+    resumeControl: (): Promise<void> => ipcRenderer.invoke('threadterm:qa-resume-control') as Promise<void>,
+  });
+}
 
 function isOutputChunk(value: unknown): value is OutputChunk {
   return isRecord(value)

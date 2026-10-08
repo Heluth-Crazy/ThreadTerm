@@ -454,6 +454,42 @@ pub(crate) trait ChatSession: Send {
 
 type SharedChat = Arc<Mutex<Box<dyn ChatSession>>>;
 
+/// Normalizes the complete UI snapshot shared by `chat.options` and `chat.ui`.
+pub(crate) fn normalize_chat_ui(value: Value) -> Value {
+    let options = value
+        .get("options")
+        .filter(|value| value.is_array())
+        .cloned()
+        .unwrap_or_else(|| json!([]));
+    let commands = value
+        .get("commands")
+        .filter(|value| value.is_array())
+        .cloned()
+        .unwrap_or_else(|| json!([]));
+    let input_capabilities = value
+        .get("inputCapabilities")
+        .filter(|value| value.is_object())
+        .cloned()
+        .unwrap_or_else(|| json!({}));
+    let load_state = value.get("loadState").cloned().unwrap_or_else(|| {
+        json!(if options.as_array().is_some_and(Vec::is_empty) {
+            "empty"
+        } else {
+            "ready"
+        })
+    });
+    let mut normalized = json!({
+        "options": options,
+        "commands": commands,
+        "inputCapabilities": input_capabilities,
+        "loadState": load_state,
+    });
+    if let Some(error) = value.get("error") {
+        normalized["error"] = error.clone();
+    }
+    normalized
+}
+
 struct ChatSlot {
     generation: u64,
     revision: u64,
@@ -1240,17 +1276,7 @@ impl ProviderRuntime for Providers {
 
     fn chat_options(&self, session_id: &str) -> Result<Value, ProviderError> {
         match self.chat(session_id, |chat| Ok(chat.ui_state())) {
-            Ok(mut value) => {
-                if value.get("loadState").is_none() {
-                    let empty_options = value
-                        .get("options")
-                        .and_then(Value::as_array)
-                        .map(|items| items.is_empty())
-                        .unwrap_or(true);
-                    value["loadState"] = json!(if empty_options { "empty" } else { "ready" });
-                }
-                Ok(value)
-            }
+            Ok(value) => Ok(normalize_chat_ui(value)),
             Err(error) if error.code == "chat_not_open" => Ok(json!({
                 "options":[],
                 "commands":[],
@@ -1406,6 +1432,36 @@ pub(crate) fn emit_scoped(
 mod registry_cleanup_tests {
     use super::*;
     use std::sync::{mpsc, Weak};
+
+    #[test]
+    fn normalize_chat_ui_preserves_the_existing_default_load_state_rules() {
+        assert_eq!(normalize_chat_ui(json!({}))["loadState"], "empty");
+        assert_eq!(
+            normalize_chat_ui(json!({"options":[{"id":"model"}]}))["loadState"],
+            "ready"
+        );
+        assert_eq!(
+            normalize_chat_ui(json!({"options":[],"loadState":"loading"}))["loadState"],
+            "loading"
+        );
+        assert_eq!(normalize_chat_ui(json!({}))["inputCapabilities"], json!({}));
+    }
+
+    #[test]
+    fn normalize_chat_ui_rejects_invalid_collection_types_and_preserves_explicit_state() {
+        let normalized = normalize_chat_ui(json!({
+            "options": {"not":"an array"},
+            "commands": "not an array",
+            "inputCapabilities": [],
+            "loadState": "error",
+            "error": {"code":"options_failed","message":"Options failed"}
+        }));
+        assert_eq!(normalized["options"], json!([]));
+        assert_eq!(normalized["commands"], json!([]));
+        assert_eq!(normalized["inputCapabilities"], json!({}));
+        assert_eq!(normalized["loadState"], "error");
+        assert_eq!(normalized["error"]["code"], "options_failed");
+    }
 
     #[test]
     fn every_production_adapter_fences_late_events_after_reconnect_and_stop() {

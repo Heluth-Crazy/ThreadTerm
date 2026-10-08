@@ -138,8 +138,10 @@ export class RuntimeClient {
   private runtimeEpoch = '';
   private sawDisconnect = false;
   private incompatible?: ProtocolIncompatibleError;
+  private qaReconnectPaused = false;
 
   async request<M extends Method>(method: M, params: RequestParams<M>): Promise<RequestResult<M>> {
+    if (this.qaReconnectPaused) throw new RuntimeUnavailableError('Runtime reconnect is paused for QA');
     await this.ensureConnected();
     this.assertOpen();
     const id = randomUUID();
@@ -156,6 +158,23 @@ export class RuntimeClient {
   }
 
   onEvent(listener: (event: RuntimeEvent) => void): () => void { this.eventListeners.add(listener); return () => this.eventListeners.delete(listener); }
+
+  /** Test-only: the Electron IPC handler also requires the non-packaged QA flag. */
+  dropControlForQa(): boolean {
+    if (env.THREADTERM_V3_RELOCATION_QA !== '1' || !this.control) return false;
+    this.qaReconnectPaused = true;
+    if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
+    this.reconnectTimer = undefined;
+    this.control.close();
+    return true;
+  }
+
+  resumeControlForQa(): boolean {
+    if (env.THREADTERM_V3_RELOCATION_QA !== '1' || !this.qaReconnectPaused) return false;
+    this.qaReconnectPaused = false;
+    void this.ensureConnected().catch(error => this.handleDisconnect(asError(error)));
+    return true;
+  }
 
   async subscribeOutput(sessionId: string, cursor: number, onChunk: (chunk: OutputChunk) => void | Promise<void>): Promise<() => void> {
     if (!Number.isSafeInteger(cursor) || cursor < 0) throw new Error('Invalid output cursor');
@@ -275,6 +294,7 @@ export class RuntimeClient {
 
   private async ensureConnected(): Promise<void> {
     this.assertOpen();
+    if (this.qaReconnectPaused) throw new RuntimeUnavailableError('Runtime reconnect is paused for QA');
     if (this.incompatible) throw this.incompatible;
     if (this.control && this.output) return;
     if (!this.connecting) this.connecting = this.connectAndAuthenticate().finally(() => { this.connecting = undefined; });
@@ -433,7 +453,7 @@ export class RuntimeClient {
     this.pending.clear();
     this.sawDisconnect = true;
     this.emitSynthetic('runtime.transport', { state: 'disconnected', epoch: this.runtimeEpoch, reason: error.message });
-    if (this.incompatible || this.suspended) return;
+    if (this.incompatible || this.suspended || this.qaReconnectPaused) return;
     if (!this.reconnectTimer) this.reconnectTimer = setTimeout(() => {
       this.reconnectTimer = undefined;
       void this.ensureConnected().catch((caught) => {

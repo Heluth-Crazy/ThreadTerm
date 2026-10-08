@@ -3147,6 +3147,19 @@ fn extract_text(item: &Value) -> String {
 mod tests {
     use super::*;
 
+    #[test]
+    fn chat_ui_event_matches_codex_ui_state() {
+        let (events, mut receiver) = crate::provider_events::tap_channel(1);
+        let mut state = CodexUiState::default();
+        state.options = vec![json!({"id":"model","value":"qa"})];
+        let ui = Mutex::new(state);
+        emit_chat_ui(&events, "s", Some("n"), &ui, "worker");
+        let event = receiver.try_recv().unwrap();
+        let mut expected = ui.lock().unwrap().wire();
+        expected["sessionId"] = json!("s");
+        assert_eq!(event.data, expected);
+    }
+
     const SUBAGENT_PARENT: &str = "01a10cc5-adcf-7532-8366-f82284f88ff9";
     const SUBAGENT_CHILD: &str = "01a10cc7-8abd-7a53-83bd-bd40920e71cf";
 

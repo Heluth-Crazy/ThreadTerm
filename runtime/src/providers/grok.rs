@@ -411,6 +411,12 @@ struct GrokUiState {
     subagents: GrokSubagents,
 }
 
+impl GrokUiState {
+    fn wire(&self) -> Value {
+        json!({"options":self.options.clone(),"commands":self.commands.clone()})
+    }
+}
+
 #[derive(Clone, Default)]
 struct GrokSubagents {
     calls: HashMap<String, GrokSubagentCall>,
@@ -1458,7 +1464,7 @@ impl ChatSession for GrokChat {
         self.ui
             .lock()
             .ok()
-            .map(|state| json!({"options":state.options.clone(),"commands":state.commands.clone()}))
+            .map(|state| state.wire())
             .unwrap_or_else(|| json!({"options":[],"commands":[]}))
     }
 
@@ -1960,7 +1966,9 @@ fn emit_chat_ui(
         .lock()
         .ok()
         .map(|state| {
-            json!({"sessionId":session_id,"options":state.options.clone(),"commands":state.commands.clone()})
+            let mut wire = state.wire();
+            wire["sessionId"] = json!(session_id);
+            wire
         })
         .unwrap_or_else(|| json!({"sessionId":session_id,"options":[],"commands":[]}));
     emit(events, "grok", session_id, native_id, None, "chat.ui", data);
@@ -2464,6 +2472,22 @@ fn parse_slash(text: &str) -> Option<(&str, &str)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn chat_ui_event_matches_grok_ui_state() {
+        let (sender, mut receiver) = crate::provider_events::tap_channel(1);
+        let events = ScopedProviderEvents::new(sender, "worker");
+        let ui = Mutex::new(GrokUiState {
+            options: vec![json!({"id":"model","value":"qa"})],
+            commands: vec![json!({"name":"compact"})],
+            ..Default::default()
+        });
+        emit_chat_ui(&events, "s", Some("n"), &ui);
+        let event = receiver.try_recv().unwrap();
+        let mut expected = ui.lock().unwrap().wire();
+        expected["sessionId"] = json!("s");
+        assert_eq!(event.data, expected);
+    }
 
     #[test]
     fn grok_history_merges_native_tool_updates_and_failed_paths() {

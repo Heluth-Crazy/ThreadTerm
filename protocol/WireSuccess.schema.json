@@ -2699,7 +2699,8 @@
         "options",
         "commands"
       ],
-      "additionalProperties": false
+      "additionalProperties": false,
+      "description": "A complete composer UI snapshot, sent by both `chat.options` and `chat.ui`; it replaces prior UI state."
     },
     "ChatSessionOption": {
       "type": "object",

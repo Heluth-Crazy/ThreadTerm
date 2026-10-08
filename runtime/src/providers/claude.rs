@@ -1562,6 +1562,26 @@ mod tests {
     use super::*;
     use std::time::Duration;
 
+    #[test]
+    fn chat_ui_event_matches_claude_ui_state() {
+        let (events, mut receiver) = crate::provider_events::tap_channel(1);
+        let ui = ClaudeUi::default();
+        let native = Mutex::new(Some("n".to_owned()));
+        emit_claude_message(
+            &events,
+            "s",
+            &native,
+            &WorkerLiveness::default(),
+            &ui,
+            Some("worker"),
+            json!({"ev":"session.ui","ui":{"options":[{"id":"model","value":"qa"}],"commands":[{"name":"compact"}]}}),
+        );
+        let event = receiver.try_recv().unwrap();
+        let mut expected = ui.wire();
+        expected["sessionId"] = json!("s");
+        assert_eq!(event.data, expected);
+    }
+
     struct SubagentReplay {
         events: crate::provider_events::Sender,
         receiver: tokio::sync::broadcast::Receiver<super::super::ProviderEvent>,

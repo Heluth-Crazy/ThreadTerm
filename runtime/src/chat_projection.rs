@@ -1,5 +1,5 @@
 //! Converts native provider updates into stable, persisted renderer chat items.
-use crate::{db::Database, domain::ChatItem, file_references};
+use crate::{db::Database, domain::ChatItem, file_references, providers::normalize_chat_ui};
 use anyhow::Result;
 use chrono::Utc;
 use rusqlite::{params, OptionalExtension};
@@ -291,7 +291,9 @@ pub fn record(
    }
    "chat.error"=>{item.parts.push(json!({"type":"error","text":data.get("message").and_then(Value::as_str).unwrap_or("Provider request failed"),"data":data}));changed=true;if !quiet {insert_attention(tx,&format!("{session_id}:error:{turn_key}"),session_id,turn,"error",data,&now)?;}}
    "chat.ui"=>{
-    tx.execute("INSERT INTO outbox(event,data,created_at) VALUES ('chat.ui',?,?)",params![serde_json::to_string(&json!({"sessionId":session_id,"options":data.get("options").cloned().unwrap_or_else(||json!([])),"commands":data.get("commands").cloned().unwrap_or_else(||json!([]))}))?,now])?;
+    let mut payload=normalize_chat_ui(data.clone());
+    payload["sessionId"]=json!(session_id);
+    tx.execute("INSERT INTO outbox(event,data,created_at) VALUES ('chat.ui',?,?)",params![serde_json::to_string(&payload)?,now])?;
    }
    _=>{}
   }
@@ -1535,7 +1537,7 @@ mod tests {
             "s",
             None,
             "chat.ui",
-            &json!({"options":[{"id":"model","name":"Model","value":"gpt-5.5-luna","choices":[]}],"commands":[{"name":"compact"}]}),
+            &json!({"options":[{"id":"model","name":"Model","value":"gpt-5.5-luna","choices":[]}],"commands":[{"name":"compact"}],"inputCapabilities":{"images":true},"loadState":"loading","error":{"code":"options_loading","message":"Loading options"}}),
         )
         .unwrap();
         let payload = db
@@ -1551,12 +1553,28 @@ mod tests {
         assert_eq!(value["sessionId"], "s");
         assert_eq!(value["options"][0]["value"], "gpt-5.5-luna");
         assert_eq!(value["commands"][0]["name"], "compact");
+        assert_eq!(value["inputCapabilities"]["images"], true);
+        assert_eq!(value["loadState"], "loading");
+        assert_eq!(value["error"]["code"], "options_loading");
         let items: i64 = db
             .transaction(|tx| {
                 Ok(tx.query_row("SELECT COUNT(*) FROM chat_items", [], |row| row.get(0))?)
             })
             .unwrap();
         assert_eq!(items, 0);
+    }
+    #[test]
+    fn chat_ui_defaults_missing_input_capabilities_to_an_empty_object() {
+        let db = db();
+        record(&db, "s", None, "chat.ui", &json!({})).unwrap();
+        let payload = db.transaction(|tx| {
+            Ok(tx.query_row("SELECT data FROM outbox WHERE event='chat.ui'", [], |row| row.get::<_, String>(0))?)
+        }).unwrap();
+        let value: Value = serde_json::from_str(&payload).unwrap();
+        assert_eq!(value["inputCapabilities"], json!({}));
+        assert_eq!(value["options"], json!([]));
+        assert_eq!(value["commands"], json!([]));
+        assert_eq!(value["loadState"], "empty");
     }
     #[test]
     fn provider_user_messages_do_not_duplicate_the_local_user_turn() {
