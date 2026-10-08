@@ -176,7 +176,8 @@ export function App() {
   useEffect(() => {
     void refresh();
     return subscribeEvents((event) => {
-      if (event.event === "state.changed") void refresh();
+      if (event.event === "state.changed" || (event.event === "runtime.transport"
+        && (event.data as { state?: string } | undefined)?.state === "reconnected")) void refresh();
     });
   }, [refresh]);
   const routedWorkspace =

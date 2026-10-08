@@ -45,6 +45,36 @@ test('disposed clients reject new work instead of reopening runtime pipes', asyn
   await assert.rejects(client.subscribeOutput('closed', 0, () => {}), /Desktop is closing/);
 });
 
+test('QA control-drop hook is unavailable without the existing QA flag and closes only the control pipe with it', async () => {
+  const previous = process.env.THREADTERM_V3_RELOCATION_QA;
+  try {
+    delete process.env.THREADTERM_V3_RELOCATION_QA;
+    const off = clientWithPipes();
+    let offClosed = 0;
+    (off.client as unknown as ClientInternals).control = { write() {}, close() { offClosed++; } };
+    assert.equal(off.client.dropControlForQa(), false);
+    assert.equal(offClosed, 0);
+
+    process.env.THREADTERM_V3_RELOCATION_QA = '1';
+    const on = clientWithPipes();
+    let controlClosed = 0;
+    let outputClosed = 0;
+    const internal = on.client as unknown as ClientInternals;
+    internal.control = { write() {}, close() { controlClosed++; } };
+    internal.output = { write() {}, close() { outputClosed++; } };
+    assert.equal(on.client.dropControlForQa(), true);
+    assert.equal(controlClosed, 1);
+    assert.equal(outputClosed, 0, 'the hook itself only cuts control; normal socket failure owns output teardown');
+    await assert.rejects(on.client.request('runtime.health', {}), /paused for QA/, 'incidental renderer requests cannot reconnect during the staged gap');
+    await assert.rejects(on.client.subscribeOutput('s', 0, () => {}), /paused for QA/, 'output subscriptions cannot reopen the paused pipes');
+    assert.equal(on.client.resumeControlForQa(), true, 'the explicit QA resume re-enables the normal reconnect path');
+    assert.equal(on.client.resumeControlForQa(), false, 'only one QA resume is accepted for a pause');
+  } finally {
+    if (previous === undefined) delete process.env.THREADTERM_V3_RELOCATION_QA;
+    else process.env.THREADTERM_V3_RELOCATION_QA = previous;
+  }
+});
+
 test('shutdown suspension rejects new work and preserves subscriptions for a cancelled shutdown', async () => {
   const { client } = clientWithPipes();
   const internal = client as unknown as ClientInternals;

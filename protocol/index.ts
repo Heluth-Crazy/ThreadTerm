@@ -121,6 +121,7 @@ export interface ChatSessionChoice { value:string; name:string }
 export interface ChatSessionOption { id:string; name:string; value:string; choices:ChatSessionChoice[] }
 export interface ChatSlashCommand { name:string; description?:string }
 export type ChatOptionsLoadState = 'idle'|'loading'|'ready'|'empty'|'error'|'unknown';
+/** A complete composer UI snapshot, sent by both `chat.options` and `chat.ui`; it replaces prior UI state. */
 export interface ChatUiState {
  options:ChatSessionOption[];
  commands:ChatSlashCommand[];

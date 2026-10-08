@@ -499,6 +499,12 @@ struct AcpUiState {
     usage_reply: Option<PendingUsageReply>,
 }
 
+impl AcpUiState {
+    fn wire(&self, provider: &str) -> Value {
+        json!({"options":self.options.clone(),"commands":merge_local_commands(provider, self.commands.clone())})
+    }
+}
+
 #[derive(Clone)]
 struct PendingUsageReply {
     turn_id: String,
@@ -1138,7 +1144,7 @@ impl ChatSession for AcpChat {
         self.ui
             .lock()
             .ok()
-            .map(|state| json!({"options":state.options.clone(),"commands":state.commands.clone()}))
+            .map(|state| state.wire(&self.provider))
             .unwrap_or_else(|| json!({"options":[],"commands":[]}))
     }
 
@@ -2113,7 +2119,9 @@ fn emit_chat_ui(
     let data = state
         .as_ref()
         .map(|value| {
-            json!({"sessionId":session_id,"options":value.options.clone(),"commands":merge_local_commands(provider, value.commands.clone())})
+            let mut wire = value.wire(provider);
+            wire["sessionId"] = json!(session_id);
+            wire
         })
         .unwrap_or_else(|| json!({"sessionId":session_id,"options":[],"commands":[]}));
     // ACP agents push config/command updates on a heartbeat; re-emitting an
@@ -2398,6 +2406,22 @@ fn kimi_terminal_cwd(cwd: &str) -> std::borrow::Cow<'_, str> {
 mod tests {
     use super::*;
     use crate::plugins::PluginRegistry;
+
+    #[test]
+    fn chat_ui_event_matches_acp_ui_state() {
+        let (sender, mut receiver) = crate::provider_events::tap_channel(1);
+        let events = ScopedProviderEvents::new(sender, "worker");
+        let ui = Mutex::new(AcpUiState {
+            options: vec![json!({"id":"model","value":"qa"})],
+            commands: vec![json!({"name":"compact"})],
+            ..Default::default()
+        });
+        emit_chat_ui(&events, "kimi", "s", Some("n"), &ui);
+        let event = receiver.try_recv().unwrap();
+        let mut expected = ui.lock().unwrap().wire("kimi");
+        expected["sessionId"] = json!("s");
+        assert_eq!(event.data, expected);
+    }
 
     #[test]
     fn subagent_result_headers_map_status_identity_and_summary() {

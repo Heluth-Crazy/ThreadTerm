@@ -280,6 +280,16 @@ function registerIpc(): void {
     validateRequest(method, params);
     return runtimeFor(event).request(method, params as RequestParams<Method>);
   });
+  ipcMain.handle('threadterm:qa-drop-control', (event) => {
+    assertTrustedRenderer(event);
+    if (process.env.THREADTERM_V3_RELOCATION_QA !== '1' || app.isPackaged) throw new Error('QA control drop is unavailable');
+    if (!runtimeFor(event).dropControlForQa()) throw new Error('Runtime control pipe is unavailable');
+  });
+  ipcMain.handle('threadterm:qa-resume-control', (event) => {
+    assertTrustedRenderer(event);
+    if (process.env.THREADTERM_V3_RELOCATION_QA !== '1' || app.isPackaged) throw new Error('QA control resume is unavailable');
+    if (!runtimeFor(event).resumeControlForQa()) throw new Error('Runtime control pipe is not paused');
+  });
   ipcMain.handle('threadterm:subscribe-output', async (event, sessionId: unknown, cursor: unknown, id: unknown) => {
     assertTrustedRenderer(event);
     if (typeof sessionId !== 'string' || !sessionId || !Number.isSafeInteger(cursor) || Number(cursor) < 0 || typeof id !== 'string' || !id) throw new Error('Invalid output subscription');
