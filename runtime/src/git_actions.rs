@@ -348,7 +348,13 @@ fn validate_merge_target(root: &std::path::Path, branch: &str) -> Result<()> {
         .map_err(|_| anyhow!("branch_not_found"))
 }
 fn merge(root: &std::path::Path, branch: &str) -> Result<Value> {
-    let output = Command::new("git")
+    let mut command = Command::new("git");
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        command.creation_flags(0x0800_0000);
+    }
+    let output = command
         .args(["merge", "--no-edit", "--", branch])
         .current_dir(root)
         .output()?;

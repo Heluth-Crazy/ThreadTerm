@@ -366,7 +366,13 @@ fn git_catalog(root: &Path) -> Value {
     result
 }
 fn git(root: &Path, args: &[&str]) -> Result<String> {
-    let out = Command::new("git").args(args).current_dir(root).output()?;
+    let mut command = Command::new("git");
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        command.creation_flags(0x0800_0000);
+    }
+    let out = command.args(args).current_dir(root).output()?;
     if !out.status.success() {
         return Err(anyhow!("git_failed"));
     }
@@ -454,6 +460,36 @@ mod tests {
             .find(|entry| entry["kind"] == "session" && entry["id"] == session_id)
             .unwrap()
             .clone()
+    }
+
+    #[test]
+    fn git_catalog_reads_real_repository_metadata() {
+        let dir = tempfile::tempdir().unwrap();
+        let run = |args: &[&str]| {
+            let output = std::process::Command::new("git")
+                .args(args)
+                .current_dir(dir.path())
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "git {args:?}: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        };
+        run(&["init", "-q"]);
+        run(&["config", "user.email", "qa@example.test"]);
+        run(&["config", "user.name", "QA"]);
+        std::fs::write(dir.path().join("catalog.txt"), "catalog\n").unwrap();
+        run(&["add", "catalog.txt"]);
+        run(&["commit", "-qm", "catalog fixture"]);
+
+        let catalog = git_catalog(dir.path());
+        assert_eq!(catalog["available"], true);
+        assert_eq!(catalog["lastCommit"]["subject"], "catalog fixture");
+        assert!(catalog["lastCommit"]["id"]
+            .as_str()
+            .is_some_and(|id| !id.is_empty()));
     }
 
     #[test]
