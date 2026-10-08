@@ -237,7 +237,7 @@ pub fn record(
      let mut payload=data.get("part").and_then(|part|part.get("data")).cloned().unwrap_or_else(||data.clone());
      if let Some(link)=&delegation {
       // Requests ThreadTerm cannot answer by choice always stay with the user.
-      routed_to_parent=quiet&&payload.get("submittable").and_then(Value::as_bool)!=Some(false);
+      routed_to_parent=quiet&&payload.get("submittable").and_then(Value::as_bool)!=Some(false)&&payload.get("interaction").and_then(Value::as_str)!=Some("question");
       if let Some(object)=payload.as_object_mut() {object.insert("delegation".into(),json!({"parentSessionId":link.parent_session_id,"route":if routed_to_parent{"parent"}else{"user"}}));}
      }
      item.parts=vec![json!({"type":"approval","approvalId":approval,"status":"pending","data":payload})];changed=true;
@@ -251,12 +251,16 @@ pub fn record(
     // `expired` retires one card (cancelled/superseded) without implying any
     // approval and without reopening the turn; other statuses resolve it.
     let expired=data.get("status").and_then(Value::as_str)==Some("expired");
-    let status=if expired{"expired"}else{match data.get("status").and_then(Value::as_str) { Some("outcomeUnknown")=>"outcomeUnknown", _=>"resolved" }};
+    let status=if expired{"expired"}else{match data.get("status").and_then(Value::as_str) { Some("outcomeUnknown")=>"outcomeUnknown", Some("answered")=>"answered", Some("dismissed")=>"dismissed", _=>"resolved" }};
     for part in &mut item.parts {if part.get("type").and_then(Value::as_str)==Some("approval"){
      let previous_status=part.get("status").and_then(Value::as_str);
-     if previous_status==Some("expired") && !expired {continue;}
+     // A successful local response can race a native turn-end expiry in the
+     // ingress queue. Retain its read-only receipt without reviving activity.
+     let submitted_answer=matches!(status,"answered"|"dismissed")&&data.get("outcome").and_then(Value::as_str)==Some("submitted");
+     if previous_status==Some("expired") && !expired && !submitted_answer {continue;}
      resolved_pending_approval |= matches!(previous_status,Some("pending"|"submitting"));
      part["status"]=json!(status);
+     if let Some(summary)=data.get("answerSummary") { let summary=crate::chat_questions::mask_answer_summary(&part["data"],summary); part["data"]["answerSummary"]=summary; }
      if expired {
       if let (Some(target),Some(outcome))=(part.pointer_mut("/data").and_then(Value::as_object_mut),data.get("outcome")) {target.insert("outcome".into(),outcome.clone());}
       if let (Some(target),Some(message))=(part.pointer_mut("/data").and_then(Value::as_object_mut),data.get("message")) {target.insert("message".into(),message.clone());}

@@ -202,7 +202,8 @@ export class ClaudeSession {
       // settles exactly once through settle().
       // The SDK's own suggestions are kept here; "always" answers never trust a
       // rule echoed back from the renderer.
-      const entry = { signal: signal ?? null, abort: null, published: false, settle: null, suggestions: Array.isArray(suggestions) ? suggestions : [] };
+      const question = toolName === 'AskUserQuestion' && Array.isArray(input?.questions);
+      const entry = { signal: signal ?? null, abort: null, published: false, settle: null, suggestions: Array.isArray(suggestions) ? suggestions : [], question, input };
       const settle = (result, { cancelled = false } = {}) => {
         if (!this.pending.has(requestId)) return;
         this.pending.delete(requestId);
@@ -221,7 +222,7 @@ export class ClaudeSession {
       entry.signal?.addEventListener('abort', entry.abort, { once: true });
       entry.published = true;
       this.write(event(this.cardId, 'session.request', {
-        requestId, toolName, input, suggestions, operationId, sessionId,
+        requestId, toolName, ...(question ? { question: { questions: input.questions } } : { input }), suggestions, operationId, sessionId,
         ...(typeof agentID === 'string' ? { agentId: agentID } : {}),
         ...(typeof toolUseID === 'string' ? { toolUseId: toolUseID } : {}),
       }));
@@ -242,6 +243,23 @@ export class ClaudeSession {
     }
     if (behavior !== 'allow' && behavior !== 'deny') throw new Error(`unsupported permission decision: ${behavior}`);
     entry.settle(behavior === 'allow' ? { behavior: 'allow' } : { behavior: 'deny', message: 'Denied by user' });
+  }
+
+  answer(requestId, values) {
+    const entry = this.pending.get(requestId);
+    if (!entry) throw new Error(`unknown or expired question request: ${requestId}`);
+    if (!entry.question) throw new Error(`request is not a question: ${requestId}`);
+    if (values === null || values === undefined) {
+      entry.settle({ behavior: 'deny', message: 'The user dismissed the question.' });
+      return;
+    }
+    const answers = {};
+    for (let index = 0; index < entry.input.questions.length; index += 1) {
+      const question = entry.input.questions[index];
+      const selected = values[`q${index}`];
+      answers[question.question] = Array.isArray(selected) ? selected.join(', ') : '';
+    }
+    entry.settle({ behavior: 'allow', updatedInput: { ...entry.input, answers } });
   }
 
   adoptTurnInit(message) {

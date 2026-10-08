@@ -1,7 +1,10 @@
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import test from 'node:test';
 import type { ChatItem, ChatPart } from '@threadterm/protocol';
-import { activeToolEntries, describeTool, groupToolActivity, toolEntriesForItems, toolStatus, withoutToolParts } from './toolActivity';
+import { groupCodexTranscript } from './codexTranscript';
+import { activeToolEntries, describeTool, groupToolActivity, hiddenQuestionTool, orderCompletedTurnItems, toolActivityWaitingLabel, toolEntriesForItems, toolStatus, withoutToolParts } from './toolActivity';
 
 const en = (english: string, _zh: string) => english;
 const zh = (_english: string, chinese: string) => chinese;
@@ -19,6 +22,38 @@ test('alternating commands and browser MCP keep one ordered group across AI text
   assert.deepEqual(result.filter(entry => entry.type === 'item').map(entry => entry.item.id), ['ai', 'approval']);
   assert.deepEqual(groups[0]!.tools.map(entry => describeTool(entry.part, en).kind), ['command', 'browser', 'command', 'browser']);
   assert.equal(JSON.stringify(items), before);
+});
+
+test('completed turns retain approval, intervening text, and final answer order', () => {
+  const approval = row('approval', [{ type: 'approval', approvalId: 'approval', status: 'answered' }]);
+  const text = row('text', [{ type: 'text', text: 'I will apply that choice.' }]);
+  const answer = { ...row('answer', [{ type: 'text', text: 'The final answer.' }]), elapsedMs: 1_000 };
+  const [turn] = groupCodexTranscript([approval, text, answer], false);
+  assert.deepEqual(turn!.response.map(item => item.id), ['approval', 'text', 'answer']);
+  assert.deepEqual(orderCompletedTurnItems(turn!.response).map(item => item.id), ['approval', 'text', 'answer']);
+});
+
+test('completed turns move a late-updated approval before the final answer', () => {
+  const text = row('text', [{ type: 'text', text: 'I will apply that choice.' }]);
+  const answer = { ...row('answer', [{ type: 'text', text: 'The final answer.' }, { type: 'approval', approvalId: 'approval', status: 'answered' }]), elapsedMs: 1_000 };
+  const [turn] = groupCodexTranscript([text, answer], false);
+  const before = JSON.stringify(turn!.response), ordered = orderCompletedTurnItems(turn!.response);
+  assert.deepEqual(ordered.flatMap(item => item.parts.map(part => part.type)), ['text', 'approval', 'text']);
+  assert.deepEqual(ordered.map(item => item.id), ['text', 'answer']);
+  assert.equal(new Set(ordered.map(item => item.id)).size, ordered.length);
+  assert.equal(JSON.stringify(turn!.response), before);
+  assert.deepEqual(groupToolActivity(turn!.response).filter(entry => entry.type === 'item').flatMap(entry => entry.item.parts.map(part => part.type)), ['text', 'text', 'approval']);
+});
+
+test('completed turns move a later question row before the final answer without duplicating native rows', () => {
+  const text = row('text', [{ type: 'text', text: 'I will apply that choice.' }]);
+  const answer = row('answer', [{ type: 'text', text: 'The final answer.' }]);
+  const question = row('question', [{ type: 'approval', approvalId: 'question', status: 'answered', data: { interaction: 'question' } }]);
+  const source = [text, answer, question];
+  const before = JSON.stringify(source), ordered = orderCompletedTurnItems(source);
+  assert.deepEqual(ordered.map(item => item.id), ['text', 'question', 'answer']);
+  assert.equal(new Set(ordered.map(item => item.id)).size, ordered.length);
+  assert.equal(JSON.stringify(source), before);
 });
 
 test('all tools including failures and cancellations are retained; native IDs survive sliced text', () => {
@@ -111,4 +146,56 @@ test('a retracted parent tool snapshot no longer contributes to the drawer', () 
   assert.equal(toolEntriesForItems([before]).length, 1);
   assert.equal(toolEntriesForItems([retracted]).length, 0);
   assert.equal(groupToolActivity([retracted]).filter(entry => entry.type === 'tools').length, 0);
+});
+
+test('native question tool rows are hidden in favor of their question cards', () => {
+  const questions = [
+    tool('grok-name', 'ask_user_question'),
+    tool('grok-label', 'Ask User'),
+    tool('grok-meta', 'other', 'completed', { _meta: { 'x.ai/tool': { kind: 'ask_user' } } }),
+    tool('grok-meta-label', 'other', 'completed', { _meta: { 'x.ai/tool': { label: 'Ask User' } } }),
+    tool('kimi', 'AskUserQuestion'),
+    tool('kimi-localized', 'other', 'completed', { title: 'Asking user questions' }),
+    tool('opencode', 'question'),
+  ];
+  assert.ok(questions.every(hiddenQuestionTool));
+  const visible = tool('visible', 'Read');
+  const items = [row('questions', [...questions, visible])];
+  assert.deepEqual(toolEntriesForItems(items).map(entry => entry.part.toolId), ['visible']);
+  assert.deepEqual(groupToolActivity(items).filter(entry => entry.type === 'tools').flatMap(entry => entry.tools.map(tool => tool.part.toolId)), ['visible']);
+});
+
+test('Grok fixture preserved completed question part remains named and hidden', () => {
+  const frames = readFileSync(resolve(process.cwd(), 'runtime/tests/fixtures/grok-question-frames.jsonl'), 'utf8')
+    .trim().split(/\r?\n/).map(line => JSON.parse(line).frame.params.update).filter(Boolean);
+  const initial = frames.find(update => update.sessionUpdate === 'tool_call')!;
+  const complete = frames.find(update => update.sessionUpdate === 'tool_call_update' && update.status === 'completed')!;
+  const xaiTool = initial._meta['x.ai/tool'];
+  assert.equal(complete.title, undefined, 'recorded completion deliberately omits the title');
+  const preserved: ChatPart = {
+    type: 'tool', toolId: complete.toolCallId, toolName: xaiTool.label, status: complete.status,
+    data: { ...complete, _meta: { 'x.ai/tool': xaiTool } },
+  };
+  assert.equal(preserved.toolName, 'Ask User');
+  assert.ok(hiddenQuestionTool(preserved));
+  assert.deepEqual(toolEntriesForItems([row('grok-question', [preserved])]), []);
+});
+
+test('Kimi recorded completed question title is hidden by the completed-turn drawer fold', () => {
+  const toolRow = row('kimi-question-tool', [tool('kimi-question', 'Asking user questions', 'complete', {
+    title: 'Asking user questions', status: 'completed', toolCallId: 'kimi-question',
+  })]);
+  const question = row('kimi-question-card', [{ type: 'approval', approvalId: 'question', status: 'answered', data: { interaction: 'question', title: 'AskUserQuestion' } }]);
+  const answer = { ...row('kimi-answer', [{ type: 'text', text: 'Sapphire' }]), elapsedMs: 33_000 };
+  const [turn] = groupCodexTranscript([toolRow, question, answer], false);
+  assert.equal(turn!.elapsedMs, 33_000);
+  assert.equal((turn!.items.find(item => item.id === 'kimi-question-card')!.parts[0]!.data as { title: string }).title, 'AskUserQuestion');
+  assert.deepEqual(toolEntriesForItems(turn!.items), [], 'completed drawers inspect group.items through hiddenQuestionTool');
+  assert.deepEqual(orderCompletedTurnItems(withoutToolParts(turn!.response)).map(item => item.id), ['kimi-question-card', 'kimi-answer']);
+});
+
+test('pending question drawers name the answer action in both locales', () => {
+  assert.equal(toolActivityWaitingLabel(false, true, en), 'Waiting for approval');
+  assert.equal(toolActivityWaitingLabel(true, true, en), 'Waiting for your answer');
+  assert.equal(toolActivityWaitingLabel(true, true, zh), '等待你的回答');
 });

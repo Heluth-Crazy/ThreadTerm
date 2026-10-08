@@ -1,4 +1,4 @@
-// Windows / Git Bash: node qa/kimi-live.mjs <probe|chat|terminal|resume|delegation|history> [--rebuild] [--keep]
+// Windows / Git Bash: node qa/kimi-live.mjs <probe|question|chat|terminal|resume|delegation|history> [--rebuild] [--keep]
 // Live Kimi only. Normal Kimi credentials/home are inherited, never copied/read/logged.
 // Sessions remain in the user's Kimi history. --keep retains only the isolated QA fixture/profile.
 // This file must be syntax-checked without launching it during implementation.
@@ -14,7 +14,7 @@ import { electron } from './lib/desktop1.mjs';
 import { build as esbuild } from 'esbuild';
 import { build as viteBuild } from 'vite';
 
-const scenarios = ['probe', 'chat', 'terminal', 'resume', 'delegation', 'history', 'queue', 'subagent'];
+const scenarios = ['probe', 'question', 'chat', 'terminal', 'resume', 'delegation', 'history', 'queue', 'subagent'];
 const [scenario, ...flags] = process.argv.slice(2);
 assert.ok(scenarios.includes(scenario) && flags.every(flag => ['--rebuild', '--keep'].includes(flag)),
   `usage: node qa/kimi-live.mjs <${scenarios.join('|')}> [--rebuild] [--keep]`);
@@ -441,6 +441,40 @@ try {
       assert.equal((await chatItems(row.id)).filter(item => item.role === 'user').length, 0);
       await shot('01-probe-connected.png');
       check('Probe submitted no prompts');
+    } else if (scenario === 'question') {
+      const before = new Set((await chatItems(row.id)).map(item => item.id));
+      const expectedQuestion = 'Which gemstone should be selected: Sapphire or Amber?';
+      const requested = `Use your AskUserQuestion tool exactly once to ask this exact question text, with no changes: "${expectedQuestion}". Offer only the choices Sapphire and Amber. Use no other tools and do not answer it yourself. After I answer, reply with exactly the selected choice.`;
+      await host(row.id).locator('.chat-compose-shell textarea').fill(requested);
+      await host(row.id).locator('.chat-compose-send[type=submit]').click();
+      const pending = await until(async () => {
+        const items = await chatItems(row.id);
+        const part = items.filter(item => !before.has(item.id)).flatMap(item => item.parts)
+          .find(candidate => candidate.type === 'approval' && candidate.status === 'pending' && candidate.data?.interaction === 'question');
+        return part && { items, part };
+      }, 'Kimi AskUserQuestion bridge surfaces a pending question', 120_000);
+      const question = pending.part.data?.form?.questions?.[0];
+      assert.equal(question?.question, expectedQuestion, 'question card preserves Kimi AskUserQuestion text instead of its tool title');
+      assert.equal(question.multiSelect, false);
+      assert.equal(question.allowOther, false);
+      const native = pending.part.data?.details ?? {};
+      report.question = {
+        expectedQuestion, cardQuestion: question.question,
+        nativeTitle: native.toolCall?.title ?? native.title ?? null,
+        nativeRawInput: native.toolCall?.rawInput ?? native.rawInput ?? null,
+      };
+      const label = question.options?.find(option => option.label === 'Sapphire')?.label ?? question.options?.[0]?.label;
+      assert.ok(label, 'Kimi question has an offered option');
+      await host(row.id).locator('form.chat-question-card').filter({ hasText: question.question }).waitFor();
+      await shot('01-question-pending.png');
+      const lease = await request('session.claim', { sessionId: row.id, clientId: 'qa-kimi-live-question' });
+      try {
+        await request('chat.answer', { sessionId: row.id, turnId: pending.part.data.turnId, approvalId: pending.part.approvalId,
+          leaseEpoch: lease.leaseEpoch, operationId: randomUUID(), response: { action: 'submit', values: { q0: [label] } } });
+      } finally { await request('session.release', { sessionId: row.id, leaseEpoch: lease.leaseEpoch }).catch(() => {}); }
+      await until(async () => (await chatItems(row.id)).some(item => assistantText(item).trim() === label), 'Kimi confirms the selected label', 120_000);
+      await shot('02-question-answered.png');
+      check('Kimi AskUserQuestion renders its text as a question card; the selected label reaches Kimi');
     } else if (scenario === 'subagent') {
       const before = new Set((await chatItems(row.id)).map(item => item.id));
       const prompt = 'Use an explore subagent (your Agent tool) to list the files in this folder and report how many there are. Do not edit anything. Then reply with just the number.';

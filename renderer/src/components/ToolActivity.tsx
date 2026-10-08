@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import type { FileReference } from '@threadterm/protocol';
-import { activeToolEntries, describeTool, toolStatus, type ToolActivityEntry, type ToolKind } from '../toolActivity';
+import { activeToolEntries, describeTool, toolActivityWaitingLabel, toolStatus, type ToolActivityEntry, type ToolKind } from '../toolActivity';
 import { partBody } from '../chatPresentation';
 import { isChatImage } from '../chatImages';
 import { FileLinkedText, FileReferenceChips } from './FileReferenceText';
@@ -9,10 +9,11 @@ import './tool-activity.css';
 
 const icons: Record<ToolKind, string> = { command: 'terminal', browser: 'popout', file: 'file', search: 'search', delegation: 'export', mcp: 'spark', tool: 'spark' };
 
-export function ToolActivity({ entries, active, awaitingApproval = false, provider, copy, openFile }: {
+export function ToolActivity({ entries, active, awaitingApproval = false, awaitingQuestion = false, provider, copy, openFile }: {
   entries: ToolActivityEntry[];
   active: boolean;
   awaitingApproval?: boolean;
+  awaitingQuestion?: boolean;
   provider: string;
   copy: (en: string, zh: string) => string;
   openFile?: (reference: FileReference) => void;
@@ -26,7 +27,8 @@ export function ToolActivity({ entries, active, awaitingApproval = false, provid
   const action = ['browser', 'mcp', 'delegation', 'tool'].includes(description.kind)
     ? `${description.name}${description.detail ? ` · ${description.detail}` : ''}`
     : description.detail || description.name;
-  const headline = awaitingApproval ? copy('Waiting for approval', '等待批准') + (current ? `: ${action}` : '')
+  const waiting = toolActivityWaitingLabel(awaitingQuestion, awaitingApproval, copy);
+  const headline = waiting ? waiting + (current ? `: ${action}` : '')
     : current ? `${description.action}: ${action}`
       : `${copy('Tool activity', '工具执行')} · ${copy('Last', '最近')}: ${description.name}${description.detail ? ` · ${description.detail}` : ''}`;
   const failures = entries.filter(entry => ['failed', 'cancelled'].includes(toolStatus(entry.part)));

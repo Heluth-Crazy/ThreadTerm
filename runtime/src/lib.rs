@@ -57,4 +57,5 @@ pub mod mcp_delegation;
 pub mod mcp_host;
 
 pub mod chat_projection;
+pub(crate) mod chat_questions;
 pub mod protocol_contract;

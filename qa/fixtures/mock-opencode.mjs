@@ -14,7 +14,8 @@ if (argv[0] === 'auth') { console.log('[]'); process.exit(0); }
 const port = Number(argv[argv.indexOf('--port') + 1]);
 if (!process.env.TT_QA_OPENCODE_STATE) throw new Error('TT_QA_OPENCODE_STATE is required');
 const stateFile = resolve(process.env.TT_QA_OPENCODE_STATE);
-const state = existsSync(stateFile) ? JSON.parse(readFileSync(stateFile, 'utf8')) : { sessions: {} };
+const state = existsSync(stateFile) ? JSON.parse(readFileSync(stateFile, 'utf8')) : { sessions: {}, questions: {} };
+state.questions ??= {};
 const save = () => writeFileSync(stateFile, JSON.stringify(state));
 const streams = new Set();
 const stalledStreams = new Map();
@@ -117,6 +118,27 @@ const server = http.createServer((req, res) => {
       state.badSnapshot = JSON.parse(body).messageID;
       save();
       json({ enabled: true });
+    });
+    return;
+  }
+  const questionMatch = path.match(/^\/question\/([^/]+)\/(reply|reject)$/);
+  if (questionMatch && req.method === 'POST') {
+    let body = '';
+    req.on('data', chunk => body += chunk);
+    req.on('end', () => {
+      const [, requestID, action] = questionMatch;
+      const question = state.questions[requestID];
+      if (!question) return json({ error: 'unknown question' }, 404);
+      const answers = action === 'reply' ? JSON.parse(body).answers : undefined;
+      state.questionReplies ??= [];
+      state.questionReplies.push({ requestID, action, answers, sessionID: question.sessionID });
+      save();
+      json({});
+      setTimeout(() => {
+        emit(question.directory, action === 'reply' ? 'question.replied' : 'question.rejected', { sessionID: question.sessionID, requestID, answers });
+        const record = sessionOf(question.directory, question.sessionID);
+        if (record) { record.busy = false; save(); emit(question.directory, 'session.idle', { sessionID: question.sessionID }); }
+      }, 20);
     });
     return;
   }
@@ -242,6 +264,23 @@ const server = http.createServer((req, res) => {
             emit(dir, 'permission.asked', { sessionID: id, id: 'per_1', permission: 'bash', patterns: ['ls'], metadata: {}, always: [] });
             emit(dir, 'permission.asked', { sessionID: id, id: 'per_2', permission: 'write', patterns: ['x'], metadata: {}, always: [] });
             return; // keep the native turn running until QA explicitly ends it
+          } else if (text === 'fixture-question') {
+            state.questions.q_root = { sessionID: id, directory: dir }; save();
+            emit(dir, 'question.asked', { sessionID: id, id: 'q_root', questions: [
+              { header: 'Colour', question: 'Choose colours', options: [{ label: 'Red', description: 'warm' }, { label: 'Blue', description: 'cool' }], multiple: true },
+              { header: 'Mode', question: 'Choose mode', options: [{ label: 'Safe' }], custom: false },
+            ] });
+            return;
+          } else if (text === 'fixture-child-question') {
+            const childID = `ses_child_question_${++seq}`;
+            state.sessions[`${dir}|${childID}`] = { id: childID, messages: [], busy: true, parentID: id };
+            state.questions.q_child = { sessionID: childID, directory: dir }; save();
+            emit(dir, 'question.asked', { sessionID: childID, id: 'q_child', questions: [{ header: 'Child choice', question: 'Inspect which file?', options: [{ label: 'README.md' }], custom: false }] });
+            setTimeout(() => {
+              emit(dir, 'session.created', { sessionID: childID, info: { id: childID, directory: dir, parentID: id } });
+              emit(dir, 'message.part.updated', { sessionID: id, part: { id: `prt_task_${childID}`, messageID, sessionID: id, type: 'tool', tool: 'task', callID: 'call_question_1', state: { title: 'Question child', input: { description: 'Question child', prompt: 'Ask which file', subagent_type: 'explore' }, status: 'running', metadata: { sessionId: childID } } } });
+            }, 20);
+            return;
           } else if (text === 'fixture-watchdog-permission') {
             emit(dir, 'permission.asked', { sessionID: id, id: 'per_watch_1', permission: 'bash', patterns: ['ls'], metadata: {}, always: [] });
             emit(dir, 'permission.asked', { sessionID: id, id: 'per_watch_2', permission: 'write', patterns: ['x'], metadata: {}, always: [] });

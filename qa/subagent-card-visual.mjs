@@ -81,7 +81,8 @@ async function render(scenario, locale = 'en', theme = 'light') {
 }
 async function shot(name) { const path = join(out, name); await page.screenshot({path, animations:'disabled'}); report.snapshots.push(path); }
 try {
-  app = await electron.launch({args:[join(scratch, 'main.cjs'), '--disable-gpu', '--in-process-gpu', '--no-sandbox']});
+  const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => key.toLowerCase() !== 'path'));
+  app = await electron.launch({args:[join(scratch, 'main.cjs'), '--disable-gpu', '--in-process-gpu', '--no-sandbox'], env});
   page = await app.firstWindow();
   page.on('pageerror', error => report.errors.push(error.message));
   await page.waitForFunction(() => typeof window.qaRender === 'function');
@@ -219,6 +220,11 @@ try {
   await shot('11-narrow-light.png');
   await page.evaluate(() => { document.documentElement.dataset.theme='dark'; });
   await shot('12-narrow-dark.png');
+  await app.evaluate(({BrowserWindow}) => BrowserWindow.getAllWindows()[0].setContentSize(420, 900));
+  await page.waitForFunction(() => window.innerWidth === 420);
+  await shot('13-narrow-420-dark.png');
+  await page.evaluate(() => { document.documentElement.dataset.theme='light'; });
+  await shot('14-narrow-420-light.png');
 
   assert.deepEqual(report.errors, []);
   report.checks.push('all ten S7 states: running, parallel, completed, failed, expanded, none-to-native, truncated, approval, zh, and completed-turn placement');

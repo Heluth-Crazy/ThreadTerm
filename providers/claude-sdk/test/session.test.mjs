@@ -75,6 +75,34 @@ test('a subagent permission request preserves the SDK agent and tool identities'
   assert.deepEqual(await within(200, pending, 'subagent permission request must settle'), { behavior: 'allow' });
 });
 
+test('AskUserQuestion publishes a question and answers by question text', async () => {
+  const { session, events } = harness();
+  const input = { questions: [
+    { header: 'Colour', question: 'Which colour?', options: [{ label: 'Blue' }] },
+    { header: 'Tools', question: 'Which tools?', options: [{ label: 'Read' }, { label: 'Write' }], multiSelect: true },
+  ] };
+  const pending = session.requestPermission('AskUserQuestion', input, { agentID: 'agent-7', toolUseID: 'tool-9' });
+  const request = events.find(event => event.ev === 'session.request');
+  assert.deepEqual(request.question, { questions: input.questions });
+  assert.equal(request.input, undefined);
+  assert.equal(request.agentId, 'agent-7');
+  session.answer(request.requestId, { q0: ['Blue'], q1: ['Read', 'Write'] });
+  assert.deepEqual(await within(200, pending, 'question answer must settle'), {
+    behavior: 'allow', updatedInput: { ...input, answers: { 'Which colour?': 'Blue', 'Which tools?': 'Read, Write' } },
+  });
+});
+
+test('AskUserQuestion dismissal denies the SDK request', async () => {
+  const { session, events } = harness();
+  const pending = session.requestPermission('AskUserQuestion', { questions: [{ header: 'Colour', question: 'Which colour?', options: [] }] });
+  const request = events.find(event => event.ev === 'session.request');
+  session.answer(request.requestId, null);
+  assert.deepEqual(await within(200, pending, 'dismissed question must settle'), {
+    behavior: 'deny', message: 'The user dismissed the question.',
+  });
+  assert.throws(() => session.answer(request.requestId, { q0: ['Blue'] }), /unknown or expired question request/);
+});
+
 test('cancelling a published request resolves deny once and reports the original request and turn', async () => {
   const { session, events } = harness();
   session.send('hello', 'op-7');

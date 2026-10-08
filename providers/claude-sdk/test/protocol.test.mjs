@@ -7,8 +7,9 @@ test('protocol rejects unknown operations', () => {
   assert.match(parseLine('{"id":1,"op":"unsafe"}').error, /unknown op/);
 });
 
-test('protocol accepts the chat option operation', () => {
+test('protocol accepts chat option and question answer operations', () => {
   assert.deepEqual(parseLine('{"id":2,"op":"session.set_option","cardId":"c","optionId":"mode","value":"plan"}').request.op, 'session.set_option');
+  assert.deepEqual(parseLine('{"id":3,"op":"session.answer","cardId":"c","requestId":"q","values":{"q0":["Blue"]}}').request.op, 'session.answer');
 });
 
 test('input queue preserves messages and closes', async () => {

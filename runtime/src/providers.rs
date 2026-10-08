@@ -299,6 +299,14 @@ pub trait ProviderRuntime: Send + Sync {
         operation_id: &str,
     ) -> Result<(), ProviderError>;
     fn chat_stop(&self, session_id: &str) -> Result<(), ProviderError>;
+    fn chat_answer(
+        &self,
+        session_id: &str,
+        turn_id: &str,
+        approval_id: &str,
+        response: &Value,
+        operation_id: &str,
+    ) -> Result<(), ProviderError>;
     fn chat_options(&self, session_id: &str) -> Result<Value, ProviderError>;
     fn chat_connection(&self, session_id: &str) -> Value;
     fn chat_set_option(
@@ -441,6 +449,15 @@ pub(crate) trait ChatSession: Send {
         operation_id: &str,
     ) -> Result<(), ProviderError>;
     fn stop(&mut self) -> Result<(), ProviderError>;
+    fn answer(
+        &mut self,
+        _turn_id: &str,
+        _approval_id: &str,
+        _response: &Value,
+        _operation_id: &str,
+    ) -> Result<(), ProviderError> {
+        Err(ProviderError::new("answer_unsupported", "This provider does not support question answers"))
+    }
     fn ui_state(&self) -> Value {
         json!({"options":[],"commands":[]})
     }
@@ -1242,6 +1259,17 @@ impl ProviderRuntime for Providers {
         self.chat(session_id, |chat| {
             chat.approve(turn_id, approval_id, choice_id, operation_id)
         })
+    }
+
+    fn chat_answer(
+        &self,
+        session_id: &str,
+        turn_id: &str,
+        approval_id: &str,
+        response: &Value,
+        operation_id: &str,
+    ) -> Result<(), ProviderError> {
+        self.chat(session_id, |chat| chat.answer(turn_id, approval_id, response, operation_id))
     }
 
     fn chat_stop(&self, session_id: &str) -> Result<(), ProviderError> {

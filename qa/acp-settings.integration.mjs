@@ -7,7 +7,7 @@ import { existsSync } from 'node:fs';
 import { mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
-import { connectPeer } from './pipe-client.mjs';
+import { connectSubagentPeer as connectPeer } from './lib/subagent-peer.mjs';
 
 const delay = ms => new Promise(done => setTimeout(done, ms));
 const scratch = await mkdtemp(join(tmpdir(), 'threadterm-acp-settings-'));

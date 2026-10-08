@@ -7,6 +7,7 @@ use super::{
     emit_scoped, ChatSession, ProviderAdapter, ProviderCapability, ProviderError,
     TerminalCommand,
 };
+use crate::chat_questions::answer_summary;
 use base64::Engine;
 use chrono::{TimeZone, Utc};
 use rand::RngCore;
@@ -261,7 +262,7 @@ struct OpenCodeServer {
     stopped: Arc<AtomicBool>,
     event_gate: Arc<Mutex<()>>,
     active_turn: Arc<Mutex<Option<String>>>,
-    permissions: Arc<Mutex<HashMap<String, Option<String>>>>,
+    permissions: Arc<Mutex<HashMap<String, OpenCodeInteraction>>>,
     events: crate::provider_events::Sender,
     threadterm_session: String,
     worker_token: String,
@@ -786,7 +787,7 @@ impl ChatSession for OpenCodeChat {
         })?;
         if known
             .get(approval_id)
-            .is_none_or(|asked_turn| asked_turn.as_deref().is_some_and(|asked| asked != turn_id))
+            .is_none_or(|asked_turn| asked_turn.turn.as_deref().is_some_and(|asked| asked != turn_id))
         {
             return Err(ProviderError::new(
                 "approval_not_pending",
@@ -799,7 +800,10 @@ impl ChatSession for OpenCodeChat {
             .permission_sessions
             .lock()
             .map_err(|_| {
-                ProviderError::new("provider_internal", "OpenCode permission session lock poisoned")
+                ProviderError::new(
+                    "provider_internal",
+                    "OpenCode permission session lock poisoned",
+                )
             })?
             .get(approval_id)
             .cloned()
@@ -833,6 +837,147 @@ impl ChatSession for OpenCodeChat {
                 "OpenCode approval result is uncertain after event-stream loss",
             ));
         }
+        Ok(())
+    }
+    fn answer(
+        &mut self,
+        turn_id: &str,
+        approval_id: &str,
+        response: &Value,
+        _operation_id: &str,
+    ) -> Result<(), ProviderError> {
+        validate_native_id(approval_id)?;
+        let commit =
+            self.server.event_gate.lock().map_err(|_| {
+                ProviderError::new("provider_internal", "OpenCode event gate poisoned")
+            })?;
+        if !self.is_alive() {
+            return Err(ProviderError::new(
+                "provider_disconnected",
+                "OpenCode event stream is disconnected",
+            ));
+        }
+        if self
+            .server
+            .active_turn
+            .lock()
+            .ok()
+            .and_then(|turn| turn.clone())
+            .as_deref()
+            != Some(turn_id)
+        {
+            return Err(ProviderError::new(
+                "approval_not_pending",
+                "OpenCode question is no longer bound to this turn",
+            ));
+        }
+        let interaction = self
+            .sse_target
+            .permissions
+            .lock()
+            .map_err(|_| {
+                ProviderError::new("provider_internal", "OpenCode interaction lock poisoned")
+            })?
+            .get(approval_id)
+            .cloned()
+            .ok_or_else(|| {
+                ProviderError::new(
+                    "approval_not_pending",
+                    "OpenCode question is no longer pending",
+                )
+            })?;
+        let question = interaction
+            .question
+            .ok_or_else(|| ProviderError::new("answer_invalid", "interaction is not a question"))?;
+        if interaction.turn.as_deref() != Some(turn_id) {
+            return Err(ProviderError::new(
+                "approval_not_pending",
+                "OpenCode question belongs to another turn",
+            ));
+        }
+        let action = response
+            .get("action")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        let path = if action == "dismiss" {
+            format!("/question/{approval_id}/reject")
+        } else if action == "submit" {
+            format!("/question/{approval_id}/reply")
+        } else {
+            return Err(ProviderError::new(
+                "answer_invalid",
+                "unsupported OpenCode question response",
+            ));
+        };
+        let body = if action == "submit" {
+            let values = response
+                .get("values")
+                .and_then(Value::as_object)
+                .ok_or_else(|| {
+                    ProviderError::new("answer_invalid", "question response has no values")
+                })?;
+            let answers = question
+                .ids
+                .iter()
+                .map(|id| {
+                    values.get(id).cloned().ok_or_else(|| {
+                        ProviderError::new("answer_invalid", "answer is missing a question")
+                    })
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            Some(json!({"answers":answers}))
+        } else {
+            None
+        };
+        drop(commit);
+        if let Err(error) = self.server.request(reqwest::Method::POST, &path, body) {
+            expire_stream(&self.sse_target, "answer_result_unknown", &error.message);
+            return Err(ProviderError::new(
+                "approval_outcome_unknown",
+                error.message,
+            ));
+        }
+        let status = if action == "dismiss" {
+            "dismissed"
+        } else {
+            "answered"
+        };
+        let summary = (action == "submit").then(|| answer_summary(&question.payload, response));
+        let _commit =
+            self.server.event_gate.lock().map_err(|_| {
+                ProviderError::new("provider_internal", "OpenCode event gate poisoned")
+            })?;
+        let still_pending = self
+            .sse_target
+            .permissions
+            .lock()
+            .ok()
+            .is_some_and(|mut pending| pending.remove(approval_id).is_some());
+        // OpenCode can publish question.replied before its HTTP reply reaches
+        // us. That native receipt is authoritative; do not overwrite it with
+        // a second local resolution.
+        let native_resolved = self
+            .sse_target
+            .settled_permissions
+            .lock()
+            .ok()
+            .is_some_and(|settled| settled.contains(approval_id));
+        if !still_pending && native_resolved {
+            return Ok(());
+        }
+        if let Ok(mut settled) = self.sse_target.settled_permissions.lock() {
+            settled.insert(approval_id.into());
+        }
+        emit_scoped(
+            &self.events,
+            "opencode",
+            &self.session_id,
+            Some(&self.native_id),
+            Some(turn_id),
+            "chat.approval.resolved",
+            json!({"approvalId":approval_id,"status":status,"outcome":"submitted","answerSummary":summary}),
+            Some(&self.worker_token),
+        );
         Ok(())
     }
     fn stop(&mut self) -> Result<(), ProviderError> {
@@ -1047,6 +1192,19 @@ struct OpenCodeSubagents {
     roles: HashMap<(String, String), String>,
     labels: HashMap<String, String>,
     turns: HashMap<String, Option<String>>,
+}
+
+#[derive(Clone)]
+struct OpenCodeQuestion {
+    session: String,
+    payload: Value,
+    ids: Vec<String>,
+}
+
+#[derive(Clone)]
+struct OpenCodeInteraction {
+    turn: Option<String>,
+    question: Option<OpenCodeQuestion>,
 }
 
 impl OpenCodeSubagents {
@@ -1294,6 +1452,18 @@ fn emit_opencode_child_event(target: &EventTarget, raw: Value) {
             opencode_permission_asked(target, kind, properties, child, Some(&key), turn);
         }
         "permission.replied" => opencode_permission_replied(target, properties, child, &raw, None),
+        "question.asked" => {
+            let turn = target
+                .subagents
+                .lock()
+                .ok()
+                .and_then(|state| state.turns.get(&key).cloned())
+                .flatten();
+            opencode_question_asked(target, properties, child, Some(&key), turn)
+        }
+        "question.replied" | "question.rejected" => {
+            opencode_question_resolved(target, kind, properties, child, &raw, None)
+        }
         _ => {}
     }
 }
@@ -1338,14 +1508,20 @@ fn opencode_permission_asked(
                 {
                     return;
                 }
-                asked_turn.clone()
+                asked_turn.turn.clone()
             } else {
                 if let Ok(mut sessions) = target.permission_sessions.lock() {
                     sessions.insert(id.into(), session.into());
                 } else {
                     return;
                 }
-                permissions.insert(id.into(), turn.clone());
+                permissions.insert(
+                    id.into(),
+                    OpenCodeInteraction {
+                        turn: turn.clone(),
+                        question: None,
+                    },
+                );
                 turn
             }
         }
@@ -1434,7 +1610,7 @@ fn opencode_permission_replied(
                 "opencode",
                 &target.threadterm_session,
                 Some(&target.native_id),
-                asked_turn.as_deref(),
+                asked_turn.turn.as_deref(),
                 "chat.approval.resolved",
                 json!({"approvalId":id,"status":status,"outcome":reply}),
                 Some(&target.worker_token),
@@ -1453,6 +1629,179 @@ fn opencode_permission_replied(
     }
 }
 
+fn opencode_question_payload(question: &Value) -> (Value, Vec<String>) {
+    let questions = question
+        .get("questions")
+        .and_then(Value::as_array)
+        .map(|questions| {
+            questions.iter().enumerate().filter_map(|(index, question)| {
+            let text = question.get("question").and_then(Value::as_str)?;
+            let options = question.get("options").and_then(Value::as_array).map(|options| {
+                options.iter().filter_map(|option| Some(json!({
+                    "label": option.get("label")?.as_str()?,
+                    "description": option.get("description").and_then(Value::as_str),
+                }))).collect::<Vec<_>>()
+            }).unwrap_or_default();
+            Some(json!({
+                "id":format!("q{index}"),
+                "header":question.get("header").and_then(Value::as_str),
+                "question":text,
+                "options":options,
+                "multiSelect":question.get("multiple").and_then(Value::as_bool).unwrap_or(false),
+                "allowOther":question.get("custom").and_then(Value::as_bool).unwrap_or(true),
+                "secret":false,
+            }))
+        }).collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    let ids = questions
+        .iter()
+        .filter_map(|question| {
+            question
+                .get("id")
+                .and_then(Value::as_str)
+                .map(str::to_owned)
+        })
+        .collect();
+    (
+        json!({"interaction":"question","answerable":!questions.is_empty(),"form":{"kind":"questions","questions":questions}}),
+        ids,
+    )
+}
+
+fn opencode_question_asked(
+    target: &EventTarget,
+    properties: &Value,
+    session: &str,
+    subagent: Option<&str>,
+    turn: Option<String>,
+) {
+    let Some(id) = properties.get("id").and_then(Value::as_str) else {
+        return;
+    };
+    if target
+        .settled_permissions
+        .lock()
+        .ok()
+        .is_some_and(|settled| settled.contains(id))
+    {
+        return;
+    }
+    let (payload, ids) = opencode_question_payload(properties);
+    let asked_turn = turn.or_else(|| target.active.lock().ok().and_then(|turn| turn.clone()));
+    let existing = target
+        .permissions
+        .lock()
+        .ok()
+        .and_then(|questions| questions.get(id).cloned());
+    if existing.is_some() {
+        return;
+    }
+    if let Ok(mut questions) = target.permissions.lock() {
+        questions.insert(
+            id.into(),
+            OpenCodeInteraction {
+                turn: asked_turn.clone(),
+                question: Some(OpenCodeQuestion {
+                    session: session.into(),
+                    payload: payload.clone(),
+                    ids,
+                }),
+            },
+        );
+    } else {
+        return;
+    }
+    let mut data = payload;
+    if let Some(key) = subagent {
+        let label = target
+            .subagents
+            .lock()
+            .ok()
+            .and_then(|state| state.labels.get(key).cloned())
+            .unwrap_or_else(|| "Subagent".into());
+        data["subagent"] = json!({"key":key,"label":label});
+    }
+    emit_scoped(
+        &target.events,
+        "opencode",
+        &target.threadterm_session,
+        Some(&target.native_id),
+        asked_turn.as_deref(),
+        "chat.approval",
+        json!({"approvalId":id,"request":properties,"part":{"type":"approval","approvalId":id,"status":"pending","data":data}}),
+        Some(&target.worker_token),
+    );
+}
+
+fn opencode_question_resolved(
+    target: &EventTarget,
+    event_type: &str,
+    properties: &Value,
+    session: &str,
+    raw: &Value,
+    turn: Option<&str>,
+) {
+    let request_id = properties
+        .get("requestID")
+        .or_else(|| properties.get("id"))
+        .and_then(Value::as_str);
+    let known = request_id.and_then(|id| {
+        target.permissions.lock().ok().and_then(|mut questions| {
+            questions
+                .get(id)
+                .and_then(|pending| pending.question.as_ref())
+                .filter(|question| question.session == session)?;
+            questions.remove(id)
+        })
+    });
+    match (request_id, known) {
+        (Some(id), Some(question)) => {
+            if let Ok(mut settled) = target.settled_permissions.lock() {
+                settled.insert(id.into());
+            }
+            let status = if event_type == "question.rejected" {
+                "dismissed"
+            } else {
+                "answered"
+            };
+            let answer_summary = question.question.as_ref().and_then(|question| {
+                let answers = properties.get("answers")?.as_array()?;
+                let values = question
+                    .ids
+                    .iter()
+                    .zip(answers)
+                    .map(|(id, answer)| (id.clone(), answer.clone()))
+                    .collect::<serde_json::Map<_, _>>();
+                Some(answer_summary(
+                    &question.payload,
+                    &json!({"action":"submit","values":values}),
+                ))
+            });
+            emit_scoped(
+                &target.events,
+                "opencode",
+                &target.threadterm_session,
+                Some(&target.native_id),
+                question.turn.as_deref(),
+                "chat.approval.resolved",
+                json!({"approvalId":id,"status":status,"outcome":"native","answerSummary":answer_summary}),
+                Some(&target.worker_token),
+            );
+        }
+        _ => emit_scoped(
+            &target.events,
+            "opencode",
+            &target.threadterm_session,
+            Some(&target.native_id),
+            turn,
+            "provider.event",
+            json!({"raw":raw,"note":format!("question reply from {session} for an unknown or settled request")}),
+            Some(&target.worker_token),
+        ),
+    }
+}
+
 /// The state an SSE event may touch: everything except the transport reader.
 /// Split out so the projection path is testable without a live socket.
 struct EventTarget {
@@ -1462,7 +1811,7 @@ struct EventTarget {
     events: crate::provider_events::Sender,
     active: Arc<Mutex<Option<String>>>,
     assembly: Arc<Mutex<OpenCodeAssembly>>,
-    permissions: Arc<Mutex<HashMap<String, Option<String>>>>,
+    permissions: Arc<Mutex<HashMap<String, OpenCodeInteraction>>>,
     settled_permissions: Arc<Mutex<HashSet<String>>>,
     subagents: Mutex<OpenCodeSubagents>,
     permission_sessions: Mutex<HashMap<String, String>>,
@@ -1679,7 +2028,7 @@ fn expire_stream_locked(
             "opencode",
             &target.threadterm_session,
             Some(&target.native_id),
-            asked_turn.as_deref(),
+            asked_turn.turn.as_deref(),
             "chat.approval.resolved",
             json!({"approvalId":approval_id,"status":"expired","outcome":"unknown","message":message}),
             Some(&target.worker_token),
@@ -1840,8 +2189,15 @@ fn emit_opencode_event(target: &EventTarget, raw: Value) {
             } else {
                 if matches!(
                     event_type,
-                    "message.updated" | "message.part.updated" | "session.error"
-                        | "permission.asked" | "permission.updated" | "permission.replied"
+                    "message.updated"
+                        | "message.part.updated"
+                        | "session.error"
+                        | "permission.asked"
+                        | "permission.updated"
+                        | "permission.replied"
+                        | "question.asked"
+                        | "question.replied"
+                        | "question.rejected"
                 ) {
                     state.buffer(event_session, raw.clone());
                 }
@@ -1861,6 +2217,15 @@ fn emit_opencode_event(target: &EventTarget, raw: Value) {
     }
 
     match event_type {
+        "question.asked" => opencode_question_asked(target, properties, event_session, None, turn),
+        "question.replied" | "question.rejected" => opencode_question_resolved(
+            target,
+            event_type,
+            properties,
+            event_session,
+            &raw,
+            turn.as_deref(),
+        ),
         "message.part.updated" => {
             let part = properties.get("part").cloned().unwrap_or(Value::Null);
             let (Some(part_id), Some(message_id)) = (
@@ -1954,10 +2319,23 @@ fn emit_opencode_event(target: &EventTarget, raw: Value) {
             );
         }
         "permission.asked" | "permission.updated" => {
-            opencode_permission_asked(target, event_type, properties, &target.native_id, None, turn);
+            opencode_permission_asked(
+                target,
+                event_type,
+                properties,
+                &target.native_id,
+                None,
+                turn,
+            );
         }
         "permission.replied" => {
-            opencode_permission_replied(target, properties, &target.native_id, &raw, turn.as_deref());
+            opencode_permission_replied(
+                target,
+                properties,
+                &target.native_id,
+                &raw,
+                turn.as_deref(),
+            );
         }
         "session.idle" => {
             let completed = target.active.lock().ok().and_then(|mut value| value.take());
@@ -2390,6 +2768,67 @@ mod tests {
         let rest = std::iter::from_fn(|| rx.try_recv().ok()).collect::<Vec<_>>();
         assert_eq!(rest.len(), 199);
         assert!(target.subagents.lock().unwrap().pending_children.is_empty());
+    }
+
+    #[test]
+    fn questions_map_root_and_buffered_child_with_native_resolution() {
+        let (events, mut rx) = crate::provider_events::tap_channel(16);
+        let target = event_target(&events, Arc::new(Mutex::new(Some("turn-1".into()))));
+        emit_opencode_event(
+            &target,
+            frame(
+                "question.asked",
+                json!({"sessionID":"native-1","id":"root-q","questions":[
+                    {"header":"Pick","question":"Which colour?","options":[{"label":"Blue","description":"Recommended"}],"custom":false},
+                    {"header":"Many","question":"Which tools?","options":[{"label":"Read"}],"multiple":true}
+                ]}),
+            ),
+        );
+        let root = rx.try_recv().unwrap();
+        assert_eq!(root.kind, "chat.approval");
+        assert_eq!(root.data["part"]["data"]["interaction"], "question");
+        assert_eq!(
+            root.data["part"]["data"]["form"]["questions"][0]["allowOther"],
+            false
+        );
+        assert_eq!(
+            root.data["part"]["data"]["form"]["questions"][1]["multiSelect"],
+            true
+        );
+        emit_opencode_event(
+            &target,
+            frame(
+                "question.replied",
+                json!({"sessionID":"native-1","requestID":"root-q"}),
+            ),
+        );
+        assert_eq!(rx.try_recv().unwrap().data["status"], "answered");
+
+        emit_opencode_event(
+            &target,
+            frame(
+                "question.asked",
+                json!({"sessionID":"child-1","id":"child-q","questions":[{"question":"Which file?","options":[{"label":"README.md"}]}]}),
+            ),
+        );
+        assert!(rx.try_recv().is_err());
+        emit_opencode_event(
+            &target,
+            task_frame("child-call", "running", Some("child-1")),
+        );
+        let subagent = rx.try_recv().unwrap();
+        assert_eq!(subagent.kind, "chat.subagent");
+        let child = rx.try_recv().unwrap();
+        assert_eq!(child.kind, "chat.approval");
+        assert_eq!(child.data["part"]["data"]["subagent"]["key"], "child-call");
+        emit_opencode_event(
+            &target,
+            frame(
+                "question.rejected",
+                json!({"sessionID":"child-1","requestID":"child-q"}),
+            ),
+        );
+        assert_eq!(rx.try_recv().unwrap().data["status"], "dismissed");
     }
 
     #[test]
@@ -2864,11 +3303,13 @@ mod tests {
     fn sse_expiry_and_explicit_stop_are_single_terminal_transitions() {
         let (events, mut rx) = crate::provider_events::tap_channel(16);
         let target = event_target(&events, Arc::new(Mutex::new(Some("turn-1".into()))));
-        target
-            .permissions
-            .lock()
-            .unwrap()
-            .insert("per_1".into(), Some("turn-1".into()));
+        target.permissions.lock().unwrap().insert(
+            "per_1".into(),
+            OpenCodeInteraction {
+                turn: Some("turn-1".into()),
+                question: None,
+            },
+        );
         expire_stream(&target, "event_stream_silent", "heartbeat missing");
         expire_stream(&target, "event_stream_disconnected", "EOF raced watchdog");
         assert_eq!(

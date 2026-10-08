@@ -1892,6 +1892,91 @@
       ],
       "additionalProperties": false
     },
+    "RequestParams<\"chat.answer\">": {
+      "type": "object",
+      "properties": {
+        "sessionId": {
+          "type": "string"
+        },
+        "turnId": {
+          "type": "string"
+        },
+        "approvalId": {
+          "type": "string"
+        },
+        "leaseEpoch": {
+          "type": "number"
+        },
+        "operationId": {
+          "type": "string"
+        },
+        "response": {
+          "$ref": "#/definitions/ChatAnswerResponse"
+        }
+      },
+      "required": [
+        "sessionId",
+        "turnId",
+        "approvalId",
+        "leaseEpoch",
+        "operationId",
+        "response"
+      ],
+      "additionalProperties": false
+    },
+    "ChatAnswerResponse": {
+      "anyOf": [
+        {
+          "type": "object",
+          "properties": {
+            "action": {
+              "type": "string",
+              "const": "submit"
+            },
+            "values": {
+              "type": "object",
+              "additionalProperties": {
+                "anyOf": [
+                  {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  },
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "number"
+                  },
+                  {
+                    "type": "boolean"
+                  }
+                ]
+              }
+            }
+          },
+          "required": [
+            "action",
+            "values"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "action": {
+              "type": "string",
+              "const": "dismiss"
+            }
+          },
+          "required": [
+            "action"
+          ],
+          "additionalProperties": false
+        }
+      ]
+    },
     "RequestParams<\"chat.options\">": {
       "type": "object",
       "properties": {
@@ -5287,6 +5372,32 @@
         },
         "params": {
           "$ref": "#/definitions/RequestParams%3C%22chat.approve%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "params"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "chat.answer"
+        },
+        "params": {
+          "$ref": "#/definitions/RequestParams%3C%22chat.answer%22%3E"
         }
       },
       "required": [

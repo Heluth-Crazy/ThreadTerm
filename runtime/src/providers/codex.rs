@@ -1,6 +1,7 @@
 use super::{
     approval::{
-        approval_payload, codex_choices, codex_response, drain_inactive_approvals, find_choice,
+        approval_payload, codex_answer, codex_choices, codex_question_payload, codex_response,
+        drain_inactive_approvals, find_choice,
         validate_codex_turn, write_failed_not_sent, ApprovalChoice, PendingApprovalState,
     },
     common::{
@@ -11,6 +12,7 @@ use super::{
     TerminalCommand,
 };
 use chrono::{TimeZone, Utc};
+use crate::chat_questions::answer_summary;
 use serde_json::{json, Value};
 use std::{
     collections::{HashMap, HashSet},
@@ -464,6 +466,9 @@ struct PendingCodexApproval {
     params: Value,
     choices: Vec<ApprovalChoice>,
     submittable: bool,
+    question: bool,
+    answerable: bool,
+    question_payload: Option<Value>,
     state: PendingApprovalState,
 }
 
@@ -637,10 +642,15 @@ impl ChatSession for CodexChat {
             turn_id,
         )?;
         if !pending.submittable {
+            let code = if pending.question {
+                "answer_required"
+            } else {
+                "approval_unsupported"
+            };
             return Err(ProviderError::new(
-                "approval_unsupported",
+                code,
                 format!(
-                    "Codex request {} cannot be answered with a permission choice",
+                    "Codex request {} must be answered with chat.answer",
                     pending.method
                 ),
             ));
@@ -712,6 +722,89 @@ impl ChatSession for CodexChat {
                     "approval_outcome_unknown",
                     error.message,
                 ))
+            }
+        }
+    }
+
+    fn answer(
+        &mut self,
+        turn_id: &str,
+        approval_id: &str,
+        response: &Value,
+        operation_id: &str,
+    ) -> Result<(), ProviderError> {
+        let mut approvals = self
+            .approvals
+            .lock()
+            .map_err(|_| ProviderError::new("provider_internal", "Codex approval lock poisoned"))?;
+        let pending = approvals.get_mut(approval_id).ok_or_else(|| {
+            ProviderError::new("approval_not_pending", "Codex question is unknown or already resolved")
+        })?;
+        if !pending.question {
+            return Err(ProviderError::new("answer_invalid", "interaction is not a question"));
+        }
+        let (active_public, active_native) = {
+            let (active, _) = &*self.active_turn;
+            active.lock().ok().and_then(|turn| {
+                turn.as_ref().map(|turn| (Some(turn.public_id.clone()), turn.native_id.clone()))
+            }).unwrap_or((None, None))
+        };
+        validate_codex_turn(
+            pending.turn_id.as_deref(), active_public.as_deref(), active_native.as_deref(), turn_id,
+        )?;
+        let action = response.get("action").and_then(Value::as_str).unwrap_or_default();
+        if action == "submit" && !pending.answerable {
+            return Err(ProviderError::new("answer_invalid", "this Codex form cannot be represented"));
+        }
+        let summary = pending
+            .question_payload
+            .as_ref()
+            .map(|payload| answer_summary(payload, response));
+        match pending.state.begin_submit(operation_id) {
+            Ok(()) => {}
+            Err(error) if error.code == "approval_duplicate" => return Ok(()),
+            Err(error) => return Err(error),
+        }
+        let result = codex_answer(&pending.method, &pending.params, response)?;
+        let status = if action == "dismiss" { "dismissed" } else { "answered" };
+        drop(approvals);
+        let still_active = {
+            let (active, _) = &*self.active_turn;
+            active.lock().ok().is_some_and(|turn| {
+                turn.as_ref().is_some_and(|turn| turn.public_id == turn_id)
+            })
+        };
+        if !still_active {
+            return Err(ProviderError::new("approval_stale", "approval is not bound to a live turn"));
+        }
+        let sent = self.process.respond(super::common::decode_approval_id(approval_id)?, result);
+        let mut approvals = self.approvals.lock().map_err(|_| {
+            ProviderError::new("provider_internal", "Codex approval lock poisoned")
+        })?;
+        match sent {
+            Ok(()) => {
+                approvals.remove(approval_id);
+                emit_scoped(
+                    &self.events, "codex", &self.session_id, Some(&self.native_id), Some(turn_id),
+                    "chat.approval.resolved",
+                    json!({"approvalId":approval_id,"status":status,"outcome":"submitted","answerSummary":summary}),
+                    Some(&self.worker_token),
+                );
+                Ok(())
+            }
+            Err(error) if write_failed_not_sent(&error) => {
+                if let Some(pending) = approvals.get_mut(approval_id) { pending.state.clear_submit(); }
+                Err(error)
+            }
+            Err(error) => {
+                if let Some(pending) = approvals.get_mut(approval_id) { pending.state.mark_unknown(); }
+                emit_scoped(
+                    &self.events, "codex", &self.session_id, Some(&self.native_id), Some(turn_id),
+                    "chat.approval.resolved",
+                    json!({"approvalId":approval_id,"status":"outcomeUnknown","outcome":"unknown"}),
+                    Some(&self.worker_token),
+                );
+                Err(ProviderError::new("approval_outcome_unknown", error.message))
             }
         }
     }
@@ -2625,7 +2718,7 @@ fn emit_codex_message(
         let Some(child) = child else {
             return;
         };
-        if raw.get("id").is_none() {
+        if raw.get("id").is_none() && method != "serverRequest/resolved" {
             emit_codex_child_notification(
                 events,
                 session_id,
@@ -2642,6 +2735,31 @@ fn emit_codex_message(
     } else {
         None
     };
+    // A native resolution is an authoritative expiry when another client (or
+    // Codex's auto-resolution) wins.  It must name the stored card; projecting
+    // only the raw app-server frame leaves the interaction actionable.
+    if raw.get("id").is_none() && method == "serverRequest/resolved" {
+        if let Some(request_id) = params.get("requestId") {
+            let approval_id = encode_approval_id(request_id);
+            let request = match approvals.lock() {
+                Ok(mut pending) => {
+                    if pending.get(&approval_id)
+                        .is_some_and(|request| request.state.submitting_operation.is_some())
+                    {
+                        return;
+                    }
+                    pending.remove(&approval_id)
+                }
+                Err(_) => return,
+            };
+            if let Some(request) = request {
+                emit_scoped(events, "codex", session_id, native_id.as_deref(), request.turn_id.as_deref(),
+                    "chat.approval.resolved", json!({"approvalId":approval_id,"status":"expired"}), Some(worker_token));
+            }
+            return;
+        }
+        return;
+    }
     let provider_turn_id = params
         .get("turnId")
         .or_else(|| params.get("turn").and_then(|turn| turn.get("id")))
@@ -2730,6 +2848,8 @@ fn emit_codex_message(
         }
         let approval_id = encode_approval_id(raw.get("id").unwrap_or(&Value::Null));
         let (choices, submittable) = codex_choices(method, &params);
+        let question_payload = matches!(method, "item/tool/requestUserInput" | "mcpServer/elicitation/request")
+            .then(|| codex_question_payload(method, &params));
         if let Ok(mut pending) = approvals.lock() {
             pending.insert(
                 approval_id.clone(),
@@ -2745,6 +2865,9 @@ fn emit_codex_message(
                     params: params.clone(),
                     choices: choices.clone(),
                     submittable,
+                    question: matches!(method, "item/tool/requestUserInput" | "mcpServer/elicitation/request"),
+                    answerable: question_payload.as_ref().and_then(|value| value.get("answerable")).and_then(Value::as_bool).unwrap_or(true),
+                    question_payload: question_payload.clone(),
                     state: PendingApprovalState::default(),
                 },
             );
@@ -2765,6 +2888,13 @@ fn emit_codex_message(
             turn_id.as_deref(),
             submittable,
         );
+        if let Some(question) = question_payload {
+            if let Some(question) = question.as_object() {
+                for (key, value) in question {
+                    payload[key] = value.clone();
+                }
+            }
+        }
         if let Some(child) = child {
             payload["subagent"] = json!({"key":child.key,"label":child.label});
         }
@@ -3415,8 +3545,51 @@ mod tests {
             json!({"key":SUBAGENT_CHILD,"label":"Kant"})
         );
         assert_eq!(observed[3].kind, "chat.approval.resolved");
-        assert_eq!(observed[3].data["raw"]["params"]["requestId"], 99);
+        assert_eq!(observed[3].data["approvalId"], encode_approval_id(&json!(99)));
+        assert_eq!(observed[3].data["status"], "expired");
         assert!(observed[4].data["part"]["data"].get("subagent").is_none());
+    }
+
+    #[test]
+    fn child_question_retains_the_subagent_label() {
+        let mut replay = CodexSubagentReplay::new();
+        replay.child();
+        replay.raw(json!({"id":"question","method":"item/tool/requestUserInput","params":{
+            "threadId":SUBAGENT_CHILD,"turnId":"child-turn","itemId":"question-item","isBlocking":true,
+            "questions":[{"id":"q0","header":"Pick","question":"Which?","options":null}]
+        }}));
+        replay.emit("serverRequest/resolved", json!({"threadId":SUBAGENT_CHILD,"requestId":"question"}));
+        let events = replay.drain();
+        let event = events.iter().find(|event| event.kind == "chat.approval").unwrap();
+        assert_eq!(event.data["part"]["data"]["interaction"], "question");
+        assert_eq!(event.data["part"]["data"]["subagent"], json!({"key":SUBAGENT_CHILD,"label":"Kant"}));
+        assert_eq!(event.data["part"]["data"]["form"]["questions"][0]["options"], json!([]));
+        let resolved = events.iter().find(|event| event.kind == "chat.approval.resolved").unwrap();
+        assert_eq!(resolved.data["approvalId"], encode_approval_id(&json!("question")));
+        assert_eq!(resolved.data["status"], "expired");
+        assert!(replay.approvals.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn native_resolution_does_not_expire_a_submitting_question() {
+        let mut replay = CodexSubagentReplay::new();
+        replay.raw(json!({"id":"submitting","method":"item/tool/requestUserInput","params":{
+            "threadId":SUBAGENT_PARENT,"turnId":"parent-turn","itemId":"question-item","isBlocking":true,
+            "questions":[{"id":"q0","header":"Pick","question":"Which?","options":[]}]
+        }}));
+        let approval_id = encode_approval_id(&json!("submitting"));
+        replay
+            .approvals
+            .lock()
+            .unwrap()
+            .get_mut(&approval_id)
+            .unwrap()
+            .state
+            .begin_submit("operation")
+            .unwrap();
+        replay.emit("serverRequest/resolved", json!({"threadId":SUBAGENT_PARENT,"requestId":"submitting"}));
+        assert!(replay.approvals.lock().unwrap().contains_key(&approval_id));
+        assert!(replay.drain().into_iter().all(|event| event.kind != "chat.approval.resolved"));
     }
 
     #[test]
