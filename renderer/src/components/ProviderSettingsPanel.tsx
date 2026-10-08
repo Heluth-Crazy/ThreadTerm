@@ -10,9 +10,10 @@ import { agentName } from "../agents";
 type Props = {
   data: Snapshot;
   onCreated?: (session: Session) => void | Promise<void>;
+  onRefreshed?: () => void | Promise<void>;
 };
 
-export function ProviderSettingsPanel({ data, onCreated }: Props) {
+export function ProviderSettingsPanel({ data, onCreated, onRefreshed }: Props) {
   const [capabilities, setCapabilities] = useState<ProviderCapability[]>(data.providers);
   const [projectId, setProjectId] = useState(() => data.projects[0]?.id ?? "");
   const [busyProvider, setBusyProvider] = useState<string>();
@@ -26,11 +27,14 @@ export function ProviderSettingsPanel({ data, onCreated }: Props) {
     setIssue(undefined);
     try {
       const next = await request("provider.list", {});
-      if (sequence === refreshSequence.current) setCapabilities(next);
+      if (sequence === refreshSequence.current) {
+        setCapabilities(next);
+        await onRefreshed?.();
+      }
     } catch (error) {
       if (sequence === refreshSequence.current) setIssue(errorMessage(error, copy.runtimeUnavailable));
     }
-  }, [copy.runtimeUnavailable]);
+  }, [copy.runtimeUnavailable, onRefreshed]);
 
   useEffect(() => { refreshSequence.current++; setCapabilities(data.providers); }, [data.providers]);
   useEffect(() => { void refresh(); }, [refresh]);
