@@ -1171,7 +1171,7 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession }
       : repairNotice.kind === 'unchanged' ? copy("History already matches the agent's saved record.", '历史已与代理保存的记录一致。')
       : repairNotice.kind === 'superseded' ? copy('This chat changed during repair. Review it and try again.', '修复期间此对话发生了变化。请检查后重试。')
       : copy('Could not repair history. The local transcript is unchanged.', '未能修复历史。本地对话记录未更改。')}</p>}
-    <ChatQueuePanel sessionId={session.id} queue={queue} leaseEpoch={leaseSessionId.current === session.id ? lease.current : undefined} writable={writable} idle={!liveTurn} onChange={setQueue} onIssue={message => setError(message)} zh={zh} />
+    <ChatQueuePanel sessionId={session.id} queue={queue} leaseEpoch={leaseSessionId.current === session.id ? lease.current : undefined} writable={writable} idle={!liveTurn} ingressFailed={ingressFailed} onChange={setQueue} onIssue={message => setError(message)} zh={zh} />
     <form className="chat-compose chat-compose-shell" data-v3-chat-form={session.id} onSubmit={submit} inert={overlay === "full" || undefined}>
       {slash !== undefined && <div className="chat-slash" role="listbox" aria-label={copy("Commands", "命令")}>
         {slashCommands.length ? slashCommands.map((command, index) => <button type="button" role="option" aria-selected={index === slashIndex} className={index === slashIndex ? "active" : ""} key={command.name} onMouseEnter={() => setSlashIndex(index)} onClick={() => applySlash(command)}>
