@@ -3254,6 +3254,60 @@ mod question_tests;
 mod projection_batch_tests {
     use super::*;
 
+    #[test]
+    fn fallback_overflow_reports_degradation_and_pauses_prompts() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Arc::new(Database::open(&dir.path().join("db.sqlite")).unwrap());
+        crate::chat_queue::initialize(&db).unwrap();
+        let session = db.create_session(crate::db::CreateSession {
+            project_id: None, title: None, provider: "codex", mode: "chat",
+            native_id: None, operation_id: "fallback-session",
+        }).unwrap();
+        db.record_provider_event(&session.id, Some("active-turn"), "message.user", &json!({"text":"work"})).unwrap();
+        db.set_session_status(&session.id, "running", None).unwrap();
+        crate::chat_queue::mutate(&db, "chat.queue.add", &json!({
+            "sessionId":session.id,"text":"do not send","operationId":"fallback-queued",
+        })).unwrap();
+        let queues = Arc::new(crate::chat_queue::ChatQueues::default());
+        // A regular file as the spool directory forces the real I/O error path
+        // on every platform, without permissions/environment mutation.
+        let spool_dir = dir.path().join("not-a-directory");
+        std::fs::write(&spool_dir, "owned test file").unwrap();
+        let (sender, mut receiver) = crate::provider_events::channel(&spool_dir);
+        let mut event = delta("x");
+        event.session_id = session.id.clone();
+        for _ in 0..(256 + 4096) {
+            sender.send(event.clone()).unwrap();
+        }
+        assert!(sender.send(event.clone()).is_err());
+        assert!(sender.send(event).is_err());
+        let reason = match receiver.blocking_recv() {
+            Err(crate::provider_events::RecvError::Failed(reason)) => reason,
+            other => panic!("expected sticky ingress failure, got {other:?}"),
+        };
+        report_projection_failure(&db, &queues, &reason);
+        let warnings: Vec<_> = db.events_after(0).unwrap().into_iter()
+            .filter(|(_, event, _)| event == "runtime.degraded").collect();
+        assert_eq!(warnings.len(), 1);
+        assert_eq!(warnings[0].2["area"], "chat");
+        assert!(warnings[0].2["sessionId"].is_null());
+        assert!(warnings[0].2["reason"].as_str().unwrap().contains("fallback exceeded"));
+        let queue = crate::chat_queue::read(&db, &session.id).unwrap();
+        assert_eq!(queue["paused"], true);
+        assert_eq!(queue["pauseReason"], "failed");
+        assert_eq!(queue["items"].as_array().unwrap().len(), 1);
+        assert_eq!(queue["items"][0]["state"], "queued");
+        // Transcript loss must preserve the native turn and its Stop target.
+        assert_eq!(db.session_by_id(&session.id).unwrap().unwrap().status, "running");
+        let leases = LeaseManager::default();
+        let epoch = leases.claim(&db, &session.id, "desktop").unwrap();
+        let providers = Arc::new(Providers::for_test(vec![]));
+        let error = queues.dispatch(&db, &providers, &leases, "desktop", "chat.queue.resume", &json!({
+            "sessionId":session.id,"leaseEpoch":epoch,"operationId":"fallback-resume",
+        })).unwrap_err();
+        assert!(error.to_string().contains("chat_queue_unavailable"));
+    }
+
     fn delta(text: &str) -> ProviderEvent {
         ProviderEvent {
             provider: "codex".into(), session_id: "session".into(),
