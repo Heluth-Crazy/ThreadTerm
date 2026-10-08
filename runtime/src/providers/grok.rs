@@ -2902,6 +2902,22 @@ mod tests {
     }
 
     #[test]
+    fn repair_fixture_normalizes_grok_load_history() {
+        let fixture: Value = serde_json::from_str(include_str!(
+            "../../tests/fixtures/repair-native-history.json"
+        ))
+        .unwrap();
+        let items = grok_transcript(fixture["grok"].as_array().unwrap());
+        assert_eq!(
+            items
+                .iter()
+                .map(|item| item["role"].as_str().unwrap())
+                .collect::<Vec<_>>(),
+            vec!["user", "assistant", "tool"]
+        );
+    }
+
+    #[test]
     fn preassigned_identity_does_not_parse_exit_output() {
         let adapter = GrokAdapter::new(
             crate::provider_events::tap_channel(1).0,

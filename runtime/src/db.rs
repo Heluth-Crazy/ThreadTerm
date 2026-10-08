@@ -31,6 +31,7 @@ impl Database {
             "CREATE TABLE IF NOT EXISTS metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL);
              CREATE TABLE IF NOT EXISTS projects (id TEXT PRIMARY KEY, name TEXT NOT NULL, path TEXT NOT NULL UNIQUE, created_at TEXT NOT NULL);
              CREATE TABLE IF NOT EXISTS sessions (id TEXT PRIMARY KEY, project_id TEXT REFERENCES projects(id) ON DELETE SET NULL, worktree_path TEXT, title TEXT NOT NULL, provider TEXT NOT NULL, mode TEXT NOT NULL, status TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, native_id TEXT, exit_code INTEGER, followed INTEGER NOT NULL DEFAULT 0, read_only INTEGER NOT NULL DEFAULT 0);
+             CREATE TRIGGER IF NOT EXISTS sessions_delete_chat_integrity AFTER DELETE ON sessions BEGIN DELETE FROM metadata WHERE key='chat.integrity:'||OLD.id; END;
              CREATE UNIQUE INDEX IF NOT EXISTS active_native_owner ON sessions(provider, native_id) WHERE native_id IS NOT NULL AND status NOT IN ('exited','interrupted','error');
              CREATE TABLE IF NOT EXISTS settings (singleton INTEGER PRIMARY KEY CHECK(singleton=1), revision INTEGER NOT NULL, value TEXT NOT NULL);
              CREATE TABLE IF NOT EXISTS presets (id TEXT PRIMARY KEY, name TEXT NOT NULL, revision INTEGER NOT NULL, sessions TEXT NOT NULL, layout TEXT NOT NULL, commands TEXT NOT NULL, updated_at TEXT NOT NULL);
@@ -44,6 +45,7 @@ impl Database {
              CREATE TABLE IF NOT EXISTS deferred_codex_launches (session_id TEXT PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE, phase TEXT NOT NULL, error_code TEXT, error_message TEXT, cwd TEXT);
              CREATE TABLE IF NOT EXISTS chat_items (id TEXT PRIMARY KEY, session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE, turn_id TEXT, kind TEXT NOT NULL, data TEXT NOT NULL, created_at TEXT NOT NULL);
              CREATE INDEX IF NOT EXISTS chat_items_session ON chat_items(session_id, created_at, id);
+             CREATE TABLE IF NOT EXISTS chat_repair_backups (session_id TEXT PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE, created_at TEXT NOT NULL, items_json TEXT NOT NULL);
              CREATE TABLE IF NOT EXISTS subagent_items (session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE, subagent_key TEXT NOT NULL, item_id TEXT NOT NULL, seq INTEGER NOT NULL, rev INTEGER NOT NULL, data TEXT NOT NULL, created_at TEXT NOT NULL, PRIMARY KEY (session_id, subagent_key, item_id));
              CREATE INDEX IF NOT EXISTS subagent_items_rev ON subagent_items(session_id, subagent_key, rev);
              CREATE TABLE IF NOT EXISTS chat_drafts (session_id TEXT PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE, revision INTEGER NOT NULL, text TEXT NOT NULL);
@@ -190,6 +192,46 @@ impl Database {
             // Lost transcript updates do not stop a native worker. Preserve its
             // running/waiting state and Stop target instead of exposing a new send.
             emit(tx,"runtime.degraded",json!({"area":"chat","sessionId":session_id,"reason":reason}))?;
+            if let Some(session_id) = session_id {
+                let revision = tx.last_insert_rowid();
+                let marker = json!({"degraded":true,"reason":reason,"revision":revision});
+                tx.execute(
+                    "INSERT INTO metadata(key,value) SELECT ?,? WHERE EXISTS (SELECT 1 FROM sessions WHERE id=? AND mode='chat') ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                    params![format!("chat.integrity:{session_id}"), serde_json::to_string(&marker)?, session_id],
+                )?;
+            }
+            Ok(())
+        })
+    }
+    /// Records one global ingress warning and durably marks only the Chat workers
+    /// that were registered when that failure occurred. Callers must capture the
+    /// registry set before entering this transaction; later sessions are not
+    /// backfilled from the global outbox event.
+    pub fn mark_chat_degraded_for_sessions(
+        &self,
+        session_ids: &[String],
+        reason: &str,
+    ) -> Result<()> {
+        self.transaction(|tx| {
+            emit(
+                tx,
+                "runtime.degraded",
+                json!({"area":"chat","sessionId":Value::Null,"reason":reason}),
+            )?;
+            let revision = tx.last_insert_rowid();
+            let marker = serde_json::to_string(
+                &json!({"degraded":true,"reason":reason,"revision":revision}),
+            )?;
+            let mut unique = HashSet::new();
+            for session_id in session_ids {
+                if !unique.insert(session_id) {
+                    continue;
+                }
+                tx.execute(
+                    "INSERT INTO metadata(key,value) SELECT ?,? WHERE EXISTS (SELECT 1 FROM sessions WHERE id=? AND mode='chat') ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                    params![format!("chat.integrity:{session_id}"), &marker, session_id],
+                )?;
+            }
             Ok(())
         })
     }

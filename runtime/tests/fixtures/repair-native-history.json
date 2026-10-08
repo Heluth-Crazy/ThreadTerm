@@ -1,0 +1,19 @@
+{
+  "codex": {"turns":[{"id":"repair-codex-turn","items":[{"id":"repair-codex-user","type":"userMessage","text":"repeat"},{"id":"repair-codex-assistant","type":"agentMessage","text":"answer"},{"id":"repair-codex-tool","type":"commandExecution","status":"completed","command":"echo repair"}]}]},
+  "claude": [
+    {"uuid":"repair-claude-user","type":"user","message":{"role":"user","content":[{"type":"text","text":"repeat"}]}},
+    {"uuid":"repair-claude-assistant","type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"answer"},{"type":"tool_use","id":"repair-claude-tool","name":"Bash","input":{"command":"echo repair"}}]}}
+  ],
+  "opencode": {"messages":[{"info":{"id":"repair-opencode-user","role":"user"},"parts":[{"type":"text","text":"repeat"}]},{"info":{"id":"repair-opencode-assistant","role":"assistant"},"parts":[{"type":"text","text":"answer"},{"id":"repair-opencode-tool","type":"tool","state":{"status":"completed"}}]}]},
+  "acp": [
+    {"params":{"update":{"sessionUpdate":"user_message_chunk","content":{"text":"repeat"}}}},
+    {"params":{"update":{"sessionUpdate":"agent_message_chunk","content":{"text":"answer"}}}},
+    {"params":{"update":{"sessionUpdate":"tool_call","toolCallId":"repair-acp-tool","title":"Repair tool"}}}
+  ],
+  "grok": [
+    {"result":{"sessionId":"repair-grok-session"}},
+    {"params":{"sessionId":"repair-grok-session","update":{"sessionUpdate":"user_message_chunk","content":{"text":"repeat"}}}},
+    {"params":{"sessionId":"repair-grok-session","update":{"sessionUpdate":"agent_message_chunk","content":{"text":"answer"}}}},
+    {"params":{"sessionId":"repair-grok-session","update":{"sessionUpdate":"tool_call","toolCallId":"repair-grok-tool","title":"Repair tool"}}}
+  ]
+}

@@ -309,6 +309,11 @@ impl Default for ChatQueues {
 }
 
 impl ChatQueues {
+    /// Observation only: repair must preserve this restart-only dispatch fence.
+    pub(crate) fn ingress_failed(&self) -> bool {
+        !self.healthy.load(Ordering::Acquire)
+    }
+
     fn gate(&self, id: &str) -> Result<Arc<Mutex<()>>> {
         Ok(self
             .gates

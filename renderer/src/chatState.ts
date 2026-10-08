@@ -22,6 +22,11 @@ export function beginResync(sessionId: string, generation: number, previous?: Ch
   return { sessionId, generation, buffered: previous?.sessionId === sessionId ? previous.buffered : [] };
 }
 
+/** state.changed revisions fence duplicate repair notices from repeated outbox delivery. */
+export function nextRepairRevision(previous: number, incoming: unknown): number | undefined {
+  return typeof incoming === 'number' && Number.isSafeInteger(incoming) && incoming > previous ? incoming : undefined;
+}
+
 /** Undefined snapshots retain current items and replay all buffered live events. */
 export function completeResync(
   resync: ChatResync | undefined,

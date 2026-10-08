@@ -9,6 +9,19 @@
 .chat-network-notice strong { font-weight: 600; }
 .chat-network-notice p { margin: 4px 0 0; color: var(--text-secondary); }
 .chat-history-note { flex:0 0 auto; margin:0; padding:5px 16px; border-bottom:1px solid var(--border); color:var(--muted); font-size:12px; }
+.chat-repair-banner { display:flex; flex-wrap:wrap; align-items:center; justify-content:space-between; gap:12px 16px; flex:0 0 auto; margin:8px 16px; padding:12px; border:1px solid color-mix(in srgb,var(--danger) 36%,var(--border)); border-radius:var(--radius); background:color-mix(in srgb,var(--danger) 7%,var(--raised)); color:var(--text); }
+.chat-repair-banner > div { flex:1 1 260px; min-width:0; display:grid; gap:4px; }
+.chat-repair-banner strong { font-size:13px; }
+.chat-repair-banner p,.chat-repair-banner small { margin:0; overflow-wrap:anywhere; font-size:12px; line-height:1.45; }
+.chat-repair-banner small { color:var(--muted); }
+.chat-repair-banner .btn { flex:0 0 auto; }
+.chat-repair-notice { flex:0 0 auto; margin:8px 16px; padding:8px 12px; border:1px solid var(--border); border-radius:var(--radius); background:var(--raised); color:var(--text); font-size:12px; line-height:1.45; }
+.dialog.sheet.sheet-sm.chat-repair-dialog { width:min(560px,calc(100vw - 32px))!important; height:auto!important; min-height:0!important; max-height:calc(100vh - 32px)!important; }
+.dialog.sheet.chat-repair-dialog .dlg-body { flex:0 1 auto!important; min-height:0!important; padding:16px 20px!important; overflow-y:auto!important; }
+.dialog.sheet.chat-repair-dialog .dlg-foot { flex:none!important; padding:12px 20px 16px!important; }
+.chat-repair-confirm { display:grid; gap:12px; font-size:13px; line-height:1.55; }
+.chat-repair-confirm p { margin:0; overflow-wrap:anywhere; }
+@media (max-width:520px) { .chat-repair-banner { align-items:stretch; flex-direction:column; gap:10px; } .chat-repair-banner .btn { width:100%; } }
 .file-reference-link { display:inline; max-width:100%; padding:0; border:0; border-bottom:1px dotted currentColor; border-radius:0; background:none; color:var(--primary, #4f59c8); font:inherit; text-align:left; text-decoration:none; overflow-wrap:anywhere; cursor:pointer; }
 .file-reference-link:hover { border-bottom-style:solid; }
 .file-reference-link:focus-visible { outline:2px solid var(--primary, #4f59c8); outline-offset:2px; border-radius:2px; }

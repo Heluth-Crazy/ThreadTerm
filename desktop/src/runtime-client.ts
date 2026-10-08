@@ -33,7 +33,7 @@ interface ControlResponse { v: 1; id: string; result?: unknown; error?: RuntimeE
 interface AuthChallenge { kind: 'challenge'; nonce: string; protocol: number; contract?: number }
 interface AuthRequest { kind: 'auth'; clientId: string; protocol: number; contract: number; nonce: string; hmac: string }
 interface Authenticated { kind: 'authenticated'; principal: string; epoch: string; hmac: string; contract?: number }
-interface PendingRequest { method: Method; resolve: (value: unknown) => void; reject: (reason: Error) => void; timer: NodeJS.Timeout }
+interface PendingRequest { method: Method|'qa.chat.projection.fail'; resolve: (value: unknown) => void; reject: (reason: Error) => void; timer: NodeJS.Timeout }
 interface OutputSubscription { id: string; sessionId: string; cursor: number; onChunk: (chunk: OutputChunk) => void | Promise<void> }
 interface OutputGroup { sessionId: string; cursor: number; fanout: OutputFanout; delivery: Promise<void> }
 
@@ -174,6 +174,19 @@ export class RuntimeClient {
     this.qaReconnectPaused = false;
     void this.ensureConnected().catch(error => this.handleDisconnect(asError(error)));
     return true;
+  }
+
+  async failChatProjectionForQa(sessionId: string): Promise<void> {
+    if (env.THREADTERM_V3_RELOCATION_QA !== '1' || !sessionId || sessionId.length > 256) throw new Error('QA projection failure is unavailable');
+    await this.ensureConnected();
+    this.assertOpen();
+    const id = randomUUID();
+    return new Promise<void>((resolvePromise, reject) => {
+      const timer = setTimeout(() => { this.pending.delete(id); reject(new Error('QA projection request timed out')); }, 30_000);
+      this.pending.set(id, { method: 'qa.chat.projection.fail', resolve: () => resolvePromise(), reject, timer });
+      try { this.control?.write(Buffer.from(JSON.stringify({ v: PROTOCOL_VERSION, id, method: 'qa.chat.projection.fail', params: { sessionId } }), 'utf8')); }
+      catch (error) { clearTimeout(timer); this.pending.delete(id); reject(asError(error)); }
+    });
   }
 
   async subscribeOutput(sessionId: string, cursor: number, onChunk: (chunk: OutputChunk) => void | Promise<void>): Promise<() => void> {
@@ -375,7 +388,9 @@ export class RuntimeClient {
     if (value.error) pending.reject(new RuntimeRequestError(value.error));
     else {
       try {
-        validateResult(pending.method, value.result);
+        if (pending.method === 'qa.chat.projection.fail') {
+          if (env.THREADTERM_V3_RELOCATION_QA !== '1' || value.result !== null) throw new Error('Invalid QA projection result');
+        } else validateResult(pending.method, value.result);
         if (pending.method === 'runtime.shutdown') this.control?.write(Buffer.from(JSON.stringify({ kind: 'shutdownAck', id: value.id }), 'utf8'));
         pending.resolve(value.result);
       }

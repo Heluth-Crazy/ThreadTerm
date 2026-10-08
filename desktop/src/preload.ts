@@ -90,6 +90,7 @@ if (process.env.THREADTERM_V3_RELOCATION_QA === '1') {
   contextBridge.exposeInMainWorld('threadtermQa', {
     dropControl: (): Promise<void> => ipcRenderer.invoke('threadterm:qa-drop-control') as Promise<void>,
     resumeControl: (): Promise<void> => ipcRenderer.invoke('threadterm:qa-resume-control') as Promise<void>,
+    failChatProjection: (sessionId: string): Promise<void> => ipcRenderer.invoke('threadterm:qa-fail-chat-projection', sessionId) as Promise<void>,
   });
 }
 

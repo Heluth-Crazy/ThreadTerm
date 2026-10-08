@@ -4096,6 +4096,26 @@ createInterface({{ input: process.stdin, crlfDelay: Infinity }}).on('line', line
     }
 
     #[test]
+    fn repair_fixture_normalizes_codex_history_in_native_order() {
+        let fixture: Value = serde_json::from_str(include_str!(
+            "../../tests/fixtures/repair-native-history.json"
+        ))
+        .unwrap();
+        let items = codex_transcript_items(&fixture["codex"]);
+        assert_eq!(
+            items
+                .iter()
+                .map(|item| item["id"].as_str().unwrap())
+                .collect::<Vec<_>>(),
+            vec![
+                "repair-codex-user",
+                "repair-codex-assistant",
+                "repair-codex-tool"
+            ]
+        );
+    }
+
+    #[test]
     fn child_completion_statuses_do_not_settle_parent_turn() {
         let mut replay = CodexSubagentReplay::new();
         replay.child();

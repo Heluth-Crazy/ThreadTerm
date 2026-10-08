@@ -855,6 +855,66 @@ impl Providers {
         self.worker_handle(session_id).is_ok()
     }
 
+    /// Pure registry/cached-capability lookup: never probes or starts a reader.
+    pub(crate) fn history_reader_available(&self, provider: &str) -> bool {
+        if !self
+            .adapters
+            .read()
+            .is_ok_and(|adapters| adapters.contains_key(provider))
+        {
+            return false;
+        }
+        if let Some(available) = self.capability_cache.lock().ok().and_then(|cache| {
+            cache.values.as_ref().and_then(|(_, values)| {
+                values
+                    .iter()
+                    .find(|value| value["id"] == provider)
+                    .and_then(|value| value["history"].as_bool())
+            })
+        }) {
+            return available;
+        }
+        // ACP load support is learned by the existing capability probe, not by
+        // opening a worker from a snapshot. Its reader checks load again on use.
+        matches!(provider, "codex" | "claude" | "opencode" | "grok")
+    }
+
+    /// Uses the existing replacement/projection fence for a short DB callback.
+    /// No worker lock, provider I/O or registry reentry is allowed in `read`.
+    pub(crate) fn with_chat_repair_state<T>(
+        &self,
+        session_id: &str,
+        read: impl FnOnce(crate::chat_repair::RepairWorkerState) -> anyhow::Result<T>,
+    ) -> anyhow::Result<T> {
+        let chats = self
+            .chats
+            .lock()
+            .map_err(|_| anyhow::anyhow!("provider_internal"))?;
+        let state = chats
+            .get(session_id)
+            .map(|slot| crate::chat_repair::RepairWorkerState {
+                generation: slot.generation,
+                worker_token: slot.worker_token.clone(),
+                registered: slot.worker.is_some(),
+                connecting: slot.connecting,
+            })
+            .unwrap_or_default();
+        read(state)
+    }
+
+    pub(crate) fn registered_chat_sessions(&self) -> Vec<String> {
+        self.chats
+            .lock()
+            .map(|chats| {
+                chats
+                    .iter()
+                    .filter(|(_, slot)| slot.worker.is_some())
+                    .map(|(id, _)| id.clone())
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
     pub(crate) fn chat_send_recording(
         &self,
         session_id: &str,
