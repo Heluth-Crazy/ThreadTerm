@@ -11,7 +11,7 @@ use crate::{
     file_ops::{contained_parent_for, recycle},
     git_actions::complete,
     git_read::{
-        plain_path, repo_paths, repo_prefix, run_git, text_of, validate_relative, MAX_TEXT_BYTES,
+        plain_path, repo_paths_until, repo_prefix, run_git, text_of, validate_relative, MAX_TEXT_BYTES,
     },
     workspace_services::{fingerprint, root_for, scoped_path},
 };
@@ -48,14 +48,14 @@ struct Snapshot {
 struct Store {
     top: PathBuf,
     prefix: String,
+    index: PathBuf,
     objects: PathBuf,
     alternates: Vec<PathBuf>,
 }
 
 impl Store {
-    fn open(db: &Database, root: &Path) -> Result<Self> {
-        let prefix = repo_prefix(root)?;
-        let repo = repo_paths(root)?;
+    fn open(db: &Database, root: &Path, deadline: Instant) -> Result<Self> {
+        let (prefix, repo) = repo_paths_until(root, deadline)?;
         // Paths handed to Git must not carry the Windows verbatim prefix.
         let common = plain_path(&repo.common.canonicalize()?);
         let key = hex::encode(Sha256::digest(
@@ -87,6 +87,7 @@ impl Store {
         Ok(Self {
             top: repo.top,
             prefix,
+            index: repo.index,
             objects,
             alternates,
         })
@@ -132,13 +133,13 @@ impl Store {
             .map(|(key, value)| (*key, value.as_os_str()))
             .collect();
         let remaining = deadline
-            .saturating_duration_since(Instant::now())
-            .max(Duration::from_millis(500));
+            .checked_duration_since(Instant::now())
+            .filter(|remaining| !remaining.is_zero())
+            .ok_or_else(|| anyhow!("git_timeout"))?;
         run_git(&self.top, args, &borrowed, stdin, remaining)
     }
 
     fn snapshot(&self, deadline: Instant) -> Result<Snapshot> {
-        let repo = repo_paths(&self.top)?;
         let index = self.objects.join(format!("index-{}", uuid::Uuid::new_v4()));
         struct Cleanup(PathBuf);
         impl Drop for Cleanup {
@@ -147,8 +148,8 @@ impl Store {
             }
         }
         let _cleanup = Cleanup(index.clone());
-        if repo.index.exists() {
-            fs::copy(&repo.index, &index)?;
+        if self.index.exists() {
+            fs::copy(&self.index, &index)?;
         }
         let env = self.env(Some(&index), &[])?;
         let status = self.run(
@@ -396,17 +397,16 @@ fn capture(
         }
     }
     let scope = session_scope(db, session_id)?.ok_or_else(|| anyhow!("review_unavailable"))?;
-    let store = Store::open(db, &scope.root).map_err(|error| {
-        if error.to_string().contains("git_unavailable") {
-            anyhow!("review_unavailable")
-        } else {
-            error
-        }
-    })?;
     let deadline = Instant::now() + budget;
-    let (tree, status, error, skipped) = match store.snapshot(deadline) {
-        Ok(snapshot) => (Some(snapshot.tree), "ready", None, snapshot.skipped),
-        Err(error) => (None, "failed", Some(error.to_string()), Vec::new()),
+    let (store, tree, status, error, skipped) = match Store::open(db, &scope.root, deadline) {
+        Ok(store) => match store.snapshot(deadline) {
+            Ok(snapshot) => (Some(store), Some(snapshot.tree), "ready", None, snapshot.skipped),
+            Err(error) => (Some(store), None, "failed", Some(error.to_string()), Vec::new()),
+        },
+        Err(error) if error.to_string().contains("git_unavailable") => {
+            return Err(anyhow!("review_unavailable"));
+        }
+        Err(error) => (None, None, "failed", Some(error.to_string()), Vec::new()),
     };
     let id = uuid::Uuid::new_v4().to_string();
     let label = label.map(|value| {
@@ -422,7 +422,7 @@ fn capture(
                 kind,
                 label,
                 operation_id,
-                store.objects.to_string_lossy(),
+                store.as_ref().map(|store| store.objects.to_string_lossy().into_owned()),
                 tree,
                 status,
                 error,
@@ -516,8 +516,8 @@ pub fn dispatch(db: &Database, method: &str, params: &Value) -> Result<Option<Va
         "review.changes" | "review.diff" => {
             let scope =
                 session_scope(db, session_id)?.ok_or_else(|| anyhow!("review_unavailable"))?;
-            let store = Store::open(db, &scope.root)?;
             let deadline = Instant::now() + REVIEW_BUDGET;
+            let store = Store::open(db, &scope.root, deadline)?;
             let (from, mut extra) = ready_tree(&checkpoint_row(db, session_id, string("from")?)?)?;
             let to = match object.get("to").and_then(Value::as_str) {
                 Some(id) => {
@@ -666,9 +666,9 @@ fn revert(db: &Database, session_id: &str, object: &Map<String, Value>) -> Resul
         .and_then(Value::as_object)
         .ok_or_else(|| anyhow!("invalid_fingerprints"))?;
     let scope = session_scope(db, session_id)?.ok_or_else(|| anyhow!("review_unavailable"))?;
-    let store = Store::open(db, &scope.root)?;
-    let (tree, extra) = ready_tree(&checkpoint_row(db, session_id, checkpoint_id)?)?;
     let deadline = Instant::now() + REVIEW_BUDGET;
+    let store = Store::open(db, &scope.root, deadline)?;
+    let (tree, extra) = ready_tree(&checkpoint_row(db, session_id, checkpoint_id)?)?;
     // Preflight every file before changing any of them.
     let mut plan = Vec::new();
     for path in &paths {
@@ -780,8 +780,8 @@ pub(crate) fn binary_diff_paths(numstat: &[u8]) -> std::collections::HashSet<Str
 pub(crate) fn unified_snapshot(db: &Database, session_id: &str, from_id: &str, to_id: Option<&str>) -> Result<Vec<ReviewFile>> {
     let scope = session_scope(db, session_id)?.ok_or_else(|| anyhow!("review_unavailable"))?;
     let (from, mut extra) = ready_tree(&checkpoint_row(db, session_id, from_id)?)?;
-    let store = Store::open(db, &scope.root)?;
     let deadline = Instant::now() + REVIEW_BUDGET;
+    let store = Store::open(db, &scope.root, deadline)?;
     let (to, skipped) = match to_id {
         Some(id) => {
             let (tree, stores) = ready_tree(&checkpoint_row(db, session_id, id)?)?;
@@ -1000,6 +1000,52 @@ mod tests {
         let listed = call(&db, "review.list", json!({"sessionId":"s2"})).unwrap();
         assert_eq!(listed["available"], false);
         assert_eq!(listed["reason"], "git_unavailable");
+    }
+
+    #[test]
+    fn expired_discovery_budget_records_failure_without_touching_repository() {
+        let (temp, db, repo, session) = setup();
+        let index_before = fs::read(repo.join(".git").join("index")).unwrap();
+        let refs_before = git(&repo, &["for-each-ref"]).unwrap();
+        let objects_before = git(&repo, &["count-objects", "-v"]).unwrap();
+
+        let started = Instant::now();
+        let checkpoint = capture(
+            &db,
+            &session,
+            "turn",
+            Some("expired-discovery"),
+            Some("x"),
+            Duration::ZERO,
+        )
+        .unwrap();
+        assert!(started.elapsed() < Duration::from_secs(2));
+
+        let row = db
+            .transaction(|tx| {
+                tx.query_row(
+                    "SELECT store,tree,status,error FROM review_checkpoints WHERE id=?",
+                    [&checkpoint],
+                    |row| {
+                        Ok((
+                            row.get::<_, Option<String>>(0)?,
+                            row.get::<_, Option<String>>(1)?,
+                            row.get::<_, String>(2)?,
+                            row.get::<_, Option<String>>(3)?,
+                        ))
+                    },
+                )
+                .map_err(Into::into)
+            })
+            .unwrap();
+        assert_eq!(row.0, None);
+        assert_eq!(row.1, None);
+        assert_eq!(row.2, "failed");
+        assert_eq!(row.3.as_deref(), Some("git_timeout"));
+        assert_eq!(fs::read(repo.join(".git").join("index")).unwrap(), index_before);
+        assert_eq!(git(&repo, &["for-each-ref"]).unwrap(), refs_before);
+        assert_eq!(git(&repo, &["count-objects", "-v"]).unwrap(), objects_before);
+        assert!(!temp.path().join("data").join("review-objects").exists());
     }
 
     #[test]

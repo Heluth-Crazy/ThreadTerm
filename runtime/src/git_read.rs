@@ -105,6 +105,24 @@ pub(crate) fn git_text(root: &Path, args: &[&str]) -> Result<String> {
     Ok(String::from_utf8_lossy(&bytes).into_owned())
 }
 
+fn remaining_git_budget(deadline: Instant) -> Result<Duration> {
+    deadline
+        .checked_duration_since(Instant::now())
+        .filter(|remaining| !remaining.is_zero())
+        .ok_or_else(|| anyhow!("git_timeout"))
+}
+
+/// Runs one local Git read within a shared caller-owned deadline.
+///
+/// Unlike `git_text`, this does not reset the timeout for each command. It is
+/// used by review checkpoint discovery so its budget covers the whole sequence,
+/// while each command remains capped by the existing local-command timeout.
+pub(crate) fn git_text_until(root: &Path, args: &[&str], deadline: Instant) -> Result<String> {
+    let timeout = remaining_git_budget(deadline)?.min(LOCAL_TIMEOUT);
+    let bytes = run_git(root, args, &[("LC_ALL", OsStr::new("C"))], None, timeout)?;
+    Ok(String::from_utf8_lossy(&bytes).into_owned())
+}
+
 /// Verifies the root is inside a Git work tree and returns the repository
 /// prefix of the root (`""` at top level, otherwise `"sub/dir/"`).
 pub(crate) fn repo_prefix(root: &Path) -> Result<String> {
@@ -574,6 +592,49 @@ pub(crate) struct RepoPaths {
     pub common: PathBuf,
 }
 
+/// Resolves the repository prefix and metadata paths under one shared deadline.
+/// Existing callers of `repo_prefix` and `repo_paths` retain their independent
+/// 30-second local-command budgets.
+pub(crate) fn repo_paths_until(root: &Path, deadline: Instant) -> Result<(String, RepoPaths)> {
+    let inside = match git_text_until(root, &["rev-parse", "--is-inside-work-tree"], deadline) {
+        Ok(inside) => inside,
+        Err(error) if error.to_string().contains("not a git repository") => {
+            return Err(anyhow!("git_unavailable"));
+        }
+        Err(error) => return Err(error),
+    };
+    if inside.trim() != "true" {
+        return Err(anyhow!("git_unavailable"));
+    }
+    let prefix = git_text_until(root, &["rev-parse", "--show-prefix"], deadline)?
+        .trim_end_matches(['\r', '\n'])
+        .to_owned();
+    let top = PathBuf::from(
+        git_text_until(root, &["rev-parse", "--show-toplevel"], deadline)?
+            .trim_end_matches(['\r', '\n']),
+    );
+    let absolute = |value: String| {
+        let path = PathBuf::from(value.trim_end_matches(['\r', '\n']));
+        if path.is_absolute() {
+            path
+        } else {
+            root.join(path)
+        }
+    };
+    let index = absolute(git_text_until(
+        root,
+        &["rev-parse", "--git-path", "index"],
+        deadline,
+    )?);
+    let common = absolute(git_text_until(
+        root,
+        &["rev-parse", "--git-common-dir"],
+        deadline,
+    )?);
+    Ok((prefix, RepoPaths { top, index, common }))
+}
+
+#[allow(dead_code)] // Retained for callers that need independent per-command local timeouts.
 pub(crate) fn repo_paths(root: &Path) -> Result<RepoPaths> {
     repo_prefix(root)?;
     let top = PathBuf::from(
@@ -597,6 +658,14 @@ mod tests {
     use super::*;
     use crate::workspace_services::git;
     use std::fs;
+
+    #[test]
+    fn shared_deadline_refuses_expired_git_without_starting_a_command() {
+        let missing = Path::new("this-path-must-not-exist");
+        let error = git_text_until(missing, &["rev-parse", "--show-toplevel"], Instant::now())
+            .unwrap_err();
+        assert_eq!(error.to_string(), "git_timeout");
+    }
 
     pub(crate) fn repo() -> tempfile::TempDir {
         let temp = tempfile::tempdir().unwrap();

@@ -134,6 +134,7 @@ enum Lane {
 fn request_lane(method: &str) -> Lane {
     match method {
         "terminal.read"
+        | "project.catalog.list"
         | "session.launch.read"
         | "git.status"
         | "git.diff"
@@ -617,6 +618,7 @@ mod decoder_tests {
     fn slow_reads_run_concurrently_and_terminal_control_keeps_its_own_order() {
         for read in [
             "terminal.read",
+            "project.catalog.list",
             "git.status",
             "git.diff",
             "git.log",
