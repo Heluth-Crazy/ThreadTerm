@@ -23,6 +23,8 @@ use uuid::Uuid;
 const TAP_CAPACITY: usize = 1_024;
 const MEMORY_EVENT_LIMIT: usize = 256;
 const MEMORY_BYTE_LIMIT: usize = 512 * 1_024;
+const FALLBACK_EVENT_LIMIT: usize = 4_096;
+const FALLBACK_BYTE_LIMIT: usize = 8 * 1_024 * 1_024;
 
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -124,17 +126,30 @@ impl QueueInner {
         if fits_memory {
             state.memory_bytes += bytes.len();
             state.memory.push_back(bytes);
-        } else if state.spool_failed {
-            state.fallback_bytes += bytes.len();
-            state.fallback_tail.push_back(bytes);
-        } else if let Err(error) = append_spool(&self.spool_dir, &mut state.spool, &bytes) {
-            // A filesystem failure cannot be made both bounded and lossless.
-            // Keep correctness for the live process and surface the loss of the
-            // normal memory bound instead of silently discarding a chat event.
-            eprintln!("provider event spool unavailable; retaining event in memory: {error}");
-            state.spool_failed = true;
-            state.fallback_bytes += bytes.len();
-            state.fallback_tail.push_back(bytes);
+        } else {
+            if !state.spool_failed {
+                if let Err(error) = append_spool(&self.spool_dir, &mut state.spool, &bytes) {
+                    eprintln!(
+                        "provider event spool unavailable; using bounded memory tail: {error}"
+                    );
+                    state.spool_failed = true;
+                }
+            }
+            if state.spool_failed {
+                // Never wait for the consumer to free space: provider readers
+                // can hold worker locks that projection needs. Fail visibly
+                // rather than letting unavailable disk storage exhaust memory.
+                if state.fallback_tail.len() >= FALLBACK_EVENT_LIMIT
+                    || state.fallback_bytes.saturating_add(bytes.len()) > FALLBACK_BYTE_LIMIT
+                {
+                    state.failure = Some("provider event fallback exceeded its 4096-event / 8 MiB limit after spool failure".into());
+                    drop(state);
+                    self.ready.notify_one();
+                    return Err(SendError);
+                }
+                state.fallback_bytes += bytes.len();
+                state.fallback_tail.push_back(bytes);
+            }
         }
         drop(state);
         self.ready.notify_one();
@@ -528,6 +543,52 @@ mod tests {
         sender.send(event(513, "worker")).unwrap();
         for index in 0..514 {
             assert_eq!(receiver.blocking_recv().unwrap().data["index"], index);
+        }
+    }
+
+    #[test]
+    fn fallback_caps_fail_without_growing_the_tail() {
+        for record_bytes in [1, 8 * 1_024, FALLBACK_BYTE_LIMIT + 1] {
+            let dir = tempfile::tempdir().unwrap();
+            let (sender, mut receiver) = channel(dir.path());
+            let queue = sender.queue.as_ref().unwrap();
+            // Retain a real spool backlog, then force its next write to fail.
+            for index in 0..512 {
+                sender.send(event(index, "worker")).unwrap();
+            }
+            {
+                let mut state = queue.state.lock().unwrap();
+                let spool = state.spool.as_mut().unwrap();
+                spool.file = OpenOptions::new().read(true).open(&spool.path).unwrap();
+            }
+            let capacity = FALLBACK_EVENT_LIMIT.min(FALLBACK_BYTE_LIMIT / record_bytes);
+            for _ in 0..capacity {
+                queue.enqueue(vec![b' '; record_bytes]).unwrap();
+            }
+            assert_eq!(queue.enqueue(vec![b' '; record_bytes]), Err(SendError));
+            {
+                let state = queue.state.lock().unwrap();
+                assert!(state.spool_failed);
+                assert!(state.failure.is_some());
+                assert_eq!(state.fallback_tail.len(), capacity);
+                assert_eq!(state.fallback_bytes, capacity * record_bytes);
+                assert!(state.memory.len() <= MEMORY_EVENT_LIMIT);
+                assert!(state.memory_bytes <= MEMORY_BYTE_LIMIT);
+                assert!(state.fallback_tail.len() <= FALLBACK_EVENT_LIMIT);
+                assert!(state.fallback_bytes <= FALLBACK_BYTE_LIMIT);
+            }
+            // Failure wins over older memory/spool records and remains sticky.
+            assert!(matches!(receiver.try_recv(), Err(TryRecvError::Failed(_))));
+            assert!(matches!(
+                receiver.blocking_recv(),
+                Err(RecvError::Failed(_))
+            ));
+            for _ in 0..10 {
+                assert_eq!(sender.send(event(999, "worker")), Err(SendError));
+            }
+            let state = queue.state.lock().unwrap();
+            assert_eq!(state.fallback_tail.len(), capacity);
+            assert_eq!(state.fallback_bytes, capacity * record_bytes);
         }
     }
 
