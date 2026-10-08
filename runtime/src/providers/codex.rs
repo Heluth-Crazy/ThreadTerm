@@ -3762,6 +3762,211 @@ mod tests {
     }
 
     #[test]
+    fn conformance_child_thread_fixture_keeps_parent_items_and_terminal_signal_scoped() {
+        let mut replay = CodexSubagentReplay::new();
+        // The harness starts a parent turn so its initial event is not part of
+        // the recorded fixture's assertion set.
+        replay.drain();
+        let mut observed = Vec::new();
+        for raw in super::super::conformance::fixture("codex-child-thread-frames.jsonl") {
+            let is_non_parent_thread = raw
+                .pointer("/params/threadId")
+                .or_else(|| raw.pointer("/params/thread/id"))
+                .and_then(Value::as_str)
+                .is_some_and(|id| id != SUBAGENT_PARENT);
+            replay.raw(raw);
+            let batch = replay.drain();
+            if is_non_parent_thread {
+                assert!(batch.iter().all(|event| {
+                    event.session_id == "d6696f72-47c2-43c2-93d0-8b161293fd83"
+                }));
+                super::super::conformance::assert_no_parent_effect(
+                    &batch,
+                    "d6696f72-47c2-43c2-93d0-8b161293fd83",
+                );
+                replay.stop_target();
+            }
+            observed.extend(batch);
+        }
+        let parent_transcript: Vec<_> = observed
+            .iter()
+            .filter(|event| {
+                matches!(
+                    event.kind.as_str(),
+                    "chat.delta" | "chat.item" | "chat.turn.started" | "chat.turn.completed"
+                )
+            })
+            .collect();
+        assert_eq!(
+            parent_transcript
+                .iter()
+                .map(|event| event.kind.as_str())
+                .collect::<Vec<_>>(),
+            ["chat.turn.started", "chat.delta", "chat.item", "chat.turn.completed"]
+        );
+        assert_eq!(parent_transcript[1].data["raw"]["params"]["itemId"], "shared-message");
+        assert_eq!(parent_transcript[2].data["raw"]["params"]["item"]["id"], "shared-message");
+        assert!(parent_transcript.iter().all(|event| {
+            let raw = event.data["raw"].to_string();
+            !raw.contains("child-only") && !raw.contains("foreign-only")
+        }));
+
+        let child_items: Vec<_> = observed
+            .iter()
+            .filter(|event| event.kind == "chat.subagent.item")
+            .collect();
+        assert_eq!(child_items.len(), 1);
+        assert!(child_items.iter().all(|event| {
+            event.data["key"] == SUBAGENT_CHILD && event.data["item"]["id"] == "shared-message"
+        }));
+
+        let approval_id = encode_approval_id(&json!("child-approval"));
+        assert_eq!(
+            observed
+                .iter()
+                .filter(|event| event.kind == "chat.approval" && event.data["approvalId"] == approval_id)
+                .count(),
+            1
+        );
+        assert_eq!(
+            observed
+                .iter()
+                .filter(|event| {
+                    event.kind == "chat.approval.resolved"
+                        && event.data["approvalId"] == approval_id
+                        && event.data["status"] == "expired"
+                })
+                .count(),
+            1
+        );
+        assert!(replay.approvals.lock().unwrap().is_empty());
+        assert_eq!(
+            parent_transcript
+                .iter()
+                .filter(|event| event.kind == "chat.turn.completed")
+                .count(),
+            1
+        );
+        assert!(replay.active.0.lock().unwrap().is_none());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn conformance_child_request_writes_one_native_response() {
+        let Some(node) = crate::providers::common::find_executable("node") else {
+            eprintln!("node is unavailable; skipping Codex response-capture fixture");
+            return;
+        };
+        let output_dir = tempfile::tempdir().unwrap();
+        let output = output_dir.path().join("responses.jsonl");
+        let script = output_dir.path().join("fake-codex-response.mjs");
+        std::fs::write(
+            &script,
+            format!(
+                r#"import {{ appendFileSync }} from 'node:fs';
+import {{ createInterface }} from 'node:readline';
+for (const name of Object.keys(process.env)) {{ if (name.toLowerCase() === 'path') delete process.env[name]; }}
+if (Object.keys(process.env).some(name => name.toLowerCase() === 'path')) process.exit(3);
+const output = {};
+let timer;
+createInterface({{ input: process.stdin, crlfDelay: Infinity }}).on('line', line => {{
+  appendFileSync(output, line + '\n');
+  clearTimeout(timer);
+  timer = setTimeout(() => process.exit(0), 100);
+}});
+"#,
+                serde_json::to_string(&output.to_string_lossy()).unwrap(),
+            ),
+        )
+        .unwrap();
+        let spec = CommandSpec::from_path(node, vec![script.to_string_lossy().into_owned()]).unwrap();
+        let (events, mut received) = crate::provider_events::tap_channel(16);
+        let native = Arc::new(Mutex::new(Some(SUBAGENT_PARENT.into())));
+        let approvals = Arc::new(Mutex::new(HashMap::new()));
+        let active = new_codex_turn_state();
+        active.0.lock().unwrap().replace(ActiveCodexTurn {
+            public_id: "public-turn".into(), native_id: Some("parent-turn".into()),
+            assistant_item_id: None, started_at: Instant::now(),
+        });
+        let ui = Arc::new(Mutex::new(CodexUiState::default()));
+        let responder = Arc::new(Mutex::new(None));
+        let subagents = Arc::new(Mutex::new(CodexSubagents::default()));
+        subagents.lock().unwrap().children.insert(SUBAGENT_CHILD.into(), CodexChildThread {
+            key: SUBAGENT_CHILD.into(), label: "Kant".into(), turn_id: Some("public-turn".into()),
+        });
+        let callback_events = events.clone();
+        let callback_native = Arc::clone(&native);
+        let callback_approvals = Arc::clone(&approvals);
+        let callback_active = Arc::clone(&active);
+        let callback_ui = Arc::clone(&ui);
+        let callback_responder = Arc::clone(&responder);
+        let callback_subagents = Arc::clone(&subagents);
+        let process = JsonLineProcess::spawn(
+            "fake-codex-response",
+            &spec,
+            None,
+            &[],
+            EnvelopeStyle::Codex,
+            Arc::new(move |raw| emit_codex_message(
+                &callback_events, "codex-chat", &callback_native, &callback_approvals,
+                &callback_active, &callback_ui, &callback_responder, "conformance-worker",
+                &callback_subagents, raw,
+            )),
+        )
+        .unwrap();
+        *responder.lock().unwrap() = Some(process.responder());
+        let mut chat = CodexChat {
+            process,
+            native_id: SUBAGENT_PARENT.into(),
+            approvals,
+            active_turn: active,
+            session_id: "codex-chat".into(),
+            cwd: String::new(),
+            events,
+            ui,
+            worker_token: "conformance-worker".into(),
+        };
+        let approval_id = encode_approval_id(&json!("child-approval"));
+        emit_codex_message(
+            &chat.events,
+            "codex-chat",
+            &native,
+            &chat.approvals,
+            &chat.active_turn,
+            &chat.ui,
+            &responder,
+            "conformance-worker",
+            &subagents,
+            json!({"id":"child-approval","method":"item/commandExecution/requestApproval","params":{
+                "threadId":SUBAGENT_CHILD,"turnId":"child-turn","itemId":"child-command","command":"echo CHILD"
+            }}),
+        );
+        assert!(chat.approvals.lock().unwrap().contains_key(&approval_id));
+        chat.approve("public-turn", &approval_id, "accept", "response-once").unwrap();
+        assert_eq!(
+            chat.approve("public-turn", &approval_id, "accept", "response-twice")
+                .unwrap_err()
+                .code,
+            "approval_not_pending"
+        );
+        for _ in 0..150 {
+            if !chat.process.is_alive() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(!chat.process.is_alive(), "response capture process did not close");
+        let responses: Vec<Value> = std::fs::read_to_string(&output)
+            .unwrap_or_default()
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect();
+        super::super::conformance::assert_exactly_once(&responses, &[json!("child-approval")]);
+        assert_eq!(responses, vec![json!({"id":"child-approval","result":{"decision":"accept"}})]);
+        assert!(received.try_recv().is_ok());
+    }
+
+    #[test]
     fn child_completed_messages_replace_parts_and_errors_stay_in_transcript() {
         let mut replay = CodexSubagentReplay::new();
         replay.child();

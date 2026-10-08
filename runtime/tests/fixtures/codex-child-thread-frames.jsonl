@@ -1,0 +1,15 @@
+{"method":"turn/started","params":{"threadId":"01a10cc5-adcf-7532-8366-f82284f88ff9","turn":{"id":"parent-turn"}}}
+{"method":"item/agentMessage/delta","params":{"threadId":"01a10cc5-adcf-7532-8366-f82284f88ff9","itemId":"shared-message","delta":"parent before child"}}
+{"method":"thread/started","params":{"thread":{"id":"01a10cc7-8abd-7a53-83bd-bd40920e71cf","parentThreadId":"01a10cc5-adcf-7532-8366-f82284f88ff9","agentNickname":"Kant","agentRole":"standard_worker","source":{"subAgent":{"thread_spawn":{"parent_thread_id":"01a10cc5-adcf-7532-8366-f82284f88ff9","depth":1,"agent_path":"/root/count_files","agent_nickname":"Kant","agent_role":"standard_worker"}}}}}}
+{"method":"turn/started","params":{"threadId":"01a10cc7-8abd-7a53-83bd-bd40920e71cf","turn":{"id":"child-turn"}}}
+{"method":"item/started","params":{"threadId":"01a10cc7-8abd-7a53-83bd-bd40920e71cf","turnId":"child-turn","item":{"id":"shared-message","type":"agentMessage"}}}
+{"method":"item/agentMessage/delta","params":{"threadId":"01a10cc7-8abd-7a53-83bd-bd40920e71cf","itemId":"shared-message","delta":"child-only text"}}
+{"method":"item/completed","params":{"threadId":"01a10cc7-8abd-7a53-83bd-bd40920e71cf","turnId":"child-turn","item":{"id":"shared-message","type":"agentMessage","text":"child-only final"}}}
+{"id":"child-approval","method":"item/commandExecution/requestApproval","params":{"threadId":"01a10cc7-8abd-7a53-83bd-bd40920e71cf","turnId":"child-turn","itemId":"child-command","command":"echo CHILD"}}
+{"method":"serverRequest/resolved","params":{"threadId":"01a10cc7-8abd-7a53-83bd-bd40920e71cf","requestId":"child-approval"}}
+{"method":"turn/completed","params":{"threadId":"01a10cc7-8abd-7a53-83bd-bd40920e71cf","turn":{"id":"child-turn","status":"completed"}}}
+{"method":"turn/started","params":{"threadId":"qa-codex-foreign","turn":{"id":"foreign-turn"}}}
+{"method":"item/agentMessage/delta","params":{"threadId":"qa-codex-foreign","itemId":"shared-message","delta":"foreign-only text"}}
+{"method":"turn/completed","params":{"threadId":"qa-codex-foreign","turn":{"id":"foreign-turn","status":"completed"}}}
+{"method":"item/completed","params":{"threadId":"01a10cc5-adcf-7532-8366-f82284f88ff9","turnId":"parent-turn","item":{"id":"shared-message","type":"agentMessage","text":"parent after child"}}}
+{"method":"turn/completed","params":{"threadId":"01a10cc5-adcf-7532-8366-f82284f88ff9","turn":{"id":"parent-turn","status":"completed"}}}

@@ -1,12 +1,12 @@
 use super::{
     acp_mcp_servers,
     approval::{
-        acp_choices, acp_title, approval_payload, drain_inactive_approvals, find_choice,
+        acp_choices, acp_title, approval_payload, find_choice,
         validate_turn, write_failed_not_sent, ApprovalChoice, PendingApprovalState,
     },
     approve_threadterm_tool,
     common::{
-        command_output, encode_approval_id, history_page, insert_optional, validate_native_id,
+        command_output, dispatch_acp_message, flush_acp_messages, encode_approval_id, history_page, insert_optional, validate_native_id,
         version_probe, ChatTextSegments, CommandSpec, EnvelopeStyle, JsonLineProcess, JsonLineResponder,
     },
     emit_bound as emit, ChatSession, ChatToolServer, ProviderAdapter, ProviderCapability,
@@ -93,22 +93,11 @@ impl AcpAdapter {
         let think_open = Arc::new(Mutex::new(false));
         let responder: Arc<Mutex<Option<JsonLineResponder>>> = Arc::new(Mutex::new(None));
         let auto_responder = Arc::clone(&responder);
-        let on_message = Arc::new(move |raw: Value| {
-            if let Some(capture) = &capture {
-                if let Ok(mut values) = capture.lock() {
-                    values.push(raw.clone());
-                }
-            }
-            // The parent's calls to ThreadTerm's own delegation tools are
-            // approved here; every other permission still reaches the user.
-            if delegation_tools && approve_threadterm_tool(&auto_responder, &raw) {
-                return;
-            }
-            // While session/load or session/resume is in flight the agent
-            // replays the transcript as session/update notifications; they
-            // carry no turn id, so projecting them would append a duplicate
-            // phantom message under the "current" key on every reconnect.
-            if project_events && !replay_gate.load(Ordering::SeqCst) {
+        let permission_ui = Arc::clone(&ui);
+        let ready_message: Arc<dyn Fn(Value) + Send + Sync> = Arc::new(move |raw: Value| {
+            // Requests must settle even when transcript replay is suppressed.
+            if handle_acp_message(&auto_responder, &raw, delegation_tools,
+                project_events && !replay_gate.load(Ordering::SeqCst)) {
                 emit_acp_message(
                     &events,
                     &provider,
@@ -122,6 +111,17 @@ impl AcpAdapter {
                 );
             }
         });
+        // The reader starts before spawn returns its responder. Preserve that
+        // small startup window instead of silently dropping early requests.
+        let startup = Arc::new(Mutex::new(Some(Vec::<Value>::new())));
+        let reader_startup = Arc::clone(&startup);
+        let reader_ready = Arc::clone(&ready_message);
+        let on_message = Arc::new(move |raw: Value| {
+            if let Some(capture) = &capture {
+                if let Ok(mut values) = capture.lock() { values.push(raw.clone()); }
+            }
+            dispatch_acp_message(&reader_startup, &reader_ready, raw);
+        });
         let process = JsonLineProcess::spawn(
             format!("{}-acp", self.descriptor.id),
             &spec,
@@ -133,6 +133,10 @@ impl AcpAdapter {
         if let Ok(mut slot) = responder.lock() {
             *slot = Some(process.responder());
         }
+        if let Ok(mut state) = permission_ui.lock() {
+            state.permission_responder = Some(process.responder());
+        }
+        flush_acp_messages(&startup, &ready_message);
         let initialized = process.request("initialize", json!({
             "protocolVersion": 1,
             "clientCapabilities": {"fs":{"readTextFile":false,"writeTextFile":false},"terminal":false},
@@ -492,6 +496,7 @@ struct PermissionRequest {
 
 #[derive(Clone, Default)]
 struct AcpUiState {
+    permission_responder: Option<JsonLineResponder>,
     text_segments: ChatTextSegments,
     subagent_calls: HashMap<String, Value>,
     parent_tool_calls: HashSet<String>,
@@ -938,6 +943,7 @@ impl AcpChat {
         let turn_id = operation_id.to_owned();
         let active = Arc::clone(&self.active_turn);
         let permissions = Arc::clone(&self.permissions);
+        let responder = self.process.responder();
         let started = std::time::Instant::now();
         let request = self.process.request_async(
             "session/prompt",
@@ -946,10 +952,9 @@ impl AcpChat {
             }),
             move |result| {
                 if let Ok(mut value) = active.lock() {
+                    if value.as_deref() != Some(&turn_id) { return; }
                     *value = None;
-                }
-                if let Ok(mut pending) = permissions.lock() {
-                    drain_inactive_approvals(&mut pending, |item| item.turn_id.as_deref(), None);
+                    drain_acp_permissions(&permissions, &responder);
                 }
                 match result {
                     Ok(value) => {
@@ -979,9 +984,7 @@ impl AcpChat {
             if let Ok(mut active) = self.active_turn.lock() {
                 *active = None;
             }
-            if let Ok(mut pending) = self.permissions.lock() {
-                drain_inactive_approvals(&mut pending, |item| item.turn_id.as_deref(), None);
-            }
+            drain_acp_permissions(&self.permissions, &self.process.responder());
             return Err(error);
         }
         emit(
@@ -1055,6 +1058,9 @@ impl ChatSession for AcpChat {
         choice_id: &str,
         operation_id: &str,
     ) -> Result<(), ProviderError> {
+        // Terminal drain and submission share active -> permissions lock order.
+        let active_turn = self.active_turn.lock()
+            .map_err(|_| ProviderError::new("provider_internal", "ACP turn lock poisoned"))?;
         let mut permissions = self
             .permissions
             .lock()
@@ -1065,7 +1071,6 @@ impl ChatSession for AcpChat {
                 "ACP approval is unknown or already resolved",
             )
         })?;
-        let active_turn = self.active_turn.lock().ok().and_then(|value| value.clone());
         validate_turn(pending.turn_id.as_deref(), active_turn.as_deref(), turn_id)?;
         find_choice(&pending.choices, choice_id)?;
         match pending.state.begin_submit(operation_id) {
@@ -1074,26 +1079,8 @@ impl ChatSession for AcpChat {
             Err(error) => return Err(error),
         }
         let rpc_id = pending.rpc_id.clone();
-        drop(permissions);
-        let still_active = self
-            .active_turn
-            .lock()
-            .ok()
-            .and_then(|value| value.clone())
-            .as_deref()
-            == Some(turn_id);
-        if !still_active {
-            return Err(ProviderError::new(
-                "approval_stale",
-                "approval is not bound to a live turn",
-            ));
-        }
         let outcome = json!({"outcome":{"outcome":"selected","optionId":choice_id}});
         let result = self.process.respond(rpc_id, outcome);
-        let mut permissions = self
-            .permissions
-            .lock()
-            .map_err(|_| ProviderError::new("provider_internal", "ACP permission lock poisoned"))?;
         match result {
             Ok(()) => {
                 permissions.remove(approval_id);
@@ -1142,6 +1129,8 @@ impl ChatSession for AcpChat {
         response: &Value,
         operation_id: &str,
     ) -> Result<(), ProviderError> {
+        let active_turn = self.active_turn.lock()
+            .map_err(|_| ProviderError::new("provider_internal", "ACP turn lock poisoned"))?;
         let mut permissions = self
             .permissions
             .lock()
@@ -1152,7 +1141,6 @@ impl ChatSession for AcpChat {
         let Some(question_data) = pending.question_data.as_ref() else {
             return Err(ProviderError::new("answer_invalid", "interaction is not a Kimi question"));
         };
-        let active_turn = self.active_turn.lock().ok().and_then(|value| value.clone());
         validate_turn(pending.turn_id.as_deref(), active_turn.as_deref(), turn_id)?;
         let (choice_id, status) = kimi_question_choice(&pending.choices, response)?;
         let summary = answer_summary(question_data, response);
@@ -1162,16 +1150,8 @@ impl ChatSession for AcpChat {
             Err(error) => return Err(error),
         }
         let rpc_id = pending.rpc_id.clone();
-        drop(permissions);
-        if self.active_turn.lock().ok().and_then(|value| value.clone()).as_deref() != Some(turn_id) {
-            return Err(ProviderError::new("approval_stale", "approval is not bound to a live turn"));
-        }
         let outcome = json!({"outcome":{"outcome":"selected","optionId":choice_id}});
         let result = self.process.respond(rpc_id, outcome);
-        let mut permissions = self
-            .permissions
-            .lock()
-            .map_err(|_| ProviderError::new("provider_internal", "ACP permission lock poisoned"))?;
         match result {
             Ok(()) => {
                 permissions.remove(approval_id);
@@ -1414,6 +1394,53 @@ fn acp_permission_subagent(params: &Value, state: &AcpUiState) -> Option<Value> 
     }
 }
 
+/// Settle unsubmitted interactions when the parent native prompt ends.
+fn drain_acp_permissions(
+    permissions: &Mutex<HashMap<String, PermissionRequest>>,
+    responder: &JsonLineResponder,
+) {
+    if let Ok(mut pending) = permissions.lock() {
+        for (_, request) in pending.drain() {
+            // An uncertain response must never be retried with another outcome.
+            if request.state.outcome_unknown || request.state.submitting_operation.is_some() { continue; }
+            let _ = responder.respond(request.rpc_id, json!({"outcome":{"outcome":"cancelled"}}));
+        }
+    }
+}
+
+/// Return whether this frame may be projected. Delegation approval precedes
+/// replay cancellation; every unsupported reverse request is rejected once.
+fn handle_acp_message(
+    responder: &Mutex<Option<JsonLineResponder>>,
+    raw: &Value,
+    delegation_tools: bool,
+    project_events: bool,
+) -> bool {
+    let request = raw.get("id").is_some() && raw.get("method").is_some()
+        && raw.get("result").is_none() && raw.get("error").is_none();
+    if !request { return project_events; }
+    let permission = raw["method"] == "session/request_permission";
+    if delegation_tools && permission && raw.get("params")
+        .and_then(super::acp_threadterm_permission_option).is_some() {
+        // Once attempted, do not send a different outcome after a partial write.
+        let _ = approve_threadterm_tool(responder, raw);
+        return false;
+    }
+    if permission && project_events { return true; }
+    if let Ok(slot) = responder.lock() {
+        if let Some(responder) = slot.as_ref() {
+            let id = raw["id"].clone();
+            let result = if permission {
+                responder.respond(id, json!({"outcome":{"outcome":"cancelled"}}))
+            } else {
+                responder.reject(id, -32601, "Method not found")
+            };
+            if let Err(error) = result { eprintln!("[acp] reverse response failed: {}", error.message); }
+        }
+    }
+    false
+}
+
 #[allow(clippy::too_many_arguments)]
 fn emit_acp_message(
     events: &ScopedProviderEvents,
@@ -1426,39 +1453,50 @@ fn emit_acp_message(
     ui: &Mutex<AcpUiState>,
     raw: Value,
 ) {
-    if raw.get("method").and_then(Value::as_str) == Some("session/update") {
-        if let Some(event_session) = raw.pointer("/params/sessionId").and_then(Value::as_str) {
-            if native.lock().ok().and_then(|value| value.clone()).as_deref()
-                .is_some_and(|parent| parent != event_session)
-            {
-                #[cfg(debug_assertions)]
-                eprintln!("[acp debug] {provider}: dropping foreign session/update");
-                return;
-            }
-        }
+    let bound_native = native.lock().ok().and_then(|value| value.clone());
+    let foreign = raw.pointer("/params/sessionId").and_then(Value::as_str)
+        .is_some_and(|event_session| bound_native.as_deref().is_some_and(|parent| parent != event_session));
+    let permission = raw["method"] == "session/request_permission"
+        && raw.get("id").is_some() && raw.get("result").is_none() && raw.get("error").is_none();
+    if foreign && !permission {
+        #[cfg(debug_assertions)]
+        eprintln!("[acp debug] {provider}: dropping foreign frame");
+        return;
     }
-    let native_id = raw
+    // A child interaction belongs to the parent UI, never to its native binding.
+    let native_id = bound_native.or_else(|| raw
         .get("params")
         .and_then(|p| p.get("sessionId"))
         .and_then(Value::as_str)
-        .map(ToOwned::to_owned)
-        .or_else(|| native.lock().ok().and_then(|v| v.clone()));
+        .map(ToOwned::to_owned));
     let method = raw
         .get("method")
         .and_then(Value::as_str)
         .unwrap_or("provider.event");
     let params = raw.get("params").cloned().unwrap_or_else(|| raw.clone());
-    let turn_id = params
+    let turn_id = if foreign {
+        active_turn.lock().ok().and_then(|value| value.clone())
+    } else { params
         .get("turnId")
         .and_then(Value::as_str)
         .map(ToOwned::to_owned)
-        .or_else(|| active_turn.lock().ok().and_then(|value| value.clone()));
+        .or_else(|| active_turn.lock().ok().and_then(|value| value.clone())) };
     let active = active_turn.lock().ok().and_then(|value| value.clone());
     if let Ok(mut state) = ui.lock() {
         state.text_segments.sync_turn(active.as_deref());
     }
-    if method == "session/request_permission" && raw.get("id").is_some() {
+    if permission {
         let rpc_id = raw.get("id").cloned().unwrap_or(Value::Null);
+        // Keep publication serialized with terminal drainage and submission.
+        // A late request must settle without creating an unanswerable card.
+        let Ok(active) = active_turn.lock() else { return; };
+        let turn_id = active.clone();
+        if turn_id.is_none() {
+            if let Some(responder) = ui.lock().ok().and_then(|state| state.permission_responder.clone()) {
+                let _ = responder.respond(rpc_id, json!({"outcome":{"outcome":"cancelled"}}));
+            }
+            return;
+        }
         let approval_id = encode_approval_id(&rpc_id);
         let options = params
             .get("options")
@@ -1494,7 +1532,9 @@ fn emit_acp_message(
             payload["answerable"] = json!(true);
             payload["form"] = question_data["form"].clone();
         }
-        if let Some(subagent) = ui
+        if foreign {
+            payload["subagent"] = json!({"label":"Subagent"});
+        } else if let Some(subagent) = ui
             .lock()
             .ok()
             .and_then(|state| acp_permission_subagent(&params, &state))
@@ -1502,6 +1542,7 @@ fn emit_acp_message(
             payload["subagent"] = subagent;
         }
         if let Ok(mut state) = ui.lock() {
+            state.text_segments.sync_turn(turn_id.as_deref());
             state.text_segments.advance(turn_id.as_deref());
         }
         emit(
@@ -2560,6 +2601,150 @@ fn kimi_terminal_cwd(cwd: &str) -> std::borrow::Cow<'_, str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(windows)]
+    fn conformance_response_sink(dir: &std::path::Path) -> (JsonLineProcess, std::path::PathBuf) {
+        let log = dir.join("responses.jsonl");
+        let log_literal = log.to_string_lossy().replace('\'', "''");
+        let script = format!(r#"$ErrorActionPreference='Stop'; Get-ChildItem Env: | Where-Object {{ $_.Name -ieq 'PATH' }} | Remove-Item; if (Get-ChildItem Env: | Where-Object {{ $_.Name -ieq 'PATH' }}) {{ exit 3 }}; while ($null -ne ($line=[Console]::In.ReadLine())) {{ [System.IO.File]::AppendAllText('{log_literal}',$line+"`n"); $frame=ConvertFrom-Json $line; if ($frame.method -eq 'session/prompt') {{ $prompt=$frame.id }}; if ($frame.method -eq 'finish-parent') {{ [Console]::Out.WriteLine('{{"jsonrpc":"2.0","id":'+$prompt+',"result":{{"stopReason":"end_turn"}}}}'); [Console]::Out.Flush() }}; if ($frame.method -eq 'barrier') {{ [Console]::Out.WriteLine('{{"jsonrpc":"2.0","id":'+$frame.id+',"result":{{}}}}'); [Console]::Out.Flush() }} }}"#);
+        let powershell = std::path::PathBuf::from(std::env::var("SystemRoot").unwrap_or_else(|_| "C:\\Windows".into()))
+            .join("System32/WindowsPowerShell/v1.0/powershell.exe");
+        let spec = CommandSpec::from_path(powershell, vec!["-NoProfile".into(), "-NonInteractive".into(), "-Command".into(), script]).unwrap();
+        let process = JsonLineProcess::spawn("conformance-acp", &spec, None, &[], EnvelopeStyle::JsonRpc2, Arc::new(|_| {})).unwrap();
+        (process, log)
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn acp_conformance_terminal_and_kimi_wire() {
+        use super::super::conformance::{assert_exactly_once, assert_no_parent_effect, fixture};
+        for provider in ["gemini", "kimi"] {
+            let dir = tempfile::tempdir().unwrap();
+            let (process, log) = conformance_response_sink(dir.path());
+            let (sender, mut receiver) = crate::provider_events::tap_channel(64);
+            let events = ScopedProviderEvents::new(sender, "worker");
+            let native = Mutex::new(Some("parent".to_owned()));
+            let active = Arc::new(Mutex::new(None));
+            let permissions = Arc::new(Mutex::new(HashMap::new()));
+            let ui = Arc::new(Mutex::new(AcpUiState { permission_responder: Some(process.responder()), ..AcpUiState::default() }));
+            let mut chat = AcpChat { provider: provider.into(), process, session_id: "s".into(), native_id: "parent".into(), cwd: String::new(), events,
+                active_turn: active, permissions, ui };
+            chat.start_prompt("test", "parent-turn").unwrap();
+            assert_eq!(receiver.try_recv().unwrap().kind, "chat.turn.started");
+            // Kimi's child wire history is separate from ACP parent ingress.
+            let wire = fixture("kimi-subagent-wire.jsonl");
+            assert!(wire.iter().any(|row| row["type"] == "turn.ended"));
+            let child_items = kimi_wire_transcript(KIMI_WIRE);
+            assert!(child_items.iter().flat_map(|item| item["parts"].as_array().unwrap()).any(|part| part["text"] == "Review complete."));
+            assert!(receiver.try_recv().is_err());
+            for raw in fixture("acp-foreign-session-frames.jsonl").into_iter().take(5) {
+                emit_acp_message(&chat.events, provider, "s", &native, &chat.active_turn, &chat.permissions, &Mutex::new(false), &chat.ui, raw);
+            }
+            let foreign: Vec<_> = std::iter::from_fn(|| receiver.try_recv().ok()).collect();
+            assert_no_parent_effect(&foreign, "s");
+            assert!(foreign.is_empty());
+            assert_eq!(chat.active_turn.lock().unwrap().as_deref(), Some("parent-turn"));
+            assert_eq!(native.lock().unwrap().as_deref(), Some("parent"));
+            // A Kimi permission for an unknown tool ID is labelled using the
+            // existing running native subagent, while staying on the parent turn.
+            chat.ui.lock().unwrap().subagent_calls.insert("agent-call".into(), json!({"status":"running","description":"Review"}));
+            let request = json!({"id":"terminal-pending","method":"session/request_permission","params":{"sessionId":"parent","toolCallId":"unknown-child-tool","options":[{"optionId":"allow","kind":"allow_once","name":"Allow"}]}});
+            emit_acp_message(&chat.events, provider, "s", &native, &chat.active_turn, &chat.permissions, &Mutex::new(false), &chat.ui, request);
+            let permission = receiver.try_recv().unwrap();
+            assert_eq!(permission.data["part"]["data"]["subagent"]["key"], "agent-call");
+            chat.process.request("barrier", json!({})).unwrap();
+            assert_eq!(chat.active_turn.lock().unwrap().as_deref(), Some("parent-turn"));
+            chat.process.notification("finish-parent", json!({})).unwrap();
+            let deadline = std::time::Instant::now() + Duration::from_secs(5);
+            let mut terminal = Vec::new();
+            while std::time::Instant::now() < deadline {
+                terminal.extend(std::iter::from_fn(|| receiver.try_recv().ok()));
+                if terminal.iter().any(|event| event.kind == "chat.turn.completed") { break; }
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            assert_eq!(terminal.iter().filter(|event| event.kind == "chat.turn.completed").count(), 1);
+            assert!(chat.active_turn.lock().unwrap().is_none());
+            assert!(chat.permissions.lock().unwrap().is_empty());
+            emit_acp_message(&chat.events, provider, "s", &native, &chat.active_turn, &chat.permissions, &Mutex::new(false), &chat.ui,
+                json!({"id":"late-permission","method":"session/request_permission","params":{"sessionId":"child","options":[]}}));
+            assert!(receiver.try_recv().is_err());
+            assert!(chat.permissions.lock().unwrap().is_empty());
+            drain_acp_permissions(&chat.permissions, &chat.process.responder());
+            chat.process.request("barrier", json!({})).unwrap();
+            let responses: Vec<Value> = std::fs::read_to_string(log).unwrap().lines().map(|line| serde_json::from_str(line).unwrap()).collect();
+            assert_exactly_once(&responses, &[json!("terminal-pending"), json!("late-permission")]);
+            assert_eq!(responses.iter().find(|row| row["id"] == "terminal-pending").unwrap()["result"], json!({"outcome":{"outcome":"cancelled"}}));
+            assert_eq!(responses.iter().find(|row| row["id"] == "late-permission").unwrap()["result"], json!({"outcome":{"outcome":"cancelled"}}));
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn acp_conformance_foreign_frames_and_reverse_requests() {
+        use super::super::conformance::{assert_exactly_once, assert_no_parent_effect, fixture};
+        for provider in ["gemini", "kimi"] {
+            let dir = tempfile::tempdir().unwrap();
+            let (process, log) = conformance_response_sink(dir.path());
+            let responder = Arc::new(Mutex::new(None));
+            let ready_responder = Arc::clone(&responder);
+            let ready: Arc<dyn Fn(Value) + Send + Sync> = Arc::new(move |raw| {
+                assert!(!handle_acp_message(&ready_responder, &raw, false, false));
+            });
+            let startup = Mutex::new(Some(Vec::new()));
+            dispatch_acp_message(&startup, &ready, json!({"id":"early-unknown","method":"terminal/create"}));
+            dispatch_acp_message(&startup, &ready, json!({"id":"early-permission","method":"session/request_permission","params":{"sessionId":"parent"}}));
+            assert_eq!(startup.lock().unwrap().as_ref().unwrap().len(), 2);
+            *responder.lock().unwrap() = Some(process.responder());
+            flush_acp_messages(&startup, &ready);
+            flush_acp_messages(&startup, &ready);
+            let (sender, mut receiver) = crate::provider_events::tap_channel(64);
+            let events = ScopedProviderEvents::new(sender, "worker");
+            let native = Mutex::new(Some("parent".to_owned()));
+            let active = Arc::new(Mutex::new(Some("turn".to_owned())));
+            let permissions = Arc::new(Mutex::new(HashMap::new()));
+            let ui = Arc::new(Mutex::new(AcpUiState::default()));
+            let think = Mutex::new(false);
+            for raw in fixture("acp-foreign-session-frames.jsonl") {
+                let replay = raw["id"] == "replay";
+                if handle_acp_message(&responder, &raw, false, !replay) {
+                    emit_acp_message(&events, provider, "s", &native, &active, &permissions, &think, &ui, raw);
+                }
+            }
+            let observed: Vec<_> = std::iter::from_fn(|| receiver.try_recv().ok()).collect();
+            assert_no_parent_effect(&observed, "s");
+            assert_eq!(observed.len(), 1);
+            assert_eq!(observed[0].kind, "chat.approval");
+            assert_eq!(observed[0].native_id.as_deref(), Some("parent"));
+            assert_eq!(observed[0].turn_id.as_deref(), Some("turn"));
+            assert_eq!(observed[0].data["part"]["data"]["subagent"]["label"], "Subagent");
+            assert_eq!(native.lock().unwrap().as_deref(), Some("parent"));
+            assert_eq!(active.lock().unwrap().as_deref(), Some("turn"));
+            assert_eq!(ui.lock().unwrap().config_generation, 0);
+            assert!(ui.lock().unwrap().parent_tool_calls.is_empty());
+            assert_eq!(permissions.lock().unwrap().len(), 1);
+            let mut chat = AcpChat { provider: provider.into(), process, session_id: "s".into(), native_id: "parent".into(), cwd: String::new(), events,
+                active_turn: active, permissions, ui };
+            let id = encode_approval_id(&json!("child-permission"));
+            chat.approve("turn", &id, "allow", "answer").unwrap();
+            assert!(chat.approve("turn", &id, "allow", "answer").is_err());
+            // Delegation must precede a closed replay gate.
+            let delegation = json!({"id":"delegation","method":"session/request_permission","params":{"sessionId":"parent","toolCall":{"title":"mcp__threadterm__delegate_start","kind":"other"},"options":[{"optionId":"once","kind":"allow_once","name":"Allow"}]}});
+            assert!(!handle_acp_message(&responder, &delegation, true, false));
+            chat.process.request("barrier", json!({})).unwrap();
+            let responses: Vec<Value> = std::fs::read_to_string(log).unwrap().lines().map(|line| serde_json::from_str(line).unwrap()).collect();
+            assert_exactly_once(&responses, &[json!("unknown"), json!("replay"), json!("child-permission"), json!("delegation"), json!("early-unknown"), json!("early-permission")]);
+            for (id, expected) in [
+                ("replay", json!({"outcome":{"outcome":"cancelled"}})),
+                ("early-permission", json!({"outcome":{"outcome":"cancelled"}})),
+                ("child-permission", json!({"outcome":{"outcome":"selected","optionId":"allow"}})),
+                ("delegation", json!({"outcome":{"outcome":"selected","optionId":"once"}})),
+            ] {
+                assert_eq!(responses.iter().find(|row| row["id"] == id).unwrap()["result"], expected);
+            }
+            assert_eq!(responses.iter().find(|row| row["id"] == "unknown").unwrap()["error"]["code"], -32601);
+            assert_eq!(responses.iter().find(|row| row["id"] == "early-unknown").unwrap()["error"]["code"], -32601);
+        }
+    }
     use crate::plugins::PluginRegistry;
 
     #[test]
