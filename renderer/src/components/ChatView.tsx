@@ -17,10 +17,10 @@ import { usageCardsForItems } from '../usageCard';
 import { connectionStatusText, emptyLink, overlayKind, reduceChatLink } from "../chatConnection";
 import { activeTurnId, chatCanControl, formatChatDuration, itemShowsStreaming, matchSlashCommands, partBody, partLabel, shouldRenderPart, slashQuery } from "../chatPresentation";
 import { groupCodexTranscript, type CodexTurn } from "../codexTranscript";
-import { groupToolActivity, orderCompletedTurnItems, toolEntriesForItems, withoutToolParts, type ToolActivityEntry } from "../toolActivity";
+import { completedTurnPresentation, groupToolActivity, toolEntriesForItems, type ToolActivityEntry } from "../toolActivity";
 import { ToolActivity } from './ToolActivity';
 import { SubagentCard } from './SubagentCard';
-import { isSubagentPart, subagentInfo, subagentItemsOf, subagentTitle } from '../subagentActivity';
+import { isSubagentPart, subagentInfo, subagentTitle } from '../subagentActivity';
 import { createCodexStreamQueue } from "../codexStream";
 import { FileLinkedMarkdown, FileLinkedText, FileReferenceChips } from './FileReferenceText';
 import { parseMarkdownFileReference } from '../fileReferences';
@@ -412,6 +412,7 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession }
   const [slashIndex, setSlashIndex] = useState(0);
   const composeRef = useRef<HTMLTextAreaElement>(null);
   const logRef = useRef<HTMLDivElement>(null);
+  const logContentRef = useRef<HTMLDivElement>(null);
   const followRef = useRef(true);
   function clearFirstResponseWait(token?: string) {
     if (token && firstResponseWaitRef.current?.token !== token) return;
@@ -868,6 +869,8 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession }
     const el = logRef.current;
     if (!el) return;
     const saved = chatViewports.get(session.id);
+    followRef.current = saved?.follow ?? true;
+    el.style.overflowAnchor = followRef.current ? 'none' : 'auto';
     if (!saved || saved.follow) el.scrollTop = el.scrollHeight;
     else el.scrollTop = saved.top;
   }, [items, session.id]);
@@ -875,6 +878,20 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession }
     const el = logRef.current;
     if (el && followRef.current) el.scrollTop = el.scrollHeight;
   }, [items, text, firstResponseWait]);
+  useEffect(() => {
+    const log = logRef.current;
+    const content = logContentRef.current;
+    if (!log || !content) return;
+    // Native anchoring is off only while following (set with followRef): its
+    // reflow scroll event would otherwise clear followRef before this observer
+    // can pin the new bottom. A scrolled-up reader keeps anchoring.
+    const observer = new ResizeObserver(() => {
+      if (followRef.current) log.scrollTop = log.scrollHeight;
+    });
+    observer.observe(log);
+    observer.observe(content);
+    return () => observer.disconnect();
+  }, []);
   function renderMenuRows(option: ChatSessionOption) {
     const choices = option.choices.length ? option.choices : [{ value: option.value, name: option.value || copy("Current", "当前") }];
     return choices.map(choice => <button type="button" key={choice.value} role="menuitemradio" aria-checked={choice.value === option.value} className={`chat-menu-item${choice.value === option.value ? " active" : ""}`} disabled={!writable || busy} onClick={() => { setMenuOpen(null); void setOption(option, choice.value); }}>
@@ -985,13 +1002,7 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession }
         : <Fragment key={entry.item.parts.some(isSubagentPart) ? `${entry.item.id}-subagent` : entry.id}>{renderItem(entry.item)}</Fragment>);
     }
     const tools = toolEntriesForItems(group.items);
-    const subagents = subagentItemsOf(group.items);
-    const withoutSubagents = (rows: ChatItem[]) => rows.flatMap(item => {
-      const parts = item.parts.filter(part => !isSubagentPart(part));
-      return parts.length ? [{ ...item, parts }] : [];
-    });
-    const activity = withoutSubagents(withoutToolParts(group.activity));
-    const response = orderCompletedTurnItems(withoutSubagents(withoutToolParts(group.response)));
+    const { activity, subagents, response } = completedTurnPresentation(group.activity, group.response);
     return [
       !group.response.some(item => usageCards.has(item.id)) && (activity.length ? <details className="codex-work" key={`${group.id}-work`}>
         <summary><span className="codex-work-label">{formatChatDuration(group.elapsedMs, zh)}<Icon name="chevR" /></span></summary>
@@ -999,7 +1010,7 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession }
       </details> : <p className="chat-duration" key={`${group.id}-work`}>{formatChatDuration(group.elapsedMs, zh)}</p>),
       tools.length ? drawer(tools) : null,
       ...subagents.map(item => <Fragment key={`${item.id}-subagent`}>{renderItem(item)}</Fragment>),
-      ...response.map(item => <Fragment key={`${item.id}-response`}>{renderItem(item)}</Fragment>),
+      ...response.map(item => <Fragment key={item.parts.some(isSubagentPart) ? `${item.id}-subagent` : `${item.id}-response`}>{renderItem(item)}</Fragment>),
     ];
   }
   return <section className={`chat-view v3-session-chat${overlay === "full" ? " is-connecting" : ""}`} data-provider={session.provider} data-testid={`session-chat-${session.id}`} aria-label={copy('Structured chat', '图形聊天')}>
@@ -1026,9 +1037,10 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession }
       const el = event.currentTarget;
       const follow = el.scrollHeight - el.scrollTop - el.clientHeight < CHAT_FOLLOW_THRESHOLD;
       followRef.current = follow;
+      el.style.overflowAnchor = follow ? 'none' : 'auto';
       if (chatViewports.size > 50) { const oldest = chatViewports.keys().next(); if (!oldest.done) chatViewports.delete(oldest.value); }
       chatViewports.set(session.id, { top: el.scrollTop, follow });
-    }}>{items.length ? groupCodexTranscript(items, session.provider === "codex").map(group => <section className="codex-turn chat-turn" key={group.id}>
+    }}><div ref={logContentRef}>{items.length ? groupCodexTranscript(items, session.provider === "codex").map(group => <section className="codex-turn chat-turn" key={group.id}>
       {renderTurn(group)}
     </section>) : firstResponseWait ? null : <div className="empty v3-empty"><strong>{copy('No messages yet.', '暂无消息。')}</strong><p>{copy('Send a message to start working with this provider.', '发送消息，开始与此提供方协作。')}</p></div>}
       {submissionPreview && !items.some(item => item.role === 'user' && item.turnId === submissionPreview.token) && <article className={`v3-chat-message user is-native is-${session.provider} chat-pending-submission`} aria-label={copy('Message being sent', '正在发送的消息')}>
@@ -1038,6 +1050,7 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession }
         </div>
       </article>}
       {firstResponseWait && <div className="chat-first-response-wait" role="status" aria-live="polite" aria-label={submissionPreview && busy ? copy('Sending…', '正在发送…') : copy("Thinking", "思考中")}><span>{submissionPreview && busy ? copy('Sending…', '正在发送…') : copy("Thinking", "思考中")}</span><span className="chat-first-response-dots" aria-hidden="true"><i /><i /><i /></span></div>}
+      </div>
     </div>
     {recovery !== undefined && <div role="alert" className="surface-error">
       <p>{copy('An unsaved draft is available on this device.', '此设备上有一份未保存的草稿。')}</p>

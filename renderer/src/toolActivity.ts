@@ -1,5 +1,6 @@
 import type { ChatItem, ChatPart } from '@threadterm/protocol';
 import { delegationTool } from './delegation';
+import { isSubagentPart, subagentItemsOf } from './subagentActivity';
 
 export interface ToolActivityEntry { id: string; itemId: string; part: ChatPart }
 export type ToolPresentation =
@@ -77,6 +78,15 @@ export function orderCompletedTurnItems(items: readonly ChatItem[]): ChatItem[] 
   if (!approvals.length && !interactions.length) return [...items];
   const orderedFinal = approvals.length ? { ...final, parts: [...approvals, ...final.parts.filter(part => part.type !== 'approval')] } : final;
   return [...items.slice(0, finalIndex), ...interactions, orderedFinal, ...remainder];
+}
+
+/** Activity cards precede the response; response cards keep their native position. */
+export function completedTurnPresentation(activityItems: readonly ChatItem[], responseItems: readonly ChatItem[]): { activity: ChatItem[]; subagents: ChatItem[]; response: ChatItem[] } {
+  const activity = withoutToolParts(activityItems).flatMap(item => {
+    const parts = item.parts.filter(part => !isSubagentPart(part));
+    return parts.length ? [{ ...item, parts }] : [];
+  });
+  return { activity, subagents: subagentItemsOf(activityItems), response: orderCompletedTurnItems(withoutToolParts(responseItems)) };
 }
 
 /** One chronological tool list; classification never changes grouping/order. */
