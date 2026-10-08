@@ -5,7 +5,7 @@ use super::{
         validate_turn, write_failed_not_sent, ApprovalChoice, PendingApprovalState,
     },
     common::{
-        encode_approval_id, history_page, insert_optional, validate_native_id, version_probe,
+        dispatch_acp_message, flush_acp_messages, encode_approval_id, history_page, insert_optional, validate_native_id, version_probe,
         ChatTextSegments, CommandSpec, EnvelopeStyle, JsonLineProcess, JsonLineResponder,
     },
     acp_mcp_servers, approve_threadterm_tool, emit_bound as emit, ChatSession, ChatToolServer,
@@ -78,20 +78,18 @@ impl GrokAdapter {
         let spec = CommandSpec::provider("grok", &["agent", "--no-leader", "stdio"])?;
         let owned_session = session_id.to_owned();
         let responder = Arc::new(Mutex::new(None));
-        let on_message = {
+        let ready_message: Arc<dyn Fn(Value) + Send + Sync> = {
             let responder = Arc::clone(&responder);
             Arc::new(move |raw: Value| {
-                if let Some(capture) = &capture {
-                    if let Ok(mut values) = capture.lock() {
-                        values.push(raw.clone());
-                    }
-                }
                 // The parent's calls to ThreadTerm's own delegation tools are
                 // approved here (Grok names them `threadterm__<tool>`).
-                if delegation_tools && approve_threadterm_tool(&responder, &raw) {
+                if delegation_tools && grok_reverse_rpc(&raw).is_some()
+                    && raw["method"] == "session/request_permission"
+                    && raw.get("params").and_then(super::acp_threadterm_permission_option).is_some() {
+                    let _ = approve_threadterm_tool(&responder, &raw);
                     return;
                 }
-                if project_events {
+                if project_events || grok_reverse_rpc(&raw).is_some() {
                     emit_grok_message(
                         &events,
                         &owned_session,
@@ -105,6 +103,15 @@ impl GrokAdapter {
                 }
             })
         };
+        let startup = Arc::new(Mutex::new(Some(Vec::<Value>::new())));
+        let reader_startup = Arc::clone(&startup);
+        let reader_ready = Arc::clone(&ready_message);
+        let on_message = Arc::new(move |raw: Value| {
+            if let Some(capture) = &capture {
+                if let Ok(mut values) = capture.lock() { values.push(raw.clone()); }
+            }
+            dispatch_acp_message(&reader_startup, &reader_ready, raw);
+        });
         let environment = self.network.grok_env()?;
         let environment: Vec<_> = environment
             .iter()
@@ -121,6 +128,7 @@ impl GrokAdapter {
         if let Ok(mut slot) = responder.lock() {
             *slot = Some(process.responder());
         }
+        flush_acp_messages(&startup, &ready_message);
         let initialized = process.request(
             "initialize",
             json!({
@@ -419,6 +427,7 @@ struct GrokUiState {
     cancel_requested: bool,
     tool_turn: Option<String>,
     tool_identities: HashMap<String, GrokToolIdentity>,
+    completed_background_turns: VecDeque<String>,
     subagents: GrokSubagents,
 }
 
@@ -1256,9 +1265,6 @@ impl GrokChat {
             params,
             move |result| {
                 cancel_grok_questions(&responder, &permissions, Some(&turn_id));
-                if let Ok(mut pending) = permissions.lock() {
-                    pending.retain(|_, item| item.question.is_some());
-                }
                 let duration_ms = started
                     .lock()
                     .ok()
@@ -1312,6 +1318,7 @@ impl GrokChat {
                         **active = None;
                     }
                 }
+                drop(active);
                 cancel_grok_questions(&responder, &permissions, Some(&turn_id));
             },
         );
@@ -1320,9 +1327,6 @@ impl GrokChat {
                 *active = None;
             }
             cancel_grok_questions(&self.process.responder(), &self.permissions, None);
-            if let Ok(mut pending) = self.permissions.lock() {
-                pending.retain(|_, item| item.question.is_some());
-            }
             emit(
                 &self.events,
                 "grok",
@@ -1409,19 +1413,7 @@ impl ChatSession for GrokChat {
         }
         let rpc_id = pending.rpc_id.clone();
         drop(permissions);
-        let still_active = self
-            .active_turn
-            .lock()
-            .ok()
-            .and_then(|value| value.clone())
-            .as_deref()
-            == Some(turn_id);
-        if !still_active {
-            return Err(ProviderError::new(
-                "approval_stale",
-                "approval is not bound to a live turn",
-            ));
-        }
+        // A claimed native RPC must finish once even if its turn ends now.
         let outcome = json!({"outcome":{"outcome":"selected","optionId":choice_id}});
         let result = self.process.respond(rpc_id, outcome);
         let mut permissions = self.permissions.lock().map_err(|_| {
@@ -1806,15 +1798,16 @@ fn cancel_grok_questions(
 ) {
     let rpc_ids = permissions.lock().ok().map(|mut pending| {
         let ids = pending.iter().filter(|(_, request)| {
-            request.question.is_some()
-                && request.state.submitting_operation.is_none()
+            request.state.submitting_operation.is_none()
                 && !request.state.outcome_unknown
                 && turn_id.is_none_or(|turn| request.turn_id.as_deref() == Some(turn))
         }).map(|(approval_id, _)| approval_id.clone()).collect::<Vec<_>>();
-        ids.into_iter().filter_map(|approval_id| pending.remove(&approval_id).map(|request| request.rpc_id)).collect::<Vec<_>>()
+        ids.into_iter().filter_map(|approval_id| pending.remove(&approval_id).map(|request| (request.rpc_id, request.question.is_some()))).collect::<Vec<_>>()
     }).unwrap_or_default();
-    for rpc_id in rpc_ids {
-        let _ = responder.respond(rpc_id, json!({"outcome":"cancelled"}));
+    for (rpc_id, question) in rpc_ids {
+        let outcome = if question { json!({"outcome":"cancelled"}) }
+            else { json!({"outcome":{"outcome":"cancelled"}}) };
+        let _ = responder.respond(rpc_id, outcome);
     }
 }
 
@@ -1865,6 +1858,23 @@ fn emit_grok_message(
     if reject_unknown_grok_rpc(responder, &raw) {
         return;
     }
+    // An unbound foreign request cannot acquire the parent native identity or
+    // attach an interaction to an unrelated turn. Known children use the normal
+    // labelled path; unknown sessions still get one native cancellation reply.
+    if child_request.is_none() && update_session_id.is_some_and(|id|
+        parent_native_id.as_deref().is_some_and(|parent| parent != id)) {
+        if let Some((id, method)) = grok_reverse_rpc(&raw) {
+            if let Ok(slot) = responder.lock() {
+                if let Some(responder) = slot.as_ref() {
+                    let outcome = if method == "session/request_permission" {
+                        json!({"outcome":{"outcome":"cancelled"}})
+                    } else { json!({"outcome":"cancelled"}) };
+                    let _ = responder.respond(id, outcome);
+                }
+            }
+            return;
+        }
+    }
     let native_id = if child_request.is_some() {
         parent_native_id.clone()
     } else {
@@ -1875,14 +1885,58 @@ fn emit_grok_message(
             .or(parent_native_id)
     };
     let params = raw.get("params").cloned().unwrap_or_else(|| raw.clone());
+    // Grok wakes the parent after a background subagent completes without a
+    // client `session/prompt` request. Its promptId is the only native turn
+    // identity, and it must not inherit the prior completed turn.
+    let background_turn = params
+        .get("_meta")
+        .and_then(|meta| meta.get("promptId"))
+        .or_else(|| params.pointer("/update/prompt_id"))
+        .and_then(Value::as_str)
+        .filter(|_| child_request.is_none())
+        .filter(|prompt_id| prompt_id.starts_with("subagent-completed-"));
+    if let Some(background_turn) = background_turn {
+        if ui.lock().ok().is_some_and(|state| state.completed_background_turns.iter().any(|turn| turn == background_turn)) {
+            return;
+        }
+        let admission = active_turn.lock().ok().map(|mut active| {
+            if active.is_none() {
+                *active = Some(background_turn.to_owned());
+                Some(true)
+            } else if active.as_deref() == Some(background_turn) {
+                Some(false)
+            } else {
+                None
+            }
+        });
+        // A late background notification must not create an unstarted turn or
+        // append to a user prompt that has already taken the active slot.
+        let Some(started) = admission.flatten() else {
+            return;
+        };
+        if started {
+            emit(
+                events,
+                "grok",
+                session_id,
+                native_id.as_deref(),
+                Some(background_turn),
+                "chat.turn.started",
+                json!({"agentInitiated":true}),
+            );
+        }
+    }
     let turn_id = if let Some((_, _, turn)) = &child_request {
         turn.clone()
             .or_else(|| active_turn.lock().ok().and_then(|value| value.clone()))
     } else {
-        params
+        background_turn
+            .map(ToOwned::to_owned)
+            .or_else(|| params
             .get("turnId")
             .and_then(Value::as_str)
             .map(ToOwned::to_owned)
+            )
             .or_else(|| active_turn.lock().ok().and_then(|value| value.clone()))
     };
     let active = active_turn.lock().ok().and_then(|value| value.clone());
@@ -1898,18 +1952,6 @@ fn emit_grok_message(
             .cloned()
             .unwrap_or_default();
         let choices = acp_choices(&options);
-        if let Ok(mut values) = permissions.lock() {
-            values.insert(
-                approval_id.clone(),
-                PermissionRequest {
-                    rpc_id,
-                    turn_id: turn_id.clone(),
-                    choices: choices.clone(),
-                    question: None,
-                    state: PendingApprovalState::default(),
-                },
-            );
-        }
         let mut payload = approval_payload(
             &approval_id,
             "grok",
@@ -1929,10 +1971,17 @@ fn emit_grok_message(
                 .unwrap_or("Subagent");
             payload["subagent"] = json!({"key":key,"label":label});
         }
-        if let Ok(mut state) = ui.lock() {
+        let published = permissions.lock().ok().is_some_and(|mut values| {
+            let live = turn_id.as_deref().is_some_and(|turn|
+                active_turn.lock().ok().and_then(|active| active.clone()).as_deref() == Some(turn));
+            let Ok(mut state) = ui.lock() else { return false; };
+            if !live || state.cancel_requested { return false; }
+            values.insert(approval_id.clone(), PermissionRequest {
+                rpc_id: rpc_id.clone(), turn_id: turn_id.clone(), choices: choices.clone(), question: None,
+                state: PendingApprovalState::default(),
+            });
             state.subagents.text_segments.advance(turn_id.as_deref());
-        }
-        emit(
+            emit(
             events,
             "grok",
             session_id,
@@ -1945,7 +1994,16 @@ fn emit_grok_message(
                 "choices":choices,
                 "part":{"type":"approval","approvalId":approval_id,"status":"pending","data":payload}
             }),
-        );
+            );
+            true
+        });
+        if !published {
+            if let Ok(slot) = responder.lock() {
+                if let Some(responder) = slot.as_ref() {
+                    let _ = responder.respond(rpc_id, json!({"outcome":{"outcome":"cancelled"}}));
+                }
+            }
+        }
         return;
     }
     if method == "_x.ai/ask_user_question" && raw.get("id").is_some() {
@@ -2005,6 +2063,33 @@ fn emit_grok_message(
             state.subagents.notification(&GrokSubagentEvents {
                 events, session_id, native_id: native_id.as_deref(),
             }, kind, update, turn_id.as_deref());
+        }
+        return;
+    }
+    if kind == "turn_completed" && background_turn.is_some() {
+        let completed = active_turn.lock().ok().is_some_and(|mut active| {
+            if active.as_deref() == turn_id.as_deref() {
+                if let Ok(mut state) = ui.lock() {
+                    if state.completed_background_turns.len() >= 128 {
+                        state.completed_background_turns.pop_front();
+                    }
+                    state.completed_background_turns.push_back(turn_id.clone().unwrap_or_default());
+                }
+                // Publish completion before opening the slot to a queued prompt.
+                emit(events, "grok", session_id, native_id.as_deref(), turn_id.as_deref(),
+                    "chat.turn.completed", json!({"elapsedMs":update.get("elapsed_ms").and_then(Value::as_u64)}));
+                *active = None;
+                true
+            } else {
+                false
+            }
+        });
+        if completed {
+            if let Ok(slot) = responder.lock() {
+                if let Some(responder) = slot.as_ref() {
+                    cancel_grok_questions(responder, permissions, turn_id.as_deref());
+                }
+            }
         }
         return;
     }
@@ -2948,13 +3033,23 @@ mod tests {
             .collect()
     }
 
+    fn grok_background_subagent_frames() -> Vec<Value> {
+        include_str!("../../tests/fixtures/grok-bg-subagent-frames.jsonl")
+            .lines()
+            .map(|line| serde_json::from_str::<Value>(line).unwrap())
+            .filter(|row| row["direction"] == "in")
+            .map(|row| row["frame"].clone())
+            .collect()
+    }
+
     struct GrokSubagentReplay {
         events: ScopedProviderEvents,
         received: broadcast::Receiver<ProviderEvent>,
-        native: Mutex<Option<String>>,
-        active: Mutex<Option<String>>,
-        permissions: Mutex<HashMap<String, PermissionRequest>>,
-        ui: Mutex<GrokUiState>,
+        native: Arc<Mutex<Option<String>>>,
+        active: Arc<Mutex<Option<String>>>,
+        permissions: Arc<Mutex<HashMap<String, PermissionRequest>>>,
+        ui: Arc<Mutex<GrokUiState>>,
+        responder: Arc<Mutex<Option<JsonLineResponder>>>,
     }
 
     impl GrokSubagentReplay {
@@ -2963,10 +3058,11 @@ mod tests {
             Self {
                 events: ScopedProviderEvents::new(sender, "subagent-worker"),
                 received,
-                native: Mutex::new(Some(GROK_PROBE_PARENT.into())),
-                active: Mutex::new(Some("parent-turn".into())),
-                permissions: Mutex::new(HashMap::new()),
-                ui: Mutex::new(GrokUiState::default()),
+                native: Arc::new(Mutex::new(Some(GROK_PROBE_PARENT.into()))),
+                active: Arc::new(Mutex::new(Some("parent-turn".into()))),
+                permissions: Arc::new(Mutex::new(HashMap::new())),
+                ui: Arc::new(Mutex::new(GrokUiState::default())),
+                responder: Arc::new(Mutex::new(None)),
             }
         }
 
@@ -2978,7 +3074,7 @@ mod tests {
                 &self.active,
                 &self.permissions,
                 &self.ui,
-                &Mutex::new(None),
+                &self.responder,
                 raw,
             );
         }
@@ -3057,6 +3153,7 @@ mod tests {
             "$ErrorActionPreference='Stop'; Get-ChildItem Env: | Where-Object {{ $_.Name -ieq 'PATH' }} | Remove-Item; if (Get-ChildItem Env: | Where-Object {{ $_.Name -ieq 'PATH' }}) {{ exit 3 }}; $start=[Console]::In.ReadLine(); if ($null -eq $start) {{ exit 2 }}; [Console]::Out.WriteLine('{{\"jsonrpc\":\"2.0\",\"id\":42,\"method\":\"session/request_permission\",\"params\":{{\"sessionId\":\"child\",\"turnId\":\"child-turn\",\"toolCall\":{{\"title\":\"Read files\"}},\"options\":[{{\"optionId\":\"allow\",\"kind\":\"allow_once\",\"name\":\"Allow\"}}]}}}}'); [Console]::Out.Flush(); $a=[Console]::In.ReadLine(); [System.IO.File]::WriteAllText('{}',$a); foreach($id in 43,44,45,46) {{ $q='Continue?'; [Console]::Out.WriteLine('{{\"jsonrpc\":\"2.0\",\"id\":'+$id+',\"method\":\"_x.ai/ask_user_question\",\"params\":{{\"sessionId\":\"child\",\"questions\":[{{\"question\":\"'+$q+'\",\"options\":[{{\"label\":\"Yes\"}}]}}]}}}}'); [Console]::Out.Flush(); $r=[Console]::In.ReadLine(); [System.IO.File]::AppendAllText('{}',\"`n\"+$r) }}",
             output_path, output_path
         );
+        let script = format!(r#"{script}; foreach($id in 47,48,49) {{ $method=if($id -eq 47){{'session/request_permission'}}elseif($id -eq 48){{'_x.ai/ask_user_question'}}else{{'_x.ai/unknown_request'}}; [Console]::Out.WriteLine('{{"jsonrpc":"2.0","id":'+$id+',"method":"'+$method+'","params":{{"sessionId":"unbound-foreign","_meta":{{"promptId":"subagent-completed-foreign"}}}}}}'); [Console]::Out.Flush(); $r=[Console]::In.ReadLine(); [System.IO.File]::AppendAllText('{output_path}',"`n"+$r) }}"#);
         let spec = CommandSpec::from_path(
             std::path::PathBuf::from(std::env::var_os("SystemRoot").unwrap())
                 .join("System32/WindowsPowerShell/v1.0/powershell.exe"),
@@ -3182,7 +3279,7 @@ mod tests {
         for _ in 0..50 {
             let text = std::fs::read_to_string(&output).unwrap_or_default();
             let rows = text.lines().map(|line| serde_json::from_str::<Value>(line).unwrap()).collect::<Vec<_>>();
-            if rows.len() >= 5 { responses = Some(rows); break; }
+            if rows.len() >= 8 { responses = Some(rows); break; }
             std::thread::sleep(Duration::from_millis(20));
         }
         assert_eq!(
@@ -3196,6 +3293,18 @@ mod tests {
         assert_eq!(responses.as_ref().unwrap()[2], json!({"jsonrpc":"2.0","id":44,"result":{"outcome":"accepted","answers":{"Continue?":"Yes"}}}));
         assert_eq!(responses.as_ref().unwrap()[3], json!({"jsonrpc":"2.0","id":45,"result":{"outcome":"cancelled"}}));
         assert_eq!(responses.as_ref().unwrap()[4], json!({"jsonrpc":"2.0","id":46,"result":{"outcome":"cancelled"}}));
+        assert_eq!(responses.as_ref().unwrap()[5], json!({"jsonrpc":"2.0","id":47,"result":{"outcome":{"outcome":"cancelled"}}}));
+        assert_eq!(responses.as_ref().unwrap()[6], json!({"jsonrpc":"2.0","id":48,"result":{"outcome":"cancelled"}}));
+        assert_eq!(responses.as_ref().unwrap()[7], json!({"jsonrpc":"2.0","id":49,"error":{"code":-32601,"message":"Method not found"}}));
+        assert_eq!(native.lock().unwrap().as_deref(), Some(GROK_PROBE_PARENT));
+        assert_eq!(chat.active_turn.lock().unwrap().as_deref(), Some("parent-turn"));
+        assert!(!std::iter::from_fn(|| received.try_recv().ok()).any(|event|
+            event.kind == "chat.approval" && [encode_approval_id(&json!(47)), encode_approval_id(&json!(48))]
+                .contains(&event.data["approvalId"].as_str().unwrap_or_default().to_owned())));
+        super::super::conformance::assert_exactly_once(
+            responses.as_ref().unwrap(),
+            &[json!(42), json!(43), json!(44), json!(45), json!(46), json!(47), json!(48), json!(49)],
+        );
     }
 
     #[test]
@@ -3425,6 +3534,97 @@ mod tests {
     }
 
     #[test]
+    fn grok_conformance_child_and_foreign_frames_keep_parent_scope() {
+        let mut replay = GrokSubagentReplay::new();
+        replay.spawn(GROK_PROBE_SPAWN, "Count files");
+        replay.bind(GROK_PROBE_CHILD, "Count files");
+        replay.drain();
+        let active_before = replay.active.lock().unwrap().clone();
+        let native_before = replay.native.lock().unwrap().clone();
+        for row in super::super::conformance::fixture("grok-subagent-frames.jsonl") {
+            let frame = row["frame"].clone();
+            if frame.pointer("/params/sessionId").and_then(Value::as_str) == Some(GROK_PROBE_CHILD) {
+                replay.raw(frame);
+            }
+        }
+        let child_events = replay.drain();
+        super::super::conformance::assert_no_parent_effect(&child_events, "grok-chat");
+        assert!(child_events.iter().filter(|event| event.kind == "chat.subagent.item").all(|event|
+            event.data["item"]["id"].as_str().is_some_and(|id| id.starts_with(GROK_PROBE_CHILD))));
+        assert_eq!(*replay.active.lock().unwrap(), active_before);
+        assert_eq!(*replay.native.lock().unwrap(), native_before);
+
+        for method in ["session/update", "_x.ai/session_notification", "_x.ai/queue/changed"] {
+            replay.raw(json!({"method":method,"params":{"sessionId":"foreign",
+                "turnId":"foreign-turn","update":{"sessionUpdate":"turn_completed"}}}));
+        }
+        let foreign_events = replay.drain();
+        super::super::conformance::assert_no_parent_effect(&foreign_events, "grok-chat");
+        assert!(foreign_events.is_empty());
+        assert_eq!(*replay.active.lock().unwrap(), active_before);
+        assert_eq!(*replay.native.lock().unwrap(), native_before);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn grok_conformance_reverse_request_lifecycle() {
+        let directory = tempfile::tempdir().unwrap();
+        let log = directory.path().join("responses.jsonl");
+        let literal = log.to_string_lossy().replace('\'', "''");
+        let script = format!(r#"$ErrorActionPreference='Stop'; Get-ChildItem Env: | Where-Object {{ $_.Name -ieq 'PATH' }} | Remove-Item; if (Get-ChildItem Env: | Where-Object {{ $_.Name -ieq 'PATH' }}) {{ exit 3 }}; while ($null -ne ($line=[Console]::In.ReadLine())) {{ [System.IO.File]::AppendAllText('{literal}',$line+"`n"); $frame=ConvertFrom-Json $line; if ($frame.method -eq 'barrier') {{ [Console]::Out.WriteLine('{{"jsonrpc":"2.0","id":'+$frame.id+',"result":{{}}}}'); [Console]::Out.Flush() }} }}"#);
+        let spec = CommandSpec::from_path(std::path::PathBuf::from(std::env::var_os("SystemRoot").unwrap())
+            .join("System32/WindowsPowerShell/v1.0/powershell.exe"),
+            vec!["-NoProfile".into(), "-NonInteractive".into(), "-Command".into(), script]).unwrap();
+        let process = JsonLineProcess::spawn("grok-conformance-sink", &spec, None, &[], EnvelopeStyle::JsonRpc2, Arc::new(|_| {})).unwrap();
+        let mut replay = GrokSubagentReplay::new();
+        *replay.responder.lock().unwrap() = Some(process.responder());
+        replay.spawn("spawn", "Inspect"); replay.bind("child", "Inspect"); replay.drain();
+        let permission = |id, session: &str| json!({"id":id,"method":"session/request_permission","params":{"sessionId":session,"options":[{"optionId":"allow","kind":"allow_once","name":"Allow"}]}});
+        replay.raw(permission(60, GROK_PROBE_PARENT));
+        assert_eq!(replay.drain()[0].kind, "chat.approval");
+        cancel_grok_questions(&process.responder(), &replay.permissions, Some("parent-turn"));
+        cancel_grok_questions(&process.responder(), &replay.permissions, Some("parent-turn"));
+        *replay.active.lock().unwrap() = None;
+        replay.raw(permission(61, "child")); replay.raw(permission(62, GROK_PROBE_PARENT));
+        assert!(replay.drain().is_empty());
+        *replay.active.lock().unwrap() = Some("parent-turn".into());
+        replay.ui.lock().unwrap().cancel_requested = true;
+        replay.raw(permission(63, GROK_PROBE_PARENT));
+        assert!(replay.drain().is_empty());
+        replay.ui.lock().unwrap().cancel_requested = false;
+        replay.raw(permission(64, GROK_PROBE_PARENT));
+        assert_eq!(replay.drain()[0].kind, "chat.approval");
+        replay.permissions.lock().unwrap().get_mut(&encode_approval_id(&json!(64))).unwrap().state.begin_submit("claimed").unwrap();
+        *replay.active.lock().unwrap() = None;
+        cancel_grok_questions(&process.responder(), &replay.permissions, Some("parent-turn"));
+        assert!(replay.permissions.lock().unwrap().contains_key(&encode_approval_id(&json!(64))));
+        process.respond(json!(64), json!({"outcome":{"outcome":"selected","optionId":"allow"}})).unwrap();
+        replay.permissions.lock().unwrap().remove(&encode_approval_id(&json!(64)));
+
+        let ready_events = replay.events.clone();
+        let ready_native = Arc::clone(&replay.native); let ready_active = Arc::clone(&replay.active);
+        let ready_permissions = Arc::clone(&replay.permissions); let ready_ui = Arc::clone(&replay.ui);
+        let ready_responder = Arc::clone(&replay.responder);
+        *replay.responder.lock().unwrap() = None;
+        let ready: Arc<dyn Fn(Value) + Send + Sync> = Arc::new(move |raw| emit_grok_message(&ready_events, "grok-chat", &ready_native, &ready_active, &ready_permissions, &ready_ui, &ready_responder, raw));
+        let startup = Mutex::new(Some(Vec::new()));
+        dispatch_acp_message(&startup, &ready, json!({"id":65,"method":"_x.ai/unknown"}));
+        dispatch_acp_message(&startup, &ready, permission(66, GROK_PROBE_PARENT));
+        *replay.responder.lock().unwrap() = Some(process.responder());
+        flush_acp_messages(&startup, &ready); flush_acp_messages(&startup, &ready);
+        assert!(replay.drain().is_empty());
+        assert!(replay.permissions.lock().unwrap().is_empty());
+        process.request("barrier", json!({})).unwrap();
+        let responses: Vec<Value> = std::fs::read_to_string(log).unwrap().lines().map(|line| serde_json::from_str(line).unwrap()).collect();
+        super::super::conformance::assert_exactly_once(&responses, &(60..=66).map(|id| json!(id)).collect::<Vec<_>>());
+        for id in [60,61,62,63,66] {
+            assert_eq!(responses.iter().find(|row| row["id"] == id).unwrap()["result"], json!({"outcome":{"outcome":"cancelled"}}));
+        }
+        assert_eq!(responses.iter().find(|row| row["id"] == 64).unwrap()["result"], json!({"outcome":{"outcome":"selected","optionId":"allow"}}));
+        assert_eq!(responses.iter().find(|row| row["id"] == 65).unwrap()["error"]["code"], -32601);
+    }
+
+    #[test]
     fn grok_subagent_binding_matches_description_then_spawn_order() {
         let replay = GrokSubagentReplay::new();
         for (key, description) in [("a", "Same"), ("b", "Other"), ("c", "Same")] {
@@ -3557,6 +3757,89 @@ mod tests {
             json!({"totalTokens":12,"toolUses":2,"durationMs":45})
         );
         assert_eq!(replay.active.lock().unwrap().as_deref(), Some("new-turn"));
+    }
+
+    #[test]
+    fn grok_background_subagent_replay_starts_and_completes_its_own_parent_turn() {
+        let mut replay = GrokSubagentReplay::new();
+        let parent = "01a118ff-1a73-71d1-be30-380f9ef93902";
+        let follow_up = "subagent-completed-01a118ff-5978-7c13-b717-d9bf8a0dfa06";
+        *replay.native.lock().unwrap() = Some(parent.into());
+        let mut events = Vec::new();
+        for raw in grok_background_subagent_frames() {
+            let parent_turn_finished = raw.pointer("/result/stopReason") == Some(&json!("end_turn"));
+            let background_ack = raw.pointer("/params/update/rawOutput/type") == Some(&json!("Text"));
+            let result = raw.get("result").cloned();
+            replay.raw(raw);
+            // JsonLineProcess consumes this recorded session/prompt response
+            // before adapter ingress. Replay its ordinary completion callback.
+            if parent_turn_finished {
+                *replay.active.lock().unwrap() = None;
+                emit(&replay.events, "grok", "grok-chat", Some(parent), Some("parent-turn"),
+                    "chat.turn.completed", json!({"result":result.unwrap()}));
+            }
+            let batch = replay.drain();
+            if background_ack {
+                assert!(!batch.is_empty());
+                assert!(batch.iter().all(|event| event.kind == "chat.subagent"
+                    && event.data["info"]["status"] == "running"));
+            }
+            events.extend(batch);
+        }
+
+        let cards = events.iter().filter(|event| event.kind == "chat.subagent").collect::<Vec<_>>();
+        assert_eq!(cards.first().unwrap().data["info"]["status"], "running");
+        assert_eq!(cards.last().unwrap().data["info"]["status"], "completed");
+        assert!(cards.iter().all(|event| event.turn_id.as_deref() == Some("parent-turn")));
+
+        assert_eq!(events.iter().filter(|event| event.kind == "chat.turn.started"
+            && event.turn_id.as_deref() == Some(follow_up)).count(), 1);
+        assert_eq!(events.iter().filter(|event| event.kind == "chat.turn.completed"
+            && event.turn_id.as_deref() == Some(follow_up)).count(), 1);
+        let text = events.iter().filter(|event| event.kind == "chat.delta"
+            && event.turn_id.as_deref() == Some(follow_up)
+            && event.data.pointer("/part/type") == Some(&json!("text")))
+            .flat_map(|event| event.data.pointer("/part/text").and_then(Value::as_str))
+            .collect::<String>();
+        assert_eq!(text, "The current folder has **3 files**: `alpha.txt`, `beta.txt`, and `notes.md`.");
+        let prior_text = events.iter().filter(|event| event.kind == "chat.delta"
+            && event.turn_id.as_deref() == Some("parent-turn")
+            && event.data.pointer("/part/type") == Some(&json!("text")))
+            .filter_map(|event| event.data.pointer("/part/text").and_then(Value::as_str)).collect::<String>();
+        assert_eq!(prior_text, "SPAWNED");
+        assert!(replay.active.lock().unwrap().is_none());
+
+        *replay.active.lock().unwrap() = Some("new-user-turn".into());
+        replay.raw(json!({"method":"session/update","params":{"sessionId":parent,
+            "update":{"sessionUpdate":"agent_message_chunk","content":{"text":"late"}},
+            "_meta":{"promptId":follow_up}}}));
+        assert!(replay.drain().is_empty());
+        assert_eq!(replay.active.lock().unwrap().as_deref(), Some("new-user-turn"));
+
+        *replay.active.lock().unwrap() = None;
+        replay.raw(json!({"method":"_x.ai/session_notification","params":{"sessionId":parent,
+            "update":{"sessionUpdate":"turn_completed","prompt_id":follow_up}}}));
+        assert!(replay.drain().is_empty());
+
+        let root = tempfile::tempdir().unwrap();
+        let db = crate::db::Database::open(&root.path().join("grok-background.sqlite")).unwrap();
+        db.transaction(|tx| {
+            tx.execute("INSERT INTO sessions(id,title,provider,mode,status,created_at,updated_at) VALUES ('grok-chat','test','grok','chat','idle','now','now')", [])?;
+            Ok(())
+        }).unwrap();
+        crate::chat_projection::record(&db, "grok-chat", Some("parent-turn"), "chat.turn.started", &json!({})).unwrap();
+        for event in &events {
+            crate::chat_projection::record(&db, "grok-chat", event.turn_id.as_deref(), &event.kind, &event.data).unwrap();
+        }
+        let items = db.chat_items("grok-chat").unwrap();
+        let assistant_texts = items.iter().filter(|item| item.role == "assistant")
+            .map(|item| (item.turn_id.as_deref(), item.parts.iter().filter(|part| part["type"] == "text")
+                .filter_map(|part| part["text"].as_str()).collect::<String>()))
+            .collect::<Vec<_>>();
+        assert!(assistant_texts.iter().any(|(turn, text)| *turn == Some("parent-turn") && text == "SPAWNED"));
+        assert!(assistant_texts.iter().any(|(turn, text)| *turn == Some(follow_up) && text.contains("The current folder has **3 files**")));
+        assert!(items.iter().flat_map(|item| &item.parts).all(|part| part["status"] != "streaming"));
+        assert_eq!(db.session_by_id("grok-chat").unwrap().unwrap().status, "idle");
     }
 
     #[test]

@@ -20,6 +20,27 @@ use std::{
 
 pub const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 
+/// Preserve inbound ACP frame order until a newly spawned reader has a responder.
+pub(super) fn dispatch_acp_message(
+    startup: &Mutex<Option<Vec<Value>>>,
+    ready: &Arc<dyn Fn(Value) + Send + Sync>,
+    raw: Value,
+) {
+    let Ok(mut pending) = startup.lock() else { return; };
+    if let Some(pending) = pending.as_mut() { pending.push(raw); }
+    else { ready(raw); }
+}
+
+pub(super) fn flush_acp_messages(
+    startup: &Mutex<Option<Vec<Value>>>,
+    ready: &Arc<dyn Fn(Value) + Send + Sync>,
+) {
+    // Holding this gate preserves reader order while startup frames drain.
+    if let Ok(mut pending) = startup.lock() {
+        if let Some(frames) = pending.take() { for frame in frames { ready(frame); } }
+    }
+}
+
 /// ACP streams have no native message id. Keep text on either side of a
 /// parent interaction in separate items, while retaining the legacy first id.
 #[derive(Clone, Default)]

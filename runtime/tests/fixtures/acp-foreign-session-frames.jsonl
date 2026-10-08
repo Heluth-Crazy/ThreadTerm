@@ -1,0 +1,8 @@
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"child","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"child secret"}}}}
+{"jsonrpc":"2.0","method":"vendor/message","params":{"sessionId":"foreign","text":"foreign secret","type":"agent_message_chunk"}}
+{"jsonrpc":"2.0","method":"vendor/tool","params":{"sessionId":"foreign","type":"tool_call","toolCallId":"shared-tool","title":"Foreign tool"}}
+{"jsonrpc":"2.0","method":"vendor/config","params":{"sessionId":"foreign","type":"config_options_update","configOptions":[{"id":"foreign"}]}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"child","update":{"sessionUpdate":"turn_completed"}}}
+{"jsonrpc":"2.0","id":"child-permission","method":"session/request_permission","params":{"sessionId":"child","turnId":"child-turn","toolCallId":"shared-tool","toolCall":{"title":"Read child file"},"options":[{"optionId":"allow","kind":"allow_once","name":"Allow"}]}}
+{"jsonrpc":"2.0","id":"unknown","method":"fs/read_text_file","params":{"sessionId":"foreign","path":"example.rs"}}
+{"jsonrpc":"2.0","id":"replay","method":"session/request_permission","params":{"sessionId":"parent","toolCall":{"title":"Replay request"},"options":[]}}

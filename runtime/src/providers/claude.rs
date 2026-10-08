@@ -48,6 +48,7 @@ struct ClaudeSubagents {
     task_agents: HashMap<String, String>,
     ignored_tasks: HashSet<String>,
     pending_tasks: VecDeque<Value>,
+    pending_questions: HashMap<String, Option<String>>,
 }
 
 struct ClaudeSubagent {
@@ -530,11 +531,27 @@ impl ChatSession for ClaudeChat {
         response: &Value,
         _operation_id: &str,
     ) -> Result<(), ProviderError> {
+        let pending_turn = self
+            .ui
+            .1
+            .lock()
+            .ok()
+            .and_then(|state| state.pending_questions.get(approval_id).cloned())
+            .flatten();
+        if pending_turn.as_deref() != Some(turn_id) {
+            return Err(ProviderError::new(
+                "approval_not_pending",
+                "Claude question is no longer pending",
+            ));
+        }
         let values = response.get("values").cloned().unwrap_or(Value::Null);
         self.process.sidecar_request(
             "session.answer",
             json!({"cardId":self.session_id,"requestId":approval_id,"values":values}),
         )?;
+        if let Ok(mut state) = self.ui.1.lock() {
+            state.pending_questions.remove(approval_id);
+        }
         let status = if response.get("action").and_then(Value::as_str) == Some("dismiss") {
             "dismissed"
         } else {
@@ -1311,6 +1328,13 @@ fn emit_claude_message(
             .and_then(Value::as_str)
             .unwrap_or("unknown");
         let is_question = raw.get("question").is_some();
+        if is_question {
+            if let Ok(mut state) = ui.1.lock() {
+                state
+                    .pending_questions
+                    .insert(approval_id.to_owned(), turn_id.map(ToOwned::to_owned));
+            }
+        }
         let choices = if is_question {
             Vec::new()
         } else {
@@ -1380,6 +1404,9 @@ fn emit_claude_message(
             .get("requestId")
             .and_then(Value::as_str)
             .unwrap_or("unknown");
+        if let Ok(mut state) = ui.1.lock() {
+            state.pending_questions.remove(approval_id);
+        }
         emit_scoped(
             events,
             "claude",
@@ -2071,6 +2098,69 @@ mod tests {
     }
 
     #[test]
+    fn conformance_child_frames_are_scoped_and_only_the_parent_terminal_event_completes() {
+        let mut replay = SubagentReplay::new();
+        replay.spawn("Agent", false);
+
+        // A child and the parent may both use `shared`. The child event must
+        // stay in the subagent transcript rather than becoming a parent item.
+        let child = replay.message(json!({
+            "type":"assistant", "parent_tool_use_id":"agent", "uuid":"shared",
+            "message":{"content":[{"type":"text","text":"child text"}]}
+        }));
+        assert_eq!(child.len(), 1);
+        assert_eq!(child[0].kind, "chat.subagent.item");
+        assert_eq!(child[0].data["key"], "agent");
+        assert_eq!(child[0].data["item"]["id"], "shared:0");
+        super::super::conformance::assert_no_parent_effect(&child, "s");
+        assert!(child.iter().all(|event| !matches!(
+            event.kind.as_str(),
+            "chat.delta" | "chat.item" | "chat.turn.started" | "chat.turn.completed"
+        )));
+        assert_eq!(replay.native.lock().unwrap().as_deref(), Some("native"));
+
+        for child_frame in [
+            json!({"type":"user", "parent_tool_use_id":"agent", "message":{"content":[
+                {"type":"tool_result","tool_use_id":"child-result","content":"done"}
+            ]}}),
+            json!({"type":"system", "subtype":"task_started", "task_id":"child-task",
+                "tool_use_id":"agent", "task_type":"local_agent"}),
+            json!({"type":"system", "subtype":"task_notification", "task_id":"child-task",
+                "status":"completed", "summary":"child terminal"}),
+        ] {
+            let events = replay.message(child_frame);
+            super::super::conformance::assert_no_parent_effect(&events, "s");
+            assert_eq!(replay.native.lock().unwrap().as_deref(), Some("native"));
+        }
+
+        let parent = replay.raw(json!({
+            "ev":"session.event", "cardId":"s", "sessionId":"native", "operationId":"turn",
+            "streamed":false,
+            "message":{"type":"assistant", "uuid":"shared", "message":{"content":[{"type":"text","text":"parent text"}]}}
+        }));
+        assert!(parent.iter().any(|event| {
+            event.kind == "chat.item" && event.data["item"]["id"] == "shared"
+        }));
+
+        // A different sidecar card is a foreign session: it cannot end or
+        // otherwise mutate this chat's bound native session.
+        assert!(replay.raw(json!({
+            "ev":"session.status", "cardId":"other", "sessionId":"foreign",
+            "operationId":"foreign-turn", "phase":"idle"
+        })).is_empty());
+        assert_eq!(replay.native.lock().unwrap().as_deref(), Some("native"));
+
+        let completed = replay.raw(json!({
+            "ev":"session.status", "cardId":"s", "sessionId":"native",
+            "operationId":"turn", "phase":"idle", "status":"completed"
+        }));
+        assert_eq!(
+            completed.iter().filter(|event| event.kind == "chat.turn.completed").count(),
+            1
+        );
+    }
+
+    #[test]
     fn subagent_permissions_resolve_known_task_and_label_unknown_agent() {
         let mut replay = SubagentReplay::new();
         replay.spawn("Agent", false);
@@ -2464,6 +2554,7 @@ mod tests {
         let script = format!(
             r#"import {{ createInterface }} from 'node:readline';
 const write = value => process.stdout.write(JSON.stringify(value) + '\n');
+for (const key of Object.keys(process.env)) if (key.toLowerCase() === 'path') delete process.env[key];
 const ui = mode => ({{ options: [{{ id: 'mode', name: 'Permission mode', value: mode, choices: [{{ value: 'default', name: 'Default' }}, {{ value: 'plan', name: 'Plan' }}] }}], commands: [{{ name: 'compact', description: 'Free up context' }}] }});
 let localHistoryId;
 createInterface({{ input: process.stdin, crlfDelay: Infinity }}).on('line', line => {{
@@ -2491,6 +2582,7 @@ createInterface({{ input: process.stdin, crlfDelay: Infinity }}).on('line', line
       if ('{mode}' === 'fail') return write({{ id: req.id, error: {{ message: 'handshake rejected: not authenticated' }} }});
       if ('{mode}' === 'die-before') write({{ ev: 'session.status', cardId: req.cardId, phase: 'closed', sessionId: 'native-fixture' }});
       write({{ id: req.id, ok: {{ sessionId: req.sessionId ?? null, ui: ui('default') }} }});
+      if ('{mode}' === 'options') write({{ ev: 'session.request', cardId: req.cardId, requestId: 'card-options-question-1', operationId: 'turn', sessionId: req.sessionId ?? null, toolName: 'AskUserQuestion', question: {{ questions: [{{ header: 'Colour', question: 'Which colour?', options: [{{ label: 'Blue' }}] }}] }} }});
       if ('{mode}' === 'die') setTimeout(() => write({{ ev: 'session.status', cardId: req.cardId, phase: 'closed', sessionId: 'native-fixture' }}), 250);
     }}, {delay_ms});
     return;
@@ -2500,6 +2592,11 @@ createInterface({{ input: process.stdin, crlfDelay: Infinity }}).on('line', line
     : write({{ id: req.id, error: {{ message: `${{req.value}} is not an available choice` }} }});
   if (req.op === 'session.decision') {{
     write({{ ev: 'provider.event', cardId: req.cardId, decision: req.behavior, requestId: req.requestId }});
+    return write({{ id: req.id, ok: {{}} }});
+  }}
+  if (req.op === 'session.answer') {{
+    write({{ ev: 'provider.event', cardId: req.cardId, answer: req.values, requestId: req.requestId }});
+    if (req.requestId === 'card-options-question-1') write({{ ev: 'session.request', cardId: req.cardId, requestId: 'card-options-question-2', operationId: 'turn-2', sessionId: req.cardId, toolName: 'AskUserQuestion', question: {{ questions: [{{ header: 'Next', question: 'Which next?', options: [{{ label: 'Green' }}] }}] }} }});
     return write({{ id: req.id, ok: {{}} }});
   }}
   if (req.op === 'session.stop') return write({{ id: req.id, ok: {{}} }});
@@ -2515,12 +2612,13 @@ createInterface({{ input: process.stdin, crlfDelay: Infinity }}).on('line', line
     #[cfg(windows)]
     #[test]
     fn sidecar_handshake_gates_open_and_internal_death_ends_liveness() {
-        if crate::providers::common::find_executable("node").is_none() {
+        let Some(node) = crate::providers::common::find_executable("node") else {
             eprintln!("node is unavailable; skipping the sidecar fixture test");
             return;
-        }
+        };
         let dir = tempfile::tempdir().unwrap();
         let mut environment = EnvironmentRestore(Vec::new());
+        environment.set("THREADTERM_CLAUDE_NODE", node);
         let cwd = dir.path().to_string_lossy().into_owned();
 
         // A slow handshake must delay open_chat instead of reporting ready early.
@@ -2635,17 +2733,36 @@ createInterface({{ input: process.stdin, crlfDelay: Infinity }}).on('line', line
             .approve("turn", "card-options-permission-1", "allow_forever", "op-2")
             .unwrap_err();
         assert_eq!(invalid.code, "approval_choice_invalid");
+        chat.answer(
+            "turn",
+            "card-options-question-1",
+            &json!({"action":"submit","values":{"q0":["Blue"]}}),
+            "op-3",
+        )
+        .unwrap();
         let deadline = std::time::Instant::now() + Duration::from_secs(5);
         let mut decisions = Vec::new();
+        let mut answers = Vec::new();
         let mut resolved = Vec::new();
-        while std::time::Instant::now() < deadline && (decisions.is_empty() || resolved.is_empty()) {
+        let mut second_question_seen = false;
+        while std::time::Instant::now() < deadline
+            && (decisions.is_empty() || answers.is_empty() || resolved.len() < 2 || !second_question_seen)
+        {
             while let Ok(event) = receiver.try_recv() {
                 if let Some(decision) = event.data.pointer("/raw/decision").and_then(Value::as_str)
                 {
                     decisions.push(decision.to_owned());
                 }
+                if let Some(answer) = event.data.pointer("/raw/answer") {
+                    answers.push(answer.clone());
+                }
                 if event.kind == "chat.approval.resolved" {
                     resolved.push((event.turn_id.clone(), event.data.clone()));
+                }
+                if event.kind == "chat.approval"
+                    && event.data["approvalId"] == "card-options-question-2"
+                {
+                    second_question_seen = true;
                 }
             }
             std::thread::sleep(Duration::from_millis(20));
@@ -2656,13 +2773,58 @@ createInterface({{ input: process.stdin, crlfDelay: Infinity }}).on('line', line
             "only the valid choice reaches the sidecar"
         );
         assert_eq!(
-            resolved,
-            [(
-                Some("turn".to_owned()),
-                json!({"approvalId":"card-options-permission-1","outcome":"submitted"})
-            )],
-            "the accepted decision settles its card; the refused one settles nothing"
+            answers,
+            [json!({"q0":["Blue"]})],
+            "one host answer request settles the question exactly once"
         );
+        assert_eq!(
+            resolved,
+            [
+                (
+                    Some("turn".to_owned()),
+                    json!({"approvalId":"card-options-permission-1","outcome":"submitted"})
+                ),
+                (
+                    Some("turn".to_owned()),
+                    json!({"approvalId":"card-options-question-1","status":"answered","outcome":"submitted","answerSummary":{"q0":"Blue"}})
+                )
+            ],
+            "each accepted host request settles its own card once"
+        );
+        assert_eq!(
+            chat.answer(
+                "turn",
+                "card-options-question-1",
+                &json!({"action":"submit","values":{"q0":["Blue"]}}),
+                "op-duplicate",
+            )
+            .unwrap_err()
+            .code,
+            "approval_not_pending"
+        );
+        assert!(receiver.try_recv().is_err(), "a duplicate answer must not reach the host");
+        chat.answer(
+            "turn-2",
+            "card-options-question-2",
+            &json!({"action":"submit","values":{"q0":["Green"]}}),
+            "op-next-turn",
+        )
+        .unwrap();
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while std::time::Instant::now() < deadline && (answers.len() < 2 || resolved.len() < 3) {
+            while let Ok(event) = receiver.try_recv() {
+                if let Some(answer) = event.data.pointer("/raw/answer") {
+                    answers.push(answer.clone());
+                }
+                if event.kind == "chat.approval.resolved" {
+                    resolved.push((event.turn_id.clone(), event.data.clone()));
+                }
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert_eq!(answers[1], json!({"q0":["Green"]}));
+        assert_eq!(resolved[2].0.as_deref(), Some("turn-2"));
+        assert_eq!(resolved[2].1["approvalId"], "card-options-question-2");
         assert_eq!(
             chat.validate_send("/clear").unwrap_err().code,
             "chat_command_unavailable"

@@ -2473,6 +2473,17 @@ mod tests {
     use super::*;
     use crate::db::Database;
     use std::io::{Read, Write};
+
+    struct TestChildCleanup(Arc<Mutex<Child>>);
+
+    impl Drop for TestChildCleanup {
+        fn drop(&mut self) {
+            if let Ok(mut child) = self.0.lock() {
+                let _ = child.kill();
+                let _ = child.wait();
+            }
+        }
+    }
     #[test]
     fn terminal_identity_is_prepared_through_native_session_api() {
         let adapter = OpenCodeAdapter::new(crate::provider_events::tap_channel(1).0);
@@ -2986,46 +2997,48 @@ mod tests {
     }
 
     #[test]
-    fn child_permission_round_trip_posts_to_child_and_resolves_original_turn() {
+    fn conformance_opencode_child_permission_and_question_settlements_are_exactly_once() {
         let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
         let address = listener.local_addr().unwrap();
-        let (request_tx, request_rx) = mpsc::sync_channel(1);
+        let (request_tx, request_rx) = mpsc::sync_channel(2);
         let responder = thread::spawn(move || {
-            let (mut stream, _) = listener.accept().unwrap();
-            stream
-                .set_read_timeout(Some(Duration::from_secs(5)))
-                .unwrap();
-            let mut request = Vec::new();
-            let mut chunk = [0u8; 1024];
-            loop {
-                let count = stream.read(&mut chunk).unwrap();
-                assert!(count > 0);
-                request.extend_from_slice(&chunk[..count]);
-                if request
-                    .windows(4)
-                    .position(|window| window == b"\r\n\r\n")
-                    .is_some_and(|end| {
-                        let headers = String::from_utf8_lossy(&request[..end]);
-                        let length = headers
-                            .lines()
-                            .find_map(|line| {
-                                line.to_ascii_lowercase()
-                                    .strip_prefix("content-length:")
-                                    .and_then(|value| value.trim().parse::<usize>().ok())
-                            })
-                            .unwrap_or(0);
-                        request.len() >= end + 4 + length
-                    })
-                {
-                    break;
+            for _ in 0..2 {
+                let (mut stream, _) = listener.accept().unwrap();
+                stream
+                    .set_read_timeout(Some(Duration::from_secs(5)))
+                    .unwrap();
+                let mut request = Vec::new();
+                let mut chunk = [0u8; 1024];
+                loop {
+                    let count = stream.read(&mut chunk).unwrap();
+                    assert!(count > 0);
+                    request.extend_from_slice(&chunk[..count]);
+                    if request
+                        .windows(4)
+                        .position(|window| window == b"\r\n\r\n")
+                        .is_some_and(|end| {
+                            let headers = String::from_utf8_lossy(&request[..end]);
+                            let length = headers
+                                .lines()
+                                .find_map(|line| {
+                                    line.to_ascii_lowercase()
+                                        .strip_prefix("content-length:")
+                                        .and_then(|value| value.trim().parse::<usize>().ok())
+                                })
+                                .unwrap_or(0);
+                            request.len() >= end + 4 + length
+                        })
+                    {
+                        break;
+                    }
                 }
+                request_tx
+                    .send(String::from_utf8(request).unwrap())
+                    .unwrap();
+                stream
+                    .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}")
+                    .unwrap();
             }
-            request_tx
-                .send(String::from_utf8(request).unwrap())
-                .unwrap();
-            stream
-                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}")
-                .unwrap();
         });
         let (events, mut rx) = crate::provider_events::tap_channel(32);
         let active = Arc::new(Mutex::new(Some("turn-1".into())));
@@ -3091,6 +3104,8 @@ mod tests {
         )
         .unwrap();
         let (child, job) = spawn_managed_service(&spec, None, &[]).unwrap();
+        let child = Arc::new(Mutex::new(child));
+        let _child_cleanup = TestChildCleanup(Arc::clone(&child));
         let server = OpenCodeServer {
             base_url: format!("http://{address}"),
             cwd: String::new(),
@@ -3100,7 +3115,7 @@ mod tests {
                 .timeout(Duration::from_secs(5))
                 .build()
                 .unwrap(),
-            child: Arc::new(Mutex::new(child)),
+            child,
             stopped: Arc::clone(&target.stopped),
             event_gate: Arc::clone(&target.event_gate),
             active_turn: Arc::clone(&active),
@@ -3125,13 +3140,6 @@ mod tests {
             "approval_not_pending"
         );
         let approved = chat.approve("turn-1", "per_child", "allow", "op-1");
-        // Always retire the inert shell before any assertion can unwind.
-        chat.server.stopped.store(true, Ordering::SeqCst);
-        {
-            let mut child = chat.server.child.lock().unwrap();
-            let _ = child.kill();
-            let _ = child.wait();
-        }
         approved.unwrap();
         let request = request_rx.recv_timeout(Duration::from_secs(5)).unwrap();
         assert!(
@@ -3139,8 +3147,6 @@ mod tests {
             "{request}"
         );
         assert!(request.contains("\"response\":\"once\""));
-        responder.join().unwrap();
-        target.stopped.store(false, Ordering::SeqCst);
         emit_opencode_event(
             &target,
             frame(
@@ -3154,6 +3160,59 @@ mod tests {
         assert!(target.permissions.lock().unwrap().is_empty());
         assert!(target.permission_sessions.lock().unwrap().is_empty());
         assert_eq!(active.lock().unwrap().as_deref(), Some("turn-2"));
+
+        // An OpenCode question is answered by an HTTP reply, so the captured
+        // request is its protocol-specific exactly-once settlement evidence.
+        emit_opencode_event(
+            &target,
+            frame(
+                "question.asked",
+                json!({"sessionID":"native-1","id":"root-q","questions":[{"question":"Pick one","options":[{"label":"Blue"}]}]}),
+            ),
+        );
+        assert_eq!(rx.try_recv().unwrap().kind, "chat.approval");
+        chat.answer(
+            "turn-2",
+            "root-q",
+            &json!({"action":"submit","values":{"q0":["Blue"]}}),
+            "op-question",
+        )
+        .unwrap();
+        let question_request = request_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        assert!(
+            question_request.starts_with("POST /question/root-q/reply?"),
+            "{question_request}"
+        );
+        assert!(question_request.contains("\"answers\":[[\"Blue\"]]"));
+        let question_resolved = rx.try_recv().unwrap();
+        assert_eq!(question_resolved.kind, "chat.approval.resolved");
+        assert_eq!(question_resolved.data["approvalId"], "root-q");
+        assert!(rx.try_recv().is_err(), "the question must settle once");
+        responder.join().unwrap();
+
+        assert_eq!(
+            chat.answer(
+                "turn-2",
+                "root-q",
+                &json!({"action":"submit","values":{"q0":["Blue"]}}),
+                "op-question-duplicate",
+            )
+            .unwrap_err()
+            .code,
+            "approval_not_pending"
+        );
+        assert!(
+            request_rx.recv_timeout(Duration::from_millis(100)).is_err(),
+            "a duplicate answer must not make another native HTTP request"
+        );
+
+        // The RAII guard retires the inert shell during unwinding too.
+        chat.server.stopped.store(true, Ordering::SeqCst);
+        {
+            let mut child = chat.server.child.lock().unwrap();
+            let _ = child.kill();
+            let _ = child.wait();
+        }
         // Suppress a disposal HTTP request when the test server has exited.
         chat.server.stopped.store(true, Ordering::SeqCst);
     }
@@ -3497,6 +3556,75 @@ mod tests {
         );
         assert!(rx.try_recv().is_err());
         assert_eq!(*active.lock().unwrap(), Some("turn-1".to_owned()));
+    }
+
+    #[test]
+    fn conformance_child_and_foreign_frames_are_scoped_and_only_parent_idle_completes() {
+        let (events, mut rx) = crate::provider_events::tap_channel(32);
+        let active = Arc::new(Mutex::new(Some("turn-1".to_owned())));
+        let target = event_target(&events, Arc::clone(&active));
+
+        // The parent and child intentionally collide on both native item ids.
+        // Parent transcript identity remains native-session scoped.
+        emit_opencode_event(
+            &target,
+            frame(
+                "message.part.updated",
+                json!({"part":{"sessionID":"native-1","messageID":"shared","id":"part","type":"text","text":"parent text"}}),
+            ),
+        );
+        let parent = rx.try_recv().unwrap();
+        assert_eq!(parent.kind, "chat.item");
+        assert_eq!(parent.data["item"]["id"], "shared");
+
+        emit_opencode_event(
+            &target,
+            frame(
+                "question.asked",
+                json!({"sessionID":"child-1","id":"child-question","questions":[{"question":"Child choice?","options":[{"label":"Blue"}]}]}),
+            ),
+        );
+        assert!(rx.try_recv().is_err(), "an unbound child question must not leak");
+        assert_eq!(*active.lock().unwrap(), Some("turn-1".to_owned()));
+        emit_opencode_event(&target, task_frame("agent", "running", Some("child-1")));
+        let binding = [rx.try_recv().unwrap(), rx.try_recv().unwrap()];
+        assert_eq!(binding[0].kind, "chat.subagent");
+        assert_eq!(binding[1].kind, "chat.approval");
+        assert_eq!(binding[1].data["approvalId"], "child-question");
+        for event in &binding {
+            super::super::conformance::assert_no_parent_effect(std::slice::from_ref(event), "chat-s");
+        }
+        emit_opencode_event(
+            &target,
+            frame(
+                "message.part.updated",
+                json!({"part":{"sessionID":"child-1","messageID":"shared","id":"part","type":"text","text":"child text"}}),
+            ),
+        );
+        let child = rx.try_recv().unwrap();
+        assert_eq!(child.kind, "chat.subagent.item");
+        assert_eq!(child.data["key"], "agent");
+        assert_eq!(child.data["item"]["id"], "shared:part");
+        super::super::conformance::assert_no_parent_effect(&[child], "chat-s");
+        assert!(rx.try_recv().is_err(), "a child frame must not project a parent event");
+
+        for raw in [
+            frame("session.idle", json!({"sessionID":"child-1"})),
+            frame("session.idle", json!({"sessionID":"foreign"})),
+            frame("question.asked", json!({"sessionID":"foreign","id":"foreign-question","questions":[{"question":"Foreign choice?","options":[{"label":"Red"}]}]})),
+            frame("message.part.updated", json!({"part":{"sessionID":"foreign","messageID":"shared","id":"part","type":"text","text":"foreign text"}})),
+        ] {
+            emit_opencode_event(&target, raw);
+        }
+        assert!(rx.try_recv().is_err(), "foreign/child frames must have no parent effect");
+        assert_eq!(*active.lock().unwrap(), Some("turn-1".to_owned()));
+
+        emit_opencode_event(&target, frame("session.idle", json!({"sessionID":"native-1"})));
+        let terminal = rx.try_recv().unwrap();
+        assert_eq!(terminal.kind, "chat.turn.completed");
+        assert_eq!(terminal.turn_id.as_deref(), Some("turn-1"));
+        assert!(rx.try_recv().is_err());
+        assert!(active.lock().unwrap().is_none());
     }
 
     #[test]

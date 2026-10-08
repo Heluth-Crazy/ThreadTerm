@@ -8,6 +8,8 @@ mod acp;
 mod approval;
 mod claude;
 mod codex;
+#[cfg(test)]
+mod conformance;
 pub(crate) mod common;
 mod grok;
 mod kimi_plan_usage;
