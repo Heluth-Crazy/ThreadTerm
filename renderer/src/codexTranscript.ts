@@ -31,10 +31,14 @@ export function groupCodexTranscript(items: ChatItem[], collapseCommentary = tru
     // The projection does not retain native message phase. For completed turns,
     // the last assistant text is the final reply; keep alerts and approvals visible.
     const final = [...group.items].reverse().find(item => item.role === 'assistant' && item.parts.some(part => part.type === 'text' && part.text));
-    for (const item of group.items) {
+    const responseStart = group.items.findIndex(item => item.parts.some(part => part.type === 'text' && part.text && (!collapseCommentary || item === final)));
+    for (const [index, item] of group.items.entries()) {
       // ACP and other providers may split the final answer across records and
       // do not expose Codex's commentary convention. Keep all their text.
-      const visible = item.parts.filter(part => part.type === 'error' || part.type === 'approval' || part.type === 'status' || part.status === 'failed' || part.status === 'declined' || ((!collapseCommentary || item === final) && part.type === 'text'));
+      // Cards announced inside the response stay there at completion. Earlier
+      // cards retain the activity presentation (including Codex commentary).
+      const responseCard = responseStart >= 0 && index >= responseStart;
+      const visible = item.parts.filter(part => part.type === 'error' || part.type === 'approval' || part.type === 'status' || part.status === 'failed' || part.status === 'declined' || (responseCard && part.type === 'subagent') || ((!collapseCommentary || item === final) && part.type === 'text'));
       const activity = item.parts.filter(part => part.type !== 'usage' && !visible.includes(part));
       if (activity.length) group.activity.push({ ...item, parts: activity });
       if (visible.length) group.response.push({ ...item, parts: visible });

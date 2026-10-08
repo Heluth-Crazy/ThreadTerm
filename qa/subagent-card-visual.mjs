@@ -31,6 +31,7 @@ const assistant = (id,turnId,parts,extra={}) => ({id,role:'assistant',turnId,cre
 const user = (id,turnId,value) => ({id,role:'user',turnId,createdAt:'2026-10-07T12:00:00.000Z',parts:[text(value)]});
 const long = 'A deliberately long description for a narrow chat pane that must ellipsize cleanly instead of creating horizontal scrolling or pushing the state controls outside the card.';
 const tallPrompt = Array.from({length:15}, (_, index) => 'Step '+(index+1)+': inspect the renderer boundary and preserve the visible transcript hierarchy.').join('\\n');
+const resizeParagraph = 'This deliberately long chat response reflows when the pane narrows, so the follow state must keep the newest reply in view without polling. '.repeat(8);
 const cards = {
   running: [user('u1','live','Review the renderer.'), assistant('run-before','live',[tool('before-subagent')]), assistant('run','live',[subagent('running',{lastActivity:'Reading renderer/src/components/ChatView.tsx and comparing compact-pane spacing.'})]), assistant('run-after','live',[tool('after-subagent')])],
   parallel: [user('u2','live','Review three areas.'), assistant('p1','live',[subagent('parallel-one',{agentType:'explore',description:'Trace the renderer entry point.',lastActivity:'Reading the transcript renderer.'})]), assistant('p2','live',[subagent('parallel-two',{agentType:'test',description:'Check narrow pane behavior.',lastActivity:'Capturing compact visual cases.'})]), assistant('p3','live',[subagent('parallel-three',{agentType:'review',description:'Review accessibility labels.',lastActivity:'Checking disclosure semantics.'})])],
@@ -42,6 +43,9 @@ const cards = {
   approval: [user('u8','live','Use the helper.'), assistant('approval','live',[{type:'approval',approvalId:'approval-subagent',status:'pending',data:{title:'Allow command?',requestType:'command',interaction:'permission',submittable:true,subagent:{key:'approval-agent',label:'Layout reviewer'},choices:[{choiceId:'allow',label:'Allow',kind:'allow',scope:'once'}]}}])],
   zh: [user('u9','live','检查子代理。'), assistant('zh','live',[subagent('zh',{agentType:'审查',description:'检查窄窗口中的卡片层级和溢出处理。',lastActivity:'正在读取组件并检查间距。',toolCount:3})])],
   narrow: [user('u10','live','Check the long description.'), assistant('narrow','live',[subagent('narrow',{description:long,lastActivity:long,summary:long})])],
+  'background-live': [user('u11','background','Check the background task.'), assistant('background-intro','background',[text('Background intro: I started a helper to inspect the folder.')]), assistant('background-card','background',[subagent('background',{description:'Count the files in the requested folder.',lastActivity:'Listing the requested folder.'})]), assistant('background-conclusion','background',[text('Background conclusion: I will incorporate the helper result when it arrives.')])],
+  'background-completed': [user('u12','background','Check the completed background task.'), assistant('background-intro','background',[text('Background intro: I started a helper to inspect the folder.')]), assistant('background-card','background',[subagent('background',{status:'completed',description:'Count the files in the requested folder.',summary:'The requested folder contains three files.'})]), assistant('background-conclusion','background',[text('Background conclusion: the helper found three files.')],{elapsedMs:19000})],
+  resize: [user('u13','resize','Keep the final response visible after the pane is narrowed.'), ...Array.from({length:14}, (_, index) => assistant('resize-'+index,'resize',[text('Resize message '+(index+1)+': '+resizeParagraph)])), assistant('resize-last','resize',[text('Resize final message: this must remain visible after a following resize.')])],
 };
 const transcripts = {
   expanded: {items:[assistant('sub-text','sub',[text('The transcript keeps ordinary subagent messages readable.')]),assistant('sub-tool','sub',[tool('subagent-command')]),assistant('sub-nested','sub',[{type:'subagent',data:{key:'nested-child',provider:'codex',name:'Nested helper',status:'completed',transcript:'none',summary:'Nested work stays a plain transcript line.'}}])],rev:2,truncated:false,source:'live'},
@@ -60,7 +64,7 @@ window.qaReads = () => readCalls.slice();
 window.qaTimerCounts = () => ({starts:intervalStarts,stops:intervalStops});
 window.qaEmit = item => { const event={event:'chat.item',seq:sequence++,data:{sessionId:activeScenario,item}}; listeners.forEach(listener=>listener(event)); };
 const root = createRoot(document.getElementById('root'));
-window.qaRender = (scenario, locale='en', theme='light') => { activeScenario=scenario; document.documentElement.dataset.theme=theme; root.render(<I18nProvider locale={locale}><SessionSurfaceContext.Provider value={{primaryHost:null,menuHost:null,focused:true,openFile:()=>{}}}><ChatView key={scenario} session={{id:scenario,provider:scenario==='native'?'kimi':'codex',mode:'chat',status:scenario==='completed'?'idle':'running',readOnly:true,title:'Subagent card QA',createdAt:'now',updatedAt:'now'}} /></SessionSurfaceContext.Provider></I18nProvider>); };
+window.qaRender = (scenario, locale='en', theme='light') => { activeScenario=scenario; document.documentElement.dataset.theme=theme; root.render(<I18nProvider locale={locale}><SessionSurfaceContext.Provider value={{primaryHost:null,menuHost:null,focused:true,openFile:()=>{}}}><ChatView key={scenario} session={{id:scenario,provider:scenario==='native'?'kimi':scenario.startsWith('background-')?'grok':'codex',mode:'chat',status:(scenario==='completed'||scenario==='background-completed')?'idle':'running',readOnly:true,title:'Subagent card QA',createdAt:'now',updatedAt:'now'}} /></SessionSurfaceContext.Provider></I18nProvider>); };
 window.qaRender('running');
 `;
 
@@ -73,13 +77,25 @@ const report = { passed:false, scratch, checks:[], snapshots:[], errors:[] };
 async function render(scenario, locale = 'en', theme = 'light') {
   await page.evaluate(([next, language, selectedTheme]) => window.qaRender(next, language, selectedTheme), [scenario, locale, theme]);
   await page.waitForFunction(() => document.querySelector('.chat-view'));
-  const keys = { running:'running', parallel:'parallel-one', completed:'complete', failed:'failed', expanded:'expanded', native:'native', truncated:'truncated', zh:'zh', narrow:'narrow' };
-  if (scenario !== 'approval') {
+  const keys = { running:'running', parallel:'parallel-one', completed:'complete', failed:'failed', expanded:'expanded', native:'native', truncated:'truncated', zh:'zh', narrow:'narrow', 'background-live':'background', 'background-completed':'background' };
+  if (scenario === 'resize') {
+    await page.getByText('Resize final message: this must remain visible after a following resize.', {exact:true}).waitFor({state:'attached'});
+  } else if (scenario !== 'approval') {
     await page.locator(`.chat-subagent-card[data-subagent-key="${keys[scenario]}"]`).waitFor({ state:'attached' });
     await page.waitForFunction(() => getComputedStyle(document.querySelector('.chat-subagent-heading')).display === 'flex');
   }
 }
 async function shot(name) { const path = join(out, name); await page.screenshot({path, animations:'disabled'}); report.snapshots.push(path); }
+async function backgroundOrder() {
+  return page.evaluate(() => {
+    const messages = Array.from(document.querySelectorAll('.v3-chat-log .v3-chat-message'));
+    const intro = messages.find(node => node.textContent?.includes('Background intro:'));
+    const card = document.querySelector('.chat-subagent-card[data-subagent-key="background"]');
+    const conclusion = messages.find(node => node.textContent?.includes('Background conclusion:'));
+    const follows = (before, after) => Boolean(before && after && (before.compareDocumentPosition(after) & Node.DOCUMENT_POSITION_FOLLOWING));
+    return { introBeforeCard:follows(intro, card), cardBeforeConclusion:follows(card, conclusion) };
+  });
+}
 try {
   const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => key.toLowerCase() !== 'path'));
   app = await electron.launch({args:[join(scratch, 'main.cjs'), '--disable-gpu', '--in-process-gpu', '--no-sandbox'], env});
@@ -118,6 +134,59 @@ try {
   await work.locator('> summary').click();
   assert.equal(await completed.evaluate(node => Boolean(node.closest('.codex-work'))), false, 'opening elapsed fold never captures the card');
   await shot('10-completed-turn-outside-fold-light.png');
+
+  for (const scenario of ['background-live', 'background-completed']) {
+    await app.evaluate(({BrowserWindow}) => BrowserWindow.getAllWindows()[0].setContentSize(1000, 900));
+    await page.waitForFunction(() => window.innerWidth === 1000);
+    await render(scenario);
+    assert.deepEqual(await backgroundOrder(), {introBeforeCard:true, cardBeforeConclusion:true}, `${scenario} keeps text → card → text at wide width`);
+    await shot(`15-${scenario}-wide.png`);
+    await app.evaluate(({BrowserWindow}) => BrowserWindow.getAllWindows()[0].setContentSize(420, 900));
+    await page.waitForFunction(() => window.innerWidth === 420);
+    assert.deepEqual(await backgroundOrder(), {introBeforeCard:true, cardBeforeConclusion:true}, `${scenario} keeps text → card → text at narrow width`);
+    await shot(`16-${scenario}-narrow.png`);
+  }
+
+  await app.evaluate(({BrowserWindow}) => BrowserWindow.getAllWindows()[0].setContentSize(1000, 900));
+  await page.waitForFunction(() => window.innerWidth === 1000);
+  await render('resize');
+  await page.waitForFunction(() => { const log=document.querySelector('.v3-chat-log'); return !!log && log.scrollHeight > log.clientHeight; });
+  await page.evaluate(() => { const log=document.querySelector('.v3-chat-log'); log.scrollTop=log.scrollHeight; log.dispatchEvent(new Event('scroll')); });
+  await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+  await shot('17-resize-following-wide.png');
+  await app.evaluate(({BrowserWindow}) => BrowserWindow.getAllWindows()[0].setContentSize(420, 900));
+  await page.waitForFunction(() => window.innerWidth === 420);
+  await page.waitForFunction(() => {
+    const log=document.querySelector('.v3-chat-log'), last=Array.from(document.querySelectorAll('.v3-chat-message')).find(node => node.textContent?.includes('Resize final message:'));
+    if (!log || !last) return false;
+    const logBox=log.getBoundingClientRect(), lastBox=last.getBoundingClientRect();
+    return log.scrollHeight-log.scrollTop-log.clientHeight <= 1 && lastBox.bottom <= logBox.bottom+1;
+  });
+  await shot('17-resize-following-narrow.png');
+  const followingHeight = await page.evaluate(() => document.querySelector('.v3-chat-log').scrollHeight);
+  await page.evaluate(() => { document.querySelector('.v3-chat-log').firstElementChild.style.paddingBottom='60px'; });
+  await page.waitForFunction(previous => { const log=document.querySelector('.v3-chat-log'); return log.scrollHeight >= previous+59 && log.scrollHeight-log.scrollTop-log.clientHeight <= 1; }, followingHeight);
+
+  await app.evaluate(({BrowserWindow}) => BrowserWindow.getAllWindows()[0].setContentSize(1000, 900));
+  await page.waitForFunction(() => window.innerWidth === 1000);
+  await render('resize');
+  // A scrolled-up reader keeps the message they were reading in view; native
+  // scroll anchoring may adjust scrollTop to do so, so pixels are not compared.
+  await page.evaluate(() => { const log=document.querySelector('.v3-chat-log'); log.scrollTop=160; log.dispatchEvent(new Event('scroll'));
+    const box=log.getBoundingClientRect(); const reading=Array.from(log.querySelectorAll('.v3-chat-message')).find(node => node.getBoundingClientRect().top >= box.top);
+    reading?.setAttribute('data-qa-reading', ''); });
+  await shot('18-resize-scrolled-up-wide.png');
+  await app.evaluate(({BrowserWindow}) => BrowserWindow.getAllWindows()[0].setContentSize(420, 900));
+  await page.waitForFunction(() => window.innerWidth === 420);
+  await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+  assert.equal(await page.evaluate(() => { const log=document.querySelector('.v3-chat-log'), reading=log.querySelector('[data-qa-reading]'); if (!reading) return false;
+    const box=log.getBoundingClientRect(), node=reading.getBoundingClientRect(); return node.bottom > box.top && node.top < box.bottom; }), true, 'a scrolled-up chat keeps the message being read in view through resize');
+  assert.equal(await page.evaluate(() => { const log=document.querySelector('.v3-chat-log'); return log.scrollTop < log.scrollHeight-log.clientHeight-1; }), true, 'a scrolled-up chat is not pulled to the bottom through resize');
+  await shot('18-resize-scrolled-up-narrow.png');
+  const scrolledTop = await page.evaluate(() => document.querySelector('.v3-chat-log').scrollTop);
+  await page.evaluate(() => { document.querySelector('.v3-chat-log').firstElementChild.style.paddingBottom='120px'; });
+  await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+  assert.ok(Math.abs(await page.evaluate(() => document.querySelector('.v3-chat-log').scrollTop)-scrolledTop) <= 1, 'a scrolled-up chat keeps its position through content-only growth');
 
   await render('failed');
   assert.match(await page.locator('.chat-subagent-card').textContent() ?? '', /Failed/i, 'failed card exposes its state');
@@ -227,8 +296,8 @@ try {
   await shot('14-narrow-420-light.png');
 
   assert.deepEqual(report.errors, []);
-  report.checks.push('all ten S7 states: running, parallel, completed, failed, expanded, none-to-native, truncated, approval, zh, and completed-turn placement');
-  report.checks.push('lazy transcript reads, incremental expanded revision reads, no collapsed reads, nested plain lines, reusable transcript tool drawer, and narrow no-overflow');
+  report.checks.push('all ten S7 states plus live/completed background text → card → text at wide and narrow widths');
+  report.checks.push('lazy transcript reads, incremental expanded revision reads, no collapsed reads, nested plain lines, reusable transcript tool drawer, narrow no-overflow, and resize follow preservation');
   report.passed = true;
 } catch (error) {
   report.error = error instanceof Error ? error.stack : String(error);

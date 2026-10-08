@@ -4,7 +4,7 @@ import { resolve } from 'node:path';
 import test from 'node:test';
 import type { ChatItem, ChatPart } from '@threadterm/protocol';
 import { groupCodexTranscript } from './codexTranscript';
-import { activeToolEntries, describeTool, groupToolActivity, hiddenQuestionTool, orderCompletedTurnItems, toolActivityWaitingLabel, toolEntriesForItems, toolStatus, withoutToolParts } from './toolActivity';
+import { activeToolEntries, completedTurnPresentation, describeTool, groupToolActivity, hiddenQuestionTool, orderCompletedTurnItems, toolActivityWaitingLabel, toolEntriesForItems, toolStatus, withoutToolParts } from './toolActivity';
 
 const en = (english: string, _zh: string) => english;
 const zh = (_english: string, chinese: string) => chinese;
@@ -54,6 +54,59 @@ test('completed turns move a later question row before the final answer without 
   assert.deepEqual(ordered.map(item => item.id), ['text', 'question', 'answer']);
   assert.equal(new Set(ordered.map(item => item.id)).size, ordered.length);
   assert.equal(JSON.stringify(source), before);
+});
+
+test('completed background turns keep the live text-card-text order without mutating items', () => {
+  const items = [row('intro', [{ type: 'text', text: 'Starting a background task.' }]),
+    row('card', [{ type: 'subagent', status: 'completed' }]),
+    { ...row('answer', [{ type: 'text', text: 'It will report later.' }]), elapsedMs: 1_000 }];
+  const before = JSON.stringify(items);
+  const [turn] = groupCodexTranscript(items, false);
+  const presentation = completedTurnPresentation(turn!.activity, turn!.response);
+  const live = groupToolActivity(items).filter(entry => entry.type === 'item').map(entry => entry.item.id);
+  assert.deepEqual(presentation.response.map(item => item.id), live);
+  assert.deepEqual(presentation.subagents, []);
+  assert.deepEqual(presentation.activity, []);
+  assert.equal(JSON.stringify(items), before);
+});
+
+test('activity cards stay before the response; work and the single drawer retain all ordinary tools', () => {
+  const items = [row('work', [{ type: 'thinking', text: 'Planning.' }, tool('read', 'Read')]),
+    row('early', [{ type: 'subagent', status: 'completed' }]),
+    row('intro', [{ type: 'text', text: 'Starting another background task.' }]),
+    row('mixed', [{ type: 'text', text: 'Before.' }, { type: 'subagent', status: 'completed' }, tool('write', 'Write'), { type: 'text', text: 'After.' }]),
+    { ...row('answer', [{ type: 'text', text: 'Finished.' }]), elapsedMs: 1_000 }];
+  const before = JSON.stringify(items);
+  const [turn] = groupCodexTranscript(items, false);
+  const presentation = completedTurnPresentation(turn!.activity, turn!.response);
+  assert.deepEqual(presentation.subagents.map(item => item.id), ['early']);
+  assert.deepEqual(presentation.activity.flatMap(item => item.parts.map(part => part.type)), ['thinking']);
+  assert.deepEqual(presentation.response.map(item => item.id), ['intro', 'mixed', 'answer']);
+  assert.deepEqual(presentation.response[1]!.parts.map(part => part.type), ['text', 'subagent', 'text']);
+  assert.deepEqual(toolEntriesForItems(turn!.items).map(entry => entry.part.toolId), ['read', 'write']);
+  assert.equal(JSON.stringify(items), before);
+});
+
+test('completed card ordering keeps late questions before the final answer', () => {
+  const source = [row('intro', [{ type: 'text', text: 'Starting.' }]), row('card', [{ type: 'subagent' }]),
+    row('answer', [{ type: 'text', text: 'Final answer.' }]),
+    { ...row('question', [{ type: 'approval', approvalId: 'question', status: 'answered', data: { interaction: 'question' } }]), elapsedMs: 1_000 }];
+  const [turn] = groupCodexTranscript(source, false);
+  const presentation = completedTurnPresentation(turn!.activity, turn!.response);
+  assert.deepEqual(presentation.response.map(item => item.id), ['intro', 'card', 'question', 'answer']);
+  assert.equal(new Set(presentation.response.map(item => item.id)).size, 4);
+});
+
+test('Codex commentary cards stay in activity; cards after the final text stay in the response', () => {
+  const source = [row('commentary', [{ type: 'text', text: 'Working.' }]), row('early', [{ type: 'subagent' }]),
+    row('answer', [{ type: 'text', text: 'Final answer.' }]), { ...row('late', [{ type: 'subagent' }]), elapsedMs: 1_000 }];
+  const [turn] = groupCodexTranscript(source);
+  const presentation = completedTurnPresentation(turn!.activity, turn!.response);
+  assert.deepEqual(presentation.activity.map(item => item.id), ['commentary']);
+  assert.deepEqual(presentation.subagents.map(item => item.id), ['early']);
+  assert.deepEqual(presentation.response.map(item => item.id), ['answer', 'late']);
+  const [cardsOnly] = groupCodexTranscript([{ ...row('only', [{ type: 'subagent' }]), elapsedMs: 1_000 }]);
+  assert.deepEqual(completedTurnPresentation(cardsOnly!.activity, cardsOnly!.response).subagents.map(item => item.id), ['only']);
 });
 
 test('all tools including failures and cancellations are retained; native IDs survive sliced text', () => {
