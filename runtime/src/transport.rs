@@ -132,6 +132,7 @@ enum Lane {
 
 #[cfg_attr(not(windows), allow(dead_code))]
 fn request_lane(method: &str) -> Lane {
+    if method.starts_with("preview.") { return Lane::Concurrent; }
     match method {
         "terminal.read"
         | "project.catalog.list"
@@ -241,6 +242,7 @@ async fn serve_control(
     let principal = authenticate(&mut pipe, credential, &service.db.epoch()?).await?;
     // Leases follow the principal's control connections; this one counts until serve_control returns.
     let _presence = service.leases.connect(&principal);
+    let _preview_presence = service.previews.connect(&principal);
     let mut sent_seq = service.db.snapshot()?.revision;
     let (mut reader, mut writer) = tokio::io::split(pipe);
     let mut decoder = FrameDecoder::default();

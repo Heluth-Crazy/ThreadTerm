@@ -18,14 +18,18 @@ export const paneRectStyle = (rect:PaneRect) => ({
 /** Derive geometry, not component ancestry, from the persisted split tree.
  * All leaf surfaces remain keyed siblings while splits are added or removed.
  */
-export function paneGeometry(layout:PaneLayout) {
+/** `stackHorizontal` is a presentation-only compact view.  It never changes
+ * the saved split axis or leaf identity, so restoring width restores the
+ * exact desktop geometry and resize ratios. */
+export function paneGeometry(layout:PaneLayout,{stackHorizontal=false}:{stackHorizontal?:boolean}={}) {
   const panes:Positioned<Extract<PaneLayout,{kind:'pane'}>>[]=[];
   const splits:Positioned<Extract<PaneLayout,{kind:'split'}>>[]=[];
   const visit=(node:PaneLayout,rect:PaneRect)=>{
     if(node.kind==='pane'){panes.push({node,rect});return;}
     splits.push({node,rect});
-    const size=node.direction==='horizontal'?'width':'height';
-    const origin=node.direction==='horizontal'?'left':'top';
+    const direction=stackHorizontal&&node.direction==='horizontal'?'vertical':node.direction;
+    const size=direction==='horizontal'?'width':'height';
+    const origin=direction==='horizontal'?'left':'top';
     const spacing=PANE_GAP*2+PANE_DIVIDER_SIZE;
     const available=add(rect[size],pixels(-spacing));
     const firstSize=scale(available,node.ratio);

@@ -10,7 +10,21 @@ export type CommentVersion =
   | { kind: "commit"; commit: string };
 export type CommentScope = { projectId: string; root: string };
 export type FileComment = { id: string; projectId: string; root: string; path: string; version: CommentVersion; side: "old" | "new"; startLine: number; endLine: number; excerpt: string; body: string; createdAt: string };
-export type PageComment = PagePick & CommentScope & { kind: "page"; id: string; body: string; createdAt: string };
+/** Immutable association captured when a page comment is created.  `previewId`, rather than URL, identifies a frame. */
+export type PageCommentProvenance = {
+  previewId: string;
+  sessionId?: string;
+  /** Display name captured with the immutable session association; retained after the session closes. */
+  sessionTitle?: string;
+  providerId?: string;
+  requestId?: string;
+  documentId?: string;
+  tabId?: string;
+  workspaceId?: string;
+  navigation?: number;
+  sequence?: number;
+};
+export type PageComment = PagePick & CommentScope & { kind: "page"; id: string; body: string; createdAt: string; provenance?: PageCommentProvenance };
 export type ReviewComment = FileComment | PageComment;
 export type DeletePageShots = (ids: string[]) => void | Promise<void>;
 
@@ -56,6 +70,17 @@ function validPage(value: unknown, scope: CommentScope): value is PageComment {
   const root = typeof item.root === "string" ? item.root : "", url = typeof item.url === "string" ? item.url : "", body = typeof item.body === "string" ? item.body : "";
   const viewport = item.viewport as Record<string, unknown> | undefined;
   if (item.kind !== "page" || !text(item.id, 200) || !item.id || item.projectId !== scope.projectId || !root || canonicalScopePath(root) !== canonicalScopePath(scope.root) || !text(url, 2048) || !/^https?:\/\//i.test(url) || !text(item.title, 200) || !viewport || !finite(viewport.width) || !finite(viewport.height) || viewport.width <= 0 || viewport.height <= 0 || viewport.width > 10000 || viewport.height > 10000 || !item.target || typeof item.target !== "object" || !text(body, MAX_REVIEW_COMMENT_BODY) || !body.trim() || typeof item.createdAt !== "string" || !Number.isFinite(Date.parse(item.createdAt))) return false;
+  const provenance = item.provenance as Record<string, unknown> | undefined;
+  if (provenance && (!text(provenance.previewId, 200) || !provenance.previewId
+    || (provenance.sessionId !== undefined && (!text(provenance.sessionId, 200) || !provenance.sessionId))
+    || (provenance.sessionTitle !== undefined && (!text(provenance.sessionTitle, 200) || !provenance.sessionTitle.trim()))
+    || (provenance.providerId !== undefined && (!text(provenance.providerId, 100) || !provenance.providerId))
+    || (provenance.requestId !== undefined && (!text(provenance.requestId, 200) || !provenance.requestId))
+    || (provenance.documentId !== undefined && (!text(provenance.documentId, 200) || !provenance.documentId))
+    || (provenance.tabId !== undefined && (!text(provenance.tabId, 200) || !provenance.tabId))
+    || (provenance.workspaceId !== undefined && (!text(provenance.workspaceId, 200) || !provenance.workspaceId))
+    || (provenance.navigation !== undefined && (!Number.isSafeInteger(provenance.navigation) || (provenance.navigation as number) < 0))
+    || (provenance.sequence !== undefined && (!Number.isSafeInteger(provenance.sequence) || (provenance.sequence as number) < 0)))) return false;
   const target = item.target as Record<string, unknown>, rect = target.rect as Record<string, unknown> | undefined, shot = item.shot as Record<string, unknown> | undefined, source = target.source as Record<string, unknown> | undefined;
   if (!rect || !finite(rect.x) || !finite(rect.y) || !finite(rect.width) || !finite(rect.height)) return false;
   if (shot && (!text(shot.id, 200) || !shot.id || !text(shot.path, 2048) || !shot.path || !text(shot.thumbnail, 350000) || !/^data:image\/(?:jpeg|png);base64,/i.test(shot.thumbnail) || !finite(shot.width) || !finite(shot.height) || shot.width <= 0 || shot.height <= 0)) return false;
@@ -91,7 +116,7 @@ export function removeFileComments(scope: CommentScope, ids: readonly string[], 
   const next = load(scope, store).filter(comment => isPageComment(comment) || !ids.includes(comment.id)); persist(scope, next, store); return next.filter((item): item is FileComment => !isPageComment(item));
 }
 export function isPageComment(comment: ReviewComment): comment is PageComment { return "kind" in comment && comment.kind === "page"; }
-export function addPageComment(input: CommentScope & PagePick & { body: string }, store: Store | undefined = storage()): ReviewComment[] {
+export function addPageComment(input: CommentScope & PagePick & { body: string; provenance?: PageCommentProvenance }, store: Store | undefined = storage()): ReviewComment[] {
   const body = input.body.trim();
   if (!body) throw new Error("review_comment_empty");
   if (body.length > MAX_REVIEW_COMMENT_BODY) throw new Error("review_comment_too_long");
@@ -183,15 +208,31 @@ function formatPageComment(comment: PageComment, zh: boolean, reference: string)
   output.push(`  HTML: ${target.html}`, `  ${zh ? "边框：" : "Box: "}${position}${shot}`);
   return output;
 }
+function pageContextIdentity(comment: PageComment, zh: boolean): string[] {
+  const provenance = comment.provenance;
+  if (!provenance) return [zh ? "  来源预览：手动或旧版页面" : "  Source preview: manual or legacy page"];
+  const source = provenance.sessionId
+    ? `${provenance.sessionTitle ?? provenance.sessionId}${provenance.providerId ? ` (${provenance.providerId})` : ""}${provenance.sessionTitle ? ` [${provenance.sessionId}]` : ""}`
+    : (zh ? "手动页面" : "manual page");
+  const lines = [
+    `${zh ? "  来源会话：" : "  Source session: "}${source}`,
+    `${zh ? "  预览 ID：" : "  Preview ID: "}${provenance.previewId}`,
+  ];
+  if (provenance.documentId) lines.push(`${zh ? "  文档 ID：" : "  Document ID: "}${provenance.documentId}`);
+  if (provenance.tabId) lines.push(`${zh ? "  页面标签 ID：" : "  Page tab ID: "}${provenance.tabId}`);
+  if (provenance.navigation !== undefined) lines.push(`${zh ? "  导航版本：" : "  Navigation generation: "}${provenance.navigation}`);
+  return lines;
+}
 /** Formats mixed comments while preserving the historic formatter byte-for-byte for file-only input. */
 export function formatReviewComments(comments: readonly ReviewComment[], roots: Roots, zh: boolean): string {
   const files = comments.filter((comment): comment is FileComment => !isPageComment(comment)), pages = comments.filter(isPageComment);
   if (!pages.length) return formatFileComments(files, roots, zh);
   const output = files.length ? [formatFileComments(files, roots, zh)] : [];
   const numbered = pages.map((comment, index) => ({ comment, reference: `P${index + 1}` }));
-  for (const url of new Set(pages.map(comment => comment.url))) {
-    const group = numbered.filter(({ comment }) => comment.url === url), first = group[0].comment;
-    output.push([`${zh ? "页面信息" : "Page context"} — ${url}${first.title ? (zh ? `（“${first.title}”）` : ` (${JSON.stringify(first.title)})`) : ""}${zh ? "，视口" : ", viewport"} ${Math.round(first.viewport.width)}×${Math.round(first.viewport.height)}:`, ...group.flatMap(({ comment, reference }) => formatPageComment(comment, zh, reference))].join("\n"));
+  const groupKey = (comment: PageComment) => `${comment.provenance?.previewId ?? "legacy"}\0${comment.provenance?.documentId ?? "legacy"}\0${comment.url}`;
+  for (const key of new Set(pages.map(groupKey))) {
+    const group = numbered.filter(({ comment }) => groupKey(comment) === key), first = group[0].comment;
+    output.push([`${zh ? "页面信息" : "Page context"} — ${first.url}${first.title ? (zh ? `（“${first.title}”）` : ` (${JSON.stringify(first.title)})`) : ""}${zh ? "，视口" : ", viewport"} ${Math.round(first.viewport.width)}×${Math.round(first.viewport.height)}:`, ...pageContextIdentity(first, zh), ...group.flatMap(({ comment, reference }) => formatPageComment(comment, zh, reference))].join("\n"));
   }
   output.push([zh ? "页面评论 / 修改要求（对应上面的编号）：" : "Page comments / requested changes (match the references above):", ...numbered.flatMap(({ comment, reference }) => {
     const [body, ...continuation] = comment.body.split(/\r?\n/);

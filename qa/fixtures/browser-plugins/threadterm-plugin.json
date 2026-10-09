@@ -1,0 +1,27 @@
+{
+  "schemaVersion": 1,
+  "id": "browser-preview-acp-qa",
+  "name": "Browser preview ACP (QA fixture)",
+  "version": "1.0.0",
+  "publisher": "ThreadTerm QA",
+  "description": "Public-contract-only ACP preview binding used by isolated QA.",
+  "contributes": {
+    "agents": [{
+      "id": "browser-preview-echo",
+      "name": "Browser Preview Echo",
+      "command": "node",
+      "args": ["{pluginDir}/agent.mjs"],
+      "versionArgs": ["--version"],
+      "chat": { "protocol": "acp", "args": ["--acp"] }
+    }],
+    "browserBindings": [{
+      "id": "browser-preview-acp",
+      "bindingVersion": 1,
+      "providerId": "browser-preview-echo",
+      "requires": { "threadterm.preview": 1 },
+      "transport": "mcp-stdio",
+      "tools": ["preview_present", "preview_status"],
+      "workflow": "threadterm.preview.after-server-ready.v1"
+    }]
+  }
+}

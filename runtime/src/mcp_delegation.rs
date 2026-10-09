@@ -89,6 +89,35 @@ impl Caller {
 
 type Output = Arc<Mutex<std::io::Stdout>>;
 
+#[derive(Clone)]
+struct PreviewCaller {session_id:String,token:String}
+impl PreviewCaller {
+    fn from_env()->Option<Self> {
+        if std::env::var("THREADTERM_MCP_PROFILE").as_deref()!=Ok("chat-tools") {return None}
+        Some(Self {session_id:std::env::var("THREADTERM_PREVIEW_SESSION_ID").ok().filter(|s|!s.is_empty())?,token:std::env::var("THREADTERM_PREVIEW_TOKEN").ok().filter(|s|!s.is_empty())?})
+    }
+}
+fn composed_tools(delegation:bool,preview:bool)->Vec<Value> {
+    let mut catalog=if delegation {tools()} else {vec![]};
+    if preview {catalog.extend(crate::preview::tools())}catalog
+}
+fn composed_instructions(delegation:bool,preview:bool)->String {
+    let mut text=format!("ThreadTerm capabilities: delegation={} (delegate_start/wait/result); local preview={} (preview_present/status). Preview: verify the server URL first; presentation/load events never prove application readiness. Browser and delegation permissions are independent.\n",delegation,preview);
+    if preview {text.push_str(crate::preview::INSTRUCTIONS);text.push('\n');}
+    if delegation {text.push_str(INSTRUCTIONS)}text
+}
+async fn call_chat_tool(config:&RuntimeConfig,caller:Option<&Caller>,preview:Option<&PreviewCaller>,name:&str,arguments:&Value,cancelled:&AtomicBool)->Result<Value,Value> {
+    if crate::preview::TOOL_NAMES.contains(&name) {
+        let preview=preview.ok_or_else(||failure("preview_not_configured","Preview tools are not authorized for this Chat."))?;
+        let mut params=arguments.clone();let object=params.as_object_mut().ok_or_else(||failure("invalid_arguments","Tool arguments must be an object."))?;
+        if object.contains_key("callerSessionId")||object.contains_key("callerToken"){return Err(failure("invalid_arguments","Caller identity is runtime-owned."))}
+        object.insert("callerSessionId".into(),json!(preview.session_id));object.insert("callerToken".into(),json!(preview.token));
+        let mut client=RuntimeClient::connect(config,format!("mcp-preview-{}",uuid::Uuid::new_v4())).await.map_err(|_|failure("app_unavailable","ThreadTerm runtime is unavailable"))?;
+        return client.request(if name=="preview_present"{"preview.tool.present"}else{"preview.tool.status"},params).await.map_err(|error|failure("preview_request_failed",error.to_string()));
+    }
+    call_tool(config,caller,name,arguments,cancelled).await
+}
+
 fn emit(output: &Output, value: &Value) {
     if let Ok(mut stdout) = output.lock() {
         let _ = serde_json::to_writer(&mut *stdout, value);
@@ -107,6 +136,8 @@ fn rpc_error(id: &Value, code: i32, message: &str) -> Value {
 
 pub async fn run_stdio(config: RuntimeConfig) -> Result<()> {
     let caller = Caller::from_env();
+    let preview = PreviewCaller::from_env();
+    let instructions = composed_instructions(caller.is_some(), preview.is_some());
     let output: Output = Arc::new(Mutex::new(std::io::stdout()));
     let inflight: Arc<Mutex<HashMap<String, Arc<AtomicBool>>>> = Arc::default();
     let (lines, mut incoming) = tokio::sync::mpsc::unbounded_channel::<String>();
@@ -158,15 +189,15 @@ pub async fn run_stdio(config: RuntimeConfig) -> Result<()> {
                         json!({
                             "protocolVersion": negotiate_version(requested),
                             "capabilities": {"tools": {"listChanged": false}},
-                            "serverInfo": {"name": "threadterm", "title": "ThreadTerm delegation", "version": env!("CARGO_PKG_VERSION")},
-                            "instructions": INSTRUCTIONS,
+                            "serverInfo": {"name": "threadterm", "title": "ThreadTerm Chat tools", "version": env!("CARGO_PKG_VERSION")},
+                            "instructions": instructions,
                         }),
                     ),
                 );
             }
             "ping" => emit(&output, &ok(&id, json!({}))),
             _ if !initialized => emit(&output, &rpc_error(&id, -32600, "initialize_required")),
-            "tools/list" => emit(&output, &ok(&id, json!({"tools": tools()}))),
+            "tools/list" => emit(&output, &ok(&id, json!({"tools": composed_tools(caller.is_some(),preview.is_some())}))),
             "tools/call" => {
                 let name = message.pointer("/params/name").and_then(Value::as_str).unwrap_or("").to_owned();
                 let arguments = message.pointer("/params/arguments").cloned().unwrap_or_else(|| json!({}));
@@ -175,9 +206,9 @@ pub async fn run_stdio(config: RuntimeConfig) -> Result<()> {
                 if let Ok(mut calls) = inflight.lock() {
                     calls.insert(key.clone(), Arc::clone(&cancelled));
                 }
-                let (config, caller, output, inflight) = (config.clone(), caller.clone(), Arc::clone(&output), Arc::clone(&inflight));
+                let (config, caller, preview, output, inflight) = (config.clone(), caller.clone(), preview.clone(), Arc::clone(&output), Arc::clone(&inflight));
                 tokio::spawn(async move {
-                    let result = call_tool(&config, caller.as_ref(), &name, &arguments, &cancelled).await;
+                    let result = call_chat_tool(&config, caller.as_ref(), preview.as_ref(), &name, &arguments, &cancelled).await;
                     if let Ok(mut calls) = inflight.lock() {
                         calls.remove(&key);
                     }
@@ -462,6 +493,54 @@ mod tests {
         // Adapters auto-approve exactly `delegation::TOOL_NAMES`; keep them in sync.
         assert_eq!(names, crate::delegation::TOOL_NAMES);
         assert!(names.iter().all(|name| !name.starts_with("terminal_")));
+    }
+
+    #[test]
+    fn composed_catalogs_keep_preview_and_delegation_authorities_separate() {
+        let names = |delegation, preview| composed_tools(delegation, preview)
+            .into_iter()
+            .map(|tool| tool["name"].as_str().unwrap().to_owned())
+            .collect::<Vec<_>>();
+        assert_eq!(names(false, true), crate::preview::TOOL_NAMES);
+        assert_eq!(names(true, false), crate::delegation::TOOL_NAMES);
+        let combined = names(true, true);
+        assert_eq!(combined.len(), 8);
+        assert_eq!(&combined[..6], crate::delegation::TOOL_NAMES);
+        assert_eq!(&combined[6..], crate::preview::TOOL_NAMES);
+
+        let preview = composed_tools(false, true);
+        assert_eq!(preview[0]["inputSchema"]["required"], json!(["requestId", "url"]));
+        assert_eq!(preview[0]["inputSchema"]["additionalProperties"], false);
+        assert_eq!(preview[1]["inputSchema"]["required"], json!(["requestId"]));
+        assert_eq!(preview[1]["inputSchema"]["additionalProperties"], false);
+
+        let instructions = composed_instructions(true, true);
+        let prefix = instructions.chars().take(512).collect::<String>();
+        assert!(prefix.contains("delegation=true") && prefix.contains("local preview=true"));
+        assert!(instructions.contains(crate::preview::INSTRUCTIONS));
+    }
+
+    #[tokio::test]
+    async fn preview_calls_reject_model_supplied_caller_identity_before_runtime_connection() {
+        let config = RuntimeConfig {
+            data_dir: std::env::temp_dir(),
+            database_path: std::env::temp_dir().join("unused-preview-test.sqlite"),
+            credential_path: std::env::temp_dir().join("unused-preview-test.credential"),
+            pipe_base: "preview-spoof-test".into(),
+        };
+        let preview = PreviewCaller { session_id: "session-owned-by-runtime".into(), token: "secret".into() };
+        let error = call_chat_tool(
+            &config,
+            None,
+            Some(&preview),
+            "preview_present",
+            &json!({"requestId":"r","url":"http://127.0.0.1:3000","callerSessionId":"spoofed"}),
+            &AtomicBool::new(false),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(error["error"]["code"], "invalid_arguments");
+        assert!(!error.to_string().contains("secret"));
     }
 
     #[test]

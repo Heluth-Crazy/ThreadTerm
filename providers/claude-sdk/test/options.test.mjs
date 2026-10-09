@@ -275,15 +275,16 @@ test('start warms the API connection in the background with a token count, never
 });
 
 const settledWithin = (promise, ms) => Promise.race([promise.then(() => 'settled'), delay(ms).then(() => 'pending')]);
+const resolvesWithin = (promise, ms) => Promise.race([promise, delay(ms).then(() => { throw new Error(`approval did not resolve within ${ms}ms`); })]);
 
 test('ThreadTerm delegation tools reach the SDK and only their exact names are approved, only when injected', async () => {
-  const servers = { threadterm: { type: 'stdio', command: 'C:/rt/threadterm-v3-mcp.exe', args: [], env: { THREADTERM_SESSION_ID: 's-1' } } };
+  const servers = { threadterm: { type: 'stdio', command: 'C:/rt/threadterm-v3-mcp.exe', args: [], env: { THREADTERM_SESSION_ID: 's-1', THREADTERM_SESSION_TOKEN: 'test-core-token', THREADTERM_MCP_PROFILE: 'delegation' } } };
   const sdk = controllableSdk();
   const session = new ClaudeSession({ cardId: 'card-tools', sdk, write() {} });
   await session.start({ cwd: 'C:/', sessionId: null, mcpServers: servers });
   assert.deepEqual(sdk.state.options.mcpServers, servers);
   assert.deepEqual(
-    await session.requestPermission('mcp__threadterm__delegate_start', { agent: 'codex' }),
+    await resolvesWithin(session.requestPermission('mcp__threadterm__delegate_start', { agent: 'codex' }), 250),
     { behavior: 'allow', updatedInput: { agent: 'codex' } },
   );
   assert.equal(await settledWithin(session.requestPermission('mcp__threadterm__terminal_create', {}, {}), 50), 'pending', 'other tools still ask the user');

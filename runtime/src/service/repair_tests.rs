@@ -126,6 +126,7 @@ impl Fixture {
         });
         let output = Arc::new(OutputStore::default());
         let service = Arc::new(RuntimeService {
+            previews: Arc::new(crate::preview::Previews::new(Arc::clone(&db)).unwrap()),
             config: RuntimeConfig {
                 data_dir: root.path().to_owned(),
                 database_path: root.path().join("repair.sqlite"),

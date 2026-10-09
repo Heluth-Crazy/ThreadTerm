@@ -8,7 +8,7 @@ use super::{
         dispatch_acp_message, flush_acp_messages, encode_approval_id, history_page, insert_optional, validate_native_id, version_probe,
         ChatTextSegments, CommandSpec, EnvelopeStyle, JsonLineProcess, JsonLineResponder,
     },
-    acp_mcp_servers, approve_threadterm_tool, emit_bound as emit, ChatSession, ChatToolServer,
+    acp_mcp_servers, approve_scoped_threadterm_tool, chat_tool_policy, emit_bound as emit, ChatSession, ChatToolPolicy, ChatToolServer,
     ProviderAdapter, ProviderCapability, ProviderError, ScopedProviderEvents,
     TerminalCommand,
 };
@@ -70,7 +70,7 @@ impl GrokAdapter {
         capture: Option<Arc<Mutex<Vec<Value>>>>,
         events: ScopedProviderEvents,
         project_events: bool,
-        delegation_tools: bool,
+        tool_policy: ChatToolPolicy,
     ) -> Result<(JsonLineProcess, Value), ProviderError> {
         // `--no-leader` is an `grok agent` flag, not `grok agent stdio`.
         // Putting it after `stdio` makes the process exit immediately with
@@ -83,10 +83,10 @@ impl GrokAdapter {
             Arc::new(move |raw: Value| {
                 // The parent's calls to ThreadTerm's own delegation tools are
                 // approved here (Grok names them `threadterm__<tool>`).
-                if delegation_tools && grok_reverse_rpc(&raw).is_some()
+                if grok_reverse_rpc(&raw).is_some()
                     && raw["method"] == "session/request_permission"
-                    && raw.get("params").and_then(super::acp_threadterm_permission_option).is_some() {
-                    let _ = approve_threadterm_tool(&responder, &raw);
+                    && raw.get("params").and_then(|params| super::acp_scoped_permission_option(params, &tool_policy)).is_some() {
+                    let _ = approve_scoped_threadterm_tool(&responder, &raw, &tool_policy);
                     return;
                 }
                 if project_events || grok_reverse_rpc(&raw).is_some() {
@@ -154,7 +154,7 @@ impl GrokAdapter {
             capture,
             ScopedProviderEvents::new(self.events.clone(), "history"),
             false,
-            false,
+            ChatToolPolicy::default(),
         )
     }
 }
@@ -343,7 +343,7 @@ impl ProviderAdapter for GrokAdapter {
             None,
             events.clone(),
             true,
-            tools.is_some(),
+            chat_tool_policy(tools),
         )?;
         let response = if let Some(id) = native_id {
             validate_native_id(id)?;

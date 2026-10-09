@@ -19,6 +19,14 @@ struct SetEnabled {
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct SelectBrowserBinding {
+    plugin_id: String,
+    binding_id: String,
+    operation_id: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct Reload {
     operation_id: String,
 }
@@ -26,7 +34,7 @@ struct Reload {
 pub(crate) fn validate(method: &str, value: &Value) -> Result<()> {
     if matches!(
         method,
-        "plugin.list" | "plugin.setEnabled" | "plugin.reload"
+        "plugin.list" | "plugin.setEnabled" | "plugin.selectBrowserBinding" | "plugin.reload"
     ) && !value.is_object()
     {
         return Err(anyhow!("plugin parameters must be an object"));
@@ -39,6 +47,12 @@ pub(crate) fn validate(method: &str, value: &Value) -> Result<()> {
             let p: SetEnabled = serde_json::from_value(value.clone())?;
             if p.plugin_id.is_empty() || p.operation_id.is_empty() {
                 return Err(anyhow!("invalid plugin parameters"));
+            }
+        }
+        "plugin.selectBrowserBinding" => {
+            let p: SelectBrowserBinding = serde_json::from_value(value.clone())?;
+            if p.plugin_id.is_empty() || p.binding_id.is_empty() || p.operation_id.is_empty() {
+                return Err(anyhow!("invalid browser binding selection parameters"));
             }
         }
         "plugin.reload" => {
@@ -91,10 +105,41 @@ pub(crate) fn dispatch(
                 p.plugin_id
             ));
         }
-        if !settings["plugins"].is_object() {
-            settings["plugins"] = json!({});
+        plugin_settings_entry_mut(&mut settings, &p.plugin_id)?["enabled"] = json!(p.enabled);
+    }
+    if method == "plugin.selectBrowserBinding" {
+        let p: SelectBrowserBinding = serde_json::from_value(value.clone())?;
+        let found = PluginRegistry::discover(&config.data_dir, &settings);
+        let target = found
+            .list
+            .plugins
+            .iter()
+            .find(|plugin| plugin.id == p.plugin_id)
+            .and_then(|plugin| {
+                plugin
+                    .browser_bindings
+                    .iter()
+                    .find(|binding| binding.id == p.binding_id)
+            })
+            .ok_or_else(|| {
+                anyhow!(
+                    "Browser binding {} in plugin {} was not found; reload the plugins folder",
+                    p.binding_id,
+                    p.plugin_id
+                )
+            })?;
+        let provider_id = target.provider_id.clone();
+        let requires = target.requires.clone();
+        for plugin in &found.list.plugins {
+            for binding in &plugin.browser_bindings {
+                if binding.provider_id == provider_id && binding.requires == requires {
+                    plugin_binding_settings_entry_mut(&mut settings, &plugin.id, &binding.id)?
+                        ["selected"] = json!(false);
+                }
+            }
         }
-        settings["plugins"][&p.plugin_id] = json!({"enabled":p.enabled});
+        plugin_binding_settings_entry_mut(&mut settings, &p.plugin_id, &p.binding_id)?
+            ["selected"] = json!(true);
     }
     let registry = PluginRegistry::discover(&config.data_dir, &settings);
     let result = serde_json::to_value(&registry.list)?;
@@ -110,9 +155,10 @@ pub(crate) fn dispatch(
                 plugins: vec![],
             },
             agents: vec![],
+            browser_bindings: vec![],
         });
     let committed = db.transaction(|tx| {
-        if method == "plugin.setEnabled" {
+        if matches!(method, "plugin.setEnabled" | "plugin.selectBrowserBinding") {
             write_enabled_settings(tx, &settings["plugins"])?;
         }
         tx.execute(
@@ -141,6 +187,46 @@ pub(crate) fn dispatch(
         return Err(failure);
     }
     Ok(result)
+}
+
+fn plugin_settings_entry_mut<'a>(
+    settings: &'a mut Value,
+    plugin_id: &str,
+) -> Result<&'a mut Value> {
+    if !settings["plugins"].is_object() {
+        settings["plugins"] = json!({});
+    }
+    let plugins = settings["plugins"]
+        .as_object_mut()
+        .ok_or_else(|| anyhow!("plugin settings must be an object"))?;
+    let entry = plugins
+        .entry(plugin_id.to_owned())
+        .or_insert_with(|| json!({}));
+    if !entry.is_object() {
+        *entry = json!({});
+    }
+    Ok(entry)
+}
+
+fn plugin_binding_settings_entry_mut<'a>(
+    settings: &'a mut Value,
+    plugin_id: &str,
+    binding_id: &str,
+) -> Result<&'a mut Value> {
+    let plugin = plugin_settings_entry_mut(settings, plugin_id)?;
+    if !plugin["browserBindings"].is_object() {
+        plugin["browserBindings"] = json!({});
+    }
+    let bindings = plugin["browserBindings"]
+        .as_object_mut()
+        .ok_or_else(|| anyhow!("browser binding settings must be an object"))?;
+    let entry = bindings
+        .entry(binding_id.to_owned())
+        .or_insert_with(|| json!({}));
+    if !entry.is_object() {
+        *entry = json!({});
+    }
+    Ok(entry)
 }
 
 fn write_enabled_settings(tx: &Transaction<'_>, plugins: &Value) -> Result<()> {
@@ -241,5 +327,41 @@ mod tests {
         ] {
             assert!(validate("plugin.setEnabled", &value).is_err());
         }
+        assert!(validate(
+            "plugin.selectBrowserBinding",
+            &json!({"pluginId":"echo-acp","bindingId":"preview","operationId":"select"})
+        )
+        .is_ok());
+        for value in [
+            json!({"pluginId":"echo-acp","bindingId":"preview"}),
+            json!({"pluginId":"","bindingId":"preview","operationId":"select"}),
+            json!({"pluginId":"echo-acp","bindingId":"","operationId":"select"}),
+            json!({"pluginId":"echo-acp","bindingId":"preview","operationId":"select","extra":true}),
+        ] {
+            assert!(validate("plugin.selectBrowserBinding", &value).is_err());
+        }
+    }
+
+    #[test]
+    fn plugin_setting_mutations_preserve_unrelated_fields() {
+        let mut settings = json!({
+            "plugins": {
+                "alpha": {"enabled": true, "browserBindings": {"first": {"selected": true, "note": "keep"}}}
+            }
+        });
+        plugin_settings_entry_mut(&mut settings, "alpha").unwrap()["enabled"] = json!(false);
+        plugin_binding_settings_entry_mut(&mut settings, "alpha", "first").unwrap()["selected"] =
+            json!(false);
+        plugin_binding_settings_entry_mut(&mut settings, "beta", "second").unwrap()["selected"] =
+            json!(true);
+        assert_eq!(
+            settings["plugins"]["alpha"]["browserBindings"]["first"]["note"],
+            "keep"
+        );
+        assert_eq!(settings["plugins"]["alpha"]["enabled"], false);
+        assert_eq!(
+            settings["plugins"]["beta"]["browserBindings"]["second"]["selected"],
+            true
+        );
     }
 }

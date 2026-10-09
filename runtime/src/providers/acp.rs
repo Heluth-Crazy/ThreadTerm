@@ -4,12 +4,12 @@ use super::{
         acp_choices, acp_title, approval_payload, find_choice,
         validate_turn, write_failed_not_sent, ApprovalChoice, PendingApprovalState,
     },
-    approve_threadterm_tool,
+    acp_scoped_permission_option, approve_scoped_threadterm_tool, chat_tool_policy,
     common::{
         command_output, dispatch_acp_message, flush_acp_messages, encode_approval_id, history_page, insert_optional, validate_native_id,
         version_probe, ChatTextSegments, CommandSpec, EnvelopeStyle, JsonLineProcess, JsonLineResponder,
     },
-    emit_bound as emit, ChatSession, ChatToolServer, ProviderAdapter, ProviderCapability,
+    emit_bound as emit, ChatSession, ChatToolPolicy, ChatToolServer, ProviderAdapter, ProviderCapability,
     NativeSessionRef, ProviderError, ScopedProviderEvents, TerminalCommand,
 };
 use crate::plugins::{AgentDescriptor, TerminalConfig};
@@ -83,7 +83,7 @@ impl AcpAdapter {
         replay_gate: Arc<AtomicBool>,
         events: ScopedProviderEvents,
         project_events: bool,
-        delegation_tools: bool,
+        tool_policy: ChatToolPolicy,
     ) -> Result<(JsonLineProcess, Value), ProviderError> {
         let spec = self
             .descriptor
@@ -96,7 +96,7 @@ impl AcpAdapter {
         let permission_ui = Arc::clone(&ui);
         let ready_message: Arc<dyn Fn(Value) + Send + Sync> = Arc::new(move |raw: Value| {
             // Requests must settle even when transcript replay is suppressed.
-            if handle_acp_message(&auto_responder, &raw, delegation_tools,
+            if handle_acp_message(&auto_responder, &raw, tool_policy,
                 project_events && !replay_gate.load(Ordering::SeqCst)) {
                 emit_acp_message(
                     &events,
@@ -160,7 +160,7 @@ impl AcpAdapter {
             Arc::new(AtomicBool::new(false)),
             ScopedProviderEvents::new(self.events.clone(), "history"),
             false,
-            false,
+            ChatToolPolicy::default(),
         )
     }
 }
@@ -410,7 +410,7 @@ impl ProviderAdapter for AcpAdapter {
             Arc::clone(&replay_gate),
             events.clone(),
             true,
-            tools.is_some(),
+            chat_tool_policy(tools),
         )?;
         let response = if let Some(id) = native_id {
             validate_native_id(id)?;
@@ -1413,17 +1413,17 @@ fn drain_acp_permissions(
 fn handle_acp_message(
     responder: &Mutex<Option<JsonLineResponder>>,
     raw: &Value,
-    delegation_tools: bool,
+    tool_policy: ChatToolPolicy,
     project_events: bool,
 ) -> bool {
     let request = raw.get("id").is_some() && raw.get("method").is_some()
         && raw.get("result").is_none() && raw.get("error").is_none();
     if !request { return project_events; }
     let permission = raw["method"] == "session/request_permission";
-    if delegation_tools && permission && raw.get("params")
-        .and_then(super::acp_threadterm_permission_option).is_some() {
+    if permission && raw.get("params")
+        .and_then(|params| acp_scoped_permission_option(params, &tool_policy)).is_some() {
         // Once attempted, do not send a different outcome after a partial write.
-        let _ = approve_threadterm_tool(responder, raw);
+        let _ = approve_scoped_threadterm_tool(responder, raw, &tool_policy);
         return false;
     }
     if permission && project_events { return true; }
@@ -2688,7 +2688,7 @@ mod tests {
             let responder = Arc::new(Mutex::new(None));
             let ready_responder = Arc::clone(&responder);
             let ready: Arc<dyn Fn(Value) + Send + Sync> = Arc::new(move |raw| {
-                assert!(!handle_acp_message(&ready_responder, &raw, false, false));
+                assert!(!handle_acp_message(&ready_responder, &raw, ChatToolPolicy::default(), false));
             });
             let startup = Mutex::new(Some(Vec::new()));
             dispatch_acp_message(&startup, &ready, json!({"id":"early-unknown","method":"terminal/create"}));
@@ -2706,7 +2706,7 @@ mod tests {
             let think = Mutex::new(false);
             for raw in fixture("acp-foreign-session-frames.jsonl") {
                 let replay = raw["id"] == "replay";
-                if handle_acp_message(&responder, &raw, false, !replay) {
+                if handle_acp_message(&responder, &raw, ChatToolPolicy::default(), !replay) {
                     emit_acp_message(&events, provider, "s", &native, &active, &permissions, &think, &ui, raw);
                 }
             }
@@ -2729,7 +2729,7 @@ mod tests {
             assert!(chat.approve("turn", &id, "allow", "answer").is_err());
             // Delegation must precede a closed replay gate.
             let delegation = json!({"id":"delegation","method":"session/request_permission","params":{"sessionId":"parent","toolCall":{"title":"mcp__threadterm__delegate_start","kind":"other"},"options":[{"optionId":"once","kind":"allow_once","name":"Allow"}]}});
-            assert!(!handle_acp_message(&responder, &delegation, true, false));
+            assert!(!handle_acp_message(&responder, &delegation, ChatToolPolicy { delegation: true, preview: false }, false));
             chat.process.request("barrier", json!({})).unwrap();
             let responses: Vec<Value> = std::fs::read_to_string(log).unwrap().lines().map(|line| serde_json::from_str(line).unwrap()).collect();
             assert_exactly_once(&responses, &[json!("unknown"), json!("replay"), json!("child-permission"), json!("delegation"), json!("early-unknown"), json!("early-permission")]);

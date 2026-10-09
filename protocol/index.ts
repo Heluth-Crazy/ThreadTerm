@@ -1,7 +1,7 @@
 import { validateWireRequest, validateWireSuccess } from './generated-validators.js';
 export const PROTOCOL_VERSION = 1 as const;
 /** Semantic contract includes explicit native-history repair and snapshot integrity. Framing/HMAC still use PROTOCOL_VERSION. */
-export const PROTOCOL_CONTRACT = 9 as const;
+export const PROTOCOL_CONTRACT = 10 as const;
 export const MAX_FRAME_BYTES = 8 * 1024 * 1024;
 /** Agents that ship with ThreadTerm (native adapters, or `shell` / `custom` commands). */
 export type BuiltinProviderId = 'codex'|'claude'|'kimi'|'gemini'|'opencode'|'shell'|'grok'|'custom';
@@ -67,7 +67,15 @@ export interface PluginAgentInfo { id:ProviderId; name:string; terminal:boolean;
  * plugins live in the plugins directory and stay disabled until the user enables them. `issues` lists problems:
  * an unloadable manifest or an invalid agent (bad id or command, id collision, icon outside the folder, …) means
  * that part contributes nothing; a warning such as an unknown contribution type does not block the agents. */
-export interface PluginInfo { id:string; name:string; version:string; publisher?:string; description?:string; homepage?:string; source:'bundled'|'user'; enabled:boolean; path?:string; agents:PluginAgentInfo[]; issues:string[] }
+export interface BrowserBindingInfo { id:string; bindingVersion:number; providerId:string; requires:Record<string,number>; transport:string; tools:string[]; workflow:string; enabled:boolean; selected:boolean; availability:'eligible'|'disabled'|'unsupported_binding_version'|'unsupported_runtime_capability'|'unsupported_transport'|'conflict'; issue?:string }
+export interface PluginInfo { id:string; name:string; version:string; publisher?:string; description?:string; homepage?:string; source:'bundled'|'user'; enabled:boolean; path?:string; agents:PluginAgentInfo[]; browserBindings?:BrowserBindingInfo[]; issues:string[] }
+export interface PreviewError {code:string;message:string;retryable:boolean}
+export type PreviewState='accepted'|'presented'|'closed'|'failed'|'unavailable'|'interrupted';
+export type PreviewNavigation='not_started'|'pending'|'load_observed'|'failed';
+export interface PreviewResult {requestId:string;previewId?:string;state:PreviewState;sequence:number;navigation:PreviewNavigation;applicationReady:'unknown';contentVerified:false;observedUrl?:string;observedTitle?:string;documentGeneration?:number;error?:PreviewError}
+/** Runtime association, separate from the ordinary web ContentRef. */
+export interface PreviewAssociation extends PreviewResult {previewId:string;sessionId:string;documentId:string;url:string;title?:string;tabId?:string;workspaceId?:string;observedUrl?:string;observedTitle?:string;documentGeneration?:number}
+export interface PreviewPresentation {sessionId:string;attachmentId:string;viewId:string;workspaceId?:string;requestId:string;previewId:string;documentId:string;url:string;title?:string}
 /** Page comments (desktop bridge only; never sent to the runtime). Rects are CSS pixels in the page viewport. Every
  * string from a pick comes from an untrusted page: the desktop bounds and validates it, the renderer shows it as text. */
 export interface PageRect { x:number; y:number; width:number; height:number }
@@ -223,6 +231,13 @@ export interface DataRelocationPrepared { sourceRoot:string; targetRoot:string; 
 export interface RuntimeEvent { v:1; event:string; epoch:string; seq:number; data:unknown }
 export interface TerminalLaunchState { phase:'preparing'|'launching'|'running'|'failed'|'cancelled'; error?:{code:string;message:string} }
 export interface RequestMap {
+ 'preview.attach': [{sessionId:string;viewId:string;workspaceId?:string},{attachmentId:string;associations:PreviewAssociation[]}];
+ 'preview.detach': [{sessionId:string;attachmentId:string},null];
+ 'preview.snapshot': [{sessionId:string;attachmentId:string},PreviewAssociation[]];
+ 'preview.prepare': [{sessionId:string;attachmentId:string;requestId:string;previewId:string;documentId:string},PreviewAssociation];
+ 'preview.ack': [{sessionId:string;attachmentId:string;requestId:string;previewId:string;documentId:string;state:'presented'|'failed';tabId?:string;workspaceId?:string;workspaceRevision?:number;error?:PreviewError},PreviewResult];
+ 'preview.observe': [{sessionId:string;attachmentId:string;requestId:string;previewId:string;documentId:string;sequence:number;navigation:'pending'|'load_observed'|'failed';url?:string;title?:string;documentGeneration?:number;error?:PreviewError},PreviewResult];
+ 'preview.close': [{sessionId:string;attachmentId:string;previewId:string},null];
  'session.launch.read': [{sessionId:string},TerminalLaunchState];
  'catalog.visibility.list': [{},CatalogVisibility[]];
  'catalog.visibility.update': [{kind:CatalogVisibility['kind'];id:string;visibility:CatalogVisibility['visibility'];expectedRevision:number;operationId:string},CatalogVisibility];
@@ -287,6 +302,7 @@ export interface RequestMap {
  'provider.list': [{},ProviderCapability[]];
  'plugin.list': [{},PluginList];
  'plugin.setEnabled': [{pluginId:string;enabled:boolean;operationId:string},PluginList];
+ 'plugin.selectBrowserBinding': [{pluginId:string;bindingId:string;operationId:string},PluginList];
  'plugin.reload': [{operationId:string},PluginList];
  'chat.queue.read': [{sessionId:string},ChatQueue];
  /** Mutations need the Chat write lease (like chat.send); each returns the whole queue. ≤ 20 items. */
@@ -427,8 +443,12 @@ export interface ThreadTermBridge {
  exportDiagnostics():Promise<string|null>;
  scheduleElectronCacheCleanup(schedule:boolean):Promise<{scheduled:boolean;available:boolean;result?:string}>;
 }
-export const METHODS = ['chat.repair','filesystem.resolve','session.launch.read','catalog.visibility.list','catalog.visibility.update','session.resume','session.organize','git.merge','git.merge.abort','project.catalog.list','project.update','worktree.branches','worktree.relocate','session.rerun','git.fetch','git.pull','git.push','session.config.read','session.config.save','session.retry.read','session.retry.update','chat.draft.read','chat.draft.save','device.status','device.enable','device.disable','device.pairing.create','device.pairing.cancel','device.list','device.rename','device.renew','device.revoke','git.stage','git.unstage','git.commit','filesystem.image','chat.snapshot','terminal.read','session.lookup','session.present','chat.read','chat.subagent.read','data.status','data.backup','data.relocation.status','data.relocation.prepare','data.relocation.cancel','settings.export','settings.import.preview','settings.import.apply','preset.list','preset.save','preset.delete','usage.query','runtime.health','terminal.host','runtime.shutdown','runtime.snapshot','project.add','project.remove','session.create','history.import','session.stop','session.update','session.attention.acknowledge','session.claim','session.renew','session.release','terminal.input','terminal.resize','settings.update','provider.list','plugin.list','plugin.setEnabled','plugin.reload','chat.queue.read','chat.queue.add','chat.queue.update','chat.queue.remove','chat.queue.move','chat.queue.pause','chat.queue.resume','chat.queue.send','quickLaunch.list','quickLaunch.save','quickLaunch.delete','quickLaunch.run','quickLaunch.setup.read','quickLaunch.setup.save','quickLaunch.setup.run','quickLaunch.setup.status','history.list','history.read','chat.send','chat.cancel','chat.approve','chat.answer','chat.options','chat.option.set','chat.connection','chat.connect','filesystem.list','filesystem.read','filesystem.write','draft.list','draft.put','draft.delete','git.status','git.diff','worktree.list','worktree.create','worktree.remove','workspace.save','workspace.delete','inbox.read','git.index.write','git.discard','git.checkout','git.branch.delete','git.branches','git.log','git.commit.show','git.commit.diff','git.blame','filesystem.create','filesystem.rename','filesystem.delete','filesystem.files','filesystem.search','review.list','review.changes','review.diff','review.revert','review.checkpoint','agentReview.start','agentReview.list','agentReview.mark','session.documents.list','session.documents.pin','session.documents.unpin'] as const satisfies readonly Method[];
+export const METHODS = ['preview.attach','preview.detach','preview.snapshot','preview.prepare','preview.ack','preview.observe','preview.close','chat.repair','filesystem.resolve','session.launch.read','catalog.visibility.list','catalog.visibility.update','session.resume','session.organize','git.merge','git.merge.abort','project.catalog.list','project.update','worktree.branches','worktree.relocate','session.rerun','git.fetch','git.pull','git.push','session.config.read','session.config.save','session.retry.read','session.retry.update','chat.draft.read','chat.draft.save','device.status','device.enable','device.disable','device.pairing.create','device.pairing.cancel','device.list','device.rename','device.renew','device.revoke','git.stage','git.unstage','git.commit','filesystem.image','chat.snapshot','terminal.read','session.lookup','session.present','chat.read','chat.subagent.read','data.status','data.backup','data.relocation.status','data.relocation.prepare','data.relocation.cancel','settings.export','settings.import.preview','settings.import.apply','preset.list','preset.save','preset.delete','usage.query','runtime.health','terminal.host','runtime.shutdown','runtime.snapshot','project.add','project.remove','session.create','history.import','session.stop','session.update','session.attention.acknowledge','session.claim','session.renew','session.release','terminal.input','terminal.resize','settings.update','provider.list','plugin.list','plugin.setEnabled','plugin.selectBrowserBinding','plugin.reload','chat.queue.read','chat.queue.add','chat.queue.update','chat.queue.remove','chat.queue.move','chat.queue.pause','chat.queue.resume','chat.queue.send','quickLaunch.list','quickLaunch.save','quickLaunch.delete','quickLaunch.run','quickLaunch.setup.read','quickLaunch.setup.save','quickLaunch.setup.run','quickLaunch.setup.status','history.list','history.read','chat.send','chat.cancel','chat.approve','chat.answer','chat.options','chat.option.set','chat.connection','chat.connect','filesystem.list','filesystem.read','filesystem.write','draft.list','draft.put','draft.delete','git.status','git.diff','worktree.list','worktree.create','worktree.remove','workspace.save','workspace.delete','inbox.read','git.index.write','git.discard','git.checkout','git.branch.delete','git.branches','git.log','git.commit.show','git.commit.diff','git.blame','filesystem.create','filesystem.rename','filesystem.delete','filesystem.files','filesystem.search','review.list','review.changes','review.diff','review.revert','review.checkpoint','agentReview.start','agentReview.list','agentReview.mark','session.documents.list','session.documents.pin','session.documents.unpin'] as const satisfies readonly Method[];
 const stringFields: Partial<Record<Method,readonly string[]>> = {
+ 'plugin.selectBrowserBinding':['pluginId','bindingId','operationId'],
+ 'preview.attach':['sessionId','viewId'],'preview.detach':['sessionId','attachmentId'],'preview.snapshot':['sessionId','attachmentId'],
+ 'preview.prepare':['sessionId','attachmentId','requestId','previewId','documentId'],
+ 'preview.ack':['sessionId','attachmentId','requestId','previewId','documentId'],'preview.observe':['sessionId','attachmentId','requestId','previewId','documentId'],'preview.close':['sessionId','attachmentId','previewId'],
  'filesystem.resolve':['sessionId','path'],
  'session.launch.read':['sessionId'],
  'catalog.visibility.update':['kind','id','visibility','operationId'],
@@ -474,6 +494,15 @@ export function validateRequest(method:unknown,params:unknown):asserts method is
  if(!isRecord(params)) throw new Error('Request parameters must be an object');
  if(!validateWireRequest({v:1,id:'boundary',method,params})) throw new Error('Request does not match the protocol schema');
  const m=method as Method;
+ if(m.startsWith('preview.')) {
+  for(const field of ['sessionId','viewId','workspaceId','attachmentId','requestId','previewId','documentId','tabId']) {
+   const value=params[field];if(value!==undefined&&(typeof value!=='string'||!value||value.length>256||/[\u0000-\u001f\u007f]/.test(value)))throw new Error('Invalid preview identity');
+  }
+  if(m==='preview.ack'&&params.state==='presented'&&(!params.tabId||!params.workspaceId||!Number.isSafeInteger(params.workspaceRevision)||Number(params.workspaceRevision)<1))throw new Error('Preview presentation requires a saved tab revision');
+  if(m==='preview.observe'&&(!Number.isSafeInteger(params.sequence)||Number(params.sequence)<0))throw new Error('Invalid preview sequence');
+  if(m==='preview.observe'&&params.documentGeneration!==undefined&&(!Number.isSafeInteger(params.documentGeneration)||Number(params.documentGeneration)<0))throw new Error('Invalid preview document generation');
+  if(params.error!==undefined&&isRecord(params.error)&&(typeof params.error.code!=='string'||!params.error.code||params.error.code.length>256||typeof params.error.message!=='string'||params.error.message.length>2048))throw new Error('Invalid preview error');
+ }
  for(const key of stringFields[m]??[]) {
   const imageOnlyText=(m==='chat.send'||m==='chat.queue.add')&&key==='text'&&Array.isArray(params.images)&&params.images.length>0;
   if(typeof params[key]!=='string'||(key!=='data'&&!imageOnlyText&&params[key]==='')) throw new Error(`Invalid ${key}`);

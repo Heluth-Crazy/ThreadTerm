@@ -1,6 +1,226 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
   "definitions": {
+    "RequestParams<\"preview.attach\">": {
+      "type": "object",
+      "properties": {
+        "sessionId": {
+          "type": "string"
+        },
+        "viewId": {
+          "type": "string"
+        },
+        "workspaceId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "sessionId",
+        "viewId"
+      ],
+      "additionalProperties": false
+    },
+    "RequestParams<\"preview.detach\">": {
+      "type": "object",
+      "properties": {
+        "sessionId": {
+          "type": "string"
+        },
+        "attachmentId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "sessionId",
+        "attachmentId"
+      ],
+      "additionalProperties": false
+    },
+    "RequestParams<\"preview.snapshot\">": {
+      "type": "object",
+      "properties": {
+        "sessionId": {
+          "type": "string"
+        },
+        "attachmentId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "sessionId",
+        "attachmentId"
+      ],
+      "additionalProperties": false
+    },
+    "RequestParams<\"preview.prepare\">": {
+      "type": "object",
+      "properties": {
+        "sessionId": {
+          "type": "string"
+        },
+        "attachmentId": {
+          "type": "string"
+        },
+        "requestId": {
+          "type": "string"
+        },
+        "previewId": {
+          "type": "string"
+        },
+        "documentId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "sessionId",
+        "attachmentId",
+        "requestId",
+        "previewId",
+        "documentId"
+      ],
+      "additionalProperties": false
+    },
+    "RequestParams<\"preview.ack\">": {
+      "type": "object",
+      "properties": {
+        "sessionId": {
+          "type": "string"
+        },
+        "attachmentId": {
+          "type": "string"
+        },
+        "requestId": {
+          "type": "string"
+        },
+        "previewId": {
+          "type": "string"
+        },
+        "documentId": {
+          "type": "string"
+        },
+        "state": {
+          "type": "string",
+          "enum": [
+            "presented",
+            "failed"
+          ]
+        },
+        "tabId": {
+          "type": "string"
+        },
+        "workspaceId": {
+          "type": "string"
+        },
+        "workspaceRevision": {
+          "type": "number"
+        },
+        "error": {
+          "$ref": "#/definitions/PreviewError"
+        }
+      },
+      "required": [
+        "sessionId",
+        "attachmentId",
+        "requestId",
+        "previewId",
+        "documentId",
+        "state"
+      ],
+      "additionalProperties": false
+    },
+    "PreviewError": {
+      "type": "object",
+      "properties": {
+        "code": {
+          "type": "string"
+        },
+        "message": {
+          "type": "string"
+        },
+        "retryable": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "code",
+        "message",
+        "retryable"
+      ],
+      "additionalProperties": false
+    },
+    "RequestParams<\"preview.observe\">": {
+      "type": "object",
+      "properties": {
+        "sessionId": {
+          "type": "string"
+        },
+        "attachmentId": {
+          "type": "string"
+        },
+        "requestId": {
+          "type": "string"
+        },
+        "previewId": {
+          "type": "string"
+        },
+        "documentId": {
+          "type": "string"
+        },
+        "sequence": {
+          "type": "number"
+        },
+        "navigation": {
+          "type": "string",
+          "enum": [
+            "pending",
+            "load_observed",
+            "failed"
+          ]
+        },
+        "url": {
+          "type": "string"
+        },
+        "title": {
+          "type": "string"
+        },
+        "documentGeneration": {
+          "type": "number"
+        },
+        "error": {
+          "$ref": "#/definitions/PreviewError"
+        }
+      },
+      "required": [
+        "sessionId",
+        "attachmentId",
+        "requestId",
+        "previewId",
+        "documentId",
+        "sequence",
+        "navigation"
+      ],
+      "additionalProperties": false
+    },
+    "RequestParams<\"preview.close\">": {
+      "type": "object",
+      "properties": {
+        "sessionId": {
+          "type": "string"
+        },
+        "attachmentId": {
+          "type": "string"
+        },
+        "previewId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "sessionId",
+        "attachmentId",
+        "previewId"
+      ],
+      "additionalProperties": false
+    },
     "RequestParams<\"session.launch.read\">": {
       "type": "object",
       "properties": {
@@ -1376,6 +1596,26 @@
       "required": [
         "pluginId",
         "enabled",
+        "operationId"
+      ],
+      "additionalProperties": false
+    },
+    "RequestParams<\"plugin.selectBrowserBinding\">": {
+      "type": "object",
+      "properties": {
+        "pluginId": {
+          "type": "string"
+        },
+        "bindingId": {
+          "type": "string"
+        },
+        "operationId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "pluginId",
+        "bindingId",
         "operationId"
       ],
       "additionalProperties": false
@@ -3256,6 +3496,188 @@
         },
         "method": {
           "type": "string",
+          "const": "preview.attach"
+        },
+        "params": {
+          "$ref": "#/definitions/RequestParams%3C%22preview.attach%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "params"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "preview.detach"
+        },
+        "params": {
+          "$ref": "#/definitions/RequestParams%3C%22preview.detach%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "params"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "preview.snapshot"
+        },
+        "params": {
+          "$ref": "#/definitions/RequestParams%3C%22preview.snapshot%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "params"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "preview.prepare"
+        },
+        "params": {
+          "$ref": "#/definitions/RequestParams%3C%22preview.prepare%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "params"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "preview.ack"
+        },
+        "params": {
+          "$ref": "#/definitions/RequestParams%3C%22preview.ack%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "params"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "preview.observe"
+        },
+        "params": {
+          "$ref": "#/definitions/RequestParams%3C%22preview.observe%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "params"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "preview.close"
+        },
+        "params": {
+          "$ref": "#/definitions/RequestParams%3C%22preview.close%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "params"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
           "const": "session.launch.read"
         },
         "params": {
@@ -4846,6 +5268,32 @@
         },
         "params": {
           "$ref": "#/definitions/RequestParams%3C%22plugin.setEnabled%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "params"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "plugin.selectBrowserBinding"
+        },
+        "params": {
+          "$ref": "#/definitions/RequestParams%3C%22plugin.selectBrowserBinding%22%3E"
         }
       },
       "required": [
