@@ -13,6 +13,7 @@ import { ignoreBrokenStdio, isBrokenPipeError } from './stdioGuards.js';
 import { resolveWindowChrome } from './windowChrome.js';
 import { terminalWindowArguments } from './terminalEnvironment.js';
 import { registerPageComments } from './pageComments.js';
+import { applicationIconPng, trayIconPng } from '../assets/icon-data.js';
 
 ignoreBrokenStdio();
 process.on('uncaughtException', (error) => {
@@ -94,24 +95,7 @@ function assertTrustedRenderer(event: IpcMainInvokeEvent): void {
   if (!event.senderFrame || !isTrustedRendererUrl(event.senderFrame.url)) throw new Error('Untrusted renderer IPC sender');
 }
 function trayImage(): Electron.NativeImage {
-  const size = 32;
-  const pixels = Buffer.alloc(size * size * 4);
-  for (let y = 0; y < size; y += 1) {
-    for (let x = 0; x < size; x += 1) {
-      const cornerX = x < 7 ? 7 - x : x > 24 ? x - 24 : 0;
-      const cornerY = y < 7 ? 7 - y : y > 24 ? y - 24 : 0;
-      if (cornerX * cornerX + cornerY * cornerY > 49) continue;
-      const bar = (y >= 9 && y < 13 && x >= 7 && x < 25)
-        || (y >= 16 && y < 19 && x >= 9 && x < 23)
-        || (y >= 21 && y < 24 && x >= 9 && x < 18);
-      const offset = (y * size + x) * 4;
-      pixels[offset] = bar ? 0xeb : 0x27;
-      pixels[offset + 1] = bar ? 0xe7 : 0x18;
-      pixels[offset + 2] = bar ? 0xe5 : 0x11;
-      pixels[offset + 3] = 0xff;
-    }
-  }
-  return nativeImage.createFromBitmap(pixels, { width: size, height: size });
+  return nativeImage.createFromDataURL(trayIconPng);
 }
 function delay(ms: number): Promise<void> { return new Promise((resolvePromise) => setTimeout(resolvePromise, ms)); }
 
@@ -122,6 +106,7 @@ function createWindow(options: { sessionId?: string; workspaceId?: string; float
     minWidth: options.floating ? 520 : 960,
     minHeight: options.floating ? 400 : 640,
     show: false,
+    icon: nativeImage.createFromDataURL(applicationIconPng),
     frame: false,
     titleBarStyle: 'hidden',
     // Windows 11 rounds the opaque window natively (DWM, `roundedCorners`);
