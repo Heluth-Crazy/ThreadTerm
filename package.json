@@ -69,7 +69,12 @@
         "filter": ["conpty.dll", "OpenConsole.exe", "VERSION.txt"]
       }
     ],
+    "win": {
+      "icon": "desktop/assets/threadterm.ico"
+    },
     "nsis": {
+      "installerIcon": "desktop/assets/threadterm.ico",
+      "uninstallerIcon": "desktop/assets/threadterm.ico",
       "shortcutName": "ThreadTerm V3",
       "oneClick": false,
       "allowToChangeInstallationDirectory": true,
