@@ -787,6 +787,20 @@
         },
         "elapsedMs": {
           "type": "number"
+        },
+        "turnStatus": {
+          "type": "string",
+          "enum": [
+            "completed",
+            "interrupted",
+            "failed",
+            "inProgress",
+            "unknown"
+          ]
+        },
+        "turnOrigin": {
+          "type": "string",
+          "const": "history"
         }
       },
       "required": [
@@ -795,7 +809,8 @@
         "parts",
         "createdAt"
       ],
-      "additionalProperties": false
+      "additionalProperties": false,
+      "description": "Native turn outcome is independent of measured wall-clock duration. Missing status remains unknown."
     },
     "ChatPart": {
       "type": "object",
@@ -834,6 +849,13 @@
           "items": {
             "$ref": "#/definitions/FileReference"
           }
+        },
+        "phase": {
+          "type": "string",
+          "enum": [
+            "commentary",
+            "final_answer"
+          ]
         }
       },
       "required": [
@@ -941,7 +963,8 @@
             "unknown_activity",
             "missing_native_id",
             "history_unavailable",
-            "session_unavailable"
+            "session_unavailable",
+            "history_metadata_missing"
           ]
         },
         "degraded": {

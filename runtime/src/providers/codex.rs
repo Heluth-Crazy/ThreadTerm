@@ -290,8 +290,8 @@ impl ProviderAdapter for CodexAdapter {
             "thread/read",
             json!({"threadId":native_id,"includeTurns":true}),
         )?;
-        let thread = response.get("thread").cloned().unwrap_or(response);
-        Ok(Value::Array(codex_transcript_items(&thread)))
+        let thread = codex_history_thread(&response, native_id)?;
+        Ok(Value::Array(codex_transcript_items(thread)))
     }
 
     fn open_chat(
@@ -3189,7 +3189,7 @@ fn codex_transcript_items(thread: &Value) -> Vec<Value> {
         .and_then(Value::as_array)
         .cloned()
         .unwrap_or_default();
-    for turn in turns {
+    for (turn_index, turn) in turns.into_iter().enumerate() {
         let turn_id = turn.get("id").and_then(Value::as_str);
         for item in turn
             .get("items")
@@ -3206,9 +3206,10 @@ fn codex_transcript_items(thread: &Value) -> Vec<Value> {
                     "user",
                     vec![json!({"type":"text","text":extract_text(item)})],
                 ),
-                "agentMessage" => (
+                "agentMessage" => ("assistant", vec![codex_history_text_part(item)]),
+                "reasoning" => (
                     "assistant",
-                    vec![json!({"type":"text","text":extract_text(item)})],
+                    vec![codex_history_reasoning_part(item)],
                 ),
                 "subAgentActivity" | "collabAgentToolCall" => (
                     "assistant",
@@ -3259,8 +3260,135 @@ fn codex_transcript_items(thread: &Value) -> Vec<Value> {
             insert_optional(&mut chat_item, "turnId", turn_id.map(|value| json!(value)));
             transcript.push(chat_item);
         }
+        transcript.push(codex_turn_boundary(&turn, turn_id, turn_index, &transcript));
     }
     transcript
+}
+
+fn codex_history_thread<'a>(response: &'a Value, native_id: &str) -> Result<&'a Value, ProviderError> {
+    let thread = response.get("thread").ok_or_else(|| {
+        ProviderError::new("invalid_history_transcript", "Codex history response did not contain a thread")
+    })?;
+    if thread.get("id").and_then(Value::as_str) != Some(native_id) {
+        return Err(ProviderError::new(
+            "invalid_history_transcript",
+            "Codex history response did not match the requested thread",
+        ));
+    }
+    if !thread.get("turns").is_some_and(Value::is_array) {
+        return Err(ProviderError::new(
+            "invalid_history_transcript",
+            "Codex history response did not contain a turns array",
+        ));
+    }
+    for turn in thread["turns"].as_array().expect("validated turns array") {
+        if turn
+            .get("id")
+            .and_then(Value::as_str)
+            .is_none_or(str::is_empty)
+        {
+            return Err(ProviderError::new(
+                "invalid_history_transcript",
+                "Codex history turn did not contain a stable id",
+            ));
+        }
+        if !turn.get("items").is_some_and(Value::is_array) {
+            return Err(ProviderError::new(
+                "invalid_history_transcript",
+                "Codex history turn did not contain an items array",
+            ));
+        }
+        if turn.get("itemsView").and_then(Value::as_str) == Some("notLoaded") {
+            return Err(ProviderError::new(
+                "invalid_history_transcript",
+                "Codex history turn items were not loaded",
+            ));
+        }
+    }
+    Ok(thread)
+}
+
+fn codex_history_text_part(item: &Value) -> Value {
+    let mut part = json!({"type":"text","text":extract_text(item)});
+    insert_optional(
+        &mut part,
+        "phase",
+        codex_message_phase(item).map(Value::String),
+    );
+    part
+}
+
+fn codex_history_reasoning_part(item: &Value) -> Value {
+    let text = ["summary", "content"]
+        .iter()
+        .find_map(|field| {
+            let text = item
+                .get(*field)
+                .and_then(Value::as_array)?
+                .iter()
+                .filter_map(Value::as_str)
+                .collect::<Vec<_>>()
+                .join("\n");
+            (!text.is_empty()).then_some(text)
+        })
+        .unwrap_or_else(|| extract_text(item));
+    json!({"type":"thinking","text":text,"status":"complete","data":item})
+}
+
+fn codex_message_phase(item: &Value) -> Option<String> {
+    match item.get("phase").and_then(Value::as_str) {
+        Some("commentary" | "final_answer") => item
+            .get("phase")
+            .and_then(Value::as_str)
+            .map(str::to_owned),
+        _ => None,
+    }
+}
+
+fn codex_turn_boundary(
+    turn: &Value,
+    turn_id: Option<&str>,
+    turn_index: usize,
+    transcript: &[Value],
+) -> Value {
+    let base_id = turn_id
+        .filter(|id| !id.is_empty())
+        .map(|id| format!("turn:{id}:boundary"))
+        .unwrap_or_else(|| format!("turn:{turn_index}:boundary"));
+    let mut id = base_id.clone();
+    let mut duplicate = 1usize;
+    while transcript.iter().any(|item| item.get("id").and_then(Value::as_str) == Some(id.as_str())) {
+        id = format!("{base_id}:{duplicate}");
+        duplicate += 1;
+    }
+    let mut parts = Vec::new();
+    if let Some(error) = turn.get("error").filter(|error| !error.is_null()) {
+        parts.push(json!({"type":"error","data":{"native":error}}));
+    }
+    let mut boundary = json!({
+        "id":id,
+        "role":"assistant",
+        "parts":parts,
+        "createdAt":Utc::now().to_rfc3339()
+    });
+    insert_optional(&mut boundary, "turnId", turn_id.map(|value| json!(value)));
+    insert_optional(
+        &mut boundary,
+        "turnStatus",
+        Some(json!(match turn.get("status").and_then(Value::as_str) {
+            Some("completed") => "completed",
+            Some("interrupted") => "interrupted",
+            Some("failed") => "failed",
+            Some("inProgress") => "inProgress",
+            _ => "unknown",
+        })),
+    );
+    insert_optional(
+        &mut boundary,
+        "elapsedMs",
+        turn.get("durationMs").and_then(Value::as_u64).map(|duration| json!(duration)),
+    );
+    boundary
 }
 
 fn extract_text(item: &Value) -> String {
@@ -4086,7 +4214,7 @@ createInterface({{ input: process.stdin, crlfDelay: Infinity }}).on('line', line
                 "prompt":"task","model":"test-model","agentsStates":{"one":{"status":"errored"},"two":{"status":"shutdown"}}},
             {"id":"answer","type":"agentMessage","text":"parent answer"}
         ]}]}));
-        assert_eq!(items.len(), 3);
+        assert_eq!(items.len(), 4);
         assert_eq!(items[0]["parts"][0]["status"], "completed");
         assert_eq!(items[1]["parts"][0]["status"], "failed");
         assert_eq!(items[1]["parts"][1]["status"], "cancelled");
@@ -4101,6 +4229,8 @@ createInterface({{ input: process.stdin, crlfDelay: Infinity }}).on('line', line
             assert_eq!(part["data"]["native"]["id"], part["toolId"]);
         }
         assert_eq!(items[2]["parts"][0]["text"], "parent answer");
+        assert_eq!(items[3]["turnId"], "history-turn");
+        assert_eq!(items[3]["turnStatus"], "unknown");
     }
 
     #[test]
@@ -4118,7 +4248,8 @@ createInterface({{ input: process.stdin, crlfDelay: Infinity }}).on('line', line
             vec![
                 "repair-codex-user",
                 "repair-codex-assistant",
-                "repair-codex-tool"
+                "repair-codex-tool",
+                "turn:repair-codex-turn:boundary"
             ]
         );
     }
@@ -4469,6 +4600,63 @@ createInterface({{ input: process.stdin, crlfDelay: Infinity }}).on('line', line
             items[2]["parts"][0]["fileReferences"],
             json!([{"path":"src/a.rs"},{"path":"src/b.rs"}])
         );
+        assert_eq!(items[3]["turnId"], "turn_1");
+        assert_eq!(items[3]["turnStatus"], "unknown");
+    }
+
+    #[test]
+    fn transcript_preserves_native_turn_boundary_status_duration_error_and_reasoning() {
+        let items = codex_transcript_items(&json!({"turns":[
+            {"id":"finished","status":"completed","durationMs":0,"items":[
+                {"id":"thought","type":"reasoning","summary":["inspect","then report"],"content":["private"]},
+                {"id":"answer","type":"agentMessage","text":"done","phase":"final_answer"}
+            ]},
+            {"id":"failed","status":"failed","durationMs":17,"error":{"message":"native failure"},"items":[]},
+            {"id":"unknown","durationMs":23,"items":[]}
+        ]}));
+        assert_eq!(items.iter().map(|item| item["id"].as_str().unwrap()).collect::<Vec<_>>(), vec![
+            "thought", "answer", "turn:finished:boundary", "turn:failed:boundary", "turn:unknown:boundary"
+        ]);
+        assert_eq!(items[0]["parts"][0]["type"], "thinking");
+        assert_eq!(items[0]["parts"][0]["text"], "inspect\nthen report");
+        assert_eq!(items[0]["parts"][0]["data"]["content"][0], "private");
+        assert_eq!(items[1]["parts"][0]["phase"], "final_answer");
+        assert_eq!(items[2]["turnStatus"], "completed");
+        assert_eq!(items[2]["elapsedMs"], 0);
+        assert_eq!(items[3]["turnStatus"], "failed");
+        assert_eq!(items[3]["elapsedMs"], 17);
+        assert_eq!(items[3]["parts"][0]["type"], "error");
+        assert_eq!(items[3]["parts"][0]["data"]["native"]["message"], "native failure");
+        assert_eq!(items[4]["turnStatus"], "unknown");
+        assert_eq!(items[4]["elapsedMs"], 23);
+    }
+
+    #[test]
+    fn history_response_requires_the_requested_thread_and_explicit_turns_array() {
+        let valid = json!({"thread":{"id":"native","turns":[]}});
+        assert!(codex_history_thread(&valid, "native").is_ok());
+        let valid_empty_turn = json!({"thread":{"id":"native","turns":[{"id":"turn-1","items":[]}]}});
+        assert!(codex_history_thread(&valid_empty_turn, "native").is_ok());
+        for response in [
+            json!({}),
+            json!({"thread":{"id":"other","turns":[]}}),
+            json!({"thread":{"id":"native"}}),
+            json!({"thread":{"id":"native","turns":null}}),
+            json!({"thread":{"id":"native","turns":{}}}),
+            json!({"thread":{"id":"native","turns":[{"items":[]}]}}),
+            json!({"thread":{"id":"native","turns":[{"id":"","items":[]}]}}),
+            json!({"thread":{"id":"native","turns":[{"id":"turn-1"}]}}),
+            json!({"thread":{"id":"native","turns":[{"id":"turn-1","items":null}]}}),
+            json!({"thread":{"id":"native","turns":[{"id":"turn-1","items":{}}]} }),
+            json!({"thread":{"id":"native","turns":[{"id":"turn-1","items":[],"itemsView":"notLoaded"}]}}),
+        ] {
+            assert_eq!(
+                codex_history_thread(&response, "native")
+                    .unwrap_err()
+                    .code,
+                "invalid_history_transcript"
+            );
+        }
     }
 
     #[test]

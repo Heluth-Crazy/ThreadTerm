@@ -1,7 +1,7 @@
 import { validateWireRequest, validateWireSuccess } from './generated-validators.js';
 export const PROTOCOL_VERSION = 1 as const;
 /** Semantic contract includes explicit native-history repair and snapshot integrity. Framing/HMAC still use PROTOCOL_VERSION. */
-export const PROTOCOL_CONTRACT = 10 as const;
+export const PROTOCOL_CONTRACT = 11 as const;
 export const MAX_FRAME_BYTES = 8 * 1024 * 1024;
 /** Agents that ship with ThreadTerm (native adapters, or `shell` / `custom` commands). */
 export type BuiltinProviderId = 'codex'|'claude'|'kimi'|'gemini'|'opencode'|'shell'|'grok'|'custom';
@@ -98,13 +98,14 @@ export interface Snapshot { epoch:string; revision:number; projects:Project[]; s
 export interface NativeHistoryItem { provider:ProviderId; nativeId:string; title:string; cwd?:string; updatedAt:string; resumable:boolean; reason?:string }
 export interface FileReference { path:string; line?:number; column?:number }
 export interface ResolvedFileReference extends FileScope, FileReference { kind:'text'|'image' }
-export interface ChatPart { type:'text'|'thinking'|'tool'|'approval'|'usage'|'error'|'status'|'subagent'; text?:string; toolName?:string; toolId?:string; approvalId?:string; status?:string; data?:unknown; fileReferences?:FileReference[] }
-export interface ChatItem { id:string; role:'user'|'assistant'|'system'|'tool'; parts:ChatPart[]; createdAt:string; turnId?:string; elapsedMs?:number }
+export interface ChatPart { type:'text'|'thinking'|'tool'|'approval'|'usage'|'error'|'status'|'subagent'; text?:string; toolName?:string; toolId?:string; approvalId?:string; status?:string; data?:unknown; fileReferences?:FileReference[]; phase?:'commentary'|'final_answer' }
+/** Native turn outcome is independent of measured wall-clock duration. Missing status remains unknown. */
+export interface ChatItem { id:string; role:'user'|'assistant'|'system'|'tool'; parts:ChatPart[]; createdAt:string; turnId?:string; elapsedMs?:number; turnStatus?:'completed'|'interrupted'|'failed'|'inProgress'|'unknown'; turnOrigin?:'history' }
 /** Runtime-authored, on-demand availability. Integrity is durable; repair never resumes an agent or queue. */
 export interface ChatRepairAvailability {
  offered:boolean;
  mode?:'rebuild';
- reason?:'healthy'|'busy'|'unknown_activity'|'missing_native_id'|'history_unavailable'|'session_unavailable';
+ reason?:'healthy'|'busy'|'unknown_activity'|'missing_native_id'|'history_unavailable'|'session_unavailable'|'history_metadata_missing';
  degraded:boolean;
  diagnostic?:string;
  /** Global ingress failure permanently fences queued dispatch until restart. */

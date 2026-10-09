@@ -34,11 +34,18 @@ export function chatCanControl(session: { readOnly?: boolean; status: string }):
   return !session.readOnly && session.status !== "exited";
 }
 
+/** An explicit native outcome wins over legacy duration-only completion. */
+function turnIsSettled(items: readonly ChatItem[]): boolean {
+  const status = [...items].reverse().find(item => item.turnStatus)?.turnStatus;
+  return status ? status === 'completed' || status === 'failed' || status === 'interrupted' : items.some(item => item.elapsedMs != null);
+}
+
 export function itemShowsStreaming(item: ChatItem, items: ChatItem[]): boolean {
-  if (item.elapsedMs != null || (item.turnId && items.some(entry => entry.turnId === item.turnId && entry.elapsedMs != null))) return false;
-  const lastUser = lastIndex(items, (entry) => entry.role === "user");
-  const lastAssistant = lastIndex(items, (entry) => entry.role === "assistant");
-  const index = items.findIndex((entry) => entry.id === item.id);
+  if (item.turnOrigin === 'history') return false;
+  if (turnIsSettled(item.turnId ? items.filter(entry => entry.turnId === item.turnId && entry.turnOrigin !== 'history') : [item])) return false;
+  const lastUser = lastIndex(items, (entry) => entry.turnOrigin !== 'history' && entry.role === "user");
+  const lastAssistant = lastIndex(items, (entry) => entry.turnOrigin !== 'history' && entry.role === "assistant");
+  const index = items.findIndex((entry) => entry.turnOrigin !== 'history' && entry.id === item.id);
   if (index < 0 || index !== lastAssistant) return false;
   if (lastUser >= 0 && lastAssistant < lastUser) return false;
   return item.parts.some((part) => part.status === "streaming" || part.status === "running");
@@ -59,14 +66,14 @@ export function activeTurnId(items: ChatItem[], sessionStatus?: string): string 
   // Persisted native parts can retain streaming flags after reload. Only the
   // runtime's current running/waiting state can authorize a stop action.
   if (sessionStatus !== undefined && sessionStatus !== 'running' && sessionStatus !== 'waiting') return undefined;
-  const latest = [...items].reverse().find(item => item.turnId);
+  const latest = [...items].reverse().find(item => item.turnId && item.turnOrigin !== 'history');
   if (!latest?.turnId) return undefined;
   const turnId = latest.turnId;
-  if (items.some(item => item.turnId === turnId && item.elapsedMs != null)) return undefined;
+  if (turnIsSettled(items.filter(item => item.turnId === turnId && item.turnOrigin !== 'history'))) return undefined;
   if (sessionStatus !== undefined) return turnId;
   for (let index = items.length - 1; index >= 0; index -= 1) {
     const item = items[index];
-    if (item.turnId !== turnId) continue;
+    if (item.turnId !== turnId || item.turnOrigin === 'history') continue;
     if (item.parts.some((part) => part.status === "streaming" || part.status === "running" || (part.type === "approval" && part.status === "pending"))) {
       return item.turnId;
     }

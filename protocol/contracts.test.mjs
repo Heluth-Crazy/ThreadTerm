@@ -2,6 +2,21 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {validateRequest,validateResult,validateLayout,METHODS,isRuntimeEvent,PROTOCOL_CONTRACT,PROTOCOL_VERSION,protocolIncompatibleReason} from './index.ts';
 
+test('native turn outcome and message phase are typed independently of duration',()=>{
+ const item={id:'native-boundary',role:'assistant',parts:[],createdAt:'2026-01-01T00:00:00Z',turnId:'scoped-turn',turnStatus:'completed'};
+ validateResult('chat.read',[item]);
+ validateResult('chat.read',[{...item,turnStatus:'inProgress'}]);
+ for(const turnStatus of ['failed','interrupted']) validateResult('chat.read',[{...item,turnStatus}]);
+ validateResult('chat.read',[{...item,turnStatus:'unknown',turnOrigin:'history'}]);
+ validateResult('chat.read',[{...item,parts:[{type:'text',text:'answer',phase:'final_answer'}]}]);
+ assert.throws(()=>validateResult('chat.read',[{...item,turnStatus:'historical'}]));
+ assert.throws(()=>validateResult('chat.read',[{...item,turnOrigin:'live'}]));
+ assert.throws(()=>validateResult('chat.read',[{...item,parts:[{type:'text',text:'answer',phase:'unknown'}]}]));
+ const snapshot={items:[item],revision:1,repair:{offered:true,mode:'rebuild',degraded:false,reason:'history_metadata_missing'}};
+ validateResult('chat.snapshot',snapshot);
+ assert.throws(()=>validateResult('chat.snapshot',{...snapshot,repair:{...snapshot.repair,reason:'invented_reason'}}));
+});
+
 test('chat repair is a leased rebuild with bounded integer counts and snapshot integrity',()=>{
  const request={sessionId:'s',leaseEpoch:1,operationId:'repair'};
  validateRequest('chat.repair',request);
@@ -308,7 +323,7 @@ test('session documents pin relative paths inside the worktree and list exact ro
  assert.throws(()=>validateRequest('session.documents.pin',{sessionId:'s',path:'docs/plan.md'}),/Invalid operationId|protocol schema/);
  validateResult('session.documents.list',[{path:'docs/plan.md',title:'Checkout plan',pinnedAt:'t'},{path:'notes.txt',pinnedAt:'t',missing:true}]);
  assert.throws(()=>validateResult('session.documents.pin',[{path:'docs/plan.md',pinnedAt:'t',size:3}]));
- assert.equal(PROTOCOL_CONTRACT,10);
+ assert.equal(PROTOCOL_CONTRACT,11);
 });
 
 test('preview presentation is attachment-scoped and requires a persisted tab acknowledgement',()=>{
