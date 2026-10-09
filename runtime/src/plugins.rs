@@ -25,6 +25,7 @@ const MAX_MANIFEST_BYTES: u64 = 64 * 1024;
 const MAX_ICON_BYTES: u64 = 64 * 1024;
 const MAX_PLUGINS: usize = 64;
 const MAX_AGENTS: usize = 8;
+const MAX_BROWSER_BINDINGS: usize = 8;
 const MAX_ARGS: usize = 32;
 const MAX_ARG_CHARS: usize = 512;
 const RESERVED_IDS: &[&str] = &["shell", "custom", "threadterm"];
@@ -37,6 +38,23 @@ pub struct PluginAgentInfo {
     pub terminal: bool,
     pub chat: bool,
     pub commands: Vec<String>,
+}
+
+/// A declarative, runtime-owned preview-tool binding. Plugins describe the
+/// provider handoff only; they never supply tool implementations or grants.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BrowserBindingInfo {
+    pub id: String,
+    pub binding_version: u32,
+    pub provider_id: String,
+    pub requires: BTreeMap<String, u32>,
+    pub transport: String,
+    pub tools: Vec<String>,
+    pub workflow: String,
+    pub enabled: bool,
+    pub selected: bool,
+    pub availability: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -56,6 +74,7 @@ pub struct PluginInfo {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub path: Option<String>,
     pub agents: Vec<PluginAgentInfo>,
+    pub browser_bindings: Vec<BrowserBindingInfo>,
     pub issues: Vec<String>,
 }
 
@@ -228,13 +247,41 @@ fn display_windows_path(value: &str) -> String {
 pub struct PluginRegistry {
     pub list: PluginList,
     pub agents: Vec<AgentDescriptor>,
+    pub(crate) browser_bindings: Vec<BrowserBinding>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BrowserBinding {
+    pub plugin_id: String,
+    pub id: String,
+    pub binding_version: u32,
+    pub provider_id: String,
+    pub requires: BTreeMap<String, u32>,
+    pub transport: String,
+    pub tools: Vec<String>,
+    pub workflow: String,
+    enabled: bool,
+    selected: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BrowserBindingResolution {
+    None,
+    Disabled,
+    UnsupportedTransport,
+    Conflict,
+    Eligible(BrowserBinding),
 }
 
 impl PluginRegistry {
     /// The compiled-in plugins only. Used by the native provider constructor,
     /// which intentionally has no data directory to inspect.
     pub(crate) fn bundled() -> Self {
-        Self::from_candidates(vec![bundled_gemini()], String::new(), &Value::Null)
+        Self::from_candidates(
+            vec![bundled_gemini(), bundled_codex_preview()],
+            String::new(),
+            &Value::Null,
+        )
     }
 
     pub fn discover(data_dir: &Path, settings: &Value) -> Self {
@@ -246,7 +293,7 @@ impl PluginRegistry {
 
     pub fn discover_with_roots(data_dir: &Path, settings: &Value, roots: &[PathBuf]) -> Self {
         let directory = data_dir.join("plugins");
-        let mut candidates = vec![bundled_gemini()];
+        let mut candidates = vec![bundled_gemini(), bundled_codex_preview()];
         let mut folders = BTreeSet::new();
         folders.extend(plugin_folders(&directory, MAX_PLUGINS));
         for root in roots {
@@ -284,6 +331,7 @@ impl PluginRegistry {
             .collect();
         let mut accepted_plugins = BTreeSet::new();
         let mut agents = Vec::new();
+        let mut browser_bindings = Vec::new();
         for plugin in &mut candidates {
             let explicit = enabled
                 .and_then(|all| all.get(&plugin.info.id))
@@ -328,6 +376,59 @@ impl PluginRegistry {
             if plugin.info.enabled {
                 agents.extend(plugin.descriptors.clone());
             }
+            for binding in &mut plugin.browser_bindings {
+                binding.enabled = plugin.info.enabled;
+                binding.selected = enabled
+                    .and_then(|all| all.get(&plugin.info.id))
+                    .and_then(|entry| entry.get("browserBindings"))
+                    .and_then(|bindings| bindings.get(&binding.id))
+                    .and_then(|entry| entry.get("selected"))
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false);
+            }
+            for binding in &mut plugin.info.browser_bindings {
+                binding.enabled = plugin.info.enabled;
+                binding.selected = enabled
+                    .and_then(|all| all.get(&plugin.info.id))
+                    .and_then(|entry| entry.get("browserBindings"))
+                    .and_then(|bindings| bindings.get(&binding.id))
+                    .and_then(|entry| entry.get("selected"))
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false);
+            }
+            browser_bindings.extend(plugin.browser_bindings.clone());
+        }
+        for plugin in &mut candidates {
+            for binding in &mut plugin.info.browser_bindings {
+                let matching = browser_bindings
+                    .iter()
+                    .filter(|candidate| {
+                        candidate.provider_id == binding.provider_id
+                            && candidate.transport == binding.transport
+                    })
+                    .collect::<Vec<_>>();
+                let enabled = matching
+                    .iter()
+                    .filter(|candidate| candidate.enabled)
+                    .collect::<Vec<_>>();
+                binding.availability = if !binding.enabled {
+                    "disabled".into()
+                } else if !supports_mcp_stdio(&binding.provider_id, &agents) {
+                    "unsupported_transport".into()
+                } else if enabled.len() == 1
+                    || (enabled.len() > 1
+                        && enabled
+                            .iter()
+                            .filter(|candidate| candidate.selected)
+                            .count()
+                            == 1
+                        && binding.selected)
+                {
+                    "eligible".into()
+                } else {
+                    "conflict".into()
+                };
+            }
         }
         Self {
             list: PluginList {
@@ -338,6 +439,7 @@ impl PluginRegistry {
                     .collect(),
             },
             agents,
+            browser_bindings,
         }
     }
 
@@ -348,12 +450,86 @@ impl PluginRegistry {
             .find(|plugin| plugin.agents.iter().any(|agent| agent.id == agent_id))
             .map(|plugin| plugin.id.as_str())
     }
+
+    /// Checks whether a binding that was already granted to a live session remains
+    /// enabled and usable. Selection and cross-plugin conflicts only decide the
+    /// binding for a future session, so they intentionally do not affect this check.
+    pub fn browser_binding_enabled(
+        &self,
+        plugin_id: &str,
+        binding_id: &str,
+        provider_id: &str,
+    ) -> bool {
+        self.browser_bindings.iter().any(|binding| {
+            binding.plugin_id == plugin_id
+                && binding.id == binding_id
+                && binding.provider_id == provider_id
+                && binding.enabled
+                && binding.transport == "mcp-stdio"
+                && supports_mcp_stdio(provider_id, &self.agents)
+        })
+    }
+
+    /// Resolves one provider's preview binding without filesystem-order
+    /// precedence. A unique enabled binding is automatic; a conflict requires
+    /// exactly one persisted user selection.
+    pub fn browser_binding_for_provider(
+        &self,
+        provider_id: &str,
+        transport: &str,
+    ) -> BrowserBindingResolution {
+        let provider_matches = self
+            .browser_bindings
+            .iter()
+            .filter(|binding| binding.provider_id == provider_id)
+            .collect::<Vec<_>>();
+        if provider_matches.is_empty() {
+            return BrowserBindingResolution::None;
+        }
+        let transport_matches = provider_matches
+            .into_iter()
+            .filter(|binding| binding.transport == transport)
+            .collect::<Vec<_>>();
+        if transport_matches.is_empty() {
+            return BrowserBindingResolution::UnsupportedTransport;
+        }
+        let enabled = transport_matches
+            .into_iter()
+            .filter(|binding| binding.enabled)
+            .collect::<Vec<_>>();
+        if enabled.is_empty() {
+            return BrowserBindingResolution::Disabled;
+        }
+        if !supports_mcp_stdio(provider_id, &self.agents) {
+            return BrowserBindingResolution::UnsupportedTransport;
+        }
+        if enabled.len() == 1 {
+            return BrowserBindingResolution::Eligible(enabled[0].clone());
+        }
+        let selected = enabled
+            .into_iter()
+            .filter(|binding| binding.selected)
+            .collect::<Vec<_>>();
+        if selected.len() == 1 {
+            BrowserBindingResolution::Eligible(selected[0].clone())
+        } else {
+            BrowserBindingResolution::Conflict
+        }
+    }
+}
+
+fn supports_mcp_stdio(provider_id: &str, agents: &[AgentDescriptor]) -> bool {
+    matches!(provider_id, "codex" | "claude" | "kimi" | "grok" | "gemini")
+        || agents
+            .iter()
+            .any(|agent| agent.id == provider_id && agent.chat_args.is_some())
 }
 
 #[derive(Debug)]
 struct Candidate {
     info: PluginInfo,
     descriptors: Vec<AgentDescriptor>,
+    browser_bindings: Vec<BrowserBinding>,
     fatal: bool,
 }
 
@@ -371,11 +547,25 @@ struct Manifest {
     contributes: Contributions,
 }
 #[derive(Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct Contributions {
     #[serde(default)]
     agents: Vec<ManifestAgent>,
+    #[serde(default)]
+    browser_bindings: Vec<ManifestBrowserBinding>,
     #[serde(flatten)]
     unknown: BTreeMap<String, Value>,
+}
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ManifestBrowserBinding {
+    id: String,
+    binding_version: u32,
+    provider_id: String,
+    requires: BTreeMap<String, u32>,
+    transport: String,
+    tools: Vec<String>,
+    workflow: String,
 }
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -410,6 +600,16 @@ fn bundled_gemini() -> Candidate {
         None,
         include_str!("../plugins/gemini/threadterm-plugin.json").as_bytes(),
         Some(include_bytes!("../plugins/gemini/icon.svg")),
+        "bundled",
+    )
+}
+
+fn bundled_codex_preview() -> Candidate {
+    read_manifest(
+        "bundled-codex-preview",
+        None,
+        include_str!("../plugins/codex-preview/threadterm-plugin.json").as_bytes(),
+        None,
         "bundled",
     )
 }
@@ -454,6 +654,7 @@ fn read_manifest(
         enabled: source == "bundled",
         path,
         agents: Vec::new(),
+        browser_bindings: Vec::new(),
         issues: Vec::new(),
     };
     let mut fatal = false;
@@ -480,6 +681,11 @@ fn read_manifest(
             .push("a plugin can contribute at most 8 agents".into());
         fatal = true;
     }
+    if manifest.contributes.browser_bindings.len() > MAX_BROWSER_BINDINGS {
+        info.issues
+            .push("a plugin can contribute at most 8 browser bindings".into());
+        fatal = true;
+    }
     for kind in manifest.contributes.unknown.keys() {
         info.issues.push(format!(
             "contribution type '{kind}' is not supported by this ThreadTerm"
@@ -489,6 +695,7 @@ fn read_manifest(
         return Candidate {
             info,
             descriptors: Vec::new(),
+            browser_bindings: Vec::new(),
             fatal,
         };
     }
@@ -499,10 +706,12 @@ fn read_manifest(
         return Candidate {
             info,
             descriptors: Vec::new(),
+            browser_bindings: Vec::new(),
             fatal: true,
         };
     }
     let mut descriptors = Vec::new();
+    let mut browser_bindings = Vec::new();
     let mut agent_ids = BTreeSet::new();
     for agent in manifest.contributes.agents {
         if !agent_ids.insert(agent.id.clone()) {
@@ -531,20 +740,116 @@ fn read_manifest(
             }
         }
     }
-    if info.agents.is_empty() {
+    let mut binding_ids = BTreeSet::new();
+    for binding in manifest.contributes.browser_bindings {
+        if !binding_ids.insert(binding.id.clone()) {
+            info.issues.push(format!(
+                "browser binding id '{}' is declared more than once by this plugin",
+                binding.id
+            ));
+            continue;
+        }
+        match validate_browser_binding(binding, &manifest.id) {
+            Ok((binding, public)) => {
+                info.browser_bindings.push(public);
+                browser_bindings.push(binding);
+            }
+            Err(error) => info.issues.push(error),
+        }
+    }
+    if info.agents.is_empty() && info.browser_bindings.is_empty() {
         info.issues
-            .push("plugin contributes zero valid agents".into());
+            .push("plugin contributes zero valid contributions".into());
         fatal = true;
     }
     if fatal {
         descriptors.clear();
         info.agents.clear();
+        browser_bindings.clear();
+        info.browser_bindings.clear();
     }
     Candidate {
         info,
         descriptors,
+        browser_bindings,
         fatal,
     }
+}
+
+fn validate_browser_binding(
+    binding: ManifestBrowserBinding,
+    plugin_id: &str,
+) -> Result<(BrowserBinding, BrowserBindingInfo), String> {
+    if !valid_binding_id(&binding.id) {
+        return Err(format!("browser binding id '{}' is invalid", binding.id));
+    }
+    if !valid_agent_id(&binding.provider_id) {
+        return Err(format!(
+            "browser binding providerId '{}' is invalid",
+            binding.provider_id
+        ));
+    }
+    if binding.binding_version != 1 {
+        return Err(format!(
+            "browser binding '{}' version {} is not supported by this ThreadTerm",
+            binding.id, binding.binding_version
+        ));
+    }
+    if binding.requires.len() != 1 || binding.requires.get("threadterm.preview") != Some(&1) {
+        return Err(format!(
+            "browser binding '{}' requires unsupported runtime capabilities",
+            binding.id
+        ));
+    }
+    if binding.transport != "mcp-stdio" {
+        return Err(format!(
+            "browser binding '{}' transport '{}' is not supported",
+            binding.id, binding.transport
+        ));
+    }
+    let expected_tools = BTreeSet::from(["preview_present", "preview_status"]);
+    let tools = binding
+        .tools
+        .iter()
+        .map(String::as_str)
+        .collect::<BTreeSet<_>>();
+    if tools != expected_tools || binding.tools.len() != expected_tools.len() {
+        return Err(format!(
+            "browser binding '{}' must declare exactly preview_present and preview_status",
+            binding.id
+        ));
+    }
+    if binding.workflow != "threadterm.preview.after-server-ready.v1" {
+        return Err(format!(
+            "browser binding '{}' workflow '{}' is not supported",
+            binding.id, binding.workflow
+        ));
+    }
+    let public = BrowserBindingInfo {
+        id: binding.id.clone(),
+        binding_version: binding.binding_version,
+        provider_id: binding.provider_id.clone(),
+        requires: binding.requires.clone(),
+        transport: binding.transport.clone(),
+        tools: binding.tools.clone(),
+        workflow: binding.workflow.clone(),
+        enabled: false,
+        selected: false,
+        availability: "disabled".into(),
+    };
+    let internal = BrowserBinding {
+        plugin_id: plugin_id.to_owned(),
+        id: binding.id,
+        binding_version: binding.binding_version,
+        provider_id: binding.provider_id,
+        requires: binding.requires,
+        transport: binding.transport,
+        tools: binding.tools,
+        workflow: binding.workflow,
+        enabled: false,
+        selected: false,
+    };
+    Ok((internal, public))
 }
 
 fn validate_agent(
@@ -842,6 +1147,14 @@ fn valid_agent_id(value: &str) -> bool {
             .iter()
             .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || *byte == b'-')
 }
+fn valid_binding_id(value: &str) -> bool {
+    let bytes = value.as_bytes();
+    (2..=64).contains(&bytes.len())
+        && (bytes[0].is_ascii_lowercase() || bytes[0].is_ascii_digit())
+        && bytes.iter().all(|byte| {
+            byte.is_ascii_lowercase() || byte.is_ascii_digit() || matches!(byte, b'.' | b'-')
+        })
+}
 fn validate_text(value: &str, max: usize, name: &str, issues: &mut Vec<String>) {
     if value.is_empty() || value.chars().count() > max || has_control(value) {
         issues.push(format!(
@@ -886,9 +1199,11 @@ fn invalid_candidate(
             enabled: source == "bundled",
             path,
             agents: Vec::new(),
+            browser_bindings: Vec::new(),
             issues: vec![issue.into()],
         },
         descriptors: Vec::new(),
+        browser_bindings: Vec::new(),
         fatal: true,
     }
 }
@@ -1023,6 +1338,141 @@ mod tests {
         assert!(candidate.info.agents[0].terminal);
         assert!(candidate.info.agents[0].chat);
         assert_eq!(candidate.info.agents[0].commands.len(), 4);
+    }
+
+    fn binding_manifest(id: &str, provider_id: &str) -> String {
+        format!(
+            r#"{{"schemaVersion":1,"id":"{id}","name":"Binding","version":"1","contributes":{{"browserBindings":[{{"id":"preview","bindingVersion":1,"providerId":"{provider_id}","requires":{{"threadterm.preview":1}},"transport":"mcp-stdio","tools":["preview_present","preview_status"],"workflow":"threadterm.preview.after-server-ready.v1"}}]}}}}"#
+        )
+    }
+
+    #[test]
+    fn accepts_binding_only_plugin_and_resolves_a_unique_enabled_binding() {
+        let root = tempdir().unwrap();
+        write_plugin(
+            &root.path().join("plugins"),
+            "binding-only",
+            &binding_manifest("binding-only", "grok"),
+        );
+        let registry = PluginRegistry::discover_with_roots(
+            root.path(),
+            &serde_json::json!({"plugins":{"binding-only":{"enabled":true}}}),
+            &[],
+        );
+        let plugin = registry
+            .list
+            .plugins
+            .iter()
+            .find(|plugin| plugin.id == "binding-only")
+            .unwrap();
+        assert!(plugin.agents.is_empty());
+        assert_eq!(plugin.browser_bindings.len(), 1);
+        assert_eq!(plugin.browser_bindings[0].availability, "eligible");
+        match registry.browser_binding_for_provider("grok", "mcp-stdio") {
+            BrowserBindingResolution::Eligible(binding) => {
+                assert_eq!(binding.plugin_id, "binding-only");
+            }
+            other => panic!("unexpected resolution: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn binding_conflicts_need_one_explicit_selection_and_disable_revokes_them() {
+        let root = tempdir().unwrap();
+        for id in ["first-binding", "second-binding"] {
+            write_plugin(
+                &root.path().join("plugins"),
+                id,
+                &binding_manifest(id, "grok"),
+            );
+        }
+        let settings = serde_json::json!({"plugins":{
+            "first-binding":{"enabled":true},
+            "second-binding":{"enabled":true}
+        }});
+        let registry = PluginRegistry::discover_with_roots(root.path(), &settings, &[]);
+        assert_eq!(
+            registry.browser_binding_for_provider("grok", "mcp-stdio"),
+            BrowserBindingResolution::Conflict
+        );
+        assert!(registry.browser_binding_enabled("first-binding", "preview", "grok"));
+        let settings = serde_json::json!({"plugins":{
+            "first-binding":{"enabled":true,"browserBindings":{"preview":{"selected":true}}},
+            "second-binding":{"enabled":true}
+        }});
+        let registry = PluginRegistry::discover_with_roots(root.path(), &settings, &[]);
+        match registry.browser_binding_for_provider("grok", "mcp-stdio") {
+            BrowserBindingResolution::Eligible(binding) => {
+                assert_eq!(binding.plugin_id, "first-binding")
+            }
+            other => panic!("unexpected resolution: {other:?}"),
+        }
+        let disabled = PluginRegistry::discover_with_roots(
+            root.path(),
+            &serde_json::json!({"plugins":{
+                "first-binding":{"enabled":false},
+                "second-binding":{"enabled":true}
+            }}),
+            &[],
+        );
+        assert!(!disabled.browser_binding_enabled("first-binding", "preview", "grok"));
+    }
+
+    #[test]
+    fn bindings_without_an_mcp_stdio_provider_are_reported_as_unsupported() {
+        let root = tempdir().unwrap();
+        write_plugin(
+            &root.path().join("plugins"),
+            "terminal-only-binding",
+            &binding_manifest("terminal-only-binding", "opencode"),
+        );
+        let registry = PluginRegistry::discover_with_roots(
+            root.path(),
+            &serde_json::json!({"plugins":{"terminal-only-binding":{"enabled":true}}}),
+            &[],
+        );
+        assert_eq!(
+            registry.browser_binding_for_provider("opencode", "mcp-stdio"),
+            BrowserBindingResolution::UnsupportedTransport
+        );
+        let plugin = registry
+            .list
+            .plugins
+            .iter()
+            .find(|plugin| plugin.id == "terminal-only-binding")
+            .unwrap();
+        assert_eq!(plugin.browser_bindings[0].availability, "unsupported_transport");
+    }
+
+    #[test]
+    fn invalid_browser_bindings_do_not_make_agent_contributions_unavailable() {
+        let manifest = valid_manifest().replace(
+            "\"agents\":[",
+            "\"browserBindings\":[{\"id\":\"bad\",\"bindingVersion\":2,\"providerId\":\"echo\",\"requires\":{\"threadterm.preview\":1},\"transport\":\"mcp-stdio\",\"tools\":[\"preview_present\",\"preview_status\"],\"workflow\":\"threadterm.preview.after-server-ready.v1\"}],\"agents\":[",
+        );
+        let candidate = user_candidate(&manifest);
+        assert!(!candidate.fatal);
+        assert_eq!(candidate.info.agents.len(), 1);
+        assert!(candidate.info.browser_bindings.is_empty());
+        assert!(candidate
+            .info
+            .issues
+            .iter()
+            .any(|issue| issue.contains("version 2")));
+    }
+
+    #[test]
+    fn bundled_codex_preview_is_enabled_and_has_no_agent_descriptor() {
+        let registry = PluginRegistry::bundled();
+        let plugin = registry
+            .list
+            .plugins
+            .iter()
+            .find(|plugin| plugin.id == "codex-preview")
+            .unwrap();
+        assert!(plugin.enabled);
+        assert!(plugin.agents.is_empty());
+        assert_eq!(plugin.browser_bindings[0].provider_id, "codex");
     }
 
     #[test]
@@ -1352,13 +1802,13 @@ mod tests {
     }
 
     #[test]
-    fn bundled_registry_contains_only_the_valid_enabled_gemini_agent() {
+    fn bundled_registry_contains_enabled_gemini_agent_and_codex_binding() {
         let registry = PluginRegistry::bundled();
         assert_eq!(registry.list.directory, "");
-        assert_eq!(registry.list.plugins.len(), 1);
-        assert_eq!(registry.list.plugins[0].id, "gemini");
-        assert!(registry.list.plugins[0].enabled);
-        assert!(registry.list.plugins[0].issues.is_empty());
+        assert_eq!(registry.list.plugins.len(), 2);
+        assert!(registry.list.plugins.iter().all(|plugin| plugin.enabled && plugin.issues.is_empty()));
+        assert!(registry.list.plugins.iter().any(|plugin| plugin.id == "gemini"));
+        assert!(registry.list.plugins.iter().any(|plugin| plugin.id == "codex-preview"));
         assert_eq!(
             registry
                 .agents

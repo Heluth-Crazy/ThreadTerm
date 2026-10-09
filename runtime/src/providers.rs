@@ -40,6 +40,30 @@ pub struct ChatToolServer {
 /// Decides, per `(session_id, provider)`, whether a Chat gets a tool server.
 pub type ToolServerResolver = Arc<dyn Fn(&str, &str) -> Option<ChatToolServer> + Send + Sync>;
 
+#[derive(Clone, Copy, Default)]
+pub(crate) struct ChatToolPolicy {pub delegation:bool,pub preview:bool}
+pub(crate) fn chat_tool_policy(tools:Option<&ChatToolServer>)->ChatToolPolicy {
+    let Some(server)=tools.filter(|s|s.name=="threadterm") else{return ChatToolPolicy::default()};
+    let env=|key:&str|server.env.iter().find(|(name,_)|name==key).map(|(_,value)|value.as_str());
+    let composed=env("THREADTERM_MCP_PROFILE")==Some("chat-tools");
+    ChatToolPolicy {delegation:!composed||env("THREADTERM_SESSION_TOKEN").is_some_and(|s|!s.is_empty()),preview:composed&&env("THREADTERM_PREVIEW_TOKEN").is_some_and(|s|!s.is_empty())}
+}
+pub(crate) fn acp_scoped_permission_option(params:&Value,policy:&ChatToolPolicy)->Option<String> {
+    if policy.delegation {if let Some(option)=acp_threadterm_permission_option(params){return Some(option)}}
+    if !policy.preview{return None}
+    let call=params.get("toolCall")?;let title=call.get("title")?.as_str()?;
+    let tool=title.strip_prefix("mcp__threadterm__").or_else(||title.strip_prefix("threadterm__"))?;
+    if !crate::preview::TOOL_NAMES.contains(&tool)||matches!(call.get("kind").and_then(Value::as_str),Some("read"|"edit"|"delete"|"move"|"execute"|"fetch")){return None}
+    params.get("options")?.as_array()?.iter().find(|o|o.get("kind").and_then(Value::as_str)==Some("allow_once"))?.get("optionId")?.as_str().map(str::to_owned)
+}
+pub(crate) fn approve_scoped_threadterm_tool(responder:&Mutex<Option<common::JsonLineResponder>>,raw:&Value,policy:&ChatToolPolicy)->bool {
+    if policy.delegation&&!policy.preview {return approve_threadterm_tool(responder,raw)}
+    if raw.get("method").and_then(Value::as_str)!=Some("session/request_permission"){return false}
+    let (Some(id),Some(option))=(raw.get("id"),raw.get("params").and_then(|p|acp_scoped_permission_option(p,policy))) else{return false};
+    let Ok(slot)=responder.lock() else{return false};
+    slot.as_ref().is_some_and(|r|r.respond(id.clone(),json!({"outcome":{"outcome":"selected","optionId":option}})).is_ok())
+}
+
 /// True only for the exact names agents give ThreadTerm's own delegation tools
 /// (`mcp__threadterm__<tool>` for Claude and Kimi, `threadterm__<tool>` for
 /// Grok). Never a prefix match: a shell command titled with the prefix must
@@ -913,6 +937,19 @@ impl Providers {
                     .collect()
             })
             .unwrap_or_default()
+    }
+
+    /// Snapshot only: no provider I/O or native worker lock. Preview grants use
+    /// the same open token as projection to fence stopped/replaced workers.
+    pub(crate) fn preview_worker_token(&self, session_id: &str) -> Option<String> {
+        let chats=self.chats.lock().ok()?;
+        let slot=chats.get(session_id)?;
+        if !slot.connecting&&slot.worker.is_none(){return None}
+        slot.worker_token.clone()
+    }
+    #[cfg(test)]
+    pub(crate) fn preview_test_worker(&self,session_id:&str,token:Option<&str>) {
+        let mut chats=self.chats.lock().unwrap();let slot=chats.entry(session_id.into()).or_insert_with(ChatSlot::new);slot.worker_token=token.map(str::to_owned);slot.connecting=token.is_some();
     }
 
     pub(crate) fn chat_send_recording(

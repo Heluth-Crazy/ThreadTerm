@@ -137,6 +137,66 @@ export const addTabToPane = (
   };
   return visit(layout);
 };
+/**
+ * Put a runtime-presented page into the shared browser leaf.  Web tabs are
+ * deliberately independent workspace content: their runtime provenance lives
+ * outside the saved layout, so same-URL pages from separate sessions remain
+ * separate tabs.
+ *
+ * A browser leaf is reused even at the pane cap.  When none exists, split the
+ * owning chat leaf so the chat and page stay visible together.  The caller can
+ * report `layout_unavailable` without disturbing an existing editor when that
+ * would exceed the four-pane contract.
+ */
+export const placeWebTabBesideSession = (
+  layout: PaneLayout,
+  sessionId: string,
+  tab: Extract<ContentRef, { kind: "web" }>,
+): { layout: PaneLayout; paneId?: string; status: "placed" | "layout_unavailable" } => {
+  const tabs = (node: PaneLayout): { paneId: string; tab: ContentRef }[] =>
+    node.kind === "pane"
+      ? node.tabs.map((item) => ({ paneId: node.id, tab: item }))
+      : [...tabs(node.first), ...tabs(node.second)];
+  const leaf = (node: PaneLayout, paneId: string): Extract<PaneLayout,{kind:'pane'}>|undefined =>
+    node.kind === 'pane' ? (node.id === paneId ? node : undefined) : leaf(node.first,paneId) ?? leaf(node.second,paneId);
+  // A page may share an ordinary work pane, but it is not a reusable browser
+  // surface: activating its owner chat would hide the page.  Only a leaf with
+  // no Chat tabs can keep both surfaces mounted side by side.
+  const existingBrowser = tabs(layout).find((item) => item.tab.kind === "web" && !leaf(layout,item.paneId)?.tabs.some(candidate=>candidate.kind==='session'))?.paneId;
+  const ownerPane = tabs(layout).find(
+    (item) => item.tab.kind === "session" && item.tab.sessionId === sessionId,
+  )?.paneId;
+  if (existingBrowser) {
+    const next=activate(addTabToPane(layout, existingBrowser, tab),existingBrowser,tab.id);
+    const owner=ownerPane&&tabs(next).find(item=>item.paneId===ownerPane&&item.tab.kind==='session'&&item.tab.sessionId===sessionId)?.tab.id;
+    return { layout: owner ? activate(next,ownerPane!,owner) : next, paneId: existingBrowser, status: "placed" };
+  }
+
+  if (!ownerPane || paneCount(layout) >= 4)
+    return { layout, status: "layout_unavailable" };
+
+  const browserPaneId = crypto.randomUUID();
+  const split = splitPane(layout, ownerPane, "horizontal", browserPaneId);
+  return {
+    layout: addTabToPane(split, browserPaneId, tab),
+    paneId: browserPaneId,
+    status: "placed",
+  };
+};
+/** Select an already-persisted runtime page and its owning Chat without
+ * changing the flat persisted layout shape. */
+export const selectWebTabBesideSession=(layout:PaneLayout,sessionId:string,tabId:string):PaneLayout=>{
+ const locate=(node:PaneLayout):{paneId:string;tab:ContentRef}|undefined=>node.kind==='pane'
+  ? node.tabs.find(tab=>tab.id===tabId)?{paneId:node.id,tab:node.tabs.find(tab=>tab.id===tabId)!}:undefined
+  :locate(node.first)??locate(node.second);
+ const owner=(node:PaneLayout):{paneId:string;tab:ContentRef}|undefined=>node.kind==='pane'
+  ? node.tabs.find(tab=>tab.kind==='session'&&tab.sessionId===sessionId)?{paneId:node.id,tab:node.tabs.find(tab=>tab.kind==='session'&&tab.sessionId===sessionId)!}:undefined
+  :owner(node.first)??owner(node.second);
+ const page=locate(layout),chat=owner(layout);
+ if(!page||page.tab.kind!=='web')return layout;
+ const pageActive=activate(layout,page.paneId,tabId);
+ return chat&&chat.paneId!==page.paneId?activate(pageActive,chat.paneId,chat.tab.id):pageActive;
+};
 export const activate = (
   layout: PaneLayout,
   paneId: string,

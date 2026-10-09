@@ -42,6 +42,18 @@ test("malformed persisted page records are ignored before they reach render help
   assert.deepEqual(loadReviewComments(scope, store), []);
 });
 
+test("page provenance is optional for legacy records but rejects malformed owner identity", () => {
+  const store = new MemoryStore();
+  addPageComment({ ...scope, ...element(), body: "legacy" }, store);
+  const storageKey = store.keys()[0];
+  const raw = JSON.parse(store.getItem(storageKey) ?? "[]");
+  raw.push({ ...raw[0], id: "bad-provenance", provenance: { previewId: "", sessionId: "session-a" } });
+  store.setItem(storageKey, JSON.stringify(raw));
+  const comments = loadReviewComments(scope, store).filter(isPageComment);
+  assert.equal(comments.length, 1);
+  assert.equal(comments[0].provenance, undefined);
+});
+
 test("a malformed page-kind record cannot fall through the legacy file validator", () => {
   const store = new MemoryStore(); addFileComment(fileInput, store);
   const key = store.keys()[0], [stored] = JSON.parse(store.getItem(key)!);
@@ -104,26 +116,54 @@ test("all page instructions follow all page references, with global IDs and inta
   assert.equal(JSON.stringify(comments), before);
 });
 
+test("same URL comments keep separate immutable page-owner context in the draft", () => {
+  const store = new MemoryStore();
+  addPageComment({ ...scope, ...element(), body: "Change owner A", provenance: { previewId: "preview-a", documentId: "document-a", sessionId: "session-a", sessionTitle: "Closed owner", providerId: "codex", tabId: "tab-a", navigation: 2 } }, store);
+  addPageComment({ ...scope, ...element(), body: "Change owner B", provenance: { previewId: "preview-b", documentId: "document-b", sessionId: "session-b", providerId: "fixture", tabId: "tab-b", navigation: 7 } }, store);
+  const message = formatReviewComments(loadReviewComments(scope, store), { fileRoot: "C:/project" }, false);
+  assert.equal((message.match(/Page context — http:\/\/localhost:5173\/cart/g) ?? []).length, 2);
+  for (const expected of ["Source session: Closed owner (codex) [session-a]", "Preview ID: preview-a", "Document ID: document-a", "Page tab ID: tab-a", "Navigation generation: 2", "Source session: session-b (fixture)", "Preview ID: preview-b", "Document ID: document-b", "Page tab ID: tab-b", "Navigation generation: 7"]) assert.ok(message.includes(expected));
+});
+
 test("page display helpers expose safe labels, locations, and target references", () => {
   const picked = element().target, area: PageComment["target"] = { type: "area", rect: { x: 1, y: 2, width: 3, height: 4 }, elements: [] };
   assert.equal(pageCommentLabel(picked, false), 'button "Save changes"'); assert.equal(pageCommentLabel(area, true), "区域 3×4");
   assert.equal(pageCommentLocation("https://example.test/a?x=1"), "example.test/a"); assert.deepEqual(pageTargetRef(picked), { selector: "#save", rect: picked.rect }); assert.deepEqual(pageTargetRef(area), { rect: area.rect });
 });
 
-test("a preview registry falls back when the newest matching preview unmounts", async () => {
-  const comment = { ...scope, ...element(), kind: "page" as const, id: "comment", body: "body", createdAt: new Date().toISOString() };
+test("a preview registry follows immutable preview identity when a newer frame unmounts", async () => {
+  const comment = { ...scope, ...element(), kind: "page" as const, id: "comment", body: "body", createdAt: new Date().toISOString(), provenance: { previewId: "preview-a", sessionId: "session-a", navigation: 1 } };
   const calls: string[] = []; (globalThis as unknown as { window: unknown }).window = { threadterm: { markPageTarget: async ({ frameName }: { frameName: string }) => { calls.push(frameName); return true; } } };
-  const old = registerPagePreview(comment.url, "tt-preview-old"), newest = registerPagePreview(comment.url, "tt-preview-new"); newest();
+  const old = registerPagePreview("preview-a", undefined, 1, "tt-preview-old"), newest = registerPagePreview("preview-a", undefined, 1, "tt-preview-new"); newest();
   assert.equal(await flashPageComment(comment), true); assert.deepEqual(calls, ["tt-preview-old"]); old();
   assert.equal(await flashPageComment(comment), false);
   assert.equal(await flashPageComment({ ...comment, url: "" }), false);
 });
 
-test("a preview registry selects the newest visible preview and skips hidden URLs", async () => {
-  const comment = { ...scope, ...element(), url: "http://localhost:5173/visible", kind: "page" as const, id: "visible", body: "body", createdAt: new Date().toISOString() }, calls: string[] = [];
+test("a preview registry never crosses same-URL preview identities", async () => {
+  const comment = { ...scope, ...element(), url: "http://localhost:5173/visible", kind: "page" as const, id: "visible", body: "body", createdAt: new Date().toISOString(), provenance: { previewId: "preview-a", sessionId: "session-a", navigation: 4 } }, calls: string[] = [];
   (globalThis as unknown as { window: unknown }).window = { threadterm: { markPageTarget: async ({ frameName }: { frameName: string }) => { calls.push(frameName); return true; } } };
-  const older = registerPagePreview(comment.url, "tt-preview-visible", () => true), newer = registerPagePreview(comment.url, "tt-preview-hidden", () => false);
+  const older = registerPagePreview("preview-a", undefined, 4, "tt-preview-visible", () => true), newer = registerPagePreview("preview-b", undefined, 4, "tt-preview-other-session", () => true);
   assert.equal(await flashPageComment(comment), true); assert.deepEqual(calls, ["tt-preview-visible"]); older(); newer();
-  registerPagePreview(comment.url, "tt-preview-hidden-only", () => false);
+  registerPagePreview("preview-a", undefined, 4, "tt-preview-hidden-only", () => false);
   assert.equal(await flashPageComment(comment), false);
+});
+
+test("a preview registry rejects a stale document in the same preview", async () => {
+  const comment = { ...scope, ...element(), kind: "page" as const, id: "stale", body: "body", createdAt: new Date().toISOString(), provenance: { previewId: "preview-a", documentId: "old-document", sessionId: "session-a" } };
+  const calls: string[] = []; (globalThis as unknown as { window: unknown }).window = { threadterm: { markPageTarget: async ({ frameName }: { frameName: string }) => { calls.push(frameName); return true; } } };
+  const stop = registerPagePreview("preview-a", "new-document", undefined, "tt-preview-new");
+  assert.equal(await flashPageComment(comment), false);
+  stop();
+  registerPagePreview("preview-a", "old-document", undefined, "tt-preview-old");
+  assert.equal(await flashPageComment(comment), true); assert.deepEqual(calls, ["tt-preview-old"]);
+});
+
+test("a preview registry rejects a stale navigation generation in the same document", async () => {
+  const comment = { ...scope, ...element(), kind: "page" as const, id: "stale-navigation", body: "body", createdAt: new Date().toISOString(), provenance: { previewId: "preview-a", documentId: "document-a", navigation: 3, sessionId: "session-a" } };
+  const calls: string[] = []; (globalThis as unknown as { window: unknown }).window = { threadterm: { markPageTarget: async ({ frameName }: { frameName: string }) => { calls.push(frameName); return true; } } };
+  registerPagePreview("preview-a", "document-a", 4, "tt-preview-reloaded");
+  assert.equal(await flashPageComment(comment), false);
+  registerPagePreview("preview-a", "document-a", 3, "tt-preview-original");
+  assert.equal(await flashPageComment(comment), true); assert.deepEqual(calls, ["tt-preview-original"]);
 });

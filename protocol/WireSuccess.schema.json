@@ -1,6 +1,207 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
   "definitions": {
+    "RequestResult<\"preview.attach\">": {
+      "type": "object",
+      "properties": {
+        "attachmentId": {
+          "type": "string"
+        },
+        "associations": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/PreviewAssociation"
+          }
+        }
+      },
+      "required": [
+        "attachmentId",
+        "associations"
+      ],
+      "additionalProperties": false
+    },
+    "PreviewAssociation": {
+      "type": "object",
+      "properties": {
+        "requestId": {
+          "type": "string"
+        },
+        "previewId": {
+          "type": "string"
+        },
+        "state": {
+          "$ref": "#/definitions/PreviewState"
+        },
+        "sequence": {
+          "type": "number"
+        },
+        "navigation": {
+          "$ref": "#/definitions/PreviewNavigation"
+        },
+        "applicationReady": {
+          "type": "string",
+          "const": "unknown"
+        },
+        "contentVerified": {
+          "type": "boolean",
+          "const": false
+        },
+        "observedUrl": {
+          "type": "string"
+        },
+        "observedTitle": {
+          "type": "string"
+        },
+        "documentGeneration": {
+          "type": "number"
+        },
+        "error": {
+          "$ref": "#/definitions/PreviewError"
+        },
+        "sessionId": {
+          "type": "string"
+        },
+        "documentId": {
+          "type": "string"
+        },
+        "url": {
+          "type": "string"
+        },
+        "title": {
+          "type": "string"
+        },
+        "tabId": {
+          "type": "string"
+        },
+        "workspaceId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "applicationReady",
+        "contentVerified",
+        "documentId",
+        "navigation",
+        "previewId",
+        "requestId",
+        "sequence",
+        "sessionId",
+        "state",
+        "url"
+      ],
+      "additionalProperties": false,
+      "description": "Runtime association, separate from the ordinary web ContentRef."
+    },
+    "PreviewState": {
+      "type": "string",
+      "enum": [
+        "accepted",
+        "presented",
+        "closed",
+        "failed",
+        "unavailable",
+        "interrupted"
+      ]
+    },
+    "PreviewNavigation": {
+      "type": "string",
+      "enum": [
+        "not_started",
+        "pending",
+        "load_observed",
+        "failed"
+      ]
+    },
+    "PreviewError": {
+      "type": "object",
+      "properties": {
+        "code": {
+          "type": "string"
+        },
+        "message": {
+          "type": "string"
+        },
+        "retryable": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "code",
+        "message",
+        "retryable"
+      ],
+      "additionalProperties": false
+    },
+    "RequestResult<\"preview.detach\">": {
+      "type": "null"
+    },
+    "RequestResult<\"preview.snapshot\">": {
+      "type": "array",
+      "items": {
+        "$ref": "#/definitions/PreviewAssociation"
+      }
+    },
+    "RequestResult<\"preview.prepare\">": {
+      "$ref": "#/definitions/PreviewAssociation"
+    },
+    "RequestResult<\"preview.ack\">": {
+      "$ref": "#/definitions/PreviewResult"
+    },
+    "PreviewResult": {
+      "type": "object",
+      "properties": {
+        "requestId": {
+          "type": "string"
+        },
+        "previewId": {
+          "type": "string"
+        },
+        "state": {
+          "$ref": "#/definitions/PreviewState"
+        },
+        "sequence": {
+          "type": "number"
+        },
+        "navigation": {
+          "$ref": "#/definitions/PreviewNavigation"
+        },
+        "applicationReady": {
+          "type": "string",
+          "const": "unknown"
+        },
+        "contentVerified": {
+          "type": "boolean",
+          "const": false
+        },
+        "observedUrl": {
+          "type": "string"
+        },
+        "observedTitle": {
+          "type": "string"
+        },
+        "documentGeneration": {
+          "type": "number"
+        },
+        "error": {
+          "$ref": "#/definitions/PreviewError"
+        }
+      },
+      "required": [
+        "requestId",
+        "state",
+        "sequence",
+        "navigation",
+        "applicationReady",
+        "contentVerified"
+      ],
+      "additionalProperties": false
+    },
+    "RequestResult<\"preview.observe\">": {
+      "$ref": "#/definitions/PreviewResult"
+    },
+    "RequestResult<\"preview.close\">": {
+      "type": "null"
+    },
     "RequestResult<\"session.launch.read\">": {
       "$ref": "#/definitions/TerminalLaunchState"
     },
@@ -2273,6 +2474,12 @@
             "$ref": "#/definitions/PluginAgentInfo"
           }
         },
+        "browserBindings": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/BrowserBindingInfo"
+          }
+        },
         "issues": {
           "type": "array",
           "items": {
@@ -2289,8 +2496,7 @@
         "agents",
         "issues"
       ],
-      "additionalProperties": false,
-      "description": "A plugin folder found by the runtime. `bundled` plugins ship with ThreadTerm and are enabled by default; `user` plugins live in the plugins directory and stay disabled until the user enables them. `issues` lists problems: an unloadable manifest or an invalid agent (bad id or command, id collision, icon outside the folder, …) means that part contributes nothing; a warning such as an unknown contribution type does not block the agents."
+      "additionalProperties": false
     },
     "PluginAgentInfo": {
       "type": "object",
@@ -2324,7 +2530,76 @@
       "additionalProperties": false,
       "description": "One agent a plugin contributes. `commands` are the command lines it may run (version probe, terminal, ACP chat, sign-in), shown to the user before the plugin is enabled."
     },
+    "BrowserBindingInfo": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "bindingVersion": {
+          "type": "number"
+        },
+        "providerId": {
+          "type": "string"
+        },
+        "requires": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "number"
+          }
+        },
+        "transport": {
+          "type": "string"
+        },
+        "tools": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "workflow": {
+          "type": "string"
+        },
+        "enabled": {
+          "type": "boolean"
+        },
+        "selected": {
+          "type": "boolean"
+        },
+        "availability": {
+          "type": "string",
+          "enum": [
+            "eligible",
+            "disabled",
+            "unsupported_binding_version",
+            "unsupported_runtime_capability",
+            "unsupported_transport",
+            "conflict"
+          ]
+        },
+        "issue": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "bindingVersion",
+        "providerId",
+        "requires",
+        "transport",
+        "tools",
+        "workflow",
+        "enabled",
+        "selected",
+        "availability"
+      ],
+      "additionalProperties": false,
+      "description": "A plugin folder found by the runtime. `bundled` plugins ship with ThreadTerm and are enabled by default; `user` plugins live in the plugins directory and stay disabled until the user enables them. `issues` lists problems: an unloadable manifest or an invalid agent (bad id or command, id collision, icon outside the folder, …) means that part contributes nothing; a warning such as an unknown contribution type does not block the agents."
+    },
     "RequestResult<\"plugin.setEnabled\">": {
+      "$ref": "#/definitions/PluginList"
+    },
+    "RequestResult<\"plugin.selectBrowserBinding\">": {
       "$ref": "#/definitions/PluginList"
     },
     "RequestResult<\"plugin.reload\">": {
@@ -4346,6 +4621,188 @@
         },
         "method": {
           "type": "string",
+          "const": "preview.attach"
+        },
+        "result": {
+          "$ref": "#/definitions/RequestResult%3C%22preview.attach%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "result"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "preview.detach"
+        },
+        "result": {
+          "$ref": "#/definitions/RequestResult%3C%22preview.detach%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "result"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "preview.snapshot"
+        },
+        "result": {
+          "$ref": "#/definitions/RequestResult%3C%22preview.snapshot%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "result"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "preview.prepare"
+        },
+        "result": {
+          "$ref": "#/definitions/RequestResult%3C%22preview.prepare%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "result"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "preview.ack"
+        },
+        "result": {
+          "$ref": "#/definitions/RequestResult%3C%22preview.ack%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "result"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "preview.observe"
+        },
+        "result": {
+          "$ref": "#/definitions/RequestResult%3C%22preview.observe%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "result"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "preview.close"
+        },
+        "result": {
+          "$ref": "#/definitions/RequestResult%3C%22preview.close%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "result"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
           "const": "session.launch.read"
         },
         "result": {
@@ -5936,6 +6393,32 @@
         },
         "result": {
           "$ref": "#/definitions/RequestResult%3C%22plugin.setEnabled%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "result"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "plugin.selectBrowserBinding"
+        },
+        "result": {
+          "$ref": "#/definitions/RequestResult%3C%22plugin.selectBrowserBinding%22%3E"
         }
       },
       "required": [

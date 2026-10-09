@@ -44,6 +44,7 @@ pub struct RuntimeService {
     remote: OnceLock<Arc<crate::remote_access::RemoteAccess>>,
     delegations: Arc<crate::delegation::Delegations>,
     chat_queues: Arc<crate::chat_queue::ChatQueues>,
+    pub(crate) previews: Arc<crate::preview::Previews>,
 }
 
 /// Opens a session's provider Chat. Shared by `chat.connect` (after the
@@ -425,9 +426,12 @@ impl RuntimeService {
             Err(error) => eprintln!("provider network settings could not be read: {error}"),
         }
         let delegations = Arc::new(crate::delegation::Delegations::default());
-        providers.set_tool_server_resolver(crate::delegation::tool_server_resolver(
+        let previews = Arc::new(crate::preview::Previews::new(Arc::clone(&db)).expect("initialize preview operations"));
+        providers.set_tool_server_resolver(crate::preview::tool_server_resolver(
             Arc::clone(&db),
             Arc::clone(&delegations),
+            Arc::clone(&previews),
+            Arc::downgrade(&providers),
             config.clone(),
             crate::delegation::default_mcp_executable(),
         ));
@@ -435,6 +439,7 @@ impl RuntimeService {
         let event_db = Arc::clone(&db);
         let event_providers = Arc::clone(&providers);
         let event_queues = Arc::clone(&chat_queues);
+        let event_previews = Arc::clone(&previews);
         std::thread::spawn(move || loop {
             match events.blocking_recv() {
                 Ok(event) => {
@@ -465,6 +470,7 @@ impl RuntimeService {
                     for event in batch {
                         if project_provider_event(&event_db, &event_providers, &event) {
                             event_queues.provider_event(&event_db, &event_providers, &event);
+                            if event.kind == "session.closed" { let _ = event_previews.revoke_disabled(&event_providers); }
                         } else if qa_projection_failed(&event.session_id) {
                             report_projection_failure(&event_db, &event_providers, &event_queues, "QA injected projection ingress failure");
                         }
@@ -500,6 +506,7 @@ impl RuntimeService {
             remote: OnceLock::new(),
             delegations,
             chat_queues,
+            previews,
         }
     }
     pub fn start_retry_scheduler(self: &Arc<Self>) {
@@ -660,6 +667,9 @@ impl RuntimeService {
             .map_err(file_reference_rpc_error);
         }
         let outcome = (|| -> Result<Value> {
+            if request.method.starts_with("preview.") {
+                return self.previews.dispatch(&self.providers, principal, &request.method, &request.params);
+            }
             if request.method.starts_with("chat.queue.") {
                 if let Some(operation_id) = request.params.get("operationId").and_then(Value::as_str) {
                     self.db.bind_operation(operation_id, &request.method, &request.params)?;
@@ -917,6 +927,7 @@ impl RuntimeService {
                     {
                         if current.mode == "chat" {
                             self.providers.chat_stop(&p.session_id)?;
+                            self.previews.revoke_disabled(&self.providers)?;
                             self.db.set_session_status(&p.session_id, "exited", None)?;
                         } else {
                             self.pty.stop(&self.db, &p.session_id, p.force)?;
@@ -1007,10 +1018,12 @@ impl RuntimeService {
                     Ok(serde_json::to_value(settings)?)
                 }
                 "provider.list" => Ok(Value::Array(self.providers.capabilities())),
-                "plugin.list" | "plugin.setEnabled" | "plugin.reload" => {
+                "plugin.list" | "plugin.setEnabled" | "plugin.reload" | "plugin.selectBrowserBinding" => {
                     let _plugins = self.plugin_gate.lock().map_err(|_| anyhow::anyhow!("plugin registry lock poisoned"))?;
                     let _settings = self.settings_apply_gate.lock().map_err(|_| anyhow::anyhow!("settings apply lock poisoned"))?;
-                    crate::plugin_services::dispatch(&self.config, &self.db, &self.providers, &request.method, &request.params)
+                    let result = crate::plugin_services::dispatch(&self.config, &self.db, &self.providers, &request.method, &request.params)?;
+                    if request.method != "plugin.list" { self.previews.revoke_disabled(&self.providers)?; }
+                    Ok(result)
                 }
                 "history.list" => {
                     let p: HistoryList = parse(&request.params)?;

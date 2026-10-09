@@ -13,7 +13,7 @@ pub async fn run_stdio() -> Result<()> {
     let config = RuntimeConfig::load()?;
     // ThreadTerm attaches this binary to parent Chat sessions in the
     // `delegation` profile; without it, the terminal host below is unchanged.
-    if std::env::var("THREADTERM_MCP_PROFILE").as_deref() == Ok("delegation") {
+    if matches!(std::env::var("THREADTERM_MCP_PROFILE").as_deref(), Ok("delegation"|"chat-tools")) {
         return crate::mcp_delegation::run_stdio(config).await;
     }
     let mut lifecycle = Lifecycle::AwaitInitialize;

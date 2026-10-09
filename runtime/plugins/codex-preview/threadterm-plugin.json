@@ -1,0 +1,19 @@
+{
+  "schemaVersion": 1,
+  "id": "codex-preview",
+  "name": "Codex preview tools",
+  "version": "1.0.0",
+  "publisher": "ThreadTerm",
+  "description": "Presents local development pages beside a Codex chat.",
+  "contributes": {
+    "browserBindings": [{
+      "id": "codex-preview",
+      "bindingVersion": 1,
+      "providerId": "codex",
+      "requires": { "threadterm.preview": 1 },
+      "transport": "mcp-stdio",
+      "tools": ["preview_present", "preview_status"],
+      "workflow": "threadterm.preview.after-server-ready.v1"
+    }]
+  }
+}

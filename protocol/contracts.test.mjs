@@ -308,7 +308,20 @@ test('session documents pin relative paths inside the worktree and list exact ro
  assert.throws(()=>validateRequest('session.documents.pin',{sessionId:'s',path:'docs/plan.md'}),/Invalid operationId|protocol schema/);
  validateResult('session.documents.list',[{path:'docs/plan.md',title:'Checkout plan',pinnedAt:'t'},{path:'notes.txt',pinnedAt:'t',missing:true}]);
  assert.throws(()=>validateResult('session.documents.pin',[{path:'docs/plan.md',pinnedAt:'t',size:3}]));
- assert.equal(PROTOCOL_CONTRACT,9);
+ assert.equal(PROTOCOL_CONTRACT,10);
+});
+
+test('preview presentation is attachment-scoped and requires a persisted tab acknowledgement',()=>{
+ const base={sessionId:'a',attachmentId:'view-a',requestId:'r',previewId:'p',documentId:'d'};
+ validateRequest('preview.attach',{sessionId:'a',viewId:'v'});
+ validateRequest('preview.ack',{...base,state:'presented',tabId:'tab',workspaceId:'w',workspaceRevision:1});
+ for(const patch of [{workspaceRevision:0},{workspaceRevision:1.5},{tabId:undefined},{sessionId:'a\0b'}])assert.throws(()=>validateRequest('preview.ack',{...base,state:'presented',tabId:'tab',workspaceId:'w',workspaceRevision:1,...patch}));
+ validateRequest('preview.observe',{...base,sequence:2,navigation:'load_observed'});
+ assert.throws(()=>validateRequest('preview.observe',{...base,sequence:0.5,navigation:'load_observed'}));
+ assert.throws(()=>validateRequest('preview.attach',{sessionId:'a',viewId:'v',callerToken:'secret'}));
+ const result={requestId:'r',previewId:'p',state:'presented',sequence:2,navigation:'load_observed',applicationReady:'unknown',contentVerified:false};
+ validateResult('preview.ack',result);assert.throws(()=>validateResult('preview.ack',{...result,contentVerified:true}));
+ assert.throws(()=>validateResult('preview.ack',{...result,applicationReady:'ready'}));
 });
 
 test('quick launch commands are bounded: relative cwd inside the root, known shells, unique env names, revisioned updates',()=>{

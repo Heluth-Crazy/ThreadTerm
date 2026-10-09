@@ -31,7 +31,8 @@ const MODE_CHOICES = [
 ];
 const AUTO_MODE = { value: 'auto', name: 'Auto' };
 // ThreadTerm's delegation tools as the SDK names them (runtime `delegation::TOOL_NAMES`).
-export const THREADTERM_TOOLS = new Set(['delegate_start', 'delegate_status', 'delegate_wait', 'delegate_respond', 'delegate_result', 'delegate_cancel'].map(name => `mcp__threadterm__${name}`));
+export const THREADTERM_DELEGATION_TOOLS = new Set(['delegate_start', 'delegate_status', 'delegate_wait', 'delegate_respond', 'delegate_result', 'delegate_cancel'].map(name => `mcp__threadterm__${name}`));
+export const THREADTERM_PREVIEW_TOOLS = new Set(['preview_present', 'preview_status'].map(name => `mcp__threadterm__${name}`));
 const EFFORT_NAMES = { low: 'Low', medium: 'Medium', high: 'High', xhigh: 'Extra high', max: 'Max' };
 
 // Commands the CLI advertises that cannot work from Chat: /clear replaces the native
@@ -82,10 +83,13 @@ export class ClaudeSession {
 
   async start({ cwd, sessionId, mcpServers }) {
     if (this.closed) throw new Error('session is closed');
-    // ThreadTerm attaches its delegation server to parent Chats; the parent's
-    // calls to exactly those tools are approved without asking the user.
+    // Only credentials supplied by ThreadTerm's core-managed MCP server permit
+    // automatic approval; a similarly named arbitrary MCP server cannot.
     const injected = mcpServers && typeof mcpServers === 'object' && !Array.isArray(mcpServers) ? mcpServers : null;
-    this.threadTermTools = Boolean(injected?.threadterm);
+    const threadterm = injected?.threadterm;
+    const environment = threadterm?.env && typeof threadterm.env === 'object' ? threadterm.env : {};
+    this.threadTermDelegationTools = threadterm?.name === undefined && typeof environment.THREADTERM_SESSION_TOKEN === 'string' && environment.THREADTERM_SESSION_TOKEN.length > 0;
+    this.threadTermPreviewTools = threadterm?.name === undefined && typeof environment.THREADTERM_PREVIEW_TOKEN === 'string' && environment.THREADTERM_PREVIEW_TOKEN.length > 0;
     const options = {
       cwd,
       settingSources: this.hostOptions.settingSources ?? ['user', 'project', 'local'],
@@ -193,7 +197,7 @@ export class ClaudeSession {
 
   requestPermission(toolName, input, { signal, suggestions, toolUseID, agentID } = {}) {
     if (this.closed || this.ended) return Promise.resolve({ behavior: 'deny', message: 'Session closed' });
-    if (this.threadTermTools && THREADTERM_TOOLS.has(toolName)) return Promise.resolve({ behavior: 'allow', updatedInput: input });
+    if ((this.threadTermDelegationTools && THREADTERM_DELEGATION_TOOLS.has(toolName)) || (this.threadTermPreviewTools && THREADTERM_PREVIEW_TOOLS.has(toolName))) return Promise.resolve({ behavior: 'allow', updatedInput: input });
     const requestId = `${this.cardId}-permission-${this.nextRequest++}`;
     const operationId = this.activeOperationId;
     const sessionId = this.sessionId;

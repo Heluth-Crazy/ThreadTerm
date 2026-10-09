@@ -132,14 +132,22 @@ fn codex_tool_server_overrides(tools: Option<&ChatToolServer>) -> Vec<String> {
         .map(|(key, value)| format!("{key}={}", toml(value)))
         .collect::<Vec<_>>()
         .join(",");
-    vec![
+    let mut overrides = vec![
         "-c".into(),
         format!("{prefix}.command={}", toml(&tools.command)),
         "-c".into(),
         format!("{prefix}.args=[{args}]"),
         "-c".into(),
         format!("{prefix}.env={{{env}}}"),
-    ]
+    ];
+    if tools.name == "threadterm" && tools.env.iter().any(|(key,value)| key=="THREADTERM_PREVIEW_TOKEN"&&!value.is_empty()) {
+        // Per-tool policy for the core-managed preview host only. Leave all
+        // other tools, shell approvals and sandbox configuration unchanged.
+        for tool in crate::preview::TOOL_NAMES {
+            overrides.extend(["-c".into(),format!("{prefix}.tools.{tool}.approval_mode='auto'")]);
+        }
+    }
+    overrides
 }
 
 impl ProviderAdapter for CodexAdapter {

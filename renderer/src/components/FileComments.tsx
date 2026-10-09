@@ -70,75 +70,103 @@ export function CommentForm({scope, path, version, selection, zh, onCancel, onAd
  </div>;
 }
 
-export function PendingComments({scope, host, comments:providedComments, zh}:{scope:CommentScope;host:FileCommentsHost;comments:ReviewComment[];zh:boolean}) {
+/** `previewId` selects one immutable page queue. File callers omit it and retain their batch UI. */
+export function PendingComments({scope, host, comments:providedComments, zh, previewId}:{scope:CommentScope;host:FileCommentsHost;comments:ReviewComment[];zh:boolean;previewId?:string}) {
  const storedComments=useReviewComments(scope);
- const comments=storedComments.some(isPageComment)?storedComments:providedComments;
- // Follows the workspace's current session until the user picks another one here.
+ const comments=previewId ? storedComments.filter(item=>isPageComment(item)&&item.provenance?.previewId===previewId) : (storedComments.some(isPageComment)?storedComments:providedComments);
  const [receiverId, setReceiverId] = useState<string>();
  const [busy, setBusy] = useState(false);
  const [issue, setIssue] = useState<string>();
+ const [issueCode, setIssueCode] = useState<'page_shot_read'|'page_shot_unavailable'>();
  const [notice, setNotice] = useState<string>();
+ const [noticeCode, setNoticeCode] = useState<'page_shots_file_path'>();
  const [confirmClear, setConfirmClear] = useState(false);
+ const [transfer, setTransfer] = useState<{comments:ReviewComment[];receiverId:string} | undefined>();
  const copy = (en:string, cn:string) => zh ? cn : en;
- const receiver = host.receivers.find(item => item.id === receiverId) ?? host.receivers.find(item => item.id === host.defaultReceiverId) ?? host.receivers[0];
+ const screenshotIssue = issueCode === 'page_shot_read' ? copy('A page screenshot could not be read. The comments were kept.','页面截图无法读取。评论已保留。') : issueCode === 'page_shot_unavailable' ? copy('A page screenshot is unavailable. The comments were kept.','页面截图不可用。评论已保留。') : issue;
+ const screenshotNotice = noticeCode === 'page_shots_file_path' ? copy('Some screenshots were added by file path only. The receiving session can read those files.', '部分截图仅以文件路径加入，接收会话可以读取这些文件。') : notice;
+ const pageOwners=[...new Set(comments.filter(isPageComment).map(item=>item.provenance?.sessionId).filter((id):id is string=>Boolean(id)))];
+ const pageOwnerLabels=[...new Set(comments.filter(isPageComment).flatMap(item=>{const id=item.provenance?.sessionId;if(!id)return [];const receiver=host.receivers.find(candidate=>candidate.id===id),title=receiver?.title??item.provenance?.sessionTitle??id;return [`${title} (${receiver?.provider??item.provenance?.providerId??'unknown'})`];}))];
+ const sourcePages=[...new Set(comments.filter(isPageComment).map(item=>`${item.title ? `${item.title} — ` : ''}${item.url}`))];
+ const hasUnownedPage=comments.some(item=>isPageComment(item)&&!item.provenance?.sessionId);
+ const defaultReceiverId=previewId ? (pageOwners.length===1&&!hasUnownedPage?pageOwners[0]:undefined) : (pageOwners.length===1&&!hasUnownedPage?pageOwners[0]:(pageOwners.length||hasUnownedPage?undefined:(host.defaultReceiverId??host.receivers[0]?.id)));
+ const receiver = host.receivers.find(item => item.id === (receiverId??defaultReceiverId));
  const roots = {fileRoot:scope.root, sessionRoot:receiver?.root ?? scope.root};
  const files = new Set(comments.filter((item):item is FileComment=>!isPageComment(item)).map(item => item.path)).size;
  const pages = new Set(comments.filter(isPageComment).map(item=>item.url)).size;
- useEffect(() => { setIssue(undefined); setNotice(undefined); setConfirmClear(false); }, [scope.projectId, scope.root]);
- useEffect(() => { if(!notice) return; const timer = setTimeout(() => setNotice(undefined), 4000); return () => clearTimeout(timer); }, [notice]);
+ useEffect(() => { setIssue(undefined); setIssueCode(undefined); setNotice(undefined); setNoticeCode(undefined); setConfirmClear(false); setTransfer(undefined); }, [scope.projectId, scope.root, previewId]);
+ useEffect(() => { if(noticeCode==='page_shots_file_path')host.notice?.(copy('Some screenshots were added by file path only. The receiving session can read those files.', '部分截图仅以文件路径加入，接收会话可以读取这些文件。')); }, [zh, noticeCode]);
+ useEffect(() => { setTransfer(undefined); }, [comments.map(item=>item.id).join('|')]);
+ useEffect(() => { if(!notice) return; const timer = setTimeout(() => {setNotice(undefined);setNoticeCode(undefined);}, 4000); return () => clearTimeout(timer); }, [notice]);
  const removeComments = (ids:string[]) => {
-  try { removeReviewComments(scope, ids); setIssue(undefined); }
-  catch(error) { setIssue(commentError(error, zh)); }
+  try { removeReviewComments(scope, ids); setIssue(undefined); setIssueCode(undefined); }
+  catch(error) { setIssueCode(undefined); setIssue(commentError(error, zh)); }
  };
- const addToMessage = async () => {
-  if(!receiver || !comments.length || busy) return;
-  const inserted = [...comments];
-  setBusy(true); setNotice(undefined); setIssue(undefined);
+ const insertToMessage = async (inserted:ReviewComment[], pinnedReceiverId:string) => {
+  const pinnedReceiver=host.receivers.find(item=>item.id===pinnedReceiverId);
+  if(!pinnedReceiver || !inserted.length || busy){setIssueCode(undefined);setIssue(copy('The selected destination is no longer available. Comments were kept.','所选目标已不可用。评论已保留。'));return;}
+  setBusy(true); setNotice(undefined); setIssue(undefined); setIssueCode(undefined);
   try {
    const shots=inserted.filter(isPageComment).flatMap(item=>item.shot?[item.shot]:[]),images:string[]=[];
    // Validate every path before releasing its comment. Only the first four data URLs are
    // transferred, but a later missing screenshot must not leave the agent a dead path.
    for(const shot of shots){
     let image:string|undefined;
-    try{image=await readPageShot(shot.id);}catch{throw new Error(copy('A page screenshot could not be read. The comments were kept.','页面截图无法读取。评论已保留。'));}
-    if(!image)throw new Error(copy('A page screenshot is unavailable. The comments were kept.','页面截图不可用。评论已保留。'));
+    try{image=await readPageShot(shot.id);}catch{throw new Error('page_shot_read');}
+    if(!image)throw new Error('page_shot_unavailable');
     if(images.length<MAX_CHAT_IMAGES)images.push(image);
    }
-   const attached=await host.insert(receiver.id, formatReviewComments(inserted, roots, zh), images.length?images:undefined);
+   const attached=await host.insert(pinnedReceiver.id, formatReviewComments(inserted, {fileRoot:scope.root,sessionRoot:pinnedReceiver.root}, zh), images.length?images:undefined);
    releaseReviewComments(scope, inserted.map(item => item.id));
-   if(shots.length>(attached??0)){const message=copy('Some screenshots were added by file path only. The receiving session can read those files.', '部分截图仅以文件路径加入，接收会话可以读取这些文件。');setNotice(message);host.notice?.(message);}
-  } catch(error) { setIssue(error instanceof Error ? error.message : String(error)); }
+   if(shots.length>(attached??0)){const message=copy('Some screenshots were added by file path only. The receiving session can read those files.', '部分截图仅以文件路径加入，接收会话可以读取这些文件。');setNoticeCode('page_shots_file_path');setNotice(message);host.notice?.(message);}
+  } catch(error) { const message=error instanceof Error ? error.message : String(error);if(message==='page_shot_read'||message==='page_shot_unavailable'){setIssue(undefined);setIssueCode(message);}else{setIssueCode(undefined);setIssue(message);} }
   finally { setBusy(false); }
  };
+ const addToMessage = () => {
+  if(!receiver || !comments.length || busy){if(!receiver){setIssueCode(undefined);setIssue(copy('Choose a destination session first. Comments were kept.','请先选择目标会话。评论已保留。'));}return;}
+  const inserted=[...comments], mismatched=inserted.filter(isPageComment).filter(item=>item.provenance?.sessionId&&item.provenance.sessionId!==receiver.id);
+  if(mismatched.length){setTransfer({comments:inserted,receiverId:receiver.id});return;}
+  void insertToMessage(inserted,receiver.id);
+ };
  const copyComments = () => void navigator.clipboard.writeText(formatReviewComments(comments, roots, zh))
-  .then(() => { setNotice(copy('Copied. The comments stay here until you add them or clear them.', '已复制。审查意见会保留，直到加入消息或清除。')); setIssue(undefined); })
-  .catch(error => setIssue(error instanceof Error ? error.message : String(error)));
+  .then(() => { setNoticeCode(undefined);setNotice(copy('Copied. The comments stay here until you add them or clear them.', '已复制。审查意见会保留，直到加入消息或清除。')); setIssue(undefined);setIssueCode(undefined); })
+  .catch(error => {setIssueCode(undefined);setIssue(error instanceof Error ? error.message : String(error));});
  if(!comments.length) return null;
  return <div className="wb-review-comments" role="region" aria-label={copy('Review comments', '审查意见')}>
   <div className="wb-review-comment-actions">
    <b>{copy(`${comments.length} comment${comments.length === 1 ? '' : 's'}`, `${comments.length} 条审查意见`)}</b>
    <span className="dim">{pages ? copy(`in ${pages} page${pages===1?'':'s'}${files?` and ${files} file${files===1?'':'s'}`:''} · not sent yet`, `涉及 ${pages} 个页面${files?`、${files} 个文件`:''} · 尚未发送`) : files > 1 ? copy(`in ${files} files · not sent yet`, `涉及 ${files} 个文件 · 尚未发送`) : copy('not sent yet', '尚未发送')}</span>
-   {receiver ? <Select value={receiver.id} disabled={busy} aria-label={copy('Send to session', '发送到会话')} onChange={event => setReceiverId(event.target.value)}>
+   {previewId&&<span className="dim">{pageOwnerLabels.length===1?copy(`Owner: ${pageOwnerLabels[0]}`,`所有者：${pageOwnerLabels[0]}`):copy('Owner: unavailable or manual page', '所有者：不可用或手动页面')}</span>}
+   {host.receivers.length ? <Select value={receiver?.id??''} disabled={busy} aria-label={copy('Destination session', '目标会话')} onChange={event => {setReceiverId(event.target.value||undefined);setTransfer(undefined);}}>
+    {!receiver&&<option value="" disabled>{copy('Choose destination', '选择目标会话')}</option>}
     {host.receivers.map(item => <option key={item.id} value={item.id}>{item.title}</option>)}
    </Select> : <span className="dim">{copy('Open an agent Chat in this workspace to add them to its message.', '在此工作区打开一个 Agent 聊天，即可加入其消息。')}</span>}
    <span className="wb-review-comment-buttons">
-    {receiver && <button type="button" className="btn btn-sm btn-primary" disabled={busy} onClick={() => void addToMessage()}
+    {host.receivers.length>0 && <button type="button" className="btn btn-sm btn-primary" disabled={busy||!receiver} onClick={addToMessage}
      title={copy('Insert all comments into the chosen session message box. Nothing is sent.', '把全部审查意见插入所选会话的消息框，不会发送。')}>{copy('Add to message', '加入消息')}</button>}
     <button type="button" className="btn btn-sm" disabled={busy} onClick={copyComments}>{copy('Copy', '复制')}</button>
     <button type="button" className="btn btn-sm" disabled={busy} onClick={() => setConfirmClear(true)}>{copy('Clear', '清除')}</button>
    </span>
   </div>
-  {issue && <p className="wb-issue" role="alert">{issue}</p>}
-  {notice && <p className="dim" role="status">{notice}</p>}
+  {screenshotIssue && <p className="wb-issue" role="alert">{screenshotIssue}</p>}
+  {screenshotNotice && <p className="dim" role="status">{screenshotNotice}</p>}
   <ul>{comments.map(item => <li key={item.id}>
-   {isPageComment(item)?<button type="button" className="wb-page-comment-row" onClick={()=>void flashPageComment(item).catch(()=>setIssue(copy('Could not highlight this page target.', '无法高亮此页面目标。')))} title={item.url} aria-label={copy(`Highlight ${pageCommentLabel(item.target,zh)}`, `高亮 ${pageCommentLabel(item.target,zh)}`)}>
+   {isPageComment(item)?<button type="button" className="wb-page-comment-row" onClick={()=>void flashPageComment(item).catch(()=>{setIssueCode(undefined);setIssue(copy('Could not highlight this page target.', '无法高亮此页面目标。'));})} title={item.url} aria-label={copy(`Highlight ${pageCommentLabel(item.target,zh)}`, `高亮 ${pageCommentLabel(item.target,zh)}`)}>
     {item.shot&&<img src={item.shot.thumbnail} alt={copy('Page screenshot', '页面截图')}/>}<span><b>{pageCommentLabel(item.target,zh)}</b><small>{pageCommentLocation(item.url)}</small></span>
    </button>:<span className="wb-review-comment-where" title={`${fileCommentPlace(item, roots, zh)}\n${item.excerpt}`}>{fileCommentShortPlace(item, zh)}</span>}
    <span className="body" title={item.body}>{item.body}</span>
    <button type="button" className="icon-btn" disabled={busy} aria-label={copy('Remove comment', '删除评论')} title={copy('Remove comment', '删除评论')} onClick={() => removeComments([item.id])}><Icon name="close"/></button>
   </li>)}</ul>
-  {confirmClear && <SurfaceDialog size="sm" icon="trash" title={copy('Clear all review comments?', '清除全部审查意见？')} subtitle={pages?copy(`${comments.length} comments in ${pages} pages and ${files} files`, `${comments.length} 条，涉及 ${pages} 个页面、${files} 个文件`):copy(`${comments.length} comments in ${files} files`, `${comments.length} 条，涉及 ${files} 个文件`)} onClose={() => setConfirmClear(false)}
-   footer={<><button type="button" className="btn" onClick={() => setConfirmClear(false)}>{copy('Cancel', '取消')}</button><button type="button" className="btn btn-danger" onClick={() => { removeComments(comments.map(item => item.id)); setConfirmClear(false); setNotice(undefined); }}>{copy('Clear', '清除')}</button></>}>
+   {transfer&&<SurfaceDialog size="sm" icon="warning" className="page-comment-transfer-dialog" title={copy('Transfer page comments?', '转移页面评论？')} subtitle={copy(`${transfer.comments.filter(isPageComment).length} page comment${transfer.comments.filter(isPageComment).length===1?'':'s'} will be added to the destination draft. Nothing is sent.`, `${transfer.comments.filter(isPageComment).length} 条页面评论将加入目标草稿，不会发送。`)} onClose={()=>setTransfer(undefined)}
+    footer={<><button type="button" className="btn" disabled={busy} onClick={()=>setTransfer(undefined)}>{copy('Cancel','取消')}</button><button type="button" className="btn btn-sm btn-primary" disabled={busy} onClick={()=>{const current=host.receivers.find(item=>item.id===transfer.receiverId);if(!current){setTransfer(undefined);setIssueCode(undefined);setIssue(copy('The selected destination is no longer available. Comments were kept.','所选目标已不可用。评论已保留。'));return;}const pinned=transfer;setTransfer(undefined);void insertToMessage(pinned.comments,pinned.receiverId);}}>{copy('Add to draft','加入草稿')}</button></>}>
+    <dl className="page-comment-transfer-details">
+     <div><dt>{copy(sourcePages.length===1?'Source page':'Source pages','来源页面')}</dt><dd>{sourcePages.map(source=><span key={source} title={source}>{source}</span>)}</dd></div>
+     <div><dt>{copy(pageOwnerLabels.length===1?'Source owner':'Source owners','来源页面会话')}</dt><dd>{pageOwnerLabels.map(owner=><span key={owner}>{owner}</span>)}</dd></div>
+     <div><dt>{copy('Destination','目标会话')}</dt><dd>{`${host.receivers.find(item=>item.id===transfer.receiverId)?.title??transfer.receiverId} (${host.receivers.find(item=>item.id===transfer.receiverId)?.provider??(zh?'未知':'unknown')})`}</dd></div>
+    </dl>
+   </SurfaceDialog>}
+   {confirmClear && <SurfaceDialog size="sm" icon="trash" title={copy('Clear all review comments?', '清除全部审查意见？')} subtitle={pages?copy(`${comments.length} comments in ${pages} pages and ${files} files`, `${comments.length} 条，涉及 ${pages} 个页面、${files} 个文件`):copy(`${comments.length} comments in ${files} files`, `${comments.length} 条，涉及 ${files} 个文件`)} onClose={() => setConfirmClear(false)}
+   footer={<><button type="button" className="btn" onClick={() => setConfirmClear(false)}>{copy('Cancel', '取消')}</button><button type="button" className="btn btn-danger" onClick={() => { removeComments(comments.map(item => item.id)); setConfirmClear(false); setNotice(undefined); setNoticeCode(undefined); }}>{copy('Clear', '清除')}</button></>}>
    <p>{copy('They have not been sent to the agent and cannot be restored.', '这些意见尚未发给 Agent，清除后无法恢复。')}</p>
   </SurfaceDialog>}
  </div>;

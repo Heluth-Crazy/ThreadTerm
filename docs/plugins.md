@@ -2,7 +2,7 @@
 
 ThreadTerm plugins let an agent author add a terminal command and, optionally, an ACP Chat agent without changing ThreadTerm. A version 1 plugin is declarative: it is a folder containing `threadterm-plugin.json`, an optional SVG icon, and any files launched by its command. ThreadTerm does not load plugin JavaScript, Rust, or UI code.
 
-Version 1 supports one contribution type, `agents`. An agent can provide a terminal command, ACP Chat, history and resume when ACP advertises them, a sign-in command, an icon, and a homepage. Future releases may add declarative contribution types such as themes, terminal profiles, prompts, model prices, MCP server definitions, and file viewers. Executable code, panels, commands, settings sections, a marketplace, signing, and distribution are not part of version 1.
+Version 1 supports `agents` and `browserBindings`. An agent can provide a terminal command and, optionally, ACP Chat. A browser binding declares a supported external-tool transport for ThreadTerm-owned local preview tools; it cannot provide executable hooks, renderer IPC, approval policy, or credentials. Future releases may add declarative contribution types such as themes, terminal profiles, prompts, model prices, MCP server definitions, and file viewers. Executable code, panels, commands, settings sections, a marketplace, signing, and distribution are not part of version 1.
 
 ## Folder layout
 
@@ -61,9 +61,30 @@ Top-level fields are:
 | `publisher` | no | Publisher displayed in Settings. |
 | `description` | no | Description, at most 500 characters. |
 | `homepage` | no | Plugin homepage. An agent may override it. |
-| `contributes.agents` | yes for a usable version 1 plugin | One to eight agent declarations. A plugin with no valid agents is listed with an issue and contributes nothing. |
+| `contributes.agents` | no | One to eight agent declarations. |
+| `contributes.browserBindings` | no | One to eight preview-tool bindings. A plugin must have at least one valid agent or browser binding. |
 
 Unknown top-level fields are ignored. An unknown `contributes` type produces a visible “not supported by this ThreadTerm” issue, but valid `agents` in the same plugin still load. A malformed manifest or unsupported schema contributes no agents.
+
+### Browser bindings
+
+`browserBindings` is a declarative contract for ThreadTerm's preview capability. It is available only through the `mcp-stdio` transport. The runtime owns the two tool implementations, grants, approval behavior, and target selection; a plugin merely identifies a compatible provider and workflow.
+
+```json
+{
+  "id": "example-preview",
+  "bindingVersion": 1,
+  "providerId": "example",
+  "requires": { "threadterm.preview": 1 },
+  "transport": "mcp-stdio",
+  "tools": ["preview_present", "preview_status"],
+  "workflow": "threadterm.preview.after-server-ready.v1"
+}
+```
+
+Every field in that example is required. `id` matches the plugin-id pattern; `providerId` matches the agent-id pattern. Version 1 accepts only `bindingVersion: 1`, exactly `{ "threadterm.preview": 1 }`, `mcp-stdio`, exactly the two listed tools, and the listed workflow identifier. Invalid bindings are reported in Settings and do not prevent valid agent contributions from loading.
+
+A binding-only plugin is valid. Bundled bindings are enabled by default; user bindings remain disabled until the user enables the containing plugin. A single enabled compatible binding activates automatically. When several enabled bindings target the same provider and transport, ThreadTerm reports a conflict until exactly one binding is selected in its persisted plugin settings. It never chooses by folder order. Disabling a plugin immediately makes its binding unavailable for future browser grants; saved pages remain ordinary user workspace content.
 
 Each agent declaration has these fields:
 

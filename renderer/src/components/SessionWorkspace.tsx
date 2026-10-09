@@ -1,12 +1,12 @@
 import { Select } from "./ui/Select";
 import { useEffect, useRef, useState } from 'react';
-import type { ContentRef, Draft, FileReference, GitStatus, PaneLayout, Session, Snapshot, Worktree } from '@threadterm/protocol';
-import { operationId, request } from '../bridge';
+import type { ContentRef, Draft, FileReference, GitStatus, PaneLayout, PreviewAssociation, PreviewPresentation, Session, Snapshot, Worktree } from '@threadterm/protocol';
+import { operationId, request, subscribeEvents } from '../bridge';
 import { attachChatImages, insertChatText, insertSessionText, insertTerminalText } from '../terminalInputTargets';
 import { useTranslation } from '../i18n';
 import { addSessionTab } from '../presentation';
 import { displayPath, sameCanonicalScope } from '../projectScope';
-import { activate, addPane, addTabToPane, closePane, reconcileSessionLayout, sessionIdsIn, sessionOnlyLayout } from '../workspaceLayout';
+import { activate, addPane, addTabToPane, closePane, placeWebTabBesideSession, reconcileSessionLayout, selectWebTabBesideSession, sessionIdsIn, sessionOnlyLayout } from '../workspaceLayout';
 import { isFileTab, isWebTabUrl, removeWorkspaceTabs, workspaceTabs, type FileTab } from '../workspaceTabs';
 import { canSplitPaneArea, fileViewPlacement, visibleSessionLayout } from '../sessionFileViews';
 import { PaneWorkspace, type PaneWorkbench } from './PaneWorkspace';
@@ -45,26 +45,58 @@ const unsavedTabIds=(tabs:readonly ContentRef[],unsaved:(tab:FileTab)=>boolean)=
  }
  return new Set([...chosen.values()].map(tab=>tab.id));
 };
+const visibleRect=(element:Element|undefined)=>{
+ if(!element||element.closest('[hidden],[inert]'))return false;
+ const rect=element.getBoundingClientRect(),style=getComputedStyle(element);
+ return rect.width>0&&rect.height>0&&style.display!=='none'&&style.visibility!=='hidden'&&rect.bottom>0&&rect.right>0&&rect.top<innerHeight&&rect.left<innerWidth;
+};
+/** Bound to a paint, never a polling loop: acknowledgement needs proof that both sibling surfaces mounted visibly. */
+const waitForPreviewMount=(sessionId:string,previewId:string,documentId:string,tabId:string,cancelled:()=>boolean)=>new Promise<boolean>(resolve=>{
+ const deadline=performance.now()+2000;
+ let frame=0,timer:number|undefined,done=false;
+ const finish=(value:boolean)=>{if(done)return;done=true;cancelAnimationFrame(frame);if(timer!==undefined)clearTimeout(timer);resolve(value);};
+ const check=()=>{
+  if(cancelled())return finish(false);
+  const chat=[...document.querySelectorAll(`[data-content-id="session-${sessionId}"]`)].find(visibleRect);
+  const preview=[...document.querySelectorAll<HTMLElement>('[data-preview-id]')].find(item=>item.dataset.previewId===previewId&&item.dataset.documentId===documentId&&item.dataset.webTabId===tabId&&visibleRect(item)&&visibleRect(item.querySelector('iframe')??undefined));
+  if(chat&&preview)return finish(true);
+  if(performance.now()>=deadline)return finish(false);
+  frame=requestAnimationFrame(check);
+ };
+ timer=window.setTimeout(()=>finish(false),2050);
+ frame=requestAnimationFrame(check);
+});
+const previewOperationKey=(value:Pick<PreviewPresentation,'sessionId'|'attachmentId'|'requestId'|'previewId'|'documentId'>)=>[value.sessionId,value.attachmentId,value.requestId,value.previewId,value.documentId].join('\0');
 
 type Props={session:Session;data:Snapshot;theme:'light'|'dark';onBack:()=>void;onSelect:(id:string)=>void;onProject:(id:string,path?:string)=>void;onChanged:()=>void;initialLayout?:PaneLayout;backgroundPresentation?:string;onBackgroundPresented:()=>void;pendingCommands?:string[];onClearCommands?:()=>void;navigationKey?:unknown;onActiveSession?:(id:string)=>void};
 export function SessionWorkspace({session,data,theme,onBack,onSelect,onProject,onChanged,initialLayout,backgroundPresentation,onBackgroundPresented,pendingCommands=[],onClearCommands,navigationKey,onActiveSession}:Props){
+ const latestData=useRef(data);latestData.current=data;
  const providerName=(id:string)=>agentName(id,data.providers);
  const {locale}=useTranslation(),zh=locale==='zh-CN';
  const project=data.projects.find(p=>p.id===session.projectId),path=session.worktreePath??project?.path;
  const restored=data.workspaces.find(w=>w.projectId===session.projectId&&sameCanonicalScope(w.worktreePath??project?.path,path));
- // A session opens as just a session (user decision 2026-09-28): restored file/Git/history/review tabs are not
- // shown again; file tabs with unsaved edits come back once draft.list answers (restoreUnsaved). Preset layouts
- // (initialLayout) are an explicit choice and stay as they are.
+ // A session opens with its sessions and independent browser pages. Restored file/Git/history/review tabs are not
+ // shown again; file tabs with unsaved edits come back once draft.list answers (restoreUnsaved). Browser pages are
+ // user content with runtime associations outside ContentRef, so pruning them would make navigation silently close
+ // manual and agent previews. Preset layouts (initialLayout) are an explicit choice and stay as they are.
  const openedFrom=useRef<{source:PaneLayout;stripped:PaneLayout}|undefined>(undefined);
  const [layout,setLayout]=useState<PaneLayout>(()=>{
   if(initialLayout)return initialLayout;
   if(!restored)return initialFor(session);
-  const stripped=reconcileSessionLayout(sessionOnlyLayout(restored.layout,()=>false),new Set(data.sessions.map(item=>item.id)),session.id);
+  const stripped=reconcileSessionLayout(sessionOnlyLayout(restored.layout,tab=>tab.kind==='web'),new Set(data.sessions.map(item=>item.id)),session.id);
   openedFrom.current={source:restored.layout,stripped};
   return stripped;
  });
  const [previewSessionId,setPreviewSessionId]=useState(session.id);
  const latestLayout=useRef(layout);latestLayout.current=layout;
+ const previewViewIds=useRef(new Map<string,string>());
+ const previewAttachments=useRef(new Map<string,string>());
+ const previewAssociations=useRef(new Map<string,PreviewAssociation>());
+ const previewAccepted=useRef(new Set<string>());
+ const previewNavigation=useRef(new Map<string,{navigation:'pending'|'load_observed'|'failed';url?:string;title?:string;documentGeneration?:number}>());
+ const previewCancelled=useRef(new Set<string>());
+ const [previewAttachEpoch,setPreviewAttachEpoch]=useState(0);
+ const [,setPreviewAssociationRevision]=useState(0);
  const [toolbarHost,setToolbarHost]=useState<HTMLDivElement|null>(null),[switcherHost,setSwitcherHost]=useState<HTMLDivElement|null>(null);
  // Split decisions use the space the panes actually get (the side bar and inspector take their own share).
  const paneArea=useRef<HTMLDivElement>(null),wideForSplit=()=>Boolean(paneArea.current&&canSplitPaneArea(paneArea.current.clientWidth));
@@ -81,24 +113,34 @@ export function SessionWorkspace({session,data,theme,onBack,onSelect,onProject,o
  useEffect(()=>{if(pendingCommands.length)setInspector(true);},[pendingCommands]);
  const fillCommand=(command:string)=>{try{insertTerminalText(commandTarget,command);setCommandNotice(zh?'已填入终端，请检查后按回车执行。':'Inserted into the terminal. Review it before pressing Enter.');}catch(error){setIssue(zh?'请先打开目标会话的终端窗格并取得输入控制权。命令只能包含一行。':String(error));}};
  const [configOpen,setConfigOpen]=useState(false);
+ const [navigationOpen,setNavigationOpen]=useState(false);
+ const navigationToggle=useRef<HTMLButtonElement>(null);
  const [issue,setIssue]=useState<string>(),[fullscreen,setFullscreen]=useState(false);
  const [commentNotice,setCommentNotice]=useState<string>();
  useEffect(()=>{if(!commentNotice)return;const timer=setTimeout(()=>setCommentNotice(undefined),6000);return()=>clearTimeout(timer);},[commentNotice]);
+ const closeNavigation=(restoreFocus=true)=>{setNavigationOpen(false);if(restoreFocus)requestAnimationFrame(()=>navigationToggle.current?.focus());};
+ useEffect(()=>{if(!navigationOpen)return;const key=(event:KeyboardEvent)=>{if(event.key==='Escape'){event.preventDefault();closeNavigation();}};addEventListener('keydown',key);return()=>removeEventListener('keydown',key);},[navigationOpen]);
+ useEffect(()=>{const navigation=document.querySelector<HTMLElement>('.app-shell > .sidebar');if(!navigation)return;const previousId=navigation.id;navigation.id='runtime-navigation';return()=>{if(navigation.id==='runtime-navigation')navigation.id=previousId;};},[]);
+ useEffect(()=>{if(!navigationOpen)return;const frame=requestAnimationFrame(()=>document.querySelector<HTMLElement>('#runtime-navigation button:not(:disabled), #runtime-navigation [href]')?.focus());return()=>cancelAnimationFrame(frame);},[navigationOpen]);
+ useEffect(()=>{const media=matchMedia('(max-width:760px)'),change=()=>{if(!media.matches)setNavigationOpen(false);};change();media.addEventListener('change',change);return()=>media.removeEventListener('change',change);},[]);
  const [fileIssue,setFileIssue]=useState<{path:string;message:string}>();
  const saving=useRef(Promise.resolve()),saved=useRef({id:restored?.id,revision:restored?.revision??0});
  const persistedLayout=useRef<PaneLayout|undefined>(undefined);
  const currentTree=trees.find(tree=>sameCanonicalScope(tree.path,path));
  const treeSessions=data.sessions.filter(s=>s.projectId===session.projectId&&sameCanonicalScope(s.worktreePath??project?.path,path)&&(!s.archived||s.id===session.id));
+ const hostedChatIds=data.sessions.filter(candidate=>candidate.mode==='chat'&&sessionIdsIn(layout).includes(candidate.id)).map(candidate=>candidate.id);
  const state=session.readOnly?'ended':session.status==='waiting'?'needs':session.status==='error'?'failed':session.status==='interrupted'?'stalled':working(session)?'running':'ended';
  const stateLabel=zh?({needs:'待处理',failed:'失败',stalled:'已中断',running:'运行中',ended:session.readOnly?'只读历史':'已结束'}[state]):({needs:'Attention',failed:'Failed',stalled:'Interrupted',running:'Running',ended:session.readOnly?'Read-only history':'Ended'}[state]);
  const fail=(error:unknown)=>setIssue(error instanceof Error?error.message:String(error));
  const save=(next:PaneLayout)=>{
   latestLayout.current=next;
   setLayout(next);
-  saving.current=saving.current.then(async()=>{
-   try{const value=await request('workspace.save',{id:saved.current.id,name:session.title,projectId:session.projectId,worktreePath:path,layout:next,expectedRevision:saved.current.revision,operationId:operationId()});saved.current={id:value.id,revision:value.revision};persistedLayout.current=next;}
-   catch(error){fail(error);}
+  const persisted=saving.current.catch(()=>undefined).then(async()=>{
+   const value=await request('workspace.save',{id:saved.current.id,name:session.title,projectId:session.projectId,worktreePath:path,layout:next,expectedRevision:saved.current.revision,operationId:operationId()});
+   saved.current={id:value.id,revision:value.revision};persistedLayout.current=next;
   });
+  saving.current=persisted.catch(error=>{fail(error);});
+  return persisted;
  };
  /** Bring back file tabs dropped on open that still have unsaved edits (drafts), in their old places when the
   * layout is still the one shown on open, otherwise beside the routed session. Persist the result. */
@@ -113,7 +155,7 @@ export function SessionWorkspace({session,data,theme,onBack,onSelect,onProject,o
   if(!live.current)return;
   const unsaved=unsavedTabIds(dropped.map(item=>item.tab),tab=>drafts.some(draft=>draft.projectId===tab.projectId&&draft.path===tab.path&&(draft.worktreePath||'')===(tab.worktreePath??'')));
   if(latestLayout.current===stripped){
-   const next=unsaved.size?reconcileSessionLayout(sessionOnlyLayout(source,tab=>kept.has(tab.id)||unsaved.has(tab.id)),new Set(data.sessions.map(item=>item.id)),session.id):stripped;
+   const next=unsaved.size?reconcileSessionLayout(sessionOnlyLayout(source,tab=>tab.kind==='web'||kept.has(tab.id)||unsaved.has(tab.id)),new Set(data.sessions.map(item=>item.id)),session.id):stripped;
    save(next);
    return;
   }
@@ -131,6 +173,81 @@ export function SessionWorkspace({session,data,theme,onBack,onSelect,onProject,o
   return()=>{live=false;};
  },[session.projectId,path]);
  useEffect(()=>{if(!backgroundPresentation)return;save(addSessionTab(latestLayout.current,backgroundPresentation));onBackgroundPresented();},[backgroundPresentation]);
+ /** A desktop attachment is an explicit, per-view lease.  It is never retried by a timer or used to replay a
+  * previous request; reconnect/navigation receives a fresh attachment for subsequent preview.present events. */
+ useEffect(()=>{
+  let active=true;
+  const attached:string[]=[];
+  for(const sessionId of hostedChatIds){
+   let viewId=previewViewIds.current.get(sessionId);
+   if(!viewId){viewId=crypto.randomUUID();previewViewIds.current.set(sessionId,viewId);}
+   void request('preview.attach',{sessionId,viewId,workspaceId:saved.current.id}).then(result=>{
+    if(!active)return void request('preview.detach',{sessionId,attachmentId:result.attachmentId}).catch(()=>undefined);
+    previewAttachments.current.set(sessionId,result.attachmentId);attached.push(sessionId);
+    for(const association of result.associations)if(association.tabId)previewAssociations.current.set(association.tabId,association);
+    setPreviewAssociationRevision(value=>value+1);
+   }).catch(error=>{if(active&&!String(error).includes('target_in_use'))fail(error);});
+  }
+  return()=>{
+   active=false;
+   for(const sessionId of attached){const attachmentId=previewAttachments.current.get(sessionId);previewAttachments.current.delete(sessionId);if(attachmentId)void request('preview.detach',{sessionId,attachmentId}).catch(()=>undefined);}
+  };
+ },[hostedChatIds.join('|'),previewAttachEpoch]);
+ useEffect(()=>subscribeEvents(event=>{if(event.event==='runtime.transport'&&(event.data as {state?:string}|undefined)?.state==='reconnected')setPreviewAttachEpoch(value=>value+1);}),[]);
+ useEffect(()=>subscribeEvents(event=>{
+  if((event.event==='preview.cancel'||event.event==='preview.present')&&event.data&&typeof event.data==='object'){
+   const cancellation=event.data as Partial<PreviewPresentation>;
+   if(event.event==='preview.cancel'&&typeof cancellation.requestId==='string'&&typeof cancellation.sessionId==='string'&&typeof cancellation.attachmentId==='string'&&typeof cancellation.previewId==='string'&&typeof cancellation.documentId==='string'&&cancellation.attachmentId===previewAttachments.current.get(cancellation.sessionId)){previewCancelled.current.add(previewOperationKey(cancellation as PreviewPresentation));return;}
+  }
+  if(event.event!=='preview.present'||!event.data||typeof event.data!=='object')return;
+  const presentation=event.data as Partial<PreviewPresentation>;
+  if(typeof presentation.sessionId!=='string'||typeof presentation.attachmentId!=='string'||presentation.attachmentId!==previewAttachments.current.get(presentation.sessionId)
+   ||presentation.viewId!==previewViewIds.current.get(presentation.sessionId)||typeof presentation.requestId!=='string'||typeof presentation.previewId!=='string'
+   ||typeof presentation.documentId!=='string'||typeof presentation.url!=='string')return;
+  const attachmentId=presentation.attachmentId;
+  const acknowledge=async()=>{
+   const operationKey=previewOperationKey(presentation as PreviewPresentation);
+   let current:PreviewAssociation;
+   let prepared=false;
+   const existing=[...previewAssociations.current.values()].find(item=>item.previewId===presentation.previewId);
+   const existingTab=existing?.tabId?workspaceTabs(latestLayout.current).find(item=>item.tab.id===existing.tabId):undefined;
+   try{
+    current=await request('preview.prepare',{sessionId:presentation.sessionId!,attachmentId,requestId:presentation.requestId!,previewId:presentation.previewId!,documentId:presentation.documentId!});
+    if(previewCancelled.current.has(operationKey)||current.state!=='accepted'||current.url!==presentation.url)return;
+    prepared=true;
+    let tabId=existingTab?.tab.id;
+    if(tabId){
+     const selected=selectWebTabBesideSession(latestLayout.current,presentation.sessionId!,tabId);
+     if(selected!==latestLayout.current)await save(selected);
+    }else{
+     const tab:Extract<ContentRef,{kind:'web'}>={id:crypto.randomUUID(),kind:'web',url:presentation.url!};
+     const placed=placeWebTabBesideSession(latestLayout.current,presentation.sessionId!,tab);
+     if(placed.status==='layout_unavailable')throw Object.assign(new Error('No browser pane can be created without exceeding the four-pane limit.'),{code:'layout_unavailable',retryable:false});
+     tabId=tab.id;
+     if(!tabId)throw new Error('The browser tab could not be placed.');
+     await save(placed.layout);
+    }
+    if(!live.current)return;
+    const association:PreviewAssociation={...current,tabId,workspaceId:saved.current.id};
+    previewAssociations.current.set(tabId,association);setPreviewAssociationRevision(value=>value+1);
+    const mounted=await waitForPreviewMount(association.sessionId,association.previewId,association.documentId,tabId,()=>previewCancelled.current.has(operationKey)||previewAttachments.current.get(association.sessionId)!==attachmentId);
+    if(previewCancelled.current.has(operationKey))return;
+    if(!mounted)throw new Error('The saved page tab did not mount beside its owning Chat before acknowledgement.');
+    const acknowledged=await request('preview.ack',{sessionId:association.sessionId,attachmentId,requestId:association.requestId,previewId:association.previewId,documentId:association.documentId,state:'presented',tabId,workspaceId:saved.current.id,workspaceRevision:saved.current.revision});
+    if(acknowledged.state!=='presented')throw new Error('The runtime did not accept the saved preview presentation.');
+    association.sequence=acknowledged.sequence;association.navigation=acknowledged.navigation;
+    previewAccepted.current.add(tabId);flushRuntimePreviewNavigation(tabId);
+   }catch(error){
+    // prepare rejects revoked/replaced operations.  They were never accepted,
+    // so acknowledgement would race the runtime's cancellation state.
+    if(!prepared||previewCancelled.current.has(operationKey))return;
+    const detail={code:typeof error==='object'&&error&&'code' in error?String((error as {code:unknown}).code):'presentation_failed',message:error instanceof Error?error.message:String(error),retryable:typeof error==='object'&&error&&'retryable' in error?Boolean((error as {retryable:unknown}).retryable):false};
+    void request('preview.ack',{sessionId:presentation.sessionId!,attachmentId,requestId:presentation.requestId!,previewId:presentation.previewId!,documentId:presentation.documentId!,state:'failed',error:detail}).catch(()=>undefined);
+    if(live.current)fail(detail.message);
+   }
+  };
+  void acknowledge();
+ }),[session.id]);
  const previousInitial=useRef(initialLayout);
  useEffect(()=>{if(initialLayout&&initialLayout!==previousInitial.current){fileOpenGeneration.current++;save(initialLayout);setPreviewSessionId(session.id);}previousInitial.current=initialLayout;},[initialLayout]);
  const lastNavigation=useRef(navigationKey);
@@ -250,11 +367,13 @@ export function SessionWorkspace({session,data,theme,onBack,onSelect,onProject,o
   }
   save(activate(latestLayout.current,tab.paneId,tab.tab.id));setFocusTarget({paneId:tab.paneId,tabId:tab.tab.id,key:crypto.randomUUID()});
   // A freshly opened Chat registers its message box only after it connected: try for up to 10 s.
-  const until=Date.now()+10_000;
-  const attempt=()=>{
-   try{
-    if(context){if(!attachChatContext(receiver.id,context))throw new Error(zh?'上下文未能加入草稿。':'Context could not be added to the draft.');resolve();}
-    else{insertChatText(receiver.id,text);resolve(images?.length?attachChatImages(receiver.id,images):undefined);}
+   const until=Date.now()+10_000;
+   const attempt=()=>{
+    try{
+     const current=latestData.current.sessions.find(candidate=>candidate.id===sessionId);
+     if(!current||current.readOnly||!working(current)||current.mode!=='chat')throw new Error(zh?'该会话已结束或不可再接收审查意见。评论已保留。':'That session has ended or can no longer receive review comments. The comments were kept.');
+     if(context){if(!attachChatContext(current.id,context))throw new Error(zh?'上下文未能加入草稿。':'Context could not be added to the draft.');resolve();}
+     else{insertChatText(current.id,text);resolve(images?.length?attachChatImages(current.id,images):undefined);}
    }
    catch(error){
     const reason=String(error);
@@ -304,6 +423,31 @@ export function SessionWorkspace({session,data,theme,onBack,onSelect,onProject,o
   openFile:target=>void openScopedFile({...target,kind:previewKind(target.path)}).catch(fail),
   historyFocus,
  };
+ const closeRuntimePreview=(tabId:string)=>{
+  const association=previewAssociations.current.get(tabId);
+  if(!association)return;
+  const attachmentId=previewAttachments.current.get(association.sessionId);
+  if(!attachmentId){setIssue('The page closed, but its preview connection is no longer available.');return;}
+  void saving.current.then(()=>{
+   if(persistedLayout.current!==latestLayout.current)throw new Error('The page tab could not be saved as closed.');
+   return request('preview.close',{sessionId:association.sessionId,attachmentId,previewId:association.previewId});
+  }).then(()=>{previewAssociations.current.delete(tabId);setPreviewAssociationRevision(value=>value+1);}).catch(fail);
+ };
+ const observeRuntimePreview=(tabId:string,observation:{navigation:'pending'|'load_observed'|'failed';url?:string;title?:string;documentGeneration?:number})=>{
+  previewNavigation.current.set(tabId,observation);
+  flushRuntimePreviewNavigation(tabId);
+ };
+ const flushRuntimePreviewNavigation=(tabId:string)=>{
+  const association=previewAssociations.current.get(tabId),attachmentId=association&&previewAttachments.current.get(association.sessionId);
+  const observation=previewNavigation.current.get(tabId);
+  if(!association||!attachmentId||!observation||!previewAccepted.current.has(tabId))return;
+  previewNavigation.current.delete(tabId);
+  const sequence=association.sequence+1;
+  association.sequence=sequence;association.navigation=observation.navigation;setPreviewAssociationRevision(value=>value+1);
+  void request('preview.observe',{sessionId:association.sessionId,attachmentId,requestId:association.requestId,previewId:association.previewId,documentId:association.documentId,sequence,navigation:observation.navigation,...(observation.url?{url:observation.url}:{}),...(observation.title?{title:observation.title}:{}),...(observation.documentGeneration!==undefined?{documentGeneration:observation.documentGeneration}:{}),...(observation.navigation==='failed'?{error:{code:'iframe_navigation_failed',message:'The embedded page failed to navigate.',retryable:false}}:{})}).then(result=>{association.sequence=result.sequence;association.navigation=result.navigation;if(observation.documentGeneration!==undefined)association.documentGeneration=observation.documentGeneration;if(observation.url)association.observedUrl=observation.url;if(observation.title)association.observedTitle=observation.title;setPreviewAssociationRevision(value=>value+1);}).catch(fail);
+ };
+ const pageCommentProvenance=new Map([...previewAssociations.current.entries()].map(([tabId,association])=>{const owner=data.sessions.find(candidate=>candidate.id===association.sessionId);return [tabId,{previewId:association.previewId,sessionId:association.sessionId,sessionTitle:owner?.title,providerId:owner?.provider,requestId:association.requestId,documentId:association.documentId,tabId,workspaceId:association.workspaceId,...(association.documentGeneration!==undefined?{navigation:association.documentGeneration}:{}),sequence:association.sequence}];}));
+ const previewLabels=new Map([...previewAssociations.current.entries()].map(([tabId,association])=>[tabId,{title:association.title,observedTitle:association.observedTitle,sessionId:association.sessionId}]));
  const workspaceSessions=treeSessions.filter(candidate=>sessionIdsIn(layout).includes(candidate.id)||candidate.id===session.id);
  const focusedTab=focusTarget?workspaceTabs(layout).find(item=>item.tab.id===focusTarget.tabId)?.tab:undefined;
  const activeFilePath=focusedTab&&focusedTab.kind!=='session'&&focusedTab.kind!=='history'&&!focusedTab.ownerSessionId?focusedTab.path:undefined;
@@ -323,9 +467,11 @@ export function SessionWorkspace({session,data,theme,onBack,onSelect,onProject,o
  // Back goes to this session's branch home page (App.sessionHome); name it, since the label is just "Back".
  const home=project?(currentTree?.branch??git?.branch??project.name):undefined;
  const backTitle=home?(zh?`返回 ${home}`:`Back to ${home}`):(zh?'返回所有终端':'Back to all terminals');
- return <section className={`ws session-screen runtime-workspace${fullscreen?' terminal-fullscreen':''}`} aria-label={zh?'终端工作区':'Terminal workspace'}>
+ return <section className={`ws session-screen runtime-workspace${fullscreen?' terminal-fullscreen':''}`} data-navigation-open={navigationOpen||undefined} aria-label={zh?'终端工作区':'Terminal workspace'}>
+  {navigationOpen&&<button type="button" className="runtime-nav-scrim" aria-label={zh?'关闭导航':'Close navigation'} onClick={()=>closeNavigation()}/>}
   <header className="ws-top">
    <button className="ws-back" onClick={onBack} title={backTitle} aria-label={backTitle}><Icon name="back"/><span>{zh?'返回':'Back'}</span></button>
+   <button ref={navigationToggle} type="button" className="runtime-nav-toggle icon-btn" aria-label={zh?'打开导航':'Open navigation'} aria-expanded={navigationOpen} aria-controls="runtime-navigation" onClick={()=>navigationOpen?closeNavigation(false):setNavigationOpen(true)}><Icon name="panel"/></button>
    {project&&<button className="ws-chip" onClick={()=>onProject(project.id)}><span className="dot primary"/>{project.name}</button>}
    {project&&<button className="ws-chip branch" title={displayPath(path)} onClick={()=>onProject(project.id,path)}><Icon name="branch"/>{currentTree?.branch??git?.branch??displayPath(path)?.split(/[\\/]/).at(-1)}</button>}
    {project&&path&&<QuickLaunchMenu key={`${project.id}:${path}`} projectId={project.id} root={path} data={data} onOpenSession={onSelect} onOpenPreview={paneWorkbench.openWeb}/>}
@@ -350,7 +496,7 @@ export function SessionWorkspace({session,data,theme,onBack,onSelect,onProject,o
       onActiveSession={id=>{setPreviewSessionId(id);onActiveSession?.(id);}}
       onInteraction={()=>{fileOpenGeneration.current++;}}
       onFileReference={(id,reference)=>void openReference(id,reference)} workbench={paneWorkbench}
-      focusTarget={focusTarget} fileReveal={fileReveal} onOpenPath={openPaneFile}
+      focusTarget={focusTarget} fileReveal={fileReveal} onOpenPath={openPaneFile} onWebClosed={closeRuntimePreview} onWebNavigation={observeRuntimePreview} previewProvenance={pageCommentProvenance} previewLabels={previewLabels}
      /></ContextHost.Provider><ContextSendDialogHost/>
     </div>
    </div>{inspector&&<aside className="inspector" aria-label={zh?'会话详情面板':'Session details'}><div className="ins-head">{zh?'会话详情':'Session details'}</div><div className="ins-scroll">

@@ -319,6 +319,15 @@ button.wb-change-row { width:100%; border:0; background:transparent; color:var(-
 .wb-page-comment-row span { display:flex; min-width:0; flex-direction:column; }
 .wb-page-comment-row b, .wb-page-comment-row small { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .wb-page-comment-row small { color:var(--muted); font:10px var(--mono); }
+.dialog.sheet.sheet-sm.page-comment-transfer-dialog { width:min(560px,calc(100vw - 32px)); height:auto; min-height:0; max-height:calc(100dvh - 32px); }
+.page-comment-transfer-dialog .dlg-body { flex:0 1 auto; min-height:0; padding:16px 20px; overflow-y:auto; }
+.page-comment-transfer-dialog .dlg-foot { flex:none; padding:12px 20px 16px; }
+.page-comment-transfer-details { display:grid; gap:10px; margin:0; }
+.page-comment-transfer-details > div { display:grid; grid-template-columns:minmax(106px,auto) minmax(0,1fr); gap:10px; align-items:start; }
+.page-comment-transfer-details dt { color:var(--muted); font-weight:600; }
+.page-comment-transfer-details dd { display:flex; flex-direction:column; gap:4px; min-width:0; margin:0; overflow-wrap:anywhere; }
+.page-comment-transfer-details dd span { min-width:0; overflow-wrap:anywhere; }
+@media (max-width:520px) { .page-comment-transfer-details > div { grid-template-columns:1fr; gap:2px; } }
 .preview-address { display:flex; align-items:center; gap:6px; flex-wrap:wrap; }
 .preview-address .wb-page-comment-hint { flex-basis:100%; }
 .wb-quick-open .cmd-row b { font-weight:500; }

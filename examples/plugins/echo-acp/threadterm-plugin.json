@@ -7,6 +7,15 @@
   "description": "A tiny ACP agent that echoes your messages.",
   "homepage": "https://example.invalid/echo",
   "contributes": {
+    "browserBindings": [{
+      "id": "echo-preview",
+      "bindingVersion": 1,
+      "providerId": "echo",
+      "requires": { "threadterm.preview": 1 },
+      "transport": "mcp-stdio",
+      "tools": ["preview_present", "preview_status"],
+      "workflow": "threadterm.preview.after-server-ready.v1"
+    }],
     "agents": [
       {
         "id": "echo",

@@ -250,3 +250,19 @@ test('a permission callback arriving after stop is denied without publishing a c
   assert.equal(events.filter(value => value.ev === 'session.request').length, 0);
   assert.equal(session.pending.size, 0);
 });
+
+test('a preview-only ThreadTerm server auto-approves only the two preview tools', async () => {
+  const { session, events } = harness();
+  await session.start({
+    cwd: 'C:/',
+    sessionId: null,
+    mcpServers: { threadterm: { type: 'stdio', command: 'threadterm-v3-mcp', args: [], env: { THREADTERM_PREVIEW_TOKEN: 'scoped-preview' } } },
+  });
+  assert.equal((await session.requestPermission('mcp__threadterm__preview_present', { url: 'http://127.0.0.1:3000' })).behavior, 'allow');
+  const delegation = session.requestPermission('mcp__threadterm__delegate_start', {});
+  const request = events.find(value => value.ev === 'session.request');
+  assert.ok(request, 'a delegation tool in a browser-only profile still asks the user');
+  session.decide(request.requestId, 'deny');
+  assert.equal((await delegation).behavior, 'deny');
+  await session.stop();
+});

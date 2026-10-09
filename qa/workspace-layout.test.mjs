@@ -1,10 +1,14 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { addPane, addTabToPane, closePane, paneCount, paneIdsIn, reconcileSessionLayout, resizeSplit, sessionIdsIn, sessionOnlyLayout, splitPane } from '../renderer/src/workspaceLayout.ts';
+import { addPane, addTabToPane, closePane, paneCount, paneIdsIn, placeWebTabBesideSession, reconcileSessionLayout, resizeSplit, sessionIdsIn, sessionOnlyLayout, splitPane } from '../renderer/src/workspaceLayout.ts';
+import { paneGeometry } from '../renderer/src/paneGeometry.ts';
 
 const tab = id => ({ id: `tab-${id}`, kind: 'session', sessionId: id });
 const pane = id => ({ kind: 'pane', id, tabs: [tab(id)], activeTabId: `tab-${id}` });
 const pair = () => ({ kind: 'split', id: 'outer', direction: 'horizontal', ratio: .65, first: pane('left'), second: pane('right') });
+const paneById = (layout, id) => layout.kind === 'pane'
+  ? (layout.id === id ? layout : undefined)
+  : paneById(layout.first, id) ?? paneById(layout.second, id);
 
 test('splitting the left leaf preserves the outer ratio and the right pane', () => {
   const original = pair();
@@ -78,6 +82,59 @@ test('addTabToPane appends the tab to the addressed leaf and activates it', () =
   assert.equal(addTabToPane(next, 'new-pane', tab('third')), next, 'same tab id is not duplicated');
 });
 
+test('runtime web presentation reuses an existing browser leaf without URL deduplication', () => {
+  const layout = {kind:'split',id:'root',direction:'horizontal',ratio:.5,
+    first:{kind:'pane',id:'chat',tabs:[tab('owner')],activeTabId:'tab-owner'},
+    second:{kind:'pane',id:'browser',tabs:[{id:'manual',kind:'web',url:'http://127.0.0.1:3000'}],activeTabId:'manual'}};
+  const page = {id:'runtime-page',kind:'web',url:'http://127.0.0.1:3000'};
+  const result = placeWebTabBesideSession(layout, 'owner', page);
+  assert.equal(result.status, 'placed');
+  assert.equal(result.paneId, 'browser');
+  const browser = paneById(result.layout, 'browser');
+  assert.deepEqual(browser.tabs.map(item => item.id), ['manual', 'runtime-page']);
+  assert.equal(browser.activeTabId, 'runtime-page');
+  assert.deepEqual(paneById(result.layout, 'chat'), layout.first, 'chat tab state stays stable while the sibling browser leaf updates');
+});
+
+test('a web tab sharing its owner Chat is not reused as a browser surface', () => {
+  const layout={kind:'pane',id:'mixed',tabs:[tab('owner'),{id:'manual',kind:'web',url:'https://example.test'}],activeTabId:'manual'};
+  const result=placeWebTabBesideSession(layout,'owner',{id:'runtime',kind:'web',url:'https://example.test'});
+  assert.equal(result.status,'placed');
+  assert.equal(paneCount(result.layout),2);
+  assert.deepEqual(paneById(result.layout,'mixed').tabs.map(item=>item.id),['tab-owner','manual']);
+  assert.deepEqual(paneById(result.layout,result.paneId).tabs.map(item=>item.id),['runtime']);
+});
+
+test('runtime web presentation creates a sibling leaf or refuses cleanly at the pane cap', () => {
+  const layout = {kind:'pane',id:'chat',tabs:[tab('owner')],activeTabId:'owner'};
+  const page = {id:'runtime-page',kind:'web',url:'http://127.0.0.1:3000'};
+  const result = placeWebTabBesideSession(layout, 'owner', page);
+  assert.equal(result.status, 'placed');
+  assert.equal(paneCount(result.layout), 2);
+  assert.equal(paneById(result.layout, 'chat'), layout, 'the chat leaf stays intact after splitting');
+  assert.equal(paneById(result.layout, result.paneId).activeTabId, 'runtime-page');
+  const capped = splitPane(splitPane(splitPane(result.layout, 'chat', 'vertical', 'third'), 'third', 'vertical', 'fourth'), 'fourth', 'vertical', 'ignored');
+  const refused = placeWebTabBesideSession(capped, 'owner', {id:'other-page',kind:'web',url:'http://127.0.0.1:3001'});
+  assert.equal(refused.status, 'placed', 'an existing browser leaf remains reusable at the pane cap');
+  const noBrowser = splitPane(splitPane(splitPane(layout, 'chat', 'vertical', 'two'), 'two', 'vertical', 'three'), 'three', 'vertical', 'four');
+  const unavailable = placeWebTabBesideSession(noBrowser, 'owner', page);
+  assert.equal(unavailable.status, 'layout_unavailable');
+  assert.equal(unavailable.layout, noBrowser);
+});
+
+test('compact pane geometry stacks horizontal leaves without changing the saved split tree', () => {
+  const layout={kind:'split',id:'root',direction:'horizontal',ratio:.4,
+    first:{kind:'pane',id:'chat',tabs:[tab('owner')],activeTabId:'tab-owner'},
+    second:{kind:'pane',id:'browser',tabs:[{id:'page',kind:'web',url:'https://example.test/app'}],activeTabId:'page'}};
+  const before=structuredClone(layout),wide=paneGeometry(layout),compact=paneGeometry(layout,{stackHorizontal:true});
+  assert.deepEqual(layout,before,'responsive geometry never mutates the saved layout');
+  assert.equal(layout.direction,'horizontal','the persisted split direction remains horizontal');
+  assert.deepEqual(compact.panes.map(item=>item.node.id),['chat','browser'],'the same keyed leaf nodes are retained');
+  assert.equal(wide.panes[0].rect.width.fraction,.4);
+  assert.equal(compact.panes[0].rect.width.fraction,1,'each compact leaf receives the full pane width');
+  assert.equal(compact.panes[1].rect.top.fraction,.4,'the second leaf is presented below the first using the saved ratio');
+});
+
 test('paneIdsIn and sessionIdsIn collect across the whole tree', () => {
   const layout = addTabToPane(splitPane(pair(), 'left', 'vertical', 'new-pane'), 'new-pane', tab('third'));
   assert.deepEqual(paneIdsIn(layout), ['left', 'new-pane', 'right']);
@@ -128,4 +185,16 @@ test('a session opens alone: non-session tabs drop, emptied panes collapse, unsa
   const only = sessionOnlyLayout({ kind: 'pane', id: 'solo', tabs: [history], activeTabId: 'h' }, () => false);
   assert.deepEqual(only, { kind: 'pane', id: 'solo', tabs: [], activeTabId: null });
   assert.deepEqual(sessionIdsIn(reconcileSessionLayout(only, new Set(['b']), 'b')), ['b']);
+});
+
+test('session-only projection retains independent web tabs without mutating their saved leaf', () => {
+  const web={id:'saved-browser-page',kind:'web',url:'https://example.test/manual'};
+  const history={id:'saved-history',kind:'history',projectId:'p'};
+  const file={id:'saved-file',kind:'file',projectId:'p',path:'notes.md'};
+  const saved={kind:'pane',id:'restored-leaf',tabs:[tab('owner'),web,history,file],activeTabId:'saved-history'};
+  const before=structuredClone(saved),restored=sessionOnlyLayout(saved,item=>item.kind==='web');
+  assert.equal(restored.id,'restored-leaf','browser tab stays in its saved leaf for stable surface identity');
+  assert.deepEqual(restored.tabs,[tab('owner'),web]);
+  assert.equal(restored.activeTabId,'tab-owner');
+  assert.deepEqual(saved,before,'projection never erases a saved manual or runtime page');
 });
