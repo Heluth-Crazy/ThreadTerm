@@ -2727,6 +2727,8 @@ mod tests {
             created_at: "2026-09-10T00:00:00Z".into(),
             turn_id: None,
             elapsed_ms: None,
+            turn_status: None,
+            turn_origin: None,
         }];
         let (session, _) = db
             .import_history_session(crate::db::ImportHistorySession {

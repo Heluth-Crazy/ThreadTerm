@@ -32,6 +32,7 @@ import type { FileCommentsHost } from "../fileCommentsHost";
 import type { PageCommentProvenance } from '../reviewComments';
 import { absolutePath, type WorkbenchActions } from '../workbench/types';
 import { sameCanonicalScope } from '../projectScope';
+import { presentedSession } from '../resumedSession';
 import { isDocumentPinned, sessionDocumentError } from '../sessionDocuments';
 import { fileTabMenuItems } from '../contextMenuSurfaceItems';
 import { showContextMenu } from './ContextMenu';
@@ -82,7 +83,20 @@ export function PaneWorkspace({ layout, sessions, onChange, theme, terminalCompa
   const [selectedPaneId, setSelectedPaneId] = useState<string|undefined>(focusTarget?.paneId);
   const [paneHost,setPaneHost]=useState<HTMLDivElement|null>(null),[stackHorizontal,setStackHorizontal]=useState(false);
   const [fullscreenPaneId, setFullscreenPaneId] = useState<string>();
-  const [resumedSessionIds, setResumedSessionIds] = useState<Set<string>>(() => new Set());
+  const [resumedSessions, setResumedSessions] = useState<Map<string,Session>>(() => new Map());
+  const viewSessions = resumedSessions.size ? sessions.map(session => presentedSession(session, resumedSessions.get(session.id))) : sessions;
+  useEffect(() => {
+    setResumedSessions(current => {
+      let next: Map<string,Session> | undefined;
+      for (const [id, resumed] of current) {
+        const canonical = sessions.find(session => session.id === id);
+        if (!canonical || presentedSession(canonical,resumed) === canonical) {
+          next ??= new Map(current); next.delete(id);
+        }
+      }
+      return next ?? current;
+    });
+  }, [sessions]);
   const [primaryHost,setPrimaryHost]=useState<HTMLDivElement|null>(null),[menuHost,setMenuHost]=useState<HTMLDivElement|null>(null);
   const [menuAnchor,setMenuAnchor]=useState<HTMLElement>(),[closing,setClosing]=useState(false),[closeIssue,setCloseIssue]=useState<string>();
   const closingRef=useRef(false),latest=useRef(layout);latest.current=layout;
@@ -174,7 +188,7 @@ export function PaneWorkspace({ layout, sessions, onChange, theme, terminalCompa
         node={node}
         visibleNode={visible?.node}
         style={fullscreenPaneId === node.id || !visible ? undefined : paneRectStyle(visible.rect)}
-        sessions={sessions}
+        sessions={viewSessions}
         theme={theme}
         terminalCompatibility={terminalCompatibility}
         onChange={commit}
@@ -194,8 +208,7 @@ export function PaneWorkspace({ layout, sessions, onChange, theme, terminalCompa
         onCloseFile={target=>void closeTabs(target,'current',true)}
         onCloseTab={target=>void closeTabs(target,'current')}
         onCloseTabs={(target,mode)=>void closeTabs(target,mode,false,'web')}
-        resumedSessionIds={resumedSessionIds}
-        onResumed={(sessionId) => setResumedSessionIds(current => new Set(current).add(sessionId))}
+        onResumed={(session) => { setResumedSessions(current => new Map(current).set(session.id,session)); onSessionChanged?.(); }}
         primaryHost={primaryHost} menuHost={menuHost} onFileReference={onFileReference} fileReveal={fileReveal} onOpenPath={onOpenPath} onWebNavigation={onWebNavigation} previewProvenance={previewProvenance} previewLabels={previewLabels} workbench={workbench}
       />
     );});
@@ -306,7 +319,6 @@ function Pane({
   onSessionChanged,
   onOpenSession,
   providers,
-  resumedSessionIds,
   onResumed,
   closing,onActivateTab,onCloseFile,onCloseTab,onCloseTabs,
   primaryHost,menuHost,onFileReference,fileReveal,onOpenPath,onWebNavigation,previewProvenance,previewLabels,workbench,
@@ -329,8 +341,7 @@ function Pane({
   onSessionChanged?: () => void;
   onOpenSession?: (sessionId: string) => void;
   providers: ProviderCapability[];
-  resumedSessionIds: Set<string>;
-  onResumed: (sessionId: string) => void;
+  onResumed: (session: Session) => void;
   closing:boolean;
   onActivateTab:(target:WorkspaceTabTarget)=>void;
   onCloseFile:(target:WorkspaceTabTarget)=>void;
@@ -384,8 +395,8 @@ function Pane({
       onDragLeave:(event:ReactDragEvent<HTMLDivElement>)=>{if(!event.currentTarget.contains(event.relatedTarget as Node|null))setFileDropTarget(undefined);},
       onDrop:(event:ReactDragEvent<HTMLDivElement>)=>{if(!event.dataTransfer.types.includes(FILE_DRAG_TYPE))return;event.preventDefault();setFileDropTarget(undefined);const file=readFileDrag(event.dataTransfer.getData(FILE_DRAG_TYPE));if(file)workbench.sendToAgent?.({...file,sessionId:itemSession.id});},
      }:{})}>
-    {itemSession?.readOnly && !resumedSessionIds.has(itemSession.id) ? (
-    <ImportedHistoryView session={itemSession} onResumed={() => onResumed(itemSession.id)} />
+    {itemSession?.readOnly ? (
+    <ImportedHistoryView session={itemSession} onResumed={onResumed} />
   ) : itemSession ? (
     itemSession.mode === "terminal" ? (
       <TerminalSurface sessionId={itemSession.id} provider={itemSession.provider} session={itemSession} theme={theme} terminalCompatibility={terminalCompatibility} resumeCapture={providers.find((candidate) => candidate.id === itemSession.provider)?.terminalResumeCapture} onChanged={onSessionChanged} onOpenSession={onOpenSession} />

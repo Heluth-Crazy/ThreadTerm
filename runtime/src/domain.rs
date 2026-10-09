@@ -119,6 +119,33 @@ pub struct ChatItem {
     // measurement (Codex, Grok, and Kimi ACP) set it.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub elapsed_ms: Option<u64>,
+    /// Provider-confirmed native turn outcome. This is deliberately separate
+    /// from `elapsed_ms`: a completed turn may have no measured duration.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub turn_status: Option<NativeTurnStatus>,
+    /// Imported native history is presentation-only even after the session is
+    /// resumed. Live projection leaves this absent.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub turn_origin: Option<ChatTurnOrigin>,
+}
+
+/// The public native-history turn states supported by the Chat presentation.
+/// Missing status stays unknown; callers must not infer completion from age,
+/// timestamps, or the presence of a transcript item.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum NativeTurnStatus {
+    Unknown,
+    Completed,
+    Interrupted,
+    Failed,
+    InProgress,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum ChatTurnOrigin {
+    History,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

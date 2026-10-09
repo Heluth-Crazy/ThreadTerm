@@ -1088,7 +1088,7 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession }
     const awaitingApproval = active && session.status === 'waiting' && group.items.some(item => item.parts.some(part => part.type === 'approval' && part.status === 'pending'));
     const awaitingQuestion = awaitingApproval && group.items.some(item => item.parts.some(part => part.type === 'approval' && part.status === 'pending' && asRecord(part.data).interaction === 'question'));
     const drawer = (entries: ToolActivityEntry[], id = `${group.id}-tools`) => <ToolActivity key={id} entries={entries} active={active} awaitingApproval={awaitingApproval} awaitingQuestion={awaitingQuestion} provider={session.provider} copy={copy} openFile={openFile} />;
-    if (group.elapsedMs == null) {
+    if (!group.settled) {
       // Subagents are chronology boundaries, while intervening parent text keeps
       // the existing single-drawer policy. Preserve the first drawer's turn key.
       const segments: ChatItem[][] = [[]];
@@ -1097,17 +1097,26 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession }
         if (item.parts.some(isSubagentPart)) segments.push([]);
       }
       let drawerIndex = 0;
-      return segments.flatMap(rows => groupToolActivity(rows)).map(entry => entry.type === 'tools'
+      const visible = segments.flatMap(rows => groupToolActivity(rows)).map(entry => entry.type === 'tools'
         ? drawer(entry.tools, drawerIndex++ ? `${group.id}-tools-${drawerIndex}` : `${group.id}-tools`)
         : <Fragment key={entry.item.parts.some(isSubagentPart) ? `${entry.item.id}-subagent` : entry.id}>{renderItem(entry.item)}</Fragment>);
+      if (group.turnStatus && !group.items.some(item => item.parts.some(shouldRenderPart))) {
+        visible.push(<p className="chat-duration" key={`${group.id}-status`}>{group.turnStatus === 'inProgress'
+          ? copy('Saved turn: in progress', '保存的回合：进行中') : copy('Saved turn: status unknown', '保存的回合：状态未知')}</p>);
+      }
+      return visible;
     }
     const tools = toolEntriesForItems(group.items);
     const { activity, subagents, response } = completedTurnPresentation(group.activity, group.response);
+    const outcome = group.turnStatus === 'failed' ? copy('Turn failed', '回合失败') : group.turnStatus === 'interrupted' ? copy('Turn interrupted', '回合已中断') : undefined;
+    const summary = group.elapsedMs == null ? (activity.length ? copy('Activity','过程') : outcome ?? copy('Completed','已完成')) : formatChatDuration(group.elapsedMs, zh);
     return [
+      outcome && (activity.length || group.elapsedMs != null) && !group.items.some(item => item.parts.some(part => part.type === 'error'))
+        ? <p className="chat-duration" key={`${group.id}-status`}>{outcome}</p> : null,
       !group.response.some(item => usageCards.has(item.id)) && (activity.length ? <details className="codex-work" key={`${group.id}-work`}>
-        <summary><span className="codex-work-label">{formatChatDuration(group.elapsedMs, zh)}<Icon name="chevR" /></span></summary>
+        <summary><span className="codex-work-label">{summary}<Icon name="chevR" /></span></summary>
         <div className="codex-work-body">{activity.length ? activity.map(item => renderItem(item)) : <p className="dim">{copy('No additional activity recorded.', '没有记录额外的过程。')}</p>}</div>
-      </details> : <p className="chat-duration" key={`${group.id}-work`}>{formatChatDuration(group.elapsedMs, zh)}</p>),
+      </details> : <p className="chat-duration" key={`${group.id}-work`}>{summary}</p>),
       tools.length ? drawer(tools) : null,
       ...subagents.map(item => <Fragment key={`${item.id}-subagent`}>{renderItem(item)}</Fragment>),
       ...response.map(item => <Fragment key={item.parts.some(isSubagentPart) ? `${item.id}-subagent` : `${item.id}-response`}>{renderItem(item)}</Fragment>),

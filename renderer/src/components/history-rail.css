@@ -74,8 +74,8 @@
 .history-scan .tt-select { flex:none; width:68px; }
 .history-scan .tt-select-trigger { min-height:30px; font-size:11px; }
 .imported-history-view { display:flex; flex:1; flex-direction:column; height:100%; min-height:0; min-width:0; gap:10px; padding:14px; overflow:hidden; box-sizing:border-box; }
-.imported-history-view > header { display:flex; flex:none; align-items:start; justify-content:space-between; gap:10px; width:min(100%,780px); margin:0 auto; }
-.imported-history-view header > div { display:grid; gap:3px; min-width:0; }
+.imported-history-view > header { display:flex; flex-wrap:wrap; flex:none; align-items:start; justify-content:space-between; gap:10px; width:min(100%,780px); margin:0 auto; }
+.imported-history-view header > div { display:grid; flex:1 1 220px; gap:3px; min-width:0; }
 .imported-history-view header strong { overflow-wrap:anywhere; }
 .imported-history-view header small { color:var(--muted); font-size:12px; }
 .imported-history-view header > button { flex:none; }

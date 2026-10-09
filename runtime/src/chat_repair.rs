@@ -1,4 +1,4 @@
-use crate::domain::ChatItem;
+use crate::domain::{ChatItem, ChatTurnOrigin};
 use anyhow::{anyhow, bail, Result};
 use chrono::{DateTime, Duration, Utc};
 use rusqlite::{params, OptionalExtension, Transaction};
@@ -7,7 +7,8 @@ use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
 
 const METHOD: &str = "chat.repair";
-const MAX_HISTORY_BYTES: usize = 8 * 1024 * 1024;
+pub(crate) const MAX_HISTORY_BYTES: usize = 8 * 1024 * 1024;
+pub(crate) const HISTORY_FRAME_HEADROOM_BYTES: usize = 64 * 1024;
 const EXPIRED_EN: &str = "This request expired when history was repaired.";
 const EXPIRED_ZH_CN: &str = "此请求已在历史修复时过期。";
 
@@ -163,7 +164,18 @@ pub(crate) fn availability(
     {
         return Ok(unavailable("unknown_activity", degraded, diagnostic));
     }
-    if !degraded && !matches!(session.status.as_str(), "error" | "interrupted") {
+    // Imports created before turn metadata existed are read-only and cannot
+    // repair themselves on startup. Offer the existing fenced rebuild only on
+    // explicit request, and only when the stored transcript actually lacks
+    // every persisted turn identity *and* history origin. A missing
+    // duration/status or native turn ID alone is not evidence of degradation:
+    // providers may omit either legitimately. Newly imported and rebuilt
+    // records carry the durable origin even when native turn IDs are absent.
+    let metadata_missing = session.read_only && history_metadata_missing(tx, session_id)?;
+    if !degraded
+        && !metadata_missing
+        && !matches!(session.status.as_str(), "error" | "interrupted")
+    {
         return Ok(unavailable("healthy", false, None));
     }
     if session.native_id.as_deref().is_none_or(str::is_empty) {
@@ -175,9 +187,13 @@ pub(crate) fn availability(
     Ok(ChatRepairAvailability {
         offered: true,
         mode: Some("rebuild"),
-        reason: None,
+        reason: metadata_missing.then_some("history_metadata_missing"),
         degraded,
-        diagnostic,
+        diagnostic: if metadata_missing {
+            Some("history_metadata_missing".to_owned())
+        } else {
+            diagnostic
+        },
         ingress_failed: None,
     })
 }
@@ -257,14 +273,16 @@ pub(crate) fn prepare(capture: &RepairCapture, history: &[ChatItem]) -> Result<R
         if source.id.is_empty() || source.id == "unknown" || !ids.insert(source.id.as_str()) {
             bail!("invalid_history_transcript: missing, fallback or duplicate item id");
         }
+        if source.turn_id.as_deref().is_some_and(str::is_empty) {
+            bail!("invalid_history_transcript: empty turn id");
+        }
         if !matches!(
             source.role.as_str(),
             "user" | "assistant" | "tool" | "system"
         ) {
             bail!("invalid_history_transcript: unsupported item role");
         }
-        let mut item = source.clone();
-        item.id = format!("{}:history:{}", capture.session_id, source.id);
+        let mut item = crate::db::scoped_history_item(&capture.session_id, source);
         for (part_index, part) in item.parts.iter_mut().enumerate() {
             validate_part(part)?;
             let approval_id = part
@@ -292,7 +310,7 @@ pub(crate) fn prepare(capture: &RepairCapture, history: &[ChatItem]) -> Result<R
         }
     }))?
     .len();
-    if output_size > MAX_HISTORY_BYTES - 64 * 1024 {
+    if output_size > MAX_HISTORY_BYTES - HISTORY_FRAME_HEADROOM_BYTES {
         bail!("invalid_history_transcript: normalized snapshot exceeds frame limit");
     }
     Ok(RepairPlan {
@@ -572,6 +590,30 @@ fn raw_transcript(tx: &Transaction<'_>, session_id: &str) -> Result<Vec<RawChatR
     Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
 }
 
+fn history_metadata_missing(tx: &Transaction<'_>, session_id: &str) -> Result<bool> {
+    let mut statement = tx.prepare(
+        "SELECT turn_id,data FROM chat_items WHERE session_id=? ORDER BY created_at,id",
+    )?;
+    let rows = statement.query_map([session_id], |row| {
+        Ok((row.get::<_, Option<String>>(0)?, row.get::<_, String>(1)?))
+    })?;
+    let mut found_item = false;
+    for row in rows {
+        let (column_turn_id, data) = row?;
+        found_item = true;
+        let parsed = serde_json::from_str::<ChatItem>(&data).ok();
+        if column_turn_id.is_some()
+            || parsed.as_ref().and_then(|item| item.turn_id.as_ref()).is_some()
+            || parsed
+                .as_ref()
+                .is_some_and(|item| item.turn_origin == Some(ChatTurnOrigin::History))
+        {
+            return Ok(false);
+        }
+    }
+    Ok(found_item)
+}
+
 fn integrity_marker(tx: &Transaction<'_>, session_id: &str) -> Result<Option<String>> {
     Ok(tx
         .query_row(
@@ -600,7 +642,7 @@ fn native_owners(
     Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
 }
 
-fn validate_part(part: &Value) -> Result<()> {
+pub(crate) fn validate_part(part: &Value) -> Result<()> {
     let Some(object) = part.as_object() else {
         bail!("invalid_history_transcript: chat part must be an object");
     };
@@ -862,6 +904,8 @@ mod tests {
             created_at: "2026-01-01T00:00:00+00:00".to_owned(),
             turn_id: None,
             elapsed_ms: None,
+            turn_status: None,
+            turn_origin: None,
         }
     }
 
@@ -884,6 +928,8 @@ mod tests {
             created_at: "2026-01-01T00:00:01+00:00".to_owned(),
             turn_id: Some("old-turn".to_owned()),
             elapsed_ms: None,
+            turn_status: None,
+            turn_origin: None,
         }
     }
 
@@ -1013,6 +1059,113 @@ mod tests {
     }
 
     #[test]
+    fn legacy_read_only_history_offers_only_explicit_metadata_rebuild() {
+        let legacy = Fixture::new();
+        legacy.insert_item(&text_item("legacy", "assistant", "older import"));
+        let offered = legacy
+            .db
+            .transaction(|tx| {
+                tx.execute(
+                    "UPDATE sessions SET status='idle',read_only=1 WHERE id=?",
+                    [&legacy.session],
+                )?;
+                tx.execute(
+                    "DELETE FROM metadata WHERE key=?",
+                    [format!("chat.integrity:{}", legacy.session)],
+                )?;
+                availability(tx, &legacy.session, &legacy.worker, true)
+            })
+            .unwrap();
+        assert!(offered.offered);
+        assert!(!offered.degraded);
+        assert_eq!(offered.reason, Some("history_metadata_missing"));
+        assert_eq!(offered.diagnostic.as_deref(), Some("history_metadata_missing"));
+
+        let current = Fixture::new();
+        let mut item = text_item("current", "assistant", "new import");
+        item.turn_origin = Some(ChatTurnOrigin::History);
+        current.insert_item(&item);
+        let unavailable = current
+            .db
+            .transaction(|tx| {
+                tx.execute(
+                    "UPDATE sessions SET status='idle',read_only=1 WHERE id=?",
+                    [&current.session],
+                )?;
+                tx.execute(
+                    "DELETE FROM metadata WHERE key=?",
+                    [format!("chat.integrity:{}", current.session)],
+                )?;
+                availability(tx, &current.session, &current.worker, true)
+            })
+            .unwrap();
+        assert!(!unavailable.offered);
+        assert_eq!(unavailable.reason, Some("healthy"));
+
+        let empty = Fixture::new();
+        let empty_gate = empty
+            .db
+            .transaction(|tx| {
+                tx.execute(
+                    "UPDATE sessions SET status='idle',read_only=1 WHERE id=?",
+                    [&empty.session],
+                )?;
+                tx.execute(
+                    "DELETE FROM metadata WHERE key=?",
+                    [format!("chat.integrity:{}", empty.session)],
+                )?;
+                availability(tx, &empty.session, &empty.worker, true)
+            })
+            .unwrap();
+        assert!(!empty_gate.offered);
+        assert_eq!(empty_gate.reason, Some("healthy"));
+    }
+
+    #[test]
+    fn prepare_scopes_repaired_native_turn_ids() {
+        let fixture = Fixture::new();
+        let mut source = text_item("native-item", "assistant", "repaired");
+        source.turn_id = Some("provider-turn".to_owned());
+        let capture = fixture.capture();
+        let plan = prepare(&capture, &[source]).unwrap();
+        let expected_turn = format!("{}:history:provider-turn", fixture.session);
+        assert_eq!(
+            plan.items[0].turn_id.as_deref(),
+            Some(expected_turn.as_str())
+        );
+        assert_eq!(plan.items[0].turn_origin, Some(ChatTurnOrigin::History));
+        fixture.bind("scope-repair");
+        fixture.commit(&capture, &plan, "scope-repair").unwrap();
+        let stored: (Option<String>, String) = fixture
+            .db
+            .transaction(|tx| {
+                tx.query_row(
+                    "SELECT turn_id,data FROM chat_items WHERE session_id=?",
+                    [&fixture.session],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .map_err(Into::into)
+            })
+            .unwrap();
+        let stored_item: ChatItem = serde_json::from_str(&stored.1).unwrap();
+        assert_eq!(stored.0.as_deref(), Some(expected_turn.as_str()));
+        assert_eq!(stored_item.turn_id.as_deref(), Some(expected_turn.as_str()));
+        fixture.insert_item(&ChatItem {
+            id: "later-live-item".into(),
+            role: "assistant".into(),
+            parts: vec![json!({"type":"text","text":"live"})],
+            created_at: Utc::now().to_rfc3339(),
+            turn_id: Some("provider-turn".into()),
+            elapsed_ms: None,
+            turn_status: None,
+            turn_origin: None,
+        });
+        let rows = fixture.db.chat_items(&fixture.session).unwrap();
+        assert!(rows.iter().any(|item| item.turn_id.as_deref() == Some("provider-turn") && item.turn_origin.is_none()));
+        assert!(rows.iter().any(|item| item.turn_id.as_deref() == Some(expected_turn.as_str()) && item.turn_origin == Some(ChatTurnOrigin::History)));
+    }
+
+    #[test]
     fn rebuild_is_atomic_ordered_idempotent_and_leaves_adjacent_state_untouched() {
         let fixture = Fixture::new();
         fixture.insert_item(&text_item("local-user", "user", "same"));
@@ -1106,6 +1259,7 @@ mod tests {
         );
         assert!(rows[0].created_at < rows[1].created_at);
         let repaired_approval: ChatItem = serde_json::from_str(&rows[1].data).unwrap();
+        assert_eq!(repaired_approval.turn_origin, Some(ChatTurnOrigin::History));
         let part = &repaired_approval.parts[0];
         assert_eq!(part["status"], "expired");
         assert_eq!(part["data"]["submittable"], false);
@@ -1316,7 +1470,7 @@ mod tests {
 
         let mut nearly_full = text_item("native", "assistant", "");
         nearly_full.parts[0]["text"] =
-            json!("x".repeat(MAX_HISTORY_BYTES - 64 * 1024 - 256));
+            json!("x".repeat(MAX_HISTORY_BYTES - HISTORY_FRAME_HEADROOM_BYTES - 256));
         let raw_size = serde_json::to_vec(&[nearly_full.clone()]).unwrap().len();
         assert!(raw_size < MAX_HISTORY_BYTES, "fixture must pass the raw input bound");
         assert!(
@@ -1386,6 +1540,8 @@ mod tests {
                 created_at: "2026-01-01T00:00:01+00:00".to_owned(),
                 turn_id: None,
                 elapsed_ms: None,
+                turn_status: None,
+                turn_origin: None,
             },
             text_item(
                 &format!("{}:history:stale-prefix", fixture.session),

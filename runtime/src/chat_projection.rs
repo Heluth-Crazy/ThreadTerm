@@ -181,7 +181,7 @@ pub fn record(
   let key=if category=="approval"{approval_id.unwrap_or(turn_key)}else{native_item.unwrap_or(turn_key)};
   let id=format!("{session_id}:{category}:{key}");
   let previous:Option<String>=tx.query_row("SELECT data FROM chat_items WHERE id=?",[&id],|r|r.get(0)).optional()?;
-  let mut item=previous.and_then(|s|serde_json::from_str::<ChatItem>(&s).ok()).unwrap_or(ChatItem{id:id.clone(),role:if category=="user"{"user"}else{"assistant"}.into(),parts:Vec::new(),created_at:now.clone(),turn_id:turn.map(str::to_owned),elapsed_ms:None});
+  let mut item=previous.and_then(|s|serde_json::from_str::<ChatItem>(&s).ok()).unwrap_or(ChatItem{id:id.clone(),role:if category=="user"{"user"}else{"assistant"}.into(),parts:Vec::new(),created_at:now.clone(),turn_id:turn.map(str::to_owned),elapsed_ms:None,turn_status:None,turn_origin:None});
   let mut changed=false;
   let mut resolved_pending_approval=false;
   // Agent delegation: while the parent agent is inside a turn, a delegated
@@ -432,6 +432,8 @@ fn record_subagent(
         created_at: now.into(),
         turn_id: turn.map(str::to_owned),
         elapsed_ms: None,
+        turn_status: None,
+        turn_origin: None,
     });
     let mut info = card.parts.first().and_then(|part| part.get("data")).filter(|v| v.is_object()).cloned()
         .unwrap_or_else(|| json!({"key":key,"provider":provider,"status":"running","transcript":"live","startedAt":now}));
@@ -461,6 +463,8 @@ fn record_subagent(
                 .into(),
             turn_id: turn.map(str::to_owned),
             elapsed_ms: None,
+            turn_status: None,
+            turn_origin: None,
         };
         let rev = crate::db::upsert_subagent_item(
             tx,
@@ -1122,6 +1126,8 @@ mod tests {
                 created_at: "now".into(),
                 turn_id: None,
                 elapsed_ms: None,
+                turn_status: None,
+                turn_origin: None,
             };
             assert_eq!(subagent_activity_label(&item), expected);
         }

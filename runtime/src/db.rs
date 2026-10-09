@@ -1,5 +1,5 @@
 use crate::domain::{
-    ChatItem, Project, Session, SessionDelegation, SessionOrganization, SessionOrganize, Settings,
+    ChatItem, ChatTurnOrigin, Project, Session, SessionDelegation, SessionOrganization, SessionOrganize, Settings,
     Snapshot,
 };
 use crate::session_activity::SessionActivity;
@@ -797,11 +797,10 @@ impl Database {
         })
     }
     pub fn import_chat_history(&self, id: &str, items: &[ChatItem]) -> Result<()> {
+        let items = normalize_history_transcript(id, items)?;
         self.transaction(|tx| {
-            for source in items {
-                let mut item=source.clone();item.id=format!("{id}:history:{}",source.id);
-                item.turn_id=None;
-                let changed=tx.execute("INSERT OR IGNORE INTO chat_items(id,session_id,turn_id,kind,data,created_at) VALUES (?,?,NULL,'message',?,?)",params![item.id,id,serde_json::to_string(&item)?,item.created_at])?;
+            for item in &items {
+                let changed=tx.execute("INSERT OR IGNORE INTO chat_items(id,session_id,turn_id,kind,data,created_at) VALUES (?,?,?,'message',?,?)",params![item.id,id,item.turn_id,serde_json::to_string(&item)?,item.created_at])?;
                 if changed>0 {emit(tx,"chat.item",json!({"sessionId":id,"item":item}))?;}
             }
             Ok(())
@@ -818,28 +817,18 @@ impl Database {
                 complete(tx,request.operation_id,"history.import",&session)?;
                 return Ok((session,false));
             }
-            let mut source_ids = HashSet::with_capacity(request.transcript.len());
-            if request
-                .transcript
-                .iter()
-                .any(|item| item.id.is_empty() || !source_ids.insert(item.id.as_str()))
-            {
-                return Err(anyhow!("invalid_history_transcript"));
-            }
             let timestamp=now();
             let session=Session { id:Uuid::new_v4().to_string(), project_id:request.project_id.map(str::to_owned), worktree_path:Some(request.cwd.to_owned()), title:request.title.unwrap_or(request.provider).to_owned(), provider:request.provider.to_owned(), mode:request.mode.to_owned(), status:"idle".into(), created_at:timestamp.clone(), updated_at:timestamp, native_id:Some(request.native_id.to_owned()), exit_code:None, cols:None, rows:None, followed:false, read_only:true, activity:None, delegation:None, run:None, organization:SessionOrganization::default() };
+            let transcript = normalize_history_transcript(&session.id, request.transcript)?;
             tx.execute("INSERT INTO sessions(id,project_id,worktree_path,title,provider,mode,status,created_at,updated_at,native_id,exit_code,followed,read_only) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,1)",params![session.id,session.project_id,session.worktree_path,session.title,session.provider,session.mode,session.status,session.created_at,session.updated_at,session.native_id,session.exit_code,session.followed])?;
             tx.execute(
                 "INSERT INTO session_launch_configs(session_id,revision,provider,mode,cwd,project_id,title,executable,args_json,source_session_id) VALUES(?,1,?,?,?,?,?,NULL,'[]',NULL)",
                 params![session.id, request.provider, request.mode, request.cwd, request.project_id, request.title],
             )?;
-            for source in request.transcript {
-                let mut item = source.clone();
-                item.id = format!("{}:history:{}", session.id, source.id);
-                item.turn_id = None;
+            for item in &transcript {
                 tx.execute(
-                    "INSERT INTO chat_items(id,session_id,turn_id,kind,data,created_at) VALUES (?,?,NULL,'message',?,?)",
-                    params![item.id, session.id, serde_json::to_string(&item)?, item.created_at],
+                    "INSERT INTO chat_items(id,session_id,turn_id,kind,data,created_at) VALUES (?,?,?,'message',?,?)",
+                    params![item.id, session.id, item.turn_id, serde_json::to_string(&item)?, item.created_at],
                 )?;
                 emit(tx,"chat.item",json!({"sessionId":session.id,"item":item}))?;
             }
@@ -1481,6 +1470,58 @@ pub struct ImportHistorySession<'a> {
     pub operation_id: &'a str,
     pub transcript: &'a [ChatItem],
 }
+
+/// Native history IDs are provider-local. Persist a session-scoped copy so
+/// unrelated imported sessions cannot accidentally share a presentation turn.
+pub(crate) fn scoped_history_item(session_id: &str, source: &ChatItem) -> ChatItem {
+    let mut item = source.clone();
+    item.id = format!("{session_id}:history:{}", source.id);
+    item.turn_id = source
+        .turn_id
+        .as_deref()
+        .map(|turn_id| format!("{session_id}:history:{turn_id}"));
+    item.turn_origin = Some(ChatTurnOrigin::History);
+    item
+}
+
+/// Validate provider data before an import transaction writes anything, then
+/// give every stored row a strictly increasing timestamp in native array order.
+/// Providers may reuse timestamps or return a clock that moves backward; read
+/// paths order by `(created_at, id)`, so retaining those values is not safe.
+fn normalize_history_transcript(session_id: &str, sources: &[ChatItem]) -> Result<Vec<ChatItem>> {
+    if serde_json::to_vec(sources)?.len() > crate::chat_repair::MAX_HISTORY_BYTES {
+        return Err(anyhow!("invalid_history_transcript: history exceeds 8 MiB"));
+    }
+    let mut ids = HashSet::with_capacity(sources.len());
+    let base = Utc::now();
+    let items: Vec<ChatItem> = sources
+        .iter()
+        .enumerate()
+        .map(|(index, source)| {
+            if source.id.is_empty() || source.id == "unknown" || !ids.insert(source.id.as_str()) {
+                return Err(anyhow!("invalid_history_transcript: missing, fallback or duplicate item id"));
+            }
+            if source.turn_id.as_deref().is_some_and(str::is_empty) {
+                return Err(anyhow!("invalid_history_transcript: empty turn id"));
+            }
+            if !matches!(source.role.as_str(), "user" | "assistant" | "tool" | "system") {
+                return Err(anyhow!("invalid_history_transcript: unsupported item role"));
+            }
+            for part in &source.parts {
+                crate::chat_repair::validate_part(part)?;
+            }
+            let mut item = scoped_history_item(session_id, source);
+            item.created_at = (base + chrono::Duration::nanoseconds(index as i64)).to_rfc3339();
+            Ok(item)
+        })
+        .collect::<Result<_>>()?;
+    if serde_json::to_vec(&items)?.len()
+        > crate::chat_repair::MAX_HISTORY_BYTES - crate::chat_repair::HISTORY_FRAME_HEADROOM_BYTES
+    {
+        return Err(anyhow!("invalid_history_transcript: normalized snapshot exceeds frame limit"));
+    }
+    Ok(items)
+}
 fn now() -> String {
     Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
 }
@@ -1984,6 +2025,8 @@ mod tests {
             created_at: "first".into(),
             turn_id: None,
             elapsed_ms: None,
+            turn_status: None,
+            turn_origin: None,
         };
         db.transaction(|tx| {
             assert_eq!(
@@ -2066,6 +2109,8 @@ mod tests {
             created_at: "now".into(),
             turn_id: None,
             elapsed_ms: None,
+            turn_status: None,
+            turn_origin: None,
         };
         db.transaction(|tx| {
             tx.execute(
@@ -2150,7 +2195,9 @@ mod tests {
             parts: vec![json!({"type":"text","text":text})],
             created_at: "2026-09-10T00:00:00Z".into(),
             turn_id: Some("native-turn".into()),
-            elapsed_ms: None,
+            elapsed_ms: Some(42),
+            turn_status: Some(crate::domain::NativeTurnStatus::Completed),
+            turn_origin: None,
         }
     }
     #[test]
@@ -2175,7 +2222,13 @@ mod tests {
         assert!(created);
         assert!(imported.read_only);
         assert_eq!(imported.status, "idle");
-        assert_eq!(db.chat_items(&imported.id).unwrap().len(), 1);
+        let stored = db.chat_items(&imported.id).unwrap();
+        assert_eq!(stored.len(), 1);
+        let expected_turn_id = format!("{}:history:native-turn", imported.id);
+        assert_eq!(stored[0].turn_id.as_deref(), Some(expected_turn_id.as_str()));
+        assert_eq!(stored[0].elapsed_ms, Some(42));
+        assert_eq!(stored[0].turn_status, Some(crate::domain::NativeTurnStatus::Completed));
+        assert_eq!(stored[0].turn_origin, Some(crate::domain::ChatTurnOrigin::History));
         assert_eq!(
             crate::session_configs::read(&db, &imported.id)
                 .unwrap()
@@ -2220,6 +2273,18 @@ mod tests {
             .unwrap();
         assert!(!resumed.read_only);
         assert_eq!(resumed.native_id.as_deref(), Some("thread-1"));
+        reopened
+            .import_chat_history(&imported.id, &[history_item("message-2", "resumed answer")])
+            .unwrap();
+        let resumed_history = reopened.chat_items(&imported.id).unwrap();
+        let resumed_item = resumed_history
+            .iter()
+            .find(|item| item.id.ends_with(":history:message-2"))
+            .unwrap();
+        assert_eq!(resumed_item.turn_id.as_deref(), Some(expected_turn_id.as_str()));
+        assert_eq!(resumed_item.elapsed_ms, Some(42));
+        assert_eq!(resumed_item.turn_status, Some(crate::domain::NativeTurnStatus::Completed));
+        assert_eq!(resumed_item.turn_origin, Some(crate::domain::ChatTurnOrigin::History));
     }
     #[test]
     fn history_import_rolls_back_owner_config_transcript_and_result_together() {
@@ -2265,6 +2330,96 @@ mod tests {
         assert!(crate::session_configs::read(&db, &session.id)
             .unwrap()
             .is_some());
+    }
+
+    #[test]
+    fn imports_validate_all_history_shapes_and_preserve_source_array_order() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Database::open(&dir.path().join("db.sqlite")).unwrap();
+        crate::session_configs::initialize(&db).unwrap();
+        for (index, mut invalid) in [
+            history_item("", "empty item id"),
+            history_item("unknown", "fallback item id"),
+            history_item("empty-turn", "empty turn id"),
+            history_item("bad-role", "unsupported role"),
+            history_item("bad-part", "malformed part"),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            match index {
+                2 => invalid.turn_id = Some(String::new()),
+                3 => invalid.role = "foreign".into(),
+                4 => invalid.parts = vec![json!("not a part")],
+                _ => {}
+            }
+            let native_id = format!("invalid-{index}");
+            assert!(db
+                .import_history_session(ImportHistorySession {
+                    project_id: None,
+                    title: None,
+                    provider: "codex",
+                    mode: "chat",
+                    cwd: dir.path().to_str().unwrap(),
+                    native_id: &native_id,
+                    operation_id: &format!("invalid-operation-{index}"),
+                    transcript: &[invalid],
+                })
+                .unwrap_err()
+                .to_string()
+                .contains("invalid_history_transcript"));
+            assert!(db.native_owner("codex", &native_id).unwrap().is_none());
+        }
+
+        let mut first = history_item("z-last-lexically", "first in native array");
+        let mut second = history_item("a-first-lexically", "second in native array");
+        first.created_at = "same".into();
+        second.created_at = "same".into();
+        let (session, _) = db
+            .import_history_session(ImportHistorySession {
+                project_id: None,
+                title: None,
+                provider: "codex",
+                mode: "chat",
+                cwd: dir.path().to_str().unwrap(),
+                native_id: "ordered",
+                operation_id: "ordered-operation",
+                transcript: &[first, second],
+            })
+            .unwrap();
+        let rows = db.chat_items(&session.id).unwrap();
+        assert_eq!(
+            rows.iter().map(|item| item.parts[0]["text"].as_str().unwrap()).collect::<Vec<_>>(),
+            ["first in native array", "second in native array"]
+        );
+        assert!(rows[0].created_at < rows[1].created_at);
+
+        let mut near_limit = history_item("near-limit", "");
+        near_limit.parts[0]["text"] = json!("x".repeat(
+            crate::chat_repair::MAX_HISTORY_BYTES
+                - crate::chat_repair::HISTORY_FRAME_HEADROOM_BYTES
+                + 1024
+        ));
+        assert!(
+            serde_json::to_vec(&[near_limit.clone()]).unwrap().len()
+                < crate::chat_repair::MAX_HISTORY_BYTES
+        );
+        assert!(db
+            .import_history_session(ImportHistorySession {
+                project_id: None,
+                title: None,
+                provider: "codex",
+                mode: "chat",
+                cwd: dir.path().to_str().unwrap(),
+                native_id: "near-limit",
+                operation_id: "near-limit-operation",
+                transcript: &[near_limit],
+            })
+            .unwrap_err()
+            .to_string()
+            .contains("normalized snapshot exceeds frame limit"));
+        assert!(db.native_owner("codex", "near-limit").unwrap().is_none());
+        assert!(db.operation("near-limit-operation").unwrap().is_none());
     }
     #[test]
     fn read_only_import_is_archivable_not_lost_on_startup_and_restored_after_failed_resume() {

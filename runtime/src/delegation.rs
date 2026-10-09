@@ -865,6 +865,8 @@ mod tests {
             created_at: String::new(),
             turn_id: None,
             elapsed_ms: None,
+            turn_status: None,
+            turn_origin: None,
         }
     }
 
