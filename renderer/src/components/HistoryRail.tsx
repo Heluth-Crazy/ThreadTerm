@@ -14,9 +14,9 @@ const PAGE_SIZE = 10;
 const active = (status: Session["status"]) => ["starting", "running", "idle", "waiting"].includes(status);
 type ProviderFilter = ProviderId | "all";
 type StatusFilter = "all" | "resumable" | "readOnly" | "owned";
-type Props = { onClose?: () => void };
+type Props = { onClose?: () => void; onPresented?: () => void };
 
-export function HistoryRail({ onClose }: Props) {
+export function HistoryRail({ onClose, onPresented }: Props) {
   const { locale, formatDate } = useTranslation();
   const copy = (en: string, cn: string) => locale === "zh-CN" ? cn : en;
   const [provider, setProvider] = useState<ProviderFilter>("all");
@@ -79,7 +79,10 @@ export function HistoryRail({ onClose }: Props) {
   const back = () => { cancel(); resetDetail(); setIssue(undefined); requestAnimationFrame(() => readButton.current?.focus({ preventScroll: true })); };
   const resetFilters = () => { resetDetail(); setIssue(undefined); setPage(1); if (listRef.current) listRef.current.scrollTop = 0; };
   const chooseCwd = async () => { const value = await chooseDirectory(); if (value) setCwd(value); };
-  const present = async (session: Session) => request("session.present", { sessionId: session.id, placement: "workspace", presentation: "focused", workspacePath: session.worktreePath, operationId: operationId() });
+  const present = async (session: Session) => {
+    await request("session.present", { sessionId: session.id, placement: "workspace", presentation: "focused", workspacePath: session.worktreePath, operationId: operationId() });
+    onPresented?.();
+  };
   const resume = async (session: Session) => {
     setLoading(true); setIssue(undefined);
     try { let path = cwd ?? session.worktreePath ?? selected?.cwd; if (!path) { path = await chooseDirectory() ?? undefined; if (!path) return; } await present(await request("session.resume", { sessionId: session.id, cwd: path, operationId: operationId() })); }
@@ -102,9 +105,9 @@ export function HistoryRail({ onClose }: Props) {
   const itemState = (item: NativeHistoryItem) => ownerFor(item) ? copy("Owned", "已绑定") : item.resumable ? copy("Ready", "可恢复") : copy("Read-only", "只读");
   return <aside className="history-rail history-rail-native" aria-label={copy("Native history", "本机历史")}>
     <div className="history-list-view" hidden={Boolean(selected)}>
-      <header className="history-rail-heading"><div><h3>{copy("Native session history", "本机会话历史")}</h3><p>{copy("Reading history never starts a session. Resume requires explicit confirmation.", "读取历史不会启动会话；恢复需要显式确认。")}</p></div>{onClose && <button className="history-close" onClick={onClose} aria-label={copy("Close history", "关闭历史")}>×</button>}</header>
+      <header className="history-rail-heading"><div><h3>{copy("Native session history", "本机会话历史")}</h3><p>{copy("Includes sessions created before ThreadTerm was installed. Reading or importing does not start a live session.", "包含安装 ThreadTerm 前已有的会话。读取或导入不会启动交互会话。")}</p></div>{onClose && <button className="history-close" onClick={onClose} aria-label={copy("Close history", "关闭历史")}>×</button>}</header>
       <div className="history-scan">
-        <button className="btn history-scan-run" disabled={loading} onClick={() => void scan()}>{loading ? copy(`Scanning native history · ${elapsed}s`, `正在扫描本机历史 · ${elapsed} 秒`) : copy("Scan native history", "扫描本机历史")}</button>
+        <button className="btn history-scan-run" disabled={loading} onClick={() => void scan()}>{loading ? copy(`Scanning native history · ${elapsed}s`, `正在扫描本机历史 · ${elapsed} 秒`) : copy("Reload native sessions", "重新加载本机会话")}</button>
         <Select aria-label={copy("Scan capacity", "扫描上限")} title={copy("Scan capacity", "扫描上限")} value={scanLimit} onChange={event => setScanLimit(Number(event.target.value))}><option value={80}>80</option><option value={100}>100</option></Select>
         {loading && <button className="btn" onClick={cancel}>{copy("Cancel", "取消")}</button>}
       </div>

@@ -7,6 +7,7 @@ import { displayPath, pathIsWithinCanonicalScope, sameCanonicalScope } from "../
 import { hasDirtyEditorsInScope } from "../dirtyEditors";
 import { AgentIcon, Icon } from "./PrototypeIcon";
 import { HistoryRail } from "./HistoryRail";
+import { showContextMenu } from "./ContextMenu";
 import "./all-terminals.css";
 import { sessionState, sessionStateLabel } from "../sessionState";
 import { agentName } from "../agents";
@@ -147,8 +148,18 @@ export function AllTerminalsPage({ data, recentIds, initialScope = "all", highli
   const summary = [zh ? `${visible.length} 个终端` : `${visible.length} ${visible.length === 1 ? "terminal" : "terminals"}`, ...(running ? [zh ? `${running} 个运行中` : `${running} running`] : []), ...(needs ? [zh ? `${needs} 个需要你` : `${needs} need${needs === 1 ? "s" : ""} you`] : [])].join(" · ");
   // The side rail exists only for something to show: a selected card's summary or native history the user opened.
   const railOpen = Boolean(inspected) || historyOpen;
+  const openPageMenu = (anchor: HTMLButtonElement) => {
+    const box = anchor.getBoundingClientRect();
+    setPageMenuOpen(true);
+    showContextMenu({ x: box.right - 240, y: box.bottom + 6, restoreFocus: anchor, onDismiss: () => setPageMenuOpen(false), items: [
+      ...([['all', copy('All sessions', '全部会话')], ['active', copy('Active', '活跃')], ['recent', copy('Recent', '最近')], ['followed', copy('Followed', '已关注')], ['bookmarked', copy('Bookmarks', '书签')], ['archived', copy('Archived', '已归档')]] as const).map(([value, label]) => ({ id: `scope-${value}`, label: `${scope === value ? '✓ ' : ''}${label}`, onSelect: () => { setScope(value); setSelected(new Set()); } })),
+      { separator: true, label: '' },
+      { id: 'manual-order', label: orderMode ? copy('Stop manual ordering', '结束手动排序') : copy('Manual order', '手动排序'), disabled: locked, reason: copy('Clear filters before changing saved order.', '清除筛选后才能调整保存的顺序。'), onSelect: () => setOrderMode(value => !value) },
+      { id: 'native-history', label: historyOpen && !inspected ? copy('Hide native session history', '隐藏本机会话历史') : copy('Native session history', '本机会话历史'), onSelect: () => { if (historyOpen && !inspected) onCloseHistory(); else { setInspectId(undefined); onOpenHistory(); } } },
+    ] });
+  };
   return <section className="page terminals-page">
-    <div className="page-head"><div><h1 className="page-title">{copy("All terminals", "所有终端")}</h1><p className="page-sub">{summary}</p></div><div className="page-actions terminals-page-actions"><button className="btn" onClick={() => { setInspectId(undefined); onLocalHistory(); }}><Icon name="archive" />{copy("Local history", "本机历史")}</button><button className="icon-btn" aria-label={copy("Terminal page options", "终端页选项")} aria-expanded={pageMenuOpen} onClick={() => setPageMenuOpen(value => !value)}><Icon name="more" /></button>{pageMenuOpen && <div className="popover terminals-page-menu"><label><span className="menu-label">{copy("Saved records", "已保存记录")}</span><Select value={scope} onChange={event => { setScope(event.target.value as SessionScope); setSelected(new Set()); }}><option value="all">{copy("All sessions", "全部会话")}</option><option value="active">{copy("Active", "活跃")}</option><option value="recent">{copy("Recent", "最近")}</option><option value="followed">{copy("Followed", "已关注")}</option><option value="bookmarked">{copy("Bookmarks", "书签")}</option><option value="archived">{copy("Archived", "已归档")}</option></Select></label><button className="menu-item" aria-pressed={orderMode} disabled={locked} title={locked ? copy("Clear filters before changing saved order.", "清除筛选后才能调整保存的顺序。") : undefined} onClick={() => { setOrderMode(value => !value); setPageMenuOpen(false); }}>{orderMode ? copy("Stop manual ordering", "结束手动排序") : copy("Manual order", "手动排序")}</button><button className="menu-item" aria-pressed={historyOpen && !inspected} onClick={() => { setPageMenuOpen(false); if (historyOpen && !inspected) onCloseHistory(); else { setInspectId(undefined); onOpenHistory(); } }}>{historyOpen && !inspected ? copy("Hide native session history", "隐藏本机会话历史") : copy("Native session history", "本机会话历史")}</button></div>}</div></div>
+    <div className="page-head"><div><h1 className="page-title">{copy("All terminals", "所有终端")}</h1><p className="page-sub">{summary}</p></div><div className="page-actions terminals-page-actions"><button className="btn" onClick={() => { setInspectId(undefined); onCloseHistory(); onLocalHistory(); }}><Icon name="archive" />{copy("Local history", "本机历史")}</button><button className="icon-btn" aria-label={copy("Terminal page options", "终端页选项")} aria-haspopup="menu" aria-expanded={pageMenuOpen} onClick={event => openPageMenu(event.currentTarget)}><Icon name="more" /></button></div></div>
     <div className="t-filters">
       <div className="t-search"><span className="filter-label">{copy("Search", "搜索")}</span><div className="input-wrap"><Icon name="search" /><input aria-label={copy("Search all terminals", "搜索所有终端")} value={query} onChange={event => setQuery(event.target.value)} placeholder={copy("Search sessions, projects, or recent output", "搜索会话、项目或最近输出")} /></div></div>
       <label><span className="filter-label">{copy("Project", "项目")}</span><Select value={projectId} onChange={event => setProjectId(event.target.value)}><option value="all">{copy("All projects", "全部项目")}</option>{data.projects.map(project => <option key={project.id} value={project.id}>{project.name}</option>)}</Select></label>

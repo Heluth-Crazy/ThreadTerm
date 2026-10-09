@@ -5,9 +5,11 @@
 .t-card { position:relative; }
 .terminals-card-menu { right:12px; bottom:46px; }
 .terminals-page-actions { position:relative; }
-.terminals-page-menu { top:34px; right:0; }
-.terminals-page-menu label { display:grid; gap:4px; padding:0 6px 6px; }
-.terminals-page-menu .tt-select { min-width:190px; }
+.terminals-page .page-head { flex-wrap:wrap; gap:10px; }
+.terminals-page .page-head > div:first-child { min-width:0; }
+.terminals-page-actions { max-width:100%; }
+.terminals-page-actions .btn { min-width:0; white-space:normal; }
+.terminals-page-actions .icon-btn { flex:none; }
 .t-card .tc-actions .icon-btn { display:inline-grid; place-items:center; }
 .t-card .tc-actions .icon-btn > .ico { width:16px; height:16px; }
 /* The rail is only rendered for a selected card's summary or opened native history. */

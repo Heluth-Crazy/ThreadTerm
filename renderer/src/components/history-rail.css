@@ -1,5 +1,20 @@
 .history-rail { display:flex; flex-direction:column; min-width:0; min-height:0; overflow:hidden; color:var(--text); background:var(--surface); border:1px solid var(--border); border-radius:8px; }
 .history-rail-native { height:100%; border:0; border-radius:0; background:transparent; }
+.dialog.sheet.wide.local-history-dialog { width:min(780px,calc(100vw - 24px)); height:min(760px,calc(100dvh - 48px)); max-height:calc(100dvh - 48px); }
+.local-history-dialog > .dlg-body { display:flex; flex:1; flex-direction:column; min-height:0; padding:0; overflow:hidden; }
+.history-source-switch { display:flex; flex:none; gap:8px; padding:12px 16px; border-bottom:1px solid var(--border); }
+.history-source-switch .btn { flex:1; min-height:36px; justify-content:center; }
+.history-source-switch .btn[aria-pressed="true"] { color:var(--primary); background:var(--primary-tint); border-color:var(--primary); }
+.local-history-dialog .history-rail { flex:1; min-height:0; height:auto; border:0; border-radius:0; }
+.history-tools.history-saved-filters { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:10px 12px; }
+.history-saved-filters > label { display:grid; min-width:0; gap:5px; color:var(--muted); font-size:12px; }
+.history-saved-filters > .history-search-label { grid-column:1 / -1; }
+.history-tools.history-saved-filters .tt-select { width:100%; }
+.history-tools.history-saved-filters input { padding:8px 10px; }
+.session-history-rail .history-native-list > article { display:grid; grid-template-columns:auto minmax(0,1fr) auto; align-items:start; }
+.session-history-rail .history-native-list > article > label { padding-top:2px; }
+.session-history-rail .history-row-main { flex:1; }
+.local-history-dialog .history-empty { padding:16px; text-align:center; }
 .history-rail-heading { display:flex; flex:0 0 auto; align-items:flex-start; gap:10px; padding:12px 14px 8px; }
 .history-rail-heading > div:first-child { min-width:0; margin-right:auto; }
 .history-rail-heading h3 { margin:0; font-size:13px; line-height:1.35; }
@@ -67,3 +82,7 @@
 .imported-history-view > .surface-error { flex:none; margin:0; }
 .imported-history-scroll { flex:1; min-height:0; min-width:0; overflow:auto; }
 @media (max-width:700px) { .history-native-list > article { flex-direction:column; }.history-row-actions { justify-content:flex-start; } }
+@media (max-width:700px) {
+  .session-history-rail .history-native-list > article { grid-template-columns:auto minmax(0,1fr); }
+  .session-history-rail .history-row-actions { grid-column:2; justify-content:flex-start; }
+}
