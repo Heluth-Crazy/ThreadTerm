@@ -27,6 +27,30 @@ test('normalizes encoded local Markdown hrefs and rejects command or web schemes
  assert.equal(parseMarkdownFileReference('https%3A%2F%2Fexample.test%2Fa.ts'),undefined);
  assert.equal(parseFileReference('command:workbench.action.open'),undefined);
 });
+test('normalizes a single Markdown Windows drive prefix while preserving positions',()=>{
+ assert.deepEqual(parseMarkdownFileReference('/D:/project/schema.json'),{path:'D:/project/schema.json'});
+ assert.deepEqual(parseMarkdownFileReference(' /d:/project/schema.json:12:3 '),{path:'d:/project/schema.json',line:12,column:3});
+ assert.deepEqual(parseMarkdownFileReference('/C:%5Crepo%5C%E4%B8%AD%E6%96%87%20file.ts#L7C3'),{path:'C:\\repo\\中文 file.ts',line:7,column:3});
+ assert.deepEqual(parseMarkdownFileReference('/D:/repo/literal%2520name.ts'),{path:'D:/repo/literal%20name.ts'});
+ assert.deepEqual(parseMarkdownFileReference('D:/project/schema.json#L12'),{path:'D:/project/schema.json',line:12});
+});
+test('drive-prefix compatibility never rewrites raw paths or unrelated Markdown targets',()=>{
+ assert.deepEqual(parseFileReference('/D:/repo/file.ts'),{path:'/D:/repo/file.ts'});
+ assert.deepEqual(parseFileReference('D:/repo/literal%20name.ts'),{path:'D:/repo/literal%20name.ts'});
+ assert.deepEqual(parseMarkdownFileReference('/tmp/file.ts'),{path:'/tmp/file.ts'});
+ assert.deepEqual(parseMarkdownFileReference('//server/share/file.ts'),{path:'//server/share/file.ts'});
+ assert.deepEqual(parseMarkdownFileReference('//D:/repo/file.ts'),{path:'//D:/repo/file.ts'});
+ assert.deepEqual(parseMarkdownFileReference('/D:relative.ts'),{path:'/D:relative.ts'});
+ assert.deepEqual(parseMarkdownFileReference('/D://host/file.ts'),{path:'/D://host/file.ts'});
+ assert.equal(parseMarkdownFileReference('https://example.test/D:/file.ts'),undefined);
+ assert.equal(parseMarkdownFileReference('javascript:alert(1)'),undefined);
+ assert.equal(parseMarkdownFileReference('/usage'),undefined);
+ assert.equal(parseMarkdownFileReference('/D:/repo/file.ts#L0'),undefined);
+ assert.equal(parseMarkdownFileReference('/D:/repo/file%00.ts'),undefined);
+});
+test('normalized Markdown traversal remains visible to the runtime scope check',()=>{
+ assert.deepEqual(parseMarkdownFileReference('/D:/repo/../outside/file.ts'),{path:'D:/repo/../outside/file.ts'});
+});
 test('extracts Markdown, quoted code, and prose with JavaScript offsets',()=>{
  const text='See [source](src/a.ts:4) and `C:\\repo\\b.ts:2:3`; ignore https://x/y.ts.';
  assert.deepEqual(extractFileReferences(text),[

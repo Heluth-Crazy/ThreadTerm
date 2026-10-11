@@ -94,7 +94,10 @@ export function parseFileReference(text:string):FileReference|undefined {
 /** Decodes one browser/Markdown URL-encoding layer before applying local-path rules. */
 export function parseMarkdownFileReference(href:string):FileReference|undefined {
   const decoded=decodedMarkdownHref(href);if(decoded===undefined)return;
-  return parseFileReference(decoded);
+  // Markdown may spell a Windows absolute link as /D:/... . Strip only that
+  // URL-style prefix here; prose/native paths and runtime containment stay literal.
+  const localHref=decoded.trim().replace(/^\/(?=[a-z]:[\\/](?![\\/]))/i,'');
+  return parseFileReference(localHref);
 }
 
 const isBreak=(value:string)=>BREAK.test(value);
