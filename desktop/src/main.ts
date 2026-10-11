@@ -123,6 +123,11 @@ function createWindow(options: { sessionId?: string; workspaceId?: string; float
       additionalArguments: terminalWindowArguments(process.platform, release()),
     },
   });
+  // The taskbar group has a separate icon source from WM_GETICON. Bind it to
+  // this packaged executable instead of relying on a matching old shortcut.
+  if (process.platform === 'win32' && app.isPackaged) {
+    window.setAppDetails({ appId: 'com.threadterm.v3', appIconPath: process.execPath, appIconIndex: 0 });
+  }
   const emitWindowState = () => { if (!window.isDestroyed()) window.webContents.send('threadterm:window-state', { maximized: window.isMaximized() }); };
   window.on('maximize', emitWindowState);
   window.on('unmaximize', emitWindowState);
