@@ -637,6 +637,42 @@ pub(crate) struct RepoPaths {
 /// Existing callers of `repo_prefix` and `repo_paths` retain their independent
 /// 30-second local-command budgets.
 pub(crate) fn repo_paths_until(root: &Path, deadline: Instant) -> Result<(String, RepoPaths)> {
+    // Git can print all five metadata values in one invocation. Repeating the
+    // same discovery multiplies process-start cost before every agent turn.
+    // Line-bearing paths keep the prior individual-command representation.
+    if root.as_os_str().to_string_lossy().contains(['\r', '\n']) {
+        return repo_paths_until_separate(root, deadline);
+    }
+    let output = match git_text_until(root, &[
+        "rev-parse", "--is-inside-work-tree", "--show-prefix", "--show-toplevel",
+        "--git-path", "index", "--git-common-dir",
+    ], deadline) {
+        Ok(output) => output,
+        Err(error) if error.to_string().contains("not a git repository")
+            || error.to_string().contains("must be run in a work tree") => {
+            return Err(anyhow!("git_unavailable"));
+        }
+        Err(error) => return Err(error),
+    };
+    let fields: Vec<_> = output.lines().collect();
+    if fields.first().map(|value| value.trim()) != Some("true") {
+        return Err(anyhow!("git_unavailable"));
+    }
+    // A repository's separately located metadata may itself contain a newline.
+    // Do not guess field boundaries or silently return incorrect Git paths.
+    if fields.len() != 5 || fields[2..].iter().any(|value| value.is_empty()) {
+        return repo_paths_until_separate(root, deadline);
+    }
+    let absolute = |value: &str| {
+        let path = PathBuf::from(value);
+        if path.is_absolute() { path } else { root.join(path) }
+    };
+    Ok((fields[1].to_owned(), RepoPaths {
+        top: PathBuf::from(fields[2]), index: absolute(fields[3]), common: absolute(fields[4]),
+    }))
+}
+
+fn repo_paths_until_separate(root: &Path, deadline: Instant) -> Result<(String, RepoPaths)> {
     let inside = match git_text_until(root, &["rev-parse", "--is-inside-work-tree"], deadline) {
         Ok(inside) => inside,
         Err(error) if error.to_string().contains("not a git repository") => {
@@ -706,6 +742,62 @@ mod tests {
         let error = git_text_until(missing, &["rev-parse", "--show-toplevel"], Instant::now())
             .unwrap_err();
         assert_eq!(error.to_string(), "git_timeout");
+    }
+
+    #[test]
+    fn grouped_repository_discovery_matches_individual_reads_and_preserves_empty_prefix() {
+        let temp = repo();
+        let nested = temp.path().join("nested folder").join("second");
+        fs::create_dir_all(&nested).unwrap();
+        for root in [temp.path(), nested.as_path()] {
+            let (prefix, actual) = repo_paths_until(root, Instant::now() + LOCAL_TIMEOUT).unwrap();
+            let expected = repo_paths(root).unwrap();
+            assert_eq!(prefix, repo_prefix(root).unwrap());
+            assert_eq!(actual.top, expected.top);
+            assert_eq!(actual.index, expected.index);
+            assert_eq!(actual.common, expected.common);
+        }
+        assert_eq!(repo_paths_until(temp.path(), Instant::now() + LOCAL_TIMEOUT).unwrap().0, "");
+    }
+
+    #[test]
+    fn grouped_repository_discovery_distinguishes_linked_worktree_index_and_common_objects() {
+        let temp = repo();
+        git(temp.path(), &["commit", "--allow-empty", "-qm", "initial"]).unwrap();
+        let linked_parent = tempfile::tempdir().unwrap();
+        let linked = linked_parent.path().join("linked folder");
+        git(temp.path(), &["worktree", "add", "-b", "linked", linked.to_str().unwrap()]).unwrap();
+        let (_, actual) = repo_paths_until(&linked, Instant::now() + LOCAL_TIMEOUT).unwrap();
+        let expected = repo_paths(&linked).unwrap();
+        assert_eq!(actual.top, expected.top);
+        assert_eq!(actual.index, expected.index);
+        assert_eq!(actual.common, expected.common);
+        assert_eq!(actual.common.canonicalize().unwrap(), temp.path().join(".git").canonicalize().unwrap());
+        assert_ne!(actual.index.parent(), Some(actual.common.as_path()));
+    }
+
+    #[test]
+    fn grouped_repository_discovery_preserves_non_repository_bare_and_expired_budget_errors() {
+        let ordinary = tempfile::tempdir().unwrap();
+        assert_eq!(repo_paths_until(ordinary.path(), Instant::now() + LOCAL_TIMEOUT).err().unwrap().to_string(), "git_unavailable");
+        let bare = tempfile::tempdir().unwrap();
+        git(bare.path(), &["init", "--bare", "-q"]).unwrap();
+        assert_eq!(repo_paths_until(bare.path(), Instant::now() + LOCAL_TIMEOUT).err().unwrap().to_string(), "git_unavailable");
+        assert_eq!(repo_paths_until(ordinary.path(), Instant::now()).err().unwrap().to_string(), "git_timeout");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn grouped_repository_discovery_preserves_line_bearing_paths_with_separate_reads() {
+        let temp = repo();
+        let nested = temp.path().join("folder\nwith line");
+        fs::create_dir_all(&nested).unwrap();
+        let (prefix, actual) = repo_paths_until(&nested, Instant::now() + LOCAL_TIMEOUT).unwrap();
+        let expected = repo_paths(&nested).unwrap();
+        assert_eq!(prefix, repo_prefix(&nested).unwrap());
+        assert_eq!(actual.top, expected.top);
+        assert_eq!(actual.index, expected.index);
+        assert_eq!(actual.common, expected.common);
     }
 
     pub(crate) fn repo() -> tempfile::TempDir {

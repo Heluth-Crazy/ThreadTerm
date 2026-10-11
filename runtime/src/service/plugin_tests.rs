@@ -57,6 +57,90 @@ fn echo_fixture(root: &std::path::Path) -> std::path::PathBuf {
     plugin
 }
 
+fn attach_test_capability_notifier(providers: &Providers, db: &Arc<Database>) {
+    let capability_db = Arc::downgrade(db);
+    providers.set_capability_listener(Arc::new(move || {
+        let Some(db) = capability_db.upgrade() else { return };
+        if let Err(error) = db.transaction(|tx| {
+            tx.execute(
+                "INSERT INTO outbox(event,data,created_at) VALUES ('state.changed',?,?)",
+                rusqlite::params![json!({"kind":"providers"}).to_string(), chrono::Utc::now().to_rfc3339()],
+            )?;
+            Ok(())
+        }) {
+            eprintln!("test provider capability notification failed: {error}");
+        }
+    }));
+}
+
+fn provider_capability_notifications(db: &Database) -> i64 {
+    db.transaction(|tx| {
+        Ok(tx.query_row(
+            "SELECT COUNT(*) FROM outbox WHERE event='state.changed' AND json_extract(data,'$.kind')='providers'",
+            [],
+            |row| row.get(0),
+        )?)
+    })
+    .unwrap()
+}
+
+fn wait_for_provider_capability_notification(db: &Database, after: i64) {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while provider_capability_notifications(db) <= after {
+        assert!(
+            Instant::now() < deadline,
+            "provider capability discovery did not publish state.changed(kind=providers)"
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
+#[test]
+fn failed_provider_discovery_keeps_runtime_snapshot_and_existing_sessions_available() {
+    use crate::providers::{ChatSession, ProviderAdapter, ProviderCapability, ProviderError, TerminalCommand};
+    use std::sync::atomic::{AtomicUsize, Ordering::SeqCst};
+
+    struct BrokenProbe(Arc<AtomicUsize>);
+    impl ProviderAdapter for BrokenProbe {
+        fn id(&self) -> &'static str { "codex" }
+        fn capability(&self) -> ProviderCapability {
+            self.0.fetch_add(1, SeqCst);
+            panic!("isolated provider discovery failure");
+        }
+        fn terminal_command(&self, _: Option<&str>, _: Option<&str>) -> std::result::Result<TerminalCommand, ProviderError> {
+            Err(ProviderError::new("unsupported", "failure fixture"))
+        }
+        fn history_list(&self, _: Option<&str>, _: u32, _: Option<&str>) -> std::result::Result<Value, ProviderError> { Ok(json!({})) }
+        fn history_read(&self, _: &str) -> std::result::Result<Value, ProviderError> { Ok(json!([])) }
+        fn open_chat(&self, _: &str, _: &str, _: Option<&str>) -> std::result::Result<Box<dyn ChatSession>, ProviderError> {
+            Err(ProviderError::new("unsupported", "failure fixture"))
+        }
+    }
+
+    let root = tempfile::tempdir().unwrap();
+    let db = Arc::new(Database::open(&root.path().join("runtime.sqlite")).unwrap());
+    let mut service = test_service(root.path(), Arc::clone(&db));
+    let existing = db.create_session(CreateSession {
+        project_id: None, title: Some("Existing session"), provider: "shell", mode: "terminal",
+        native_id: None, operation_id: "existing-session",
+    }).unwrap();
+    let probes = Arc::new(AtomicUsize::new(0));
+    service.providers = Arc::new(Providers::for_test(vec![Arc::new(BrokenProbe(Arc::clone(&probes)))]));
+    attach_test_capability_notifier(&service.providers, &db);
+    let before = provider_capability_notifications(&db);
+    assert!(request(&service, "runtime.snapshot", json!({})).unwrap()["providers"].as_array().unwrap().is_empty());
+    wait_for_provider_capability_notification(&db, before);
+    for _ in 0..8 {
+        let snapshot = request(&service, "runtime.snapshot", json!({})).unwrap();
+        assert_eq!(snapshot["sessions"][0]["id"], existing.id);
+        assert!(snapshot["providers"].as_array().unwrap().is_empty());
+        let error = request(&service, "provider.list", json!({})).unwrap_err();
+        assert_eq!(error.code, "provider_detection_failed");
+        assert!(request(&service, "runtime.health", json!({})).is_ok());
+    }
+    assert_eq!(probes.load(SeqCst), 1, "failure completion/reads must not cause a retry loop");
+}
+
 #[test]
 fn plugin_dispatch_enable_reload_metadata_delegation_and_live_chat() {
     if find_executable("node").is_none() {
@@ -68,6 +152,7 @@ fn plugin_dispatch_enable_reload_metadata_delegation_and_live_chat() {
     let mut service = test_service(root.path(), Arc::clone(&db));
     // Probes in this test may execute only the temporary example script.
     service.providers = Arc::new(Providers::for_test(vec![]));
+    attach_test_capability_notifier(&service.providers, &db);
     service
         .providers
         .rebuild_plugins(crate::plugins::PluginRegistry::discover_with_roots(
@@ -123,6 +208,10 @@ fn plugin_dispatch_enable_reload_metadata_delegation_and_live_chat() {
         db.settings_value().unwrap()["plugins"]["echo-acp"]["enabled"],
         true
     );
+    let capability_notifications_before_probe = provider_capability_notifications(&db);
+    let pending_capabilities = request(&service, "provider.list", json!({})).unwrap();
+    assert_eq!(pending_capabilities.as_array().unwrap().len(), 0, "cold provider discovery should return pending empty capabilities");
+    wait_for_provider_capability_notification(&db, capability_notifications_before_probe);
     let capabilities = request(&service, "provider.list", json!({})).unwrap();
     let capability = capabilities
         .as_array()
@@ -206,7 +295,15 @@ fn plugin_dispatch_enable_reload_metadata_delegation_and_live_chat() {
     let mut manifest: Value = serde_json::from_slice(&fs::read(&manifest_path).unwrap()).unwrap();
     manifest["contributes"]["agents"][0]["name"] = json!("Echo Reloaded");
     fs::write(manifest_path, serde_json::to_vec(&manifest).unwrap()).unwrap();
+    let capability_notifications_before_reload = provider_capability_notifications(&db);
     request(&service, "plugin.reload", json!({"operationId":"reload"})).unwrap();
+    let reloaded_capabilities = request(&service, "provider.list", json!({})).unwrap();
+    if !reloaded_capabilities
+        .as_array()
+        .is_some_and(|items| items.iter().any(|item| item["name"] == "Echo Reloaded"))
+    {
+        wait_for_provider_capability_notification(&db, capability_notifications_before_reload);
+    }
     let capabilities = request(&service, "provider.list", json!({})).unwrap();
     assert_eq!(capabilities[0]["name"], "Echo Reloaded");
     request(

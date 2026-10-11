@@ -456,7 +456,7 @@ pub fn capture_before_turn(
     .ok();
     crate::send_trace::emit(crate::send_trace::Event::new("review.checkpoint.end")
         .operation_id(operation_id).session_id(session_id).method("chat.send")
-        .outcome(if checkpoint.is_some() { "captured" } else { "unavailable" })
+        .outcome(if checkpoint.is_some() { "recorded" } else { "unavailable" })
         .duration_us(trace_timer.elapsed_us()));
     checkpoint
 }
