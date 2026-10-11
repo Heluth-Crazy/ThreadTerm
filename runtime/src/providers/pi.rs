@@ -1,0 +1,2573 @@
+//! Native Pi provider: terminal sessions plus `pi --mode rpc` Chat.
+//!
+//! Pi speaks a flat JSONL command/response protocol that is neither JSON-RPC
+//! nor ACP, so this adapter drives it through `JsonLineProcess` with the
+//! dedicated `EnvelopeStyle::Pi` framing. Each Chat session owns one long-lived
+//! `pi --mode rpc` process.
+use super::{
+    builtin_name,
+    common::{
+        history_page, validate_native_id, version_probe, CommandSpec, EnvelopeStyle,
+        JsonLineProcess, JsonLineResponder,
+    },
+    emit_bound as emit, ChatSession, ProviderAdapter, ProviderCapability, ProviderError,
+    ScopedProviderEvents, TerminalCapture, TerminalCommand,
+};
+use chrono::{DateTime, Utc};
+use serde_json::{json, Value};
+use std::{
+    collections::{HashMap, HashSet, VecDeque},
+    fs,
+    io::{Read, Seek, SeekFrom},
+    path::{Path, PathBuf},
+    sync::{Arc, Mutex},
+    time::{Instant, SystemTime},
+};
+use uuid::Uuid;
+
+const PI_HOME: &str = "https://github.com/earendil-works/pi";
+const MAX_SESSION_FILES: usize = 512;
+const HEAD_BYTES: u64 = 64 * 1024;
+const TAIL_BYTES: u64 = 256 * 1024;
+const RESOLVED_UI_IDS: usize = 256;
+/// Separates provider and model id in a chat option value. The unit separator
+/// cannot appear in either, so the round trip is unambiguous even though pi
+/// model ids themselves contain `/` (for example `stealth/ox-alpha`).
+const PI_MODEL_SEPARATOR: char = '\u{1f}';
+/// Pi handles these in its TUI, not through `prompt`, so the adapter executes
+/// them from the composer's slash menu and answers with a text turn.
+const PI_BUILTIN_COMMANDS: &[(&str, &str)] = &[
+    ("compact", "Compact the conversation context"),
+    ("model", "Show or switch the model"),
+    ("thinking", "Show or set the thinking level"),
+    ("name", "Rename this session"),
+    ("session", "Show session statistics"),
+    ("export", "Export the session to HTML"),
+    ("new", "Start a fresh session"),
+    ("help", "List available commands"),
+];
+
+pub struct PiAdapter {
+    events: crate::provider_events::Sender,
+}
+
+impl PiAdapter {
+    pub fn new(events: crate::provider_events::Sender) -> Self {
+        Self { events }
+    }
+}
+
+impl ProviderAdapter for PiAdapter {
+    fn id(&self) -> &str {
+        "pi"
+    }
+
+    fn capability(&self) -> ProviderCapability {
+        let (installed, version, error) = version_probe("pi");
+        ProviderCapability {
+            id: "pi".to_owned(),
+            name: builtin_name("pi").to_owned(),
+            installed,
+            version,
+            terminal: installed,
+            chat: installed,
+            history: installed,
+            resume: installed,
+            terminal_resume_capture: TerminalCapture::PreAssigned.as_str(),
+            reason: error,
+            auth: "unknown".to_owned(),
+            source: "builtin",
+            plugin_id: None,
+            icon: None,
+            sign_in: None,
+            homepage: Some(PI_HOME.to_owned()),
+        }
+    }
+
+    fn terminal_command(
+        &self,
+        resume_id: Option<&str>,
+        assign_id: Option<&str>,
+    ) -> Result<TerminalCommand, ProviderError> {
+        if resume_id.is_some() && assign_id.is_some() {
+            return Err(ProviderError::new(
+                "provider_invalid_request",
+                "terminal resume and assignment cannot both be requested",
+            ));
+        }
+        let owned: Vec<String> = if let Some(id) = resume_id {
+            validate_native_id(id)?;
+            vec!["--session".to_owned(), id.to_owned()]
+        } else if let Some(id) = assign_id {
+            validate_native_id(id)?;
+            vec!["--session-id".to_owned(), id.to_owned()]
+        } else {
+            Vec::new()
+        };
+        let refs: Vec<&str> = owned.iter().map(String::as_str).collect();
+        let spec = CommandSpec::provider("pi", &refs)?;
+        Ok(TerminalCommand {
+            program: spec.program,
+            args: spec.args,
+            display: spec.display,
+        })
+    }
+
+    fn terminal_capture(&self) -> TerminalCapture {
+        // `pi --session-id` binds the conversation identity before the PTY starts.
+        TerminalCapture::PreAssigned
+    }
+
+    fn prepare_terminal(&self, _cwd: &str) -> Result<Option<String>, ProviderError> {
+        // Pi accepts a native CLI flag for the id, so no provider API call and
+        // no verification round trip are needed before launch.
+        Ok(Some(Uuid::new_v4().to_string()))
+    }
+
+    fn history_list(
+        &self,
+        cursor: Option<&str>,
+        limit: u32,
+        cwd: Option<&str>,
+    ) -> Result<Value, ProviderError> {
+        let directory = pi_sessions_dir()?;
+        let mut files = Vec::new();
+        walk_jsonl(&directory, &mut files, MAX_SESSION_FILES);
+        let mut rows = Vec::new();
+        for path in files {
+            let Some((native_id, session_cwd)) = pi_session_identity(&path) else {
+                continue;
+            };
+            if let Some(expected) = cwd {
+                if !same_path(&session_cwd, expected) {
+                    continue;
+                }
+            }
+            let tail = read_bounded(&path, TAIL_BYTES, true).unwrap_or_default();
+            let title = pi_tail_title(&tail).unwrap_or_else(|| "Pi session".to_owned());
+            let updated_at = pi_tail_updated_at(&tail).unwrap_or_else(|| file_timestamp(&path));
+            rows.push(json!({
+                "provider": "pi",
+                "nativeId": native_id,
+                "title": title,
+                "updatedAt": updated_at,
+                "cwd": session_cwd,
+                "resumable": true
+            }));
+        }
+        rows.sort_by(|left, right| {
+            right["updatedAt"]
+                .as_str()
+                .unwrap_or_default()
+                .cmp(left["updatedAt"].as_str().unwrap_or_default())
+        });
+        let offset = cursor
+            .and_then(|value| value.parse::<usize>().ok())
+            .unwrap_or(0);
+        let total = rows.len();
+        let items = rows
+            .into_iter()
+            .skip(offset)
+            .take(limit as usize)
+            .collect::<Vec<_>>();
+        let consumed = offset + items.len();
+        let next_cursor = (consumed < total).then(|| json!(consumed.to_string()));
+        Ok(history_page(items, next_cursor))
+    }
+
+    fn history_read(&self, native_id: &str) -> Result<Value, ProviderError> {
+        validate_native_id(native_id)?;
+        let directory = pi_sessions_dir()?;
+        let mut files = Vec::new();
+        walk_jsonl(&directory, &mut files, MAX_SESSION_FILES);
+        let path = files
+            .into_iter()
+            .find(|path| pi_session_identity(path).is_some_and(|(id, _)| id == native_id))
+            .ok_or_else(|| {
+                ProviderError::new("history_unavailable", "No Pi session matches that id")
+            })?;
+        let text = fs::read_to_string(&path).map_err(|error| {
+            ProviderError::new(
+                "history_unavailable",
+                format!("Failed reading the Pi session: {error}"),
+            )
+        })?;
+        Ok(Value::Array(pi_transcript(&text)))
+    }
+
+    fn open_chat(
+        &self,
+        session_id: &str,
+        cwd: &str,
+        native_id: Option<&str>,
+    ) -> Result<Box<dyn ChatSession>, ProviderError> {
+        self.open_chat_scoped(session_id, cwd, native_id, "pi")
+    }
+
+    fn scopes_chat_events(&self) -> bool {
+        // Every Pi event is emitted through a worker-scoped sender so a
+        // replaced worker generation can no longer enter the projection.
+        true
+    }
+
+    fn open_chat_scoped(
+        &self,
+        session_id: &str,
+        cwd: &str,
+        native_id: Option<&str>,
+        worker_token: &str,
+    ) -> Result<Box<dyn ChatSession>, ProviderError> {
+        let shared = Arc::new(PiShared::default());
+        let events = ScopedProviderEvents::new(self.events.clone(), worker_token);
+        let callback_events = events.clone();
+        let callback_session = session_id.to_owned();
+        let callback_shared = Arc::clone(&shared);
+        let on_message: Arc<dyn Fn(Value) + Send + Sync> = Arc::new(move |raw: Value| {
+            pi_event(
+                &callback_events,
+                "pi",
+                &callback_session,
+                &callback_shared,
+                raw,
+            );
+        });
+
+        let mut args: Vec<String> = vec!["--mode".to_owned(), "rpc".to_owned()];
+        if let Some(id) = native_id {
+            validate_native_id(id)?;
+            args.push("--session".to_owned());
+            args.push(id.to_owned());
+        } else {
+            // Bind the native identity before the first turn so the session can
+            // be resumed even if it ends before any message arrives.
+            let id = Uuid::new_v4().to_string();
+            args.push("--session-id".to_owned());
+            args.push(id.clone());
+            if let Ok(mut value) = shared.native_id.lock() {
+                *value = Some(id);
+            }
+        }
+        let refs: Vec<&str> = args.iter().map(String::as_str).collect();
+        let spec = CommandSpec::provider("pi", &refs)?;
+        let process =
+            JsonLineProcess::spawn("pi", &spec, Some(cwd), &[], EnvelopeStyle::Pi, on_message)?;
+        // Pi may emit an extension UI request during startup. Publish the responder
+        // and drain those records atomically with respect to the stdout callback.
+        let queued_ui = {
+            let mut control = shared
+                .control
+                .lock()
+                .map_err(|_| ProviderError::new("provider_internal", "Pi control lock poisoned"))?;
+            control.responder = Some(process.responder());
+            std::mem::take(&mut control.queued_ui)
+        };
+        for raw in queued_ui {
+            pi_event(&events, "pi", session_id, &shared, raw);
+        }
+        let chat = PiChat {
+            session_id: session_id.to_owned(),
+            shared,
+            events,
+            process,
+        };
+        // Resolve the durable identity and the live option snapshot.
+        chat.refresh_ui();
+        Ok(Box::new(chat))
+    }
+}
+
+/// State shared with the stdout reader thread; it outlives every borrow of
+/// `PiChat` that the reader might otherwise need.
+#[derive(Default)]
+struct PiShared {
+    native_id: Mutex<Option<String>>,
+    active_turn: Mutex<Option<String>>,
+    started: Mutex<Option<Instant>>,
+    /// The most recent failed attempt. Kept unpublished until the turn settles,
+    /// because pi may still recover through its own retry budget.
+    pending_error: Mutex<Option<Value>>,
+    ui: Mutex<PiUi>,
+    control: Mutex<PiControl>,
+    interactions: Mutex<HashMap<String, PiInteraction>>,
+    /// A bounded exact-id fence prevents Pi extension replays from reopening a
+    /// card after its response/cancellation has been written.
+    resolved_interactions: Mutex<VecDeque<String>>,
+}
+
+#[derive(Default)]
+struct PiControl {
+    responder: Option<JsonLineResponder>,
+    queued_ui: Vec<Value>,
+}
+
+struct PiInteraction {
+    turn_id: String,
+    data: Value,
+    state: super::approval::PendingApprovalState,
+}
+
+#[derive(Default)]
+struct PiUi {
+    state: Option<Value>,
+    models: Vec<Value>,
+    thinking_levels: Vec<String>,
+    commands: Vec<Value>,
+}
+
+struct PiChat {
+    session_id: String,
+    shared: Arc<PiShared>,
+    events: ScopedProviderEvents,
+    process: JsonLineProcess,
+}
+
+impl PiChat {
+    fn native(&self) -> Option<String> {
+        self.shared
+            .native_id
+            .lock()
+            .ok()
+            .and_then(|value| value.clone())
+    }
+
+    fn active_turn(&self) -> Option<String> {
+        self.shared
+            .active_turn
+            .lock()
+            .ok()
+            .and_then(|value| value.clone())
+    }
+
+    /// Settles the current turn at most once, whichever path observes it first.
+    fn finish_turn(&self, stop_reason: &str, elapsed_ms: Option<u64>) {
+        let turn_id = match self.shared.active_turn.lock() {
+            Ok(mut active) => active.take(),
+            Err(_) => return,
+        };
+        let Some(turn_id) = turn_id else {
+            return;
+        };
+        self.drain_interactions(Some(&turn_id));
+        let mut data = json!({"result":{"stopReason":stop_reason}});
+        if let Some(elapsed) = elapsed_ms {
+            data["elapsedMs"] = json!(elapsed);
+        }
+        emit(
+            &self.events,
+            "pi",
+            &self.session_id,
+            self.native().as_deref(),
+            Some(&turn_id),
+            "chat.turn.completed",
+            data,
+        );
+    }
+
+    fn drain_interactions(&self, turn_id: Option<&str>) {
+        pi_drain_interactions(
+            &self.events,
+            &self.session_id,
+            self.native().as_deref(),
+            &self.shared,
+            turn_id,
+        );
+    }
+
+    /// Re-reads the durable identity and the live option snapshot. Called after
+    /// open and after any model/thinking change, because pi clamps and re-scopes
+    /// these per model.
+    fn refresh_ui(&self) {
+        let state = self.process.request("get_state", json!({})).ok();
+        let models = self
+            .process
+            .request("get_available_models", json!({}))
+            .ok()
+            .and_then(|value| value.get("models").and_then(Value::as_array).cloned());
+        let levels = self
+            .process
+            .request("get_available_thinking_levels", json!({}))
+            .ok()
+            .and_then(|value| value.get("levels").and_then(Value::as_array).cloned());
+        let commands = self
+            .process
+            .request("get_commands", json!({}))
+            .ok()
+            .and_then(|value| value.get("commands").and_then(Value::as_array).cloned());
+        if let Some(state) = &state {
+            if let Some(id) = state.get("sessionId").and_then(Value::as_str) {
+                if let Ok(mut value) = self.shared.native_id.lock() {
+                    *value = Some(id.to_owned());
+                }
+            }
+        }
+        if let Ok(mut ui) = self.shared.ui.lock() {
+            if let Some(state) = state {
+                ui.state = Some(state);
+            }
+            if let Some(models) = models {
+                ui.models = models;
+            }
+            if let Some(levels) = levels {
+                ui.thinking_levels = levels
+                    .iter()
+                    .filter_map(|value| value.as_str().map(ToOwned::to_owned))
+                    .collect();
+            }
+            if let Some(commands) = commands {
+                ui.commands = merge_builtin_commands(commands);
+            }
+        }
+    }
+
+    /// Publishes a locally-handled slash command as one complete text turn.
+    fn reply_local(&self, operation_id: &str, text: &str) {
+        let native = self.native();
+        emit(
+            &self.events,
+            "pi",
+            &self.session_id,
+            native.as_deref(),
+            Some(operation_id),
+            "chat.turn.started",
+            json!({}),
+        );
+        emit(
+            &self.events,
+            "pi",
+            &self.session_id,
+            native.as_deref(),
+            Some(operation_id),
+            "chat.item",
+            json!({"parts":[{"type":"text","text":text,"status":"complete"}]}),
+        );
+        emit(
+            &self.events,
+            "pi",
+            &self.session_id,
+            native.as_deref(),
+            Some(operation_id),
+            "chat.turn.completed",
+            json!({"result":{"stopReason":"end_turn"}}),
+        );
+    }
+
+    /// Executes pi's TUI-level slash commands, which `prompt` cannot run. A
+    /// name the adapter does not own returns `None` and flows through `prompt`
+    /// so extension, prompt-template, and skill commands keep working.
+    fn dispatch_slash(
+        &self,
+        text: &str,
+        operation_id: &str,
+    ) -> Result<Option<Value>, ProviderError> {
+        let Some((name, args)) = parse_slash(text) else {
+            return Ok(None);
+        };
+        let reply = match name {
+            "help" => PI_BUILTIN_COMMANDS
+                .iter()
+                .map(|(name, description)| format!("/{name} - {description}"))
+                .collect::<Vec<_>>()
+                .join("\n"),
+            "compact" => {
+                let params = if args.is_empty() {
+                    json!({})
+                } else {
+                    json!({"customInstructions":args})
+                };
+                let data = self.process.request("compact", params)?;
+                match (
+                    data.get("tokensBefore").and_then(Value::as_u64),
+                    data.get("estimatedTokensAfter").and_then(Value::as_u64),
+                ) {
+                    (Some(before), Some(after)) => {
+                        format!("Compacted the context: {before} -> {after} tokens (estimated).")
+                    }
+                    _ => "Compacted the context.".to_owned(),
+                }
+            }
+            "thinking" => {
+                if args.is_empty() {
+                    self.refresh_ui();
+                    let (current, levels) = {
+                        let ui = self.shared.ui.lock().map_err(|_| {
+                            ProviderError::new("provider_internal", "Pi UI lock poisoned")
+                        })?;
+                        (
+                            ui.state
+                                .as_ref()
+                                .and_then(|state| state.get("thinkingLevel"))
+                                .and_then(Value::as_str)
+                                .unwrap_or("off")
+                                .to_owned(),
+                            ui.thinking_levels.join(", "),
+                        )
+                    };
+                    format!("Thinking level: {current}. Available: {levels}.")
+                } else {
+                    self.process
+                        .request("set_thinking_level", json!({"level":args}))?;
+                    self.refresh_ui();
+                    format!("Thinking level set to {args}.")
+                }
+            }
+            "model" => {
+                self.refresh_ui();
+                let (current, models) = {
+                    let ui = self.shared.ui.lock().map_err(|_| {
+                        ProviderError::new("provider_internal", "Pi UI lock poisoned")
+                    })?;
+                    (
+                        ui.state
+                            .as_ref()
+                            .and_then(|state| state.get("model"))
+                            .and_then(|model| model.get("id"))
+                            .and_then(Value::as_str)
+                            .unwrap_or_default()
+                            .to_owned(),
+                        ui.models.clone(),
+                    )
+                };
+                if args.is_empty() {
+                    let mut lines = vec![format!("Current model: {current}")];
+                    for model in &models {
+                        if let Some(id) = model.get("id").and_then(Value::as_str) {
+                            let name = model.get("name").and_then(Value::as_str).unwrap_or(id);
+                            let provider = model
+                                .get("provider")
+                                .and_then(Value::as_str)
+                                .unwrap_or_default();
+                            lines.push(format!("- {name} ({provider}/{id})"));
+                        }
+                    }
+                    lines.join("\n")
+                } else if let Some(model) = models.iter().find(|model| {
+                    model.get("id").and_then(Value::as_str) == Some(args)
+                        || model.get("name").and_then(Value::as_str) == Some(args)
+                        || pi_model_value(model).as_deref() == Some(args)
+                }) {
+                    let provider = model
+                        .get("provider")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default()
+                        .to_owned();
+                    let id = model
+                        .get("id")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default()
+                        .to_owned();
+                    let name = model
+                        .get("name")
+                        .and_then(Value::as_str)
+                        .unwrap_or(&id)
+                        .to_owned();
+                    let mut params = json!({"modelId":id});
+                    if !provider.is_empty() {
+                        params["provider"] = json!(provider);
+                    }
+                    self.process.request("set_model", params)?;
+                    self.refresh_ui();
+                    format!("Model set to {name}.")
+                } else {
+                    format!("No configured model matches '{args}'.")
+                }
+            }
+            "name" => {
+                if args.is_empty() {
+                    "Usage: /name <session name>".to_owned()
+                } else {
+                    self.process
+                        .request("set_session_name", json!({"name":args}))?;
+                    format!("Session renamed to {args}.")
+                }
+            }
+            "session" => {
+                let data = self.process.request("get_session_stats", json!({}))?;
+                let mut parts = vec![format!(
+                    "Messages: {} user / {} assistant",
+                    data.get("userMessages")
+                        .and_then(Value::as_u64)
+                        .unwrap_or(0),
+                    data.get("assistantMessages")
+                        .and_then(Value::as_u64)
+                        .unwrap_or(0)
+                )];
+                if let Some(tokens) = data.pointer("/tokens/total").and_then(Value::as_u64) {
+                    parts.push(format!("Tokens: {tokens}"));
+                }
+                if let (Some(tokens), Some(window)) = (
+                    data.pointer("/contextUsage/tokens").and_then(Value::as_u64),
+                    data.pointer("/contextUsage/contextWindow")
+                        .and_then(Value::as_u64),
+                ) {
+                    parts.push(format!("Context: {tokens}/{window}"));
+                }
+                if let Some(cost) = data.get("cost").and_then(Value::as_f64) {
+                    parts.push(format!("Cost: ${cost:.4}"));
+                }
+                parts.join("\n")
+            }
+            "export" => {
+                let data = self.process.request("export_html", json!({}))?;
+                match data.get("path").and_then(Value::as_str) {
+                    Some(path) => format!("Exported the session to {path}."),
+                    None => "Exported the session.".to_owned(),
+                }
+            }
+            "new" => {
+                self.process.request("new_session", json!({}))?;
+                self.refresh_ui();
+                "Started a fresh session.".to_owned()
+            }
+            _ => return Ok(None),
+        };
+        self.reply_local(operation_id, &reply);
+        Ok(Some(json!({"turnId":operation_id})))
+    }
+}
+
+impl ChatSession for PiChat {
+    fn native_id(&self) -> Option<String> {
+        self.native()
+    }
+
+    fn is_alive(&self) -> bool {
+        self.process.is_alive()
+    }
+
+    fn send(&mut self, text: &str, operation_id: &str) -> Result<Value, ProviderError> {
+        validate_native_id(operation_id)?;
+        if self.active_turn().is_some() {
+            return Err(ProviderError::new(
+                "turn_in_progress",
+                "This Pi session already has an active turn",
+            ));
+        }
+        if let Some(result) = self.dispatch_slash(text, operation_id)? {
+            return Ok(result);
+        }
+        {
+            let mut active =
+                self.shared.active_turn.lock().map_err(|_| {
+                    ProviderError::new("provider_internal", "Pi turn lock poisoned")
+                })?;
+            *active = Some(operation_id.to_owned());
+        }
+        if let Ok(mut started) = self.shared.started.lock() {
+            *started = Some(Instant::now());
+        }
+        emit(
+            &self.events,
+            "pi",
+            &self.session_id,
+            self.native().as_deref(),
+            Some(operation_id),
+            "chat.turn.started",
+            json!({}),
+        );
+        match self.process.request("prompt", json!({"message":text})) {
+            Ok(data) => {
+                let disposition = data
+                    .get("disposition")
+                    .and_then(Value::as_str)
+                    .unwrap_or("started");
+                if disposition == "handled" {
+                    // A handled prompt starts no run, so settle it immediately.
+                    self.finish_turn("handled", None);
+                }
+                Ok(json!({"turnId":operation_id}))
+            }
+            Err(error) => {
+                if let Ok(mut active) = self.shared.active_turn.lock() {
+                    *active = None;
+                }
+                self.drain_interactions(Some(operation_id));
+                emit(
+                    &self.events,
+                    "pi",
+                    &self.session_id,
+                    self.native().as_deref(),
+                    Some(operation_id),
+                    "chat.error",
+                    json!({"code":error.code,"message":error.message}),
+                );
+                Err(error)
+            }
+        }
+    }
+
+    fn cancel(&mut self, turn_id: &str) -> Result<(), ProviderError> {
+        if self.active_turn().as_deref() != Some(turn_id) {
+            return Err(ProviderError::new(
+                "turn_not_active",
+                "The requested Pi turn is not active",
+            ));
+        }
+        self.process.request("abort", json!({}))?;
+        // `agent_settled` normally closes the turn; settle here when the
+        // process confirms idle without emitting one.
+        if self.active_turn().as_deref() == Some(turn_id) {
+            let elapsed = self
+                .shared
+                .started
+                .lock()
+                .ok()
+                .and_then(|value| *value)
+                .map(|started| started.elapsed().as_millis() as u64);
+            self.finish_turn("cancelled", elapsed);
+        }
+        Ok(())
+    }
+
+    fn approve(
+        &mut self,
+        _turn_id: &str,
+        _approval_id: &str,
+        _choice_id: &str,
+        _operation_id: &str,
+    ) -> Result<(), ProviderError> {
+        Err(ProviderError::new(
+            "approval_unsupported",
+            "Pi runs its tools without an interactive approval channel",
+        ))
+    }
+
+    fn answer(
+        &mut self,
+        turn_id: &str,
+        approval_id: &str,
+        response: &Value,
+        operation_id: &str,
+    ) -> Result<(), ProviderError> {
+        use crate::{
+            chat_questions::{answer_summary, validate_response},
+            providers::approval::{validate_turn, write_failed_not_sent},
+        };
+        // Resolve transport ownership before taking the turn lock. Extension
+        // callbacks take `control` before reaching this path, so keeping this
+        // order avoids a control/turn lock inversion.
+        let responder = pi_responder(&self.shared)?;
+        let active = self
+            .shared
+            .active_turn
+            .lock()
+            .map_err(|_| ProviderError::new("provider_internal", "Pi turn lock poisoned"))?;
+        let mut interactions =
+            self.shared.interactions.lock().map_err(|_| {
+                ProviderError::new("provider_internal", "Pi interaction lock poisoned")
+            })?;
+        let interaction = interactions.get_mut(approval_id).ok_or_else(|| {
+            ProviderError::new(
+                "approval_not_pending",
+                "Pi dialog is unknown or already resolved",
+            )
+        })?;
+        validate_turn(Some(&interaction.turn_id), active.as_deref(), turn_id)?;
+        // Pi input/editor prompts are optional. The card may omit an untouched
+        // optional value, while Pi still expects `value` for a submitted
+        // response; submit the documented empty string in that case.
+        let normalized_response = if matches!(
+            interaction.data.get("piMethod").and_then(Value::as_str),
+            Some("input" | "editor")
+        ) && response.get("action").and_then(Value::as_str)
+            == Some("submit")
+            && response.get("values").is_none_or(Value::is_object)
+            && response.pointer("/values/value").is_none()
+        {
+            let mut normalized = response.clone();
+            if normalized.get("values").is_none() {
+                normalized["values"] = json!({});
+            }
+            normalized["values"]["value"] = json!("");
+            Some(normalized)
+        } else {
+            None
+        };
+        let response = normalized_response.as_ref().unwrap_or(response);
+        validate_response(&interaction.data, response)?;
+        // Do all fallible conversion before claiming the interaction. In
+        // particular, optional Pi input fields still need a concrete value
+        // when the user submits rather than dismisses.
+        let frame = pi_extension_response(approval_id, &interaction.data, response)?;
+        let status = if response.get("action").and_then(Value::as_str) == Some("dismiss") {
+            "dismissed"
+        } else {
+            "answered"
+        };
+        let summary = answer_summary(&interaction.data, response);
+        match interaction.state.begin_submit(operation_id) {
+            Ok(()) => {}
+            Err(error) if error.code == "approval_duplicate" => return Ok(()),
+            Err(error) => return Err(error),
+        }
+        drop(interactions);
+        drop(active);
+        let result = responder.notification("extension_ui_response", frame);
+        let mut interactions =
+            self.shared.interactions.lock().map_err(|_| {
+                ProviderError::new("provider_internal", "Pi interaction lock poisoned")
+            })?;
+        match result {
+            Ok(()) => {
+                interactions.remove(approval_id);
+                pi_remember_resolved(&self.shared, approval_id);
+                emit(
+                    &self.events,
+                    "pi",
+                    &self.session_id,
+                    self.native().as_deref(),
+                    Some(turn_id),
+                    "chat.approval.resolved",
+                    json!({"approvalId":approval_id,"status":status,"outcome":"submitted","answerSummary":summary}),
+                );
+                Ok(())
+            }
+            Err(error) if write_failed_not_sent(&error) => {
+                if let Some(interaction) = interactions.get_mut(approval_id) {
+                    interaction.state.clear_submit();
+                }
+                Err(error)
+            }
+            Err(error) => {
+                if let Some(interaction) = interactions.get_mut(approval_id) {
+                    interaction.state.mark_unknown();
+                }
+                emit(
+                    &self.events,
+                    "pi",
+                    &self.session_id,
+                    self.native().as_deref(),
+                    Some(turn_id),
+                    "chat.approval.resolved",
+                    json!({"approvalId":approval_id,"status":"outcomeUnknown","outcome":"unknown"}),
+                );
+                Err(ProviderError::new(
+                    "approval_outcome_unknown",
+                    error.message,
+                ))
+            }
+        }
+    }
+
+    fn stop(&mut self) -> Result<(), ProviderError> {
+        let active = self.active_turn();
+        if active.is_some() {
+            let _ = self.process.request("abort", json!({}));
+        }
+        self.drain_interactions(active.as_deref());
+        Ok(())
+    }
+
+    fn ui_state(&self) -> Value {
+        match self.shared.ui.lock() {
+            Ok(ui) => pi_ui_state(&ui),
+            Err(_) => json!({"options":[],"commands":[]}),
+        }
+    }
+
+    fn set_option(&mut self, option_id: &str, value: &str) -> Result<Value, ProviderError> {
+        match option_id {
+            "model" => {
+                let (provider, model_id) = match value.split_once(PI_MODEL_SEPARATOR) {
+                    Some((provider, model)) => (provider.to_owned(), model.to_owned()),
+                    None => (String::new(), value.to_owned()),
+                };
+                let mut params = json!({"modelId":model_id});
+                if !provider.is_empty() {
+                    params["provider"] = json!(provider);
+                }
+                self.process.request("set_model", params)?;
+                // The new model can change the supported thinking levels and
+                // clamp the current level, so re-read the whole snapshot.
+                self.refresh_ui();
+            }
+            "thinking" => {
+                self.process
+                    .request("set_thinking_level", json!({"level":value}))?;
+                self.refresh_ui();
+            }
+            other => {
+                return Err(ProviderError::new(
+                    "chat_option_unknown",
+                    format!("Pi has no chat option named {other}"),
+                ))
+            }
+        }
+        Ok(self.ui_state())
+    }
+}
+
+fn pi_responder(shared: &PiShared) -> Result<JsonLineResponder, ProviderError> {
+    shared
+        .control
+        .lock()
+        .map_err(|_| ProviderError::new("provider_internal", "Pi control lock poisoned"))?
+        .responder
+        .clone()
+        .ok_or_else(|| {
+            ProviderError::new("provider_disconnected", "Pi RPC responder is unavailable")
+        })
+}
+
+fn pi_interaction_resolved(shared: &PiShared, id: &str) -> bool {
+    shared
+        .resolved_interactions
+        .lock()
+        .map(|ids| ids.iter().any(|resolved| resolved == id))
+        // Failing closed avoids reopening a card when duplicate fencing state
+        // cannot be inspected.
+        .unwrap_or(true)
+}
+
+/// Call while holding the interaction lock when removal and fencing must be
+/// atomic with respect to a duplicate extension request.
+fn pi_remember_resolved(shared: &PiShared, id: &str) {
+    let Ok(mut ids) = shared.resolved_interactions.lock() else {
+        return;
+    };
+    if ids.iter().any(|resolved| resolved == id) {
+        return;
+    }
+    ids.push_back(id.to_owned());
+    if ids.len() > RESOLVED_UI_IDS {
+        ids.pop_front();
+    }
+}
+
+fn pi_extension_data(raw: &Value) -> Option<Value> {
+    let method = raw.get("method").and_then(Value::as_str)?;
+    let title = raw
+        .get("title")
+        .and_then(Value::as_str)
+        .unwrap_or("Pi extension request");
+    let message = raw.get("message").and_then(Value::as_str).unwrap_or(title);
+    let data = match method {
+        "select" => {
+            let options = raw.get("options").and_then(Value::as_array)?;
+            let options = options
+                .iter()
+                .filter_map(Value::as_str)
+                .map(|label| json!({"label":label}))
+                .collect::<Vec<_>>();
+            if options.is_empty() {
+                return None;
+            }
+            json!({"interaction":"question","answerable":true,"form":{"kind":"questions","questions":[{
+                "id":"value","header":title,"question":message,"options":options,
+                "multiSelect":false,"allowOther":false,"secret":false
+            }]}})
+        }
+        "confirm" => {
+            json!({"interaction":"question","answerable":true,"form":{"kind":"form","message":message,"fields":[{
+                "id":"value","title":title,"description":message,"type":"boolean","required":true,"default":false,
+                "minimum":null,"maximum":null,"minLength":null,"maxLength":null,"format":null,"minItems":null,"maxItems":null
+            }]}})
+        }
+        "input" | "editor" => {
+            json!({"interaction":"question","answerable":true,"form":{"kind":"form","message":message,"fields":[{
+                "id":"value","title":title,"description":raw.get("placeholder").or_else(|| raw.get("prefill")).and_then(Value::as_str),
+                "type":"string","required":false,"default":raw.get("prefill").cloned().unwrap_or_else(|| json!("")),"multiline":method == "editor",
+                "minimum":null,"maximum":null,"minLength":null,"maxLength":null,"format":null,"minItems":null,"maxItems":null
+            }]}})
+        }
+        _ => return None,
+    };
+    Some(data)
+}
+
+fn pi_extension_response(id: &str, data: &Value, response: &Value) -> Result<Value, ProviderError> {
+    if response.get("action").and_then(Value::as_str) == Some("dismiss") {
+        return Ok(json!({"id":id,"cancelled":true}));
+    }
+    let value = response
+        .pointer("/values/value")
+        .ok_or_else(|| ProviderError::new("answer_invalid", "Pi dialog response has no value"))?;
+    let method = data
+        .get("piMethod")
+        .and_then(Value::as_str)
+        .ok_or_else(|| {
+            ProviderError::new("provider_internal", "Pi dialog method is unavailable")
+        })?;
+    match method {
+        "select" => {
+            let selected = value
+                .as_array()
+                .and_then(|values| values.first())
+                .and_then(Value::as_str)
+                .ok_or_else(|| ProviderError::new("answer_invalid", "Pi select needs one value"))?;
+            Ok(json!({"id":id,"value":selected}))
+        }
+        "confirm" => value
+            .as_bool()
+            .map(|confirmed| json!({"id":id,"confirmed":confirmed}))
+            .ok_or_else(|| ProviderError::new("answer_invalid", "Pi confirm needs a boolean")),
+        "input" | "editor" => value
+            .as_str()
+            .map(|value| json!({"id":id,"value":value}))
+            .ok_or_else(|| ProviderError::new("answer_invalid", "Pi input needs text")),
+        _ => Err(ProviderError::new(
+            "provider_internal",
+            "unsupported Pi dialog method",
+        )),
+    }
+}
+
+fn pi_extension_request(
+    events: &ScopedProviderEvents,
+    session_id: &str,
+    native_id: Option<&str>,
+    turn_id: Option<&str>,
+    shared: &PiShared,
+    responder: &JsonLineResponder,
+    raw: Value,
+) {
+    let Some(id) = raw
+        .get("id")
+        .and_then(Value::as_str)
+        .filter(|id| !id.is_empty())
+    else {
+        return;
+    };
+    if pi_interaction_resolved(shared, id) {
+        return;
+    }
+    let method = raw
+        .get("method")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    let Some(mut data) = pi_extension_data(&raw) else {
+        if matches!(
+            method,
+            "notify" | "setStatus" | "setWidget" | "setTitle" | "set_editor_text"
+        ) {
+            let text = raw
+                .get("message")
+                .or_else(|| raw.get("statusText"))
+                .or_else(|| raw.get("title"))
+                .or_else(|| raw.get("text"))
+                .and_then(Value::as_str)
+                .unwrap_or("Pi extension update");
+            emit(
+                events,
+                "pi",
+                session_id,
+                native_id,
+                turn_id,
+                "chat.item",
+                json!({"parts":[{"type":"text","text":text,"status":"complete"}],"raw":raw}),
+            );
+        } else {
+            // Unknown UI methods may be blocking in a newer Pi. Refuse them on
+            // their original id so an unrecognized extension cannot stall a turn.
+            let _ =
+                responder.notification("extension_ui_response", json!({"id":id,"cancelled":true}));
+        }
+        return;
+    };
+    let Some(turn_id) = turn_id else {
+        let _ = responder.notification("extension_ui_response", json!({"id":id,"cancelled":true}));
+        return;
+    };
+    data["approvalId"] = json!(id);
+    data["provider"] = json!("pi");
+    data["requestType"] = json!("extension_ui_request");
+    data["title"] = raw
+        .get("title")
+        .cloned()
+        .unwrap_or_else(|| json!("Pi extension request"));
+    data["turnId"] = json!(turn_id);
+    data["raw"] = raw.clone();
+    data["piMethod"] = json!(method);
+    // The event dispatcher observes an active turn before calling us, but a
+    // settle/cancel event can win the race before this request is published.
+    // Hold the turn guard through insertion and emission, using the shared
+    // active-turn -> interactions ordering, so draining cannot leave a stale
+    // question card behind a completed turn.
+    let active = match shared.active_turn.lock() {
+        Ok(active) => active,
+        Err(_) => {
+            let _ =
+                responder.notification("extension_ui_response", json!({"id":id,"cancelled":true}));
+            return;
+        }
+    };
+    if active.as_deref() != Some(turn_id) {
+        drop(active);
+        let _ = responder.notification("extension_ui_response", json!({"id":id,"cancelled":true}));
+        return;
+    }
+    let inserted = match shared.interactions.lock() {
+        Ok(mut interactions) => {
+            // Recheck under the same lock used by resolution/removal. The early
+            // check alone can race an answer between lookup and publication.
+            if interactions.contains_key(id) || pi_interaction_resolved(shared, id) {
+                false
+            } else {
+                interactions.insert(
+                    id.to_owned(),
+                    PiInteraction {
+                        turn_id: turn_id.to_owned(),
+                        data: data.clone(),
+                        state: Default::default(),
+                    },
+                );
+                true
+            }
+        }
+        Err(_) => {
+            drop(active);
+            let _ =
+                responder.notification("extension_ui_response", json!({"id":id,"cancelled":true}));
+            return;
+        }
+    };
+    if !inserted {
+        return;
+    }
+    emit(
+        events,
+        "pi",
+        session_id,
+        native_id,
+        Some(turn_id),
+        "chat.approval",
+        json!({
+            "approvalId":id,"request":raw,"choices":[],
+            "part":{"type":"approval","approvalId":id,"status":"pending","data":data}
+        }),
+    );
+}
+
+fn pi_drain_interactions(
+    events: &ScopedProviderEvents,
+    session_id: &str,
+    native_id: Option<&str>,
+    shared: &PiShared,
+    turn_id: Option<&str>,
+) {
+    let drained = match shared.interactions.lock() {
+        Ok(mut interactions) => match shared.resolved_interactions.lock() {
+            Ok(mut resolved) => {
+                let ids = interactions
+                    .iter()
+                    .filter(|(_, interaction)| {
+                        interaction.state.submitting_operation.is_none()
+                            && !interaction.state.outcome_unknown
+                            && turn_id.is_none_or(|turn| interaction.turn_id == turn)
+                    })
+                    .map(|(id, _)| id.clone())
+                    .collect::<Vec<_>>();
+                ids.into_iter()
+                    .filter_map(|id| {
+                        interactions.remove(&id).map(|interaction| {
+                            if !resolved.iter().any(|known| known == &id) {
+                                resolved.push_back(id.clone());
+                                if resolved.len() > RESOLVED_UI_IDS {
+                                    resolved.pop_front();
+                                }
+                            }
+                            (id, interaction.turn_id)
+                        })
+                    })
+                    .collect::<Vec<_>>()
+            }
+            Err(_) => Vec::new(),
+        },
+        Err(_) => Vec::new(),
+    };
+    let responder = pi_responder(shared).ok();
+    for (id, interaction_turn) in drained {
+        if let Some(responder) = &responder {
+            let _ =
+                responder.notification("extension_ui_response", json!({"id":id,"cancelled":true}));
+        }
+        emit(
+            events,
+            "pi",
+            session_id,
+            native_id,
+            Some(&interaction_turn),
+            "chat.approval.resolved",
+            json!({"approvalId":id,"status":"expired","outcome":"cancelled"}),
+        );
+    }
+}
+
+/// Translates one `pi --mode rpc` record into provider events.
+fn pi_event(
+    events: &ScopedProviderEvents,
+    provider: &str,
+    session_id: &str,
+    shared: &PiShared,
+    raw: Value,
+) {
+    let native_id = shared.native_id.lock().ok().and_then(|value| value.clone());
+    let turn_id = shared
+        .active_turn
+        .lock()
+        .ok()
+        .and_then(|value| value.clone());
+    let emit = |kind: &str, data: Value| {
+        emit(
+            events,
+            provider,
+            session_id,
+            native_id.as_deref(),
+            turn_id.as_deref(),
+            kind,
+            data,
+        );
+    };
+    let record_type = raw.get("type").and_then(Value::as_str).unwrap_or_default();
+    // Pi may flush stdout after a turn has settled (notably after accepting a
+    // cancellation response). Those records no longer have an owning turn;
+    // projecting them makes the chat layer create a phantom current assistant
+    // item and can carry an old error into the next turn.
+    if turn_id.is_none()
+        && matches!(
+            record_type,
+            "agent_start"
+                | "message_update"
+                | "message_end"
+                | "tool_execution_start"
+                | "tool_execution_update"
+                | "tool_execution_end"
+                | "error"
+        )
+    {
+        return;
+    }
+    match record_type {
+        "extension_ui_request" => {
+            let responder = {
+                let mut control = match shared.control.lock() {
+                    Ok(control) => control,
+                    Err(_) => return,
+                };
+                let Some(responder) = control.responder.clone() else {
+                    control.queued_ui.push(raw);
+                    return;
+                };
+                responder
+            };
+            pi_extension_request(
+                events,
+                session_id,
+                native_id.as_deref(),
+                turn_id.as_deref(),
+                shared,
+                &responder,
+                raw,
+            );
+        }
+        "session" => {
+            if let Some(id) = raw.get("id").and_then(Value::as_str) {
+                if let Ok(mut value) = shared.native_id.lock() {
+                    *value = Some(id.to_owned());
+                }
+            }
+        }
+        "message_update" => {
+            let update = raw
+                .get("assistantMessageEvent")
+                .cloned()
+                .unwrap_or(Value::Null);
+            if update.get("type").and_then(Value::as_str) == Some("error") {
+                let message = update
+                    .get("error")
+                    .and_then(Value::as_str)
+                    .map(ToOwned::to_owned)
+                    .unwrap_or_else(|| "The Pi turn failed".to_owned());
+                if let Ok(mut slot) = shared.pending_error.lock() {
+                    *slot = Some(json!({"code":"provider_error","message":message}));
+                }
+                return;
+            }
+            let (part_type, delta) = match update.get("type").and_then(Value::as_str) {
+                Some("text_delta") => ("text", update.get("delta").and_then(Value::as_str)),
+                Some("thinking_delta") => ("thinking", update.get("delta").and_then(Value::as_str)),
+                _ => ("", None),
+            };
+            if let Some(delta) = delta.filter(|value| !value.is_empty()) {
+                emit(
+                    "chat.delta",
+                    json!({"part":{"type":part_type,"text":delta,"status":"streaming"},"raw":raw}),
+                );
+            }
+        }
+        "tool_execution_start" | "tool_execution_update" | "tool_execution_end" => {
+            let kind = raw.get("type").and_then(Value::as_str).unwrap_or_default();
+            let Some(tool_id) = raw.get("toolCallId").and_then(Value::as_str) else {
+                return;
+            };
+            let status = match kind {
+                "tool_execution_end" => {
+                    if raw.get("isError").and_then(Value::as_bool) == Some(true) {
+                        "failed"
+                    } else {
+                        "complete"
+                    }
+                }
+                _ => "running",
+            };
+            let mut part = json!({
+                "type":"tool",
+                "toolId":tool_id,
+                "status":status,
+                "data":raw
+            });
+            if let Some(name) = raw.get("toolName").and_then(Value::as_str) {
+                part["toolName"] = json!(name);
+            }
+            crate::file_references::enrich_tool_part(&mut part, None);
+            emit(
+                "chat.item",
+                json!({"item":{"id":tool_id},"merge":true,"part":part}),
+            );
+        }
+        "message_end" => {
+            let message = raw.get("message").cloned().unwrap_or(Value::Null);
+            if message.get("role").and_then(Value::as_str) != Some("assistant") {
+                return;
+            }
+            let stop_reason = message
+                .get("stopReason")
+                .and_then(Value::as_str)
+                .unwrap_or("end_turn");
+            // A failed attempt may still be retried, so record it instead of
+            // publishing a permanent error. `agent_settled` publishes it only
+            // when the turn truly ends in that state; a later success clears it.
+            let pending = if stop_reason == "error" {
+                let text = pi_message_text(&message).0;
+                let message_text = if !text.is_empty() {
+                    text
+                } else {
+                    message
+                        .get("errorMessage")
+                        .and_then(Value::as_str)
+                        .map(ToOwned::to_owned)
+                        .unwrap_or_else(|| "The Pi turn failed".to_owned())
+                };
+                Some(json!({"code":"provider_error","message":message_text}))
+            } else {
+                None
+            };
+            if let Ok(mut slot) = shared.pending_error.lock() {
+                *slot = pending;
+            }
+        }
+        "agent_settled" => {
+            let aborted = raw.get("aborted").and_then(Value::as_bool) == Some(true);
+            if let Ok(mut active) = shared.active_turn.lock() {
+                if let Some(settled_turn) = active.take() {
+                    drop(active);
+                    pi_drain_interactions(
+                        events,
+                        session_id,
+                        native_id.as_deref(),
+                        shared,
+                        Some(&settled_turn),
+                    );
+                    let pending = shared
+                        .pending_error
+                        .lock()
+                        .ok()
+                        .and_then(|mut slot| slot.take());
+                    if !aborted {
+                        if let Some(error) = pending {
+                            emit("chat.error", error);
+                        }
+                    }
+                    let mut data = json!({
+                        "result":{"stopReason":if aborted {"cancelled"} else {"end_turn"}}
+                    });
+                    if let Some(elapsed) = shared
+                        .started
+                        .lock()
+                        .ok()
+                        .and_then(|value| *value)
+                        .map(|started| started.elapsed().as_millis() as u64)
+                    {
+                        data["elapsedMs"] = json!(elapsed);
+                    }
+                    emit("chat.turn.completed", data);
+                }
+            }
+        }
+        "error" => {
+            let message = raw
+                .get("message")
+                .or_else(|| raw.get("error"))
+                .and_then(Value::as_str)
+                .unwrap_or("The Pi runtime reported an error")
+                .to_owned();
+            if let Ok(mut slot) = shared.pending_error.lock() {
+                *slot = Some(json!({"code":"provider_error","message":message}));
+            }
+        }
+        "thinking_level_changed" => {
+            if let Some(level) = raw.get("level").and_then(Value::as_str) {
+                if let Ok(mut ui) = shared.ui.lock() {
+                    if let Some(state) = ui.state.as_mut() {
+                        state["thinkingLevel"] = json!(level);
+                    }
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Builds the `ChatUiState` payload. The protocol requires `value` and
+/// `choices` on every option and forbids additional properties.
+fn pi_ui_state(ui: &PiUi) -> Value {
+    let current_model = ui
+        .state
+        .as_ref()
+        .and_then(|state| state.get("model"))
+        .and_then(pi_model_choice)
+        .and_then(|choice| {
+            choice
+                .get("value")
+                .and_then(Value::as_str)
+                .map(ToOwned::to_owned)
+        })
+        .unwrap_or_default();
+    let mut options = vec![json!({
+        "id":"model",
+        "name":"Model",
+        "value":current_model,
+        "choices":ui.models.iter().filter_map(pi_model_choice).collect::<Vec<_>>()
+    })];
+    if !ui.thinking_levels.is_empty() {
+        let current = ui
+            .state
+            .as_ref()
+            .and_then(|state| state.get("thinkingLevel"))
+            .and_then(Value::as_str)
+            .unwrap_or("off");
+        let choices = ui
+            .thinking_levels
+            .iter()
+            .map(|level| json!({"value":level,"name":level}))
+            .collect::<Vec<_>>();
+        options.push(json!({
+            "id":"thinking",
+            "name":"Thinking",
+            "value":current,
+            "choices":choices
+        }));
+    }
+    let commands = ui
+        .commands
+        .iter()
+        .filter_map(|command| {
+            let name = command.get("name").and_then(Value::as_str)?;
+            Some(json!({
+                "name":name,
+                "description":command.get("description").and_then(Value::as_str).unwrap_or("")
+            }))
+        })
+        .collect::<Vec<_>>();
+    json!({"options":options,"commands":commands})
+}
+
+fn parse_slash(text: &str) -> Option<(&str, &str)> {
+    let rest = text.trim().strip_prefix('/')?;
+    if rest.is_empty() || rest.starts_with('/') {
+        return None;
+    }
+    Some(match rest.split_once(char::is_whitespace) {
+        Some((name, args)) => (name, args.trim()),
+        None => (rest, ""),
+    })
+}
+
+/// Adds pi's TUI-only commands to the adapter-advertised list without hiding a
+/// same-named extension/prompt/skill command reported by `get_commands`.
+fn merge_builtin_commands(mut commands: Vec<Value>) -> Vec<Value> {
+    for (name, description) in PI_BUILTIN_COMMANDS {
+        if !commands
+            .iter()
+            .any(|command| command.get("name").and_then(Value::as_str) == Some(*name))
+        {
+            commands.push(json!({"name":name,"description":description}));
+        }
+    }
+    commands
+}
+
+/// Encodes a model choice value as `provider<US>id`, or the bare id when pi
+/// reports no provider.
+fn pi_model_value(model: &Value) -> Option<String> {
+    let id = model.get("id").and_then(Value::as_str)?;
+    match model
+        .get("provider")
+        .and_then(Value::as_str)
+        .filter(|provider| !provider.is_empty())
+    {
+        Some(provider) => Some(format!("{provider}{PI_MODEL_SEPARATOR}{id}")),
+        None => Some(id.to_owned()),
+    }
+}
+
+fn pi_model_choice(model: &Value) -> Option<Value> {
+    let id = model.get("id").and_then(Value::as_str)?;
+    let value = pi_model_value(model)?;
+    let name = model.get("name").and_then(Value::as_str).unwrap_or(id);
+    Some(json!({"value":value,"name":name}))
+}
+
+/// Extracts text and thinking from one Pi message payload.
+fn pi_message_text(message: &Value) -> (String, String) {
+    let content = message.get("content").unwrap_or(message);
+    let mut text = String::new();
+    let mut thinking = String::new();
+    if let Some(value) = content.as_str() {
+        text.push_str(value);
+    } else if let Some(blocks) = content.as_array() {
+        for block in blocks {
+            match block.get("type").and_then(Value::as_str) {
+                Some("text") => {
+                    if let Some(value) = block.get("text").and_then(Value::as_str) {
+                        if !text.is_empty() {
+                            text.push('\n');
+                        }
+                        text.push_str(value);
+                    }
+                }
+                Some("thinking") => {
+                    if let Some(value) = block.get("thinking").and_then(Value::as_str) {
+                        if !thinking.is_empty() {
+                            thinking.push('\n');
+                        }
+                        thinking.push_str(value);
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    (text, thinking)
+}
+
+fn pi_transcript(text: &str) -> Vec<Value> {
+    let entries = text
+        .lines()
+        .filter_map(|line| serde_json::from_str::<Value>(line.trim()).ok())
+        .collect::<Vec<_>>();
+    let entries = pi_active_branch(entries);
+    let mut out = Vec::new();
+    for (index, value) in entries.into_iter().enumerate() {
+        if value.get("type").and_then(Value::as_str) != Some("message") {
+            continue;
+        }
+        let message = value.get("message").cloned().unwrap_or(Value::Null);
+        let role = message
+            .get("role")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        if role != "user" && role != "assistant" {
+            continue;
+        }
+        let (text, thinking) = pi_message_text(&message);
+        let mut parts = Vec::new();
+        if !thinking.is_empty() {
+            parts.push(json!({"type":"thinking","text":thinking}));
+        }
+        if !text.is_empty() {
+            parts.push(json!({"type":"text","text":text}));
+        }
+        if parts.is_empty() {
+            continue;
+        }
+        out.push(json!({
+            "id":format!("pi-{index}"),
+            "role":role,
+            "parts":parts,
+            "createdAt":value.get("timestamp").and_then(Value::as_str).unwrap_or_default()
+        }));
+    }
+    out
+}
+
+/// Pi v2+ sessions are append-only trees. The session manager restores the
+/// last appended entry as its active leaf, then follows `parentId` to root.
+/// Legacy entries without a complete id chain remain linear.
+fn pi_active_branch(entries: Vec<Value>) -> Vec<Value> {
+    let indexed = entries
+        .iter()
+        .filter_map(|entry| {
+            entry
+                .get("id")
+                .and_then(Value::as_str)
+                .map(|id| (id.to_owned(), entry.clone()))
+        })
+        .collect::<HashMap<_, _>>();
+    let Some(leaf) = entries
+        .iter()
+        .rev()
+        .find(|entry| entry.get("type").and_then(Value::as_str) != Some("session"))
+    else {
+        return Vec::new();
+    };
+    let Some(mut id) = leaf
+        .get("id")
+        .and_then(Value::as_str)
+        .map(ToOwned::to_owned)
+    else {
+        return entries;
+    };
+    let mut branch = Vec::new();
+    let mut seen = HashSet::new();
+    loop {
+        if !seen.insert(id.clone()) {
+            return Vec::new();
+        }
+        let Some(entry) = indexed.get(&id).cloned() else {
+            // A modern session with a missing parent must not silently import
+            // every branch. Pi itself cannot reconstruct this active path.
+            return Vec::new();
+        };
+        let parent = entry
+            .get("parentId")
+            .and_then(Value::as_str)
+            .map(ToOwned::to_owned);
+        branch.push(entry);
+        let Some(parent) = parent else {
+            break;
+        };
+        id = parent;
+    }
+    branch.reverse();
+    branch
+}
+
+/// `~/.pi/agent`, honouring the documented environment override.
+fn pi_agent_dir() -> Option<PathBuf> {
+    if let Some(dir) = std::env::var_os("PI_CODING_AGENT_DIR") {
+        return Some(PathBuf::from(dir));
+    }
+    let home = std::env::var_os("USERPROFILE").or_else(|| std::env::var_os("HOME"))?;
+    Some(PathBuf::from(home).join(".pi").join("agent"))
+}
+
+fn pi_sessions_dir() -> Result<PathBuf, ProviderError> {
+    let agent = pi_agent_dir().ok_or_else(|| {
+        ProviderError::new(
+            "provider_unavailable",
+            "The Pi configuration directory could not be resolved",
+        )
+    })?;
+    Ok(pi_sessions_dir_for(
+        &agent,
+        std::env::var_os("PI_CODING_AGENT_SESSION_DIR"),
+    ))
+}
+
+fn pi_sessions_dir_for(agent: &Path, override_dir: Option<std::ffi::OsString>) -> PathBuf {
+    if let Some(directory) = override_dir.filter(|directory| !directory.is_empty()) {
+        return PathBuf::from(directory);
+    }
+    pi_settings_session_dir(agent).unwrap_or_else(|| agent.join("sessions"))
+}
+
+fn pi_settings_session_dir(agent: &Path) -> Option<PathBuf> {
+    let raw = fs::read_to_string(agent.join("settings.json")).ok()?;
+    let value: Value = serde_json::from_str(&raw).ok()?;
+    let configured = value.get("sessionDir").and_then(Value::as_str)?.trim();
+    if configured.is_empty() {
+        return None;
+    }
+    let path = PathBuf::from(configured);
+    Some(if path.is_absolute() {
+        path
+    } else {
+        agent.join(path)
+    })
+}
+
+fn walk_jsonl(directory: &Path, out: &mut Vec<PathBuf>, budget: usize) {
+    if out.len() >= budget {
+        return;
+    }
+    let Ok(entries) = fs::read_dir(directory) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        if out.len() >= budget {
+            return;
+        }
+        let path = entry.path();
+        let Ok(kind) = entry.file_type() else {
+            continue;
+        };
+        if kind.is_dir() {
+            walk_jsonl(&path, out, budget);
+        } else if path.extension().and_then(|value| value.to_str()) == Some("jsonl") {
+            out.push(path);
+        }
+    }
+}
+
+fn read_bounded(path: &Path, maximum: u64, tail: bool) -> Option<String> {
+    let mut file = fs::File::open(path).ok()?;
+    if tail {
+        let length = file.metadata().ok()?.len();
+        file.seek(SeekFrom::Start(length.saturating_sub(maximum)))
+            .ok()?;
+    }
+    let mut buffer = Vec::new();
+    file.take(maximum).read_to_end(&mut buffer).ok()?;
+    Some(String::from_utf8_lossy(&buffer).into_owned())
+}
+
+fn pi_session_identity(path: &Path) -> Option<(String, String)> {
+    let head = read_bounded(path, HEAD_BYTES, false)?;
+    let line = head.lines().next()?;
+    let value: Value = serde_json::from_str(line).ok()?;
+    if value.get("type").and_then(Value::as_str) != Some("session") {
+        return None;
+    }
+    let id = value.get("id").and_then(Value::as_str)?.to_owned();
+    let cwd = value.get("cwd").and_then(Value::as_str)?.to_owned();
+    Some((id, cwd))
+}
+
+fn pi_tail_title(tail: &str) -> Option<String> {
+    for line in tail.lines().rev() {
+        let Ok(value) = serde_json::from_str::<Value>(line.trim()) else {
+            continue;
+        };
+        if value.get("type").and_then(Value::as_str) == Some("session_info") {
+            if let Some(name) = value.get("name").and_then(Value::as_str) {
+                if !name.trim().is_empty() {
+                    return Some(name.trim().to_owned());
+                }
+            }
+        }
+    }
+    None
+}
+
+fn pi_tail_updated_at(tail: &str) -> Option<String> {
+    for line in tail.lines().rev() {
+        let Ok(value) = serde_json::from_str::<Value>(line.trim()) else {
+            continue;
+        };
+        if value.get("type").and_then(Value::as_str) == Some("message") {
+            if let Some(timestamp) = value.get("timestamp").and_then(Value::as_str) {
+                return Some(timestamp.to_owned());
+            }
+        }
+    }
+    None
+}
+
+fn file_timestamp(path: &Path) -> String {
+    fs::metadata(path)
+        .and_then(|metadata| metadata.modified())
+        .map(DateTime::<Utc>::from)
+        .unwrap_or_else(|_| SystemTime::now().into())
+        .to_rfc3339()
+}
+
+#[cfg(not(windows))]
+fn same_path(left: &str, right: &str) -> bool {
+    left == right
+}
+
+#[cfg(windows)]
+fn same_path(left: &str, right: &str) -> bool {
+    left.replace('/', "\\")
+        .eq_ignore_ascii_case(&right.replace('/', "\\"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::provider_events::tap_channel;
+
+    fn scoped() -> (
+        ScopedProviderEvents,
+        tokio::sync::broadcast::Receiver<super::super::ProviderEvent>,
+    ) {
+        let (sender, receiver) = tap_channel(16);
+        (ScopedProviderEvents::new(sender, "worker"), receiver)
+    }
+
+    #[test]
+    fn text_and_thinking_deltas_stream_as_chat_parts() {
+        let (events, mut receiver) = scoped();
+        let shared = PiShared::default();
+        *shared.active_turn.lock().unwrap() = Some("turn-1".into());
+        pi_event(
+            &events,
+            "pi",
+            "session",
+            &shared,
+            json!({"type":"message_update","assistantMessageEvent":{"type":"text_delta","delta":"Hello"}}),
+        );
+        pi_event(
+            &events,
+            "pi",
+            "session",
+            &shared,
+            json!({"type":"message_update","assistantMessageEvent":{"type":"thinking_delta","delta":"Hmm"}}),
+        );
+        let text = receiver.try_recv().unwrap();
+        assert_eq!(text.kind, "chat.delta");
+        assert_eq!(text.data["part"]["type"], "text");
+        assert_eq!(text.data["part"]["text"], "Hello");
+        assert_eq!(text.turn_id.as_deref(), Some("turn-1"));
+        let thinking = receiver.try_recv().unwrap();
+        assert_eq!(thinking.data["part"]["type"], "thinking");
+    }
+
+    #[test]
+    fn empty_and_unknown_updates_do_not_emit() {
+        let (events, mut receiver) = scoped();
+        let shared = PiShared::default();
+        pi_event(
+            &events,
+            "pi",
+            "session",
+            &shared,
+            json!({"type":"message_update","assistantMessageEvent":{"type":"text_delta","delta":""}}),
+        );
+        pi_event(
+            &events,
+            "pi",
+            "session",
+            &shared,
+            json!({"type":"message_update","assistantMessageEvent":{"type":"start"}}),
+        );
+        assert!(receiver.try_recv().is_err());
+    }
+
+    #[test]
+    fn late_turn_scoped_records_do_not_project_or_poison_the_next_turn() {
+        let (events, mut receiver) = scoped();
+        let shared = PiShared::default();
+        for record in [
+            json!({"type":"message_update","assistantMessageEvent":{"type":"text_delta","delta":"late"}}),
+            json!({"type":"tool_execution_start","toolCallId":"late-tool","toolName":"bash"}),
+            json!({"type":"message_end","message":{"role":"assistant","stopReason":"error","errorMessage":"late failure"}}),
+            json!({"type":"error","message":"late runtime failure"}),
+        ] {
+            pi_event(&events, "pi", "session", &shared, record);
+        }
+        assert!(receiver.try_recv().is_err());
+        assert!(shared.pending_error.lock().unwrap().is_none());
+    }
+
+    #[test]
+    fn agent_settled_completes_the_active_turn_once() {
+        let (events, mut receiver) = scoped();
+        let shared = PiShared::default();
+        *shared.active_turn.lock().unwrap() = Some("turn-1".into());
+        pi_event(
+            &events,
+            "pi",
+            "session",
+            &shared,
+            json!({"type":"agent_settled"}),
+        );
+        pi_event(
+            &events,
+            "pi",
+            "session",
+            &shared,
+            json!({"type":"agent_settled"}),
+        );
+        let completed = receiver.try_recv().unwrap();
+        assert_eq!(completed.kind, "chat.turn.completed");
+        assert_eq!(completed.data["result"]["stopReason"], "end_turn");
+        assert!(
+            receiver.try_recv().is_err(),
+            "a settled turn must not complete twice"
+        );
+        assert!(shared.active_turn.lock().unwrap().is_none());
+    }
+
+    #[test]
+    fn aborted_agent_settled_reports_a_cancelled_turn() {
+        let (events, mut receiver) = scoped();
+        let shared = PiShared::default();
+        *shared.active_turn.lock().unwrap() = Some("turn-1".into());
+        pi_event(
+            &events,
+            "pi",
+            "session",
+            &shared,
+            json!({"type":"agent_settled","aborted":true}),
+        );
+        let completed = receiver.try_recv().unwrap();
+        assert_eq!(completed.data["result"]["stopReason"], "cancelled");
+    }
+
+    #[test]
+    fn tool_execution_projects_running_then_failed_parts() {
+        let (events, mut receiver) = scoped();
+        let shared = PiShared::default();
+        *shared.active_turn.lock().unwrap() = Some("turn-1".into());
+        pi_event(
+            &events,
+            "pi",
+            "session",
+            &shared,
+            json!({"type":"tool_execution_start","toolCallId":"call-1","toolName":"bash","args":{"command":"ls"}}),
+        );
+        let running = receiver.try_recv().unwrap();
+        assert_eq!(running.kind, "chat.item");
+        assert_eq!(running.data["part"]["status"], "running");
+        assert_eq!(running.data["part"]["toolName"], "bash");
+        assert_eq!(running.data["item"]["id"], "call-1");
+        pi_event(
+            &events,
+            "pi",
+            "session",
+            &shared,
+            json!({"type":"tool_execution_end","toolCallId":"call-1","toolName":"bash","isError":true}),
+        );
+        let failed = receiver.try_recv().unwrap();
+        assert_eq!(failed.data["part"]["status"], "failed");
+    }
+
+    #[test]
+    fn failed_assistant_message_reports_the_error_only_when_the_turn_settles() {
+        let (events, mut receiver) = scoped();
+        let shared = PiShared::default();
+        *shared.active_turn.lock().unwrap() = Some("turn-1".into());
+        pi_event(
+            &events,
+            "pi",
+            "session",
+            &shared,
+            json!({"type":"message_end","message":{"role":"assistant","stopReason":"error","errorMessage":"401 invalid key","content":[]}}),
+        );
+        // A retry may still follow, so nothing is published yet.
+        assert!(receiver.try_recv().is_err());
+        pi_event(
+            &events,
+            "pi",
+            "session",
+            &shared,
+            json!({"type":"agent_settled"}),
+        );
+        let error = receiver.try_recv().unwrap();
+        assert_eq!(error.kind, "chat.error");
+        assert_eq!(error.data["message"], "401 invalid key");
+        let completed = receiver.try_recv().unwrap();
+        assert_eq!(completed.kind, "chat.turn.completed");
+    }
+
+    #[test]
+    fn a_successful_retry_discards_the_earlier_failure() {
+        let (events, mut receiver) = scoped();
+        let shared = PiShared::default();
+        *shared.active_turn.lock().unwrap() = Some("turn-1".into());
+        // First attempt times out...
+        pi_event(
+            &events,
+            "pi",
+            "session",
+            &shared,
+            json!({"type":"message_end","message":{"role":"assistant","stopReason":"error","errorMessage":"Request timed out.","content":[]}}),
+        );
+        // ...then the retry streams and succeeds.
+        pi_event(
+            &events,
+            "pi",
+            "session",
+            &shared,
+            json!({"type":"message_update","assistantMessageEvent":{"type":"text_delta","delta":"ok"}}),
+        );
+        pi_event(
+            &events,
+            "pi",
+            "session",
+            &shared,
+            json!({"type":"message_end","message":{"role":"assistant","stopReason":"end_turn","content":[{"type":"text","text":"ok"}]}}),
+        );
+        pi_event(
+            &events,
+            "pi",
+            "session",
+            &shared,
+            json!({"type":"agent_settled"}),
+        );
+        let mut kinds = Vec::new();
+        while let Ok(event) = receiver.try_recv() {
+            kinds.push(event.kind);
+        }
+        assert!(
+            !kinds.iter().any(|kind| kind == "chat.error"),
+            "recovered retries must not leave an error: {kinds:?}"
+        );
+        assert!(kinds.iter().any(|kind| kind == "chat.turn.completed"));
+    }
+
+    #[test]
+    fn session_header_binds_the_native_id() {
+        let (events, _receiver) = scoped();
+        let shared = PiShared::default();
+        pi_event(
+            &events,
+            "pi",
+            "session",
+            &shared,
+            json!({"type":"session","id":"native-9"}),
+        );
+        assert_eq!(
+            shared.native_id.lock().unwrap().as_deref(),
+            Some("native-9")
+        );
+    }
+
+    #[test]
+    fn transcript_reads_text_and_thinking_from_message_entries() {
+        let source = [
+            json!({"type":"session","id":"s","cwd":"/w"}).to_string(),
+            json!({"type":"message","timestamp":"2026-01-01T00:00:00Z","message":{"role":"user","content":"hi"}}).to_string(),
+            json!({"type":"message","timestamp":"2026-01-01T00:00:01Z","message":{"role":"assistant","content":[{"type":"thinking","thinking":"plan"},{"type":"text","text":"done"}]}}).to_string(),
+            json!({"type":"session_info","name":"named"}).to_string(),
+        ]
+        .join("\n");
+        let transcript = pi_transcript(&source);
+        assert_eq!(transcript.len(), 2);
+        assert_eq!(transcript[0]["role"], "user");
+        assert_eq!(transcript[0]["parts"][0]["text"], "hi");
+        assert_eq!(transcript[1]["parts"][0]["type"], "thinking");
+        assert_eq!(transcript[1]["parts"][1]["text"], "done");
+        assert_eq!(pi_tail_title(&source).as_deref(), Some("named"));
+        assert_eq!(
+            pi_tail_updated_at(&source).as_deref(),
+            Some("2026-01-01T00:00:01Z")
+        );
+    }
+
+    #[test]
+    fn transcript_follows_pi_active_branch_instead_of_importing_abandoned_messages() {
+        let source = [
+            json!({"type":"session","version":3,"id":"s","cwd":"/w"}),
+            json!({"type":"message","id":"root","parentId":null,"timestamp":"2026-01-01T00:00:00Z","message":{"role":"user","content":"root"}}),
+            json!({"type":"message","id":"old","parentId":"root","timestamp":"2026-01-01T00:00:01Z","message":{"role":"assistant","content":[{"type":"text","text":"abandoned"}]}}),
+            json!({"type":"message","id":"new","parentId":"root","timestamp":"2026-01-01T00:00:02Z","message":{"role":"assistant","content":[{"type":"text","text":"active"}]}}),
+        ]
+        .into_iter()
+        .map(|entry| entry.to_string())
+        .collect::<Vec<_>>()
+        .join("\n");
+        let transcript = pi_transcript(&source);
+        assert_eq!(transcript.len(), 2);
+        assert_eq!(transcript[0]["parts"][0]["text"], "root");
+        assert_eq!(transcript[1]["parts"][0]["text"], "active");
+    }
+
+    #[test]
+    fn broken_pi_parent_chain_fails_closed_instead_of_importing_other_branches() {
+        let entries = vec![
+            json!({"type":"message","id":"root","parentId":null}),
+            json!({"type":"message","id":"other","parentId":"root"}),
+            json!({"type":"message","id":"broken","parentId":"missing"}),
+        ];
+        assert!(pi_active_branch(entries).is_empty());
+    }
+
+    #[test]
+    fn configured_session_directory_takes_priority_without_process_environment_mutation() {
+        let agent = Path::new("C:/pi-agent");
+        assert_eq!(
+            pi_sessions_dir_for(
+                agent,
+                Some(std::ffi::OsString::from("D:/isolated-sessions"))
+            ),
+            PathBuf::from("D:/isolated-sessions")
+        );
+    }
+
+    #[test]
+    fn extension_dialogs_use_question_contract_and_preserve_native_ids() {
+        let select = json!({"type":"extension_ui_request","id":"select-1","method":"select","title":"Pick","options":["Allow","Block"]});
+        let mut data = pi_extension_data(&select).unwrap();
+        data["piMethod"] = json!("select");
+        assert_eq!(data["interaction"], "question");
+        assert_eq!(data["form"]["questions"][0]["options"][1]["label"], "Block");
+        assert_eq!(
+            pi_extension_response(
+                "select-1",
+                &data,
+                &json!({"action":"submit","values":{"value":["Allow"]}})
+            )
+            .unwrap(),
+            json!({"id":"select-1","value":"Allow"})
+        );
+        assert_eq!(
+            pi_extension_response("select-1", &data, &json!({"action":"dismiss"})).unwrap(),
+            json!({"id":"select-1","cancelled":true})
+        );
+
+        for (method, value, expected) in [
+            (
+                "confirm",
+                json!(true),
+                json!({"id":"confirm-1","confirmed":true}),
+            ),
+            (
+                "input",
+                json!("typed"),
+                json!({"id":"input-1","value":"typed"}),
+            ),
+            (
+                "editor",
+                json!("multi\nline"),
+                json!({"id":"editor-1","value":"multi\nline"}),
+            ),
+        ] {
+            let raw = json!({"type":"extension_ui_request","id":format!("{method}-1"),"method":method,"title":"Need input"});
+            let mut data = pi_extension_data(&raw).unwrap();
+            data["piMethod"] = json!(method);
+            assert_eq!(data["form"]["kind"], "form");
+            if matches!(method, "input" | "editor") {
+                assert_eq!(data["form"]["fields"][0]["default"], "");
+                assert_eq!(data["form"]["fields"][0]["multiline"], method == "editor");
+            }
+            assert_eq!(
+                pi_extension_response(
+                    &format!("{method}-1"),
+                    &data,
+                    &json!({"action":"submit","values":{"value":value}})
+                )
+                .unwrap(),
+                expected
+            );
+        }
+    }
+
+    #[test]
+    fn terminal_mapping_preserves_pi_resume_and_preassigned_identity_contracts() {
+        let (sender, _receiver) = tap_channel(8);
+        let adapter = PiAdapter::new(sender);
+        let resumed = adapter.terminal_command(Some("session-9"), None).unwrap();
+        assert_eq!(resumed.args, vec!["--session", "session-9"]);
+        let fresh = adapter.terminal_command(None, Some("assigned-9")).unwrap();
+        assert_eq!(fresh.args, vec!["--session-id", "assigned-9"]);
+        assert_eq!(adapter.terminal_capture(), TerminalCapture::PreAssigned);
+        assert!(adapter.prepare_terminal(".").unwrap().is_some());
+        assert_eq!(
+            adapter
+                .terminal_command(Some("one"), Some("two"))
+                .unwrap_err()
+                .code,
+            "provider_invalid_request"
+        );
+        assert_eq!(
+            adapter
+                .terminal_command(Some("bad id"), None)
+                .unwrap_err()
+                .code,
+            "invalid_native_id"
+        );
+    }
+
+    #[test]
+    fn model_choice_qualifies_the_value_with_the_provider() {
+        let choice =
+            pi_model_choice(&json!({"id":"m1","provider":"anthropic","name":"Claude"})).unwrap();
+        assert_eq!(choice["value"], format!("anthropic{PI_MODEL_SEPARATOR}m1"));
+        assert_eq!(choice["name"], "Claude");
+        let bare = pi_model_choice(&json!({"id":"m1"})).unwrap();
+        assert_eq!(bare["value"], "m1");
+        // A model id that itself contains `/` still round-trips.
+        let nested =
+            pi_model_choice(&json!({"id":"stealth/ox-alpha","provider":"cc-switch-open-router"}))
+                .unwrap();
+        assert_eq!(
+            nested["value"],
+            format!("cc-switch-open-router{PI_MODEL_SEPARATOR}stealth/ox-alpha")
+        );
+    }
+
+    #[test]
+    fn ui_state_matches_the_protocol_option_shape() {
+        let ui = PiUi {
+            state: Some(json!({"model":{"id":"m","provider":"p"},"thinkingLevel":"high"})),
+            models: vec![json!({"id":"m","provider":"p","name":"M"})],
+            thinking_levels: vec!["off".to_owned(), "high".to_owned()],
+            commands: vec![json!({"name":"demo","description":"Demo"})],
+        };
+        let value = pi_ui_state(&ui);
+        // Required ChatSessionOption fields, and no extraneous ones.
+        assert_eq!(value["options"][0]["id"], "model");
+        assert_eq!(
+            value["options"][0]["value"],
+            format!("p{PI_MODEL_SEPARATOR}m")
+        );
+        assert_eq!(
+            value["options"][0]["choices"][0]["value"],
+            format!("p{PI_MODEL_SEPARATOR}m")
+        );
+        assert_eq!(value["options"][1]["value"], "high");
+        assert!(value["options"][0].get("currentValue").is_none());
+        assert!(value["options"][0].get("options").is_none());
+        assert_eq!(value["commands"][0]["name"], "demo");
+    }
+
+    #[test]
+    fn slash_parsing_and_builtin_merging_are_stable() {
+        assert_eq!(parse_slash("/compact now"), Some(("compact", "now")));
+        assert_eq!(parse_slash("  /help  "), Some(("help", "")));
+        assert_eq!(
+            parse_slash("/model deepseek-flash"),
+            Some(("model", "deepseek-flash"))
+        );
+        assert_eq!(parse_slash("hello"), None);
+        assert_eq!(parse_slash("/"), None);
+        assert_eq!(parse_slash("//nope"), None);
+        let merged = merge_builtin_commands(vec![json!({"name":"compact","description":"user"})]);
+        assert_eq!(
+            merged
+                .iter()
+                .filter(|command| command["name"] == "compact")
+                .count(),
+            1
+        );
+        assert!(merged.iter().any(|command| command["name"] == "thinking"));
+        assert!(merged.iter().any(|command| command["name"] == "help"));
+    }
+
+    /// Verifies the Pi envelope against the real CLI without invoking a model.
+    #[test]
+    #[ignore = "requires the pi CLI on PATH"]
+    fn real_pi_rpc_round_trips_state_and_thinking_levels() {
+        let spec = CommandSpec::provider(
+            "pi",
+            &[
+                "--mode",
+                "rpc",
+                "--no-session",
+                "--session-id",
+                "00000000-0000-4000-8000-000000000000",
+            ],
+        )
+        .unwrap();
+        let on_message: Arc<dyn Fn(Value) + Send + Sync> = Arc::new(|_| {});
+        let process =
+            JsonLineProcess::spawn("pi-test", &spec, None, &[], EnvelopeStyle::Pi, on_message)
+                .unwrap();
+        let state = process.request("get_state", json!({})).unwrap();
+        assert_eq!(
+            state.get("sessionId").and_then(Value::as_str),
+            Some("00000000-0000-4000-8000-000000000000")
+        );
+        let levels = process
+            .request("get_available_thinking_levels", json!({}))
+            .unwrap();
+        assert!(levels.get("levels").and_then(Value::as_array).is_some());
+    }
+
+    /// Verifies the real open-chat path, not only a raw RPC round trip.
+    #[test]
+    #[ignore = "requires the pi CLI on PATH"]
+    fn real_pi_open_chat_returns_a_live_native_session() {
+        let (sender, _receiver) = tap_channel(64);
+        let adapter = PiAdapter::new(sender);
+        let cwd = std::env::temp_dir();
+        let chat = adapter
+            .open_chat_scoped("sess-1", cwd.to_str().unwrap(), None, "worker")
+            .expect("open_chat must succeed");
+        assert!(
+            chat.native_id().is_some(),
+            "the native id must be bound before the first turn"
+        );
+        assert!(chat.is_alive());
+    }
+
+    /// Full chat turn against the real CLI: open, send, stream, complete.
+    #[test]
+    #[ignore = "requires the pi CLI and a configured model"]
+    fn real_pi_chat_turn_streams_and_completes() {
+        use std::time::{Duration, Instant};
+        let (sender, mut receiver) = tap_channel(256);
+        let adapter = PiAdapter::new(sender);
+        let cwd = std::env::temp_dir();
+        let mut chat = adapter
+            .open_chat_scoped("sess-e2e", cwd.to_str().unwrap(), None, "worker")
+            .expect("open_chat");
+        let result = chat
+            .send("Reply with exactly the single word: pong", "turn-e2e")
+            .expect("send");
+        eprintln!("send -> {result}");
+        let deadline = Instant::now() + Duration::from_secs(120);
+        let mut saw_delta = false;
+        let mut kinds = Vec::new();
+        while Instant::now() < deadline {
+            match receiver.try_recv() {
+                Ok(event) => {
+                    kinds.push(event.kind.clone());
+                    if event.kind == "chat.delta" {
+                        saw_delta = true;
+                        eprintln!("delta: {}", event.data["part"]["text"]);
+                    }
+                    if event.kind == "chat.error" {
+                        panic!("chat.error: {}", event.data);
+                    }
+                    if event.kind == "chat.turn.completed" {
+                        break;
+                    }
+                }
+                Err(tokio::sync::broadcast::error::TryRecvError::Empty) => {
+                    std::thread::sleep(Duration::from_millis(25));
+                }
+                Err(error) => panic!("event stream failed: {error}"),
+            }
+        }
+        assert!(kinds.iter().any(|kind| kind == "chat.turn.started"));
+        assert!(
+            kinds.iter().any(|kind| kind == "chat.turn.completed"),
+            "kinds: {kinds:?}"
+        );
+        assert!(saw_delta, "kinds: {kinds:?}");
+    }
+
+    /// Deterministic end-to-end turn through the real adapter and transport,
+    /// driven by a fake `pi --mode rpc` executable on PATH.
+    #[cfg(windows)]
+    #[test]
+    #[ignore = "mutates PATH; run alone with --test-threads=1"]
+    fn fake_pi_chat_turn_streams_and_completes() {
+        use std::time::{Duration, Instant};
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("fake-pi.cjs"),
+            r#"const readline = require('node:readline');
+const fs = require('node:fs');
+const path = require('node:path');
+const rl = readline.createInterface({ input: process.stdin });
+const out = o => process.stdout.write(JSON.stringify(o) + '\n');
+let prompts = 0;
+if (process.argv.includes('--version')) { console.log('1.1.0'); process.exit(0); }
+rl.on('line', line => {
+  let cmd; try { cmd = JSON.parse(line); } catch { return; }
+  const id = cmd.id;
+  switch (cmd.type) {
+    case 'get_state': return out({id,type:'response',command:'get_state',success:true,data:{sessionId:'fake-session',model:{id:'fake-model',name:'Fake',provider:'fake'},thinkingLevel:'off',isStreaming:false}});
+    case 'get_available_models': return out({id,type:'response',command:'get_available_models',success:true,data:{models:[{id:'fake-model',name:'Fake',provider:'fake'}]}});
+    case 'get_available_thinking_levels': return out({id,type:'response',command:'get_available_thinking_levels',success:true,data:{levels:['off','high']}});
+    case 'get_commands': return out({id,type:'response',command:'get_commands',success:true,data:{commands:[{name:'demo',description:'Demo'}]}});
+    case 'prompt':
+      prompts++;
+      out({id,type:'response',command:'prompt',success:true,data:{disposition:'started'}});
+      setTimeout(() => {
+        out({type:'agent_start'});
+        const request = {type:'extension_ui_request',id:prompts === 1 ? 'dialog-1' : 'dialog-2',method:'select',title:'Choose',message:'Continue?',options:['Allow','Block']};
+        out(request);
+        out(request); // Pi extensions can replay a request; it must remain one card.
+      }, 20);
+      return;
+    case 'extension_ui_response':
+      if (cmd.id === 'dialog-1' && cmd.value === 'Allow') {
+        // A replay after the native answer must not reopen the resolved card.
+        out({type:'extension_ui_request',id:'dialog-1',method:'select',title:'Choose',message:'Continue?',options:['Allow','Block']});
+        out({type:'message_update',assistantMessageEvent:{type:'text_delta',contentIndex:0,delta:'pong'}});
+        out({type:'message_end',message:{role:'assistant',stopReason:'end_turn',content:[{type:'text',text:'pong'}]}});
+        out({type:'agent_settled',aborted:false});
+      }
+      if (cmd.id === 'dialog-2' && cmd.cancelled === true) {
+        fs.writeFileSync(path.join(__dirname, 'cancel-received.json'), JSON.stringify(cmd));
+        out({type:'message_update',assistantMessageEvent:{type:'text_delta',contentIndex:0,delta:'cancelled'}});
+        out({type:'agent_settled',aborted:true});
+      }
+      return;
+    case 'abort': return out({id,type:'response',command:'abort',success:true});
+    case 'set_model': return out({id,type:'response',command:'set_model',success:true,data:{id:'fake-model'}});
+    case 'set_thinking_level': return out({id,type:'response',command:'set_thinking_level',success:true});
+    default: return out({id,type:'response',command:cmd.type,success:false,error:'unknown command'});
+  }
+});
+"#,
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("pi.cmd"),
+            "@echo off\r\nnode \"%~dp0fake-pi.cjs\" %*\r\n",
+        )
+        .unwrap();
+        let previous = std::env::var("PATH").unwrap_or_default();
+        std::env::set_var(
+            "PATH",
+            format!("{};{previous}", dir.path().to_string_lossy()),
+        );
+
+        let (sender, mut receiver) = tap_channel(256);
+        let adapter = PiAdapter::new(sender);
+        let cwd = std::env::temp_dir();
+        let mut chat = adapter
+            .open_chat_scoped("sess-fake", cwd.to_str().unwrap(), None, "worker")
+            .expect("open_chat");
+        assert_eq!(chat.native_id().as_deref(), Some("fake-session"));
+        assert_eq!(
+            chat.ui_state()["options"][0]["value"],
+            format!("fake{PI_MODEL_SEPARATOR}fake-model")
+        );
+        chat.send("hello", "turn-fake").expect("send");
+
+        let deadline = Instant::now() + Duration::from_secs(30);
+        let mut text = String::new();
+        let mut completed = false;
+        let mut approvals = 0;
+        let mut resolved = 0;
+        let mut answered = false;
+        while Instant::now() < deadline {
+            match receiver.try_recv() {
+                Ok(event) => match event.kind.as_str() {
+                    "chat.approval" => {
+                        approvals += 1;
+                        assert_eq!(event.data["approvalId"], "dialog-1");
+                        if !answered {
+                            chat.answer(
+                                "turn-fake",
+                                "dialog-1",
+                                &json!({"action":"submit","values":{"value":["Allow"]}}),
+                                "reply-1",
+                            )
+                            .expect("answer Pi dialog");
+                            answered = true;
+                        }
+                    }
+                    "chat.approval.resolved" => resolved += 1,
+                    "chat.delta" => {
+                        if let Some(delta) = event.data["part"]["text"].as_str() {
+                            text.push_str(delta);
+                        }
+                    }
+                    "chat.turn.completed" => {
+                        completed = true;
+                        break;
+                    }
+                    "chat.error" => panic!("chat.error: {}", event.data),
+                    _ => {}
+                },
+                Err(tokio::sync::broadcast::error::TryRecvError::Empty) => {
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+                Err(error) => panic!("event stream failed: {error}"),
+            }
+        }
+        assert!(completed, "the fake turn never completed");
+        assert_eq!(text, "pong");
+        assert_eq!(approvals, 1, "duplicate Pi request made more than one card");
+        assert_eq!(resolved, 1, "dialog should resolve exactly once");
+
+        // A second pending dialog is cancelled through the native Pi protocol
+        // when the ThreadTerm turn is stopped. The fake only emits its final
+        // event after receiving that exact cancellation frame.
+        chat.send("cancel", "turn-cancel")
+            .expect("send cancel turn");
+        let cancel_deadline = Instant::now() + Duration::from_secs(10);
+        let mut cancel_cards = 0;
+        let mut cancel_resolved = 0;
+        let mut cancel_completed = false;
+        let mut cancellation_sent = false;
+        let mut saw_late_delta = false;
+        while Instant::now() < cancel_deadline {
+            match receiver.try_recv() {
+                Ok(event) => match event.kind.as_str() {
+                    "chat.approval" => {
+                        cancel_cards += 1;
+                        assert_eq!(event.data["approvalId"], "dialog-2");
+                        if !cancellation_sent {
+                            chat.cancel("turn-cancel").expect("cancel Pi dialog turn");
+                            cancellation_sent = true;
+                        }
+                    }
+                    "chat.approval.resolved" => {
+                        if event.data["approvalId"] == "dialog-2" {
+                            cancel_resolved += 1;
+                            assert_eq!(event.data["status"], "expired");
+                        }
+                    }
+                    "chat.delta" => {
+                        if event.data["part"]["text"] == "cancelled" {
+                            saw_late_delta = true;
+                        }
+                    }
+                    "chat.turn.completed" => {
+                        cancel_completed = true;
+                    }
+                    "chat.error" => panic!("chat.error: {}", event.data),
+                    _ => {}
+                },
+                Err(tokio::sync::broadcast::error::TryRecvError::Empty) => {
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+                Err(error) => panic!("event stream failed: {error}"),
+            }
+            if cancel_completed && dir.path().join("cancel-received.json").is_file() {
+                // Give the fake's immediate post-cancellation stdout records a
+                // chance to be processed before asserting they were dropped.
+                std::thread::sleep(Duration::from_millis(25));
+                while let Ok(event) = receiver.try_recv() {
+                    if event.kind == "chat.delta" && event.data["part"]["text"] == "cancelled" {
+                        saw_late_delta = true;
+                    }
+                }
+                break;
+            }
+        }
+        assert!(
+            cancellation_sent,
+            "the test never stopped the pending Pi dialog"
+        );
+        let receipt: Value = serde_json::from_str(
+            &std::fs::read_to_string(dir.path().join("cancel-received.json"))
+                .expect("the fake never received Pi cancellation"),
+        )
+        .expect("fake cancellation receipt is JSON");
+        assert_eq!(
+            receipt,
+            json!({"type":"extension_ui_response","id":"dialog-2","cancelled":true})
+        );
+        assert!(!saw_late_delta, "late cancellation output must not project");
+        assert!(cancel_completed, "cancelled turn never settled");
+        assert_eq!(
+            cancel_cards, 1,
+            "duplicate cancel request made more than one card"
+        );
+        assert_eq!(cancel_resolved, 1, "cancelled dialog should resolve once");
+
+        // A locally-handled slash command answers without the model.
+        chat.send("/help", "turn-help").expect("send /help");
+        let mut help_text = String::new();
+        let mut help_done = false;
+        let help_deadline = Instant::now() + Duration::from_secs(10);
+        while Instant::now() < help_deadline {
+            match receiver.try_recv() {
+                Ok(event) => match event.kind.as_str() {
+                    "chat.item" => {
+                        if let Some(parts) = event.data["parts"].as_array() {
+                            for part in parts {
+                                if let Some(value) = part["text"].as_str() {
+                                    help_text.push_str(value);
+                                }
+                            }
+                        }
+                    }
+                    "chat.turn.completed" => {
+                        help_done = true;
+                        break;
+                    }
+                    "chat.error" => panic!("chat.error: {}", event.data),
+                    _ => {}
+                },
+                Err(tokio::sync::broadcast::error::TryRecvError::Empty) => {
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+                Err(error) => panic!("event stream failed: {error}"),
+            }
+        }
+        assert!(help_done, "/help never completed");
+        assert!(help_text.contains("/thinking"), "help text: {help_text}");
+        std::env::set_var("PATH", previous);
+    }
+}

@@ -121,6 +121,9 @@ pub enum EnvelopeStyle {
     JsonRpc2,
     Codex,
     Sidecar,
+    /// Pi RPC: flat command records (`{"id":n,"type":"prompt",...}`) with a
+    /// `{"type":"response","success":bool,...}` reply. Not JSON-RPC.
+    Pi,
 }
 
 #[derive(Debug, Clone)]
@@ -476,6 +479,14 @@ pub struct JsonLineResponder {
 }
 
 impl JsonLineResponder {
+    pub fn notification(&self, method: &str, params: Value) -> Result<(), ProviderError> {
+        write_stdin(
+            &self.stdin,
+            &self.label,
+            notification_frame(self.style, method, params)?,
+        )
+    }
+
     pub fn respond(&self, id: Value, result: Value) -> Result<(), ProviderError> {
         write_stdin(
             &self.stdin,
@@ -483,10 +494,10 @@ impl JsonLineResponder {
             match self.style {
                 EnvelopeStyle::JsonRpc2 => json!({"jsonrpc":"2.0","id":id,"result":result}),
                 EnvelopeStyle::Codex => json!({"id":id,"result":result}),
-                EnvelopeStyle::Sidecar => {
+                EnvelopeStyle::Sidecar | EnvelopeStyle::Pi => {
                     return Err(ProviderError::new(
                         "provider_internal",
-                        "sidecar notifications are unsupported",
+                        "this transport has no server-to-client responses",
                     ))
                 }
             },
@@ -502,10 +513,10 @@ impl JsonLineResponder {
                     json!({"jsonrpc":"2.0","id":id,"error":{"code":code,"message":message}})
                 }
                 EnvelopeStyle::Codex => json!({"id":id,"error":{"code":code,"message":message}}),
-                EnvelopeStyle::Sidecar => {
+                EnvelopeStyle::Sidecar | EnvelopeStyle::Pi => {
                     return Err(ProviderError::new(
                         "provider_internal",
-                        "sidecar notifications are unsupported",
+                        "this transport has no server-to-client rejections",
                     ))
                 }
             },
@@ -626,6 +637,7 @@ impl JsonLineProcess {
         let reader_label = label.clone();
         let alive = Arc::new(AtomicBool::new(true));
         let reader_alive = Arc::clone(&alive);
+        let reader_style = style;
         thread::Builder::new()
             .name(format!("{label}-stdout"))
             .spawn(move || {
@@ -643,14 +655,14 @@ impl JsonLineProcess {
                             break;
                         }
                     };
-                    if is_response(&raw) {
+                    if is_response(&raw, reader_style) {
                         let key = id_key(raw.get("id").unwrap_or(&Value::Null));
                         let pending_request = reader_pending
                             .lock()
                             .ok()
                             .and_then(|mut pending| pending.remove(&key));
                         if let Some(pending_request) = pending_request {
-                            let result = response_result(&raw);
+                            let result = response_result(&raw, reader_style);
                             match pending_request {
                                 Pending::Blocking(sender) => {
                                     let _ = sender.send(result);
@@ -763,17 +775,7 @@ impl JsonLineProcess {
     }
 
     pub fn notification(&self, method: &str, params: Value) -> Result<(), ProviderError> {
-        let frame = match self.style {
-            EnvelopeStyle::JsonRpc2 => json!({"jsonrpc":"2.0","method":method,"params":params}),
-            EnvelopeStyle::Codex => json!({"method":method,"params":params}),
-            EnvelopeStyle::Sidecar => {
-                return Err(ProviderError::new(
-                    "provider_internal",
-                    "sidecar notifications are unsupported",
-                ));
-            }
-        };
-        self.write(frame)
+        self.write(notification_frame(self.style, method, params)?)
     }
 
     pub fn sidecar_request(&self, op: &str, mut params: Value) -> Result<Value, ProviderError> {
@@ -829,19 +831,53 @@ impl JsonLineProcess {
             }
             EnvelopeStyle::Codex => json!({"id":id,"method":method,"params":params}),
             EnvelopeStyle::Sidecar => json!({"id":id,"op":method,"params":params}),
+            EnvelopeStyle::Pi => pi_command_frame(id, method, params),
         };
         (id, frame)
     }
 
     fn write(&self, frame: Value) -> Result<(), ProviderError> {
         let trace_timer = crate::send_trace::Timer::start();
-        crate::send_trace::emit(crate::send_trace::Event::new("native.stdin_write.begin").method("chat.send"));
+        crate::send_trace::emit(
+            crate::send_trace::Event::new("native.stdin_write.begin").method("chat.send"),
+        );
         let result = write_stdin(&self.stdin, &self.label, frame);
-        crate::send_trace::emit(crate::send_trace::Event::new("native.stdin_write.end")
-            .method("chat.send")
-            .outcome(if result.is_ok() { "ok" } else { "error" })
-            .duration_us(trace_timer.elapsed_us()));
+        crate::send_trace::emit(
+            crate::send_trace::Event::new("native.stdin_write.end")
+                .method("chat.send")
+                .outcome(if result.is_ok() { "ok" } else { "error" })
+                .duration_us(trace_timer.elapsed_us()),
+        );
         result
+    }
+}
+
+fn pi_record(method: &str, params: Value) -> Value {
+    let mut frame = params.as_object().cloned().unwrap_or_default();
+    frame.insert("type".to_owned(), json!(method));
+    Value::Object(frame)
+}
+
+fn pi_command_frame(id: u64, method: &str, params: Value) -> Value {
+    let mut frame = pi_record(method, params);
+    // Pi's RPC contract uses string IDs; the transport keeps its counter internal.
+    frame["id"] = json!(id.to_string());
+    frame
+}
+
+fn notification_frame(
+    style: EnvelopeStyle,
+    method: &str,
+    params: Value,
+) -> Result<Value, ProviderError> {
+    match style {
+        EnvelopeStyle::JsonRpc2 => Ok(json!({"jsonrpc":"2.0","method":method,"params":params})),
+        EnvelopeStyle::Codex => Ok(json!({"method":method,"params":params})),
+        EnvelopeStyle::Pi => Ok(pi_record(method, params)),
+        EnvelopeStyle::Sidecar => Err(ProviderError::new(
+            "provider_internal",
+            "this transport has no client-to-server notifications",
+        )),
     }
 }
 
@@ -882,12 +918,25 @@ fn id_key(id: &Value) -> String {
         .to_owned()
 }
 
-fn is_response(raw: &Value) -> bool {
+fn is_response(raw: &Value, style: EnvelopeStyle) -> bool {
+    if matches!(style, EnvelopeStyle::Pi) {
+        return raw.get("type").and_then(Value::as_str) == Some("response");
+    }
     raw.get("id").is_some()
         && (raw.get("result").is_some() || raw.get("error").is_some() || raw.get("ok").is_some())
 }
 
-fn response_result(raw: &Value) -> Result<Value, ProviderError> {
+fn response_result(raw: &Value, style: EnvelopeStyle) -> Result<Value, ProviderError> {
+    if matches!(style, EnvelopeStyle::Pi) {
+        if raw.get("success").and_then(Value::as_bool) == Some(false) {
+            let message = raw
+                .get("error")
+                .and_then(Value::as_str)
+                .unwrap_or("the pi command failed");
+            return Err(ProviderError::new("provider_error", message));
+        }
+        return Ok(raw.get("data").cloned().unwrap_or(Value::Null));
+    }
     if let Some(error) = raw.get("error") {
         let message = error
             .get("message")
@@ -1000,6 +1049,56 @@ mod tests {
     fn history_page_omits_an_absent_cursor() {
         let page = history_page(Vec::new(), None);
         assert!(page.get("nextCursor").is_none());
+    }
+
+    #[test]
+    fn pi_envelope_detects_responses_and_reads_their_payloads() {
+        let response =
+            json!({"id":3,"type":"response","command":"get_state","success":true,"data":{"a":1}});
+        assert!(is_response(&response, EnvelopeStyle::Pi));
+        assert_eq!(
+            response_result(&response, EnvelopeStyle::Pi).unwrap(),
+            json!({"a":1})
+        );
+        let failed = json!({"id":4,"type":"response","command":"set_model","success":false,"error":"Model not found"});
+        assert!(is_response(&failed, EnvelopeStyle::Pi));
+        assert_eq!(
+            response_result(&failed, EnvelopeStyle::Pi)
+                .unwrap_err()
+                .message,
+            "Model not found"
+        );
+        // Pi events also carry ids but are not command responses.
+        let extension = json!({"type":"extension_ui_request","id":"x","method":"setWidget"});
+        assert!(!is_response(&extension, EnvelopeStyle::Pi));
+        // The JSON-RPC and Codex shapes are untouched by the Pi branch.
+        assert!(is_response(
+            &json!({"id":"r","result":{}}),
+            EnvelopeStyle::JsonRpc2
+        ));
+        assert!(!is_response(&response, EnvelopeStyle::JsonRpc2));
+    }
+
+    #[test]
+    fn pi_flat_frames_preserve_ui_ids_but_protect_command_headers() {
+        let params = json!({"id":"dialog-1","value":"choice","type":"forged"});
+        assert_eq!(
+            notification_frame(EnvelopeStyle::Pi, "extension_ui_response", params.clone()).unwrap(),
+            json!({"id":"dialog-1","value":"choice","type":"extension_ui_response"})
+        );
+        assert_eq!(
+            pi_command_frame(7, "prompt", params),
+            json!({"id":"7","value":"choice","type":"prompt"})
+        );
+        assert_eq!(
+            notification_frame(EnvelopeStyle::JsonRpc2, "cancel", json!({"id":4})).unwrap(),
+            json!({"jsonrpc":"2.0","method":"cancel","params":{"id":4}})
+        );
+        assert_eq!(
+            notification_frame(EnvelopeStyle::Codex, "cancel", json!({"id":4})).unwrap(),
+            json!({"method":"cancel","params":{"id":4}})
+        );
+        assert!(notification_frame(EnvelopeStyle::Sidecar, "cancel", json!({})).is_err());
     }
 
     #[cfg(windows)]
