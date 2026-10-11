@@ -11,9 +11,11 @@
 /* One primary action, with a shared size and quiet theme-based secondaries. */
 .ov-page-head .page-actions { flex-wrap:wrap; gap:8px; justify-content:flex-end; }
 .ov-page-head .page-actions .btn { height:32px; min-height:32px; padding:0 12px; gap:8px; border-radius:8px; font-size:13px; font-weight:500; }
-.ov-page-head .page-actions .btn:not(.btn-primary) { background:var(--raised); color:var(--text); }
-.ov-page-head .page-actions .btn:not(.btn-primary):hover:not(:disabled) { background:var(--soft); border-color:var(--faint); }
-.ov-page-head .page-actions .btn:focus-visible { outline:2px solid var(--primary); outline-offset:2px; }
+.ov-page-head .page-actions .btn:not(.btn-primary) { background:transparent; border-color:transparent; color:var(--muted); }
+.ov-page-head .page-actions .btn:not(.btn-primary):hover:not(:disabled) { background:var(--soft); border-color:transparent; color:var(--text); }
+.ov-page-head .page-actions .btn-primary { background:var(--text); border-color:transparent; color:var(--surface); }
+.ov-page-head .page-actions .btn-primary:hover:not(:disabled) { background:color-mix(in srgb,var(--text) 88%,var(--bg)); }
+.ov-page-head .page-actions .btn:focus-visible { outline:2px solid var(--text); outline-offset:2px; }
 
 /* Project / branch home (user decision 2026-09-28: departs from the prototype's fixed 3:2:3 brief slots).
    Sections take their natural height and the page scrolls as a whole; no inner scrollers, no empty slots.
