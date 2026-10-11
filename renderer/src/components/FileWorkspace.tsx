@@ -1201,6 +1201,7 @@ function FileWorkspaceInstance({
           subtitle={document?.path}
           icon="file"
           size="sm"
+          className="file-unsaved-dialog"
           onClose={() => {
             setPending(undefined);
             setClosePrompt(false);
