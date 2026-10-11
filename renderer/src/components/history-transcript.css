@@ -9,8 +9,6 @@
 .history-transcript .codex-markdown p { margin:0 0 10px; }
 .history-transcript .codex-markdown pre, .history-transcript-tool pre { margin:8px 0; padding:10px; border:1px solid var(--border); border-radius:6px; overflow:auto; background:color-mix(in srgb,var(--text) 4%,var(--surface)); white-space:pre-wrap; font:12px/1.5 "Cascadia Code",Consolas,monospace; }
 .history-transcript .codex-markdown img { max-width:100%; height:auto; }
-.history-transcript .codex-markdown table { display:block; max-width:100%; overflow:auto; border-collapse:collapse; }
-.history-transcript .codex-markdown th, .history-transcript .codex-markdown td { padding:5px 8px; border:1px solid var(--border); }
 .history-transcript-thinking, .history-transcript-tool, .history-tool-line { margin:0; color:var(--muted); font-size:12px; line-height:1.5; }
 .history-transcript-item > * + .history-transcript-thinking, .history-transcript-item > * + .history-transcript-tool, .history-transcript-item > * + .history-tool-line { margin-top:6px; }
 .history-transcript summary { cursor:pointer; padding:2px 0; }

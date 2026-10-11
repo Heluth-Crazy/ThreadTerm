@@ -86,6 +86,8 @@ export function parseFileReference(text:string):FileReference|undefined {
   const bare=FILE_EXTENSION.test(path)||BARE_NAMED_FILE.test(path);
   if(!absolute&&!relative&&!bare)return;
   if(!absolute&&!looksLikeFile(path))return;
+  // A leading slash is not enough: `/usage`, `/status` and `/src/` are commands or directories.
+  if(path.startsWith('/')&&!path.startsWith('//')&&!looksLikeFile(path))return;
   return reference;
 }
 

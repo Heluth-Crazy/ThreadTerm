@@ -5,8 +5,42 @@ import { operationId, request } from "../bridge";
 import { displayPath } from "../projectScope";
 import { RetrySettings } from "./RetrySettings";
 import { agentIds, agentName } from "../agents";
+import { useTranslation } from "../i18n";
+
 const isActive = (session: Session) =>
   !session.readOnly && ["starting", "running", "idle", "waiting"].includes(session.status);
+
+const configCopy = (zh: boolean) => zh ? {
+  heading: "会话配置",
+  mode: "模式",
+  executable: "可执行文件",
+  executablePlaceholder: "使用提供方默认值",
+  arguments: "参数",
+  argumentsPlaceholder: "每行一个参数",
+  save: "保存配置",
+  stopRerun: "停止后重新运行",
+  rerun: "在新会话中重新运行",
+  loading: "正在加载配置…",
+  readError: "无法读取此会话配置。",
+  saveError: "配置未保存。",
+  rerunError: "无法重新运行此会话。",
+  confirmStop: "结束此活动会话，并按其已保存的配置创建新会话？",
+} : {
+  heading: "Session configuration",
+  mode: "Mode",
+  executable: "Executable",
+  executablePlaceholder: "Provider default",
+  arguments: "Arguments",
+  argumentsPlaceholder: "One argument per line",
+  save: "Save configuration",
+  stopRerun: "Stop then rerun",
+  rerun: "Rerun in new session",
+  loading: "Loading configuration…",
+  readError: "Unable to read this session configuration.",
+  saveError: "Configuration was not saved.",
+  rerunError: "Unable to rerun this session.",
+  confirmStop: "End this active session and create a new session from its saved configuration?",
+};
 
 export function SessionConfigDialog({
   session,
@@ -19,24 +53,25 @@ export function SessionConfigDialog({
   onClose: () => void;
   onRerun: (id: string) => void;
 }) {
+  const { locale, t } = useTranslation();
+  const text = configCopy(locale === "zh-CN");
   const providers = [...agentIds(data.providers), "shell", "custom"];
   const [config, setConfig] = useState<SessionConfig>();
   const [args, setArgs] = useState("");
   const [issue, setIssue] = useState<string>();
+  const [fallback, setFallback] = useState<"readError" | "saveError" | "rerunError">();
   const [busy, setBusy] = useState(false);
+  const shownIssue = issue ?? (fallback ? text[fallback] : undefined);
   useEffect(() => {
     void request("session.config.read", { sessionId: session.id })
       .then((value) => {
         setConfig(value);
         setArgs(value.args.join("\n"));
       })
-      .catch((error) =>
-        setIssue(
-          error instanceof Error
-            ? error.message
-            : "Unable to read this session configuration.",
-        ),
-      );
+      .catch((error) => {
+        if (error instanceof Error) setIssue(error.message);
+        else setFallback("readError");
+      });
   }, [session.id]);
   const update = <K extends keyof SessionConfig>(
     key: K,
@@ -47,6 +82,7 @@ export function SessionConfigDialog({
     if (!config) return false;
     setBusy(true);
     setIssue(undefined);
+    setFallback(undefined);
     try {
       const saved = await request("session.config.save", {
         sessionId: session.id,
@@ -67,9 +103,8 @@ export function SessionConfigDialog({
       setArgs(saved.args.join("\n"));
       return true;
     } catch (error) {
-      setIssue(
-        error instanceof Error ? error.message : "Configuration was not saved.",
-      );
+      if (error instanceof Error) setIssue(error.message);
+      else setFallback("saveError");
       return false;
     } finally {
       setBusy(false);
@@ -83,9 +118,7 @@ export function SessionConfigDialog({
     if (isActive(session) && !stopFirst) return;
     if (
       stopFirst &&
-      !confirm(
-        "End this active session and create a new session from its saved configuration?",
-      )
+      !confirm(text.confirmStop)
     )
       return;
     if (!(await save())) return;
@@ -102,11 +135,8 @@ export function SessionConfigDialog({
       });
       onRerun(created.id);
     } catch (error) {
-      setIssue(
-        error instanceof Error
-          ? error.message
-          : "Unable to rerun this session.",
-      );
+      if (error instanceof Error) setIssue(error.message);
+      else setFallback("rerunError");
     } finally {
       setBusy(false);
     }
@@ -120,8 +150,8 @@ export function SessionConfigDialog({
         aria-labelledby="session-config-title"
       >
         <div className="dialog-title">
-          <h2 id="session-config-title">Session configuration</h2>
-          <button onClick={onClose}>Close</button>
+          <h2 id="session-config-title">{text.heading}</h2>
+          <button onClick={onClose}>{t("close")}</button>
         </div>
         {config ? (
           <form
@@ -129,7 +159,7 @@ export function SessionConfigDialog({
             onSubmit={(event) => void submit(event)}
           >
             <label>
-              Provider
+              {t("provider")}
               <Select
                 value={config.provider}
                 onChange={(event) =>
@@ -142,19 +172,19 @@ export function SessionConfigDialog({
               </Select>
             </label>
             <label>
-              Mode
+              {text.mode}
               <Select
                 value={config.mode}
                 onChange={(event) =>
                   update("mode", event.target.value as SessionConfig["mode"])
                 }
               >
-                <option value="terminal">Terminal</option>
-                <option value="chat">Structured Chat</option>
+                <option value="terminal">{t("terminal")}</option>
+                <option value="chat">{t("structuredChat")}</option>
               </Select>
             </label>
             <label>
-              Working directory
+              {t("workingDirectory")}
               <input
                 required
                 value={displayPath(config.cwd)}
@@ -162,41 +192,41 @@ export function SessionConfigDialog({
               />
             </label>
             <label>
-              Executable{" "}
+              {text.executable}{" "}
               <input
                 value={config.executable ?? ""}
                 onChange={(event) => update("executable", event.target.value)}
-                placeholder="Provider default"
+                placeholder={text.executablePlaceholder}
               />
             </label>
             <label>
-              Arguments{" "}
+              {text.arguments}{" "}
               <textarea
                 value={args}
                 onChange={(event) => setArgs(event.target.value)}
-                placeholder="One argument per line"
+                placeholder={text.argumentsPlaceholder}
                 rows={4}
               />
             </label>
             <label>
-              Title{" "}
+              {t("title")}{" "}
               <input
                 value={config.title ?? ""}
                 onChange={(event) => update("title", event.target.value)}
               />
             </label>
             <RetrySettings sessionId={session.id} terminal={session.mode === "terminal"} />
-            {issue && (
+            {shownIssue && (
               <p role="alert" className="surface-error">
-                {issue}
+                {shownIssue}
               </p>
             )}
             <div className="dialog-actions">
               <button type="button" onClick={onClose}>
-                Cancel
+                {t("cancel")}
               </button>
               <button className="primary" disabled={busy} type="submit">
-                Save configuration
+                {text.save}
               </button>
               {isActive(session) ? (
                 <button
@@ -205,7 +235,7 @@ export function SessionConfigDialog({
                   disabled={busy}
                   onClick={() => void rerun(true)}
                 >
-                  Stop then rerun
+                  {text.stopRerun}
                 </button>
               ) : (
                 <button
@@ -213,13 +243,13 @@ export function SessionConfigDialog({
                   disabled={busy}
                   onClick={() => void rerun(false)}
                 >
-                  Rerun in new session
+                  {text.rerun}
                 </button>
               )}
             </div>
           </form>
         ) : (
-          <p className="settings-note">Loading configuration…</p>
+          <p className="settings-note">{text.loading}</p>
         )}
       </section>
     </div>

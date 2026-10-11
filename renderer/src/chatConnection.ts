@@ -77,7 +77,9 @@ export function mergeConnectionEvent(current: ChatConnectionState, next: ChatCon
 export function reduceChatLink(state: ChatLinkState, action: ChatLinkAction): ChatLinkState {
   switch (action.type) {
     case "reset":
-      return emptyLink(action.sessionId, action.phase);
+      return action.sessionId === state.connection.sessionId
+        ? { ...state, connection: emptyConnection(action.sessionId, action.phase) }
+        : emptyLink(action.sessionId, action.phase);
     case "snapshot": {
       if (action.transportGeneration !== undefined && action.transportGeneration !== state.transportGeneration) return state;
       if (state.transport === "down") return state;

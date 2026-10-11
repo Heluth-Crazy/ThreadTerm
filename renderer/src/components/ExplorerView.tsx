@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent, type MouseEvent, type ReactNode } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent, type MouseEvent, type ReactNode } from 'react';
 import type { FileEntry } from '@threadterm/protocol';
 import { operationId, request } from '../bridge';
 import { Icon } from './PrototypeIcon';
@@ -15,6 +15,28 @@ import { explorerFileMenuItems } from '../contextMenuSurfaceItems';
 
 type Editing = { mode:'rename'|'file'|'directory'; dir:string; target?:string; value:string; error?:string };
 type Row = { entry:FileEntry; depth:number };
+const scrollHost = (node:HTMLElement) => {
+ let current = node.parentElement;
+ while(current && current !== document.body && current !== document.documentElement) {
+  const style = getComputedStyle(current);
+  if(style.overflowX === 'auto' || style.overflowX === 'scroll' || style.overflowY === 'auto' || style.overflowY === 'scroll') return current;
+  current = current.parentElement;
+ }
+ return null;
+};
+// Move only the tree's own scroll host. A name already touching the viewport stays put.
+const revealTreeRow = (row:HTMLElement) => {
+ const host = scrollHost(row);
+ if(!host) return;
+ const hostBox = host.getBoundingClientRect();
+ const name = row.querySelector<HTMLElement>('.wb-name') ?? row;
+ const box = name.getBoundingClientRect();
+ const rowBox = row.getBoundingClientRect();
+ if(box.left < hostBox.left + 1) host.scrollLeft -= hostBox.left + 1 - box.left;
+ else if(box.left > hostBox.right - 1) host.scrollLeft += box.left - (hostBox.right - 1);
+ if(rowBox.bottom > hostBox.bottom - 1) host.scrollTop += rowBox.bottom - (hostBox.bottom - 1);
+ else if(rowBox.top < hostBox.top + 1) host.scrollTop -= hostBox.top + 1 - rowBox.top;
+};
 const sortEntries = (entries:FileEntry[]) => entries
  .filter(entry => entry.name !== '.git')
  .sort((left, right) => (left.kind === 'directory' ? 0 : 1) - (right.kind === 'directory' ? 0 : 1) || left.name.localeCompare(right.name, undefined, {numeric:true, sensitivity:'base'}));
@@ -77,6 +99,23 @@ export function ExplorerView({scope, actions, git, zh, activePath, focusKey, too
   walk('', 0);
   return list;
  }, [tree, expanded]);
+ const revealSelected = useCallback(() => {
+  const root = treeRef.current;
+  const path = selected ?? activePath;
+  if(!root || !path) return;
+  const row = root.querySelector<HTMLElement>(`[data-path="${CSS.escape(path)}"]`);
+  if(row) revealTreeRow(row);
+ }, [activePath, selected]);
+ useLayoutEffect(() => { revealSelected(); }, [revealSelected, rows]);
+ useEffect(() => {
+  const root = treeRef.current;
+  if(!root || !(selected ?? activePath)) return;
+  const host = scrollHost(root);
+  if(!host) return;
+  const observer = new ResizeObserver(() => revealSelected());
+  observer.observe(host);
+  return () => observer.disconnect();
+ }, [activePath, revealSelected, selected]);
 
  const guardDirty = (path:string, verb:string) => {
   const dirty = actions.dirtyPaths().filter(candidate => coveredBy(candidate, path));
