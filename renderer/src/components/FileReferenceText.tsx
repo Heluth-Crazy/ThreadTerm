@@ -1,8 +1,146 @@
-import { Fragment, useMemo, type MouseEvent, type ReactNode } from 'react';
-import type { FileReference } from '@threadterm/protocol';
+import { Fragment, createContext, useContext, useEffect, useMemo, useRef, useState, type MouseEvent, type ReactNode } from 'react';
+import type { FileReference, ResolvedFileReference } from '@threadterm/protocol';
+import { request, subscribeEvents } from '../bridge';
 import { extractFileReferences, parseFileReference, parseMarkdownFileReference } from '../fileReferences';
 
 type OpenFile = (reference: FileReference) => void;
+export type FileReferenceScope = { sourceSessionId?: string; canonicalRoot?: string };
+const FileReferenceScopeContext = createContext<FileReferenceScope | undefined>(undefined);
+
+/** Supplies one session/root to nested prose-reference renderers in a chat surface. */
+export function FileReferenceScopeProvider({ sourceSessionId, canonicalRoot, children }: FileReferenceScope & { children: ReactNode }) {
+ const value = useMemo(() => ({ sourceSessionId, canonicalRoot }), [canonicalRoot, sourceSessionId]);
+ return <FileReferenceScopeContext.Provider value={value}>{children}</FileReferenceScopeContext.Provider>;
+}
+
+function useFileReferenceScope(sourceSessionId?: string, canonicalRoot?: string): FileReferenceScope {
+ const scope = useContext(FileReferenceScopeContext);
+ return {
+  sourceSessionId: sourceSessionId ?? scope?.sourceSessionId,
+  canonicalRoot: canonicalRoot ?? scope?.canonicalRoot,
+ };
+}
+
+type AutoReference = ReturnType<typeof extractFileReferences>[number];
+type AutoReferenceResolver = (sessionId:string, reference:FileReference)=>Promise<ResolvedFileReference>;
+type CachedReference = { exists:boolean; expiresAt?:number };
+type PendingReference = { promise:Promise<ResolvedFileReference|undefined>; interested:Set<()=>boolean> };
+const AUTO_REFERENCE_LIMIT=32;
+const AUTO_REFERENCE_CONCURRENCY=4;
+const AUTO_REFERENCE_CACHE_LIMIT=512;
+const AUTO_REFERENCE_QUEUE_LIMIT=128;
+const AUTO_REFERENCE_NEGATIVE_TTL=30_000;
+const autoReferenceCache=new Map<string,CachedReference>();
+const sourceRoots=new Map<string,string>();
+const pendingAutoReferences=new Map<string,PendingReference>();
+const queuedAutoReferences:{run:()=>Promise<void>; current:()=>boolean}[]=[];
+let activeAutoReferences=0;
+let transportEpoch=0;
+
+const referenceKey=(reference:FileReference)=>`${reference.path}\u0000${reference.line??''}\u0000${reference.column??''}`;
+const cacheKey=(sessionId:string, root:string, reference:FileReference)=>`${sessionId}\u0000${root}\u0000${referenceKey(reference)}`;
+const pendingKey=(key:string)=>`${transportEpoch}\u0000${key}`;
+const asReference=({path,line,column}:FileReference):FileReference=>({path,...(line===undefined?{}:{line}),...(column===undefined?{}:{column})});
+const cacheReference=(key:string, value:CachedReference)=>{
+ autoReferenceCache.delete(key); autoReferenceCache.set(key,value);
+ if(autoReferenceCache.size>AUTO_REFERENCE_CACHE_LIMIT) autoReferenceCache.delete(autoReferenceCache.keys().next().value!);
+};
+const rememberSourceRoot=(sessionId:string, root:string)=>{
+ sourceRoots.delete(sessionId); sourceRoots.set(sessionId,root);
+ if(sourceRoots.size>128) sourceRoots.delete(sourceRoots.keys().next().value!);
+};
+const drainAutoReferenceQueue=()=>{
+ while(activeAutoReferences<AUTO_REFERENCE_CONCURRENCY&&queuedAutoReferences.length){
+ const next=queuedAutoReferences.shift()!;
+  if(!next.current()){void next.run();continue;}
+  activeAutoReferences++;
+  void next.run().finally(()=>{activeAutoReferences--;drainAutoReferenceQueue();});
+ }
+};
+const sharedResolution=(key:string, current:()=>boolean, run:()=>Promise<ResolvedFileReference>)=>{
+ const existing=pendingAutoReferences.get(key);
+ if(existing){existing.interested.add(current);return existing.promise;}
+ let settle:(value:ResolvedFileReference|undefined)=>void=()=>{};
+ const promise=new Promise<ResolvedFileReference|undefined>(resolve=>{settle=resolve;});
+ const interested=new Set<()=>boolean>([current]);
+ const pending:PendingReference={promise,interested};
+ pendingAutoReferences.set(key,pending);
+ const execute=async()=>{
+  try { settle([...interested].some(check=>check())?await run():undefined); }
+  catch { settle(undefined); }
+  finally { if(pendingAutoReferences.get(key)===pending)pendingAutoReferences.delete(key); }
+ };
+ if(queuedAutoReferences.length>=AUTO_REFERENCE_QUEUE_LIMIT){pendingAutoReferences.delete(key);settle(undefined);}
+ else {queuedAutoReferences.push({run:execute,current:()=>[...interested].some(check=>check())});drainAutoReferenceQueue();}
+ return promise;
+};
+export const invalidateAutoFileReferenceCache=()=>{transportEpoch++;autoReferenceCache.clear();sourceRoots.clear();};
+
+/** Resolves only bounded auto-prose candidates. Structured provider references bypass this gate. */
+export async function resolveAutoFileReferences({
+ sessionId,
+ canonicalRoot,
+ candidates,
+ resolve,
+ current=()=>true,
+}: {
+ sessionId:string;
+ canonicalRoot?:string;
+ candidates:readonly AutoReference[];
+ resolve:AutoReferenceResolver;
+ current?:()=>boolean;
+}):Promise<AutoReference[]> {
+ const root=canonicalRoot??sourceRoots.get(sessionId)??'';
+ const unique=[...new Map(candidates.slice(0,AUTO_REFERENCE_LIMIT).map(candidate=>[referenceKey(candidate),candidate])).values()];
+ const accepted=new Set<string>();
+ let next=0;
+ const worker=async()=>{
+  while(current()){
+   const candidate=unique[next++]; if(!candidate)return;
+   const key=referenceKey(candidate);
+   const cachedKey=cacheKey(sessionId,root,candidate);
+   const cache=autoReferenceCache.get(cachedKey);
+   if(cache?.expiresAt!==undefined&&cache.expiresAt<=Date.now())autoReferenceCache.delete(cachedKey);
+   else if(cache) { if(cache.exists) accepted.add(key); continue; }
+   const resolved=await sharedResolution(pendingKey(cachedKey),current,()=>resolve(sessionId,asReference(candidate)));
+   if(!current())continue;
+   if(!resolved) { cacheReference(cachedKey,{exists:false,expiresAt:Date.now()+AUTO_REFERENCE_NEGATIVE_TTL}); continue; }
+   const resolvedRoot=resolved.worktreePath??root;
+   if(resolvedRoot) rememberSourceRoot(sessionId,resolvedRoot);
+   cacheReference(cacheKey(sessionId,root,candidate),{exists:true});
+   cacheReference(cacheKey(sessionId,resolvedRoot,candidate),{exists:true});
+   accepted.add(key);
+  }
+ };
+ await Promise.all(Array.from({length:Math.min(AUTO_REFERENCE_CONCURRENCY,unique.length)},worker));
+ return current()?candidates.filter(candidate=>accepted.has(referenceKey(candidate))):[];
+}
+
+function useAutoReferences(content:string, candidates:readonly AutoReference[], interactive:boolean, sourceSessionId?:string, canonicalRoot?:string) {
+ const [verified,setVerified]=useState<AutoReference[]>([]);
+ const [revalidation,setRevalidation]=useState(0);
+ const generation=useRef(0);
+ useEffect(()=>{
+  if(!sourceSessionId)return;
+  return subscribeEvents(event=>{
+   if(event.event==='runtime.transport'&&(event.data as {state?:string}|undefined)?.state==='reconnected'){
+    generation.current++;invalidateAutoFileReferenceCache();setVerified([]);setRevalidation(value=>value+1);
+   }
+  });
+ },[sourceSessionId]);
+ useEffect(()=>{
+  const id=++generation.current;
+  setVerified([]);
+  if(!interactive||!sourceSessionId||!candidates.length)return;
+  void resolveAutoFileReferences({
+   sessionId:sourceSessionId, canonicalRoot, candidates,
+   resolve:(sessionId,reference)=>request('filesystem.resolve',{sessionId,...reference}),
+   current:()=>generation.current===id,
+  }).then(value=>{if(generation.current===id)setVerified(value);});
+  return()=>{generation.current++;};
+ },[canonicalRoot,candidates,content,interactive,revalidation,sourceSessionId]);
+ return verified;
+}
 
 const sameReference = (a: FileReference, b: FileReference) =>
   a.path === b.path && a.line === b.line && a.column === b.column;
@@ -29,13 +167,16 @@ function structuredPath(path: string): string | undefined {
   return value;
 }
 
-export function FileLinkedText({ text, openFile }: { text: string; openFile?: OpenFile }) {
+export function FileLinkedText({ text, openFile, sourceSessionId, canonicalRoot }: { text: string; openFile?: OpenFile; sourceSessionId?:string; canonicalRoot?:string }) {
+  const scope=useFileReferenceScope(sourceSessionId,canonicalRoot);
   const candidates = useMemo(() => extractFileReferences(text), [text]);
+  const interactive=Boolean(openFile);
+  const verified=useAutoReferences(text,candidates,interactive,scope.sourceSessionId,scope.canonicalRoot);
   if (!openFile) return text;
-  if (!candidates.length) return text;
+  if (!scope.sourceSessionId||!verified.length) return text;
   const pieces: ReactNode[] = [];
   let offset = 0;
-  for (const candidate of candidates) {
+  for (const candidate of verified) {
     if (candidate.start < offset) continue;
     pieces.push(text.slice(offset, candidate.start));
     const reference = { path: candidate.path, ...(candidate.line ? { line: candidate.line } : {}), ...(candidate.column ? { column: candidate.column } : {}) };
@@ -46,10 +187,10 @@ export function FileLinkedText({ text, openFile }: { text: string; openFile?: Op
   return <Fragment>{pieces}</Fragment>;
 }
 
-export function FileReferenceChips({ references, visibleText, openFile }: { references?: FileReference[]; visibleText?: string; openFile?: OpenFile }) {
+export function FileReferenceChips({ references, visibleText, visibleReferences, openFile }: { references?: FileReference[]; visibleText?: string; visibleReferences?:readonly FileReference[]; openFile?: OpenFile }) {
   if (!openFile || !references?.length) return null;
   const unique: FileReference[] = [];
-  const visible = visibleText ? extractFileReferences(visibleText) : [];
+  const visible = visibleReferences ?? (visibleText ? extractFileReferences(visibleText) : []);
   for (const reference of references.slice(0, 256)) {
     const path = structuredPath(reference.path);
     if (!path) continue;
@@ -67,7 +208,34 @@ export function FileReferenceChips({ references, visibleText, openFile }: { refe
 
 // The HTML has already passed DOMPurify. Only create textContent and inert
 // buttons here; never carry raw model HTML into an attribute or URL.
-function decorateMarkdown(sanitized: string, interactive: boolean): string {
+function markdownAutoReferences(sanitized:string):AutoReference[] {
+ const root=document.createElement('div'); root.innerHTML=sanitized;
+ const walker=document.createTreeWalker(root,NodeFilter.SHOW_TEXT);
+ const candidates:AutoReference[]=[];
+ while(walker.nextNode()){
+  const node=walker.currentNode as Text;
+  if(node.parentElement?.closest('button, a'))continue;
+  candidates.push(...extractFileReferences(node.textContent??''));
+ }
+ return candidates;
+}
+
+function markdownAnchorReferences(sanitized:string):FileReference[] {
+ const root=document.createElement('div'); root.innerHTML=sanitized;
+ const references:FileReference[]=[];
+ for(const anchor of Array.from(root.querySelectorAll('a'))){
+  let reference=parseMarkdownFileReference(anchor.getAttribute('href')??'');
+  const encoded=anchor.getAttribute('data-threadterm-file-reference');
+  if(encoded)try{
+   const value=JSON.parse(encoded) as FileReference;
+   if(value&&typeof value.path==='string'&&parseFileReference(value.path))reference=value;
+  }catch{/* Ignore malformed inert metadata. */}
+  if(reference)references.push(reference);
+ }
+ return references;
+}
+
+function decorateMarkdown(sanitized: string, interactive: boolean, accepted:ReadonlySet<string>): string {
   const root = document.createElement('div');
   root.innerHTML = sanitized;
   for (const anchor of Array.from(root.querySelectorAll('a'))) {
@@ -97,7 +265,7 @@ function decorateMarkdown(sanitized: string, interactive: boolean): string {
   for (const node of textNodes) {
     if (node.parentElement?.closest('button, a')) continue;
     const text = node.textContent ?? '';
-    const candidates = extractFileReferences(text);
+    const candidates = extractFileReferences(text).filter(candidate=>accepted.has(referenceKey(candidate)));
     if (!candidates.length) continue;
     const fragment = document.createDocumentFragment();
     let offset = 0;
@@ -117,14 +285,20 @@ function decorateMarkdown(sanitized: string, interactive: boolean): string {
   return root.innerHTML;
 }
 
-export function FileLinkedMarkdown({ sanitizedHtml, references, openFile }: { sanitizedHtml: string; references?: FileReference[]; openFile?: OpenFile }) {
+export function FileLinkedMarkdown({ sanitizedHtml, references, openFile, sourceSessionId, canonicalRoot }: { sanitizedHtml: string; references?: FileReference[]; openFile?: OpenFile; sourceSessionId?:string; canonicalRoot?:string }) {
+  const scope=useFileReferenceScope(sourceSessionId,canonicalRoot);
   const interactive = Boolean(openFile);
+  const candidates=useMemo(()=>markdownAutoReferences(sanitizedHtml),[sanitizedHtml]);
+  const anchors=useMemo(()=>markdownAnchorReferences(sanitizedHtml),[sanitizedHtml]);
+  const verified=useAutoReferences(sanitizedHtml,candidates,interactive,scope.sourceSessionId,scope.canonicalRoot);
+  const accepted=useMemo(()=>new Set(verified.map(referenceKey)),[verified]);
+  const visibleReferences=useMemo(()=>[...anchors,...verified],[anchors,verified]);
   const rendered = useMemo(() => {
-    const html = decorateMarkdown(sanitizedHtml, interactive);
+    const html = decorateMarkdown(sanitizedHtml, interactive, accepted);
     const container = document.createElement('div');
     container.innerHTML = html;
     return { innerHtml: { __html: html }, visibleText: container.textContent ?? '' };
-  }, [interactive, sanitizedHtml]);
+  }, [accepted, interactive, sanitizedHtml]);
   const onClick = (event: MouseEvent<HTMLDivElement>) => {
     const target = event.target instanceof Element ? event.target.closest('button[data-file-reference]') : null;
     if (!target || !event.currentTarget.contains(target) || !openFile) return;
@@ -135,6 +309,6 @@ export function FileLinkedMarkdown({ sanitizedHtml, references, openFile }: { sa
   };
   return <>
     <div className="v3-message-text codex-markdown" dangerouslySetInnerHTML={rendered.innerHtml} onClick={onClick} />
-    <FileReferenceChips references={references} visibleText={rendered.visibleText} openFile={openFile} />
+    <FileReferenceChips references={references} visibleReferences={visibleReferences} openFile={openFile} />
   </>;
 }

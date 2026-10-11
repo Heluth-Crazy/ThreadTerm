@@ -1,4 +1,4 @@
-use crate::domain::{ChatItem, ChatTurnOrigin};
+use crate::domain::ChatItem;
 use anyhow::{anyhow, bail, Result};
 use chrono::{DateTime, Duration, Utc};
 use rusqlite::{params, OptionalExtension, Transaction};
@@ -164,14 +164,13 @@ pub(crate) fn availability(
     {
         return Ok(unavailable("unknown_activity", degraded, diagnostic));
     }
-    // Imports created before turn metadata existed are read-only and cannot
-    // repair themselves on startup. Offer the existing fenced rebuild only on
-    // explicit request, and only when the stored transcript actually lacks
-    // every persisted turn identity *and* history origin. A missing
-    // duration/status or native turn ID alone is not evidence of degradation:
-    // providers may omit either legitimately. Newly imported and rebuilt
-    // records carry the durable origin even when native turn IDs are absent.
-    let metadata_missing = session.read_only && history_metadata_missing(tx, session_id)?;
+    // Imports created before turn metadata existed keep their generated
+    // `session:history:` row IDs even after explicit resume. Offer the fenced
+    // rebuild only for that durable legacy provenance; a generic missing
+    // duration/status or turn ID is not evidence of degradation. New imports
+    // and rebuilds carry turn_origin, while resumed sessions may later contain
+    // ordinary live projection rows alongside the legacy rows.
+    let metadata_missing = history_metadata_missing(tx, session_id)?;
     if !degraded
         && !metadata_missing
         && !matches!(session.status.as_str(), "error" | "interrupted")
@@ -592,26 +591,33 @@ fn raw_transcript(tx: &Transaction<'_>, session_id: &str) -> Result<Vec<RawChatR
 
 fn history_metadata_missing(tx: &Transaction<'_>, session_id: &str) -> Result<bool> {
     let mut statement = tx.prepare(
-        "SELECT turn_id,data FROM chat_items WHERE session_id=? ORDER BY created_at,id",
+        "SELECT id,turn_id,data FROM chat_items WHERE session_id=? ORDER BY created_at,id",
     )?;
     let rows = statement.query_map([session_id], |row| {
-        Ok((row.get::<_, Option<String>>(0)?, row.get::<_, String>(1)?))
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, Option<String>>(1)?,
+            row.get::<_, String>(2)?,
+        ))
     })?;
-    let mut found_item = false;
+    let prefix = format!("{session_id}:history:");
     for row in rows {
-        let (column_turn_id, data) = row?;
-        found_item = true;
-        let parsed = serde_json::from_str::<ChatItem>(&data).ok();
-        if column_turn_id.is_some()
-            || parsed.as_ref().and_then(|item| item.turn_id.as_ref()).is_some()
-            || parsed
-                .as_ref()
-                .is_some_and(|item| item.turn_origin == Some(ChatTurnOrigin::History))
+        let (id, column_turn_id, data) = row?;
+        let Ok(parsed) = serde_json::from_str::<ChatItem>(&data) else {
+            continue;
+        };
+        if id
+            .strip_prefix(&prefix)
+            .is_some_and(|suffix| !suffix.is_empty())
+            && parsed.id == id
+            && column_turn_id.is_none()
+            && parsed.turn_id.is_none()
+            && parsed.turn_origin.is_none()
         {
-            return Ok(false);
+            return Ok(true);
         }
     }
-    Ok(found_item)
+    Ok(false)
 }
 
 fn integrity_marker(tx: &Transaction<'_>, session_id: &str) -> Result<Option<String>> {
@@ -797,6 +803,7 @@ fn emit(tx: &Transaction<'_>, event: &str, data: Value) -> Result<()> {
 mod tests {
     use super::*;
     use crate::db::{CreateSession, Database};
+    use crate::domain::ChatTurnOrigin;
 
     const PRINCIPAL: &str = "repair-test";
     const EPOCH: i64 = 7;
@@ -1059,14 +1066,22 @@ mod tests {
     }
 
     #[test]
-    fn legacy_read_only_history_offers_only_explicit_metadata_rebuild() {
+    fn legacy_scoped_history_offers_explicit_rebuild_after_resume_with_live_rows() {
         let legacy = Fixture::new();
-        legacy.insert_item(&text_item("legacy", "assistant", "older import"));
+        let mut legacy_unsupported = text_item(
+            &format!("{}:history:unsupported", legacy.session),
+            "assistant",
+            "preserved legacy shape",
+        );
+        legacy_unsupported.role = "unsupported-legacy-role".into();
+        legacy_unsupported.parts = vec![json!("unsupported legacy part")];
+        legacy.insert_item(&legacy_unsupported);
+        legacy.insert_item(&text_item("later-live", "assistant", "new live response"));
         let offered = legacy
             .db
             .transaction(|tx| {
                 tx.execute(
-                    "UPDATE sessions SET status='idle',read_only=1 WHERE id=?",
+                    "UPDATE sessions SET status='idle',read_only=0 WHERE id=?",
                     [&legacy.session],
                 )?;
                 tx.execute(
@@ -1082,7 +1097,11 @@ mod tests {
         assert_eq!(offered.diagnostic.as_deref(), Some("history_metadata_missing"));
 
         let current = Fixture::new();
-        let mut item = text_item("current", "assistant", "new import");
+        let mut item = text_item(
+            &format!("{}:history:current", current.session),
+            "assistant",
+            "new import",
+        );
         item.turn_origin = Some(ChatTurnOrigin::History);
         current.insert_item(&item);
         let unavailable = current
@@ -1101,6 +1120,25 @@ mod tests {
             .unwrap();
         assert!(!unavailable.offered);
         assert_eq!(unavailable.reason, Some("healthy"));
+
+        let live_only = Fixture::new();
+        live_only.insert_item(&text_item("live-without-metadata", "assistant", "ordinary live row"));
+        let live_gate = live_only
+            .db
+            .transaction(|tx| {
+                tx.execute(
+                    "UPDATE sessions SET status='idle',read_only=0 WHERE id=?",
+                    [&live_only.session],
+                )?;
+                tx.execute(
+                    "DELETE FROM metadata WHERE key=?",
+                    [format!("chat.integrity:{}", live_only.session)],
+                )?;
+                availability(tx, &live_only.session, &live_only.worker, true)
+            })
+            .unwrap();
+        assert!(!live_gate.offered);
+        assert_eq!(live_gate.reason, Some("healthy"));
 
         let empty = Fixture::new();
         let empty_gate = empty

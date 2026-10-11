@@ -371,7 +371,7 @@ export function App() {
         </header>
         <aside className="sidebar">
           <div className="side-head">
-            <button className="brand-home" onClick={() => void navigate({ kind: "workbench" })}><span className="brand-mark"><Icon name="terminal" /></span>ThreadTerm</button>
+            <button className="brand-home" onClick={() => void navigate({ kind: "workbench" })}><span className="brand-mark"><img src="./brand-mark.png" alt="" /></span>ThreadTerm</button>
             <button className="icon-btn" aria-label={t("commandPalette")} onClick={() => setPaletteOpen(true)}><Icon name="search" /></button>
             <button aria-label={t("inbox")} className="icon-btn" aria-expanded={shellMenu?.kind==="notifications"} onClick={event => setShellMenu(shellMenu?.kind==="notifications"?undefined:{kind:"notifications",anchor:event.currentTarget})}><Icon name="bell" />{inboxUnread > 0 && <i className="bell-badge">{inboxUnread}</i>}</button>
           </div>

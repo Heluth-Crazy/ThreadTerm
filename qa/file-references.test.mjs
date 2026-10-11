@@ -91,6 +91,23 @@ test('bracketed directory names and numbers keep their meaning',()=>{
  assert.deepEqual(spans('app/(auth)/login/page.tsx pages/[...slug].tsx Read(app/(auth)/page.tsx) report(1).pdf'),['app/(auth)/login/page.tsx','pages/[...slug].tsx','app/(auth)/page.tsx','report(1).pdf']);
  assert.deepEqual(spans('v1.2.3 and 3.14 https://x.com/search?q=src/a.ts error:src/a.ts foo.bar(src);'),[]);
 });
+test('slash commands stay text while candidate paths retain their spelling for runtime verification',()=>{
+ assert.equal(parseFileReference('/usage'),undefined);
+ assert.equal(parseFileReference('/status'),undefined);
+ assert.equal(parseFileReference('/src/'),undefined);
+ assert.deepEqual(parseFileReference('complaintList.srvFullName'),{path:'complaintList.srvFullName'});
+ assert.deepEqual(parseFileReference('src/Foo.Ts:8:2'),{path:'src/Foo.Ts',line:8,column:2});
+ assert.deepEqual(parseFileReference('/home/user/src/Foo.Ts:12:3'),{path:'/home/user/src/Foo.Ts',line:12,column:3});
+ assert.deepEqual(parseFileReference(String.raw`C:\repo\Foo.Ts:4:5`),{path:String.raw`C:\repo\Foo.Ts`,line:4,column:5});
+ assert.deepEqual(parseFileReference('src/complaintList.srvFullName:3:2'),{path:'src/complaintList.srvFullName',line:3,column:2});
+ assert.deepEqual(parseFileReference('Dockerfile'),{path:'Dockerfile'});
+ assert.deepEqual(parseFileReference('/home/user/src/main.ts:12:3'),{path:'/home/user/src/main.ts',line:12,column:3});
+ assert.deepEqual(extractFileReferences('Run /usage then open src/Foo.Ts:12:3, Dockerfile, and complaintList.srvFullName.'),[
+  {path:'src/Foo.Ts',line:12,column:3,start:21,end:36},
+  {path:'Dockerfile',start:38,end:48},
+  {path:'complaintList.srvFullName',start:54,end:79},
+ ]);
+});
 test('speculative readings wait for the runtime and never replace the default',()=>{
  const groups=text=>fileReferenceCandidates(text).map(group=>group.map(item=>`${text.slice(item.start,item.end)}${item.speculative?'?':''}`));
  assert.deepEqual(groups(String.raw`C:\Program Files\nodejs\node.exe --version`),[[String.raw`C:\Program Files\nodejs\node.exe?`,String.raw`C:\Program`],[String.raw`Files\nodejs\node.exe`]]);

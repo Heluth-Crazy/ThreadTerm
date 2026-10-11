@@ -38,6 +38,27 @@ test("only the current reconnect query can unlock writes; wrong epochs and sessi
   assert.equal(state.connection.phase, "ready");
 });
 
+test("same-session retry retains the transport fence after reconnect; a new session resets it", () => {
+  let state = emptyLink("s", "connecting");
+  state = reduceChatLink(state, { type: "transport-down" });
+  state = reduceChatLink(state, { type: "transport-up", epoch: "runtime" });
+  state = reduceChatLink(state, { type: "snapshot", transportGeneration: 2, resync: true,
+    snapshot: { ...state.connection, phase: "disconnected", runtimeEpoch: "runtime", connectionGeneration: 0, revision: 0 } });
+  state = reduceChatLink(state, { type: "connect-failed", message: "retry me" });
+
+  state = reduceChatLink(state, { type: "reset", sessionId: "s", phase: "connecting" });
+  assert.equal(state.transport, "up");
+  assert.equal(state.transportGeneration, 2);
+  state = reduceChatLink(state, { type: "snapshot", transportGeneration: 2,
+    snapshot: { ...state.connection, phase: "ready", runtimeEpoch: "runtime", connectionGeneration: 1, revision: 1 } });
+  assert.equal(state.connection.phase, "ready");
+
+  state = reduceChatLink(state, { type: "reset", sessionId: "other", phase: "connecting" });
+  assert.equal(state.connection.sessionId, "other");
+  assert.equal(state.transport, "up");
+  assert.equal(state.transportGeneration, 0);
+});
+
 test("full overlay waits for provider ready, not lease or history", () => {
   assert.equal(overlayKind({ ended: false, canControl: true, phase: "connecting", hasTranscript: false, sessionStatus: "starting" }), "full");
   assert.equal(overlayKind({ ended: false, canControl: true, phase: "connecting", hasTranscript: false, sessionStatus: "running" }), "full");

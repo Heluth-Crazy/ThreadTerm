@@ -1,8 +1,8 @@
 # ThreadTerm application icon
 
-The mark joins an upright T and a slightly offset inverted T on a purple-blue rounded tile. Geometry and colors live in `threadterm.svg`; this is an original vector mark, not an Electron fallback or a font glyph.
+The mark joins an upright T and an inverted T on a purple-blue rounded tile. The two stems are separated by a small gap, and the motif is rotated five degrees clockwise around the tile center. The tile itself stays upright. Geometry and colors live in `threadterm.svg`; this is an original vector mark, not an Electron fallback or a font glyph.
 
-Regenerate committed artifacts with `python desktop/assets/generate-icons.py` (Pillow required). The script renders the simple SVG rectangles with supersampling and writes the 512px PNG, 32px tray PNG, Windows ICO frames at 16/20/24/32/40/48/64/128/256px, and `icon-data.ts`.
+Regenerate committed artifacts with `python desktop/assets/generate-icons.py` (Pillow required). The script renders the SVG rectangles and the one supported `rotate()` group with supersampling. It writes the 512px PNG, 32px tray PNG, Windows ICO frames at 16/20/24/32/40/48/64/128/256px, `icon-data.ts`, and `renderer/public/brand-mark.png` for the boot screen and in-app brand. An unsupported SVG element or transform fails the run.
 
 Electron main imports the generated PNG data URLs into its bundle. Every main/floating BrowserWindow receives the application NativeImage; Tray receives the small image. No runtime asset paths are required, including manually bundled isolated QA applications. Standard builds consume the committed artifacts and do not require Python.
 
