@@ -2585,6 +2585,122 @@
         "projectId"
       ]
     },
+    "RequestParams<\"git.commit.selected\">": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "message": {
+          "type": "string"
+        },
+        "selected": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/GitSelectedCommitEntry"
+          }
+        },
+        "expectedHead": {
+          "$ref": "#/definitions/GitHeadSnapshot"
+        },
+        "expectedIndexFingerprint": {
+          "type": "string"
+        },
+        "operationId": {
+          "type": "string"
+        },
+        "projectId": {
+          "type": "string"
+        },
+        "worktreePath": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "expectedHead",
+        "expectedIndexFingerprint",
+        "message",
+        "operationId",
+        "projectId",
+        "selected"
+      ]
+    },
+    "GitSelectedCommitEntry": {
+      "type": "object",
+      "properties": {
+        "path": {
+          "type": "string"
+        },
+        "indexStatus": {
+          "type": "string"
+        },
+        "originalPath": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "path",
+        "indexStatus"
+      ],
+      "additionalProperties": false
+    },
+    "GitHeadSnapshot": {
+      "anyOf": [
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "branch"
+            },
+            "oid": {
+              "type": "string"
+            },
+            "target": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "oid",
+            "target"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "detached"
+            },
+            "oid": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "oid"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "unborn"
+            },
+            "target": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "target"
+          ],
+          "additionalProperties": false
+        }
+      ]
+    },
     "RequestParams<\"git.fetch\">": {
       "type": "object",
       "additionalProperties": false,
@@ -6308,6 +6424,32 @@
         },
         "params": {
           "$ref": "#/definitions/RequestParams%3C%22git.commit%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "params"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "git.commit.selected"
+        },
+        "params": {
+          "$ref": "#/definitions/RequestParams%3C%22git.commit.selected%22%3E"
         }
       },
       "required": [

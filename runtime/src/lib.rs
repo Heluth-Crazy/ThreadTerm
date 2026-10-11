@@ -22,6 +22,7 @@ pub mod file_ops;
 pub mod file_references;
 pub mod git_actions;
 pub mod git_read;
+pub(crate) mod git_selected_commit;
 pub mod job;
 pub mod leases;
 pub mod output;
@@ -49,8 +50,8 @@ pub mod windows_security;
 pub mod workspace_services;
 
 pub const PROTOCOL_VERSION: u32 = 1;
-/// Semantic contract includes explicit native-history repair and snapshot integrity. Wire HMAC still uses PROTOCOL_VERSION.
-pub const PROTOCOL_CONTRACT: u32 = 11;
+/// Semantic contract includes explicit native-history repair and exact selected-commit snapshots. Wire HMAC still uses PROTOCOL_VERSION.
+pub const PROTOCOL_CONTRACT: u32 = 12;
 pub const RUNTIME_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 pub mod local_client;

@@ -27,6 +27,19 @@ const known:Record<string,[string,string]> = {
  invalid_search_pattern:['搜索表达式无效。','Invalid search expression.'],
  invalid_glob:['包含/排除规则无效。','Invalid include/exclude pattern.'],
  operation_outcome_unknown:['上一次操作结果未知，请刷新确认状态。','The previous attempt has an unknown outcome. Refresh to check the current state.'],
+ git_status_changed:['Git 状态已变化。请刷新后重试。','Git status changed. Refresh and try again.'],
+ git_selected_commit_unsupported:['当前 Git 版本不支持选择性提交。请升级 Git 后重试。','This Git version does not support selected commits. Upgrade Git and try again.'],
+ git_selected_commit_stale:['暂存区或 HEAD 已变化。请刷新后重新选择文件。','The index or HEAD changed. Refresh and select the files again.'],
+ git_selected_commit_conflict_state:['仓库处于合并或冲突状态。请先解决冲突。','The repository is in a merge or conflict state. Resolve it first.'],
+ git_selected_commit_index_locked:['Git 暂存区正被其他操作使用。请稍后刷新重试。','Git’s index is in use by another operation. Refresh and try again shortly.'],
+ git_selected_commit_invalid_selection:['所选暂存文件已变化。请刷新后重新选择。','The selected staged files changed. Refresh and select them again.'],
+ git_selected_commit_cross_root_rename:['重命名跨越工作区根目录，无法选择性提交。','The rename crosses the workspace root and cannot be selectively committed.'],
+ git_selected_commit_invalid_message:['提交信息无效。','The commit message is invalid.'],
+ git_selected_commit_hook_failed:['Git 钩子失败，未创建提交。','A Git hook failed; no commit was created.'],
+ git_selected_commit_hook_changed_index:['Git 钩子修改了暂存区，未创建提交。请刷新后检查更改。','A Git hook changed the index; no commit was created. Refresh and inspect the changes.'],
+ git_selected_commit_signing_failed:['提交签名失败，未创建提交。','Commit signing failed; no commit was created.'],
+ git_selected_commit_ref_conflict:['提交引用已变化，未创建提交。请刷新后重试。','The commit reference changed; no commit was created. Refresh and try again.'],
+ git_selected_commit_cleanup_failed:['提交已发布，但清理报告错误。请刷新确认状态。','The commit was published, but cleanup reported an error. Refresh to confirm the state.'],
 };
 
 export function workbenchError(error:unknown, zh:boolean):string {
@@ -35,7 +48,8 @@ export function workbenchError(error:unknown, zh:boolean):string {
  const text = /Unsupported runtime method/.test(raw) ? 'unknown_method' : raw;
  const code = Object.keys(known).find(key => text === key || text.startsWith(`${key}:`) || text.includes(`${key}`));
  if(code) {
-  const detail = text.startsWith(`${code}:`) ? text.slice(code.length + 1).trim() : '';
+  const marker = text.indexOf(`${code}:`);
+  const detail = marker >= 0 ? text.slice(marker + code.length + 1).trim() : '';
   return known[code][zh ? 0 : 1] + (detail && code !== 'recycle_failed' ? ` ${detail}` : '');
  }
  const git = /git_failed:\s*([\s\S]*)/.exec(text);

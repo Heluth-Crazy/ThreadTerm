@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent, type MouseEvent, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import { WbIcon } from '../workbench/icons';
-import type { GitBranches, GitChange } from '@threadterm/protocol';
+import type { GitBranches, GitChange, GitSelectedCommitResult } from '@threadterm/protocol';
 import { operationId, request } from '../bridge';
 import { Icon } from './PrototypeIcon';
 import { CatalogPopover } from './CatalogActions';
@@ -13,17 +13,24 @@ import { ContextSendAction, sendContextToAgent } from './ContextSendAction';
 import { changedFileContext } from './GitContextActions';
 import { showContextMenu } from './ContextMenu';
 import { sourceControlMenuItems } from '../contextMenuSurfaceItems';
+import { clearSelectedChanges, selectedChanges, selectedCommitKey, setGroupSelection, toggleSelectedChange, type SelectedCommitGroup } from '../workbench/selectedCommitSelection';
 
 type Confirm =
  | {kind:'discard';paths:string[];untracked:number}
  | {kind:'amend';subject:string}
  | {kind:'delete-branch';branch:string;force:boolean};
+function GroupSelectionToggle({checked,mixed,label,onChange}:{checked:boolean;mixed:boolean;label:string;onChange:()=>void}) {
+ const input=useRef<HTMLInputElement>(null);
+ useEffect(()=>{if(input.current)input.current.indeterminate=mixed;},[mixed]);
+ return <input ref={input} type="checkbox" className="wb-change-select" aria-label={label} checked={checked} onChange={onChange}/>;
+}
 
 export function SourceControlView({scope, actions, git, zh, compact = false, toolbarHost}:{scope:WorkbenchScope;actions:WorkbenchActions;git:GitState;zh:boolean;compact?:boolean;toolbarHost?:HTMLElement|null}) {
  const [message, setMessage] = useState('');
  const [busy, setBusy] = useState<string>();
  const [issue, setIssue] = useState<string>();
  const [notice, setNotice] = useState<string>();
+ const [committedWarning, setCommittedWarning] = useState<string>();
  const [collapsed, setCollapsed] = useState<Set<ChangeGroup>>(new Set());
  const [confirm, setConfirm] = useState<Confirm>();
  const [commitMenu, setCommitMenu] = useState<HTMLElement>();
@@ -31,27 +38,86 @@ export function SourceControlView({scope, actions, git, zh, compact = false, too
  const [branches, setBranches] = useState<GitBranches>();
  const [branchQuery, setBranchQuery] = useState('');
  const [creating, setCreating] = useState(false);
+ const [selection, setSelection] = useState<Set<string>>(() => new Set());
  const messageRef = useRef<HTMLTextAreaElement>(null);
+ const scopeEpoch=useRef(0);
+ const renderedScope=useRef(`${scope.projectId}\u0000${scope.worktreePath ?? ''}\u0000${scope.rootPath}`);
  const text = (en:string, cn:string) => zh ? cn : en;
  const params = scopeParams(scope);
  const status = git.status;
+ const rootKey=scope.rootPath;
+ const scopeKey=`${scope.projectId}\u0000${scope.worktreePath ?? ''}\u0000${scope.rootPath}`;
+ if(renderedScope.current!==scopeKey) { renderedScope.current=scopeKey; scopeEpoch.current++; }
+ const selectedCommit=status?.selectedCommit;
  const groups = useMemo(() => {
   const value:Record<ChangeGroup,GitChange[]> = {conflicts:[], staged:[], changes:[], untracked:[]};
   for(const change of status?.changes ?? []) for(const group of changeGroups(change)) value[group].push(change);
   return value;
  }, [status]);
- useEffect(() => { setIssue(undefined); setNotice(undefined); }, [scope.projectId, scope.worktreePath]);
+ const selectedIn = (group:SelectedCommitGroup) => selectedChanges(selection, rootKey, group, groups[group]);
+ const selectedStaged=selectedIn('staged');
+ const toggleSelection = (group:SelectedCommitGroup, path:string) => setSelection(current => toggleSelectedChange(current,rootKey,group,path));
+ const toggleGroupSelection = (group:SelectedCommitGroup) => {
+  const items=groups[group], all=items.length>0&&items.every(change=>selection.has(selectedCommitKey(rootKey,group,change.path)));
+  setSelection(current=>setGroupSelection(current,rootKey,group,items,!all));
+ };
+ useEffect(() => { setBusy(undefined); setIssue(undefined); setNotice(undefined); setCommittedWarning(undefined); setConfirm(undefined); setCommitMenu(undefined); setBranchMenu(undefined); setBranches(undefined); setBranchQuery(''); setCreating(false); }, [scope.projectId, scope.worktreePath, scope.rootPath]);
  // Success notices are transient; errors stay until dismissed.
  useEffect(() => { if(!notice) return; const timer = setTimeout(() => setNotice(undefined), 4000); return () => clearTimeout(timer); }, [notice]);
 
+ const refreshFailure = (operation:{en:string;cn:string}, succeeded:boolean, error:unknown) => {
+  const detail=workbenchError(error,zh);
+  return succeeded
+   ? text(`${operation.en} completed, but status refresh failed: ${detail}`, `${operation.cn}已完成，但状态刷新失败：${detail}`)
+   : text(`${operation.en} failed, and status refresh also failed: ${detail}`, `${operation.cn}失败，状态刷新也失败：${detail}`);
+ };
+ const ordinaryOperation = (label:string) => label === 'stage'
+  ? {en:'Staging changes',cn:'暂存更改'}
+  : label === 'unstage' ? {en:'Unstaging changes',cn:'取消暂存更改'} : {en:'Action',cn:'操作'};
+ const selectedOperation = (label:string) => label === 'stage-selected'
+  ? {en:'Staging selected files',cn:'暂存所选文件'}
+  : label === 'unstage-selected' ? {en:'Unstaging selected files',cn:'取消暂存所选文件'} : {en:'Commit',cn:'提交'};
  const run = async (label:string, action:() => Promise<unknown>, done?:string) => {
-  setBusy(label); setIssue(undefined); setNotice(undefined);
-  try { await action(); if(done) setNotice(done); return true; }
-  catch(error) { setIssue(workbenchError(error, zh)); return false; }
-  finally { setBusy(undefined); await git.refresh(); }
+  const epoch=scopeEpoch.current; let succeeded=false;
+  setBusy(label); setIssue(undefined); setNotice(undefined); setCommittedWarning(undefined);
+  try { await action(); succeeded=true; if(epoch===scopeEpoch.current&&done)setNotice(done); }
+  catch(error) { if(epoch===scopeEpoch.current)setIssue(workbenchError(error, zh)); }
+  finally {
+   if(epoch===scopeEpoch.current) {
+    try { await git.refresh(); }
+    catch(error) { if(epoch===scopeEpoch.current)setIssue(refreshFailure(ordinaryOperation(label),succeeded,error)); }
+    finally { if(epoch===scopeEpoch.current)setBusy(undefined); }
+   }
+  }
+  return succeeded&&epoch===scopeEpoch.current;
  };
  const stage = (paths:string[]) => run('stage', () => request('git.stage', {...params, paths, operationId:operationId()}));
  const unstage = (paths:string[]) => run('unstage', () => request('git.unstage', {...params, paths, operationId:operationId()}));
+ const runSelected = async <T,>(label:string, action:()=>Promise<T>, clear:readonly [SelectedCommitGroup, GitChange[]][], done?:string):Promise<T|undefined> => {
+  const epoch=scopeEpoch.current; let result:T|undefined, succeeded=false;
+  setBusy(label); setIssue(undefined); setNotice(undefined); setCommittedWarning(undefined);
+  try {
+   result=await action(); succeeded=true;
+   if(epoch===scopeEpoch.current) { setSelection(current=>clear.reduce((next,[group,changes])=>clearSelectedChanges(next,rootKey,group,changes),current)); if(done)setNotice(done); }
+  } catch(error) {
+   if(epoch===scopeEpoch.current)setIssue(workbenchError(error,zh));
+  } finally {
+   if(epoch===scopeEpoch.current) {
+    try { await git.refresh(); }
+    catch(error) { if(epoch===scopeEpoch.current)setIssue(refreshFailure(selectedOperation(label),succeeded,error)); }
+    finally { if(epoch===scopeEpoch.current)setBusy(undefined); }
+   }
+  }
+  return succeeded&&epoch===scopeEpoch.current?result:undefined;
+ };
+ const stageSelected = async (group:Extract<SelectedCommitGroup,'changes'|'untracked'>) => {
+  const selected=selectedIn(group); if(!selected.length)return;
+  await runSelected('stage-selected',()=>request('git.stage',{...params,paths:selected.map(change=>change.path),operationId:operationId()}),[[group,selected]],text('Selected files staged.','已暂存所选文件。'));
+ };
+ const unstageSelected = async () => {
+  const selected=selectedStaged; if(!selected.length)return;
+  await runSelected('unstage-selected',()=>request('git.unstage',{...params,paths:selected.map(change=>change.path),operationId:operationId()}),[['staged',selected]],text('Selected files unstaged.','已取消暂存所选文件。'));
+ };
  const discard = (changes:GitChange[]) => setConfirm({kind:'discard', paths:changes.map(change => change.path), untracked:changes.filter(change => change.untracked).length});
  const openChange = (change:GitChange, group:ChangeGroup) => group === 'conflicts' ? actions.openFile(change.path) : actions.openDiff(change.path, group === 'staged');
  const changeMenu = (change:GitChange, group:ChangeGroup, event:{clientX:number;clientY:number;currentTarget:HTMLElement}) => {
@@ -81,10 +147,11 @@ export function SourceControlView({scope, actions, git, zh, compact = false, too
   const trimmed = message.trim();
   if(!trimmed) { messageRef.current?.focus(); setIssue(text('Write a commit message first.', '请先填写提交说明。')); return; }
   if(mode === 'amend') {
+   const epoch=scopeEpoch.current;
    try {
     const log = await request('git.log', {...params, limit:1});
-    setConfirm({kind:'amend', subject:log.commits[0]?.subject ?? ''});
-   } catch(error) { setIssue(workbenchError(error, zh)); }
+    if(epoch===scopeEpoch.current)setConfirm({kind:'amend', subject:log.commits[0]?.subject ?? ''});
+   } catch(error) { if(epoch===scopeEpoch.current)setIssue(workbenchError(error, zh)); }
    return;
   }
   const ok = await run('commit', () => request('git.commit', {...params, message:trimmed, operationId:operationId()}), text('Committed.', '已提交。'));
@@ -92,8 +159,19 @@ export function SourceControlView({scope, actions, git, zh, compact = false, too
   setMessage('');
   if(mode === 'push') await push();
  };
+ const commitSelected = async () => {
+  const trimmed=message.trim();
+  if(!trimmed) { messageRef.current?.focus(); setIssue(text('Write a commit message first.', '请先填写提交说明。')); return; }
+  if(!selectedStaged.length) return;
+  if(!selectedCommit?.supported) { setIssue(selectedCommit?.unsupportedReason ?? text('Restart the ThreadTerm runtime to enable selected commits.', '请重启 ThreadTerm 运行时以启用选择性提交。')); return; }
+  const selected=[...selectedStaged];
+  const result=await runSelected<GitSelectedCommitResult>('commit-selected',()=>request('git.commit.selected',{...params,message:trimmed,selected:selected.map(change=>({path:change.path,indexStatus:change.indexStatus,...(change.originalPath?{originalPath:change.originalPath}:{})})),expectedHead:selectedCommit.head,expectedIndexFingerprint:selectedCommit.indexFingerprint,operationId:operationId()}),[['staged',selected]],text('Selected staged files committed.','已提交所选暂存文件。'));
+  if(!result) return;
+  setMessage('');
+  if(result.postCommitError||result.cleanupError) setCommittedWarning([result.postCommitError&&text(`Committed, but the post-commit hook reported: ${result.postCommitError}`, `已提交，但提交后钩子报告：${result.postCommitError}`),result.cleanupError&&text('Committed, but cleanup after publication reported an error.', '已提交，但发布后的清理报告错误。')].filter(Boolean).join(' '));
+ };
  const push = () => run('push', () => request('git.push', {...params, ...(status?.upstream ? {} : {setUpstream:true}), operationId:operationId()}), status?.upstream ? text('Pushed.', '已推送。') : text('Branch published.', '分支已发布。'));
- const loadBranches = async () => { try { setBranches(await request('git.branches', params)); } catch(error) { setIssue(workbenchError(error, zh)); } };
+ const loadBranches = async () => { const epoch=scopeEpoch.current; try { const next=await request('git.branches', params); if(epoch===scopeEpoch.current)setBranches(next); } catch(error) { if(epoch===scopeEpoch.current)setIssue(workbenchError(error, zh)); } };
  const openBranches = (anchor:HTMLElement) => { setBranchMenu(anchor); setBranchQuery(''); setCreating(false); void loadBranches(); };
  const checkout = async (branch:string, create = false) => {
   setBranchMenu(undefined);
@@ -101,7 +179,7 @@ export function SourceControlView({scope, actions, git, zh, compact = false, too
  };
  const confirmAction = async () => {
   if(!confirm) return;
-  const current = confirm;
+  const current = confirm, epoch=scopeEpoch.current;
   if(current.kind === 'discard') {
    setConfirm(undefined);
    const dirty = actions.dirtyPaths().filter(path => current.paths.includes(path));
@@ -115,11 +193,13 @@ export function SourceControlView({scope, actions, git, zh, compact = false, too
    setBusy('branch'); setIssue(undefined);
    try {
     await request('git.branch.delete', {...params, branch:current.branch, ...(current.force ? {force:true} : {}), operationId:operationId()});
-    setConfirm(undefined); setNotice(text(`Deleted ${current.branch}.`, `已删除 ${current.branch}。`)); void loadBranches();
+    if(epoch===scopeEpoch.current) { setConfirm(undefined); setNotice(text(`Deleted ${current.branch}.`, `已删除 ${current.branch}。`)); void loadBranches(); }
    } catch(error) {
-    if(!current.force && /branch_not_merged/.test(String(error))) setConfirm({...current, force:true});
-    else { setConfirm(undefined); setIssue(workbenchError(error, zh)); }
-   } finally { setBusy(undefined); }
+    if(epoch===scopeEpoch.current) {
+     if(!current.force && /branch_not_merged/.test(String(error))) setConfirm({...current, force:true});
+     else { setConfirm(undefined); setIssue(workbenchError(error, zh)); }
+    }
+   } finally { if(epoch===scopeEpoch.current)setBusy(undefined); }
   }
  };
 
@@ -134,7 +214,10 @@ export function SourceControlView({scope, actions, git, zh, compact = false, too
  const row = (change:GitChange, group:ChangeGroup) => {
   const decoration = decorationFor(change, group);
   const staged = group === 'staged';
+  const selectionGroup=group === 'conflicts' ? undefined : group as SelectedCommitGroup;
+  const selected=selectionGroup!==undefined&&selection.has(selectedCommitKey(rootKey,selectionGroup,change.path));
   return <div key={`${group}:${change.path}`} className={`wb-change-row tone-${decoration.tone}`} role="listitem" data-change-path={change.path} data-change-group={group}>
+   {selectionGroup && <input type="checkbox" className="wb-change-select" aria-label={text(`Select ${change.path} in ${group}`, `在${group}中选择 ${change.path}`)} checked={selected} onClick={event=>event.stopPropagation()} onChange={()=>toggleSelection(selectionGroup,change.path)}/>}
    <button type="button" className="wb-change-open" title={change.originalPath ? `${change.originalPath} → ${change.path}` : change.path}
     onClick={() => openChange(change, group)}>
     <Icon name="file"/><span className="wb-name">{baseName(change.path)}</span><span className="wb-dir">{parentPath(change.path)}</span>
@@ -154,17 +237,21 @@ export function SourceControlView({scope, actions, git, zh, compact = false, too
   const items = groups[group];
   if(!items.length) return null;
   const closed = collapsed.has(group);
+  const selectionGroup=group === 'conflicts' ? undefined : group as SelectedCommitGroup;
+  const selectedCount=selectionGroup?selectedIn(selectionGroup).length:0;
   return <section className="wb-change-group" aria-label={title}>
    <div className="wb-group-head">
     <button type="button" className="wb-group-toggle" aria-expanded={!closed} onClick={() => setCollapsed(current => { const next = new Set(current); if(next.has(group)) next.delete(group); else next.add(group); return next; })}>
      <span className={`wb-chevron${closed ? '' : ' open'}`} aria-hidden="true"><Icon name="chevR"/></span>{title}<span className="wb-count">{items.length}</span>
     </button>
-    <span className="wb-row-actions">{actionsNode}</span>
+    {selectionGroup && <GroupSelectionToggle checked={selectedCount===items.length} mixed={selectedCount>0&&selectedCount<items.length} label={text(`Select all ${title}`, `全选${title}`)} onChange={()=>toggleGroupSelection(selectionGroup)}/>}<span className="wb-row-actions">{actionsNode}</span>
    </div>
    {!closed && <div role="list">{items.map(change => row(change, group))}</div>}
   </section>;
  };
  const nothing = !(status.changes.length);
+ const selectedForStage=selectedIn('changes').length+selectedIn('untracked').length;
+ const commitSelectedActive=selectedStaged.length>0;
  const filteredBranches = (branches?.branches ?? []).filter(branch => branch.name.toLowerCase().includes(branchQuery.trim().toLowerCase()));
  return <div className={`wb-scm${compact ? ' compact' : ''}`}>
   {toolbar}
@@ -181,30 +268,38 @@ export function SourceControlView({scope, actions, git, zh, compact = false, too
   </div>
   <div className="wb-commit">
    <textarea ref={messageRef} value={message} onChange={event => setMessage(event.target.value)} rows={2} placeholder={text('Message (Ctrl+Enter to commit)', '提交说明（Ctrl+Enter 提交）')} aria-label={text('Commit message', '提交说明')}
-    onKeyDown={event => { if(event.key === 'Enter' && (event.ctrlKey || event.metaKey)) { event.preventDefault(); void commit('commit'); } }}/>
+    onKeyDown={event => { if(event.key === 'Enter' && (event.ctrlKey || event.metaKey)) { event.preventDefault(); if(!busy) void (commitSelectedActive ? commitSelected() : commit('commit')); } }}/>
    <div className="wb-commit-actions">
-    <button type="button" className="btn btn-primary wb-commit-main" disabled={!!busy || !groups.staged.length} title={groups.staged.length ? undefined : text('Stage changes first', '请先暂存更改')} onClick={() => void commit('commit')}>
-     {busy === 'commit' ? text('Committing…', '正在提交…') : text('Commit', '提交')}
+   <button type="button" className="btn btn-primary wb-commit-main" disabled={!!busy || (commitSelectedActive ? !selectedCommit?.supported : !groups.staged.length)} title={commitSelectedActive&&!selectedCommit?.supported ? selectedCommit?.unsupportedReason ?? text('Restart the ThreadTerm runtime to enable selected commits.', '请重启 ThreadTerm 运行时以启用选择性提交。') : !commitSelectedActive&&!groups.staged.length ? text('Stage changes first', '请先暂存更改') : undefined} onClick={() => void (commitSelectedActive ? commitSelected() : commit('commit'))}>
+     {busy === 'commit-selected' ? text('Committing selected…', '正在提交所选文件…') : busy === 'commit' ? text('Committing all…', '正在提交全部…') : commitSelectedActive ? text('Commit selected', '提交所选') : text('Commit all staged', '提交全部暂存')}
     </button>
     <button type="button" className="btn wb-commit-more" aria-label={text('More commit actions', '更多提交操作')} disabled={!!busy} onClick={event => setCommitMenu(event.currentTarget)}><Icon name="chevron"/></button>
    </div>
+   {(commitSelectedActive||selectedForStage>0) && <p className="wb-selected-summary" aria-live="polite">{commitSelectedActive ? text(`${selectedStaged.length} staged file(s) selected for this commit.`, `已选择 ${selectedStaged.length} 个暂存文件用于此次提交。`) : ''}{commitSelectedActive&&selectedForStage>0?' ':''}{selectedForStage>0 ? text(`${selectedForStage} change(s) selected to stage; they are not included until staged.`, `已选择 ${selectedForStage} 个更改待暂存；暂存前不会包含在提交中。`) : ''}</p>}
   </div>
   {busy && busy !== 'commit' && <p className="wb-summary" aria-live="polite">{text('Working…', '正在执行…')}</p>}
   {issue && <p className="wb-issue" role="alert">{issue}<button type="button" className="icon-btn" aria-label={text('Dismiss', '关闭提示')} onClick={() => setIssue(undefined)}><Icon name="close"/></button></p>}
   {notice && !issue && <p className="wb-notice" aria-live="polite">{notice}</p>}
+  {committedWarning && <p className="wb-notice wb-commit-warning" role="status">{committedWarning}</p>}
   <div className="wb-changes" onContextMenu={onChangeContext} onKeyDown={onChangeKey}>
    {section('conflicts', text('Merge conflicts', '合并冲突'), null)}
-   {section('staged', text('Staged changes', '已暂存的更改'), <button type="button" className="icon-btn" title={text('Unstage all', '全部取消暂存')} aria-label={text('Unstage all', '全部取消暂存')} disabled={!!busy} onClick={() => void unstage(groups.staged.map(change => change.path))}><WbIcon name="minus"/></button>)}
+   {section('staged', text('Staged changes', '已暂存的更改'), <>
+    <button type="button" className="icon-btn" title={text('Unstage selected files (whole file)', '取消暂存所选文件（整个文件）')} aria-label={text('Unstage selected files (whole file)', '取消暂存所选文件（整个文件）')} disabled={!!busy || !selectedStaged.length} onClick={() => void unstageSelected()}><WbIcon name="minus"/></button>
+    <button type="button" className="icon-btn" title={text('Unstage all', '全部取消暂存')} aria-label={text('Unstage all', '全部取消暂存')} disabled={!!busy} onClick={() => void unstage(groups.staged.map(change => change.path))}><WbIcon name="minus"/></button>
+   </>)}
    {section('changes', text('Changes', '更改'), <>
     <button type="button" className="icon-btn" title={text('Discard all changes', '丢弃全部更改')} aria-label={text('Discard all changes', '丢弃全部更改')} disabled={!!busy} onClick={() => discard(groups.changes)}><WbIcon name="undo"/></button>
+    <button type="button" className="icon-btn" title={text('Stage selected files', '暂存所选文件')} aria-label={text('Stage selected files', '暂存所选文件')} disabled={!!busy || !selectedIn('changes').length} onClick={() => void stageSelected('changes')}><Icon name="plus"/></button>
     <button type="button" className="icon-btn" title={text('Stage all changes', '暂存全部更改')} aria-label={text('Stage all changes', '暂存全部更改')} disabled={!!busy} onClick={() => void stage(groups.changes.map(change => change.path))}><Icon name="plus"/></button>
    </>)}
    {section('untracked', text('Untracked', '未跟踪'), <>
+    <button type="button" className="icon-btn" title={text('Stage selected files', '暂存所选文件')} aria-label={text('Stage selected files', '暂存所选文件')} disabled={!!busy || !selectedIn('untracked').length} onClick={() => void stageSelected('untracked')}><Icon name="plus"/></button>
     <button type="button" className="icon-btn" title={text('Stage all untracked', '暂存全部未跟踪文件')} aria-label={text('Stage all untracked', '暂存全部未跟踪文件')} disabled={!!busy} onClick={() => void stage(groups.untracked.map(change => change.path))}><Icon name="plus"/></button>
    </>)}
    {nothing && <p className="wb-empty">{text('No changes in this worktree.', '此工作树没有更改。')}</p>}
   </div>
   {commitMenu && <CatalogPopover anchor={commitMenu} label={text('Commit actions', '提交操作')} onClose={() => setCommitMenu(undefined)}>
+   <button type="button" role="menuitem" className="menu-item" disabled={!groups.staged.length} onClick={() => { setCommitMenu(undefined); void commit('commit'); }}><Icon name="check"/>{text('Commit all staged', '提交全部暂存')}</button>
    <button type="button" role="menuitem" className="menu-item" disabled={!groups.staged.length} onClick={() => { setCommitMenu(undefined); void commit('push'); }}><Icon name="export"/>{status.upstream ? text('Commit & push', '提交并推送') : text('Commit & publish', '提交并发布')}</button>
    <button type="button" role="menuitem" className="menu-item" onClick={() => { setCommitMenu(undefined); void commit('amend'); }}><Icon name="clock"/>{text('Amend last commit…', '修改上次提交…')}</button>
   </CatalogPopover>}

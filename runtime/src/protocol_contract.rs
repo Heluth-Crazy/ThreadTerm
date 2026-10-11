@@ -88,7 +88,7 @@ mod tests {
 
     #[test]
     fn registry_contract_rejects_contract_two() {
-        assert_eq!(PROTOCOL_CONTRACT, 11);
+        assert_eq!(PROTOCOL_CONTRACT, 12);
         assert!(
             require_peer_contract(&json!({"protocol":1,"contract":2}), ContractRole::Runtime)
                 .is_err()
@@ -97,6 +97,13 @@ mod tests {
             require_peer_contract(&json!({"protocol":1,"contract":2}), ContractRole::Desktop)
                 .is_err()
         );
+    }
+
+    #[test]
+    fn selected_commit_contract_rejects_previous_history_contract() {
+        for role in [ContractRole::Runtime, ContractRole::Desktop] {
+            assert!(require_peer_contract(&json!({"protocol":1,"contract":11}), role).is_err());
+        }
     }
 
     #[test]

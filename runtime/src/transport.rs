@@ -644,6 +644,7 @@ mod decoder_tests {
             "git.fetch",
             "git.push",
             "git.commit",
+            "git.commit.selected",
             "git.index.write",
             "session.resume",
             "session.stop",

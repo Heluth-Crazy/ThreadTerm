@@ -1167,79 +1167,88 @@ pub fn git(root: &Path, arguments: &[&str]) -> Result<String> {
 /// Git state is meaningful only for a verified worktree. A non-repository must
 /// remain unavailable rather than impersonating a clean branch with zero counts.
 pub fn git_status(root: &Path) -> Result<Value> {
-    let inside = git(root, &["rev-parse", "--is-inside-work-tree"])
+    let reader = crate::git_selected_commit::GitStatusReader::new(root)?;
+    let inside = reader
+        .read(&["rev-parse", "--is-inside-work-tree"])
         .map_err(|_| anyhow!("git_unavailable"))?;
     if inside.trim() != "true" {
         return Err(anyhow!("git_unavailable"));
     }
-    // symbolic-ref works for an unborn branch; detached HEAD has no branch name.
-    let branch = git(root, &["symbolic-ref", "--quiet", "--short", "HEAD"]).ok();
-    let upstream = git(
-        root,
-        &[
-            "rev-parse",
-            "--abbrev-ref",
-            "--symbolic-full-name",
-            "@{upstream}",
-        ],
-    )
-    .ok();
-    let (ahead, behind) = if upstream.is_some() {
-        let counts = git(
-            root,
-            &["rev-list", "--left-right", "--count", "@{upstream}...HEAD"],
-        )?;
-        let values = counts
-            .split_whitespace()
-            .map(str::parse::<i64>)
-            .collect::<std::result::Result<Vec<_>, _>>()
-            .map_err(|_| anyhow!("git_failed"))?;
-        if values.len() != 2 {
-            return Err(anyhow!("git_failed"));
-        }
-        (values[1], values[0])
-    } else {
-        (0, 0)
-    };
-    // Porcelain paths are repository-relative; the registered root may be a
-    // subdirectory, so keep only entries below it and make them root-relative.
-    let prefix = crate::git_read::repo_prefix(root)?;
-    let porcelain = git(
-        root,
-        &["status", "--porcelain=v1", "-z", "--untracked-files=all"],
-    )?;
-    let mut fields = porcelain.split('\0');
-    let mut changes = Vec::new();
-    while let Some(record) = fields.next() {
-        if record.len() < 4 {
-            continue;
-        }
-        let index = &record[..1];
-        let worktree = &record[1..2];
-        // -z renames are "XY new\0old\0" for either column (e.g. "RM").
-        let original = if matches!(index, "R" | "C") || matches!(worktree, "R" | "C") {
-            fields.next()
+    for _ in 0..3 {
+        let selected_snapshot = reader.snapshot()?;
+        // symbolic-ref works for an unborn branch; detached HEAD has no branch name.
+        let branch = reader
+            .read(&["symbolic-ref", "--quiet", "--short", "HEAD"])
+            .ok();
+        let upstream = reader
+            .read(&[
+                "rev-parse",
+                "--abbrev-ref",
+                "--symbolic-full-name",
+                "@{upstream}",
+            ])
+            .ok();
+        let (ahead, behind) = if upstream.is_some() {
+            let counts =
+                reader.read(&["rev-list", "--left-right", "--count", "@{upstream}...HEAD"])?;
+            let values = counts
+                .split_whitespace()
+                .map(str::parse::<i64>)
+                .collect::<std::result::Result<Vec<_>, _>>()
+                .map_err(|_| anyhow!("git_failed"))?;
+            if values.len() != 2 {
+                return Err(anyhow!("git_failed"));
+            }
+            (values[1], values[0])
         } else {
-            None
+            (0, 0)
         };
-        let Some(path) = crate::git_read::strip_prefix(&prefix, &record[3..]) else {
-            continue;
-        };
-        let mut change = serde_json::Map::new();
-        change.insert("path".into(), json!(path));
-        if let Some(original) =
-            original.and_then(|value| crate::git_read::strip_prefix(&prefix, value))
-        {
-            change.insert("originalPath".into(), json!(original));
+        // Porcelain paths are repository-relative; the registered root may be a
+        // subdirectory, so keep only entries below it and make them root-relative.
+        let prefix = reader.read(&["rev-parse", "--show-prefix"])?;
+        let prefix = prefix.trim_end_matches(['\r', '\n']);
+        let porcelain =
+            reader.read(&["status", "--porcelain=v1", "-z", "--untracked-files=all"])?;
+        let mut fields = porcelain.split('\0');
+        let mut changes = Vec::new();
+        while let Some(record) = fields.next() {
+            if record.len() < 4 {
+                continue;
+            }
+            let index = &record[..1];
+            let worktree = &record[1..2];
+            // -z renames are "XY new\0old\0" for either column (e.g. "RM").
+            let original = if matches!(index, "R" | "C") || matches!(worktree, "R" | "C") {
+                fields.next()
+            } else {
+                None
+            };
+            let Some(path) = crate::git_read::strip_prefix(prefix, &record[3..]) else {
+                continue;
+            };
+            let mut change = serde_json::Map::new();
+            change.insert("path".into(), json!(path));
+            if let Some(original) =
+                original.and_then(|value| crate::git_read::strip_prefix(prefix, value))
+            {
+                change.insert("originalPath".into(), json!(original));
+            }
+            change.insert("indexStatus".into(), json!(index));
+            change.insert("worktreeStatus".into(), json!(worktree));
+            change.insert("untracked".into(), json!(record.starts_with("??")));
+            changes.push(Value::Object(change));
         }
-        change.insert("indexStatus".into(), json!(index));
-        change.insert("worktreeStatus".into(), json!(worktree));
-        change.insert("untracked".into(), json!(record.starts_with("??")));
-        changes.push(Value::Object(change));
+        let after = reader.identity()?;
+        if selected_snapshot["head"] != after["head"]
+            || selected_snapshot["indexFingerprint"] != after["indexFingerprint"]
+        {
+            continue;
+        }
+        return Ok(
+            json!({"branch":branch.as_deref().map(str::trim),"upstream":upstream.as_deref().map(str::trim),"ahead":ahead,"behind":behind,"changes":changes,"selectedCommit":selected_snapshot}),
+        );
     }
-    Ok(
-        json!({"branch":branch.as_deref().map(str::trim),"upstream":upstream.as_deref().map(str::trim),"ahead":ahead,"behind":behind,"changes":changes}),
-    )
+    Err(anyhow!("git_status_changed"))
 }
 
 /// staged=false compares the index with the working file (editable side);
@@ -1682,6 +1691,36 @@ mod tests {
         assert!(git(temp.path(), &["status", "--porcelain"])
             .unwrap()
             .is_empty());
+    }
+    #[test]
+    fn git_status_snapshot_keeps_partial_changes_and_space_prefixed_scope() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        git(root, &["init"]).unwrap();
+        git(root, &["config", "user.email", "tests@threadterm.invalid"]).unwrap();
+        git(root, &["config", "user.name", "ThreadTerm Tests"]).unwrap();
+        let nested = root.join(" leading space");
+        fs::create_dir(&nested).unwrap();
+        fs::write(nested.join("partial.txt"), "base\n").unwrap();
+        fs::write(root.join("outside.txt"), "base\n").unwrap();
+        git(root, &["add", "."]).unwrap();
+        git(root, &["commit", "-m", "base"]).unwrap();
+        fs::write(nested.join("partial.txt"), "staged\n").unwrap();
+        git(root, &["add", "."]).unwrap();
+        fs::write(nested.join("partial.txt"), "unstaged remainder\n").unwrap();
+        fs::write(root.join("outside.txt"), "outside change\n").unwrap();
+        let before = fs::read(root.join(".git/index")).unwrap();
+        let status = git_status(&nested).unwrap();
+        let changes = status["changes"].as_array().unwrap();
+        assert_eq!(changes.len(), 1);
+        assert_eq!(changes[0]["path"], "partial.txt");
+        assert_eq!(changes[0]["indexStatus"], "M");
+        assert_eq!(changes[0]["worktreeStatus"], "M");
+        assert_eq!(status["selectedCommit"]["head"]["oid"], git(root, &["rev-parse", "HEAD"]).unwrap().trim());
+        let staged_entries = git(root, &["ls-files", "--stage", "-z"]).unwrap();
+        assert_eq!(status["selectedCommit"]["indexFingerprint"], hex::encode(Sha256::digest(staged_entries.as_bytes())));
+        assert!(status["selectedCommit"]["supported"].is_boolean());
+        assert_eq!(fs::read(root.join(".git/index")).unwrap(), before);
     }
     #[test]
     fn worktree_and_branch_payloads_preserve_nullable_and_optional_fields() {

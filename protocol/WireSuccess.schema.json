@@ -3474,6 +3474,9 @@
           "items": {
             "$ref": "#/definitions/GitChange"
           }
+        },
+        "selectedCommit": {
+          "$ref": "#/definitions/GitSelectedCommitSnapshot"
         }
       },
       "required": [
@@ -3511,6 +3514,91 @@
         "untracked"
       ],
       "additionalProperties": false
+    },
+    "GitSelectedCommitSnapshot": {
+      "type": "object",
+      "properties": {
+        "head": {
+          "$ref": "#/definitions/GitHeadSnapshot"
+        },
+        "indexFingerprint": {
+          "type": "string"
+        },
+        "supported": {
+          "type": "boolean"
+        },
+        "unsupportedReason": {
+          "type": "string"
+        },
+        "gitVersion": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "head",
+        "indexFingerprint",
+        "supported"
+      ],
+      "additionalProperties": false
+    },
+    "GitHeadSnapshot": {
+      "anyOf": [
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "branch"
+            },
+            "oid": {
+              "type": "string"
+            },
+            "target": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "oid",
+            "target"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "detached"
+            },
+            "oid": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "oid"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "unborn"
+            },
+            "target": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "target"
+          ],
+          "additionalProperties": false
+        }
+      ]
     },
     "RequestResult<\"git.stage\">": {
       "type": "object",
@@ -3551,6 +3639,62 @@
       },
       "required": [
         "commit"
+      ],
+      "additionalProperties": false
+    },
+    "RequestResult<\"git.commit.selected\">": {
+      "$ref": "#/definitions/GitSelectedCommitResult"
+    },
+    "GitSelectedCommitResult": {
+      "type": "object",
+      "properties": {
+        "commit": {
+          "type": "string"
+        },
+        "tree": {
+          "type": "string"
+        },
+        "parent": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "refTarget": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "committedPaths": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "retainedStagedPaths": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "retainedStagedPathsTruncated": {
+          "type": "boolean"
+        },
+        "postCommitError": {
+          "type": "string"
+        },
+        "cleanupError": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "commit",
+        "tree",
+        "parent",
+        "refTarget",
+        "committedPaths",
+        "retainedStagedPaths"
       ],
       "additionalProperties": false
     },
@@ -7456,6 +7600,32 @@
         },
         "result": {
           "$ref": "#/definitions/RequestResult%3C%22git.commit%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "result"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "git.commit.selected"
+        },
+        "result": {
+          "$ref": "#/definitions/RequestResult%3C%22git.commit.selected%22%3E"
         }
       },
       "required": [
