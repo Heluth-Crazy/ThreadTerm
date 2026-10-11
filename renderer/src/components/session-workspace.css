@@ -3,6 +3,18 @@
 .runtime-workspace .runtime-tile-title { padding:0; border:0; background:transparent; text-align:left; color:inherit; }
 .runtime-workspace .runtime-session-actions { display:flex; flex-direction:column; align-items:flex-start; gap:8px; }
 .runtime-workspace .ws-chip .dot.primary { background:var(--primary); }
+/* Context navigation and Run share the same quiet control geometry. Scope the
+   rules past the later prototype imports; other workspace buttons stay intact. */
+.runtime-workspace .ws-top .ws-chip,
+.runtime-workspace .ws-top .ql-trigger { height:32px; min-height:32px; padding:0 12px; gap:8px; border:1px solid var(--border); border-radius:8px; background:var(--raised); color:var(--text); font-size:13px; font-weight:500; font-family:inherit; }
+.runtime-workspace .ws-top .ws-chip { min-width:0; max-width:clamp(120px,24vw,320px); flex:0 1 auto; }
+.runtime-workspace .ws-top .ws-chip > .ico,
+.runtime-workspace .ws-top .ws-chip > .dot { flex-shrink:0; }
+.runtime-workspace .ws-top .ws-chip-label { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.runtime-workspace .ws-top .ws-chip:hover:not(:disabled),
+.runtime-workspace .ws-top .ql-trigger:hover:not(:disabled) { background:var(--soft); border-color:var(--faint); }
+.runtime-workspace .ws-top .ws-chip:focus-visible,
+.runtime-workspace .ws-top .ql-trigger:focus-visible { outline:2px solid var(--primary); outline-offset:2px; }
 .runtime-workspace.terminal-fullscreen .ws-top,.runtime-workspace.terminal-fullscreen .ws-tabrow,.runtime-workspace.terminal-fullscreen .ws-strip { display:none; }
 .runtime-workspace.terminal-fullscreen .ws-content { padding:2px; }
 .workspace-file-error { display:flex; flex:none; align-items:center; gap:8px; padding:6px 12px; color:var(--text); background:var(--surface); font-size:12px; }
