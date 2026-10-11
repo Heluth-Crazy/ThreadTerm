@@ -18,6 +18,8 @@ const values = (key, fallback) => process.argv.find(arg => arg.startsWith(`--${k
 const sizes = values('sizes', ['1280x800', '1440x900', '1920x1080', '960x800', '720x800']).map(value => value.split('x').map(Number));
 const themes = values('themes', ['light', 'dark']);
 const langs = values('langs', ['en', 'zh']);
+const neutralPalette = process.argv.includes('--neutral-palette');
+const cropsOnly = process.argv.includes('--crops-only');
 const out = resolve(values('out', [join(here, 'results', 'ui-header-actions', phase)])[0]);
 const scratch = await mkdtemp(join(tmpdir(), `tt-header-${phase}-`));
 const isolatedHome = join(scratch, 'home');
@@ -104,6 +106,129 @@ async function cancelDialog(page, opener, openAction, buttonLabel) {
   await openAction.waitFor();
   return dialog;
 }
+async function assertNeutralPalette(page, tag) {
+  const colors = await page.evaluate(() => {
+    const root = getComputedStyle(document.documentElement);
+    const token = name => root.getPropertyValue(name).trim();
+    const rgba = value => {
+      const hex = value.match(/^#([\da-f]{3,8})$/i)?.[1];
+      if (hex) {
+        const expanded = hex.length === 3 || hex.length === 4 ? [...hex].map(char => char + char).join('') : hex;
+        if (expanded.length !== 6 && expanded.length !== 8) throw new Error(`Cannot parse color: ${value}`);
+        const channels = expanded.match(/../g).map(channel => parseInt(channel, 16));
+        return [channels[0], channels[1], channels[2], channels[3] === undefined ? 1 : channels[3] / 255];
+      }
+      const channels = value.match(/[\d.]+/g)?.map(Number) ?? [];
+      if (channels.length < 3) throw new Error(`Cannot parse computed color: ${value}`);
+      if (value.startsWith('color(srgb ')) return [channels[0] * 255, channels[1] * 255, channels[2] * 255, channels[3] ?? 1];
+      return [channels[0], channels[1], channels[2], channels[3] ?? 1];
+    };
+    const composite = (front, back) => {
+      const alpha = front[3] + back[3] * (1 - front[3]);
+      if (!alpha) return [0, 0, 0, 0];
+      return [0, 1, 2].map(index => (front[index] * front[3] + back[index] * back[3] * (1 - front[3])) / alpha).concat(alpha);
+    };
+    const colorString = color => `rgb(${color.slice(0, 3).map(value => Math.round(value)).join(', ')})`;
+    const luminance = color => color.slice(0, 3).map(value => {
+      const channel = value / 255;
+      return channel <= 0.04045 ? channel / 12.92 : ((channel + 0.055) / 1.055) ** 2.4;
+    }).reduce((sum, value, index) => sum + value * [0.2126, 0.7152, 0.0722][index], 0);
+    const contrast = (foreground, background) => {
+      const a = luminance(foreground), b = luminance(background);
+      return (Math.max(a, b) + 0.05) / (Math.min(a, b) + 0.05);
+    };
+    const pageBackground = element => {
+      for (let node = element.parentElement; node; node = node.parentElement) {
+        const color = rgba(getComputedStyle(node).backgroundColor);
+        if (color[3] >= 0.999) return { color, source: node.className?.toString() || node.tagName.toLowerCase() };
+      }
+      return { color: rgba(token('--bg')), source: '--bg fallback' };
+    };
+    const primary = document.querySelector('.ov-page-head .page-actions .btn-primary');
+    const secondary = document.querySelector('.ov-page-head .page-actions .btn:not(.btn-primary):not(.ql-trigger)');
+    if (!primary || !secondary) throw new Error('Project header primary or secondary action is missing');
+    const primaryStyle = getComputedStyle(primary), secondaryStyle = getComputedStyle(secondary);
+    const background = pageBackground(secondary);
+    const actualPrimaryBg = rgba(primaryStyle.backgroundColor), actualPrimaryFg = rgba(primaryStyle.color);
+    const actualSecondaryBg = rgba(secondaryStyle.backgroundColor), actualSecondaryBorder = rgba(secondaryStyle.borderTopColor), actualSecondaryFg = rgba(secondaryStyle.color);
+    const runStyle = getComputedStyle(document.querySelector('.ov-page-head .page-actions .ql-trigger'));
+    const runFg = rgba(runStyle.color);
+    const text = rgba(token('--text')), surface = rgba(token('--surface')), muted = rgba(token('--muted'));
+    return {
+      tokens: { text: colorString(text), surface: colorString(surface), muted: colorString(muted), bg: token('--bg'), soft: token('--soft') },
+      primary: { background: colorString(actualPrimaryBg), foreground: colorString(actualPrimaryFg), backgroundTokenMatch: colorString(actualPrimaryBg) === colorString(text), foregroundTokenMatch: colorString(actualPrimaryFg) === colorString(surface), contrast: contrast(actualPrimaryFg, actualPrimaryBg) },
+      secondary: { background: colorString(actualSecondaryBg), border: secondaryStyle.borderTopColor, foreground: colorString(actualSecondaryFg), transparentFill: actualSecondaryBg[3] === 0, transparentBorder: actualSecondaryBorder[3] === 0, mutedTokenMatch: colorString(actualSecondaryFg) === colorString(muted), contrast: contrast(composite(actualSecondaryFg, background.color), background.color), pageBackground: colorString(background.color), pageBackgroundSource: background.source },
+      run: { foreground: colorString(runFg), mutedTokenMatch: colorString(runFg) === colorString(muted), contrast: contrast(composite(runFg, background.color), background.color) },
+    };
+  });
+  assert.equal(colors.primary.backgroundTokenMatch, true, `${tag}: primary background follows --text`);
+  assert.equal(colors.primary.foregroundTokenMatch, true, `${tag}: primary foreground follows --surface`);
+  assert.ok(colors.primary.contrast >= 4.5, `${tag}: primary contrast ${colors.primary.contrast.toFixed(2)}:1 below 4.5:1`);
+  assert.equal(colors.secondary.transparentFill, true, `${tag}: secondary fill is transparent`);
+  assert.equal(colors.secondary.transparentBorder, true, `${tag}: secondary border is transparent`);
+  assert.equal(colors.secondary.mutedTokenMatch, true, `${tag}: secondary text follows --muted`);
+  assert.ok(colors.secondary.contrast >= 4.5, `${tag}: secondary contrast ${colors.secondary.contrast.toFixed(2)}:1 below 4.5:1 on ${colors.secondary.pageBackgroundSource}`);
+  assert.equal(colors.run.mutedTokenMatch, true, `${tag}: Run action text follows --muted`);
+  assert.ok(colors.run.contrast >= 4.5, `${tag}: Run contrast ${colors.run.contrast.toFixed(2)}:1 below 4.5:1`);
+
+  const secondary = page.locator('.ov-page-head .page-actions .btn').filter({ hasText: /new worktree|新建工作树/i });
+  await secondary.hover();
+  const secondaryHover = await secondary.evaluate(element => ({ background: getComputedStyle(element).backgroundColor, color: getComputedStyle(element).color }));
+  const expectedSoft = await page.evaluate(() => {
+    const root = getComputedStyle(document.documentElement);
+    const value = root.getPropertyValue('--soft').trim();
+    const probe = document.createElement('span');
+    probe.style.color = value;
+    document.body.append(probe);
+    const resolved = getComputedStyle(probe).color;
+    probe.remove();
+    return resolved;
+  });
+  assert.equal(secondaryHover.background, expectedSoft, `${tag}: secondary hover uses --soft`);
+
+  const primary = page.locator('.ov-page-head .page-actions .btn-primary');
+  await primary.hover();
+  const primaryHover = await primary.evaluate(element => ({ background: getComputedStyle(element).backgroundColor, color: getComputedStyle(element).color }));
+  const expectedPrimaryHover = await primary.evaluate(element => {
+    const parse = value => {
+      const hex = value.match(/^#([\da-f]{6})$/i)?.[1];
+      if (hex) return hex.match(/../g).map(channel => parseInt(channel, 16));
+      const channels = value.match(/[\d.]+/g).slice(0, 3).map(Number);
+      return value.startsWith('color(srgb ') ? channels.map(channel => channel * 255) : channels;
+    };
+    const root = getComputedStyle(document.documentElement);
+    const foreground = parse(root.getPropertyValue('--text'));
+    const background = parse(root.getPropertyValue('--bg'));
+    const expected = foreground.map((value, index) => value * .88 + background[index] * .12);
+    const actual = parse(getComputedStyle(element).backgroundColor);
+    return expected.every((value, index) => Math.abs(value - actual[index]) <= 1);
+  });
+  assert.equal(expectedPrimaryHover, true, `${tag}: primary hover uses the neutral --text mix (computed ${primaryHover.background})`);
+  assert.equal(primaryHover.color, colors.tokens.surface, `${tag}: primary hover keeps surface foreground`);
+
+  const run = page.locator('.ov-page-head .page-actions .ql-trigger');
+  await run.focus();
+  await page.keyboard.press('Tab');
+  const primaryFocus = await primary.evaluate(element => ({ active: element === document.activeElement, visible: element.matches(':focus-visible'), outlineColor: getComputedStyle(element).outlineColor, outlineWidth: getComputedStyle(element).outlineWidth }));
+  await page.keyboard.press('Tab');
+  const secondaryFocus = await secondary.evaluate(element => ({ active: element === document.activeElement, visible: element.matches(':focus-visible'), outlineColor: getComputedStyle(element).outlineColor, outlineWidth: getComputedStyle(element).outlineWidth }));
+  for (const [name, focus] of [['primary', primaryFocus], ['secondary', secondaryFocus]]) {
+    assert.ok(focus.active && focus.visible && parseFloat(focus.outlineWidth) >= 1, `${tag}: ${name} action retains keyboard focus indication`);
+    assert.equal(focus.outlineColor, colors.tokens.text, `${tag}: ${name} focus outline follows --text`);
+  }
+
+  await openSession(page);
+  await page.locator('.ws-top .ws-chip.branch').click();
+  const disabled = page.locator('.ov-page-head .page-actions .btn-primary');
+  assert.equal(await disabled.isDisabled(), true, `${tag}: New terminal remains disabled for missing worktree`);
+  const disabledStyle = await disabled.evaluate(element => ({ background: getComputedStyle(element).backgroundColor, foreground: getComputedStyle(element).color, opacity: getComputedStyle(element).opacity, cursor: getComputedStyle(element).cursor }));
+  assert.ok(Number(disabledStyle.opacity) < 1 && disabledStyle.cursor === 'default', `${tag}: disabled primary remains visibly disabled`);
+  const createsBefore = await page.evaluate(() => window.__parityFixture.calls.filter(call => call.method === 'session.create').length);
+  await disabled.evaluate(element => element.click());
+  const createsAfter = await page.evaluate(() => window.__parityFixture.calls.filter(call => call.method === 'session.create').length);
+  assert.equal(createsAfter, createsBefore, `${tag}: disabled New terminal issues no create request`);
+  return { ...colors, secondaryHover, primaryHover, primaryFocus, secondaryFocus, disabled: disabledStyle };
+}
 
 try {
   await mkdir(out, { recursive: true });
@@ -135,6 +260,15 @@ try {
     const projectChip = page.locator('.ws-top .ws-chip').first();
     await projectChip.click();
     await page.locator('.ov-page-head').waitFor();
+    if (cropsOnly) {
+      await page.locator('.ov-page-head .page-actions .btn-primary:not(:disabled)').waitFor();
+      await page.mouse.move(0, 0);
+      const filename = `actions-${theme}-zh.png`;
+      await page.locator('.ov-page-head .page-actions').screenshot({ path: join(out, filename), animations: 'disabled' });
+      report.shots.push(filename);
+      note(`crop-${tag}`, { passed: true });
+      continue;
+    }
     const projectGeometry = await metrics(page, ['.ov-page-head .page-actions > .ql-trigger', '.ov-page-head .page-actions > .btn', '.ov-page-head .project-tools > .icon-btn']);
     const actionSemantics = await page.locator('.ov-page-head .page-actions > .btn').evaluateAll(elements => elements.map(element => ({ text: element.textContent.trim(), primary: element.classList.contains('btn-primary') })));
     await page.screenshot({ path: join(out, `project-${tag}.png`), animations: 'disabled' });
@@ -158,6 +292,18 @@ try {
       const projectLabel = sessionGeometry.find(item => item.selector.includes('.ws-chip') && item.text.includes('Project name used'));
       assert.ok(projectLabel && projectLabel.title?.includes('Project name used'), `${tag}: long project label remains available in its tooltip`);
       if (projectLabel.label.scrollWidth > projectLabel.label.clientWidth) assert.equal(projectLabel.label.textOverflow, 'ellipsis', `${tag}: clipped project label uses ellipsis`);
+    }
+    if (neutralPalette && phase === 'after') {
+      const palette = await assertNeutralPalette(page, tag);
+      note(`neutral-palette-${tag}`, { passed: true, palette });
+    }
+    if (width === 1280 && lang === 'zh' && (theme === 'light' || theme === 'dark')) {
+      await openProject(page);
+      await page.locator('.ov-page-head .page-actions .btn-primary:not(:disabled)').waitFor();
+      await page.mouse.move(0, 0);
+      const filename = `actions-${theme}-zh.png`;
+      await page.locator('.ov-page-head .page-actions').screenshot({ path: join(out, filename), animations: 'disabled' });
+      report.shots.push(filename);
     }
 
     // Project and branch chips retain their navigation meaning.
