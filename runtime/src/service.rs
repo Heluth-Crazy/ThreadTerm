@@ -430,6 +430,17 @@ impl RuntimeService {
         let chat_queues = Arc::new(crate::chat_queue::ChatQueues::default());
         let output = Arc::new(OutputStore::default());
         let providers = Arc::new(Providers::with_plugins(&config.data_dir, &db.settings_value().unwrap_or_else(|_| json!({}))));
+        let capability_db = Arc::downgrade(&db);
+        providers.set_capability_listener(Arc::new(move || {
+            let Some(db) = capability_db.upgrade() else { return };
+            if let Err(error) = db.transaction(|tx| {
+                tx.execute("INSERT INTO outbox(event,data,created_at) VALUES ('state.changed',?,?)",
+                    rusqlite::params![json!({"kind":"providers"}).to_string(), chrono::Utc::now().to_rfc3339()])?;
+                Ok(())
+            }) {
+                eprintln!("provider capability notification failed: {error}");
+            }
+        }));
         match db.settings_value() {
             Ok(settings) => {
                 if let Err(error) = providers.configure_network(&settings) {
@@ -810,7 +821,9 @@ impl RuntimeService {
                 "terminal.host" => Ok(json!({"conptyHost": crate::conpty::active().as_str(), "bundledAvailable": crate::conpty::bundled_available()})),
                 "runtime.snapshot" => {
                     let mut snapshot = self.db.snapshot()?;
-                    snapshot.providers = self.providers.capabilities();
+                    // A failed provider probe does not make the runtime/catalog
+                    // unavailable. Provider UI checks provider.list for its error.
+                    snapshot.providers = self.providers.capability_snapshot();
                     Ok(serde_json::to_value(snapshot)?)
                 }
                 "runtime.shutdown" => {
@@ -1035,7 +1048,7 @@ impl RuntimeService {
                     self.providers.configure_network(&settings.value)?;
                     Ok(serde_json::to_value(settings)?)
                 }
-                "provider.list" => Ok(Value::Array(self.providers.capabilities())),
+                "provider.list" => Ok(Value::Array(self.providers.capability_snapshot_result()?)),
                 "plugin.list" | "plugin.setEnabled" | "plugin.reload" | "plugin.selectBrowserBinding" => {
                     let _plugins = self.plugin_gate.lock().map_err(|_| anyhow::anyhow!("plugin registry lock poisoned"))?;
                     let _settings = self.settings_apply_gate.lock().map_err(|_| anyhow::anyhow!("settings apply lock poisoned"))?;

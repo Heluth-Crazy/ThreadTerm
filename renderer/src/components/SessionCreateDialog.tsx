@@ -1,5 +1,5 @@
 import { Select } from "./ui/Select";
-import { useEffect, useId, useMemo, useState } from "react";
+import { useEffect, useId, useMemo, useRef, useState } from "react";
 import type { ProviderId, Session, Snapshot, Worktree } from "@threadterm/protocol";
 import { chooseDirectory, operationId, request } from "../bridge";
 import { AgentIcon, Icon } from "./PrototypeIcon";
@@ -25,10 +25,28 @@ export function SessionCreateDialog({ data, onClose, onCreated, initialProjectId
   const [mode, setMode] = useState<"terminal" | "chat">("terminal");
   const [command, setCommand] = useState("");
   const [busy, setBusy] = useState(false); const [issue, setIssue] = useState<string>();
+  const [providerDetectionFailed, setProviderDetectionFailed] = useState(false);
+  const providerDetectionSequence = useRef(0);
+  const providerDetectionMounted = useRef(true);
   const selectedProject = data.projects.find((project) => project.id === projectId);
-  const providers = [...agentIds(data.providers), "shell", "custom"];
+  const detectingProviders = data.providers.length === 0;
+  const providers = [...(detectingProviders ? ["codex", "claude", "kimi", "gemini", "opencode", "grok"] as ProviderId[] : agentIds(data.providers)), "shell", "custom"];
   const capability = data.providers.find((item) => item.id === provider);
-  const canCreate = (mode === "terminal" && ["shell", "custom"].includes(provider)) || Boolean(capability?.installed && capability[mode]);
+  const canCreate = (mode === "terminal" && ["shell", "custom"].includes(provider)) || Boolean(!detectingProviders && capability?.installed && capability[mode]);
+  useEffect(() => { providerDetectionMounted.current = true; return () => { providerDetectionMounted.current = false; providerDetectionSequence.current++; }; }, []);
+  useEffect(() => {
+    if (!detectingProviders) {
+      providerDetectionSequence.current++;
+      setProviderDetectionFailed(false);
+      return;
+    }
+    const sequence = ++providerDetectionSequence.current;
+    void request("provider.list", {}).then(() => {
+      if (providerDetectionMounted.current && sequence === providerDetectionSequence.current) setProviderDetectionFailed(false);
+    }).catch(() => {
+      if (providerDetectionMounted.current && sequence === providerDetectionSequence.current) setProviderDetectionFailed(true);
+    });
+  }, [data.providers, detectingProviders]);
   useEffect(() => { if (!projectId) { setWorktrees([]); return; } let active = true; void request("worktree.list", { projectId }).then((items) => { if (active) setWorktrees(items); }).catch((error) => { if (active) setIssue(error instanceof Error ? error.message : tx("Unable to load worktrees.", "无法读取工作树。")); }); return () => { active = false; }; }, [projectId]);
   const recentProjects = useMemo(() => data.projects.slice(0, 6), [data.projects]);
   const selectProject = (id: string) => { setProjectId(id); const project = data.projects.find((item) => item.id === id); if (project) setCwd(project.path); };
@@ -49,7 +67,7 @@ export function SessionCreateDialog({ data, onClose, onCreated, initialProjectId
       <label className="create-block"><span className="create-label">{tx("Name", "名称")}</span><input className="create-input" placeholder={tx("Development session","开发会话")} maxLength={60} value={title} onChange={(event) => setTitle(event.target.value)} autoFocus /></label>
       <label className="create-block"><span className="create-label">{tx("Project", "项目")}</span><Select className="create-input" value={projectId} onChange={(event) => selectProject(event.target.value)}><option value="">{tx("No project", "无项目")}</option>{data.projects.map((project) => <option key={project.id} value={project.id}>{project.name}</option>)}</Select></label>
       <label className="create-block"><span className="create-label">{tx("Working directory", "工作目录")}</span><div className="create-path-row"><Select className="create-input create-input-mono" value={cwd} onChange={(event) => selectWorktree(event.target.value)}>{!worktrees.some(t=>t.path===selectedProject?.path)&&<option value={selectedProject?.path ?? ""}>{tx("Project root", "项目根目录")} · {displayPath(selectedProject?.path) || tx("Choose a project", "选择项目")}</option>}{cwd!==selectedProject?.path&&!worktrees.some(t=>t.path===cwd)&&<option value={cwd}>{displayPath(cwd)}</option>}{worktrees.filter((tree) => !tree.missing).map((tree) => <option key={tree.id} value={tree.path}>{tree.branch ?? tx("Detached", "分离状态")} · {displayPath(tree.path)}</option>)}</Select><button type="button" className="create-browse" onClick={() => void chooseDirectory().then((path) => path && applyCwd(path))}><Icon name="folder" />{tx("Browse", "浏览")}</button></div><input className="create-input create-input-mono" value={displayPath(cwd)} onChange={(event) => applyCwd(event.target.value)} aria-label={tx("Local path", "本地路径")} /></label>
-      <fieldset className="create-block"><legend className="create-label">{tx("Type", "类型")}</legend><div className="create-type-grid">{providers.map((id) => { const available = id === "shell" || id === "custom" || data.providers.find((item) => item.id === id)?.installed; return <button type="button" key={id} disabled={!available} className={provider === id ? "create-type is-on" : "create-type"} onClick={() => { setProvider(id); if (!data.providers.find((item) => item.id === id)?.chat) setMode("terminal"); }}><AgentIcon provider={id} size={16} /><span>{id==="custom"?tx("Preset","预设"):agentName(id,data.providers)}</span></button>; })}</div></fieldset>
+      <fieldset className="create-block"><legend className="create-label">{tx("Type", "类型")}</legend>{detectingProviders && (providerDetectionFailed ? <p role="alert">{tx("Provider detection failed.", "提供商检测失败。")}</p> : <p role="status">{tx("Detecting providers…", "正在检测提供商…")}</p>)}{!detectingProviders && capability && !capability.installed && <p role="status">{tx("Not installed", "未安装")}</p>}<div className="create-type-grid">{providers.map((id) => { const available = id === "shell" || id === "custom" || (!detectingProviders && data.providers.find((item) => item.id === id)?.installed); return <button type="button" key={id} disabled={!available} className={provider === id ? "create-type is-on" : "create-type"} onClick={() => { setProvider(id); if (!data.providers.find((item) => item.id === id)?.chat) setMode("terminal"); }}><AgentIcon provider={id} size={16} /><span>{id==="custom"?tx("Preset","预设"):agentName(id,data.providers)}</span></button>; })}</div></fieldset>
       <fieldset className="create-block"><legend className="create-label">{tx("Create as", "创建方式")}</legend><div className="create-choice-grid">{(["terminal", "chat"] as const).map((value) => <button type="button" key={value} disabled={value === "chat" && !capability?.chat} className={mode === value ? "create-choice is-on" : "create-choice"} aria-pressed={mode === value} onClick={() => setMode(value)}>{value === "terminal" ? "Terminal" : "Chat"}</button>)}</div></fieldset>
       {provider === "custom" && <label className="create-block"><span className="create-label">{tx("Command preset","命令预设")}</span><Select className="create-input" value={preset} onChange={event=>setPreset(event.target.value)}>{["npm run dev","yarn dev","pnpm dev","docker compose up","python -m http.server","node server.js"].map(value=><option key={value}>{value}</option>)}<option value="custom">{tx("Custom","自定义")}</option></Select></label>}
       {mode === "terminal" && <><label className="create-block"><span className="create-label">{tx("Initial command", "初始命令")} <span className="create-optional">{tx("Optional","可选")}</span></span><input className="create-input create-input-mono" value={command} onChange={(event) => setCommand(event.target.value)} placeholder="npm run dev" disabled={provider==="custom"&&preset!=="custom"} /><p className="create-hint">{tx("Leave blank for the default command. Runs when you choose Create.", "留空使用该类型的默认命令；点击创建后运行。")}</p></label><div className="create-block"><span className="create-label">{tx("Execution","执行方式")}</span><div className="create-choice-grid"><label className="create-choice"><input type="radio" checked={!oneShot} onChange={()=>setOneShot(false)}/>{tx("Interactive session","交互会话")}</label><label className="create-choice"><input type="radio" checked={oneShot} onChange={()=>setOneShot(true)}/>{tx("Run once","一次性运行")}</label></div></div></>}

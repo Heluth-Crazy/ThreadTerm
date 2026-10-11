@@ -10,6 +10,8 @@ Trace records use `kind: "threadterm.sendTrace"` and `schema: 1`. Correlate stag
 
 The desktop writer is asynchronous and bounded to 256 pending records. When the queue is full or the log cannot be resolved or written, it drops diagnostic records without delaying or failing the request. A scope-exit stage such as `service.chat_send.end` has no outcome; `transport.dispatch.end`, persistence stages, provider handoff, native stdin write, and Git exit stages carry the authoritative outcome where available.
 
+`review.checkpoint.end` with outcome `recorded` means a checkpoint row was persisted; it does not prove the baseline is ready. Read the checkpoint's canonical status before claiming successful capture. Older trace builds used the misleading label `captured` for this same persistence result.
+
 Run the offline Windows acceptance QA against a freshly built runtime twice:
 
 ```powershell
