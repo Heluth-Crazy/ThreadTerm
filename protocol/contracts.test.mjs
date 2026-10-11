@@ -2,6 +2,39 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {validateRequest,validateResult,validateLayout,METHODS,isRuntimeEvent,PROTOCOL_CONTRACT,PROTOCOL_VERSION,protocolIncompatibleReason} from './index.ts';
 
+test('selected commits carry an exact staged snapshot and reject ambiguous or unsafe selections',()=>{
+ const oid='a'.repeat(40),fingerprint='b'.repeat(64);
+ const head={kind:'branch',oid,target:'refs/heads/main'};
+ const input={projectId:'p',message:'Commit selected',operationId:'selected',expectedHead:head,expectedIndexFingerprint:fingerprint,selected:[{path:'src/partial.ts',indexStatus:'M'}]};
+ validateRequest('git.commit.selected',input);
+ validateRequest('git.commit.selected',{...input,message:'a'.repeat(65535)});
+ validateRequest('git.commit.selected',{...input,message:'a'.repeat(65535)+'\n'});
+ assert.throws(()=>validateRequest('git.commit.selected',{...input,message:'a'.repeat(65536)}));
+ assert.throws(()=>validateRequest('git.commit.selected',{...input,message:'中'.repeat(21845)+'a'}));
+ validateRequest('git.commit.selected',{...input,expectedHead:{kind:'detached',oid}});
+ validateRequest('git.commit.selected',{...input,expectedHead:{kind:'unborn',target:'refs/heads/new'}});
+ validateRequest('git.commit.selected',{...input,selected:[{path:'new.ts',originalPath:'old.ts',indexStatus:'R'}]});
+ validateRequest('git.commit.selected',{...input,selected:[{path:'copy.ts',indexStatus:'C'}]});
+ validateRequest('git.commit.selected',{...input,selected:[{path:'a'.repeat(4096),indexStatus:'M'}]});
+ assert.throws(()=>validateRequest('git.commit.selected',{...input,selected:[{path:'a'.repeat(4097),indexStatus:'M'}]}));
+ assert.throws(()=>validateRequest('git.commit.selected',{...input,selected:[{path:'new.ts',originalPath:'a'.repeat(4097),indexStatus:'R'}]}));
+ for(const patch of [{selected:[]},{selected:Array.from({length:501},(_,i)=>({path:`${i}.ts`,indexStatus:'A'}))},{selected:[input.selected[0],input.selected[0]]},{message:'   '},{expectedIndexFingerprint:'stale'},{expectedHead:{...head,oid:'not-a-commit'}},{expectedHead:{kind:'unborn',oid,target:'refs/heads/new'}},{amend:true},{projectId:''},{operationId:''}])assert.throws(()=>validateRequest('git.commit.selected',{...input,...patch}));
+ for(const path of ['../outside.ts','/outside.ts','C:/outside.ts','src/../outside.ts','src//alias.ts','src\u0000bad.ts'])assert.throws(()=>validateRequest('git.commit.selected',{...input,selected:[{path,indexStatus:'M'}]}));
+ for(const row of [{path:'untracked.ts',indexStatus:'?'},{path:'new.ts',indexStatus:'R'},{path:'new.ts',indexStatus:'C',originalPath:'../outside.ts'},{path:'partial.ts',indexStatus:'M',worktreeStatus:'M'}])assert.throws(()=>validateRequest('git.commit.selected',{...input,selected:[row]}));
+ const result={commit:oid,tree:oid,parent:oid,refTarget:'refs/heads/main',committedPaths:['src/partial.ts'],retainedStagedPaths:['excluded.ts'],retainedStagedPathsTruncated:true,postCommitError:'post-commit hook failed'};
+ validateResult('git.commit.selected',result);
+ validateResult('git.commit.selected',{...result,parent:null,refTarget:null});
+ const {parent:_parent,...withoutParent}=result;
+ const {refTarget:_refTarget,...withoutRef}=result;
+ assert.throws(()=>validateResult('git.commit.selected',withoutParent));
+ assert.throws(()=>validateResult('git.commit.selected',withoutRef));
+ validateResult('git.commit.selected',{...result,cleanupError:'git_selected_commit_cleanup_failed'});
+ assert.throws(()=>validateResult('git.commit.selected',{...result,cleanupError:true}));
+ assert.throws(()=>validateResult('git.commit.selected',{...result,retainedStagedPathsTruncated:'yes'}));
+ validateResult('git.status',{branch:'main',upstream:null,ahead:0,behind:0,changes:[],selectedCommit:{head,indexFingerprint:fingerprint,supported:false,unsupportedReason:'Git cannot guard symbolic HEAD',gitVersion:'test'}});
+ assert.throws(()=>validateResult('git.status',{branch:'main',upstream:null,ahead:0,behind:0,changes:[],selectedCommit:{head,indexFingerprint:fingerprint,supported:'yes'}}));
+});
+
 test('native turn outcome and message phase are typed independently of duration',()=>{
  const item={id:'native-boundary',role:'assistant',parts:[],createdAt:'2026-01-01T00:00:00Z',turnId:'scoped-turn',turnStatus:'completed'};
  validateResult('chat.read',[item]);
@@ -323,7 +356,7 @@ test('session documents pin relative paths inside the worktree and list exact ro
  assert.throws(()=>validateRequest('session.documents.pin',{sessionId:'s',path:'docs/plan.md'}),/Invalid operationId|protocol schema/);
  validateResult('session.documents.list',[{path:'docs/plan.md',title:'Checkout plan',pinnedAt:'t'},{path:'notes.txt',pinnedAt:'t',missing:true}]);
  assert.throws(()=>validateResult('session.documents.pin',[{path:'docs/plan.md',pinnedAt:'t',size:3}]));
- assert.equal(PROTOCOL_CONTRACT,11);
+ assert.equal(PROTOCOL_CONTRACT,12);
 });
 
 test('preview presentation is attachment-scoped and requires a persisted tab acknowledgement',()=>{

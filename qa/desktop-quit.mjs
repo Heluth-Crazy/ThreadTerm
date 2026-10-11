@@ -1,6 +1,7 @@
 // Production-main tray Quit QA. Every Electron profile, runtime database and
 // named pipe is temporary; this never attaches to the user's application.
 import assert from 'node:assert/strict';
+import {PROTOCOL_CONTRACT} from '../protocol/index.ts';
 import {createHmac, randomUUID} from 'node:crypto';
 import {execFile} from 'node:child_process';
 import {promisify} from 'node:util';
@@ -128,16 +129,16 @@ async function startFailOnceRuntime(data, pipe) {
       const peer = framed(socket);
       const nonce = randomUUID();
       let authenticated = false;
-      peer.json({kind: 'challenge', nonce, protocol: 1, contract: 11});
+      peer.json({kind: 'challenge', nonce, protocol: 1, contract: PROTOCOL_CONTRACT});
       peer.onFrame(frame => {
         try {
           if (!authenticated) {
             const auth = JSON.parse(frame.toString('utf8'));
             assert.equal(auth.kind, 'auth');
-            assert.equal(auth.protocol, 1); assert.equal(auth.contract, 11);
+            assert.equal(auth.protocol, 1); assert.equal(auth.contract, PROTOCOL_CONTRACT);
             assert.equal(auth.hmac, createHmac('sha256', credential).update(`1:${auth.clientId}:${nonce}`).digest('hex'));
             authenticated = true;
-            peer.json({kind: 'authenticated', principal: auth.clientId, epoch: 'desktop-quit-failure-epoch', contract: 11, hmac: createHmac('sha256', credential).update(`server:1:${auth.clientId}:${nonce}`).digest('hex')});
+            peer.json({kind: 'authenticated', principal: auth.clientId, epoch: 'desktop-quit-failure-epoch', contract: PROTOCOL_CONTRACT, hmac: createHmac('sha256', credential).update(`server:1:${auth.clientId}:${nonce}`).digest('hex')});
             if (kind === 'output') outputPeers.add(peer);
             return;
           }
@@ -189,11 +190,11 @@ async function closeRuntime(data, pipe) {
     const peer = await connectPeer(`${pipe}-control`);
     try {
       const challenge = JSON.parse((await peer.next()).toString('utf8'));
-      assert.equal(challenge.protocol, 1); assert.equal(challenge.contract, 11);
+      assert.equal(challenge.protocol, 1); assert.equal(challenge.contract, PROTOCOL_CONTRACT);
       const clientId = randomUUID();
-      peer.json({kind:'auth', clientId, protocol:1, contract:11, nonce:challenge.nonce, hmac:createHmac('sha256', credential).update(`1:${clientId}:${challenge.nonce}`).digest('hex')});
+      peer.json({kind:'auth', clientId, protocol:1, contract:PROTOCOL_CONTRACT, nonce:challenge.nonce, hmac:createHmac('sha256', credential).update(`1:${clientId}:${challenge.nonce}`).digest('hex')});
       const authenticated = JSON.parse((await peer.next()).toString('utf8'));
-      assert.equal(authenticated.kind, 'authenticated'); assert.equal(authenticated.contract, 11);
+      assert.equal(authenticated.kind, 'authenticated'); assert.equal(authenticated.contract, PROTOCOL_CONTRACT);
       assert.equal(authenticated.hmac, createHmac('sha256', credential).update(`server:1:${clientId}:${challenge.nonce}`).digest('hex'));
       await peer.request('runtime.shutdown', {operationId: randomUUID()});
     }

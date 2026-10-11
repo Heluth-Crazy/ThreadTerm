@@ -716,6 +716,11 @@ impl RuntimeService {
                 return Ok(result);
             }
             if let Some(result) =
+                crate::git_selected_commit::dispatch(&self.db, &request.method, &request.params)?
+            {
+                return Ok(result);
+            }
+            if let Some(result) =
                 crate::git_actions::dispatch(&self.db, &request.method, &request.params)?
             {
                 return Ok(result);
@@ -2098,6 +2103,13 @@ fn map_error(message: &str) -> RpcError {
         "operation_outcome_unknown" => "operation_outcome_unknown",
         value if crate::delegation::ERROR_CODES.contains(&value) => value,
         value if crate::quick_launch::ERROR_CODES.contains(&value) => value,
+        value
+            if crate::git_selected_commit::ERROR_CODES
+                .contains(&value.split(':').next().unwrap_or(value)) =>
+        {
+            value.split(':').next().unwrap_or(value)
+        }
+        "git_status_changed" => "git_status_changed",
         _ => "invalid_request",
     };
     let mut failure = error(code, message);

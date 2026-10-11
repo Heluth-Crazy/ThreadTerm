@@ -3,6 +3,7 @@
 // the user to click Retry connection.  This uses the built production Electron
 // main/renderer and a deliberately minimal authenticated named-pipe runtime.
 import assert from 'node:assert/strict';
+import {PROTOCOL_CONTRACT} from '../protocol/index.ts';
 import { createHmac, randomUUID } from 'node:crypto';
 import { existsSync } from 'node:fs';
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
@@ -65,7 +66,7 @@ function fakePipe(name, kind) {
       const peer = framed(socket);
       const nonce = randomUUID();
       let authenticated = false;
-      peer.send({ kind: 'challenge', nonce, protocol: 1, contract: 11 });
+      peer.send({ kind: 'challenge', nonce, protocol: 1, contract: PROTOCOL_CONTRACT });
       peer.on(frame => {
         const value = JSON.parse(frame.toString('utf8'));
         if (!authenticated) {
@@ -73,7 +74,7 @@ function fakePipe(name, kind) {
           const expected = createHmac('sha256', credential).update(`1:${value.clientId}:${nonce}`).digest('hex');
           assert.equal(value.hmac, expected, `${kind}: client HMAC must verify`);
           authenticated = true;
-          peer.send({ kind: 'authenticated', principal: value.clientId, epoch: 'startup-recovery-epoch', contract: 11, hmac: createHmac('sha256', credential).update(`server:1:${value.clientId}:${nonce}`).digest('hex') });
+          peer.send({ kind: 'authenticated', principal: value.clientId, epoch: 'startup-recovery-epoch', contract: PROTOCOL_CONTRACT, hmac: createHmac('sha256', credential).update(`server:1:${value.clientId}:${nonce}`).digest('hex') });
           return;
         }
         if (kind !== 'control' || !value?.method) return;
