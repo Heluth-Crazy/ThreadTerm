@@ -1,5 +1,5 @@
 import { createHash, createHmac, randomUUID, timingSafeEqual } from 'node:crypto';
-import { execFile } from 'node:child_process';
+import { execFile, type ChildProcess } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
 import { platform, env } from 'node:process';
 import { join, resolve } from 'node:path';
@@ -27,6 +27,9 @@ const RUNTIME_READY_TIMEOUT_MS = 12_000;
 const RETRY_DELAY_MS = 400;
 const INITIAL_OUTPUT_CREDIT = 64 * 1024;
 const MAX_OUTPUT_CREDIT = 8 * 1024 * 1024;
+
+interface PendingRuntimeStartup { child: ChildProcess }
+const pendingRuntimeStartups = new Map<string, Set<PendingRuntimeStartup>>();
 
 interface ControlRequest { v: 1; id: string; method: string; params: Record<string, unknown> }
 interface ControlResponse { v: 1; id: string; result?: unknown; error?: RuntimeError }
@@ -121,6 +124,29 @@ export async function runtimePipeIsOpen(): Promise<boolean> {
   } catch { return false; }
 }
 
+/**
+ * Waits only for runtime processes launched by this desktop process which have
+ * not yet reached a usable control pipe. This never launches or reconnects a
+ * client, so shutdown can close the race between suspension and a late bind.
+ */
+export async function waitForPendingRuntimeStartup(timeoutMs = 30_000): Promise<void> {
+  if (!Number.isFinite(timeoutMs) || timeoutMs < 0) throw new RangeError('Runtime startup timeout must be a non-negative finite number');
+  const deadline = Date.now() + timeoutMs;
+  const { control } = await runtimePipes();
+  while (pendingRuntimeStartups.get(control)?.size) {
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) throw new RuntimeUnavailableError('Timed out waiting for the launched runtime to bind its control pipe');
+    if (await pipeIsOpen(control, Math.min(CONNECT_TIMEOUT_MS, remaining))) {
+      pendingRuntimeStartups.delete(control);
+      return;
+    }
+    if (!pendingRuntimeStartups.get(control)?.size) return;
+    const delayMs = Math.min(RETRY_DELAY_MS, deadline - Date.now());
+    if (delayMs <= 0) throw new RuntimeUnavailableError('Timed out waiting for the launched runtime to bind its control pipe');
+    await delay(delayMs);
+  }
+}
+
 export class RuntimeClient {
   constructor(private readonly options: { autoLaunch?: boolean } = {}) {}
   private control?: LengthPrefixedSocket;
@@ -137,6 +163,7 @@ export class RuntimeClient {
   private disconnecting = false;
   private runtimeEpoch = '';
   private sawDisconnect = false;
+  private disconnectRevision = 0;
   private incompatible?: ProtocolIncompatibleError;
   private qaReconnectPaused = false;
 
@@ -172,7 +199,7 @@ export class RuntimeClient {
   resumeControlForQa(): boolean {
     if (env.THREADTERM_V3_RELOCATION_QA !== '1' || !this.qaReconnectPaused) return false;
     this.qaReconnectPaused = false;
-    void this.ensureConnected().catch(error => this.handleDisconnect(asError(error)));
+    void this.ensureConnected().catch(() => {});
     return true;
   }
 
@@ -301,7 +328,7 @@ export class RuntimeClient {
     if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
     this.reconnectTimer = undefined;
     if (!suspended && !this.expectedDisconnect) {
-      void this.ensureConnected().catch(error => this.handleDisconnect(asError(error)));
+      void this.ensureConnected().catch(() => {});
     }
   }
 
@@ -310,7 +337,20 @@ export class RuntimeClient {
     if (this.qaReconnectPaused) throw new RuntimeUnavailableError('Runtime reconnect is paused for QA');
     if (this.incompatible) throw this.incompatible;
     if (this.control && this.output) return;
-    if (!this.connecting) this.connecting = this.connectAndAuthenticate().finally(() => { this.connecting = undefined; });
+    if (!this.connecting) {
+      const disconnectRevision = this.disconnectRevision;
+      this.connecting = this.connectAndAuthenticate().catch(error => {
+        // Initial startup can exhaust readiness before the daemon binds its pipes.
+        // Recover the connection as for an established disconnect; callers still
+        // receive their original failure and no request is replayed. A pipe which
+        // failed during this attempt has already performed this transition.
+        const failure = asError(error);
+        if (failure instanceof ProtocolIncompatibleError || this.disconnectRevision === disconnectRevision) {
+          this.handleDisconnect(failure);
+        }
+        throw error;
+      }).finally(() => { this.connecting = undefined; });
+    }
     return this.connecting;
   }
 
@@ -319,7 +359,7 @@ export class RuntimeClient {
     this.assertOpen();
     if (!readCredential()) {
       if (this.options.autoLaunch === false) throw new RuntimeUnavailableError('Runtime is not running');
-      await launchRuntimeIfNeeded();
+      await launchRuntimeIfNeeded(pipes.control, () => this.assertOpen());
     }
     this.assertOpen();
     const token = await waitForCredential();
@@ -329,17 +369,32 @@ export class RuntimeClient {
     catch {
       this.assertOpen();
       if (this.options.autoLaunch === false) throw new RuntimeUnavailableError('Runtime is not running');
-      await launchRuntimeIfNeeded();
+      await launchRuntimeIfNeeded(pipes.control, () => this.assertOpen());
       this.assertOpen();
       control = await connectUntilReady(pipes.control, RUNTIME_READY_TIMEOUT_MS);
     }
     try {
       this.assertOpen();
       const session = await authenticate(control, token, this.clientId);
+      markRuntimeStartupReady(pipes.control);
       this.assertOpen();
-      this.attachControl(control);
-      const output = await connectUntilReady(pipes.output, RUNTIME_READY_TIMEOUT_MS);
-      try { this.assertOpen(); await authenticate(output, token, this.clientId); this.assertOpen(); this.attachOutput(output); }
+      const controlFailure = this.attachControl(control);
+      const outputAttempt = connectUntilReady(pipes.output, RUNTIME_READY_TIMEOUT_MS);
+      let output: LengthPrefixedSocket;
+      try { output = await Promise.race([outputAttempt, controlFailure]); }
+      catch (error) {
+        // A control failure can win while the output connection attempt is
+        // still running. Close any pipe that the losing attempt opens later.
+        void outputAttempt.then(connection => connection.close(), () => {});
+        throw error;
+      }
+      try {
+        this.assertOpen();
+        await Promise.race([authenticate(output, token, this.clientId), controlFailure]);
+        this.assertOpen();
+        if (this.control !== control) throw new RuntimeUnavailableError('Runtime control pipe closed during connection');
+        this.attachOutput(output);
+      }
       catch (error) { output.close(); throw error; }
       const previousEpoch = this.runtimeEpoch;
       this.runtimeEpoch = session.epoch;
@@ -353,23 +408,36 @@ export class RuntimeClient {
       }
     } catch (error) {
       control.close();
-      if (error instanceof ProtocolIncompatibleError) this.incompatible = error;
       throw error;
     }
   }
 
-  private attachControl(control: LengthPrefixedSocket): void {
+  async whenConnectionAttemptSettled(): Promise<void> {
+    const connecting = this.connecting;
+    if (!connecting) return;
+    try { await connecting; } catch {}
+  }
+
+  private attachControl(control: LengthPrefixedSocket): Promise<never> {
     this.control = control;
-    control.onFrame((frame) => this.handleControlFrame(frame));
-    control.onFailure((error) => this.handleDisconnect(error));
+    control.onFrame((frame) => { if (this.control === control) this.handleControlFrame(frame); });
+    return new Promise((_, reject) => {
+      control.onFailure((error) => {
+        if (this.control !== control) return;
+        this.handleDisconnect(error);
+        reject(error);
+      });
+    });
   }
 
   private attachOutput(output: LengthPrefixedSocket): void {
     this.output = output;
     output.onFrame((frame) => {
-      void this.handleOutputFrame(frame, output).catch((error) => this.handleDisconnect(asError(error)));
+      void this.handleOutputFrame(frame, output).catch((error) => {
+        if (this.output === output) this.handleDisconnect(asError(error));
+      });
     });
-    output.onFailure((error) => this.handleDisconnect(error));
+    output.onFailure((error) => { if (this.output === output) this.handleDisconnect(error); });
     for (const group of this.outputGroups.values()) {
       this.sendOutputFrame(3, { sessionId: group.sessionId, cursor: group.cursor });
       this.sendOutputFrame(2, { sessionId: group.sessionId, credit: INITIAL_OUTPUT_CREDIT });
@@ -399,6 +467,7 @@ export class RuntimeClient {
   }
 
   private async handleOutputFrame(frame: Buffer, origin = this.output): Promise<void> {
+    if (origin && this.output !== origin) return;
     if (frame.length < 5) { this.handleDisconnect(new Error('Runtime sent a malformed output frame')); return; }
     const kind = frame.readUInt8(0);
     const headerLength = frame.readUInt32LE(1);
@@ -442,7 +511,9 @@ export class RuntimeClient {
     // Keep later frames ordered even if this transport is about to fail.  The
     // originating call still receives the failure, and the normal reconnect
     // path owns recovery of the group cursor.
-    group.delivery = delivery.catch((error) => { this.handleDisconnect(asError(error)); });
+    group.delivery = delivery.catch((error) => {
+      if (!origin || this.output === origin) this.handleDisconnect(asError(error));
+    });
     return delivery;
   }
 
@@ -456,6 +527,7 @@ export class RuntimeClient {
 
   private handleDisconnect(error: Error): void {
     if (this.expectedDisconnect || this.disconnecting) return;
+    this.disconnectRevision++;
     this.disconnecting = true;
     const control = this.control;
     const output = this.output;
@@ -466,19 +538,19 @@ export class RuntimeClient {
     this.disconnecting = false;
     for (const pending of this.pending.values()) { clearTimeout(pending.timer); pending.reject(error); }
     this.pending.clear();
+    if (error instanceof ProtocolIncompatibleError) {
+      if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = undefined;
+      this.incompatible = error;
+      this.emitSynthetic('runtime.transport', { state: 'incompatible', message: error.message });
+      return;
+    }
     this.sawDisconnect = true;
     this.emitSynthetic('runtime.transport', { state: 'disconnected', epoch: this.runtimeEpoch, reason: error.message });
     if (this.incompatible || this.suspended || this.qaReconnectPaused) return;
     if (!this.reconnectTimer) this.reconnectTimer = setTimeout(() => {
       this.reconnectTimer = undefined;
-      void this.ensureConnected().catch((caught) => {
-        if (caught instanceof ProtocolIncompatibleError) {
-          this.incompatible = caught;
-          this.emitSynthetic('runtime.transport', { state: 'incompatible', message: caught.message });
-          return;
-        }
-        this.handleDisconnect(new RuntimeUnavailableError('Runtime reconnect failed'));
-      });
+      void this.ensureConnected().catch(() => {});
     }, RETRY_DELAY_MS);
   }
 
@@ -548,12 +620,11 @@ async function authenticate(connection: LengthPrefixedSocket, token: string, cli
     const removeFrame = connection.onFrame((frame) => {
       try {
         const value = JSON.parse(frame.toString('utf8')) as unknown;
-        if (isAuthChallenge(value)) {
-          const reason = protocolIncompatibleReason(value, 'desktop');
-          if (reason) throw new ProtocolIncompatibleError(reason);
-          nonce = value.nonce;
-          const hmac = createHmac('sha256', token).update(`${value.protocol}:${clientId}:${value.nonce}`).digest('hex');
-          connection.write(Buffer.from(JSON.stringify({ kind: 'auth', clientId, protocol: PROTOCOL_VERSION, contract: PROTOCOL_CONTRACT, nonce: value.nonce, hmac } satisfies AuthRequest), 'utf8'));
+        const challenge = parseAuthChallenge(value);
+        if (challenge) {
+          nonce = challenge.nonce;
+          const hmac = createHmac('sha256', token).update(`${challenge.protocol}:${clientId}:${challenge.nonce}`).digest('hex');
+          connection.write(Buffer.from(JSON.stringify({ kind: 'auth', clientId, protocol: PROTOCOL_VERSION, contract: PROTOCOL_CONTRACT, nonce: challenge.nonce, hmac } satisfies AuthRequest), 'utf8'));
           return;
         }
         if (isRecord(value) && value.kind === 'incompatible') {
@@ -570,9 +641,12 @@ async function authenticate(connection: LengthPrefixedSocket, token: string, cli
     const removeFailure = connection.onFailure((error) => { cleanup(); reject(error); });
   });
 }
-async function launchRuntimeIfNeeded(): Promise<void> {
+async function launchRuntimeIfNeeded(controlPipe: string, assertOpen: () => void): Promise<void> {
   const { spawn } = await import('node:child_process');
-  const { mkdirSync, openSync } = await import('node:fs');
+  const { closeSync, mkdirSync, openSync } = await import('node:fs');
+  // Suspension or disposal may happen while the lazy imports resolve. Keep the
+  // irreversible spawn on the current side of that asynchronous boundary.
+  assertOpen();
   const executable = resolveRuntimeExecutable();
   const runtimeEnv: NodeJS.ProcessEnv = { ...env, THREADTERM_V3_DATA: v3DataDirectory() };
   if (env.THREADTERM_CLAUDE_NODE) {
@@ -587,10 +661,56 @@ async function launchRuntimeIfNeeded(): Promise<void> {
   mkdirSync(v3DataDirectory(), { recursive: true });
   const logPath = join(v3DataDirectory(), 'runtime.log');
   const log = openSync(logPath, 'a');
-  const child = executable.kind === 'cargo'
-    ? spawn('cargo', ['run', '--manifest-path', executable.path, '--bin', 'threadterm-v3-runtime'], { cwd: app.getAppPath(), detached: true, stdio: ['ignore', log, log], windowsHide: true, env: runtimeEnv })
-    : spawn(executable.path, [], { detached: true, stdio: ['ignore', log, log], windowsHide: true, env: runtimeEnv });
+  const child = (() => {
+    try {
+      return executable.kind === 'cargo'
+        ? spawn('cargo', ['run', '--manifest-path', executable.path, '--bin', 'threadterm-v3-runtime'], { cwd: app.getAppPath(), detached: true, stdio: ['ignore', log, log], windowsHide: true, env: runtimeEnv })
+        : spawn(executable.path, [], { detached: true, stdio: ['ignore', log, log], windowsHide: true, env: runtimeEnv });
+    } finally {
+      closeSync(log);
+    }
+  })();
+  trackRuntimeStartup(controlPipe, child);
   child.unref();
+}
+
+function trackRuntimeStartup(controlPipe: string, child: ChildProcess): void {
+  const tracker: PendingRuntimeStartup = { child };
+  let tracked = pendingRuntimeStartups.get(controlPipe);
+  if (!tracked) {
+    tracked = new Set();
+    pendingRuntimeStartups.set(controlPipe, tracked);
+  }
+  tracked.add(tracker);
+  const remove = () => {
+    const current = pendingRuntimeStartups.get(controlPipe);
+    if (!current?.delete(tracker)) return;
+    if (current.size === 0) pendingRuntimeStartups.delete(controlPipe);
+  };
+  child.once('exit', remove);
+  child.once('error', remove);
+  if (child.exitCode !== null || child.signalCode !== null) remove();
+}
+
+function markRuntimeStartupReady(controlPipe: string): void {
+  pendingRuntimeStartups.delete(controlPipe);
+}
+
+function pipeIsOpen(pipe: string, timeoutMs: number): Promise<boolean> {
+  return new Promise(resolvePromise => {
+    const socket = net.createConnection(pipe);
+    let settled = false;
+    const finish = (open: boolean) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      socket.destroy();
+      resolvePromise(open);
+    };
+    const timer = setTimeout(() => finish(false), Math.max(1, timeoutMs));
+    socket.once('connect', () => finish(true));
+    socket.once('error', () => finish(false));
+  });
 }
 function resolveRuntimeExecutable(): { kind: 'exe' | 'cargo'; path: string } {
   const configured = env.THREADTERM_V3_RUNTIME;
@@ -605,7 +725,13 @@ function asError(value: unknown): Error { return value instanceof Error ? value 
 function isControlResponse(value: unknown): value is ControlResponse { return isRecord(value) && value.v === 1 && typeof value.id === 'string' && (('result' in value) !== ('error' in value)) && (!('error' in value) || isRuntimeError(value.error)); }
 function isRuntimeError(value: unknown): value is RuntimeError { return isRecord(value) && typeof value.code === 'string' && typeof value.message === 'string'; }
 function isOutputHeader(value: unknown): value is { sessionId: string; cursor?: number } { return isRecord(value) && typeof value.sessionId === 'string' && (value.cursor === undefined || (Number.isSafeInteger(value.cursor) && Number(value.cursor) >= 0)); }
-function isAuthChallenge(value: unknown): value is AuthChallenge { return isRecord(value) && value.kind === 'challenge' && typeof value.nonce === 'string' && value.protocol === PROTOCOL_VERSION; }
+export function parseAuthChallenge(value: unknown): AuthChallenge | undefined {
+  if (!isRecord(value) || value.kind !== 'challenge') return undefined;
+  const reason = protocolIncompatibleReason(value, 'desktop');
+  if (reason) throw new ProtocolIncompatibleError(reason);
+  if (typeof value.nonce !== 'string' || value.protocol !== PROTOCOL_VERSION) throw new Error('Runtime sent an invalid authentication challenge');
+  return value as unknown as AuthChallenge;
+}
 function isAuthenticated(value: unknown): value is Authenticated { return isRecord(value) && value.kind === 'authenticated' && typeof value.principal === 'string' && typeof value.epoch === 'string' && typeof value.hmac === 'string'; }
 function sameProof(actual: string, expected: string): boolean {
   const left = Buffer.from(actual, 'hex');

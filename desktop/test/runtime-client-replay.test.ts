@@ -1,14 +1,526 @@
 import assert from 'node:assert/strict';
+import { createHmac, randomUUID } from 'node:crypto';
+import { access, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import net from 'node:net';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import test from 'node:test';
-import { RuntimeClient } from '../src/runtime-client.js';
+import { PROTOCOL_CONTRACT, PROTOCOL_VERSION } from '@threadterm/protocol';
+import {
+  parseAuthChallenge,
+  ProtocolIncompatibleError,
+  RuntimeClient,
+  RuntimeUnavailableError,
+  waitForPendingRuntimeStartup,
+} from '../src/runtime-client.js';
 
 type ClientInternals = {
   control?: { write(payload: Buffer): void; close(): void };
   output?: { write(payload: Buffer): void; close(): void };
   outputGroups: Map<string, { cursor: number }>;
   request: RuntimeClient['request'];
-  handleOutputFrame(frame: Buffer): Promise<void>;
+  handleOutputFrame(frame: Buffer, origin?: { write(payload: Buffer): void; close(): void }): Promise<void>;
 };
+
+type StartupInternals = {
+  connectAndAuthenticate(): Promise<void>;
+  control?: { write(payload: Buffer): void; close(): void };
+  output?: { write(payload: Buffer): void; close(): void };
+  attachControl(connection: {
+    write(payload: Buffer): void;
+    close(): void;
+    onFrame(listener: (frame: Buffer) => void): () => void;
+    onFailure(listener: (error: Error) => void): () => void;
+  }): Promise<never>;
+};
+
+function sendJson(socket: net.Socket, value: unknown): void {
+  const payload = Buffer.from(JSON.stringify(value), 'utf8');
+  const frame = Buffer.allocUnsafe(4 + payload.length);
+  frame.writeUInt32LE(payload.length, 0);
+  payload.copy(frame, 4);
+  socket.write(frame);
+}
+
+function readJson(socket: net.Socket, onValue: (value: Record<string, unknown>) => void): void {
+  let incoming = Buffer.alloc(0);
+  socket.on('data', chunk => {
+    incoming = Buffer.concat([incoming, chunk]);
+    while (incoming.length >= 4) {
+      const length = incoming.readUInt32LE(0);
+      if (incoming.length < 4 + length) return;
+      const frame = incoming.subarray(4, 4 + length);
+      incoming = incoming.subarray(4 + length);
+      onValue(JSON.parse(frame.toString('utf8')) as Record<string, unknown>);
+    }
+  });
+}
+
+function listen(server: net.Server, pipe: string): Promise<void> {
+  return new Promise((resolve, reject) => {
+    server.once('error', reject);
+    server.listen(pipe, () => { server.off('error', reject); resolve(); });
+  });
+}
+
+function closeServer(server: net.Server): Promise<void> {
+  return new Promise(resolve => server.close(() => resolve()));
+}
+
+async function waitForFile(path: string, timeoutMs = 5_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    try { await access(path); return; } catch {}
+    await new Promise(resolve => setTimeout(resolve, 25));
+  }
+  throw new Error(`Timed out waiting for ${path}`);
+}
+
+test('concurrent first connection failures recover the connection once without replaying failed requests', async () => {
+  const client = new RuntimeClient();
+  const internal = client as unknown as StartupInternals;
+  let attempts = 0;
+  let writes = 0;
+  let recovered!: () => void;
+  const recovery = new Promise<void>(resolve => { recovered = resolve; });
+  internal.connectAndAuthenticate = async () => {
+    if (++attempts === 1) throw new RuntimeUnavailableError('startup pipe is not ready');
+    internal.control = {write() { writes++; },close() {}};
+    internal.output = {write() {},close() {}};
+    recovered();
+  };
+  try {
+    const results = await Promise.allSettled([client.request('runtime.health', {}), client.request('runtime.snapshot', {})]);
+    assert.ok(results.every(result => result.status === 'rejected'));
+    assert.equal(attempts, 1, 'initial callers share one connection attempt');
+    await recovery;
+    assert.equal(attempts, 2, 'one ordinary reconnect follows the initial failure');
+    assert.equal(writes, 0, 'connection recovery never replays the failed RPCs');
+  } finally { client.dispose(); }
+});
+
+for (const operation of ['dispose', 'suspend'] as const) {
+  test(`${operation} cancels recovery scheduled by an initial connection failure`, async () => {
+    const client = new RuntimeClient();
+    const internal = client as unknown as StartupInternals;
+    let attempts = 0;
+    internal.connectAndAuthenticate = async () => { attempts++; throw new RuntimeUnavailableError('startup pipe is not ready'); };
+    try {
+      await assert.rejects(client.request('runtime.health', {}), /startup pipe/);
+      if (operation === 'dispose') client.dispose(); else client.setSuspended(true);
+      await new Promise(resolve => setTimeout(resolve, 450));
+      assert.equal(attempts, 1, 'shutdown must not launch a new connection attempt');
+    } finally { client.dispose(); }
+  });
+}
+
+test('a wire-mismatched challenge is parsed as incompatible and is not retried as a transient startup failure', async () => {
+  const client = new RuntimeClient();
+  const internal = client as unknown as StartupInternals;
+  const transportStates: string[] = [];
+  const unsubscribe = client.onEvent(event => {
+    if (event.event === 'runtime.transport') transportStates.push(String((event.data as {state?: unknown}).state));
+  });
+  let attempts = 0;
+  internal.connectAndAuthenticate = async () => {
+    attempts++;
+    parseAuthChallenge({ kind: 'challenge', nonce: 'n', protocol: PROTOCOL_VERSION + 1, contract: PROTOCOL_CONTRACT });
+  };
+  try {
+    await assert.rejects(client.request('runtime.health', {}), (error: unknown) => (
+      error instanceof ProtocolIncompatibleError && /wire protocol/.test(error.message)
+    ));
+    await new Promise(resolve => setTimeout(resolve, 450));
+    assert.equal(attempts, 1);
+    assert.deepEqual(transportStates, ['incompatible']);
+  } finally {
+    unsubscribe();
+    client.dispose();
+  }
+});
+
+test('each failed startup or reconnect attempt emits one disconnected event', async () => {
+  const client = new RuntimeClient();
+  const internal = client as unknown as StartupInternals;
+  const disconnectReasons: string[] = [];
+  const unsubscribe = client.onEvent(event => {
+    if (event.event === 'runtime.transport' && (event.data as {state?: unknown}).state === 'disconnected') {
+      disconnectReasons.push(String((event.data as {reason?: unknown}).reason));
+    }
+  });
+  let attempts = 0;
+  let secondAttemptStarted!: () => void;
+  const secondAttempt = new Promise<void>(resolve => { secondAttemptStarted = resolve; });
+  internal.connectAndAuthenticate = async () => {
+    attempts++;
+    if (attempts === 2) {
+      client.setSuspended(true);
+      secondAttemptStarted();
+    }
+    throw new RuntimeUnavailableError(`connection failure ${attempts}`);
+  };
+  try {
+    await assert.rejects(client.request('runtime.health', {}), /connection failure 1/);
+    await secondAttempt;
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(attempts, 2);
+    assert.deepEqual(disconnectReasons, ['connection failure 1', 'connection failure 2']);
+  } finally {
+    unsubscribe();
+    client.dispose();
+  }
+});
+
+test('shutdown quiescence waits for only the current connection attempt and consumes its failure', async () => {
+  const client = new RuntimeClient();
+  const internal = client as unknown as StartupInternals;
+  let attempts = 0;
+  let rejectAttempt!: (error: Error) => void;
+  internal.connectAndAuthenticate = () => {
+    attempts++;
+    return new Promise<void>((_, reject) => { rejectAttempt = reject; });
+  };
+  const request = client.request('runtime.health', {});
+  client.setSuspended(true);
+  let settled = false;
+  const quiesced = client.whenConnectionAttemptSettled().then(() => { settled = true; });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(settled, false);
+  rejectAttempt(new RuntimeUnavailableError('connection attempt stopped'));
+  await quiesced;
+  await assert.rejects(request, /connection attempt stopped/);
+  await client.whenConnectionAttemptSettled();
+  assert.equal(attempts, 1, 'quiescence never starts or retries a connection');
+  client.dispose();
+});
+
+for (const operation of ['dispose', 'suspend'] as const) {
+  test(`${operation} during launcher setup prevents runtime spawn side effects`, async () => {
+    const dataDirectory = await mkdtemp(join(tmpdir(), 'threadterm-runtime-launch-'));
+    const previousPipe = process.env.THREADTERM_V3_PIPE;
+    const previousData = process.env.THREADTERM_V3_DATA;
+    const previousRuntime = process.env.THREADTERM_V3_RUNTIME;
+    process.env.THREADTERM_V3_PIPE = `\\\\.\\pipe\\threadterm-runtime-launch-${process.pid}-${randomUUID()}`;
+    process.env.THREADTERM_V3_DATA = dataDirectory;
+    process.env.THREADTERM_V3_RUNTIME = join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'where.exe');
+    const client = new RuntimeClient();
+    try {
+      const request = client.request('runtime.health', {});
+      queueMicrotask(() => { if (operation === 'dispose') client.dispose(); else client.setSuspended(true); });
+      await assert.rejects(request, operation === 'dispose' ? /Desktop is closing/ : /shutdown is in progress/);
+      await assert.rejects(access(join(dataDirectory, 'runtime.log')), (error: unknown) => (
+        error instanceof Error && 'code' in error && error.code === 'ENOENT'
+      ));
+    } finally {
+      client.dispose();
+      await rm(dataDirectory, { recursive: true, force: true });
+      if (previousPipe === undefined) delete process.env.THREADTERM_V3_PIPE; else process.env.THREADTERM_V3_PIPE = previousPipe;
+      if (previousData === undefined) delete process.env.THREADTERM_V3_DATA; else process.env.THREADTERM_V3_DATA = previousData;
+      if (previousRuntime === undefined) delete process.env.THREADTERM_V3_RUNTIME; else process.env.THREADTERM_V3_RUNTIME = previousRuntime;
+    }
+  });
+}
+
+test('shutdown waits for every owned startup until a surviving child binds the control pipe', async () => {
+  const dataDirectory = await mkdtemp(join(tmpdir(), 'threadterm-runtime-pending-'));
+  const pipeBase = `\\\\.\\pipe\\threadterm-runtime-pending-${process.pid}-${randomUUID()}`;
+  const bootstrapPath = join(dataDirectory, 'bootstrap.cjs');
+  const loserStartedPath = join(dataDirectory, 'loser-started');
+  const firstConnectedPath = join(dataDirectory, 'first-connected');
+  const childDonePath = join(dataDirectory, 'child-done');
+  const previousPipe = process.env.THREADTERM_V3_PIPE;
+  const previousData = process.env.THREADTERM_V3_DATA;
+  const previousRuntime = process.env.THREADTERM_V3_RUNTIME;
+  const previousNodeOptions = process.env.NODE_OPTIONS;
+  await writeFile(bootstrapPath, String.raw`
+const fs = require('node:fs');
+const net = require('node:net');
+const path = require('node:path');
+const data = process.env.THREADTERM_V3_DATA;
+const pipe = process.env.THREADTERM_V3_PIPE + '-control';
+setTimeout(() => process.exit(5), 5_000);
+let winner = false;
+try {
+  const lock = fs.openSync(path.join(data, 'startup-owner'), 'wx');
+  fs.closeSync(lock);
+  winner = true;
+} catch {}
+if (!winner) {
+  fs.writeFileSync(path.join(data, 'loser-started'), '1');
+  setTimeout(() => process.exit(0), 100);
+} else {
+  fs.writeFileSync(path.join(data, 'runtime.credential'), 'test-credential');
+  const sockets = new Set();
+  let closing = false;
+  const first = net.createServer(socket => {
+    sockets.add(socket);
+    socket.on('close', () => sockets.delete(socket));
+    if (closing) return;
+    closing = true;
+    fs.writeFileSync(path.join(data, 'first-connected'), '1');
+    setTimeout(() => {
+      for (const active of sockets) active.destroy();
+      first.close(() => setTimeout(() => {
+        const ready = net.createServer(socket => socket.destroy());
+        ready.listen(pipe, () => setTimeout(() => ready.close(() => {
+          fs.writeFileSync(path.join(data, 'child-done'), '1');
+          process.exit(0);
+        }), 1_000));
+      }, 700));
+    }, 75);
+  });
+  first.listen(pipe);
+}
+`);
+  process.env.THREADTERM_V3_PIPE = pipeBase;
+  process.env.THREADTERM_V3_DATA = dataDirectory;
+  process.env.THREADTERM_V3_RUNTIME = process.execPath;
+  process.env.NODE_OPTIONS = `${previousNodeOptions ? `${previousNodeOptions} ` : ''}--require=${bootstrapPath.replace(/\\/g, '/')}`;
+
+  const first = new RuntimeClient();
+  const second = new RuntimeClient();
+  const requests = [first.request('runtime.health', {}), second.request('runtime.health', {})];
+  try {
+    await Promise.all([waitForFile(loserStartedPath), waitForFile(firstConnectedPath)]);
+    first.setSuspended(true);
+    second.setSuspended(true);
+    first.dispose();
+    second.dispose();
+    const results = await Promise.allSettled(requests);
+    assert.ok(results.every(result => result.status === 'rejected'));
+
+    await assert.rejects(
+      waitForPendingRuntimeStartup(100),
+      /Timed out waiting for the launched runtime/,
+      'one singleton loser exiting must not hide the surviving owned startup',
+    );
+    const started = Date.now();
+    await waitForPendingRuntimeStartup(3_000);
+    assert.ok(Date.now() - started >= 300, 'the passive wait must remain pending until the late control bind');
+    await waitForPendingRuntimeStartup(0);
+    await waitForFile(childDonePath, 3_000);
+  } finally {
+    first.dispose();
+    second.dispose();
+    try { await waitForFile(childDonePath, 5_500); } catch {}
+    await rm(dataDirectory, { recursive: true, force: true });
+    if (previousPipe === undefined) delete process.env.THREADTERM_V3_PIPE; else process.env.THREADTERM_V3_PIPE = previousPipe;
+    if (previousData === undefined) delete process.env.THREADTERM_V3_DATA; else process.env.THREADTERM_V3_DATA = previousData;
+    if (previousRuntime === undefined) delete process.env.THREADTERM_V3_RUNTIME; else process.env.THREADTERM_V3_RUNTIME = previousRuntime;
+    if (previousNodeOptions === undefined) delete process.env.NODE_OPTIONS; else process.env.NODE_OPTIONS = previousNodeOptions;
+  }
+});
+
+test('a control failure aborts an in-flight output handshake instead of producing a half-ready client', async () => {
+  const dataDirectory = await mkdtemp(join(tmpdir(), 'threadterm-runtime-client-'));
+  const credential = 'test-credential';
+  await writeFile(join(dataDirectory, 'runtime.credential'), credential, 'utf8');
+  const pipeBase = `\\\\.\\pipe\\threadterm-runtime-client-${process.pid}-${randomUUID()}`;
+  const controlServer = net.createServer();
+  const outputServer = net.createServer();
+  const sockets = new Set<net.Socket>();
+  const previousPipe = process.env.THREADTERM_V3_PIPE;
+  const previousData = process.env.THREADTERM_V3_DATA;
+  process.env.THREADTERM_V3_PIPE = pipeBase;
+  process.env.THREADTERM_V3_DATA = dataDirectory;
+
+  let controlSocket: net.Socket | undefined;
+  let outputAuthenticated!: () => void;
+  const outputAuthReceived = new Promise<void>(resolve => { outputAuthenticated = resolve; });
+  let disconnected!: () => void;
+  const controlDisconnected = new Promise<void>(resolve => { disconnected = resolve; });
+  const receivedMethods: unknown[] = [];
+  const nonce = 'partial-handshake-nonce';
+
+  controlServer.on('connection', socket => {
+    sockets.add(socket);
+    socket.on('close', () => sockets.delete(socket));
+    controlSocket = socket;
+    sendJson(socket, { kind: 'challenge', nonce, protocol: PROTOCOL_VERSION, contract: PROTOCOL_CONTRACT });
+    readJson(socket, value => {
+      if (value.kind === 'auth') {
+        const clientId = String(value.clientId);
+        const hmac = createHmac('sha256', credential).update(`server:${PROTOCOL_VERSION}:${clientId}:${nonce}`).digest('hex');
+        sendJson(socket, { kind: 'authenticated', principal: clientId, epoch: 'partial-handshake-epoch', contract: PROTOCOL_CONTRACT, hmac });
+      } else {
+        receivedMethods.push(value.method);
+      }
+    });
+  });
+  outputServer.on('connection', socket => {
+    sockets.add(socket);
+    socket.on('close', () => sockets.delete(socket));
+    sendJson(socket, { kind: 'challenge', nonce, protocol: PROTOCOL_VERSION, contract: PROTOCOL_CONTRACT });
+    readJson(socket, value => {
+      if (value.kind !== 'auth') return;
+      outputAuthenticated();
+      controlSocket?.destroy();
+      void controlDisconnected.then(() => {
+        const clientId = String(value.clientId);
+        const hmac = createHmac('sha256', credential).update(`server:${PROTOCOL_VERSION}:${clientId}:${nonce}`).digest('hex');
+        if (!socket.destroyed) sendJson(socket, { kind: 'authenticated', principal: clientId, epoch: 'partial-handshake-epoch', contract: PROTOCOL_CONTRACT, hmac });
+      });
+    });
+  });
+
+  const client = new RuntimeClient({ autoLaunch: false });
+  const internal = client as unknown as StartupInternals;
+  const transportStates: string[] = [];
+  const unsubscribe = client.onEvent(event => {
+    if (event.event !== 'runtime.transport') return;
+    const state = String((event.data as {state?: unknown}).state);
+    transportStates.push(state);
+    if (state === 'disconnected') disconnected();
+  });
+  try {
+    await Promise.all([listen(controlServer, `${pipeBase}-control`), listen(outputServer, `${pipeBase}-output`)]);
+    const request = client.request('runtime.health', {});
+    await outputAuthReceived;
+    await assert.rejects(request, /Runtime pipe closed/);
+    client.setSuspended(true);
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(internal.control, undefined);
+    assert.equal(internal.output, undefined);
+    assert.deepEqual(transportStates, ['disconnected']);
+    assert.deepEqual(receivedMethods, [], 'the failed request is never written after the control pipe closes');
+  } finally {
+    unsubscribe();
+    client.dispose();
+    for (const socket of sockets) socket.destroy();
+    await Promise.all([closeServer(controlServer), closeServer(outputServer)]);
+    await rm(dataDirectory, { recursive: true, force: true });
+    if (previousPipe === undefined) delete process.env.THREADTERM_V3_PIPE; else process.env.THREADTERM_V3_PIPE = previousPipe;
+    if (previousData === undefined) delete process.env.THREADTERM_V3_DATA; else process.env.THREADTERM_V3_DATA = previousData;
+  }
+});
+
+for (const scenario of [
+  { kind: 'transient', error: new RuntimeUnavailableError('output authentication failed'), states: ['disconnected'] },
+  { kind: 'incompatible', error: new ProtocolIncompatibleError('output protocol is incompatible'), states: ['incompatible'] },
+] as const) {
+  test(`a late control close cannot duplicate or override a ${scenario.kind} partial-handshake failure`, async () => {
+    const client = new RuntimeClient();
+    const internal = client as unknown as StartupInternals;
+    const transportStates: string[] = [];
+    const unsubscribe = client.onEvent(event => {
+      if (event.event === 'runtime.transport') transportStates.push(String((event.data as {state?: unknown}).state));
+    });
+    let failureListener: ((error: Error) => void) | undefined;
+    let closed = false;
+    let lateFailure!: () => void;
+    const lateFailureDelivered = new Promise<void>(resolve => { lateFailure = resolve; });
+    const control = {
+      write() {},
+      close() {
+        if (closed) return;
+        closed = true;
+        setImmediate(() => {
+          failureListener?.(new RuntimeUnavailableError('control pipe closed'));
+          lateFailure();
+        });
+      },
+      onFrame() { return () => {}; },
+      onFailure(listener: (error: Error) => void) { failureListener = listener; return () => { failureListener = undefined; }; },
+    };
+    internal.connectAndAuthenticate = async () => {
+      internal.attachControl(control);
+      control.close();
+      throw scenario.error;
+    };
+    try {
+      await assert.rejects(client.request('runtime.health', {}), scenario.error);
+      client.setSuspended(true);
+      await lateFailureDelivered;
+      await new Promise(resolve => setImmediate(resolve));
+      assert.deepEqual(transportStates, scenario.states);
+    } finally {
+      unsubscribe();
+      client.dispose();
+    }
+  });
+}
+
+test('a stale malformed output frame cannot disconnect the replacement transport', async () => {
+  const client = new RuntimeClient();
+  const internal = client as unknown as ClientInternals;
+  const stale = { write() {}, close() {} };
+  const current = { write() {}, close() {} };
+  internal.output = current;
+  const states: string[] = [];
+  const unsubscribe = client.onEvent(event => {
+    if (event.event === 'runtime.transport') states.push(String((event.data as {state?: unknown}).state));
+  });
+  try {
+    await internal.handleOutputFrame(Buffer.alloc(0), stale);
+    assert.equal(internal.output, current);
+    assert.deepEqual(states, []);
+  } finally {
+    unsubscribe();
+    client.dispose();
+  }
+});
+
+test('a stale control frame cannot publish an event from the replaced transport', () => {
+  const client = new RuntimeClient();
+  const internal = client as unknown as StartupInternals;
+  let frameListener: ((frame: Buffer) => void) | undefined;
+  const stale = {
+    write() {},
+    close() {},
+    onFrame(listener: (frame: Buffer) => void) { frameListener = listener; return () => { frameListener = undefined; }; },
+    onFailure() { return () => {}; },
+  };
+  const current = { write() {}, close() {} };
+  internal.attachControl(stale);
+  internal.control = current;
+  const events: string[] = [];
+  const unsubscribe = client.onEvent(event => { events.push(event.event); });
+  try {
+    frameListener?.(Buffer.from(JSON.stringify({
+      v: 1, event: 'state.changed', epoch: 'stale', seq: 1, data: { kind: 'settings' },
+    }), 'utf8'));
+    assert.deepEqual(events, []);
+    assert.equal(internal.control, current);
+  } finally {
+    unsubscribe();
+    client.dispose();
+  }
+});
+
+test('a stale output delivery failure cannot disconnect the replacement transport', async () => {
+  const client = new RuntimeClient();
+  const internal = client as unknown as ClientInternals;
+  internal.control = { write() {}, close() {} };
+  const stale = { write() {}, close() {} };
+  const current = { write() {}, close() {} };
+  internal.output = stale;
+  let deliveryStarted!: () => void;
+  const started = new Promise<void>(resolve => { deliveryStarted = resolve; });
+  let rejectDelivery!: (error: Error) => void;
+  const heldDelivery = new Promise<void>((_, reject) => { rejectDelivery = reject; });
+  const unsubscribeOutput = await client.subscribeOutput('stale-delivery', 0, async () => {
+    deliveryStarted();
+    await heldDelivery;
+  });
+  const states: string[] = [];
+  const unsubscribeEvent = client.onEvent(event => {
+    if (event.event === 'runtime.transport') states.push(String((event.data as {state?: unknown}).state));
+  });
+  try {
+    const pending = internal.handleOutputFrame(outputFrame('stale-delivery', 0, Uint8Array.of(1)), stale);
+    await started;
+    internal.output = current;
+    rejectDelivery(new Error('stale consumer failed'));
+    await assert.rejects(pending, /stale consumer failed/);
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(internal.output, current);
+    assert.deepEqual(states, []);
+  } finally {
+    unsubscribeOutput();
+    unsubscribeEvent();
+    client.dispose();
+  }
+});
 
 function clientWithPipes(): { client: RuntimeClient; writes: Buffer[] } {
   const client = new RuntimeClient();
