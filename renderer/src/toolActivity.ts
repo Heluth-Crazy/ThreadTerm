@@ -148,11 +148,61 @@ export function toolStatus(part: ChatPart): ToolStatus {
 }
 
 function inputs(data: Record<string, unknown>): Record<string, unknown>[] {
-  const values = [data.input, data.arguments, data.rawInput, record(data.state).input, data];
+  const values = [data.input, data.arguments, data.rawInput, data.args, record(data.state).input, data];
   return values.map(value => {
     if (typeof value === 'string') { try { return record(JSON.parse(value)); } catch { return {}; } }
     return record(value);
   });
+}
+
+const outputText = (value: unknown): string[] => {
+  if (typeof value === 'string') return [value];
+  if (Array.isArray(value)) return value.flatMap(outputText);
+  const item = record(value);
+  const text = string(item.text);
+  if (text) return [text];
+  return item.content === undefined ? [] : outputText(item.content);
+};
+
+const ANSI = /\x1B(?:\[[0-?]*[ -/]*[@-~]|\][^\x07\x1B]*(?:\x07|\x1B\\))/g;
+const CONTROL = /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F-\u009F]/g;
+const OUTPUT_PREVIEW_LIMIT = 240;
+
+/** A compact real result line only; tool inputs are never serialized as output. */
+export function toolOutputPreview(part: ChatPart): string | undefined {
+  const data = record(part.data), state = record(data.state);
+  const candidates = [
+    record(data.result).content,
+    record(data.partialResult).content,
+    data.aggregatedOutput,
+    data.output,
+    data.rawOutput,
+    data.content,
+    state.output,
+  ];
+  for (const candidate of candidates) {
+    const lines = outputText(candidate)
+      .flatMap(text => text.replace(ANSI, '').replace(CONTROL, '').replace(/\r/g, '\n').split('\n'))
+      .map(line => line.replace(/\s+/g, ' ').trim())
+      .filter(Boolean);
+    const last = lines.at(-1);
+    if (last) return last.length > OUTPUT_PREVIEW_LIMIT ? `${last.slice(0, OUTPUT_PREVIEW_LIMIT - 1)}…` : last;
+  }
+}
+
+/**
+ * Prefer the newest running call's own result. When it has none, the entry ID
+ * identifies the most recent completed-result fallback in the same drawer.
+ */
+export function toolActivityPreview(entries: readonly ToolActivityEntry[], turnActive: boolean): { entryId: string; text: string } | undefined {
+  const running = activeToolEntries(entries, turnActive);
+  const current = running.at(-1);
+  const currentText = current && toolOutputPreview(current.part);
+  if (current && currentText) return { entryId: current.id, text: currentText };
+  for (const entry of [...entries].reverse()) {
+    const text = toolOutputPreview(entry.part);
+    if (text) return { entryId: entry.id, text };
+  }
 }
 
 export function describeTool(part: ChatPart, copy: Copy): { kind: ToolKind; name: string; action: string; detail?: string } {

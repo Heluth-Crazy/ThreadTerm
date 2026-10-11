@@ -286,12 +286,30 @@ struct PiShared {
     /// The most recent failed attempt. Kept unpublished until the turn settles,
     /// because pi may still recover through its own retry budget.
     pending_error: Mutex<Option<Value>>,
+    /// Pi splits one tool call across start/update/end frames. Keep only the
+    /// stable call identity and arguments for the active turn so a sparse end
+    /// frame cannot erase the useful description from the durable projection.
+    tool_calls: Mutex<PiToolCalls>,
     ui: Mutex<PiUi>,
     control: Mutex<PiControl>,
     interactions: Mutex<HashMap<String, PiInteraction>>,
     /// A bounded exact-id fence prevents Pi extension replays from reopening a
     /// card after its response/cancellation has been written.
     resolved_interactions: Mutex<VecDeque<String>>,
+}
+
+const PI_TOOL_CALL_LIMIT: usize = 128;
+
+#[derive(Clone)]
+struct PiToolCall {
+    name: String,
+    args: Value,
+}
+
+#[derive(Default)]
+struct PiToolCalls {
+    owner: Option<String>,
+    calls: HashMap<String, PiToolCall>,
 }
 
 #[derive(Default)]
@@ -340,10 +358,7 @@ impl PiChat {
 
     /// Settles the current turn at most once, whichever path observes it first.
     fn finish_turn(&self, stop_reason: &str, elapsed_ms: Option<u64>) {
-        let turn_id = match self.shared.active_turn.lock() {
-            Ok(mut active) => active.take(),
-            Err(_) => return,
-        };
+        let turn_id = pi_take_active_turn(&self.shared);
         let Some(turn_id) = turn_id else {
             return;
         };
@@ -650,6 +665,16 @@ impl ChatSession for PiChat {
                 self.shared.active_turn.lock().map_err(|_| {
                     ProviderError::new("provider_internal", "Pi turn lock poisoned")
                 })?;
+            if active.is_some() {
+                return Err(ProviderError::new(
+                    "turn_in_progress",
+                    "This Pi session already has an active turn",
+                ));
+            }
+            if let Ok(mut calls) = self.shared.tool_calls.lock() {
+                calls.owner = Some(operation_id.to_owned());
+                calls.calls.clear();
+            }
             *active = Some(operation_id.to_owned());
         }
         if let Ok(mut started) = self.shared.started.lock() {
@@ -677,9 +702,7 @@ impl ChatSession for PiChat {
                 Ok(json!({"turnId":operation_id}))
             }
             Err(error) => {
-                if let Ok(mut active) = self.shared.active_turn.lock() {
-                    *active = None;
-                }
+                pi_clear_active_turn(&self.shared, operation_id);
                 self.drain_interactions(Some(operation_id));
                 emit(
                     &self.events,
@@ -1192,6 +1215,128 @@ fn pi_drain_interactions(
     }
 }
 
+fn pi_clear_active_turn(shared: &PiShared, expected_turn: &str) -> bool {
+    let Ok(mut active) = shared.active_turn.lock() else {
+        return false;
+    };
+    if active.as_deref() != Some(expected_turn) {
+        return false;
+    }
+    if let Ok(mut calls) = shared.tool_calls.lock() {
+        if calls.owner.as_deref() == Some(expected_turn) {
+            calls.owner = None;
+            calls.calls.clear();
+        }
+    }
+    *active = None;
+    true
+}
+
+fn pi_take_active_turn(shared: &PiShared) -> Option<String> {
+    let Ok(mut active) = shared.active_turn.lock() else {
+        return None;
+    };
+    let turn = active.take()?;
+    if let Ok(mut calls) = shared.tool_calls.lock() {
+        if calls.owner.as_deref() == Some(&turn) {
+            calls.owner = None;
+            calls.calls.clear();
+        }
+    }
+    Some(turn)
+}
+
+/// Projects one Pi tool frame only while its captured turn still owns the
+/// active cache. Holding active_turn then tool_calls through emit prevents an
+/// old reader callback from appending data to a new turn that reused a call ID.
+fn pi_emit_tool_call(
+    events: &ScopedProviderEvents,
+    provider: &str,
+    session_id: &str,
+    native_id: Option<&str>,
+    shared: &PiShared,
+    turn_id: &str,
+    mut raw: Value,
+) {
+    let kind = raw
+        .get("type")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_owned();
+    let Some(tool_id) = raw
+        .get("toolCallId")
+        .and_then(Value::as_str)
+        .map(ToOwned::to_owned)
+    else {
+        return;
+    };
+    let status = if kind == "tool_execution_end" {
+        if raw.get("isError").and_then(Value::as_bool) == Some(true) {
+            "failed"
+        } else {
+            "complete"
+        }
+    } else {
+        "running"
+    };
+    let incoming_name = raw
+        .get("toolName")
+        .and_then(Value::as_str)
+        .map(ToOwned::to_owned);
+    let incoming_args = raw.get("args").cloned();
+    let mut name = incoming_name.clone();
+    let Ok(active) = shared.active_turn.lock() else {
+        return;
+    };
+    if active.as_deref() != Some(turn_id) {
+        return;
+    }
+    let Ok(mut calls) = shared.tool_calls.lock() else {
+        return;
+    };
+    if calls.owner.as_deref() != Some(turn_id) {
+        return;
+    }
+    if let Some(previous) = calls.calls.get(&tool_id) {
+        if name.is_none() {
+            name = Some(previous.name.clone());
+        }
+        if incoming_args.is_none() {
+            if let Some(object) = raw.as_object_mut() {
+                object.insert("args".into(), previous.args.clone());
+            }
+        }
+    }
+    if kind == "tool_execution_end" {
+        calls.calls.remove(&tool_id);
+    } else if let (Some(name), Some(args)) = (name.clone(), raw.get("args").cloned()) {
+        if calls.calls.contains_key(&tool_id) || calls.calls.len() < PI_TOOL_CALL_LIMIT {
+            calls
+                .calls
+                .insert(tool_id.clone(), PiToolCall { name, args });
+        }
+    }
+    let mut part = json!({
+        "type":"tool",
+        "toolId":tool_id,
+        "status":status,
+        "data":raw
+    });
+    if let Some(name) = name {
+        part["toolName"] = json!(name);
+    }
+    crate::file_references::enrich_tool_part(&mut part, None);
+    emit(
+        events,
+        provider,
+        session_id,
+        native_id,
+        Some(turn_id),
+        "chat.item",
+        json!({"item":{"id":tool_id},"merge":true,"part":part}),
+    );
+}
+
 /// Translates one `pi --mode rpc` record into provider events.
 fn pi_event(
     events: &ScopedProviderEvents,
@@ -1295,33 +1440,17 @@ fn pi_event(
             }
         }
         "tool_execution_start" | "tool_execution_update" | "tool_execution_end" => {
-            let kind = raw.get("type").and_then(Value::as_str).unwrap_or_default();
-            let Some(tool_id) = raw.get("toolCallId").and_then(Value::as_str) else {
+            let Some(turn_id) = turn_id.as_deref() else {
                 return;
             };
-            let status = match kind {
-                "tool_execution_end" => {
-                    if raw.get("isError").and_then(Value::as_bool) == Some(true) {
-                        "failed"
-                    } else {
-                        "complete"
-                    }
-                }
-                _ => "running",
-            };
-            let mut part = json!({
-                "type":"tool",
-                "toolId":tool_id,
-                "status":status,
-                "data":raw
-            });
-            if let Some(name) = raw.get("toolName").and_then(Value::as_str) {
-                part["toolName"] = json!(name);
-            }
-            crate::file_references::enrich_tool_part(&mut part, None);
-            emit(
-                "chat.item",
-                json!({"item":{"id":tool_id},"merge":true,"part":part}),
+            pi_emit_tool_call(
+                events,
+                provider,
+                session_id,
+                native_id.as_deref(),
+                shared,
+                turn_id,
+                raw,
             );
         }
         "message_end" => {
@@ -1357,40 +1486,37 @@ fn pi_event(
         }
         "agent_settled" => {
             let aborted = raw.get("aborted").and_then(Value::as_bool) == Some(true);
-            if let Ok(mut active) = shared.active_turn.lock() {
-                if let Some(settled_turn) = active.take() {
-                    drop(active);
-                    pi_drain_interactions(
-                        events,
-                        session_id,
-                        native_id.as_deref(),
-                        shared,
-                        Some(&settled_turn),
-                    );
-                    let pending = shared
-                        .pending_error
-                        .lock()
-                        .ok()
-                        .and_then(|mut slot| slot.take());
-                    if !aborted {
-                        if let Some(error) = pending {
-                            emit("chat.error", error);
-                        }
+            if let Some(settled_turn) = pi_take_active_turn(shared) {
+                pi_drain_interactions(
+                    events,
+                    session_id,
+                    native_id.as_deref(),
+                    shared,
+                    Some(&settled_turn),
+                );
+                let pending = shared
+                    .pending_error
+                    .lock()
+                    .ok()
+                    .and_then(|mut slot| slot.take());
+                if !aborted {
+                    if let Some(error) = pending {
+                        emit("chat.error", error);
                     }
-                    let mut data = json!({
-                        "result":{"stopReason":if aborted {"cancelled"} else {"end_turn"}}
-                    });
-                    if let Some(elapsed) = shared
-                        .started
-                        .lock()
-                        .ok()
-                        .and_then(|value| *value)
-                        .map(|started| started.elapsed().as_millis() as u64)
-                    {
-                        data["elapsedMs"] = json!(elapsed);
-                    }
-                    emit("chat.turn.completed", data);
                 }
+                let mut data = json!({
+                    "result":{"stopReason":if aborted {"cancelled"} else {"end_turn"}}
+                });
+                if let Some(elapsed) = shared
+                    .started
+                    .lock()
+                    .ok()
+                    .and_then(|value| *value)
+                    .map(|started| started.elapsed().as_millis() as u64)
+                {
+                    data["elapsedMs"] = json!(elapsed);
+                }
+                emit("chat.turn.completed", data);
             }
         }
         "error" => {
@@ -1785,7 +1911,9 @@ fn same_path(left: &str, right: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::db::{CreateSession, Database};
     use crate::provider_events::tap_channel;
+    use tempfile::tempdir;
 
     fn scoped() -> (
         ScopedProviderEvents,
@@ -1906,10 +2034,24 @@ mod tests {
     }
 
     #[test]
-    fn tool_execution_projects_running_then_failed_parts() {
+    fn tool_execution_projection_retains_pi_args_and_result_across_updates() {
         let (events, mut receiver) = scoped();
         let shared = PiShared::default();
+        let directory = tempdir().unwrap();
+        let database_path = directory.path().join("tool-projection.sqlite");
+        let database = Database::open(&database_path).unwrap();
+        let session = database
+            .create_session(CreateSession {
+                project_id: None,
+                title: Some("Pi tool projection"),
+                provider: "pi",
+                mode: "chat",
+                native_id: None,
+                operation_id: "create-pi-tool-projection",
+            })
+            .unwrap();
         *shared.active_turn.lock().unwrap() = Some("turn-1".into());
+        shared.tool_calls.lock().unwrap().owner = Some("turn-1".into());
         pi_event(
             &events,
             "pi",
@@ -1922,15 +2064,176 @@ mod tests {
         assert_eq!(running.data["part"]["status"], "running");
         assert_eq!(running.data["part"]["toolName"], "bash");
         assert_eq!(running.data["item"]["id"], "call-1");
+        crate::chat_projection::record(
+            &database,
+            &session.id,
+            running.turn_id.as_deref(),
+            &running.kind,
+            &running.data,
+        )
+        .unwrap();
         pi_event(
             &events,
             "pi",
             "session",
             &shared,
-            json!({"type":"tool_execution_end","toolCallId":"call-1","toolName":"bash","isError":true}),
+            json!({"type":"tool_execution_update","toolCallId":"call-1","toolName":"bash","args":{"command":"ls"},"partialResult":{"content":[{"type":"text","text":"listing"}]}}),
+        );
+        let update = receiver.try_recv().unwrap();
+        assert_eq!(update.data["part"]["status"], "running");
+        assert_eq!(update.data["part"]["data"]["args"]["command"], "ls");
+        assert_eq!(
+            update.data["part"]["data"]["partialResult"]["content"][0]["text"],
+            "listing"
+        );
+        crate::chat_projection::record(
+            &database,
+            &session.id,
+            update.turn_id.as_deref(),
+            &update.kind,
+            &update.data,
+        )
+        .unwrap();
+        pi_event(
+            &events,
+            "pi",
+            "session",
+            &shared,
+            json!({"type":"tool_execution_end","toolCallId":"call-1","toolName":"bash","result":{"content":[{"type":"text","text":"done"}]},"isError":false}),
+        );
+        let complete = receiver.try_recv().unwrap();
+        assert_eq!(complete.data["part"]["status"], "complete");
+        assert_eq!(complete.data["part"]["toolName"], "bash");
+        assert_eq!(complete.data["part"]["data"]["args"]["command"], "ls");
+        assert_eq!(
+            complete.data["part"]["data"]["result"]["content"][0]["text"],
+            "done"
+        );
+        crate::chat_projection::record(
+            &database,
+            &session.id,
+            complete.turn_id.as_deref(),
+            &complete.kind,
+            &complete.data,
+        )
+        .unwrap();
+        let persisted = database.chat_items(&session.id).unwrap().pop().unwrap();
+        assert_eq!(persisted.parts[0]["toolName"], "bash");
+        assert_eq!(persisted.parts[0]["data"]["args"]["command"], "ls");
+        assert_eq!(
+            persisted.parts[0]["data"]["result"]["content"][0]["text"],
+            "done"
+        );
+    }
+
+    #[test]
+    fn sparse_or_late_tool_frames_cannot_cross_pi_turn_ownership() {
+        let (events, mut receiver) = scoped();
+        let shared = PiShared::default();
+        *shared.active_turn.lock().unwrap() = Some("old".into());
+        shared.tool_calls.lock().unwrap().owner = Some("old".into());
+        pi_event(
+            &events,
+            "pi",
+            "session",
+            &shared,
+            json!({"type":"tool_execution_start","toolCallId":"reused","toolName":"bash","args":{"command":"old"}}),
+        );
+        assert_eq!(
+            receiver.try_recv().unwrap().data["part"]["data"]["args"]["command"],
+            "old"
+        );
+        assert!(pi_clear_active_turn(&shared, "old"));
+        {
+            let mut active = shared.active_turn.lock().unwrap();
+            let mut calls = shared.tool_calls.lock().unwrap();
+            calls.owner = Some("new".into());
+            *active = Some("new".into());
+        }
+        pi_emit_tool_call(
+            &events,
+            "pi",
+            "session",
+            None,
+            &shared,
+            "old",
+            json!({"type":"tool_execution_end","toolCallId":"reused","result":{"content":[{"type":"text","text":"old result"}]},"isError":true}),
+        );
+        assert!(
+            receiver.try_recv().is_err(),
+            "a late old-turn result must be fenced"
+        );
+        pi_event(
+            &events,
+            "pi",
+            "session",
+            &shared,
+            json!({"type":"tool_execution_start","toolCallId":"reused","toolName":"bash","args":{"command":"new"}}),
+        );
+        let new_start = receiver.try_recv().unwrap();
+        assert_eq!(new_start.data["part"]["data"]["args"]["command"], "new");
+        pi_event(
+            &events,
+            "pi",
+            "session",
+            &shared,
+            json!({"type":"tool_execution_update","toolCallId":"reused","partialResult":{"content":[{"type":"text","text":"progress"}]}}),
+        );
+        let sparse = receiver.try_recv().unwrap();
+        assert_eq!(sparse.data["part"]["toolName"], "bash");
+        assert_eq!(sparse.data["part"]["data"]["args"]["command"], "new");
+        pi_event(
+            &events,
+            "pi",
+            "session",
+            &shared,
+            json!({"type":"tool_execution_end","toolCallId":"reused","result":{"content":[{"type":"text","text":"failed output"}]},"isError":true}),
         );
         let failed = receiver.try_recv().unwrap();
         assert_eq!(failed.data["part"]["status"], "failed");
+        assert_eq!(failed.data["part"]["toolName"], "bash");
+        assert_eq!(failed.data["part"]["data"]["args"]["command"], "new");
+        assert_eq!(
+            failed.data["part"]["data"]["result"]["content"][0]["text"],
+            "failed output"
+        );
+        assert!(shared.tool_calls.lock().unwrap().calls.is_empty());
+    }
+
+    #[test]
+    fn pi_tool_cache_is_bounded_per_active_turn() {
+        let (sender, mut receiver) = tap_channel(PI_TOOL_CALL_LIMIT + 1);
+        let events = ScopedProviderEvents::new(sender, "worker");
+        let shared = PiShared::default();
+        *shared.active_turn.lock().unwrap() = Some("turn".into());
+        shared.tool_calls.lock().unwrap().owner = Some("turn".into());
+        for index in 0..=PI_TOOL_CALL_LIMIT {
+            let id = format!("call-{index}");
+            pi_emit_tool_call(
+                &events,
+                "pi",
+                "session",
+                None,
+                &shared,
+                "turn",
+                json!({"type":"tool_execution_start","toolCallId":id,"toolName":"bash","args":{"command":"echo"}}),
+            );
+        }
+        assert_eq!(
+            shared.tool_calls.lock().unwrap().calls.len(),
+            PI_TOOL_CALL_LIMIT
+        );
+        let mut emitted = 0;
+        while receiver.try_recv().is_ok() {
+            emitted += 1;
+        }
+        assert_eq!(
+            emitted,
+            PI_TOOL_CALL_LIMIT + 1,
+            "cache pressure must not hide tool calls"
+        );
+        assert!(pi_clear_active_turn(&shared, "turn"));
+        assert!(shared.tool_calls.lock().unwrap().calls.is_empty());
     }
 
     #[test]
