@@ -31,15 +31,16 @@
 .settings-drawer .paired-device > div { min-width: 0; }
 .settings-drawer .settings-actions { display: flex; gap: 8px; flex-wrap: wrap; }
 .usage-details { min-height: 0; display: flex; flex-direction: column; }
-.usage-details .sheet-filters { display: flex; flex-direction: column; gap: 8px; padding: 10px 0; border-bottom: 1px solid color-mix(in srgb, var(--border) 70%, transparent); }
-.usage-details .sheet-chip-row { display: flex; gap: 4px; flex-wrap: wrap; }
-.usage-details .sheet-chip { height: 24px; padding: 0 9px; border: 1px solid var(--border); border-radius: 999px; background: var(--bg); color: var(--muted); font-size: 11px; }
+.usage-details .sheet-filters { box-sizing: border-box; display: flex; flex-direction: column; gap: 12px; padding: 12px 16px; border-bottom: 1px solid color-mix(in srgb, var(--border) 70%, transparent); }
+.usage-details .sheet-chip-row { display: flex; gap: 8px; flex-wrap: wrap; }
+.usage-details .sheet-chip { height: 28px; padding: 0 10px; border: 1px solid var(--border); border-radius: 999px; background: var(--bg); color: var(--muted); font-size: 12px; }
 .usage-details .sheet-chip[aria-pressed=true] { background: var(--primary); border-color: var(--primary); color: #fff; }
-.usage-details .sheet-filter-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 6px; }
-.usage-details .sheet-filter-grid .tt-select { min-width: 0; height: 28px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg); color: inherit; font-size: 11px; }
-.usage-details .sheet-filter-grid .tt-select-trigger { min-height: 26px; padding: 0 7px; }
+.usage-details .sheet-filter-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(120px, 100%), 1fr)); gap: 8px; }
+.usage-details .sheet-filter-grid .tt-select { display: flex; width: 100%; min-width: 0; height: 32px; min-height: 32px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg); color: inherit; font-size: 12px; }
+.usage-details .sheet-filter-grid .tt-select-trigger { height: 32px; min-height: 32px; padding: 0 9px; font-size: 12px; }
 .usage-details .sheet-scroll { min-height: 0; padding-top: 12px; }
 .usage-details .usage-detail-grid { display: grid; grid-template-columns: minmax(0, 1fr) 180px; gap: 16px; }
+.usage-details .usage-detail-grid > * { min-width: 0; }
 .usage-details .usage-rank { border-left: 1px solid var(--border); padding-left: 14px; }
 .usage-details .usage-rank ol { margin: 0; padding: 0; list-style: none; }
 .usage-details .usage-rank li { display: flex; justify-content: space-between; gap: 8px; padding: 6px 0; border-bottom: 1px solid color-mix(in srgb, var(--border) 55%, transparent); font-size: 11px; }
@@ -50,7 +51,7 @@
 .usage-details .usage-pricing textarea { width: 100%; margin: 4px 0 8px; }
 .usage-details .page-actions { display: flex; align-items: center; gap: 6px; margin-top: 12px; }
 .usage-details .sheet-foot-meta { margin-right: auto; font-size: 11px; color: var(--muted); }
-@media (max-width: 720px) { .usage-details .sheet-filter-grid { grid-template-columns: 1fr 1fr; } .usage-details .usage-detail-grid { grid-template-columns: 1fr; } .usage-details .usage-rank { border-left: 0; border-top: 1px solid var(--border); padding: 12px 0 0; } }
+@media (max-width: 720px) { .usage-details .usage-detail-grid { grid-template-columns: minmax(0, 1fr); } .usage-details .usage-rank { border-left: 0; border-top: 1px solid var(--border); padding: 12px 0 0; } }
 /* Settings is a dialog, not a page: sized for its longest tab without filling a 1080p screen. */
 .settings-drawer .settings-panel { width:min(820px, 100%); height:min(640px, 100%); }
 .settings-drawer header .settings-close { flex:0 0 auto; }
