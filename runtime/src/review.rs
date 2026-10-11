@@ -442,7 +442,10 @@ pub fn capture_before_turn(
     operation_id: &str,
     text: &str,
 ) -> Option<String> {
-    capture(
+    let trace_timer = crate::send_trace::Timer::start();
+    crate::send_trace::emit(crate::send_trace::Event::new("review.checkpoint.begin")
+        .operation_id(operation_id).session_id(session_id).method("chat.send"));
+    let checkpoint = capture(
         db,
         session_id,
         "turn",
@@ -450,7 +453,12 @@ pub fn capture_before_turn(
         Some(text),
         TURN_BUDGET,
     )
-    .ok()
+    .ok();
+    crate::send_trace::emit(crate::send_trace::Event::new("review.checkpoint.end")
+        .operation_id(operation_id).session_id(session_id).method("chat.send")
+        .outcome(if checkpoint.is_some() { "captured" } else { "unavailable" })
+        .duration_us(trace_timer.elapsed_us()));
+    checkpoint
 }
 
 /// Attaches the provider turn id once `chat.send` has returned one.
