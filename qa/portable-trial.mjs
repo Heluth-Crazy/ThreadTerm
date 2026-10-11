@@ -6,6 +6,8 @@
 import assert from 'node:assert/strict';
 import { createHash, createHmac, randomUUID } from 'node:crypto';
 import { once } from 'node:events';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 import { access, mkdtemp, mkdir, readFile, realpath, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -117,6 +119,32 @@ try {
  const sourceIcon=page.locator('.brand-mark img');
  await sourceIcon.waitFor({state:'visible'});
  assert.equal(await sourceIcon.evaluate(image=>image instanceof HTMLImageElement&&image.complete&&image.naturalWidth>0),true,'packaged source icon must render');
+ if(process.platform==='win32') {
+  const readProperties=async handle=>{
+   const {stdout}=await promisify(execFile)(join(process.env.SystemRoot??'C:\\Windows','System32','WindowsPowerShell','v1.0','powershell.exe'),['-NoProfile','-ExecutionPolicy','Bypass','-File',join(root,'qa','lib','windows-taskbar-properties.ps1'),'-Hwnd',handle],{windowsHide:true,timeout:20_000});
+   const properties=JSON.parse(stdout.trim());
+   assert.equal(properties.appId,'com.threadterm.v3','packaged taskbar identity must match the existing installer identity');
+   assert.equal(properties.icon,`${executable},0`,'taskbar group icon must reference this exact running executable');
+   assert.equal(properties.command,'','icon metadata must not introduce a relaunch command');
+   return properties;
+  };
+  const mainHandle=await app.evaluate(({BrowserWindow})=>BrowserWindow.getAllWindows()[0].getNativeWindowHandle().readBigUInt64LE().toString());
+  report.mainTaskbarProperties=await readProperties(mainHandle);
+  const floatingPromise=app.waitForEvent('window');
+  await page.evaluate(()=>window.threadterm.openWindow({}));
+  const floatingPage=await floatingPromise;
+  await floatingPage.waitForFunction(()=>Boolean(window.threadterm));
+  const floatHandle=await app.evaluate(({BrowserWindow},excludedHandle)=>BrowserWindow.getAllWindows().find(window=>window.getNativeWindowHandle().readBigUInt64LE().toString()!==excludedHandle)?.getNativeWindowHandle().readBigUInt64LE().toString(),mainHandle);
+  assert.ok(floatHandle,'the existing floating-window route must create another window');
+  report.floatingTaskbarProperties=await readProperties(floatHandle);
+  const floatingClosed=floatingPage.waitForEvent('close');
+  await floatingPage.evaluate(()=>window.threadterm.windowAction('close')).catch(error=>{
+   if(!/Target page, context or browser has been closed/.test(String(error))) throw error;
+  });
+  await floatingClosed;
+  await page.waitForFunction(()=>Boolean(window.threadterm));
+  report.checks.push('main and floating windows expose the exact packaged AppUserModelID and current EXE taskbar icon; closing the float preserves main');
+ }
  await page.screenshot({path:join(out,'catalog-source-icon.png'),fullPage:true}); report.screenshots.push('catalog-source-icon.png');
  report.checks.push('production preload/main routed project.add and filesystem.read to the actual packaged Rust runtime; the source file contents and visible source icon were verified');
  report.passed=true;
