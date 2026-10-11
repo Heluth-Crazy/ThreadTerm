@@ -15,6 +15,7 @@ mod grok;
 mod kimi_plan_usage;
 pub(crate) mod network;
 mod opencode;
+mod pi;
 
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -146,6 +147,7 @@ pub(crate) const BUILTIN_AGENTS: &[BuiltinDescriptor] = &[
     BuiltinDescriptor { id: "kimi", name: "Kimi", sign_in_args: &["login"] },
     BuiltinDescriptor { id: "opencode", name: "OpenCode", sign_in_args: &["providers", "login"] },
     BuiltinDescriptor { id: "grok", name: "Grok", sign_in_args: &[] },
+    BuiltinDescriptor { id: "pi", name: "Pi", sign_in_args: &[] },
 ];
 
 pub(crate) fn builtin_name(id: &str) -> &str {
@@ -745,6 +747,7 @@ impl Providers {
             Arc::new(acp::AcpAdapter::kimi(events.clone())),
             Arc::new(opencode::OpenCodeAdapter::new(events.clone())),
             Arc::new(grok::GrokAdapter::new(events.clone(), network.clone())),
+            Arc::new(pi::PiAdapter::new(events.clone())),
         ];
         Self::from_adapters(events, projection_events, adapters, network)
     }
@@ -1688,7 +1691,7 @@ mod registry_cleanup_tests {
     #[test]
     fn every_production_adapter_fences_late_events_after_reconnect_and_stop() {
         let providers = Providers::new();
-        assert_eq!(providers.adapters.read().unwrap().len(), 6);
+        assert_eq!(providers.adapters.read().unwrap().len(), 7);
         let mut receiver = providers.events.subscribe();
         for (provider, adapter) in providers.adapters.read().unwrap().iter() {
             assert!(

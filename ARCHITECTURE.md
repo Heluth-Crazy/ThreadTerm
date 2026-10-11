@@ -14,7 +14,7 @@ Control request: {v:1,id:string,method:string,params:object}; response {v:1,id,r
 
 Output connection authenticates with same JSON framing first. Binary frames payload: u8 kind (1 output,2 credit,3 subscribe,4 gap), u32 header length, UTF8 JSON header, bytes. Header {sessionId,cursor?,credit?}. Cursor is absolute byte offset; bounded replay reports gaps explicitly. Hidden views cannot block PTY drain. Runtime stores batched output chunks; use credits per subscription. Define exact implementation additions in protocol before consumers diverge.
 
-Canonical entities use camelCase JSON: Project {id,name,path,createdAt}; Session {id,projectId?,worktreePath?,title,provider,mode,status,createdAt,updatedAt,nativeId?,exitCode?,followed?}; provider is codex|claude|kimi|gemini|opencode|shell|grok|custom. mode terminal|chat; status starting|running|idle|waiting|exited|interrupted|error. IDs UUID, timestamps UTC ISO strings. Session id distinct from native session identity. Settings JSON revisioned in DB.
+Canonical entities use camelCase JSON: Project {id,name,path,createdAt}; Session {id,projectId?,worktreePath?,title,provider,mode,status,createdAt,updatedAt,nativeId?,exitCode?,followed?}; provider is codex|claude|kimi|gemini|opencode|grok|pi|shell|custom. mode terminal|chat; status starting|running|idle|waiting|exited|interrupted|error. IDs UUID, timestamps UTC ISO strings. Session id distinct from native session identity. Settings JSON revisioned in DB.
 
 Initial methods (params -> result):
 - runtime.health {} -> {version,epoch}; runtime.snapshot {} -> snapshot

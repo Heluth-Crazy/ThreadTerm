@@ -1,6 +1,6 @@
 import type { ProviderCapability, ProviderId } from "@threadterm/protocol";
 
-const builtinOrder = ["codex", "claude", "kimi", "gemini", "opencode", "grok"];
+const builtinOrder = ["codex", "claude", "kimi", "gemini", "opencode", "grok", "pi"];
 
 export function agentName(id: string, capabilities: readonly ProviderCapability[] = []): string {
   const name = capabilities.find(capability => capability.id === id)?.name;

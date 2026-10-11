@@ -194,7 +194,7 @@ export interface ChatQuestion {
 export interface ChatFormField {
  id:string; title?:string; description?:string;
  type:'string'|'number'|'integer'|'boolean'|'enum'|'multiEnum'; required:boolean;
- options?:{value:string;label:string}[]; default?:unknown; secret?:boolean;
+ options?:{value:string;label:string}[]; default?:unknown; secret?:boolean; multiline?:boolean;
  minimum?:number; maximum?:number; minLength?:number; maxLength?:number;
  minItems?:number; maxItems?:number; format?:'email'|'uri'|'date'|'date-time';
 }

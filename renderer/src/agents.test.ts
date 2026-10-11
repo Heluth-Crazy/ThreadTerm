@@ -6,9 +6,9 @@ import { agentIds, agentName } from "./agents";
 const capability = (id: string, name = ""): ProviderCapability => ({ id, name, installed: true, terminal: true, chat: true, history: true, resume: true });
 
 test("orders registered built-ins before plugin agents by display name without mutating capabilities", () => {
-  const providers = [capability("z-agent", "Alpha"), capability("custom"), capability("grok"), capability("opencode"), capability("gemini"), capability("shell"), capability("kimi"), capability("claude"), capability("codex"), capability("a-agent", "Zulu")];
+  const providers = [capability("z-agent", "Alpha"), capability("custom"), capability("grok"), capability("opencode"), capability("gemini"), capability("shell"), capability("kimi"), capability("claude"), capability("codex"), capability("pi"), capability("a-agent", "Zulu")];
   const before = [...providers];
-  assert.deepEqual(agentIds(providers), ["codex", "claude", "kimi", "gemini", "opencode", "grok", "z-agent", "a-agent"]);
+  assert.deepEqual(agentIds(providers), ["codex", "claude", "kimi", "gemini", "opencode", "grok", "pi", "z-agent", "a-agent"]);
   assert.deepEqual(providers, before);
   assert.deepEqual(agentIds([]), []);
   assert.deepEqual(agentIds([capability("echo"), capability("echo")]), ["echo"]);
@@ -20,6 +20,7 @@ test("uses capability names and keeps known and unknown name fallbacks", () => {
   assert.equal(agentName("claude", [capability("claude", "  ")]), "Claude Code");
   assert.equal(agentName("opencode"), "OpenCode");
   assert.equal(agentName("codex"), "Codex");
+  assert.equal(agentName("pi"), "Pi");
   assert.equal(agentName("new-agent"), "New-agent");
   assert.equal(agentName(""), "");
 });
