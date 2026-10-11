@@ -23,6 +23,19 @@ pub(crate) const MAX_TEXT_BYTES: usize = 1024 * 1024;
 const MAX_LOG_PAGE: usize = 200;
 const ZERO_COMMIT: &str = "0000000000000000000000000000000000000000";
 
+fn send_trace_git_step(args: &[&str]) -> &'static str {
+    match args.first().copied() {
+        Some("rev-parse") => "rev-parse",
+        Some("status") => "status",
+        Some("update-index") => "update-index",
+        Some("write-tree") => "write-tree",
+        Some("cat-file") => "cat-file",
+        Some("diff") => "diff",
+        Some("ls-files") => "ls-files",
+        _ => "other",
+    }
+}
+
 /// Runs Git with a hard timeout, no terminal prompt and no optional index locks.
 /// Returns stdout bytes; a non-zero exit becomes `git_failed: <stderr>`.
 pub(crate) fn run_git(
@@ -55,7 +68,19 @@ pub(crate) fn run_git(
         use std::os::windows::process::CommandExt;
         command.creation_flags(0x0800_0000);
     }
-    let mut child = command.spawn().context("launching git")?;
+    let trace_step = send_trace_git_step(args);
+    let trace_timer = crate::send_trace::Timer::start();
+    crate::send_trace::emit(crate::send_trace::Event::new("review.git.spawn")
+        .method("chat.send").step(trace_step));
+    let mut child = match command.spawn().context("launching git") {
+        Ok(child) => child,
+        Err(error) => {
+            crate::send_trace::emit(crate::send_trace::Event::new("review.git.exit")
+                .method("chat.send").step(trace_step).outcome("launch_error")
+                .duration_us(trace_timer.elapsed_us()));
+            return Err(error);
+        }
+    };
     if let Some(input) = stdin {
         let mut pipe = child.stdin.take().ok_or_else(|| anyhow!("git_failed"))?;
         let data = input.to_vec();
@@ -77,14 +102,24 @@ pub(crate) fn run_git(
     });
     let deadline = Instant::now() + timeout;
     let status = loop {
-        if let Some(status) = child.try_wait()? {
-            break status;
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) => {}
+            Err(error) => {
+                crate::send_trace::emit(crate::send_trace::Event::new("review.git.exit")
+                    .method("chat.send").step(trace_step).outcome("error")
+                    .duration_us(trace_timer.elapsed_us()));
+                return Err(error.into());
+            }
         }
         if Instant::now() >= deadline {
             let _ = child.kill();
             let _ = child.wait();
             // Reader threads are detached: a grandchild (ssh, credential helper)
             // may keep the pipes open after Git itself is gone.
+            crate::send_trace::emit(crate::send_trace::Event::new("review.git.exit")
+                .method("chat.send").step(trace_step).outcome("timeout")
+                .duration_us(trace_timer.elapsed_us()));
             return Err(anyhow!("git_timeout"));
         }
         std::thread::sleep(Duration::from_millis(5));
@@ -92,11 +127,17 @@ pub(crate) fn run_git(
     let stdout = out.join().unwrap_or_default();
     let stderr = err.join().unwrap_or_default();
     if !status.success() {
+        crate::send_trace::emit(crate::send_trace::Event::new("review.git.exit")
+            .method("chat.send").step(trace_step).outcome("error")
+            .duration_us(trace_timer.elapsed_us()));
         return Err(anyhow!(
             "git_failed: {}",
             String::from_utf8_lossy(&stderr).trim()
         ));
     }
+    crate::send_trace::emit(crate::send_trace::Event::new("review.git.exit")
+        .method("chat.send").step(trace_step).outcome("ok")
+        .duration_us(trace_timer.elapsed_us()));
     Ok(stdout)
 }
 

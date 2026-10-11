@@ -134,6 +134,11 @@ pub(crate) fn send_chat_message(
     images: &[String],
     operation_id: &str,
 ) -> Result<Value> {
+    let _trace_context = crate::send_trace::Context::capture(None, Some(operation_id), Some(session_id))
+        .map(crate::send_trace::Context::enter);
+    let _trace_span = crate::send_trace::Span::begin(
+        "service.chat_send.begin", "service.chat_send.end", "chat.send",
+    );
     db.require_interactive(session_id)?;
     if !providers.chat_is_open(session_id) {
         return Err(anyhow::anyhow!("chat_not_open"));
@@ -175,7 +180,15 @@ pub(crate) fn send_chat_message(
     if let Some(checkpoint) = &checkpoint {
         crate::review::attach_turn(db, checkpoint, result.get("turnId").and_then(Value::as_str));
     }
-    db.complete_operation(operation_id, "chat.send", &result)?;
+    let completion_timer = crate::send_trace::Timer::start();
+    crate::send_trace::emit(crate::send_trace::Event::new("persistence.complete.begin")
+        .method("chat.send"));
+    let completion = db.complete_operation(operation_id, "chat.send", &result);
+    crate::send_trace::emit(crate::send_trace::Event::new("persistence.complete.end")
+        .method("chat.send")
+        .outcome(if completion.is_ok() { "ok" } else { "error" })
+        .duration_us(completion_timer.elapsed_us()));
+    completion?;
     Ok(result)
 }
 

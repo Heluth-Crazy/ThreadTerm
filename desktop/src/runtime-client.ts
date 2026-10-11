@@ -1,7 +1,7 @@
 import { createHash, createHmac, randomUUID, timingSafeEqual } from 'node:crypto';
 import { execFile, type ChildProcess } from 'node:child_process';
-import { existsSync, readFileSync } from 'node:fs';
-import { platform, env } from 'node:process';
+import { appendFile, existsSync, readFile, readFileSync } from 'node:fs';
+import { platform, env, hrtime } from 'node:process';
 import { join, resolve } from 'node:path';
 import net from 'node:net';
 import { app } from 'electron';
@@ -27,6 +27,116 @@ const RUNTIME_READY_TIMEOUT_MS = 12_000;
 const RETRY_DELAY_MS = 400;
 const INITIAL_OUTPUT_CREDIT = 64 * 1024;
 const MAX_OUTPUT_CREDIT = 8 * 1024 * 1024;
+const SEND_TRACE_ENV = 'THREADTERM_V3_SEND_TRACE';
+const MAX_CORRELATION_ID_LENGTH = 128;
+const MAX_PENDING_SEND_TRACE_RECORDS = 256;
+
+type SendTraceMethod = 'chat.send' | 'chat.draft.save';
+interface SendTraceContext {
+  requestId: string;
+  operationId?: string;
+  sessionId?: string;
+  method: SendTraceMethod;
+  started: bigint;
+}
+
+let sendTraceOrigin: bigint | undefined;
+const pendingSendTraceRecords: string[] = [];
+let sendTraceWriteActive = false;
+let sendTracePathResolving = false;
+let sendTraceLogPath: string | undefined;
+
+function resolveSendTraceLogPath(): void {
+  if (sendTraceLogPath || sendTracePathResolving) return;
+  try {
+    if (env.THREADTERM_V3_DATA) {
+      sendTraceLogPath = join(env.THREADTERM_V3_DATA, 'runtime.log');
+      drainSendTraceRecords();
+      return;
+    }
+    sendTracePathResolving = true;
+    readFile(join(app.getPath('userData'), 'runtime-data-root.json'), 'utf8', (_error, contents) => {
+      try {
+        let root: string | undefined;
+        try {
+          const value = JSON.parse(contents) as unknown;
+          if (isRecord(value) && typeof value.root === 'string' && value.root) root = value.root;
+        } catch {}
+        const dataRoot = root || join(env.LOCALAPPDATA || env.APPDATA || app.getPath('appData'), 'ThreadTermV3');
+        sendTraceLogPath = join(dataRoot, 'runtime.log');
+      } catch {
+        pendingSendTraceRecords.length = 0;
+      }
+      sendTracePathResolving = false;
+      if (sendTraceLogPath && pendingSendTraceRecords.length) drainSendTraceRecords();
+    });
+  } catch {
+    sendTracePathResolving = false;
+    pendingSendTraceRecords.length = 0;
+  }
+}
+
+function drainSendTraceRecords(): void {
+  if (sendTraceWriteActive) return;
+  if (!sendTraceLogPath) { resolveSendTraceLogPath(); return; }
+  const line = pendingSendTraceRecords.shift();
+  if (!line) return;
+  sendTraceWriteActive = true;
+  try {
+    appendFile(sendTraceLogPath, line, 'utf8', () => {
+      sendTraceWriteActive = false;
+      drainSendTraceRecords();
+    });
+  } catch {
+    sendTraceWriteActive = false;
+    pendingSendTraceRecords.length = 0;
+  }
+}
+
+function sendTraceMethod(method: string): SendTraceMethod | undefined {
+  if (env[SEND_TRACE_ENV] !== '1') return undefined;
+  if (method === 'chat.send' || method === 'chat.draft.save') return method;
+  return undefined;
+}
+
+function safeCorrelationId(value: unknown): string | undefined {
+  return typeof value === 'string'
+    && value.length > 0
+    && value.length <= MAX_CORRELATION_ID_LENGTH
+    && /^[A-Za-z0-9_.:-]+$/.test(value)
+    ? value
+    : undefined;
+}
+
+/**
+ * Appends to the existing readable runtime log. Each process owns a separate
+ * monotonic clock; correlate records by ID and compare durations, never clocks.
+ */
+function emitSendTrace(
+  stage: 'desktop.request.begin' | 'desktop.request.write' | 'desktop.request.end',
+  context: SendTraceContext,
+  outcome?: 'ok' | 'error',
+): void {
+  if (env[SEND_TRACE_ENV] !== '1') return;
+  const now = hrtime.bigint();
+  sendTraceOrigin ??= now;
+  const record = {
+    kind: 'threadterm.sendTrace',
+    schema: 1,
+    source: 'desktop',
+    monotonicUs: Number((now - sendTraceOrigin) / 1_000n),
+    stage,
+    requestId: context.requestId,
+    ...(context.operationId ? { operationId: context.operationId } : {}),
+    ...(context.sessionId ? { sessionId: context.sessionId } : {}),
+    method: context.method,
+    ...(outcome ? { outcome } : {}),
+    durationUs: Number((now - context.started) / 1_000n),
+  };
+  if (pendingSendTraceRecords.length >= MAX_PENDING_SEND_TRACE_RECORDS) return;
+  pendingSendTraceRecords.push(`${JSON.stringify(record)}\n`);
+  drainSendTraceRecords();
+}
 
 interface PendingRuntimeStartup { child: ChildProcess }
 const pendingRuntimeStartups = new Map<string, Set<PendingRuntimeStartup>>();
@@ -173,15 +283,35 @@ export class RuntimeClient {
     this.assertOpen();
     const id = randomUUID();
     const message: ControlRequest = { v: PROTOCOL_VERSION, id, method, params: params as Record<string, unknown> };
-    return new Promise<RequestResult<M>>((resolvePromise, reject) => {
+    const tracedMethod = sendTraceMethod(method);
+    const trace = tracedMethod ? {
+      requestId: id,
+      operationId: safeCorrelationId(message.params.operationId),
+      sessionId: safeCorrelationId(message.params.sessionId),
+      method: tracedMethod,
+      started: hrtime.bigint(),
+    } satisfies SendTraceContext : undefined;
+    if (trace) emitSendTrace('desktop.request.begin', trace);
+    const response = new Promise<RequestResult<M>>((resolvePromise, reject) => {
       const timer = setTimeout(() => {
         this.pending.delete(id);
         reject(new RuntimeUnavailableError(`Runtime request ${method} timed out`));
       }, 30_000);
       this.pending.set(id, { method, resolve: resolvePromise as (value: unknown) => void, reject, timer });
-      try { this.control?.write(Buffer.from(JSON.stringify(message), 'utf8')); }
+      try {
+        this.control?.write(Buffer.from(JSON.stringify(message), 'utf8'));
+        if (trace) emitSendTrace('desktop.request.write', trace);
+      }
       catch (error) { clearTimeout(timer); this.pending.delete(id); reject(asError(error)); }
     });
+    try {
+      const result = await response;
+      if (trace) emitSendTrace('desktop.request.end', trace, 'ok');
+      return result;
+    } catch (error) {
+      if (trace) emitSendTrace('desktop.request.end', trace, 'error');
+      throw error;
+    }
   }
 
   onEvent(listener: (event: RuntimeEvent) => void): () => void { this.eventListeners.add(listener); return () => this.eventListeners.delete(listener); }

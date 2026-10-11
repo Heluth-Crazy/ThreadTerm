@@ -834,7 +834,14 @@ impl JsonLineProcess {
     }
 
     fn write(&self, frame: Value) -> Result<(), ProviderError> {
-        write_stdin(&self.stdin, &self.label, frame)
+        let trace_timer = crate::send_trace::Timer::start();
+        crate::send_trace::emit(crate::send_trace::Event::new("native.stdin_write.begin").method("chat.send"));
+        let result = write_stdin(&self.stdin, &self.label, frame);
+        crate::send_trace::emit(crate::send_trace::Event::new("native.stdin_write.end")
+            .method("chat.send")
+            .outcome(if result.is_ok() { "ok" } else { "error" })
+            .duration_us(trace_timer.elapsed_us()));
+        result
     }
 }
 

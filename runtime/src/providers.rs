@@ -869,9 +869,21 @@ impl Providers {
         // Hold the registry lock only long enough to clone the per-session
         // handle. A slow provider call must not block unrelated sessions.
         let chat = self.worker_handle(session_id)?;
-        let mut chat = chat
-            .lock()
-            .map_err(|_| ProviderError::new("provider_internal", "session worker lock poisoned"))?;
+        let lock_timer = crate::send_trace::Timer::start();
+        crate::send_trace::emit(crate::send_trace::Event::new("provider.worker_lock.begin")
+            .method("chat.send"));
+        let mut chat = match chat.lock() {
+            Ok(chat) => chat,
+            Err(_) => {
+                crate::send_trace::emit(crate::send_trace::Event::new("provider.worker_lock.end")
+                    .method("chat.send").outcome("error")
+                    .duration_us(lock_timer.elapsed_us()));
+                return Err(ProviderError::new("provider_internal", "session worker lock poisoned"));
+            }
+        };
+        crate::send_trace::emit(crate::send_trace::Event::new("provider.worker_lock.end")
+            .method("chat.send").outcome("ok")
+            .duration_us(lock_timer.elapsed_us()));
         call(chat.as_mut())
     }
 
@@ -966,14 +978,32 @@ impl Providers {
                 "Chat message cannot be empty",
             ));
         }
+        let _trace_context = crate::send_trace::Context::capture(None, Some(operation_id), Some(session_id))
+            .map(crate::send_trace::Context::enter);
         // Serialize validation, persistence and dispatch with other writes to
         // this worker. A rejected local command must not become the UI's most
         // recent turn or complete the active reply's streaming parts.
         let result = self.chat(session_id, |chat| {
             chat.validate_send(text)?;
             chat.validate_send_with_images(text, images)?;
-            record()?;
-            chat.send_with_images(text, images, operation_id)
+            let record_timer = crate::send_trace::Timer::start();
+            crate::send_trace::emit(crate::send_trace::Event::new("persistence.record.begin")
+                .method("chat.send"));
+            let recorded = record();
+            crate::send_trace::emit(crate::send_trace::Event::new("persistence.record.end")
+                .method("chat.send")
+                .outcome(if recorded.is_ok() { "ok" } else { "error" })
+                .duration_us(record_timer.elapsed_us()));
+            recorded?;
+            let handoff_timer = crate::send_trace::Timer::start();
+            crate::send_trace::emit(crate::send_trace::Event::new("provider.handoff.begin")
+                .method("chat.send"));
+            let sent = chat.send_with_images(text, images, operation_id);
+            crate::send_trace::emit(crate::send_trace::Event::new("provider.handoff.end")
+                .method("chat.send")
+                .outcome(if sent.is_ok() { "ok" } else { "error" })
+                .duration_us(handoff_timer.elapsed_us()));
+            sent
         });
         match result {
             Err(error) if error.code == "provider_disconnected" => {

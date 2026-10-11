@@ -10,7 +10,10 @@ use hmac::{Hmac, Mac};
 use rand::RngCore;
 use serde_json::{json, Value};
 use sha2::Sha256;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
+
+#[cfg(windows)]
+use crate::send_trace::{self, Context as SendTraceContext, Event as SendTraceEvent, Timer as SendTraceTimer};
 
 pub const MAX_FRAME: usize = 8 * 1024 * 1024;
 const TERMINAL_HISTORY_GAP: &str = "terminal_history_gap";
@@ -177,6 +180,98 @@ struct Reply {
 }
 
 #[cfg(windows)]
+struct QueuedRequest {
+    request: RpcRequest,
+    queued: Option<SendTraceTimer>,
+}
+
+#[cfg(windows)]
+struct ActiveLaneRequest {
+    request_id: String,
+    method: &'static str,
+}
+
+#[cfg(windows)]
+struct LaneSender {
+    sender: tokio::sync::mpsc::Sender<QueuedRequest>,
+    active: Option<Arc<Mutex<Option<ActiveLaneRequest>>>>,
+    traced: bool,
+}
+
+#[cfg(windows)]
+impl LaneSender {
+    async fn send(
+        &self,
+        request: RpcRequest,
+    ) -> Result<(), tokio::sync::mpsc::error::SendError<QueuedRequest>> {
+        let queued = self.traced.then(SendTraceTimer::start);
+        if self.traced {
+            let mut event = request_trace_event("transport.ordered.enqueue", &request);
+            if let Some(active) = self.active.as_ref()
+                .and_then(|state| state.lock().ok())
+                .and_then(|state| state.as_ref().map(|active| (active.request_id.clone(), active.method)))
+            {
+                event = event.active_request_id(&active.0).active_method(active.1);
+                send_trace::emit(event);
+            } else {
+                send_trace::emit(event);
+            }
+        }
+        self.sender.send(QueuedRequest { request, queued }).await
+    }
+}
+
+#[cfg(windows)]
+fn trace_method(method: &str) -> &'static str {
+    const KNOWN: &[&str] = &[
+        "agentReview.list", "agentReview.mark", "agentReview.start",
+        "catalog.visibility.list", "catalog.visibility.update",
+        "chat.answer", "chat.approve", "chat.cancel", "chat.connect",
+        "chat.connection", "chat.draft.read", "chat.draft.save", "chat.option.set",
+        "chat.options", "chat.queue.add", "chat.queue.move", "chat.queue.pause",
+        "chat.queue.read", "chat.queue.remove", "chat.queue.resume", "chat.queue.send",
+        "chat.queue.update", "chat.read", "chat.repair", "chat.send", "chat.snapshot",
+        "chat.subagent.read", "data.backup", "data.relocation.cancel",
+        "data.relocation.prepare", "data.relocation.status", "data.status", "device.disable",
+        "device.enable", "device.list", "device.pairing.cancel", "device.pairing.create",
+        "device.rename", "device.renew", "device.revoke", "draft.delete", "draft.put",
+        "filesystem.create", "filesystem.delete", "filesystem.image", "filesystem.rename",
+        "filesystem.resolve", "filesystem.write", "git.branch.delete", "git.checkout",
+        "git.commit", "git.commit.selected", "git.discard", "git.fetch", "git.index.write",
+        "git.merge", "git.merge.abort", "git.pull", "git.push", "git.stage", "git.unstage",
+        "history.import", "inbox.read", "plugin.list", "plugin.reload",
+        "plugin.selectBrowserBinding", "plugin.setEnabled", "preset.delete", "preset.list",
+        "preset.save", "project.add", "project.remove", "project.update", "provider.list",
+        "quickLaunch.delete", "quickLaunch.list", "quickLaunch.run", "quickLaunch.save",
+        "quickLaunch.setup.read", "quickLaunch.setup.run", "quickLaunch.setup.save",
+        "quickLaunch.setup.status", "review.checkpoint", "review.revert", "runtime.health",
+        "runtime.shutdown", "runtime.snapshot", "session.attention.acknowledge",
+        "session.config.read", "session.config.save", "session.create", "session.documents.list",
+        "session.documents.pin", "session.documents.unpin", "session.lookup", "session.organize",
+        "session.present", "session.rerun", "session.resume", "session.retry.read",
+        "session.retry.update", "session.stop", "session.update", "settings.export",
+        "settings.import.apply", "settings.import.preview", "settings.update", "terminal.host",
+        "workspace.delete", "workspace.save", "worktree.create", "worktree.list",
+        "worktree.relocate", "worktree.remove",
+    ];
+    KNOWN.iter().copied().find(|known| *known == method).unwrap_or("other")
+}
+
+#[cfg(windows)]
+fn request_trace_event<'a>(stage: &'static str, request: &'a RpcRequest) -> SendTraceEvent<'a> {
+    let mut event = SendTraceEvent::new(stage)
+        .request_id(&request.id)
+        .method(trace_method(&request.method));
+    if let Some(operation_id) = request.params.get("operationId").and_then(Value::as_str) {
+        event = event.operation_id(operation_id);
+    }
+    if let Some(session_id) = request.params.get("sessionId").and_then(Value::as_str) {
+        event = event.session_id(session_id);
+    }
+    event
+}
+
+#[cfg(windows)]
 async fn run_request(
     service: Arc<RuntimeService>,
     principal: String,
@@ -185,7 +280,29 @@ async fn run_request(
 ) -> Reply {
     let id = request.id.clone();
     let is_shutdown = request.method == "runtime.shutdown";
-    let result = tokio::task::spawn_blocking(move || service.dispatch(&principal, request))
+    let is_chat_send = request.method == "chat.send";
+    let trace_context = is_chat_send
+        .then(|| SendTraceContext::capture(
+            Some(&request.id),
+            request.params.get("operationId").and_then(Value::as_str),
+            request.params.get("sessionId").and_then(Value::as_str),
+        ))
+        .flatten();
+    let trace_timer = is_chat_send.then(SendTraceTimer::start);
+    let result = tokio::task::spawn_blocking(move || {
+        let _trace_context = trace_context.map(SendTraceContext::enter);
+        if is_chat_send {
+            send_trace::emit(SendTraceEvent::new("transport.dispatch.begin").method("chat.send"));
+        }
+        let result = service.dispatch(&principal, request);
+        if is_chat_send {
+            send_trace::emit(SendTraceEvent::new("transport.dispatch.end")
+                .method("chat.send")
+                .outcome(if result.is_ok() { "ok" } else { "error" })
+                .duration_us(trace_timer.as_ref().and_then(SendTraceTimer::elapsed_us)));
+        }
+        result
+    })
         .await
         .unwrap_or_else(|_| {
             Err(crate::domain::RpcError {
@@ -220,17 +337,41 @@ fn lane_worker(
     service: Arc<RuntimeService>,
     principal: String,
     replies: tokio::sync::mpsc::UnboundedSender<Reply>,
-) -> tokio::sync::mpsc::Sender<RpcRequest> {
-    let (sender, mut requests) = tokio::sync::mpsc::channel::<RpcRequest>(LANE_QUEUE);
+    traced: bool,
+) -> LaneSender {
+    let (sender, mut requests) = tokio::sync::mpsc::channel::<QueuedRequest>(LANE_QUEUE);
+    let active = (traced && send_trace::enabled())
+        .then(|| Arc::new(Mutex::new(None::<ActiveLaneRequest>)));
+    let worker_active = active.clone();
     tokio::spawn(async move {
-        while let Some(request) = requests.recv().await {
+        while let Some(queued) = requests.recv().await {
+            if let Some(state) = &worker_active {
+                if let Ok(mut active) = state.lock() {
+                    *active = send_trace::safe_correlation_id(&queued.request.id).map(|request_id| {
+                        ActiveLaneRequest {
+                            request_id: request_id.to_owned(),
+                            method: trace_method(&queued.request.method),
+                        }
+                    });
+                }
+            }
+            if traced {
+                send_trace::emit(request_trace_event("transport.ordered.dequeue", &queued.request)
+                    .queue_wait_us(queued.queued.as_ref().and_then(SendTraceTimer::elapsed_us)));
+            }
+            let request = queued.request;
             let reply = run_request(Arc::clone(&service), principal.clone(), request, true).await;
+            if let Some(state) = &worker_active {
+                if let Ok(mut active) = state.lock() {
+                    *active = None;
+                }
+            }
             if replies.send(reply).is_err() {
                 break;
             }
         }
     });
-    sender
+    LaneSender { sender, active, traced }
 }
 
 #[cfg(windows)]
@@ -247,8 +388,8 @@ async fn serve_control(
     let (mut reader, mut writer) = tokio::io::split(pipe);
     let mut decoder = FrameDecoder::default();
     let (replies, mut completed) = tokio::sync::mpsc::unbounded_channel::<Reply>();
-    let ordered = lane_worker(Arc::clone(&service), principal.clone(), replies.clone());
-    let terminal = lane_worker(Arc::clone(&service), principal.clone(), replies.clone());
+    let ordered = lane_worker(Arc::clone(&service), principal.clone(), replies.clone(), true);
+    let terminal = lane_worker(Arc::clone(&service), principal.clone(), replies.clone(), false);
     let reads = Arc::new(tokio::sync::Semaphore::new(MAX_CONCURRENT_READS));
     // Sequenced requests without a reply yet. Events wait for them, as in the old one-at-a-time
     // loop, so a mutation's reply is still written before the events it caused.
@@ -657,6 +798,25 @@ mod decoder_tests {
             "not.a.method",
         ] {
             assert_eq!(request_lane(method), Lane::Ordered, "{method}");
+        }
+    }
+
+    #[test]
+    fn send_trace_classifies_only_fixed_public_ordered_methods() {
+        for known in [
+            "git.fetch",
+            "session.config.save",
+            "chat.queue.add",
+            "review.revert",
+            "agentReview.start",
+            "data.backup",
+        ] {
+            assert_eq!(trace_method(known), known, "{known}");
+        }
+        for private_or_unknown in ["qa.chat.projection.fail", "private.secret", "git.future"] {
+            let classified = trace_method(private_or_unknown);
+            assert_eq!(classified, "other");
+            assert_ne!(classified, private_or_unknown);
         }
     }
 

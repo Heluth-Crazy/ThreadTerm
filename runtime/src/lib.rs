@@ -41,6 +41,7 @@ pub mod session_activity;
 pub mod session_configs;
 pub mod session_metrics;
 pub mod session_documents;
+pub(crate) mod send_trace;
 #[cfg(test)] mod session_documents_tests;
 pub mod settings_services;
 pub mod singleton;
