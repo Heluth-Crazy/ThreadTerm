@@ -5,7 +5,7 @@ import { fileURLToPath } from 'node:url';
 import { release } from 'node:os';
 import { readFileSync, renameSync, writeFileSync, unlinkSync, realpathSync, statSync, mkdirSync } from 'node:fs';
 import { validateRequest, type Method, type RequestParams, type RuntimeEvent } from '@threadterm/protocol';
-import { RuntimeClient, runtimePipeIsOpen } from './runtime-client.js';
+import { RuntimeClient, runtimePipeIsOpen, waitForPendingRuntimeStartup } from './runtime-client.js';
 import { floatIdentity, nextFloatKey, tiledFloatBounds, type FloatMode } from './floatingWindows.js';
 import { nativeDelivery, type NotificationKind } from './notificationPreferences.js';
 import { inboxNotificationCopy, notificationLocale, terminalNotificationCopy, terminalNotificationKind, testNotificationCopy, type InboxNotice, type NotificationLocale } from './inboxNotification.js';
@@ -14,6 +14,7 @@ import { resolveWindowChrome } from './windowChrome.js';
 import { terminalWindowArguments } from './terminalEnvironment.js';
 import { registerPageComments } from './pageComments.js';
 import { applicationIconPng, trayIconPng } from '../assets/icon-data.js';
+import { quitConfirmationOptions } from './quitConfirmation.js';
 
 ignoreBrokenStdio();
 process.on('uncaughtException', (error) => {
@@ -572,28 +573,58 @@ async function requestQuit(): Promise<void> {
   try {
     showMainWindow();
     const runtimeRunning = await runtimePipeIsOpen();
-    const active = runtimeRunning && await hasActiveSessions();
-    if (active) {
-      const options = {
-        type: 'warning',
-        buttons: ['Keep ThreadTerm running', 'Quit application'],
-        defaultId: 0,
-        cancelId: 0,
-        title: 'Sessions are still running',
-        message: 'Quitting will stop all running sessions and the ThreadTerm runtime.',
-        detail: 'Keep ThreadTerm running to leave this work untouched in the background.',
-      } satisfies Electron.MessageBoxOptions;
+    let active = runtimeRunning;
+    let zh = false;
+    const confirm = async () => {
+      const options = quitConfirmationOptions(zh, nativeImage.createFromDataURL(applicationIconPng));
       const result = mainWindow ? await dialog.showMessageBox(mainWindow, options) : await dialog.showMessageBox(options);
-      if (result.response !== 1) return;
+      return result.response === 1;
+    };
+    if (runtimeRunning) {
+      const inspectionClient = new RuntimeClient({ autoLaunch: false });
+      try {
+        const snapshot = await inspectionClient.request('runtime.snapshot', {});
+        zh = notificationLocale(snapshot.settings) === 'zh-CN';
+        active = snapshot.sessions.some(session => ['starting', 'running', 'idle', 'waiting'].includes(session.status));
+      }
+      catch { /* Unknown state still requires confirmation; keep the English fallback. */ }
+      finally { inspectionClient.dispose(); }
     }
+    const confirmed = active && await confirm();
+    if (active && !confirmed) return;
     stoppingRuntime = true;
     // Stop every ordinary client's reconnect/auto-launch before asking the
     // daemon to exit. A dedicated no-launch client owns the final handshake.
-    adminRuntime.setSuspended(true);
-    for (const client of windowRuntimes.values()) client.setSuspended(true);
+    const ordinaryClients = [adminRuntime, ...windowRuntimes.values()];
+    for (const client of ordinaryClients) client.setSuspended(true);
     const shutdownClient = new RuntimeClient({ autoLaunch: false });
     try {
-      if (runtimeRunning) {
+      // A daemon spawned before suspension may not have bound its pipe yet.
+      // Wait only existing attempts, then re-probe; never launch for shutdown.
+      const settleDeadline = Date.now() + 30_000;
+      let settleTimer: ReturnType<typeof setTimeout> | undefined;
+      try {
+        await Promise.race([
+          Promise.all(ordinaryClients.map(client => client.whenConnectionAttemptSettled())),
+          new Promise<never>((_, reject) => { settleTimer = setTimeout(() => reject(new Error('Runtime startup did not settle before shutdown')), 30_000); }),
+        ]);
+      } finally { if (settleTimer) clearTimeout(settleTimer); }
+      await waitForPendingRuntimeStartup(Math.max(1, settleDeadline - Date.now()));
+      const runtimeReady = await runtimePipeIsOpen();
+      if (runtimeReady && !confirmed) {
+        let lateActive = true;
+        try {
+          const snapshot = await shutdownClient.request('runtime.snapshot', {});
+          zh = notificationLocale(snapshot.settings) === 'zh-CN';
+          lateActive = snapshot.sessions.some(session => ['starting', 'running', 'idle', 'waiting'].includes(session.status));
+        } catch { /* Unknown late state requires confirmation as well. */ }
+        if (lateActive && !await confirm()) {
+          stoppingRuntime = false;
+          for (const client of ordinaryClients) client.setSuspended(false);
+          return;
+        }
+      }
+      if (runtimeReady) {
         try { await shutdownClient.request('runtime.shutdown', { operationId: randomUUID() }); }
         finally { shutdownClient.dispose(); }
         const deadline = Date.now() + 12_000;
@@ -608,9 +639,11 @@ async function requestQuit(): Promise<void> {
       for (const client of windowRuntimes.values()) client.setSuspended(false);
       const options = {
         type: 'error',
-        title: 'ThreadTerm could not stop the runtime',
-        message: error instanceof Error ? error.message : 'The runtime did not confirm shutdown.',
-        detail: 'The application remains open so running work is not abandoned without confirmation.',
+        noLink: true,
+        icon: nativeImage.createFromDataURL(applicationIconPng),
+        title: zh ? 'ThreadTerm 未能停止运行时' : 'ThreadTerm could not stop the runtime',
+        message: error instanceof Error ? error.message : zh ? '运行时未确认关闭。' : 'The runtime did not confirm shutdown.',
+        detail: zh ? '应用将保持打开，保留正在运行的工作。' : 'The application remains open to preserve running work.',
       } satisfies Electron.MessageBoxOptions;
       if (mainWindow) await dialog.showMessageBox(mainWindow, options); else await dialog.showMessageBox(options);
       return;
@@ -622,13 +655,6 @@ async function requestQuit(): Promise<void> {
     windowRuntimes.clear();
     app.quit();
   } finally { quitPending = false; }
-}
-
-async function hasActiveSessions(): Promise<boolean> {
-  try {
-    const snapshot = await adminRuntime.request('runtime.snapshot', {});
-    return snapshot.sessions.some((session) => ['starting', 'running', 'idle', 'waiting'].includes(session.status));
-  } catch { return true; } // Unknown runtime state is not evidence that work is safe to stop.
 }
 
 function closeOutputSubscription(id: string): void { const subscription = outputSubscriptions.get(id); if (subscription) { for (const acknowledge of subscription.acknowledgements.splice(0)) acknowledge(); subscription.unsubscribe?.(); } outputSubscriptions.delete(id); }
