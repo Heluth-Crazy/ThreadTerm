@@ -88,7 +88,7 @@ export function SubagentCard({ sessionId, info, copy, zh, renderItem, openFile }
   const label = info.description || (info.provider === 'codex' && info.name?.startsWith('/') ? title : info.name || copy('Subagent', '子代理'));
   const transcriptItems = withoutPromptEcho(items, info.prompt);
   return <article className={`v3-chat-message assistant chat-subagent-card is-${status}`} data-subagent-key={info.key}>
-    <details open={open} onToggle={event => { pin.current = true; setOpen(event.currentTarget.open); }}>
+    <details open={open} onToggle={event => { if (event.target !== event.currentTarget) return; pin.current = true; setOpen(event.currentTarget.open); }}>
       <summary>
         <span className="chat-subagent-heading"><AgentIcon provider={info.provider} size={16} />
           <span className="chat-subagent-description" title={title}>{label}</span>
@@ -116,7 +116,7 @@ export function SubagentCard({ sessionId, info, copy, zh, renderItem, openFile }
           const node = event.currentTarget; pin.current = node.scrollHeight - node.scrollTop - node.clientHeight < 24;
         }}>
           {groupToolActivity(transcriptItems).map(entry => entry.type === 'tools'
-            ? <ToolActivity key={entry.id} entries={entry.tools} active={status === 'running'} provider={info.provider} copy={copy} openFile={openFile} />
+            ? <ToolActivity key={entry.id} entries={entry.tools} active={status === 'running'} provider={info.provider} copy={copy} openFile={openFile} onInspect={() => { pin.current = false; }} />
             : <Fragment key={entry.id}>{renderItem(entry.item, true)}</Fragment>)}
           {!loading && !error && !transcriptItems.length && info.transcript !== 'none' && <p className="chat-subagent-note">{copy('No steps recorded yet.', '尚未记录步骤。')}</p>}
         </div>

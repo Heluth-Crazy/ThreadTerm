@@ -40,6 +40,8 @@ import { contextError } from '../contextErrors';
 import { CHAT_REPAIR_REQUEST, setChatRepairAvailability, type ChatRepairAvailability } from '../chatRepair';
 import { discoveredRepair, discoveryMatches, type RepairDiscovery } from '../chatRepairDiscovery';
 import { SurfaceDialog } from './SurfaceDialog';
+import { useChatViewport } from '../useChatViewport';
+import './chat-viewport.css';
 
 type RepairNotice = { kind: 'rebuilt'; total: number } | { kind: 'unchanged' | 'superseded' | 'failed' };
 
@@ -343,12 +345,7 @@ const optionTitle = (option: ChatSessionOption, copy: (en: string, zh: string) =
 type DraftWriter = ReturnType<typeof createDraftWriter>;
 type ControlToken = { epoch: number; release: () => void; valid: boolean };
 type ChatLifecycle = { sessionId: string; writer?: DraftWriter; control?: ControlToken; flushOnExit?: Promise<void> };
-type LogViewport = { top: number; follow: boolean };
 type FirstResponseWait = { token: string; sessionUpdatedAt: string; turnId?: string };
-// Mirrors the reference's viewport contract: within 24px of the bottom means "follow",
-// otherwise the reader's offset is preserved across transcript updates and session switches.
-const CHAT_FOLLOW_THRESHOLD = 24;
-const chatViewports = new Map<string, LogViewport>();
 
 function hasVisibleAssistantResponse(items: ChatItem[], turnId: string): boolean {
   return items.some(item => item.role === "assistant" && item.turnId === turnId && item.parts.some(shouldRenderPart));
@@ -372,6 +369,7 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession }
   const canControl = chatCanControl(session);
   const ended = isEnded(session);
   const [items, setItems] = useState<ChatItem[]>([]); const [text, setText] = useState(""); const [busy, setBusy] = useState(false); const [error, setError] = useState<string>(); const [controlIssue, setControlIssue] = useState<string>(); const [controllable, setControllable] = useState(false);
+  const [viewportSessionId, setViewportSessionId] = useState<string>();
   const [repair, setRepair] = useState<ChatRepairAvailability>();
   const [repairDiscovery, setRepairDiscovery] = useState<RepairDiscovery>();
   const discoverHistoryRef = useRef<() => void>(() => undefined);
@@ -429,7 +427,7 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession }
   const composeRef = useRef<HTMLTextAreaElement>(null);
   const logRef = useRef<HTMLDivElement>(null);
   const logContentRef = useRef<HTMLDivElement>(null);
-  const followRef = useRef(true);
+  const viewport = useChatViewport(session.id, viewportSessionId === session.id, logRef, logContentRef);
   function clearFirstResponseWait(token?: string) {
     if (token && firstResponseWaitRef.current?.token !== token) return;
     firstResponseWaitRef.current = undefined;
@@ -515,6 +513,7 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession }
       resync = undefined;
       setItems(current => completeResync(completed, session.id, generation, current, transcript) ?? current);
       if (transcript) {
+        setViewportSessionId(session.id);
         setRepair(transcript.repair); setChatRepairAvailability(session.id, repairDescriptionId, transcript.repair);
         if (transcript.repair) {
           ingressWasFailed = Boolean(transcript.repair.ingressFailed); setIngressFailed(ingressWasFailed);
@@ -545,6 +544,7 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession }
       }).catch(() => undefined);
     };
     clearFirstResponseWait();
+    setViewportSessionId(undefined);
     setHistoryIssue(undefined);
     setSubmissionPreview(undefined);
     setItems([]); setText(''); setBusy(false); setQueue(undefined); setDraftLoaded(false); setHistoryLoaded(false); setHistoryFailed(false); setLink(emptyLink(session.id, canControl && !ended ? "connecting" : "unavailable")); setConnectSlow(false); setError(undefined); setRepair(undefined); setRepairDialog(false); setRepairBusy(false); setRepairNotice(undefined); setIngressFailed(false); setRepairFollowup(false); setChatRepairAvailability(session.id, repairDescriptionId, undefined);draftReady.current=false;writer.current=undefined;setDraftFailed(false);setRecovery(undefined);setMenuOpen(null);setApprovalBusy(undefined);
@@ -1003,31 +1003,8 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession }
   }, [text, submissionPreview]);
   useEffect(() => {
     const el = logRef.current;
-    if (!el) return;
-    const saved = chatViewports.get(session.id);
-    followRef.current = saved?.follow ?? true;
-    el.style.overflowAnchor = followRef.current ? 'none' : 'auto';
-    if (!saved || saved.follow) el.scrollTop = el.scrollHeight;
-    else el.scrollTop = saved.top;
-  }, [items, session.id]);
-  useEffect(() => {
-    const el = logRef.current;
-    if (el && followRef.current) el.scrollTop = el.scrollHeight;
+    if (el && viewport.followRef.current) el.scrollTop = el.scrollHeight;
   }, [items, text, firstResponseWait]);
-  useEffect(() => {
-    const log = logRef.current;
-    const content = logContentRef.current;
-    if (!log || !content) return;
-    // Native anchoring is off only while following (set with followRef): its
-    // reflow scroll event would otherwise clear followRef before this observer
-    // can pin the new bottom. A scrolled-up reader keeps anchoring.
-    const observer = new ResizeObserver(() => {
-      if (followRef.current) log.scrollTop = log.scrollHeight;
-    });
-    observer.observe(log);
-    observer.observe(content);
-    return () => observer.disconnect();
-  }, []);
   function renderMenuRows(option: ChatSessionOption) {
     const choices = option.choices.length ? option.choices : [{ value: option.value, name: option.value || copy("Current", "当前") }];
     return choices.map(choice => <button type="button" key={choice.value} role="menuitemradio" aria-checked={choice.value === option.value} className={`chat-menu-item${choice.value === option.value ? " active" : ""}`} disabled={!writable || busy} onClick={() => { setMenuOpen(null); void setOption(option, choice.value); }}>
@@ -1177,21 +1154,15 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession }
       <button type="button" role="menuitem" className="menu-item" onClick={() => { const url = linkMenu.url; setLinkMenu(undefined); void openExternal(url).catch(error => setLinkIssue(String(error))); }}><Icon name="popout" />{copy("Open in browser", "在浏览器中打开")}</button>
       <button type="button" role="menuitem" className="menu-item" onClick={() => { const url = linkMenu.url; setLinkMenu(undefined); void navigator.clipboard.writeText(url).catch(error => setLinkIssue(String(error))); }}><Icon name="export" />{copy("Copy link", "复制链接")}</button>
     </CatalogPopover>}
-    <div className="chat-scroll v3-chat-log" data-chat-log={session.id} ref={logRef} inert={overlay === "full" || undefined} onClick={event => {
+    <div className="chat-log-shell" onKeyDown={viewport.onKeyDown}>
+    <div className="chat-scroll v3-chat-log" data-chat-log={session.id} ref={logRef} tabIndex={0} aria-label={copy('Chat transcript', '聊天记录')} inert={overlay === "full" || undefined} onClickCapture={viewport.pauseForDisclosure} onWheelCapture={viewport.onWheel} onTouchStartCapture={viewport.onTouchStart} onMouseDownCapture={viewport.onPointerDown} onClick={event => {
       // Links never navigate the app window (the desktop blocks that, so they used to do nothing).
       const anchor = event.target instanceof Element ? event.target.closest<HTMLAnchorElement>('a[href]') : null;
       if (!anchor || !event.currentTarget.contains(anchor)) return;
       event.preventDefault();
       const url = anchor.getAttribute('href') ?? '';
       if (isWebTabUrl(url)) { setLinkIssue(undefined); setLinkMenu({ anchor, url }); }
-    }} onScroll={event => {
-      const el = event.currentTarget;
-      const follow = el.scrollHeight - el.scrollTop - el.clientHeight < CHAT_FOLLOW_THRESHOLD;
-      followRef.current = follow;
-      el.style.overflowAnchor = follow ? 'none' : 'auto';
-      if (chatViewports.size > 50) { const oldest = chatViewports.keys().next(); if (!oldest.done) chatViewports.delete(oldest.value); }
-      chatViewports.set(session.id, { top: el.scrollTop, follow });
-    }}><div ref={logContentRef}>{items.length ? groupCodexTranscript(items, session.provider === "codex").map(group => <section className="codex-turn chat-turn" key={group.id}>
+    }} onScroll={viewport.onScroll}><div ref={logContentRef}>{items.length ? groupCodexTranscript(items, session.provider === "codex").map(group => <section className="codex-turn chat-turn" key={group.id}>
       {renderTurn(group)}
     </section>) : firstResponseWait ? null : <div className="empty v3-empty"><strong>{copy('No messages yet.', '暂无消息。')}</strong><p>{copy('Send a message to start working with this provider.', '发送消息，开始与此提供方协作。')}</p></div>}
       {submissionPreview && !items.some(item => item.role === 'user' && item.turnId === submissionPreview.token) && <article className={`v3-chat-message user is-native is-${session.provider} chat-pending-submission`} aria-label={copy('Message being sent', '正在发送的消息')}>
@@ -1202,6 +1173,8 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession }
       </article>}
       {firstResponseWait && <div className="chat-first-response-wait" role="status" aria-live="polite" aria-label={submissionPreview && busy ? copy('Sending…', '正在发送…') : copy("Thinking", "思考中")}><span>{submissionPreview && busy ? copy('Sending…', '正在发送…') : copy("Thinking", "思考中")}</span><span className="chat-first-response-dots" aria-hidden="true"><i /><i /><i /></span></div>}
       </div>
+    </div>
+    {viewport.paused && overlay !== 'full' && <button type="button" className="chat-back-to-bottom" aria-keyshortcuts="Escape" onClick={viewport.followLatest}><Icon name="arrowUp" /><span>{copy('Back to bottom', '返回底部')}</span><kbd aria-hidden="true">Esc</kbd></button>}
     </div>
     {recovery !== undefined && <div role="alert" className="surface-error">
       <p>{copy('An unsaved draft is available on this device.', '此设备上有一份未保存的草稿。')}</p>

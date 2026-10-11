@@ -4,7 +4,7 @@ import { resolve } from 'node:path';
 import test from 'node:test';
 import type { ChatItem, ChatPart } from '@threadterm/protocol';
 import { groupCodexTranscript } from './codexTranscript';
-import { activeToolEntries, completedTurnPresentation, describeTool, groupToolActivity, hiddenQuestionTool, orderCompletedTurnItems, toolActivityWaitingLabel, toolEntriesForItems, toolStatus, withoutToolParts } from './toolActivity';
+import { activeToolEntries, completedTurnPresentation, describeTool, groupToolActivity, hiddenQuestionTool, orderCompletedTurnItems, toolActivityPreview, toolActivityWaitingLabel, toolEntriesForItems, toolOutputPreview, toolStatus, withoutToolParts } from './toolActivity';
 
 const en = (english: string, _zh: string) => english;
 const zh = (_english: string, chinese: string) => chinese;
@@ -191,6 +191,42 @@ test('all provider input shapes describe commands and browser operations without
   assert.equal(describeTool(tool('x', 'mcpToolCall', 'complete', { server: 'custom', tool: 'get_status' }), en).kind, 'mcp');
   assert.equal(describeTool(tool('x', 'mcp__custom__get_execution_history'), en).kind, 'mcp');
   assert.deepEqual(describeTool(tool('x', 'fileChange', 'running', { changes: [{ path: 'a.ts' }, { path: 'b.ts' }] }), en), { kind: 'file', name: 'Files', action: 'Applying changes', detail: 'a.ts (+1)' });
+});
+
+test('Pi args describe live and settled tool calls without treating results as inputs', () => {
+  const running = tool('pi', 'bash', 'running', { args: { command: 'Get-ChildItem' } });
+  const complete = tool('pi', 'bash', 'complete', { args: { command: 'Get-ChildItem' }, result: { content: [{ type: 'text', text: 'one\ntwo' }] } });
+  assert.deepEqual(describeTool(running, en), { kind: 'command', name: 'Command', action: 'Running command', detail: 'Get-ChildItem' });
+  assert.deepEqual(describeTool(complete, en), { kind: 'command', name: 'Command', action: 'Running command', detail: 'Get-ChildItem' });
+  assert.equal(toolOutputPreview(complete), 'two');
+});
+
+test('tool output previews use only provider result fields and normalize the last useful line', () => {
+  const cases: [string, ChatPart, string][] = [
+    ['Pi update', tool('pi-update', 'bash', 'running', { partialResult: { content: [{ type: 'text', text: 'first\npartial result' }] } }), 'partial result'],
+    ['Pi end', tool('pi-end', 'bash', 'complete', { result: { content: [{ type: 'text', text: 'done' }] } }), 'done'],
+    ['Codex', tool('codex', 'commandExecution', 'complete', { aggregatedOutput: '\u001b[32mfirst\nlast\u001b[0m' }), 'last'],
+    ['terminal progress', tool('terminal', 'commandExecution', 'running', { aggregatedOutput: '\u001b]0;title\u0007halfway\rdone' }), 'done'],
+    ['Claude', tool('claude', 'tool_result', 'complete', { content: [{ type: 'text', text: 'Claude result' }] }), 'Claude result'],
+    ['ACP raw', tool('acp-raw', 'Read', 'complete', { rawOutput: { content: [{ type: 'text', text: 'ACP raw result' }] } }), 'ACP raw result'],
+    ['ACP state', tool('acp-state', 'Read', 'complete', { state: { output: 'state result' } }), 'state result'],
+  ];
+  for (const [provider, part, expected] of cases) assert.equal(toolOutputPreview(part), expected, provider);
+  assert.equal(toolOutputPreview(tool('input-only', 'bash', 'running', { args: { command: 'never preview this' }, input: { output: 'also input' } })), undefined);
+  assert.equal(toolOutputPreview(tool('malformed', 'bash', 'complete', { result: { content: [{ type: 'image' }, null, { text: 42 }] } })), undefined);
+  const long = 'x'.repeat(250);
+  assert.equal(toolOutputPreview(tool('long', 'bash', 'complete', { output: long })), `${'x'.repeat(239)}…`);
+});
+
+test('tool activity previews prefer the latest running result then fall back to the newest available output', () => {
+  const entries = toolEntriesForItems([row('tools', [
+    tool('finished', 'bash', 'complete', { result: { content: [{ type: 'text', text: 'finished output' }] } }),
+    tool('running', 'bash', 'running', { args: { command: 'long job' } }),
+  ])]);
+  assert.deepEqual(toolActivityPreview(entries, true), { entryId: entries[0]!.id, text: 'finished output' });
+  const withLiveOutput = [...entries.slice(0, 1), { ...entries[1]!, part: tool('running', 'bash', 'running', { partialResult: { content: [{ type: 'text', text: 'live output' }] } }) }];
+  assert.deepEqual(toolActivityPreview(withLiveOutput, true), { entryId: withLiveOutput[1]!.id, text: 'live output' });
+  assert.deepEqual(toolActivityPreview(entries, false), { entryId: entries[0]!.id, text: 'finished output' });
 });
 
 test('a retracted parent tool snapshot no longer contributes to the drawer', () => {
