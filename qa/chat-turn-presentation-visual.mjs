@@ -22,7 +22,9 @@ const approval = {type:'approval',approvalId:'approval-1',status:'pending',data:
 const plan = {type:'text',status:'complete',text:'Plan usage',data:{kind:'plan',rows:[{label:'Weekly limit',percent:10,reset:'resets in 1d'}]}};
 const live = {id:'live',role:'assistant',turnId:'turn-live',createdAt:'now',parts:[{type:'thinking',text:'Live thinking remains visible',status:'streaming'}]};
 const transcripts = {
-  kimi: [user,{id:'kimi-response',role:'assistant',turnId:'turn-1',createdAt:'now',elapsedMs:7000,parts:[{type:'thinking',text:'Kimi private thought',status:'complete'},text('Final answer'),plan,approval]},live],
+  // Kimi mirrors Codex's tool call so the parity checks below compare the same structure. A provider without a tool
+  // legitimately lays its final reply higher, which is not a presentation difference.
+  kimi: [user,{id:'kimi-tool',role:'assistant',turnId:'turn-1',createdAt:'now',parts:[{type:'tool',toolName:'Read',toolId:'read-1',status:'complete',text:'AGENTS.md'}]},{id:'kimi-response',role:'assistant',turnId:'turn-1',createdAt:'now',elapsedMs:7000,parts:[{type:'thinking',text:'Kimi private thought',status:'complete'},text('Final answer'),plan,approval]},live],
   grok: [user,{id:'grok-response',role:'assistant',turnId:'turn-1',createdAt:'now',elapsedMs:7000,parts:[{type:'thinking',text:'Grok private thought',status:'complete'},text('Final answer'),plan,approval]},live],
   codex: [user,{id:'codex-thought',role:'assistant',turnId:'turn-1',createdAt:'now',parts:[{type:'thinking',text:'Codex private thought',status:'complete'}]},{id:'codex-tool',role:'assistant',turnId:'turn-1',createdAt:'now',parts:[{type:'tool',toolName:'Read',toolId:'read-1',status:'complete',text:'AGENTS.md'}]},{id:'codex-final',role:'assistant',turnId:'turn-1',createdAt:'now',parts:[text('Final answer'),approval]},{id:'codex-completed',role:'assistant',turnId:'turn-1',createdAt:'now',elapsedMs:7000,parts:[]},live],
 };
