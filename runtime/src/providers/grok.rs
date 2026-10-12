@@ -2935,6 +2935,46 @@ mod tests {
     }
 
     #[test]
+    #[test]
+    fn grok_plan_update_maps_acp_entries() {
+        // Grok is ACP-shaped. A live Grok turn (qa/grok-plan-probe.mjs, recorded
+        // in progress.md) was observed to send text, tool_call and hook updates but
+        // never an ACP `plan` update, so this exercises the mapper against the ACP
+        // plan frame shape the adapter already handles.
+        let data = grok_plan_data(&json!({
+            "sessionUpdate": "plan",
+            "entries": [
+                {"content": "Inspect the module", "status": "in_progress", "priority": "high"},
+                {"content": "Add the export", "status": "completed"},
+                {"content": "Write the test", "status": "pending", "priority": "low"}
+            ],
+            "explanation": "Keep it additive"
+        }))
+        .unwrap();
+        assert_eq!(data["entries"][0]["content"], "Inspect the module");
+        assert_eq!(data["entries"][0]["status"], "in_progress");
+        assert_eq!(data["entries"][0]["priority"], "high");
+        assert_eq!(data["entries"][1]["status"], "completed");
+        assert!(data["entries"][1].get("priority").is_none());
+        assert_eq!(data["entries"][2]["status"], "pending");
+        assert_eq!(data["entries"][2]["priority"], "low");
+        assert_eq!(data["explanation"], "Keep it additive");
+
+        // Unknown statuses fall back to pending; unknown priorities are dropped.
+        let normalized = grok_plan_data(&json!({"entries": [
+            {"content": "Odd", "status": "queued", "priority": "urgent"}
+        ]}))
+        .unwrap();
+        assert_eq!(normalized["entries"][0]["status"], "pending");
+        assert!(normalized["entries"][0].get("priority").is_none());
+        assert!(normalized.get("explanation").is_none());
+
+        // A plan frame with no usable entries yields no part.
+        assert!(grok_plan_data(&json!({"sessionUpdate": "plan"})).is_none());
+        assert!(grok_plan_data(&json!({"entries": [{"content": "  "}]})).is_none());
+    }
+
+    #[test]
     fn repair_fixture_normalizes_grok_load_history() {
         let fixture: Value = serde_json::from_str(include_str!(
             "../../tests/fixtures/repair-native-history.json"
