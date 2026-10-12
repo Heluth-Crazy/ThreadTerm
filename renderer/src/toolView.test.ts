@@ -92,6 +92,29 @@ test('the same immutable part object reuses one memoized view', () => {
   assert.notEqual(toolView({ ...part }), toolView(part));
 });
 
+test('a web result keeps its full text, not a 160-character preview', () => {
+  const long = Array.from({ length: 40 }, (_, index) => `result line ${index}`).join('\n');
+  const view = toolView({ type: 'tool', toolId: 'web', toolName: 'WebFetch', status: 'complete', data: { input: { url: 'https://example.com/docs' }, rawOutput: long } } as ChatPart);
+  assert.equal(view.kind, 'web');
+  assert.equal(view.kind === 'web' ? view.result : undefined, long);
+  assert.ok((view.kind === 'web' ? view.result?.length ?? 0 : 0) > 160);
+});
+
+test('an ACP delete without a diff is classified as a delete, not a modify', () => {
+  const view = toolView({ type: 'tool', toolId: 'del', toolName: 'delete', status: 'completed', data: { kind: 'delete', rawInput: { path: 'src/old.ts' } } } as ChatPart);
+  assert.equal(view.kind, 'edit');
+  assert.equal(view.kind === 'edit' ? view.files[0]?.change : undefined, 'delete');
+});
+
+test('a replaced part with the same tool id exposes its new live output', () => {
+  const first = { type: 'tool', toolId: 'cmd', toolName: 'Bash', status: 'running', data: { input: { command: 'npm test' }, aggregatedOutput: 'first output' } } as ChatPart;
+  const second = { ...first, data: { input: { command: 'npm test' }, aggregatedOutput: 'second output' } } as ChatPart;
+  const before = toolView(first), after = toolView(second);
+  assert.notEqual(before, after);
+  assert.equal(before.kind === 'command' ? before.output : undefined, 'first output');
+  assert.equal(after.kind === 'command' ? after.output : undefined, 'second output');
+});
+
 test('2,000 mixed parts classify well inside the 50 ms budget', () => {
   const parts = Array.from({ length: 2_000 }, (_, index) => ({
     type: 'tool', toolId: `perf-${index}`, status: 'complete',

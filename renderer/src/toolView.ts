@@ -127,7 +127,8 @@ function editFiles(data: Record<string, unknown>, arg: (...keys: string[]) => un
     if (content !== undefined) diff = { oldText: '', newText: content };
   }
   const write = /write|create/.test(lower) || (kind === 'edit' && oldString === '' && newString !== undefined);
-  return { files: [{ path, change: write ? 'add' : 'modify', ...(diff ? { diff } : {}) }] };
+  const change: ToolEditChange = kind === 'delete' ? 'delete' : write ? 'add' : 'modify';
+  return { files: [{ path, change, ...(diff ? { diff } : {}) }] };
 }
 
 function webLabel(url: string | undefined, query: string | undefined): string {
@@ -189,7 +190,7 @@ function classify(part: ChatPart): ToolView {
   if (isWeb) {
     const url = argText('url');
     const query = argText('query', 'prompt');
-    return { kind: 'web', status, title: webLabel(url, query), url, query, result: compact(commandOutput(data)) };
+    return { kind: 'web', status, title: webLabel(url, query), url, query, result: commandOutput(data) };
   }
 
   // Command execution.
