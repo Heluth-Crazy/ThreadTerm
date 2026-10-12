@@ -381,6 +381,7 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession }
   const { locale } = useTranslation();
   const surface = useContext(SessionSurfaceContext);
   const openFile = surface?.openFile;
+  const openDiff = surface?.openDiff;
   const zh = locale === 'zh-CN';
   const copy = (en: string, cn: string) => zh ? cn : en;
   const repairDescriptionId = useId();
@@ -1149,7 +1150,7 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession }
     const active = group.items.some(item => item.turnId && item.turnId === displayTurn);
     const awaitingApproval = active && session.status === 'waiting' && group.items.some(item => item.parts.some(part => part.type === 'approval' && part.status === 'pending'));
     const awaitingQuestion = awaitingApproval && group.items.some(item => item.parts.some(part => part.type === 'approval' && part.status === 'pending' && asRecord(part.data).interaction === 'question'));
-    const drawer = (entries: ToolActivityEntry[], id = `${group.id}-tools`) => <ToolActivity key={id} entries={entries} active={active} awaitingApproval={awaitingApproval} awaitingQuestion={awaitingQuestion} provider={session.provider} copy={copy} openFile={openFile} />;
+    const drawer = (entries: ToolActivityEntry[], id = `${group.id}-tools`) => <ToolActivity key={id} entries={entries} active={active} awaitingApproval={awaitingApproval} awaitingQuestion={awaitingQuestion} provider={session.provider} copy={copy} openFile={openFile} openDiff={openDiff} sessionCwd={session.worktreePath} />;
     if (!group.settled) {
       // Subagents are chronology boundaries, while intervening parent text keeps
       // the existing single-drawer policy. Preserve the first drawer's turn key.

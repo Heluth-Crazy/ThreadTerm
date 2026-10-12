@@ -247,3 +247,60 @@ export function describeTool(part: ChatPart, copy: Copy): { kind: ToolKind; name
 export function activeToolEntries(entries: readonly ToolActivityEntry[], turnActive: boolean): ToolActivityEntry[] {
   return turnActive ? entries.filter(entry => toolStatus(entry.part) === 'running') : [];
 }
+
+export interface ToolSummary { explored: number; searched: number; ran: number; edited: number; other: number; failed: number; interrupted: number }
+
+/**
+ * Describe a turn's tool work by view kind (B3). Counts are derived from
+ * `toolView`, so Codex shell reads/searches count as explored/searched and an
+ * edit's distinct file paths count once. Failed and interrupted calls stay a
+ * separate signal and are also counted in their own kind.
+ */
+export function toolSummary(entries: readonly ToolActivityEntry[]): ToolSummary {
+  const summary: ToolSummary = { explored: 0, searched: 0, ran: 0, edited: 0, other: 0, failed: 0, interrupted: 0 };
+  const files = new Set<string>();
+  for (const entry of entries) {
+    const view = toolView(entry.part);
+    if (view.status === 'failed') summary.failed += 1;
+    if (view.status === 'cancelled') summary.interrupted += 1;
+    switch (view.kind) {
+      case 'read': summary.explored += 1; break;
+      case 'search': summary.searched += 1; break;
+      case 'web': summary.searched += 1; break;
+      case 'edit': for (const file of view.files) if (file.path) files.add(file.path); break;
+      case 'command': {
+        summary.ran += 1;
+        const actions = view.actions ?? [];
+        if (actions.some(action => action === 'read' || action === 'list')) summary.explored += 1;
+        if (actions.includes('search')) summary.searched += 1;
+        break;
+      }
+      case 'subagent': break;
+      default: summary.other += 1;
+    }
+  }
+  summary.edited = files.size;
+  return summary;
+}
+
+const plural = (count: number, one: string, many: string): string => count === 1 ? one : many;
+
+/** Localized summary segments, at most four, then "+N more". */
+export function toolSummarySegments(summary: ToolSummary, copy: Copy): string[] {
+  const segments: string[] = [];
+  if (summary.explored) segments.push(copy(`Explored ${summary.explored} ${plural(summary.explored, 'file', 'files')}`, `查看 ${summary.explored} 个文件`));
+  if (summary.searched) segments.push(copy(`Searched ${summary.searched}`, `搜索 ${summary.searched} 次`));
+  if (summary.ran) segments.push(copy(`Ran ${summary.ran} ${plural(summary.ran, 'command', 'commands')}`, `运行 ${summary.ran} 条命令`));
+  if (summary.edited) segments.push(copy(`Edited ${summary.edited} ${plural(summary.edited, 'file', 'files')}`, `修改 ${summary.edited} 个文件`));
+  if (summary.other) segments.push(copy(`Used ${summary.other} ${plural(summary.other, 'tool', 'tools')}`, `使用 ${summary.other} 项工具`));
+  if (segments.length > 4) return [...segments.slice(0, 4), copy(`+${segments.length - 4} more`, `另有 ${segments.length - 4} 类`) ];
+  return segments;
+}
+
+/** One plain sentence for the screen-reader label and the title tooltip. */
+export function toolSummaryText(summary: ToolSummary, copy: Copy): string {
+  const parts = [...toolSummarySegments(summary, copy)];
+  if (summary.failed) parts.push(copy(`${summary.failed} failed`, `${summary.failed} 项失败`));
+  if (summary.interrupted) parts.push(copy(`${summary.interrupted} interrupted`, `${summary.interrupted} 项中断`));
+  return parts.join(' · ');
+}

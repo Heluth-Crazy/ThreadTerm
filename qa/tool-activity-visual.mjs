@@ -118,7 +118,7 @@ try {
     assert.deepEqual(await drawer.locator('.chat-tool-entry').evaluateAll(nodes => nodes.map(node => node.getAttribute('data-tool-id'))), ['command-codex','browser-mcp','command-claude','browser-acp','file-read','search','delegate','failed-command','cancelled-browser'], `${provider}: entries retain call order rather than category sort`);
     const summary = drawer.locator('> summary');
     assert.match(await summary.locator('.chat-tool-current-action').textContent() ?? '', /Tool activity|npm run unavailable/i, `${provider}: idle summary uses current/recent action`);
-    assert.match(await summary.locator('.chat-tool-count').textContent() ?? '', /9 tools/i, `${provider}: summary includes ordinary-call count`);
+    assert.match(await summary.locator('.chat-tool-count').textContent() ?? '', /Explored 1 file.*Searched 1.*Ran 3 commands.*Used 4 tools/, `${provider}: idle summary describes the turn's tool work`);
     assert.equal(await summary.locator('.chat-tool-active-count').count(), 0, `${provider}: completed turn never claims an active tool`);
     assert.equal(await drawer.evaluate(node => Boolean(node.closest('.codex-work'))), false, `${provider}: completed tool activity stays outside elapsed commentary fold`);
     assert.equal(await page.locator('.chat-tool-failures').count(), 1, `${provider}: failures have a visible row outside details body`);
