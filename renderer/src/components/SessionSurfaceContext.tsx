@@ -9,6 +9,8 @@ export type SessionSurfacePresentation = {
  openFile?:(reference:FileReference)=>void;
  /** Opens a working-tree diff for a path inside the session's project, when the host supports it. */
  openDiff?:(path:string)=>void;
+ /** Whether `openDiff` can open this exact path; the action stays hidden when it cannot. */
+ canOpenDiff?:(path:string)=>boolean;
  /** Opens an http(s) page in a tab beside the session (terminal link bar). */
  openWeb?:(url:string)=>void;
 };

@@ -1,4 +1,5 @@
 import type { ToolEditDiff, ToolEditFile, ToolStatus, ToolView } from './toolView';
+import { pathIsWithinCanonicalScope } from './projectScope';
 
 /**
  * Pure presentation helpers for the typed tool cards (B2/B3). Everything that
@@ -107,6 +108,19 @@ export function moreFilesLabel(shown: number, total: number): string | undefined
   return total > shown ? `+${total - shown}` : undefined;
 }
 
+/**
+ * "Open diff" is only offered for a path a working-tree diff can open: a
+ * relative path is workspace-relative, and an absolute path must sit inside
+ * the session's project/worktree root. An absolute path with no known root is
+ * hidden rather than offering an action that can only fail.
+ */
+export function isOpenableDiffPath(path: string | undefined, root: string | undefined): boolean {
+  const value = path?.trim();
+  if (!value) return false;
+  if (!/^(?:[a-zA-Z]:[\\/]|\\\\|\/)/.test(value)) return true;
+  return pathIsWithinCanonicalScope(value, root);
+}
+
 /** Command/web output tail with the 400-line cap and a Show output state. */
 export function outputView(text: string | undefined, expanded: boolean): OutputView {
   const lines = splitLines(text);
@@ -157,7 +171,11 @@ export function jsonView(value: unknown, expanded: ReadonlySet<string> = new Set
       : Object.entries(current as Record<string, unknown>);
     for (const [childKey, child] of entries) {
       if (nodes >= JSON_NODE_LIMIT) { truncated = true; return; }
-      walk(child, `${path}.${childKey}`, depth + 1, childKey);
+      // Names that are valid identifiers (or array indices) keep the readable
+      // `$.a.b` form; anything else is quoted and bracketed so keys that
+      // themselves contain a dot cannot collide with a nested path.
+      const childPath = /^[A-Za-z_$][A-Za-z0-9_$]*$/.test(childKey) || /^\d+$/.test(childKey) ? `${path}.${childKey}` : `${path}[${JSON.stringify(childKey)}]`;
+      walk(child, childPath, depth + 1, childKey);
     }
   };
   walk(value, '$', 0, undefined);

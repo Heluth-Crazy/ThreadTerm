@@ -47,12 +47,15 @@ function DiffBlock({ diff, copy }: { diff: NonNullable<Extract<ToolView, { kind:
   </div>;
 }
 
-function EditBody({ view, copy, openFile, openDiff }: { view: Extract<ToolView, { kind: 'edit' }>; copy: Copy; openFile?: OpenFile; openDiff?: (path: string) => void }) {
+function EditBody({ view, copy, openFile, openDiff, canOpenDiff }: { view: Extract<ToolView, { kind: 'edit' }>; copy: Copy; openFile?: OpenFile; openDiff?: (path: string) => void; canOpenDiff?: (path: string) => boolean }) {
   const shown = view.files.slice(0, EDIT_FILE_LIMIT);
   const more = moreFilesLabel(shown.length, view.files.length);
   return <>
     {shown.map((file, index) => {
       const stats = editFileStats(file);
+      // Only offer Open diff when the working-tree diff can actually open this
+      // path; a native absolute path outside the project would only fail.
+      const diffable = openDiff && (canOpenDiff ? canOpenDiff(file.path) : true);
       return <div className="tool-edit-file" key={`${file.path}:${index}`}>
         <div className="tool-edit-file-head">
           <Icon name="file" />
@@ -62,9 +65,9 @@ function EditBody({ view, copy, openFile, openDiff }: { view: Extract<ToolView, 
         </div>
         {file.movePath && <p className="tool-card-note">→ {file.movePath}</p>}
         {file.diff && <DiffBlock diff={file.diff} copy={copy} />}
-        {(openFile || openDiff) && <div className="tool-card-actions">
+        {(openFile || diffable) && <div className="tool-card-actions">
           {openFile && <button type="button" className="tool-card-action" onClick={() => openFile({ path: file.path })}>{copy('Open file', '打开文件')}</button>}
-          {openDiff && <button type="button" className="tool-card-action" onClick={() => openDiff(file.path)}>{copy('Open diff', '查看差异')}</button>}
+          {diffable && <button type="button" className="tool-card-action" onClick={() => openDiff!(file.path)}>{copy('Open diff', '查看差异')}</button>}
         </div>}
       </div>;
     })}
@@ -179,9 +182,9 @@ function GenericBody({ view, copy }: { view: Extract<ToolView, { kind: 'generic'
   </>;
 }
 
-function CardBody({ view, copy, sessionCwd, openFile, openDiff }: { view: ToolView; copy: Copy; sessionCwd?: string; openFile?: OpenFile; openDiff?: (path: string) => void }) {
+function CardBody({ view, copy, sessionCwd, openFile, openDiff, canOpenDiff }: { view: ToolView; copy: Copy; sessionCwd?: string; openFile?: OpenFile; openDiff?: (path: string) => void; canOpenDiff?: (path: string) => boolean }) {
   switch (view.kind) {
-    case 'edit': return <EditBody view={view} copy={copy} openFile={openFile} openDiff={openDiff} />;
+    case 'edit': return <EditBody view={view} copy={copy} openFile={openFile} openDiff={openDiff} canOpenDiff={canOpenDiff} />;
     case 'command': return <CommandBody view={view} sessionCwd={sessionCwd} copy={copy} />;
     case 'read': return <ReadBody view={view} copy={copy} openFile={openFile} />;
     case 'search': return <SearchBody view={view} copy={copy} />;
@@ -209,7 +212,7 @@ function CardImages({ part, copy }: { part: ChatPart; copy: Copy }) {
  * always rendered so identity, ordering and inspection keep working while the
  * drawer is collapsed; the body is built only when `open`.
  */
-export function ToolCard({ entry, index, open, active, awaitingApproval, sessionCwd, copy, openFile, openDiff }: {
+export function ToolCard({ entry, index, open, active, awaitingApproval, sessionCwd, copy, openFile, openDiff, canOpenDiff }: {
   entry: ToolActivityEntry;
   index: number;
   open: boolean;
@@ -219,6 +222,7 @@ export function ToolCard({ entry, index, open, active, awaitingApproval, session
   copy: Copy;
   openFile?: OpenFile;
   openDiff?: (path: string) => void;
+  canOpenDiff?: (path: string) => boolean;
 }) {
   const view = toolView(entry.part);
   const status = toolStatusLabel(view.status, active, awaitingApproval, copy);
@@ -231,7 +235,7 @@ export function ToolCard({ entry, index, open, active, awaitingApproval, session
       <span className={`tool-card-status is-${status.key}`}>{status.label}</span>
     </div>
     {open && <div className="tool-card-body">
-      <CardBody view={view} copy={copy} sessionCwd={sessionCwd} openFile={openFile} openDiff={openDiff} />
+      <CardBody view={view} copy={copy} sessionCwd={sessionCwd} openFile={openFile} openDiff={openDiff} canOpenDiff={canOpenDiff} />
     </div>}
     <CardImages part={entry.part} copy={copy} />
     <FileReferenceChips references={entry.part.fileReferences} visibleText={body} openFile={openFile} />

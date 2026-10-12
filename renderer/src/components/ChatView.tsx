@@ -383,7 +383,12 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession }
   const surface = useContext(SessionSurfaceContext);
   const openFile = surface?.openFile;
   const openDiff = surface?.openDiff;
+  const canOpenDiff = surface?.canOpenDiff;
   const zh = locale === 'zh-CN';
+  // Code-block copy buttons live inside injected Markdown HTML, so their label
+  // is set imperatively; keep the latest locale so the 1.5 s reset never falls
+  // back to the language that was active when the click happened.
+  const zhRef = useRef(zh); zhRef.current = zh;
   const copy = (en: string, cn: string) => zh ? cn : en;
   const repairDescriptionId = useId();
   // A clicked http(s) link in the transcript: the same actions as the terminal's link bar, as a menu at the link.
@@ -1078,9 +1083,8 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession }
     void navigator.clipboard.writeText(value).then(() => {
       if (button.dataset.copying === 'true') return;
       button.dataset.copying = 'true';
-      const original = button.textContent ?? '';
-      button.textContent = zh ? '已复制' : 'Copied';
-      window.setTimeout(() => { button.textContent = original; delete button.dataset.copying; }, 1500);
+      button.textContent = zhRef.current ? '已复制' : 'Copied';
+      window.setTimeout(() => { button.textContent = zhRef.current ? '复制' : 'Copy'; delete button.dataset.copying; }, 1500);
     }).catch(() => undefined);
   }
   function renderItem(item: ChatItem, nested = false) {
@@ -1151,7 +1155,7 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession }
     const active = group.items.some(item => item.turnId && item.turnId === displayTurn);
     const awaitingApproval = active && session.status === 'waiting' && group.items.some(item => item.parts.some(part => part.type === 'approval' && part.status === 'pending'));
     const awaitingQuestion = awaitingApproval && group.items.some(item => item.parts.some(part => part.type === 'approval' && part.status === 'pending' && asRecord(part.data).interaction === 'question'));
-    const drawer = (entries: ToolActivityEntry[], id = `${group.id}-tools`) => <ToolActivity key={id} entries={entries} active={active} awaitingApproval={awaitingApproval} awaitingQuestion={awaitingQuestion} provider={session.provider} copy={copy} openFile={openFile} openDiff={openDiff} sessionCwd={session.worktreePath} />;
+    const drawer = (entries: ToolActivityEntry[], id = `${group.id}-tools`) => <ToolActivity key={id} entries={entries} active={active} awaitingApproval={awaitingApproval} awaitingQuestion={awaitingQuestion} provider={session.provider} copy={copy} openFile={openFile} openDiff={openDiff} canOpenDiff={canOpenDiff} sessionCwd={session.worktreePath} />;
     if (!group.settled) {
       // Subagents are chronology boundaries, while intervening parent text keeps
       // the existing single-drawer policy. Preserve the first drawer's turn key.

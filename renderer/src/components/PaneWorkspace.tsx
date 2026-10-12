@@ -32,6 +32,7 @@ import type { FileCommentsHost } from "../fileCommentsHost";
 import type { PageCommentProvenance } from '../reviewComments';
 import { absolutePath, type WorkbenchActions } from '../workbench/types';
 import { sameCanonicalScope } from '../projectScope';
+import { isOpenableDiffPath } from '../toolCards';
 import { presentedSession } from '../resumedSession';
 import { isDocumentPinned, sessionDocumentError } from '../sessionDocuments';
 import { fileTabMenuItems } from '../contextMenuSurfaceItems';
@@ -56,6 +57,8 @@ type Props = {
   focusTarget?:WorkspaceTabTarget & {key:string};
   fileReveal?:{tabId:string;line:number;column?:number;key:string};
   onOpenPath?:(file:{projectId:string;worktreePath?:string;path:string;kind:'file'|'diff'|'preview';assetKind?:'text'|'image';ownerSessionId?:string})=>void;
+  /** Project root for a session without its own worktree; scopes the Chat Open-diff action. */
+  projectPath?:string;
   onWebClosed?:(tabId:string)=>void;
   onWebNavigation?:(tabId:string,observation:{navigation:'pending'|'load_observed'|'failed';url?:string;title?:string;documentGeneration?:number})=>void;
   previewProvenance?:ReadonlyMap<string,PageCommentProvenance>;
@@ -78,7 +81,7 @@ export type PaneWorkbench = {
   /** Documents for the active session, limited to this session's project/worktree root. */
   sessionDocuments?:{projectId:string;rootPath:string;projectRoot?:string} & NonNullable<WorkbenchActions['sessionDocuments']>;
 };
-export function PaneWorkspace({ layout, sessions, onChange, theme, terminalCompatibility, providers = [], onSessionChanged, onOpenSession, ownerSessionId, onPickSession,toolbarHost,onEmpty,onActiveSession,onInteraction,onFileReference,focusTarget,fileReveal,onOpenPath,onWebClosed,onWebNavigation,previewProvenance,previewLabels,workbench }: Props) {
+export function PaneWorkspace({ layout, sessions, onChange, theme, terminalCompatibility, providers = [], onSessionChanged, onOpenSession, ownerSessionId, onPickSession,toolbarHost,onEmpty,onActiveSession,onInteraction,onFileReference,focusTarget,fileReveal,onOpenPath,projectPath,onWebClosed,onWebNavigation,previewProvenance,previewLabels,workbench }: Props) {
   const zh=useTranslation().locale==='zh-CN';
   const [selectedPaneId, setSelectedPaneId] = useState<string|undefined>(focusTarget?.paneId);
   const [paneHost,setPaneHost]=useState<HTMLDivElement|null>(null),[stackHorizontal,setStackHorizontal]=useState(false);
@@ -209,7 +212,7 @@ export function PaneWorkspace({ layout, sessions, onChange, theme, terminalCompa
         onCloseTab={target=>void closeTabs(target,'current')}
         onCloseTabs={(target,mode)=>void closeTabs(target,mode,false,'web')}
         onResumed={(session) => { setResumedSessions(current => new Map(current).set(session.id,session)); onSessionChanged?.(); }}
-        primaryHost={primaryHost} menuHost={menuHost} onFileReference={onFileReference} fileReveal={fileReveal} onOpenPath={onOpenPath} onWebNavigation={onWebNavigation} previewProvenance={previewProvenance} previewLabels={previewLabels} workbench={workbench}
+        primaryHost={primaryHost} menuHost={menuHost} onFileReference={onFileReference} fileReveal={fileReveal} onOpenPath={onOpenPath} projectPath={projectPath} onWebNavigation={onWebNavigation} previewProvenance={previewProvenance} previewLabels={previewLabels} workbench={workbench}
       />
     );});
   const companionFiles=workspaceTabs(visibleLayout).filter(item=>item.tab.kind!=='session'&&item.tab.ownerSessionId===ownerSessionId&&Boolean(ownerSessionId));
@@ -321,7 +324,7 @@ function Pane({
   providers,
   onResumed,
   closing,onActivateTab,onCloseFile,onCloseTab,onCloseTabs,
-  primaryHost,menuHost,onFileReference,fileReveal,onOpenPath,onWebNavigation,previewProvenance,previewLabels,workbench,
+  primaryHost,menuHost,onFileReference,fileReveal,onOpenPath,projectPath,onWebNavigation,previewProvenance,previewLabels,workbench,
 }: {
   node: Extract<PaneLayout, { kind: "pane" }>;
   visibleNode?: Extract<PaneLayout, { kind: "pane" }>;
@@ -351,6 +354,7 @@ function Pane({
   onFileReference?:(sessionId:string,reference:FileReference)=>void;
   fileReveal?:{tabId:string;line:number;column?:number;key:string};
   onOpenPath?:(file:{projectId:string;worktreePath?:string;path:string;kind:'file'|'diff'|'preview';assetKind?:'text'|'image';ownerSessionId?:string})=>void;
+  projectPath?:string;
   onWebNavigation?:(tabId:string,observation:{navigation:'pending'|'load_observed'|'failed';url?:string;title?:string;documentGeneration?:number})=>void;
   previewProvenance?:ReadonlyMap<string,PageCommentProvenance>;
   previewLabels?:ReadonlyMap<string,Pick<PreviewAssociation,'title'|'observedTitle'|'sessionId'>>;
@@ -370,6 +374,7 @@ function Pane({
       : undefined;
   const paneLimit = paneCount(layout) >= 4;
   const lastPane = paneCount(layout) === 1;
+  const diffRoot = session?.worktreePath ?? projectPath;
   const split = (direction: "horizontal" | "vertical") => {
     const paneId = crypto.randomUUID();
     onChange(splitPane(layout, node.id, direction, paneId));
@@ -466,7 +471,7 @@ function Pane({
    showContextMenu({x:event.clientX,y:event.clientY,restoreFocus:event.currentTarget,items:(['current','others','all'] as const).map(mode=>({id:`browser-tab-close-${mode}`,label:zh?({current:'关闭当前页面',others:'关闭其他页面',all:'关闭所有页面'}[mode]):({current:'Close page',others:'Close other pages',all:'Close all pages'}[mode]),disabled:mode==='others'&&browserTabs.length<2,onSelect:()=>onCloseTabs(target,mode)}))});
   };
   return (
-    <SessionSurfaceContext.Provider value={{primaryHost,menuHost,focused:selected,openFile:session&&onFileReference?reference=>onFileReference(session.id,reference):undefined,openDiff:session&&session.projectId&&onOpenPath?path=>onOpenPath({projectId:session.projectId as string,worktreePath:session.worktreePath,path,kind:'diff',ownerSessionId:session.id}):undefined,openWeb:workbench?.openWeb}}>
+    <SessionSurfaceContext.Provider value={{primaryHost,menuHost,focused:selected,openFile:session&&onFileReference?reference=>onFileReference(session.id,reference):undefined,openDiff:session&&session.projectId&&onOpenPath?path=>{if(!isOpenableDiffPath(path,diffRoot))return;onOpenPath({projectId:session.projectId as string,worktreePath:session.worktreePath,path,kind:'diff',ownerSessionId:session.id});}:undefined,canOpenDiff:session&&session.projectId&&onOpenPath?path=>isOpenableDiffPath(path,diffRoot):undefined,openWeb:workbench?.openWeb}}>
     <section data-pane-id={node.id} hidden={!visibleNode} inert={!visibleNode} style={style} className={`workspace-pane ws-pane ${fullscreen ? "fullscreen" : ""}${selected ? " selected" : ""}`} onPointerDown={event=>{if(event.currentTarget.contains(event.target as Node))onFocus();}}>
        {!lastPane&&session&&tab&&<div className="pane-identity"><AgentIcon provider={session.provider}/><span>{tabLabel(tab)}</span></div>}
        {browserTabs.length>0&&<div className="browser-page-tabs" role="tablist" aria-label={zh?'浏览器页面':'Browser pages'}>{browserTabs.map(item=>{const label=browserLabel(item),title=browserTitle(item),active=item.id===tab?.id,provider=previewLabels?.get(item.id)?.sessionId?sessions.find(candidate=>candidate.id===previewLabels.get(item.id)?.sessionId)?.provider:undefined;return <div className={`browser-page-tab${active?' active':''}`} key={item.id} onContextMenu={event=>browserMenu(item,event)}><button type="button" id={`browser-tab-${node.id}-${item.id}`} role="tab" aria-selected={active} aria-controls={`browser-panel-${node.id}-${item.id}`} tabIndex={active?0:-1} title={title} aria-label={title} onKeyDown={browserKeys} onClick={()=>onActivateTab({paneId:node.id,tabId:item.id})}><span>{label}</span>{provider&&<small>{provider}</small>}</button><button type="button" className="browser-page-tab-close" aria-label={zh?`关闭页面 ${label}`:`Close page ${label}`} title={zh?'关闭页面':'Close page'} onPointerDown={event=>event.stopPropagation()} onClick={event=>{event.stopPropagation();onCloseTab({paneId:node.id,tabId:item.id});}}><Icon name="close"/></button></div>;})}</div>}

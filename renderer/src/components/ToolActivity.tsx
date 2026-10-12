@@ -1,6 +1,6 @@
 import { useLayoutEffect, useRef, useState } from 'react';
 import type { FileReference } from '@threadterm/protocol';
-import { activeToolEntries, describeTool, toolActivityPreview, toolActivityWaitingLabel, toolStatus, toolSummary, toolSummaryText, type ToolActivityEntry, type ToolKind } from '../toolActivity';
+import { activeToolEntries, describeTool, toolActivityPreview, toolActivityWaitingLabel, toolStatus, toolSummary, toolSummaryLabel, toolSummaryText, type ToolActivityEntry, type ToolKind } from '../toolActivity';
 import { FileReferenceChips } from './FileReferenceText';
 import { ToolCard } from './ToolCards';
 import { Icon } from './PrototypeIcon';
@@ -8,7 +8,7 @@ import './tool-activity.css';
 
 const icons: Record<ToolKind, string> = { command: 'terminal', browser: 'popout', file: 'file', search: 'search', delegation: 'export', mcp: 'spark', tool: 'spark' };
 
-export function ToolActivity({ entries, active, awaitingApproval = false, awaitingQuestion = false, provider, copy, openFile, onInspect, openDiff, sessionCwd }: {
+export function ToolActivity({ entries, active, awaitingApproval = false, awaitingQuestion = false, provider, copy, openFile, onInspect, openDiff, canOpenDiff, sessionCwd }: {
   entries: ToolActivityEntry[];
   active: boolean;
   awaitingApproval?: boolean;
@@ -18,6 +18,7 @@ export function ToolActivity({ entries, active, awaitingApproval = false, awaiti
   openFile?: (reference: FileReference) => void;
   onInspect?: () => void;
   openDiff?: (path: string) => void;
+  canOpenDiff?: (path: string) => boolean;
   sessionCwd?: string;
 }) {
   const [open, setOpen] = useState(false);
@@ -51,7 +52,8 @@ export function ToolActivity({ entries, active, awaitingApproval = false, awaiti
   const failures = entries.filter(entry => ['failed', 'cancelled'].includes(toolStatus(entry.part)));
   const summaryCounts = toolSummary(entries);
   const summaryText = toolSummaryText(summaryCounts, copy);
-  const countLabel = current || waiting || !summaryText ? `${entries.length} ${copy('tools', '项工具')}` : summaryText;
+  const summaryLabel = toolSummaryLabel(summaryCounts, copy);
+  const countLabel = current || waiting || !summaryLabel ? `${entries.length} ${copy('tools', '项工具')}` : summaryLabel;
   return <article className={`v3-chat-message assistant is-native is-${provider} chat-tool-activity-card`}>
     <details className="chat-tool-activity" open={open} onToggle={event => setOpen(event.currentTarget.open)}>
       <summary ref={summaryRef} onClick={() => { onInspect?.(); if (open) revealAfterCollapse.current = true; }} onKeyDown={event => { if (event.key === 'Enter' || event.key === ' ') { onInspect?.(); if (open) revealAfterCollapse.current = true; } }}>
@@ -76,6 +78,7 @@ export function ToolActivity({ entries, active, awaitingApproval = false, awaiti
         copy={copy}
         openFile={openFile}
         openDiff={openDiff}
+        canOpenDiff={canOpenDiff}
       />)}</div>
       <button type="button" className="chat-tool-collapse" data-chat-collapse onClick={() => { onInspect?.(); revealAfterCollapse.current = true; setOpen(false); }}><Icon name="chevD" />{copy('Collapse tools', '收起工具详情')}</button>
     </details>
