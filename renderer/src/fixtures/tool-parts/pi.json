@@ -1,0 +1,215 @@
+{
+  "provider": "pi",
+  "note": "Synthetic ChatPart shapes for Pi 1.1.0 RPC mode. A tool part's data is the tool_execution_* event itself; the adapter persists args across sparse tool_execution_update frames. Argument names verified against the installed Pi tool schemas at @earendil-works/pi-coding-agent/dist/core/tools/*.d.ts.",
+  "cases": [
+    {
+      "id": "pi-bash-running",
+      "kind": "command",
+      "expect": { "command": "npm run build", "status": "running" },
+      "part": {
+        "type": "tool",
+        "toolId": "call_bash_01",
+        "toolName": "bash",
+        "status": "running",
+        "data": {
+          "type": "tool_execution_start",
+          "toolCallId": "call_bash_01",
+          "toolName": "bash",
+          "args": { "command": "npm run build" }
+        }
+      }
+    },
+    {
+      "id": "pi-bash-streaming",
+      "kind": "command",
+      "expect": { "command": "npm run build", "status": "running" },
+      "part": {
+        "type": "tool",
+        "toolId": "call_bash_01",
+        "toolName": "bash",
+        "status": "running",
+        "data": {
+          "type": "tool_execution_update",
+          "toolCallId": "call_bash_01",
+          "toolName": "bash",
+          "args": { "command": "npm run build" },
+          "partialResult": { "content": [{ "type": "text", "text": "building module 4 of 9" }] }
+        }
+      }
+    },
+    {
+      "id": "pi-bash-complete",
+      "kind": "command",
+      "expect": { "command": "npm run build", "status": "complete" },
+      "part": {
+        "type": "tool",
+        "toolId": "call_bash_01",
+        "toolName": "bash",
+        "status": "complete",
+        "data": {
+          "type": "tool_execution_end",
+          "toolCallId": "call_bash_01",
+          "toolName": "bash",
+          "args": { "command": "npm run build" },
+          "result": { "content": [{ "type": "text", "text": "built in 1.2s" }] },
+          "isError": false
+        }
+      }
+    },
+    {
+      "id": "pi-bash-failed",
+      "kind": "command",
+      "expect": { "command": "npm test", "status": "failed" },
+      "part": {
+        "type": "tool",
+        "toolId": "call_bash_02",
+        "toolName": "bash",
+        "status": "failed",
+        "data": {
+          "type": "tool_execution_end",
+          "toolCallId": "call_bash_02",
+          "toolName": "bash",
+          "args": { "command": "npm test" },
+          "result": { "content": [{ "type": "text", "text": "1 test failed" }] },
+          "isError": true
+        }
+      }
+    },
+    {
+      "id": "pi-edit",
+      "kind": "edit",
+      "expect": { "files": 1, "change": "modify" },
+      "part": {
+        "type": "tool",
+        "toolId": "call_edit_01",
+        "toolName": "edit",
+        "status": "complete",
+        "data": {
+          "type": "tool_execution_end",
+          "toolCallId": "call_edit_01",
+          "toolName": "edit",
+          "args": {
+            "path": "src/app.ts",
+            "edits": [{ "oldText": "const version = 1;", "newText": "const version = 2;" }]
+          },
+          "result": { "content": [{ "type": "text", "text": "Applied 1 edit" }] },
+          "isError": false
+        }
+      }
+    },
+    {
+      "id": "pi-write",
+      "kind": "edit",
+      "expect": { "files": 1, "change": "add" },
+      "part": {
+        "type": "tool",
+        "toolId": "call_write_01",
+        "toolName": "write",
+        "status": "complete",
+        "data": {
+          "type": "tool_execution_end",
+          "toolCallId": "call_write_01",
+          "toolName": "write",
+          "args": { "path": "src/generated.ts", "content": "export const generated = true;\n" },
+          "result": { "content": [{ "type": "text", "text": "Wrote 32 bytes" }] },
+          "isError": false
+        }
+      }
+    },
+    {
+      "id": "pi-read",
+      "kind": "read",
+      "expect": { "path": "src/app.ts", "offset": 10, "limit": 40 },
+      "part": {
+        "type": "tool",
+        "toolId": "call_read_01",
+        "toolName": "read",
+        "status": "complete",
+        "data": {
+          "type": "tool_execution_end",
+          "toolCallId": "call_read_01",
+          "toolName": "read",
+          "args": { "path": "src/app.ts", "offset": 10, "limit": 40 },
+          "result": { "content": [{ "type": "text", "text": "export const app = 1;" }] },
+          "isError": false
+        }
+      }
+    },
+    {
+      "id": "pi-grep",
+      "kind": "search",
+      "expect": { "query": "describeTool", "path": "renderer/src" },
+      "part": {
+        "type": "tool",
+        "toolId": "call_grep_01",
+        "toolName": "grep",
+        "status": "complete",
+        "data": {
+          "type": "tool_execution_end",
+          "toolCallId": "call_grep_01",
+          "toolName": "grep",
+          "args": { "pattern": "describeTool", "path": "renderer/src", "glob": "*.ts", "ignoreCase": true },
+          "result": { "content": [{ "type": "text", "text": "3 matches in 2 files" }] },
+          "isError": false
+        }
+      }
+    },
+    {
+      "id": "pi-find",
+      "kind": "search",
+      "expect": { "query": "**/*.test.ts", "path": "renderer" },
+      "part": {
+        "type": "tool",
+        "toolId": "call_find_01",
+        "toolName": "find",
+        "status": "complete",
+        "data": {
+          "type": "tool_execution_end",
+          "toolCallId": "call_find_01",
+          "toolName": "find",
+          "args": { "pattern": "**/*.test.ts", "path": "renderer" },
+          "result": { "content": [{ "type": "text", "text": "renderer/src/toolActivity.test.ts" }] },
+          "isError": false
+        }
+      }
+    },
+    {
+      "id": "pi-ls",
+      "kind": "read",
+      "expect": { "path": "src" },
+      "part": {
+        "type": "tool",
+        "toolId": "call_ls_01",
+        "toolName": "ls",
+        "status": "complete",
+        "data": {
+          "type": "tool_execution_end",
+          "toolCallId": "call_ls_01",
+          "toolName": "ls",
+          "args": { "path": "src" },
+          "result": { "content": [{ "type": "text", "text": "app.ts\nmain.ts" }] },
+          "isError": false
+        }
+      }
+    },
+    {
+      "id": "pi-unknown",
+      "kind": "generic",
+      "expect": { "name": "custom_tool" },
+      "part": {
+        "type": "tool",
+        "toolId": "call_custom_01",
+        "toolName": "custom_tool",
+        "status": "complete",
+        "data": {
+          "type": "tool_execution_end",
+          "toolCallId": "call_custom_01",
+          "toolName": "custom_tool",
+          "args": { "value": 1 },
+          "result": { "content": [{ "type": "text", "text": "done" }] },
+          "isError": false
+        }
+      }
+    }
+  ]
+}

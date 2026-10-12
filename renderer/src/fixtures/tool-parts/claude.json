@@ -1,0 +1,320 @@
+{
+  "provider": "claude",
+  "note": "Synthetic ChatPart shapes for the Claude Agent SDK. A tool part's data is the assistant message content block itself: tool_use blocks carry {type,id,name,input}; tool_result blocks carry {type,tool_use_id,content,is_error}. Derived from runtime/src/providers/claude.rs (claude_message_tool_parts) and the SDK block shapes.",
+  "cases": [
+    {
+      "id": "claude-edit",
+      "kind": "edit",
+      "expect": { "files": 1, "change": "modify" },
+      "part": {
+        "type": "tool",
+        "toolId": "toolu_edit_01",
+        "toolName": "Edit",
+        "status": "complete",
+        "data": {
+          "type": "tool_use",
+          "id": "toolu_edit_01",
+          "name": "Edit",
+          "input": {
+            "file_path": "src/app.ts",
+            "old_string": "const version = 1;",
+            "new_string": "const version = 2;",
+            "replace_all": false
+          }
+        }
+      }
+    },
+    {
+      "id": "claude-multiedit",
+      "kind": "edit",
+      "expect": { "files": 1, "change": "modify" },
+      "part": {
+        "type": "tool",
+        "toolId": "toolu_multiedit_01",
+        "toolName": "MultiEdit",
+        "status": "complete",
+        "data": {
+          "type": "tool_use",
+          "id": "toolu_multiedit_01",
+          "name": "MultiEdit",
+          "input": {
+            "file_path": "src/app.ts",
+            "edits": [
+              { "old_string": "const alpha = 1;", "new_string": "const alpha = 2;" },
+              { "old_string": "const gamma = 3;", "new_string": "const gamma = 4;" }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "id": "claude-write",
+      "kind": "edit",
+      "expect": { "files": 1, "change": "add" },
+      "part": {
+        "type": "tool",
+        "toolId": "toolu_write_01",
+        "toolName": "Write",
+        "status": "complete",
+        "data": {
+          "type": "tool_use",
+          "id": "toolu_write_01",
+          "name": "Write",
+          "input": {
+            "file_path": "src/generated.ts",
+            "content": "export const generated = true;\n"
+          }
+        }
+      }
+    },
+    {
+      "id": "claude-bash",
+      "kind": "command",
+      "expect": { "command": "npm run lint", "exitCode": 0 },
+      "part": {
+        "type": "tool",
+        "toolId": "toolu_bash_01",
+        "toolName": "Bash",
+        "status": "complete",
+        "data": {
+          "type": "tool_use",
+          "id": "toolu_bash_01",
+          "name": "Bash",
+          "input": {
+            "command": "npm run lint",
+            "description": "Run the linter",
+            "run_in_background": false
+          }
+        }
+      }
+    },
+    {
+      "id": "claude-bash-failed",
+      "kind": "command",
+      "expect": { "command": "npm test", "exitCode": 1 },
+      "part": {
+        "type": "tool",
+        "toolId": "toolu_bash_02",
+        "toolName": "Bash",
+        "status": "failed",
+        "data": {
+          "type": "tool_use",
+          "id": "toolu_bash_02",
+          "name": "Bash",
+          "input": {
+            "command": "npm test",
+            "description": "Run the tests",
+            "run_in_background": false
+          }
+        }
+      }
+    },
+    {
+      "id": "claude-bash-background",
+      "kind": "command",
+      "expect": { "command": "npm run dev", "background": true },
+      "part": {
+        "type": "tool",
+        "toolId": "toolu_bash_03",
+        "toolName": "Bash",
+        "status": "running",
+        "data": {
+          "type": "tool_use",
+          "id": "toolu_bash_03",
+          "name": "Bash",
+          "input": {
+            "command": "npm run dev",
+            "description": "Start the dev server",
+            "run_in_background": true
+          }
+        }
+      }
+    },
+    {
+      "id": "claude-read",
+      "kind": "read",
+      "expect": { "path": "src/app.ts", "offset": 10, "limit": 40 },
+      "part": {
+        "type": "tool",
+        "toolId": "toolu_read_01",
+        "toolName": "Read",
+        "status": "complete",
+        "data": {
+          "type": "tool_use",
+          "id": "toolu_read_01",
+          "name": "Read",
+          "input": { "file_path": "src/app.ts", "offset": 10, "limit": 40 }
+        }
+      }
+    },
+    {
+      "id": "claude-grep",
+      "kind": "search",
+      "expect": { "query": "describeTool", "path": "renderer/src", "flags": { "caseInsensitive": true } },
+      "part": {
+        "type": "tool",
+        "toolId": "toolu_grep_01",
+        "toolName": "Grep",
+        "status": "complete",
+        "data": {
+          "type": "tool_use",
+          "id": "toolu_grep_01",
+          "name": "Grep",
+          "input": {
+            "pattern": "describeTool",
+            "path": "renderer/src",
+            "glob": "*.ts",
+            "-i": true,
+            "multiline": false,
+            "output_mode": "content"
+          }
+        }
+      }
+    },
+    {
+      "id": "claude-glob",
+      "kind": "search",
+      "expect": { "query": "**/*.test.ts", "path": "renderer" },
+      "part": {
+        "type": "tool",
+        "toolId": "toolu_glob_01",
+        "toolName": "Glob",
+        "status": "complete",
+        "data": {
+          "type": "tool_use",
+          "id": "toolu_glob_01",
+          "name": "Glob",
+          "input": { "pattern": "**/*.test.ts", "path": "renderer" }
+        }
+      }
+    },
+    {
+      "id": "claude-webfetch",
+      "kind": "web",
+      "expect": { "url": "https://example.com/docs/guide" },
+      "part": {
+        "type": "tool",
+        "toolId": "toolu_web_01",
+        "toolName": "WebFetch",
+        "status": "complete",
+        "data": {
+          "type": "tool_use",
+          "id": "toolu_web_01",
+          "name": "WebFetch",
+          "input": { "url": "https://example.com/docs/guide", "prompt": "Summarize the guide" }
+        }
+      }
+    },
+    {
+      "id": "claude-websearch",
+      "kind": "web",
+      "expect": { "query": "thread term chat parity" },
+      "part": {
+        "type": "tool",
+        "toolId": "toolu_web_02",
+        "toolName": "WebSearch",
+        "status": "complete",
+        "data": {
+          "type": "tool_use",
+          "id": "toolu_web_02",
+          "name": "WebSearch",
+          "input": { "query": "thread term chat parity" }
+        }
+      }
+    },
+    {
+      "id": "claude-todo",
+      "kind": "todo",
+      "expect": { "done": 1, "total": 3 },
+      "part": {
+        "type": "tool",
+        "toolId": "toolu_todo_01",
+        "toolName": "TodoWrite",
+        "status": "complete",
+        "data": {
+          "type": "tool_use",
+          "id": "toolu_todo_01",
+          "name": "TodoWrite",
+          "input": {
+            "todos": [
+              { "content": "Read the renderer", "status": "completed", "activeForm": "Reading the renderer" },
+              { "content": "Write tests", "status": "in_progress", "activeForm": "Writing tests" },
+              { "content": "Ship it", "status": "pending", "activeForm": "Shipping it" }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "id": "claude-skill",
+      "kind": "skill",
+      "_unverified": true,
+      "expect": { "name": "example-skill" },
+      "part": {
+        "type": "tool",
+        "toolId": "toolu_skill_01",
+        "toolName": "Skill",
+        "status": "complete",
+        "data": {
+          "type": "tool_use",
+          "id": "toolu_skill_01",
+          "name": "Skill",
+          "input": { "skill": "example-skill", "args": "--dry-run" }
+        }
+      }
+    },
+    {
+      "id": "claude-subagent",
+      "kind": "subagent",
+      "expect": {},
+      "part": {
+        "type": "subagent",
+        "toolId": "toolu_task_01",
+        "toolName": "Task",
+        "status": "unknown",
+        "data": {
+          "key": "toolu_task_01",
+          "description": "Inspect the module",
+          "prompt": "Read renderer/src/toolActivity.ts",
+          "agentType": "explore",
+          "status": "unknown",
+          "provider": "claude"
+        }
+      }
+    },
+    {
+      "id": "claude-mcp",
+      "kind": "mcp",
+      "expect": { "server": "filesystem", "tool": "read_file" },
+      "part": {
+        "type": "tool",
+        "toolId": "toolu_mcp_01",
+        "toolName": "mcp__filesystem__read_file",
+        "status": "complete",
+        "data": {
+          "type": "tool_use",
+          "id": "toolu_mcp_01",
+          "name": "mcp__filesystem__read_file",
+          "input": { "path": "src/app.ts" }
+        }
+      }
+    },
+    {
+      "id": "claude-generic",
+      "kind": "generic",
+      "expect": { "name": "Frobnicate" },
+      "part": {
+        "type": "tool",
+        "toolId": "toolu_custom_01",
+        "toolName": "Frobnicate",
+        "status": "complete",
+        "data": {
+          "type": "tool_use",
+          "id": "toolu_custom_01",
+          "name": "Frobnicate",
+          "input": { "thing": 1 }
+        }
+      }
+    }
+  ]
+}

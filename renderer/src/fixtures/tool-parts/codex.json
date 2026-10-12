@@ -1,0 +1,297 @@
+{
+  "provider": "codex",
+  "note": "Synthetic ChatPart shapes for codex app-server v2. A tool part's data is the ThreadItem object, and toolName is the item type (or its name when present). Item and field shapes verified against the offline schema dump qa/results/codex-0161-recheck/schema/codex_app_server_protocol.v2.schemas.json.",
+  "cases": [
+    {
+      "id": "codex-command-complete",
+      "kind": "command",
+      "expect": { "command": "npm run lint", "exitCode": 0 },
+      "part": {
+        "type": "tool",
+        "toolId": "call_cmd_01",
+        "toolName": "commandExecution",
+        "status": "completed",
+        "data": {
+          "id": "call_cmd_01",
+          "type": "commandExecution",
+          "command": "npm run lint",
+          "cwd": "/workspace/app",
+          "status": "completed",
+          "aggregatedOutput": "lint clean",
+          "exitCode": 0,
+          "durationMs": 1200,
+          "commandActions": [{ "type": "unknown", "command": "npm run lint" }]
+        }
+      }
+    },
+    {
+      "id": "codex-command-failed",
+      "kind": "command",
+      "expect": { "command": "npm test", "exitCode": 1, "status": "failed" },
+      "part": {
+        "type": "tool",
+        "toolId": "call_cmd_02",
+        "toolName": "commandExecution",
+        "status": "failed",
+        "data": {
+          "id": "call_cmd_02",
+          "type": "commandExecution",
+          "command": "npm test",
+          "cwd": "/workspace/app",
+          "status": "failed",
+          "aggregatedOutput": "1 test failed",
+          "exitCode": 1,
+          "commandActions": [{ "type": "unknown", "command": "npm test" }]
+        }
+      }
+    },
+    {
+      "id": "codex-command-streaming",
+      "kind": "command",
+      "expect": { "command": "npm run build", "status": "running" },
+      "part": {
+        "type": "tool",
+        "toolId": "call_cmd_03",
+        "toolName": "commandExecution",
+        "status": "inProgress",
+        "data": {
+          "id": "call_cmd_03",
+          "type": "commandExecution",
+          "command": "npm run build",
+          "cwd": "/workspace/app",
+          "status": "inProgress",
+          "aggregatedOutput": "building module 4 of 9",
+          "commandActions": [{ "type": "unknown", "command": "npm run build" }]
+        }
+      }
+    },
+    {
+      "id": "codex-command-background",
+      "kind": "command",
+      "_unverified": true,
+      "expect": { "command": "npm run watch", "status": "running" },
+      "part": {
+        "type": "tool",
+        "toolId": "call_cmd_04",
+        "toolName": "commandExecution",
+        "status": "inProgress",
+        "data": {
+          "id": "call_cmd_04",
+          "type": "commandExecution",
+          "command": "npm run watch",
+          "cwd": "/workspace/app",
+          "status": "inProgress",
+          "processId": "pty-77",
+          "aggregatedOutput": "watching for changes",
+          "commandActions": [{ "type": "unknown", "command": "npm run watch" }]
+        }
+      }
+    },
+    {
+      "id": "codex-command-read",
+      "kind": "command",
+      "expect": { "command": "cat src/app.ts", "actions": ["read"] },
+      "part": {
+        "type": "tool",
+        "toolId": "call_cmd_05",
+        "toolName": "commandExecution",
+        "status": "completed",
+        "data": {
+          "id": "call_cmd_05",
+          "type": "commandExecution",
+          "command": "cat src/app.ts",
+          "cwd": "/workspace/app",
+          "status": "completed",
+          "aggregatedOutput": "export const app = 1;",
+          "exitCode": 0,
+          "commandActions": [{ "type": "read", "command": "cat src/app.ts", "name": "cat", "path": "src/app.ts" }]
+        }
+      }
+    },
+    {
+      "id": "codex-command-search",
+      "kind": "command",
+      "expect": { "command": "rg describeTool src", "actions": ["search"] },
+      "part": {
+        "type": "tool",
+        "toolId": "call_cmd_06",
+        "toolName": "commandExecution",
+        "status": "completed",
+        "data": {
+          "id": "call_cmd_06",
+          "type": "commandExecution",
+          "command": "rg describeTool src",
+          "cwd": "/workspace/app",
+          "status": "completed",
+          "aggregatedOutput": "src/toolActivity.ts:40: export function describeTool",
+          "exitCode": 0,
+          "commandActions": [{ "type": "search", "command": "rg describeTool src", "path": "src", "query": "describeTool" }]
+        }
+      }
+    },
+    {
+      "id": "codex-command-list",
+      "kind": "command",
+      "expect": { "command": "ls src", "actions": ["list"] },
+      "part": {
+        "type": "tool",
+        "toolId": "call_cmd_07",
+        "toolName": "commandExecution",
+        "status": "completed",
+        "data": {
+          "id": "call_cmd_07",
+          "type": "commandExecution",
+          "command": "ls src",
+          "cwd": "/workspace/app",
+          "status": "completed",
+          "aggregatedOutput": "app.ts\nmain.ts",
+          "exitCode": 0,
+          "commandActions": [{ "type": "listFiles", "command": "ls src", "path": "src" }]
+        }
+      }
+    },
+    {
+      "id": "codex-filechange-multi",
+      "kind": "edit",
+      "expect": { "files": 3, "changes": ["add", "modify", "delete"] },
+      "part": {
+        "type": "tool",
+        "toolId": "call_patch_01",
+        "toolName": "fileChange",
+        "status": "completed",
+        "data": {
+          "id": "call_patch_01",
+          "type": "fileChange",
+          "status": "completed",
+          "changes": [
+            {
+              "path": "src/new.ts",
+              "kind": { "type": "add" },
+              "diff": "@@ -0,0 +1,2 @@\n+export const added = true;\n+export const also = false;\n"
+            },
+            {
+              "path": "src/app.ts",
+              "kind": { "type": "update" },
+              "diff": "@@ -1,3 +1,3 @@\n-const version = 1;\n+const version = 2;\n export const app = version;\n"
+            },
+            {
+              "path": "src/obsolete.ts",
+              "kind": { "type": "delete" },
+              "diff": "@@ -1,1 +0,0 @@\n-export const obsolete = true;\n"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "codex-filechange-move",
+      "kind": "edit",
+      "expect": { "files": 1, "change": "move" },
+      "part": {
+        "type": "tool",
+        "toolId": "call_patch_02",
+        "toolName": "fileChange",
+        "status": "completed",
+        "data": {
+          "id": "call_patch_02",
+          "type": "fileChange",
+          "status": "completed",
+          "changes": [
+            { "path": "src/old.ts", "kind": { "type": "update", "move_path": "src/moved.ts" }, "diff": "" }
+          ]
+        }
+      }
+    },
+    {
+      "id": "codex-websearch",
+      "kind": "web",
+      "expect": { "query": "codex app server protocol" },
+      "part": {
+        "type": "tool",
+        "toolId": "call_web_01",
+        "toolName": "webSearch",
+        "status": "completed",
+        "data": {
+          "id": "call_web_01",
+          "type": "webSearch",
+          "query": "codex app server protocol",
+          "action": { "type": "search", "query": "codex app server protocol" }
+        }
+      }
+    },
+    {
+      "id": "codex-mcp",
+      "kind": "mcp",
+      "expect": { "server": "filesystem", "tool": "read_file" },
+      "part": {
+        "type": "tool",
+        "toolId": "call_mcp_01",
+        "toolName": "mcpToolCall",
+        "status": "completed",
+        "data": {
+          "id": "call_mcp_01",
+          "type": "mcpToolCall",
+          "server": "filesystem",
+          "tool": "read_file",
+          "status": "completed",
+          "arguments": { "path": "src/app.ts" },
+          "result": { "content": [{ "type": "text", "text": "export const app = 1;" }] }
+        }
+      }
+    },
+    {
+      "id": "codex-image-view",
+      "kind": "image",
+      "expect": { "path": "assets/diagram.png" },
+      "part": {
+        "type": "tool",
+        "toolId": "call_image_01",
+        "toolName": "imageView",
+        "status": "completed",
+        "data": { "id": "call_image_01", "type": "imageView", "path": "assets/diagram.png" }
+      }
+    },
+    {
+      "id": "codex-image-generation",
+      "kind": "image",
+      "expect": { "status": "completed" },
+      "part": {
+        "type": "tool",
+        "toolId": "call_image_02",
+        "toolName": "imageGeneration",
+        "status": "completed",
+        "data": {
+          "id": "call_image_02",
+          "type": "imageGeneration",
+          "status": "completed",
+          "result": "data:image/png;base64,AA==",
+          "revisedPrompt": "A neutral placeholder diagram"
+        }
+      }
+    },
+    {
+      "id": "codex-compaction",
+      "kind": "compaction",
+      "expect": {},
+      "part": {
+        "type": "tool",
+        "toolId": "call_compact_01",
+        "toolName": "contextCompaction",
+        "status": "completed",
+        "data": { "id": "call_compact_01", "type": "contextCompaction" }
+      }
+    },
+    {
+      "id": "codex-generic",
+      "kind": "generic",
+      "expect": { "name": "futureItem" },
+      "part": {
+        "type": "tool",
+        "toolId": "call_future_01",
+        "toolName": "futureItem",
+        "status": "completed",
+        "data": { "id": "call_future_01", "type": "futureItem", "status": "completed" }
+      }
+    }
+  ]
+}
