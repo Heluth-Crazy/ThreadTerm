@@ -1,4 +1,4 @@
-import { ClipboardEvent, FormEvent, Fragment, KeyboardEvent, useContext, useEffect, useId, useMemo, useRef, useState } from "react";
+import { ClipboardEvent, FormEvent, Fragment, KeyboardEvent, type MouseEvent as ReactMouseEvent, useContext, useEffect, useId, useMemo, useRef, useState } from "react";
 import DOMPurify from "dompurify";
 import { marked } from "marked";
 import type { ChatAnswerResponse, ChatPart, ChatQueue, ChatSessionOption, ChatSlashCommand, ChatUiState, FileReference, Session } from "@threadterm/protocol";
@@ -23,6 +23,8 @@ import { SubagentCard } from './SubagentCard';
 import { isSubagentPart, subagentInfo, subagentTitle } from '../subagentActivity';
 import { createCodexStreamQueue } from "../codexStream";
 import { FileLinkedMarkdown, FileLinkedText, FileReferenceChips, FileReferenceScopeProvider } from './FileReferenceText';
+import { replyMarkdown } from '../replyMarkdown';
+import { MessageActions } from './MessageActions';
 import { parseMarkdownFileReference } from '../fileReferences';
 import { SessionSurfaceContext } from './SessionSurfaceContext';
 import { CatalogPopover } from './CatalogActions';
@@ -61,8 +63,9 @@ function ThinkingPart({ part, streaming, copy, openFile }: { part: ChatPart; str
 
 const codexMarkdownCache = new Map<string, string>();
 const codexMarkdownCacheLimit = 300;
-function renderCodexMarkdown(text: string): string {
-  const cached = codexMarkdownCache.get(text);
+function renderCodexMarkdown(text: string, zh: boolean): string {
+  const cacheKey = `${zh ? "zh" : "en"}\u0000${text}`;
+  const cached = codexMarkdownCache.get(cacheKey);
   if (cached !== undefined) return cached;
   const rendered = marked.parse(text, { gfm: true, breaks: true });
   const template = document.createElement('template');
@@ -79,9 +82,28 @@ function renderCodexMarkdown(text: string): string {
     FORBID_ATTR: ["style", "srcset", "background", "poster"],
     SANITIZE_NAMED_PROPS: true,
   });
-  codexMarkdownCache.set(text, sanitized);
+  // Copy controls are added after sanitizing: they are our own inert markup,
+  // and the read-only pre content is never carried into an attribute.
+  const holder = document.createElement('div');
+  holder.innerHTML = sanitized;
+  for (const pre of Array.from(holder.querySelectorAll('pre'))) {
+    const block = document.createElement('div');
+    block.className = 'md-code-block';
+    pre.replaceWith(block);
+    block.append(pre);
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'md-code-copy';
+    button.dataset.copyCode = 'true';
+    button.textContent = zh ? '复制' : 'Copy';
+    button.setAttribute('aria-label', zh ? '复制代码' : 'Copy code');
+    button.title = zh ? '复制代码' : 'Copy code';
+    block.append(button);
+  }
+  const result = holder.innerHTML;
+  codexMarkdownCache.set(cacheKey, result);
   if (codexMarkdownCache.size > codexMarkdownCacheLimit) codexMarkdownCache.delete(codexMarkdownCache.keys().next().value!);
-  return sanitized;
+  return result;
 }
 
 function CodexToolPart({ part, copy, openFile }: { part: ChatPart; copy: (en: string, zh: string) => string; openFile?: (reference: FileReference) => void }) {
@@ -1035,6 +1057,30 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession }
     }
   }
   const usageCards = useMemo(() => usageCardsForItems(session.provider, items), [session.provider, items]);
+  // One copy row per turn's reply: the last assistant item that carries final-answer text.
+  const replyItemIds = useMemo(() => {
+    const lastByTurn = new Map<string, string>();
+    for (const item of items) {
+      if (item.role !== 'assistant' || !replyMarkdown(item)) continue;
+      lastByTurn.set(item.turnId ?? item.id, item.id);
+    }
+    return new Set(lastByTurn.values());
+  }, [items]);
+  function copyCodeBlock(event: ReactMouseEvent<HTMLElement>) {
+    const button = event.target instanceof Element ? event.target.closest<HTMLButtonElement>('button[data-copy-code]') : null;
+    if (!button || !event.currentTarget.contains(button)) return;
+    const block = button.closest('.md-code-block');
+    const code = block?.querySelector('code') ?? block?.querySelector('pre');
+    const value = code?.textContent ?? '';
+    if (!value) return;
+    void navigator.clipboard.writeText(value).then(() => {
+      if (button.dataset.copying === 'true') return;
+      button.dataset.copying = 'true';
+      const original = button.textContent ?? '';
+      button.textContent = zh ? '已复制' : 'Copied';
+      window.setTimeout(() => { button.textContent = original; delete button.dataset.copying; }, 1500);
+    }).catch(() => undefined);
+  }
   function renderItem(item: ChatItem, nested = false) {
       if (!item.parts.length) return null;
       if (!nested && item.parts.some(isSubagentPart)) return <Fragment key={item.id}>
@@ -1047,7 +1093,9 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession }
       const usage = nested ? undefined : usageCards.get(item.id);
       if (usage) return <article className={`v3-chat-message assistant is-native is-${session.provider} is-usage`} key={item.id}><UsageCard model={usage} zh={zh} /></article>;
       const live = itemShowsStreaming(item, items);
-      return <article className={`v3-chat-message ${item.role} is-native is-${session.provider}`} key={item.id}>
+      const replyText = item.role === 'assistant' && !nested ? replyMarkdown(item) : '';
+      const showReplyActions = !!replyText && !live && replyItemIds.has(item.id);
+      return <article className={`v3-chat-message ${item.role} is-native is-${session.provider}${showReplyActions ? ' has-reply-actions' : ''}`} key={item.id} onClick={copyCodeBlock}>
       {item.parts.filter(part => shouldRenderPart(part) || (Array.isArray(asRecord(part.data).images) && (asRecord(part.data).images as unknown[]).some(isChatImage))).map((part, index) => {
         if (isSubagentPart(part)) {
           const info = subagentInfo(part);
@@ -1083,7 +1131,7 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession }
           {foldedTool ? <CodexToolPart part={part} copy={copy} openFile={openFile} /> : <>
             {label && <strong>{label}</strong>}
             {body ? codexMarkdown
-              ? <FileLinkedMarkdown sanitizedHtml={renderCodexMarkdown(body)} references={part.fileReferences} openFile={openFile} />
+              ? <FileLinkedMarkdown sanitizedHtml={renderCodexMarkdown(body, zh)} references={part.fileReferences} openFile={openFile} />
               : item.role === 'user' ? <ContextMessage text={body} zh={zh}>{value => <div className="v3-message-text"><FileLinkedText text={value} openFile={openFile} /></div>}</ContextMessage> : <div className="v3-message-text"><FileLinkedText text={body} openFile={openFile} /></div>
               : null}
             {!codexMarkdown && <FileReferenceChips references={part.fileReferences} visibleText={body} openFile={openFile} />}
@@ -1091,6 +1139,7 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession }
           {part.status && !foldedTool && part.type !== 'text' && part.status !== 'complete' && part.status !== 'streaming' && <small>{part.status}</small>}
         </div>;
       })}
+      {showReplyActions && <MessageActions markdown={replyText} copy={copy} />}
     </article>;
   }
   function renderTurn(group: CodexTurn) {

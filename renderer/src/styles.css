@@ -366,6 +366,21 @@ html[data-theme="dark"] { color-scheme:dark; }
 .codex-markdown code { padding:.12em .38em; border-radius:4px; background:var(--soft); font:0.86em/1.4 var(--mono,ui-monospace,SFMono-Regular,Consolas,monospace); }
 .codex-markdown pre { margin:12px 0; padding:10px 12px; overflow:auto; border:1px solid var(--border); border-radius:8px; background:var(--soft); }
 .codex-markdown pre code { padding:0; background:transparent; font-size:12.5px; line-height:1.55; }
+/* Chat reply copy row (A2): reserved space so hover never changes message height. */
+.v3-chat-message.is-native.assistant.has-reply-actions { position:relative; padding-bottom:26px; }
+.chat-message-actions { position:absolute; right:0; bottom:0; display:flex; align-items:center; gap:4px; opacity:0; transition:opacity .12s ease; }
+.v3-chat-message.has-reply-actions:hover .chat-message-actions,
+.v3-chat-message.has-reply-actions:focus-within .chat-message-actions { opacity:1; }
+.chat-message-action { appearance:none; border:1px solid var(--border); border-radius:6px; background:var(--surface); color:var(--muted); font:inherit; font-size:12px; line-height:1; padding:5px 9px; cursor:pointer; }
+.chat-message-action:hover { color:var(--text); border-color:var(--muted); }
+.chat-message-action:focus-visible { outline:2px solid var(--primary); outline-offset:2px; }
+/* Markdown code-block copy (A2): the wrapper pins the button while the block scrolls. */
+.codex-markdown .md-code-block { position:relative; margin:12px 0; }
+.codex-markdown .md-code-block > pre { margin:0; }
+.codex-markdown .md-code-copy { position:absolute; top:6px; right:6px; appearance:none; border:1px solid var(--border); border-radius:6px; background:var(--surface); color:var(--muted); font:inherit; font-size:11px; line-height:1; padding:4px 8px; cursor:pointer; opacity:0; transition:opacity .12s ease; }
+.codex-markdown .md-code-block:hover .md-code-copy,
+.codex-markdown .md-code-copy:focus-visible { opacity:1; }
+.codex-markdown .md-code-copy:focus-visible { outline:2px solid var(--primary); outline-offset:2px; }
 .codex-markdown ul, .codex-markdown ol { margin:0 0 12px; padding-left:1.4em; }
 .codex-markdown li + li { margin-top:4px; }
 .codex-markdown h1, .codex-markdown h2, .codex-markdown h3, .codex-markdown h4 { margin:18px 0 8px; line-height:1.35; font-weight:600; }
