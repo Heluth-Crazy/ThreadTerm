@@ -1714,6 +1714,26 @@ mod tests {
         assert_eq!(item.parts[1]["text"], "a.txt");
     }
     #[test]
+    fn plan_parts_upsert_in_place() {
+        let db = db();
+        record(&db, "s", Some("t"), "chat.item", &json!({"merge":true,"part":{"type":"plan","toolId":"plan:t","status":"complete","data":{"entries":[{"content":"One","status":"pending"}]}}})).unwrap();
+        record(&db, "s", Some("t"), "chat.item", &json!({"merge":true,"part":{"type":"plan","toolId":"plan:t","status":"complete","data":{"entries":[{"content":"One","status":"completed"},{"content":"Two","status":"in_progress"}]}}})).unwrap();
+        let item = db
+            .chat_items("s")
+            .unwrap()
+            .into_iter()
+            .find(|item| item.role == "assistant")
+            .unwrap();
+        let plans: Vec<_> = item
+            .parts
+            .iter()
+            .filter(|part| part["type"] == "plan")
+            .collect();
+        assert_eq!(plans.len(), 1);
+        assert_eq!(plans[0]["data"]["entries"].as_array().unwrap().len(), 2);
+        assert_eq!(plans[0]["data"]["entries"][0]["status"], "completed");
+    }
+    #[test]
     fn six_provider_tool_shapes_keep_bounded_candidates_across_partial_updates() {
         for (provider, data, expected) in [
             (

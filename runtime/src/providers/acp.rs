@@ -1586,6 +1586,22 @@ fn emit_acp_message(
         }
         emit_chat_ui(events, provider, session_id, native_id.as_deref(), ui);
     }
+    if kind == "plan" {
+        // ACP plan updates carry `entries` and no text; they used to fall through
+        // to provider.event and were dropped from the transcript.
+        if let Some(data) = acp_plan_data(update) {
+            emit(
+                events,
+                provider,
+                session_id,
+                native_id.as_deref(),
+                turn_id.as_deref(),
+                "chat.item",
+                json!({"merge":true,"part":crate::chat_plan::plan_part(data, turn_id.as_deref())}),
+            );
+        }
+        return;
+    }
     let text = update
         .get("content")
         .and_then(|c| c.get("text"))
@@ -2102,6 +2118,27 @@ fn acp_part_type(kind: &str) -> Option<&'static str> {
     }
 }
 
+/// ACP `sessionUpdate:"plan"` entries. Kimi and Gemini send the whole list;
+/// `priority` is optional. Malformed entries are skipped rather than failing.
+fn acp_plan_data(update: &Value) -> Option<Value> {
+    let entries = update.get("entries").and_then(Value::as_array)?;
+    let entries = entries.iter().filter_map(|entry| {
+        let content = entry.get("content").and_then(Value::as_str)?.to_owned();
+        let status = entry
+            .get("status")
+            .and_then(Value::as_str)
+            .unwrap_or("pending")
+            .to_owned();
+        let priority = entry
+            .get("priority")
+            .and_then(Value::as_str)
+            .map(ToOwned::to_owned);
+        Some((content, status, priority))
+    });
+    let explanation = update.get("explanation").and_then(Value::as_str);
+    crate::chat_plan::plan_data(entries, explanation)
+}
+
 #[allow(clippy::too_many_arguments)]
 fn emit_chat_delta(
     events: &ScopedProviderEvents,
@@ -2500,6 +2537,32 @@ fn acp_transcript_for_provider(provider: &str, raw: &[Value]) -> Vec<Value> {
             );
             last_message = None;
             continue;
+        }
+        if kind == "plan" {
+            // ACP history carries the same plan updates; keep the latest list
+            // in one part so a repaired/imported chat shows the current plan.
+            if let Some(data) = acp_plan_data(update) {
+                let part = crate::chat_plan::plan_part(data, None);
+                let mut replaced = false;
+                for item in transcript.iter_mut().rev() {
+                    let Some(parts) = item.get_mut("parts").and_then(Value::as_array_mut) else {
+                        continue;
+                    };
+                    if let Some(existing) = parts
+                        .iter_mut()
+                        .find(|candidate| candidate.get("type").and_then(Value::as_str) == Some("plan"))
+                    {
+                        *existing = part.clone();
+                        replaced = true;
+                        break;
+                    }
+                }
+                if !replaced {
+                    transcript.push(json!({"id":format!("acp-plan-{index}"),"role":"assistant","parts":[part],"createdAt":Utc::now().to_rfc3339()}));
+                }
+                last_message = None;
+                continue;
+            }
         }
         let content = update.get("content").unwrap_or(update);
         let Some(text) = content.get("text").and_then(Value::as_str) else {
@@ -3871,6 +3934,54 @@ mod tests {
                 vec!["user", "assistant", "tool"]
             );
         }
+    }
+    #[test]
+    fn plan_updates_project_one_upserted_plan_part() {
+        let (sender, mut receiver) = crate::provider_events::tap_channel(8);
+        let events = ScopedProviderEvents::new(sender, "worker");
+        let native = Mutex::new(Some("parent".to_owned()));
+        let active = Mutex::new(Some("turn-1".to_owned()));
+        let permissions = Mutex::new(HashMap::new());
+        let think = Mutex::new(false);
+        let ui = Mutex::new(AcpUiState::default());
+        emit_acp_message(
+            &events,
+            "kimi",
+            "s",
+            &native,
+            &active,
+            &permissions,
+            &think,
+            &ui,
+            json!({"method":"session/update","params":{"sessionId":"parent","update":{"sessionUpdate":"plan","entries":[
+                {"content":"Explore","status":"completed"},
+                {"content":"Implement","status":"in_progress","priority":"high"}]}}}),
+        );
+        let event = receiver.try_recv().unwrap();
+        assert_eq!(event.kind, "chat.item");
+        assert_eq!(event.data["merge"], true);
+        assert_eq!(event.data["part"]["type"], "plan");
+        assert_eq!(event.data["part"]["toolId"], "plan:turn-1");
+        assert_eq!(event.data["part"]["data"]["entries"][0]["status"], "completed");
+        assert_eq!(event.data["part"]["data"]["entries"][1]["status"], "in_progress");
+        assert_eq!(event.data["part"]["data"]["entries"][1]["priority"], "high");
+        assert!(receiver.try_recv().is_err());
+    }
+    #[test]
+    fn acp_history_derives_a_plan_part_and_keeps_the_latest() {
+        let frames = vec![
+            json!({"params":{"update":{"sessionUpdate":"plan","entries":[{"content":"One","status":"pending"}]}}}),
+            json!({"params":{"update":{"sessionUpdate":"plan","entries":[{"content":"One","status":"completed"},{"content":"Two","status":"in_progress"}]}}}),
+        ];
+        let transcript = acp_transcript_for_provider("kimi", &frames);
+        let plans: Vec<_> = transcript
+            .iter()
+            .flat_map(|item| item["parts"].as_array().unwrap())
+            .filter(|part| part["type"] == "plan")
+            .collect();
+        assert_eq!(plans.len(), 1);
+        assert_eq!(plans[0]["data"]["entries"].as_array().unwrap().len(), 2);
+        assert_eq!(plans[0]["data"]["entries"][0]["status"], "completed");
     }
     #[test]
     fn maps_thought_chunks_to_thinking_parts() {

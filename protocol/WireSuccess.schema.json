@@ -825,7 +825,8 @@
             "usage",
             "error",
             "status",
-            "subagent"
+            "subagent",
+            "plan"
           ]
         },
         "text": {

@@ -654,7 +654,7 @@ pub(crate) fn validate_part(part: &Value) -> Result<()> {
     };
     if !matches!(
         object.get("type").and_then(Value::as_str),
-        Some("text" | "thinking" | "tool" | "approval" | "usage" | "error" | "status" | "subagent")
+        Some("text" | "thinking" | "tool" | "approval" | "usage" | "error" | "status" | "subagent" | "plan")
     ) {
         bail!("invalid_history_transcript: unsupported chat part type");
     }
