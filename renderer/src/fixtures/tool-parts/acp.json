@@ -1,0 +1,250 @@
+{
+  "provider": "acp",
+  "note": "Synthetic ChatPart shapes for ACP agents (Kimi, Gemini and plugins). A tool part's data is the session/update object; the projection merges tool_call and tool_call_update frames by toolCallId, so a completed part carries the newest update. Shapes derived from runtime/src/providers/acp.rs (acp_tool_part, acp_subagent_update) and runtime/tests/fixtures/kimi-question-bridge.jsonl.",
+  "cases": [
+    {
+      "id": "acp-read",
+      "kind": "read",
+      "expect": { "path": "src/app.ts" },
+      "part": {
+        "type": "tool",
+        "toolId": "tc-read-01",
+        "toolName": "Read src/app.ts",
+        "status": "running",
+        "data": {
+          "sessionUpdate": "tool_call",
+          "toolCallId": "tc-read-01",
+          "title": "Read src/app.ts",
+          "kind": "read",
+          "status": "running",
+          "locations": [{ "path": "src/app.ts", "line": 3 }],
+          "rawInput": { "path": "src/app.ts" }
+        }
+      }
+    },
+    {
+      "id": "acp-edit-diff",
+      "kind": "edit",
+      "expect": { "files": 1, "change": "modify" },
+      "part": {
+        "type": "tool",
+        "toolId": "tc-edit-01",
+        "toolName": "Edit src/app.ts",
+        "status": "complete",
+        "data": {
+          "sessionUpdate": "tool_call_update",
+          "toolCallId": "tc-edit-01",
+          "title": "Edit src/app.ts",
+          "kind": "edit",
+          "status": "completed",
+          "content": [
+            {
+              "type": "diff",
+              "path": "src/app.ts",
+              "oldText": "const version = 1;\n",
+              "newText": "const version = 2;\n"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "acp-edit-add",
+      "kind": "edit",
+      "expect": { "files": 1, "change": "add" },
+      "part": {
+        "type": "tool",
+        "toolId": "tc-edit-02",
+        "toolName": "Create src/generated.ts",
+        "status": "complete",
+        "data": {
+          "sessionUpdate": "tool_call_update",
+          "toolCallId": "tc-edit-02",
+          "title": "Create src/generated.ts",
+          "kind": "edit",
+          "status": "completed",
+          "content": [
+            { "type": "diff", "path": "src/generated.ts", "oldText": "", "newText": "export const generated = true;\n" }
+          ]
+        }
+      }
+    },
+    {
+      "id": "acp-delete",
+      "kind": "edit",
+      "expect": { "files": 1, "change": "delete" },
+      "part": {
+        "type": "tool",
+        "toolId": "tc-delete-01",
+        "toolName": "Delete src/obsolete.ts",
+        "status": "complete",
+        "data": {
+          "sessionUpdate": "tool_call_update",
+          "toolCallId": "tc-delete-01",
+          "title": "Delete src/obsolete.ts",
+          "kind": "delete",
+          "status": "completed",
+          "content": [
+            { "type": "diff", "path": "src/obsolete.ts", "oldText": "export const obsolete = true;\n", "newText": "" }
+          ]
+        }
+      }
+    },
+    {
+      "id": "acp-move",
+      "kind": "edit",
+      "expect": { "files": 1, "change": "move" },
+      "part": {
+        "type": "tool",
+        "toolId": "tc-move-01",
+        "toolName": "Move src/old.ts",
+        "status": "complete",
+        "data": {
+          "sessionUpdate": "tool_call_update",
+          "toolCallId": "tc-move-01",
+          "title": "Move src/old.ts",
+          "kind": "move",
+          "status": "completed",
+          "locations": [{ "path": "src/old.ts" }],
+          "rawInput": { "source": "src/old.ts", "destination": "src/moved.ts" }
+        }
+      }
+    },
+    {
+      "id": "acp-search",
+      "kind": "search",
+      "expect": { "query": "describeTool" },
+      "part": {
+        "type": "tool",
+        "toolId": "tc-search-01",
+        "toolName": "Search",
+        "status": "complete",
+        "data": {
+          "sessionUpdate": "tool_call_update",
+          "toolCallId": "tc-search-01",
+          "title": "Search",
+          "kind": "search",
+          "status": "completed",
+          "rawInput": { "pattern": "describeTool", "path": "renderer/src" },
+          "rawOutput": { "content": [{ "type": "text", "text": "3 matches in 2 files" }] }
+        }
+      }
+    },
+    {
+      "id": "acp-execute",
+      "kind": "command",
+      "expect": { "command": "npm test" },
+      "part": {
+        "type": "tool",
+        "toolId": "tc-exec-01",
+        "toolName": "Execute",
+        "status": "running",
+        "data": {
+          "sessionUpdate": "tool_call",
+          "toolCallId": "tc-exec-01",
+          "title": "Execute",
+          "kind": "execute",
+          "status": "running",
+          "rawInput": { "command": "npm test" },
+          "content": [{ "type": "terminal", "terminalId": "term-1" }]
+        }
+      }
+    },
+    {
+      "id": "acp-execute-failed",
+      "kind": "command",
+      "expect": { "command": "npm test", "status": "failed" },
+      "part": {
+        "type": "tool",
+        "toolId": "tc-exec-02",
+        "toolName": "Execute",
+        "status": "failed",
+        "data": {
+          "sessionUpdate": "tool_call_update",
+          "toolCallId": "tc-exec-02",
+          "title": "Execute",
+          "kind": "execute",
+          "status": "failed",
+          "rawInput": { "command": "npm test" },
+          "rawOutput": { "content": [{ "type": "text", "text": "1 test failed" }] }
+        }
+      }
+    },
+    {
+      "id": "acp-fetch",
+      "kind": "web",
+      "expect": { "url": "https://example.com/docs" },
+      "part": {
+        "type": "tool",
+        "toolId": "tc-fetch-01",
+        "toolName": "Fetch",
+        "status": "complete",
+        "data": {
+          "sessionUpdate": "tool_call_update",
+          "toolCallId": "tc-fetch-01",
+          "title": "Fetch",
+          "kind": "fetch",
+          "status": "completed",
+          "rawInput": { "url": "https://example.com/docs" }
+        }
+      }
+    },
+    {
+      "id": "acp-mcp",
+      "kind": "mcp",
+      "expect": { "server": "filesystem", "tool": "read_file" },
+      "part": {
+        "type": "tool",
+        "toolId": "tc-mcp-01",
+        "toolName": "mcp__filesystem__read_file",
+        "status": "complete",
+        "data": {
+          "sessionUpdate": "tool_call_update",
+          "toolCallId": "tc-mcp-01",
+          "title": "mcp__filesystem__read_file",
+          "kind": "other",
+          "status": "completed",
+          "rawInput": { "path": "src/app.ts" }
+        }
+      }
+    },
+    {
+      "id": "acp-subagent",
+      "kind": "subagent",
+      "expect": {},
+      "part": {
+        "type": "subagent",
+        "toolId": "tc-agent-01",
+        "toolName": "Task",
+        "status": "running",
+        "data": {
+          "key": "tc-agent-01",
+          "description": "Inspect the module",
+          "prompt": "Read renderer/src/toolActivity.ts",
+          "agentType": "explore",
+          "status": "running",
+          "provider": "kimi"
+        }
+      }
+    },
+    {
+      "id": "acp-other",
+      "kind": "generic",
+      "expect": { "name": "Todo list" },
+      "part": {
+        "type": "tool",
+        "toolId": "tc-other-01",
+        "toolName": "Todo list",
+        "status": "complete",
+        "data": {
+          "sessionUpdate": "tool_call_update",
+          "toolCallId": "tc-other-01",
+          "title": "Todo list",
+          "kind": "other",
+          "status": "completed",
+          "rawInput": { "items": ["one", "two"] }
+        }
+      }
+    }
+  ]
+}

@@ -1,0 +1,208 @@
+{
+  "provider": "grok",
+  "note": "Synthetic ChatPart shapes for Grok's ACP-shaped JSON-RPC. A tool part's data is the update object, enriched with _meta['x.ai/tool'] identity when present, and toolName is the identity label/name. Shapes derived from runtime/src/providers/grok.rs (grok_tool_part, grok_tool_part_preserving_identity) and runtime/tests/fixtures/grok-question-frames.jsonl.",
+  "cases": [
+    {
+      "id": "grok-read",
+      "kind": "read",
+      "expect": { "path": "src/app.ts" },
+      "part": {
+        "type": "tool",
+        "toolId": "call-read-01",
+        "toolName": "Read File",
+        "status": "complete",
+        "data": {
+          "sessionUpdate": "tool_call_update",
+          "toolCallId": "call-read-01",
+          "status": "completed",
+          "rawInput": { "path": "src/app.ts" },
+          "rawOutput": { "content": [{ "type": "text", "text": "Read 42 lines" }] },
+          "_meta": {
+            "x.ai/tool": {
+              "version": 1,
+              "name": "read_file",
+              "kind": "read",
+              "namespace": "grok_build",
+              "label": "Read File",
+              "read_only": true
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "grok-edit",
+      "kind": "edit",
+      "expect": { "files": 1, "change": "modify" },
+      "part": {
+        "type": "tool",
+        "toolId": "call-edit-01",
+        "toolName": "Edit File",
+        "status": "complete",
+        "data": {
+          "sessionUpdate": "tool_call_update",
+          "toolCallId": "call-edit-01",
+          "status": "completed",
+          "content": [
+            { "type": "diff", "path": "src/app.ts", "oldText": "const version = 1;\n", "newText": "const version = 2;\n" }
+          ],
+          "_meta": {
+            "x.ai/tool": {
+              "version": 1,
+              "name": "edit_file",
+              "kind": "edit",
+              "namespace": "grok_build",
+              "label": "Edit File",
+              "read_only": false
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "grok-command",
+      "kind": "command",
+      "expect": { "command": "npm run lint" },
+      "part": {
+        "type": "tool",
+        "toolId": "call-exec-01",
+        "toolName": "Run Command",
+        "status": "complete",
+        "data": {
+          "sessionUpdate": "tool_call_update",
+          "toolCallId": "call-exec-01",
+          "status": "completed",
+          "rawInput": { "command": "npm run lint" },
+          "rawOutput": { "content": [{ "type": "text", "text": "lint clean" }] },
+          "_meta": {
+            "x.ai/tool": {
+              "version": 1,
+              "name": "run_command",
+              "kind": "execute",
+              "namespace": "grok_build",
+              "label": "Run Command",
+              "read_only": false
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "grok-search",
+      "kind": "search",
+      "expect": { "query": "describeTool" },
+      "part": {
+        "type": "tool",
+        "toolId": "call-search-01",
+        "toolName": "Search Files",
+        "status": "complete",
+        "data": {
+          "sessionUpdate": "tool_call_update",
+          "toolCallId": "call-search-01",
+          "status": "completed",
+          "rawInput": { "query": "describeTool", "path": "renderer/src" },
+          "_meta": {
+            "x.ai/tool": {
+              "version": 1,
+              "name": "search_files",
+              "kind": "search",
+              "namespace": "grok_build",
+              "label": "Search Files",
+              "read_only": true
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "grok-web",
+      "kind": "web",
+      "expect": { "query": "thread term chat parity" },
+      "part": {
+        "type": "tool",
+        "toolId": "call-web-01",
+        "toolName": "Web Search",
+        "status": "complete",
+        "data": {
+          "sessionUpdate": "tool_call_update",
+          "toolCallId": "call-web-01",
+          "status": "completed",
+          "rawInput": { "query": "thread term chat parity" },
+          "_meta": {
+            "x.ai/tool": {
+              "version": 1,
+              "name": "web_search",
+              "kind": "search",
+              "namespace": "grok_build",
+              "label": "Web Search",
+              "read_only": true
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "grok-mcp",
+      "kind": "mcp",
+      "expect": { "tool": "read_file" },
+      "part": {
+        "type": "tool",
+        "toolId": "call-mcp-01",
+        "toolName": "mcp__filesystem__read_file",
+        "status": "complete",
+        "data": {
+          "sessionUpdate": "tool_call_update",
+          "toolCallId": "call-mcp-01",
+          "status": "completed",
+          "rawInput": { "path": "src/app.ts" },
+          "_meta": {
+            "x.ai/tool": {
+              "version": 1,
+              "name": "mcp__filesystem__read_file",
+              "kind": "other",
+              "namespace": "mcp",
+              "label": "mcp__filesystem__read_file",
+              "read_only": true
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "grok-subagent",
+      "kind": "subagent",
+      "expect": {},
+      "part": {
+        "type": "subagent",
+        "toolId": "call-spawn-01",
+        "toolName": "Spawn Subagent",
+        "status": "running",
+        "data": {
+          "key": "call-spawn-01",
+          "description": "Inspect the module",
+          "prompt": "Read renderer/src/toolActivity.ts",
+          "agentType": "explore",
+          "status": "running",
+          "provider": "grok"
+        }
+      }
+    },
+    {
+      "id": "grok-generic",
+      "kind": "generic",
+      "expect": { "name": "custom_tool" },
+      "part": {
+        "type": "tool",
+        "toolId": "call-custom-01",
+        "toolName": "custom_tool",
+        "status": "complete",
+        "data": {
+          "sessionUpdate": "tool_call_update",
+          "toolCallId": "call-custom-01",
+          "status": "completed",
+          "rawInput": { "value": 1 }
+        }
+      }
+    }
+  ]
+}

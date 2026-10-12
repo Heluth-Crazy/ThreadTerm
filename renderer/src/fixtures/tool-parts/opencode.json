@@ -1,0 +1,322 @@
+{
+  "provider": "opencode",
+  "note": "Synthetic ChatPart shapes for the OpenCode server. A tool part's data is the message part, toolName is part.tool (or part.type for history). Shapes derived from runtime/src/providers/opencode.rs (opencode_chat_part, opencode_task_part) and qa/fixtures/mock-opencode.mjs. Edit argument names are marked _unverified.",
+  "cases": [
+    {
+      "id": "opencode-bash",
+      "kind": "command",
+      "expect": { "command": "npm test", "exitCode": 0 },
+      "part": {
+        "type": "tool",
+        "toolId": "prt_bash_01",
+        "toolName": "bash",
+        "status": "completed",
+        "data": {
+          "id": "prt_bash_01",
+          "messageID": "msg_01",
+          "sessionID": "ses_01",
+          "type": "tool",
+          "tool": "bash",
+          "callID": "call_bash_01",
+          "state": {
+            "status": "completed",
+            "title": "Run the tests",
+            "input": { "command": "npm test" },
+            "output": "all tests passed",
+            "metadata": { "exit": 0 },
+            "time": { "start": 1, "end": 2 }
+          }
+        }
+      }
+    },
+    {
+      "id": "opencode-bash-failed",
+      "kind": "command",
+      "expect": { "command": "npm test", "status": "failed" },
+      "part": {
+        "type": "tool",
+        "toolId": "prt_bash_02",
+        "toolName": "bash",
+        "status": "error",
+        "data": {
+          "id": "prt_bash_02",
+          "messageID": "msg_02",
+          "sessionID": "ses_01",
+          "type": "tool",
+          "tool": "bash",
+          "callID": "call_bash_02",
+          "state": {
+            "status": "error",
+            "title": "Run the tests",
+            "input": { "command": "npm test" },
+            "error": "1 test failed",
+            "metadata": { "exit": 1 },
+            "time": { "start": 1, "end": 2 }
+          }
+        }
+      }
+    },
+    {
+      "id": "opencode-edit",
+      "kind": "edit",
+      "_unverified": true,
+      "expect": { "files": 1, "change": "modify" },
+      "part": {
+        "type": "tool",
+        "toolId": "prt_edit_01",
+        "toolName": "edit",
+        "status": "completed",
+        "data": {
+          "id": "prt_edit_01",
+          "messageID": "msg_03",
+          "sessionID": "ses_01",
+          "type": "tool",
+          "tool": "edit",
+          "callID": "call_edit_01",
+          "state": {
+            "status": "completed",
+            "title": "Edit src/app.ts",
+            "input": {
+              "filePath": "src/app.ts",
+              "oldString": "const version = 1;",
+              "newString": "const version = 2;",
+              "replaceAll": false
+            },
+            "metadata": {
+              "diff": "--- a/src/app.ts\n+++ b/src/app.ts\n@@ -1 +1 @@\n-const version = 1;\n+const version = 2;\n"
+            },
+            "time": { "start": 1, "end": 2 }
+          }
+        }
+      }
+    },
+    {
+      "id": "opencode-write",
+      "kind": "edit",
+      "_unverified": true,
+      "expect": { "files": 1, "change": "add" },
+      "part": {
+        "type": "tool",
+        "toolId": "prt_write_01",
+        "toolName": "write",
+        "status": "completed",
+        "data": {
+          "id": "prt_write_01",
+          "messageID": "msg_04",
+          "sessionID": "ses_01",
+          "type": "tool",
+          "tool": "write",
+          "callID": "call_write_01",
+          "state": {
+            "status": "completed",
+            "title": "Write src/generated.ts",
+            "input": { "filePath": "src/generated.ts", "content": "export const generated = true;\n" },
+            "metadata": { "diff": "--- /dev/null\n+++ b/src/generated.ts\n@@ -0,0 +1 @@\n+export const generated = true;\n" },
+            "time": { "start": 1, "end": 2 }
+          }
+        }
+      }
+    },
+    {
+      "id": "opencode-read",
+      "kind": "read",
+      "expect": { "path": "src/app.ts" },
+      "part": {
+        "type": "tool",
+        "toolId": "prt_read_01",
+        "toolName": "read",
+        "status": "completed",
+        "data": {
+          "id": "prt_read_01",
+          "messageID": "msg_05",
+          "sessionID": "ses_01",
+          "type": "tool",
+          "tool": "read",
+          "callID": "call_read_01",
+          "state": {
+            "status": "completed",
+            "title": "Read src/app.ts",
+            "input": { "filePath": "src/app.ts" },
+            "output": "export const app = 1;",
+            "time": { "start": 1, "end": 2 }
+          }
+        }
+      }
+    },
+    {
+      "id": "opencode-grep",
+      "kind": "search",
+      "expect": { "query": "describeTool" },
+      "part": {
+        "type": "tool",
+        "toolId": "prt_grep_01",
+        "toolName": "grep",
+        "status": "completed",
+        "data": {
+          "id": "prt_grep_01",
+          "messageID": "msg_06",
+          "sessionID": "ses_01",
+          "type": "tool",
+          "tool": "grep",
+          "callID": "call_grep_01",
+          "state": {
+            "status": "completed",
+            "title": "Search describeTool",
+            "input": { "pattern": "describeTool", "path": "renderer/src" },
+            "output": "3 matches in 2 files",
+            "time": { "start": 1, "end": 2 }
+          }
+        }
+      }
+    },
+    {
+      "id": "opencode-glob",
+      "kind": "search",
+      "expect": { "query": "**/*.test.ts" },
+      "part": {
+        "type": "tool",
+        "toolId": "prt_glob_01",
+        "toolName": "glob",
+        "status": "completed",
+        "data": {
+          "id": "prt_glob_01",
+          "messageID": "msg_07",
+          "sessionID": "ses_01",
+          "type": "tool",
+          "tool": "glob",
+          "callID": "call_glob_01",
+          "state": {
+            "status": "completed",
+            "title": "Find test files",
+            "input": { "pattern": "**/*.test.ts", "path": "renderer" },
+            "output": "renderer/src/toolActivity.test.ts",
+            "time": { "start": 1, "end": 2 }
+          }
+        }
+      }
+    },
+    {
+      "id": "opencode-list",
+      "kind": "read",
+      "_unverified": true,
+      "expect": { "path": "src" },
+      "part": {
+        "type": "tool",
+        "toolId": "prt_list_01",
+        "toolName": "list",
+        "status": "completed",
+        "data": {
+          "id": "prt_list_01",
+          "messageID": "msg_08",
+          "sessionID": "ses_01",
+          "type": "tool",
+          "tool": "list",
+          "callID": "call_list_01",
+          "state": {
+            "status": "completed",
+            "title": "List src",
+            "input": { "path": "src" },
+            "output": "app.ts\nmain.ts",
+            "time": { "start": 1, "end": 2 }
+          }
+        }
+      }
+    },
+    {
+      "id": "opencode-webfetch",
+      "kind": "web",
+      "expect": { "url": "https://example.com/docs" },
+      "part": {
+        "type": "tool",
+        "toolId": "prt_web_01",
+        "toolName": "webfetch",
+        "status": "completed",
+        "data": {
+          "id": "prt_web_01",
+          "messageID": "msg_09",
+          "sessionID": "ses_01",
+          "type": "tool",
+          "tool": "webfetch",
+          "callID": "call_web_01",
+          "state": {
+            "status": "completed",
+            "title": "Fetch docs",
+            "input": { "url": "https://example.com/docs", "format": "markdown" },
+            "output": "Example docs",
+            "time": { "start": 1, "end": 2 }
+          }
+        }
+      }
+    },
+    {
+      "id": "opencode-todowrite",
+      "kind": "todo",
+      "_unverified": true,
+      "expect": { "done": 1, "total": 2 },
+      "part": {
+        "type": "tool",
+        "toolId": "prt_todo_01",
+        "toolName": "todowrite",
+        "status": "completed",
+        "data": {
+          "id": "prt_todo_01",
+          "messageID": "msg_10",
+          "sessionID": "ses_01",
+          "type": "tool",
+          "tool": "todowrite",
+          "callID": "call_todo_01",
+          "state": {
+            "status": "completed",
+            "title": "Update the plan",
+            "input": {
+              "todos": [
+                { "content": "Read the renderer", "status": "completed" },
+                { "content": "Write tests", "status": "in_progress" }
+              ]
+            },
+            "time": { "start": 1, "end": 2 }
+          }
+        }
+      }
+    },
+    {
+      "id": "opencode-subagent",
+      "kind": "subagent",
+      "expect": {},
+      "part": {
+        "type": "subagent",
+        "toolId": "prt_task_01",
+        "toolName": "task",
+        "status": "running",
+        "data": {
+          "key": "call_task_01",
+          "description": "Inspect the fixture",
+          "prompt": "Read the fixture files",
+          "agentType": "explore",
+          "status": "running",
+          "provider": "opencode"
+        }
+      }
+    },
+    {
+      "id": "opencode-unknown",
+      "kind": "generic",
+      "expect": { "name": "custom" },
+      "part": {
+        "type": "tool",
+        "toolId": "prt_custom_01",
+        "toolName": "custom",
+        "status": "completed",
+        "data": {
+          "id": "prt_custom_01",
+          "messageID": "msg_11",
+          "sessionID": "ses_01",
+          "type": "tool",
+          "tool": "custom",
+          "callID": "call_custom_01",
+          "state": { "status": "completed", "input": { "value": 1 }, "time": { "start": 1, "end": 2 } }
+        }
+      }
+    }
+  ]
+}
