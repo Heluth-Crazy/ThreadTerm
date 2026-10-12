@@ -8,7 +8,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 
 const scratch = await mkdtemp(join(tmpdir(), 'threadterm-reply-copy-'));
-const out = resolve('qa', 'results', 'reply-copy', new Date().toISOString().replace(/[:.]/g, '-'));
+const out = resolve('qa', 'results', 'chat-parity', 'A2', 'reply-copy-isolated', new Date().toISOString().replace(/[:.]/g, '-'));
 await mkdir(out, { recursive: true });
 
 const entry = `
