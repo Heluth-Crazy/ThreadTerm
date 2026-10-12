@@ -1,0 +1,16 @@
+{
+  "schemaVersion": 1,
+  "id": "tool-cards-echo-acp",
+  "name": "Tool cards Echo (QA fixture)",
+  "version": "0.1.0",
+  "publisher": "ThreadTerm QA",
+  "description": "Isolated ACP fixture that emits one read, one search, one command and a multi-file edit.",
+  "homepage": "https://example.invalid/tool-cards-echo",
+  "contributes": { "agents": [{
+    "id": "tool-cards-echo", "name": "Tool cards Echo", "icon": "icon.svg",
+    "command": "node", "args": ["{pluginDir}/agent.mjs"], "versionArgs": ["--version"],
+    "terminal": { "args": [], "resumeArgs": ["--resume", "{sessionId}"] },
+    "chat": { "protocol": "acp", "args": ["--acp"] }, "signIn": { "args": ["login"] },
+    "homepage": "https://example.invalid/tool-cards-echo"
+  }] }
+}
