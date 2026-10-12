@@ -1,0 +1,16 @@
+{
+  "schemaVersion": 1,
+  "id": "reply-copy-echo-acp",
+  "name": "Reply copy Echo (QA fixture)",
+  "version": "0.1.0",
+  "publisher": "ThreadTerm QA",
+  "description": "Isolated ACP Echo fixture for Chat reply-copy QA.",
+  "homepage": "https://example.invalid/reply-copy-echo",
+  "contributes": { "agents": [{
+    "id": "reply-copy-echo", "name": "Reply copy Echo", "icon": "icon.svg",
+    "command": "node", "args": ["{pluginDir}/agent.mjs"], "versionArgs": ["--version"],
+    "terminal": { "args": [], "resumeArgs": ["--resume", "{sessionId}"] },
+    "chat": { "protocol": "acp", "args": ["--acp"] }, "signIn": { "args": ["login"] },
+    "homepage": "https://example.invalid/reply-copy-echo"
+  }] }
+}

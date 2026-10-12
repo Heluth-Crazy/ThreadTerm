@@ -16,7 +16,7 @@ function harness() {
   const code = stripTypeScriptTypes(source.slice(start, end));
   const render = runInNewContext(`${code}\nrenderCodexMarkdown`, {
     marked: { parse: (text: string) => { parses += 1; return `<p>${text}</p>`; } },
-    document: { createElement: () => ({ innerHTML: '', content: { querySelectorAll: () => [] } }) },
+    document: { createElement: () => ({ innerHTML: '', content: { querySelectorAll: () => [] }, querySelectorAll: () => [] }) },
     DOMPurify: { sanitize: (html: string) => { sanitizes += 1; return html === '<p></p>' ? '' : `safe:${html}`; } },
     parseMarkdownFileReference: () => undefined,
   }) as (text: string) => string;
