@@ -496,7 +496,7 @@ export function SessionWorkspace({session,data,theme,onBack,onSelect,onProject,o
       onActiveSession={id=>{setPreviewSessionId(id);onActiveSession?.(id);}}
       onInteraction={()=>{fileOpenGeneration.current++;}}
       onFileReference={(id,reference)=>void openReference(id,reference)} workbench={paneWorkbench}
-      focusTarget={focusTarget} fileReveal={fileReveal} onOpenPath={openPaneFile} onWebClosed={closeRuntimePreview} onWebNavigation={observeRuntimePreview} previewProvenance={pageCommentProvenance} previewLabels={previewLabels}
+      focusTarget={focusTarget} fileReveal={fileReveal} onOpenPath={openPaneFile} projectPath={project?.path} onWebClosed={closeRuntimePreview} onWebNavigation={observeRuntimePreview} previewProvenance={pageCommentProvenance} previewLabels={previewLabels}
      /></ContextHost.Provider><ContextSendDialogHost/>
     </div>
    </div>{inspector&&<aside className="inspector" aria-label={zh?'会话详情面板':'Session details'}><div className="ins-head">{zh?'会话详情':'Session details'}</div><div className="ins-scroll">

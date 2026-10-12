@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import type { ChatPart } from '@threadterm/protocol';
-import { cardBodyVisible, diffView, editFileStats, jsonView, moreFilesLabel, outputView, toolStatusLabel, DIFF_COLLAPSE_LINES, OUTPUT_MAX_LINES, JSON_NODE_LIMIT } from './toolCards';
-import { toolSummary, toolSummarySegments, toolSummaryText } from './toolActivity';
+import { cardBodyVisible, diffView, editFileStats, isOpenableDiffPath, jsonView, moreFilesLabel, outputView, toolStatusLabel, DIFF_COLLAPSE_LINES, OUTPUT_MAX_LINES, JSON_NODE_LIMIT } from './toolCards';
+import { toolSummary, toolSummaryLabel, toolSummarySegments, toolSummaryText } from './toolActivity';
 import { toolView } from './toolView';
 
 const copy = (en: string) => en;
@@ -64,9 +64,26 @@ test('JSON trees start collapsed beyond depth 2 and cap at 500 nodes', () => {
   assert.ok(wide.nodes <= JSON_NODE_LIMIT);
 });
 
+test('JSON tree paths stay distinct for keys that contain a dot', () => {
+  const view = jsonView({ 'a.b': 1, a: { b: 2 } });
+  const paths = view.rows.map(row => row.path);
+  assert.equal(new Set(paths).size, paths.length, 'every row path is unique');
+  assert.ok(paths.includes('$["a.b"]'));
+  assert.ok(paths.includes('$.a.b'));
+});
+
 test('card bodies are only built for an open drawer', () => {
   assert.equal(cardBodyVisible(false), false);
   assert.equal(cardBodyVisible(true), true);
+});
+
+test('Open diff is only offered for a path the diff surface can open', () => {
+  assert.equal(isOpenableDiffPath('src/app.ts', 'D:\\repo'), true, 'relative paths are workspace-relative');
+  assert.equal(isOpenableDiffPath('D:\\repo\\src\\app.ts', 'D:\\repo'), true, 'absolute path inside the root');
+  assert.equal(isOpenableDiffPath('D:\\other\\app.ts', 'D:\\repo'), false, 'absolute path outside the root');
+  assert.equal(isOpenableDiffPath('D:\\other\\app.ts', undefined), false, 'absolute path with no known root');
+  assert.equal(isOpenableDiffPath('', 'D:\\repo'), false);
+  assert.equal(isOpenableDiffPath(undefined, 'D:\\repo'), false);
 });
 
 test('status chips stay neutral with a distinct label per state', () => {
@@ -103,6 +120,10 @@ test('toolSummary counts by kind, distinct edited files and failures', () => {
   assert.deepEqual(toolSummarySegments(toolSummary([entry({ id: 'r', input: { file_path: 'a' } }, 'Read')]), copy), ['Explored 1 file']);
   assert.equal(toolSummaryText(summary, copy).includes('1 failed'), true);
   assert.equal(toolSummaryText(summary, copy).includes('1 interrupted'), true);
+  // The visible label omits the failed/interrupted tail because the drawer shows
+  // those as their own red badge; the full sentence stays in the title.
+  assert.equal(toolSummaryLabel(summary, copy), toolSummarySegments(summary, copy).join(' · '));
+  assert.equal(toolSummaryLabel(summary, copy).includes('failed'), false);
 });
 
 test('a command with no actions is only a command', () => {

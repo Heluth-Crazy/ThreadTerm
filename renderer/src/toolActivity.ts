@@ -305,3 +305,12 @@ export function toolSummaryText(summary: ToolSummary, copy: Copy): string {
   if (summary.interrupted) parts.push(copy(`${summary.interrupted} interrupted`, `${summary.interrupted} 项中断`));
   return parts.join(' · ');
 }
+
+/**
+ * The visible count line. It keeps the failed/interrupted counts out because
+ * the drawer already shows them as their own red badge; the full sentence stays
+ * in `toolSummaryText` for the title and screen reader.
+ */
+export function toolSummaryLabel(summary: ToolSummary, copy: Copy): string {
+  return toolSummarySegments(summary, copy).join(' · ');
+}

@@ -104,11 +104,13 @@ try {
   assert.deepEqual(kinds, ['read', 'search', 'command', 'edit'], `entry kinds: ${kinds.join(',')}`);
   check('collapsed drawer keeps every entry shell and builds no card bodies');
 
-  // The B3 turn summary line.
+  // The B3 turn summary line. The visible count omits the failed/interrupted
+  // tail (the red badge below shows it); the title keeps the full sentence.
   const summary = (await scope.locator('.chat-tool-count').innerText()).trim();
-  assert.equal(summary, 'Explored 1 file · Searched 1 · Ran 1 command · Edited 2 files · 1 failed', `summary line: ${summary}`);
+  assert.equal(summary, 'Explored 1 file · Searched 1 · Ran 1 command · Edited 2 files', `summary line: ${summary}`);
+  assert.equal(await scope.locator('.chat-tool-count').getAttribute('title'), 'Explored 1 file · Searched 1 · Ran 1 command · Edited 2 files · 1 failed', 'the title keeps the full sentence, including failures');
   assert.equal(await scope.locator('.chat-tool-failed-count').innerText(), '1 failed / interrupted');
-  check('the collapsed summary counts explored, searched, ran, edited files and failures');
+  check('the collapsed summary counts explored, searched, ran and edited files, with failures shown once as a badge');
 
   // Expanded typed bodies.
   await drawer.locator('> summary').click();
