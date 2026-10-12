@@ -7,6 +7,8 @@ export type SessionSurfacePresentation = {
  menuHost:HTMLElement|null;
  focused:boolean;
  openFile?:(reference:FileReference)=>void;
+ /** Opens a working-tree diff for a path inside the session's project, when the host supports it. */
+ openDiff?:(path:string)=>void;
  /** Opens an http(s) page in a tab beside the session (terminal link bar). */
  openWeb?:(url:string)=>void;
 };
