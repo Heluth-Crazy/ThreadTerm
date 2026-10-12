@@ -35,6 +35,15 @@ test('selected commits carry an exact staged snapshot and reject ambiguous or un
  assert.throws(()=>validateResult('git.status',{branch:'main',upstream:null,ahead:0,behind:0,changes:[],selectedCommit:{head,indexFingerprint:fingerprint,supported:'yes'}}));
 });
 
+test('the additive plan part type round-trips through the chat contract',()=>{
+ const part={type:'plan',toolId:'plan:turn-1',data:{entries:[{content:'Write the tests',status:'in_progress',priority:'high'},{content:'Ship it',status:'pending'}],explanation:'Two-step plan'}};
+ const item={id:'plan-item',role:'assistant',createdAt:'2026-01-01T00:00:00Z',turnId:'turn-1',parts:[part]};
+ validateResult('chat.read',[item]);
+ validateResult('chat.snapshot',{items:[item],revision:1,repair:{offered:false,reason:'history_unavailable',degraded:false}});
+ // The union stays closed: unknown part types are still rejected.
+ assert.throws(()=>validateResult('chat.read',[{...item,parts:[{...part,type:'roadmap'}]}]));
+});
+
 test('native turn outcome and message phase are typed independently of duration',()=>{
  const item={id:'native-boundary',role:'assistant',parts:[],createdAt:'2026-01-01T00:00:00Z',turnId:'scoped-turn',turnStatus:'completed'};
  validateResult('chat.read',[item]);
