@@ -2971,6 +2971,36 @@ fn emit_codex_message(
         emit_chat_ui(events, session_id, native_id.as_deref(), ui, worker_token);
         return;
     }
+    if method == "turn/plan/updated" {
+        let entries = params
+            .get("plan")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(|step| {
+                let content = step.get("step").and_then(Value::as_str)?.to_owned();
+                let status = step
+                    .get("status")
+                    .and_then(Value::as_str)
+                    .unwrap_or("pending")
+                    .to_owned();
+                Some((content, status, None))
+            });
+        let explanation = params.get("explanation").and_then(Value::as_str);
+        if let Some(data) = crate::chat_plan::plan_data(entries, explanation) {
+            emit_scoped(
+                events,
+                "codex",
+                session_id,
+                native_id.as_deref(),
+                turn_id.as_deref(),
+                "chat.item",
+                json!({"merge":true,"part":crate::chat_plan::plan_part(data, turn_id.as_deref())}),
+                Some(worker_token),
+            );
+        }
+        return;
+    }
     match method {
         "thread/tokenUsage/updated" => {
             if let Ok(mut state) = ui.lock() {
@@ -3513,6 +3543,25 @@ mod tests {
         fn drain(&mut self) -> Vec<super::super::ProviderEvent> {
             std::iter::from_fn(|| self.received.try_recv().ok()).collect()
         }
+    }
+
+    #[test]
+    fn turn_plan_updates_project_a_plan_part() {
+        let mut replay = CodexSubagentReplay::new();
+        let _ = replay.drain();
+        replay.emit(
+            "turn/plan/updated",
+            json!({"threadId":SUBAGENT_PARENT,"turnId":"parent-turn","explanation":"Two steps",
+                "plan":[{"step":"Read","status":"completed"},{"step":"Edit","status":"inProgress"}]}),
+        );
+        let events = replay.drain();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].kind, "chat.item");
+        assert_eq!(events[0].data["merge"], true);
+        assert_eq!(events[0].data["part"]["type"], "plan");
+        assert_eq!(events[0].data["part"]["toolId"], "plan:public-turn");
+        assert_eq!(events[0].data["part"]["data"]["entries"][1]["status"], "in_progress");
+        assert_eq!(events[0].data["part"]["data"]["explanation"], "Two steps");
     }
 
     #[test]

@@ -60,7 +60,7 @@ export function toolEntriesForItems(items: readonly ChatItem[]): ToolActivityEnt
 export function withoutToolParts(items: readonly ChatItem[]): ChatItem[] {
   return items.flatMap(item => {
     if (item.role === 'user' || item.role === 'system') return [item];
-    const parts = item.parts.filter(part => part.type !== 'tool');
+    const parts = item.parts.filter(part => part.type !== 'tool' && part.type !== 'plan');
     return parts.length ? [{ ...item, parts }] : [];
   });
 }
@@ -116,6 +116,7 @@ export function groupToolActivity(items: readonly ChatItem[]): ToolPresentation[
       }
     };
     item.parts.forEach((part, index) => {
+      if (part.type === 'plan') return;
       if (part.type === 'tool' && hiddenTool(part)) return;
       if (part.type !== 'tool') {
         if (!parts.length) start = index;

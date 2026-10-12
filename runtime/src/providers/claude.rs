@@ -1512,6 +1512,18 @@ fn emit_claude_message(
                     worker_token,
                 );
             }
+            if let Some(data) = claude_plan_data(&message) {
+                emit_scoped(
+                    events,
+                    "claude",
+                    session_id,
+                    native_id.as_deref(),
+                    turn_id,
+                    "chat.item",
+                    json!({"merge":true,"part":crate::chat_plan::plan_part(data, turn_id)}),
+                    worker_token,
+                );
+            }
             if let Some((item_id, text)) = claude_unstreamed_text(&raw, &message) {
                 emit_scoped(
                     events,
@@ -1591,6 +1603,39 @@ fn claude_local_command_output(content: &str) -> String {
     }
     output.retain(|text| !text.is_empty());
     output.join("\n")
+}
+
+/// Claude Code's `TodoWrite` input carries the whole list each time, so the
+/// latest call in the message is the current plan. Incremental `Task*` tools
+/// need the native task id from a tool result, which this adapter does not
+/// parse; `TodoWrite` remains the authoritative list.
+fn claude_plan_data(message: &Value) -> Option<Value> {
+    let content = message
+        .pointer("/message/content")
+        .and_then(Value::as_array)?;
+    content
+        .iter()
+        .rev()
+        .find_map(claude_block_plan_data)
+}
+
+fn claude_block_plan_data(block: &Value) -> Option<Value> {
+    if block.get("type").and_then(Value::as_str) != Some("tool_use")
+        || block.get("name").and_then(Value::as_str) != Some("TodoWrite")
+    {
+        return None;
+    }
+    let todos = block.pointer("/input/todos").and_then(Value::as_array)?;
+    let entries = todos.iter().filter_map(|todo| {
+        let content = todo.get("content").and_then(Value::as_str)?.to_owned();
+        let status = todo
+            .get("status")
+            .and_then(Value::as_str)
+            .unwrap_or("pending")
+            .to_owned();
+        Some((content, status, None))
+    });
+    crate::chat_plan::plan_data(entries, None)
 }
 
 fn claude_message_tool_parts(message: &Value) -> Vec<(String, Value)> {
@@ -1674,18 +1719,18 @@ fn claude_transcript(raw: &[Value]) -> Vec<Value> {
         let message = entry.get("message")?;
         let role = entry.get("type").or_else(|| message.get("role")).and_then(Value::as_str)?;
         if !matches!(role, "user"|"assistant") { return None; }
-        let parts = message.get("content").and_then(Value::as_array).map(|content| content.iter().filter_map(|part| {
+        let parts = message.get("content").and_then(Value::as_array).map(|content| content.iter().flat_map(|part| {
             match part.get("type").and_then(Value::as_str) {
-                Some("text") => Some(json!({"type":"text","text":part.get("text").and_then(Value::as_str).unwrap_or_default()})),
+                Some("text") => vec![json!({"type":"text","text":part.get("text").and_then(Value::as_str).unwrap_or_default()})],
                 Some("tool_use") if claude_agent_tool(part) => {
-                    let id = part.get("id").and_then(Value::as_str)?;
+                    let Some(id) = part.get("id").and_then(Value::as_str) else { return Vec::new(); };
                     let mut info = claude_agent_info(id, part.get("input").unwrap_or(&Value::Null), "none");
                     info["key"] = json!(id);
                     info["provider"] = json!("claude");
                     info["status"] = json!("unknown");
-                    Some(json!({"type":"subagent","toolId":id,"status":"unknown","data":info}))
+                    vec![json!({"type":"subagent","toolId":id,"status":"unknown","data":info})]
                 }
-                Some("tool_result") if part.get("tool_use_id").and_then(Value::as_str).is_some_and(|id| agents.contains(id)) => None,
+                Some("tool_result") if part.get("tool_use_id").and_then(Value::as_str).is_some_and(|id| agents.contains(id)) => Vec::new(),
                 Some(kind) => {
                     let mut tool = json!({"type":"tool","toolName":kind,"data":part});
                     insert_optional(
@@ -1697,9 +1742,13 @@ fn claude_transcript(raw: &[Value]) -> Vec<Value> {
                             .map(|value| json!(value)),
                     );
                     crate::file_references::enrich_tool_part(&mut tool, None);
-                    Some(tool)
+                    let mut out = vec![tool];
+                    if let Some(data) = claude_block_plan_data(part) {
+                        out.push(crate::chat_plan::plan_part(data, None));
+                    }
+                    out
                 }
-                None => None,
+                None => Vec::new(),
             }
         }).collect::<Vec<_>>()).unwrap_or_default();
         Some(json!({"id":entry.get("uuid").and_then(Value::as_str).map(ToOwned::to_owned).unwrap_or_else(|| format!("claude-{index}")),"role":role,"parts":parts,"createdAt":Utc::now().to_rfc3339()}))
@@ -1803,6 +1852,40 @@ mod tests {
             }
             self.message(message)
         }
+    }
+
+    #[test]
+    fn todowrite_projects_a_plan_part_alongside_its_tool() {
+        let mut replay = SubagentReplay::new();
+        let all = replay.message(json!({"type":"assistant","parent_tool_use_id":null,"message":{"content":[
+            {"type":"tool_use","id":"todo-1","name":"TodoWrite","input":{"todos":[
+                {"content":"Read","status":"completed","activeForm":"Reading"},
+                {"content":"Edit","status":"in_progress","activeForm":"Editing"}]}}
+        ]}}));
+        let items: Vec<_> = all
+            .iter()
+            .filter(|event| event.kind == "chat.item")
+            .collect();
+        assert!(items.iter().any(|event| {
+            event.data["part"]["type"] == "tool" && event.data["part"]["toolId"] == "todo-1"
+        }));
+        let plan = items
+            .iter()
+            .find(|event| event.data["part"]["type"] == "plan")
+            .expect("plan part");
+        assert_eq!(plan.data["part"]["toolId"], "plan:turn");
+        assert_eq!(plan.data["part"]["data"]["entries"][0]["status"], "completed");
+        assert_eq!(plan.data["part"]["data"]["entries"][1]["status"], "in_progress");
+    }
+
+    #[test]
+    fn claude_history_derives_plan_parts() {
+        let transcript = claude_transcript(&[json!({"type":"assistant","uuid":"u1","message":{"content":[
+            {"type":"tool_use","id":"todo-1","name":"TodoWrite","input":{"todos":[{"content":"One","status":"pending"}]}}
+        ]}})]);
+        let parts = transcript[0]["parts"].as_array().unwrap();
+        assert!(parts.iter().any(|part| part["type"] == "plan"));
+        assert!(parts.iter().any(|part| part["type"] == "tool"));
     }
 
     #[test]

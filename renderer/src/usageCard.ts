@@ -144,7 +144,7 @@ export function usageCardsForItems(provider: string, items: ChatItem[]): Map<str
     } else {
       // Mixed replies still need the ordinary renderer for approvals, tools
       // and reasoning; a quota part alone must not swallow those controls.
-      if (command && !usageCommand || item.parts.some(part => !['text', 'error'].includes(part.type))) continue;
+      if (command && !usageCommand || item.parts.some(part => !['text', 'error', 'plan'].includes(part.type))) continue;
       const native = item.parts.some(part => record(part.data).kind === 'plan' || /^Grok (?:session )?usage(?:$|\s+[—(])/m.test(part.text ?? '') || usageCommand && /^Context:.*tokens/m.test(part.text ?? ''));
       if (command !== '/status' && (native || usageCommand && item.parts.some(part => part.type === 'error' || /usage.*unavailable/i.test(part.text ?? '')))) cards.set(item.id, nativeUsage(provider, item));
     }

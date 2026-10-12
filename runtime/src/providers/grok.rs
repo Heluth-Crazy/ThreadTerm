@@ -2117,6 +2117,20 @@ fn emit_grok_message(
         emit_chat_ui(events, session_id, native_id.as_deref(), ui);
         return;
     }
+    if kind == "plan" {
+        if let Some(data) = grok_plan_data(update) {
+            emit(
+                events,
+                "grok",
+                session_id,
+                native_id.as_deref(),
+                turn_id.as_deref(),
+                "chat.item",
+                json!({"merge":true,"part":crate::chat_plan::plan_part(data, turn_id.as_deref())}),
+            );
+        }
+        return;
+    }
     if kind == "tool_call" || kind == "tool_call_update" || kind.contains("toolCall") {
         let fallback_status = if kind == "tool_call" { "running" } else { "complete" };
         let part;
@@ -2201,6 +2215,25 @@ fn grok_part_type(kind: &str) -> Option<&'static str> {
         "agent_message_chunk" | "agentMessageChunk" | "message" => Some("text"),
         _ => None,
     }
+}
+
+/// Grok is ACP-shaped; map the same `plan` update when the agent sends one.
+fn grok_plan_data(update: &Value) -> Option<Value> {
+    let entries = update.get("entries").and_then(Value::as_array)?;
+    let entries = entries.iter().filter_map(|entry| {
+        let content = entry.get("content").and_then(Value::as_str)?.to_owned();
+        let status = entry
+            .get("status")
+            .and_then(Value::as_str)
+            .unwrap_or("pending")
+            .to_owned();
+        let priority = entry
+            .get("priority")
+            .and_then(Value::as_str)
+            .map(ToOwned::to_owned);
+        Some((content, status, priority))
+    });
+    crate::chat_plan::plan_data(entries, update.get("explanation").and_then(Value::as_str))
 }
 
 fn grok_update_text(update: &Value) -> Option<String> {

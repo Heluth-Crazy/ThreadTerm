@@ -23,14 +23,14 @@ const items = [row('u',[text('Test message')],{role:'user'}),
   row('tool',[{type:'tool',toolName:'commandExecution',status:'completed',data:{command:'Get-Content AGENTS.md',output:'Project instructions'}}]),
   row('answer',[text('The test message completed successfully.')]),
   row('done',[],{elapsedMs:22000})];
-let listener;
-window.threadterm = {onEvent: cb => {listener=cb; return ()=>{};},request:async method => {
+const listeners = new Set();
+window.threadterm = {onEvent: cb => {listeners.add(cb); return ()=>listeners.delete(cb);},request:async method => {
   if(method==='chat.snapshot')return {items,revision:1};
   if(method==='chat.draft.read')return {text:'',revision:0};
   if(method==='chat.options')return {options:[],commands:[]};
   throw Error('Unexpected QA request '+method);
 }};
-window.qaUpdate = item => listener({event:'chat.item',seq:2,data:{sessionId:'qa',item}});
+window.qaUpdate = item => listeners.forEach(cb => cb({event:'chat.item',seq:2,data:{sessionId:'qa',item}}));
 document.documentElement.dataset.theme='light';
 createRoot(document.getElementById('root')).render(<I18nProvider locale="zh-CN"><ChatView session={{id:'qa',provider:'codex',mode:'chat',status:'idle',readOnly:true,title:'QA',createdAt:'now',updatedAt:'now'}} /></I18nProvider>);
 `;
@@ -50,7 +50,7 @@ try {
   assert.equal(geometry.height, 44, 'shared 24px line height plus 20px vertical padding; no phantom Markdown newline');
   assert.equal(await page.locator('.codex-work').getAttribute('open'), null);
   assert.equal(await page.locator('.codex-work-body').isVisible(), false);
-  assert.equal(await page.locator('.codex-turn > .assistant').filter({hasText:'The test message completed successfully.'}).innerText(), 'The test message completed successfully.');
+  assert.equal(await page.locator('.codex-turn > .assistant').filter({hasText:'The test message completed successfully.'}).locator('.v3-message-text').first().innerText(), 'The test message completed successfully.');
   for (const theme of ['light', 'dark']) {
     await page.evaluate(theme => document.documentElement.dataset.theme = theme, theme);
     for (const width of [1280, 1440, 1920]) {
@@ -67,8 +67,11 @@ try {
     }
   }
   await page.locator('.codex-work > summary').click();
-  await page.locator('.chat-tool-activity > summary').click();
-  assert.equal(await page.locator('.chat-tool-entry pre').isVisible(), true);
+  const drawer = page.locator('.chat-tool-activity').first();
+  if (!(await drawer.evaluate(element => element.open))) await drawer.locator('> summary').click();
+  // B2/B3 replaced the generic entry with typed cards; the expanded card body
+  // renders the command output instead of a bare entry <pre>.
+  await page.locator('.chat-tool-entry .tool-card-body').first().waitFor();
   // State survives transcript updates, and intentional user line breaks survive.
   await page.evaluate(() => window.qaUpdate({id:'u2',role:'user',turnId:'t2',createdAt:'now',parts:[{type:'text',text:'First line\nSecond line'}]}));
   await page.locator('.is-codex.user').nth(1).waitFor();

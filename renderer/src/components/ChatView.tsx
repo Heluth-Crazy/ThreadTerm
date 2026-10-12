@@ -25,6 +25,7 @@ import { createCodexStreamQueue } from "../codexStream";
 import { FileLinkedMarkdown, FileLinkedText, FileReferenceChips, FileReferenceScopeProvider } from './FileReferenceText';
 import { replyMarkdown } from '../replyMarkdown';
 import { MessageActions } from './MessageActions';
+import { ChatPlanPanel } from './ChatPlanPanel';
 import { parseMarkdownFileReference } from '../fileReferences';
 import { SessionSurfaceContext } from './SessionSurfaceContext';
 import { CatalogPopover } from './CatalogActions';
@@ -1212,7 +1213,7 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession }
       event.preventDefault();
       const url = anchor.getAttribute('href') ?? '';
       if (isWebTabUrl(url)) { setLinkIssue(undefined); setLinkMenu({ anchor, url }); }
-    }} onScroll={viewport.onScroll}><div ref={logContentRef}>{items.length ? groupCodexTranscript(items, session.provider === "codex").map(group => <section className="codex-turn chat-turn" key={group.id}>
+    }} onScroll={viewport.onScroll}><ChatPlanPanel items={items} copy={copy} liveTurnId={activeTurnId(items, session.status)} /><div ref={logContentRef}>{items.length ? groupCodexTranscript(items, session.provider === "codex").map(group => <section className="codex-turn chat-turn" key={group.id}>
       {renderTurn(group)}
     </section>) : firstResponseWait ? null : <div className="empty v3-empty"><strong>{copy('No messages yet.', '暂无消息。')}</strong><p>{copy('Send a message to start working with this provider.', '发送消息，开始与此提供方协作。')}</p></div>}
       {submissionPreview && !items.some(item => item.role === 'user' && item.turnId === submissionPreview.token) && <article className={`v3-chat-message user is-native is-${session.provider} chat-pending-submission`} aria-label={copy('Message being sent', '正在发送的消息')}>
