@@ -3,13 +3,14 @@
 // and removes ~/.grok/sessions/<encoded cwd> afterwards. Grok is the only live
 // agent this task may start.
 //   node qa/grok-plan-probe.mjs
+// Set THREADTERM_QA_GROK to override the default (<home>/.grok/bin/grok.exe).
 import { spawn } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { homedir, tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 
-const source = process.env.THREADTERM_QA_GROK ?? 'C:\\Users\\27968\\.grok\\bin\\grok.exe';
+const source = process.env.THREADTERM_QA_GROK ?? join(homedir(), '.grok', 'bin', 'grok.exe');
 if (!existsSync(source)) throw new Error(`Grok executable not found: ${source}`);
 const scratch = await mkdtemp(join(tmpdir(), 'grok-plan-probe-'));
 const bin = join(scratch, 'bin');
