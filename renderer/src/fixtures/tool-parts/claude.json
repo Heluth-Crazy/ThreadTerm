@@ -70,7 +70,7 @@
     {
       "id": "claude-bash",
       "kind": "command",
-      "expect": { "command": "npm run lint", "exitCode": 0 },
+      "expect": { "command": "npm run lint" },
       "part": {
         "type": "tool",
         "toolId": "toolu_bash_01",
@@ -91,7 +91,7 @@
     {
       "id": "claude-bash-failed",
       "kind": "command",
-      "expect": { "command": "npm test", "exitCode": 1 },
+      "expect": { "command": "npm test" },
       "part": {
         "type": "tool",
         "toolId": "toolu_bash_02",

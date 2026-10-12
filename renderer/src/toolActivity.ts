@@ -1,12 +1,15 @@
 import type { ChatItem, ChatPart } from '@threadterm/protocol';
 import { delegationTool } from './delegation';
 import { isSubagentPart, subagentItemsOf } from './subagentActivity';
+import { toolInputs, toolStatus, toolView } from './toolView';
+
+export { toolStatus } from './toolView';
+export type { ToolStatus } from './toolView';
 
 export interface ToolActivityEntry { id: string; itemId: string; part: ChatPart }
 export type ToolPresentation =
   | { type: 'item'; id: string; item: ChatItem }
   | { type: 'tools'; id: string; tools: ToolActivityEntry[] };
-export type ToolStatus = 'running' | 'complete' | 'failed' | 'cancelled' | 'unknown';
 export type ToolKind = 'command' | 'browser' | 'file' | 'search' | 'delegation' | 'mcp' | 'tool';
 type Copy = (en: string, zh: string) => string;
 const record = (value: unknown): Record<string, unknown> => value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {};
@@ -135,24 +138,9 @@ export function groupToolActivity(items: readonly ChatItem[]): ToolPresentation[
   return result;
 }
 
-export function toolStatus(part: ChatPart): ToolStatus {
-  const data = record(part.data), state = record(data.state);
-  const status = (part.status || string(state.status) || string(data.status) || '').toLowerCase().replace(/[\s_-]/g, '');
-  if (['cancelled', 'canceled', 'interrupted', 'aborted'].includes(status)) return 'cancelled';
-  if (['failed', 'error', 'declined', 'rejected'].includes(status)
-    || data.isError === true || data.is_error === true
-    || (typeof data.exitCode === 'number' && data.exitCode !== 0)) return 'failed';
-  if (['running', 'pending', 'inprogress', 'streaming', 'executing'].includes(status)) return 'running';
-  if (['complete', 'completed', 'success', 'succeeded'].includes(status)) return 'complete';
-  return 'unknown';
-}
-
 function inputs(data: Record<string, unknown>): Record<string, unknown>[] {
-  const values = [data.input, data.arguments, data.rawInput, data.args, record(data.state).input, data];
-  return values.map(value => {
-    if (typeof value === 'string') { try { return record(JSON.parse(value)); } catch { return {}; } }
-    return record(value);
-  });
+  // Kept as a local alias: describeTool's browser branch reads the same inputs.
+  return toolInputs(data);
 }
 
 const outputText = (value: unknown): string[] => {
@@ -234,26 +222,24 @@ export function describeTool(part: ChatPart, copy: Copy): { kind: ToolKind; name
     if (argument('url')) { try { const url = new URL(argument('url')!); target = url.host + url.pathname; } catch { /* Keep the native target. */ } }
     return { kind: 'browser', name: operation, action: copy('Browsing', '正在操作浏览器'), detail: target };
   }
-  if (lower === 'commandexecution' || /\b(command|shell|bash|exec|execute|terminal)\b/.test(lower.replace(/[._-]+/g, ' ')) || data.kind === 'execute') {
-    const actions = Array.isArray(data.commandActions) ? data.commandActions : [];
-    const detail = compact(string(record(actions[0]).command)) || argument('command', 'cmd', 'script') || compact(string(data.rawInput));
-    return { kind: 'command', name: copy('Command', '命令'), action: copy('Running command', '正在执行命令'), detail };
+  const view = toolView(part);
+  if (view.kind === 'command') return { kind: 'command', name: copy('Command', '命令'), action: copy('Running command', '正在执行命令'), detail: view.command };
+  if (view.kind === 'mcp') return { kind: 'mcp', name: leaf, action: copy('Calling MCP', '正在调用 MCP'), detail: view.server };
+  if (view.kind === 'search' || view.kind === 'web') {
+    const detail = (view.kind === 'search' ? view.query : (view.query ?? view.url)) || argument('query', 'pattern', 'url') || leaf;
+    return { kind: 'search', name: copy('Search', '搜索'), action: copy('Searching', '正在搜索'), detail };
   }
-  if (/search|web|grep|glob|fetch/.test(lower) || data.kind === 'search') {
-    return { kind: 'search', name: copy('Search', '搜索'), action: copy('Searching', '正在搜索'), detail: argument('query', 'pattern', 'url') || leaf };
-  }
-  if (/file|patch|directory|read|write|edit/.test(lower) || ['read', 'edit', 'delete', 'move'].includes(String(data.kind))) {
+  // Old listing tools (ls/list) stay "tool" rather than becoming a file read.
+  const fileish = /file|patch|directory|read|write|edit/.test(lower) || ['read', 'edit', 'delete', 'move'].includes(String(data.kind));
+  if (view.kind === 'edit' || (view.kind === 'read' && fileish)) {
     const patch = /patch|filechange/.test(lower), write = /write/.test(lower), edit = /edit/.test(lower) || data.kind === 'edit';
     const read = /read/.test(lower) || data.kind === 'read';
-    const changes = Array.isArray(data.changes) ? data.changes : [];
-    const path = compact(string(record(changes[0]).path));
-    const detail = argument('file_path', 'filePath', 'path', 'filename') || (path ? `${path}${changes.length > 1 ? ` (+${changes.length - 1})` : ''}` : undefined) || compact(string(data.title)) || leaf;
+    const detail = view.kind === 'edit'
+      ? (view.files.length ? `${view.files[0]!.path}${view.files.length > 1 ? ` (+${view.files.length - 1})` : ''}` : undefined) || argument('file_path', 'filePath', 'path', 'filename') || compact(string(data.title)) || leaf
+      : view.path || argument('file_path', 'filePath', 'path', 'filename') || compact(string(data.title)) || leaf;
     const action = patch ? copy('Applying changes', '正在修改文件') : write ? copy('Writing file', '正在写入文件')
       : edit ? copy('Editing file', '正在编辑文件') : read ? copy('Reading file', '正在读取文件') : copy('Accessing files', '正在处理文件');
     return { kind: 'file', name: copy('Files', '文件操作'), action, detail };
-  }
-  if (server || /^mcp(?:__|toolcall)/i.test(part.toolName ?? '')) {
-    return { kind: 'mcp', name: leaf, action: copy('Calling MCP', '正在调用 MCP'), detail: server };
   }
   return { kind: 'tool', name: leaf, action: copy('Running tool', '正在执行工具'), detail: compact(string(data.title)) };
 }
