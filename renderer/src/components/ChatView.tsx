@@ -53,6 +53,7 @@ import "./chat-network-notice.css";
 import { isChatImage, readClipboardImage, selectChatImageAttachments, validateChatImages } from '../chatImages';
 import './chat-images.css';
 import { queueComposerMode } from '../chatQueue';
+import { slashPaletteEnter } from '../composeKeys';
 import { ChatQueue as ChatQueuePanel } from './ChatQueue';
 import { SteerSend } from './SteerSend';
 import { steerControlKind, steerFailureMessage } from '../steerSend';
@@ -599,9 +600,8 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession }
       const data = event.data as { sessionId?: string; item?: ChatItem; reason?: string };
       if (event.event === 'chat.forked' && data.sessionId === session.id) {
         const forked = event.data as {operationId?: string; session?: Session; mode?: 'native' | 'copy'};
-        if (forked.operationId === firstResponseWaitRef.current?.token && forked.session && (forked.mode === 'native' || forked.mode === 'copy')) {
-          clearFirstResponseWait(forked.operationId);
-          forkActionsRef.current.accept(forked.session, forked.mode);
+        if (forked.operationId && forked.session && (forked.mode === 'native' || forked.mode === 'copy')) {
+          forkActionsRef.current.acceptEvent(forked.operationId, forked.session, forked.mode);
         }
         return;
       }
@@ -1123,7 +1123,7 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession }
     if (slash !== undefined && slashCommands.length) {
       if (event.key === "ArrowDown") { event.preventDefault(); setSlashIndex(value => Math.min(value + 1, slashCommands.length - 1)); return; }
       if (event.key === "ArrowUp") { event.preventDefault(); setSlashIndex(value => Math.max(0, value - 1)); return; }
-      if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); applySlash(slashCommands[slashIndex] ?? slashCommands[0]!); return; }
+      if (slashPaletteEnter({ key: event.key, shiftKey: event.shiftKey, isComposing: event.nativeEvent.isComposing })) { event.preventDefault(); applySlash(slashCommands[slashIndex] ?? slashCommands[0]!); return; }
       if (event.key === "Escape") { event.preventDefault(); changeText(""); return; }
     }
     if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {
