@@ -1,6 +1,7 @@
 import { ClipboardEvent, FormEvent, Fragment, KeyboardEvent, type MouseEvent as ReactMouseEvent, useContext, useEffect, useId, useMemo, useRef, useState } from "react";
 import DOMPurify from "dompurify";
-import { marked } from "marked";
+import { parseChatMarkdown } from '../chatMath';
+import { ChatMarkdown } from './ChatMarkdownExtras';
 import type { ChatAnswerResponse, ChatPart, ChatQueue, ChatSlashCommand, ChatUiState, FileReference, Session } from "@threadterm/protocol";
 import { ChatItem, openExternal, operationId, request, subscribeEvents } from "../bridge";
 import { beginResync, chatUiFromEvent, completeResync, nextRepairRevision, upsertChatItem, type ChatResync } from "../chatState";
@@ -23,7 +24,7 @@ import { ToolActivity } from './ToolActivity';
 import { SubagentCard } from './SubagentCard';
 import { isSubagentPart, subagentInfo, subagentTitle } from '../subagentActivity';
 import { createCodexStreamQueue } from "../codexStream";
-import { FileLinkedMarkdown, FileLinkedText, FileReferenceChips, FileReferenceScopeProvider } from './FileReferenceText';
+import { FileLinkedText, FileReferenceChips, FileReferenceScopeProvider } from './FileReferenceText';
 import { isReplyTextPart, replyActionMarkdown } from '../replyMarkdown';
 import { MessageActions } from './MessageActions';
 import { TurnFooter } from './TurnFooter';
@@ -84,7 +85,7 @@ function renderCodexMarkdown(text: string, zh: boolean): string {
   const cacheKey = `${zh ? "zh" : "en"}\u0000${text}`;
   const cached = codexMarkdownCache.get(cacheKey);
   if (cached !== undefined) return cached;
-  const rendered = marked.parse(text, { gfm: true, breaks: true });
+  const rendered = parseChatMarkdown(text);
   const template = document.createElement('template');
   template.innerHTML = typeof rendered === "string" ? rendered : "";
   for (const element of Array.from(template.content.querySelectorAll('[data-threadterm-file-reference]'))) element.removeAttribute('data-threadterm-file-reference');
@@ -1163,7 +1164,7 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession }
           {foldedTool ? <CodexToolPart part={part} copy={copy} openFile={openFile} /> : <>
             {label && <strong>{label}</strong>}
             {body ? codexMarkdown
-              ? <FileLinkedMarkdown sanitizedHtml={renderCodexMarkdown(body, zh)} references={part.fileReferences} openFile={openFile} />
+              ? <ChatMarkdown sanitizedHtml={renderCodexMarkdown(body, zh)} references={part.fileReferences} openFile={openFile} copy={copy} onInsert={writable ? text => insertChatText(session.id, text) : undefined} />
               : item.role === 'user' ? <ContextMessage text={body} zh={zh}>{value => <div className="v3-message-text"><FileLinkedText text={value} openFile={openFile} /></div>}</ContextMessage> : <div className="v3-message-text"><FileLinkedText text={body} openFile={openFile} /></div>
               : null}
             {!codexMarkdown && <FileReferenceChips references={part.fileReferences} visibleText={body} openFile={openFile} />}

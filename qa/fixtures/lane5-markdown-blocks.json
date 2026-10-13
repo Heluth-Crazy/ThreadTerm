@@ -1,0 +1,9 @@
+{
+  "plain": "A normal reply has no special blocks.",
+  "mermaid": "graph TD; A-->B",
+  "maliciousMermaid": "graph TD; <script>alert(1)</script>",
+  "math": "Inline $E=mc^2$ and display $$\\int_0^1 x dx$$",
+  "json": "{\"name\":\"ThreadTerm\",\"nested\":{\"answer\":42}}",
+  "generatedUi": "{\"version\":1,\"components\":[{\"type\":\"card\",\"title\":\"Build\",\"children\":[{\"type\":\"stat\",\"label\":\"Tests\",\"value\":\"276\"},{\"type\":\"chart\",\"kind\":\"bar\",\"data\":[{\"label\":\"Pass\",\"value\":276}]}]}],\"buttons\":[{\"label\":\"Insert summary\",\"text\":\"Build has 276 passing tests.\"}]}",
+  "invalidGeneratedUi": "{\"type\":\"script\",\"src\":\"https://invalid.example/a.js\"}"
+}

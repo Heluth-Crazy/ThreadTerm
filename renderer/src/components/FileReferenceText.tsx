@@ -285,7 +285,7 @@ function decorateMarkdown(sanitized: string, interactive: boolean, accepted:Read
   return root.innerHTML;
 }
 
-export function FileLinkedMarkdown({ sanitizedHtml, references, openFile, sourceSessionId, canonicalRoot }: { sanitizedHtml: string; references?: FileReference[]; openFile?: OpenFile; sourceSessionId?:string; canonicalRoot?:string }) {
+export function FileLinkedMarkdown({ sanitizedHtml, references, openFile, sourceSessionId, canonicalRoot, renderHtml }: { sanitizedHtml: string; references?: FileReference[]; openFile?: OpenFile; sourceSessionId?:string; canonicalRoot?:string; renderHtml?: (html: string) => ReactNode }) {
   const scope=useFileReferenceScope(sourceSessionId,canonicalRoot);
   const interactive = Boolean(openFile);
   const candidates=useMemo(()=>markdownAutoReferences(sanitizedHtml),[sanitizedHtml]);
@@ -299,6 +299,7 @@ export function FileLinkedMarkdown({ sanitizedHtml, references, openFile, source
     container.innerHTML = html;
     return { innerHtml: { __html: html }, visibleText: container.textContent ?? '' };
   }, [accepted, interactive, sanitizedHtml]);
+  const rich = useMemo(() => renderHtml?.(rendered.innerHtml.__html), [renderHtml, rendered]);
   const onClick = (event: MouseEvent<HTMLDivElement>) => {
     const target = event.target instanceof Element ? event.target.closest('button[data-file-reference]') : null;
     if (!target || !event.currentTarget.contains(target) || !openFile) return;
@@ -308,7 +309,7 @@ export function FileLinkedMarkdown({ sanitizedHtml, references, openFile, source
     } catch { /* Ignore malformed display metadata. */ }
   };
   return <>
-    <div className="v3-message-text codex-markdown" dangerouslySetInnerHTML={rendered.innerHtml} onClick={onClick} />
+    {renderHtml ? <div className="v3-message-text codex-markdown" onClick={onClick}>{rich}</div> : <div className="v3-message-text codex-markdown" dangerouslySetInnerHTML={rendered.innerHtml} onClick={onClick} />}
     <FileReferenceChips references={references} visibleReferences={visibleReferences} openFile={openFile} />
   </>;
 }
