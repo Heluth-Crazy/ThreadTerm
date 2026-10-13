@@ -29,7 +29,7 @@ export function planDataOf(part: ChatPart | undefined): ChatPlanData | undefined
   const raw = record(part.data);
   if (!Array.isArray(raw.entries)) return undefined;
   const entries = raw.entries.map(planEntry).filter((entry): entry is ChatPlanEntry => Boolean(entry));
-  if (!entries.length) return undefined;
+  if (!entries.length && raw.entries.length) return undefined;
   const explanation = text(raw.explanation);
   return explanation ? { entries, explanation } : { entries };
 }
@@ -41,10 +41,15 @@ export function latestPlan(items: readonly ChatItem[]): ChatPlanState | undefine
     for (let partIndex = item.parts.length - 1; partIndex >= 0; partIndex -= 1) {
       const part = item.parts[partIndex]!;
       const data = planDataOf(part);
-      if (data) return { part, data, itemId: item.id, turnId: item.turnId, live: item.turnOrigin !== 'history' };
+      if (data) return data.entries.length ? { part, data, itemId: item.id, turnId: item.turnId, live: item.turnOrigin !== 'history' } : undefined;
     }
   }
   return undefined;
+}
+
+/** Loaded plans stay closed; a later live update opens even if its turn has just ended. */
+export function shouldAutoOpenPlan(plan: ChatPlanState | undefined, previous: ChatPlanState | undefined, alreadyOpened: boolean, historyReady = true): boolean {
+  return Boolean(historyReady && !alreadyOpened && plan?.live && plan.part !== previous?.part);
 }
 
 export function planProgress(entries: readonly ChatPlanEntry[]): { done: number; total: number } {

@@ -32,7 +32,7 @@ import type { FileCommentsHost } from "../fileCommentsHost";
 import type { PageCommentProvenance } from '../reviewComments';
 import { absolutePath, type WorkbenchActions } from '../workbench/types';
 import { sameCanonicalScope } from '../projectScope';
-import { isOpenableDiffPath } from '../toolCards';
+import { sessionDiffActions } from '../sessionDiffActions';
 import { presentedSession } from '../resumedSession';
 import { isDocumentPinned, sessionDocumentError } from '../sessionDocuments';
 import { fileTabMenuItems } from '../contextMenuSurfaceItems';
@@ -374,7 +374,6 @@ function Pane({
       : undefined;
   const paneLimit = paneCount(layout) >= 4;
   const lastPane = paneCount(layout) === 1;
-  const diffRoot = session?.worktreePath ?? projectPath;
   const split = (direction: "horizontal" | "vertical") => {
     const paneId = crypto.randomUUID();
     onChange(splitPane(layout, node.id, direction, paneId));
@@ -391,7 +390,7 @@ function Pane({
   const content = node.tabs.filter(item=>visited.current.has(item.id)).map(item=>{
     const active=Boolean(visibleNode)&&item.id===tab?.id;
     const itemSession=item.kind==='session'?sessions.find(candidate=>candidate.id===item.sessionId):undefined;
-    return <SessionSurfaceContext.Provider key={item.id} value={{primaryHost,menuHost,focused:selected&&active,openFile:itemSession&&onFileReference?reference=>onFileReference(itemSession.id,reference):undefined,openDiff:itemSession&&itemSession.projectId&&onOpenPath?path=>onOpenPath({projectId:itemSession.projectId as string,worktreePath:itemSession.worktreePath,path,kind:'diff',ownerSessionId:itemSession.id}):undefined,openWeb:workbench?.openWeb}}>
+    return <SessionSurfaceContext.Provider key={item.id} value={{primaryHost,menuHost,focused:selected&&active,openFile:itemSession&&onFileReference?reference=>onFileReference(itemSession.id,reference):undefined,...sessionDiffActions(itemSession,projectPath,onOpenPath),openWeb:workbench?.openWeb}}>
     <div className={`pane-tab-surface${fileDropTarget===item.id?" file-drop-target":""}`} data-content-id={item.id} {...(item.kind==='web'?{id:`browser-panel-${node.id}-${item.id}`,role:'tabpanel','aria-labelledby':`browser-tab-${node.id}-${item.id}`}:{})} hidden={!active} inert={!active}
      {...(itemSession&&!itemSession.readOnly&&workbench?.sendToAgent&&["starting","running","idle","waiting"].includes(itemSession.status)?{
       // An Explorer file dropped here inserts the same reference as "Send to agent", into this session.
@@ -471,7 +470,7 @@ function Pane({
    showContextMenu({x:event.clientX,y:event.clientY,restoreFocus:event.currentTarget,items:(['current','others','all'] as const).map(mode=>({id:`browser-tab-close-${mode}`,label:zh?({current:'关闭当前页面',others:'关闭其他页面',all:'关闭所有页面'}[mode]):({current:'Close page',others:'Close other pages',all:'Close all pages'}[mode]),disabled:mode==='others'&&browserTabs.length<2,onSelect:()=>onCloseTabs(target,mode)}))});
   };
   return (
-    <SessionSurfaceContext.Provider value={{primaryHost,menuHost,focused:selected,openFile:session&&onFileReference?reference=>onFileReference(session.id,reference):undefined,openDiff:session&&session.projectId&&onOpenPath?path=>{if(!isOpenableDiffPath(path,diffRoot))return;onOpenPath({projectId:session.projectId as string,worktreePath:session.worktreePath,path,kind:'diff',ownerSessionId:session.id});}:undefined,canOpenDiff:session&&session.projectId&&onOpenPath?path=>isOpenableDiffPath(path,diffRoot):undefined,openWeb:workbench?.openWeb}}>
+    <SessionSurfaceContext.Provider value={{primaryHost,menuHost,focused:selected,openFile:session&&onFileReference?reference=>onFileReference(session.id,reference):undefined,...sessionDiffActions(session,projectPath,onOpenPath),openWeb:workbench?.openWeb}}>
     <section data-pane-id={node.id} hidden={!visibleNode} inert={!visibleNode} style={style} className={`workspace-pane ws-pane ${fullscreen ? "fullscreen" : ""}${selected ? " selected" : ""}`} onPointerDown={event=>{if(event.currentTarget.contains(event.target as Node))onFocus();}}>
        {!lastPane&&session&&tab&&<div className="pane-identity"><AgentIcon provider={session.provider}/><span>{tabLabel(tab)}</span></div>}
        {browserTabs.length>0&&<div className="browser-page-tabs" role="tablist" aria-label={zh?'浏览器页面':'Browser pages'}>{browserTabs.map(item=>{const label=browserLabel(item),title=browserTitle(item),active=item.id===tab?.id,provider=previewLabels?.get(item.id)?.sessionId?sessions.find(candidate=>candidate.id===previewLabels.get(item.id)?.sessionId)?.provider:undefined;return <div className={`browser-page-tab${active?' active':''}`} key={item.id} onContextMenu={event=>browserMenu(item,event)}><button type="button" id={`browser-tab-${node.id}-${item.id}`} role="tab" aria-selected={active} aria-controls={`browser-panel-${node.id}-${item.id}`} tabIndex={active?0:-1} title={title} aria-label={title} onKeyDown={browserKeys} onClick={()=>onActivateTab({paneId:node.id,tabId:item.id})}><span>{label}</span>{provider&&<small>{provider}</small>}</button><button type="button" className="browser-page-tab-close" aria-label={zh?`关闭页面 ${label}`:`Close page ${label}`} title={zh?'关闭页面':'Close page'} onPointerDown={event=>event.stopPropagation()} onClick={event=>{event.stopPropagation();onCloseTab({paneId:node.id,tabId:item.id});}}><Icon name="close"/></button></div>;})}</div>}

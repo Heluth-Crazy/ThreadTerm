@@ -30,6 +30,7 @@ import { showContextMenu } from "./ContextMenu";
 import { diffSurfaceMenuItems, sourceEditorMenuItems } from "../fileSurfaceContextMenuItems";
 import { changedFileContext } from "./GitContextActions";
 import { sendContextToAgent } from "./ContextSendAction";
+import { readDiffDocument } from '../fileDiffDocument';
 
 type View = "file" | "diff" | "preview";
 type Props = {
@@ -284,7 +285,7 @@ function FileWorkspaceInstance({
     const ticket = ++generation.current;
     try {
       const imageHint = path === initialPath ? assetKind : undefined;
-      if (imageHint === "image" || imagePath(path)) {
+      if (nextView !== "diff" && (imageHint === "image" || imagePath(path))) {
         const asset = await request("filesystem.image", { ...scope, path });
         if (!mounted.current || ticket !== generation.current) return false;
         const imageDocument = {
@@ -309,9 +310,12 @@ function FileWorkspaceInstance({
         setIssue(undefined);
         return true;
       }
-      const value = await request("filesystem.read", { ...scope, path });
+      const read = () => request("filesystem.read", { ...scope, path });
+      const value: FileDocument & { diffOnly?: true } = nextView === "diff"
+        ? await readDiffDocument(path, read, () => request("git.diff", { ...scope, path, staged }))
+        : await read();
       if (!mounted.current || ticket !== generation.current) return false;
-      const saved = ignoreDraft ? undefined : drafts.current.get(path);
+      const saved = ignoreDraft || value.diffOnly ? undefined : drafts.current.get(path);
       loaded.current = value;
       base.current = saved?.baseFingerprint ?? value.fingerprint;
       setDocument(value);
