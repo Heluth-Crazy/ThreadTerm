@@ -31,6 +31,8 @@ window.threadterm={
     if(method==='chat.options')return {options:[],commands:[],loadState:'ready'};
     if(method==='session.claim'||method==='session.renew')return {leaseEpoch:1};
     if(method==='session.release'||method==='chat.cancel')return null;
+    if(method==='chat.queue.read')return {sessionId:params.sessionId,paused:false,items:[]};
+    if(method==='chat.feedback.read')return {notes:[]};
     throw Error('Unexpected visual QA request '+method);
   }
 };

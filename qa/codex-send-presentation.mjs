@@ -50,6 +50,8 @@ window.threadterm = {
     }
     if (method === 'session.claim' || method === 'session.renew') return { leaseEpoch: 1 };
     if (method === 'session.release' || method === 'chat.cancel') return null;
+    if (method === 'chat.queue.read') return { sessionId: params.sessionId, paused: false, items: [] };
+    if (method === 'chat.feedback.read') return { notes: [] };
     throw new Error('Unexpected fixture request: ' + method);
   },
 };

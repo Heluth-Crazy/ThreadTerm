@@ -54,7 +54,7 @@ const sessions=new Map(); let active='inspect-codex', seq=0, snapshotDelay=0, ch
 window.threadterm={onEvent:fn=>{listeners.add(fn);return()=>listeners.delete(fn)},request:async (method,params)=>{
  if(method==='chat.snapshot'){const id=params.sessionId;await new Promise(resolve=>setTimeout(resolve,snapshotDelay));window.__toolInspection.lastHydrated=id;return {items:sessions.get(id)||[],revision:1};}
  if(method==='chat.subagent.read'){window.__toolInspection.lastChildRead=childRevision;return {items:inspection(),rev:childRevision,source:'native',truncated:false};}
- if(method==='chat.draft.read')return{text:'',revision:0}; if(method==='chat.queue.read')return{sessionId:active,paused:false,items:[]}; if(method==='chat.options')return{options:[],commands:[]}; throw Error('Unexpected deterministic bridge request: '+method);
+ if(method==='chat.draft.read')return{text:'',revision:0}; if(method==='chat.queue.read')return{sessionId:active,paused:false,items:[]}; if(method==='chat.options')return{options:[],commands:[]}; if(method==='chat.feedback.read')return{notes:[]}; throw Error('Unexpected deterministic bridge request: '+method);
 }};
 const emit=item=>listeners.forEach(fn=>fn({event:'chat.item',seq:++seq,data:{sessionId:active,item}}));
 const root=createRoot(document.getElementById('root')); let locale='en';

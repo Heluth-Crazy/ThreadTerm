@@ -58,6 +58,8 @@ window.threadterm={onPageContextMenu:()=>()=>{},
   if(method==='session.launch.read')throw new Error('session_launch_unavailable');
   if(method==='session.claim')return {leaseEpoch:73};
   if(method==='session.renew'||method==='session.release'||method==='terminal.resize'||method==='terminal.input')return null;
+  if(method==='chat.queue.read')return {sessionId:params.sessionId,paused:false,items:[]};
+  if(method==='chat.feedback.read')return {notes:[]};
   throw new Error('Unexpected QA method '+method);
  },
  onEvent:()=>()=>{},
