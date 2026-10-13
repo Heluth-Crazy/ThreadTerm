@@ -215,7 +215,7 @@ code, kbd, pre, .mono { font-family: var(--mono); }
   color: var(--muted);
   position: relative;
 }
-.icon-btn:hover, .icon-btn[aria-expanded="true"] { background: var(--soft); color: var(--text); }
+.icon-btn:hover:not(:disabled), .icon-btn[aria-expanded="true"] { background: var(--soft); color: var(--text); }
 
 .kbd {
   font-size: 11px;
@@ -1860,7 +1860,7 @@ button.preset-card:hover { border-color: var(--faint); }
 .term-head .grow { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .term-head .demo { color: var(--term-dim); white-space: nowrap; }
 .term-head .btn-ghost { color: var(--term-dim); }
-.term-head .btn-ghost:hover { background: var(--raised); color: var(--term-fg); }
+.term-head .btn-ghost:hover:not(:disabled) { background: var(--raised); color: var(--term-fg); }
 .term-head .star.on { color: var(--amber); }
 .term-cmd {
   padding: 10px 16px 0;

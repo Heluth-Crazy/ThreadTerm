@@ -63,9 +63,6 @@
 .icon-btn.is-secondary { background:var(--text); color:var(--bg); }
 .icon-btn.is-secondary:hover:not(:disabled) { background:var(--text); color:var(--bg); }
 .icon-btn.is-secondary:hover:disabled { background:var(--text); color:var(--bg); }
-/* The prototype .icon-btn:hover does not exclude disabled; keep a disabled icon
-   button visually fixed on hover (issue VC, shared states). */
-.icon-btn:hover:disabled { background:transparent; color:var(--muted); }
 /* One chip spec: read-only chips are the prototype .chip (11 px / 20 px);
    interactive chips add .chip-btn for the 26 px size. Colours are tokens. */
 .chip-btn { height:26px; padding:0 10px; gap:6px; font-size:12px; background:var(--surface); border:1px solid var(--border); color:var(--text); cursor:pointer; }

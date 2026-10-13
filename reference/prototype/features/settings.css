@@ -282,7 +282,7 @@
   font-size: 13px;
   font-weight: 500;
 }
-.btn-subtle:hover { background: var(--soft); }
+.btn-subtle:hover:not(:disabled) { background: var(--soft); }
 body:has(.dialog) .settings-drawer,
 .settings-drawer.settings-dialog-open { visibility: hidden; }
 .settings-drawer button:focus-visible,
