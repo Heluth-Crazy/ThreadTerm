@@ -1,4 +1,4 @@
-import { createElement, lazy, Suspense, useCallback, type ReactNode, type ComponentType, type LazyExoticComponent } from 'react';
+import { createElement, lazy, Suspense, useCallback, type ReactNode } from 'react';
 import type { FileReference } from '@threadterm/protocol';
 import { FileLinkedMarkdown } from '../FileReferenceText';
 import './markdown-extras.css';
@@ -7,13 +7,10 @@ export type BlockProps = { kind: 'mermaid' | 'json' | 'math' | 'threadterm-ui'; 
 const Mermaid = lazy(() => import('./MermaidBlock'));
 const Math = lazy(() => import('./MathBlock'));
 const Json = lazy(() => import('./JsonBlock'));
-// G1 registers its loader separately; plain replies never enter this dispatcher.
-let generated: LazyExoticComponent<ComponentType<BlockProps>> | undefined;
-export function registerGeneratedUi(loader: () => Promise<{ default: React.ComponentType<BlockProps> }>) { generated = lazy(loader); }
+const Generated = lazy(() => import('./GeneratedUi'));
 
 export function MarkdownBlock(props: BlockProps) {
-  const Component = props.kind === 'mermaid' ? Mermaid : props.kind === 'math' ? Math : props.kind === 'json' ? Json : generated;
-  if (!Component) return <pre>{props.source}</pre>;
+  const Component = props.kind === 'mermaid' ? Mermaid : props.kind === 'math' ? Math : props.kind === 'json' ? Json : Generated;
   return <Suspense fallback={<div className="markdown-extra-loading" role="status">{props.copy('Loading renderer…', '正在加载渲染器…')}<pre>{props.source}</pre></div>}><Component {...props} /></Suspense>;
 }
 

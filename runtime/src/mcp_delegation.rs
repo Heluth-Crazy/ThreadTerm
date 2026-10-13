@@ -64,6 +64,7 @@ awaiting_parent it needs your decision: answer its pendingRequests with delegate
 delegates run; if your turn ends, their requests go to the user instead. Delegates cannot delegate further.\n\n",
     handoff_guide!()
 );
+const GENERATED_UI_INSTRUCTIONS: &str = "ThreadTerm generated UI: when a compact visual answer helps, emit one fenced ```threadterm-ui block containing JSON. The root has version, components, and buttons; for example, {\"version\":1,\"components\":[],\"buttons\":[{\"label\":\"Example\",\"text\":\"Example text\"}]}. version is always 1. Source is at most 64 KiB, the component tree has at most 256 nodes and depth 6, and buttons has at most 12 entries with label/text only and text at most 4000 characters. Components are: card {\"type\":\"card\",\"title\"?:string,\"children\"?:components[]}; stat {\"type\":\"stat\",\"label\":string,\"value\":string|number}; table {\"type\":\"table\",\"columns\":string[],\"rows\":(string|number)[][]} with at most 100 rows and 20 columns; list {\"type\":\"list\",\"items\":string[]}; badge {\"type\":\"badge\",\"text\":string,\"tone\"?:\"neutral\"|\"success\"|\"warning\"|\"danger\"}; progress {\"type\":\"progress\",\"value\":number,\"max\"?:number,\"label\"?:string}, where max defaults to 100; chart {\"type\":\"chart\",\"kind\":\"bar\"|\"line\"|\"pie\",\"title\"?:string,\"data\":[{\"label\":string,\"value\":number}]}, with at most 200 nonnegative data values. ThreadTerm renders charts as handwritten SVG. Buttons only insert their given text into the composer. Do not include URLs, scripts, event handlers, or any executable content.\n";
 
 #[derive(Clone)]
 struct Caller {
@@ -121,7 +122,10 @@ fn composed_tools(delegation:bool,preview:bool,chat:Option<&ChatCaller>)->Vec<Va
     if let Some(chat)=chat { catalog.extend(chat_tools(chat)); }
     catalog
 }
-fn composed_instructions(delegation:bool,preview:bool,chat:Option<&ChatCaller>)->String {
+fn generated_ui_from_env()->bool {
+    std::env::var("THREADTERM_GENERATED_UI").as_deref()==Ok("1")
+}
+fn composed_instructions(delegation:bool,preview:bool,chat:Option<&ChatCaller>,generated_ui:bool)->String {
     let mut text=format!("ThreadTerm capabilities: delegation={} (delegate_start/wait/result); local preview={} (preview_present/status). Preview: verify the server URL first; presentation/load events never prove application readiness. Browser and delegation permissions are independent.\n",delegation,preview);
     if preview {text.push_str(crate::preview::INSTRUCTIONS);text.push('\n');}
     if delegation {text.push_str(INSTRUCTIONS)}
@@ -130,6 +134,7 @@ fn composed_instructions(delegation:bool,preview:bool,chat:Option<&ChatCaller>)-
         if chat.session_info { text.push_str("\nUse session_info to read a referenced ThreadTerm chat; it returns bounded plain-text history."); }
         if chat.feedback { text.push_str("\nFor long tasks, call feedback_check between major steps to receive user notes sent during this turn."); }
     }
+    if generated_ui {text.push_str(GENERATED_UI_INSTRUCTIONS)}
     text
 }
 async fn call_chat_tool(config:&RuntimeConfig,caller:Option<&Caller>,preview:Option<&PreviewCaller>,chat:Option<&ChatCaller>,name:&str,arguments:&Value,cancelled:&AtomicBool)->Result<Value,Value> {
@@ -182,7 +187,7 @@ pub async fn run_stdio(config: RuntimeConfig) -> Result<()> {
     let caller = Caller::from_env();
     let preview = PreviewCaller::from_env();
     let chat = ChatCaller::from_env();
-    let instructions = composed_instructions(caller.is_some(), preview.is_some(), chat.as_ref());
+    let instructions = composed_instructions(caller.is_some(), preview.is_some(), chat.as_ref(), generated_ui_from_env());
     let output: Output = Arc::new(Mutex::new(std::io::stdout()));
     let inflight: Arc<Mutex<HashMap<String, Arc<AtomicBool>>>> = Arc::default();
     let (lines, mut incoming) = tokio::sync::mpsc::unbounded_channel::<String>();
@@ -559,10 +564,21 @@ mod tests {
         assert_eq!(preview[1]["inputSchema"]["required"], json!(["requestId"]));
         assert_eq!(preview[1]["inputSchema"]["additionalProperties"], false);
 
-        let instructions = composed_instructions(true, true, None);
+        let instructions = composed_instructions(true, true, None, false);
         let prefix = instructions.chars().take(512).collect::<String>();
         assert!(prefix.contains("delegation=true") && prefix.contains("local preview=true"));
         assert!(instructions.contains(crate::preview::INSTRUCTIONS));
+        assert!(!instructions.contains(GENERATED_UI_INSTRUCTIONS));
+    }
+
+    #[test]
+    fn generated_ui_instructions_add_no_tools_or_authority() {
+        let instructions = composed_instructions(false, false, None, true);
+        assert!(instructions.contains(GENERATED_UI_INSTRUCTIONS));
+        assert!(instructions.contains("{\"version\":1,\"components\":[],\"buttons\":[{\"label\":\"Example\",\"text\":\"Example text\"}]}"));
+        assert!(instructions.contains("at most 256 nodes and depth 6"));
+        assert_eq!(composed_tools(false, false, None), Vec::<Value>::new());
+        assert!(!composed_instructions(false, false, None, false).contains(GENERATED_UI_INSTRUCTIONS));
     }
 
     #[tokio::test]

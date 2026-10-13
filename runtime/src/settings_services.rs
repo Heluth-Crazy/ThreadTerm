@@ -47,6 +47,7 @@ const RUNTIME_SETTINGS: &[&str] = &[
     "chatTools.sessionInfo",
     "chatTools.feedback",
     "chatTools.delegation",
+    "chatTools",
     // Machine-specific (not exported): the console host for Windows terminals (conpty.rs); read at runtime start.
     "conptyHost",
 ];
@@ -756,6 +757,16 @@ fn valid_setting(key: &str, value: &Value) -> Result<()> {
             crate::providers::network::validate_settings(&json!({"providerNetwork":value}))
                 .map_err(Into::into)
         }
+        "chatTools"
+            if value.as_object().is_some_and(|tools| {
+                tools.len() == 1
+                    && tools
+                        .get("generatedUi")
+                        .is_some_and(Value::is_boolean)
+            }) =>
+        {
+            Ok(())
+        }
         "modelPrices" if valid_model_prices(value) => Ok(()),
         "electronCacheCleanup" if valid_cache_cleanup(value) => Ok(()),
         "conptyHost" if matches!(value.as_str(), Some("system" | "bundled")) => Ok(()),
@@ -885,11 +896,22 @@ mod tests {
             "customThemes":{},
             "themeSelection":"system",
             "modelPrices":{"codex/gpt-5":{"input":1.0,"output":4.0}},
-            "supervision":{"enabled":false,"rangeMinutes":15,"threshold":3}
+            "supervision":{"enabled":false,"rangeMinutes":15,"threshold":3},
+            "chatTools":{"generatedUi":true}
         }))
         .is_ok());
         assert!(valid_runtime_patch(&json!({"unknown":true})).is_err());
         assert!(valid_runtime_patch(&json!({"lightweightMode":"true"})).is_err());
+        assert!(valid_runtime_patch(&json!({"chatTools":{"generatedUi":false}})).is_ok());
+        for invalid in [
+            json!({}),
+            json!({"generatedUi":"true"}),
+            json!({"generatedUi":true,"extra":false}),
+            json!({"extra":true}),
+            json!(true),
+        ] {
+            assert!(valid_runtime_patch(&json!({"chatTools":invalid})).is_err());
+        }
         assert!(
             valid_runtime_patch(&json!({"desktopCompanion":{"enabled":true,"extra":false}}))
                 .is_err()

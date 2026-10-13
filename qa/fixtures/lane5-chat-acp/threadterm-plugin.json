@@ -1,0 +1,14 @@
+{
+  "schemaVersion": 1,
+  "id": "lane5-chat-acp",
+  "name": "Lane 5 Chat fixture",
+  "version": "0.1.0",
+  "publisher": "ThreadTerm QA",
+  "description": "Offline ACP fixture for message navigation, selection, Markdown extras, export and generated UI QA.",
+  "contributes": { "agents": [{
+    "id": "lane5-chat", "name": "Lane 5 Chat", "icon": "icon.svg",
+    "command": "node", "args": ["{pluginDir}/agent.mjs"], "versionArgs": ["--version"],
+    "terminal": { "args": [], "resumeArgs": ["--resume", "{sessionId}"] },
+    "chat": { "protocol": "acp", "args": ["--acp"] }
+  }] }
+}
