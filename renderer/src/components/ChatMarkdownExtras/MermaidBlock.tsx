@@ -38,7 +38,7 @@ export default function MermaidBlock({ source, copy }: BlockProps) {
           blob = await new Promise<Blob>((resolve, reject) => canvas.toBlob(value => value ? resolve(value) : reject(new Error('PNG export failed')), 'image/png'));
         } finally { URL.revokeObjectURL(url); }
       }
-      const url = URL.createObjectURL(blob), anchor = document.createElement('a'); anchor.href = url; anchor.download = `diagram.${format}`; anchor.click(); URL.revokeObjectURL(url);
+      const url = URL.createObjectURL(blob), anchor = document.createElement('a'); anchor.href = url; anchor.download = `diagram.${format}`; anchor.click(); setTimeout(() => URL.revokeObjectURL(url), 0);
     } catch (error) { setIssue(String(error)); }
     finally { setDownloading(false); }
   };
@@ -54,7 +54,7 @@ export default function MermaidBlock({ source, copy }: BlockProps) {
       {(['svg', 'png', 'mmd'] as const).map(format => <button type="button" className="btn btn-sm" disabled={downloading || (format !== 'mmd' && !svg)} key={format} onClick={() => void download(format)} aria-label={copy(`Download ${format.toUpperCase()}`, `下载 ${format.toUpperCase()}`)}>{format.toUpperCase()}</button>)}
     </div>
     {issue && <p className="markdown-extra-error" role="alert">{copy('Diagram error', '图表错误')}: {issue}</p>}
-    {raw || issue ? <pre>{source}</pre> : svg ? diagram : <p role="status">{copy('Rendering diagram…', '正在绘制图表…')}</p>}
+    {raw || issue ? <pre>{source}</pre> : svg ? (fullscreen ? null : diagram) : <p role="status">{copy('Rendering diagram…', '正在绘制图表…')}</p>}
     {fullscreen && <SurfaceDialog title={copy('Diagram', '图表')} onClose={() => setFullscreen(false)} size="wide">{diagram}</SurfaceDialog>}
   </div>;
 }

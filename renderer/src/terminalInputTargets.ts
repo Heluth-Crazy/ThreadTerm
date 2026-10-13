@@ -39,7 +39,7 @@ export function focusRequestedChatInput(sessionId: string) {
       requestedChatFocus.delete(sessionId);
       return;
     }
-    if (--left <= 0) return;
+    if (--left <= 0) { requestedChatFocus.delete(sessionId); return; }
     focusBurst.set(sessionId, requestAnimationFrame(tick));
   };
   focusBurst.set(sessionId, requestAnimationFrame(tick));

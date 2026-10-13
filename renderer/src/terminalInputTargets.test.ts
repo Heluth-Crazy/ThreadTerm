@@ -153,3 +153,26 @@ test('comment text and screenshots select the same visible Chat without submitti
  const unsupported=registerChatInputTarget('plain',{visible:()=>true,insert:text=>calls.push(text)});
  insertChatText('plain','paths only');assert.equal(attachChatImages('plain',['image']),0);unsupported();
 });
+test('an exhausted focus burst expires the pending handoff instead of focusing a later composer', () => {
+  const frames: Array<(time: number) => void> = [];
+  const previous = globalThis.requestAnimationFrame;
+  const previousCancel = globalThis.cancelAnimationFrame;
+  globalThis.requestAnimationFrame = callback => { frames.push(callback); return frames.length; };
+  globalThis.cancelAnimationFrame = () => {};
+  try {
+    let accepts = false, attempts = 0;
+    const remove = registerChatInputTarget('expire', { visible: () => true, insert: () => assert.fail(), focus: () => { attempts++; return accepts; } });
+    requestChatInputFocus('expire');
+    assert.equal(attempts, 1);
+    // Never confirm focus while draining the bounded burst.
+    for (let i = 0; i < 130 && frames.length; i++) frames[frames.length - 1](0);
+    const exhausted = attempts;
+    accepts = true;
+    focusRequestedChatInput('expire');
+    assert.equal(attempts, exhausted, 'an expired handoff cannot focus a later composer');
+    remove();
+  } finally {
+    globalThis.requestAnimationFrame = previous;
+    globalThis.cancelAnimationFrame = previousCancel;
+  }
+});

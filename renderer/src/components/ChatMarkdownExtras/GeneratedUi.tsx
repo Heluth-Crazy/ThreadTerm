@@ -26,7 +26,7 @@ function Component({ item, copy }: { item: UiComponent; copy: BlockProps['copy']
     case 'table': return <div className="generated-table"><table><thead><tr>{item.columns.map((column, index) => <th key={index}>{column}</th>)}</tr></thead><tbody>{item.rows.map((row, index) => <tr key={index}>{row.map((cell, index) => <td key={index}>{cell}</td>)}</tr>)}</tbody></table></div>;
     case 'list': return <ul className="generated-list">{item.items.map((text, index) => <li key={index}>{text}</li>)}</ul>;
     case 'badge': return <span className={`chip generated-badge is-${item.tone ?? 'neutral'}`} title={item.text}>{item.text}</span>;
-    case 'progress': return <div className="generated-progress"><span>{item.label} {Math.round(item.value / (item.max ?? 100) * 100)}%</span><div role="progressbar" aria-label={item.label ?? copy('Progress', '进度')} aria-valuenow={item.value} aria-valuemin={0} aria-valuemax={item.max ?? 100}><i style={{ width: `${item.value / (item.max ?? 100) * 100}%` }} /></div></div>;
+    case 'progress': return <div className="generated-progress"><span>{item.label ? `${item.label} ` : ''}{Math.round(item.value / (item.max ?? 100) * 100)}%</span><div role="progressbar" aria-label={item.label ?? copy('Progress', '进度')} aria-valuenow={item.value} aria-valuemin={0} aria-valuemax={item.max ?? 100}><i style={{ width: `${item.value / (item.max ?? 100) * 100}%` }} /></div></div>;
     case 'chart': return <Chart chart={item} copy={copy} />;
   }
 }

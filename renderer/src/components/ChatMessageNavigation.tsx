@@ -11,7 +11,7 @@ export function ChatMessageNavigation({ items, copy, onNavigate, stats }: Props)
   const root = useRef<HTMLDivElement>(null), trigger = useRef<HTMLButtonElement>(null), list = useRef<HTMLDivElement>(null);
   useEffect(() => {
     if (!open) return;
-    const outside = (event: PointerEvent) => { if (!root.current?.contains(event.target as Node)) setOpen(false); };
+    const outside = (event: PointerEvent) => { if (!root.current?.contains(event.target as Node)) { setOpen(false); trigger.current?.focus({ preventScroll: true }); } };
     // The list is a dialog. Escape must close it even when programmatic focus
     // could not move into the list (the key then targets document, not this div).
     const onKey = (event: KeyboardEvent) => {
@@ -50,7 +50,7 @@ export function ChatMessageNavigation({ items, copy, onNavigate, stats }: Props)
       requestAnimationFrame(() => list.current?.querySelector<HTMLButtonElement>(`button[data-message-index="${next}"]`)?.focus({ preventScroll: true }));
     }
   }}>
-    <button ref={trigger} type="button" className="chip chip-btn" aria-expanded={open} aria-label={copy('Message navigation', '消息导航')} onClick={() => { setTop(0); setOpen(value => !value); }}>{copy(`Messages ${messages.length}`, `消息 ${messages.length}`)}</button>
+    <button ref={trigger} type="button" className="chip chip-btn" aria-expanded={open} onClick={() => { setTop(0); setOpen(value => !value); }}>{copy(`Messages ${messages.length}`, `消息 ${messages.length}`)}</button>
     {open && <div className="chat-message-popover" style={placement} role="dialog" aria-label={copy('Message navigation', '消息导航')}>
       <div className="chat-message-list" ref={list} onScroll={event => setTop(event.currentTarget.scrollTop)}>
         {!!window.before && <div aria-hidden="true" style={{ height: window.before }} />}
