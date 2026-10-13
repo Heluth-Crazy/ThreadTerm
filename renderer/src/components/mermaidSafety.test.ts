@@ -47,6 +47,16 @@ test('style rules must be scoped to the rendered diagram id', () => {
   assert.equal(isScopedSelector('#ttmermaid10 .node', '#ttmermaid1'), false);
   // A comma-separated list is split by the caller; `isScopedSelector` sees one selector.
   assert.equal(isScopedSelector('#ttmermaid1, .leak', '#ttmermaid1'), true);
+  // Sibling combinators and :has() reach outside the diagram's subtree.
+  assert.equal(isScopedSelector('#ttmermaid1 ~ *', '#ttmermaid1'), false);
+  assert.equal(isScopedSelector('#ttmermaid1 + *', '#ttmermaid1'), false);
+  assert.equal(isScopedSelector('#ttmermaid1 .node ~ .other', '#ttmermaid1'), false);
+  assert.equal(isScopedSelector('#ttmermaid1 + .leak', '#ttmermaid1'), false);
+  assert.equal(isScopedSelector('#ttmermaid1:has(.node)', '#ttmermaid1'), false);
+  assert.equal(isScopedSelector('#ttmermaid1:has(> .node)', '#ttmermaid1'), false);
+  // Attribute matching and an nth-child argument are not combinators.
+  assert.equal(isScopedSelector('#ttmermaid1[class~="node"]', '#ttmermaid1'), true);
+  assert.equal(isScopedSelector('#ttmermaid1:nth-child(2n+1)', '#ttmermaid1'), true);
 });
 
 test('style attributes keep only allowlisted declarations', () => {
@@ -70,9 +80,12 @@ test('stylesheet allowlist drops unscoped overlays, remote images and imported s
     { selectorText: '#ttmermaid10', declarations: 'fill: red' },
     { selectorText: '#ttmermaid1 .ok', declarations: 'fill: var(--ttm-accent); stroke-width: 2px' },
     { selectorText: '#ttmermaid1, .leak', declarations: 'fill: red' },
+    { selectorText: '#ttmermaid1 ~ *', declarations: 'position: fixed; inset: 0' },
+    { selectorText: '#ttmermaid1 + .leak', declarations: 'fill: red' },
+    { selectorText: '#ttmermaid1:has(.leak)', declarations: 'fill: red' },
   ];
   const clean = sanitizeCssRules(rules, '#ttmermaid1');
-  assert.doesNotMatch(clean, /position|image-set|https?:|ttmermaid10/i);
+  assert.doesNotMatch(clean, /position|image-set|https?:|ttmermaid10|~|\+|:has/i);
   assert.match(clean, /#ttmermaid1 \.node \{ fill: #ffe; stroke: #333 \}/);
   assert.match(clean, /#ttmermaid1 \.ok \{ fill: var\(--ttm-accent\); stroke-width: 2px \}/);
 });
