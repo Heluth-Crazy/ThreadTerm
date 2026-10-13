@@ -24,6 +24,11 @@ export function openForkInPane(layout: PaneLayout, paneId: string, sessionId: st
   return first === layout.first && second === layout.second ? layout : { ...layout, first, second };
 }
 
+/** Clear only the composer text captured when /fork started. Later typing stays. */
+export function composerTextAfterFork(current: string, capturedAtStart: string): string {
+  return current === capturedAtStart ? '' : current;
+}
+
 export function forkDisabledReason(running: boolean, busy: boolean, zh: boolean): string | undefined {
   if (running) return zh ? '运行期间无法分叉' : "Can't fork while a turn is running";
   if (busy) return zh ? '正在分叉…' : 'Forking…';
