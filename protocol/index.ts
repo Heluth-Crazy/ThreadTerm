@@ -1,7 +1,7 @@
 import { validateWireRequest, validateWireSuccess } from './generated-validators.js';
 export const PROTOCOL_VERSION = 1 as const;
-/** Semantic contract includes explicit native-history repair and snapshot integrity. Framing/HMAC still use PROTOCOL_VERSION. */
-export const PROTOCOL_CONTRACT = 12 as const;
+/** Semantic contract includes native-history repair, snapshot integrity, Chat fork, and feedback notes. Framing/HMAC still use PROTOCOL_VERSION. */
+export const PROTOCOL_CONTRACT = 13 as const;
 export const MAX_FRAME_BYTES = 8 * 1024 * 1024;
 /** Agents that ship with ThreadTerm (native adapters, or `shell` / `custom` commands). */
 export type BuiltinProviderId = 'codex'|'claude'|'kimi'|'gemini'|'opencode'|'shell'|'grok'|'custom';
@@ -824,8 +824,8 @@ export function protocolIncompatibleReason(peer:unknown,role:'desktop'|'runtime'
  if(contract===PROTOCOL_CONTRACT) return undefined;
  if(contract===undefined) {
   return role==='desktop'
-   ? `This desktop requires runtime contract ${PROTOCOL_CONTRACT} for choice-based Chat approvals. The connected runtime is older and was left running. Update ThreadTerm, or quit the old runtime from the tray before retrying.`
-   : `This runtime requires desktop contract ${PROTOCOL_CONTRACT} for choice-based Chat approvals. This client is older. Update the ThreadTerm desktop. Running jobs were not stopped.`;
+   ? `This desktop requires runtime contract ${PROTOCOL_CONTRACT} for choice-based Chat approvals, Chat fork, and feedback notes. The connected runtime is older and was left running. Update ThreadTerm, or quit the old runtime from the tray before retrying.`
+   : `This runtime requires desktop contract ${PROTOCOL_CONTRACT} for choice-based Chat approvals, Chat fork, and feedback notes. This client is older. Update the ThreadTerm desktop. Running jobs were not stopped.`;
  }
  return role==='desktop'
   ? `This desktop requires contract ${PROTOCOL_CONTRACT}, but the runtime uses ${contract}. The existing runtime was left running.`

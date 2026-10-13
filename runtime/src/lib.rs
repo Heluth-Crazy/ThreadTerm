@@ -53,8 +53,8 @@ pub mod windows_security;
 pub mod workspace_services;
 
 pub const PROTOCOL_VERSION: u32 = 1;
-/// Semantic contract includes explicit native-history repair and exact selected-commit snapshots. Wire HMAC still uses PROTOCOL_VERSION.
-pub const PROTOCOL_CONTRACT: u32 = 12;
+/// Semantic contract includes native-history repair, exact selected-commit snapshots, Chat fork, and feedback notes. Wire HMAC still uses PROTOCOL_VERSION.
+pub const PROTOCOL_CONTRACT: u32 = 13;
 pub const RUNTIME_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 pub mod local_client;

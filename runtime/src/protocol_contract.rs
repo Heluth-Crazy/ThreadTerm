@@ -20,18 +20,18 @@ pub fn incompatible_reason(peer: &Value, role: ContractRole) -> Option<String> {
         Some(contract) if contract == PROTOCOL_CONTRACT => None,
         Some(contract) => Some(match role {
             ContractRole::Runtime => format!(
-                "This runtime requires desktop contract {PROTOCOL_CONTRACT} for session documents, worktree setup, agent reviews, prompt queues, Quick Launch, the agent registry, choice-based Chat approvals, and scoped browser previews, but the desktop uses {contract}. Running jobs were not stopped."
+                "This runtime requires desktop contract {PROTOCOL_CONTRACT} for session documents, worktree setup, agent reviews, prompt queues, Quick Launch, the agent registry, choice-based Chat approvals, scoped browser previews, and Chat fork and feedback, but the desktop uses {contract}. Running jobs were not stopped."
             ),
             ContractRole::Desktop => format!(
-                "This desktop requires runtime contract {PROTOCOL_CONTRACT} for session documents, worktree setup, agent reviews, prompt queues, Quick Launch, the agent registry, choice-based Chat approvals, and scoped browser previews, but the runtime uses {contract}. The existing runtime was left running."
+                "This desktop requires runtime contract {PROTOCOL_CONTRACT} for session documents, worktree setup, agent reviews, prompt queues, Quick Launch, the agent registry, choice-based Chat approvals, scoped browser previews, and Chat fork and feedback, but the runtime uses {contract}. The existing runtime was left running."
             ),
         }),
         None => Some(match role {
             ContractRole::Runtime => format!(
-                "This runtime requires desktop contract {PROTOCOL_CONTRACT} for session documents, worktree setup, agent reviews, prompt queues, Quick Launch, the agent registry, choice-based Chat approvals, and scoped browser previews. This client is older. Update the ThreadTerm desktop. Running jobs were not stopped."
+                "This runtime requires desktop contract {PROTOCOL_CONTRACT} for session documents, worktree setup, agent reviews, prompt queues, Quick Launch, the agent registry, choice-based Chat approvals, scoped browser previews, and Chat fork and feedback. This client is older. Update the ThreadTerm desktop. Running jobs were not stopped."
             ),
             ContractRole::Desktop => format!(
-                "This desktop requires runtime contract {PROTOCOL_CONTRACT} for session documents, worktree setup, agent reviews, prompt queues, Quick Launch, the agent registry, choice-based Chat approvals, and scoped browser previews. The connected runtime is older and was left running. Update ThreadTerm, or quit the old runtime from the tray before retrying."
+                "This desktop requires runtime contract {PROTOCOL_CONTRACT} for session documents, worktree setup, agent reviews, prompt queues, Quick Launch, the agent registry, choice-based Chat approvals, scoped browser previews, and Chat fork and feedback. The connected runtime is older and was left running. Update ThreadTerm, or quit the old runtime from the tray before retrying."
             ),
         }),
     }
@@ -88,7 +88,7 @@ mod tests {
 
     #[test]
     fn registry_contract_rejects_contract_two() {
-        assert_eq!(PROTOCOL_CONTRACT, 12);
+        assert_eq!(PROTOCOL_CONTRACT, 13);
         assert!(
             require_peer_contract(&json!({"protocol":1,"contract":2}), ContractRole::Runtime)
                 .is_err()
@@ -103,6 +103,17 @@ mod tests {
     fn selected_commit_contract_rejects_previous_history_contract() {
         for role in [ContractRole::Runtime, ContractRole::Desktop] {
             assert!(require_peer_contract(&json!({"protocol":1,"contract":11}), role).is_err());
+        }
+    }
+
+    #[test]
+    fn fork_feedback_contract_rejects_the_previous_contract() {
+        assert_eq!(PROTOCOL_CONTRACT, 13);
+        for role in [ContractRole::Runtime, ContractRole::Desktop] {
+            let reason = incompatible_reason(&json!({"protocol": 1, "contract": 12}), role).unwrap();
+            assert!(reason.contains("13"));
+            assert!(reason.contains("were not stopped") || reason.contains("left running"));
+            assert!(require_peer_contract(&json!({"protocol": 1, "contract": 12}), role).is_err());
         }
     }
 
