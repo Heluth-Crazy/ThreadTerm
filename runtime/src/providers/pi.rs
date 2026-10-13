@@ -13,6 +13,7 @@ use super::{
     emit_bound as emit, ChatSession, ProviderAdapter, ProviderCapability, ProviderError,
     ScopedProviderEvents, TerminalCapture, TerminalCommand,
 };
+use crate::pi_project_trust;
 use chrono::{DateTime, Utc};
 use serde_json::{json, Value};
 use std::{
@@ -217,7 +218,60 @@ impl ProviderAdapter for PiAdapter {
         native_id: Option<&str>,
         worker_token: &str,
     ) -> Result<Box<dyn ChatSession>, ProviderError> {
+        self.open_chat_scoped_with_project_trust(session_id, cwd, native_id, worker_token, None)
+    }
+
+    fn open_chat_with_project_trust(
+        &self,
+        session_id: &str,
+        cwd: &str,
+        native_id: Option<&str>,
+        worker_token: &str,
+        _tools: Option<&super::ChatToolServer>,
+        decision: Option<&str>,
+    ) -> Result<Box<dyn ChatSession>, ProviderError> {
+        self.open_chat_scoped_with_project_trust(session_id, cwd, native_id, worker_token, decision)
+    }
+}
+
+impl PiAdapter {
+    fn open_chat_scoped_with_project_trust(
+        &self,
+        session_id: &str,
+        cwd: &str,
+        native_id: Option<&str>,
+        worker_token: &str,
+        decision: Option<&str>,
+    ) -> Result<Box<dyn ChatSession>, ProviderError> {
         let shared = Arc::new(PiShared::default());
+        // Capture once: trust inspection and the child process must observe
+        // one environment, including a just-installed PI_CODING_AGENT_DIR.
+        let launch_environment =
+            crate::environment::for_terminal().unwrap_or_else(|| std::env::vars_os().collect());
+        let agent_home = pi_environment_value(&launch_environment, "USERPROFILE")
+            .or_else(|| pi_environment_value(&launch_environment, "HOME"));
+        let resource_home = pi_environment_value(&launch_environment, "HOME")
+            .or_else(|| pi_environment_value(&launch_environment, "USERPROFILE"));
+        let agent_dir = pi_project_trust::agent_dir_for(
+            pi_environment_value(&launch_environment, "PI_CODING_AGENT_DIR"),
+            agent_home,
+            Some(Path::new(cwd)),
+        );
+        if let Ok(mut ui) = shared.ui.lock() {
+            ui.trust = Some(match agent_dir.as_deref() {
+                Some(agent_dir) => pi_project_trust::compute_with_home(
+                    Path::new(cwd),
+                    agent_dir,
+                    resource_home,
+                    decision,
+                ),
+                None => pi_project_trust::compute_without_agent_dir(
+                    Path::new(cwd),
+                    resource_home,
+                    decision,
+                ),
+            });
+        }
         let events = ScopedProviderEvents::new(self.events.clone(), worker_token);
         let callback_events = events.clone();
         let callback_session = session_id.to_owned();
@@ -233,6 +287,9 @@ impl ProviderAdapter for PiAdapter {
         });
 
         let mut args: Vec<String> = vec!["--mode".to_owned(), "rpc".to_owned()];
+        if let Some(flag) = pi_project_trust::launch_flag(decision) {
+            args.push(flag.to_owned());
+        }
         if let Some(id) = native_id {
             validate_native_id(id)?;
             args.push("--session".to_owned());
@@ -250,7 +307,8 @@ impl ProviderAdapter for PiAdapter {
         let refs: Vec<&str> = args.iter().map(String::as_str).collect();
         let spec = CommandSpec::provider("pi", &refs)?;
         let process =
-            JsonLineProcess::spawn("pi", &spec, Some(cwd), &[], EnvelopeStyle::Pi, on_message)?;
+            JsonLineProcess::spawn_with_environment("pi", &spec, Some(cwd), &[],
+            Some(&launch_environment), EnvelopeStyle::Pi, on_message)?;
         // Pi may emit an extension UI request during startup. Publish the responder
         // and drain those records atomically with respect to the stdout callback.
         let queued_ui = {
@@ -272,6 +330,7 @@ impl ProviderAdapter for PiAdapter {
             shared,
             events,
             process,
+            retired: false,
         };
         // Resolve the durable identity and the live option snapshot.
         chat.refresh_ui();
@@ -354,6 +413,7 @@ struct PiUi {
     /// Pi's `get_state` does not report auto-retry, so the adapter tracks the
     /// last value it set (Pi enables it by default).
     auto_retry: Option<bool>,
+    trust: Option<Value>,
 }
 
 struct PiChat {
@@ -361,6 +421,7 @@ struct PiChat {
     shared: Arc<PiShared>,
     events: ScopedProviderEvents,
     process: JsonLineProcess,
+    retired: bool,
 }
 
 impl PiChat {
@@ -665,10 +726,37 @@ impl ChatSession for PiChat {
     }
 
     fn is_alive(&self) -> bool {
-        self.process.is_alive()
+        !self.retired && self.process.is_alive()
+    }
+
+    fn validate_send(&self, _text: &str) -> Result<(), ProviderError> {
+        if self.retired {
+            return Err(ProviderError::new(
+                "provider_disconnected",
+                "Pi is reconnecting",
+            ));
+        }
+        Ok(())
+    }
+
+    fn validate_restart(&self) -> Result<(), ProviderError> {
+        if self.retired {
+            return Err(ProviderError::new(
+                "provider_disconnected",
+                "Pi is reconnecting",
+            ));
+        }
+        if self.active_turn().is_some() {
+            return Err(ProviderError::new(
+                "turn_in_progress",
+                "Pi cannot reconnect during an active turn",
+            ));
+        }
+        Ok(())
     }
 
     fn send(&mut self, text: &str, operation_id: &str) -> Result<Value, ProviderError> {
+        self.validate_send(text)?;
         validate_native_id(operation_id)?;
         if self.active_turn().is_some() {
             return Err(ProviderError::new(
@@ -894,6 +982,7 @@ impl ChatSession for PiChat {
     }
 
     fn stop(&mut self) -> Result<(), ProviderError> {
+        self.retired = true;
         let active = self.active_turn();
         if active.is_some() {
             let _ = self.process.request("abort", json!({}));
@@ -1765,7 +1854,11 @@ fn pi_ui_state(ui: &PiUi) -> Value {
             }))
         })
         .collect::<Vec<_>>();
-    json!({"options":options,"commands":commands})
+    let mut state = json!({"options":options,"commands":commands});
+    if let Some(trust) = &ui.trust {
+        state["piTrust"] = trust.clone();
+    }
+    state
 }
 
 fn pi_boolean(value: &str) -> Result<bool, ProviderError> {
@@ -1962,11 +2055,29 @@ fn pi_active_branch(entries: Vec<Value>) -> Vec<Value> {
 
 /// `~/.pi/agent`, honouring the documented environment override.
 fn pi_agent_dir() -> Option<PathBuf> {
-    if let Some(dir) = std::env::var_os("PI_CODING_AGENT_DIR") {
-        return Some(PathBuf::from(dir));
-    }
-    let home = std::env::var_os("USERPROFILE").or_else(|| std::env::var_os("HOME"))?;
-    Some(PathBuf::from(home).join(".pi").join("agent"))
+    pi_project_trust::agent_dir_for(
+        pi_launch_env("PI_CODING_AGENT_DIR") ,
+        pi_launch_env("USERPROFILE").or_else(|| pi_launch_env("HOME")),
+        None,
+    )
+}
+
+/// Read the environment that the managed Pi child receives, not only the
+/// long-lived runtime's startup environment.
+fn pi_launch_env(name: &str) -> Option<std::ffi::OsString> {
+    let environment =
+        crate::environment::for_terminal().unwrap_or_else(|| std::env::vars_os().collect());
+    pi_environment_value(&environment, name)
+}
+
+fn pi_environment_value(
+    environment: &crate::environment::Vars,
+    name: &str,
+) -> Option<std::ffi::OsString> {
+    environment.iter().find_map(|(key, value)| {
+        key.to_string_lossy().eq_ignore_ascii_case(name)
+            .then(|| value.clone())
+    })
 }
 
 fn pi_sessions_dir() -> Result<PathBuf, ProviderError> {
@@ -2873,6 +2984,7 @@ require('node:readline').createInterface({input:process.stdin}).on('line', line 
             thinking_levels: vec!["off".to_owned(), "high".to_owned()],
             commands: vec![json!({"name":"demo","description":"Demo"})],
             auto_retry: Some(false),
+            trust: Some(json!({"effective":"skipped"})),
         };
         let value = pi_ui_state(&ui);
         // Required ChatSessionOption fields, and no extraneous ones.
@@ -2903,6 +3015,7 @@ require('node:readline').createInterface({input:process.stdin}).on('line', line 
         assert!(value["options"][0].get("currentValue").is_none());
         assert!(value["options"][0].get("options").is_none());
         assert_eq!(value["commands"][0]["name"], "demo");
+        assert_eq!(value["piTrust"]["effective"], "skipped");
     }
 
     #[test]

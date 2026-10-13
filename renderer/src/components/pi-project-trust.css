@@ -1,0 +1,6 @@
+.pi-project-trust { display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:12px; margin:8px 12px; padding:8px 12px; border:1px solid var(--border); border-radius:var(--radius-card); background:color-mix(in srgb,var(--amber) 10%,var(--surface)); color:var(--text); font-size:13px; }
+.pi-project-trust .btn { flex:0 0 auto; }
+.pi-project-trust-list { margin:0; padding-left:20px; display:grid; gap:4px; font-size:12px; color:var(--muted); overflow-wrap:anywhere; }
+.pi-project-trust-list code { font-family:var(--mono); color:var(--text); }
+.pi-project-trust-disabled { color:var(--muted); font-size:12px; }
+.pi-project-trust-details { display:flex; align-items:center; gap:8px; margin:0; color:var(--muted); font-size:12px; }

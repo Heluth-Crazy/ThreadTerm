@@ -10,6 +10,7 @@ import { useTranslation } from '../i18n';
 import { Icon, useAgentCapabilities } from "./PrototypeIcon";
 import { ChatApprovalCard } from "./ChatApprovalCard";
 import { ChatConnectOverlay } from "./ChatConnectOverlay";
+import { PiProjectTrust } from './PiProjectTrust';
 import { DelegationPanel } from "./DelegationPanel";
 import { delegationTool, delegationToolLabel } from "../delegation";
 import { UsageCard } from './UsageCard';
@@ -420,6 +421,7 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession }
   const optionsGeneration = useRef<number | undefined>(undefined);
   const uiUpdates = useRef(0);
   const [ui, setUi] = useState<ChatUiState>({ options: [], commands: [] });
+  const [trustBusy, setTrustBusy] = useState(false);
   const [images, setImages] = useState<string[]>([]);
   const imagesRef=useRef(images); imagesRef.current=images;
   const [imageReading, setImageReading] = useState(false);
@@ -944,6 +946,14 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession }
       setApprovalBusy(current => current === key ? undefined : current);
     }
   }
+  async function setPiProjectTrust(decision: 'trusted'|'declined'|'none') {
+    const epoch=leaseSessionId.current===session.id?lease.current:undefined;
+    if(!writable||trustBusy||liveTurn||!session.projectId||epoch===undefined)return;
+    setTrustBusy(true);
+    try { setUi(await request('chat.projectTrust.set',{sessionId:session.id,decision,leaseEpoch:epoch,operationId:operationId()})); }
+    catch(caught) { setError(asUserError(caught,copy('The trust decision or reconnection could not be completed. Review the connection before retrying.','信任决定或重新连接未完成，请检查连接后重试。'))); }
+    finally { setTrustBusy(false); }
+  }
   const liveTurn = ended ? undefined : activeTurnId(items, session.status);
   const legacyHistoryReload = repair?.reason === 'history_metadata_missing' || (connectionHeld && repairDiscovery?.recovery === 'legacy');
   const repairOffered = Boolean(repair?.offered && !liveTurn);
@@ -1148,6 +1158,7 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession }
     </section>}
     {repairFollowup && <p className="chat-repair-notice" role="status">{copy('History repaired. Queued prompts stay paused until ThreadTerm restarts.', '历史已修复。排队的提示词将保持暂停，直到 ThreadTerm 重启。')}</p>}
     {overlay === "banner" && <ChatConnectOverlay provider={session.provider} phase={connection.phase} slow={false} error={connection.error} variant="banner" onRetry={retryConnection} copy={copy} transportDown={link.transport !== "up"} />}
+    <PiProjectTrust trust={ui.piTrust} disabled={!writable || trustBusy || Boolean(liveTurn) || !session.projectId} disabledReason={!session.projectId ? copy('Add this session to a project before changing project trust.', '请先将此会话加入项目，再更改项目信任。') : undefined} onDecide={setPiProjectTrust} copy={copy} />
     {ui.loadState === "error" && ui.error && <p className="surface-error" role="alert">{ui.error.message} <button type="button" className="btn" disabled={!writable} onClick={() => void request("chat.options", { sessionId: session.id }).then(setUi).catch(caught => setUi(current => ({ ...current, loadState: "error", error: { code: "options_failed", message: asUserError(caught, copy("Options could not be loaded.", "无法读取选项。")) } })))}>{copy("Retry options", "重试读取选项")}</button></p>}
     {historyFailed && <section className="chat-repair-banner" role="alert"><div><strong>{copy('Saved history could not be checked.', '无法检查已保存的历史。')}</strong><p>{copy('Retry loading saved history before continuing this chat.', '请重试加载已保存的历史，再继续聊天。')}</p>{historyIssue && <small>{historyIssue}</small>}</div><button className="btn" disabled={repairBusy} onClick={() => discoverHistoryRef.current()}>{copy('Retry loading history', '重试加载历史')}</button></section>}
     {linkIssue && <p className="surface-error" role="alert">{linkIssue}</p>}

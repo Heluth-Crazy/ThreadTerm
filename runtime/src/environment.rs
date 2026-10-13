@@ -83,6 +83,12 @@ pub fn apply_to_service(command: &mut std::process::Command) {
     }
 }
 
+/// Applies a caller-captured service environment. This is used when provider
+/// launch decisions must inspect exactly the same snapshot passed to the child.
+pub fn apply_vars_to_service(command: &mut std::process::Command, vars: &Vars) {
+    replace_service(command, vars.to_vec());
+}
+
 fn replace_service(command: &mut std::process::Command, vars: Vars) {
     let own: Vec<(OsString, Option<OsString>)> = command
         .get_envs()

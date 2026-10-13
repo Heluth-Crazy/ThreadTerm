@@ -503,6 +503,74 @@ fn repair_operation_lock(database_path: &std::path::Path, operation_id: &str) ->
 }
 
 impl RuntimeService {
+    fn set_pi_project_trust(&self, principal: &str, params: &Value) -> Result<Value> {
+        #[derive(Deserialize)]
+        #[serde(rename_all = "camelCase", deny_unknown_fields)]
+        struct Decision {
+            session_id: String,
+            decision: String,
+            lease_epoch: i64,
+            operation_id: String,
+        }
+        let p: Decision = parse(params)?;
+        if p.session_id.is_empty()
+            || p.operation_id.is_empty()
+            || !matches!(p.decision.as_str(), "trusted" | "declined" | "none")
+        {
+            return Err(anyhow::anyhow!("invalid_request"));
+        }
+        self.leases
+            .require(&self.db, &p.session_id, principal, p.lease_epoch)?;
+        let session = self
+            .db
+            .session_by_id(&p.session_id)?
+            .ok_or_else(|| anyhow::anyhow!("session_not_found"))?;
+        if session.provider != "pi" || session.mode != "chat" {
+            return Err(anyhow::anyhow!("project_trust_unavailable"));
+        }
+        self.db.require_interactive(&p.session_id)?;
+        let project_id = session
+            .project_id
+            .as_deref()
+            .ok_or_else(|| anyhow::anyhow!("project_required"))?;
+        self.db.bind_operation(
+            &p.operation_id,
+            "chat.projectTrust.set",
+            &json!({"sessionId":p.session_id,"decision":p.decision}),
+        )?;
+        let flight = repair_operation_lock(&self.config.database_path, &p.operation_id)?;
+        let _request = flight
+            .lock()
+            .map_err(|_| anyhow::anyhow!("provider_internal"))?;
+        self.leases
+            .require(&self.db, &p.session_id, principal, p.lease_epoch)?;
+        if let Some(result) = self.db.operation(&p.operation_id)? {
+            return Ok(result);
+        }
+        // The provider validates idle state and holds the worker lock through
+        // persistence and retirement. A concurrent send cannot enter between
+        // the decision and the restart, or use the retired Pi process.
+        self.providers.restart_idle_chat(&p.session_id, || {
+            self.leases
+                .require(&self.db, &p.session_id, principal, p.lease_epoch)?;
+            self.db.require_interactive(&p.session_id)?;
+            if !crate::pi_project_trust::claim_and_set(&self.db, project_id, &p.decision, &p.operation_id)? {
+                return Err(anyhow::anyhow!(
+                    "project_trust_outcome_unknown: review the connection before retrying"
+                ));
+            }
+            Ok(())
+        })?;
+        // Pi is opened through the same resolver as every normal connection,
+        // so its flags and returned snapshot use the durable project decision.
+        self.connect_chat(&p.session_id)?;
+        let state = self.providers.chat_options(&p.session_id)?;
+        self.db
+            .complete_operation(&p.operation_id, "chat.projectTrust.set", &state)?;
+        Ok(state)
+    }
+
+
     fn repair_chat_history(&self, principal: &str, p: &ChatRepair) -> Result<Value> {
         if p.session_id.is_empty() || p.operation_id.is_empty() || p.lease_epoch < 1 {
             return Err(anyhow::anyhow!("invalid_request"));
@@ -538,6 +606,34 @@ impl RuntimeService {
         let chat_queues = Arc::new(crate::chat_queue::ChatQueues::default());
         let output = Arc::new(OutputStore::default());
         let providers = Arc::new(Providers::with_plugins(&config.data_dir, &db.settings_value().unwrap_or_else(|_| json!({}))));
+        // Resolve the project decision on each Pi connection. Other providers
+        // neither read this table nor inspect Pi's configuration files.
+        let trust_db = Arc::downgrade(&db);
+        providers.set_project_trust_resolver(Arc::new(move |session_id, provider| {
+            if provider != "pi" {
+                return Ok(None);
+            }
+            let db = trust_db.upgrade().ok_or_else(|| {
+                crate::providers::ProviderError::new("runtime_stopped", "Runtime stopped")
+            })?;
+            let session = db
+                .session_by_id(session_id)
+                .map_err(|error| {
+                    crate::providers::ProviderError::new("chat_persistence", error.to_string())
+                })?
+                .ok_or_else(|| {
+                    crate::providers::ProviderError::new("session_not_found", "Session not found")
+                })?;
+            session
+                .project_id
+                .as_deref()
+                .map(|project_id| crate::pi_project_trust::read(&db, project_id))
+                .transpose()
+                .map(Option::flatten)
+                .map_err(|error| {
+                    crate::providers::ProviderError::new("chat_persistence", error.to_string())
+                })
+        }));
         let capability_db = Arc::downgrade(&db);
         providers.set_capability_listener(Arc::new(move || {
             let Some(db) = capability_db.upgrade() else { return };
@@ -818,7 +914,7 @@ impl RuntimeService {
                 ));
             }
             // lookup references an existing operation; it does not reserve one.
-            if request.method != "session.lookup" && request.method != "chat.answer" && request.method != "chat.repair" {
+            if request.method != "session.lookup" && request.method != "chat.answer" && request.method != "chat.repair" && request.method != "chat.projectTrust.set" {
                 if let Some(operation_id) =
                     request.params.get("operationId").and_then(Value::as_str)
                 {
@@ -1284,6 +1380,7 @@ impl RuntimeService {
                     }
                     answer_chat_request(&self.db, &self.providers, &p.session_id, &p.turn_id, &p.approval_id, &p.response, &p.operation_id)
                 }
+                "chat.projectTrust.set" => self.set_pi_project_trust(principal, &request.params),
                 "chat.options" => {
                     let p: ChatRead = parse(&request.params)?;
                     self.providers
@@ -3168,6 +3265,93 @@ mod tests {
             "exited"
         );
         assert!(db.operation("force-ended").unwrap().is_some());
+    }
+
+    #[test]
+    fn pi_project_trust_requires_a_lease_and_an_idle_open_pi_session() {
+        let root = tempfile::tempdir().unwrap();
+        let db = Arc::new(Database::open(&root.path().join("runtime.sqlite")).unwrap());
+        let project = db
+            .add_project(
+                root.path().to_str().unwrap(),
+                Some("Trust test"),
+                "trust-project",
+            )
+            .unwrap();
+        let session = db
+            .create_session(CreateSession {
+                project_id: Some(&project.id),
+                title: None,
+                provider: "pi",
+                mode: "chat",
+                native_id: None,
+                operation_id: "trust-session",
+            })
+            .unwrap();
+        let service = test_service(root.path(), Arc::clone(&db));
+        let epoch = service.leases.claim(&db, &session.id, "desktop").unwrap();
+        let params = json!({"sessionId":session.id,"decision":"trusted","leaseEpoch":epoch,"operationId":"trust-decision"});
+        assert!(service
+            .set_pi_project_trust("other-device", &params)
+            .is_err());
+        let mut invalid = params.clone();
+        invalid["decision"] = json!("invalid");
+        assert!(service.set_pi_project_trust("desktop", &invalid).is_err());
+        let error = service
+            .set_pi_project_trust("desktop", &params)
+            .unwrap_err();
+        assert_eq!(
+            error
+                .downcast_ref::<crate::providers::ProviderError>()
+                .unwrap()
+                .code,
+            "chat_not_open"
+        );
+        assert_eq!(
+            crate::pi_project_trust::read(&db, &project.id).unwrap(),
+            None
+        );
+        // A failed preflight did not reserve the side effect or change trust.
+        assert!(db.claim_external_operation("trust-decision").unwrap());
+    }
+
+    #[test]
+    fn pi_project_trust_replays_receipts_only_after_authorization() {
+        let root = tempfile::tempdir().unwrap();
+        let db = Arc::new(Database::open(&root.path().join("runtime.sqlite")).unwrap());
+        let project = db
+            .add_project(root.path().to_str().unwrap(), None, "trust-project")
+            .unwrap();
+        let session = db
+            .create_session(CreateSession {
+                project_id: Some(&project.id),
+                title: None,
+                provider: "pi",
+                mode: "chat",
+                native_id: None,
+                operation_id: "trust-session",
+            })
+            .unwrap();
+        let service = test_service(root.path(), Arc::clone(&db));
+        let epoch = service.leases.claim(&db, &session.id, "desktop").unwrap();
+        let params = json!({"sessionId":session.id,"decision":"declined","leaseEpoch":epoch,"operationId":"trust-receipt"});
+        db.bind_operation(
+            "trust-receipt",
+            "chat.projectTrust.set",
+            &json!({"sessionId":session.id,"decision":"declined"}),
+        )
+        .unwrap();
+        let saved = json!({"options":[],"commands":[],"loadState":"ready"});
+        db.complete_operation("trust-receipt", "chat.projectTrust.set", &saved)
+            .unwrap();
+        assert_eq!(
+            service.set_pi_project_trust("desktop", &params).unwrap(),
+            saved
+        );
+        assert!(service
+            .set_pi_project_trust("other-device", &params)
+            .is_err());
+        assert!(service.set_pi_project_trust("desktop", &json!({"sessionId":session.id,"decision":"trusted","leaseEpoch":epoch,"operationId":"trust-receipt"})).is_err());
     }
 
     #[test]

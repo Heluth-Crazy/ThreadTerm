@@ -3148,7 +3148,7 @@
     "RequestResult<\"chat.answer\">": {
       "type": "null"
     },
-    "RequestResult<\"chat.options\">": {
+    "RequestResult<\"chat.projectTrust.set\">": {
       "$ref": "#/definitions/ChatUiState"
     },
     "ChatUiState": {
@@ -3193,6 +3193,9 @@
             "message"
           ],
           "additionalProperties": false
+        },
+        "piTrust": {
+          "$ref": "#/definitions/PiTrustState"
         }
       },
       "required": [
@@ -3301,6 +3304,59 @@
         "error",
         "unknown"
       ]
+    },
+    "PiTrustState": {
+      "type": "object",
+      "properties": {
+        "protectedResources": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "piDecision": {
+          "type": "string",
+          "enum": [
+            "trusted",
+            "declined",
+            "none"
+          ]
+        },
+        "defaultProjectTrust": {
+          "type": "string",
+          "enum": [
+            "always",
+            "ask",
+            "never"
+          ]
+        },
+        "threadtermDecision": {
+          "type": "string",
+          "enum": [
+            "trusted",
+            "declined",
+            "none"
+          ]
+        },
+        "effective": {
+          "type": "string",
+          "enum": [
+            "loaded",
+            "skipped"
+          ]
+        }
+      },
+      "required": [
+        "protectedResources",
+        "piDecision",
+        "defaultProjectTrust",
+        "threadtermDecision",
+        "effective"
+      ],
+      "additionalProperties": false
+    },
+    "RequestResult<\"chat.options\">": {
+      "$ref": "#/definitions/ChatUiState"
     },
     "RequestResult<\"chat.context.read\">": {
       "anyOf": [
@@ -7371,6 +7427,32 @@
         },
         "result": {
           "$ref": "#/definitions/RequestResult%3C%22chat.answer%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "result"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "chat.projectTrust.set"
+        },
+        "result": {
+          "$ref": "#/definitions/RequestResult%3C%22chat.projectTrust.set%22%3E"
         }
       },
       "required": [
