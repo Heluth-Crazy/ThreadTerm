@@ -106,6 +106,17 @@ test('session options carry additive kind, category, description and recommendat
  assert.throws(()=>validateResult('chat.options',{...ui,options:[{...ui.options[1],choices:[{value:'true',name:'On',group:2}]}]}));
 });
 
+test('chat UI skills are additive and carry a text invocation',()=>{
+ validateResult('chat.options',{options:[],commands:[],skills:[{name:'skill:review',description:'Review code',invocation:'/skill:review'}]});
+ // Absent or empty is valid: a provider that cannot tell skills apart publishes none.
+ validateResult('chat.options',{options:[],commands:[]});
+ validateResult('chat.options',{options:[],commands:[],skills:[]});
+ // Invocation is required and the closed shape rejects extras.
+ assert.throws(()=>validateResult('chat.options',{options:[],commands:[],skills:[{name:'x'}]}));
+ assert.throws(()=>validateResult('chat.options',{options:[],commands:[],skills:[{name:'x',invocation:'/x',extra:1}]}));
+ assert.throws(()=>validateResult('chat.options',{options:[],commands:[],skills:[{name:2,invocation:'/x'}]}));
+});
+
 test('background tasks are additive UI state with explicit lazy list and leased stop',()=>{
  const running={id:'proc-1',title:'Build docs',command:'npm run docs',status:'running',startedAt:'2026-10-13T12:00:00Z',canStop:true,toolId:'tool-1'};
  const finished={id:'task-2',title:'Inspect tests',status:'completed',startedAt:'2026-10-13T12:00:00Z',endedAt:'2026-10-13T12:00:05Z',canStop:false};

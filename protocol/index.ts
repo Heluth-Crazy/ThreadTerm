@@ -165,6 +165,8 @@ export interface SubagentTranscriptRead { items:ChatItem[]; rev:number; truncate
 export interface ChatSessionChoice { value:string; name:string; description?:string; group?:string; recommended?:boolean }
 export interface ChatSessionOption { id:string; name:string; value:string; choices:ChatSessionChoice[]; kind?:'select'|'boolean'; category?:'mode'|'model'|'thinking'|'other'; description?:string; recommended?:string }
 export interface ChatSlashCommand { name:string; description?:string }
+/** A provider skill that can be invoked by text (provider-matrix §E3). */
+export interface ChatSkill { name:string; description?:string; invocation:string }
 export type ChatOptionsLoadState = 'idle'|'loading'|'ready'|'empty'|'error'|'unknown';
 export interface PiTrustState {
  protectedResources:string[];
@@ -189,6 +191,8 @@ export interface ChatBackgroundTask {
 export interface ChatUiState {
  options:ChatSessionOption[];
  commands:ChatSlashCommand[];
+ /** Skills the provider can tell apart from ordinary commands; absent when it cannot. */
+ skills?:ChatSkill[];
  backgroundTasks?:ChatBackgroundTask[];
  inputCapabilities?:{images?:boolean;steer?:'native'|'note'};
  loadState?:ChatOptionsLoadState;

@@ -94,6 +94,37 @@ try {
   await openView('Files'); await page.locator('.wb-tree-row[data-path="src/cart.ts"]').click({ button: 'right' }); await page.getByRole('menuitem', { name: 'File history', exact: true }).click(); await page.locator('.wb-commit-row').first().click(); await page.getByTestId('history-send-to-agent').waitFor(); await attachFrom(page.getByTestId('history-send-to-agent'), async () => true); await request('session.present', { sessionId: chat.id, placement: 'workspace', presentation: 'focused', operationId: randomUUID() }); await until(async () => (await tray.getByTestId('context-chip').count()) >= 4, 'commit context chip'); await shot('01-tray-chips.png');
   await tray.getByTestId('context-chip').first().click(); const preview = page.getByTestId('context-preview'); await preview.waitFor(); assert.match(await preview.innerText(), /^\[ThreadTerm context 1\//); await shot('02-preview.png'); await page.keyboard.press('Escape'); await tray.getByTestId('context-chip-remove').first().click(); await page.reload(); await page.waitForFunction(() => Boolean(window.threadterm)); await request('session.present', { sessionId: chat.id, placement: 'workspace', presentation: 'focused', operationId: randomUUID() }); await until(async () => (await tray.getByTestId('context-chip').count()) >= 3, 'persisted tray after reload'); await tray.getByTestId('context-chip').first().click(); await preview.waitFor(); const previewText = await preview.innerText(); await page.keyboard.press('Escape');
   await composer(chat.id).fill('user text comes last'); await page.locator('.chat-compose-send[aria-label="Send"]').click(); const snapshot = await until(async () => { const items = await request('chat.snapshot', { sessionId: chat.id }); const user = items.items.filter(item => item.role === 'user').flatMap(item => item.parts || []).find(part => part.type === 'text' && part.text?.endsWith('user text comes last'))?.text; const assistant = items.items.filter(item => item.role === 'assistant').flatMap(item => item.parts || []).find(part => part.type === 'text' && part.text === `Echo: ${user}`); return user && assistant ? { items: items.items, user } : undefined; }, 'full Echo reply'); assert.ok(snapshot.user.startsWith(previewText), 'echo receives the exact preview block first'); assert.ok(snapshot.user.endsWith('user text comes last'), 'user text is serialized last'); await page.getByTestId('context-transcript-row').waitFor(); assert.doesNotMatch(await page.getByTestId('context-transcript-row').locator('xpath=ancestor::*[contains(@class,"chat-message")]').innerText(), /\[ThreadTerm context/); await shot('03-sent-bubble.png');
+  // @-mention chip kinds: session, agent and skill render, preview, remove and serialize.
+  await page.evaluate(({ id, items }) => { localStorage.setItem(`threadterm.compose.context.${id}`, JSON.stringify(items)); }, { id: chat.id, items: [
+    { kind: 'session', id: 'session:ctx', sessionId: shell.id, title: 'Context shell', provider: 'shell' },
+    { kind: 'agent', id: 'agent:codex', provider: 'codex' },
+    { kind: 'skill', id: 'skill:demo', name: 'demo', invocation: '/skill:demo' },
+  ] });
+  await page.reload(); await page.waitForFunction(() => Boolean(window.threadterm)); await request('session.present', { sessionId: chat.id, placement: 'workspace', presentation: 'focused', operationId: randomUUID() });
+  await until(async () => (await tray.getByTestId('context-chip').count()) >= 3, 'mention chips after reload');
+  const mentionLabels = await tray.getByTestId('context-chip').allInnerTexts();
+  assert.ok(mentionLabels.some(label => label.includes('Session · Context shell')), `session chip: ${mentionLabels.join(' | ')}`);
+  assert.ok(mentionLabels.some(label => label.includes('Agent · codex')), `agent chip: ${mentionLabels.join(' | ')}`);
+  assert.ok(mentionLabels.some(label => label.includes('Skill · demo')), `skill chip: ${mentionLabels.join(' | ')}`);
+  await shot('05-mention-chips.png');
+  const mentionPreview = page.getByTestId('context-preview');
+  for (const [index, pattern] of [
+    [0, /\[ThreadTerm context 1\/3\] Session [A-Za-z0-9._:-]+: Context shell \(shell\)\. Call session_info with this id\./],
+    [1, /Agent: delegate the following task to codex with delegate_start\./],
+    [2, /Skill: demo \(invoke: \/skill:demo\)/],
+  ]) {
+    await tray.getByTestId('context-chip').nth(index).click(); await mentionPreview.waitFor();
+    assert.match(await mentionPreview.innerText(), pattern);
+    await page.keyboard.press('Escape');
+    await mentionPreview.waitFor({ state: 'detached' });
+  }
+  await tray.getByTestId('context-chip-remove').last().click();
+  await until(async () => (await tray.getByTestId('context-chip').count()) === 2, 'skill chip removed');
+  await page.locator('.chat-compose-send[aria-label="Send"]').click();
+  const mentionPrompt = await until(async () => { const items = await request('chat.snapshot', { sessionId: chat.id }); return items.items.filter(item => item.role === 'user').flatMap(item => item.parts || []).find(part => part.type === 'text' && part.text?.includes('Call session_info with this id.'))?.text; }, 'mention prompt serialized');
+  assert.match(mentionPrompt, /Agent: delegate the following task to codex with delegate_start\./);
+  assert.match(mentionPrompt, /\[ThreadTerm message\]/);
+  check('session, agent and skill mention chips render, preview, remove and serialize into the prompt');
   await composer(chat.id).fill('slow:10000'); await page.locator('.chat-compose-send[aria-label="Send"]').click(); await page.locator('.chat-compose-send[aria-label="Queue"]').waitFor(); await request('session.present', { sessionId: shell.id, placement: 'workspace', presentation: 'focused', operationId: randomUUID() }); await selectTerminalLines('context line 1', 'context line 12'); await attachFrom(page.getByTestId('terminal-selection-send-to-agent'), async () => true); await request('session.present', { sessionId: chat.id, placement: 'workspace', presentation: 'focused', operationId: randomUUID() }); await until(() => tray.getByTestId('context-chip').count(), 'queued terminal context'); await composer(chat.id).fill('queued text'); await page.locator('.chat-compose-send[aria-label="Queue"]').click(); await page.getByTestId('chat-queue-context-badge').waitFor(); await shot('04-queue-badge.png'); check('terminal selection, editor selection, Source Control diff, and history commit create Chat chips; terminal receivers retain inline references; preview, transcript, echo ordering, persistence, and contextual queue badge pass');
   assert.deepEqual(report.errors, [], report.errors.join('\n')); report.passed = true;
 } catch (error) { report.errors.push(error instanceof Error ? error.stack || error.message : String(error)); if (page) await page.screenshot({ path: join(out, 'failure.png') }).catch(() => {}); }

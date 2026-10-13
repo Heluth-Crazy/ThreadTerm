@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { MAX_CONTEXT_BYTES, MAX_DIFF_BYTES, MAX_TERMINAL_BYTES, MAX_TERMINAL_LINES, contextDisplayMetadata, contextSerializedBlocks, normalizeContextItems, parseContext, serializeContext, stripAnsi } from './chatContext';
+import { MAX_CONTEXT_BYTES, MAX_DIFF_BYTES, MAX_SESSION_SUMMARY_BYTES, MAX_TERMINAL_BYTES, MAX_TERMINAL_LINES, contextDisplayMetadata, contextSerializedBlocks, normalizeContextItems, parseContext, serializeContext, stripAnsi } from './chatContext';
 
 test('serializes and parses every context kind without exposing the user text to the envelope', () => {
   const items = [
@@ -100,4 +100,83 @@ test('preserves a full commit reference and rejects malformed fenced envelopes',
   assert.equal(parseContext(message)!.text, '[ThreadTerm message]\nuser text');
   assert.equal(parseContext('[ThreadTerm context 1/1] Terminal output — "shell", last 1 lines\n````diff\na\n````\n[ThreadTerm message]\ntext'), undefined);
   assert.equal(parseContext('[ThreadTerm context 1/1] Terminal output — "shell", last 1 lines\n````text\na\n`````\n[ThreadTerm message]\ntext'), undefined);
+});
+
+test('round-trips session, agent and skill mentions and their chip metadata', () => {
+  const items = [
+    { kind: 'session' as const, id: 'session:x', sessionId: 'x-1', title: 'Other chat', provider: 'claude' },
+    { kind: 'agent' as const, id: 'agent:pi', provider: 'pi' },
+    { kind: 'skill' as const, id: 'skill:review', name: 'review', invocation: '/review' },
+  ];
+  const message = serializeContext(items, 'please handle it');
+  const parsed = parseContext(message)!;
+  assert.ok(parsed);
+  assert.equal(parsed.items.length, 3);
+  assert.match(parsed.items[0]!.header, /Call session_info with this id\.$/);
+  assert.equal(parsed.items[0]!.body, '');
+  assert.match(parsed.items[1]!.header, /delegate the following task to pi with delegate_start\.$/);
+  assert.match(parsed.items[2]!.header, /invoke: \/review\)$/);
+  assert.equal(parsed.text, 'please handle it');
+  assert.deepEqual(contextDisplayMetadata(parsed.items[0]!.header), { kind: 'session', label: 'Session · Other chat', title: 'Session x-1: Other chat (claude). Call session_info with this id.' });
+  assert.deepEqual(contextDisplayMetadata(parsed.items[1]!.header), { kind: 'agent', label: 'Agent · pi', title: 'Agent: delegate the following task to pi with delegate_start.' });
+  assert.deepEqual(contextDisplayMetadata(parsed.items[2]!.header), { kind: 'skill', label: 'Skill · review', title: 'Skill: review (invoke: /review)' });
+  const withSummary = serializeContext([{ ...items[0]!, summary: 'User: hi' }], 'x');
+  const summaryParsed = parseContext(withSummary)!;
+  assert.equal(summaryParsed.items[0]!.body, '````text\nUser: hi\n````');
+  assert.match(summaryParsed.items[0]!.header, /Summary attached; session_info unavailable\.$/);
+  assert.doesNotMatch(summaryParsed.items[0]!.header, /Call session_info/);
+  assert.deepEqual(contextDisplayMetadata(summaryParsed.items[0]!.header), { kind: 'session', label: 'Session · Other chat', title: 'Session x-1: Other chat (claude). Summary attached; session_info unavailable.' });
+});
+
+test('skill invocation containing an invoke marker still round-trips to the right chip', () => {
+  const item = { kind: 'skill' as const, id: 'skill:review', name: 'review', invocation: '/run (invoke: x' };
+  const message = serializeContext([item], 'go');
+  const parsed = parseContext(message)!;
+  assert.equal(parsed.items[0]!.header, '[ThreadTerm context 1/1] Skill: review (invoke: /run (invoke: x)');
+  assert.deepEqual(contextDisplayMetadata(parsed.items[0]!.header), { kind: 'skill', label: 'Skill · review', title: 'Skill: review (invoke: /run (invoke: x)' });
+});
+
+test('every serialized mention header is single-line and length-bounded', () => {
+  const blocks = contextSerializedBlocks([
+    { kind: 'terminal' as const, id: 't', sessionTitle: 'build', lines: 1, text: 'x' },
+    { kind: 'file' as const, id: 'f', path: 'src/a.ts' },
+    { kind: 'diff' as const, id: 'd', path: 'src/a.ts', staged: false, text: 'x', truncated: false },
+    { kind: 'commit' as const, id: 'c', sha: '6e0f22b1234', subject: 'Fix' },
+    { kind: 'conversation' as const, id: 'v', copiedAt: 'now', text: 'x' },
+    { kind: 'quote' as const, id: 'q', sourceTitle: 'src', text: 'x' },
+    { kind: 'session' as const, id: 's', sessionId: 'x', title: 'Other', provider: 'claude' },
+    { kind: 'session' as const, id: 's2', sessionId: 'y', title: 'Other', provider: 'claude', summary: 'User: hi' },
+    { kind: 'agent' as const, id: 'a', provider: 'pi' },
+    { kind: 'skill' as const, id: 'k', name: 'review', invocation: '/review' },
+  ]);
+  for (const block of blocks) {
+    const header = block.split('\n', 1)[0]!;
+    assert.ok(!/[\r\n]/.test(header), `header must be one line: ${JSON.stringify(header)}`);
+    assert.ok(header.length <= 4096 * 3 + 64, `header must stay bounded: ${header.length}`);
+  }
+  // Metadata fields reject CR/LF outright, so no header can be split.
+  for (const bad of [
+    { kind: 'terminal' as const, id: 't', sessionTitle: 'a\rb', lines: 1, text: '' },
+    { kind: 'file' as const, id: 'f', path: 'src/a\rb.ts' },
+    { kind: 'commit' as const, id: 'c', sha: '6e0f22b1234', subject: 'a\nb' },
+    { kind: 'session' as const, id: 's', sessionId: 'x', title: 'a\nb', provider: 'claude' },
+    { kind: 'session' as const, id: 's', sessionId: 'x', title: 'a\rb', provider: 'claude', summary: 'User: hi' },
+    { kind: 'agent' as const, id: 'a', provider: 'a\nb' },
+    { kind: 'skill' as const, id: 'k', name: 'a\nb', invocation: '/x' },
+  ]) {
+    assert.throws(() => normalizeContextItems([bad]), /Invalid context/);
+  }
+});
+
+test('rejects malformed mention kinds and still parses legacy envelopes', () => {
+  assert.throws(() => normalizeContextItems([{ kind: 'session', id: 's', sessionId: 'bad id', title: 't', provider: 'p' }]), /Invalid context/);
+  assert.throws(() => normalizeContextItems([{ kind: 'session', id: 's', sessionId: 'ok', title: 't', provider: 'bad provider' }]), /Invalid context/);
+  assert.throws(() => normalizeContextItems([{ kind: 'agent', id: 'a', provider: 'bad provider' }]), /Invalid context/);
+  assert.throws(() => normalizeContextItems([{ kind: 'skill', id: 'k', name: '', invocation: '/x' }]), /Invalid context/);
+  assert.throws(() => normalizeContextItems([{ kind: 'session', id: 's', sessionId: 'ok', title: 't', provider: 'p', summary: 'x'.repeat(MAX_SESSION_SUMMARY_BYTES + 1) }]), /Invalid context/);
+  // A prompt written before mentions existed still parses unchanged.
+  const legacy = serializeContext([{ kind: 'file', id: 'f', path: 'src/cart.ts' }], 'legacy text');
+  const parsed = parseContext(legacy)!;
+  assert.equal(parsed.items.length, 1);
+  assert.equal(parsed.text, 'legacy text');
 });

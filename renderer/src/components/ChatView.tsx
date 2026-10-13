@@ -2,7 +2,7 @@ import { ClipboardEvent, FormEvent, Fragment, KeyboardEvent, type MouseEvent as 
 import DOMPurify from "dompurify";
 import { parseChatMarkdown } from '../chatMath';
 import { ChatMarkdown } from './ChatMarkdownExtras';
-import type { ChatAnswerResponse, ChatPart, ChatQueue, ChatSlashCommand, ChatUiState, FileReference, Session } from "@threadterm/protocol";
+import type { ChatAnswerResponse, ChatPart, ChatQueue, ChatSlashCommand, ChatUiState, FileReference, GitCommitInfo, Session } from "@threadterm/protocol";
 import { ChatItem, openExternal, operationId, request, subscribeEvents } from "../bridge";
 import { beginResync, chatUiFromEvent, completeResync, nextRepairRevision, upsertChatItem, type ChatResync } from "../chatState";
 import { acquireControl } from '../controlLease';
@@ -59,6 +59,9 @@ import { SteerSend } from './SteerSend';
 import { steerControlKind, steerFailureMessage } from '../steerSend';
 import { useChatContext } from '../useChatContext';
 import { ContextMessage, ContextTray } from './ContextTray';
+import { ChatMentions } from './ChatMentions';
+import { agentMentionItems, beginMentionLoad, commitMentionItems, fileMentionItems, flatMentionItems, initialMentionLoadState, mentionAttachIsCurrent, mentionGroups as buildMentionGroups, mentionKeyAction, mentionLoadCurrent, mentionLoadKey, mentionQuery, sessionContextItem, sessionMentionItems, skillMentionItems, type MentionItem, type MentionLoadState, type MentionSources } from '../chatMentions';
+import type { ContextItem, SessionContextItem } from '../chatContext';
 import { contextError } from '../contextErrors';
 import { CHAT_REPAIR_REQUEST, setChatRepairAvailability, type ChatRepairAvailability } from '../chatRepair';
 import { discoveredRepair, discoveryMatches, type RepairDiscovery } from '../chatRepairDiscovery';
@@ -375,7 +378,7 @@ function isTerminalChatStatus(status: Session["status"]): boolean {
   return status === "idle" || status === "error" || status === "exited" || status === "interrupted";
 }
 
-export function ChatView({ session, delegates = [], delegatedBy, onOpenSession }: { session: Session; delegates?: Session[]; delegatedBy?: Session; onOpenSession?: (sessionId: string) => void }) {
+export function ChatView({ session, delegates = [], delegatedBy, onOpenSession, sessions = [], delegationEnabled = true, sessionInfoEnabled = true }: { session: Session; delegates?: Session[]; delegatedBy?: Session; onOpenSession?: (sessionId: string) => void; sessions?: Session[]; delegationEnabled?: boolean; sessionInfoEnabled?: boolean }) {
   const { locale } = useTranslation();
   const surface = useContext(SessionSurfaceContext);
   const openFile = surface?.openFile;
@@ -457,6 +460,11 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession }
   }, [imageDraftKey]);
   const [approvalBusy, setApprovalBusy] = useState<string>();
   const [slashIndex, setSlashIndex] = useState(0);
+  const [mentionIndex, setMentionIndex] = useState(0);
+  const [mentionDismissed, setMentionDismissed] = useState<number>();
+  const [mentionData, setMentionData] = useState<{ key?: string; files?: string[]; commits?: GitCommitInfo[] }>({});
+  const mentionLoadRef = useRef<MentionLoadState>(initialMentionLoadState);
+  const [caret, setCaret] = useState(0);
   const composeRef = useRef<HTMLTextAreaElement>(null);
   const logRef = useRef<HTMLDivElement>(null);
   const logContentRef = useRef<HTMLDivElement>(null);
@@ -1079,6 +1087,45 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession }
   }
   const queueMode = queueComposerMode(Boolean(liveTurn), queue);
   const steerKind = steerControlKind(Boolean(liveTurn), ui.inputCapabilities?.steer, queueMode);
+  const rawMention = mentionQuery(text, caret);
+  const mention = rawMention && rawMention.start !== mentionDismissed ? rawMention : undefined;
+  const mentionKey = mentionLoadKey(session.projectId, session.worktreePath);
+  useEffect(() => {
+    // Reload on every closed->open transition and on a session, project or
+    // worktree change. A ticket generation drops a late response after an await
+    // so it cannot overwrite newer data (no timers or polling).
+    const loadState = beginMentionLoad(mentionLoadRef.current, mention !== undefined, mentionKey);
+    mentionLoadRef.current = loadState;
+    const ticket = loadState.ticket;
+    if (!ticket) return;
+    let disposed = false;
+    setMentionData(current => current.key === ticket.key ? current : { key: ticket.key });
+    const project = { projectId: session.projectId ?? '', worktreePath: session.worktreePath };
+    void Promise.all([
+      request("filesystem.files", project).then(result => result.paths).catch(() => undefined),
+      request("git.log", { ...project, limit: 50 }).then(result => result.commits).catch(() => undefined),
+    ]).then(([files, commits]) => {
+      if (disposed || !mentionLoadCurrent(ticket, mentionLoadRef.current)) return;
+      setMentionData({ key: ticket.key, files: files ?? undefined, commits: commits ?? undefined });
+    });
+    return () => { disposed = true; };
+  }, [mention !== undefined, mentionKey, session.id]);
+  const mentionSourceItems = useMemo<MentionSources>(() => {
+    const sources: MentionSources = {};
+    const fresh = mentionData.key === mentionKey ? mentionData : {};
+    if (fresh.files) sources.files = fileMentionItems(fresh.files);
+    if (fresh.commits) sources.commits = commitMentionItems(fresh.commits);
+    const otherSessions = sessionMentionItems(sessions, session.id, session.projectId);
+    if (otherSessions.length) sources.sessions = otherSessions;
+    if (delegationEnabled) {
+      const agents = agentMentionItems(capabilities, session.provider);
+      if (agents.length) sources.agents = agents;
+    }
+    const skills = skillMentionItems(ui.skills ?? []);
+    if (skills.length) sources.skills = skills;
+    return sources;
+  }, [mentionData, mentionKey, sessions, session.id, session.projectId, session.provider, delegationEnabled, capabilities, ui.skills]);
+  const mentionGroups = useMemo(() => mention ? buildMentionGroups(mentionSourceItems, mention.query) : [], [mention?.query, mentionSourceItems]);
   const slash = slashQuery(text);
   const slashCommands = useMemo(() => {
     const commands: ChatSlashCommand[] = [...ui.commands];
@@ -1119,7 +1166,48 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession }
     changeText(`/${command.name.replace(/^\//, "")} `);
     composeRef.current?.focus();
   }
+  function applyMention(pick: MentionItem) {
+    const range = mention;
+    if (!range) return;
+    setMentionIndex(0); setMentionDismissed(undefined);
+    changeText(text.slice(0, range.start) + text.slice(range.end));
+    composeRef.current?.focus();
+    const attach = (item: ContextItem) => { if (context.items.some(existing => existing.id === item.id)) return; try { context.attach(item); } catch (caught) { setError(asUserError(caught, copy("Context could not be attached.", "无法附加上下文。"))); } };
+    const sessionItem: SessionContextItem | undefined = pick.item.kind === 'session' ? pick.item : undefined;
+    if (sessionItem && !sessionInfoEnabled) {
+      // The session-info tool is off: embed a bounded inline reading instead.
+      // Capture the lifecycle and session id before the await so a switch wins
+      // over the late response instead of landing the chip in the new tray.
+      const guard = (): { sessionId?: string; lifecycle: unknown } => ({ sessionId: lifecycle.current?.sessionId, lifecycle: lifecycle.current });
+      const captured = guard();
+      void request('chat.read', { sessionId: sessionItem.sessionId })
+        .then(items => {
+          if (!mentionAttachIsCurrent(captured, guard())) return;
+          const item = sessionContextItem(sessionItem, items, false);
+          // Without the tool and without a transcript there is nothing to
+          // reference, and the header must never promise a call that is off.
+          if (!item.summary) {
+            setError(copy('This session has no readable transcript to attach.', '此会话没有可附加的对话记录。'));
+            return;
+          }
+          attach(item);
+        })
+        .catch(caught => {
+          if (!mentionAttachIsCurrent(captured, guard())) return;
+          setError(asUserError(caught, copy('Session context could not be attached.', '无法附加会话上下文。')));
+        });
+      return;
+    }
+    attach(pick.item);
+  }
   function onComposeKey(event: KeyboardEvent<HTMLTextAreaElement>) {
+    if (mention) {
+      const action = mentionKeyAction(event.key, { count: mentionGroups.length ? flatMentionItems(mentionGroups).length : 0, composing: event.nativeEvent.isComposing || event.keyCode === 229, shiftKey: event.shiftKey });
+      if (action === "next") { event.preventDefault(); setMentionIndex(value => Math.min(value + 1, flatMentionItems(mentionGroups).length - 1)); return; }
+      if (action === "previous") { event.preventDefault(); setMentionIndex(value => Math.max(0, value - 1)); return; }
+      if (action === "pick") { event.preventDefault(); const flat = flatMentionItems(mentionGroups); const pick = flat[mentionIndex] ?? flat[0]; if (pick) applyMention(pick); return; }
+      if (action === "close") { event.preventDefault(); setMentionDismissed(mention.start); return; }
+    }
     if (slash !== undefined && slashCommands.length) {
       if (event.key === "ArrowDown") { event.preventDefault(); setSlashIndex(value => Math.min(value + 1, slashCommands.length - 1)); return; }
       if (event.key === "ArrowUp") { event.preventDefault(); setSlashIndex(value => Math.max(0, value - 1)); return; }
@@ -1323,10 +1411,11 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession }
           <b>/{command.name.replace(/^\//, "")}</b><span>{command.description ?? ""}</span>
         </button>) : <p className="chat-slash-empty">{copy("No matching command", "没有匹配的命令")}</p>}
       </div>}
+      {mention && <ChatMentions groups={mentionGroups} index={mentionIndex} zh={zh} onHover={setMentionIndex} onPick={applyMention} />}
       <label className="sr-only" htmlFor={`chat-message-${session.id}`}>{copy('Message', '消息')}</label>
       {!!images.length && !submissionPreview && <div className="chat-image-draft" aria-label={copy('Image attachments', '图片附件')}>{images.map((image, index) => <figure key={index}><img src={image} alt={`${copy('Pasted image', '已粘贴图片')} ${index + 1}`} /><button type="button" disabled={busy || imageReading || !writable} aria-label={`${copy('Remove image', '移除图片')} ${index + 1}`} onClick={() => updateImages(images.filter((_, imageIndex) => imageIndex !== index))}>×</button></figure>)}<span className="chat-image-draft-note">{copy('Images saved on this device', '图片已保存在此设备')}</span></div>}
       {!submissionPreview && <ContextTray items={context.items} text={text} zh={zh} onRemove={context.remove} disabled={busy || imageReading || !writable} />}
-      <textarea id={`chat-message-${session.id}`} ref={composeRef} value={submissionPreview ? '' : text} onChange={event => { changeText(event.target.value); setSlashIndex(0); }} onPaste={pasteImages} onKeyDown={onComposeKey} placeholder={copy('Message, or type / for commands', '发送消息，或输入 / 命令')} rows={1} disabled={busy || ended || !writable || overlay === "full" || !draftLoaded} />
+      <textarea id={`chat-message-${session.id}`} ref={composeRef} value={submissionPreview ? '' : text} onChange={event => { setCaret(event.target.selectionStart ?? event.target.value.length); setMentionDismissed(undefined); changeText(event.target.value); setSlashIndex(0); setMentionIndex(0); }} onSelect={event => setCaret(event.currentTarget.selectionStart ?? caret)} onClick={event => setCaret(event.currentTarget.selectionStart ?? caret)} onKeyUp={event => setCaret(event.currentTarget.selectionStart ?? caret)} onPaste={pasteImages} onKeyDown={onComposeKey} placeholder={copy('Message, or type / for commands', '发送消息，或输入 / 命令')} rows={1} disabled={busy || ended || !writable || overlay === "full" || !draftLoaded} />
       <ComposerOptions
         options={ui.options}
         loadState={ui.loadState}

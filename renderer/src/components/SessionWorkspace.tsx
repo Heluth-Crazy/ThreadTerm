@@ -489,6 +489,7 @@ export function SessionWorkspace({session,data,theme,onBack,onSelect,onProject,o
      <ContextHost.Provider value={commentsHost}><PaneWorkspace
       layout={layout} sessions={data.sessions} theme={theme}
       terminalCompatibility={data.settings.terminalCompatibility} providers={data.providers}
+      delegationEnabled={data.settings['chatTools.delegation'] !== false} sessionInfoEnabled={data.settings['chatTools.sessionInfo'] !== false}
       onChange={save} onSessionChanged={onChanged} onOpenSession={onSelect} ownerSessionId={previewSessionId}
       onPickSession={(paneId)=>{setPicker({mode:'fill',paneId});setQuery('');}}
       toolbarHost={toolbarHost}
