@@ -3,10 +3,10 @@
 .context-chips-wrap { width:100%; }
 .context-chips-wrap { position:relative; min-width:0; }
 .context-chips, .context-chip-measure { display:flex; flex-wrap:wrap; gap:6px; align-items:center; justify-content:flex-start; }
-.context-chip-measure { position:absolute; inset:0 0 auto; visibility:hidden; pointer-events:none; }
+.context-chip-measure { position:absolute; inset:0 0 auto; overflow:hidden; visibility:hidden; pointer-events:none; }
 .context-chip { display:inline-flex; align-items:center; max-width:100%; min-width:0; }
 /* Layout only: size, border, radius, colour, focus and disabled states come from the shared .btn/.btn-sm and .icon-btn/.icon-btn-sm. */
-.context-chip-label { min-width:0; max-width:240px; }
+.context-chip-label { min-width:0; max-width:240px; overflow:hidden; }
 .context-chip-label span { min-width:0; overflow:hidden; text-overflow:ellipsis; }
 .context-chip-remove { flex:none; }
 .context-more { flex:none; }
