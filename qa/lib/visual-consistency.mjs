@@ -243,6 +243,16 @@ function sameStyle(a, b) {
 }
 
 /**
+ * Whether a hover changed a control that is *still* disabled. A control that
+ * became enabled while the probe was hovering (state settled after the first
+ * paint) is not a disabled-hover bug, so it is never reported.
+ */
+export function disabledHoverChanged(before, after) {
+  if (!after || after.disabled === false) return false;
+  return !sameStyle(before, after);
+}
+
+/**
  * Checks a container for control-consistency violations.
  * Returns `{ violations, checked, groups, error? }`; never throws on a missing
  * container (the caller can assert on `error`).
@@ -258,25 +268,34 @@ export async function checkControlConsistency(page, containerSelector, options =
   const violations = analyzeControls(controls);
 
   // Disabled controls must not react to hover. The collect pass tagged each one
-  // with data-vc-probe so the selector stays unambiguous.
+  // with data-vc-probe so the selector stays unambiguous. A control whose state
+  // settles after the first paint (for example a question card that enables
+  // once its lease lands) is re-probed once and skipped if it stays enabled.
   const probes = controls.filter(control => control.probe !== undefined);
+  const readProbe = locator => locator
+    .evaluate(element => {
+      const style = window.getComputedStyle(element);
+      return {
+        backgroundColor: style.backgroundColor,
+        color: style.color,
+        borderTopColor: style.borderTopColor,
+        opacity: style.opacity,
+        disabled: element.matches(':disabled') || element.getAttribute('aria-disabled') === 'true',
+      };
+    })
+    .catch(() => null);
   for (const control of probes) {
     const locator = page.locator(`[data-vc-probe="${control.probe}"]`);
-    const before = await locator
-      .evaluate(element => {
-        const style = window.getComputedStyle(element);
-        return { backgroundColor: style.backgroundColor, color: style.color, borderTopColor: style.borderTopColor, opacity: style.opacity };
-      })
-      .catch(() => null);
-    if (!before) continue;
+    const before = await readProbe(locator);
+    if (!before?.disabled) continue;
     await locator.hover({ force: true }).catch(() => undefined);
-    const after = await locator
-      .evaluate(element => {
-        const style = window.getComputedStyle(element);
-        return { backgroundColor: style.backgroundColor, color: style.color, borderTopColor: style.borderTopColor, opacity: style.opacity };
-      })
-      .catch(() => before);
-    if (!sameStyle(before, after)) {
+    let after = await readProbe(locator);
+    if (after && !after.disabled) {
+      await locator.hover({ force: true }).catch(() => undefined);
+      after = await readProbe(locator);
+      if (!after?.disabled) continue;
+    }
+    if (disabledHoverChanged(before, after)) {
       violations.push({
         kind: 'disabled-hover',
         parent: control.parentPath,
