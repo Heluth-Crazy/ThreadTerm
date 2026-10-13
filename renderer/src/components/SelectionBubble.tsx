@@ -9,15 +9,31 @@ export function SelectionBubble({ rootRef, visible, copy, onQuote, onAsk, onCopy
   const [busy, setBusy] = useState(false), [issue, setIssue] = useState<string>();
   const bubble = useRef<HTMLDivElement>(null), generation = useRef(0);
   const locked = useRef(false);
-  const dismiss = () => { generation.current++; locked.current = false; setSelected(undefined); setIssue(undefined); setBusy(false); };
+  const captured = useRef<Range | null>(null);
+  const retain = useRef(false);
+  const shown = useRef<string | undefined>(undefined);
+  const dismiss = () => {
+    generation.current++; locked.current = false; captured.current = null; retain.current = false; shown.current = undefined;
+    setSelected(undefined); setIssue(undefined); setBusy(false);
+  };
   useEffect(() => {
     if (!visible) { dismiss(); return; }
     const root = rootRef.current;
     if (!root) return;
     const change = () => {
-      if (bubble.current?.contains(document.activeElement)) return;
-      const next = root.getClientRects().length ? assistantSelection(document.getSelection(), root) : undefined;
-      generation.current++; locked.current = false; setBusy(false); setIssue(undefined); setSelected(next);
+      const token = generation.current;
+      queueMicrotask(() => {
+        if (token !== generation.current) return;
+        // Focusing or blurring an action collapses the DOM selection before activeElement updates.
+        if (retain.current || bubble.current?.contains(document.activeElement)) return;
+        const next = root.getClientRects().length ? assistantSelection(document.getSelection(), root) : undefined;
+        if ((next?.text ?? '') === (shown.current ?? '')) return;
+        generation.current++; locked.current = false; setBusy(false); setIssue(undefined);
+        const range = next ? document.getSelection()?.getRangeAt(0) : undefined;
+        captured.current = range ? range.cloneRange() : null;
+        shown.current = next?.text;
+        setSelected(next);
+      });
     };
     document.addEventListener('selectionchange', change);
     return () => {
@@ -47,7 +63,20 @@ export function SelectionBubble({ rootRef, visible, copy, onQuote, onAsk, onCopy
     try { await callback(selected.text, () => token === generation.current); if (token === generation.current) { document.getSelection()?.removeAllRanges(); dismiss(); } }
     catch (error) { if (token === generation.current) { locked.current = false; setIssue(String(error)); setBusy(false); } }
   };
-  return createPortal(<div ref={bubble} className="selection-bubble" role="group" aria-label={copy('Selected text', '所选文本')} data-testid="selection-bubble" style={{ ...position, visibility: position ? 'visible' : 'hidden' }} onPointerDown={event => event.preventDefault()}>
+  return createPortal(<div ref={bubble} className="selection-bubble" role="group" aria-label={copy('Selected text', '所选文本')} data-testid="selection-bubble" style={{ ...position, visibility: position ? 'visible' : 'hidden' }} onPointerDown={event => event.preventDefault()} onFocus={() => { retain.current = true; }} onBlur={() => {
+    const token = generation.current;
+    const range = captured.current;
+    const root = rootRef.current;
+    queueMicrotask(() => {
+      if (token !== generation.current) { retain.current = false; return; }
+      if (!range || !root || !bubble.current?.isConnected || bubble.current.contains(document.activeElement)) return;
+      const selection = document.getSelection();
+      if (selection && assistantSelection(selection, root)) { retain.current = false; return; }
+      try { selection?.removeAllRanges(); selection?.addRange(range); }
+      catch { captured.current = null; }
+      retain.current = false;
+    });
+  }}>
     <div className="selection-bubble-actions">
       <button type="button" className="btn btn-sm" disabled={busy} onClick={() => void action(onCopy ?? (text => navigator.clipboard.writeText(text)))}>{copy('Copy', '复制')}</button>
       <button type="button" className="btn btn-sm" disabled={busy || !quoteEnabled} onClick={() => void action(onQuote)}>{copy('Quote', '引用')}</button>
