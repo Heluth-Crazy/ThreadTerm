@@ -1643,14 +1643,14 @@ fn claude_block_plan_data(block: &Value) -> Option<Value> {
         return None;
     }
     let todos = block.pointer("/input/todos").and_then(Value::as_array)?;
-    let entries = todos.iter().filter_map(|todo| {
-        let content = todo.get("content").and_then(Value::as_str)?.to_owned();
+    let entries = todos.iter().map(|todo| {
+        let content = todo.get("content").and_then(Value::as_str).unwrap_or_default().to_owned();
         let status = todo
             .get("status")
             .and_then(Value::as_str)
             .unwrap_or("pending")
             .to_owned();
-        Some((content, status, None))
+        (content, status, None)
     });
     crate::chat_plan::plan_data(entries, None)
 }
@@ -1731,11 +1731,19 @@ fn claude_transcript(raw: &[Value]) -> Vec<Value> {
     let agents: HashSet<&str> = raw.iter().filter_map(|entry| entry.pointer("/message/content").and_then(Value::as_array))
         .flatten().filter(|block| block.get("type").and_then(Value::as_str)==Some("tool_use") && claude_agent_tool(block))
         .filter_map(|block| block.get("id").and_then(Value::as_str)).collect();
-    raw.iter().enumerate().filter_map(|(index, entry)| {
+    let mut turn = 0usize;
+    let mut transcript: Vec<Value> = raw.iter().enumerate().filter_map(|(index, entry)| {
         if entry.get("parent_tool_use_id").is_some_and(|id| !id.is_null()) { return None; }
         let message = entry.get("message")?;
         let role = entry.get("type").or_else(|| message.get("role")).and_then(Value::as_str)?;
         if !matches!(role, "user"|"assistant") { return None; }
+        let starts_turn = role == "user" && match message.get("content") {
+            Some(Value::Array(content)) => content.iter().any(|part| part.get("type").and_then(Value::as_str) != Some("tool_result")),
+            Some(Value::String(_)) => true,
+            _ => false,
+        };
+        if starts_turn { turn += 1; }
+        let turn_id = format!("history-{turn}");
         let parts = message.get("content").and_then(Value::as_array).map(|content| content.iter().flat_map(|part| {
             match part.get("type").and_then(Value::as_str) {
                 Some("text") => vec![json!({"type":"text","text":part.get("text").and_then(Value::as_str).unwrap_or_default()})],
@@ -1761,7 +1769,7 @@ fn claude_transcript(raw: &[Value]) -> Vec<Value> {
                     crate::file_references::enrich_tool_part(&mut tool, None);
                     let mut out = vec![tool];
                     if let Some(data) = claude_block_plan_data(part) {
-                        out.push(crate::chat_plan::plan_part(data, None));
+                        out.push(crate::chat_plan::plan_part(data, Some(&turn_id)));
                     }
                     out
                 }
@@ -1769,7 +1777,32 @@ fn claude_transcript(raw: &[Value]) -> Vec<Value> {
             }
         }).collect::<Vec<_>>()).unwrap_or_default();
         Some(json!({"id":entry.get("uuid").and_then(Value::as_str).map(ToOwned::to_owned).unwrap_or_else(|| format!("claude-{index}")),"role":role,"parts":parts,"createdAt":Utc::now().to_rfc3339()}))
-    }).collect()
+    }).collect();
+    // TodoWrite snapshots are full replacements. Retain the last snapshot by
+    // turn-specific ID, including multiple TodoWrite blocks in one message.
+    let mut plan_items = HashMap::<String, usize>::new();
+    for index in 0..transcript.len() {
+        let parts = std::mem::take(transcript[index]["parts"].as_array_mut().unwrap());
+        let mut retained = Vec::new();
+        for part in parts {
+            let Some(plan_id) = (part["type"] == "plan").then(|| part.get("toolId").and_then(Value::as_str).map(ToOwned::to_owned)).flatten() else {
+                retained.push(part);
+                continue;
+            };
+            if let Some(previous) = plan_items.get(&plan_id).copied() {
+                if previous == index {
+                    *retained.iter_mut().find(|candidate: &&mut Value| candidate.get("toolId").and_then(Value::as_str) == Some(&plan_id)).unwrap() = part;
+                } else if let Some(existing) = transcript[previous]["parts"].as_array_mut().and_then(|parts| parts.iter_mut().find(|candidate| candidate.get("toolId").and_then(Value::as_str) == Some(&plan_id))) {
+                    *existing = part;
+                }
+            } else {
+                plan_items.insert(plan_id, index);
+                retained.push(part);
+            }
+        }
+        transcript[index]["parts"] = json!(retained);
+    }
+    transcript
 }
 
 #[cfg(test)]
@@ -1903,6 +1936,34 @@ mod tests {
         let parts = transcript[0]["parts"].as_array().unwrap();
         assert!(parts.iter().any(|part| part["type"] == "plan"));
         assert!(parts.iter().any(|part| part["type"] == "tool"));
+    }
+
+    #[test]
+    fn claude_plan_mapper_distinguishes_empty_todos_from_malformed_todos() {
+        let empty = json!({"type":"tool_use","name":"TodoWrite","input":{"todos":[]}});
+        assert_eq!(claude_block_plan_data(&empty).unwrap()["entries"], json!([]));
+        let malformed = json!({"type":"tool_use","name":"TodoWrite","input":{"todos":[{}]}});
+        assert!(claude_block_plan_data(&malformed).is_none());
+    }
+
+    #[test]
+    fn claude_history_coalesces_todowrites_without_splitting_on_tool_results() {
+        let transcript = claude_transcript(&[
+            json!({"type":"user","uuid":"u1","message":{"content":"first"}}),
+            json!({"type":"assistant","uuid":"a1","message":{"content":[
+                {"type":"tool_use","id":"todo-1","name":"TodoWrite","input":{"todos":[{"content":"First","status":"pending"}]}},
+                {"type":"tool_use","id":"todo-2","name":"TodoWrite","input":{"todos":[{"content":"First","status":"completed"},{"content":"Second","status":"pending"}]}}
+            ]}}),
+            json!({"type":"user","uuid":"r1","message":{"content":[{"type":"tool_result","tool_use_id":"todo-1","content":"ok"}]}}),
+            json!({"type":"user","uuid":"u2","message":{"content":"second"}}),
+            json!({"type":"assistant","uuid":"a3","message":{"content":[{"type":"tool_use","id":"todo-3","name":"TodoWrite","input":{"todos":[{"content":"Third","status":"pending"}]}}]}}),
+        ]);
+        let plans: Vec<_> = transcript.iter().flat_map(|item| item["parts"].as_array().unwrap()).filter(|part| part["type"] == "plan").collect();
+        assert_eq!(plans.len(), 2);
+        assert_eq!(plans[0]["toolId"], "plan:history-1");
+        assert_eq!(plans[0]["data"]["entries"].as_array().unwrap().len(), 2);
+        assert_eq!(plans[0]["data"]["entries"][0]["status"], "completed");
+        assert_eq!(plans[1]["toolId"], "plan:history-2");
     }
 
     #[test]

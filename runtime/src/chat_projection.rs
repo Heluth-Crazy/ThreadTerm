@@ -1822,6 +1822,14 @@ mod tests {
         assert_eq!(plans[0]["data"]["entries"][0]["status"], "completed");
     }
     #[test]
+    fn empty_plan_snapshot_replaces_the_persisted_plan() {
+        let db = db();
+        record(&db, "s", Some("t"), "chat.item", &json!({"merge":true,"part":{"type":"plan","toolId":"plan:t","status":"complete","data":{"entries":[{"content":"One","status":"pending"}]}}})).unwrap();
+        record(&db, "s", Some("t"), "chat.item", &json!({"merge":true,"part":{"type":"plan","toolId":"plan:t","status":"complete","data":{"entries":[]}}})).unwrap();
+        let item = db.chat_items("s").unwrap().into_iter().find(|item| item.role == "assistant").unwrap();
+        assert_eq!(item.parts.iter().find(|part| part["type"] == "plan").unwrap()["data"]["entries"], json!([]));
+    }
+    #[test]
     fn six_provider_tool_shapes_keep_bounded_candidates_across_partial_updates() {
         for (provider, data, expected) in [
             (

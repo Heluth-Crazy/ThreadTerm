@@ -2135,11 +2135,12 @@ fn acp_part_type(kind: &str) -> Option<&'static str> {
 }
 
 /// ACP `sessionUpdate:"plan"` entries. Kimi and Gemini send the whole list;
-/// `priority` is optional. Malformed entries are skipped rather than failing.
+/// `priority` is optional. A malformed nonempty list is ignored; only an
+/// explicitly empty native list produces the clearing snapshot.
 fn acp_plan_data(update: &Value) -> Option<Value> {
     let entries = update.get("entries").and_then(Value::as_array)?;
-    let entries = entries.iter().filter_map(|entry| {
-        let content = entry.get("content").and_then(Value::as_str)?.to_owned();
+    let entries = entries.iter().map(|entry| {
+        let content = entry.get("content").and_then(Value::as_str).unwrap_or_default().to_owned();
         let status = entry
             .get("status")
             .and_then(Value::as_str)
@@ -2149,7 +2150,7 @@ fn acp_plan_data(update: &Value) -> Option<Value> {
             .get("priority")
             .and_then(Value::as_str)
             .map(ToOwned::to_owned);
-        Some((content, status, priority))
+        (content, status, priority)
     });
     let explanation = update.get("explanation").and_then(Value::as_str);
     crate::chat_plan::plan_data(entries, explanation)
@@ -2579,9 +2580,17 @@ fn acp_transcript_for_provider(provider: &str, raw: &[Value]) -> Vec<Value> {
         }
         if kind == "plan" {
             // ACP history carries the same plan updates; keep the latest list
-            // in one part so a repaired/imported chat shows the current plan.
+            // in one part for the current user turn, so later turns cannot
+            // overwrite an earlier turn's saved plan.
             if let Some(data) = acp_plan_data(update) {
-                let part = crate::chat_plan::plan_part(data, None);
+                let current_turn = transcript
+                    .iter()
+                    .rev()
+                    .find(|item| item.get("role").and_then(Value::as_str) == Some("user"))
+                    .and_then(|item| item.get("id").and_then(Value::as_str))
+                    .map(ToOwned::to_owned);
+                let part = crate::chat_plan::plan_part(data, current_turn.as_deref());
+                let tool_id = part.get("toolId").and_then(Value::as_str);
                 let mut replaced = false;
                 for item in transcript.iter_mut().rev() {
                     let Some(parts) = item.get_mut("parts").and_then(Value::as_array_mut) else {
@@ -2589,7 +2598,7 @@ fn acp_transcript_for_provider(provider: &str, raw: &[Value]) -> Vec<Value> {
                     };
                     if let Some(existing) = parts
                         .iter_mut()
-                        .find(|candidate| candidate.get("type").and_then(Value::as_str) == Some("plan"))
+                        .find(|candidate| candidate.get("toolId").and_then(Value::as_str) == tool_id)
                     {
                         *existing = part.clone();
                         replaced = true;
@@ -4064,6 +4073,28 @@ mod tests {
         assert_eq!(plans.len(), 1);
         assert_eq!(plans[0]["data"]["entries"].as_array().unwrap().len(), 2);
         assert_eq!(plans[0]["data"]["entries"][0]["status"], "completed");
+    }
+    #[test]
+    fn acp_plan_mapper_distinguishes_empty_snapshots_from_malformed_entries() {
+        assert_eq!(acp_plan_data(&json!({"entries":[]})).unwrap()["entries"], json!([]));
+        assert!(acp_plan_data(&json!({"entries":[{}]})).is_none());
+    }
+    #[test]
+    fn acp_history_keeps_one_plan_per_user_turn() {
+        let frames = vec![
+            json!({"params":{"update":{"sessionUpdate":"user_message_chunk","content":{"text":"first"}}}}),
+            json!({"params":{"update":{"sessionUpdate":"plan","entries":[{"content":"First plan","status":"pending"}]}}}),
+            json!({"params":{"update":{"sessionUpdate":"user_message_chunk","content":{"text":"second"}}}}),
+            json!({"params":{"update":{"sessionUpdate":"plan","entries":[{"content":"Second plan","status":"pending"}]}}}),
+            json!({"params":{"update":{"sessionUpdate":"plan","entries":[{"content":"Second plan","status":"completed"}]}}}),
+        ];
+        let transcript = acp_transcript_for_provider("kimi", &frames);
+        let plans: Vec<_> = transcript.iter().flat_map(|item| item["parts"].as_array().unwrap()).filter(|part| part["type"] == "plan").collect();
+        assert_eq!(plans.len(), 2);
+        assert_eq!(plans[0]["toolId"], "plan:acp-0");
+        assert_eq!(plans[0]["data"]["entries"][0]["content"], "First plan");
+        assert_eq!(plans[1]["toolId"], "plan:acp-2");
+        assert_eq!(plans[1]["data"]["entries"][0]["status"], "completed");
     }
     #[test]
     fn maps_thought_chunks_to_thinking_parts() {
