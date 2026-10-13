@@ -20,7 +20,7 @@ export function MessageActions({ markdown, copy, children }: { markdown: string;
     }).catch(() => undefined);
   };
   return <div className="chat-message-actions" role="group" aria-label={copy('Message actions', '消息操作')}>
-    <button type="button" className="chat-message-action" onClick={onCopy} aria-live="polite">{copied ? copy('Copied', '已复制') : copy('Copy', '复制')}</button>
+    <button type="button" className="btn btn-sm chat-message-action" onClick={onCopy} aria-live="polite">{copied ? copy('Copied', '已复制') : copy('Copy', '复制')}</button>
     {children}
   </div>;
 }

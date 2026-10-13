@@ -47,6 +47,25 @@
 .chip.st-ended::before { background:var(--st-ended); }
 .chip.st-stalled::before { background:var(--st-stalled); }
 
+/* Shared control sizes (issue VC). The prototype owns .btn/.btn-sm geometry when
+   workbench.css is loaded; these identical declarations make the small size
+   available to every surface (Chat, isolated QA) without a workbench import. */
+.btn.btn-sm { height:26px; padding:0 10px; font-size:12px; }
+.btn.btn-sm .ico { width:14px; height:14px; }
+.icon-btn.icon-btn-sm { width:26px; height:26px; }
+.icon-btn.icon-btn-sm .ico { width:14px; height:14px; }
+.icon-btn-round { width:32px; height:32px; border-radius:999px; }
+/* The prototype .icon-btn:hover does not exclude disabled; keep a disabled icon
+   button visually fixed on hover (issue VC, shared states). */
+.icon-btn:hover:disabled { background:transparent; color:var(--muted); }
+/* One chip spec: read-only chips are the prototype .chip (11 px / 20 px);
+   interactive chips add .chip-btn for the 26 px size. Colours are tokens. */
+.chip-btn { height:26px; padding:0 10px; gap:6px; font-size:12px; background:var(--surface); border:1px solid var(--border); color:var(--text); cursor:pointer; }
+.chip-btn:hover:not(:disabled) { background:var(--soft); color:var(--text); }
+.chip-btn[aria-expanded="true"], .chip-btn[aria-pressed="true"] { background:var(--soft); color:var(--text); }
+.chip.is-accent { color:var(--primary); background:color-mix(in srgb, var(--primary) 11%, transparent); }
+.chip.flat.is-danger { color:var(--danger); }
+
 html, body, #root { height:100%; margin:0; }
 /* The desktop window is transparent (Windows 10 has no native corner rounding),
    so the shell paints its own rounded frame; maximized windows go full-bleed.
@@ -371,16 +390,12 @@ html[data-theme="dark"] { color-scheme:dark; }
 .chat-message-actions { position:absolute; right:0; bottom:0; display:flex; align-items:center; gap:4px; opacity:0; transition:opacity .12s ease; }
 .v3-chat-message.has-reply-actions:hover .chat-message-actions,
 .v3-chat-message.has-reply-actions:focus-within .chat-message-actions { opacity:1; }
-.chat-message-action { appearance:none; border:1px solid var(--border); border-radius:6px; background:var(--surface); color:var(--muted); font:inherit; font-size:12px; line-height:1; padding:5px 9px; cursor:pointer; }
-.chat-message-action:hover { color:var(--text); border-color:var(--muted); }
-.chat-message-action:focus-visible { outline:2px solid var(--primary); outline-offset:2px; }
 /* Markdown code-block copy (A2): the wrapper pins the button while the block scrolls. */
 .codex-markdown .md-code-block { position:relative; margin:12px 0; }
 .codex-markdown .md-code-block > pre { margin:0; }
-.codex-markdown .md-code-copy { position:absolute; top:6px; right:6px; appearance:none; border:1px solid var(--border); border-radius:6px; background:var(--surface); color:var(--muted); font:inherit; font-size:11px; line-height:1; padding:4px 8px; cursor:pointer; opacity:0; transition:opacity .12s ease; }
+.codex-markdown .md-code-copy { position:absolute; top:6px; right:6px; opacity:0; transition:opacity .12s ease; }
 .codex-markdown .md-code-block:hover .md-code-copy,
 .codex-markdown .md-code-copy:focus-visible { opacity:1; }
-.codex-markdown .md-code-copy:focus-visible { outline:2px solid var(--primary); outline-offset:2px; }
 .codex-markdown ul, .codex-markdown ol { margin:0 0 12px; padding-left:1.4em; }
 .codex-markdown li + li { margin-top:4px; }
 .codex-markdown h1, .codex-markdown h2, .codex-markdown h3, .codex-markdown h4 { margin:18px 0 8px; line-height:1.35; font-weight:600; }
@@ -517,18 +532,17 @@ html[data-theme="dark"] { color-scheme:dark; }
 .chat-compose-bar { display:flex; align-items:center; justify-content:space-between; gap:8px; }
 .chat-compose-left, .chat-compose-right { display:flex; align-items:center; gap:6px; min-width:0; }
 .chat-compose-right { margin-left:auto; flex-wrap:wrap; justify-content:flex-end; }
-.chat-compose-icon { width:32px; height:32px; flex:none; padding:0; border:0; border-radius:999px; display:grid; place-items:center; background:transparent; color:var(--muted); }
-.chat-compose-icon:hover:not(:disabled), .chat-compose-chip:hover:not(:disabled) { background:var(--soft, var(--raised)); color:var(--text); }
-.chat-compose-icon:disabled, .chat-compose-chip:disabled { opacity:0.5; }
-.chat-compose-send { width:34px; height:34px; flex:none; padding:0; border:0; border-radius:999px; display:grid; place-items:center; color:var(--primary-contrast, #fff); background:var(--primary); }
-.chat-compose-send .ico { width:17px; height:17px; }
-.chat-compose-send:disabled { opacity:0.45; }
-.chat-compose-send.is-stop { background:var(--text); color:var(--bg); }
-.chat-stop-square { width:11px; height:11px; border-radius:2px; background:currentColor; }
 .chat-compose-chip { display:inline-flex; align-items:center; gap:5px; height:32px; padding:0 10px; border:0; border-radius:999px; background:transparent; color:var(--text); font:inherit; font-size:12px; white-space:nowrap; }
+.chat-compose-chip:hover:not(:disabled) { background:var(--soft, var(--raised)); color:var(--text); }
+.chat-compose-chip:disabled { opacity:0.5; }
 .chat-compose-chip .ico { width:14px; height:14px; flex:none; }
+.chat-compose-send { background:var(--primary); color:var(--primary-fg); }
+.chat-compose-send:hover:disabled { background:var(--primary); color:var(--primary-fg); }
+.chat-compose-send.is-stop { background:var(--text); color:var(--bg); }
+.chat-compose-send.is-stop:hover:disabled { background:var(--text); color:var(--bg); }
+.chat-stop-square { width:11px; height:11px; border-radius:2px; background:currentColor; }
 .chat-mode-chip { color:var(--muted); }
-.chat-mode-chip.mode-yolo { color:color-mix(in srgb, #f59e0b 72%, var(--text)); }
+.chat-mode-chip.mode-yolo { color:color-mix(in srgb, var(--amber) 72%, var(--text)); }
 .chat-model-chip { min-width:0; }
 .chat-model-name { font-weight:600; }
 .chat-model-think { color:var(--muted); }

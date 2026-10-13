@@ -1,12 +1,10 @@
 /* Agent plan panel (B4). A small sticky chip that expands into the step list. */
 .chat-plan-panel { position:sticky; top:4px; z-index:6; display:flex; flex-direction:column; align-items:flex-start; gap:6px; width:100%; box-sizing:border-box; padding:4px 8px 2px; }
-.chat-plan-chip { display:inline-flex; align-items:center; gap:8px; min-height:28px; padding:4px 11px; border:1px solid var(--border); border-radius:999px; background:var(--surface); color:var(--text); font:12px/1.4 inherit; cursor:pointer; box-shadow:0 1px 4px rgba(0,0,0,.14); }
-.chat-plan-chip:hover { background:var(--raised); }
-.chat-plan-chip:focus-visible { outline:2px solid var(--primary); outline-offset:2px; }
+/* Size, border, radius, colour and states come from the shared .chip/.chip-btn. */
 .chat-plan-label { white-space:nowrap; }
 .chat-plan-progress { width:56px; height:4px; flex:none; border-radius:999px; background:var(--border); overflow:hidden; }
 .chat-plan-progress > i { display:block; height:100%; background:var(--primary); transition:width .2s ease; }
-.chat-plan-card { width:100%; max-width:360px; max-height:50vh; overflow:auto; padding:10px 12px; border:1px solid var(--border); border-radius:10px; background:var(--surface); box-shadow:0 10px 26px rgba(0,0,0,.2); }
+.chat-plan-card { width:100%; max-width:360px; max-height:50vh; overflow:auto; padding:10px 12px; border:1px solid var(--border); border-radius:10px; background:var(--surface); box-shadow:var(--shadow-soft); }
 .chat-plan-explanation { margin:0 0 8px; color:var(--muted); font-size:12px; overflow-wrap:anywhere; }
 .chat-plan-list { display:flex; flex-direction:column; gap:6px; margin:0; padding:0; list-style:none; }
 .chat-plan-entry { display:flex; align-items:baseline; gap:8px; font-size:13px; line-height:1.45; }
@@ -15,7 +13,7 @@
 .chat-plan-mark { flex:none; width:14px; text-align:center; color:var(--muted); }
 .chat-plan-mark.is-done { color:var(--primary); }
 .chat-plan-mark.is-active > i { display:inline-block; width:11px; height:11px; vertical-align:-1px; border:2px solid var(--primary); border-top-color:transparent; border-radius:50%; animation:chat-plan-spin .8s linear infinite; }
-.chat-plan-priority { flex:none; margin-left:auto; padding:0 6px; border:1px solid var(--border); border-radius:999px; color:var(--muted); font-size:10px; text-transform:uppercase; }
-.chat-plan-priority.is-high { color:var(--danger,var(--text)); border-color:currentColor; }
+.chat-plan-priority { flex:none; margin-left:auto; text-transform:uppercase; }
+.chat-plan-priority.is-high { color:var(--danger); }
 @keyframes chat-plan-spin { to { transform:rotate(360deg); } }
 @media (prefers-reduced-motion: reduce) { .chat-plan-mark.is-active > i { animation:none; } }
