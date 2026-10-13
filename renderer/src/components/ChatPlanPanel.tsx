@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import type { ChatItem, ChatPlanEntry } from '@threadterm/protocol';
 import { latestPlan, planEntryLabel, planPriorityLabel, planProgress, shouldAutoOpenPlan } from '../chatPlan';
 import './chat-plan.css';
@@ -18,7 +18,7 @@ function StatusMark({ status, active }: { status: ChatPlanEntry['status']; activ
  * transcript, opens once when a live turn first writes a plan, and renders
  * nothing at all when no plan exists.
  */
-export function ChatPlanPanel({ items, copy, liveTurnId, historyReady = true }: { items: readonly ChatItem[]; copy: Copy; liveTurnId?: string; historyReady?: boolean }) {
+export function ChatPlanPanel({ items, copy, liveTurnId, historyReady = true, navigation }: { items: readonly ChatItem[]; copy: Copy; liveTurnId?: string; historyReady?: boolean; navigation?: ReactNode }) {
   const plan = useMemo(() => latestPlan(items), [items]);
   const [open, setOpen] = useState(false);
   const autoOpened = useRef(false);
@@ -35,7 +35,7 @@ export function ChatPlanPanel({ items, copy, liveTurnId, historyReady = true }: 
     }
   }, [plan, historyReady]);
 
-  if (!plan) return null;
+  if (!plan) return navigation ? <div className="chat-plan-panel"><div className="chat-plan-sticky">{navigation}</div></div> : null;
   const entries = plan.data.entries;
   const { done, total } = planProgress(entries);
   const percent = total ? Math.round((done / total) * 100) : 0;
@@ -54,6 +54,7 @@ export function ChatPlanPanel({ items, copy, liveTurnId, historyReady = true }: 
         <span className="chat-plan-label">{label}</span>
         <span className="chat-plan-progress" role="presentation"><i style={{ width: `${percent}%` }} /></span>
       </button>
+      {navigation}
     </div>
     {open && <div className="chat-plan-card" role="group" aria-label={copy('Agent plan', '代理计划')}>
       {plan.data.explanation && <p className="chat-plan-explanation">{plan.data.explanation}</p>}
