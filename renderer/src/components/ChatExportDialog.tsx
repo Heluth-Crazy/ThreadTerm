@@ -32,7 +32,7 @@ export function ChatExportDialog({ session, copy, onClose, items, meta, save }: 
     } catch (error) { if (token === generation.current) setIssue(String(error)); }
     finally { locked.current = false; if (token === generation.current) setBusy(false); }
   };
-  return <SurfaceDialog title={copy('Export as Markdown', '导出为 Markdown')} subtitle={session.title} onClose={close} size="sm" footer={<><button type="button" className="btn" disabled={busy} onClick={close}>{copy('Cancel', '取消')}</button><button type="button" className="btn" disabled={busy || !loaded || !usageReady} onClick={() => void exportMarkdown()}>{busy ? copy('Saving…', '正在保存…') : copy('Save Markdown', '保存 Markdown')}</button></>}>
+  return <SurfaceDialog title={copy('Export as Markdown', '导出为 Markdown')} subtitle={session.title} onClose={close} size="sm" footer={<><button type="button" className="btn" disabled={busy} onClick={close}>{copy('Cancel', '取消')}</button><button type="button" className="btn btn-primary" disabled={busy || !loaded || !usageReady} onClick={() => void exportMarkdown()}>{busy ? copy('Saving…', '正在保存…') : copy('Save Markdown', '保存 Markdown')}</button></>}>
     {(!loaded || !usageReady) && !issue && <p role="status">{copy('Loading conversation…', '正在加载对话…')}</p>}
     <label><input type="checkbox" checked={includeThinking} disabled={busy} onChange={event => setThinking(event.target.checked)} /> {copy('Include thinking', '包含思考过程')}</label>
     <p className="note">{copy('Pasted images are saved in a companion folder and referenced from Markdown.', '粘贴的图片会保存到配套文件夹，并在 Markdown 中引用。')}</p>
