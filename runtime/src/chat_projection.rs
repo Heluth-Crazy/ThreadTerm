@@ -228,7 +228,7 @@ pub fn record(
      let text=item_text(raw);
      if matches!(kind,"userMessage") {
       // User turns are already persisted from chat.send as message.user.
-     } else if matches!(kind,"agentMessage"|"assistant"|"message") {
+     } else if matches!(kind,"agentMessage"|"assistant"|"message"|"plan") {
       if !text.is_empty(){item.parts=vec![json!({"type":"text","text":text})];changed=true;}
      } else if matches!(kind,"agentThought"|"reasoning"|"thinking") {
       if !text.is_empty(){item.parts=vec![json!({"type":"thinking","text":text,"status":"complete"})];changed=true;}
@@ -240,7 +240,7 @@ pub fn record(
      let mut payload=data.get("part").and_then(|part|part.get("data")).cloned().unwrap_or_else(||data.clone());
      if let Some(link)=&delegation {
       // Requests ThreadTerm cannot answer by choice always stay with the user.
-      routed_to_parent=quiet&&payload.get("submittable").and_then(Value::as_bool)!=Some(false)&&payload.get("interaction").and_then(Value::as_str)!=Some("question");
+      routed_to_parent=quiet&&payload.get("submittable").and_then(Value::as_bool)!=Some(false)&&!matches!(payload.get("interaction").and_then(Value::as_str),Some("question"|"plan"));
       if let Some(object)=payload.as_object_mut() {object.insert("delegation".into(),json!({"parentSessionId":link.parent_session_id,"route":if routed_to_parent{"parent"}else{"user"}}));}
      }
      item.parts=vec![json!({"type":"approval","approvalId":approval,"status":"pending","data":payload})];changed=true;
@@ -263,6 +263,7 @@ pub fn record(
      if previous_status==Some("expired") && !expired && !submitted_answer {continue;}
      resolved_pending_approval |= matches!(previous_status,Some("pending"|"submitting"));
      part["status"]=json!(status);
+     for key in ["planOutcome","feedback"] {if let Some(value)=data.get(key){part["data"][key]=value.clone();}}
      if let Some(summary)=data.get("answerSummary") { let summary=crate::chat_questions::mask_answer_summary(&part["data"],summary); part["data"]["answerSummary"]=summary; }
      if expired {
       if let (Some(target),Some(outcome))=(part.pointer_mut("/data").and_then(Value::as_object_mut),data.get("outcome")) {target.insert("outcome".into(),outcome.clone());}
@@ -323,7 +324,7 @@ pub fn record(
    tx.execute("INSERT INTO chat_items(id,session_id,turn_id,kind,data,created_at) VALUES (?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET data=excluded.data,turn_id=excluded.turn_id",params![id,session_id,turn,"message",payload,item.created_at])?;
    tx.execute("INSERT INTO outbox(event,data,created_at) VALUES ('chat.item',?,?)",params![serde_json::to_string(&json!({"sessionId":session_id,"item":item}))?,now])?;
   }
-  let status=match kind {"chat.turn.started"=>Some("running"),"chat.turn.completed"=>Some("idle"),"chat.approval"=>Some("waiting"),"chat.approval.resolved" if !resolved_pending_approval || data.get("status").and_then(Value::as_str)==Some("expired")=>None,"chat.approval.resolved"=>Some(if has_pending_approval(tx,session_id)? {"waiting"}else{"running"}),"chat.error"=>Some("error"),_=>None};
+  let status=match kind {"chat.turn.started"=>Some("running"),"chat.turn.completed"=>Some("idle"),"chat.approval" if data.pointer("/part/data/runtimeOwned").and_then(Value::as_bool)==Some(true) && data.pointer("/part/data/waitingForPrompt").and_then(Value::as_bool)==Some(true)=>Some("idle"),"chat.approval"=>Some("waiting"),"chat.approval.resolved" if data.get("preserveSessionState").and_then(Value::as_bool)==Some(true)=>None,"chat.approval.resolved" if data.get("returnToIdle").and_then(Value::as_bool)==Some(true) && !has_pending_approval(tx,session_id)?=>Some("idle"),"chat.approval.resolved" if !resolved_pending_approval || data.get("status").and_then(Value::as_str)==Some("expired")=>None,"chat.approval.resolved"=>Some(if has_pending_approval(tx,session_id)? {"waiting"}else{"running"}),"chat.error"=>Some("error"),_=>None};
   if let Some(status)=status {
    // Provider readers can deliver a final completion/error after an explicit
    // stop or runtime recovery has already made the session terminal. Keep
@@ -589,8 +590,15 @@ fn project_activity(
         // before replaying a local user/start record. Only an explicit idle
         // activity has that admission path; a completed awaiting-input turn
         // remains fenced against late approvals.
+        "chat.approval" if same_turn
+            && data.pointer("/part/data/runtimeOwned").and_then(Value::as_bool) == Some(true)
+            && data.pointer("/part/data/waitingForPrompt").and_then(Value::as_bool) == Some(true) =>
+        {
+            Some(("awaiting_input", turn_id, None))
+        }
         "chat.approval"
             if live_turn
+                || (same_turn && data.pointer("/part/data/runtimeOwned").and_then(Value::as_bool) == Some(true))
                 || current
                     .as_ref()
                     .is_none_or(|activity| activity.state == "idle") =>
@@ -602,6 +610,10 @@ fn project_activity(
                 _ => Some(("awaiting_approval", turn_id, None)),
             }
         }
+        "chat.approval.resolved" if data.get("preserveSessionState").and_then(Value::as_bool) == Some(true) => None,
+        "chat.approval.resolved" if same_turn
+            && data.get("returnToIdle").and_then(Value::as_bool) == Some(true)
+            && !has_pending_approval(tx, session_id)? => Some(("awaiting_input", turn_id, None)),
         "chat.approval.resolved"
             if resolved_pending_approval
                 && data.get("status").and_then(Value::as_str) != Some("expired")
@@ -613,7 +625,7 @@ fn project_activity(
             match pending_approval_route(tx, session_id)? {
                 Some("parent") => Some(("awaiting_parent", turn_id, None)),
                 Some(_) => Some(("awaiting_approval", turn_id, None)),
-                None => Some(("running", turn_id, None)),
+                None => Some((if data.get("returnToIdle").and_then(Value::as_bool) == Some(true) { "awaiting_input" } else { "running" }, turn_id, None)),
             }
         }
         "chat.turn.completed" if live_turn && completion_is_actionable(data) => {
@@ -819,6 +831,7 @@ fn expire_pending_parts_matching(
         })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
     drop(stmt);
+    let mut retired_runtime_turns = Vec::new();
     for (id, item_turn, data) in rows {
         if let Some(expected) = turn_id {
             if item_turn.as_deref() != Some(expected) {
@@ -834,6 +847,9 @@ fn expire_pending_parts_matching(
                 && part.get("status").and_then(Value::as_str) == Some("pending")
             {
                 part["status"] = json!("expired");
+                if part.pointer("/data/runtimeOwned").and_then(Value::as_bool) == Some(true) {
+                    retired_runtime_turns.push(item_turn.clone());
+                }
                 changed = true;
             }
         }
@@ -852,6 +868,15 @@ fn expire_pending_parts_matching(
             ],
         )?;
         tx.execute("UPDATE inbox SET resolved=1,read=1 WHERE id=?", [&id])?;
+    }
+    if !retired_runtime_turns.is_empty() && !has_pending_approval(tx, session_id)? {
+        if let Some(activity) = crate::db::session_activity_tx(tx, session_id)? {
+            if retired_runtime_turns.contains(&activity.turn_id)
+                && matches!(activity.state.as_str(), "awaiting_approval" | "awaiting_parent") {
+                crate::db::set_session_activity_tx(tx, session_id, "idle", activity.turn_id.as_deref(), Some("plan_expired"))?;
+                tx.execute("UPDATE sessions SET status='idle' WHERE id=? AND status='waiting'", [session_id])?;
+            }
+        }
     }
     Ok(())
 }
@@ -1742,6 +1767,16 @@ mod tests {
     }
 
     #[test]
+    fn native_plan_markdown_is_transcript_text_instead_of_a_tool() {
+        let db = db();
+        record(&db, "s", Some("plan-turn"), "chat.item", &json!({"item":{"id":"native-plan","type":"plan","text":"# Plan\n1. Build"}})).unwrap();
+        let items = db.chat_items("s").unwrap();
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].parts[0]["type"], "text");
+        assert_eq!(items[0].parts[0]["text"], "# Plan\n1. Build");
+    }
+
+    #[test]
     fn timed_native_item_is_enriched_without_creating_a_blank_turn_item() {
         let db = db();
         record(
@@ -1801,6 +1836,66 @@ mod tests {
         assert_eq!(item.parts[1]["status"], "complete");
         assert_eq!(item.parts[1]["text"], "a.txt");
     }
+    #[test]
+    fn runtime_plan_feedback_is_idle_and_receipts_survive_late_resolution() {
+        let db = db();
+        record(&db, "s", Some("plan-turn"), "message.user", &json!({"text":"Plan"})).unwrap();
+        record(&db, "s", Some("plan-turn"), "chat.turn.completed", &json!({"status":"completed"})).unwrap();
+        let pending = json!({"approvalId":"plan:plan-turn","part":{"data":{"interaction":"plan","runtimeOwned":true,"plan":"# Plan","submittable":true,"choices":[]}}});
+        record(&db, "s", Some("plan-turn"), "chat.approval", &pending).unwrap();
+        assert_eq!(db.session_by_id("s").unwrap().unwrap().activity.unwrap().state, "awaiting_approval");
+        let mut waiting = pending.clone();
+        waiting["part"]["data"]["waitingForPrompt"] = json!(true);
+        record(&db, "s", Some("plan-turn"), "chat.approval", &waiting).unwrap();
+        let session = db.session_by_id("s").unwrap().unwrap();
+        assert_eq!(session.status, "idle");
+        assert_eq!(session.activity.unwrap().state, "awaiting_input");
+        record(&db, "s", Some("next-turn"), "message.user", &json!({"text":"Add tests"})).unwrap();
+        record(&db, "s", Some("next-turn"), "chat.turn.completed", &json!({"status":"completed"})).unwrap();
+        let before = db.session_by_id("s").unwrap().unwrap();
+        record(&db, "s", Some("plan-turn"), "chat.approval.resolved", &json!({"approvalId":"plan:plan-turn","status":"answered","outcome":"submitted","planOutcome":"changes_requested","feedback":"Add tests","preserveSessionState":true})).unwrap();
+        let after = db.session_by_id("s").unwrap().unwrap();
+        assert_eq!(after.status, before.status);
+        assert_eq!(after.activity, before.activity);
+        let part = db.chat_items("s").unwrap().into_iter().flat_map(|item| item.parts).find(|part| part["approvalId"] == "plan:plan-turn").unwrap();
+        assert_eq!(part["status"], "answered");
+        assert_eq!(part["data"]["planOutcome"], "changes_requested");
+        assert_eq!(part["data"]["feedback"], "Add tests");
+    }
+
+    #[test]
+    fn runtime_plan_cancel_and_reconnect_retire_attention_without_a_new_card() {
+        for reconnect in [false, true] {
+            let db = db();
+            record(&db, "s", Some("plan-turn"), "message.user", &json!({"text":"Plan"})).unwrap();
+            record(&db, "s", Some("plan-turn"), "chat.turn.completed", &json!({"status":"completed"})).unwrap();
+            record(&db, "s", Some("plan-turn"), "chat.approval", &json!({"approvalId":"plan:plan-turn","part":{"data":{"interaction":"plan","runtimeOwned":true,"plan":"Plan"}}})).unwrap();
+            if reconnect {
+                record(&db, "s", None, "chat.connection", &json!({"phase":"connecting"})).unwrap();
+            } else {
+                record(&db, "s", Some("plan-turn"), "chat.approval.resolved", &json!({"approvalId":"plan:plan-turn","status":"expired","returnToIdle":true})).unwrap();
+            }
+            let session = db.session_by_id("s").unwrap().unwrap();
+            assert_ne!(session.status, "waiting");
+            assert!(!matches!(session.activity.unwrap().state.as_str(), "awaiting_approval" | "awaiting_parent"));
+            let part = db.chat_items("s").unwrap().into_iter().flat_map(|item| item.parts).find(|part| part["approvalId"] == "plan:plan-turn").unwrap();
+            assert_eq!(part["status"], "expired");
+        }
+    }
+
+    #[test]
+    fn native_plan_receipt_wins_over_completion_expiry() {
+        let db = db();
+        record(&db, "s", Some("native-plan"), "message.user", &json!({"text":"Plan"})).unwrap();
+        record(&db, "s", Some("native-plan"), "chat.approval", &json!({"approvalId":"exit-plan","part":{"data":{"interaction":"plan","plan":"# Plan"}}})).unwrap();
+        record(&db, "s", Some("native-plan"), "chat.turn.completed", &json!({"status":"completed"})).unwrap();
+        record(&db, "s", Some("native-plan"), "chat.approval.resolved", &json!({"approvalId":"exit-plan","status":"answered","outcome":"submitted","planOutcome":"approved"})).unwrap();
+        let part = db.chat_items("s").unwrap().into_iter().flat_map(|item| item.parts).find(|part| part["approvalId"] == "exit-plan").unwrap();
+        assert_eq!(part["status"], "answered");
+        assert_eq!(part["data"]["planOutcome"], "approved");
+        assert_eq!(db.session_by_id("s").unwrap().unwrap().status, "idle");
+    }
+
     #[test]
     fn plan_parts_upsert_in_place() {
         let db = db();

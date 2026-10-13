@@ -6,6 +6,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { electron } from './lib/desktop1.mjs';
+import { checkControlConsistency, assertNoControlViolations } from './lib/visual-consistency.mjs';
 const delay = milliseconds => new Promise(resolveDelay => setTimeout(resolveDelay, milliseconds));
 
 const qaDir = dirname(fileURLToPath(import.meta.url));
@@ -19,6 +20,8 @@ const data = join(scratch, 'data');
 const profile = join(scratch, 'profile');
 const log = join(scratch, 'codex-requests.jsonl');
 const pipe = `\\\\.\\pipe\\threadterm-codex-slash-${randomUUID()}`;
+const out = resolve(v3Root, 'qa/results/chat-parity/D2/codex-slash');
+await mkdir(out, { recursive: true });
 const report = { passed: false, scratch, runtime, checks: [] };
 let app;
 let page;
@@ -40,7 +43,11 @@ async function requests() {
 }
 async function send(text) {
   // A trailing space closes the command suggestion list; submit trims it.
+  // Wait for any previous turn's first-response indicator to clear, then for
+  // the composer to accept input, so a cancelled turn cannot swallow the send.
+  await page.locator('.chat-first-response-wait').waitFor({ state: 'detached' }).catch(() => undefined);
   await page.locator('.chat-compose-shell textarea').fill(/^\/\w+$/u.test(text) ? `${text} ` : text);
+  await page.locator('.chat-compose-send[type="submit"]:not([disabled])').waitFor();
   await page.locator('.chat-compose-shell').evaluate(form => form.requestSubmit());
 }
 async function waitResult(sessionId, command, text) {
@@ -77,6 +84,9 @@ try {
   page = await app.firstWindow({ timeout: 30_000 });
   page.setDefaultTimeout(20_000);
   await page.waitForFunction(() => Boolean(window.threadterm));
+  await page.evaluate(() => Object.defineProperty(navigator,'clipboard',{configurable:true,value:{writeText:async value=>{window.__lane2Clipboard=value;},readText:async()=>window.__lane2Clipboard??''}}));
+  await page.locator('#boot-splash').waitFor({state:'detached'});
+  await page.evaluate(()=>{document.title='ThreadTerm lane2 D2 slash QA';});
   await page.locator('.app-shell').waitFor();
   await page.locator('#boot-splash').waitFor({ state: 'detached', timeout: 30_000 });
   await request('project.add', { path: workspace, name: 'Codex slash QA', operationId: randomUUID() });
@@ -152,6 +162,9 @@ try {
   await waitResult(session.id, 'qa fail ordinary turn', 'QA ordinary turn failed');
   report.checks.push('ordinary native failure released first-response wait');
 
+  await page.evaluate(() => { document.title = 'ThreadTerm lane2 D2 slash QA'; });
+  assertNoControlViolations(await checkControlConsistency(page, `[data-testid="session-chat-${session.id}"]`), 'D2 slash regression');
+  await page.screenshot({ path: join(out, 'wide.png') });
   report.passed = true;
 } catch (failure) {
   report.error = failure instanceof Error ? failure.stack : String(failure);
@@ -162,7 +175,7 @@ try {
       waiting: Boolean(document.querySelector('.chat-first-response-wait')),
       surfaceError: document.querySelector('.surface-error')?.textContent,
     })).catch(() => undefined);
-    await page.screenshot({ path: join(scratch, 'failure.png') }).catch(() => {});
+    await page.screenshot({ path: join(out, 'failure.png') }).catch(() => {});
   }
   process.exitCode = 1;
 } finally {
@@ -171,6 +184,6 @@ try {
     await app.evaluate(({ app: electronApp }) => electronApp.exit(0)).catch(() => {});
     await app.close().catch(() => {});
   }
-  await writeFile(join(scratch, 'report.json'), `${JSON.stringify(report, null, 2)}\n`);
+  await writeFile(join(out, 'report.json'), `${JSON.stringify(report, null, 2)}\n`);
   process.stdout.write(`${JSON.stringify(report, null, 2)}\n`);
 }

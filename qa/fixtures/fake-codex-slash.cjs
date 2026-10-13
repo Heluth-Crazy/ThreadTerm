@@ -12,6 +12,7 @@ const error = (id, message) => process.stdout.write(`${JSON.stringify({ id, erro
 const event = (method, params) => process.stdout.write(`${JSON.stringify({ method, params })}\n`);
 const settings = {
   model: 'qa-model-a',
+  effort: 'medium',
   reasoningEffort: 'medium',
   collaborationMode: { mode: 'default' },
 };
@@ -43,7 +44,7 @@ lines.on('line', (line) => {
     if (params.model === 'qa-rejected') return error(id, 'QA model rejected');
     apply(params);
     event('thread/settings/updated', { threadId: nativeId, threadSettings: settings });
-    return result(id, { threadSettings: settings });
+    return result(id, threadResponse());
   }
   if (method === 'turn/start') {
     if (params.input?.some(item => item.text === 'qa fail ordinary turn')) return error(id, 'QA ordinary turn failed');

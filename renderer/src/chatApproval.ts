@@ -15,10 +15,15 @@ export function approvalData(part: ChatPart): ChatApprovalData | undefined {
     title: stringField(data.title),
     details: data.details,
     choices,
-    interaction: data.interaction === "userInput" || data.interaction === "elicitation" || data.interaction === "permission" || data.interaction === "unknown"
+    plan: typeof data.plan === "string" ? data.plan : undefined,
+    runtimeOwned: data.runtimeOwned === true,
+    waitingForPrompt: data.waitingForPrompt === true,
+    planOutcome: data.planOutcome === "approved" || data.planOutcome === "changes_requested" || data.planOutcome === "abandoned" ? data.planOutcome : undefined,
+    feedback: typeof data.feedback === "string" ? data.feedback : undefined,
+    interaction: data.interaction === "plan" || data.interaction === "userInput" || data.interaction === "elicitation" || data.interaction === "permission" || data.interaction === "unknown"
       ? data.interaction
       : undefined,
-    submittable: data.submittable === true && choices.length > 0,
+    submittable: data.submittable === true && (data.interaction === "plan" || choices.length > 0),
   };
 }
 
@@ -26,6 +31,12 @@ export function approvalButtonsEnabled(part: ChatPart, writable: boolean): boole
   if (!writable || part.status !== "pending") return false;
   const data = approvalData(part);
   return Boolean(data?.submittable);
+}
+
+export function planApprovalEnabled(part: ChatPart, writable: boolean, submitting?: string): boolean {
+  const data = approvalData(part);
+  const waiting = isRecord(part.data) && part.data.waitingForPrompt === true;
+  return data?.interaction === "plan" && approvalButtonsEnabled(part, writable) && !submitting && !waiting;
 }
 
 export function scopeLabel(scope: ChatApprovalScope, copy: (en: string, zh: string) => string): string {

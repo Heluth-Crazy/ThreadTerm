@@ -2234,6 +2234,26 @@
             "action"
           ],
           "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "action": {
+              "type": "string",
+              "enum": [
+                "approve",
+                "request_changes",
+                "abandon"
+              ]
+            },
+            "feedback": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "action"
+          ],
+          "additionalProperties": false
         }
       ]
     },

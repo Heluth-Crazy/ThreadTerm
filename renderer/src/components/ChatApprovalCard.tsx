@@ -1,9 +1,10 @@
 import { useState } from "react";
+import { PlanApprovalCard } from "./PlanApprovalCard";
 import { approvalPreview } from "../approvalPreview";
 import { EditBody } from "./ToolCards";
 import "./tool-activity.css";
 import "./approval-preview.css";
-import type { ChatApprovalChoice, ChatPart } from "@threadterm/protocol";
+import type { ChatAnswerResponse, ChatApprovalChoice, ChatPart } from "@threadterm/protocol";
 import { approvalButtonsEnabled, approvalData, choiceLabel, scopeLabel } from "../chatApproval";
 import { ChatQuestionCard } from "./ChatQuestionCard";
 import type { ChatInteractionForm, QuestionResponse } from "../chatQuestion";
@@ -15,6 +16,7 @@ export function ChatApprovalCard({
   writable,
   onChoose,
   onAnswer,
+  onPlanResponse,
   copy,
 }: {
   part: ChatPart;
@@ -22,6 +24,7 @@ export function ChatApprovalCard({
   writable: boolean;
   onChoose: (choiceId: string) => void;
   onAnswer?: (response: QuestionResponse) => void;
+  onPlanResponse?: (response: ChatAnswerResponse) => void;
   copy: (en: string, zh: string) => string;
 }) {
   const [showAll, setShowAll] = useState(false);
@@ -33,6 +36,7 @@ export function ChatApprovalCard({
   if (!data) {
     return <p className="chat-approval-stale">{copy("This older approval cannot be acted on. Reload the live session to review current requests.", "这条旧审批无法操作。请同步当前会话后再查看新的请求。")}</p>;
   }
+  if (data.interaction === "plan") return <PlanApprovalCard part={part} writable={writable} submitting={submitting} onRespond={onPlanResponse} copy={copy} />;
   const title = data.title || copy("Approval required", "需要批准");
   const unsupported = data.interaction === "userInput" || data.submittable === false;
   const question = (part.data as { interaction?: string; form?: ChatInteractionForm; answerable?: boolean; answerSummary?: Record<string, string>; isBlocking?: boolean; autoResolutionMs?: number } | undefined);

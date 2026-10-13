@@ -1,0 +1,11 @@
+.chat-plan-approval { min-width:0; }
+.chat-plan-approval-body { max-height:50vh; overflow:auto; overscroll-behavior:contain; min-width:0; font-size:13px; line-height:1.5; }
+@supports (height:1cqh) { .chat-view { container-type:size; } .chat-plan-approval-body { max-height:50cqh; } }
+.chat-plan-approval-body .codex-markdown { overflow-wrap:anywhere; }
+.chat-plan-approval-body :is(h1,h2,h3,h4,h5,h6) { font-size:13px; font-weight:600; margin:8px 0; }
+.chat-plan-approval-body pre { max-width:100%; overflow:auto; }
+.chat-plan-approval-actions { display:flex; align-items:center; flex-wrap:wrap; gap:8px; }
+.chat-plan-feedback { display:grid; gap:8px; }
+.chat-plan-feedback label { display:grid; gap:6px; font-size:12px; }
+.chat-plan-feedback textarea { min-height:64px; width:100%; box-sizing:border-box; resize:vertical; padding:8px; border:1px solid var(--border); border-radius:var(--radius); background:var(--surface); color:var(--text); font-family:inherit; font-size:13px; line-height:1.5; }
+.chat-plan-receipt { color:var(--muted); overflow-wrap:anywhere; font-size:12px; margin:0; }
