@@ -106,9 +106,15 @@ function CommandBody({ view, sessionCwd, copy }: { view: Extract<ToolView, { kin
   </>;
 }
 
-function ReadBody({ view, copy, openFile }: { view: Extract<ToolView, { kind: 'read' }>; copy: Copy; openFile?: OpenFile }) {
+function ReadBody({ view, copy, openFile, references }: { view: Extract<ToolView, { kind: 'read' }>; copy: Copy; openFile?: OpenFile; references?: FileReference[] }) {
+  // Prefer the structured reference because it can carry the line/column; the
+  // generic reference chips are suppressed for read cards so the path shows once.
+  const reference = references?.find(value => value.path === view.path);
+  const label = reference ? `${reference.path}${reference.line ? `:${reference.line}${reference.column ? `:${reference.column}` : ''}` : ''}` : view.path;
   return <>
-    <div className="tool-path"><Icon name="file" /><FileLinkedText text={view.path} openFile={openFile} /></div>
+    <div className="tool-path"><Icon name="file" />{reference && openFile
+      ? <button type="button" className="file-reference-link" onClick={() => openFile(reference)} title={reference.path}>{label}</button>
+      : <FileLinkedText text={view.path} openFile={openFile} />}</div>
     <div className="tool-chip-row">
       {view.offset !== undefined && <span className="chip flat tool-chip">{copy('offset', '起始')} {view.offset}</span>}
       {view.limit !== undefined && <span className="chip flat tool-chip">{copy('limit', '行数')} {view.limit}</span>}
@@ -188,11 +194,11 @@ function GenericBody({ view, copy }: { view: Extract<ToolView, { kind: 'generic'
   </>;
 }
 
-function CardBody({ view, copy, sessionCwd, openFile, openDiff, canOpenDiff }: { view: ToolView; copy: Copy; sessionCwd?: string; openFile?: OpenFile; openDiff?: (path: string) => void; canOpenDiff?: (path: string) => boolean }) {
+function CardBody({ view, copy, sessionCwd, openFile, openDiff, canOpenDiff, references }: { view: ToolView; copy: Copy; sessionCwd?: string; openFile?: OpenFile; openDiff?: (path: string) => void; canOpenDiff?: (path: string) => boolean; references?: FileReference[] }) {
   switch (view.kind) {
     case 'edit': return <EditBody view={view} copy={copy} openFile={openFile} openDiff={openDiff} canOpenDiff={canOpenDiff} />;
     case 'command': return <CommandBody view={view} sessionCwd={sessionCwd} copy={copy} />;
-    case 'read': return <ReadBody view={view} copy={copy} openFile={openFile} />;
+    case 'read': return <ReadBody view={view} copy={copy} openFile={openFile} references={references} />;
     case 'search': return <SearchBody view={view} copy={copy} />;
     case 'web': return <WebBody view={view} copy={copy} />;
     case 'todo': return <TodoBody view={view} copy={copy} />;
@@ -241,9 +247,9 @@ export function ToolCard({ entry, index, open, active, awaitingApproval, session
       <span className={`chip tool-card-status ${statusChip[status.key] ?? 'flat'}`}>{status.label}</span>
     </div>
     {open && <div className="tool-card-body">
-      <CardBody view={view} copy={copy} sessionCwd={sessionCwd} openFile={openFile} openDiff={openDiff} canOpenDiff={canOpenDiff} />
+      <CardBody view={view} copy={copy} sessionCwd={sessionCwd} openFile={openFile} openDiff={openDiff} canOpenDiff={canOpenDiff} references={entry.part.fileReferences} />
     </div>}
     <CardImages part={entry.part} copy={copy} />
-    <FileReferenceChips references={entry.part.fileReferences} visibleText={body} openFile={openFile} />
+    {view.kind !== 'read' && <FileReferenceChips references={entry.part.fileReferences} visibleText={body} openFile={openFile} />}
   </div>;
 }

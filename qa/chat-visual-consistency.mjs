@@ -137,10 +137,39 @@ try {
       assert.ok(result.checked >= 1, `${label} ${theme}/${locale}/${width}: the helper saw at least one control`);
       if (result.checked < 1) report.errors.push(`${label} ${theme}/${locale}/${width}: no control collected`);
     }
+    // V1-1: the tool header is one deliberate line. The headline ellipsizes and
+    // the failure/Collapse/chevron controls stay on line 1; the turn summary is
+    // its own line 2. No control is ever alone on a wrapped line.
+    const header = await scope.locator('.chat-tool-head').first().evaluate(node => {
+      const boxes = {};
+      for (const name of ['.chat-tool-current-action', '.chat-tool-active-count', '.chat-tool-failed-count', '.chat-tool-collapse-label', '.chat-tool-chevron']) {
+        const element = node.querySelector(name);
+        if (element) { const rect = element.getBoundingClientRect(); boxes[name] = { top: rect.top, center: rect.top + rect.height / 2 }; }
+      }
+      const count = node.parentElement && node.parentElement.querySelector('.chat-tool-count');
+      const headRect = node.getBoundingClientRect();
+      return { boxes, countTop: count ? count.getBoundingClientRect().top : null, headBottom: headRect.bottom, clientWidth: node.clientWidth, scrollWidth: node.scrollWidth, flexWrap: getComputedStyle(node).flexWrap };
+    });
+    const headerCenters = Object.values(header.boxes).map(box => box.center);
+    assert.ok(headerCenters.length >= 3, `${theme}/${locale}/${width}: the header exposes the headline, failure count and chevron`);
+    assert.ok(Math.max(...headerCenters) - Math.min(...headerCenters) <= 1.5, `${theme}/${locale}/${width}: the header controls share one line ${JSON.stringify(header.boxes)}`);
+    assert.equal(header.flexWrap, 'nowrap', `${theme}/${locale}/${width}: the header never wraps`);
+    assert.ok(header.scrollWidth <= header.clientWidth + 1, `${theme}/${locale}/${width}: the headline ellipsizes instead of overflowing (${header.scrollWidth} > ${header.clientWidth})`);
+    assert.ok(header.countTop === null || header.countTop >= header.headBottom - 1, `${theme}/${locale}/${width}: the turn summary sits on its own line below the header`);
+    // V1-5: the floating overlay keeps the shared .btn surface and a real shadow,
+    // and the transcript reserve clears its height so it cannot cover the card.
     await scope.locator('.v3-chat-log').evaluate(node => { node.scrollTop = 0; });
     await page.evaluate(() => new Promise(done => requestAnimationFrame(() => requestAnimationFrame(done))));
+    await until(() => scope.locator('.chat-back-to-bottom').count(), `${theme}/${locale}/${width} back-to-bottom overlay`);
+    const backToBottom = await scope.locator('.chat-back-to-bottom').evaluate(node => ({ classes: node.className, shadow: getComputedStyle(node).boxShadow, background: getComputedStyle(node).backgroundColor }));
+    assert.match(backToBottom.classes, /(^|\s)btn(\s|$)/, `${theme}/${locale}/${width}: the overlay uses the shared .btn surface`);
+    assert.notEqual(backToBottom.shadow, 'none', `${theme}/${locale}/${width}: the overlay has the shared overlay shadow`);
+    const reserve = await scope.locator('.v3-chat-log').evaluate(node => parseFloat(getComputedStyle(node).paddingBottom) || 0);
+    assert.ok(reserve >= 40, `${theme}/${locale}/${width}: the transcript reserves the overlay height (${reserve}px)`);
     await shot(`chat-${theme}-${width}-${locale}.png`);
   }
+  check('V1-1 the tool header keeps its controls on one line with an ellipsized headline and an own-line summary');
+  check('V1-5 the back-to-bottom overlay keeps a shared .btn surface, a real shadow and a 52 px reserve');
   check('wide/420, light/dark/custom, en/zh-CN: zero helper violations on the plan, tool cards, drawer, reply actions, code copy and composer');
 
   // The custom-theme screenshot must show a measurably different surface.

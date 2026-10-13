@@ -57,16 +57,17 @@ export function ToolActivity({ entries, active, awaitingApproval = false, awaiti
   return <article className={`v3-chat-message assistant is-native is-${provider} chat-tool-activity-card`}>
     <details className="chat-tool-activity" open={open} onToggle={event => setOpen(event.currentTarget.open)}>
       <summary ref={summaryRef} onClick={() => { onInspect?.(); if (open) revealAfterCollapse.current = true; }} onKeyDown={event => { if (event.key === 'Enter' || event.key === ' ') { onInspect?.(); if (open) revealAfterCollapse.current = true; } }}>
-        <Icon name={icons[description.kind]} />
-        <span className={`chat-tool-current-action${current ? ' is-running' : ''}`} role="status" aria-live="polite" aria-atomic="true" title={current ? headline : action}>{headline}</span>
+        <span className="chat-tool-head">
+          <Icon name={icons[description.kind]} />
+          <span className={`chat-tool-current-action${current ? ' is-running' : ''}`} role="status" aria-live="polite" aria-atomic="true" title={current ? headline : action}>{headline}</span>
+          {running.length > 1 && <span className="chat-tool-active-count">{running.length} {copy('running', '项执行中')}</span>}
+          {!!failures.length && <span className="chat-tool-failed-count">{failures.length} {copy('failed / interrupted', '项失败或中断')}</span>}
+          {open && <span className="chat-tool-collapse-label">{copy('Collapse', '收起')}</span>}
+          <Icon name="chevR" className="chat-tool-chevron" />
+        </span>
         <span className="chat-tool-count" title={summaryText || undefined}>{countLabel}</span>
-        {running.length > 1 && <span className="chat-tool-active-count">{running.length} {copy('running', '项执行中')}</span>}
-        {!!failures.length && <span className="chat-tool-failed-count">{failures.length} {copy('failed / interrupted', '项失败或中断')}</span>}
-        {open && <span className="chat-tool-collapse-label">{copy('Collapse', '收起')}</span>}
-        <Icon name="chevR" className="chat-tool-chevron" />
         {preview && <span className="chat-tool-output-preview" role="status" aria-live="polite" aria-atomic="true" data-preview-tool-id={preview.entryId} title={previewTitle}><span className="chat-tool-output-label">{copy('Latest output', '最新输出')}</span><span>{preview.text}</span></span>}
       </summary>
-      {!current && <div className="chat-tool-recent">{copy('Last', '最近')}: {description.name}{description.detail ? ` · ${description.detail}` : ''}</div>}
       <div className="chat-tool-entries" role="list">{entries.map((entry, index) => <ToolCard
         key={entry.id}
         entry={entry}

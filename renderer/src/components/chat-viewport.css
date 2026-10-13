@@ -1,8 +1,9 @@
 .chat-log-shell { position:relative; display:flex; flex-direction:column; flex:1; min-height:0; min-width:0; }
 .chat-log-shell > .v3-chat-log { flex:1; min-height:0; overflow-y:auto; }
 /* The floating affordance keeps only position and elevation; size, border,
-   radius and colours come from the shared .btn (issue VC). */
-.chat-back-to-bottom { position:absolute; z-index:5; bottom:12px; left:50%; transform:translateX(-50%); max-width:calc(100% - 32px); box-shadow:var(--shadow-soft); white-space:nowrap; }
+   radius, surface and colours come from the shared .btn (issue VC). The
+   stronger overlay shadow keeps it reading as floating above the card. */
+.chat-back-to-bottom { position:absolute; z-index:5; bottom:12px; left:50%; transform:translateX(-50%); max-width:calc(100% - 32px); box-shadow:var(--shadow); white-space:nowrap; }
 .chat-back-to-bottom > .ico { transform:rotate(180deg); }
 /* Reserve room so the overlay never covers the last card's content or actions. */
 .chat-view .chat-log-shell:has(.chat-back-to-bottom) .v3-chat-log { padding-bottom:52px; }

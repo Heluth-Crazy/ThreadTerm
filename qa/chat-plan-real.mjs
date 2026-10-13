@@ -107,6 +107,21 @@ try {
     await until(async () => (await scope.locator('.chat-plan-panel').count()) > 0, `${locale}/${theme}/${width} plan panel`);
     if (await scope.locator('.chat-plan-chip').getAttribute('aria-expanded') === 'false') await scope.locator('.chat-plan-chip').click();
     await scope.locator('.chat-plan-card').waitFor();
+    // V1-2: the expanded card stays in flow under the sticky chip, so at the top
+    // of the transcript it sits above the first message and never intersects one.
+    await scope.locator('.v3-chat-log').evaluate(node => { node.scrollTop = 0; });
+    await page.evaluate(() => new Promise(done => requestAnimationFrame(() => requestAnimationFrame(done))));
+    const planFlow = await scope.locator('.v3-chat-log').evaluate(log => {
+      const card = log.querySelector('.chat-plan-card');
+      if (!card) return { hits: 0, cardBottom: null, firstTop: null };
+      const cardRect = card.getBoundingClientRect();
+      const messages = [...log.querySelectorAll('.v3-chat-message')].map(node => node.getBoundingClientRect());
+      const hits = messages.filter(rect => rect.left < cardRect.right && rect.right > cardRect.left && rect.top < cardRect.bottom && rect.bottom > cardRect.top);
+      const first = [...log.querySelectorAll('.v3-chat-message')].map(node => node.getBoundingClientRect()).sort((a, b) => a.top - b.top)[0];
+      return { hits: hits.length, cardBottom: cardRect.bottom, firstTop: first ? first.top : null };
+    });
+    assert.equal(planFlow.hits, 0, `${locale}/${theme}/${width}: the expanded plan card does not intersect any message bubble in the initial view`);
+    assert.ok(planFlow.firstTop === null || planFlow.cardBottom <= planFlow.firstTop + 0.5, `${locale}/${theme}/${width}: the expanded plan card sits in flow above the first message`);
     await shot(`plan-real-${theme}-${width}-${locale}.png`);
     const label = await scope.locator('.chat-plan-label').textContent();
     assert.match(label, /^(Plan|计划) 1\/3$/, `${locale} chip label`);

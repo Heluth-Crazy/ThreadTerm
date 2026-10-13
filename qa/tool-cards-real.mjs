@@ -117,6 +117,8 @@ try {
   await until(async () => (await scope.locator('.tool-card-body').count()) === 4, 'four card bodies');
   const readBody = scope.locator('.chat-tool-entry[data-tool-kind=read]');
   assert.match(await readBody.locator('.tool-path').innerText(), /src\/app\.ts/);
+  assert.equal(await readBody.locator('.tool-path .file-reference-link').innerText(), 'src/app.ts:1', 'the read card links the path once, carrying its line number');
+  assert.equal(await readBody.locator('.file-reference-chips').count(), 0, 'the read card does not repeat the path as a reference chip');
   assert.equal(await readBody.locator('.tool-chip').first().innerText(), 'offset 1');
   assert.equal(await readBody.locator('.tool-chip').nth(1).innerText(), 'limit 40');
   const searchBody = scope.locator('.chat-tool-entry[data-tool-kind=search]');
