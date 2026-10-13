@@ -1148,8 +1148,10 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession }
           const statusRows = parseKimiStatus(part.text);
           if (statusRows) return <KimiStatusCard key={`kstatus-${index}`} rows={statusRows} zh={zh} copy={copy} />;
         }
+        // A question can paint before chat.send settles. The composer busy flag
+        // must not disable that card, or Dismiss enables under the pointer.
         if (part.type === "approval") return <div className={`chat-part approval v3-tool-card ${part.status ?? ""}`} key={`${part.type}-${index}`}>
-          <ChatApprovalCard part={part} writable={writable && !busy} submitting={approvalBusy?.startsWith(`${part.approvalId ?? ""}:`) ? approvalBusy.slice((part.approvalId ?? "").length + 1) : undefined} onChoose={choiceId => { if (item.turnId && part.approvalId) void approval(item.turnId, part.approvalId, choiceId); }} onAnswer={response => { if (item.turnId && part.approvalId) void answer(item.turnId, part.approvalId, response); }} onPlanResponse={response => { if (item.turnId && part.approvalId) void answer(item.turnId, part.approvalId, response); }} copy={copy} />
+          <ChatApprovalCard part={part} writable={writable} submitting={approvalBusy?.startsWith(`${part.approvalId ?? ""}:`) ? approvalBusy.slice((part.approvalId ?? "").length + 1) : undefined} onChoose={choiceId => { if (item.turnId && part.approvalId) void approval(item.turnId, part.approvalId, choiceId); }} onAnswer={response => { if (item.turnId && part.approvalId) void answer(item.turnId, part.approvalId, response); }} onPlanResponse={response => { if (item.turnId && part.approvalId) void answer(item.turnId, part.approvalId, response); }} copy={copy} />
         </div>;
         const label = partLabel(part, copy);
         const localizedText = asRecord(asRecord(part.data).localizedText);
