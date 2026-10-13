@@ -458,6 +458,65 @@ pub fn version_probe(command: &str) -> (bool, Option<String>, Option<String>) {
 enum Pending {
     Blocking(mpsc::SyncSender<Result<Value, ProviderError>>),
     Async(Box<dyn FnOnce(Result<Value, ProviderError>) + Send>),
+    ExpiringAsync {
+        tag: String,
+        callback: Box<dyn FnOnce(Result<Value, ProviderError>) + Send>,
+        finished: mpsc::Sender<()>,
+    },
+}
+
+fn complete_pending(request: Pending, result: Result<Value, ProviderError>) {
+    match request {
+        Pending::Blocking(sender) => { let _ = sender.send(result); }
+        Pending::Async(callback) => callback(result),
+        Pending::ExpiringAsync { callback, finished, .. } => {
+            let _ = finished.send(());
+            callback(result);
+        }
+    }
+}
+
+/// Retain at most one read per tag. A one-shot wait owns only an outstanding
+/// request and ends on response, replacement, write failure or disconnect.
+/// There is no idle polling or timer after that request is retired.
+fn insert_expiring_request(
+    pending: &Arc<Mutex<HashMap<String, Pending>>>,
+    id: u64,
+    tag: &str,
+    timeout: Duration,
+    callback: impl FnOnce(Result<Value, ProviderError>) + Send + 'static,
+) -> Result<(), ProviderError> {
+    let (finished, waiting) = mpsc::channel();
+    let replaced = {
+        let mut requests = pending.lock().map_err(|_| ProviderError::new("provider_internal", "pending request lock poisoned"))?;
+        let prior = requests.iter().find_map(|(key, request)| match request {
+            Pending::ExpiringAsync { tag: previous, .. } if previous == tag => Some(key.clone()),
+            _ => None,
+        }).and_then(|key| requests.remove(&key));
+        requests.insert(id.to_string(), Pending::ExpiringAsync { tag: tag.into(), callback: Box::new(callback), finished });
+        prior
+    };
+    if let Some(prior) = replaced {
+        complete_pending(prior, Err(ProviderError::new("provider_superseded", "A newer context read superseded this request")));
+    }
+    let weak = Arc::downgrade(pending);
+    let key = id.to_string();
+    let expired_key = key.clone();
+    if let Err(error) = thread::Builder::new().name("context-request-expiry".into()).spawn(move || {
+        if matches!(waiting.recv_timeout(timeout), Err(mpsc::RecvTimeoutError::Timeout)) {
+            let request = weak.upgrade().and_then(|pending| pending.lock().ok().and_then(|mut pending| pending.remove(&expired_key)));
+            if let Some(request) = request {
+                complete_pending(request, Err(ProviderError::new("provider_timeout", "Context read timed out")));
+            }
+        }
+    }) {
+        let request = pending.lock().ok().and_then(|mut pending| pending.remove(&key));
+        if let Some(request) = request {
+            complete_pending(request, Err(ProviderError::new("provider_internal", error.to_string())));
+        }
+        return Err(ProviderError::new("provider_internal", error.to_string()));
+    }
+    Ok(())
 }
 
 pub struct JsonLineProcess {
@@ -481,24 +540,20 @@ pub struct JsonLineRequester {
 }
 
 impl JsonLineRequester {
-    /// Issues a request and invokes `callback` from the transport's reader
-    /// thread when the matching response arrives. Never blocks the caller.
-    pub fn request_async(
+    pub fn request_async_latest(
         &self,
+        tag: &str,
         method: &str,
         params: Value,
+        timeout: Duration,
         callback: impl FnOnce(Result<Value, ProviderError>) + Send + 'static,
     ) -> Result<u64, ProviderError> {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
+        insert_expiring_request(&self.pending, id, tag, timeout, callback)?;
         let frame = envelope_request_frame(self.style, id, method, params);
-        self.pending
-            .lock()
-            .map_err(|_| ProviderError::new("provider_internal", "pending request lock poisoned"))?
-            .insert(id.to_string(), Pending::Async(Box::new(callback)));
         if let Err(error) = write_stdin(&self.stdin, &self.label, frame) {
-            if let Ok(mut pending) = self.pending.lock() {
-                pending.remove(&id.to_string());
-            }
+            let request = self.pending.lock().ok().and_then(|mut pending| pending.remove(&id.to_string()));
+            if let Some(request) = request { complete_pending(request, Err(error.clone())); }
             return Err(error);
         }
         Ok(id)
@@ -750,12 +805,7 @@ impl JsonLineProcess {
                             .and_then(|mut pending| pending.remove(&key));
                         if let Some(pending_request) = pending_request {
                             let result = response_result(&raw, reader_style);
-                            match pending_request {
-                                Pending::Blocking(sender) => {
-                                    let _ = sender.send(result);
-                                }
-                                Pending::Async(callback) => callback(result),
-                            }
+                            complete_pending(pending_request, result);
                         } else {
                             on_message(raw);
                         }
@@ -768,15 +818,9 @@ impl JsonLineProcess {
                     "provider_disconnected",
                     format!("{reader_label} closed its output stream"),
                 );
-                if let Ok(mut pending) = reader_pending.lock() {
-                    for (_, request) in pending.drain() {
-                        match request {
-                            Pending::Blocking(sender) => {
-                                let _ = sender.send(Err(disconnected.clone()));
-                            }
-                            Pending::Async(callback) => callback(Err(disconnected.clone())),
-                        }
-                    }
+                let requests = reader_pending.lock().map(|mut pending| pending.drain().map(|(_, request)| request).collect::<Vec<_>>()).unwrap_or_default();
+                for request in requests {
+                    complete_pending(request, Err(disconnected.clone()));
                 }
             })
             .map_err(|error| ProviderError::new("provider_internal", error.to_string()))?;
@@ -816,7 +860,7 @@ impl JsonLineProcess {
 
     /// A cloneable handle that can issue a request without owning the process.
     /// Used by adapters whose event callback runs on the reader thread and must
-    /// not block; `request_async` invokes the callback from that same thread.
+    /// not block; `request_async_latest` delivers successful replies there.
     pub fn requester(&self) -> JsonLineRequester {
         JsonLineRequester {
             label: self.label.clone(),
@@ -1122,6 +1166,39 @@ fn hide_background_window(_command: &mut Command) {}
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn missing_context_replies_are_bounded_and_expire_without_polling() {
+        let pending = Arc::new(Mutex::new(HashMap::new()));
+        let (sent, received) = mpsc::channel();
+        for id in 1..=32 {
+            let sent = sent.clone();
+            let timeout = if id == 32 { Duration::from_millis(50) } else { Duration::from_secs(30) };
+            insert_expiring_request(&pending, id, "pi.context", timeout, move |result| {
+                sent.send((id, result.unwrap_err().code)).unwrap();
+            }).unwrap();
+            assert_eq!(pending.lock().unwrap().len(), 1);
+        }
+        for id in 1..32 {
+            assert_eq!(received.recv_timeout(Duration::from_secs(3)).unwrap(), (id, "provider_superseded".into()));
+        }
+        assert_eq!(received.recv_timeout(Duration::from_secs(3)).unwrap(), (32, "provider_timeout".into()));
+        assert!(pending.lock().unwrap().is_empty(), "lost replies release their closures even on an idle worker");
+    }
+
+    #[test]
+    fn successful_context_reply_retires_expiry_and_calls_back_once() {
+        let pending = Arc::new(Mutex::new(HashMap::new()));
+        let (sent, received) = mpsc::channel();
+        insert_expiring_request(&pending, 1, "pi.context", Duration::from_secs(3), move |result| {
+            sent.send(result.unwrap()).unwrap();
+        }).unwrap();
+        let request = pending.lock().unwrap().remove("1").unwrap();
+        complete_pending(request, Ok(json!({"tokens":{"total":5}})));
+        assert_eq!(received.recv_timeout(Duration::from_secs(3)).unwrap()["tokens"]["total"], 5);
+        assert!(matches!(received.recv_timeout(Duration::from_millis(40)), Err(mpsc::RecvTimeoutError::Disconnected)));
+        assert!(pending.lock().unwrap().is_empty());
+    }
 
     #[test]
     fn approval_ids_round_trip_json_rpc_ids() {

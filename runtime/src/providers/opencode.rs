@@ -502,6 +502,11 @@ impl OpenCodeServer {
             ));
         }
 
+        let model_limits = self
+            .request(reqwest::Method::GET, "/provider", None)
+            .and_then(|response| self.json(response))
+            .map(|providers| opencode_provider_context_limits(&providers))
+            .unwrap_or_default();
         let liveness = Arc::new(AtomicBool::new(true));
         let target = Arc::new(EventTarget {
             threadterm_session: self.threadterm_session.clone(),
@@ -523,6 +528,7 @@ impl OpenCodeServer {
             directory: self.cwd.clone(),
             username: self.username.clone(),
             password: self.password.clone(),
+            model_limits,
         });
         let context = SseContext {
             reader: BufReader::new(response),
@@ -1824,6 +1830,7 @@ struct EventTarget {
     directory: String,
     username: String,
     password: String,
+    model_limits: HashMap<String, u64>,
 }
 
 impl EventTarget {
@@ -2226,6 +2233,33 @@ fn emit_opencode_event(target: &EventTarget, raw: Value) {
             &raw,
             turn.as_deref(),
         ),
+        "message.updated" => {
+            let info = properties.get("info").unwrap_or(properties);
+            if info.get("role").and_then(Value::as_str) == Some("assistant") {
+                if let Some(usage) = opencode_context_usage(info, &target.model_limits) {
+                    emit_scoped(
+                        &target.events,
+                        "opencode",
+                        &target.threadterm_session,
+                        native_id,
+                        turn.as_deref(),
+                        "chat.context",
+                        json!({"usage":usage}),
+                        Some(&target.worker_token),
+                    );
+                }
+            }
+            emit_scoped(
+                &target.events,
+                "opencode",
+                &target.threadterm_session,
+                native_id,
+                turn.as_deref(),
+                "provider.event",
+                json!({"raw":raw}),
+                Some(&target.worker_token),
+            );
+        }
         "message.part.updated" => {
             let part = properties.get("part").cloned().unwrap_or(Value::Null);
             let (Some(part_id), Some(message_id)) = (
@@ -2391,6 +2425,59 @@ fn emit_opencode_event(target: &EventTarget, raw: Value) {
     }
 }
 
+fn opencode_provider_context_limits(value: &Value) -> HashMap<String, u64> {
+    let providers = value.get("all").or_else(|| value.get("providers")).unwrap_or(value);
+    let Some(providers) = providers.as_array() else { return HashMap::new() };
+    let mut limits = HashMap::new();
+    for provider in providers {
+        let provider_id = provider.get("id").and_then(Value::as_str).unwrap_or_default();
+        let Some(models) = provider.get("models").and_then(Value::as_object) else { continue };
+        for (model_id, model) in models {
+            let Some(context) = model.pointer("/limit/context").and_then(Value::as_u64).filter(|v| *v > 0) else { continue };
+            limits.insert(format!("{provider_id}/{model_id}"), context);
+        }
+    }
+    limits
+}
+
+fn opencode_context_usage(info: &Value, model_limits: &HashMap<String, u64>) -> Option<Value> {
+    let tokens = info.get("tokens")?;
+    let read = tokens.pointer("/cache/read").and_then(Value::as_u64)
+        .or_else(|| tokens.get("cacheRead").and_then(Value::as_u64));
+    let write = tokens.pointer("/cache/write").and_then(Value::as_u64)
+        .or_else(|| tokens.get("cacheWrite").and_then(Value::as_u64));
+    let input = tokens.get("input").and_then(Value::as_u64);
+    let output = tokens.get("output").and_then(Value::as_u64);
+    let total = tokens.get("total").and_then(Value::as_u64).or_else(|| {
+        Some(input?.saturating_add(output?).saturating_add(read.unwrap_or(0)).saturating_add(write.unwrap_or(0)))
+    });
+    let window = info.pointer("/model/limit/context").and_then(Value::as_u64)
+        .or_else(|| info.pointer("/model/limit/contextWindow").and_then(Value::as_u64))
+        .or_else(|| {
+            let model = info.get("modelID").and_then(Value::as_str)?;
+            let provider = info.get("providerID").and_then(Value::as_str)?;
+            model_limits.get(&format!("{provider}/{model}")).copied()
+        })
+        .filter(|window| *window > 0);
+    if input.is_none() && output.is_none() && total.is_none() {
+        return None;
+    }
+    let mut usage = serde_json::Map::new();
+    if let Some(value) = input { usage.insert("inputTokens".into(), json!(value)); }
+    if let Some(value) = output { usage.insert("outputTokens".into(), json!(value)); }
+    if let Some(value) = read { usage.insert("cacheReadTokens".into(), json!(value)); }
+    if let Some(value) = write { usage.insert("cacheWriteTokens".into(), json!(value)); }
+    if let Some(value) = total {
+        usage.insert("totalTokens".into(), json!(value));
+        usage.insert("usedTokens".into(), json!(value));
+    }
+    if let Some(value) = window {
+        usage.insert("windowTokens".into(), json!(value));
+        if let Some(used) = total { usage.insert("percent".into(), json!(((used as f64 / value as f64) * 100.0).clamp(0.0, 100.0))); }
+    }
+    Some(Value::Object(usage))
+}
+
 fn opencode_chat_part(part: &Value) -> Value {
     let part_type = part.get("type").and_then(Value::as_str);
     if matches!(part_type, Some("text" | "reasoning")) {
@@ -2547,6 +2634,25 @@ mod tests {
         );
     }
 
+    #[test]
+    fn established_message_updated_event_emits_context_usage() {
+        let fixture: Value = serde_json::from_str(include_str!("../../tests/fixtures/opencode-context-event.json")).unwrap();
+        let (events, mut rx) = crate::provider_events::tap_channel(8);
+        let providers: Value = serde_json::from_str(include_str!("../../tests/fixtures/opencode-provider-model-limits.json")).unwrap();
+        let limits = opencode_provider_context_limits(&providers);
+        assert_eq!(limits["openai/gpt-test"], 200000);
+        let mut target = event_target(&events, Arc::new(Mutex::new(Some("turn-1".into()))));
+        target.model_limits = limits;
+        emit_opencode_event(&target, fixture);
+        let event = std::iter::from_fn(|| rx.try_recv().ok()).find(|event| event.kind == "chat.context").unwrap();
+        assert_eq!(event.data["usage"]["inputTokens"], 120);
+        assert_eq!(event.data["usage"]["outputTokens"], 30);
+        assert_eq!(event.data["usage"]["cacheReadTokens"], 80);
+        assert_eq!(event.data["usage"]["cacheWriteTokens"], 5);
+        assert_eq!(event.data["usage"]["totalTokens"], 235, "native output already includes reasoning tokens");
+        assert_eq!(event.data["usage"]["windowTokens"], 200000);
+    }
+
     /// Event frames below mirror the real OpenCode 1.18.31 `/global/event`
     /// shapes verified against the installed server's OpenAPI document.
     fn frame(kind: &str, properties: Value) -> Value {
@@ -2611,6 +2717,7 @@ mod tests {
             directory: String::new(),
             username: String::new(),
             password: String::new(),
+            model_limits: HashMap::new(),
         }
     }
 

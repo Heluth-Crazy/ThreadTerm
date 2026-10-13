@@ -1858,7 +1858,7 @@ fn codex_context_usage(token_usage: &Value) -> Option<Value> {
     if let (Some(used), Some(window)) = (used, window) {
         usage.insert("percent".into(), json!(percent_used(used, window)));
     }
-    if let Some(value) = input {
+    if let Some(value) = input.map(|input| input.saturating_sub(cache_read.unwrap_or(0))) {
         usage.insert("inputTokens".into(), json!(value));
     }
     if let Some(value) = output {
@@ -5132,10 +5132,13 @@ createInterface({{ input: process.stdin, crlfDelay: Infinity }}).on('line', line
         assert_eq!(usage["usedTokens"], 94700);
         assert_eq!(usage["totalTokens"], 94700);
         assert_eq!(usage["windowTokens"], 258000);
-        assert_eq!(usage["inputTokens"], 90000);
+        assert_eq!(usage["inputTokens"], 30000, "shared input excludes cached tokens");
         assert_eq!(usage["outputTokens"], 4700);
         assert_eq!(usage["cacheReadTokens"], 60000);
         assert_eq!(usage["cacheWriteTokens"], 1000);
+        let cache_rate = usage["cacheReadTokens"].as_f64().unwrap()
+            / (usage["inputTokens"].as_f64().unwrap() + usage["cacheReadTokens"].as_f64().unwrap());
+        assert!((cache_rate - 2.0 / 3.0).abs() < 0.0001);
         assert!((usage["percent"].as_f64().unwrap() - 36.705).abs() < 0.01);
 
         // Tokens without a window still produce a tokens-only snapshot.

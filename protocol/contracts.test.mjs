@@ -2,6 +2,16 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {validateRequest,validateResult,validateLayout,METHODS,isRuntimeEvent,PROTOCOL_CONTRACT,PROTOCOL_VERSION,protocolIncompatibleReason} from './index.ts';
 
+test('context read preserves timestamp and all counters, with an empty-session null result',()=>{
+ validateRequest('chat.context.read',{sessionId:'s'});
+ const usage={usedTokens:60000,windowTokens:200000,percent:30,inputTokens:30000,outputTokens:4700,cacheReadTokens:60000,cacheWriteTokens:1000,totalTokens:95700,updatedAt:'2026-10-13T10:00:00Z'};
+ validateResult('chat.context.read',usage);
+ validateResult('chat.context.read',null);
+ assert.throws(()=>validateResult('chat.context.read',{...usage,updatedAt:1}));
+ assert.throws(()=>validateResult('chat.context.read',{...usage,contextSequence:2}));
+ assert.equal(isRuntimeEvent({v:1,event:'chat.context',epoch:'e',seq:1,data:{sessionId:'s',usage}}),true);
+});
+
 test('selected commits carry an exact staged snapshot and reject ambiguous or unsafe selections',()=>{
  const oid='a'.repeat(40),fingerprint='b'.repeat(64);
  const head={kind:'branch',oid,target:'refs/heads/main'};

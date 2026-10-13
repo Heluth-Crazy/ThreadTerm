@@ -21,7 +21,7 @@ use std::{
     io::{Read, Seek, SeekFrom},
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
-    time::{Instant, SystemTime},
+    time::{Duration, Instant, SystemTime},
 };
 use uuid::Uuid;
 
@@ -262,7 +262,7 @@ impl ProviderAdapter for PiAdapter {
             std::mem::take(&mut control.queued_ui)
         };
         if let Ok(mut slot) = shared.requester.lock() {
-            *slot = Some(process.requester());
+            *slot = Some(Arc::new(process.requester()));
         }
         for raw in queued_ui {
             pi_event(&events, "pi", session_id, &shared, raw);
@@ -298,13 +298,28 @@ struct PiShared {
     interactions: Mutex<HashMap<String, PiInteraction>>,
     /// Lets the stdout callback issue a non-blocking usage query after the turn
     /// settles without owning the process.
-    requester: Mutex<Option<JsonLineRequester>>,
+    requester: Mutex<Option<Arc<dyn PiStatsRequester>>>,
+    /// Settlement/read generation. Publication shares this lock with advancing
+    /// the generation, so an old callback cannot enqueue after a newer read.
+    context_sequence: Arc<Mutex<u64>>,
     /// A bounded exact-id fence prevents Pi extension replays from reopening a
     /// card after its response/cancellation has been written.
     resolved_interactions: Mutex<VecDeque<String>>,
 }
 
 const PI_TOOL_CALL_LIMIT: usize = 128;
+
+type PiStatsCallback = Box<dyn FnOnce(Result<Value, ProviderError>) + Send>;
+
+trait PiStatsRequester: Send + Sync {
+    fn request_stats(&self, callback: PiStatsCallback) -> Result<(), ProviderError>;
+}
+
+impl PiStatsRequester for JsonLineRequester {
+    fn request_stats(&self, callback: PiStatsCallback) -> Result<(), ProviderError> {
+        self.request_async_latest("pi.context", "get_session_stats", json!({}), Duration::from_secs(10), callback).map(|_| ())
+    }
+}
 
 #[derive(Clone)]
 struct PiToolCall {
@@ -367,24 +382,7 @@ impl PiChat {
 
     /// Settles the current turn at most once, whichever path observes it first.
     fn finish_turn(&self, stop_reason: &str, elapsed_ms: Option<u64>) {
-        let turn_id = pi_take_active_turn(&self.shared);
-        let Some(turn_id) = turn_id else {
-            return;
-        };
-        self.drain_interactions(Some(&turn_id));
-        let mut data = json!({"result":{"stopReason":stop_reason}});
-        if let Some(elapsed) = elapsed_ms {
-            data["elapsedMs"] = json!(elapsed);
-        }
-        emit(
-            &self.events,
-            "pi",
-            &self.session_id,
-            self.native().as_deref(),
-            Some(&turn_id),
-            "chat.turn.completed",
-            data,
-        );
+        pi_finish_turn(&self.events, &self.session_id, &self.shared, stop_reason, elapsed_ms);
     }
 
     fn drain_interactions(&self, turn_id: Option<&str>) {
@@ -499,6 +497,7 @@ impl PiChat {
                     json!({"customInstructions":args})
                 };
                 let data = self.process.request("compact", params)?;
+                pi_reset_context(&self.events, &self.session_id, &self.shared);
                 match (
                     data.get("tokensBefore").and_then(Value::as_u64),
                     data.get("estimatedTokensAfter").and_then(Value::as_u64),
@@ -638,9 +637,20 @@ impl PiChat {
                 }
             }
             "new" => {
-                self.process.request("new_session", json!({}))?;
-                self.refresh_ui();
-                "Started a fresh session.".to_owned()
+                let previous = self.native();
+                let data = self.process.request("new_session", json!({}))?;
+                if data.get("cancelled").and_then(Value::as_bool) == Some(true) {
+                    "New session was cancelled.".to_owned()
+                } else {
+                    self.refresh_ui();
+                    let native = self.native();
+                    if previous != native {
+                        emit(&self.events, "pi", &self.session_id, native.as_deref(), None,
+                            "chat.session.replaced", json!({"previousNativeId":previous}));
+                    }
+                    pi_reset_context(&self.events, &self.session_id, &self.shared);
+                    "Started a fresh session.".to_owned()
+                }
             }
             _ => return Ok(None),
         };
@@ -685,6 +695,9 @@ impl ChatSession for PiChat {
                 calls.calls.clear();
             }
             *active = Some(operation_id.to_owned());
+            if let Ok(mut sequence) = self.shared.context_sequence.lock() {
+                *sequence += 1;
+            }
         }
         if let Ok(mut started) = self.shared.started.lock() {
             *started = Some(Instant::now());
@@ -1267,7 +1280,7 @@ fn pi_clear_active_turn(shared: &PiShared, expected_turn: &str) -> bool {
     true
 }
 
-fn pi_take_active_turn(shared: &PiShared) -> Option<String> {
+fn pi_take_active_turn(shared: &PiShared) -> Option<(String, u64)> {
     let Ok(mut active) = shared.active_turn.lock() else {
         return None;
     };
@@ -1278,7 +1291,66 @@ fn pi_take_active_turn(shared: &PiShared) -> Option<String> {
             calls.calls.clear();
         }
     }
-    Some(turn)
+    let sequence = {
+        let mut sequence = shared.context_sequence.lock().ok()?;
+        *sequence += 1;
+        *sequence
+    };
+    Some((turn, sequence))
+}
+
+fn pi_finish_turn(events: &ScopedProviderEvents, session_id: &str, shared: &PiShared, stop_reason: &str, elapsed_ms: Option<u64>) {
+    let Some((turn, sequence)) = pi_take_active_turn(shared) else { return; };
+    let native = shared.native_id.lock().ok().and_then(|id| id.clone());
+    pi_drain_interactions(events, session_id, native.as_deref(), shared, Some(&turn));
+    let pending = shared.pending_error.lock().ok().and_then(|mut slot| slot.take());
+    if stop_reason != "cancelled" {
+        if let Some(error) = pending {
+            emit(events, "pi", session_id, native.as_deref(), Some(&turn), "chat.error", error);
+        }
+    }
+    let mut data = json!({"result":{"stopReason":stop_reason}});
+    if let Some(elapsed) = elapsed_ms { data["elapsedMs"] = json!(elapsed); }
+    emit(events, "pi", session_id, native.as_deref(), Some(&turn), "chat.turn.completed", data);
+    pi_refresh_context(events, session_id, shared, sequence);
+}
+
+fn pi_publish_context(events: &ScopedProviderEvents, session_id: &str, native: Option<&str>, sequence: &Mutex<u64>, expected: u64, usage: Value) {
+    let Ok(current) = sequence.lock() else { return; };
+    if *current == expected {
+        emit(events, "pi", session_id, native, None, "chat.context", json!({"usage":usage}));
+    }
+}
+
+fn pi_refresh_context(events: &ScopedProviderEvents, session_id: &str, shared: &PiShared, expected: u64) {
+    let requester = shared.requester.lock().ok().and_then(|slot| slot.clone());
+    let Some(requester) = requester else { return; };
+    let Ok(current) = shared.context_sequence.lock() else { return; };
+    if *current != expected { return; }
+    let callback_events = events.clone();
+    let callback_session = session_id.to_owned();
+    let callback_native = shared.native_id.lock().ok().and_then(|id| id.clone());
+    let sequence = Arc::clone(&shared.context_sequence);
+    let _ = requester.request_stats(Box::new(move |result| {
+        if let Ok(data) = result {
+            if let Some(usage) = pi_context_usage(&data) {
+                pi_publish_context(&callback_events, &callback_session, callback_native.as_deref(), &sequence, expected, usage);
+            }
+        }
+    }));
+}
+
+/// Compaction and new-session mutations invalidate outstanding reads and clear
+/// old pressure immediately, even if the following stats response is lost.
+fn pi_reset_context(events: &ScopedProviderEvents, session_id: &str, shared: &PiShared) {
+    let expected = {
+        let Ok(mut sequence) = shared.context_sequence.lock() else { return; };
+        *sequence += 1;
+        let native = shared.native_id.lock().ok().and_then(|id| id.clone());
+        emit(events, "pi", session_id, native.as_deref(), None, "chat.context", json!({"usage":{}}));
+        *sequence
+    };
+    pi_refresh_context(events, session_id, shared, expected);
 }
 
 /// Projects one Pi tool frame only while its captured turn still owns the
@@ -1573,66 +1645,9 @@ fn pi_event(
         }
         "agent_settled" => {
             let aborted = raw.get("aborted").and_then(Value::as_bool) == Some(true);
-            if let Some(settled_turn) = pi_take_active_turn(shared) {
-                pi_drain_interactions(
-                    events,
-                    session_id,
-                    native_id.as_deref(),
-                    shared,
-                    Some(&settled_turn),
-                );
-                let pending = shared
-                    .pending_error
-                    .lock()
-                    .ok()
-                    .and_then(|mut slot| slot.take());
-                if !aborted {
-                    if let Some(error) = pending {
-                        emit("chat.error", error);
-                    }
-                }
-                let mut data = json!({
-                    "result":{"stopReason":if aborted {"cancelled"} else {"end_turn"}}
-                });
-                if let Some(elapsed) = shared
-                    .started
-                    .lock()
-                    .ok()
-                    .and_then(|value| *value)
-                    .map(|started| started.elapsed().as_millis() as u64)
-                {
-                    data["elapsedMs"] = json!(elapsed);
-                }
-                emit("chat.turn.completed", data);
-                // Context pressure is read once per settled turn, never polled.
-                // The query is issued asynchronously so the stdout reader never
-                // blocks on a response it would have to deliver itself.
-                if let Some(requester) = shared
-                    .requester
-                    .lock()
-                    .ok()
-                    .and_then(|slot| slot.clone())
-                {
-                    let callback_events = events.clone();
-                    let callback_session = session_id.to_owned();
-                    let callback_native = native_id.clone();
-                    let _ = requester.request_async("get_session_stats", json!({}), move |result| {
-                        if let Ok(data) = result {
-                            if let Some(usage) = pi_context_usage(&data) {
-                                super::emit_bound(
-                                    &callback_events,
-                                    "pi",
-                                    &callback_session,
-                                    callback_native.as_deref(),
-                                    None,
-                                    "chat.context",
-                                    json!({"usage":usage}),
-                                );
-                            }
-                        }
-                    });
-                }
-            }
+            let elapsed = shared.started.lock().ok().and_then(|value| *value)
+                .map(|started| started.elapsed().as_millis() as u64);
+            pi_finish_turn(events, session_id, shared, if aborted { "cancelled" } else { "end_turn" }, elapsed);
         }
         "error" => {
             let message = raw
@@ -2092,6 +2107,22 @@ mod tests {
     use crate::provider_events::tap_channel;
     use tempfile::tempdir;
 
+    #[derive(Default)]
+    struct StatsReplies(Mutex<Vec<PiStatsCallback>>);
+
+    impl PiStatsRequester for StatsReplies {
+        fn request_stats(&self, callback: PiStatsCallback) -> Result<(), ProviderError> {
+            self.0.lock().unwrap().push(callback);
+            Ok(())
+        }
+    }
+
+    fn stats_reader(shared: &PiShared) -> Arc<StatsReplies> {
+        let reader = Arc::new(StatsReplies::default());
+        *shared.requester.lock().unwrap() = Some(reader.clone());
+        reader
+    }
+
     fn scoped() -> (
         ScopedProviderEvents,
         tokio::sync::broadcast::Receiver<super::super::ProviderEvent>,
@@ -2163,6 +2194,143 @@ mod tests {
         }
         assert!(receiver.try_recv().is_err());
         assert!(shared.pending_error.lock().unwrap().is_none());
+    }
+
+    #[test]
+    fn superseded_context_reads_cannot_publish_in_reverse_order() {
+        let (events, mut receiver) = scoped();
+        let shared = PiShared::default();
+        let reader = stats_reader(&shared);
+        for turn in ["turn-1", "turn-2"] {
+            *shared.active_turn.lock().unwrap() = Some(turn.into());
+            pi_event(&events, "pi", "session", &shared, json!({"type":"agent_settled"}));
+            assert_eq!(receiver.try_recv().unwrap().kind, "chat.turn.completed");
+        }
+        let mut replies = reader.0.lock().unwrap();
+        replies.pop().unwrap()(Ok(json!({"tokens":{"total":20}})));
+        replies.pop().unwrap()(Ok(json!({"tokens":{"total":10}})));
+        assert_eq!(receiver.try_recv().unwrap().data["usage"]["totalTokens"], 20);
+        assert!(receiver.try_recv().is_err());
+        // Starting another turn invalidates a read even before its replacement
+        // response exists; an older turn cannot paint over that running turn.
+        *shared.context_sequence.lock().unwrap() = 3;
+        pi_publish_context(&events, "session", None, &shared.context_sequence, 2, json!({"totalTokens":20}));
+        assert!(receiver.try_recv().is_err());
+    }
+
+    #[test]
+    fn cancel_fallback_and_native_settlement_share_one_refresh_generation() {
+        let (events, mut receiver) = scoped();
+        let shared = PiShared::default();
+        let reader = stats_reader(&shared);
+        *shared.active_turn.lock().unwrap() = Some("turn-1".into());
+        pi_finish_turn(&events, "session", &shared, "cancelled", Some(20));
+        pi_event(&events, "pi", "session", &shared, json!({"type":"agent_settled","aborted":true}));
+        assert_eq!(*shared.context_sequence.lock().unwrap(), 1);
+        assert_eq!(reader.0.lock().unwrap().len(), 1, "abort fallback refreshes once despite late settlement");
+        assert_eq!(receiver.try_recv().unwrap().data["result"]["stopReason"], "cancelled");
+        assert!(receiver.try_recv().is_err());
+        *shared.active_turn.lock().unwrap() = Some("turn-2".into());
+        pi_event(&events, "pi", "session", &shared, json!({"type":"agent_settled"}));
+        pi_finish_turn(&events, "session", &shared, "cancelled", None);
+        assert_eq!(*shared.context_sequence.lock().unwrap(), 2);
+        assert_eq!(reader.0.lock().unwrap().len(), 2, "native settlement wins over fallback without a duplicate read");
+        assert_eq!(receiver.try_recv().unwrap().data["result"]["stopReason"], "end_turn");
+        assert!(receiver.try_recv().is_err());
+    }
+
+    #[test]
+    fn context_mutations_clear_pressure_and_fence_pre_mutation_reads() {
+        let (events, mut receiver) = scoped();
+        let shared = PiShared::default();
+        let reader = stats_reader(&shared);
+        *shared.context_sequence.lock().unwrap() = 1;
+        for (index, native) in ["compacted-session", "new-session"].iter().enumerate() {
+            *shared.native_id.lock().unwrap() = Some((*native).into());
+            pi_reset_context(&events, "session", &shared);
+            let reset = receiver.try_recv().unwrap();
+            assert_eq!(reset.kind, "chat.context");
+            assert_eq!(reset.native_id.as_deref(), Some(*native));
+            assert_eq!(reset.data["usage"].as_object().unwrap().len(), 1);
+            chrono::DateTime::parse_from_rfc3339(reset.data["usage"]["updatedAt"].as_str().unwrap()).unwrap();
+            assert_eq!(reader.0.lock().unwrap().len(), index + 1, "each mutation requests fresh stats once");
+            pi_publish_context(&events, "session", None, &shared.context_sequence, 1, json!({"percent":90}));
+            assert!(receiver.try_recv().is_err());
+        }
+    }
+
+    #[test]
+    fn slash_mutations_and_abort_fallback_refresh_context_over_the_rpc_transport() {
+        let root = tempdir().unwrap();
+        let script = root.path().join("context-pi.cjs");
+        fs::write(&script, r#"
+for (const key of Object.keys(process.env)) if (key.toLowerCase() === 'path') delete process.env[key];
+let native = 'native-old', total = 90, stats = 0;
+const out = value => process.stdout.write(JSON.stringify(value) + '\n');
+require('node:readline').createInterface({input:process.stdin}).on('line', line => {
+  const cmd = JSON.parse(line);
+  let data = {};
+  switch (cmd.type) {
+    case 'compact': total = 10; data = {tokensBefore:90,estimatedTokensAfter:10}; break;
+    case 'new_session': native = 'native-new'; total = 0; break;
+    case 'get_state': data = {sessionId:native}; break;
+    case 'get_available_models': data = {models:[]}; break;
+    case 'get_available_thinking_levels': data = {levels:[]}; break;
+    case 'get_commands': data = {commands:[]}; break;
+    case 'prompt': total = 5; data = {disposition:'started'}; break;
+    case 'abort': break; // Acknowledgement only: exercise the runtime fallback.
+    case 'get_session_stats':
+      data = {tokens:{total,output:++stats},contextUsage:{tokens:total,contextWindow:100}}; break;
+    default: throw new Error('Unexpected fake command: ' + cmd.type);
+  }
+  out({id:cmd.id,type:'response',command:cmd.type,success:true,data});
+});
+"#).unwrap();
+        // Launch this exact synthetic script through Node, never the installed
+        // Pi CLI. No PATH mutation in the test process or model turn is needed.
+        let spec = CommandSpec::provider("node", &[script.to_str().unwrap()]).unwrap();
+        let (events, mut receiver) = scoped();
+        let shared = Arc::new(PiShared::default());
+        *shared.native_id.lock().unwrap() = Some("native-old".into());
+        let callback_events = events.clone();
+        let callback_shared = Arc::clone(&shared);
+        let on_message = Arc::new(move |raw| pi_event(&callback_events, "pi", "session", &callback_shared, raw));
+        let process = JsonLineProcess::spawn("fake-pi-context", &spec, Some(root.path().to_str().unwrap()), &[], EnvelopeStyle::Pi, on_message).unwrap();
+        *shared.requester.lock().unwrap() = Some(Arc::new(process.requester()));
+        let mut chat = PiChat { session_id: "session".into(), shared, events, process };
+        let mut read_snapshot = |total: u64, reads: u64| {
+            let deadline = Instant::now() + Duration::from_secs(5);
+            let mut observed = Vec::new();
+            loop {
+                while let Ok(event) = receiver.try_recv() {
+                    let matches = event.kind == "chat.context" && event.data["usage"]["totalTokens"] == total;
+                    if matches {
+                        assert_eq!(event.data["usage"]["outputTokens"], reads, "one stats read per completed action");
+                        chrono::DateTime::parse_from_rfc3339(event.data["usage"]["updatedAt"].as_str().unwrap()).unwrap();
+                        observed.push(event);
+                        return observed;
+                    }
+                    observed.push(event);
+                }
+                assert!(Instant::now() < deadline, "context refresh did not arrive");
+                std::thread::sleep(Duration::from_millis(5));
+            }
+        };
+        chat.send("/compact", "compact").unwrap();
+        read_snapshot(10, 1);
+        chat.send("/new", "new").unwrap();
+        let new_events = read_snapshot(0, 2);
+        let replacement = new_events.iter().position(|event| event.kind == "chat.session.replaced").unwrap();
+        let clear = new_events.iter().position(|event| event.kind == "chat.context").unwrap();
+        assert!(replacement < clear, "new identity must bind before its context is cleared");
+        assert_eq!(new_events[replacement].data["previousNativeId"], "native-old");
+        assert_eq!(new_events[replacement].native_id.as_deref(), Some("native-new"));
+        chat.send("cancel me", "cancel").unwrap();
+        chat.cancel("cancel").unwrap();
+        read_snapshot(5, 3);
+        let sequence = *chat.shared.context_sequence.lock().unwrap();
+        pi_event(&chat.events, "pi", "session", &chat.shared, json!({"type":"agent_settled","aborted":true}));
+        assert_eq!(*chat.shared.context_sequence.lock().unwrap(), sequence);
     }
 
     #[test]

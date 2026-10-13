@@ -893,6 +893,23 @@ impl GrokUsageReply {
     }
 
     fn record(&self, billing: bool, result: Result<Value, ProviderError>) {
+        if !billing {
+            if let (Ok(value), Ok(active)) = (&result, self.active_turn.lock()) {
+                if active.as_deref() == Some(self.turn_id.as_str()) {
+                    if let Some(usage) = grok_context_usage(value) {
+                        emit(
+                            &self.events,
+                            "grok",
+                            &self.session_id,
+                            Some(&self.native_id),
+                            Some(&self.turn_id),
+                            "chat.context",
+                            json!({"usage":usage}),
+                        );
+                    }
+                }
+            }
+        }
         if let Ok(mut results) = self.results.lock() {
             let slot = if billing {
                 &mut results.billing
@@ -2082,6 +2099,20 @@ fn emit_grok_message(
         }
         return;
     }
+    if kind == "response_completed" {
+        if let Some(usage) = grok_context_usage(update) {
+            emit(
+                events,
+                "grok",
+                session_id,
+                native_id.as_deref(),
+                turn_id.as_deref(),
+                "chat.context",
+                json!({"usage":usage}),
+            );
+        }
+        return;
+    }
     if kind == "turn_completed" && background_turn.is_some() {
         let completed = active_turn.lock().ok().is_some_and(|mut active| {
             if active.as_deref() == turn_id.as_deref() {
@@ -2202,6 +2233,37 @@ fn emit_grok_message(
             );
         }
     }
+}
+
+fn grok_context_usage(value: &Value) -> Option<Value> {
+    let source = value.get("usage").unwrap_or(value);
+    let number = |keys: &[&str]| keys.iter().find_map(|key| {
+        source.get(*key).and_then(Value::as_u64)
+            .or_else(|| value.get(*key).and_then(Value::as_u64))
+    });
+    let input = number(&["input_tokens", "inputTokens"]);
+    let output = number(&["output_tokens", "outputTokens"]);
+    let read = number(&["cache_read_input_tokens", "cacheReadTokens", "cachedInputTokens", "cachedReadTokens"]);
+    let write = number(&["cache_creation_input_tokens", "cacheWriteTokens", "cacheCreationTokens"]);
+    let total = number(&["total_tokens", "totalTokens", "tokens_used"])
+        .or_else(|| Some(input?.saturating_add(output?).saturating_add(read.unwrap_or(0)).saturating_add(write.unwrap_or(0))));
+    let used = number(&["used", "usedTokens", "tokens_used", "totalTokens"]).or(total);
+    let window = number(&["context_window_tokens", "contextWindow", "windowTokens", "size"]).filter(|v| *v > 0);
+    if input.is_none() && output.is_none() && total.is_none() && window.is_none() {
+        return None;
+    }
+    let mut usage = serde_json::Map::new();
+    if let Some(v) = input { usage.insert("inputTokens".into(), json!(v)); }
+    if let Some(v) = output { usage.insert("outputTokens".into(), json!(v)); }
+    if let Some(v) = read { usage.insert("cacheReadTokens".into(), json!(v)); }
+    if let Some(v) = write { usage.insert("cacheWriteTokens".into(), json!(v)); }
+    if let Some(v) = total { usage.insert("totalTokens".into(), json!(v)); }
+    if let Some(v) = used { usage.insert("usedTokens".into(), json!(v)); }
+    if let Some(v) = window {
+        usage.insert("windowTokens".into(), json!(v));
+        if let Some(used) = used { usage.insert("percent".into(), json!(((used as f64 / v as f64) * 100.0).clamp(0.0, 100.0))); }
+    }
+    Some(Value::Object(usage))
 }
 
 fn emit_grok_retry(
@@ -2950,7 +3012,6 @@ mod tests {
         );
     }
 
-    #[test]
     #[test]
     fn grok_plan_update_maps_acp_entries() {
         // Grok is ACP-shaped. A live Grok turn (qa/grok-plan-probe.mjs, recorded
@@ -4037,6 +4098,39 @@ mod tests {
     }
 
     #[test]
+    fn session_usage_rpc_shape_populates_context_snapshot() {
+        let (reply, mut receiver) = usage_reply_fixture();
+        let fixture: Value = serde_json::from_str(include_str!("../../tests/fixtures/grok-session-usage-context.json")).unwrap();
+        reply.record(false, Ok(fixture));
+        let event = receiver.try_recv().unwrap();
+        assert_eq!(event.kind, "chat.context");
+        assert_eq!(event.data["usage"]["inputTokens"], 900);
+        assert_eq!(event.data["usage"]["cacheReadTokens"], 140);
+        assert_eq!(event.data["usage"]["cacheWriteTokens"], 10);
+        assert_eq!(event.data["usage"]["windowTokens"], 200000);
+        reply.record(true, Ok(billing_fixture()));
+        assert_eq!(receiver.try_recv().unwrap().kind, "chat.item");
+    }
+
+    #[test]
+    fn recorded_response_completed_fixture_emits_context_snapshot() {
+        let fixture: Value = serde_json::from_str(include_str!("../../tests/fixtures/grok-response-completed-context.json")).unwrap();
+        let (sender, mut receiver) = crate::provider_events::tap_channel(8);
+        let events = ScopedProviderEvents::new(sender, "fixture-worker");
+        let native = Mutex::new(Some("session-1".to_owned()));
+        let active = Mutex::new(Some("turn-1".to_owned()));
+        let permissions = Mutex::new(HashMap::new());
+        let ui = Mutex::new(GrokUiState::default());
+        emit_grok_message(&events, "session-1", &native, &active, &permissions, &ui, &Mutex::new(None), fixture);
+        let event = std::iter::from_fn(|| receiver.try_recv().ok()).find(|event| event.kind == "chat.context").unwrap();
+        assert_eq!(event.data["usage"]["inputTokens"], 349);
+        assert_eq!(event.data["usage"]["outputTokens"], 140);
+        assert_eq!(event.data["usage"]["cacheReadTokens"], 16896);
+        assert_eq!(event.data["usage"]["totalTokens"], 17385);
+        assert_eq!(event.data["usage"]["usedTokens"], 17385);
+    }
+
+    #[test]
     fn grok_session_update_rejects_foreign_and_accepts_matching_or_missing_session_id() {
         let (sender, mut receiver) = crate::provider_events::tap_channel(4);
         let events = ScopedProviderEvents::new(sender, "test-worker");
@@ -4088,7 +4182,13 @@ mod tests {
                     session.clone()
                 }),
             );
-            assert!(receiver.try_recv().is_err());
+            if billing_first {
+                assert!(receiver.try_recv().is_err());
+            } else {
+                let context = receiver.try_recv().unwrap();
+                assert_eq!(context.kind, "chat.context");
+                assert_eq!(context.data["usage"]["totalTokens"], 123);
+            }
             assert_eq!(reply.active_turn.lock().unwrap().as_deref(), Some("usage"));
             reply.record(
                 !billing_first,
@@ -4098,6 +4198,11 @@ mod tests {
                     billing_fixture()
                 }),
             );
+            if billing_first {
+                let context = receiver.try_recv().unwrap();
+                assert_eq!(context.kind, "chat.context");
+                assert_eq!(context.data["usage"]["totalTokens"], 123);
+            }
             let card = receiver.try_recv().unwrap();
             assert_eq!(card.kind, "chat.item");
             assert_eq!(card.data["parts"][1]["data"]["rows"][0]["percent"], 60);
@@ -4115,6 +4220,9 @@ mod tests {
             false,
             Ok(json!({"usage":{"totalTokens":123,"modelCalls":1}})),
         );
+        let context = receiver.try_recv().unwrap();
+        assert_eq!(context.kind, "chat.context");
+        assert_eq!(context.data["usage"]["totalTokens"], 123);
         reply.timeout();
         let card = receiver.try_recv().unwrap();
         let parts = card.data["parts"].as_array().unwrap();

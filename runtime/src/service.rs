@@ -110,6 +110,10 @@ fn ensure_chat_session_open(db: &Database, providers: &Providers, session_id: &s
             session.native_id.as_deref(),
         )
         .map_err(anyhow::Error::from)?;
+    if let Err(error) = restore_pi_auto_retry(db, providers, session_id, &session.provider) {
+        let _ = providers.chat_stop(session_id);
+        return Err(error);
+    }
     let accepted =
         db.accept_chat_connection(session_id, opened.get("nativeId").and_then(Value::as_str));
     if !matches!(accepted, Ok(true)) {
@@ -122,6 +126,45 @@ fn ensure_chat_session_open(db: &Database, providers: &Providers, session_id: &s
     }
     let _ = crate::chat_projection::expire_pending_approvals(db, session_id);
     Ok(())
+}
+
+fn restore_pi_auto_retry(
+    db: &Database,
+    providers: &Providers,
+    session_id: &str,
+    provider: &str,
+) -> Result<()> {
+    if provider != "pi" {
+        return Ok(());
+    }
+    if let Some(enabled) = db.pi_auto_retry(session_id)? {
+        providers
+            .chat_set_option(session_id, "auto-retry", if enabled { "true" } else { "false" })
+            .map_err(anyhow::Error::from)?;
+    }
+    Ok(())
+}
+
+fn set_chat_option(
+    db: &Database,
+    providers: &Providers,
+    session_id: &str,
+    provider: &str,
+    option_id: &str,
+    value: &str,
+) -> Result<Value> {
+    let result = providers
+        .chat_set_option(session_id, option_id, value)
+        .map_err(anyhow::Error::from)?;
+    if provider == "pi" && option_id == "auto-retry" {
+        let enabled = match value {
+            "true" | "on" => true,
+            "false" | "off" => false,
+            _ => return Err(anyhow::anyhow!("chat_option_invalid")),
+        };
+        db.set_pi_auto_retry(session_id, enabled)?;
+    }
+    Ok(result)
 }
 
 /// Sends one user message to an open Chat. Shared by `chat.send` (after the
@@ -333,6 +376,33 @@ fn project_provider_event(db: &Database, providers: &Providers, event: &Provider
         if injected_failure {
             let _ = db.mark_chat_degraded(Some(&event.session_id), "QA: Chat update could not be persisted; transcript may be incomplete");
             return false;
+        }
+        if event.kind == "chat.session.replaced" {
+            let replacement = if event.provider != "pi" {
+                Err(anyhow::anyhow!("native_identity_replacement_unsupported"))
+            } else {
+                let previous = match event.data.get("previousNativeId") {
+                    Some(Value::Null) => Ok(None),
+                    Some(Value::String(value)) => Ok(Some(value.as_str())),
+                    _ => Err(anyhow::anyhow!("invalid_native_identity_replacement")),
+                };
+                previous.and_then(|previous| {
+                    let new_native_id = event
+                        .native_id
+                        .as_deref()
+                        .ok_or_else(|| anyhow::anyhow!("invalid_native_id"))?;
+                    db.replace_pi_chat_native_id(
+                        &event.session_id,
+                        previous,
+                        new_native_id,
+                    )
+                })
+            };
+            if let Err(error) = replacement {
+                eprintln!("chat native identity replacement failed for {}: {error}", event.session_id);
+                let _ = crate::chat_queue::pause(db, &event.session_id, "failed");
+                return false;
+            }
         }
         if let Err(error) = db.bind_session(&event.session_id, None, event.native_id.as_deref()) {
             eprintln!("chat bind failed for {}: {error}", event.session_id);
@@ -1224,9 +1294,9 @@ impl RuntimeService {
                     if !self.providers.chat_is_open(&p.session_id) {
                         return Err(anyhow::anyhow!("chat_not_open"));
                     }
-                    self.providers
-                        .chat_set_option(&p.session_id, &p.option_id, &p.value)
-                        .map_err(anyhow::Error::from)
+                    let session = self.db.session_by_id(&p.session_id)?
+                        .ok_or_else(|| anyhow::anyhow!("session_not_found"))?;
+                    set_chat_option(&self.db, &self.providers, &p.session_id, &session.provider, &p.option_id, &p.value)
                 }
                 _ => Err(anyhow::anyhow!("unknown_method")),
             }
@@ -1654,6 +1724,11 @@ impl RuntimeService {
                         return Err(error.into());
                     }
                 };
+            if let Err(error) = restore_pi_auto_retry(db, providers, session_id, &p.provider) {
+                let _ = providers.chat_stop(session_id);
+                db.set_session_status(session_id, "error", None)?;
+                return Err(error);
+            }
             if let Err(error) = db.bind_session(
                 session_id,
                 None,
@@ -2516,6 +2591,56 @@ mod plugin_tests;
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::providers::{ChatSession, ProviderAdapter, ProviderCapability, ProviderError, TerminalCommand};
+
+    struct PiOptionAdapter {
+        values: Arc<Mutex<Vec<String>>>,
+        fail_set: Arc<AtomicBool>,
+    }
+
+    impl ProviderAdapter for PiOptionAdapter {
+        fn id(&self) -> &'static str { "pi" }
+        fn capability(&self) -> ProviderCapability {
+            ProviderCapability {
+                source: "builtin", plugin_id: None, icon: None, sign_in: None, homepage: None,
+                id: "pi".into(), name: "Pi fixture".into(), installed: true, version: None,
+                terminal: false, chat: true, history: false, resume: false,
+                terminal_resume_capture: "none", reason: None, auth: "unknown".into(),
+            }
+        }
+        fn terminal_command(&self, _: Option<&str>, _: Option<&str>) -> Result<TerminalCommand, ProviderError> {
+            Err(ProviderError::new("unsupported", "Pi fixture has no terminal"))
+        }
+        fn history_list(&self, _: Option<&str>, _: u32, _: Option<&str>) -> Result<Value, ProviderError> { Ok(json!({})) }
+        fn history_read(&self, _: &str) -> Result<Value, ProviderError> { Ok(json!([])) }
+        fn open_chat(&self, _: &str, _: &str, _: Option<&str>) -> Result<Box<dyn ChatSession>, ProviderError> {
+            Ok(Box::new(PiOptionChat { values: Arc::clone(&self.values), fail_set: Arc::clone(&self.fail_set) }))
+        }
+    }
+
+    struct PiOptionChat {
+        values: Arc<Mutex<Vec<String>>>,
+        fail_set: Arc<AtomicBool>,
+    }
+
+    impl ChatSession for PiOptionChat {
+        fn native_id(&self) -> Option<String> { Some("pi-native".into()) }
+        fn send(&mut self, _: &str, _: &str) -> Result<Value, ProviderError> { Ok(json!({})) }
+        fn cancel(&mut self, _: &str) -> Result<(), ProviderError> { Ok(()) }
+        fn approve(&mut self, _: &str, _: &str, _: &str, _: &str) -> Result<(), ProviderError> { Ok(()) }
+        fn stop(&mut self) -> Result<(), ProviderError> { Ok(()) }
+        fn set_option(&mut self, option_id: &str, value: &str) -> Result<Value, ProviderError> {
+            if self.fail_set.load(Ordering::SeqCst) {
+                return Err(ProviderError::new("chat_option_failed", "fixture rejected option"));
+            }
+            self.values.lock().unwrap().push(format!("{option_id}={value}"));
+            Ok(json!({"value":value}))
+        }
+    }
+
+    fn pi_test_providers(values: Arc<Mutex<Vec<String>>>, fail_set: Arc<AtomicBool>) -> Providers {
+        Providers::for_test(vec![Arc::new(PiOptionAdapter { values, fail_set })])
+    }
 
     fn test_service(root: &std::path::Path, db: Arc<Database>) -> RuntimeService {
         RuntimeService::new(
@@ -2527,6 +2652,134 @@ mod tests {
             },
             db,
         )
+    }
+
+    fn pi_session(db: &Database, cwd: &std::path::Path, operation_id: &str) -> crate::domain::Session {
+        crate::session_configs::initialize(db).unwrap();
+        let session = db.create_session(CreateSession {
+            project_id: None,
+            title: None,
+            provider: "pi",
+            mode: "chat",
+            native_id: None,
+            operation_id,
+        }).unwrap();
+        db.bind_session(&session.id, Some(cwd.to_str().unwrap()), None).unwrap();
+        db.set_session_status(&session.id, "idle", None).unwrap();
+        session
+    }
+
+    #[test]
+    fn pi_auto_retry_setting_is_restored_after_provider_reopen_and_database_restart() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("runtime.sqlite");
+        let db = Arc::new(Database::open(&path).unwrap());
+        let session = pi_session(&db, root.path(), "pi-auto-retry-reopen");
+        let values = Arc::new(Mutex::new(Vec::new()));
+        let providers = pi_test_providers(Arc::clone(&values), Arc::new(AtomicBool::new(false)));
+
+        connect_chat_session(&db, &providers, &session.id).unwrap();
+        let result = set_chat_option(&db, &providers, &session.id, "pi", "auto-retry", "false").unwrap();
+        assert_eq!(result["value"], "false");
+        assert_eq!(db.pi_auto_retry(&session.id).unwrap(), Some(false));
+        providers.chat_stop(&session.id).unwrap();
+        connect_chat_session(&db, &providers, &session.id).unwrap();
+        assert_eq!(values.lock().unwrap().as_slice(), ["auto-retry=false", "auto-retry=false"]);
+        providers.chat_stop(&session.id).unwrap();
+        drop(db);
+
+        let reopened = Arc::new(Database::open(&path).unwrap());
+        let restarted_providers = pi_test_providers(Arc::clone(&values), Arc::new(AtomicBool::new(false)));
+        connect_chat_session(&reopened, &restarted_providers, &session.id).unwrap();
+        assert_eq!(reopened.pi_auto_retry(&session.id).unwrap(), Some(false));
+        assert_eq!(
+            values.lock().unwrap().as_slice(),
+            ["auto-retry=false", "auto-retry=false", "auto-retry=false"],
+            "the persisted choice is reapplied to a fresh provider worker",
+        );
+    }
+
+    #[test]
+    fn pi_auto_retry_is_saved_only_after_provider_success_and_restore_failure_stops_open() {
+        let root = tempfile::tempdir().unwrap();
+        let db = Arc::new(Database::open(&root.path().join("runtime.sqlite")).unwrap());
+        let session = pi_session(&db, root.path(), "pi-auto-retry-failure");
+        let values = Arc::new(Mutex::new(Vec::new()));
+        let fail_set = Arc::new(AtomicBool::new(false));
+        let providers = pi_test_providers(Arc::clone(&values), Arc::clone(&fail_set));
+        connect_chat_session(&db, &providers, &session.id).unwrap();
+
+        fail_set.store(true, Ordering::SeqCst);
+        assert!(set_chat_option(&db, &providers, &session.id, "pi", "auto-retry", "false").is_err());
+        assert_eq!(db.pi_auto_retry(&session.id).unwrap(), None);
+        providers.chat_stop(&session.id).unwrap();
+
+        db.set_pi_auto_retry(&session.id, false).unwrap();
+        assert!(ensure_chat_session_open(&db, &providers, &session.id).is_err());
+        assert!(!providers.chat_is_open(&session.id), "failed restore must stop the newly opened worker");
+    }
+
+    #[test]
+    fn pi_new_replacement_allows_following_context_and_fences_stale_or_foreign_identity() {
+        let root = tempfile::tempdir().unwrap();
+        let db = Database::open(&root.path().join("runtime.sqlite")).unwrap();
+        let session = db.create_session(CreateSession {
+            project_id: None,
+            title: None,
+            provider: "pi",
+            mode: "chat",
+            native_id: Some("pi-before-new"),
+            operation_id: "pi-new-projection",
+        }).unwrap();
+        db.create_session(CreateSession {
+            project_id: None,
+            title: None,
+            provider: "pi",
+            mode: "chat",
+            native_id: Some("pi-owned-by-other"),
+            operation_id: "pi-new-conflict-owner",
+        }).unwrap();
+        let providers = Providers::for_test(vec![]);
+        providers.preview_test_worker(&session.id, Some("worker-current"));
+        let replacement = ProviderEvent {
+            provider: "pi".into(),
+            session_id: session.id.clone(),
+            native_id: Some("pi-after-new".into()),
+            turn_id: None,
+            kind: "chat.session.replaced".into(),
+            data: json!({"previousNativeId":"pi-before-new"}),
+            worker_token: Some("worker-current".into()),
+        };
+        assert!(project_provider_event(&db, &providers, &replacement));
+        assert_eq!(db.session_by_id(&session.id).unwrap().unwrap().native_id.as_deref(), Some("pi-after-new"));
+
+        let context = ProviderEvent {
+            provider: "pi".into(),
+            session_id: session.id.clone(),
+            native_id: Some("pi-after-new".into()),
+            turn_id: None,
+            kind: "chat.context".into(),
+            data: json!({"usage":{"usedTokens":321,"windowTokens":1000,"percent":32.1}}),
+            worker_token: Some("worker-current".into()),
+        };
+        assert!(project_provider_event(&db, &providers, &context));
+        assert_eq!(db.chat_context(&session.id).unwrap().unwrap()["usedTokens"], 321);
+
+        let stale = ProviderEvent {
+            worker_token: Some("worker-old".into()),
+            native_id: Some("pi-stale".into()),
+            data: json!({"previousNativeId":"pi-after-new"}),
+            ..replacement.clone()
+        };
+        assert!(!project_provider_event(&db, &providers, &stale));
+        let conflict = ProviderEvent {
+            native_id: Some("pi-owned-by-other".into()),
+            data: json!({"previousNativeId":"pi-after-new"}),
+            ..replacement
+        };
+        assert!(!project_provider_event(&db, &providers, &conflict));
+        assert_eq!(db.session_by_id(&session.id).unwrap().unwrap().native_id.as_deref(), Some("pi-after-new"));
+        assert_eq!(db.chat_context(&session.id).unwrap().unwrap()["usedTokens"], 321);
     }
 
     #[test]

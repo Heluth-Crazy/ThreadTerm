@@ -50,6 +50,7 @@ impl Database {
              CREATE INDEX IF NOT EXISTS subagent_items_rev ON subagent_items(session_id, subagent_key, rev);
              CREATE TABLE IF NOT EXISTS chat_drafts (session_id TEXT PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE, revision INTEGER NOT NULL, text TEXT NOT NULL);
              CREATE TABLE IF NOT EXISTS chat_context (session_id TEXT PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE, data TEXT NOT NULL, updated_at TEXT NOT NULL);
+             CREATE TABLE IF NOT EXISTS pi_chat_options (session_id TEXT PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE, auto_retry INTEGER NOT NULL CHECK(auto_retry IN (0,1)));
              CREATE TABLE IF NOT EXISTS session_organization (session_id TEXT PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE, data TEXT NOT NULL);
              CREATE TABLE IF NOT EXISTS session_activity (session_id TEXT PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE, state TEXT NOT NULL, revision INTEGER NOT NULL, turn_id TEXT, reason TEXT);
              CREATE TABLE IF NOT EXISTS inbox (id TEXT PRIMARY KEY, session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE, turn_id TEXT, kind TEXT NOT NULL, data TEXT NOT NULL, resolved INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL);
@@ -500,16 +501,51 @@ impl Database {
             .connection
             .lock()
             .map_err(|_| anyhow!("database lock poisoned"))?;
-        let value: Option<String> = conn
+        let value: Option<(String, String)> = conn
             .query_row(
-                "SELECT data FROM chat_context WHERE session_id=?",
+                "SELECT data,updated_at FROM chat_context WHERE session_id=?",
                 [session_id],
-                |r| r.get(0),
+                |r| Ok((r.get(0)?, r.get(1)?)),
             )
             .optional()?;
         value
-            .map(|text| serde_json::from_str(&text).map_err(Into::into))
+            .map(|(text, updated_at)| {
+                let mut snapshot: Value = serde_json::from_str(&text)?;
+                if snapshot
+                    .get("updatedAt")
+                    .and_then(Value::as_str)
+                    .is_none_or(|value| chrono::DateTime::parse_from_rfc3339(value).is_err())
+                {
+                    snapshot["updatedAt"] = json!(updated_at);
+                }
+                Ok(snapshot)
+            })
             .transpose()
+    }
+    pub fn pi_auto_retry(&self, session_id: &str) -> Result<Option<bool>> {
+        let conn = self
+            .connection
+            .lock()
+            .map_err(|_| anyhow!("database lock poisoned"))?;
+        conn.query_row(
+            "SELECT auto_retry FROM pi_chat_options WHERE session_id=?",
+            [session_id],
+            |row| row.get::<_, bool>(0),
+        )
+        .optional()
+        .map_err(Into::into)
+    }
+    pub fn set_pi_auto_retry(&self, session_id: &str, enabled: bool) -> Result<()> {
+        self.transaction(|tx| {
+            let changed = tx.execute(
+                "INSERT INTO pi_chat_options(session_id,auto_retry) SELECT ?,? WHERE EXISTS (SELECT 1 FROM sessions WHERE id=? AND provider='pi') ON CONFLICT(session_id) DO UPDATE SET auto_retry=excluded.auto_retry",
+                params![session_id, enabled, session_id],
+            )?;
+            if changed != 1 {
+                return Err(anyhow!("pi_chat_session_not_found"));
+            }
+            Ok(())
+        })
     }
     pub fn chat_snapshot(&self, session_id: &str) -> Result<(Vec<ChatItem>, i64)> {
         self.transaction(|tx| {
@@ -679,6 +715,57 @@ impl Database {
             // Most worker events carry the identity already bound at connection.
             // Preserve conflict checks without dirtying a SQLite page each time.
             tx.execute("UPDATE sessions SET worktree_path=COALESCE(?,worktree_path),native_id=COALESCE(?,native_id) WHERE id=? AND ((? IS NOT NULL AND worktree_path IS NOT ?) OR (? IS NOT NULL AND native_id IS NOT ?))",params![cwd,native_id,id,cwd,cwd,native_id,native_id])?;
+            Ok(())
+        })
+    }
+    /// Replaces a Pi Chat session's native identity only for an explicit,
+    /// worker-scoped `/new` event. Generic provider events must keep using
+    /// `bind_session`, which continues to reject identity changes.
+    pub fn replace_pi_chat_native_id(
+        &self,
+        id: &str,
+        expected_prior: Option<&str>,
+        new_native_id: &str,
+    ) -> Result<()> {
+        if new_native_id.trim().is_empty() {
+            return Err(anyhow!("invalid_native_id"));
+        }
+        self.transaction(|tx| {
+            let (provider, mode, prior): (String, String, Option<String>) = tx.query_row(
+                "SELECT provider,mode,native_id FROM sessions WHERE id=?",
+                [id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )?;
+            if provider != "pi" || mode != "chat" {
+                return Err(anyhow!("native_identity_replacement_unsupported"));
+            }
+            if prior.as_deref() != expected_prior {
+                return Err(anyhow!("native_identity_conflict"));
+            }
+            if prior.as_deref() == Some(new_native_id) {
+                return Ok(());
+            }
+            let owner: Option<String> = tx
+                .query_row(
+                    "SELECT id FROM sessions WHERE provider='pi' AND native_id=? AND id<>? LIMIT 1",
+                    params![new_native_id, id],
+                    |row| row.get(0),
+                )
+                .optional()?;
+            if let Some(owner) = owner {
+                return Err(anyhow!("native_session_exists:{owner}"));
+            }
+            tx.execute(
+                "UPDATE sessions SET native_id=?,updated_at=? WHERE id=?",
+                params![new_native_id, now(), id],
+            )?;
+            // session_launch_configs contains launch parameters, not native
+            // identity. The sessions row remains the single durable owner.
+            emit(
+                tx,
+                "state.changed",
+                json!({"sessionId":id,"kind":"session.native_replaced"}),
+            )?;
             Ok(())
         })
     }
@@ -3311,5 +3398,91 @@ mod tests {
         // A table scan would read every Chat's items to show one; the index also supplies the order.
         assert!(plan.iter().any(|step| step.contains("USING INDEX chat_items_session")), "{plan:?}");
         assert!(!plan.iter().any(|step| step.contains("TEMP B-TREE")), "{plan:?}");
+    }
+
+    #[test]
+    fn pi_auto_retry_selection_survives_database_reopen_and_cascades_on_delete() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("pi-options.sqlite");
+        let session_id;
+        {
+            let db = Database::open(&path).unwrap();
+            let session = db.create_session(CreateSession {
+                project_id: None,
+                title: None,
+                provider: "pi",
+                mode: "chat",
+                native_id: None,
+                operation_id: "pi-options-session",
+            }).unwrap();
+            session_id = session.id;
+            assert_eq!(db.pi_auto_retry(&session_id).unwrap(), None);
+            db.set_pi_auto_retry(&session_id, false).unwrap();
+            assert_eq!(db.pi_auto_retry(&session_id).unwrap(), Some(false));
+        }
+        let db = Database::open(&path).unwrap();
+        assert_eq!(db.pi_auto_retry(&session_id).unwrap(), Some(false));
+        db.transaction(|tx| {
+            tx.execute("DELETE FROM sessions WHERE id=?", [&session_id])?;
+            Ok(())
+        }).unwrap();
+        assert_eq!(db.pi_auto_retry(&session_id).unwrap(), None);
+    }
+
+    #[test]
+    fn chat_context_reads_timestamp_from_column_for_legacy_or_invalid_payloads() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("context-timestamp.sqlite");
+        let db = Database::open(&path).unwrap();
+        let session = db.create_session(CreateSession {
+            project_id: None,
+            title: None,
+            provider: "claude",
+            mode: "chat",
+            native_id: None,
+            operation_id: "context-timestamp-session",
+        }).unwrap();
+        let timestamp = "2026-10-13T15:30:00Z";
+        db.transaction(|tx| {
+            tx.execute("INSERT INTO chat_context(session_id,data,updated_at) VALUES (?,?,?)", params![session.id, json!({"usedTokens":5}).to_string(), timestamp])?;
+            Ok(())
+        }).unwrap();
+        assert_eq!(db.chat_context(&session.id).unwrap().unwrap()["updatedAt"], timestamp);
+        db.transaction(|tx| {
+            tx.execute("UPDATE chat_context SET data=? WHERE session_id=?", params![json!({"updatedAt":42}).to_string(), session.id])?;
+            Ok(())
+        }).unwrap();
+        assert_eq!(db.chat_context(&session.id).unwrap().unwrap()["updatedAt"], timestamp);
+        drop(db);
+        let reopened = Database::open(&path).unwrap();
+        assert_eq!(reopened.chat_context(&session.id).unwrap().unwrap()["updatedAt"], timestamp);
+    }
+
+    #[test]
+    fn explicit_pi_chat_native_replacement_checks_prior_and_owner_without_weakening_bind() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Database::open(&dir.path().join("pi-native-replacement.sqlite")).unwrap();
+        let session = db.create_session(CreateSession {
+            project_id: None,
+            title: None,
+            provider: "pi",
+            mode: "chat",
+            native_id: Some("pi-old"),
+            operation_id: "pi-native-owner",
+        }).unwrap();
+        let owner = db.create_session(CreateSession {
+            project_id: None,
+            title: None,
+            provider: "pi",
+            mode: "chat",
+            native_id: Some("pi-taken"),
+            operation_id: "pi-native-other-owner",
+        }).unwrap();
+        db.replace_pi_chat_native_id(&session.id, Some("pi-old"), "pi-new").unwrap();
+        assert_eq!(db.session_by_id(&session.id).unwrap().unwrap().native_id.as_deref(), Some("pi-new"));
+        assert!(db.replace_pi_chat_native_id(&session.id, Some("pi-old"), "pi-stale").is_err());
+        assert!(db.replace_pi_chat_native_id(&session.id, Some("pi-new"), "pi-taken").unwrap_err().to_string().contains(&owner.id));
+        assert!(db.bind_session(&session.id, None, Some("pi-generic-change")).is_err());
+        assert_eq!(db.session_by_id(&session.id).unwrap().unwrap().native_id.as_deref(), Some("pi-new"));
     }
 }
