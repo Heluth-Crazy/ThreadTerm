@@ -51,6 +51,7 @@ window.threadterm = {
   if (method === 'chat.draft.read') return {text:'',revision:1};
   if (method === 'chat.draft.save') return {text:params.text ?? '',revision:(params.expectedRevision ?? 0) + 1};
   if (method === 'chat.queue.read') return {sessionId:params.sessionId,items:[],revision:0,paused:false};
+  if (method === 'chat.feedback.read') return {notes:[]};
   if (method === 'session.claim' || method === 'session.renew') return {leaseEpoch:1};
   if (method === 'session.release') return null;
   if (method === 'chat.repair') { fixture.repair=false; return {sessionId:params.sessionId,mode:'rebuild',added:1,updated:0,removed:0,expired:0,total:1,revision:2}; }

@@ -65,6 +65,7 @@ window.threadterm={onPageContextMenu:()=>()=>{},platform:'win32',windowsPty:{bac
   // ChatView mounts ChatNotes, which reads feedback on mount; return the real
   // empty state so the unmocked read cannot render an error banner.
   if(method==='chat.feedback.read')return{notes:[]};
+  if(method==='preview.attach')return{attachmentId:'qa-preview-attachment',associations:[]};
   throw Error('Unexpected QA request '+method);
  }};
 window.qaEmitUpdated=()=>listeners.forEach(listener=>listener({event:'chat.item',seq:2,epoch:'qa',data:{sessionId:session.id,item:{id:'answer',role:'assistant',createdAt:'now',parts:[{type:'text',text:answerText+'\\n\\n[updated](updated.md)'},toolPart]}}}));
