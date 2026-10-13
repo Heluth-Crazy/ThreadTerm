@@ -167,7 +167,32 @@ pub fn record(
     kind: &str,
     data: &Value,
 ) -> Result<()> {
+    db.transaction(|tx| record_tx(tx, session_id, turn_id, kind, data))
+}
+
+/// A successful answer and its non-actionable transcript receipt share one
+/// crash boundary. No completed operation can leave a pending approval behind.
+pub(crate) fn record_answer_receipt(
+    db: &Database,
+    session_id: &str,
+    turn_id: &str,
+    kind: &str,
+    data: &Value,
+    operation_id: &str,
+) -> Result<()> {
     db.transaction(|tx| {
+        record_tx(tx, session_id, Some(turn_id), kind, data)?;
+        crate::db::complete(tx, operation_id, "chat.answer", &Value::Null)
+    })
+}
+
+fn record_tx(
+    tx: &rusqlite::Transaction<'_>,
+    session_id: &str,
+    turn_id: Option<&str>,
+    kind: &str,
+    data: &Value,
+) -> Result<()> {
   let wall_now=Utc::now();
   let latest:Option<String>=tx.query_row("SELECT MAX(created_at) FROM chat_items WHERE session_id=?",[session_id],|row|row.get(0))?;
   let timestamp=latest.as_deref().and_then(|value|chrono::DateTime::parse_from_rfc3339(value).ok()).map(|value|value.with_timezone(&Utc)+chrono::Duration::nanoseconds(1)).filter(|value|value>&wall_now).unwrap_or(wall_now);
@@ -259,11 +284,11 @@ pub fn record(
      let previous_status=part.get("status").and_then(Value::as_str);
      // A successful local response can race a native turn-end expiry in the
      // ingress queue. Retain its read-only receipt without reviving activity.
-     let submitted_answer=matches!(status,"answered"|"dismissed")&&data.get("outcome").and_then(Value::as_str)==Some("submitted");
+     let submitted_answer=matches!(status,"answered"|"dismissed")&&matches!(data.get("outcome").and_then(Value::as_str),Some("submitted"|"partial"));
      if previous_status==Some("expired") && !expired && !submitted_answer {continue;}
      resolved_pending_approval |= matches!(previous_status,Some("pending"|"submitting"));
      part["status"]=json!(status);
-     for key in ["planOutcome","feedback"] {if let Some(value)=data.get(key){part["data"][key]=value.clone();}}
+     for key in ["planOutcome","feedback","outcome","message","recovery"] {if let Some(value)=data.get(key){part["data"][key]=value.clone();}}
      if let Some(summary)=data.get("answerSummary") { let summary=crate::chat_questions::mask_answer_summary(&part["data"],summary); part["data"]["answerSummary"]=summary; }
      if expired {
       if let (Some(target),Some(outcome))=(part.pointer_mut("/data").and_then(Value::as_object_mut),data.get("outcome")) {target.insert("outcome".into(),outcome.clone());}
@@ -324,7 +349,7 @@ pub fn record(
    tx.execute("INSERT INTO chat_items(id,session_id,turn_id,kind,data,created_at) VALUES (?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET data=excluded.data,turn_id=excluded.turn_id",params![id,session_id,turn,"message",payload,item.created_at])?;
    tx.execute("INSERT INTO outbox(event,data,created_at) VALUES ('chat.item',?,?)",params![serde_json::to_string(&json!({"sessionId":session_id,"item":item}))?,now])?;
   }
-  let status=match kind {"chat.turn.started"=>Some("running"),"chat.turn.completed"=>Some("idle"),"chat.approval" if data.pointer("/part/data/runtimeOwned").and_then(Value::as_bool)==Some(true) && data.pointer("/part/data/waitingForPrompt").and_then(Value::as_bool)==Some(true)=>Some("idle"),"chat.approval"=>Some("waiting"),"chat.approval.resolved" if data.get("preserveSessionState").and_then(Value::as_bool)==Some(true)=>None,"chat.approval.resolved" if data.get("returnToIdle").and_then(Value::as_bool)==Some(true) && !has_pending_approval(tx,session_id)?=>Some("idle"),"chat.approval.resolved" if !resolved_pending_approval || data.get("status").and_then(Value::as_str)==Some("expired")=>None,"chat.approval.resolved"=>Some(if has_pending_approval(tx,session_id)? {"waiting"}else{"running"}),"chat.error"=>Some("error"),_=>None};
+  let status=match kind {"chat.turn.started"=>Some("running"),"chat.turn.completed"=>Some(if has_pending_approval(tx,session_id)? {"waiting"}else{"idle"}),"chat.approval" if data.pointer("/part/data/runtimeOwned").and_then(Value::as_bool)==Some(true) && data.pointer("/part/data/waitingForPrompt").and_then(Value::as_bool)==Some(true)=>Some("idle"),"chat.approval"=>Some("waiting"),"chat.approval.resolved" if data.get("preserveSessionState").and_then(Value::as_bool)==Some(true)=>None,"chat.approval.resolved" if data.get("returnToIdle").and_then(Value::as_bool)==Some(true) && !has_pending_approval(tx,session_id)?=>Some("idle"),"chat.approval.resolved" if !resolved_pending_approval || data.get("status").and_then(Value::as_str)==Some("expired")=>None,"chat.approval.resolved"=>Some(if has_pending_approval(tx,session_id)? {"waiting"}else{"running"}),"chat.error"=>Some("error"),_=>None};
   if let Some(status)=status {
    // Provider readers can deliver a final completion/error after an explicit
    // stop or runtime recovery has already made the session terminal. Keep
@@ -349,7 +374,6 @@ pub fn record(
   }
   if status.is_some()||usage.is_some() {tx.execute("INSERT INTO outbox(event,data,created_at) VALUES ('state.changed',?,?)",params![serde_json::to_string(&json!({"sessionId":session_id,"kind":kind}))?,now])?;}
   Ok(())
- })
 }
 
 fn terminal_subagent_status(status: &str) -> bool {
@@ -628,6 +652,7 @@ fn project_activity(
                 None => Some((if data.get("returnToIdle").and_then(Value::as_bool) == Some(true) { "awaiting_input" } else { "running" }, turn_id, None)),
             }
         }
+        "chat.turn.completed" if live_turn && has_pending_approval(tx, session_id)? => None,
         "chat.turn.completed" if live_turn && completion_is_actionable(data) => {
             Some(("awaiting_input", turn_id, None))
         }
@@ -843,6 +868,11 @@ fn expire_pending_parts_matching(
         };
         let mut changed = false;
         for part in &mut item.parts {
+            // A synthetic plan belongs to the completed turn's review, not to
+            // a native permission request that expires at that turn boundary.
+            if turn_id.is_some() && part.pointer("/data/runtimeOwned").and_then(Value::as_bool) == Some(true) {
+                continue;
+            }
             if part.get("type").and_then(Value::as_str) == Some("approval")
                 && part.get("status").and_then(Value::as_str) == Some("pending")
             {

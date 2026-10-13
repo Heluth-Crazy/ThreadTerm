@@ -717,6 +717,29 @@ fn failed_and_uncertain_sends_pause_without_retrying() {
 }
 
 #[test]
+fn completed_plan_installs_approval_before_queue_dispatch_and_keeps_work_queued() {
+    let fixture = Fixture::new(false);
+    fixture.db.record_provider_event(&fixture.session_id, Some("plan-turn"), "message.user", &json!({"text":"Make a plan"})).unwrap();
+    fixture.add("Implement only after review", "queued-after-plan");
+    // Match the adapter's FIFO: synthetic approval first, completion second.
+    // A completion must neither expire that plan nor clear its pending gate.
+    fixture.db.record_provider_event(&fixture.session_id, Some("plan-turn"), "chat.approval", &json!({
+        "approvalId":"plan:plan-turn","part":{"data":{"interaction":"plan","runtimeOwned":true,"plan":"# Plan"}}
+    })).unwrap();
+    fixture.db.record_provider_event(&fixture.session_id, Some("plan-turn"), "chat.turn.completed", &json!({"status":"completed"})).unwrap();
+    fixture.queues.try_dispatch(&fixture.db, &fixture.providers, &fixture.session_id).unwrap();
+    assert!(fixture.sent.lock().unwrap().is_empty());
+    let queue = read(&fixture.db, &fixture.session_id).unwrap();
+    assert_eq!(queue["items"][0]["state"], "queued");
+    let session = fixture.db.session_by_id(&fixture.session_id).unwrap().unwrap();
+    assert_eq!(session.status, "waiting");
+    assert_eq!(session.activity.unwrap().state, "awaiting_approval");
+    let card = fixture.db.chat_items(&fixture.session_id).unwrap().into_iter().flat_map(|item|item.parts)
+        .find(|part|part["approvalId"]=="plan:plan-turn").unwrap();
+    assert_eq!(card["status"], "pending");
+}
+
+#[test]
 fn initialize_pauses_nonempty_queues_after_restart_and_pause_is_durable() {
     let fixture = Fixture::new(false);
     fixture.add("keep me", "add-keep");

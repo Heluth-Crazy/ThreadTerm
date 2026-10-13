@@ -252,6 +252,9 @@ export interface ChatApprovalData {
  waitingForPrompt?:boolean;
  planOutcome?:'approved'|'changes_requested'|'abandoned';
  feedback?:string;
+ outcome?:'submitted'|'partial';
+ recovery?:'reconnect';
+ message?:string;
  form?:ChatInteractionForm;
  answerable?:boolean;
  answerSummary?:Record<string,string>;

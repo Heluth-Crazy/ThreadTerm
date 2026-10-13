@@ -16,6 +16,8 @@ mod kimi_plan_usage;
 pub(crate) mod network;
 mod opencode;
 mod pi;
+#[cfg(test)]
+mod retirement_tests;
 
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -498,6 +500,16 @@ pub(crate) trait ChatSession: Send {
         operation_id: &str,
     ) -> Result<(), ProviderError>;
     fn stop(&mut self) -> Result<(), ProviderError>;
+    /// Held transcript items must commit before the worker token is retired.
+    /// Return a snapshot so a failed database write can be retried safely.
+    fn retirement_events(&self) -> Vec<ProviderEvent> { Vec::new() }
+    fn prepare_retirement(&mut self, persist: &dyn Fn(&ProviderEvent) -> Result<(), ProviderError>) -> Result<(), ProviderError> {
+        for event in &self.retirement_events() { persist(event)?; }
+        Ok(())
+    }
+    /// Native decisions can have a terminal partial outcome (for example an
+    /// approved plan whose mode switch failed). Persist that exact receipt.
+    fn plan_response_receipt(&self) -> Option<Value> { None }
     /// Native plan decisions return no prompt; runtime-owned plans may request
     /// a normal, durably recorded implementation turn through the service.
     fn plan_response(&mut self, _turn_id: &str, _approval_id: &str, _response: &Value, _operation_id: &str) -> Result<Option<String>, ProviderError> {
@@ -755,7 +767,10 @@ pub struct Providers {
     network: network::NetworkSettings,
     tool_servers: RwLock<Option<ToolServerResolver>>,
     project_trust: RwLock<Option<ProjectTrustResolver>>,
+    retirement_projector: RwLock<Option<RetirementProjector>>,
 }
+
+type RetirementProjector = Arc<dyn Fn(&ProviderEvent) -> Result<(), ProviderError> + Send + Sync>;
 
 /// Last provider capability probe. Probing runs every provider CLI and takes
 /// seconds, while `runtime.snapshot`/`provider.list` share the ordered request
@@ -870,6 +885,7 @@ impl Providers {
             }
         };
         worker.validate_restart()?;
+        self.persist_retirement(worker.as_mut())?;
         before_stop().map_err(|error| {
             ProviderError::new("project_trust_persist_failed", error.to_string())
         })?;
@@ -1062,6 +1078,7 @@ impl Providers {
             network,
             tool_servers: RwLock::new(None),
             project_trust: RwLock::new(None),
+            retirement_projector: RwLock::new(None),
         }
     }
 
@@ -1077,6 +1094,17 @@ impl Providers {
         if let Ok(mut slot) = self.project_trust.write() {
             *slot = Some(resolver);
         }
+    }
+
+    pub(crate) fn set_retirement_projector(&self, projector: RetirementProjector) {
+        if let Ok(mut slot) = self.retirement_projector.write() { *slot = Some(projector); }
+    }
+
+    /// Called with the registry and old worker locked, before token invalidation.
+    fn persist_retirement(&self, worker: &mut dyn ChatSession) -> Result<(), ProviderError> {
+        let projector = self.retirement_projector.read().ok().and_then(|slot| slot.clone())
+            .unwrap_or_else(|| Arc::new(|_| Err(ProviderError::new("chat_persistence", "Held transcript items cannot be persisted"))));
+        worker.prepare_retirement(projector.as_ref())
     }
 
     fn tool_server(&self, session_id: &str, provider: &str) -> Option<ChatToolServer> {
@@ -1215,6 +1243,9 @@ impl Providers {
         })?;
         let alive = worker.lock().ok().is_some_and(|chat| chat.is_alive());
         if !alive {
+            let mut guard = worker.try_lock().map_err(|_| ProviderError::new("chat_busy", "Chat retirement is still in progress"))?;
+            self.persist_retirement(guard.as_mut())?;
+            drop(guard);
             let retired = slot.mark_disconnected();
             self.connect_wait.notify_all();
             let state = slot.wire(session_id, "unknown", None);
@@ -1259,15 +1290,17 @@ impl Providers {
         &self,
         request: PlanResponseRequest<'_>,
         record: impl FnOnce(&str) -> Result<(), ProviderError>,
-    ) -> Result<Option<Value>, ProviderError> {
+    ) -> Result<(Option<Value>, Option<Value>), ProviderError> {
         let PlanResponseRequest { session_id, turn_id, approval_id, response, operation_id, implementation_id } = request;
         self.chat(session_id, |chat| {
-            let Some(prompt) = chat.plan_response(turn_id, approval_id, response, operation_id)? else { return Ok(None); };
+            let prompt = chat.plan_response(turn_id, approval_id, response, operation_id)?;
+            let receipt = chat.plan_response_receipt();
+            let Some(prompt) = prompt else { return Ok((None, receipt)); };
             // Option transition, durable user record and dispatch share the
             // worker lock, so a queue send cannot consume the approved plan.
             chat.validate_send(&prompt)?;
             record(&prompt)?;
-            chat.send(&prompt, implementation_id).map(Some)
+            chat.send(&prompt, implementation_id).map(|result| (Some(result), receipt))
         })
     }
 
@@ -1420,6 +1453,13 @@ impl Providers {
         }
         if slot.worker.is_none() || slot.worker_alive() {
             return;
+        }
+        if let Some(worker) = slot.worker.as_ref() {
+            let Ok(mut guard) = worker.try_lock() else { return; };
+            if let Err(error) = self.persist_retirement(guard.as_mut()) {
+                eprintln!("held transcript persistence failed for {session_id}: {error}");
+                return;
+            }
         }
         let retired = slot.mark_disconnected();
         let state = slot.wire(session_id, "unknown", None);
@@ -1611,6 +1651,10 @@ impl ProviderRuntime for Providers {
             break;
         }
         let worker_token = uuid::Uuid::new_v4().to_string();
+        if let Some(worker) = chats.get(session_id).and_then(|slot| slot.worker.clone()) {
+            let mut worker = worker.try_lock().map_err(|_| ProviderError::new("chat_busy", "Chat retirement is still in progress"))?;
+            self.persist_retirement(worker.as_mut())?;
+        }
         let (generation, old_worker) = {
             let slot = chats
                 .entry(session_id.to_owned())
@@ -1769,7 +1813,24 @@ impl ProviderRuntime for Providers {
         let Some(slot) = chats.get_mut(session_id) else {
             return Ok(());
         };
-        let worker = slot.worker.take();
+        let worker = slot.worker.clone();
+        // Wait outside the registry, then confirm that this is still the same
+        // worker before committing held items and invalidating its token.
+        if let Some(worker) = worker {
+            drop(chats);
+            let mut guard = worker.lock().map_err(|_| ProviderError::new("provider_internal", "session worker lock poisoned"))?;
+            chats = self.chats.lock().map_err(|_| ProviderError::new("provider_internal", "provider chat lock poisoned"))?;
+            let Some(slot) = chats.get_mut(session_id) else { return Ok(()); };
+            if !slot.worker.as_ref().is_some_and(|current| Arc::ptr_eq(current, &worker)) { return Ok(()); }
+            self.persist_retirement(guard.as_mut())?;
+            slot.worker_token = None;
+            let _ = slot.mark_disconnected();
+            let state = slot.wire(session_id, "unknown", None);
+            drop(chats);
+            self.connect_wait.notify_all();
+            self.emit_connection(session_id, state);
+            return guard.stop();
+        }
         // An explicit stop invalidates even notifications queued by a worker
         // whose startup has not returned. Natural EOF keeps its token until
         // replacement so already-queued final error/expiry events can settle.
@@ -1779,13 +1840,7 @@ impl ProviderRuntime for Providers {
         drop(chats);
         self.connect_wait.notify_all();
         self.emit_connection(session_id, state);
-        let Some(worker) = worker else {
-            return Ok(());
-        };
-        let mut worker = worker
-            .lock()
-            .map_err(|_| ProviderError::new("provider_internal", "session worker lock poisoned"))?;
-        worker.stop()
+        Ok(())
     }
 
     fn chat_options(&self, session_id: &str) -> Result<Value, ProviderError> {
@@ -1821,6 +1876,12 @@ impl ProviderRuntime for Providers {
         };
         if let Some(slot) = chats.get_mut(session_id) {
             if slot.worker.is_some() && !slot.worker_alive() {
+                if let Some(worker) = slot.worker.as_ref() {
+                    let Ok(mut guard) = worker.try_lock() else { return slot.wire(session_id, "unknown", None); };
+                    if let Err(error) = self.persist_retirement(guard.as_mut()) {
+                        return slot.wire(session_id, "error", Some(json!({"code":error.code,"message":error.message})));
+                    }
+                }
                 let retired = slot.mark_disconnected();
                 let state = slot.wire(session_id, "unknown", None);
                 drop(chats);

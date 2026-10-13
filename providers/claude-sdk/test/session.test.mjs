@@ -349,9 +349,50 @@ test('ExitPlanMode approval allows the tool before returning Claude to default m
   pending.then(() => { settled = true; });
   const response = session.planResponse(request.requestId, 'approve');
   assert.deepEqual(await within(200, pending, 'plan approval settles'), { behavior: 'allow' });
-  await response;
+  assert.deepEqual(await response, { outcome: 'submitted', nativeDecision: 'allowed', modeChanged: true });
   assert.deepEqual(calls, ['default']);
   assert.equal(session.settings.mode, 'default');
+});
+
+test('permission request ids remain unique when a Chat worker restarts', async () => {
+  const requestId = async session => {
+    const pending = session.requestPermission('ExitPlanMode', { plan: '# Build it' });
+    const request = session.events.find(value => value.ev === 'session.request');
+    await session.planResponse(request.requestId, 'abandon');
+    await pending;
+    return request.requestId;
+  };
+  const create = () => {
+    const events = [];
+    const session = new ClaudeSession({ cardId: 'stable-card', sdk: fakeSdk(), write: value => events.push(value) });
+    session.events = events;
+    return session;
+  };
+  const first = await requestId(create());
+  const second = await requestId(create());
+  assert.notEqual(first, second, 'a replacement worker must use a fresh request namespace');
+  assert.match(first, /^stable-card-permission-[0-9a-f-]{36}-1$/);
+  assert.match(second, /^stable-card-permission-[0-9a-f-]{36}-1$/);
+});
+
+test('ExitPlanMode mode-switch failure returns a terminal partial receipt', async () => {
+  const events = [];
+  const session = new ClaudeSession({ cardId: 'plan-card', sdk: fakeSdk(), write: value => events.push(value) });
+  session.query = { setPermissionMode: async () => { throw new Error('mode control disconnected'); } };
+  session.settings.mode = 'plan';
+  const pending = session.requestPermission('ExitPlanMode', { plan: '# Build it' });
+  const request = events.find(value => value.ev === 'session.request');
+  const response = session.planResponse(request.requestId, 'approve');
+  assert.deepEqual(await within(200, pending, 'native plan approval settles'), { behavior: 'allow' });
+  assert.deepEqual(await response, {
+    outcome: 'partial',
+    nativeDecision: 'allowed',
+    modeChanged: false,
+    recovery: 'reconnect',
+    message: 'mode control disconnected',
+  });
+  assert.equal(session.pending.has(request.requestId), false, 'a partial success cannot remain retryable');
+  assert.equal(session.settings.mode, 'plan');
 });
 
 test('ExitPlanMode feedback and abandonment deny with messages and retain plan mode', async () => {

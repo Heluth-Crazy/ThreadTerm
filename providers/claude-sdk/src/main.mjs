@@ -54,7 +54,7 @@ async function handle(request) {
     case 'session.send': get(request.cardId).send(request.text, request.operationId); return {};
     case 'session.interrupt': await get(request.cardId).interrupt(); return {};
     case 'session.decision': get(request.cardId).decide(request.requestId, request.behavior); return {};
-    case 'session.plan_response': await get(request.cardId).planResponse(request.requestId, request.action, request.feedback); return {};
+    case 'session.plan_response': return await get(request.cardId).planResponse(request.requestId, request.action, request.feedback);
     case 'session.answer': get(request.cardId).answer(request.requestId, request.values); return {};
     case 'session.set_option': return { ui: await get(request.cardId).setOption(request.optionId, request.value) };
     case 'session.stop': { const session = sessions.get(request.cardId); sessions.delete(request.cardId); if (session) await session.stop(); return {}; }
