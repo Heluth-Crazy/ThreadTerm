@@ -68,6 +68,42 @@ test('groupControls merges a taller control that overlaps a neighbour band', () 
   assert.equal(groups.length, 1);
 });
 
+test('groupControls compares a floating control with its overlapping card row', () => {
+  const groups = groupControls([
+    control({ selector: 'button.card-action' }),
+    control({ selector: 'button.floating-action', floating: true, parentKey: 1, parentPath: 'div.overlay', top: 1, bottom: 27, centerY: 14 }),
+  ]);
+  assert.equal(groups.length, 1);
+  assert.equal(groups[0].controls.length, 2);
+});
+
+test('analyzeControls reports a mismatched floating control beside a card action', () => {
+  const violations = analyzeControls([
+    control({ selector: 'button.card-action' }),
+    control({ selector: 'button.floating-action', floating: true, parentKey: 1, parentPath: 'div.overlay', top: 1, bottom: 31, centerY: 16, height: 30 }),
+  ]);
+  const height = violations.find(violation => violation.kind === 'height');
+  assert.ok(height, 'the floating control is compared to the overlapping card action');
+  assert.deepEqual(height.controls, ['button.card-action', 'button.floating-action']);
+});
+
+test('analyzeControls compares mismatched floating controls in one overlay band', () => {
+  const violations = analyzeControls([
+    control({ selector: 'button.floating-a', floating: true, parentPath: 'div.overlay', height: 26 }),
+    control({ selector: 'button.floating-b', floating: true, parentPath: 'div.overlay', top: 1, bottom: 31, centerY: 16, height: 30 }),
+  ]);
+  assert.ok(violations.some(violation => violation.kind === 'height'));
+});
+
+test('groupControls keeps an unrelated floating overlay in a separate band', () => {
+  const groups = groupControls([
+    control({ selector: 'button.card-action' }),
+    control({ selector: 'button.floating-overlay', floating: true, top: 80, bottom: 106, centerY: 93 }),
+  ]);
+  assert.equal(groups.length, 2);
+  assert.equal(groups[1].controls.length, 1);
+});
+
 test('compareGroup reports a height mismatch with both values', () => {
   const group = groupControls([
     control({ selector: 'button.a', height: 26, bottom: 26 }),

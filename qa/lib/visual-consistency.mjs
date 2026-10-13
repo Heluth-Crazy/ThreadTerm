@@ -41,27 +41,17 @@ function valueViolation(kind, group, values) {
 
 /**
  * Groups controls into visual rows: an overlapping vertical band inside the
- * checked container. Controls that share a parent and a band are always one
- * row; a floating control that overlaps a card row (for example the
- * "Back to bottom" overlay) also lands in that row, so the helper catches it.
+ * checked container. Controls that share an overlapping band are one row. A
+ * floating control joins the ordinary row or card it overlaps (for example the
+ * "Back to bottom" overlay), while an unpaired overlay stays isolated.
  */
 export function groupControls(controls) {
   const sorted = [...controls].sort((a, b) => a.top - b.top);
   const groups = [];
   for (const control of sorted) {
-    if (control.floating) {
-      groups.push({
-        parentKey: control.parentKey,
-        parentPath: control.parentPath,
-        floating: true,
-        top: control.top,
-        bottom: control.bottom,
-        controls: [control],
-      });
-      continue;
-    }
+    if (control.floating) continue;
     const band = groups.find(candidate =>
-      !candidate.floating && control.top < candidate.bottom - 0.5 && control.bottom > candidate.top + 0.5);
+      control.top < candidate.bottom - 0.5 && control.bottom > candidate.top + 0.5);
     if (band) {
       band.controls.push(control);
       band.top = Math.min(band.top, control.top);
@@ -70,6 +60,24 @@ export function groupControls(controls) {
       groups.push({
         parentKey: control.parentKey,
         parentPath: control.parentPath,
+        top: control.top,
+        bottom: control.bottom,
+        controls: [control],
+      });
+    }
+  }
+  for (const control of sorted.filter(candidate => candidate.floating)) {
+    const band = groups.find(candidate =>
+      control.top < candidate.bottom - 0.5 && control.bottom > candidate.top + 0.5);
+    if (band) {
+      band.controls.push(control);
+      band.top = Math.min(band.top, control.top);
+      band.bottom = Math.max(band.bottom, control.bottom);
+    } else {
+      groups.push({
+        parentKey: control.parentKey,
+        parentPath: control.parentPath,
+        floating: true,
         top: control.top,
         bottom: control.bottom,
         controls: [control],
