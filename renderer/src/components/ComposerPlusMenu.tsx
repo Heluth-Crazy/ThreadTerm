@@ -38,8 +38,14 @@ export function ComposerPlusMenu({ quickMessages, onAttachFiles, onPickQuickMess
   useEffect(() => {
     if (!open) return;
     const onPointerDown = (event: MouseEvent) => {
-      if (rootRef.current?.contains(event.target as Node)) return;
-      close(false);
+      const target = event.target instanceof Element ? event.target : undefined;
+      if (rootRef.current?.contains(target as Node)) return;
+      // Match the other composer menus: clicks inside a menu surface are left to
+      // that menu, while a click on the page closes this one without stealing
+      // focus unless it landed on another control.
+      if (target?.closest(".chat-compose-menu")) return;
+      const nextFocus = target?.closest("button, a, input, textarea, select, [tabindex]");
+      close(!nextFocus);
     };
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key !== "Escape") return;
