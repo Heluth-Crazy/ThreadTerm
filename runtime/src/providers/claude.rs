@@ -2261,7 +2261,7 @@ mod tests {
             json!({"type":"user","uuid":"r1","message":{"content":[{"type":"tool_result","tool_use_id":"todo-1","content":"ok"}]}}),
             json!({"type":"user","uuid":"u2","message":{"content":"second"}}),
             json!({"type":"assistant","uuid":"a3","message":{"content":[{"type":"tool_use","id":"todo-3","name":"TodoWrite","input":{"todos":[{"content":"Third","status":"pending"}]}}]}}),
-        ]);
+        ], None);
         let plans: Vec<_> = transcript.iter().flat_map(|item| item["parts"].as_array().unwrap()).filter(|part| part["type"] == "plan").collect();
         assert_eq!(plans.len(), 2);
         assert_eq!(plans[0]["toolId"], "plan:history-1");

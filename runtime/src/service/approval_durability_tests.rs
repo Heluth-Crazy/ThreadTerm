@@ -43,7 +43,15 @@ impl Fixture {
         db.record_provider_event(&session,Some("turn"),"chat.approval",&json!({"approvalId":"plan","part":{"data":{"interaction":"plan","plan":"# Plan"}}})).unwrap();
         Self { root, db, providers, session, calls }
     }
-    fn answer(&self) -> Result<Value> { answer_chat_request(&self.db,&self.providers,&self.session,"turn","plan",&json!({"action":"approve"}),"answer") }
+    fn answer(&self) -> Result<Value> {
+        // Plan answers never reach the app-hosted tool registry; any registry instance satisfies the signature.
+        let path = self.root.path().join("runtime.sqlite");
+        let tools = crate::chat_tools::shared(&path, Arc::new(Database::open(&path)?))?;
+        answer_chat_request(&self.db, &self.providers, &tools, AnswerChatRequest {
+            session_id: &self.session, turn_id: "turn", approval_id: "plan",
+            response: &json!({"action":"approve"}), operation_id: "answer",
+        })
+    }
     fn card(&self) -> Value { self.db.chat_items(&self.session).unwrap().into_iter().flat_map(|item|item.parts).find(|part|part["approvalId"]=="plan").unwrap() }
 }
 
