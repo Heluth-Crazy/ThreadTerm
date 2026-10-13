@@ -1,3 +1,8 @@
+import { useState } from "react";
+import { approvalPreview } from "../approvalPreview";
+import { EditBody } from "./ToolCards";
+import "./tool-activity.css";
+import "./approval-preview.css";
 import type { ChatApprovalChoice, ChatPart } from "@threadterm/protocol";
 import { approvalButtonsEnabled, approvalData, choiceLabel, scopeLabel } from "../chatApproval";
 import { ChatQuestionCard } from "./ChatQuestionCard";
@@ -19,7 +24,9 @@ export function ChatApprovalCard({
   onAnswer?: (response: QuestionResponse) => void;
   copy: (en: string, zh: string) => string;
 }) {
+  const [showAll, setShowAll] = useState(false);
   const data = approvalData(part);
+  const preview = approvalPreview(part);
   const expired = part.status === "expired" || part.status === "outcomeUnknown" || part.status === "failed";
   const resolved = part.status === "resolved" || part.status === "answered" || part.status === "dismissed";
   const enabled = approvalButtonsEnabled(part, writable) && !submitting;
@@ -51,6 +58,13 @@ export function ChatApprovalCard({
       {data.requestType && <small className="chat-approval-type">{data.requestType}</small>}
       {part.status === "pending" && delegation?.route === "parent" && <p className="chat-approval-delegated">{copy("The agent that delegated this session decides this request. You can still answer it yourself.", "此请求由委派这个会话的代理决定。你也可以直接处理。")}</p>}
       {part.status === "pending" && delegation?.route === "user" && !unsupported && <p className="chat-approval-delegated">{copy("The delegating agent is no longer in its turn, so this request is yours to decide.", "委派方已结束当前轮次，此请求需要你来决定。")}</p>}
+      {preview?.kind === "edit" && <>
+        <div className="chat-approval-preview" role="region" aria-label={copy("Proposed edits", "拟议修改")} tabIndex={0}>
+          <EditBody view={preview} copy={copy} fileLimit={showAll ? preview.files.length : 3} />
+        </div>
+        {preview.files.length > 3 && <button type="button" className="btn btn-sm" aria-expanded={showAll} onClick={() => setShowAll(value => !value)}>{showAll ? copy("Show less", "收起") : copy("Show all", "显示全部")}</button>}
+      </>}
+      {preview?.kind === "command" && <div className="chat-approval-command"><code>{preview.command}</code>{preview.cwd && <small>{copy("Working directory", "工作目录")}: {preview.cwd}</small>}</div>}
       {details && <details className="chat-approval-details"><summary>{copy("Request details", "请求详情")}</summary><pre>{details}</pre></details>}
       {unsupported && <p>{copy("This request is a native prompt and cannot be answered as Allow or Deny.", "这是原生问答请求，不能压缩成允许或拒绝。")}</p>}
       {expired && <p>{copy("This request is no longer active and cannot grant permission.", "该请求已失效，不能再授权。")}</p>}
@@ -88,7 +102,7 @@ function ApprovalButton({
   return (
     <button
       type="button"
-      className={`btn chat-approval-choice kind-${choice.kind}`}
+      className={`btn btn-sm chat-approval-choice kind-${choice.kind}`}
       disabled={disabled}
       aria-label={`${choiceLabel(choice, copy)}. ${scopeLabel(choice.scope, copy)}`}
       onClick={() => onChoose(choice.choiceId)}

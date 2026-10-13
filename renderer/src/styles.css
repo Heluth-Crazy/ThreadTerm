@@ -492,8 +492,8 @@ html[data-theme="dark"] { color-scheme:dark; }
 .chat-approval-card small.chat-approval-type { display:block; color:var(--muted); font-size:11px; }
 .chat-approval-actions { display:flex; flex-wrap:wrap; gap:8px; }
 /* Two lines (choice + scope): the shared .btn height would clip the scope line. */
-.chat-approval-choice { display:grid; justify-items:start; gap:2px; height:auto; min-height:28px; padding:4px 12px; text-align:left; }
-.chat-approval-choice small { color:var(--muted); font-size:10px; }
+.chat-approval-choice { flex-wrap:nowrap; }
+.chat-approval-choice small { color:var(--muted); font-size:11px; }
 .chat-approval-stale { margin:0; color:var(--muted); font-size:12px; }
 .chat-approval-details { color:var(--muted); font-size:12px; }
 .chat-approval-details pre { margin:6px 0 0; max-height:180px; overflow:auto; white-space:pre-wrap; overflow-wrap:anywhere; }

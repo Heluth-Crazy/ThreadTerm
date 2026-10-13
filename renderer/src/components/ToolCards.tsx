@@ -53,8 +53,8 @@ function DiffBlock({ diff, copy }: { diff: NonNullable<Extract<ToolView, { kind:
   </div>;
 }
 
-function EditBody({ view, copy, openFile, openDiff, canOpenDiff }: { view: Extract<ToolView, { kind: 'edit' }>; copy: Copy; openFile?: OpenFile; openDiff?: (path: string) => void; canOpenDiff?: (path: string) => boolean }) {
-  const shown = view.files.slice(0, EDIT_FILE_LIMIT);
+export function EditBody({ view, copy, openFile, openDiff, canOpenDiff, fileLimit = EDIT_FILE_LIMIT }: { view: Extract<ToolView, { kind: 'edit' }>; copy: Copy; openFile?: OpenFile; openDiff?: (path: string) => void; canOpenDiff?: (path: string) => boolean; fileLimit?: number }) {
+  const shown = view.files.slice(0, fileLimit);
   const more = moreFilesLabel(shown.length, view.files.length);
   return <>
     {shown.map((file, index) => {

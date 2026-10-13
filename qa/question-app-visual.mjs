@@ -9,6 +9,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { electron } from './lib/desktop1.mjs';
+import { assertNoControlViolations, checkControlConsistency } from './lib/visual-consistency.mjs';
 
 const pause = milliseconds => new Promise(done => setTimeout(done, milliseconds));
 const qa = dirname(fileURLToPath(import.meta.url));
@@ -16,7 +17,7 @@ const root = resolve(qa, '..');
 const args = process.argv.slice(2);
 const option = name => args.includes(name) ? args[args.indexOf(name) + 1] : undefined;
 process.env.TT_QA_DESKTOP = '1';
-const runtime = resolve(option('--runtime') ?? process.env.THREADTERM_QA_RUNTIME_EXE ?? join(root, 'runtime', 'target', 'debug', 'threadterm-v3-runtime.exe'));
+const runtime = resolve(option('--runtime') ?? process.env.THREADTERM_QA_RUNTIME_EXE ?? join(root, 'runtime', 'target-qa', 'debug', 'threadterm-v3-runtime.exe'));
 assert.ok(existsSync(runtime), `Missing QA runtime: ${runtime}`);
 
 const scratch = await mkdtemp(join(tmpdir(), 'threadterm-question-app-'));
@@ -24,7 +25,7 @@ const bin = join(scratch, 'bin');
 const workspace = join(scratch, 'workspace');
 const fixture = resolve(qa, 'fixtures', 'fake-codex-questions.cjs');
 const log = join(scratch, 'fake-codex-questions.jsonl');
-const out = resolve(root, 'qa', 'results', 'question-app');
+const out = resolve(root, 'qa', 'results', 'chat-parity', 'D1', 'question-app');
 assert.ok(existsSync(fixture), `Missing fake Codex question fixture: ${fixture}`);
 
 // Strip every inherited PATH spelling before installing the only codex.exe.
@@ -78,6 +79,7 @@ async function setChatPaneWidth(target, label) {
   report.paneWidths.push({ label, target, viewportWidth: width, paneWidth, ...fit });
 }
 async function shot(prefix) {
+  assertNoControlViolations(await checkControlConsistency(page, '.chat-question-wrapper'),prefix);
   for (const [target, label] of [[1000, 'wide'], [420, 'narrow']]) {
     await setChatPaneWidth(target, `${prefix}-${label}`);
     const path = join(out, `${prefix}-${label}.png`);
@@ -95,6 +97,8 @@ async function openScenario(prompt) {
   await until(async () => (await rpc('chat.connection', { sessionId: session.id })).phase === 'ready', `Codex connection (${prompt})`);
   await rpc('chat.send', { sessionId: session.id, text: prompt, leaseEpoch, operationId: randomUUID() });
   await questionCard().waitFor();
+  await until(async () => (await questionCard().locator('button.chat-approval-choice:not([disabled])').count()) >= 1, `question actions enabled (${prompt})`);
+  assertNoControlViolations(await checkControlConsistency(page, '.chat-question-wrapper'), 'question app card');
   assert.equal(await questionCard().count(), 1, `${prompt} has one visible question card`);
 }
 async function waitAnswered(label) {
@@ -114,6 +118,9 @@ try {
   page.setDefaultTimeout(30_000);
   page.on('pageerror', error => pageErrors.push(error.stack ?? error.message));
   await page.waitForFunction(() => Boolean(window.threadterm));
+  await page.evaluate(() => Object.defineProperty(navigator,'clipboard',{configurable:true,value:{writeText:async value=>{window.__lane2Clipboard=value;},readText:async()=>window.__lane2Clipboard??''}}));
+  await page.locator('#boot-splash').waitFor({state:'detached'});
+  await page.evaluate(()=>{document.title='ThreadTerm lane2 D1 question QA';});
   const initial = await rpc('runtime.snapshot');
   await rpc('settings.update', { patch: { language: 'en', theme: 'light', notifications: { native: false, attention: false, completed: false, sound: false } }, expectedRevision: initial.settings.revision, operationId: randomUUID() });
   project = await rpc('project.add', { path: workspace, name: 'Question app QA', operationId: randomUUID() });
