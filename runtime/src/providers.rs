@@ -656,13 +656,20 @@ fn normalized_pi_trust(value: Option<&Value>) -> Option<Value> {
     let default_trust = enum_value("defaultProjectTrust", &["always", "ask", "never"])?;
     let threadterm_decision = enum_value("threadtermDecision", &["trusted", "declined", "none"])?;
     let effective = enum_value("effective", &["loaded", "skipped"])?;
-    Some(json!({
+    let mut normalized = json!({
         "protectedResources": protected,
         "piDecision": pi_decision,
         "defaultProjectTrust": default_trust,
         "threadtermDecision": threadterm_decision,
         "effective": effective,
-    }))
+    });
+    if let Some(outside) = value.get("outsideProtectedResources") {
+        let outside = outside.as_array()?;
+        if !outside.iter().all(|entry| entry.get("path").is_some_and(Value::is_string)
+            && entry.get("target").is_some_and(Value::is_string)) { return None; }
+        normalized["outsideProtectedResources"] = json!(outside);
+    }
+    Some(normalized)
 }
 
 struct ChatSlot {
@@ -775,6 +782,53 @@ fn probe_capabilities(adapters: &[Arc<dyn ProviderAdapter>]) -> Vec<Value> {
 }
 
 impl Providers {
+    /// Revoke a project decision only after every matching worker is idle.
+    /// Registry admission and all captured send handles are fenced together.
+    pub(crate) fn restart_idle_project_chats(
+        &self,
+        selected: &str,
+        belongs: impl Fn(&str) -> anyhow::Result<bool>,
+        before_stop: impl FnOnce(&[String]) -> anyhow::Result<()>,
+    ) -> Result<Vec<String>, ProviderError> {
+        let mut chats = self.chats.lock().map_err(|_| ProviderError::new("provider_internal", "provider chat lock poisoned"))?;
+        let mut ids = Vec::new();
+        for (id, slot) in chats.iter() {
+            if !belongs(id).map_err(|error| ProviderError::new("chat_persistence", error.to_string()))? { continue; }
+            if slot.connecting {
+                return Err(ProviderError::new("turn_in_progress", "Wait for all Pi chats in this project to finish connecting before revoking trust."));
+            }
+            if slot.worker.is_some() { ids.push(id.clone()); }
+        }
+        if !ids.iter().any(|id| id == selected) {
+            return Err(ProviderError::new("chat_not_open", "Open the selected Pi chat before changing project trust."));
+        }
+        ids.sort();
+        let handles: Vec<_> = ids.iter().map(|id| chats[id].worker.as_ref().unwrap().clone()).collect();
+        let mut workers = Vec::new();
+        for handle in &handles {
+            let worker = handle.try_lock().map_err(|_| ProviderError::new("turn_in_progress", "Stop the active turns in every Pi chat in this project before revoking trust."))?;
+            worker.validate_restart().map_err(|error| ProviderError::new(error.code, "Stop the active turns in every Pi chat in this project before revoking trust."))?;
+            workers.push(worker);
+        }
+        before_stop(&ids).map_err(|error| ProviderError::new("project_trust_persist_failed", error.to_string()))?;
+        let mut states = Vec::new();
+        for id in &ids {
+            let slot = chats.get_mut(id).unwrap();
+            slot.worker_token = None;
+            let _ = slot.mark_disconnected();
+            states.push((id.clone(), slot.wire(id, "unknown", None)));
+        }
+        drop(chats);
+        self.connect_wait.notify_all();
+        for (id, state) in states { self.emit_connection(&id, state); }
+        let mut failure = None;
+        for worker in &mut workers {
+            if let Err(error) = worker.stop() { failure.get_or_insert(error); }
+        }
+        if let Some(error) = failure { return Err(error); }
+        Ok(ids)
+    }
+
     /// Persists a decision and retires an idle worker without waiting under
     /// the shared registry lock. Captured old sends are fenced by stop().
     pub(crate) fn restart_idle_chat(

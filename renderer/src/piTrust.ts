@@ -1,7 +1,8 @@
 import type { PiTrustState } from '@threadterm/protocol';
 
 export function showPiTrustBanner(trust?: PiTrustState): boolean {
-  return Boolean(trust && trust.protectedResources.length && trust.effective === 'skipped'
+  const outside = (trust as PiTrustState & { outsideProtectedResources?: readonly unknown[] } | undefined)?.outsideProtectedResources?.length ?? 0;
+  return Boolean(trust && (trust.protectedResources.length || outside) && trust.effective === 'skipped'
     && trust.threadtermDecision === 'none' && trust.piDecision === 'none');
 }
 

@@ -527,7 +527,7 @@ pub struct JsonLineProcess {
     pending: Arc<Mutex<HashMap<String, Pending>>>,
     next_id: Arc<AtomicU64>,
     alive: Arc<std::sync::atomic::AtomicBool>,
-    _job: SessionJob,
+    _job: Option<SessionJob>,
 }
 
 #[derive(Clone)]
@@ -868,12 +868,28 @@ impl JsonLineProcess {
             pending,
             next_id: Arc::new(AtomicU64::new(1)),
             alive,
-            _job: job,
+            _job: Some(job),
         })
     }
 
     pub fn is_alive(&self) -> bool {
         self.alive.load(Ordering::SeqCst)
+    }
+
+    /// End the owned native process tree even if a captured worker handle
+    /// delays dropping this transport. Trust revocation needs this boundary.
+    pub fn terminate(&mut self) -> Result<(), ProviderError> {
+        drop(self._job.take());
+        let failure = |error: std::io::Error| ProviderError::new("provider_stop_failed", error.to_string());
+        let mut child = self.child.lock().map_err(|_| ProviderError::new("provider_internal", "provider process lock poisoned"))?;
+        if child.try_wait().map_err(failure)?.is_none() {
+            if let Err(error) = child.kill() {
+                if child.try_wait().map_err(failure)?.is_none() { return Err(failure(error)); }
+            }
+        }
+        child.wait().map_err(failure)?;
+        self.alive.store(false, Ordering::SeqCst);
+        Ok(())
     }
 
     pub fn responder(&self) -> JsonLineResponder {
@@ -1192,6 +1208,19 @@ fn hide_background_window(_command: &mut Command) {}
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(windows)]
+    #[test]
+    fn terminating_a_retained_transport_ends_its_native_process_before_drop() {
+        let program = find_executable("powershell").expect("Windows fixture shell");
+        let spec = CommandSpec::from_path(program, vec!["-NoProfile".into(), "-NonInteractive".into(), "-Command".into(), "Start-Sleep -Seconds 30".into()]).unwrap();
+        let mut process = JsonLineProcess::spawn("retained transport fixture", &spec, None, &[], EnvelopeStyle::Pi, Arc::new(|_| {})).unwrap();
+        process.terminate().unwrap();
+        assert!(process.child.lock().unwrap().try_wait().unwrap().is_some());
+        assert!(process._job.is_none(), "the owned Windows process tree ended before handle drop");
+        assert!(!process.is_alive());
+        process.terminate().unwrap();
+    }
 
     #[test]
     fn missing_context_replies_are_bounded_and_expire_without_polling() {

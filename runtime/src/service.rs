@@ -8,6 +8,9 @@ use crate::{
     pty::PtyManager,
     RUNTIME_VERSION,
 };
+mod project_trust;
+#[cfg(test)]
+mod project_trust_tests;
 use anyhow::Result;
 use base64::Engine;
 use serde::Deserialize;
@@ -547,26 +550,42 @@ impl RuntimeService {
         if let Some(result) = self.db.operation(&p.operation_id)? {
             return Ok(result);
         }
-        // The provider validates idle state and holds the worker lock through
-        // persistence and retirement. A concurrent send cannot enter between
-        // the decision and the restart, or use the retired Pi process.
-        self.providers.restart_idle_chat(&p.session_id, || {
-            self.leases
-                .require(&self.db, &p.session_id, principal, p.lease_epoch)?;
-            self.db.require_interactive(&p.session_id)?;
-            if !crate::pi_project_trust::claim_and_set(&self.db, project_id, &p.decision, &p.operation_id)? {
-                return Err(anyhow::anyhow!(
-                    "project_trust_outcome_unknown: review the connection before retrying"
-                ));
-            }
-            Ok(())
-        })?;
-        // Pi is opened through the same resolver as every normal connection,
-        // so its flags and returned snapshot use the durable project decision.
-        self.connect_chat(&p.session_id)?;
+        // Serialize project decisions and their recovery against one another.
+        // Normal Chat opens read the saved value after registry admission.
+        let project_flight = repair_operation_lock(&self.config.database_path, &format!("pi-trust:{project_id}"))?;
+        let _project = project_flight.lock().map_err(|_| anyhow::anyhow!("provider_internal"))?;
+        self.leases.require(&self.db, &p.session_id, principal, p.lease_epoch)?;
+        let resume = project_trust::pending(&self.db, project_id, &p.operation_id)?;
+        let sessions = if let Some(sessions) = resume {
+            sessions
+        } else if p.decision == "trusted" {
+            self.providers.restart_idle_chat(&p.session_id, || {
+                self.leases.require(&self.db, &p.session_id, principal, p.lease_epoch)?;
+                self.db.require_interactive(&p.session_id)?;
+                project_trust::save(&self.db, project_id, &p.decision, &p.operation_id, std::slice::from_ref(&p.session_id))
+            })?;
+            vec![p.session_id.clone()]
+        } else {
+            // Validate and lock ALL matching Pi workers before persisting any
+            // change. A busy peer refuses the revoke without changing trust.
+            self.providers.restart_idle_project_chats(&p.session_id, |id| {
+                Ok(self.db.session_by_id(id)?.is_some_and(|peer| peer.provider == "pi"
+                    && peer.mode == "chat" && peer.project_id.as_deref() == Some(project_id)))
+            }, |sessions| {
+                self.leases.require(&self.db, &p.session_id, principal, p.lease_epoch)?;
+                self.db.require_interactive(&p.session_id)?;
+                project_trust::save(&self.db, project_id, &p.decision, &p.operation_id, sessions)
+            })?
+        };
+        // A failed reconnect leaves the durable route intact. Replaying this
+        // operation resumes connection only; it never replays the decision.
+        let mut failure = None;
+        for id in &sessions {
+            if let Err(error) = self.connect_chat(id) { failure.get_or_insert(error); }
+        }
+        if let Some(error) = failure { return Err(error); }
         let state = self.providers.chat_options(&p.session_id)?;
-        self.db
-            .complete_operation(&p.operation_id, "chat.projectTrust.set", &state)?;
+        project_trust::complete(&self.db, &p.operation_id, &state)?;
         Ok(state)
     }
 

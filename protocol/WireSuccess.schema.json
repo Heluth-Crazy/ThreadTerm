@@ -3314,6 +3314,25 @@
             "type": "string"
           }
         },
+        "outsideProtectedResources": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "path": {
+                "type": "string"
+              },
+              "target": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "path",
+              "target"
+            ],
+            "additionalProperties": false
+          }
+        },
         "piDecision": {
           "type": "string",
           "enum": [
