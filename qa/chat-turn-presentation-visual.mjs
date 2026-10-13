@@ -36,6 +36,12 @@ window.threadterm = {
       return {items:transcripts[key] ?? (key.includes('codex') ? transcripts.codex : transcripts.kimi),revision:1};
     }
     if (method === 'chat.draft.read') return {text:'',revision:0};
+    // The queue and the E2 notes strip each read on mount. An unmocked read
+    // throws, ChatView shows an error banner, the transcript shrinks and the
+    // taller Kimi turn auto-scrolls, which moves its user bubble. Return the
+    // real empty states.
+    if (method === 'chat.queue.read') return {sessionId:params.sessionId,paused:false,items:[]};
+    if (method === 'chat.feedback.read') return {notes:[]};
     if (method === 'chat.options') return {options:[],commands:[]};
     throw new Error('Unexpected QA request '+method);
   },
