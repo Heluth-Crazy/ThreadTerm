@@ -140,14 +140,30 @@ fn codex_tool_server_overrides(tools: Option<&ChatToolServer>) -> Vec<String> {
         "-c".into(),
         format!("{prefix}.env={{{env}}}"),
     ];
-    if tools.name == "threadterm" && tools.env.iter().any(|(key,value)| key=="THREADTERM_PREVIEW_TOKEN"&&!value.is_empty()) {
-        // Per-tool policy for the core-managed preview host only. Leave all
-        // other tools, shell approvals and sandbox configuration unchanged.
-        for tool in crate::preview::TOOL_NAMES {
-            overrides.extend(["-c".into(),format!("{prefix}.tools.{tool}.approval_mode='auto'")]);
-        }
+    // Per-tool policy applies only to the core-managed host and only to exact
+    // names enabled in this process's immutable environment. Shell tools and
+    // arbitrary same-prefix names remain subject to Codex's normal approval.
+    for tool in codex_auto_approved_threadterm_tools(tools) {
+        overrides.extend(["-c".into(),format!("{prefix}.tools.{tool}.approval_mode='auto'")]);
     }
     overrides
+}
+
+fn codex_auto_approved_threadterm_tools(tools: &ChatToolServer) -> Vec<&'static str> {
+    if tools.name != "threadterm" {
+        return Vec::new();
+    }
+    let env = |key: &str| tools.env.iter().find(|(name, _)| name == key).map(|(_, value)| value.as_str());
+    let mut result = Vec::new();
+    if env("THREADTERM_PREVIEW_TOKEN").is_some_and(|value| !value.is_empty()) {
+        result.extend(crate::preview::TOOL_NAMES);
+    }
+    if env("THREADTERM_CHAT_TOKEN").is_some_and(|value| !value.is_empty()) {
+        if env("THREADTERM_CHAT_TOOL_ASK") == Some("1") { result.push("ask_user"); }
+        if env("THREADTERM_CHAT_TOOL_SESSION_INFO") == Some("1") { result.push("session_info"); }
+        if env("THREADTERM_CHAT_TOOL_FEEDBACK") == Some("1") { result.push("feedback_check"); }
+    }
+    result
 }
 
 impl ProviderAdapter for CodexAdapter {
@@ -5868,6 +5884,24 @@ createInterface({{ input: process.stdin, crlfDelay: Infinity }}).on('line', line
                 r#"mcp_servers.threadterm.env={THREADTERM_SESSION_ID='s-1',THREADTERM_V3_PIPE='\\.\pipe\threadterm-v3-x',ODD="it's"}"#,
             ]
         );
+    }
+
+    #[test]
+    fn codex_auto_approval_uses_only_exact_enabled_threadterm_tools() {
+        let tools = ChatToolServer { name: "threadterm".into(), command: "mcp".into(), args: vec![], env: vec![
+            ("THREADTERM_CHAT_TOKEN".into(), "opaque".into()),
+            ("THREADTERM_CHAT_TOOL_ASK".into(), "1".into()),
+            ("THREADTERM_CHAT_TOOL_SESSION_INFO".into(), "0".into()),
+            ("THREADTERM_CHAT_TOOL_FEEDBACK".into(), "1".into()),
+        ] };
+        assert_eq!(codex_auto_approved_threadterm_tools(&tools), ["ask_user", "feedback_check"]);
+        let overrides = codex_tool_server_overrides(Some(&tools)).join("\n");
+        assert!(overrides.contains("tools.ask_user.approval_mode='auto'"));
+        assert!(overrides.contains("tools.feedback_check.approval_mode='auto'"));
+        assert!(!overrides.contains("tools.session_info.approval_mode='auto'"));
+        assert!(!overrides.contains("ask_user_extra"));
+        let foreign = ChatToolServer { name: "other".into(), ..tools.clone() };
+        assert!(codex_auto_approved_threadterm_tools(&foreign).is_empty());
     }
 
     #[test]

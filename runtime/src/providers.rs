@@ -47,23 +47,39 @@ pub type ProjectTrustResolver =
     Arc<dyn Fn(&str, &str) -> Result<Option<String>, ProviderError> + Send + Sync>;
 
 #[derive(Clone, Copy, Default)]
-pub(crate) struct ChatToolPolicy {pub delegation:bool,pub preview:bool}
+pub(crate) struct ChatToolPolicy {pub delegation:bool,pub preview:bool,pub ask:bool,pub session_info:bool,pub feedback:bool}
 pub(crate) fn chat_tool_policy(tools:Option<&ChatToolServer>)->ChatToolPolicy {
     let Some(server)=tools.filter(|s|s.name=="threadterm") else{return ChatToolPolicy::default()};
     let env=|key:&str|server.env.iter().find(|(name,_)|name==key).map(|(_,value)|value.as_str());
     let composed=env("THREADTERM_MCP_PROFILE")==Some("chat-tools");
-    ChatToolPolicy {delegation:!composed||env("THREADTERM_SESSION_TOKEN").is_some_and(|s|!s.is_empty()),preview:composed&&env("THREADTERM_PREVIEW_TOKEN").is_some_and(|s|!s.is_empty())}
+    ChatToolPolicy {
+        delegation: !composed || env("THREADTERM_SESSION_TOKEN").is_some_and(|s|!s.is_empty()),
+        preview: composed && env("THREADTERM_PREVIEW_TOKEN").is_some_and(|s|!s.is_empty()),
+        ask: composed && env("THREADTERM_CHAT_TOKEN").is_some_and(|s|!s.is_empty()) && env("THREADTERM_CHAT_TOOL_ASK") == Some("1"),
+        session_info: composed && env("THREADTERM_CHAT_TOKEN").is_some_and(|s|!s.is_empty()) && env("THREADTERM_CHAT_TOOL_SESSION_INFO") == Some("1"),
+        feedback: composed && env("THREADTERM_CHAT_TOKEN").is_some_and(|s|!s.is_empty()) && env("THREADTERM_CHAT_TOOL_FEEDBACK") == Some("1"),
+    }
 }
 pub(crate) fn acp_scoped_permission_option(params:&Value,policy:&ChatToolPolicy)->Option<String> {
-    if policy.delegation {if let Some(option)=acp_threadterm_permission_option(params){return Some(option)}}
-    if !policy.preview{return None}
     let call=params.get("toolCall")?;let title=call.get("title")?.as_str()?;
+    if !is_threadterm_tool(title)
+        && !title
+            .strip_prefix("mcp__threadterm__")
+            .or_else(|| title.strip_prefix("threadterm__"))
+            .is_some_and(|tool| crate::preview::TOOL_NAMES.contains(&tool))
+    {
+        return None;
+    }
     let tool=title.strip_prefix("mcp__threadterm__").or_else(||title.strip_prefix("threadterm__"))?;
-    if !crate::preview::TOOL_NAMES.contains(&tool)||matches!(call.get("kind").and_then(Value::as_str),Some("read"|"edit"|"delete"|"move"|"execute"|"fetch")){return None}
+    let allowed=crate::delegation::TOOL_NAMES.contains(&tool) && policy.delegation
+        || tool=="ask_user" && policy.ask
+        || tool=="session_info" && policy.session_info
+        || tool=="feedback_check" && policy.feedback
+        || crate::preview::TOOL_NAMES.contains(&tool) && policy.preview;
+    if !allowed||matches!(call.get("kind").and_then(Value::as_str),Some("read"|"edit"|"delete"|"move"|"execute"|"fetch")){return None}
     params.get("options")?.as_array()?.iter().find(|o|o.get("kind").and_then(Value::as_str)==Some("allow_once"))?.get("optionId")?.as_str().map(str::to_owned)
 }
 pub(crate) fn approve_scoped_threadterm_tool(responder:&Mutex<Option<common::JsonLineResponder>>,raw:&Value,policy:&ChatToolPolicy)->bool {
-    if policy.delegation&&!policy.preview {return approve_threadterm_tool(responder,raw)}
     if raw.get("method").and_then(Value::as_str)!=Some("session/request_permission"){return false}
     let (Some(id),Some(option))=(raw.get("id"),raw.get("params").and_then(|p|acp_scoped_permission_option(p,policy))) else{return false};
     let Ok(slot)=responder.lock() else{return false};
@@ -77,7 +93,7 @@ pub(crate) fn approve_scoped_threadterm_tool(responder:&Mutex<Option<common::Jso
 pub(crate) fn is_threadterm_tool(name: &str) -> bool {
     name.strip_prefix("mcp__threadterm__")
         .or_else(|| name.strip_prefix("threadterm__"))
-        .is_some_and(|tool| crate::delegation::TOOL_NAMES.contains(&tool))
+        .is_some_and(|tool| crate::delegation::TOOL_NAMES.contains(&tool) || matches!(tool, "ask_user" | "session_info" | "feedback_check"))
 }
 
 /// ACP `session/new` / `session/load` `mcpServers` for an optional tool server.
@@ -96,6 +112,7 @@ pub(crate) fn acp_mcp_servers(tools: Option<&ChatToolServer>) -> Value {
 /// For an ACP `session/request_permission` about one of ThreadTerm's own
 /// delegation tools, the once-only allow option to answer with. Requires the
 /// exact tool title and a non-file, non-shell tool kind.
+#[cfg(test)]
 pub(crate) fn acp_threadterm_permission_option(params: &Value) -> Option<String> {
     let call = params.get("toolCall")?;
     let title = call.get("title").and_then(Value::as_str)?;
@@ -112,32 +129,6 @@ pub(crate) fn acp_threadterm_permission_option(params: &Value) -> Option<String>
         .find(|option| option.get("kind").and_then(Value::as_str) == Some("allow_once"))
         .and_then(|option| option.get("optionId").and_then(Value::as_str))
         .map(str::to_owned)
-}
-
-/// Answers an ACP permission request for one of ThreadTerm's delegation tools
-/// with its once-only allow option (Kimi, Gemini, Grok parent Chats only).
-/// Returns false, leaving normal handling, for anything else.
-pub(crate) fn approve_threadterm_tool(
-    responder: &Mutex<Option<common::JsonLineResponder>>,
-    raw: &Value,
-) -> bool {
-    if raw.get("method").and_then(Value::as_str) != Some("session/request_permission") {
-        return false;
-    }
-    let (Some(id), Some(option)) = (
-        raw.get("id"),
-        raw.get("params").and_then(acp_threadterm_permission_option),
-    ) else {
-        return false;
-    };
-    let Ok(slot) = responder.lock() else {
-        return false;
-    };
-    slot.as_ref().is_some_and(|responder| {
-        responder
-            .respond(id.clone(), json!({"outcome":{"outcome":"selected","optionId":option}}))
-            .is_ok()
-    })
 }
 
 pub(crate) struct BuiltinDescriptor {
@@ -1375,6 +1366,22 @@ impl Providers {
         let slot=chats.get(session_id)?;
         if !slot.connecting&&slot.worker.is_none(){return None}
         slot.worker_token.clone()
+    }
+    /// Holds the chat registry fence while the caller verifies that an MCP
+    /// grant still belongs to the current worker. The callback may use the
+    /// database, but must not reenter `Providers` or perform provider I/O.
+    pub(crate) fn with_current_preview_generation<T>(
+        &self,
+        session_id: &str,
+        generation: &str,
+        callback: impl FnOnce() -> T,
+    ) -> Option<T> {
+        let chats = self.chats.lock().ok()?;
+        let slot = chats.get(session_id)?;
+        (slot.connecting || slot.worker.is_some())
+            .then_some(())
+            .filter(|_| slot.worker_token.as_deref() == Some(generation))
+            .map(|_| callback())
     }
     #[cfg(test)]
     pub(crate) fn preview_test_worker(&self,session_id:&str,token:Option<&str>) {
@@ -2618,6 +2625,10 @@ mod delegation_tool_tests {
         assert!(!is_threadterm_tool("mcp__threadterm__delegate_start; rm -rf ."));
         assert!(!is_threadterm_tool("Shell: mcp__threadterm__delegate_start"));
         assert!(!is_threadterm_tool("mcp__other__delegate_start"));
+        assert!(is_threadterm_tool("mcp__threadterm__ask_user"));
+        assert!(is_threadterm_tool("threadterm__session_info"));
+        assert!(is_threadterm_tool("mcp__threadterm__feedback_check"));
+        assert!(!is_threadterm_tool("mcp__threadterm__ask_user; rm -rf ."));
     }
 
     #[test]
@@ -2663,5 +2674,25 @@ mod delegation_tool_tests {
         );
         let no_once = json!({"toolCall":{"title":"mcp__threadterm__delegate_start","kind":"other"},"options":[{"optionId":"approve_always","kind":"allow_always"}]});
         assert_eq!(acp_threadterm_permission_option(&no_once), None);
+    }
+
+    #[test]
+    fn scoped_permissions_never_approve_a_disabled_app_tool() {
+        let request = json!({"toolCall":{"title":"mcp__threadterm__ask_user","kind":"other"},"options":[{"optionId":"once","kind":"allow_once"}]});
+        assert_eq!(acp_scoped_permission_option(&request, &ChatToolPolicy { delegation: true, ..Default::default() }), None);
+        assert_eq!(acp_scoped_permission_option(&request, &ChatToolPolicy { ask: true, ..Default::default() }), Some("once".into()));
+        let shell = json!({"toolCall":{"title":"mcp__threadterm__ask_user","kind":"execute"},"options":[{"optionId":"once","kind":"allow_once"}]});
+        assert_eq!(acp_scoped_permission_option(&shell, &ChatToolPolicy { ask: true, ..Default::default() }), None);
+    }
+
+    #[test]
+    fn scoped_permissions_keep_preview_exact_and_never_prefix_match() {
+        let request = |title: &str, kind: &str| json!({"toolCall":{"title":title,"kind":kind},"options":[{"optionId":"once","kind":"allow_once"}]});
+        let policy = ChatToolPolicy { preview: true, ..Default::default() };
+        assert_eq!(acp_scoped_permission_option(&request("mcp__threadterm__preview_present", "other"), &policy), Some("once".into()));
+        assert_eq!(acp_scoped_permission_option(&request("threadterm__preview_status", "other"), &policy), Some("once".into()));
+        assert_eq!(acp_scoped_permission_option(&request("mcp__threadterm__preview_present", "other"), &ChatToolPolicy::default()), None);
+        assert_eq!(acp_scoped_permission_option(&request("mcp__threadterm__preview_present_extra", "other"), &policy), None);
+        assert_eq!(acp_scoped_permission_option(&request("mcp__threadterm__preview_present", "execute"), &policy), None);
     }
 }

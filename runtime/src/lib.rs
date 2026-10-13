@@ -11,6 +11,7 @@ pub mod agent_review;
 mod chat_queue;
 #[cfg(test)]
 mod chat_queue_tests;
+pub(crate) mod chat_tools;
 pub(crate) mod chat_repair;
 pub mod conpty;
 pub mod db;

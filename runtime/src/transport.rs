@@ -137,6 +137,7 @@ enum Lane {
 fn request_lane(method: &str) -> Lane {
     if method.starts_with("preview.") { return Lane::Concurrent; }
     match method {
+        "chat.tool.ask" | "chat.tool.sessionInfo" | "chat.tool.feedback" | "chat.feedback.read" => Lane::Concurrent,
         "terminal.read"
         | "project.catalog.list"
         | "session.launch.read"
@@ -761,6 +762,10 @@ mod decoder_tests {
     fn slow_reads_run_concurrently_and_terminal_control_keeps_its_own_order() {
         for read in [
             "terminal.read",
+            "chat.tool.ask",
+            "chat.tool.sessionInfo",
+            "chat.tool.feedback",
+            "chat.feedback.read",
             "project.catalog.list",
             "git.status",
             "git.diff",

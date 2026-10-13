@@ -186,6 +186,37 @@ pub(crate) fn record_answer_receipt(
     })
 }
 
+/// Project an app-hosted approval only while its originating turn is still
+/// running. The activity check and projection share the database transaction,
+/// so a turn completion cannot slip between admission and publication.
+pub(crate) fn record_if_active(
+    db: &Database,
+    session_id: &str,
+    turn_id: &str,
+    kind: &str,
+    data: &Value,
+) -> Result<bool> {
+    db.transaction(|tx| {
+        let active: bool = tx.query_row(
+            "SELECT EXISTS(
+                SELECT 1
+                FROM sessions s
+                JOIN session_activity a ON a.session_id=s.id
+                WHERE s.id=? AND s.mode='chat' AND s.read_only=0
+                  AND s.status NOT IN ('exited','interrupted','error')
+                  AND a.turn_id=? AND a.state='running'
+            )",
+            params![session_id, turn_id],
+            |row| row.get(0),
+        )?;
+        if !active {
+            return Ok(false);
+        }
+        record_tx(tx, session_id, Some(turn_id), kind, data)?;
+        Ok(true)
+    })
+}
+
 fn record_tx(
     tx: &rusqlite::Transaction<'_>,
     session_id: &str,

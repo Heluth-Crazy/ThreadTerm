@@ -1,0 +1,16 @@
+{
+  "schemaVersion": 1,
+  "id": "chat-tools-echo-acp",
+  "name": "Chat tools Echo (QA fixture)",
+  "version": "1.0.0",
+  "publisher": "ThreadTerm QA",
+  "description": "Local ACP fixture that exercises app-hosted chat tools.",
+  "homepage": "https://example.invalid/chat-tools-echo",
+  "contributes": { "agents": [{
+    "id": "chat-tools-echo", "name": "Chat tools Echo", "icon": "icon.svg",
+    "command": "node", "args": ["{pluginDir}/agent.mjs"], "versionArgs": ["--version"],
+    "terminal": { "args": [], "resumeArgs": ["--resume", "{sessionId}"] },
+    "chat": { "protocol": "acp", "args": ["--acp"] }, "signIn": { "args": ["login"] },
+    "homepage": "https://example.invalid/chat-tools-echo"
+  }] }
+}

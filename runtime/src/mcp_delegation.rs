@@ -97,16 +97,42 @@ impl PreviewCaller {
         Some(Self {session_id:std::env::var("THREADTERM_PREVIEW_SESSION_ID").ok().filter(|s|!s.is_empty())?,token:std::env::var("THREADTERM_PREVIEW_TOKEN").ok().filter(|s|!s.is_empty())?})
     }
 }
-fn composed_tools(delegation:bool,preview:bool)->Vec<Value> {
-    let mut catalog=if delegation {tools()} else {vec![]};
-    if preview {catalog.extend(crate::preview::tools())}catalog
+#[derive(Clone)]
+struct ChatCaller {session_id:String,token:String,ask:bool,session_info:bool,feedback:bool}
+impl ChatCaller {
+    fn from_env()->Option<Self> {
+        if std::env::var("THREADTERM_MCP_PROFILE").as_deref()!=Ok("chat-tools") { return None; }
+        let session_id=std::env::var("THREADTERM_CHAT_SESSION_ID").ok().filter(|s|!s.is_empty())?;
+        let token=std::env::var("THREADTERM_CHAT_TOKEN").ok().filter(|s|!s.is_empty())?;
+        let enabled=|name:&str| std::env::var(name).as_deref()==Ok("1");
+        Some(Self {session_id,token,ask:enabled("THREADTERM_CHAT_TOOL_ASK"),session_info:enabled("THREADTERM_CHAT_TOOL_SESSION_INFO"),feedback:enabled("THREADTERM_CHAT_TOOL_FEEDBACK")})
+    }
+    fn params(&self, mut params:Value)->Result<Value,Value> {
+        let object=params.as_object_mut().ok_or_else(||failure("invalid_arguments","Tool arguments must be an object."))?;
+        if object.contains_key("callerSessionId")||object.contains_key("callerToken") { return Err(failure("invalid_arguments","Caller identity is runtime-owned.")); }
+        object.insert("callerSessionId".into(),json!(self.session_id));
+        object.insert("callerToken".into(),json!(self.token));
+        Ok(params)
+    }
 }
-fn composed_instructions(delegation:bool,preview:bool)->String {
+fn composed_tools(delegation:bool,preview:bool,chat:Option<&ChatCaller>)->Vec<Value> {
+    let mut catalog=if delegation {tools()} else {vec![]};
+    if preview {catalog.extend(crate::preview::tools())}
+    if let Some(chat)=chat { catalog.extend(chat_tools(chat)); }
+    catalog
+}
+fn composed_instructions(delegation:bool,preview:bool,chat:Option<&ChatCaller>)->String {
     let mut text=format!("ThreadTerm capabilities: delegation={} (delegate_start/wait/result); local preview={} (preview_present/status). Preview: verify the server URL first; presentation/load events never prove application readiness. Browser and delegation permissions are independent.\n",delegation,preview);
     if preview {text.push_str(crate::preview::INSTRUCTIONS);text.push('\n');}
-    if delegation {text.push_str(INSTRUCTIONS)}text
+    if delegation {text.push_str(INSTRUCTIONS)}
+    if let Some(chat)=chat {
+        if chat.ask { text.push_str("\nUse ask_user when a user choice would materially affect the work. It waits for the user's answer; do not use it for routine implementation decisions."); }
+        if chat.session_info { text.push_str("\nUse session_info to read a referenced ThreadTerm chat; it returns bounded plain-text history."); }
+        if chat.feedback { text.push_str("\nFor long tasks, call feedback_check between major steps to receive user notes sent during this turn."); }
+    }
+    text
 }
-async fn call_chat_tool(config:&RuntimeConfig,caller:Option<&Caller>,preview:Option<&PreviewCaller>,name:&str,arguments:&Value,cancelled:&AtomicBool)->Result<Value,Value> {
+async fn call_chat_tool(config:&RuntimeConfig,caller:Option<&Caller>,preview:Option<&PreviewCaller>,chat:Option<&ChatCaller>,name:&str,arguments:&Value,cancelled:&AtomicBool)->Result<Value,Value> {
     if crate::preview::TOOL_NAMES.contains(&name) {
         let preview=preview.ok_or_else(||failure("preview_not_configured","Preview tools are not authorized for this Chat."))?;
         let mut params=arguments.clone();let object=params.as_object_mut().ok_or_else(||failure("invalid_arguments","Tool arguments must be an object."))?;
@@ -115,7 +141,25 @@ async fn call_chat_tool(config:&RuntimeConfig,caller:Option<&Caller>,preview:Opt
         let mut client=RuntimeClient::connect(config,format!("mcp-preview-{}",uuid::Uuid::new_v4())).await.map_err(|_|failure("app_unavailable","ThreadTerm runtime is unavailable"))?;
         return client.request(if name=="preview_present"{"preview.tool.present"}else{"preview.tool.status"},params).await.map_err(|error|failure("preview_request_failed",error.to_string()));
     }
-    call_tool(config,caller,name,arguments,cancelled).await
+    let Some(chat)=chat else { return call_tool(config,caller,name,arguments,cancelled).await };
+    let (method, enabled) = match name {
+        "ask_user" => ("chat.tool.ask", chat.ask),
+        "session_info" => ("chat.tool.sessionInfo", chat.session_info),
+        "feedback_check" => ("chat.tool.feedback", chat.feedback),
+        _ => return call_tool(config,caller,name,arguments,cancelled).await,
+    };
+    if !enabled { return Err(failure("tool_disabled", "This Chat tool is disabled for this connection.")); }
+    let params=chat.params(arguments.clone())?;
+    let mut client=RuntimeClient::connect(config,format!("mcp-chat-tool-{}",uuid::Uuid::new_v4())).await.map_err(|_|failure("app_unavailable","ThreadTerm runtime is unavailable"))?;
+    client.request(method,params).await.map_err(|error|failure("chat_tool_request_failed",error.to_string()))
+}
+
+fn chat_tools(caller:&ChatCaller)->Vec<Value> {
+    let mut result=Vec::new();
+    if caller.ask { result.push(tool("ask_user", "Ask the user up to four concise multiple-choice questions when their decision is needed. This call waits for an answer, dismissal, cancellation, or session close.", json!({"type":"object","additionalProperties":false,"required":["questions"],"properties":{"questions":{"type":"array","minItems":1,"maxItems":4,"items":{"type":"object","additionalProperties":false,"required":["question","options"],"properties":{"header":{"type":"string","minLength":1,"maxLength":80},"question":{"type":"string","minLength":1,"maxLength":4000},"options":{"type":"array","minItems":2,"maxItems":6,"items":{"type":"object","additionalProperties":false,"required":["label"],"properties":{"label":{"type":"string","minLength":1,"maxLength":256},"description":{"type":"string","maxLength":2000}}}},"multiSelect":{"type":"boolean"},"allowOther":{"type":"boolean"}}}}}}))); }
+    if caller.session_info { result.push(tool("session_info", "Read bounded metadata and recent plain-text transcript items for a ThreadTerm session in this runtime.", json!({"type":"object","additionalProperties":false,"required":["session"],"properties":{"session":{"type":"string","minLength":1,"maxLength":512}}}))); }
+    if caller.feedback { result.push(tool("feedback_check", "Read feedback notes the user sent during this turn. Call between major steps of long tasks; returned notes are marked received.", json!({"type":"object","additionalProperties":false,"properties":{}}))); }
+    result
 }
 
 fn emit(output: &Output, value: &Value) {
@@ -137,7 +181,8 @@ fn rpc_error(id: &Value, code: i32, message: &str) -> Value {
 pub async fn run_stdio(config: RuntimeConfig) -> Result<()> {
     let caller = Caller::from_env();
     let preview = PreviewCaller::from_env();
-    let instructions = composed_instructions(caller.is_some(), preview.is_some());
+    let chat = ChatCaller::from_env();
+    let instructions = composed_instructions(caller.is_some(), preview.is_some(), chat.as_ref());
     let output: Output = Arc::new(Mutex::new(std::io::stdout()));
     let inflight: Arc<Mutex<HashMap<String, Arc<AtomicBool>>>> = Arc::default();
     let (lines, mut incoming) = tokio::sync::mpsc::unbounded_channel::<String>();
@@ -197,7 +242,7 @@ pub async fn run_stdio(config: RuntimeConfig) -> Result<()> {
             }
             "ping" => emit(&output, &ok(&id, json!({}))),
             _ if !initialized => emit(&output, &rpc_error(&id, -32600, "initialize_required")),
-            "tools/list" => emit(&output, &ok(&id, json!({"tools": composed_tools(caller.is_some(),preview.is_some())}))),
+            "tools/list" => emit(&output, &ok(&id, json!({"tools": composed_tools(caller.is_some(),preview.is_some(),chat.as_ref())}))),
             "tools/call" => {
                 let name = message.pointer("/params/name").and_then(Value::as_str).unwrap_or("").to_owned();
                 let arguments = message.pointer("/params/arguments").cloned().unwrap_or_else(|| json!({}));
@@ -206,9 +251,9 @@ pub async fn run_stdio(config: RuntimeConfig) -> Result<()> {
                 if let Ok(mut calls) = inflight.lock() {
                     calls.insert(key.clone(), Arc::clone(&cancelled));
                 }
-                let (config, caller, preview, output, inflight) = (config.clone(), caller.clone(), preview.clone(), Arc::clone(&output), Arc::clone(&inflight));
+                let (config, caller, preview, chat, output, inflight) = (config.clone(), caller.clone(), preview.clone(), chat.clone(), Arc::clone(&output), Arc::clone(&inflight));
                 tokio::spawn(async move {
-                    let result = call_chat_tool(&config, caller.as_ref(), preview.as_ref(), &name, &arguments, &cancelled).await;
+                    let result = call_chat_tool(&config, caller.as_ref(), preview.as_ref(), chat.as_ref(), &name, &arguments, &cancelled).await;
                     if let Ok(mut calls) = inflight.lock() {
                         calls.remove(&key);
                     }
@@ -497,7 +542,7 @@ mod tests {
 
     #[test]
     fn composed_catalogs_keep_preview_and_delegation_authorities_separate() {
-        let names = |delegation, preview| composed_tools(delegation, preview)
+        let names = |delegation, preview| composed_tools(delegation, preview, None)
             .into_iter()
             .map(|tool| tool["name"].as_str().unwrap().to_owned())
             .collect::<Vec<_>>();
@@ -508,13 +553,13 @@ mod tests {
         assert_eq!(&combined[..6], crate::delegation::TOOL_NAMES);
         assert_eq!(&combined[6..], crate::preview::TOOL_NAMES);
 
-        let preview = composed_tools(false, true);
+        let preview = composed_tools(false, true, None);
         assert_eq!(preview[0]["inputSchema"]["required"], json!(["requestId", "url"]));
         assert_eq!(preview[0]["inputSchema"]["additionalProperties"], false);
         assert_eq!(preview[1]["inputSchema"]["required"], json!(["requestId"]));
         assert_eq!(preview[1]["inputSchema"]["additionalProperties"], false);
 
-        let instructions = composed_instructions(true, true);
+        let instructions = composed_instructions(true, true, None);
         let prefix = instructions.chars().take(512).collect::<String>();
         assert!(prefix.contains("delegation=true") && prefix.contains("local preview=true"));
         assert!(instructions.contains(crate::preview::INSTRUCTIONS));
@@ -533,6 +578,7 @@ mod tests {
             &config,
             None,
             Some(&preview),
+            None,
             "preview_present",
             &json!({"requestId":"r","url":"http://127.0.0.1:3000","callerSessionId":"spoofed"}),
             &AtomicBool::new(false),
@@ -541,6 +587,26 @@ mod tests {
         .unwrap_err();
         assert_eq!(error["error"]["code"], "invalid_arguments");
         assert!(!error.to_string().contains("secret"));
+    }
+
+    #[test]
+    fn app_tool_catalog_obeys_the_per_open_snapshot() {
+        let chat = ChatCaller { session_id: "s".into(), token: "t".into(), ask: true, session_info: false, feedback: true };
+        let names: Vec<_> = composed_tools(false, false, Some(&chat)).into_iter().map(|tool| tool["name"].as_str().unwrap().to_owned()).collect();
+        assert_eq!(names, ["ask_user", "feedback_check"]);
+        assert!(chat_tools(&chat).iter().all(|tool| tool["inputSchema"]["additionalProperties"] == false));
+        let ask = &chat_tools(&chat)[0]["inputSchema"]["properties"]["questions"]["items"]["properties"];
+        assert_eq!(ask["header"]["maxLength"], 80);
+        assert_eq!(ask["question"]["maxLength"], 4_000);
+        assert_eq!(ask["options"]["items"]["properties"]["label"]["maxLength"], 256);
+        assert_eq!(ask["options"]["items"]["properties"]["description"]["maxLength"], 2_000);
+    }
+
+    #[test]
+    fn app_tool_identity_is_runtime_owned() {
+        let chat = ChatCaller { session_id: "s".into(), token: "secret".into(), ask: true, session_info: true, feedback: true };
+        assert_eq!(chat.params(json!({})).unwrap(), json!({"callerSessionId":"s","callerToken":"secret"}));
+        assert_eq!(chat.params(json!({"callerToken":"spoof"})).unwrap_err()["error"]["code"], "invalid_arguments");
     }
 
     #[test]

@@ -292,16 +292,22 @@ fn question_request_data(
     } else { Ok(None) }
 }
 
+struct AnswerChatRequest<'a> {
+    session_id: &'a str,
+    turn_id: &'a str,
+    approval_id: &'a str,
+    response: &'a Value,
+    operation_id: &'a str,
+}
+
 fn answer_chat_request(
     db: &Database,
     providers: &Providers,
-    session_id: &str,
-    turn_id: &str,
-    approval_id: &str,
-    response: &Value,
-    operation_id: &str,
+    chat_tools: &crate::chat_tools::ChatTools,
+    request: AnswerChatRequest<'_>,
 ) -> Result<Value> {
     use sha2::{Digest, Sha256};
+    let AnswerChatRequest { session_id, turn_id, approval_id, response, operation_id } = request;
     db.require_interactive(session_id)?;
     // Reuse the operation binding, without persisting raw (possibly secret)
     // values. The caller has already fenced the current lease; lease renewal
@@ -321,6 +327,16 @@ fn answer_chat_request(
         crate::chat_plan_approval::validate_response(response, data["runtimeOwned"] == true)?;
     } else {
         crate::chat_questions::validate_response(&data, response)?;
+        if data.get("threadtermTool").and_then(Value::as_str) == Some("ask_user") {
+            if chat_tools.answer(session_id, turn_id, approval_id, response, Some(operation_id))? {
+                db.complete_null_operation(operation_id, "chat.answer")?;
+                return Ok(Value::Null);
+            }
+            return Err(crate::providers::ProviderError::new(
+                "approval_expired",
+                "This app-hosted question is no longer pending",
+            ).into());
+        }
     }
     if !db.claim_external_operation(operation_id)? {
         return Err(anyhow::anyhow!("operation_outcome_unknown"));
@@ -704,10 +720,13 @@ impl RuntimeService {
             Err(error) => eprintln!("provider network settings could not be read: {error}"),
         }
         let delegations = Arc::new(crate::delegation::Delegations::default());
+        let chat_tools = crate::chat_tools::shared(&config.database_path, Arc::clone(&db))
+            .expect("initialize app-hosted chat tools");
         let previews = Arc::new(crate::preview::Previews::new(Arc::clone(&db)).expect("initialize preview operations"));
         providers.set_tool_server_resolver(crate::preview::tool_server_resolver(
             Arc::clone(&db),
             Arc::clone(&delegations),
+            Arc::clone(&chat_tools),
             Arc::clone(&previews),
             Arc::downgrade(&providers),
             config.clone(),
@@ -718,6 +737,7 @@ impl RuntimeService {
         let event_providers = Arc::clone(&providers);
         let event_queues = Arc::clone(&chat_queues);
         let event_previews = Arc::clone(&previews);
+        let event_chat_tools = Arc::clone(&chat_tools);
         std::thread::spawn(move || loop {
             match events.blocking_recv() {
                 Ok(event) => {
@@ -748,6 +768,22 @@ impl RuntimeService {
                     for event in batch {
                         if project_provider_event(&event_db, &event_providers, &event) {
                             event_queues.provider_event(&event_db, &event_providers, &event);
+                            let settled = match event.kind.as_str() {
+                                "chat.turn.completed" | "chat.error" => event.turn_id.as_deref().map(|turn| {
+                                    event_chat_tools.cancel_turn(&event.session_id, turn)?;
+                                    let cancelled = event.kind == "chat.error"
+                                        || matches!(event.data.get("status").and_then(Value::as_str), Some("failed" | "error" | "cancelled" | "canceled" | "interrupted"));
+                                    if cancelled {
+                                        event_chat_tools.clear_waiting_feedback(&event.session_id, Some(turn))?;
+                                    }
+                                    Ok(())
+                                }),
+                                "session.closed" => Some(event_chat_tools.revoke_session(&event.session_id)),
+                                _ => None,
+                            };
+                            if let Some(Err(error)) = settled {
+                                eprintln!("app-hosted Chat tool cleanup failed for {}: {error}", event.session_id);
+                            }
                             if event.kind == "session.closed" { let _ = event_previews.revoke_disabled(&event_providers); }
                         } else if qa_projection_failed(&event.session_id) {
                             report_projection_failure(&event_db, &event_providers, &event_queues, "QA injected projection ingress failure");
@@ -812,6 +848,11 @@ impl RuntimeService {
         let _ = crate::retry_scheduler::finish(&self.db, &attempt.id, success);
     }
     pub fn shutdown(&self) {
+        if let Ok(chat_tools) = crate::chat_tools::shared(&self.config.database_path, Arc::clone(&self.db)) {
+            if let Err(error) = chat_tools.revoke_all() {
+                eprintln!("app-hosted Chat tool shutdown failed: {error}");
+            }
+        }
         if let Err(error) = self.cancel_all_deferred_launches() {
             eprintln!("deferred terminal shutdown failed: {error}");
         }
@@ -860,6 +901,29 @@ impl RuntimeService {
         principal: &str,
         request: RpcRequest,
     ) -> std::result::Result<Value, RpcError> {
+        // `ask_user` waits for a later `chat.answer`, so release the global
+        // relocation fence after its short admission and publication step.
+        if request.method == "chat.tool.ask" {
+            if request.v != 1 {
+                return Err(error("unsupported_version", "only protocol version 1 is supported"));
+            }
+            if self.shutdown_pending.load(Ordering::Acquire) {
+                return Err(error("runtime_stopping", "Runtime is shutting down"));
+            }
+            let gate = self.relocation_gate.read()
+                .map_err(|_| error("runtime_error", "relocation lock poisoned"))?;
+            if crate::settings_services::relocation_blocks(&self.config, &request.method)
+                .map_err(|failure| error("runtime_error", &failure.to_string()))?
+            {
+                return Err(error("relocation_pending", "data relocation is awaiting activation or cancellation"));
+            }
+            let tools = crate::chat_tools::shared(&self.config.database_path, Arc::clone(&self.db))
+                .map_err(|failure| map_error(&failure.to_string()))?;
+            let waiter = tools.prepare_ask(&self.providers, &request.params)
+                .map_err(|failure| map_error(&failure.to_string()))?;
+            drop(gate);
+            return waiter.wait().map_err(|failure| map_error(&failure.to_string()));
+        }
         let exclusive = matches!(
             request.method.as_str(),
             "data.relocation.prepare"
@@ -945,6 +1009,10 @@ impl RuntimeService {
             .map_err(file_reference_rpc_error);
         }
         let outcome = (|| -> Result<Value> {
+            if request.method.starts_with("chat.tool.") {
+                return crate::chat_tools::shared(&self.config.database_path, Arc::clone(&self.db))?
+                    .dispatch(&self.providers, &request.method, &request.params);
+            }
             if request.method.starts_with("preview.") {
                 return self.previews.dispatch(&self.providers, principal, &request.method, &request.params);
             }
@@ -964,7 +1032,7 @@ impl RuntimeService {
                 ));
             }
             // lookup references an existing operation; it does not reserve one.
-            if request.method != "session.lookup" && request.method != "chat.answer" && request.method != "chat.repair" && request.method != "chat.projectTrust.set" {
+            if request.method != "session.lookup" && request.method != "chat.answer" && request.method != "chat.repair" && request.method != "chat.projectTrust.set" && request.method != "chat.feedback.add" {
                 if let Some(operation_id) =
                     request.params.get("operationId").and_then(Value::as_str)
                 {
@@ -1082,6 +1150,8 @@ impl RuntimeService {
                 }
                 "runtime.shutdown" => {
                     let p: OperationOnly = parse(&request.params)?;
+                    crate::chat_tools::shared(&self.config.database_path, Arc::clone(&self.db))?
+                        .revoke_all()?;
                     self.cancel_all_deferred_launches()?;
                     if self
                         .db
@@ -1180,6 +1250,8 @@ impl RuntimeService {
                         .db
                         .session_by_id(&p.session_id)?
                         .ok_or_else(|| anyhow::anyhow!("session_not_found"))?;
+                    crate::chat_tools::shared(&self.config.database_path, Arc::clone(&self.db))?
+                        .revoke_session(&p.session_id)?;
                     if session.read_only {
                         self.record_null(&p.operation_id, "session.stop")?;
                         return Ok(Value::Null);
@@ -1385,6 +1457,40 @@ impl RuntimeService {
                         })
                     })
                 }
+                "chat.feedback.add" => {
+                    #[derive(Deserialize)]
+                    #[serde(rename_all = "camelCase", deny_unknown_fields)]
+                    struct AddFeedback {
+                        session_id: String,
+                        turn_id: String,
+                        text: String,
+                        operation_id: String,
+                        lease_epoch: i64,
+                    }
+                    let p: AddFeedback = parse(&request.params)?;
+                    self.leases.require(&self.db, &p.session_id, principal, p.lease_epoch)?;
+                    self.db.bind_operation(&p.operation_id, "chat.feedback.add", &json!({
+                        "sessionId":p.session_id,
+                        "turnId":p.turn_id,
+                        "text":p.text,
+                        "operationId":p.operation_id,
+                    }))?;
+                    crate::chat_tools::shared(&self.config.database_path, Arc::clone(&self.db))?
+                        .feedback_add(crate::chat_tools::FeedbackAdd {
+                            session_id: p.session_id,
+                            turn_id: p.turn_id,
+                            text: p.text,
+                            operation_id: p.operation_id,
+                        })
+                }
+                "chat.feedback.read" => {
+                    #[derive(Deserialize)]
+                    #[serde(rename_all = "camelCase", deny_unknown_fields)]
+                    struct ReadFeedback { session_id: String }
+                    let p: ReadFeedback = parse(&request.params)?;
+                    crate::chat_tools::shared(&self.config.database_path, Arc::clone(&self.db))?
+                        .feedback_read(&p.session_id)
+                }
                 "chat.repair" => {
                     let p: ChatRepair = parse(&request.params)?;
                     self.repair_chat_history(principal, &p)
@@ -1403,6 +1509,9 @@ impl RuntimeService {
                     self.leases
                         .require(&self.db, &p.session_id, principal, p.lease_epoch)?;
                     self.chat_queues.pause_dispatch(&self.db, &p.session_id, "stopped")?;
+                    let chat_tools = crate::chat_tools::shared(&self.config.database_path, Arc::clone(&self.db))?;
+                    chat_tools.cancel_turn(&p.session_id, &p.turn_id)?;
+                    chat_tools.clear_waiting_feedback(&p.session_id, Some(&p.turn_id))?;
                     self.providers
                         .chat_cancel(&p.session_id, &p.turn_id)
                         .map_err(anyhow::Error::from)?;
@@ -1428,7 +1537,14 @@ impl RuntimeService {
                     if [&p.session_id, &p.turn_id, &p.approval_id, &p.operation_id].iter().any(|s| s.is_empty()) {
                         return Err(crate::providers::ProviderError::new("answer_invalid", "Question identifiers must not be empty").into());
                     }
-                    answer_chat_request(&self.db, &self.providers, &p.session_id, &p.turn_id, &p.approval_id, &p.response, &p.operation_id)
+                    let chat_tools = crate::chat_tools::shared(&self.config.database_path, Arc::clone(&self.db))?;
+                    answer_chat_request(&self.db, &self.providers, &chat_tools, AnswerChatRequest {
+                        session_id: &p.session_id,
+                        turn_id: &p.turn_id,
+                        approval_id: &p.approval_id,
+                        response: &p.response,
+                        operation_id: &p.operation_id,
+                    })
                 }
                 "chat.projectTrust.set" => self.set_pi_project_trust(principal, &request.params),
                 "chat.options" => {
@@ -3940,6 +4056,8 @@ mod tests {
 
 #[cfg(test)]
 mod chat_lifecycle_tests;
+#[cfg(test)]
+mod chat_tool_tests;
 #[cfg(test)]
 mod question_tests;
 #[cfg(test)]

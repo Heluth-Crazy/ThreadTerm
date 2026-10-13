@@ -32,6 +32,32 @@ use std::{
 pub const PARENT_PROVIDERS: [&str; 4] = ["claude", "codex", "kimi", "grok"];
 pub const MAX_ACTIVE_DELEGATES: i64 = 4;
 pub const TOOL_SERVER_NAME: &str = "threadterm";
+/// The per-chat snapshot of the in-conversation tool settings. Missing values
+/// deliberately mean enabled so existing installations retain their current
+/// delegation behaviour and newly introduced tools are available by default.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct ChatToolSettings {
+    pub ask: bool,
+    pub session_info: bool,
+    pub feedback: bool,
+    pub delegation: bool,
+}
+
+impl Default for ChatToolSettings {
+    fn default() -> Self {
+        Self { ask: true, session_info: true, feedback: true, delegation: true }
+    }
+}
+
+pub(crate) fn chat_tool_settings(db: &Database) -> Result<ChatToolSettings> {
+    let mut result = ChatToolSettings::default();
+    let settings = db.settings_value()?;
+    if let Some(value) = settings.get("chatTools.ask").and_then(Value::as_bool) { result.ask = value; }
+    if let Some(value) = settings.get("chatTools.sessionInfo").and_then(Value::as_bool) { result.session_info = value; }
+    if let Some(value) = settings.get("chatTools.feedback").and_then(Value::as_bool) { result.feedback = value; }
+    if let Some(value) = settings.get("chatTools.delegation").and_then(Value::as_bool) { result.delegation = value; }
+    Ok(result)
+}
 /// The `delegation` profile's tools (`mcp_delegation::tools`). Adapters
 /// auto-approve the parent's calls to exactly these names and nothing else.
 pub const TOOL_NAMES: [&str; 6] = [
@@ -146,6 +172,12 @@ pub fn tool_server_resolver(
     mcp_executable: Option<PathBuf>,
 ) -> ToolServerResolver {
     Arc::new(move |session_id: &str, provider: &str| {
+        let Ok(settings) = chat_tool_settings(&db) else {
+            return None;
+        };
+        if !settings.delegation {
+            return None;
+        }
         if !PARENT_PROVIDERS.contains(&provider) {
             return None;
         }
