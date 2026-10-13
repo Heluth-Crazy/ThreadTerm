@@ -113,6 +113,15 @@ try {
   assert.equal(await page.evaluate(() => document.activeElement?.dataset?.testid), 'composer-plus', 'the menu returns focus to + after an action');
   report.checks.push('root menu lists Attach files, Quick messages, Slash commands and Live feedback; Attach runs once and restores focus');
 
+  // F3-03: the enabled Live feedback action reaches the note path.
+  await plus().click();
+  await menu().waitFor();
+  assert.equal(await page.getByTestId('plus-live-feedback').isDisabled(), false, 'live feedback is enabled while a note turn runs');
+  await page.getByTestId('plus-live-feedback').click();
+  await page.waitForFunction(() => window.qaHost().feedback === 1);
+  assert.equal(await page.evaluate(() => document.activeElement?.dataset?.testid), 'composer-plus', 'Live feedback restores focus to +');
+  report.checks.push('the enabled Live feedback action opens the note path exactly once');
+
   await plus().click();
   await page.getByTestId('plus-slash-commands').click();
   await page.waitForFunction(() => window.qaHost().slashes === 1);
@@ -133,7 +142,7 @@ try {
   assert.equal(inserted, 'hello Run the full test suite and fix failures.');
 
   // Live feedback is disabled outside a note-capable running turn.
-  await render({ locale: 'en', live: false, disabled: false });
+  await render({ locale: 'en', live: false, disabled: false, feedback: 0 });
   await plus().click();
   assert.equal(await page.getByTestId('plus-live-feedback').isDisabled(), true, 'live feedback stays disabled without a note turn');
   await page.getByTestId('plus-live-feedback').evaluate(node => node.click());
