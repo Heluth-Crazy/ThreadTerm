@@ -44,7 +44,7 @@ export function ChatPlanPanel({ items, copy, liveTurnId }: { items: readonly Cha
       setOpen(false);
     }
   }}>
-    <button type="button" className="chat-plan-chip" aria-expanded={open} aria-label={label} title={title} onClick={() => setOpen(current => !current)}>
+    <button type="button" className="chip chip-btn chat-plan-chip" aria-expanded={open} aria-label={label} title={title} onClick={() => setOpen(current => !current)}>
       <span className="chat-plan-label">{label}</span>
       <span className="chat-plan-progress" role="presentation"><i style={{ width: `${percent}%` }} /></span>
     </button>
@@ -54,7 +54,7 @@ export function ChatPlanPanel({ items, copy, liveTurnId }: { items: readonly Cha
         {entries.map((entry, index) => <li className={`chat-plan-entry is-${entry.status}`} key={index} title={planEntryLabel(entry, copy)}>
           <StatusMark status={entry.status} active={active} />
           <span className="chat-plan-entry-text">{entry.content}</span>
-          {entry.priority && <span className={`chat-plan-priority is-${entry.priority}`}>{planPriorityLabel(entry.priority, copy)}</span>}
+          {entry.priority && <span className={`chip flat chat-plan-priority is-${entry.priority}`}>{planPriorityLabel(entry.priority, copy)}</span>}
         </li>)}
       </ol>
     </div>}

@@ -15,10 +15,8 @@
 .chat-tool-output-preview { flex:1 0 100%; display:flex; align-items:baseline; gap:8px; min-width:0; max-width:100%; color:var(--muted); font:12px/1.5 var(--mono,ui-monospace,SFMono-Regular,Consolas,monospace); }
 .chat-tool-output-preview > span:last-child { min-width:0; overflow:hidden; white-space:nowrap; text-overflow:ellipsis; }
 .chat-tool-output-label { flex:none; font-family:inherit; opacity:.85; }
-.chat-tool-collapse { display:inline-flex; align-items:center; gap:6px; min-height:32px; margin:8px 0 0 20px; padding:5px 10px; border:1px solid var(--border); border-radius:8px; background:var(--surface); color:var(--text); font-family:inherit; font-size:12px; cursor:pointer; }
-.chat-tool-collapse > .ico { width:14px; height:14px; transform:rotate(180deg); }
-.chat-tool-collapse:hover { background:var(--raised); }
-.chat-tool-collapse:focus-visible { outline:2px solid var(--primary); outline-offset:3px; }
+.chat-tool-collapse { margin:8px 0 0 20px; }
+.chat-tool-collapse > .ico { transform:rotate(180deg); }
 .chat-tool-recent { margin:6px 0 0 22px; color:var(--muted); font-size:12px; overflow-wrap:anywhere; }
 .chat-tool-entries { margin-top:8px; }
 .chat-tool-entry { min-width:0; padding:10px 0 10px 20px; border-left:1px solid var(--border); }
@@ -37,19 +35,13 @@
 .tool-card { display:block; }
 .tool-card-head { gap:8px; }
 .tool-card-title { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-.tool-card-status { margin-left:auto; flex:none; font-size:11px; padding:1px 7px; border-radius:999px; border:1px solid var(--border); color:var(--muted); }
-.tool-card-status.is-running, .tool-card-status.is-awaiting { color:var(--primary); border-color:color-mix(in srgb,var(--primary) 35%,var(--border)); }
-.tool-card-status.is-failed, .tool-card-status.is-cancelled { color:var(--danger); border-color:color-mix(in srgb,var(--danger) 35%,var(--border)); }
+.tool-card-status { margin-left:auto; flex:none; }
 .tool-card.is-failed .tool-card-title, .tool-card.is-cancelled .tool-card-title { color:var(--muted); }
 .tool-card-body { margin:7px 0 0; min-width:0; }
 .tool-card-note { margin:5px 0 0; color:var(--muted); font-size:12px; overflow-wrap:anywhere; }
-.tool-card-action { display:inline-flex; align-items:center; gap:6px; margin:6px 6px 0 0; padding:3px 9px; min-height:26px; border:1px solid var(--border); border-radius:7px; background:var(--surface); color:var(--text); font-family:inherit; font-size:12px; cursor:pointer; }
-.tool-card-action:hover { background:var(--raised); }
-.tool-card-action:focus-visible { outline:2px solid var(--primary); outline-offset:2px; }
+.tool-card-action { margin:6px 6px 0 0; }
 .tool-chip-row { display:flex; flex-wrap:wrap; gap:5px; margin-top:6px; min-width:0; }
-.tool-chip { max-width:100%; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; padding:1px 7px; border:1px solid var(--border); border-radius:999px; color:var(--muted); font-size:11px; }
-.tool-chip.is-accent { color:var(--primary); border-color:color-mix(in srgb,var(--primary) 35%,var(--border)); }
-.tool-chip.is-danger { color:var(--danger); border-color:color-mix(in srgb,var(--danger) 35%,var(--border)); }
+.tool-chip { max-width:100%; overflow:hidden; text-overflow:ellipsis; }
 .tool-path, .tool-command, .tool-search { display:flex; align-items:center; gap:6px; min-width:0; font:12px/1.5 var(--mono,ui-monospace,SFMono-Regular,Consolas,monospace); }
 .tool-path > .ico, .tool-edit-file-head > .ico { flex:none; width:14px; height:14px; color:var(--muted); }
 .tool-path > *, .tool-edit-path { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; direction:rtl; text-align:left; }
@@ -84,10 +76,9 @@
 .tool-json { min-width:0; margin-top:4px; }
 .tool-json-bar { display:flex; justify-content:flex-end; }
 .tool-json-tree { max-height:300px; overflow:auto; border:1px solid var(--border); border-radius:8px; padding:6px 8px; background:var(--surface); font:11px/1.5 var(--mono,ui-monospace,SFMono-Regular,Consolas,monospace); }
-.tool-json-row { display:flex; align-items:baseline; gap:5px; min-width:max-content; }
-.tool-json-toggle { flex:none; width:16px; height:16px; padding:0; border:none; background:none; color:var(--muted); cursor:pointer; }
-.tool-json-toggle > .ico { width:12px; height:12px; }
-.tool-json-spacer { flex:none; width:16px; }
+.tool-json-row { display:flex; align-items:center; gap:5px; min-width:max-content; }
+.tool-json-toggle { flex:none; }
+.tool-json-spacer { flex:none; width:26px; }
 .tool-json-key { color:var(--muted); }
 .tool-json-value.is-string { color:var(--text); }
 .tool-json-value.is-number, .tool-json-value.is-boolean { color:var(--primary); }

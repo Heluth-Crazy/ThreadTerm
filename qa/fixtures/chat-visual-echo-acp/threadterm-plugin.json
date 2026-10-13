@@ -1,0 +1,16 @@
+{
+  "schemaVersion": 1,
+  "id": "chat-visual-echo-acp",
+  "name": "Chat visual Echo (QA fixture)",
+  "version": "0.1.0",
+  "publisher": "ThreadTerm QA",
+  "description": "Isolated ACP fixture that emits a plan, one read, one search, one command, a multi-file edit and a final answer with a code block.",
+  "homepage": "https://example.invalid/chat-visual-echo",
+  "contributes": { "agents": [{
+    "id": "chat-visual-echo", "name": "Chat visual Echo", "icon": "icon.svg",
+    "command": "node", "args": ["{pluginDir}/agent.mjs"], "versionArgs": ["--version"],
+    "terminal": { "args": [], "resumeArgs": ["--resume", "{sessionId}"] },
+    "chat": { "protocol": "acp", "args": ["--acp"] }, "signIn": { "args": ["login"] },
+    "homepage": "https://example.invalid/chat-visual-echo"
+  }] }
+}

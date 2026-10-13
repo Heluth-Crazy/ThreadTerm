@@ -6,6 +6,7 @@ import { _electron as electron } from '@playwright/test';
 import { mkdir, mkdtemp, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
+import { assertNoControlViolations, checkControlConsistency } from './lib/visual-consistency.mjs';
 
 const scratch = await mkdtemp(join(tmpdir(), 'threadterm-reply-copy-'));
 const out = resolve('qa', 'results', 'chat-parity', 'A2', 'reply-copy-isolated', new Date().toISOString().replace(/[:.]/g, '-'));
@@ -141,6 +142,12 @@ try {
   await chat.locator('article.has-reply-actions').first().waitFor();
   await copyButton.hover();
   await page.screenshot({ path: join(out, 'hover-en-light.png') });
+
+  const replyConsistency = await checkControlConsistency(page, '.v3-chat-message.has-reply-actions');
+  assertNoControlViolations(replyConsistency, 'reply actions');
+  const codeConsistency = await checkControlConsistency(page, '.md-code-block');
+  assertNoControlViolations(codeConsistency, 'code-block copy');
+  report.checks.push(`zero visual-consistency violations (reply ${replyConsistency.checked}, code ${codeConsistency.checked} controls)`);
 
   report.passed = true;
   await writeFile(join(out, 'report.json'), JSON.stringify(report, null, 2));

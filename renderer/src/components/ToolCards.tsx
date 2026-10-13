@@ -21,6 +21,12 @@ const icons: Record<ToolView['kind'], string> = {
   compaction: 'layers', generic: 'spark',
 };
 
+/** Maps a tool status key to the shared status-chip colours. */
+const statusChip: Record<string, string> = {
+  running: 'st-running', awaiting: 'st-needs', complete: 'st-ended',
+  recorded: 'st-ended', inactive: 'st-ended', failed: 'st-failed', cancelled: 'st-failed',
+};
+
 function changeLabel(change: string, copy: Copy): string {
   switch (change) {
     case 'add': return copy('Added', '新增');
@@ -42,7 +48,7 @@ function DiffBlock({ diff, copy }: { diff: NonNullable<Extract<ToolView, { kind:
         <span className="tool-diff-text">{row.text}</span>
       </div>)}
     </div>
-    {view.collapsed && view.canShowAll && <button type="button" className="tool-card-action" onClick={() => setShowAll(true)}>{copy(`Show all (${view.rows.length} lines)`, `显示全部（${view.rows.length} 行）`)}</button>}
+    {view.collapsed && view.canShowAll && <button type="button" className="btn btn-sm tool-card-action" onClick={() => setShowAll(true)}>{copy(`Show all (${view.rows.length} lines)`, `显示全部（${view.rows.length} 行）`)}</button>}
     {view.openOnly && <p className="tool-card-note">{copy(`Diff has ${view.rows.length} lines. Open it in the editor to review.`, `差异共 ${view.rows.length} 行，请在编辑器中查看。`)}</p>}
   </div>;
 }
@@ -66,8 +72,8 @@ function EditBody({ view, copy, openFile, openDiff, canOpenDiff }: { view: Extra
         {file.movePath && <p className="tool-card-note">→ {file.movePath}</p>}
         {file.diff && <DiffBlock diff={file.diff} copy={copy} />}
         {(openFile || diffable) && <div className="tool-card-actions">
-          {openFile && <button type="button" className="tool-card-action" onClick={() => openFile({ path: file.path })}>{copy('Open file', '打开文件')}</button>}
-          {diffable && <button type="button" className="tool-card-action" onClick={() => openDiff!(file.path)}>{copy('Open diff', '查看差异')}</button>}
+          {openFile && <button type="button" className="btn btn-sm tool-card-action" onClick={() => openFile({ path: file.path })}>{copy('Open file', '打开文件')}</button>}
+          {diffable && <button type="button" className="btn btn-sm tool-card-action" onClick={() => openDiff!(file.path)}>{copy('Open diff', '查看差异')}</button>}
         </div>}
       </div>;
     })}
@@ -81,7 +87,7 @@ function OutputBody({ text, copy }: { text: string; copy: Copy }) {
   const view = outputView(text, expanded);
   return <>
     <pre className="tool-output">{view.lines.join('\n')}</pre>
-    {view.expandable && <button type="button" className="tool-card-action" onClick={() => setExpanded(true)}>{copy(`Show output (${view.total} lines)`, `显示输出（${view.total} 行）`)}</button>}
+    {view.expandable && <button type="button" className="btn btn-sm tool-card-action" onClick={() => setExpanded(true)}>{copy(`Show output (${view.total} lines)`, `显示输出（${view.total} 行）`)}</button>}
     {expanded && view.omitted > 0 && <p className="tool-card-note">{copy(`${view.omitted} earlier lines not shown.`, `较早的 ${view.omitted} 行未显示。`)}</p>}
   </>;
 }
@@ -91,10 +97,10 @@ function CommandBody({ view, sessionCwd, copy }: { view: Extract<ToolView, { kin
   return <>
     <div className="tool-command"><code>{view.command}</code></div>
     <div className="tool-chip-row">
-      {cwd && <span className="tool-chip" title={cwd}>{copy('cwd', '目录')}: {cwd}</span>}
-      {view.background && <span className="tool-chip is-accent">{copy('Background', '后台')}</span>}
-      {view.exitCode !== undefined && view.exitCode !== 0 && <span className="tool-chip is-danger">{copy('exit', '退出码')} {view.exitCode}</span>}
-      {view.actions?.map(action => <span className="tool-chip" key={action}>{action}</span>)}
+      {cwd && <span className="chip flat tool-chip" title={cwd}>{copy('cwd', '目录')}: {cwd}</span>}
+      {view.background && <span className="chip flat is-accent tool-chip">{copy('Background', '后台')}</span>}
+      {view.exitCode !== undefined && view.exitCode !== 0 && <span className="chip flat is-danger tool-chip">{copy('exit', '退出码')} {view.exitCode}</span>}
+      {view.actions?.map(action => <span className="chip flat tool-chip" key={action}>{action}</span>)}
     </div>
     {view.output && <OutputBody text={view.output} copy={copy} />}
   </>;
@@ -104,9 +110,9 @@ function ReadBody({ view, copy, openFile }: { view: Extract<ToolView, { kind: 'r
   return <>
     <div className="tool-path"><Icon name="file" /><FileLinkedText text={view.path} openFile={openFile} /></div>
     <div className="tool-chip-row">
-      {view.offset !== undefined && <span className="tool-chip">{copy('offset', '起始')} {view.offset}</span>}
-      {view.limit !== undefined && <span className="tool-chip">{copy('limit', '行数')} {view.limit}</span>}
-      {view.pages !== undefined && <span className="tool-chip">{copy('pages', '页')} {view.pages}</span>}
+      {view.offset !== undefined && <span className="chip flat tool-chip">{copy('offset', '起始')} {view.offset}</span>}
+      {view.limit !== undefined && <span className="chip flat tool-chip">{copy('limit', '行数')} {view.limit}</span>}
+      {view.pages !== undefined && <span className="chip flat tool-chip">{copy('pages', '页')} {view.pages}</span>}
     </div>
   </>;
 }
@@ -115,11 +121,11 @@ function SearchBody({ view, copy }: { view: Extract<ToolView, { kind: 'search' }
   return <>
     <div className="tool-search"><code>{view.query}</code></div>
     <div className="tool-chip-row">
-      {view.path && <span className="tool-chip">{view.path}</span>}
-      {view.glob && <span className="tool-chip">{view.glob}</span>}
-      {view.matches !== undefined && view.files !== undefined && <span className="tool-chip">{copy(`${view.matches} matches in ${view.files} files`, `${view.files} 个文件中 ${view.matches} 处匹配`)}</span>}
-      {view.flags?.caseInsensitive && <span className="tool-chip">-i</span>}
-      {view.flags?.multiline && <span className="tool-chip">multiline</span>}
+      {view.path && <span className="chip flat tool-chip">{view.path}</span>}
+      {view.glob && <span className="chip flat tool-chip">{view.glob}</span>}
+      {view.matches !== undefined && view.files !== undefined && <span className="chip flat tool-chip">{copy(`${view.matches} matches in ${view.files} files`, `${view.files} 个文件中 ${view.matches} 处匹配`)}</span>}
+      {view.flags?.caseInsensitive && <span className="chip flat tool-chip">-i</span>}
+      {view.flags?.multiline && <span className="chip flat tool-chip">multiline</span>}
     </div>
     {view.omitted && <p className="tool-card-note">{copy('Some results were not shown.', '部分结果未显示。')}</p>}
   </>;
@@ -132,13 +138,13 @@ function WebBody({ view, copy }: { view: Extract<ToolView, { kind: 'web' }>; cop
     <div className="tool-path"><Icon name="popout" /><span className="tool-url" title={view.url}>{label}</span></div>
     {view.result && (open
       ? <OutputBody text={view.result} copy={copy} />
-      : <button type="button" className="tool-card-action" onClick={() => setOpen(true)}>{copy('Show result', '显示结果')}</button>)}
+      : <button type="button" className="btn btn-sm tool-card-action" onClick={() => setOpen(true)}>{copy('Show result', '显示结果')}</button>)}
   </>;
 }
 
 function TodoBody({ view, copy }: { view: Extract<ToolView, { kind: 'todo' }>; copy: Copy }) {
   return <>
-    <div className="tool-chip-row"><span className="tool-chip">{copy(`${view.done}/${view.total} done`, `已完成 ${view.done}/${view.total}`)}</span></div>
+    <div className="tool-chip-row"><span className="chip flat tool-chip">{copy(`${view.done}/${view.total} done`, `已完成 ${view.done}/${view.total}`)}</span></div>
     <ul className="tool-todos">
       {view.items.map((item, index) => <li className={`tool-todo is-${item.status}`} key={index}>
         <span className="tool-todo-mark" aria-hidden="true">{item.status === 'completed' ? '✓' : item.status === 'in_progress' ? '◐' : '○'}</span>
@@ -160,8 +166,8 @@ function CompactionBody({ view, copy }: { view: Extract<ToolView, { kind: 'compa
   const before = view.before ?? 0, after = view.after ?? 0;
   return <>
     <div className="tool-chip-row">
-      {(view.before !== undefined || view.after !== undefined) && <span className="tool-chip">{before.toLocaleString()} → {after.toLocaleString()}</span>}
-      {view.trigger && <span className="tool-chip">{view.trigger}</span>}
+      {(view.before !== undefined || view.after !== undefined) && <span className="chip flat tool-chip">{before.toLocaleString()} → {after.toLocaleString()}</span>}
+      {view.trigger && <span className="chip flat tool-chip">{view.trigger}</span>}
     </div>
     {view.before === undefined && view.after === undefined && <p className="tool-card-note">{copy('Context was compacted.', '上下文已压缩。')}</p>}
   </>;
@@ -169,7 +175,7 @@ function CompactionBody({ view, copy }: { view: Extract<ToolView, { kind: 'compa
 
 function McpBody({ view, copy }: { view: Extract<ToolView, { kind: 'mcp' }>; copy: Copy }) {
   return <>
-    {view.server && <div className="tool-chip-row"><span className="tool-chip">{view.server}</span><span className="tool-chip">{view.tool}</span></div>}
+    {view.server && <div className="tool-chip-row"><span className="chip flat tool-chip">{view.server}</span><span className="chip flat tool-chip">{view.tool}</span></div>}
     {view.args !== undefined && <div className="tool-json-block"><span className="tool-json-label">{copy('Arguments', '参数')}</span><JsonTree value={view.args} copy={copy} /></div>}
     {view.result !== undefined && <div className="tool-json-block"><span className="tool-json-label">{copy('Result', '结果')}</span><JsonTree value={view.result} copy={copy} /></div>}
   </>;
@@ -190,7 +196,7 @@ function CardBody({ view, copy, sessionCwd, openFile, openDiff, canOpenDiff }: {
     case 'search': return <SearchBody view={view} copy={copy} />;
     case 'web': return <WebBody view={view} copy={copy} />;
     case 'todo': return <TodoBody view={view} copy={copy} />;
-    case 'skill': return <div className="tool-chip-row"><span className="tool-chip">{view.name}</span>{view.args && <span className="tool-chip">{view.args}</span>}</div>;
+    case 'skill': return <div className="tool-chip-row"><span className="chip flat tool-chip">{view.name}</span>{view.args && <span className="chip flat tool-chip">{view.args}</span>}</div>;
     case 'image': return <ImageBody view={view} copy={copy} />;
     case 'compaction': return <CompactionBody view={view} copy={copy} />;
     case 'mcp': return <McpBody view={view} copy={copy} />;
@@ -232,7 +238,7 @@ export function ToolCard({ entry, index, open, active, awaitingApproval, session
       <span className="chat-tool-step">{index + 1}</span>
       <Icon name={icons[view.kind]} />
       <strong className="tool-card-title" title={view.title}>{view.title}</strong>
-      <span className={`tool-card-status is-${status.key}`}>{status.label}</span>
+      <span className={`chip tool-card-status ${statusChip[status.key] ?? 'flat'}`}>{status.label}</span>
     </div>
     {open && <div className="tool-card-body">
       <CardBody view={view} copy={copy} sessionCwd={sessionCwd} openFile={openFile} openDiff={openDiff} canOpenDiff={canOpenDiff} />

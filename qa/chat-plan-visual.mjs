@@ -9,6 +9,7 @@ import { _electron as electron } from '@playwright/test';
 import { mkdir, mkdtemp, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
+import { assertNoControlViolations, checkControlConsistency } from './lib/visual-consistency.mjs';
 
 const root = resolve(import.meta.dirname, '..');
 const scratch = await mkdtemp(join(tmpdir(), 'threadterm-chat-plan-'));
@@ -129,6 +130,14 @@ try {
     await shot(`plan-${theme}-${locale}-${width}-collapsed.png`);
   }
   report.checks.push('wide/420 light/dark en/zh-CN expanded and collapsed screenshots have no horizontal clipping');
+
+  // Visual consistency (V1, issue VC): the plan chip and the priority chips.
+  await setState({ theme: 'light', locale: 'en', width: 1280, scenario: 'live' });
+  await page.locator('.chat-plan-panel').waitFor();
+  if (await page.locator('.chat-plan-chip').getAttribute('aria-expanded') === 'false') await page.locator('.chat-plan-chip').click();
+  const planConsistency = await checkControlConsistency(page, '.chat-plan-panel');
+  assertNoControlViolations(planConsistency, 'plan panel');
+  report.checks.push(`zero visual-consistency violations across ${planConsistency.checked} plan controls`);
 
   // Long entries wrap inside the narrow card.
   await setState({ theme: 'dark', locale: 'en', width: 420, scenario: 'long' });

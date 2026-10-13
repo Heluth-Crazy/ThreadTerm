@@ -94,7 +94,7 @@ function renderCodexMarkdown(text: string, zh: boolean): string {
     block.append(pre);
     const button = document.createElement('button');
     button.type = 'button';
-    button.className = 'md-code-copy';
+    button.className = 'btn btn-sm md-code-copy';
     button.dataset.copyCode = 'true';
     button.textContent = zh ? '复制' : 'Copy';
     button.setAttribute('aria-label', zh ? '复制代码' : 'Copy code');
@@ -1229,7 +1229,7 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession }
       {firstResponseWait && <div className="chat-first-response-wait" role="status" aria-live="polite" aria-label={submissionPreview && busy ? copy('Sending…', '正在发送…') : copy("Thinking", "思考中")}><span>{submissionPreview && busy ? copy('Sending…', '正在发送…') : copy("Thinking", "思考中")}</span><span className="chat-first-response-dots" aria-hidden="true"><i /><i /><i /></span></div>}
       </div>
     </div>
-    {viewport.paused && overlay !== 'full' && <button type="button" className="chat-back-to-bottom" aria-keyshortcuts="Escape" onClick={viewport.followLatest}><Icon name="arrowUp" /><span>{copy('Back to bottom', '返回底部')}</span><kbd aria-hidden="true">Esc</kbd></button>}
+    {viewport.paused && overlay !== 'full' && <button type="button" className="btn chat-back-to-bottom" aria-keyshortcuts="Escape" onClick={viewport.followLatest}><Icon name="arrowUp" /><span>{copy('Back to bottom', '返回底部')}</span><kbd className="kbd" aria-hidden="true">Esc</kbd></button>}
     </div>
     {recovery !== undefined && <div role="alert" className="surface-error">
       <p>{copy('An unsaved draft is available on this device.', '此设备上有一份未保存的草稿。')}</p>
@@ -1268,7 +1268,7 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession }
       <textarea id={`chat-message-${session.id}`} ref={composeRef} value={submissionPreview ? '' : text} onChange={event => { changeText(event.target.value); setSlashIndex(0); }} onPaste={pasteImages} onKeyDown={onComposeKey} placeholder={copy('Message the provider, or type / for commands', '发送消息，或输入 / 唤出命令')} rows={1} disabled={busy || ended || !writable || overlay === "full" || !draftLoaded} />
       <div className="chat-compose-bar">
         <div className="chat-compose-left">
-          <button type="button" className="chat-compose-icon" disabled={busy || ended || !writable} aria-label={copy("Commands", "命令")} title={copy("Commands", "命令")} onClick={() => { changeText(text.startsWith("/") ? text : "/"); composeRef.current?.focus(); }}><Icon name="plus" /></button>
+          <button type="button" className="icon-btn icon-btn-round chat-compose-icon" disabled={busy || ended || !writable} aria-label={copy("Commands", "命令")} title={copy("Commands", "命令")} onClick={() => { changeText(text.startsWith("/") ? text : "/"); composeRef.current?.focus(); }}><Icon name="plus" /></button>
           {modeOption && <button type="button" className={`chat-compose-chip chat-mode-chip mode-${modeOption.value.replace(/[^a-z0-9]/gi, "") || "unknown"}`} data-menu-trigger="mode" aria-haspopup="menu" aria-expanded={menuOpen === "mode"} disabled={ended || !writable} title={isNativeOption(modeOption) ? modeText(modeOption, zh) : currentChoiceName(modeOption) || modeOption.name} onClick={() => setMenuOpen(menuOpen === "mode" ? null : "mode")}>
             <Icon name="shield" /><span>{modeText(modeOption, zh)}</span>
           </button>}
@@ -1281,8 +1281,8 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession }
             {thinkingOption && <span className="chat-model-think">{shortThinking(thinkingOption, zh)}</span>}
             <Icon name="chevD" className="chat-model-chev" />
           </button>}
-          {liveTurn && <button type="button" className="chat-compose-send is-stop" disabled={!writable || busy} onClick={() => void cancel(liveTurn)} aria-label={copy('Stop', '停止')} title={copy('Stop', '停止')}><span className="chat-stop-square" /></button>}
-          <button className={`chat-compose-send${queueMode ? ' is-queue' : ''}`} type="submit" disabled={(!text.trim() && !images.length && !context.items.length) || queue?.sessionId !== session.id || imageReading || busy || !writable || !draftLoaded || draftFailed || recovery !== undefined} aria-label={busy ? copy('Sending…', '正在发送…') : queueMode ? copy('Queue', '加入队列') : copy('Send', '发送')}>{queueMode ? copy('Queue', '加入队列') : <Icon name="arrowUp" />}</button>
+          {liveTurn && <button type="button" className="icon-btn icon-btn-round chat-compose-send is-stop" disabled={!writable || busy} onClick={() => void cancel(liveTurn)} aria-label={copy('Stop', '停止')} title={copy('Stop', '停止')}><span className="chat-stop-square" /></button>}
+          <button className={`icon-btn icon-btn-round chat-compose-send${queueMode ? ' is-queue' : ''}`} type="submit" disabled={(!text.trim() && !images.length && !context.items.length) || queue?.sessionId !== session.id || imageReading || busy || !writable || !draftLoaded || draftFailed || recovery !== undefined} aria-label={busy ? copy('Sending…', '正在发送…') : queueMode ? copy('Queue', '加入队列') : copy('Send', '发送')}>{queueMode ? copy('Queue', '加入队列') : <Icon name="arrowUp" />}</button>
         </div>
       </div>
     </form>

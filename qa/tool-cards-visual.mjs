@@ -10,6 +10,7 @@ import { _electron as electron } from '@playwright/test';
 import { mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
+import { assertNoControlViolations, checkControlConsistency } from './lib/visual-consistency.mjs';
 
 const root = resolve(import.meta.dirname, '..');
 const scratch = await mkdtemp(join(tmpdir(), 'threadterm-tool-cards-'));
@@ -133,6 +134,22 @@ try {
     await shot(`cards-${theme}-${locale}-${width}-expanded.png`);
   }
   report.checks.push('wide/420 light/dark en/zh-CN collapsed and expanded screenshots have no horizontal clipping');
+
+  // Visual consistency (V1, issue VC): check every card entry after scrolling
+  // it into view so no control is missed by the clipping guard.
+  await setState({ theme: 'light', locale: 'en', width: 1280, scenario: 'cards' });
+  await drawerOpen(true);
+  const entryCount = await page.locator('.chat-tool-entry').count();
+  let cardControls = 0;
+  for (let index = 0; index < entryCount; index += 1) {
+    const selector = `.chat-tool-entries > .chat-tool-entry:nth-child(${index + 1})`;
+    await page.locator(selector).scrollIntoViewIfNeeded();
+    await page.evaluate(() => new Promise(done => requestAnimationFrame(() => requestAnimationFrame(done))));
+    const result = await checkControlConsistency(page, selector);
+    assertNoControlViolations(result, `tool card ${index + 1}`);
+    cardControls += result.checked;
+  }
+  report.checks.push(`zero visual-consistency violations across ${cardControls} tool-card controls (${entryCount} entries)`);
 
   // Running command: live preview outside, Running chip and streaming output inside.
   await setState({ theme: 'light', locale: 'en', width: 1280, scenario: 'running' });

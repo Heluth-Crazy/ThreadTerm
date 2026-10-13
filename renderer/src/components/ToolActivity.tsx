@@ -80,7 +80,7 @@ export function ToolActivity({ entries, active, awaitingApproval = false, awaiti
         openDiff={openDiff}
         canOpenDiff={canOpenDiff}
       />)}</div>
-      <button type="button" className="chat-tool-collapse" data-chat-collapse onClick={() => { onInspect?.(); revealAfterCollapse.current = true; setOpen(false); }}><Icon name="chevD" />{copy('Collapse tools', '收起工具详情')}</button>
+      <button type="button" className="btn btn-sm chat-tool-collapse" data-chat-collapse onClick={() => { onInspect?.(); revealAfterCollapse.current = true; setOpen(false); }}><Icon name="chevD" />{copy('Collapse tools', '收起工具详情')}</button>
     </details>
     {!!failures.length && <div className="chat-tool-failures">{failures.map(entry => {
       const info = describeTool(entry.part, copy);

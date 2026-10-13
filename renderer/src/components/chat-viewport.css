@@ -1,8 +1,9 @@
 .chat-log-shell { position:relative; display:flex; flex-direction:column; flex:1; min-height:0; min-width:0; }
 .chat-log-shell > .v3-chat-log { flex:1; min-height:0; overflow-y:auto; }
-.chat-back-to-bottom { position:absolute; z-index:5; bottom:12px; left:50%; transform:translateX(-50%); display:inline-flex; align-items:center; justify-content:center; gap:8px; max-width:calc(100% - 32px); min-height:32px; padding:6px 12px; border:1px solid var(--border); border-radius:16px; background:var(--surface); color:var(--text); box-shadow:var(--shadow-soft); font-family:inherit; font-size:12px; line-height:1.4; font-weight:500; cursor:pointer; white-space:nowrap; }
-.chat-back-to-bottom > .ico { width:14px; height:14px; transform:rotate(180deg); flex:none; }
-.chat-back-to-bottom kbd { border:0; color:var(--muted); background:transparent; font:11px/1.4 var(--mono,ui-monospace,monospace); }
-.chat-back-to-bottom:hover { background:var(--raised); }
-.chat-back-to-bottom:focus-visible { outline:2px solid var(--primary); outline-offset:3px; }
+/* The floating affordance keeps only position and elevation; size, border,
+   radius and colours come from the shared .btn (issue VC). */
+.chat-back-to-bottom { position:absolute; z-index:5; bottom:12px; left:50%; transform:translateX(-50%); max-width:calc(100% - 32px); box-shadow:var(--shadow-soft); white-space:nowrap; }
+.chat-back-to-bottom > .ico { transform:rotate(180deg); }
+/* Reserve room so the overlay never covers the last card's content or actions. */
+.chat-view .chat-log-shell:has(.chat-back-to-bottom) .v3-chat-log { padding-bottom:52px; }
 .chat-log-shell .v3-chat-log:focus-visible { outline:2px solid var(--border); outline-offset:-2px; }
