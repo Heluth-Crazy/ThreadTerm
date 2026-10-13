@@ -78,6 +78,10 @@
 /* Interactive chips that carry a label, not a status: keep the chip geometry and drop the status dot. */
 .chip.is-plain::before { display:none; }
 .chip.flat.is-danger { color:var(--danger); }
+/* Shared menu-item checked state. Size, radius, type, hover, disabled and
+   focus stay on .menu-item and the global button / :focus-visible rules. */
+.menu-item[aria-checked="true"] { background:var(--primary-tint, var(--soft, var(--raised))); }
+.menu-item[aria-checked="true"] .ico { color:var(--primary); }
 
 html, body, #root { height:100%; margin:0; }
 /* The desktop window is transparent (Windows 10 has no native corner rounding),
@@ -571,22 +575,23 @@ html[data-theme="dark"] { color-scheme:dark; }
 .chat-compose-menu.chat-menu-more { left:0; right:auto; bottom:calc(100% + 6px); width:min(340px, calc(100vw - 40px)); }
 .chat-menu-label { margin:7px 8px 3px; color:var(--muted); font-size:11px; }
 .chat-menu-desc { margin:0 8px 6px; color:var(--muted); font-size:11px; line-height:1.4; overflow-wrap:anywhere; }
-.chat-menu-search { width:100%; box-sizing:border-box; margin:2px 0 4px; padding:6px 8px; border:1px solid var(--border); border-radius:9px; background:var(--bg); color:var(--text); font:inherit; font-size:12px; }
+.chat-menu-search { width:100%; box-sizing:border-box; margin:2px 0 4px; padding:6px 8px; border:1px solid var(--border); border-radius:var(--radius); background:var(--bg); color:var(--text); font:inherit; font-size:12px; }
 .chat-menu-empty { margin:8px 10px; color:var(--muted); font-size:12px; }
-.chat-menu-group { margin:8px 8px 2px; color:var(--muted); font-size:10px; font-weight:600; text-transform:uppercase; letter-spacing:.04em; }
-.chat-menu-item { width:100%; display:flex; align-items:center; gap:8px; padding:7px 8px; border:0; border-radius:9px; background:transparent; color:var(--text); font:inherit; font-size:12px; text-align:left; }
-.chat-menu-text { display:grid; gap:1px; min-width:0; flex:1; }
-.chat-menu-text > span { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-.chat-menu-choice-desc { color:var(--muted); font-size:11px; overflow-wrap:anywhere; }
-.chat-menu-badge { flex:none; padding:1px 6px; border-radius:999px; background:color-mix(in srgb, var(--primary) 11%, transparent); color:var(--primary); font-size:10px; font-weight:500; }
+.chat-menu-group { margin:8px 8px 2px; color:var(--muted); font-size:11px; font-weight:600; text-transform:uppercase; letter-spacing:.04em; }
+/* Layout only. Size, border, radius, type, color and states come from .menu-item. */
 .chat-menu-item .chat-menu-check { width:14px; height:14px; flex:none; visibility:hidden; }
-.chat-menu-item.active { background:var(--primary-tint, var(--soft, var(--raised))); }
-.chat-menu-item.active .chat-menu-check { visibility:visible; color:var(--primary); }
-.chat-menu-item:hover:not(:disabled):not(.active) { background:var(--soft, var(--raised)); }
-.chat-menu-item:disabled { opacity:0.5; }
+.chat-menu-item[aria-checked="true"] .chat-menu-check { visibility:visible; }
+.chat-menu-text { display:grid; gap:1px; min-width:0; flex:1; white-space:normal; }
+.chat-menu-text > span { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.chat-menu-choice-desc { display:block; color:var(--muted); font-size:11px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.chat-menu-badge { flex:none; padding:1px 6px; border-radius:999px; background:color-mix(in srgb, var(--primary) 11%, transparent); color:var(--primary); font-size:11px; font-weight:500; }
 .chat-menu-virtual { max-height:240px; overflow:auto; }
 .chat-menu-virtual-inner { position:relative; }
 .chat-menu-virtual-window { position:absolute; left:0; right:0; top:0; }
+/* One slot per virtual row. --chat-menu-row-height is MODEL_ROW_HEIGHT. */
+.chat-menu-virtual-row { height:var(--chat-menu-row-height, 28px); max-height:var(--chat-menu-row-height, 28px); margin:0; box-sizing:border-box; overflow:hidden; }
+.chat-menu-virtual-row.menu-item { min-height:0; }
+.chat-menu-group.chat-menu-virtual-row { display:flex; align-items:center; padding:0 10px; }
 .chat-more-row { display:grid; grid-template-columns:minmax(96px, 1fr) auto; align-items:center; gap:8px; padding:4px 6px; }
 .chat-more-name { display:grid; min-width:0; color:var(--text); font-size:12px; }
 .chat-more-name small { color:var(--muted); font-size:11px; }
