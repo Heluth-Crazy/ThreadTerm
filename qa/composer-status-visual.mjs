@@ -126,6 +126,23 @@ async function assertSingleLine(label) {
   assert.ok(layout.scrollWidth <= layout.clientWidth + 1, `${label}: the bar does not overflow`);
   assert.ok(layout.height < 40, `${label}: the bar is a single row`);
 }
+// VC-COMPOSER-420: the model chip never collapses below eight readable characters.
+async function assertModelReadable(label) {
+  if (await page.locator('#root .chat-model-name').count() === 0) return;
+  const info = await page.locator('#root .chat-model-name').evaluate(node => ({
+    clientWidth: node.clientWidth, text: (node.textContent ?? '').trim(),
+  }));
+  assert.ok(info.clientWidth >= 48, `${label}: the model name keeps 8 characters (${info.clientWidth}px of "${info.text}")`);
+  assert.ok(info.text.length > 0, `${label}: the model chip is never hidden`);
+}
+// VC-COMPOSER-420: an empty composer never shows a vertical scrollbar from a wrapped placeholder.
+async function assertEmptyTextareaNoScrollbar(label) {
+  const info = await page.locator('#root .chat-compose-shell textarea').evaluate(node => ({
+    scrollHeight: node.scrollHeight, clientHeight: node.clientHeight, value: node.value,
+  }));
+  assert.equal(info.value, '', `${label}: the composer is empty`);
+  assert.ok(info.scrollHeight <= info.clientHeight + 1, `${label}: the empty textarea has no vertical scrollbar (${info.scrollHeight} vs ${info.clientHeight})`);
+}
 async function openStatus(trigger) {
   const chip = page.locator(`#root [data-status-trigger="${trigger}"]`);
   await chip.click();
@@ -302,6 +319,8 @@ try {
   assert.equal(await page.locator('#root .chat-compose-send.is-stop').count(), 1);
   assert.equal(await page.locator('#root .chat-compose-send.is-queue').count(), 1);
   await assertSingleLine('running turn Stop/Queue at 420');
+  await assertModelReadable('running turn Stop/Queue at 420');
+  await assertEmptyTextareaNoScrollbar('running turn Stop/Queue at 420');
   const runningConsistency = await checkControlConsistency(page, '.chat-compose-shell');
   if (runningConsistency.violations.length) {
     const dbgControls = await page.evaluate(() => [...document.querySelectorAll('.chat-compose-shell button, .chat-compose-shell [role=button], .chat-compose-shell .chip')].filter(el => {
@@ -355,6 +374,8 @@ try {
   async function captureComposer({ usage, phase, theme, locale, width, name }) {
     await setState({ usage, phase, theme, locale, width });
     await assertSingleLine(name);
+    await assertModelReadable(name);
+    await assertEmptyTextareaNoScrollbar(name);
     assertNoControlViolations(await checkControlConsistency(page, '.chat-compose-shell'), `${name} composer`);
     await shot(`${name}.png`);
   }

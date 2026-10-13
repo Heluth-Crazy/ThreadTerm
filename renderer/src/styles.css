@@ -542,6 +542,8 @@ html[data-theme="dark"] { color-scheme:dark; }
 .chat-compose-shell:focus-within { border-color:color-mix(in srgb, var(--primary) 45%, var(--border)); box-shadow:0 0 0 3px color-mix(in srgb, var(--primary) 12%, transparent), var(--shadow-soft, 0 8px 24px color-mix(in srgb, var(--text) 8%, transparent)); }
 .chat-compose-shell textarea { width:100%; min-height:44px; max-height:200px; padding:10px 6px 4px; border:0; resize:none; background:transparent; box-shadow:none; font-size:14px; line-height:1.55; overflow-y:auto; }
 .chat-compose-shell textarea::placeholder { color:color-mix(in srgb, var(--muted) 85%, transparent); }
+/* The hint stays one line: while the placeholder shows, clip it with an ellipsis. Typing restores normal wrapping. */
+.chat-compose-shell textarea:placeholder-shown { white-space:nowrap; overflow-x:hidden; text-overflow:ellipsis; }
 .chat-compose-shell textarea:focus { outline:none; }
 .chat-compose-bar { position:relative; display:flex; align-items:center; justify-content:space-between; gap:8px; flex-wrap:nowrap; min-width:0; }
 .chat-compose-left, .chat-compose-right { display:flex; align-items:center; gap:6px; min-width:0; flex-wrap:nowrap; }
@@ -567,8 +569,8 @@ html[data-theme="dark"] { color-scheme:dark; }
 .chat-compose-measure { display:flex; width:max-content; gap:6px; visibility:hidden; pointer-events:none; white-space:nowrap; }
 .chat-compose-measure .chip { flex:none; }
 .chat-stop-square { width:11px; height:11px; border-radius:2px; background:currentColor; }
-.chat-model-chip { min-width:0; max-width:200px; }
-.chat-model-name { font-weight:600; }
+.chat-model-chip { min-width:88px; max-width:200px; }
+.chat-model-name { min-width:48px; font-weight:600; }
 .chat-model-think, .chat-model-chev { color:var(--muted); }
 /* Hidden copies used only to measure a chip's natural width; classes are distinct so QA hooks never match them. */
 .chat-model-measure-name { font-weight:600; }
@@ -637,8 +639,6 @@ code.chat-status-value { font-family:var(--mono); font-size:11px; }
 /* Keep the model, phase label and actions available in a narrow composer.
    The ring retains its full accessible label and popover token breakdown. */
 @container (max-width:480px) {
-  .chat-mode-chip > span { max-width:72px; }
-  .chat-mode-chip .ico, .chat-model-chev { display:none; }
   .chat-compose-left { flex:none; }
 }
 @media (prefers-reduced-motion:reduce) { .chat-context-ring-fill { transition:none; } }

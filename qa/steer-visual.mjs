@@ -27,6 +27,7 @@ const providers = [{ id: 'codex', name: 'Codex', version: '0.161.0', installed: 
 const OPTIONS = { loadState: 'ready', commands: [], inputCapabilities: { images: true, steer: 'native' }, options: [
   { id: 'model', name: 'Model', category: 'model', value: 'openai/qa-steer', choices: [{ value: 'openai/qa-steer', name: 'GPT QA Steer' }] },
   { id: 'thinking', name: 'Thinking', category: 'thinking', value: 'medium', choices: [{ value: 'medium', name: 'Medium' }] },
+  { id: 'mode', name: 'Approval policy', category: 'mode', value: 'on-request', choices: [{ value: 'on-request', name: 'Ask as needed' }, { value: 'never', name: 'Never ask' }] },
 ] };
 const listeners = new Set();
 let sequence = 1, sessionId = 'steer-1', locale = 'en';
@@ -148,6 +149,18 @@ async function oneRow(root, name) {
   assert.ok(bar.height < 40, `${name}: the bar is ${bar.height}px`);
 }
 async function note(name, text) { report.layout.push(`${name}: ${text}`); }
+// VC-COMPOSER-420: the model chip keeps eight readable characters at every width.
+async function assertModelReadable(root, name) {
+  const info = await root.locator('.chat-model-name').evaluate(node => ({ clientWidth: node.clientWidth, text: (node.textContent ?? '').trim() }));
+  assert.ok(info.clientWidth >= 48, `${name}: the model name keeps 8 characters (${info.clientWidth}px of "${info.text}")`);
+  assert.ok(info.text.length > 0, `${name}: the model chip is never hidden`);
+}
+// VC-COMPOSER-420: an empty composer shows its placeholder on one line without a scrollbar.
+async function assertEmptyTextareaNoScrollbar(root, name) {
+  const info = await root.locator('.chat-compose-shell textarea').evaluate(node => ({ scrollHeight: node.scrollHeight, clientHeight: node.clientHeight, value: node.value }));
+  if (info.value !== '') return;
+  assert.ok(info.scrollHeight <= info.clientHeight + 1, `${name}: the empty textarea has no vertical scrollbar (${info.scrollHeight} vs ${info.clientHeight})`);
+}
 
 try {
   app = await electron.launch({ args: [join(scratch, 'main.cjs')], env, timeout: 60_000 });
@@ -175,6 +188,8 @@ try {
             await root.locator('.surface-error').waitFor();
           }
           await oneRow(root, name);
+          await assertModelReadable(root, name);
+          await assertEmptyTextareaNoScrollbar(root, name);
           const shell = `[data-testid="session-chat-${await page.evaluate(() => window.qaSessionId)}"] .chat-compose-shell`;
           assertNoControlViolations(await checkControlConsistency(page, shell), `${name} composer`);
           if (state === 'menu') {
