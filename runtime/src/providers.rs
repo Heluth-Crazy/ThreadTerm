@@ -40,6 +40,9 @@ pub struct ChatToolServer {
 
 /// Decides, per `(session_id, provider)`, whether a Chat gets a tool server.
 pub type ToolServerResolver = Arc<dyn Fn(&str, &str) -> Option<ChatToolServer> + Send + Sync>;
+/// Reads ThreadTerm's per-project Pi trust choice when a Chat worker opens.
+pub type ProjectTrustResolver =
+    Arc<dyn Fn(&str, &str) -> Result<Option<String>, ProviderError> + Send + Sync>;
 
 #[derive(Clone, Copy, Default)]
 pub(crate) struct ChatToolPolicy {pub delegation:bool,pub preview:bool}
@@ -426,6 +429,20 @@ pub(crate) trait ProviderAdapter: Send + Sync {
         let _ = tools;
         self.open_chat_scoped(session_id, cwd, native_id, worker_token)
     }
+
+    /// Opens a Chat with the ThreadTerm-owned, per-project Pi trust decision.
+    /// Other adapters deliberately ignore this additive argument.
+    fn open_chat_with_project_trust(
+        &self,
+        session_id: &str,
+        cwd: &str,
+        native_id: Option<&str>,
+        worker_token: &str,
+        tools: Option<&ChatToolServer>,
+        _decision: Option<&str>,
+    ) -> Result<Box<dyn ChatSession>, ProviderError> {
+        self.open_chat_with_tools(session_id, cwd, native_id, worker_token, tools)
+    }
 }
 
 pub(crate) trait ChatSession: Send {
@@ -436,6 +453,10 @@ pub(crate) trait ChatSession: Send {
     /// Side-effect-free rejection before a user turn is durably recorded.
     fn validate_send(&self, _text: &str) -> Result<(), ProviderError> {
         Ok(())
+    }
+    /// Side-effect-free admission check before replacing an idle Chat worker.
+    fn validate_restart(&self) -> Result<(), ProviderError> {
+        self.validate_send("")
     }
     /// Side-effect-free validation before a user turn is durably recorded.
     /// Providers that do not opt in reject image inputs without changing their
@@ -547,6 +568,9 @@ pub(crate) fn normalize_chat_ui(value: Value) -> Value {
     if let Some(error) = value.get("error") {
         normalized["error"] = error.clone();
     }
+    if let Some(trust) = normalized_pi_trust(value.get("piTrust")) {
+        normalized["piTrust"] = trust;
+    }
     normalized
 }
 
@@ -614,6 +638,31 @@ fn enrich_chat_options(options: &mut Value) {
             }
         }
     }
+}
+
+fn normalized_pi_trust(value: Option<&Value>) -> Option<Value> {
+    let value = value?.as_object()?;
+    let enum_value = |key: &str, allowed: &[&str]| {
+        value
+            .get(key)
+            .and_then(Value::as_str)
+            .filter(|candidate| allowed.contains(candidate))
+    };
+    let protected = value.get("protectedResources")?.as_array()?;
+    if !protected.iter().all(Value::is_string) {
+        return None;
+    }
+    let pi_decision = enum_value("piDecision", &["trusted", "declined", "none"])?;
+    let default_trust = enum_value("defaultProjectTrust", &["always", "ask", "never"])?;
+    let threadterm_decision = enum_value("threadtermDecision", &["trusted", "declined", "none"])?;
+    let effective = enum_value("effective", &["loaded", "skipped"])?;
+    Some(json!({
+        "protectedResources": protected,
+        "piDecision": pi_decision,
+        "defaultProjectTrust": default_trust,
+        "threadtermDecision": threadterm_decision,
+        "effective": effective,
+    }))
 }
 
 struct ChatSlot {
@@ -698,6 +747,7 @@ pub struct Providers {
     projection_events: Mutex<Option<ProjectionReceiver>>,
     network: network::NetworkSettings,
     tool_servers: RwLock<Option<ToolServerResolver>>,
+    project_trust: RwLock<Option<ProjectTrustResolver>>,
 }
 
 /// Last provider capability probe. Probing runs every provider CLI and takes
@@ -725,6 +775,65 @@ fn probe_capabilities(adapters: &[Arc<dyn ProviderAdapter>]) -> Vec<Value> {
 }
 
 impl Providers {
+    /// Persists a decision and retires an idle worker without waiting under
+    /// the shared registry lock. Captured old sends are fenced by stop().
+    pub(crate) fn restart_idle_chat(
+        &self,
+        session_id: &str,
+        before_stop: impl FnOnce() -> anyhow::Result<()>,
+    ) -> Result<Value, ProviderError> {
+        let mut chats = self
+            .chats
+            .lock()
+            .map_err(|_| ProviderError::new("provider_internal", "provider chat lock poisoned"))?;
+        let slot = chats.get_mut(session_id).ok_or_else(|| {
+            ProviderError::new(
+                "chat_not_open",
+                format!("no provider Chat worker is open for session {session_id}"),
+            )
+        })?;
+        let worker = slot.worker.clone().ok_or_else(|| {
+            ProviderError::new(
+                "chat_not_open",
+                format!("no provider Chat worker is open for session {session_id}"),
+            )
+        })?;
+        // Never wait for a captured sender while holding the global registry.
+        // The sender itself may need that registry to publish its completion.
+        let mut worker = match worker.try_lock() {
+            Ok(worker) => worker,
+            Err(std::sync::TryLockError::WouldBlock) => {
+                return Err(ProviderError::new(
+                    "turn_in_progress",
+                    "the Pi chat still has an active turn",
+                ));
+            }
+            Err(std::sync::TryLockError::Poisoned(_)) => {
+                return Err(ProviderError::new(
+                    "provider_internal",
+                    "session worker lock poisoned",
+                ));
+            }
+        };
+        worker.validate_restart()?;
+        before_stop().map_err(|error| {
+            ProviderError::new("project_trust_persist_failed", error.to_string())
+        })?;
+
+        // The new generation rejects stale scoped events before the old native
+        // process is stopped. Clear its token so unscoped old events cannot
+        // claim the replacement slot either.
+        slot.worker_token = None;
+        let _retired = slot.mark_disconnected();
+        let state = slot.wire(session_id, "unknown", None);
+        drop(chats);
+        self.connect_wait.notify_all();
+        self.emit_connection(session_id, state.clone());
+        worker.stop()?;
+        Ok(state)
+    }
+
+
     /// Nonblocking provider information for snapshots and settings UI.
     /// An empty cold result means detection is pending, not uninstalled.
     pub(crate) fn capability_snapshot(&self) -> Vec<Value> {
@@ -898,6 +1007,7 @@ impl Providers {
             projection_events: Mutex::new(Some(projection_events)),
             network,
             tool_servers: RwLock::new(None),
+            project_trust: RwLock::new(None),
         }
     }
 
@@ -908,9 +1018,34 @@ impl Providers {
         }
     }
 
+    /// Installed once by the runtime service; read only while opening a Chat.
+    pub fn set_project_trust_resolver(&self, resolver: ProjectTrustResolver) {
+        if let Ok(mut slot) = self.project_trust.write() {
+            *slot = Some(resolver);
+        }
+    }
+
     fn tool_server(&self, session_id: &str, provider: &str) -> Option<ChatToolServer> {
         let resolver = self.tool_servers.read().ok()?.clone()?;
         resolver(session_id, provider)
+    }
+
+    fn project_trust(
+        &self,
+        session_id: &str,
+        provider: &str,
+    ) -> Result<Option<String>, ProviderError> {
+        let resolver = self
+            .project_trust
+            .read()
+            .map_err(|_| {
+                ProviderError::new("provider_internal", "project trust resolver lock poisoned")
+            })?
+            .clone();
+        resolver
+            .map(|resolve| resolve(session_id, provider))
+            .transpose()
+            .map(Option::flatten)
     }
 
     #[cfg(test)]
@@ -1381,6 +1516,8 @@ impl ProviderRuntime for Providers {
             ));
         }
         let adapter = self.adapter(provider)?.clone();
+        // The resolver may read durable project state; never run it under the
+        // Chat registry lock.
         let mut chats = self
             .chats
             .lock()
@@ -1443,8 +1580,9 @@ impl ProviderRuntime for Providers {
 
         // Resolved per open: reconnects rotate the session token.
         let tools = self.tool_server(session_id, provider);
-        let opened =
-            adapter.open_chat_with_tools(session_id, cwd, native_id, &worker_token, tools.as_ref());
+        let opened = self.project_trust(session_id, provider).and_then(|trust| {
+            adapter.open_chat_with_project_trust(session_id, cwd, native_id, &worker_token, tools.as_ref(), trust.as_deref())
+        });
         let mut chats = self
             .chats
             .lock()
@@ -1838,6 +1976,32 @@ mod registry_cleanup_tests {
     }
 
     #[test]
+    fn normalize_chat_ui_preserves_only_a_valid_pi_trust_snapshot() {
+        let trust = json!({
+            "protectedResources":[".pi/extensions","../.agents/skills"],
+            "piDecision":"none",
+            "defaultProjectTrust":"ask",
+            "threadtermDecision":"declined",
+            "effective":"skipped",
+            "unexpected":"discarded",
+        });
+        let normalized = normalize_chat_ui(json!({"piTrust":trust}));
+        assert_eq!(normalized["piTrust"]["effective"], "skipped");
+        assert!(normalized["piTrust"].get("unexpected").is_none());
+        assert!(
+            normalize_chat_ui(json!({"piTrust":{"protectedResources":[4]}}))
+                .get("piTrust")
+                .is_none()
+        );
+        assert!(normalize_chat_ui(json!({"piTrust":{
+            "protectedResources":[],"piDecision":"maybe","defaultProjectTrust":"ask",
+            "threadtermDecision":"none","effective":"skipped"
+        }}))
+        .get("piTrust")
+        .is_none());
+    }
+
+    #[test]
     fn every_production_adapter_fences_late_events_after_reconnect_and_stop() {
         let providers = Providers::new();
         assert_eq!(providers.adapters.read().unwrap().len(), 7);
@@ -1978,6 +2142,36 @@ mod registry_cleanup_tests {
         }
     }
 
+    struct RestartWorker {
+        retired: bool,
+    }
+    impl ChatSession for RestartWorker {
+        fn native_id(&self) -> Option<String> {
+            None
+        }
+        fn validate_send(&self, _: &str) -> Result<(), ProviderError> {
+            if self.retired {
+                Err(ProviderError::new("provider_disconnected", "retired"))
+            } else {
+                Ok(())
+            }
+        }
+        fn send(&mut self, _: &str, _: &str) -> Result<Value, ProviderError> {
+            self.validate_send("")?;
+            Ok(json!({}))
+        }
+        fn cancel(&mut self, _: &str) -> Result<(), ProviderError> {
+            Ok(())
+        }
+        fn approve(&mut self, _: &str, _: &str, _: &str, _: &str) -> Result<(), ProviderError> {
+            Ok(())
+        }
+        fn stop(&mut self) -> Result<(), ProviderError> {
+            self.retired = true;
+            Ok(())
+        }
+    }
+
     #[test]
     fn default_chat_session_rejects_images_before_send() {
         let worker = UnsupportedImageWorker;
@@ -2013,6 +2207,48 @@ mod registry_cleanup_tests {
                 "{path}: provider cleanup held the shared registry"
             );
         }
+    }
+
+    #[test]
+    fn restart_fences_a_send_that_captured_the_old_worker() {
+        let providers = Providers::for_test(vec![]);
+        let stale: SharedChat = Arc::new(Mutex::new(Box::new(RestartWorker { retired: false })));
+        let mut slot = ChatSlot::new();
+        slot.phase = "ready";
+        slot.worker_token = Some("old".into());
+        slot.worker = Some(Arc::clone(&stale));
+        providers.chats.lock().unwrap().insert("s".into(), slot);
+        let state = providers.restart_idle_chat("s", || Ok(())).unwrap();
+        assert_eq!(state["phase"], "disconnected");
+        assert!(providers.chats.lock().unwrap()["s"].worker.is_none());
+        let error = stale.lock().unwrap().send("late", "turn").unwrap_err();
+        assert_eq!(error.code, "provider_disconnected");
+    }
+
+    #[test]
+    fn restart_rejects_a_busy_worker_without_persisting_or_holding_the_registry() {
+        let providers = Providers::for_test(vec![]);
+        let worker: SharedChat = Arc::new(Mutex::new(Box::new(RestartWorker { retired: false })));
+        let mut slot = ChatSlot::new();
+        slot.worker = Some(Arc::clone(&worker));
+        providers.chats.lock().unwrap().insert("s".into(), slot);
+        let _busy = worker.lock().unwrap();
+        let error = providers.restart_idle_chat("s", || panic!("busy restart persisted a decision")).unwrap_err();
+        assert_eq!(error.code, "turn_in_progress");
+        assert!(providers.chats.try_lock().unwrap()["s"].worker.is_some());
+    }
+
+    #[test]
+    fn failed_trust_persistence_leaves_the_original_worker_open() {
+        let providers = Providers::for_test(vec![]);
+        let worker: SharedChat = Arc::new(Mutex::new(Box::new(RestartWorker { retired: false })));
+        let mut slot = ChatSlot::new();
+        slot.worker = Some(Arc::clone(&worker));
+        slot.worker_token = Some("original".into());
+        providers.chats.lock().unwrap().insert("s".into(), slot);
+        assert!(providers.restart_idle_chat("s", || Err(anyhow::anyhow!("persistence failed"))).is_err());
+        assert_eq!(providers.chats.lock().unwrap()["s"].worker_token.as_deref(), Some("original"));
+        assert!(worker.lock().unwrap().validate_send("next prompt").is_ok());
     }
 }
 
@@ -2099,6 +2335,23 @@ mod capability_cache_tests {
         fn history_read(&self, native_id: &str) -> Result<Value, ProviderError> { self.inner.history_read(native_id) }
         fn open_chat(&self, session: &str, cwd: &str, native_id: Option<&str>) -> Result<Box<dyn ChatSession>, ProviderError> {
             self.inner.open_chat(session, cwd, native_id)
+        }
+    }
+
+    #[test]
+    fn trust_resolver_runs_after_connection_admission_and_failure_does_not_stall_retry() {
+        let providers = Arc::new(Providers::for_test(vec![Arc::new(SlowProbe { probes: Arc::new(AtomicUsize::new(0)) })]));
+        let observer = Arc::downgrade(&providers);
+        providers.set_project_trust_resolver(Arc::new(move |session_id, _| {
+            let providers = observer.upgrade().unwrap();
+            assert!(providers.chats.lock().unwrap()[session_id].connecting);
+            Err(ProviderError::new("trust_read_failed", "fixture failure"))
+        }));
+        for _ in 0..2 {
+            assert_eq!(providers.chat_open("s", "codex", "fixture-cwd", None).unwrap_err().code, "trust_read_failed");
+            let chats = providers.chats.lock().unwrap();
+            assert!(!chats["s"].connecting);
+            assert_eq!(chats["s"].phase, "failed");
         }
     }
 

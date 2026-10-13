@@ -212,6 +212,14 @@ test('chat.answer accepts only the additive plan review decisions and optional f
   {action:'plan'},
  ]) assert.throws(()=>validateRequest('chat.answer',{...base,response}),undefined,JSON.stringify(response));
 });
+test('Pi project trust is additive to chat UI and has a leased decision RPC',()=>{
+ assert.ok(METHODS.includes('chat.projectTrust.set'));
+ const trust={protectedResources:['.pi/extensions','.agents/skills'],piDecision:'none',defaultProjectTrust:'ask',threadtermDecision:'none',effective:'skipped'};
+ validateResult('chat.options',{options:[],commands:[],piTrust:trust});
+ validateRequest('chat.projectTrust.set',{sessionId:'s',decision:'trusted',leaseEpoch:1,operationId:'trust'});
+ for(const decision of ['always','',7]) assert.throws(()=>validateRequest('chat.projectTrust.set',{sessionId:'s',decision,leaseEpoch:1,operationId:'trust'}));
+ assert.throws(()=>validateRequest('chat.projectTrust.set',{sessionId:'s',decision:'trusted',operationId:'trust'}));
+});
 test('mutation boundary requires conflict and idempotency fields',()=>{
  validateRequest('catalog.visibility.list',{});
  validateRequest('catalog.visibility.update',{kind:'session',id:'s',visibility:'archived',expectedRevision:0,operationId:'visibility'});

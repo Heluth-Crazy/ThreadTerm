@@ -10,6 +10,7 @@ import { build as viteBuild } from 'vite';
 import react from '@vitejs/plugin-react';
 import { electron } from './lib/desktop1.mjs';
 import { startReadonlyReferenceServer } from './parity/reference-server.mjs';
+import { assertNoControlViolations, checkControlConsistency } from './lib/visual-consistency.mjs';
 
 const root = resolve(import.meta.dirname, '..');
 const scratch = await mkdtemp(join(tmpdir(), 'tt-pi-question-editor-'));
@@ -24,7 +25,7 @@ const isolatedData = join(scratch, 'data');
 const isolatedUserData = join(scratch, 'user-data');
 const isolatedPipe = `\\\\.\\pipe\\tt-pi-question-editor-${randomUUID()}`;
 const outFlag = process.argv.indexOf('--out');
-const out = resolve(outFlag >= 0 ? process.argv[outFlag + 1] : join(root, 'qa', 'results', 'pi-question-editor'));
+const out = resolve(outFlag >= 0 ? process.argv[outFlag + 1] : join(root, 'qa', 'results', 'chat-parity', 'D3', 'pi-question-editor'));
 const report = { passed: false, baseline: { status: 'not-run', note: 'The multiline implementation was already present before this isolated fixture was created.' }, checks: [], layouts: [], screenshots: [], errors: [] };
 let server, app, page, electronProcess;
 const check = label => { report.checks.push(label); console.log(`PASS ${label}`); };
@@ -79,6 +80,7 @@ async function inspectLayout(width, locale, theme) {
   assert.ok(geometry.editor.left >= geometry.card.left && geometry.editor.right <= geometry.card.right + 1, `${locale}/${theme}/${width} editor is contained by its card`);
   assert.ok(geometry.submit.bottom <= geometry.viewport.height + 1, `${locale}/${theme}/${width} submit control is visible`);
   assert.ok(geometry.scrollWidth <= width + 1, `${locale}/${theme}/${width} has no horizontal page overflow`);
+  assertNoControlViolations(await checkControlConsistency(page, '.chat-question-card'), `${locale}/${theme}/${width} Pi question card`);
   report.layouts.push({ width, locale, theme, ...geometry });
 }
 
@@ -108,6 +110,7 @@ try {
   page.on('pageerror', error => report.errors.push(String(error)));
   await page.goto(`${server.origin}/`);
   await page.waitForFunction(() => Boolean(window.__piEditorQA));
+  await page.evaluate(() => Object.defineProperty(navigator,'clipboard',{configurable:true,value:{writeText:async value=>{window.__lane2Clipboard=value;},readText:async()=>window.__lane2Clipboard??''}}));
 
   await page.evaluate(() => { window.__piEditorQA.setMultiline(false); window.__piEditorQA.reset(); });
   const baselineEditor = page.getByLabel('Editor');

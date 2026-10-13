@@ -671,6 +671,15 @@ pub fn spawn_managed_service(
     cwd: Option<&str>,
     envs: &[(&str, &str)],
 ) -> Result<(Child, SessionJob), ProviderError> {
+    spawn_managed_service_with_environment(spec, cwd, envs, None)
+}
+
+pub fn spawn_managed_service_with_environment(
+    spec: &CommandSpec,
+    cwd: Option<&str>,
+    envs: &[(&str, &str)],
+    environment: Option<&crate::environment::Vars>,
+) -> Result<(Child, SessionJob), ProviderError> {
     let owned_cwd = cwd
         .map(ToOwned::to_owned)
         .or_else(|| {
@@ -715,7 +724,11 @@ pub fn spawn_managed_service(
         .stderr(Stdio::piped());
     // The user's current Windows environment rather than the long-lived runtime's, as for a
     // terminal (environment.rs); the provider's own variables below still win.
-    crate::environment::apply_to_service(&mut command);
+    if let Some(environment) = environment {
+        crate::environment::apply_vars_to_service(&mut command, environment);
+    } else {
+        crate::environment::apply_to_service(&mut command);
+    }
     for (name, value) in envs {
         command.env(name, value);
     }
@@ -758,8 +771,21 @@ impl JsonLineProcess {
         style: EnvelopeStyle,
         on_message: Arc<dyn Fn(Value) + Send + Sync>,
     ) -> Result<Self, ProviderError> {
+        Self::spawn_with_environment(label, spec, cwd, envs, None, style, on_message)
+    }
+
+    /// Starts a provider with a previously captured terminal environment.
+    pub fn spawn_with_environment(
+        label: impl Into<String>,
+        spec: &CommandSpec,
+        cwd: Option<&str>,
+        envs: &[(&str, &str)],
+        environment: Option<&crate::environment::Vars>,
+        style: EnvelopeStyle,
+        on_message: Arc<dyn Fn(Value) + Send + Sync>,
+    ) -> Result<Self, ProviderError> {
         let label = label.into();
-        let (mut child, job) = spawn_managed_service(spec, cwd, envs)?;
+        let (mut child, job) = spawn_managed_service_with_environment(spec, cwd, envs, environment)?;
         let stdin = child.stdin.take().ok_or_else(|| {
             ProviderError::new(
                 "provider_launch_failed",

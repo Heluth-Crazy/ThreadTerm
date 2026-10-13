@@ -9,6 +9,7 @@ export function chatUiFromEvent(data: Partial<ChatUiState>): ChatUiState {
     inputCapabilities: data.inputCapabilities && typeof data.inputCapabilities === 'object' && !Array.isArray(data.inputCapabilities) ? data.inputCapabilities : {},
     loadState: data.loadState ?? (options.length ? 'ready' : 'empty'),
     ...(data.error !== undefined ? { error: data.error } : {}),
+    ...(data.piTrust !== undefined ? { piTrust: data.piTrust } : {}),
   };
 }
 

@@ -63,5 +63,6 @@ pub mod mcp_host;
 pub mod chat_projection;
 pub(crate) mod chat_plan;
 pub(crate) mod chat_plan_approval;
+mod pi_project_trust;
 pub(crate) mod chat_questions;
 pub mod protocol_contract;
