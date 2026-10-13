@@ -290,7 +290,7 @@ export async function checkControlConsistency(page, containerSelector, options =
 export function assertNoControlViolations(result, label = 'surface') {
   if (result.error) throw new Error(`${label}: ${result.error}`);
   if (result.violations.length) {
-    const lines = result.violations.map(violation => `  - [${violation.kind}] ${violation.message}`);
+    const lines = result.violations.map(violation => `  - [${violation.kind}] ${violation.parent ? `${violation.parent}: ` : ''}${violation.message}${violation.controls?.length ? ` (${violation.controls.join(', ')})` : ''}`);
     throw new Error(`${label}: ${result.violations.length} control-consistency violation(s):\n${lines.join('\n')}`);
   }
   return result;
