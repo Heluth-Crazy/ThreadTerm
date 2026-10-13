@@ -32,7 +32,7 @@ fn stop_and_reconnect_persist_held_plan_before_invalidating_the_old_token(){
         let providers=Providers::for_test(vec![Arc::new(Adapter)]);
         let event=held_event(&session);
         let mut slot=ChatSlot::new();
-        slot.phase="ready".into();slot.worker_token=Some("old-token".into());slot.requires_scoped_events=true;
+        slot.phase="ready";slot.worker_token=Some("old-token".into());slot.requires_scoped_events=true;
         slot.worker=Some(Arc::new(Mutex::new(Box::new(HeldWorker{event:event.clone(),alive:path=="stop",retired:false}))));
         providers.chats.lock().unwrap().insert(session.clone(),slot);
         let persist_db=db.clone();
