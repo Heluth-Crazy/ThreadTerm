@@ -88,6 +88,8 @@ window.threadterm = {
     if (method === 'chat.snapshot') return { items: [], revision: 1 };
     if (method === 'chat.draft.read') return { text: '', revision: 0 };
     if (method === 'chat.queue.read') return { sessionId, paused: false, items: [] };
+    if (method === 'chat.feedback.read') return { notes: [] };
+    if (method === 'chat.backgroundTasks.list') return { tasks: [] };
     if (method === 'chat.options') return state;
     if (method === 'chat.option.set') {
       window.__setCalls.push({ optionId: params.optionId, value: params.value });
@@ -267,6 +269,14 @@ try {
   await page.keyboard.press('Escape');
   report.checks.push('the model menu searches, groups, badges the recommended value and shows an empty state');
 
+  // zh-CN localizes the boolean value and its chips (fast mode must not show English On/Off).
+  await setState({ scenario: 'codex', locale: 'zh-CN', theme: 'light', width: 1100 });
+  assert.equal((await page.locator('.chat-option-chip[data-option-id="fast"]').innerText()).trim(), '快速模式: 关');
+  assert.equal(/On|Off/.test(await page.locator('.chat-compose-shell').innerText()), false, 'the zh-CN composer shows no English On/Off');
+  await page.locator('.chat-option-chip[data-option-id="fast"]').click();
+  assert.equal((await page.locator('.chat-option-chip[data-option-id="fast"]').innerText()).trim(), '快速模式: 开');
+  report.checks.push('zh-CN localizes boolean option values and chips');
+
   // pi: booleans + selects, no mode chip.
   await setState({ scenario: 'pi' });
   assert.equal(await page.locator('.chat-mode-chip').count(), 0, 'Pi exposes no mode chip');
@@ -444,6 +454,7 @@ try {
         for (const width of [420, 700, 1100]) {
           await setState({ scenario, theme, locale, width });
           await assertSingleLine(`${scenario}/${theme}/${locale}/${width}`);
+          if (locale === 'zh-CN') assert.equal(/On|Off/.test(await page.locator('.chat-compose-shell').innerText()), false, `${scenario}/${theme}/${locale}/${width}: no English On/Off in zh-CN`);
           const consistency = await checkControlConsistency(page, '.chat-compose-shell');
           assertNoControlViolations(consistency, `${scenario}/${theme}/${locale}/${width} composer`);
           await shot(`composer-${scenario}-${theme}-${locale}-${width}.png`);

@@ -45,6 +45,8 @@ const VALUE_LABELS: Record<string, [string, string]> = {
 
 const normalize = (value: string) => value.toLowerCase().replace(/[^a-z0-9]/g, "");
 
+const booleanOn = (value: string) => value === "true" || value.toLowerCase() === "on";
+
 /** Category from the C1 metadata, with the legacy regex fallback for old rows. */
 export function optionCategory(option: ChatSessionOption): OptionCategory {
   if (option.category) return option.category;
@@ -69,6 +71,9 @@ export function currentChoiceName(option: ChatSessionOption): string {
 /** A choice's display text: known provider values localize, everything else keeps the provider's own name. */
 export function choiceText(option: ChatSessionOption, choice: ChatSessionChoice, zh: boolean): string {
   if (optionCategory(option) === "model") return choice.name || choice.value;
+  // Boolean options carry provider values (`true`/`false`) or legacy `on`/`off`;
+  // always show the localized On/Off label, never the provider's English name.
+  if (isBooleanOption(option)) return booleanValueText(choice.value, zh);
   const known = VALUE_LABELS[normalize(choice.value)];
   return known ? (zh ? known[1] : known[0]) : choice.name || choice.value;
 }
@@ -80,7 +85,12 @@ export function chipValueText(option: ChatSessionOption, zh: boolean): string {
 }
 
 export function booleanText(value: string, copy: ComposerCopy): string {
-  return value === "true" || value.toLowerCase() === "on" ? copy("On", "开") : copy("Off", "关");
+  return booleanOn(value) ? copy("On", "开") : copy("Off", "关");
+}
+
+/** Localized boolean label for option chips and menus, without a copy callback. */
+export function booleanValueText(value: string, zh: boolean): string {
+  return booleanOn(value) ? (zh ? "开" : "On") : (zh ? "关" : "Off");
 }
 
 /** The thinking chip drops a provider's redundant "thinking" prefix. */
