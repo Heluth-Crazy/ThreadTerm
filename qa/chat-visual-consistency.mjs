@@ -87,7 +87,7 @@ async function checkSurface(selector, label) {
 async function checkRequiredSurfacesMatrix() {
   const fixtureDir = join(scratch, 'required-surfaces');
   await mkdir(fixtureDir, { recursive: true });
-  await esbuild({ entryPoints: [requiredSurfacesFixture], bundle: true, platform: 'browser', format: 'iife', target: 'chrome120', outfile: join(fixtureDir, 'fixture.js'), logLevel: 'error' });
+  await esbuild({ entryPoints: [requiredSurfacesFixture], bundle: true, platform: 'browser', format: 'iife', target: 'chrome120', outfile: join(fixtureDir, 'fixture.js'), logLevel: 'error', loader: { '.woff2': 'dataurl', '.woff': 'dataurl', '.ttf': 'dataurl' } });
   await writeFile(join(fixtureDir, 'index.html'), '<!doctype html><meta charset="utf-8"><link rel="stylesheet" href="fixture.css"><style>html,body,#root{height:100%;margin:0}#root{display:flex;min-height:0}</style><div id="root"></div><script src="fixture.js"></script>');
   await writeFile(join(fixtureDir, 'main.cjs'), `const { app, BrowserWindow } = require('electron'); app.setPath('userData', ${JSON.stringify(join(fixtureDir, 'profile'))}); app.whenReady().then(() => new BrowserWindow({ width: 1440, height: 900, show: false, webPreferences: { contextIsolation: true, nodeIntegration: false, sandbox: true } }).loadFile(${JSON.stringify(join(fixtureDir, 'index.html'))}));`);
   const supplementaryEnv = Object.fromEntries(Object.entries(process.env).filter(([key]) => key.toLowerCase() !== 'path'));
