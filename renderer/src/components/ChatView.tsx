@@ -28,6 +28,8 @@ import { isReplyTextPart, replyActionMarkdown } from '../replyMarkdown';
 import { MessageActions } from './MessageActions';
 import { TurnFooter } from './TurnFooter';
 import { createTurnChangesCache } from '../turnFooter';
+import { BackgroundTasksStrip } from './BackgroundTasksStrip';
+import { backgroundHasOutput, revealBackgroundOutput } from '../backgroundTasks';
 import { ChatPlanPanel } from './ChatPlanPanel';
 import { ComposerOptions } from './ComposerOptions';
 import { ChatContextRing } from './ChatContextRing';
@@ -451,6 +453,19 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession }
   const logRef = useRef<HTMLDivElement>(null);
   const logContentRef = useRef<HTMLDivElement>(null);
   const viewport = useChatViewport(session.id, viewportSessionId === session.id, logRef, logContentRef);
+  async function refreshBackgroundTasks() {
+    const revision = uiUpdates.current, generation = transportGeneration.current, owner = lifecycle.current;
+    const snapshot = await request('chat.backgroundTasks.list', { sessionId: session.id });
+    if (lifecycle.current === owner && generation === transportGeneration.current && revision === uiUpdates.current) {
+      setUi(current => ({ ...current, backgroundTasks: snapshot.tasks }));
+    }
+  }
+  async function stopBackgroundTask(task: import('@threadterm/protocol').ChatBackgroundTask) {
+    const epoch = leaseSessionId.current === session.id ? lease.current : undefined;
+    if (epoch === undefined || !lifecycle.current?.control?.valid) throw new Error('Chat control is required');
+    const result = await request('chat.backgroundTask.stop', { sessionId: session.id, taskId: task.id, leaseEpoch: epoch, operationId: operationId() });
+    if (!result.accepted) throw new Error('Background task stop was not accepted');
+  }
   function clearFirstResponseWait(token?: string) {
     if (token && firstResponseWaitRef.current?.token !== token) return;
     firstResponseWaitRef.current = undefined;
@@ -1196,6 +1211,7 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession }
     {ui.loadState === "error" && ui.error && <p className="surface-error" role="alert">{ui.error.message} <button type="button" className="btn" disabled={!writable} onClick={() => void request("chat.options", { sessionId: session.id }).then(setUi).catch(caught => setUi(current => ({ ...current, loadState: "error", error: { code: "options_failed", message: asUserError(caught, copy("Options could not be loaded.", "无法读取选项。")) } })))}>{copy("Retry options", "重试读取选项")}</button></p>}
     {historyFailed && <section className="chat-repair-banner" role="alert"><div><strong>{copy('Saved history could not be checked.', '无法检查已保存的历史。')}</strong><p>{copy('Retry loading saved history before continuing this chat.', '请重试加载已保存的历史，再继续聊天。')}</p>{historyIssue && <small>{historyIssue}</small>}</div><button className="btn" disabled={repairBusy} onClick={() => discoverHistoryRef.current()}>{copy('Retry loading history', '重试加载历史')}</button></section>}
     {linkIssue && <p className="surface-error" role="alert">{linkIssue}</p>}
+    <BackgroundTasksStrip key={session.id} tasks={ui.backgroundTasks ?? []} copy={copy} zh={zh} writable={writable && !ended} onExpand={refreshBackgroundTasks} onStop={stopBackgroundTask} canOutput={task => backgroundHasOutput(task, items)} onOutput={task => { if (logRef.current) revealBackgroundOutput(logRef.current, task, viewport.inspect); }} />
     {linkMenu && <CatalogPopover anchor={linkMenu.anchor} label={copy("Link", "链接")} onClose={() => setLinkMenu(undefined)}>
       <div className="menu-label chat-link-menu-url" title={linkMenu.url}>{linkMenu.url}</div>
       {surface?.openWeb && <button type="button" role="menuitem" className="menu-item" onClick={() => { surface.openWeb?.(linkMenu.url); setLinkMenu(undefined); }}><Icon name="split" />{copy("Open in preview", "在预览中打开")}</button>}
@@ -1222,7 +1238,7 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession }
       {firstResponseWait && <div className="chat-first-response-wait" role="status" aria-live="polite" aria-label={submissionPreview && busy ? copy('Sending…', '正在发送…') : copy("Thinking", "思考中")}><span>{submissionPreview && busy ? copy('Sending…', '正在发送…') : copy("Thinking", "思考中")}</span><span className="chat-first-response-dots" aria-hidden="true"><i /><i /><i /></span></div>}
       </div>
     </div>
-    {viewport.paused && overlay !== 'full' && <button type="button" className="btn chat-back-to-bottom" aria-keyshortcuts="Escape" onClick={viewport.followLatest}><Icon name="arrowUp" /><span>{copy('Back to bottom', '返回底部')}</span><kbd className="kbd" aria-hidden="true">Esc</kbd></button>}
+    {viewport.paused && overlay !== 'full' && <button type="button" className="icon-btn icon-btn-round chat-back-to-bottom" aria-keyshortcuts="Escape" aria-label={copy('Back to bottom (Esc)', '返回底部（Esc）')} title={copy('Back to bottom (Esc)', '返回底部（Esc）')} onClick={viewport.followLatest}><Icon name="arrowUp" /></button>}
     </div>
     {recovery !== undefined && <div role="alert" className="surface-error">
       <p>{copy('An unsaved draft is available on this device.', '此设备上有一份未保存的草稿。')}</p>

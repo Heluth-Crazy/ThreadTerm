@@ -320,6 +320,80 @@ test('a missing context read and a failed one write no context event', async () 
   assert.equal(events.filter(value => value.ev === 'session.context').length, 0);
 });
 
+test('background tasks require explicit native background membership and retain terminal rows until the next turn', async () => {
+  const { session, events } = harness();
+  const stopped = [];
+  session.query = { async stopTask(taskId) { stopped.push(taskId); } };
+  assert.equal(session.observeBackgroundMessage({ type: 'system', subtype: 'task_started', task_id: 'ambient-task', description: 'Ambient' }), false);
+  assert.equal(session.observeBackgroundMessage({ type: 'system', subtype: 'task_started', task_id: 'skip-task', is_backgrounded: true, ambient: true }), false);
+  session.observeBackgroundMessage({ type: 'assistant', message: { content: [{ type: 'tool_use', id: 'bash-tool', name: 'Bash', input: { command: 'npm test', run_in_background: true } }] } });
+  assert.deepEqual(session.uiState().backgroundTasks.map(task => [task.id, task.canStop, task.toolId]), [['bash-tool', false, 'bash-tool']]);
+  session.observeBackgroundMessage({ type: 'system', subtype: 'task_started', task_id: 'native-task', tool_use_id: 'bash-tool', is_backgrounded: true, description: 'Run tests' });
+  assert.deepEqual(session.uiState().backgroundTasks.map(task => [task.id, task.canStop, task.toolId]), [['native-task', true, 'bash-tool']]);
+  assert.equal(await session.stopTask('native-task'), true);
+  assert.deepEqual(stopped, ['native-task']);
+  assert.equal(session.uiState().backgroundTasks[0].status, 'running', 'stop acknowledgement does not invent a terminal event');
+  session.observeBackgroundMessage({ type: 'system', subtype: 'task_notification', task_id: 'native-task', status: 'stopped' });
+  const terminal = session.uiState().backgroundTasks[0];
+  assert.equal(terminal.status, 'stopped');
+  assert.equal(terminal.canStop, false);
+  assert.match(terminal.endedAt, /^\d{4}-/);
+  session.send('next', 'turn-next');
+  assert.deepEqual(session.uiState().backgroundTasks, []);
+  assert.ok(events.some(value => value.ev === 'session.ui'), 'task changes can publish complete UI snapshots');
+});
+
+test('running background tasks survive parent completion and the next turn', () => {
+  const { session } = harness();
+  session.query = { async stopTask() {} };
+  session.observeBackgroundMessage({ type: 'system', subtype: 'task_started', task_id: 'agent-task', is_backgrounded: true, description: 'Inspect code' });
+  session.activeOperationId = null;
+  session.send('next', 'turn-next');
+  assert.deepEqual(session.uiState().backgroundTasks.map(task => [task.id, task.status]), [['agent-task', 'running']]);
+});
+
+test('terminal background tasks cannot resurrect from late progress or membership snapshots', () => {
+  const { session } = harness();
+  session.query = { async stopTask() {} };
+  session.observeBackgroundMessage({ type:'system', subtype:'task_started', task_id:'old', tool_use_id:'old-tool', is_backgrounded:true });
+  session.observeBackgroundMessage({ type:'system', subtype:'task_notification', task_id:'old', status:'failed' });
+  session.observeBackgroundMessage({ type:'system', subtype:'task_progress', task_id:'old' });
+  assert.equal(session.uiState().backgroundTasks[0].status,'failed');
+  session.send('next','next');
+  session.observeBackgroundMessage({ type:'system', subtype:'task_progress', task_id:'old', tool_use_id:'old-tool' });
+  session.observeBackgroundMessage({ type:'system', subtype:'background_tasks_changed', tasks:[{task_id:'old',is_backgrounded:true}] });
+  assert.deepEqual(session.uiState().backgroundTasks,[]);
+});
+
+test('background Stop shares accepted and uncertain native requests until terminal confirmation', async () => {
+  const { session } = harness();
+  let calls=0, release;
+  session.query={stopTask:()=>{calls++; return new Promise(resolve=>{release=resolve;});}};
+  session.observeBackgroundMessage({type:'system',subtype:'task_started',task_id:'one',is_backgrounded:true});
+  const first=session.stopTask('one'), second=session.stopTask('one');
+  await Promise.resolve();
+  assert.equal(calls,1); release(); await Promise.all([first,second]);
+  await session.stopTask('one'); assert.equal(calls,1);
+  session.query={stopTask:async()=>{calls++; throw Error('lost response');}};
+  session.observeBackgroundMessage({type:'system',subtype:'task_started',task_id:'two',is_backgrounded:true});
+  await assert.rejects(session.stopTask('two'),/lost response/);
+  await assert.rejects(session.stopTask('two'),/lost response/);
+  assert.equal(calls,2);
+});
+
+test('background task stop rejects foreign, finished, unsupported and closed tasks', async () => {
+  const { session } = harness();
+  session.query = {};
+  session.observeBackgroundMessage({ type: 'system', subtype: 'task_started', task_id: 'unsupported', is_backgrounded: true });
+  await assert.rejects(session.stopTask('foreign'), /does not belong/);
+  await assert.rejects(session.stopTask('unsupported'), /not supported/);
+  session.query = { async stopTask() {} };
+  session.observeBackgroundMessage({ type: 'system', subtype: 'task_updated', task_id: 'unsupported', patch: { status: 'failed' } });
+  await assert.rejects(session.stopTask('unsupported'), /no longer running/);
+  session.closed = true;
+  await assert.rejects(session.stopTask('unsupported'), /ended/);
+});
+
 test('a preview-only ThreadTerm server auto-approves only the two preview tools', async () => {
   const { session, events } = harness();
   await session.start({

@@ -59,6 +59,10 @@ async function handle(request) {
     case 'session.plan_response': return await get(request.cardId).planResponse(request.requestId, request.action, request.feedback);
     case 'session.answer': get(request.cardId).answer(request.requestId, request.values); return {};
     case 'session.set_option': return { ui: await get(request.cardId).setOption(request.optionId, request.value) };
+    case 'session.stop_task': {
+      if (!request.taskId) throw new Error('taskId is required');
+      return { accepted: await get(request.cardId).stopTask(request.taskId) };
+    }
     case 'session.stop': { const session = sessions.get(request.cardId); sessions.delete(request.cardId); if (session) await session.stop(); return {}; }
     default: throw new Error(`unhandled op: ${request.op}`);
   }

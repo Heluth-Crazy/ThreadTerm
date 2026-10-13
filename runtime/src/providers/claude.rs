@@ -4,7 +4,7 @@ use super::{
         command_output, find_executable, history_page, insert_optional, validate_native_id,
         version_probe, CommandSpec, EnvelopeStyle, JsonLineProcess,
     },
-    emit_scoped, ChatSession, ChatToolServer, NativeForkAnchor, ProviderAdapter,
+    emit_scoped, ChatBackgroundTask, ChatSession, ChatToolServer, NativeForkAnchor, ProviderAdapter,
     ProviderCapability, ProviderError, TerminalCommand,
 };
 use chrono::{TimeZone, Utc};
@@ -85,7 +85,7 @@ impl ClaudeUi {
                 .cloned()
                 .unwrap_or_else(|| json!([]))
         };
-        json!({"options":list("options"),"commands":list("commands")})
+        json!({"options":list("options"),"commands":list("commands"),"backgroundTasks":list("backgroundTasks")})
     }
 }
 
@@ -694,6 +694,45 @@ impl ChatSession for ClaudeChat {
     }
     fn ui_state(&self) -> Value {
         self.ui.wire()
+    }
+    fn background_tasks(&mut self) -> Result<Vec<ChatBackgroundTask>, ProviderError> {
+        serde_json::from_value(
+            self.ui
+                .wire()
+                .get("backgroundTasks")
+                .cloned()
+                .unwrap_or_else(|| json!([])),
+        )
+        .map_err(|error| ProviderError::new("provider_protocol", format!("Claude returned invalid background tasks: {error}")))
+    }
+    fn stop_background_task(&mut self, task_id: &str) -> Result<bool, ProviderError> {
+        let task = self
+            .background_tasks()?
+            .into_iter()
+            .find(|task| task.id == task_id)
+            .ok_or_else(|| ProviderError::new(
+                "background_task_not_found",
+                "Background task does not belong to this Chat session",
+            ))?;
+        if task.status != "running" {
+            return Err(ProviderError::new(
+                "background_task_not_running",
+                "Background task is no longer running",
+            ));
+        }
+        if !task.can_stop {
+            return Err(ProviderError::new(
+                "background_task_stop_unsupported",
+                "Claude cannot stop this background task",
+            ));
+        }
+        let result = self.process.sidecar_request(
+            "session.stop_task",
+            json!({"cardId":self.session_id,"taskId":task_id}),
+        )?;
+        result.get("accepted").and_then(Value::as_bool).ok_or_else(|| {
+            ProviderError::new("provider_protocol", "Claude returned no background task stop result")
+        })
     }
     fn set_option(&mut self, option_id: &str, value: &str) -> Result<Value, ProviderError> {
         let result = self.process.sidecar_request(

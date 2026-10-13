@@ -3382,6 +3382,12 @@
             "$ref": "#/definitions/ChatSlashCommand"
           }
         },
+        "backgroundTasks": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/ChatBackgroundTask"
+          }
+        },
         "inputCapabilities": {
           "type": "object",
           "properties": {
@@ -3510,6 +3516,49 @@
       ],
       "additionalProperties": false
     },
+    "ChatBackgroundTask": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "title": {
+          "type": "string"
+        },
+        "command": {
+          "type": "string"
+        },
+        "status": {
+          "type": "string",
+          "enum": [
+            "running",
+            "completed",
+            "failed",
+            "stopped"
+          ]
+        },
+        "startedAt": {
+          "type": "string"
+        },
+        "endedAt": {
+          "type": "string"
+        },
+        "canStop": {
+          "type": "boolean"
+        },
+        "toolId": {
+          "type": "string",
+          "description": "Existing transcript tool/subagent identity used by the Output action."
+        }
+      },
+      "required": [
+        "id",
+        "title",
+        "status",
+        "canStop"
+      ],
+      "additionalProperties": false
+    },
     "ChatOptionsLoadState": {
       "type": "string",
       "enum": [
@@ -3592,6 +3641,33 @@
     },
     "RequestResult<\"chat.options\">": {
       "$ref": "#/definitions/ChatUiState"
+    },
+    "RequestResult<\"chat.backgroundTasks.list\">": {
+      "type": "object",
+      "properties": {
+        "tasks": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/ChatBackgroundTask"
+          }
+        }
+      },
+      "required": [
+        "tasks"
+      ],
+      "additionalProperties": false
+    },
+    "RequestResult<\"chat.backgroundTask.stop\">": {
+      "type": "object",
+      "properties": {
+        "accepted": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "accepted"
+      ],
+      "additionalProperties": false
     },
     "RequestResult<\"chat.context.read\">": {
       "anyOf": [
@@ -7767,6 +7843,58 @@
         },
         "result": {
           "$ref": "#/definitions/RequestResult%3C%22chat.options%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "result"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "chat.backgroundTasks.list"
+        },
+        "result": {
+          "$ref": "#/definitions/RequestResult%3C%22chat.backgroundTasks.list%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "result"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "chat.backgroundTask.stop"
+        },
+        "result": {
+          "$ref": "#/definitions/RequestResult%3C%22chat.backgroundTask.stop%22%3E"
         }
       },
       "required": [

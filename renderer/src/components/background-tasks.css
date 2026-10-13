@@ -1,0 +1,12 @@
+.chat-background-tasks { flex:none; min-width:0; padding:4px 12px; border-bottom:1px solid var(--border); background:var(--surface); color:var(--text); }
+.chat-background-body { display:grid; gap:8px; padding:8px 0; max-height:240px; overflow-y:auto; font-size:12px; }
+.chat-background-body p { margin:0; color:var(--muted); }
+.chat-background-list { display:grid; gap:8px; margin:0; padding:0; list-style:none; }
+.chat-background-row { display:flex; align-items:center; flex-wrap:wrap; gap:8px; min-width:0; }
+.chat-background-description { display:flex; align-items:center; flex-wrap:wrap; gap:6px; flex:1 1 180px; min-width:0; }
+.chat-background-title { min-width:0; overflow-wrap:anywhere; font-size:12px; }
+.chat-background-elapsed { color:var(--muted); font-size:11px; white-space:nowrap; }
+.chat-background-status { color:var(--muted); font-size:11px; white-space:nowrap; }
+.chat-background-status.is-failed { color:var(--danger); }
+.chat-background-actions { display:flex; align-items:center; gap:4px; }
+.chat-background-issue { display:flex; align-items:center; flex-wrap:wrap; gap:8px; color:var(--danger); }

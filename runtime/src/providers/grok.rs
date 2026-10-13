@@ -8,8 +8,9 @@ use super::{
         dispatch_acp_message, context_usage_from_update, flush_acp_messages, encode_approval_id, history_page, insert_optional, validate_native_id, version_probe,
         ChatTextSegments, CommandSpec, EnvelopeStyle, JsonLineProcess, JsonLineResponder,
     },
-    acp_mcp_servers, approve_scoped_threadterm_tool, chat_tool_policy, emit_bound as emit, ChatSession, ChatToolPolicy, ChatToolServer,
-    ProviderAdapter, ProviderCapability, ProviderError, ScopedProviderEvents,
+    acp_mcp_servers, approve_scoped_threadterm_tool, chat_tool_policy, emit_bound as emit,
+    ChatBackgroundTask, ChatSession, ChatToolPolicy, ChatToolServer, ProviderAdapter,
+    ProviderCapability, ProviderError, ScopedProviderEvents,
     TerminalCommand,
 };
 use chrono::Utc;
@@ -429,6 +430,7 @@ struct GrokUiState {
     tool_identities: HashMap<String, GrokToolIdentity>,
     completed_background_turns: VecDeque<String>,
     subagents: GrokSubagents,
+    background_tasks: Vec<ChatBackgroundTask>,
 }
 
 #[derive(Clone, Default)]
@@ -439,7 +441,95 @@ struct GrokToolIdentity {
 
 impl GrokUiState {
     fn wire(&self) -> Value {
-        json!({"options":self.options.clone(),"commands":self.commands.clone()})
+        json!({"options":self.options.clone(),"commands":self.commands.clone(),"backgroundTasks":self.background_tasks})
+    }
+
+    fn begin_turn(&mut self) -> bool {
+        let before = self.background_tasks.len();
+        for task in self.background_tasks.iter().filter(|task| task.status != "running") {
+            for (key, call) in &mut self.subagents.calls {
+                let native_id = call.info.pointer("/native/id").and_then(Value::as_str);
+                if task.tool_id.as_deref() == Some(key.as_str())
+                    || native_id == Some(task.id.as_str())
+                {
+                    call.background_retired = true;
+                }
+            }
+        }
+        self.background_tasks.retain(|task| task.status == "running");
+        before != self.background_tasks.len()
+    }
+
+    fn sync_background_tasks(&mut self) -> bool {
+        let now = Utc::now().to_rfc3339();
+        let mut changed = false;
+        for (key, call) in &self.subagents.calls {
+            if call.background_retired
+                || call.info.get("background").and_then(Value::as_bool) != Some(true)
+            {
+                continue;
+            }
+            let id = call
+                .info
+                .pointer("/native/id")
+                .and_then(Value::as_str)
+                .unwrap_or(key)
+                .to_owned();
+            let title = call
+                .info
+                .get("description")
+                .or_else(|| call.info.get("prompt"))
+                .or_else(|| call.info.get("agentType"))
+                .and_then(Value::as_str)
+                .filter(|value| !value.is_empty())
+                .unwrap_or("Background agent")
+                .to_owned();
+            let existing = self.background_tasks.iter().position(|task| {
+                task.id == id || task.tool_id.as_deref() == Some(key.as_str())
+            });
+            let call_status = match call.info.get("status").and_then(Value::as_str) {
+                Some("completed") => "completed",
+                Some("failed") => "failed",
+                Some("cancelled" | "stopped") => "stopped",
+                _ => "running",
+            };
+            let status = existing
+                .map(|index| self.background_tasks[index].status.as_str())
+                .filter(|status| *status != "running")
+                .unwrap_or(call_status);
+            let started_at = existing
+                .and_then(|index| self.background_tasks[index].started_at.clone())
+                .or_else(|| Some(now.clone()));
+            let ended_at = if status == "running" {
+                None
+            } else {
+                existing
+                    .and_then(|index| self.background_tasks[index].ended_at.clone())
+                    .or_else(|| Some(now.clone()))
+            };
+            let task = ChatBackgroundTask {
+                id,
+                title,
+                command: None,
+                status: status.into(),
+                started_at,
+                ended_at,
+                can_stop: false,
+                tool_id: Some(key.clone()),
+            };
+            match existing {
+                Some(index) if self.background_tasks[index] != task => {
+                    self.background_tasks[index] = task;
+                    changed = true;
+                }
+                None => {
+                    self.background_tasks.push(task);
+                    changed = true;
+                }
+                _ => {}
+            }
+        }
+        changed
     }
 }
 
@@ -457,6 +547,7 @@ struct GrokSubagents {
 struct GrokSubagentCall {
     info: Value,
     turn_id: Option<String>,
+    background_retired: bool,
 }
 
 #[derive(Clone)]
@@ -508,6 +599,7 @@ fn grok_spawn_update(
             GrokSubagentCall {
                 info: json!({"status":"running","transcript":"live"}),
                 turn_id: turn.map(str::to_owned),
+                background_retired: false,
             },
         );
     }
@@ -617,6 +709,7 @@ impl GrokSubagents {
                 .or_insert_with(|| GrokSubagentCall {
                     info: json!({"status":"running","transcript":"live"}),
                     turn_id: turn.map(str::to_owned),
+                    background_retired: false,
                 });
             for (field, value) in [
                 ("description", update.get("description")),
@@ -1265,6 +1358,11 @@ impl GrokChat {
         if let Ok(mut ui) = self.ui.lock() {
             ui.retry = None;
             ui.cancel_requested = false;
+            let tasks_changed = ui.begin_turn();
+            drop(ui);
+            if tasks_changed {
+                emit_chat_ui(&self.events, &self.session_id, Some(&self.native_id), &self.ui);
+            }
         }
         // The reader can finish a fast native request before request_async
         // returns. Publish start before handing the frame to that reader.
@@ -1568,6 +1666,13 @@ impl ChatSession for GrokChat {
             .ok()
             .map(|state| state.wire())
             .unwrap_or_else(|| json!({"options":[],"commands":[]}))
+    }
+
+    fn background_tasks(&mut self) -> Result<Vec<ChatBackgroundTask>, ProviderError> {
+        self.ui
+            .lock()
+            .map(|state| state.background_tasks.clone())
+            .map_err(|_| ProviderError::new("provider_internal", "Grok UI lock poisoned"))
     }
 
     fn set_option(&mut self, option_id: &str, value: &str) -> Result<Value, ProviderError> {
@@ -2076,10 +2181,15 @@ fn emit_grok_message(
     if method == "_x.ai/session_notification"
         && matches!(kind, "subagent_spawned" | "subagent_progress" | "subagent_finished")
     {
+        let mut tasks_changed = false;
         if let Ok(mut state) = ui.lock() {
             state.subagents.notification(&GrokSubagentEvents {
                 events, session_id, native_id: native_id.as_deref(),
             }, kind, update, turn_id.as_deref());
+            tasks_changed = state.sync_background_tasks();
+        }
+        if tasks_changed {
+            emit_chat_ui(events, session_id, native_id.as_deref(), ui);
         }
         return;
     }
@@ -2186,6 +2296,11 @@ fn emit_grok_message(
                 state.subagents.emit_card(&GrokSubagentEvents {
                     events, session_id, native_id: native_id.as_deref(),
                 }, &key);
+                let tasks_changed = state.sync_background_tasks();
+                drop(state);
+                if tasks_changed {
+                    emit_chat_ui(events, session_id, native_id.as_deref(), ui);
+                }
                 return;
             }
             // Retain the last turn's identity for late completion updates; the
@@ -3019,6 +3134,68 @@ mod tests {
         let mut expected = ui.lock().unwrap().wire();
         expected["sessionId"] = json!("s");
         assert_eq!(event.data, expected);
+    }
+
+    #[test]
+    fn background_tasks_retire_terminal_calls_at_the_next_turn() {
+        let mut ui = GrokUiState::default();
+        ui.subagents.calls.insert(
+            "spawn-call".into(),
+            GrokSubagentCall {
+                info: json!({"background":true,"status":"running","native":{"id":"native-1"}}),
+                turn_id: Some("turn-1".into()),
+                background_retired: false,
+            },
+        );
+        assert!(ui.sync_background_tasks());
+        assert_eq!(ui.background_tasks[0].tool_id.as_deref(), Some("spawn-call"));
+        assert!(!ui.background_tasks[0].can_stop);
+        assert_eq!(ui.background_tasks[0].status, "running");
+
+        ui.subagents.calls.get_mut("spawn-call").unwrap().info["status"] = json!("completed");
+        assert!(ui.sync_background_tasks());
+        assert_eq!(ui.background_tasks[0].status, "completed");
+        ui.subagents.calls.get_mut("spawn-call").unwrap().info["status"] = json!("running");
+        assert!(!ui.sync_background_tasks());
+        assert_eq!(ui.background_tasks[0].status, "completed");
+        assert!(ui.begin_turn());
+        assert!(ui.background_tasks.is_empty());
+
+        // An unrelated task sync does not restore the prior call.
+        ui.subagents.calls.insert(
+            "unrelated-call".into(),
+            GrokSubagentCall {
+                info: json!({"background":true,"status":"running","native":{"id":"native-other"}}),
+                turn_id: Some("turn-2".into()),
+                background_retired: false,
+            },
+        );
+        assert!(ui.sync_background_tasks());
+        assert_eq!(ui.background_tasks.len(), 1);
+        assert!(ui.background_tasks.iter().all(|task| task.tool_id.as_deref() != Some("spawn-call")));
+
+        // Late progress can change the retired call's status, but cannot restore its task.
+        ui.subagents.calls.get_mut("spawn-call").unwrap().info["status"] = json!("running");
+        assert!(!ui.sync_background_tasks());
+        assert_eq!(ui.background_tasks.len(), 1);
+        assert!(ui.background_tasks.iter().all(|task| task.tool_id.as_deref() != Some("spawn-call")));
+
+        // A still-running task survives turn cleanup and keeps its exact tool call key.
+        let mut running_ui = GrokUiState::default();
+        running_ui.subagents.calls.insert(
+            "running-call".into(),
+            GrokSubagentCall {
+                info: json!({"background":true,"status":"running","native":{"id":"native-2"}}),
+                turn_id: Some("turn-2".into()),
+                background_retired: false,
+            },
+        );
+        assert!(running_ui.sync_background_tasks());
+        let running = running_ui.background_tasks.iter().find(|task| task.id == "native-2").unwrap();
+        assert_eq!(running.tool_id.as_deref(), Some("running-call"));
+        assert!(!running.can_stop);
+        assert!(!running_ui.begin_turn());
+        assert_eq!(running_ui.background_tasks.len(), 1);
     }
 
     #[test]
@@ -3945,9 +4122,11 @@ mod tests {
         replay.update(GROK_PROBE_PARENT, json!({"sessionUpdate":"tool_call_update","toolCallId":"spawn",
             "rawInput":{"run_in_background":true},"status":"completed","rawOutput":{"subagent_id":"child"}}));
         replay.bind("child", "Inspect");
-        assert!(replay.drain().iter().all(
-            |event| event.kind == "chat.subagent" && event.data["info"]["status"] == "running"
-        ));
+        assert!(replay
+            .drain()
+            .iter()
+            .filter(|event| event.kind == "chat.subagent")
+            .all(|event| event.data["info"]["status"] == "running"));
         *replay.active.lock().unwrap() = Some("new-turn".into());
         replay.notification(
             json!({"sessionUpdate":"subagent_progress","subagent_id":"child",
@@ -3958,13 +4137,17 @@ mod tests {
             "status":"completed","output":"Done","tool_calls":2,"duration_ms":45}),
         );
         let events = replay.drain();
-        assert!(events
+        let cards = events
+            .iter()
+            .filter(|event| event.kind == "chat.subagent")
+            .collect::<Vec<_>>();
+        assert!(cards
             .iter()
             .all(|event| event.turn_id.as_deref() == Some("parent-turn")));
-        assert_eq!(events.last().unwrap().data["info"]["status"], "completed");
-        assert_eq!(events.last().unwrap().data["info"]["background"], true);
+        assert_eq!(cards.last().unwrap().data["info"]["status"], "completed");
+        assert_eq!(cards.last().unwrap().data["info"]["background"], true);
         assert_eq!(
-            events.last().unwrap().data["info"]["usage"],
+            cards.last().unwrap().data["info"]["usage"],
             json!({"totalTokens":12,"toolUses":2,"durationMs":45})
         );
         assert_eq!(replay.active.lock().unwrap().as_deref(), Some("new-turn"));

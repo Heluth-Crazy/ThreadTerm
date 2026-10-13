@@ -84,6 +84,13 @@ export class ClaudeSession {
     this.contextSequence = 0;
     // The turn the user asked to stop; its result reports `interrupted`.
     this.interruptedOperation = null;
+    // Native background membership and lifecycle. Finished rows remain through
+    // the current parent turn and are cleared only when the next turn starts.
+    this.backgroundTasks = new Map();
+    this.backgroundToolIds = new Set();
+    this.nativeBackgroundTaskIds = new Set();
+    this.retiredBackgroundIds = new Set();
+    this.backgroundStops = new Map();
   }
 
   async start({ cwd, sessionId, mcpServers }) {
@@ -163,6 +170,20 @@ export class ClaudeSession {
     if (this.activeOperationId) throw new Error(`turn already active: ${this.activeOperationId}`);
     // A prior turn's outstanding context read must not publish into this turn.
     this.contextSequence += 1;
+    const before = this.backgroundTasks.size;
+    for (const task of this.backgroundTasks.values()) {
+      if (task.status === 'running') continue;
+      this.retiredBackgroundIds.add(task.id);
+      if (task.toolId) this.retiredBackgroundIds.add(task.toolId);
+      this.nativeBackgroundTaskIds.delete(task.id);
+      this.backgroundToolIds.delete(task.toolId);
+      this.backgroundStops.delete(task.id);
+    }
+    // Native task/tool IDs are unique within one SDK query. Keep a bounded
+    // retirement window, like the runtime's other late-event fences.
+    while (this.retiredBackgroundIds.size > 512) this.retiredBackgroundIds.delete(this.retiredBackgroundIds.values().next().value);
+    this.backgroundTasks = new Map([...this.backgroundTasks].filter(([, task]) => task.status === 'running'));
+    if (this.backgroundTasks.size !== before) this.publishUi();
     this.activeOperationId = operationId;
     this.input.push(userMessage(text));
     this.write(event(this.cardId, 'session.status', { phase: 'running', sessionId: this.sessionId, operationId }));
@@ -177,6 +198,7 @@ export class ClaudeSession {
           this.adoptTurnInit(message);
         }
         if (message.type === 'stream_event' && message.event?.type === 'message_start' && message.event.message?.id) this.streamedIds.add(message.event.message.id);
+        if (this.observeBackgroundMessage(message)) this.publishUi();
         const streamed = message.type === 'assistant' ? { streamed: this.streamedIds.has(message.message?.id) } : {};
         this.write(event(this.cardId, 'session.event', { message, sessionId: this.sessionId, operationId: this.activeOperationId, ...streamed }));
         if (message.type === 'system' && message.subtype === 'status' && typeof message.permissionMode === 'string') this.noteMode(message.permissionMode);
@@ -418,7 +440,7 @@ export class ClaudeSession {
       .filter(command => typeof command?.name === 'string' && command.name && !command.name.startsWith('__')
         && !HIDDEN_COMMANDS.has(command.name) && !this.terminalCommands.has(command.name))
       .map(command => ({ name: command.name, ...(typeof command.description === 'string' && command.description ? { description: command.description } : {}) }));
-    return { options, commands };
+    return { options, commands, backgroundTasks: [...this.backgroundTasks.values()] };
   }
 
   publishUi() {
@@ -447,6 +469,108 @@ export class ClaudeSession {
     return this.publishUi();
   }
 
+  observeBackgroundMessage(message) {
+    if (!message || typeof message !== 'object' || message.ambient === true || message.skip_transcript === true) return false;
+    let changed = false;
+    const blocks = Array.isArray(message?.message?.content) ? message.message.content : [];
+    for (const block of blocks) {
+      if (block?.type !== 'tool_use' || typeof block.id !== 'string') continue;
+      if (this.retiredBackgroundIds.has(block.id)) continue;
+      const input = block.input && typeof block.input === 'object' ? block.input : {};
+      if (input.run_in_background !== true) continue;
+      const command = typeof input.command === 'string' && input.command ? input.command : undefined;
+      const title = (typeof input.description === 'string' && input.description) || command || block.name || 'Background task';
+      this.backgroundToolIds.add(block.id);
+      if (!this.backgroundTasks.has(block.id)) {
+        this.backgroundTasks.set(block.id, { id: block.id, title, ...(command ? { command } : {}), status: 'running', startedAt: new Date().toISOString(), canStop: false, toolId: block.id });
+        changed = true;
+      }
+    }
+    if (message.type !== 'system') return changed;
+    const subtype = message.subtype;
+    if (subtype === 'background_tasks_changed') {
+      const rows = [message.tasks, message.background_tasks, message.backgroundTasks].find(Array.isArray) ?? [];
+      const next = new Set();
+      for (const row of rows) {
+        const taskId = typeof row === 'string' ? row : row?.task_id ?? row?.taskId ?? row?.id;
+        if (typeof taskId !== 'string' || !taskId) continue;
+        if (row?.ambient === true || row?.skip_transcript === true || this.retiredBackgroundIds.has(taskId)) continue;
+        next.add(taskId);
+        this.nativeBackgroundTaskIds.add(taskId);
+        if (row && typeof row === 'object') changed = this.observeBackgroundMessage({ type: 'system', subtype: 'task_started', task_id: taskId, ...row, is_backgrounded: true }) || changed;
+      }
+      for (const taskId of this.nativeBackgroundTaskIds) {
+        if (next.has(taskId)) continue;
+        const task = this.backgroundTasks.get(taskId);
+        if (task?.status === 'running') {
+          // Membership only confirms that work ended; a later task_notification
+          // refines completed to failed/stopped. Do not invent a Stop result.
+          this.backgroundTasks.set(taskId, { ...task, status: 'completed', canStop: false, endedAt: new Date().toISOString() });
+          this.backgroundStops.delete(taskId);
+          changed = true;
+        }
+      }
+      this.nativeBackgroundTaskIds = next;
+      return changed;
+    }
+    if (!['task_started', 'task_updated', 'task_progress', 'task_notification'].includes(subtype)) return changed;
+    const taskId = message.task_id ?? message.taskId;
+    if (typeof taskId !== 'string' || !taskId) return changed;
+    const toolId = message.tool_use_id ?? message.toolUseId;
+    if (this.retiredBackgroundIds.has(taskId) || this.retiredBackgroundIds.has(toolId)) return changed;
+    const patch = message.patch && typeof message.patch === 'object' ? message.patch : {};
+    const explicitBackground = message.is_backgrounded === true || patch.is_backgrounded === true;
+    const member = explicitBackground || this.nativeBackgroundTaskIds.has(taskId)
+      || (typeof toolId === 'string' && this.backgroundToolIds.has(toolId)) || this.backgroundTasks.has(taskId);
+    if (!member) return changed;
+    this.nativeBackgroundTaskIds.add(taskId);
+    let prior = this.backgroundTasks.get(taskId);
+    if (!prior && typeof toolId === 'string') {
+      prior = this.backgroundTasks.get(toolId);
+      if (prior) this.backgroundTasks.delete(toolId);
+    }
+    const command = (typeof message.command === 'string' && message.command) || prior?.command;
+    const title = (typeof patch.description === 'string' && patch.description)
+      || (typeof message.description === 'string' && message.description)
+      || (typeof message.summary === 'string' && message.summary)
+      || command || prior?.title || 'Background task';
+    const rawStatus = subtype === 'task_notification' ? message.status : patch.status;
+    if (prior && prior.status !== 'running' && !['completed', 'failed', 'stopped', 'killed', 'cancelled'].includes(rawStatus)) return changed;
+    const status = rawStatus === 'completed' ? 'completed'
+      : rawStatus === 'failed' ? 'failed'
+      : ['stopped', 'killed', 'cancelled'].includes(rawStatus) ? 'stopped' : 'running';
+    const next = {
+      id: taskId, title, ...(command ? { command } : {}), status,
+      startedAt: prior?.startedAt ?? new Date().toISOString(),
+      ...(status === 'running' ? {} : { endedAt: prior?.endedAt ?? new Date().toISOString() }),
+      canStop: status === 'running' && typeof this.query?.stopTask === 'function',
+      ...(typeof toolId === 'string' ? { toolId } : prior?.toolId ? { toolId: prior.toolId } : {}),
+    };
+    if (JSON.stringify(prior) !== JSON.stringify(next)) {
+      this.backgroundTasks.set(taskId, next);
+      changed = true;
+    }
+    if (status !== 'running') this.backgroundStops.delete(taskId);
+    return changed;
+  }
+
+  async stopTask(taskId) {
+    if (this.ended || this.closed || !this.query) throw new Error('session worker has ended');
+    const task = this.backgroundTasks.get(taskId);
+    if (!task) throw new Error(`background task does not belong to this session: ${taskId}`);
+    if (task.status !== 'running') throw new Error(`background task is no longer running: ${taskId}`);
+    if (typeof this.query.stopTask !== 'function' || !task.canStop) throw new Error('background task stop is not supported');
+    if (!this.backgroundStops.has(taskId)) {
+      // Keep the same promise even after a control timeout/rejection. The
+      // native action may have happened; only a terminal event can retire it.
+      this.backgroundStops.set(taskId, Promise.resolve().then(() => withTimeout(this.query.stopTask(taskId), CONTROL_TIMEOUT_MS, 'Claude background task stop')));
+    }
+    await this.backgroundStops.get(taskId);
+    // The promise acknowledges the command only. A native task notification or
+    // background_tasks_changed event owns the terminal status and timestamp.
+    return true;
+  }
+
   cancelPermissions(message) {
     for (const [requestId] of [...this.pending]) {
       this.pending.get(requestId)?.settle({ behavior: 'deny', message }, { cancelled: true });
@@ -461,6 +585,7 @@ export class ClaudeSession {
   async stop() {
     if (this.closed) return;
     this.closed = true;
+    this.backgroundStops.clear();
     this.abortStart?.();
     this.input.end(); this.cancelPermissions('Session stopped');
     try { this.query?.return?.(undefined)?.catch?.(() => {}); } catch {}
