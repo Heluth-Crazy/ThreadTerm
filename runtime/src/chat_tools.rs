@@ -729,6 +729,33 @@ impl ChatTools {
         })
     }
 
+    /// E2: the user sent unread notes as a message, so retire exactly those
+    /// rows. Scoped to the session, and only rows still `waiting` are removed.
+    pub(crate) fn feedback_dismiss(&self, request: FeedbackDismiss) -> Result<Value> {
+        if request.session_id.is_empty() || request.note_ids.is_empty() || request.note_ids.len() > MAX_FEEDBACK_READ as usize {
+            return Err(anyhow!("invalid_feedback"));
+        }
+        if self.db.session_by_id(&request.session_id)?.is_none() {
+            return Err(anyhow!("session_not_found"));
+        }
+        self.db.transaction(|tx| {
+            let mut removed = Vec::new();
+            for id in &request.note_ids {
+                let changed = tx.execute(
+                    "DELETE FROM chat_feedback_notes WHERE id=? AND session_id=? AND status='waiting'",
+                    params![id, request.session_id],
+                )?;
+                if changed > 0 {
+                    removed.push(id.clone());
+                }
+            }
+            if !removed.is_empty() {
+                emit_feedback_change(tx, &request.session_id, &[], &removed)?;
+            }
+            Ok(json!({"removed":removed}))
+        })
+    }
+
     /// Explicit turn cancellation and session close retire undelivered notes.
     /// A normal successful completion deliberately does not call this: E2 lets
     /// the user resend those waiting notes as a regular message.
@@ -872,6 +899,13 @@ pub(crate) struct FeedbackAdd {
     pub turn_id: String,
     pub text: String,
     pub operation_id: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct FeedbackDismiss {
+    pub session_id: String,
+    pub note_ids: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]

@@ -333,6 +333,10 @@ impl ProviderAdapter for GrokAdapter {
         let active_turn = Arc::new(Mutex::new(None));
         let permissions = Arc::new(Mutex::new(HashMap::new()));
         let ui = Arc::new(Mutex::new(GrokUiState::default()));
+        let policy = chat_tool_policy(tools);
+        if let Ok(mut state) = ui.lock() {
+            state.note_steer = policy.feedback;
+        }
         // Passed on new and on load (verified with Grok 1.0.41).
         let mcp_servers = acp_mcp_servers(tools);
         let (process, initialized) = self.spawn(
@@ -344,7 +348,7 @@ impl ProviderAdapter for GrokAdapter {
             None,
             events.clone(),
             true,
-            chat_tool_policy(tools),
+            policy,
         )?;
         let response = if let Some(id) = native_id {
             validate_native_id(id)?;
@@ -431,6 +435,9 @@ struct GrokUiState {
     completed_background_turns: VecDeque<String>,
     subagents: GrokSubagents,
     background_tasks: Vec<ChatBackgroundTask>,
+    /// E2: this open was granted the Feedback tool, and Grok never steers
+    /// natively, so the composer offers "Send note for next check" instead.
+    note_steer: bool,
 }
 
 #[derive(Clone, Default)]
@@ -441,7 +448,11 @@ struct GrokToolIdentity {
 
 impl GrokUiState {
     fn wire(&self) -> Value {
-        json!({"options":self.options.clone(),"commands":self.commands.clone(),"backgroundTasks":self.background_tasks})
+        let mut state = json!({"options":self.options.clone(),"commands":self.commands.clone(),"backgroundTasks":self.background_tasks});
+        if self.note_steer {
+            state["inputCapabilities"] = json!({"steer":"note"});
+        }
+        state
     }
 
     fn begin_turn(&mut self) -> bool {
@@ -3082,6 +3093,14 @@ fn parse_slash(text: &str) -> Option<(&str, &str)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_granted_feedback_tool_offers_a_note_not_native_steering() {
+        let mut state = GrokUiState::default();
+        assert!(state.wire().get("inputCapabilities").is_none());
+        state.note_steer = true;
+        assert_eq!(state.wire()["inputCapabilities"], json!({"steer":"note"}));
+    }
 
     #[test]
     fn grok_replay_splits_text_at_parent_interactions() {

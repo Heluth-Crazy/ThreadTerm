@@ -4,6 +4,7 @@ import { diffView, editFileStats, moreFilesLabel, outputView, toolStatusLabel, t
 import { partBody } from '../chatPresentation';
 import { isChatImage } from '../chatImages';
 import { toolView, type ToolView } from '../toolView';
+import { feedbackNotesFromPart } from '../feedbackNotes';
 import type { ToolActivityEntry } from '../toolActivity';
 import { FileLinkedText, FileReferenceChips } from './FileReferenceText';
 import { JsonTree } from './JsonTree';
@@ -197,7 +198,23 @@ function GenericBody({ view, copy }: { view: Extract<ToolView, { kind: 'generic'
   </>;
 }
 
-function CardBody({ view, copy, sessionCwd, openFile, openDiff, canOpenDiff, references }: { view: ToolView; copy: Copy; sessionCwd?: string; openFile?: OpenFile; openDiff?: (path: string) => void; canOpenDiff?: (path: string) => boolean; references?: FileReference[] }) {
+/** E2: a `feedback_check` result reads as a count with an optional note list. */
+function FeedbackBody({ notes, copy }: { notes: NonNullable<ReturnType<typeof feedbackNotesFromPart>>; copy: Copy }) {
+  const [showAll, setShowAll] = useState(false);
+  if (!notes.length) return <p className="tool-card-note">{copy('No feedback notes', '没有反馈备注')}</p>;
+  return <>
+    <div className="tool-chip-row"><span className="chip flat tool-chip">{copy(`${notes.length} feedback ${notes.length === 1 ? 'note' : 'notes'}`, `${notes.length} 条反馈备注`)}</span></div>
+    {!showAll && <button type="button" className="btn btn-sm tool-card-action" data-testid="feedback-show-all" onClick={() => setShowAll(true)}>{copy(`Show all (${notes.length})`, `显示全部（${notes.length}）`)}</button>}
+    {showAll && <ul className="feedback-note-list">{notes.map(note => <li className="feedback-note-row" key={note.id}>
+      <span className={`feedback-note-status is-${note.status}`}>{note.status === 'received' ? copy('Received', '已接收') : copy('Waiting', '等待中')}</span>
+      <span className="feedback-note-text">{note.text}</span>
+    </li>)}</ul>}
+  </>;
+}
+
+function CardBody({ part, view, copy, sessionCwd, openFile, openDiff, canOpenDiff, references }: { part: ChatPart; view: ToolView; copy: Copy; sessionCwd?: string; openFile?: OpenFile; openDiff?: (path: string) => void; canOpenDiff?: (path: string) => boolean; references?: FileReference[] }) {
+  const feedback = feedbackNotesFromPart(part);
+  if (feedback) return <FeedbackBody notes={feedback} copy={copy} />;
   switch (view.kind) {
     case 'edit': return <EditBody view={view} copy={copy} openFile={openFile} openDiff={openDiff} canOpenDiff={canOpenDiff} />;
     case 'command': return <CommandBody view={view} sessionCwd={sessionCwd} copy={copy} />;
@@ -250,7 +267,7 @@ export function ToolCard({ entry, index, open, active, awaitingApproval, session
       <span className={`chip tool-card-status ${statusChip[status.key] ?? 'flat'}`}>{status.label}</span>
     </div>
     {open && <div className="tool-card-body">
-      <CardBody view={view} copy={copy} sessionCwd={sessionCwd} openFile={openFile} openDiff={openDiff} canOpenDiff={canOpenDiff} references={entry.part.fileReferences} />
+      <CardBody part={entry.part} view={view} copy={copy} sessionCwd={sessionCwd} openFile={openFile} openDiff={openDiff} canOpenDiff={canOpenDiff} references={entry.part.fileReferences} />
     </div>}
     <CardImages part={entry.part} copy={copy} />
     {view.kind !== 'read' && <FileReferenceChips references={entry.part.fileReferences} visibleText={body} openFile={openFile} />}

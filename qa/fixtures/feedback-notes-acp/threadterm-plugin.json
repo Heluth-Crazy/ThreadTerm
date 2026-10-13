@@ -1,0 +1,16 @@
+{
+  "schemaVersion": 1,
+  "id": "feedback-notes-acp",
+  "name": "Feedback notes Echo (QA fixture)",
+  "version": "1.0.0",
+  "publisher": "ThreadTerm QA",
+  "description": "Local ACP fixture that waits for a mid-turn note, then calls feedback_check.",
+  "homepage": "https://example.invalid/feedback-notes",
+  "contributes": { "agents": [{
+    "id": "feedback-notes-echo", "name": "Feedback notes Echo", "icon": "icon.svg",
+    "command": "node", "args": ["{pluginDir}/agent.mjs"], "versionArgs": ["--version"],
+    "terminal": { "args": [], "resumeArgs": ["--resume", "{sessionId}"] },
+    "chat": { "protocol": "acp", "args": ["--acp"] }, "signIn": { "args": ["login"] },
+    "homepage": "https://example.invalid/feedback-notes"
+  }] }
+}

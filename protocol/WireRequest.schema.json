@@ -616,6 +616,33 @@
       ],
       "additionalProperties": false
     },
+    "RequestParams<\"chat.feedback.dismiss\">": {
+      "type": "object",
+      "properties": {
+        "sessionId": {
+          "type": "string"
+        },
+        "noteIds": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "operationId": {
+          "type": "string"
+        },
+        "leaseEpoch": {
+          "type": "number"
+        }
+      },
+      "required": [
+        "sessionId",
+        "noteIds",
+        "operationId",
+        "leaseEpoch"
+      ],
+      "additionalProperties": false
+    },
     "RequestParams<\"chat.fork\">": {
       "type": "object",
       "properties": {
@@ -4593,6 +4620,32 @@
         },
         "params": {
           "$ref": "#/definitions/RequestParams%3C%22chat.feedback.read%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "params"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "chat.feedback.dismiss"
+        },
+        "params": {
+          "$ref": "#/definitions/RequestParams%3C%22chat.feedback.dismiss%22%3E"
         }
       },
       "required": [

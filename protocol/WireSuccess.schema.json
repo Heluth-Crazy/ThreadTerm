@@ -1329,6 +1329,21 @@
       ],
       "additionalProperties": false
     },
+    "RequestResult<\"chat.feedback.dismiss\">": {
+      "type": "object",
+      "properties": {
+        "removed": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "removed"
+      ],
+      "additionalProperties": false
+    },
     "RequestResult<\"chat.fork\">": {
       "type": "object",
       "properties": {
@@ -6152,6 +6167,32 @@
         },
         "result": {
           "$ref": "#/definitions/RequestResult%3C%22chat.feedback.read%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "result"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "chat.feedback.dismiss"
+        },
+        "result": {
+          "$ref": "#/definitions/RequestResult%3C%22chat.feedback.dismiss%22%3E"
         }
       },
       "required": [

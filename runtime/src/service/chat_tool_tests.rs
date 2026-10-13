@@ -1,6 +1,6 @@
 use super::*;
 use crate::{
-    chat_tools::{self, FeedbackAdd},
+    chat_tools::{self, FeedbackAdd, FeedbackDismiss},
     db::CreateSession,
 };
 use std::{
@@ -540,6 +540,61 @@ fn feedback_is_persisted_bounded_idempotent_and_consumed_once_only_while_running
             .count(),
         1
     );
+}
+
+#[test]
+fn dismiss_removes_only_waiting_notes_of_that_session_once() {
+    let fixture = Fixture::new(false, false, true);
+    for (operation, text) in [("dismiss-one", "first"), ("dismiss-two", "second")] {
+        fixture
+            .tools
+            .feedback_add(FeedbackAdd {
+                session_id: fixture.session.clone(),
+                turn_id: "turn-one".into(),
+                text: text.into(),
+                operation_id: operation.into(),
+            })
+            .unwrap();
+    }
+    let notes = fixture.tools.feedback_read(&fixture.session).unwrap()["notes"]
+        .as_array()
+        .unwrap()
+        .clone();
+    let first = notes[0]["id"].as_str().unwrap().to_owned();
+    // Only waiting notes are retired, and only the exact rows of this session.
+    let dismissed = fixture
+        .tools
+        .feedback_dismiss(FeedbackDismiss {
+            session_id: fixture.session.clone(),
+            note_ids: vec![first.clone()],
+        })
+        .unwrap();
+    assert_eq!(dismissed, json!({"removed":[first]}));
+    // A replay removes nothing and is not an error.
+    assert_eq!(
+        fixture
+            .tools
+            .feedback_dismiss(FeedbackDismiss {
+                session_id: fixture.session.clone(),
+                note_ids: vec![first],
+            })
+            .unwrap(),
+        json!({"removed":[]})
+    );
+    assert_eq!(
+        fixture.tools.feedback_read(&fixture.session).unwrap()["notes"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+    assert!(fixture
+        .tools
+        .feedback_dismiss(FeedbackDismiss {
+            session_id: fixture.session,
+            note_ids: vec![],
+        })
+        .is_err());
 }
 
 #[test]
