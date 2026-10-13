@@ -187,6 +187,11 @@ export function collectControlsInPage({ containerSelector, controlSelector }) {
     const disabled = element.matches(':disabled') || element.getAttribute('aria-disabled') === 'true';
     let focusVisibleOutline = null;
     if (typeof element.focus === 'function') {
+      const selection = document.getSelection();
+      let savedRange = null;
+      if (selection && selection.rangeCount === 1) {
+        try { savedRange = selection.getRangeAt(0).cloneRange(); } catch { savedRange = null; }
+      }
       try {
         element.focus({ preventScroll: true });
         if (element.matches(':focus-visible')) {
@@ -195,6 +200,11 @@ export function collectControlsInPage({ containerSelector, controlSelector }) {
         element.blur();
       } catch {
         focusVisibleOutline = null;
+      }
+      // Measuring the outline must not leave the user's selection cleared.
+      if (savedRange) {
+        const live = document.getSelection();
+        try { live?.removeAllRanges(); live?.addRange(savedRange); } catch { /* The measured node may have replaced the range. */ }
       }
     }
     let probe;
