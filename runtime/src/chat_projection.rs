@@ -1087,7 +1087,7 @@ mod tests {
     fn completion_stamps_every_assistant_row_in_the_turn() {
         use crate::domain::NativeTurnStatus;
         let db=db();
-        let item=ChatItem {id:"reply".into(),role:"assistant".into(),parts:vec![json!({"type":"text","text":"reply"})],created_at:"now".into(),turn_id:Some("turn".into()),elapsed_ms:None,turn_status:None,turn_origin:None,fork_anchor:None};
+        let item=ChatItem {id:"reply".into(),role:"assistant".into(),parts:vec![json!({"type":"text","text":"reply"})],created_at:"now".into(),turn_id:Some("turn".into()),elapsed_ms:None,turn_status:None,turn_origin:None,fork_anchor:None,turn_model:None,turn_usage:None,turn_review:None};
         db.transaction(|tx| {
             tx.execute("INSERT INTO chat_items(id,session_id,turn_id,kind,data,created_at) VALUES ('reply','s','turn','message',?,'now')",[serde_json::to_string(&item)?])?;
             stamp_turn_status(tx,"s","turn","boundary",NativeTurnStatus::Completed,"later")

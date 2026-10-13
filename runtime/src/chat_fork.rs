@@ -669,6 +669,9 @@ mod tests {
                 elapsed_ms: None,
                 turn_status: Some(NativeTurnStatus::Completed),
                 turn_origin: None,
+                turn_model: None,
+                turn_usage: None,
+                turn_review: None,
                 fork_anchor: native.map(|native_id| NativeForkAnchor {
                     native_id: native_id.into(),
                     turn_id: Some("source-turn".into()),
@@ -703,6 +706,9 @@ mod tests {
             turn_status: status,
             turn_origin: None,
             fork_anchor: None,
+            turn_model: None,
+            turn_usage: None,
+            turn_review: None,
         };
         let items = vec![
             item("u", "user", None),
@@ -808,6 +814,9 @@ mod tests {
             turn_status: None,
             turn_origin: None,
             fork_anchor: None,
+            turn_model: None,
+            turn_usage: None,
+            turn_review: None,
         };
         assert_eq!(
             fork_point(&[statusless.clone()], Some("statusless"))
