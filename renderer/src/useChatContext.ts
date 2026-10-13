@@ -4,6 +4,13 @@ import { contextError } from './contextErrors';
 import { copiedConversationItem, encodeCopiedConversationDraft } from './chatForkDraft';
 
 const keyFor = (sessionId: string) => `threadterm.compose.context.${sessionId}`;
+export function clearChatContextDraft(sessionId: string) { localStorage.removeItem(keyFor(sessionId)); }
+/** Prepares a new chat's tray before its first mount; never submits a message. */
+export function saveChatContextDraft(sessionId: string, items: ContextItem[]) {
+  const bounded = normalizeContextItems(items);
+  serializeContext(bounded, '');
+  localStorage.setItem(keyFor(sessionId), JSON.stringify(bounded));
+}
 function load(sessionId: string): ContextItem[] {
   const saved = localStorage.getItem(keyFor(sessionId));
   if (!saved) return [];

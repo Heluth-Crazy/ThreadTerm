@@ -5,7 +5,7 @@ import { Icon } from './PrototypeIcon';
 import './context-tray.css';
 
 type Chip = { id: string; kind: ContextItem['kind']; label: string; title: string; block: string };
-const icons = { terminal: 'terminal', file: 'file', diff: 'branch', commit: 'clock', conversation: 'clock' };
+const icons = { terminal: 'terminal', file: 'file', diff: 'branch', commit: 'clock', conversation: 'clock', quote: 'file' };
 function localized(chip: Chip, zh: boolean) {
   if (chip.kind === 'file') return chip.label.replace(/:(\d+)-(\d+)$/, ':$1–$2');
   if (!zh) return chip.label;
@@ -13,6 +13,7 @@ function localized(chip: Chip, zh: boolean) {
   if (chip.kind === 'diff') return chip.label.replace(/^Diff/, '差异');
   if (chip.kind === 'commit') return chip.label.replace(/^Commit/, '提交');
   if (chip.kind === 'conversation') return fullTitle(chip, true);
+  if (chip.kind === 'quote') return chip.label.replace(/^Quote:/, '引用：');
   return chip.label;
 }
 
@@ -20,6 +21,7 @@ function fullTitle(chip: Chip, zh: boolean) {
   if (!zh) return chip.title;
   if (chip.kind === 'file') return chip.title.replace(/^File:/, '文件：');
   if (chip.kind === 'commit') return chip.title.replace(/^Commit/, '提交');
+  if (chip.kind === 'quote') return chip.title.replace(/^Quote:/, '引用：');
   if (chip.kind === 'diff') return chip.title.replace(/^Uncommitted diff/, '未提交差异').replace('(unstaged', '（未暂存').replace('(staged', '（已暂存').replace('; truncated', '；已截断').replace(/\)$/, '）');
   if (chip.kind === 'conversation') return chip.title.replace(/^Conversation up to/, '复制至').replace(' (copied)', ' 的对话');
   return chip.title.replace(/^Terminal output/, '终端输出').replace(/, last (\d+) lines$/, '，最后 $1 行');
