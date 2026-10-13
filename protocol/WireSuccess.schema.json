@@ -3399,6 +3399,13 @@
             "$ref": "#/definitions/ChatSlashCommand"
           }
         },
+        "skills": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/ChatSkill"
+          },
+          "description": "Skills the provider can tell apart from ordinary commands; absent when it cannot."
+        },
         "backgroundTasks": {
           "type": "array",
           "items": {
@@ -3539,6 +3546,26 @@
         "name"
       ],
       "additionalProperties": false
+    },
+    "ChatSkill": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "description": {
+          "type": "string"
+        },
+        "invocation": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "invocation"
+      ],
+      "additionalProperties": false,
+      "description": "A provider skill that can be invoked by text (provider-matrix §E3)."
     },
     "ChatBackgroundTask": {
       "type": "object",

@@ -64,6 +64,9 @@ type Props = {
   onWebNavigation?:(tabId:string,observation:{navigation:'pending'|'load_observed'|'failed';url?:string;title?:string;documentGeneration?:number})=>void;
   previewProvenance?:ReadonlyMap<string,PageCommentProvenance>;
   previewLabels?:ReadonlyMap<string,Pick<PreviewAssociation,'title'|'observedTitle'|'sessionId'>>;
+  /** Chat composer `@` groups the session supports; both default on (Extensions → Chat tools). */
+  delegationEnabled?:boolean;
+  sessionInfoEnabled?:boolean;
   workbench?:PaneWorkbench;
 };
 /** Host callbacks for workbench content inside panes; absent → panes behave as before. */
@@ -82,7 +85,7 @@ export type PaneWorkbench = {
   /** Documents for the active session, limited to this session's project/worktree root. */
   sessionDocuments?:{projectId:string;rootPath:string;projectRoot?:string} & NonNullable<WorkbenchActions['sessionDocuments']>;
 };
-export function PaneWorkspace({ layout, sessions, onChange, theme, terminalCompatibility, providers = [], onSessionChanged, onOpenSession, ownerSessionId, onPickSession,toolbarHost,onEmpty,onActiveSession,onInteraction,onFileReference,focusTarget,fileReveal,onOpenPath,projectPath,onWebClosed,onWebNavigation,previewProvenance,previewLabels,workbench }: Props) {
+export function PaneWorkspace({ layout, sessions, onChange, theme, terminalCompatibility, providers = [], onSessionChanged, onOpenSession, ownerSessionId, onPickSession,toolbarHost,onEmpty,onActiveSession,onInteraction,onFileReference,focusTarget,fileReveal,onOpenPath,projectPath,onWebClosed,onWebNavigation,previewProvenance,previewLabels,delegationEnabled,sessionInfoEnabled,workbench }: Props) {
   const zh=useTranslation().locale==='zh-CN';
   const [selectedPaneId, setSelectedPaneId] = useState<string|undefined>(focusTarget?.paneId);
   const [paneHost,setPaneHost]=useState<HTMLDivElement|null>(null),[stackHorizontal,setStackHorizontal]=useState(false);
@@ -234,7 +237,7 @@ export function PaneWorkspace({ layout, sessions, onChange, theme, terminalCompa
         onCloseTab={target=>void closeTabs(target,'current')}
         onCloseTabs={(target,mode)=>void closeTabs(target,mode,false,'web')}
         onResumed={(session) => { setResumedSessions(current => new Map(current).set(session.id,session)); onSessionChanged?.(); }}
-        primaryHost={primaryHost} menuHost={menuHost} onFileReference={onFileReference} fileReveal={fileReveal} onOpenPath={onOpenPath} projectPath={projectPath} onWebNavigation={onWebNavigation} previewProvenance={previewProvenance} previewLabels={previewLabels} workbench={workbench}
+        primaryHost={primaryHost} menuHost={menuHost} onFileReference={onFileReference} fileReveal={fileReveal} onOpenPath={onOpenPath} projectPath={projectPath} onWebNavigation={onWebNavigation} previewProvenance={previewProvenance} previewLabels={previewLabels} delegationEnabled={delegationEnabled} sessionInfoEnabled={sessionInfoEnabled} workbench={workbench}
       />
     );});
   const companionFiles=workspaceTabs(visibleLayout).filter(item=>item.tab.kind!=='session'&&item.tab.ownerSessionId===ownerSessionId&&Boolean(ownerSessionId));
@@ -347,7 +350,7 @@ function Pane({
   providers,
   onResumed,
   closing,onActivateTab,onCloseFile,onCloseTab,onCloseTabs,
-  primaryHost,menuHost,onFileReference,fileReveal,onOpenPath,projectPath,onWebNavigation,previewProvenance,previewLabels,workbench,
+  primaryHost,menuHost,onFileReference,fileReveal,onOpenPath,projectPath,onWebNavigation,previewProvenance,previewLabels,delegationEnabled,sessionInfoEnabled,workbench,
 }: {
   node: Extract<PaneLayout, { kind: "pane" }>;
   visibleNode?: Extract<PaneLayout, { kind: "pane" }>;
@@ -382,6 +385,8 @@ function Pane({
   onWebNavigation?:(tabId:string,observation:{navigation:'pending'|'load_observed'|'failed';url?:string;title?:string;documentGeneration?:number})=>void;
   previewProvenance?:ReadonlyMap<string,PageCommentProvenance>;
   previewLabels?:ReadonlyMap<string,Pick<PreviewAssociation,'title'|'observedTitle'|'sessionId'>>;
+  delegationEnabled?:boolean;
+  sessionInfoEnabled?:boolean;
   workbench?:PaneWorkbench;
 }) {
   const {locale}=useTranslation();const zh=locale==="zh-CN";
@@ -429,7 +434,7 @@ function Pane({
     itemSession.mode === "terminal" ? (
       <TerminalSurface sessionId={itemSession.id} provider={itemSession.provider} session={itemSession} theme={theme} terminalCompatibility={terminalCompatibility} resumeCapture={providers.find((candidate) => candidate.id === itemSession.provider)?.terminalResumeCapture} onChanged={onSessionChanged} onOpenSession={onOpenSession} />
     ) : (
-      <ChatView session={itemSession} delegates={sessions.filter(candidate => candidate.delegation?.parentSessionId === itemSession.id)} delegatedBy={itemSession.delegation ? sessions.find(candidate => candidate.id === itemSession.delegation?.parentSessionId) : undefined} onOpenSession={onOpenSession} />
+      <ChatView session={itemSession} sessions={sessions} delegates={sessions.filter(candidate => candidate.delegation?.parentSessionId === itemSession.id)} delegatedBy={itemSession.delegation ? sessions.find(candidate => candidate.id === itemSession.delegation?.parentSessionId) : undefined} onOpenSession={onOpenSession} delegationEnabled={delegationEnabled} sessionInfoEnabled={sessionInfoEnabled} />
     )
   ) : item.kind === "history" ? (
     <GitHistoryView projectId={item.projectId} worktreePath={item.worktreePath} path={item.path} zh={zh}

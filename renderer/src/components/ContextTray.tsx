@@ -5,7 +5,7 @@ import { Icon } from './PrototypeIcon';
 import './context-tray.css';
 
 type Chip = { id: string; kind: ContextItem['kind']; label: string; title: string; block: string };
-const icons = { terminal: 'terminal', file: 'file', diff: 'branch', commit: 'clock', conversation: 'clock', quote: 'file' };
+const icons = { terminal: 'terminal', file: 'file', diff: 'branch', commit: 'clock', conversation: 'clock', quote: 'file', session: 'layers', agent: 'export', skill: 'spark' };
 function localized(chip: Chip, zh: boolean) {
   if (chip.kind === 'file') return chip.label.replace(/:(\d+)-(\d+)$/, ':$1–$2');
   if (!zh) return chip.label;
@@ -14,6 +14,9 @@ function localized(chip: Chip, zh: boolean) {
   if (chip.kind === 'commit') return chip.label.replace(/^Commit/, '提交');
   if (chip.kind === 'conversation') return fullTitle(chip, true);
   if (chip.kind === 'quote') return chip.label.replace(/^Quote:/, '引用：');
+  if (chip.kind === 'session') return chip.label.replace(/^Session/, '会话');
+  if (chip.kind === 'agent') return chip.label.replace(/^Agent/, '代理');
+  if (chip.kind === 'skill') return chip.label.replace(/^Skill/, '技能');
   return chip.label;
 }
 
@@ -24,6 +27,9 @@ function fullTitle(chip: Chip, zh: boolean) {
   if (chip.kind === 'quote') return chip.title.replace(/^Quote:/, '引用：');
   if (chip.kind === 'diff') return chip.title.replace(/^Uncommitted diff/, '未提交差异').replace('(unstaged', '（未暂存').replace('(staged', '（已暂存').replace('; truncated', '；已截断').replace(/\)$/, '）');
   if (chip.kind === 'conversation') return chip.title.replace(/^Conversation up to/, '复制至').replace(' (copied)', ' 的对话');
+  if (chip.kind === 'session') return chip.title.replace(/^Session ([A-Za-z0-9._:-]+):/, '$1 会话：').replace(/\. Call session_info with this id\.$/, '。请用此 ID 调用 session_info。').replace(/\. Summary attached; session_info unavailable\.$/, '。已附加摘要；session_info 不可用。');
+  if (chip.kind === 'agent') return chip.title.replace(/^Agent: delegate the following task to (.+) with delegate_start\.$/, '代理：用 delegate_start 将后续任务交给 $1。');
+  if (chip.kind === 'skill') return chip.title.replace(/^Skill: (.+?) \(invoke: (.+)\)$/, '技能：$1（调用：$2）');
   return chip.title.replace(/^Terminal output/, '终端输出').replace(/, last (\d+) lines$/, '，最后 $1 行');
 }
 

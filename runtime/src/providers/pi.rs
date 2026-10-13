@@ -2018,7 +2018,26 @@ fn pi_ui_state(ui: &PiUi) -> Value {
             }))
         })
         .collect::<Vec<_>>();
-    let mut state = json!({"options":options,"commands":commands,"inputCapabilities":{"steer":"native"}});
+    // Only commands whose `source` is `skill` are skills (docs/rpc-commands.md);
+    // `prompt` expands their `/<name>` invocation. Ordinary commands and
+    // built-ins stay out of the Skills group.
+    let skills = ui
+        .commands
+        .iter()
+        .filter(|command| command.get("source").and_then(Value::as_str) == Some("skill"))
+        .filter_map(|command| {
+            let name = command.get("name").and_then(Value::as_str)?.trim();
+            if name.is_empty() || name.chars().any(char::is_whitespace) {
+                return None;
+            }
+            Some(json!({
+                "name":name,
+                "description":command.get("description").and_then(Value::as_str).unwrap_or(""),
+                "invocation":format!("/{name}")
+            }))
+        })
+        .collect::<Vec<_>>();
+    let mut state = json!({"options":options,"commands":commands,"inputCapabilities":{"steer":"native"},"skills":skills});
     if let Some(trust) = &ui.trust {
         state["piTrust"] = trust.clone();
     }
@@ -3315,7 +3334,11 @@ require('node:readline').createInterface({input:process.stdin}).on('line', line 
             state: Some(json!({"model":{"id":"m","provider":"p"},"thinkingLevel":"high","autoCompactionEnabled":true,"steeringMode":"all","followUpMode":"one-at-a-time"})),
             models: vec![json!({"id":"m","provider":"p","name":"M"})],
             thinking_levels: vec!["off".to_owned(), "high".to_owned()],
-            commands: vec![json!({"name":"demo","description":"Demo"})],
+            commands: vec![
+                json!({"name":"demo","description":"Demo"}),
+                json!({"name":"skill:review","description":"Review","source":"skill"}),
+                json!({"name":"fix-tests","description":"Prompt","source":"prompt"}),
+            ],
             auto_retry: Some(false),
             trust: Some(json!({"effective":"skipped"})),
         };
@@ -3348,6 +3371,16 @@ require('node:readline').createInterface({input:process.stdin}).on('line', line 
         assert!(value["options"][0].get("currentValue").is_none());
         assert!(value["options"][0].get("options").is_none());
         assert_eq!(value["commands"][0]["name"], "demo");
+        // Only source:skill commands are published as skills, with /<name>.
+        assert_eq!(value["skills"].as_array().unwrap().len(), 1);
+        assert_eq!(value["skills"][0]["name"], "skill:review");
+        assert_eq!(value["skills"][0]["invocation"], "/skill:review");
+        assert_eq!(value["skills"][0]["description"], "Review");
+        assert!(value["commands"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|command| command["name"] == "fix-tests"));
         assert_eq!(value["piTrust"]["effective"], "skipped");
     }
 

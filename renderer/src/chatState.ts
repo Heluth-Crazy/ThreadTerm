@@ -6,6 +6,7 @@ export function chatUiFromEvent(data: Partial<ChatUiState>): ChatUiState {
   return {
     options,
     commands: Array.isArray(data.commands) ? data.commands : [],
+    ...(Array.isArray(data.skills) ? { skills: data.skills } : {}),
     inputCapabilities: data.inputCapabilities && typeof data.inputCapabilities === 'object' && !Array.isArray(data.inputCapabilities) ? data.inputCapabilities : {},
     loadState: data.loadState ?? (options.length ? 'ready' : 'empty'),
     ...(data.error !== undefined ? { error: data.error } : {}),

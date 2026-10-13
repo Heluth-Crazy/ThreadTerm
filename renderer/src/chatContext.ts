@@ -3,6 +3,7 @@ export const MAX_CONTEXT_BYTES = 128 * 1024;
 export const MAX_TERMINAL_LINES = 400;
 export const MAX_TERMINAL_BYTES = 32 * 1024;
 export const MAX_DIFF_BYTES = 32 * 1024;
+export const MAX_SESSION_SUMMARY_BYTES = 16 * 1024;
 
 export type TerminalContextItem = {
   kind: 'terminal'; id: string; sessionTitle: string; cwd?: string; lines: number; text: string;
@@ -18,7 +19,13 @@ export type CommitContextItem = {
 };
 export type ConversationContextItem = { kind: 'conversation'; id: string; copiedAt: string; text: string };
 export type QuoteContextItem = { kind: 'quote'; id: string; sourceTitle: string; text: string };
-export type ContextItem = TerminalContextItem | FileContextItem | DiffContextItem | CommitContextItem | ConversationContextItem | QuoteContextItem;
+/** A session referenced by `@`; the agent is told to read it with `session_info`. */
+export type SessionContextItem = { kind: 'session'; id: string; sessionId: string; title: string; provider: string; summary?: string };
+/** An agent mentioned by `@`; the following task is handed to it with `delegate_start`. */
+export type AgentContextItem = { kind: 'agent'; id: string; provider: string };
+/** A provider skill mentioned by `@`, carried as the provider-specific invocation. */
+export type SkillContextItem = { kind: 'skill'; id: string; name: string; invocation: string };
+export type ContextItem = TerminalContextItem | FileContextItem | DiffContextItem | CommitContextItem | ConversationContextItem | QuoteContextItem | SessionContextItem | AgentContextItem | SkillContextItem;
 
 export type ParsedContextItem = { header: string; body: string };
 export type ParsedContext = { items: ParsedContextItem[]; text: string };
@@ -84,6 +91,9 @@ function assertContextItem(value: unknown): asserts value is ContextItem {
   if (item.kind === 'commit' && /^[a-f0-9]{7,64}$/i.test(item.sha ?? '') && oneLine(item.subject)) return;
   if (item.kind === 'conversation' && oneLine(item.copiedAt) && typeof item.text === 'string' && bytes(item.text) <= 64 * 1024) return;
   if (item.kind === 'quote' && oneLine(item.sourceTitle) && nonEmptyString(item.text) && bytes(item.text) <= MAX_TERMINAL_BYTES) return;
+  if (item.kind === 'session' && /^[A-Za-z0-9._:-]{1,128}$/.test(item.sessionId ?? '') && oneLine(item.title) && /^[A-Za-z0-9._-]{1,64}$/.test(item.provider ?? '') && (item.summary === undefined || (typeof item.summary === 'string' && bytes(item.summary) <= MAX_SESSION_SUMMARY_BYTES))) return;
+  if (item.kind === 'agent' && /^[A-Za-z0-9._-]{1,64}$/.test(item.provider ?? '')) return;
+  if (item.kind === 'skill' && oneLine(item.name) && oneLine(item.invocation)) return;
   throw new Error('Invalid context attachment. / 无效的上下文附件。');
 }
 
@@ -106,6 +116,9 @@ export function normalizeContextItems(items: unknown): ContextItem[] {
     else if (candidate.kind === 'diff') normalized.push(normalizeDiff(candidate));
     else if (candidate.kind === 'commit') normalized.push({ ...candidate, sha: candidate.sha.trim(), subject: candidate.subject.trim() });
     else if (candidate.kind === 'quote') normalized.push({ ...candidate });
+    else if (candidate.kind === 'session') normalized.push({ ...candidate, sessionId: candidate.sessionId.trim(), title: candidate.title.trim(), provider: candidate.provider.trim() });
+    else if (candidate.kind === 'agent') normalized.push({ ...candidate, provider: candidate.provider.trim() });
+    else if (candidate.kind === 'skill') normalized.push({ ...candidate, name: candidate.name.trim(), invocation: candidate.invocation.trim() });
     else normalized.push({ ...candidate, copiedAt: candidate.copiedAt.trim() });
   }
   if (normalized.length > MAX_CONTEXT_ITEMS) throw new Error('Attach at most 12 context items. / 最多附加 12 个上下文项。');
@@ -126,10 +139,20 @@ function itemHeader(item: ContextItem): string {
     case 'commit': return `Commit ${item.sha} — ${item.subject}`;
     case 'conversation': return `Conversation up to ${item.copiedAt} (copied)`;
     case 'quote': return `Quote: ${item.sourceTitle}`;
+    case 'session': return item.summary
+      ? `Session ${item.sessionId}: ${item.title} (${item.provider}). Summary attached; session_info unavailable.`
+      : `Session ${item.sessionId}: ${item.title} (${item.provider}). Call session_info with this id.`;
+    case 'agent': return `Agent: delegate the following task to ${item.provider} with delegate_start.`;
+    case 'skill': return `Skill: ${item.name} (invoke: ${item.invocation})`;
   }
 }
 
 function itemBody(item: ContextItem): string {
+  if (item.kind === 'session') {
+    if (!item.summary) return '';
+    const marker = fence(item.summary);
+    return `${marker}text\n${item.summary}\n${marker}`;
+  }
   if (item.kind !== 'terminal' && item.kind !== 'diff' && item.kind !== 'conversation' && item.kind !== 'quote') return '';
   const marker = fence(item.text);
   return `${marker}${item.kind === 'diff' ? 'diff' : 'text'}\n${item.text}\n${marker}`;
@@ -167,6 +190,9 @@ function headerKind(header: string): ContextItem['kind'] | undefined {
   if (/^Commit [0-9a-fA-F]{7,64} — .+$/.test(value)) return 'commit';
   if (/^Conversation up to .+ \(copied\)$/.test(value)) return 'conversation';
   if (/^Quote: .+$/.test(value)) return 'quote';
+  if (/^Session [A-Za-z0-9._:-]{1,128}: .+ \([A-Za-z0-9._-]+\)\. (?:Call session_info with this id\.|Summary attached; session_info unavailable\.)$/.test(value)) return 'session';
+  if (/^Agent: delegate the following task to [A-Za-z0-9._-]{1,64} with delegate_start\.$/.test(value)) return 'agent';
+  if (/^Skill: .+ \(invoke: .+\)$/.test(value)) return 'skill';
   return undefined;
 }
 
@@ -189,26 +215,30 @@ export function parseContext(message: string): ParsedContext | undefined {
     total = declaredTotal;
     position = lineEnd + 1;
     let body = '';
-    if (kind === 'terminal' || kind === 'diff' || kind === 'conversation' || kind === 'quote') {
+    // A session summary is optional; the other body kinds must carry their fence.
+    const bodyKind = kind === 'terminal' || kind === 'diff' || kind === 'conversation' || kind === 'quote';
+    if (bodyKind || kind === 'session') {
       const fenceEnd = message.indexOf('\n', position);
-      if (fenceEnd < 0) return undefined;
-      const opening = message.slice(position, fenceEnd);
+      const opening = fenceEnd < 0 ? '' : message.slice(position, fenceEnd);
       const fenceMatch = new RegExp(`^(` + '`{4,}' + `)${kind === 'diff' ? 'diff' : 'text'}$`).exec(opening);
-      if (!fenceMatch) return undefined;
-      const marker = fenceMatch[1]!;
-      const closing = `\n${marker}`;
-      let closingStart = message.indexOf(closing, fenceEnd);
-      while (closingStart >= 0 && message[closingStart + closing.length] !== '\n') closingStart = message.indexOf(closing, closingStart + 1);
-      if (closingStart < 0) return undefined;
-      const afterClosing = closingStart + closing.length;
-      const content = message.slice(fenceEnd + 1, closingStart);
-      if (bytes(content) > (kind === 'terminal' ? MAX_TERMINAL_BYTES : kind === 'diff' ? MAX_DIFF_BYTES : 64 * 1024)) return undefined;
-      if (kind === 'terminal') {
-        const declaredLines = Number(/, last (\d+) lines?$/.exec(headerMatch[3]!)?.[1]);
-        if (lineCount(content) !== declaredLines || declaredLines > MAX_TERMINAL_LINES) return undefined;
+      if (fenceMatch) {
+        const marker = fenceMatch[1]!;
+        const closing = `\n${marker}`;
+        let closingStart = message.indexOf(closing, fenceEnd);
+        while (closingStart >= 0 && message[closingStart + closing.length] !== '\n') closingStart = message.indexOf(closing, closingStart + 1);
+        if (closingStart < 0) return undefined;
+        const afterClosing = closingStart + closing.length;
+        const content = message.slice(fenceEnd + 1, closingStart);
+        if (bytes(content) > (kind === 'terminal' ? MAX_TERMINAL_BYTES : kind === 'diff' ? MAX_DIFF_BYTES : kind === 'session' ? MAX_SESSION_SUMMARY_BYTES : 64 * 1024)) return undefined;
+        if (kind === 'terminal') {
+          const declaredLines = Number(/, last (\d+) lines?$/.exec(headerMatch[3]!)?.[1]);
+          if (lineCount(content) !== declaredLines || declaredLines > MAX_TERMINAL_LINES) return undefined;
+        }
+        body = message.slice(position, afterClosing);
+        position = afterClosing + 1;
+      } else if (bodyKind) {
+        return undefined;
       }
-      body = message.slice(position, afterClosing);
-      position = afterClosing + 1;
     }
     items.push({ header, body });
     if (items.length === total) break;
@@ -239,6 +269,18 @@ export function contextDisplayMetadata(header: string): ContextDisplayMetadata |
     return { kind, label: `Diff · ${fileName(diff[1]!)}`, title: value };
   }
   if (kind === 'conversation' || kind === 'quote') return { kind, label: value, title: value };
+  if (kind === 'session') {
+    const session = /^Session ([A-Za-z0-9._:-]{1,128}): (.+) \(([A-Za-z0-9._-]+)\)\. (?:Call session_info with this id\.|Summary attached; session_info unavailable\.)$/.exec(value)!;
+    return { kind, label: `Session · ${session[2]}`, title: value };
+  }
+  if (kind === 'agent') {
+    const agent = /^Agent: delegate the following task to ([A-Za-z0-9._-]{1,64}) with delegate_start\.$/.exec(value)!;
+    return { kind, label: `Agent · ${agent[1]}`, title: value };
+  }
+  if (kind === 'skill') {
+    const skill = /^Skill: (.+?) \(invoke: (.+)\)$/.exec(value)!;
+    return { kind, label: `Skill · ${skill[1]}`, title: value };
+  }
   const commit = /^Commit ([0-9a-fA-F]{7,64}) — (.+)$/.exec(value)!;
   return { kind, label: `Commit ${commit[1]!.slice(0, 7)}`, title: value };
 }
