@@ -1,8 +1,9 @@
 .chat-log-shell { position:relative; display:flex; flex-direction:column; flex:1; min-height:0; min-width:0; }
 .chat-log-shell > .v3-chat-log { flex:1; min-height:0; overflow-y:auto; }
-/* Shared round icon geometry; reserve a gutter so inspection never places
-   the floating control over a card's title, buttons or inputs (VC-OVERLAY). */
+/* Compact shared .btn so Output inspection is not covered, while the overlay
+   keeps the shared button surface, border and shadow (VC-OVERLAY). */
 .chat-back-to-bottom { position:absolute; z-index:5; bottom:12px; right:12px; box-shadow:var(--shadow); }
+.btn.chat-back-to-bottom { width:32px; height:32px; padding:0; gap:0; justify-content:center; border-radius:999px; }
 .chat-back-to-bottom > .ico { transform:rotate(180deg); }
 /* Reserve room so the overlay never covers the last card's content or actions. */
 .chat-view .chat-log-shell:has(.chat-back-to-bottom) .v3-chat-log { padding-bottom:52px; padding-right:52px; }
