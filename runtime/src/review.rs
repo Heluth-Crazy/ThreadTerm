@@ -21,9 +21,11 @@ use rusqlite::{params, OptionalExtension};
 use serde_json::{json, Map, Value};
 use sha2::{Digest, Sha256};
 use std::{
+    collections::HashMap,
     ffi::{OsStr, OsString},
     fs,
     path::{Path, PathBuf},
+    sync::{Arc, Mutex, OnceLock},
     time::{Duration, Instant},
 };
 
@@ -503,18 +505,66 @@ pub fn attach_turn(db: &Database, checkpoint_id: &str, turn_id: Option<&str>) {
     });
 }
 
+/// Tags the newest still-untagged pre-turn checkpoint for the session. The
+/// `chat.turn.started` projection calls this so pairing no longer depends on
+/// the `chat.send` response winning its race with the completion event.
+pub fn attach_turn_to_latest(db: &Database, session_id: &str, turn_id: &str) {
+    let _ = db.transaction(|tx| {
+        tx.execute(
+            "UPDATE review_checkpoints SET turn_id=? WHERE id=(SELECT id FROM review_checkpoints WHERE session_id=? AND turn_id IS NULL AND kind='turn' AND COALESCE(operation_id,'') NOT LIKE 'turn-complete:%' ORDER BY created_at DESC, rowid DESC LIMIT 1) AND turn_id IS NULL",
+            params![turn_id, session_id],
+        )?;
+        Ok(())
+    });
+}
+
+fn tagged_before_checkpoint(db: &Database, session_id: &str, turn_id: &str) -> Option<String> {
+    db.transaction(|tx| {
+        Ok(tx
+            .query_row(
+                "SELECT id FROM review_checkpoints WHERE session_id=? AND turn_id=? AND kind='turn' AND COALESCE(operation_id,'') NOT LIKE 'turn-complete:%' ORDER BY created_at ASC, rowid ASC LIMIT 1",
+                params![session_id, turn_id],
+                |row| row.get(0),
+            )
+            .optional()?)
+    })
+    .ok()
+    .flatten()
+}
+
+/// The fallback for a turn whose completion was projected before the send
+/// handler tagged its checkpoint: adopt the newest untagged pre-turn row and
+/// tag it now, so the pair is never lost and stays stable for replay.
+fn adopt_untagged_checkpoint(db: &Database, session_id: &str, turn_id: &str) -> Option<String> {
+    let id: Option<String> = db
+        .transaction(|tx| {
+            Ok(tx
+                .query_row(
+                    "SELECT id FROM review_checkpoints WHERE session_id=? AND turn_id IS NULL AND kind='turn' AND COALESCE(operation_id,'') NOT LIKE 'turn-complete:%' ORDER BY created_at DESC, rowid DESC LIMIT 1",
+                    params![session_id],
+                    |row| row.get(0),
+                )
+                .optional()?)
+        })
+        .ok()
+        .flatten();
+    let id = id?;
+    let _ = db.transaction(|tx| {
+        tx.execute(
+            "UPDATE review_checkpoints SET turn_id=? WHERE id=? AND turn_id IS NULL",
+            params![turn_id, id],
+        )?;
+        Ok(())
+    });
+    Some(id)
+}
+
 /// Captures the immutable post-turn tree and returns the compact comparison
 /// metadata for the matching pre-turn checkpoint. This is deliberately called
 /// by the service after projection has released its provider/SQLite fences.
 pub fn capture_after_turn(db: &Database, session_id: &str, turn_id: &str) -> Option<crate::domain::ChatTurnReview> {
-    let before: Option<String> = db.transaction(|tx| {
-        Ok(tx.query_row(
-            "SELECT id FROM review_checkpoints WHERE session_id=? AND turn_id=? AND kind='turn' AND COALESCE(operation_id,'') NOT LIKE 'turn-complete:%' ORDER BY created_at ASC, rowid ASC LIMIT 1",
-            params![session_id, turn_id],
-            |row| row.get(0),
-        ).optional()?)
-    }).ok().flatten();
-    let before = before?;
+    let before = tagged_before_checkpoint(db, session_id, turn_id)
+        .or_else(|| adopt_untagged_checkpoint(db, session_id, turn_id))?;
     let operation = format!("turn-complete:{session_id}:{turn_id}");
     let after = capture(db, session_id, "turn", Some(&operation), None, TURN_BUDGET).ok()?;
     attach_turn(db, &after, Some(turn_id));
@@ -538,6 +588,40 @@ pub fn capture_after_turn(db: &Database, session_id: &str, turn_id: &str) -> Opt
 pub fn capture_launch_in_background(db: std::sync::Arc<Database>, session_id: String) {
     std::thread::spawn(move || {
         let _ = capture(&db, &session_id, "launch", None, None, REVIEW_BUDGET);
+    });
+}
+
+/// One after-turn capture runs per session at a time. Later completions wait
+/// on the same lock instead of overlapping Git work or dropping a review.
+fn after_turn_session_lock(session_id: &str) -> Arc<Mutex<()>> {
+    type Locks = HashMap<String, Arc<Mutex<()>>>;
+    static LOCKS: OnceLock<Mutex<Locks>> = OnceLock::new();
+    let mut locks = LOCKS
+        .get_or_init(Mutex::default)
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    locks.retain(|_, lock| Arc::strong_count(lock) > 1);
+    locks.entry(session_id.to_owned()).or_default().clone()
+}
+
+/// Captures the post-turn tree away from the single provider-event projection
+/// thread, then emits the updated item through `attach_turn_review`.
+pub fn capture_after_turn_in_background(db: Arc<Database>, session_id: String, turn_id: String) {
+    after_turn_worker(db, session_id, turn_id, capture_after_turn);
+}
+
+fn after_turn_worker<F>(db: Arc<Database>, session_id: String, turn_id: String, capture_turn: F)
+where
+    F: Fn(&Database, &str, &str) -> Option<crate::domain::ChatTurnReview> + Send + 'static,
+{
+    let lock = after_turn_session_lock(&session_id);
+    std::thread::spawn(move || {
+        let _guard = lock.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        if let Some(review) = capture_turn(&db, &session_id, &turn_id) {
+            if let Err(error) = crate::chat_projection::attach_turn_review(&db, &session_id, &turn_id, review) {
+                eprintln!("could not attach turn review for {session_id}: {error}");
+            }
+        }
     });
 }
 
@@ -1061,6 +1145,78 @@ mod tests {
         assert_ne!(review.from, review.to);
         fs::write(repo.join("after-completion.txt"), "not part of this turn\n").unwrap();
         assert_eq!(capture_after_turn(&db, &session, "turn-pair").unwrap(), review);
+    }
+
+    #[test]
+    fn fast_completion_pairs_without_the_send_attaching_the_turn_id() {
+        let (_temp, db, repo, session) = setup();
+        let before = capture_before_turn(&db, &session, "send-fast", "edit").unwrap();
+        // `chat.turn.started` projection tags the newest untagged checkpoint;
+        // the completion can then pair even though `chat.send` never returned.
+        attach_turn_to_latest(&db, &session, "turn-fast");
+        fs::write(repo.join("a.txt"), "fast\n").unwrap();
+        let review = capture_after_turn(&db, &session, "turn-fast").unwrap();
+        assert_eq!(review.from, before);
+        assert_eq!(review.file_count, 1);
+        // Fallback: a completion that beat even the `chat.turn.started`
+        // projection still adopts the newest untagged pre-turn checkpoint.
+        let before2 = capture_before_turn(&db, &session, "send-fast-2", "edit again").unwrap();
+        fs::write(repo.join("a.txt"), "faster\n").unwrap();
+        let review2 = capture_after_turn(&db, &session, "turn-fast-2").unwrap();
+        assert_eq!(review2.from, before2);
+        assert_eq!(review2.file_count, 1);
+    }
+
+    #[test]
+    fn after_turn_capture_runs_off_the_caller_and_still_attaches() {
+        let (_temp, db, _repo, session) = setup();
+        let db = Arc::new(db);
+        crate::chat_projection::record(
+            &db,
+            &session,
+            Some("turn-async"),
+            "chat.item",
+            &json!({"item":{"id":"assistant-async"},"parts":[{"type":"text","text":"answer"}]}),
+        )
+        .unwrap();
+        let (entered_tx, entered_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let started = Instant::now();
+        after_turn_worker(
+            Arc::clone(&db),
+            session.clone(),
+            "turn-async".to_owned(),
+            move |_db, _session, _turn| {
+                entered_tx.send(()).unwrap();
+                release_rx.recv().unwrap();
+                Some(crate::domain::ChatTurnReview {
+                    from: "before".into(),
+                    to: "after".into(),
+                    file_count: 2,
+                })
+            },
+        );
+        assert!(
+            started.elapsed() < Duration::from_secs(1),
+            "the projection caller returns before the capture finishes"
+        );
+        entered_rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("the worker started its capture");
+        release_tx.send(()).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            let attached = db
+                .chat_items(&session)
+                .unwrap()
+                .iter()
+                .any(|item| item.turn_review.is_some());
+            if attached {
+                break;
+            }
+            assert!(Instant::now() < deadline, "the review attaches once the capture completes");
+            std::thread::sleep(Duration::from_millis(10));
+        }
     }
 
     #[test]
