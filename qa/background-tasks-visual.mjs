@@ -161,7 +161,7 @@ try {
     if (scenario !== 'empty') await openStrip();
     else assert.equal(await page.locator('[data-testid="background-tasks-strip"]').count(), 0, 'empty tasks render no strip');
     if (scenario === 'stop-pending') {
-      const pendingStop = page.getByRole('button', { name:/Stop task/ });
+      const pendingStop = page.getByRole('button', { name: locale === 'zh-CN' ? /停止任务/ : /Stop task/ });
       await pendingStop.click();
       assert.equal(await pendingStop.isDisabled(), true, `${theme}/${locale}/${width}: Stop is disabled while stopping`);
       assert.match(await pendingStop.textContent(), /Stopping|正在停止/, `${theme}/${locale}/${width}: Stop reports its pending state`);
@@ -181,6 +181,6 @@ try {
   process.exitCode = 1;
 } finally {
   if (app) await app.close().catch(error => report.errors.push(`Electron close failed: ${error}`));
-  await writeFile(join(out, 'report.json'), `${JSON.stringify(report, null, 2)}\\n`);
+  await writeFile(join(out, 'report.json'), `${JSON.stringify(report, null, 2)}\n`);
   console.log(`${report.passed ? 'BACKGROUND TASKS VISUAL QA PASSED' : 'BACKGROUND TASKS VISUAL QA FAILED'}; report: ${join(out, 'report.json')}`);
 }
