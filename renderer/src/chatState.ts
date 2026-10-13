@@ -42,6 +42,9 @@ export function completeResync(
 }
 
 export function upsertChatItem(items: ChatItem[], next: ChatItem): ChatItem[] {
+  // A rejected steer emits the same user id with no parts. Assistant rows may
+  // be empty on purpose (elapsed markers, tool retracts) and stay in the list.
+  if (next.role === 'user' && next.parts.length === 0) return items.filter(item => item.id !== next.id);
   const index = items.findIndex(item => item.id === next.id);
   return index < 0 ? [...items, next] : items.map((item, i) => i === index ? next : item);
 }

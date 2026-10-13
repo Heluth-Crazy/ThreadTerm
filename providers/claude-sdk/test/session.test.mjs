@@ -497,3 +497,96 @@ test('only one ExitPlanMode approval can remain pending', async () => {
   await session.planResponse(request.requestId, 'abandon');
   assert.equal((await first).behavior, 'deny');
 });
+function controllableSdk() {
+  let waiter;
+  const pending = [];
+  let ended = false;
+  const query = {
+    push(message) {
+      if (ended) return;
+      if (waiter) {
+        const resolve = waiter;
+        waiter = undefined;
+        resolve({ value: message, done: false });
+      } else pending.push(message);
+    },
+    finish() {
+      ended = true;
+      if (waiter) {
+        const resolve = waiter;
+        waiter = undefined;
+        resolve({ value: undefined, done: true });
+      }
+    },
+    [Symbol.asyncIterator]() {
+      return {
+        next: () => {
+          if (pending.length) return Promise.resolve({ value: pending.shift(), done: false });
+          if (ended) return Promise.resolve({ value: undefined, done: true });
+          return new Promise(resolve => { waiter = resolve; });
+        },
+      };
+    },
+    async initializationResult() { return { commands: [], models: [], account: {} }; },
+    async interrupt() {},
+    close() { this.finish(); },
+  };
+  return { sdk: { query: () => query }, query };
+}
+
+test('steer while a turn is active delivers once and does not replace the turn', () => {
+  const { session } = harness();
+  const seen = [];
+  const push = session.input.push.bind(session.input);
+  session.input.push = value => { seen.push(structuredClone(value)); return push(value); };
+  assert.throws(() => session.steer('too early', 'steer-0'), /The turn ended before the message was inserted/);
+  assert.equal(session.pendingSteers.size, 0);
+  session.send('hello', 'op-1');
+  seen.length = 0;
+  assert.deepEqual(session.steer('while you work', 'steer-1'), { disposition: 'delivered' });
+  assert.equal(session.activeOperationId, 'op-1');
+  assert.equal(seen.length, 1);
+  assert.equal(seen[0].uuid, 'steer-1');
+  assert.equal(seen[0].message.content[0].text, 'while you work');
+  assert.equal(seen[0].uuid !== undefined, true);
+  session.input.end();
+  assert.throws(() => session.steer('after close', 'steer-2'), /The turn ended before the message was inserted/);
+  assert.equal(session.pendingSteers.has('steer-2'), false);
+  assert.equal(session.activeOperationId, 'op-1');
+});
+
+test('a result consumes steered uuids and an unconsumed steer is adopted on the next message only', async () => {
+  const { sdk, query } = controllableSdk();
+  const events = [];
+  const session = new ClaudeSession({ cardId: 'card-steer', sdk, write: value => events.push(value), hostOptions: { warmUp: false } });
+  try {
+    await session.start({ cwd: 'C:/' });
+    session.send('hello', 'op-1');
+    session.steer('kept', 'steer-kept');
+    query.push({ type: 'result', user_message_uuids: ['steer-kept'], is_error: false });
+    await delay(30);
+    assert.equal(session.pendingSteers.size, 0);
+    assert.equal(session.carryArmed, false);
+    assert.equal(session.activeOperationId, null);
+    query.push({ type: 'assistant', message: { id: 'm-kept', content: [] } });
+    await delay(30);
+    assert.equal(session.activeOperationId, null, 'a consumed steer must not start another turn');
+    assert.equal(events.filter(event => event.ev === 'session.status' && event.phase === 'running').map(event => event.operationId).join(','), 'op-1');
+
+    session.send('again', 'op-2');
+    session.steer('carried', 'steer-carry');
+    query.push({ type: 'result', user_message_uuids: [], is_error: false });
+    await delay(30);
+    assert.equal(session.carryArmed, true);
+    assert.equal(session.activeOperationId, null);
+    assert.equal(events.filter(event => event.phase === 'running' && String(event.operationId).startsWith('carry:')).length, 0);
+    query.push({ type: 'assistant', message: { id: 'm-carry', content: [] } });
+    await delay(30);
+    assert.equal(session.activeOperationId, 'carry:steer-carry');
+    assert.equal(session.pendingSteers.has('steer-carry'), false);
+    assert.equal(events.filter(event => event.ev === 'session.status' && event.phase === 'running' && event.operationId === 'carry:steer-carry').length, 1);
+  } finally {
+    query.finish();
+    await session.pump;
+  }
+});

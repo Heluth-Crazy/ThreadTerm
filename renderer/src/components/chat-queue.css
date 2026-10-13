@@ -16,3 +16,5 @@
 @media (max-width:640px) { .chat-queue-item { align-items:flex-start; flex-direction:column; } .chat-queue-actions { justify-content:flex-start; } }
 /* Compact controls: a long queue must not push the transcript out of view. */
 .chat-queue-actions .btn-subtle, .chat-queue-header .btn-subtle, .chat-queue-edit .btn-subtle { min-height:24px; padding:2px 8px; font-size:11px; }
+/* settings.css hover does not exclude disabled; a paused Up/Down must stay still. */
+.chat-queue .btn-subtle:hover:disabled { background: var(--bg); color: inherit; text-decoration: none; }

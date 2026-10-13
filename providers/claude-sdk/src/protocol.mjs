@@ -1,5 +1,5 @@
 export const OPS = new Set([
-  'host.ping', 'history.list', 'history.read', 'history.fork', 'session.start', 'session.send',
+  'host.ping', 'history.list', 'history.read', 'history.fork', 'session.start', 'session.send', 'session.steer',
   'session.interrupt', 'session.decision', 'session.plan_response', 'session.answer', 'session.set_option', 'session.stop_task', 'session.stop',
 ]);
 

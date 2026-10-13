@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import type { ChatItem } from '@threadterm/protocol';
-import { beginResync, chatUiFromEvent, completeResync, nextRepairRevision } from './chatState';
+import { beginResync, chatUiFromEvent, completeResync, nextRepairRevision, restoreChat, upsertChatItem } from './chatState';
 import { createCodexStreamQueue } from './codexStream';
 
 const item = (id: string, text = id): ChatItem => ({ id, role: 'assistant', parts: [{ type: 'text', text }], createdAt: 'now' });
@@ -50,6 +50,22 @@ test('snapshot failure keeps current items and applies buffered events in sequen
   const resync = beginResync('s', 2);
   resync.buffered.push({ seq: 12, item: item('a', 'latest') }, { seq: 11, item: item('a', 'earlier') }, { seq: 13, item: item('b') });
   assert.deepEqual(completeResync(resync, 's', 2, [item('a'), item('kept')]), [item('a', 'latest'), item('kept'), item('b')]);
+});
+
+test('chat.ui keeps native steer and does not invent a note capability', () => {
+  assert.deepEqual(chatUiFromEvent({ inputCapabilities: { images: true, steer: 'native' } }).inputCapabilities, { images: true, steer: 'native' });
+  assert.deepEqual(chatUiFromEvent({ commands: [] }).inputCapabilities, {});
+});
+
+test('an empty user item removes a rejected steer and an empty assistant item stays', () => {
+  const user = item('s:user:turn-a', 'start');
+  const steered = { ...item('s:user:steer:op-1', 'while you work'), role: 'user' as const, parts: [{ type: 'text' as const, text: 'while you work', data: { steered: true, turnId: 'turn-a' } }] };
+  const assistant = { ...item('s:assistant:turn-a', ''), parts: [] as ChatItem['parts'] };
+  const kept = upsertChatItem(upsertChatItem([user], steered), assistant);
+  assert.deepEqual(kept.map(entry => entry.id), ['s:user:turn-a', 's:user:steer:op-1', 's:assistant:turn-a']);
+  const removed = upsertChatItem(kept, { ...steered, parts: [] });
+  assert.deepEqual(removed.map(entry => entry.id), ['s:user:turn-a', 's:assistant:turn-a']);
+  assert.deepEqual(restoreChat({ items: kept, revision: 1 }, [{ seq: 2, item: { ...steered, parts: [] } }]).map(entry => entry.id), ['s:user:turn-a', 's:assistant:turn-a']);
 });
 
 test('repair state changes only start one newer revision fence', () => {

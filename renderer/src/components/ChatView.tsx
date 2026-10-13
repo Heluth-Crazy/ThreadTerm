@@ -54,6 +54,8 @@ import { isChatImage, readClipboardImage, selectChatImageAttachments, validateCh
 import './chat-images.css';
 import { queueComposerMode } from '../chatQueue';
 import { ChatQueue as ChatQueuePanel } from './ChatQueue';
+import { SteerSend } from './SteerSend';
+import { steerControlKind, steerFailureMessage } from '../steerSend';
 import { useChatContext } from '../useChatContext';
 import { ContextMessage, ContextTray } from './ContextTray';
 import { contextError } from '../contextErrors';
@@ -988,6 +990,40 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession }
     }
   }
   async function cancel(turnId:string){const epoch=leaseSessionId.current===session.id?lease.current:undefined;if(!writable||epoch===undefined)return;const pending=firstResponseWaitRef.current;if(pending?.turnId===turnId)clearFirstResponseWait(pending.token);try{await request("chat.cancel",{sessionId:session.id,turnId,leaseEpoch:epoch})}catch(caught){setError(caught instanceof Error?caught.message:"Cancellation failed.")}}
+  async function insertIntoTurn(queued?: { text: string; images?: string[]; id?: string }) {
+    const epoch = leaseSessionId.current === session.id ? lease.current : undefined;
+    const turnId = activeTurnId(itemsRef.current, session.status);
+    const refused = () => { throw new Error(copy('Message was not inserted.', '消息未能插入。')); };
+    if (!writable || epoch === undefined || !turnId || busy) { if (queued) refused(); return; }
+    let value = queued?.text ?? '';
+    if (!queued) {
+      try { value = context.serialize(text.trim()); } catch (caught) { setError(contextError(caught, zh)); return; }
+    }
+    const attachment = queued ? queued.images ?? [] : images;
+    if ((!value && !attachment.length) || imageReading) { if (queued) refused(); return; }
+    const submittingLifecycle = lifecycle.current;
+    setBusy(true); setError(undefined);
+    try {
+      if (!queued) await persistCompose(text, epoch);
+      if (lifecycle.current !== submittingLifecycle) return;
+      await request('chat.steer', {
+        sessionId: session.id, turnId, text: value,
+        ...(attachment.length ? { images: attachment } : {}),
+        ...(queued?.id ? { queueItemId: queued.id } : {}),
+        operationId: operationId(), leaseEpoch: epoch,
+      });
+      if (lifecycle.current !== submittingLifecycle || queued) return;
+      changeText(''); setImages([]); context.clear();
+      try { localStorage.removeItem(imageDraftKey); } catch { /* The accepted insert is already durable. */ }
+      await persistCompose('', epoch);
+    } catch (caught) {
+      const message = steerFailureMessage(caught, copy);
+      if (lifecycle.current === submittingLifecycle) setError(message);
+      // The queue row deletes itself only after this promise resolves. A
+      // rejection leaves the item for the server snapshot to restore or fail.
+      if (queued) throw new Error(message);
+    } finally { if (lifecycle.current === submittingLifecycle) setBusy(false); }
+  }
   async function answer(turnId: string, approvalId: string, response: ChatAnswerResponse) {
     const epoch = leaseSessionId.current === session.id ? lease.current : undefined;
     if (!writable || epoch === undefined || approvalBusy) return;
@@ -1042,6 +1078,7 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession }
     } finally { if (lifecycle.current === repairLifecycle) setRepairBusy(false); }
   }
   const queueMode = queueComposerMode(Boolean(liveTurn), queue);
+  const steerKind = steerControlKind(Boolean(liveTurn), ui.inputCapabilities?.steer, queueMode);
   const slash = slashQuery(text);
   const slashCommands = useMemo(() => {
     const commands: ChatSlashCommand[] = [...ui.commands];
@@ -1166,7 +1203,7 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession }
             {label && <strong>{label}</strong>}
             {body ? codexMarkdown
               ? <ChatMarkdown sanitizedHtml={renderCodexMarkdown(body, zh)} references={part.fileReferences} openFile={openFile} copy={copy} onInsert={writable ? text => insertChatText(session.id, text) : undefined} />
-              : item.role === 'user' ? <ContextMessage text={body} zh={zh}>{value => <div className="v3-message-text"><FileLinkedText text={value} openFile={openFile} /></div>}</ContextMessage> : <div className="v3-message-text"><FileLinkedText text={body} openFile={openFile} /></div>
+              : item.role === 'user' ? <><ContextMessage text={body} zh={zh}>{value => <div className="v3-message-text"><FileLinkedText text={value} openFile={openFile} /></div>}</ContextMessage>{asRecord(part.data).steered === true && <span className="chip is-plain chat-inserted-tag" data-testid="inserted-tag">{copy('Inserted', '已插入')}</span>}</> : <div className="v3-message-text"><FileLinkedText text={body} openFile={openFile} /></div>
               : null}
             {!codexMarkdown && <FileReferenceChips references={part.fileReferences} visibleText={body} openFile={openFile} />}
           </>}
@@ -1279,7 +1316,7 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession }
       : repairNotice.kind === 'unchanged' ? copy("History already matches the agent's saved record.", '历史已与代理保存的记录一致。')
       : repairNotice.kind === 'superseded' ? copy('This chat changed during repair. Review it and try again.', '修复期间此对话发生了变化。请检查后重试。')
       : copy('Could not repair history. The local transcript is unchanged.', '未能修复历史。本地对话记录未更改。')}</p>}
-    <ChatQueuePanel sessionId={session.id} queue={queue} leaseEpoch={leaseSessionId.current === session.id ? lease.current : undefined} writable={writable} idle={!liveTurn} ingressFailed={ingressFailed} onChange={setQueue} onIssue={message => setError(message)} zh={zh} />
+    <ChatQueuePanel sessionId={session.id} queue={queue} leaseEpoch={leaseSessionId.current === session.id ? lease.current : undefined} writable={writable} idle={!liveTurn} canInsert={steerKind === 'split'} onInsertNow={item => insertIntoTurn({ text: item.text, images: item.images, id: item.id })} ingressFailed={ingressFailed} onChange={setQueue} onIssue={message => setError(message)} zh={zh} />
     <form className="chat-compose chat-compose-shell" data-v3-chat-form={session.id} onSubmit={submit} inert={overlay === "full" || undefined}>
       {slash !== undefined && <div className="chat-slash" role="listbox" aria-label={copy("Commands", "命令")}>
         {slashCommands.length ? slashCommands.map((command, index) => <button type="button" role="option" aria-selected={index === slashIndex} className={index === slashIndex ? "active" : ""} key={command.name} onMouseEnter={() => setSlashIndex(index)} onClick={() => applySlash(command)}>
@@ -1317,7 +1354,7 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession }
           {controlIssue && <span className="dim">{controlIssue}</span>}
           {canControl && !writable && <button type="button" className="chip chip-btn chat-compose-reclaim" onClick={() => reclaimRef.current()} disabled={busy}>{copy('Reclaim control', '重新取得控制')}</button>}
           {liveTurn && <button type="button" className="icon-btn icon-btn-sm icon-btn-round is-secondary chat-compose-send is-stop" disabled={!writable || busy} onClick={() => void cancel(liveTurn)} aria-label={copy('Stop', '停止')} title={copy('Stop', '停止')}><span className="chat-stop-square" /></button>}
-          <button className={`icon-btn icon-btn-sm icon-btn-round is-primary chat-compose-send${queueMode ? ' is-queue' : ''}`} type="submit" disabled={(!text.trim() && !images.length && !context.items.length) || queue?.sessionId !== session.id || imageReading || busy || !writable || !draftLoaded || draftFailed || recovery !== undefined} aria-label={busy ? copy('Sending…', '正在发送…') : queueMode ? copy('Queue', '加入队列') : copy('Send', '发送')}><Icon name={queueMode ? "clock" : "arrowUp"} /></button>
+          <SteerSend kind={steerKind} busy={busy} disabled={(!text.trim() && !images.length && !context.items.length) || queue?.sessionId !== session.id || imageReading || busy || !writable || !draftLoaded || draftFailed || recovery !== undefined} copy={copy} onInsert={() => void insertIntoTurn()} />
         </Fragment>}
       />
     </form>

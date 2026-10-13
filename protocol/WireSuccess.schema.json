@@ -3355,6 +3355,23 @@
       ],
       "additionalProperties": false
     },
+    "RequestResult<\"chat.steer\">": {
+      "type": "object",
+      "properties": {
+        "disposition": {
+          "type": "string",
+          "enum": [
+            "delivered",
+            "queued",
+            "note"
+          ]
+        }
+      },
+      "required": [
+        "disposition"
+      ],
+      "additionalProperties": false
+    },
     "RequestResult<\"chat.cancel\">": {
       "type": "null"
     },
@@ -3393,6 +3410,13 @@
           "properties": {
             "images": {
               "type": "boolean"
+            },
+            "steer": {
+              "type": "string",
+              "enum": [
+                "native",
+                "note"
+              ]
             }
           },
           "additionalProperties": false
@@ -7713,6 +7737,32 @@
         },
         "result": {
           "$ref": "#/definitions/RequestResult%3C%22chat.send%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "result"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "chat.steer"
+        },
+        "result": {
+          "$ref": "#/definitions/RequestResult%3C%22chat.steer%22%3E"
         }
       },
       "required": [

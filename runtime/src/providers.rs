@@ -211,6 +211,10 @@ impl ProviderError {
     }
 }
 
+/// Shown when a steer is rejected because the turn is no longer active.
+/// The renderer matches this sentence when the IPC error drops `code`.
+pub(crate) const STEER_TURN_ENDED: &str = "The turn ended before the message was inserted";
+
 impl std::fmt::Display for ProviderError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(formatter, "{}", self.message)
@@ -517,6 +521,32 @@ pub(crate) trait ChatSession: Send {
         self.send(text, operation_id)
     }
     fn send(&mut self, text: &str, operation_id: &str) -> Result<Value, ProviderError>;
+    /// Side-effect-free rejection before a steered row is recorded. Adapters
+    /// that cannot steer fail here, so nothing is persisted for them.
+    fn validate_steer(&self, _text: &str, _images: &[String]) -> Result<(), ProviderError> {
+        Err(ProviderError::new(
+            "steer_unsupported",
+            "This provider does not support steering into the current turn. / 此 Provider 不支持插入当前回合。",
+        ))
+    }
+    /// Confirms the requested turn is still active. Adapters that only learn
+    /// that from the provider leave this successful and return `turn_changed`
+    /// from `steer` when the provider rejects the insert.
+    fn steer_turn_ready(&self, _turn_id: &str) -> Result<(), ProviderError> {
+        Ok(())
+    }
+    fn steer(
+        &mut self,
+        _turn_id: &str,
+        _text: &str,
+        _images: &[String],
+        _operation_id: &str,
+    ) -> Result<Value, ProviderError> {
+        Err(ProviderError::new(
+            "steer_unsupported",
+            "This provider does not support steering into the current turn. / 此 Provider 不支持插入当前回合。",
+        ))
+    }
     fn cancel(&mut self, turn_id: &str) -> Result<(), ProviderError>;
     fn approve(
         &mut self,
@@ -1491,6 +1521,38 @@ impl Providers {
                 .outcome(if sent.is_ok() { "ok" } else { "error" })
                 .duration_us(handoff_timer.elapsed_us()));
             sent
+        });
+        match result {
+            Err(error) if error.code == "provider_disconnected" => {
+                let _ = self.chat_stop(session_id);
+                Err(error)
+            }
+            other => other,
+        }
+    }
+
+    /// Same lock and validate-then-record order as `chat_send_recording`. The
+    /// provider call is `steer`, which must not start a new turn.
+    pub(crate) fn chat_steer_recording(
+        &self,
+        session_id: &str,
+        turn_id: &str,
+        text: &str,
+        images: &[String],
+        operation_id: &str,
+        record: impl FnOnce() -> Result<(), ProviderError>,
+    ) -> Result<Value, ProviderError> {
+        if text.trim().is_empty() && images.is_empty() {
+            return Err(ProviderError::new(
+                "empty_message",
+                "Chat message cannot be empty",
+            ));
+        }
+        let result = self.chat(session_id, |chat| {
+            chat.validate_steer(text, images)?;
+            chat.steer_turn_ready(turn_id)?;
+            record()?;
+            chat.steer(turn_id, text, images, operation_id)
         });
         match result {
             Err(error) if error.code == "provider_disconnected" => {

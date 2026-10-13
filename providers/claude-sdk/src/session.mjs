@@ -15,8 +15,10 @@ export function createInputQueue() {
   };
 }
 
-function userMessage(text) {
-  return { type: 'user', message: { role: 'user', content: [{ type: 'text', text }] }, parent_tool_use_id: null };
+function userMessage(text, uuid) {
+  const message = { type: 'user', message: { role: 'user', content: [{ type: 'text', text }] }, parent_tool_use_id: null };
+  if (uuid) message.uuid = uuid;
+  return message;
 }
 
 const DEFAULT_HANDSHAKE_TIMEOUT_MS = 25000;
@@ -72,6 +74,10 @@ export class ClaudeSession {
     this.cardId = cardId; this.sdk = sdk; this.write = write; this.hostOptions = hostOptions;
     this.input = createInputQueue(); this.query = null; this.sessionId = null;
     this.activeOperationId = null; this.pending = new Map(); this.requestGeneration = randomUUID(); this.nextRequest = 1; this.closed = false; this.ended = false; this.endError = null;
+    // Steers pushed into the active turn. A uuid missing from the turn result
+    // becomes the next SDK turn; it is adopted on the following message so a
+    // query that simply ends does not leave a phantom running turn.
+    this.pendingSteers = new Map(); this.carryArmed = false;
     this.abortStart = null;
     // Chat options and command menu, from the handshake and later native updates.
     this.catalog = { commands: [], models: [] }; this.terminalCommands = new Set();
@@ -189,9 +195,40 @@ export class ClaudeSession {
     this.write(event(this.cardId, 'session.status', { phase: 'running', sessionId: this.sessionId, operationId }));
   }
 
+  steer(text, operationId) {
+    if (this.ended || this.closed || !this.activeOperationId) {
+      const error = new Error('turn_changed: The turn ended before the message was inserted');
+      error.code = 'turn_changed';
+      throw error;
+    }
+    const message = userMessage(text, operationId);
+    this.pendingSteers.set(operationId, { operationId });
+    try {
+      this.input.push(message);
+    } catch (cause) {
+      this.pendingSteers.delete(operationId);
+      const error = new Error('turn_changed: The turn ended before the message was inserted');
+      error.code = 'turn_changed';
+      error.cause = cause;
+      throw error;
+    }
+    return { disposition: 'delivered' };
+  }
+
+  adoptCarry() {
+    if (this.activeOperationId || !this.carryArmed) return;
+    const uuid = this.pendingSteers.keys().next().value;
+    this.carryArmed = false;
+    if (!uuid) return;
+    this.pendingSteers.delete(uuid);
+    this.activeOperationId = `carry:${uuid}`;
+    this.write(event(this.cardId, 'session.status', { phase: 'running', sessionId: this.sessionId, operationId: this.activeOperationId }));
+  }
+
   async run() {
     try {
       for await (const message of this.query) {
+        this.adoptCarry();
         if (message.type === 'system' && message.subtype === 'init') {
           this.sessionId = message.session_id;
           this.write(event(this.cardId, 'session.status', { phase: 'ready', sessionId: this.sessionId, operationId: this.activeOperationId }));
@@ -207,6 +244,8 @@ export class ClaudeSession {
           this.publishUi();
         }
         if (message.type === 'result') {
+          const consumed = new Set(Array.isArray(message.user_message_uuids) ? message.user_message_uuids : []);
+          for (const uuid of consumed) this.pendingSteers.delete(uuid);
           // How the turn ended: a stopped or failed turn must not read as a
           // completed answer waiting for the user.
           const status = this.interruptedOperation !== null && this.interruptedOperation === this.activeOperationId ? 'interrupted'
@@ -216,6 +255,9 @@ export class ClaudeSession {
           this.activeOperationId = null;
           this.interruptedOperation = null;
           this.streamedIds.clear();
+          // Arm only after this result is published. The next message, if the
+          // SDK actually starts the unconsumed steer, adopts the carry id.
+          this.carryArmed = this.pendingSteers.size > 0;
           // A typed /effort (or a model downgrade) changes the applied effort without
           // any other signal; re-read it after each turn.
           this.refreshApplied({ model: false }).then(changed => { if (changed) this.publishUi(); });

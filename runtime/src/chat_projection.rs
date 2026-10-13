@@ -160,6 +160,32 @@ fn complete_streaming_items(
     Ok(())
 }
 
+/// Removes a steered row that the provider explicitly rejected. An empty
+/// user item is the removal signal: history no longer contains the row, and
+/// the renderer drops that id instead of leaving an empty bubble.
+pub fn retract_steered_message(db: &Database, session_id: &str, operation_id: &str) -> Result<()> {
+    let id = format!("{session_id}:user:steer:{operation_id}");
+    db.transaction(|tx| {
+        let previous: Option<String> = tx
+            .query_row("SELECT data FROM chat_items WHERE id=?", [&id], |row| row.get(0))
+            .optional()?;
+        let Some(raw) = previous else {
+            return Ok(());
+        };
+        let mut item: Value = serde_json::from_str(&raw)?;
+        tx.execute("DELETE FROM chat_items WHERE id=?", [&id])?;
+        if let Some(object) = item.as_object_mut() {
+            object.insert("parts".into(), json!([]));
+        }
+        let now = Utc::now().to_rfc3339();
+        tx.execute(
+            "INSERT INTO outbox(event,data,created_at) VALUES ('chat.item',?,?)",
+            params![serde_json::to_string(&json!({"sessionId":session_id,"item":item}))?, now],
+        )?;
+        Ok(())
+    })
+}
+
 pub fn record(
     db: &Database,
     session_id: &str,
@@ -256,9 +282,18 @@ fn record_tx(
     return Ok(());
    }
    "message.user"=>{
-    complete_streaming_items(tx,session_id,&now)?;
+    // A steered insert joins the running turn. Completing streaming parts or
+    // starting a new activity generation would freeze the live reply and make
+    // Stop/queue target the insert instead of the turn already in progress.
+    let steered=data.get("steered").and_then(Value::as_bool)==Some(true);
+    if !steered { complete_streaming_items(tx,session_id,&now)?; }
     let mut part=json!({"type":"text","text":data.get("text").and_then(Value::as_str).unwrap_or("")});
-    if let Some(images)=data.get("images").filter(|images| images.as_array().is_some_and(|items| !items.is_empty())) { part["data"]=json!({"images":images}); }
+    if steered {
+     let mut extra=json!({"steered":true});
+     if let Some(turn)=data.get("turnId") { extra["turnId"]=turn.clone(); }
+     if let Some(images)=data.get("images").filter(|images| images.as_array().is_some_and(|items| !items.is_empty())) { extra["images"]=images.clone(); }
+     part["data"]=extra;
+    } else if let Some(images)=data.get("images").filter(|images| images.as_array().is_some_and(|items| !items.is_empty())) { part["data"]=json!({"images":images}); }
     item.parts=vec![part];changed=true;
    }
    "chat.delta"=>{
@@ -767,7 +802,9 @@ fn project_activity(
     let transition = match kind {
         // This record is accepted under the provider worker lock, so it is
         // the only event allowed to begin a new attention generation.
-        "message.user" => Some(("running", turn_id, None)),
+        "message.user" if data.get("steered").and_then(Value::as_bool) != Some(true) => {
+            Some(("running", turn_id, None))
+        }
         // Native start can replace the client operation id with the canonical
         // native turn id, but never revives an already completed turn.
         "chat.turn.started"
@@ -1766,6 +1803,89 @@ mod tests {
             .unwrap();
         let value: Value = serde_json::from_str(&assistant).unwrap();
         assert_eq!(value["parts"][0]["status"], "complete");
+    }
+    #[test]
+    fn a_steered_user_message_keeps_the_running_turn_and_retracts_when_rejected() {
+        let db = db();
+        record(&db, "s", Some("turn-a"), "message.user", &json!({"text":"start"})).unwrap();
+        record(
+            &db,
+            "s",
+            Some("turn-a"),
+            "chat.delta",
+            &json!({"part":{"type":"text","text":"old"}}),
+        )
+        .unwrap();
+        let before: Value = db
+            .transaction(|tx| {
+                Ok(tx.query_row(
+                    "SELECT state,revision,turn_id FROM session_activity WHERE session_id='s'",
+                    [],
+                    |row| Ok(json!({"state":row.get::<_,String>(0)?,"revision":row.get::<_,i64>(1)?,"turnId":row.get::<_,Option<String>>(2)?})),
+                )?)
+            })
+            .unwrap();
+        record(
+            &db,
+            "s",
+            Some("turn-a"),
+            "message.user",
+            &json!({"text":"while you work","steered":true,"turnId":"turn-a","item":{"id":"steer:op-1"}}),
+        )
+        .unwrap();
+        let assistant: Value = db
+            .transaction(|tx| {
+                Ok(serde_json::from_str(&tx.query_row(
+                    "SELECT data FROM chat_items WHERE id='s:assistant:turn-a'",
+                    [],
+                    |row| row.get::<_, String>(0),
+                )?)?)
+            })
+            .unwrap();
+        assert_eq!(assistant["parts"][0]["status"], "streaming");
+        let steered: Value = db
+            .transaction(|tx| {
+                Ok(serde_json::from_str(&tx.query_row(
+                    "SELECT data FROM chat_items WHERE id='s:user:steer:op-1'",
+                    [],
+                    |row| row.get::<_, String>(0),
+                )?)?)
+            })
+            .unwrap();
+        assert_eq!(steered["turnId"], "turn-a");
+        assert_eq!(steered["role"], "user");
+        assert_eq!(steered["parts"][0]["data"]["steered"], true);
+        let original: i64 = db
+            .transaction(|tx| {
+                Ok(tx.query_row(
+                    "SELECT COUNT(*) FROM chat_items WHERE id='s:user:turn-a'",
+                    [],
+                    |row| row.get(0),
+                )?)
+            })
+            .unwrap();
+        assert_eq!(original, 1);
+        let after: Value = db
+            .transaction(|tx| {
+                Ok(tx.query_row(
+                    "SELECT state,revision,turn_id FROM session_activity WHERE session_id='s'",
+                    [],
+                    |row| Ok(json!({"state":row.get::<_,String>(0)?,"revision":row.get::<_,i64>(1)?,"turnId":row.get::<_,Option<String>>(2)?})),
+                )?)
+            })
+            .unwrap();
+        assert_eq!(after, before);
+        retract_steered_message(&db, "s", "op-1").unwrap();
+        let gone: i64 = db
+            .transaction(|tx| {
+                Ok(tx.query_row(
+                    "SELECT COUNT(*) FROM chat_items WHERE id='s:user:steer:op-1'",
+                    [],
+                    |row| row.get(0),
+                )?)
+            })
+            .unwrap();
+        assert_eq!(gone, 0);
     }
     #[test]
     fn usage_projection_keeps_distinct_turns_and_unknowns_null() {

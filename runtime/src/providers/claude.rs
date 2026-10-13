@@ -85,7 +85,7 @@ impl ClaudeUi {
                 .cloned()
                 .unwrap_or_else(|| json!([]))
         };
-        json!({"options":list("options"),"commands":list("commands"),"backgroundTasks":list("backgroundTasks")})
+        json!({"options":list("options"),"commands":list("commands"),"backgroundTasks":list("backgroundTasks"),"inputCapabilities":{"steer":"native"}})
     }
 }
 
@@ -514,6 +514,17 @@ struct ClaudeChat {
     worker_token: Option<String>,
 }
 
+fn claude_steer_rejected(error: &ProviderError) -> bool {
+    if error.code == "provider_timeout" {
+        return false;
+    }
+    let message = error.message.to_ascii_lowercase();
+    message.contains("turn_changed")
+        || message.contains("no active turn")
+        || message.contains("session input is closed")
+        || message.contains("turn ended")
+}
+
 impl ChatSession for ClaudeChat {
     fn native_id(&self) -> Option<String> {
         self.native_id.clone()
@@ -533,6 +544,38 @@ impl ChatSession for ClaudeChat {
             json!({"cardId":self.session_id,"text":text,"operationId":operation_id}),
         )?;
         Ok(json!({"turnId":operation_id}))
+    }
+    fn validate_steer(&self, text: &str, images: &[String]) -> Result<(), ProviderError> {
+        if !images.is_empty() {
+            return Err(ProviderError::new(
+                "images_unsupported",
+                "This provider does not support chat images. / 此 Provider 不支持聊天图片。",
+            ));
+        }
+        if text.trim().is_empty() {
+            return Err(ProviderError::new("invalid_message", "invalid_message"));
+        }
+        self.validate_send(text)
+    }
+    fn steer(
+        &mut self,
+        _turn_id: &str,
+        text: &str,
+        _images: &[String],
+        operation_id: &str,
+    ) -> Result<Value, ProviderError> {
+        validate_native_id(operation_id)?;
+        match self.process.sidecar_request(
+            "session.steer",
+            json!({"cardId":self.session_id,"text":text,"operationId":operation_id}),
+        ) {
+            Ok(_) => Ok(json!({"disposition":"delivered"})),
+            Err(error) if claude_steer_rejected(&error) => Err(ProviderError::new(
+                "turn_changed",
+                crate::providers::STEER_TURN_ENDED,
+            )),
+            Err(error) => Err(error),
+        }
     }
     fn cancel(&mut self, _turn_id: &str) -> Result<(), ProviderError> {
         self.process
