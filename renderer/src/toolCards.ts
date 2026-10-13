@@ -14,6 +14,9 @@ import { pathIsWithinCanonicalScope } from './projectScope';
 export const DIFF_COLLAPSE_LINES = 200;
 /** Past this many diff lines the card only offers "Open diff". */
 export const DIFF_OPEN_ONLY_LINES = 2_000;
+/** Approval cards bound their expanded preview across every edited file. */
+export const APPROVAL_PREVIEW_FILE_LIMIT = 12;
+export const APPROVAL_PREVIEW_ROW_LIMIT = 1_200;
 /** Command output lines rendered at most in one card. */
 export const OUTPUT_MAX_LINES = 400;
 /** Command output tail shown while the output is collapsed. */
@@ -106,6 +109,22 @@ export function editFileStats(file: ToolEditFile): DiffStats {
 /** The extra file count shown as "+N more files". */
 export function moreFilesLabel(shown: number, total: number): string | undefined {
   return total > shown ? `+${total - shown}` : undefined;
+}
+
+/** Allocate a bounded approval-preview DOM budget in file order. */
+export function approvalPreviewBudget(files: readonly ToolEditFile[], expanded: boolean): { files: number; rows: number[]; omittedFiles: number; omittedRows: number } {
+  const fileLimit = expanded ? APPROVAL_PREVIEW_FILE_LIMIT : 3;
+  let remaining = APPROVAL_PREVIEW_ROW_LIMIT;
+  const rows: number[] = [];
+  for (const file of files.slice(0, fileLimit)) {
+    const wanted = file.diff ? Math.min(diffView(file.diff).rows.length, expanded ? DIFF_OPEN_ONLY_LINES : DIFF_COLLAPSE_LINES) : 0;
+    const allowed = Math.min(wanted, remaining);
+    rows.push(allowed);
+    remaining -= allowed;
+  }
+  const shownRows = rows.reduce((total, value) => total + value, 0);
+  const totalRows = files.reduce((total, file) => total + (file.diff ? diffView(file.diff).rows.length : 0), 0);
+  return { files: rows.length, rows, omittedFiles: Math.max(0, files.length - rows.length), omittedRows: Math.max(0, totalRows - shownRows) };
 }
 
 /**

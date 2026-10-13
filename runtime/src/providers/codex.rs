@@ -1358,7 +1358,7 @@ struct CodexUiState {
     skills_error: Option<String>,
     options_error: Option<ProviderError>,
     // Proposed edits are scoped by native thread, turn and item; bounded per connection.
-    proposed_edits: HashMap<(String, String, String), Value>,
+    proposed_edits: HashMap<(String, String, String), CodexEditPreview>,
     plan_candidate: Option<CodexPlanCandidate>,
     pending_plan: Option<CodexPlanApproval>,
     retiring: bool,
@@ -1374,6 +1374,12 @@ struct CodexPlanCandidate {
     turn_id: String,
     item_id: Option<String>,
     text: String,
+}
+
+#[derive(Clone)]
+enum CodexEditPreview {
+    Available(Value),
+    Unavailable(String),
 }
 
 impl CodexPlanCandidate {
@@ -2967,10 +2973,33 @@ fn remember_codex_edits(ui: &Mutex<CodexUiState>, method: &str, params: &Value) 
             }
             if method == "item/started" && params.pointer("/item/type").and_then(Value::as_str) == Some("fileChange") {
                 if let (Some(turn), Some(item), Some(changes)) = (turn, params.pointer("/item/id").and_then(Value::as_str), params.pointer("/item/changes")) {
-                    // 128 entries × 256 KiB maximum; skip oversized previews rather
-                    // than presenting a silently incomplete diff as a full edit.
-                    if state.proposed_edits.len() < 128 && serde_json::to_vec(changes).is_ok_and(|bytes| bytes.len() <= 256 * 1024) {
-                        state.proposed_edits.insert((thread.into(), turn.into(), item.into()), changes.clone());
+                    let key = (thread.into(), turn.into(), item.into());
+                    let size = serde_json::to_vec(changes).map(|bytes| bytes.len()).unwrap_or(usize::MAX);
+                    let cached = state
+                        .proposed_edits
+                        .values()
+                        .filter(|preview| matches!(preview, CodexEditPreview::Available(_)))
+                        .count()
+                        .saturating_sub(usize::from(matches!(
+                            state.proposed_edits.get(&key),
+                            Some(CodexEditPreview::Available(_))
+                        )));
+                    let preview = if size > 256 * 1024 {
+                        CodexEditPreview::Unavailable(
+                            "The proposed edit exceeds ThreadTerm's 256 KiB approval-preview limit. / 建议的编辑超过 ThreadTerm 256 KiB 审批预览上限。".into(),
+                        )
+                    } else if cached >= 128 {
+                        CodexEditPreview::Unavailable(
+                            "The approval preview is unavailable because this turn exceeded ThreadTerm's 128-edit preview cache. / 此轮编辑超过 ThreadTerm 的 128 项审批预览缓存，无法显示预览。".into(),
+                        )
+                    } else {
+                        CodexEditPreview::Available(changes.clone())
+                    };
+                    // Keep at most 128 available previews and 128 reason markers.
+                    // If both budgets are exhausted, the approval path supplies a
+                    // generic explicit reason rather than silently omitting it.
+                    if state.proposed_edits.len() < 256 || state.proposed_edits.contains_key(&key) {
+                        state.proposed_edits.insert(key, preview);
                     }
                 }
             }
@@ -3177,12 +3206,23 @@ fn emit_codex_message(
             );
             return;
         }
+        let mut preview_unavailable_reason = None;
         if method == "item/fileChange/requestApproval" {
             if let (Some(thread), Some(turn), Some(item)) = (thread_id, provider_turn_id, provider_item_id) {
-                let changes = ui.lock().ok().and_then(|state| state.proposed_edits.get(&(thread.into(), turn.into(), item.into())).cloned());
-                if let Some(changes) = changes {
-                    params["changes"] = changes;
+                let preview = ui.lock().ok().and_then(|state| state.proposed_edits.get(&(thread.into(), turn.into(), item.into())).cloned());
+                match preview {
+                    Some(CodexEditPreview::Available(changes)) => params["changes"] = changes,
+                    Some(CodexEditPreview::Unavailable(reason)) => preview_unavailable_reason = Some(reason),
+                    None => {
+                        preview_unavailable_reason = Some(
+                            "Codex did not provide a matching edit preview for this approval. / Codex 未提供与此审批匹配的编辑预览。".into(),
+                        );
+                    }
                 }
+            } else {
+                preview_unavailable_reason = Some(
+                    "Codex did not identify the edit needed to build this approval preview. / Codex 未标识生成此审批预览所需的编辑。".into(),
+                );
             }
         }
         let approval_id = encode_approval_id(raw.get("id").unwrap_or(&Value::Null));
@@ -3227,6 +3267,9 @@ fn emit_codex_message(
             turn_id.as_deref(),
             submittable,
         );
+        if let Some(reason) = preview_unavailable_reason {
+            payload["previewUnavailableReason"] = json!(reason);
+        }
         if let Some(question) = question_payload {
             if let Some(question) = question.as_object() {
                 for (key, value) in question {
@@ -3890,8 +3933,63 @@ mod tests {
         assert_eq!(approvals.len(), 2);
         assert_eq!(approvals[0].data.pointer("/part/data/details/changes"), Some(&changes));
         assert!(approvals[1].data.pointer("/part/data/details/changes").is_none());
+        assert!(approvals[0].data.pointer("/part/data/previewUnavailableReason").is_none());
+        assert!(approvals[1]
+            .data
+            .pointer("/part/data/previewUnavailableReason")
+            .and_then(Value::as_str)
+            .is_some_and(|reason| reason.contains("matching edit preview")));
         replay.emit("turn/completed", json!({"threadId":SUBAGENT_PARENT,"turn":{"id":"parent-turn","status":"completed"}}));
         assert!(replay.ui.lock().unwrap().proposed_edits.is_empty());
+    }
+
+    #[test]
+    fn oversized_file_approval_carries_an_explicit_preview_unavailable_reason() {
+        let mut replay = CodexSubagentReplay::new();
+        let oversized = format!("+{}", "x".repeat(256 * 1024));
+        replay.emit("item/started", json!({
+            "threadId":SUBAGENT_PARENT,
+            "turnId":"parent-turn",
+            "item":{"id":"large-edit","type":"fileChange","changes":[{"path":"large.txt","diff":oversized}]}
+        }));
+        replay.raw(json!({"id":903,"method":"item/fileChange/requestApproval","params":{
+            "threadId":SUBAGENT_PARENT,"turnId":"parent-turn","itemId":"large-edit"
+        }}));
+        let approval = std::iter::from_fn(|| replay.received.try_recv().ok())
+            .find(|event| event.kind == "chat.approval")
+            .expect("oversized edit approval");
+        assert!(approval.data.pointer("/part/data/details/changes").is_none());
+        assert!(approval
+            .data
+            .pointer("/part/data/previewUnavailableReason")
+            .and_then(Value::as_str)
+            .is_some_and(|reason| reason.contains("256 KiB")));
+    }
+
+    #[test]
+    fn file_approval_after_preview_cache_limit_explains_the_missing_preview() {
+        let mut replay = CodexSubagentReplay::new();
+        for index in 0..=128 {
+            replay.emit("item/started", json!({
+                "threadId":SUBAGENT_PARENT,
+                "turnId":"parent-turn",
+                "item":{"id":format!("edit-{index}"),"type":"fileChange","changes":[{
+                    "path":format!("src/{index}.txt"),"diff":format!("+{index}")
+                }]}
+            }));
+        }
+        replay.raw(json!({"id":904,"method":"item/fileChange/requestApproval","params":{
+            "threadId":SUBAGENT_PARENT,"turnId":"parent-turn","itemId":"edit-128"
+        }}));
+        let approval = std::iter::from_fn(|| replay.received.try_recv().ok())
+            .find(|event| event.kind == "chat.approval")
+            .expect("cache-limited edit approval");
+        assert!(approval.data.pointer("/part/data/details/changes").is_none());
+        assert!(approval
+            .data
+            .pointer("/part/data/previewUnavailableReason")
+            .and_then(Value::as_str)
+            .is_some_and(|reason| reason.contains("128-edit")));
     }
 
     const SUBAGENT_PARENT: &str = "01a10cc5-adcf-7532-8366-f82284f88ff9";

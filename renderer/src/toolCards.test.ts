@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import type { ChatPart } from '@threadterm/protocol';
-import { cardBodyVisible, diffView, editFileStats, isOpenableDiffPath, jsonView, moreFilesLabel, outputView, toolStatusLabel, DIFF_COLLAPSE_LINES, OUTPUT_MAX_LINES, JSON_NODE_LIMIT } from './toolCards';
+import { approvalPreviewBudget, APPROVAL_PREVIEW_FILE_LIMIT, APPROVAL_PREVIEW_ROW_LIMIT, cardBodyVisible, diffView, editFileStats, isOpenableDiffPath, jsonView, moreFilesLabel, outputView, toolStatusLabel, DIFF_COLLAPSE_LINES, OUTPUT_MAX_LINES, JSON_NODE_LIMIT } from './toolCards';
 import { toolSummary, toolSummaryLabel, toolSummarySegments, toolSummaryText } from './toolActivity';
 import { toolView } from './toolView';
 
@@ -36,6 +36,15 @@ test('long diffs collapse to 200 lines, then only Open diff past 2,000', () => {
   assert.equal(huge.openOnly, true);
   assert.equal(moreFilesLabel(3, 7), '+4');
   assert.equal(moreFilesLabel(3, 3), undefined);
+});
+
+test('expanded approval previews cap their total files and rows', () => {
+  const files = Array.from({ length: 20 }, (_, index) => ({ path: `src/${index}.ts`, change: 'modify' as const, diff: { unified: Array.from({ length: 200 }, (_, row) => `+${row}`).join('\n') } }));
+  const budget = approvalPreviewBudget(files, true);
+  assert.equal(budget.files, APPROVAL_PREVIEW_FILE_LIMIT);
+  assert.ok(budget.rows.reduce((total, rows) => total + rows, 0) <= APPROVAL_PREVIEW_ROW_LIMIT);
+  assert.ok(budget.omittedFiles > 0);
+  assert.ok(budget.omittedRows > 0);
 });
 
 test('output caps at 400 lines and offers the tail while collapsed', () => {
