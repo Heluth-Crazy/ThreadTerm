@@ -194,14 +194,14 @@ try {
   await waitAssistant(session.id, '/help', 'Chat commands:', prior);
   report.checks.push('slash-menu click selected and executed /help');
 
-  // Collaboration and sandbox are extra model-menu controls. Their selection uses the live UI, not direct RPC.
-  await page.locator('.chat-model-chip').click();
-  const modelMenu = page.locator('.chat-menu-model');
-  await modelMenu.getByText('Collaboration', { exact: true }).waitFor();
-  await selectMenuItem(modelMenu, 'Plan');
+  // Collaboration and sandbox are extra composer chips (C2). Their selection uses the live UI, not direct RPC.
+  await page.locator('.chat-option-chip[data-option-id="collaboration"]').click();
+  const collaborationMenu = page.locator('.chat-option-chip[data-option-id="collaboration"] + .chat-compose-menu');
+  await collaborationMenu.waitFor();
+  await selectMenuItem(collaborationMenu, 'Plan');
   await waitOption(session.id, 'collaboration', 'plan');
-  await page.locator('.chat-model-chip').click();
-  await selectMenuItem(page.locator('.chat-menu-model'), 'Workspace write');
+  await page.locator('.chat-option-chip[data-option-id="sandbox"]').click();
+  await selectMenuItem(page.locator('.chat-option-chip[data-option-id="sandbox"] + .chat-compose-menu'), 'Workspace write');
   await waitOption(session.id, 'sandbox', 'workspace-write');
   leaseEpoch = await renew(session.id, leaseEpoch);
   prior = await sendCommand(session.id, '/status');
@@ -242,16 +242,16 @@ try {
     await page.locator('.chat-model-chip').click();
     const modelMenu = page.locator('.chat-menu-model');
     const labels = locale === 'en'
-      ? { collaboration: 'Collaboration', plan: 'Plan', sandbox: 'Sandbox', workspace: 'Workspace write', shield: 'Ask as needed' }
-      : { collaboration: '协作模式', plan: '规划', sandbox: '沙箱', workspace: '工作区可写', shield: '按需询问' };
-    await modelMenu.getByText(labels.collaboration, { exact: true }).waitFor();
-    await modelMenu.getByText(labels.sandbox, { exact: true }).waitFor();
-    await modelMenu.getByRole('menuitemradio', { name: labels.plan, exact: true }).waitFor();
-    await modelMenu.getByRole('menuitemradio', { name: labels.workspace, exact: true }).waitFor();
-    await modelMenu.getByRole('menuitemradio', { name: labels.workspace, exact: true }).scrollIntoViewIfNeeded();
-    assert.equal((await shield.textContent())?.trim(), labels.shield, `localized shield mismatch for ${locale}`);
+      ? { collaboration: 'Default', sandbox: 'Workspace write', shield: 'Ask as needed', fast: 'Fast mode' }
+      : { collaboration: '默认', sandbox: '工作区可写', shield: '按需询问', fast: '快速模式' };
+    await modelMenu.waitFor();
+    await page.keyboard.press('Escape');
+    await page.locator('.chat-mode-chip').filter({ hasText: labels.shield }).waitFor();
+    await page.locator('.chat-option-chip[data-option-id="collaboration"]').filter({ hasText: labels.collaboration }).waitFor();
+    await page.locator('.chat-option-chip[data-option-id="sandbox"]').filter({ hasText: labels.sandbox }).waitFor();
+    await page.locator('.chat-option-chip[data-option-id="fast"]').filter({ hasText: labels.fast }).waitFor();
+    await page.locator('.chat-option-chip[data-option-id="reviewer"]').waitFor();
     await page.screenshot({ path: join(scratch, `success-${locale}-${theme}-${width}.png`), fullPage: true });
-    await page.locator('.chat-model-chip').click();
   }
   report.checks.push('captured English and Chinese light/dark menu screenshots at 1280, 1440, and 1920px');
   report.passed = true;

@@ -1,7 +1,7 @@
 import { ClipboardEvent, FormEvent, Fragment, KeyboardEvent, type MouseEvent as ReactMouseEvent, useContext, useEffect, useId, useMemo, useRef, useState } from "react";
 import DOMPurify from "dompurify";
 import { marked } from "marked";
-import type { ChatAnswerResponse, ChatPart, ChatQueue, ChatSessionOption, ChatSlashCommand, ChatUiState, FileReference, Session } from "@threadterm/protocol";
+import type { ChatAnswerResponse, ChatPart, ChatQueue, ChatSlashCommand, ChatUiState, FileReference, Session } from "@threadterm/protocol";
 import { ChatItem, openExternal, operationId, request, subscribeEvents } from "../bridge";
 import { beginResync, chatUiFromEvent, completeResync, nextRepairRevision, upsertChatItem, type ChatResync } from "../chatState";
 import { acquireControl } from '../controlLease';
@@ -26,6 +26,7 @@ import { FileLinkedMarkdown, FileLinkedText, FileReferenceChips, FileReferenceSc
 import { replyMarkdown } from '../replyMarkdown';
 import { MessageActions } from './MessageActions';
 import { ChatPlanPanel } from './ChatPlanPanel';
+import { ComposerOptions } from './ComposerOptions';
 import { parseMarkdownFileReference } from '../fileReferences';
 import { SessionSurfaceContext } from './SessionSurfaceContext';
 import { CatalogPopover } from './CatalogActions';
@@ -341,30 +342,7 @@ const asUserError = (caught: unknown, fallback: string) => {
   const message = caught instanceof Error ? caught.message : String(caught);
   return message.replace(/^Error invoking remote method '[^']+': (?:Error:\s*)?/, "") || fallback;
 };
-// Provider option ids are provider-defined (kimi ACP: model/thinking/mode); labels localize known values and fall back to the provider's own names.
-const MODE_LABELS: Record<string, [string, string]> = { default: ["Default", "默认"], plan: ["Plan", "规划"], onrequest: ["Ask as needed", "按需询问"], never: ["Never ask", "从不询问"], onfailure: ["On failure", "失败时询问"], untrusted: ["Untrusted", "不受信任的"], readonly: ["Read only", "只读"], workspacewrite: ["Workspace write", "工作区可写"], dangerfullaccess: ["Full access", "完全访问"], auto: ["Auto", "自动"], yolo: ["Full access", "完全访问"], acceptedits: ["Accept edits", "接受编辑"], dontask: ["Don't ask", "不问"], bypasspermissions: ["Bypass", "跳过权限"] };
-const THINKING_LABELS: Record<string, [string, string]> = { off: ["Off", "关"], none: ["Off", "关"], minimal: ["Minimal", "最低"], low: ["Low", "低"], on: ["On", "开"], medium: ["Medium", "中"], high: ["High", "高"], xhigh: ["Xhigh", "超高"], max: ["Max", "Max"], ultra: ["Ultra", "Ultra"] };
-const currentChoiceName = (option: ChatSessionOption) => option.choices.find(choice => choice.value === option.value)?.name ?? option.value;
-const shortThinking = (option: ChatSessionOption, zh: boolean) => {
-  const known = THINKING_LABELS[option.value.toLowerCase()];
-  if (known) return zh ? known[1] : known[0];
-  return currentChoiceName(option).replace(/^thinking\s+/i, "") || option.value;
-};
-const modeText = (option: ChatSessionOption, zh: boolean) => {
-  const known = MODE_LABELS[option.value.toLowerCase().replace(/[^a-z0-9]/g, "")];
-  if (known) return zh ? known[1] : known[0];
-  return currentChoiceName(option) || option.value;
-};
-const isNativeOption = (option: ChatSessionOption) => /^(collaboration|approvalpolicy|sandbox)$/i.test(option.id) || (/^mode$/i.test(option.id) && /^approval policy$/i.test(option.name));
-const optionTitle = (option: ChatSessionOption, copy: (en: string, zh: string) => string) => {
-  if (/^model$/i.test(option.id)) return copy("Model", "模型");
-  if (/think/i.test(option.id)) return copy("Thinking level", "思考程度");
-  if (/^collaboration$/i.test(option.id)) return copy("Collaboration", "协作模式");
-  if (/^approvalpolicy$/i.test(option.id) || (/^mode$/i.test(option.id) && /^approval policy$/i.test(option.name))) return copy("Approval policy", "审批策略");
-  if (/^sandbox$/i.test(option.id)) return copy("Sandbox", "沙箱");
-  if (/^mode$/i.test(option.id)) return copy("Permission mode", "权限模式");
-  return option.name;
-};
+// Option classification and labels moved to ../composerOptions (C2).
 type DraftWriter = ReturnType<typeof createDraftWriter>;
 type ControlToken = { epoch: number; release: () => void; valid: boolean };
 type ChatLifecycle = { sessionId: string; writer?: DraftWriter; control?: ControlToken; flushOnExit?: Promise<void> };
@@ -576,7 +554,7 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession }
     setViewportSessionId(undefined);
     setHistoryIssue(undefined);
     setSubmissionPreview(undefined);
-    setItems([]); setText(''); setBusy(false); setQueue(undefined); setDraftLoaded(false); setHistoryLoaded(false); setHistoryFailed(false); setLink(emptyLink(session.id, canControl && !ended ? "connecting" : "unavailable")); setConnectSlow(false); setError(undefined); setRepair(undefined); setRepairDialog(false); setRepairBusy(false); setRepairNotice(undefined); setIngressFailed(false); setRepairFollowup(false); setChatRepairAvailability(session.id, repairDescriptionId, undefined);draftReady.current=false;writer.current=undefined;setDraftFailed(false);setRecovery(undefined);setMenuOpen(null);setApprovalBusy(undefined);
+    setItems([]); setText(''); setBusy(false); setQueue(undefined); setDraftLoaded(false); setHistoryLoaded(false); setHistoryFailed(false); setLink(emptyLink(session.id, canControl && !ended ? "connecting" : "unavailable")); setConnectSlow(false); setError(undefined); setRepair(undefined); setRepairDialog(false); setRepairBusy(false); setRepairNotice(undefined); setIngressFailed(false); setRepairFollowup(false); setChatRepairAvailability(session.id, repairDescriptionId, undefined);draftReady.current=false;writer.current=undefined;setDraftFailed(false);setRecovery(undefined);setApprovalBusy(undefined);
     const unsubscribe = subscribeEvents(event => {
       if (disposed || !event.data || typeof event.data !== 'object') return;
       const data = event.data as { sessionId?: string; item?: ChatItem; reason?: string };
@@ -992,38 +970,19 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession }
     } finally { if (lifecycle.current === repairLifecycle) setRepairBusy(false); }
   }
   const queueMode = queueComposerMode(Boolean(liveTurn), queue);
-  const modelOption = ui.options.find(option => /model/i.test(option.id) || /model/i.test(option.name));
-  const thinkingOption = ui.options.find(option => option !== modelOption && (/think/i.test(option.id) || /think/i.test(option.name) || /reason/i.test(option.id)));
-  const modeOption = ui.options.find(option => option !== modelOption && option !== thinkingOption && (/mode/i.test(option.id) || /mode/i.test(option.name)));
-  const extraOptions = ui.options.filter(option => option !== modelOption && option !== thinkingOption && option !== modeOption && option.choices.length > 0);
-  const [menuOpen, setMenuOpen] = useState<null | "model" | "mode">(null);
   const slash = slashQuery(text);
   const slashCommands = useMemo(() => {
     const commands: ChatSlashCommand[] = [...ui.commands];
     if (liveTurn && !commands.some(command => command.name === "stop")) commands.unshift({ name: "stop", description: copy("Stop this turn", "停止此轮") });
     return slash === undefined ? [] : matchSlashCommands(slash, commands);
   }, [zh, liveTurn, slash, ui.commands]);
-  async function setOption(option: ChatSessionOption, value: string) {
+  async function setOption(optionId: string, value: string) {
     const epoch = leaseSessionId.current === session.id ? lease.current : undefined;
     if (!writable || epoch === undefined) return;
     try {
-      setUi(await request("chat.option.set", { sessionId: session.id, optionId: option.id, value, leaseEpoch: epoch, operationId: operationId() }));
+      setUi(await request("chat.option.set", { sessionId: session.id, optionId, value, leaseEpoch: epoch, operationId: operationId() }));
     } catch (caught) { setError(asUserError(caught, copy("Option was not updated.", "未能更新选项。"))); }
   }
-  useEffect(() => {
-    if (!menuOpen) return;
-    const onPointerDown = (event: MouseEvent) => {
-      const target = event.target instanceof Element ? event.target : undefined;
-      if (!target?.closest(".chat-compose-menu, [data-menu-trigger]")) setMenuOpen(null);
-    };
-    const onKeyDown = (event: globalThis.KeyboardEvent) => { if (event.key === "Escape") setMenuOpen(null); };
-    document.addEventListener("mousedown", onPointerDown);
-    document.addEventListener("keydown", onKeyDown);
-    return () => {
-      document.removeEventListener("mousedown", onPointerDown);
-      document.removeEventListener("keydown", onKeyDown);
-    };
-  }, [menuOpen]);
   useEffect(() => {
     const el = composeRef.current;
     if (!el) return;
@@ -1034,18 +993,6 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession }
     const el = logRef.current;
     if (el && viewport.followRef.current) el.scrollTop = el.scrollHeight;
   }, [items, text, firstResponseWait]);
-  function renderMenuRows(option: ChatSessionOption) {
-    const choices = option.choices.length ? option.choices : [{ value: option.value, name: option.value || copy("Current", "当前") }];
-    return choices.map(choice => <button type="button" key={choice.value} role="menuitemradio" aria-checked={choice.value === option.value} className={`chat-menu-item${choice.value === option.value ? " active" : ""}`} disabled={!writable || busy} onClick={() => { setMenuOpen(null); void setOption(option, choice.value); }}>
-      <Icon name="check" className="chat-menu-check" /><span>{menuChoiceText(option, choice)}</span>
-    </button>);
-  }
-  function menuChoiceText(option: ChatSessionOption, choice: ChatSessionOption["choices"][number]) {
-    if (isNativeOption(option)) return modeText({ ...option, value: choice.value }, zh);
-    // Providers name mode/thinking choices in English; in Chinese, translate the known values like their chips.
-    const known = option === modeOption ? MODE_LABELS[choice.value.toLowerCase().replace(/[^a-z0-9]/g, "")] : option === thinkingOption ? THINKING_LABELS[choice.value.toLowerCase()] : undefined;
-    return zh && known ? known[1] : choice.name;
-  }
   function applySlash(command: ChatSlashCommand) {
     if (command.name === "stop" && liveTurn) { void cancel(liveTurn); changeText(""); return; }
     changeText(`/${command.name.replace(/^\//, "")} `);
@@ -1252,39 +1199,26 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession }
           <b>/{command.name.replace(/^\//, "")}</b><span>{command.description ?? ""}</span>
         </button>) : <p className="chat-slash-empty">{copy("No matching command", "没有匹配的命令")}</p>}
       </div>}
-      {menuOpen === "model" && modelOption && <div className="chat-compose-menu chat-menu-model" role="menu" aria-label={copy("Model and thinking level", "模型与思考程度")}>
-        <p className="chat-menu-label">{optionTitle(modelOption, copy)}</p>
-        {renderMenuRows(modelOption)}
-        {thinkingOption && <Fragment><p className="chat-menu-label">{optionTitle(thinkingOption, copy)}</p>{renderMenuRows(thinkingOption)}</Fragment>}
-        {extraOptions.map(option => <Fragment key={option.id}><p className="chat-menu-label">{optionTitle(option, copy)}</p>{renderMenuRows(option)}</Fragment>)}
-      </div>}
-      {menuOpen === "mode" && modeOption && <div className="chat-compose-menu chat-menu-mode" role="menu" aria-label={optionTitle(modeOption, copy)}>
-        <p className="chat-menu-label">{optionTitle(modeOption, copy)}</p>
-        {renderMenuRows(modeOption)}
-      </div>}
       <label className="sr-only" htmlFor={`chat-message-${session.id}`}>{copy('Message', '消息')}</label>
       {!!images.length && !submissionPreview && <div className="chat-image-draft" aria-label={copy('Image attachments', '图片附件')}>{images.map((image, index) => <figure key={index}><img src={image} alt={`${copy('Pasted image', '已粘贴图片')} ${index + 1}`} /><button type="button" disabled={busy || imageReading || !writable} aria-label={`${copy('Remove image', '移除图片')} ${index + 1}`} onClick={() => updateImages(images.filter((_, imageIndex) => imageIndex !== index))}>×</button></figure>)}<span className="chat-image-draft-note">{copy('Images saved on this device', '图片已保存在此设备')}</span></div>}
       {!submissionPreview && <ContextTray items={context.items} text={text} zh={zh} onRemove={context.remove} disabled={busy || imageReading || !writable} />}
       <textarea id={`chat-message-${session.id}`} ref={composeRef} value={submissionPreview ? '' : text} onChange={event => { changeText(event.target.value); setSlashIndex(0); }} onPaste={pasteImages} onKeyDown={onComposeKey} placeholder={copy('Message the provider, or type / for commands', '发送消息，或输入 / 唤出命令')} rows={1} disabled={busy || ended || !writable || overlay === "full" || !draftLoaded} />
-      <div className="chat-compose-bar">
-        <div className="chat-compose-left">
-          <button type="button" className="icon-btn icon-btn-round chat-compose-icon" disabled={busy || ended || !writable} aria-label={copy("Commands", "命令")} title={copy("Commands", "命令")} onClick={() => { changeText(text.startsWith("/") ? text : "/"); composeRef.current?.focus(); }}><Icon name="plus" /></button>
-          {modeOption && <button type="button" className={`chat-compose-chip chat-mode-chip mode-${modeOption.value.replace(/[^a-z0-9]/gi, "") || "unknown"}`} data-menu-trigger="mode" aria-haspopup="menu" aria-expanded={menuOpen === "mode"} disabled={ended || !writable} title={isNativeOption(modeOption) ? modeText(modeOption, zh) : currentChoiceName(modeOption) || modeOption.name} onClick={() => setMenuOpen(menuOpen === "mode" ? null : "mode")}>
-            <Icon name="shield" /><span>{modeText(modeOption, zh)}</span>
-          </button>}
-        </div>
-        <div className="chat-compose-right">
+      <ComposerOptions
+        options={ui.options}
+        loadState={ui.loadState}
+        zh={zh}
+        copy={copy}
+        disabled={ended || !writable}
+        busy={busy}
+        onSetOption={setOption}
+        leading={<button type="button" className="icon-btn icon-btn-sm icon-btn-round chat-compose-icon" disabled={busy || ended || !writable} aria-label={copy("Commands", "命令")} title={copy("Commands", "命令")} onClick={() => { changeText(text.startsWith("/") ? text : "/"); composeRef.current?.focus(); }}><Icon name="plus" /></button>}
+        trailing={<Fragment>
           {controlIssue && <span className="dim">{controlIssue}</span>}
-          {canControl && !writable && <button type="button" className="btn" onClick={() => reclaimRef.current()} disabled={busy}>{copy('Reclaim control', '重新取得控制')}</button>}
-          {modelOption && <button type="button" className="chat-compose-chip chat-model-chip" data-menu-trigger="model" aria-haspopup="menu" aria-expanded={menuOpen === "model"} disabled={ended || !writable} title={`${modelOption.name}: ${currentChoiceName(modelOption) || modelOption.value}${thinkingOption ? ` · ${optionTitle(thinkingOption, copy)}: ${currentChoiceName(thinkingOption) || thinkingOption.value}` : ""}`} onClick={() => setMenuOpen(menuOpen === "model" ? null : "model")}>
-            <span className="chat-model-name">{currentChoiceName(modelOption) || copy("Model", "模型")}</span>
-            {thinkingOption && <span className="chat-model-think">{shortThinking(thinkingOption, zh)}</span>}
-            <Icon name="chevD" className="chat-model-chev" />
-          </button>}
-          {liveTurn && <button type="button" className="icon-btn icon-btn-round chat-compose-send is-stop" disabled={!writable || busy} onClick={() => void cancel(liveTurn)} aria-label={copy('Stop', '停止')} title={copy('Stop', '停止')}><span className="chat-stop-square" /></button>}
-          <button className={`icon-btn icon-btn-round chat-compose-send${queueMode ? ' is-queue' : ''}`} type="submit" disabled={(!text.trim() && !images.length && !context.items.length) || queue?.sessionId !== session.id || imageReading || busy || !writable || !draftLoaded || draftFailed || recovery !== undefined} aria-label={busy ? copy('Sending…', '正在发送…') : queueMode ? copy('Queue', '加入队列') : copy('Send', '发送')}>{queueMode ? copy('Queue', '加入队列') : <Icon name="arrowUp" />}</button>
-        </div>
-      </div>
+          {canControl && !writable && <button type="button" className="chip chip-btn chat-compose-reclaim" onClick={() => reclaimRef.current()} disabled={busy}>{copy('Reclaim control', '重新取得控制')}</button>}
+          {liveTurn && <button type="button" className="icon-btn icon-btn-sm icon-btn-round is-secondary chat-compose-send is-stop" disabled={!writable || busy} onClick={() => void cancel(liveTurn)} aria-label={copy('Stop', '停止')} title={copy('Stop', '停止')}><span className="chat-stop-square" /></button>}
+          <button className={`icon-btn icon-btn-sm icon-btn-round is-primary chat-compose-send${queueMode ? ' is-queue' : ''}`} type="submit" disabled={(!text.trim() && !images.length && !context.items.length) || queue?.sessionId !== session.id || imageReading || busy || !writable || !draftLoaded || draftFailed || recovery !== undefined} aria-label={busy ? copy('Sending…', '正在发送…') : queueMode ? copy('Queue', '加入队列') : copy('Send', '发送')}>{queueMode ? copy('Queue', '加入队列') : <Icon name="arrowUp" />}</button>
+        </Fragment>}
+      />
     </form>
     {overlay === "full" && <ChatConnectOverlay provider={session.provider} phase={connection.phase} slow={connectSlow} error={connection.error} variant="full" onRetry={connection.phase === "failed" && link.transport === "up" ? retryConnection : undefined} copy={copy} transportDown={link.transport !== "up"} />}
     {repairDialog && <SurfaceDialog title={legacyHistoryReload ? copy('Reload saved history?', '重新加载已保存的历史？') : copy('Repair chat history?', '修复对话记录？')} subtitle={session.title} icon={legacyHistoryReload ? 'clock' : 'refresh'} size="sm" className="chat-repair-dialog" descriptionId={repairDescriptionId} onClose={() => { if (!repairBusy) setRepairDialog(false); }} footer={<><button autoFocus className="btn" disabled={repairBusy} onClick={() => setRepairDialog(false)}>{copy('Cancel', '取消')}</button><button className="btn btn-primary" disabled={repairBusy} onClick={() => void confirmRepair()}>{repairBusy ? (legacyHistoryReload ? copy('Reloading…', '正在重新加载…') : copy('Repairing…', '正在修复…')) : (legacyHistoryReload ? copy('Reload history', '重新加载历史') : copy('Repair history', '修复历史'))}</button></>}><div id={repairDescriptionId} className="chat-repair-confirm"><p>{copy("The local transcript will be replaced by the agent's saved record. Some local details may be lost: tool details, subagent cards, question answers, usage and timings. A backup of the current transcript is kept, and pending requests will expire.", '本地对话记录将被代理保存的记录替换。部分本地细节可能丢失：工具详情、子代理卡片、问题回答、用量和耗时。当前记录会保留一份备份，待处理的请求将过期。')}</p><p>{copy('Queued prompts, drafts and review checkpoints are not changed.', '排队的提示词、草稿和审查检查点不受影响。')}</p><p className="note">{copy('This only reads the agent\'s saved history. It does not send a prompt or continue the conversation.', '此操作仅读取代理保存的历史，不会发送提示词，也不会继续对话。')}</p></div></SurfaceDialog>}

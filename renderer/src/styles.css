@@ -55,6 +55,14 @@
 .icon-btn.icon-btn-sm { width:26px; height:26px; }
 .icon-btn.icon-btn-sm .ico { width:14px; height:14px; }
 .icon-btn-round { width:32px; height:32px; border-radius:999px; }
+/* Round icon buttons that sit in a chip row take the chip height. */
+.icon-btn.icon-btn-sm.icon-btn-round { width:26px; height:26px; }
+.icon-btn.is-primary { background:var(--primary); color:var(--primary-fg); }
+.icon-btn.is-primary:hover:not(:disabled) { background:var(--primary-hover); color:var(--primary-fg); }
+.icon-btn.is-primary:hover:disabled { background:var(--primary); color:var(--primary-fg); }
+.icon-btn.is-secondary { background:var(--text); color:var(--bg); }
+.icon-btn.is-secondary:hover:not(:disabled) { background:var(--text); color:var(--bg); }
+.icon-btn.is-secondary:hover:disabled { background:var(--text); color:var(--bg); }
 /* The prototype .icon-btn:hover does not exclude disabled; keep a disabled icon
    button visually fixed on hover (issue VC, shared states). */
 .icon-btn:hover:disabled { background:transparent; color:var(--muted); }
@@ -63,7 +71,10 @@
 .chip-btn { height:26px; padding:0 10px; gap:6px; font-size:12px; background:var(--surface); border:1px solid var(--border); color:var(--text); cursor:pointer; }
 .chip-btn:hover:not(:disabled) { background:var(--soft); color:var(--text); }
 .chip-btn[aria-expanded="true"], .chip-btn[aria-pressed="true"] { background:var(--soft); color:var(--text); }
-.chip.is-accent { color:var(--primary); background:color-mix(in srgb, var(--primary) 11%, transparent); }
+.chip.is-accent { color:var(--primary); background:color-mix(in srgb, var(--primary) 11%, transparent); border-color:color-mix(in srgb, var(--primary) 45%, var(--border)); }
+.chip.is-warn { color:color-mix(in srgb, var(--amber) 72%, var(--text)); }
+/* Interactive chips that carry a label, not a status: keep the chip geometry and drop the status dot. */
+.chip.is-plain::before { display:none; }
 .chip.flat.is-danger { color:var(--danger); }
 
 html, body, #root { height:100%; margin:0; }
@@ -529,34 +540,56 @@ html[data-theme="dark"] { color-scheme:dark; }
 .chat-compose-shell textarea { width:100%; min-height:44px; max-height:200px; padding:10px 6px 4px; border:0; resize:none; background:transparent; box-shadow:none; font-size:14px; line-height:1.55; overflow-y:auto; }
 .chat-compose-shell textarea::placeholder { color:color-mix(in srgb, var(--muted) 85%, transparent); }
 .chat-compose-shell textarea:focus { outline:none; }
-.chat-compose-bar { display:flex; align-items:center; justify-content:space-between; gap:8px; }
-.chat-compose-left, .chat-compose-right { display:flex; align-items:center; gap:6px; min-width:0; }
-.chat-compose-right { margin-left:auto; flex-wrap:wrap; justify-content:flex-end; }
-.chat-compose-chip { display:inline-flex; align-items:center; gap:5px; height:32px; padding:0 10px; border:0; border-radius:999px; background:transparent; color:var(--text); font:inherit; font-size:12px; white-space:nowrap; }
-.chat-compose-chip:hover:not(:disabled) { background:var(--soft, var(--raised)); color:var(--text); }
-.chat-compose-chip:disabled { opacity:0.5; }
+.chat-compose-bar { display:flex; align-items:center; justify-content:space-between; gap:8px; flex-wrap:nowrap; min-width:0; }
+.chat-compose-left, .chat-compose-right { display:flex; align-items:center; gap:6px; min-width:0; flex-wrap:nowrap; }
+.chat-compose-right { margin-left:auto; justify-content:flex-end; }
+.chat-compose-leading { display:inline-flex; flex:none; }
+.chat-compose-anchor { position:relative; display:inline-flex; min-width:0; }
+/* Geometry, colour and states come from the shared .chip/.chip-btn; these rules are layout only. */
+.chat-compose-chip { min-width:0; max-width:200px; }
+.chat-compose-chip > span { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .chat-compose-chip .ico { width:14px; height:14px; flex:none; }
-.chat-compose-send { background:var(--primary); color:var(--primary-fg); }
-.chat-compose-send:hover:disabled { background:var(--primary); color:var(--primary-fg); }
-.chat-compose-send.is-stop { background:var(--text); color:var(--bg); }
-.chat-compose-send.is-stop:hover:disabled { background:var(--text); color:var(--bg); }
+.chat-option-chip { flex:none; }
+.chat-compose-more { flex:none; }
+.chat-mode-chip { flex:none; }
+.chat-compose-send { flex:none; }
+.chat-compose-reclaim { flex:none; }
+.chat-compose-measure { position:absolute; left:0; top:0; display:flex; gap:6px; visibility:hidden; pointer-events:none; white-space:nowrap; }
+.chat-compose-measure .chip { flex:none; }
 .chat-stop-square { width:11px; height:11px; border-radius:2px; background:currentColor; }
-.chat-mode-chip { color:var(--muted); }
-.chat-mode-chip.mode-yolo { color:color-mix(in srgb, var(--amber) 72%, var(--text)); }
-.chat-model-chip { min-width:0; }
+.chat-model-chip { min-width:0; max-width:200px; }
 .chat-model-name { font-weight:600; }
-.chat-model-think { color:var(--muted); }
-.chat-model-chev { color:var(--muted); }
+.chat-model-think, .chat-model-chev { color:var(--muted); }
+/* Hidden copies used only to measure a chip's natural width; classes are distinct so QA hooks never match them. */
+.chat-model-measure-name { font-weight:600; }
+.chat-model-measure-think { color:var(--muted); }
 .chat-compose-menu, .v3-session-chat form > .chat-compose-menu { position:absolute; z-index:6; display:block; width:230px; max-height:300px; overflow:auto; padding:6px; border:1px solid var(--border); border-radius:14px; background:var(--surface); box-shadow:var(--shadow); }
-.chat-compose-menu.chat-menu-model { right:10px; bottom:calc(100% - 6px); }
-.chat-compose-menu.chat-menu-mode { left:44px; bottom:calc(100% - 6px); }
+.chat-compose-menu.is-anchored { left:0; right:auto; bottom:calc(100% + 6px); }
+.chat-compose-menu.chat-menu-model { left:auto; right:0; bottom:calc(100% + 6px); }
+.chat-compose-menu.chat-menu-more { left:0; right:auto; bottom:calc(100% + 6px); width:min(340px, calc(100vw - 40px)); }
 .chat-menu-label { margin:7px 8px 3px; color:var(--muted); font-size:11px; }
+.chat-menu-desc { margin:0 8px 6px; color:var(--muted); font-size:11px; line-height:1.4; overflow-wrap:anywhere; }
+.chat-menu-search { width:100%; box-sizing:border-box; margin:2px 0 4px; padding:6px 8px; border:1px solid var(--border); border-radius:9px; background:var(--bg); color:var(--text); font:inherit; font-size:12px; }
+.chat-menu-empty { margin:8px 10px; color:var(--muted); font-size:12px; }
+.chat-menu-group { margin:8px 8px 2px; color:var(--muted); font-size:10px; font-weight:600; text-transform:uppercase; letter-spacing:.04em; }
 .chat-menu-item { width:100%; display:flex; align-items:center; gap:8px; padding:7px 8px; border:0; border-radius:9px; background:transparent; color:var(--text); font:inherit; font-size:12px; text-align:left; }
+.chat-menu-text { display:grid; gap:1px; min-width:0; flex:1; }
+.chat-menu-text > span { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.chat-menu-choice-desc { color:var(--muted); font-size:11px; overflow-wrap:anywhere; }
+.chat-menu-badge { flex:none; padding:1px 6px; border-radius:999px; background:color-mix(in srgb, var(--primary) 11%, transparent); color:var(--primary); font-size:10px; font-weight:500; }
 .chat-menu-item .chat-menu-check { width:14px; height:14px; flex:none; visibility:hidden; }
 .chat-menu-item.active { background:var(--primary-tint, var(--soft, var(--raised))); }
 .chat-menu-item.active .chat-menu-check { visibility:visible; color:var(--primary); }
 .chat-menu-item:hover:not(:disabled):not(.active) { background:var(--soft, var(--raised)); }
 .chat-menu-item:disabled { opacity:0.5; }
+.chat-menu-virtual { max-height:240px; overflow:auto; }
+.chat-menu-virtual-inner { position:relative; }
+.chat-menu-virtual-window { position:absolute; left:0; right:0; top:0; }
+.chat-more-row { display:grid; grid-template-columns:minmax(96px, 1fr) auto; align-items:center; gap:8px; padding:4px 6px; }
+.chat-more-name { display:grid; min-width:0; color:var(--text); font-size:12px; }
+.chat-more-name small { color:var(--muted); font-size:11px; }
+.chat-more-choices { display:flex; flex-wrap:wrap; gap:4px; justify-content:flex-end; }
+.chat-more-choice { min-width:0; }
 .chat-slash, .v3-session-chat form > .chat-slash { position:absolute; left:12px; right:12px; bottom:calc(100% - 8px); z-index:4; display:block; max-height:220px; overflow:auto; padding:6px; border:1px solid var(--border); border-radius:14px; background:var(--surface); box-shadow:var(--shadow); }
 .chat-slash button { width:100%; display:flex; gap:8px; align-items:baseline; border:0; background:transparent; text-align:left; padding:8px 10px; border-radius:10px; color:inherit; }
 .chat-slash button.active, .chat-slash button:hover { background:var(--soft, var(--raised)); }

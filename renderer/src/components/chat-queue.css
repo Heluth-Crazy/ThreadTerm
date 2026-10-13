@@ -12,7 +12,7 @@
 .chat-queue-edit { display:grid; width:100%; gap:6px; }
 .chat-queue-edit textarea { width:100%; min-height:72px; padding:8px; border:1px solid var(--border); border-radius:8px; background:var(--bg); color:var(--text); font:inherit; line-height:1.5; resize:vertical; }
 .chat-queue button:focus-visible, .chat-queue textarea:focus-visible { outline:2px solid var(--primary); outline-offset:2px; }
-.chat-compose-send.is-queue { width:auto; min-width:58px; padding:0 12px; font:inherit; font-size:12px; font-weight:600; }
+.chat-compose-send.is-queue { width:auto; min-width:58px; padding:0 10px; font:inherit; font-size:12px; font-weight:600; }
 @media (max-width:640px) { .chat-queue-item { align-items:flex-start; flex-direction:column; } .chat-queue-actions { justify-content:flex-start; } }
 /* Compact controls: a long queue must not push the transcript out of view. */
 .chat-queue-actions .btn-subtle, .chat-queue-header .btn-subtle, .chat-queue-edit .btn-subtle { min-height:24px; padding:2px 8px; font-size:11px; }
