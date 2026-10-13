@@ -1,0 +1,44 @@
+import { createElement, lazy, Suspense, useCallback, type ReactNode, type ComponentType, type LazyExoticComponent } from 'react';
+import type { FileReference } from '@threadterm/protocol';
+import { FileLinkedMarkdown } from '../FileReferenceText';
+import './markdown-extras.css';
+
+export type BlockProps = { kind: 'mermaid' | 'json' | 'math' | 'threadterm-ui'; source: string; copy: (en: string, zh: string) => string; display?: boolean; onInsert?: (text: string) => void };
+const Mermaid = lazy(() => import('./MermaidBlock'));
+const Math = lazy(() => import('./MathBlock'));
+const Json = lazy(() => import('./JsonBlock'));
+// G1 registers its loader separately; plain replies never enter this dispatcher.
+let generated: LazyExoticComponent<ComponentType<BlockProps>> | undefined;
+export function registerGeneratedUi(loader: () => Promise<{ default: React.ComponentType<BlockProps> }>) { generated = lazy(loader); }
+
+export function MarkdownBlock(props: BlockProps) {
+  const Component = props.kind === 'mermaid' ? Mermaid : props.kind === 'math' ? Math : props.kind === 'json' ? Json : generated;
+  if (!Component) return <pre>{props.source}</pre>;
+  return <Suspense fallback={<div className="markdown-extra-loading" role="status">{props.copy('Loading renderer…', '正在加载渲染器…')}<pre>{props.source}</pre></div>}><Component {...props} /></Suspense>;
+}
+
+export function ChatMarkdown({ sanitizedHtml, references, openFile, copy, onInsert }: { sanitizedHtml: string; references?: FileReference[]; openFile?: (reference: FileReference) => void; copy: BlockProps['copy']; onInsert?: BlockProps['onInsert'] }) {
+  const rendered = useCallback((html: string): ReactNode => {
+    const root = document.createElement('div'); root.innerHTML = html;
+    const node = (value: Node, key: number): ReactNode => {
+      if (value.nodeType === Node.TEXT_NODE) return value.textContent;
+      if (!(value instanceof HTMLElement)) return null;
+      const code = value.matches('.md-code-block, pre') ? value.querySelector('pre > code, :scope > code') : null;
+      const kind = code && (['mermaid', 'json', 'threadterm-ui'] as const).find(kind => code.classList.contains(`language-${kind}`));
+      if (kind) return <MarkdownBlock key={key} kind={kind} source={code!.textContent ?? ''} copy={copy} onInsert={onInsert} />;
+      if (value.hasAttribute('data-threadterm-math')) return <MarkdownBlock key={key} kind="math" source={value.textContent ?? ''} display={value.dataset.threadtermMath === 'display'} copy={copy} />;
+      const props: Record<string, unknown> = { key };
+      for (const attribute of Array.from(value.attributes)) {
+        if (attribute.name === 'class') props.className = attribute.value;
+        else if (attribute.name === 'colspan') props.colSpan = attribute.value;
+        else if (attribute.name === 'rowspan') props.rowSpan = attribute.value;
+        else if (['title', 'href', 'src', 'alt', 'target', 'rel', 'type', 'start'].includes(attribute.name) || /^(?:data|aria)-/.test(attribute.name)) props[attribute.name] = attribute.value;
+      }
+      const tag = value.tagName.toLowerCase();
+      return createElement(tag, props, ...(['img', 'br', 'hr', 'wbr'].includes(tag) ? [] : Array.from(value.childNodes).map(node)));
+    };
+    return Array.from(root.childNodes).map(node);
+  }, [copy, onInsert]);
+  const extras = /language-(?:mermaid|json|threadterm-ui)|data-threadterm-math/.test(sanitizedHtml);
+  return <FileLinkedMarkdown sanitizedHtml={sanitizedHtml} references={references} openFile={openFile} renderHtml={extras ? rendered : undefined} />;
+}

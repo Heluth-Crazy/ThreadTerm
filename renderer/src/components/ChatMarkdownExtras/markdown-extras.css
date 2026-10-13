@@ -1,0 +1,9 @@
+.markdown-extra { min-width:0; width:100%; background:var(--surface); border:1px solid var(--border); border-radius:var(--radius-card); padding:8px; box-sizing:border-box; }
+.markdown-extra-toolbar { display:flex; flex-wrap:wrap; align-items:center; gap:6px; margin-bottom:8px; }
+.markdown-extra pre, .markdown-extra-loading pre { white-space:pre-wrap; overflow-wrap:anywhere; margin:0; }
+.markdown-extra-error { font-size:12px; color:var(--danger); overflow-wrap:anywhere; }
+.markdown-math.is-display { display:block; overflow:auto; padding-block:8px; }
+.mermaid-canvas { overflow:auto; max-height:60vh; }
+.mermaid-canvas svg { width:var(--diagram-width, 100%); height:auto; max-width:none !important; }
+.mermaid-canvas.is-fit svg { max-height:60vh; }
+.md-code-block:has(.markdown-extra) { padding:0; }
