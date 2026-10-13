@@ -1238,7 +1238,7 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession }
       {firstResponseWait && <div className="chat-first-response-wait" role="status" aria-live="polite" aria-label={submissionPreview && busy ? copy('Sending…', '正在发送…') : copy("Thinking", "思考中")}><span>{submissionPreview && busy ? copy('Sending…', '正在发送…') : copy("Thinking", "思考中")}</span><span className="chat-first-response-dots" aria-hidden="true"><i /><i /><i /></span></div>}
       </div>
     </div>
-    {viewport.paused && overlay !== 'full' && <button type="button" className="icon-btn icon-btn-round chat-back-to-bottom" aria-keyshortcuts="Escape" aria-label={copy('Back to bottom (Esc)', '返回底部（Esc）')} title={copy('Back to bottom (Esc)', '返回底部（Esc）')} onClick={viewport.followLatest}><Icon name="arrowUp" /></button>}
+    {viewport.paused && overlay !== 'full' && <button type="button" className="btn chat-back-to-bottom" aria-keyshortcuts="Escape" aria-label={copy('Back to bottom (Esc)', '返回底部（Esc）')} title={copy('Back to bottom (Esc)', '返回底部（Esc）')} onClick={viewport.followLatest}><Icon name="arrowUp" /></button>}
     </div>
     {recovery !== undefined && <div role="alert" className="surface-error">
       <p>{copy('An unsaved draft is available on this device.', '此设备上有一份未保存的草稿。')}</p>
