@@ -38,6 +38,7 @@ window.threadterm = {
     if (method === 'chat.queue.read') return { sessionId: params.sessionId, paused: false, items: [] };
     if (method === 'chat.read') return [];
     if (method === 'chat.draft.read') return { text: '', revision: 0 };
+    if (method === 'chat.feedback.read') return { notes: [] };
     if (method === 'chat.options') return { options: [], commands: [] };
     throw new Error('Unexpected QA request ' + method);
   },
@@ -64,8 +65,13 @@ try {
   const chat = page.locator('[data-testid="session-chat-reply-copy-qa"]');
   await chat.locator('article.has-reply-actions').first().waitFor();
 
-  const copyButton = chat.locator('.chat-message-actions .chat-message-action');
-  assert.equal(await copyButton.count(), 1, 'only the completed reply owns the copy row');
+  // E4 adds a reply Fork button with the shared chat-message-action class, so the
+  // row (not the button class) is the per-reply anchor and Copy is counted by name.
+  const actionRows = chat.locator('.chat-message-actions');
+  assert.equal(await actionRows.count(), 1, 'only the completed reply owns the copy row');
+  assert.equal(await actionRows.getByRole('button', { name: 'Copy' }).count(), 1, 'the completed reply row holds exactly one Copy button');
+  const copyButton = actionRows.locator('button[aria-live="polite"]');
+  assert.equal(await copyButton.count(), 1, 'the Copy button announces its copied state');
   assert.equal(await chat.locator('article.user .chat-message-actions').count(), 0, 'user messages have no copy row');
   assert.equal(await chat.locator('article').filter({ hasText: 'Still streaming' }).locator('.chat-message-actions').count(), 0, 'streaming replies have no copy row');
   report.checks.push('copy row only on the completed reply');
@@ -111,7 +117,7 @@ try {
   for (const locale of ['en', 'zh-CN']) {
     await page.evaluate(next => window.qaRender(next), locale);
     await chat.locator('article.has-reply-actions').first().waitFor();
-    const label = await chat.locator('.chat-message-action').textContent();
+    const label = await copyButton.textContent();
     assert.equal(label, locale === 'zh-CN' ? '复制' : 'Copy', `${locale} copy label`);
   }
   report.checks.push('bilingual labels');
