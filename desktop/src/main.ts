@@ -14,7 +14,7 @@ import { resolveWindowChrome } from './windowChrome.js';
 import { terminalWindowArguments } from './terminalEnvironment.js';
 import { registerPageComments } from './pageComments.js';
 import { applicationIconPng, trayIconPng } from '../assets/icon-data.js';
-import { quitConfirmationOptions } from './quitConfirmation.js';
+import { quitConfirmationOptions, quitConfirmationPreapproved } from './quitConfirmation.js';
 
 ignoreBrokenStdio();
 process.on('uncaughtException', (error) => {
@@ -595,7 +595,7 @@ async function requestQuit(): Promise<void> {
       catch { /* Unknown state still requires confirmation; keep the English fallback. */ }
       finally { inspectionClient.dispose(); }
     }
-    const confirmed = active && await confirm();
+    const confirmed = active && (quitConfirmationPreapproved(process.env) || await confirm());
     if (active && !confirmed) return;
     stoppingRuntime = true;
     // Stop every ordinary client's reconnect/auto-launch before asking the

@@ -27,15 +27,19 @@ function qaDesktop(exe) {
   return index;
 }
 
+// Automation cannot answer the native "Exit ThreadTerm?" dialog, so app.close() would leave the app open. QA launches
+// pre-approve the quit; the app then runs its normal confirmed shutdown (desktop/src/quitConfirmation.ts).
+const qaEnv = env => ({ ...(env ?? process.env), THREADTERM_V3_QA_AUTO_CONFIRM_QUIT: '1' });
+
 export const electron = {
   async launch(options = {}) {
     const exe = vdesk();
-    if (!exe) return _electron.launch(options);
+    if (!exe) return _electron.launch({ ...options, env: qaEnv(options.env) });
     const index = qaDesktop(exe);
     return _electron.launch({
       ...options,
       args: ['-r', hook, ...(options.args ?? [])],
-      env: { ...(options.env ?? process.env), TT_QA_VDESK: exe, TT_QA_DESKTOP_INDEX: String(index) },
+      env: { ...qaEnv(options.env), TT_QA_VDESK: exe, TT_QA_DESKTOP_INDEX: String(index) },
     });
   },
 };
