@@ -868,7 +868,7 @@ mod tests {
             turn_review: None,
         };
         assert_eq!(
-            fork_point(&[statusless.clone()], Some("statusless"))
+            fork_point(std::slice::from_ref(&statusless), Some("statusless"))
                 .unwrap_err()
                 .to_string(),
             "fork_point_invalid"
@@ -887,10 +887,10 @@ mod tests {
                 .map(|anchor| anchor.native_id.as_str()),
             Some("history-native")
         );
-        assert!(fork_point(&[imported.clone()], Some(&imported.id)).is_ok());
-        assert!(!fork_point(&[imported.clone()], Some(&imported.id)).unwrap().2,
+        assert!(fork_point(std::slice::from_ref(&imported), Some(&imported.id)).is_ok());
+        assert!(!fork_point(std::slice::from_ref(&imported), Some(&imported.id)).unwrap().2,
             "a selected saved reply without a point coordinate cannot prove the current native tip");
-        assert!(fork_point(&[imported.clone()], None).unwrap().2,
+        assert!(fork_point(std::slice::from_ref(&imported), None).unwrap().2,
             "whole-session forks intentionally use the current native session");
     }
 
