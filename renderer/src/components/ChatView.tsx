@@ -23,7 +23,7 @@ import { SubagentCard } from './SubagentCard';
 import { isSubagentPart, subagentInfo, subagentTitle } from '../subagentActivity';
 import { createCodexStreamQueue } from "../codexStream";
 import { FileLinkedMarkdown, FileLinkedText, FileReferenceChips, FileReferenceScopeProvider } from './FileReferenceText';
-import { replyMarkdown } from '../replyMarkdown';
+import { isReplyTextPart, replyActionMarkdown } from '../replyMarkdown';
 import { MessageActions } from './MessageActions';
 import { ChatPlanPanel } from './ChatPlanPanel';
 import { ComposerOptions } from './ComposerOptions';
@@ -1016,15 +1016,7 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession }
     }
   }
   const usageCards = useMemo(() => usageCardsForItems(session.provider, items), [session.provider, items]);
-  // One copy row per turn's reply: the last assistant item that carries final-answer text.
-  const replyItemIds = useMemo(() => {
-    const lastByTurn = new Map<string, string>();
-    for (const item of items) {
-      if (item.role !== 'assistant' || !replyMarkdown(item)) continue;
-      lastByTurn.set(item.turnId ?? item.id, item.id);
-    }
-    return new Set(lastByTurn.values());
-  }, [items]);
+  const replyActions = useMemo(() => replyActionMarkdown(items, session.status), [items, session.status]);
   function copyCodeBlock(event: ReactMouseEvent<HTMLElement>) {
     const button = event.target instanceof Element ? event.target.closest<HTMLButtonElement>('button[data-copy-code]') : null;
     if (!button || !event.currentTarget.contains(button)) return;
@@ -1039,20 +1031,23 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession }
       window.setTimeout(() => { button.textContent = zhRef.current ? '复制' : 'Copy'; delete button.dataset.copying; }, 1500);
     }).catch(() => undefined);
   }
-  function renderItem(item: ChatItem, nested = false) {
+  function renderItem(item: ChatItem, nested = false, replyEligible = true) {
       if (!item.parts.length) return null;
-      if (!nested && item.parts.some(isSubagentPart)) return <Fragment key={item.id}>
+      if (!nested && item.parts.some(isSubagentPart)) {
+        const lastReplyIndex = item.parts.reduce((last, part, index) => isReplyTextPart(part) ? index : last, -1);
+        return <Fragment key={item.id}>
         {item.parts.map((part, index) => {
-          if (!isSubagentPart(part)) return <Fragment key={`part-${index}`}>{renderItem({ ...item, parts: [part] })}</Fragment>;
+          if (!isSubagentPart(part)) return <Fragment key={`part-${index}`}>{renderItem({ ...item, parts: [part] }, false, index === lastReplyIndex)}</Fragment>;
           const info = subagentInfo(part);
           return info ? <SubagentCard key={`${session.id}:${info.key}`} sessionId={session.id} info={info} copy={copy} zh={zh} renderItem={renderItem} openFile={openFile} /> : null;
         })}
       </Fragment>;
+      }
       const usage = nested ? undefined : usageCards.get(item.id);
       if (usage) return <article className={`v3-chat-message assistant is-native is-${session.provider} is-usage`} key={item.id}><UsageCard model={usage} zh={zh} /></article>;
       const live = itemShowsStreaming(item, items);
-      const replyText = item.role === 'assistant' && !nested ? replyMarkdown(item) : '';
-      const showReplyActions = !!replyText && !live && replyItemIds.has(item.id);
+      const replyText = item.role === 'assistant' && !nested && replyEligible && item.parts.some(isReplyTextPart) ? replyActions.get(item.id) ?? '' : '';
+      const showReplyActions = !!replyText;
       return <article className={`v3-chat-message ${item.role} is-native is-${session.provider}${showReplyActions ? ' has-reply-actions' : ''}`} key={item.id} onClick={copyCodeBlock}>
       {item.parts.filter(part => shouldRenderPart(part) || (Array.isArray(asRecord(part.data).images) && (asRecord(part.data).images as unknown[]).some(isChatImage))).map((part, index) => {
         if (isSubagentPart(part)) {
