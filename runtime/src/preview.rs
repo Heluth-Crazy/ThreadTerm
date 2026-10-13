@@ -715,6 +715,23 @@ fn contains_session(layout: &Value, session: &str) -> bool {
     })
 }
 
+fn generated_ui_enabled(settings: &Value) -> bool {
+    settings
+        .pointer("/chatTools/generatedUi")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+}
+
+fn mcp_handoff_capable(providers: &Providers, provider: &str) -> bool {
+    matches!(provider, "codex" | "claude" | "kimi" | "grok" | "gemini")
+        || providers.plugin_registry().is_some_and(|registry| {
+            registry
+                .agents
+                .iter()
+                .any(|agent| agent.id == provider && agent.chat_args.is_some())
+        })
+}
+
 pub(crate) fn tool_server_resolver(
     db: Arc<Database>,
     delegations: Arc<crate::delegation::Delegations>,
@@ -732,6 +749,12 @@ pub(crate) fn tool_server_resolver(
     );
     Arc::new(move |session, provider| {
         let mut spec = delegation(session, provider);
+        // Servers are constructed per provider open. Do not let a parent
+        // process environment turn a delegated, read-only, or unsupported
+        // session into a generated-UI instruction recipient.
+        if let Some(server) = spec.as_mut() {
+            server.env.retain(|(key, _)| key != "THREADTERM_GENERATED_UI");
+        }
         let Some(registry) = providers.upgrade() else {
             return spec;
         };
@@ -779,6 +802,24 @@ pub(crate) fn tool_server_resolver(
         if !preview_eligible {
             return spec;
         }
+        let generated_ui = db.snapshot().ok().is_some_and(|snapshot| generated_ui_enabled(&snapshot.settings.value));
+        if generated_ui && mcp_handoff_capable(&registry, provider) {
+            let Some(command) = mcp.as_ref() else {
+                return spec;
+            };
+            let server = spec.get_or_insert_with(|| ChatToolServer {
+                name: "threadterm".into(),
+                command: command.to_string_lossy().into_owned(),
+                args: vec![],
+                // `chat-tools` starts the core MCP host but grants no tool
+                // credentials; generated UI adds initialize instructions only.
+                env: vec![("THREADTERM_MCP_PROFILE".into(), "chat-tools".into())],
+            });
+            server.env.retain(|(key, _)| key != "THREADTERM_GENERATED_UI");
+            server.env.push(("THREADTERM_GENERATED_UI".into(), "1".into()));
+        }
+        // Preview remains independently gated by its browser binding. The
+        // generated-UI instruction above intentionally does not need one.
         let Some(binding) = registry.plugin_registry().and_then(|r| {
             match r.browser_binding_for_provider(provider, "mcp-stdio") {
                 crate::plugins::BrowserBindingResolution::Eligible(b) => Some(b),
@@ -930,6 +971,43 @@ mod tests {
             self.call("desktop-a","preview.prepare",json!({"sessionId":"a","attachmentId":attachment,"requestId":event["requestId"],"previewId":event["previewId"],"documentId":event["documentId"]})).unwrap();
             self.call("desktop-a","preview.ack",json!({"sessionId":"a","attachmentId":attachment,"requestId":event["requestId"],"previewId":event["previewId"],"documentId":event["documentId"],"state":"presented","tabId":"web-a","workspaceId":"workspace-a","workspaceRevision":1})).unwrap()
         }
+    }
+    #[test]
+    fn generated_ui_is_default_off_and_only_injects_for_eligible_open_chats() {
+        assert!(!generated_ui_enabled(&json!({})));
+        let root = tempfile::tempdir().unwrap();
+        let db = Arc::new(Database::open(&root.path().join("runtime.sqlite")).unwrap());
+        db.transaction(|tx| {
+            for (id, provider) in [("parent", "codex"), ("standalone", "gemini")] {
+                tx.execute("INSERT INTO sessions(id,title,provider,mode,status,created_at,updated_at) VALUES(?,?,?,'chat','idle','t','t')", params![id, id, provider])?;
+            }
+            Ok(())
+        }).unwrap();
+        let providers = Arc::new(Providers::with_plugins(root.path(), &json!({})));
+        assert!(mcp_handoff_capable(&providers, "gemini"));
+        assert!(!mcp_handoff_capable(&providers, "opencode"));
+        let config = RuntimeConfig { data_dir: root.path().to_owned(), database_path: root.path().join("runtime.sqlite"), credential_path: root.path().join("credential"), pipe_base: "generated-ui-test".into() };
+        let resolver = tool_server_resolver(
+            Arc::clone(&db),
+            Arc::new(crate::delegation::Delegations::default()),
+            Arc::new(Previews::new(Arc::clone(&db)).unwrap()),
+            Arc::downgrade(&providers),
+            config,
+            Some(root.path().join("threadterm-v3-mcp")),
+        );
+        assert!(resolver("standalone", "gemini").is_none());
+        db.update_settings(&json!({"chatTools":{"generatedUi":true}}), 0, "enable-generated-ui").unwrap();
+        let server = resolver("standalone", "gemini").expect("generated UI gets an instruction-only MCP host");
+        assert_eq!(server.env, vec![
+            ("THREADTERM_MCP_PROFILE".into(), "chat-tools".into()),
+            ("THREADTERM_GENERATED_UI".into(), "1".into()),
+        ]);
+        assert!(resolver("standalone", "opencode").is_none());
+        db.transaction(|tx| {
+            tx.execute("INSERT INTO delegations(id,parent_session_id,child_session_id,agent,workspace,workspace_path,branch,prompt,user_messages,operation_id,state,created_at,updated_at) VALUES('d','parent','standalone','gemini','shared','C:/fixture',NULL,'x',0,'o','running','t','t')", [])?;
+            Ok(())
+        }).unwrap();
+        assert!(resolver("standalone", "gemini").is_none(), "delegated children never inherit generated UI instructions");
     }
     #[test]
     fn acknowledgment_cannot_retarget_an_existing_workspace_lease() {
