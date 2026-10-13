@@ -36,6 +36,10 @@ import { ChatContextRing } from './ChatContextRing';
 import { useChatContextUsage } from '../useChatContextUsage';
 import { ChatConnectionChip } from './ChatConnectionChip';
 import { ChatMessageNavigation } from './ChatMessageNavigation';
+import { SelectionBubble } from './SelectionBubble';
+import { quoteSelection } from '../chatSelection';
+import { askSelectionChat } from '../askSelectionChat';
+import { cancelChatInputFocus, focusRequestedChatInput, insertChatText, registerChatInputTarget } from '../terminalInputTargets';
 import { parseMarkdownFileReference } from '../fileReferences';
 import { SessionSurfaceContext } from './SessionSurfaceContext';
 import { ChatForkButton, ChatForkMenu, ChatForkStatus, useChatFork } from './ChatForkControls';
@@ -43,7 +47,6 @@ import { decodeCopiedConversationDraft } from '../chatForkDraft';
 import { composerTextAfterFork, isCompletedForkReply } from '../chatFork';
 import { CatalogPopover } from './CatalogActions';
 import { isWebTabUrl } from '../workspaceTabs';
-import { registerChatInputTarget } from '../terminalInputTargets';
 import { insertAtCaret } from '../workbench/agentReference';
 import "./chat-network-notice.css";
 import { isChatImage, readClipboardImage, selectChatImageAttachments, validateChatImages } from '../chatImages';
@@ -505,6 +508,7 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession }
     visible: () => Boolean(composeRef.current && !composeRef.current.disabled && composeRef.current.getClientRects().length > 0),
     attachImages: incoming => attachImagesRef.current(incoming),
     attachContext: context.attach,
+    focus: () => composeRef.current?.focus(),
     insert: (reference) => {
       const area = composeRef.current;
       const next = insertAtCaret(currentText.current, area?.selectionStart ?? currentText.current.length, reference);
@@ -774,6 +778,8 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession }
   const connectionHeld = discoveryCurrent && repairDiscovery?.phase === 'held';
   const discoveryFailed = discoveryCurrent && repairDiscovery?.phase === 'failed';
   const writable = canControl && controllable && connected && discoveryClear && leaseSessionId.current === session.id && lease.current !== undefined;
+  useEffect(() => { if (writable && draftLoaded && !busy && surface?.focused !== false) focusRequestedChatInput(session.id); }, [writable, draftLoaded, busy, session.id, surface?.focused]);
+  useEffect(() => () => cancelChatInputFocus(session.id), [session.id]);
   const repairWritable = controllable && leaseSessionId.current === session.id && lease.current !== undefined;
   const repairHasLiveTurn = !ended && Boolean(activeTurnId(items, session.status));
   useEffect(() => {
@@ -1234,6 +1240,7 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession }
       <button type="button" role="menuitem" className="menu-item" onClick={() => { const url = linkMenu.url; setLinkMenu(undefined); void openExternal(url).catch(error => setLinkIssue(String(error))); }}><Icon name="popout" />{copy("Open in browser", "在浏览器中打开")}</button>
       <button type="button" role="menuitem" className="menu-item" onClick={() => { const url = linkMenu.url; setLinkMenu(undefined); void navigator.clipboard.writeText(url).catch(error => setLinkIssue(String(error))); }}><Icon name="export" />{copy("Copy link", "复制链接")}</button>
     </CatalogPopover>}
+    <SelectionBubble rootRef={logRef} visible={surface?.focused !== false && overlay !== 'full'} copy={copy} quoteEnabled={writable} askEnabled={!!onOpenSession} onQuote={text => insertChatText(session.id, quoteSelection(text))} onAsk={(text, current) => askSelectionChat(session, text, current, id => onOpenSession?.(id))} />
     <div className="chat-log-shell" onKeyDown={viewport.onKeyDown}>
     <div className="chat-scroll v3-chat-log" data-chat-log={session.id} ref={logRef} tabIndex={0} aria-label={copy('Chat transcript', '聊天记录')} inert={overlay === "full" || undefined} onClickCapture={viewport.pauseForDisclosure} onWheelCapture={viewport.onWheel} onTouchStartCapture={viewport.onTouchStart} onMouseDownCapture={viewport.onPointerDown} onClick={event => {
       // Links never navigate the app window (the desktop blocks that, so they used to do nothing).

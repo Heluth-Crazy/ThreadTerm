@@ -1,5 +1,13 @@
 import type { ContextItem } from './chatContext';
-type Target={visible:()=>boolean;insert:(text:string)=>void;attachImages?:(images:string[])=>number;attachContext?:(item:ContextItem)=>boolean};
+type Target={visible:()=>boolean;insert:(text:string)=>void;focus?:()=>void;attachImages?:(images:string[])=>number;attachContext?:(item:ContextItem)=>boolean};
+const requestedChatFocus = new Set<string>();
+export function cancelChatInputFocus(sessionId: string) { requestedChatFocus.delete(sessionId); }
+export function focusRequestedChatInput(sessionId: string) {
+  const target = visibleTarget(chatTargets, sessionId);
+  if (requestedChatFocus.has(sessionId) && target?.focus) { requestedChatFocus.delete(sessionId); target.focus(); }
+}
+/** A one-shot handoff, consumed when the new chat's existing input becomes writable. */
+export function requestChatInputFocus(sessionId: string) { requestedChatFocus.add(sessionId); focusRequestedChatInput(sessionId); }
 const targets=new Map<string,Set<Target>>();
 const chatTargets=new Map<string,Set<Target>>();
 const register=(registry:Map<string,Set<Target>>,sessionId:string,target:Target)=>{
