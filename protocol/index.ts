@@ -245,6 +245,7 @@ export interface ChatApprovalData {
  requestType?:string;
  title?:string;
  details?:unknown;
+ previewUnavailableReason?:string;
  choices:ChatApprovalChoice[];
  interaction?:'permission'|'userInput'|'elicitation'|'question'|'plan'|'unknown';
  plan?:string;

@@ -36,10 +36,12 @@ function changeLabel(change: string, copy: Copy): string {
   }
 }
 
-function DiffBlock({ diff, copy }: { diff: NonNullable<Extract<ToolView, { kind: 'edit' }>['files'][number]['diff']>; copy: Copy }) {
+function DiffBlock({ diff, copy, rowLimit }: { diff: NonNullable<Extract<ToolView, { kind: 'edit' }>['files'][number]['diff']>; copy: Copy; rowLimit?: number }) {
   const [showAll, setShowAll] = useState(false);
   const view: DiffView = diffView(diff);
-  const rows = showAll ? view.rows.slice(0, 2_000) : view.visible;
+  const cap = rowLimit === undefined ? 2_000 : Math.max(0, rowLimit);
+  const rows = (showAll ? view.rows : view.visible).slice(0, cap);
+  const budgetLimited = rows.length < (showAll ? view.rows.length : view.visible.length);
   return <div className="tool-diff">
     <div className="tool-diff-rows">
       {rows.map((row, index) => <div className={`tool-diff-line is-${row.kind}`} key={index}>
@@ -49,11 +51,12 @@ function DiffBlock({ diff, copy }: { diff: NonNullable<Extract<ToolView, { kind:
       </div>)}
     </div>
     {view.collapsed && view.canShowAll && <button type="button" className="btn btn-sm tool-card-action" onClick={() => setShowAll(true)}>{copy(`Show all (${view.rows.length} lines)`, `显示全部（${view.rows.length} 行）`)}</button>}
-    {view.openOnly && <p className="tool-card-note">{copy(`Diff has ${view.rows.length} lines. Open it in the editor to review.`, `差异共 ${view.rows.length} 行，请在编辑器中查看。`)}</p>}
+    {view.openOnly && <p className="tool-card-note">{copy(`Preview is incomplete: ${rows.length} of ${view.rows.length} diff lines are shown.`, `预览不完整：仅显示 ${view.rows.length} 行差异中的 ${rows.length} 行。`)}</p>}
+    {budgetLimited && <p className="tool-card-note">{copy('Preview limit reached. Review the request details before deciding.', '已达到预览限制。请在决定前查看请求详情。')}</p>}
   </div>;
 }
 
-export function EditBody({ view, copy, openFile, openDiff, canOpenDiff, fileLimit = EDIT_FILE_LIMIT }: { view: Extract<ToolView, { kind: 'edit' }>; copy: Copy; openFile?: OpenFile; openDiff?: (path: string) => void; canOpenDiff?: (path: string) => boolean; fileLimit?: number }) {
+export function EditBody({ view, copy, openFile, openDiff, canOpenDiff, fileLimit = EDIT_FILE_LIMIT, rowLimits }: { view: Extract<ToolView, { kind: 'edit' }>; copy: Copy; openFile?: OpenFile; openDiff?: (path: string) => void; canOpenDiff?: (path: string) => boolean; fileLimit?: number; rowLimits?: readonly number[] }) {
   const shown = view.files.slice(0, fileLimit);
   const more = moreFilesLabel(shown.length, view.files.length);
   return <>
@@ -70,7 +73,7 @@ export function EditBody({ view, copy, openFile, openDiff, canOpenDiff, fileLimi
           <span className="tool-edit-counts"><b>+{stats.added}</b> <i>−{stats.removed}</i></span>
         </div>
         {file.movePath && <p className="tool-card-note">→ {file.movePath}</p>}
-        {file.diff && <DiffBlock diff={file.diff} copy={copy} />}
+        {file.diff && <DiffBlock diff={file.diff} copy={copy} rowLimit={rowLimits?.[index]} />}
         {(openFile || diffable) && <div className="tool-card-actions">
           {openFile && <button type="button" className="btn btn-sm tool-card-action" onClick={() => openFile({ path: file.path })}>{copy('Open file', '打开文件')}</button>}
           {diffable && <button type="button" className="btn btn-sm tool-card-action" onClick={() => openDiff!(file.path)}>{copy('Open diff', '查看差异')}</button>}

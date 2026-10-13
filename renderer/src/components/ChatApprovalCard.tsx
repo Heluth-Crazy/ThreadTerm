@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { PlanApprovalCard } from "./PlanApprovalCard";
 import { approvalPreview } from "../approvalPreview";
+import { approvalPreviewBudget, diffView } from "../toolCards";
 import { EditBody } from "./ToolCards";
 import "./tool-activity.css";
 import "./approval-preview.css";
@@ -30,6 +31,9 @@ export function ChatApprovalCard({
   const [showAll, setShowAll] = useState(false);
   const data = approvalData(part);
   const preview = approvalPreview(part);
+  const previewBudget = preview?.kind === 'edit' ? approvalPreviewBudget(preview.files, showAll) : undefined;
+  const previewUnavailableReason = (part.data as { previewUnavailableReason?: unknown; details?: { previewUnavailableReason?: unknown } } | undefined)?.previewUnavailableReason
+    ?? (part.data as { details?: { previewUnavailableReason?: unknown } } | undefined)?.details?.previewUnavailableReason;
   const expired = part.status === "expired" || part.status === "outcomeUnknown" || part.status === "failed";
   const resolved = part.status === "resolved" || part.status === "answered" || part.status === "dismissed";
   const enabled = approvalButtonsEnabled(part, writable) && !submitting;
@@ -62,11 +66,13 @@ export function ChatApprovalCard({
       {data.requestType && <small className="chat-approval-type">{data.requestType}</small>}
       {part.status === "pending" && delegation?.route === "parent" && <p className="chat-approval-delegated">{copy("The agent that delegated this session decides this request. You can still answer it yourself.", "此请求由委派这个会话的代理决定。你也可以直接处理。")}</p>}
       {part.status === "pending" && delegation?.route === "user" && !unsupported && <p className="chat-approval-delegated">{copy("The delegating agent is no longer in its turn, so this request is yours to decide.", "委派方已结束当前轮次，此请求需要你来决定。")}</p>}
+      {typeof previewUnavailableReason === 'string' && <p className="tool-card-note" role="status">{copy(`Preview unavailable: ${previewUnavailableReason}. Review the request details before deciding.`, `预览不可用：${previewUnavailableReason}。请在决定前查看请求详情。`)}</p>}
       {preview?.kind === "edit" && <>
         <div className="chat-approval-preview" role="region" aria-label={copy("Proposed edits", "拟议修改")} tabIndex={0}>
-          <EditBody view={preview} copy={copy} fileLimit={showAll ? preview.files.length : 3} />
+          <EditBody view={preview} copy={copy} fileLimit={previewBudget!.files} rowLimits={previewBudget!.rows} />
         </div>
-        {preview.files.length > 3 && <button type="button" className="btn btn-sm chat-approval-show-all" aria-expanded={showAll} onClick={() => setShowAll(value => !value)}>{showAll ? copy("Show less", "收起") : copy("Show all", "显示全部")}</button>}
+        {(preview.files.length > 3 || approvalPreviewBudget(preview.files, true).omittedRows > 0) && <button type="button" className="btn btn-sm chat-approval-show-all" aria-expanded={showAll} onClick={() => setShowAll(value => !value)}>{showAll ? copy("Show less", "收起") : copy("Show all", "显示全部")}</button>}
+        {preview.files.some(file => file.diff && diffView(file.diff).openOnly) && <p className="tool-card-note">{copy('Preview is incomplete for a large edit. Review the request details before deciding.', '大型修改的预览不完整。请在决定前查看请求详情。')}</p>}
       </>}
       {preview?.kind === "command" && <div className="chat-approval-command"><code>{preview.command}</code>{preview.cwd && <small>{copy("Working directory", "工作目录")}: {preview.cwd}</small>}</div>}
       {details && <details className="chat-approval-details"><summary>{copy("Request details", "请求详情")}</summary><pre>{details}</pre></details>}
