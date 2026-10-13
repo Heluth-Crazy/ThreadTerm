@@ -94,6 +94,14 @@ test('status chips stay neutral with a distinct label per state', () => {
   assert.deepEqual(toolStatusLabel('cancelled', true, false, copy), { key: 'cancelled', label: 'Interrupted' });
 });
 
+test('JSON disclosures can collapse default-open roots and reopen nested nodes', () => {
+  const value = { args: { nested: { answer: 42 } } };
+  assert.equal(jsonView(value).rows[0]?.expanded, true);
+  assert.deepEqual(jsonView(value, new Set(), new Set(['$'])).rows.map(row => row.path), ['$']);
+  assert.equal(jsonView(value, new Set(), new Set(['$.args'])).rows.some(row => row.path === '$.args.nested'), false);
+  assert.equal(jsonView(value, new Set(['$.args.nested'])).rows.some(row => row.path === '$.args.nested.answer'), true);
+});
+
 test('toolSummary counts by kind, distinct edited files and failures', () => {
   const summary = toolSummary([
     entry({ id: 'read', input: { file_path: 'src/a.ts' } }, 'Read'),

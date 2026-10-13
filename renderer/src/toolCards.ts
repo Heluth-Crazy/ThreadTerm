@@ -153,7 +153,7 @@ function leafPreview(value: unknown): string {
  * stops at `JSON_NODE_LIMIT` rows and reports `truncated`, which the card uses
  * to offer "Show raw" instead of an unbounded tree.
  */
-export function jsonView(value: unknown, expanded: ReadonlySet<string> = new Set()): JsonView {
+export function jsonView(value: unknown, expanded: ReadonlySet<string> = new Set(), collapsed: ReadonlySet<string> = new Set()): JsonView {
   const rows: JsonRow[] = [];
   let nodes = 0, truncated = false;
   const walk = (current: unknown, path: string, depth: number, key: string | undefined): void => {
@@ -161,7 +161,7 @@ export function jsonView(value: unknown, expanded: ReadonlySet<string> = new Set
     nodes += 1;
     const kind = jsonKind(current);
     const expandable = kind === 'object' || kind === 'array';
-    const open = expandable && (depth < JSON_BASE_DEPTH || expanded.has(path));
+    const open = expandable && !collapsed.has(path) && (depth < JSON_BASE_DEPTH || expanded.has(path));
     const count = kind === 'array' ? (current as unknown[]).length : kind === 'object' ? Object.keys(current as object).length : 0;
     const preview = kind === 'array' ? `[${count}]` : kind === 'object' ? `{${count}}` : leafPreview(current);
     rows.push({ path, depth, key, preview, kind, expandable, expanded: open });
