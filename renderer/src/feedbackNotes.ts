@@ -12,6 +12,19 @@ const record = (value: unknown): Record<string, unknown> =>
 const text = (value: unknown): string | undefined =>
   typeof value === 'string' && value.trim() ? value : undefined;
 
+/** The runtime store caps each note at 4,000 characters. */
+export const MAX_NOTE_CHARS = 4000;
+
+/** True while a serialized note body still fits the runtime's character cap. */
+export function noteBodyFits(text: string): boolean {
+  return Array.from(text).length <= MAX_NOTE_CHARS;
+}
+
+/** A read snapshot only lands while no later event or read superseded it. */
+export function readIsCurrent(sequence: number, current: number): boolean {
+  return sequence === current;
+}
+
 /** The exact `feedback_check` tool, whatever envelope a provider used. */
 export function isFeedbackCheck(part: ChatPart): boolean {
   const data = record(part.data);
