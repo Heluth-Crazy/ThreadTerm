@@ -1012,6 +1012,39 @@ mod tests {
         assert!(resolver("standalone", "gemini").is_none(), "delegated children never inherit generated UI instructions");
     }
     #[test]
+    fn disabling_a_tool_switch_removes_it_from_the_next_connection() {
+        let root = tempfile::tempdir().unwrap();
+        let db = Arc::new(Database::open(&root.path().join("runtime.sqlite")).unwrap());
+        db.transaction(|tx| {
+            tx.execute("INSERT INTO sessions(id,title,provider,mode,status,created_at,updated_at) VALUES('s','s','codex','chat','idle','t','t')", [])?;
+            Ok(())
+        }).unwrap();
+        let providers = Arc::new(Providers::with_plugins(root.path(), &json!({})));
+        providers.preview_test_worker("s", Some("generation-one"));
+        let config = RuntimeConfig { data_dir: root.path().to_owned(), database_path: root.path().join("runtime.sqlite"), credential_path: root.path().join("credential"), pipe_base: "chat-tools-switch-test".into() };
+        let chat_tools = crate::chat_tools::shared(&config.database_path, Arc::clone(&db)).unwrap();
+        let resolver = tool_server_resolver(
+            Arc::clone(&db),
+            Arc::new(crate::delegation::Delegations::default()),
+            chat_tools,
+            Arc::new(Previews::new(Arc::clone(&db)).unwrap()),
+            Arc::downgrade(&providers),
+            config,
+            Some(root.path().join("threadterm-v3-mcp")),
+        );
+        let env_value = |server: &ChatToolServer, key: &str| server.env.iter().find(|(name, _)| name == key).map(|(_, value)| value.clone());
+        db.update_settings(&json!({"chatTools.ask":true,"chatTools.sessionInfo":true,"chatTools.feedback":true}), 0, "enable-all").unwrap();
+        let first = resolver("s", "codex").expect("the first connection gets the app-hosted tools");
+        assert_eq!(env_value(&first, "THREADTERM_CHAT_TOOL_ASK").as_deref(), Some("1"));
+        assert_eq!(env_value(&first, "THREADTERM_CHAT_TOOL_SESSION_INFO").as_deref(), Some("1"));
+        assert_eq!(env_value(&first, "THREADTERM_CHAT_TOOL_FEEDBACK").as_deref(), Some("1"));
+        assert!(first.env.iter().all(|(key, _)| key != "THREADTERM_GENERATED_UI"), "generated UI stays off while its switch is off");
+        db.update_settings(&json!({"chatTools.feedback":false}), db.snapshot().unwrap().settings.revision, "disable-feedback").unwrap();
+        let second = resolver("s", "codex").expect("the next connection still gets the remaining tools");
+        assert_eq!(env_value(&second, "THREADTERM_CHAT_TOOL_ASK").as_deref(), Some("1"), "the remaining switches stay on");
+        assert_eq!(env_value(&second, "THREADTERM_CHAT_TOOL_FEEDBACK").as_deref(), Some("0"), "the disabled tool is off for the next connection");
+    }
+    #[test]
     fn acknowledgment_cannot_retarget_an_existing_workspace_lease() {
         let f = Fixture::new();
         f.workspace();

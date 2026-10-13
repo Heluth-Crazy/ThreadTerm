@@ -447,7 +447,7 @@ fn answer_chat_request(
             }
             return Err(crate::providers::ProviderError::new(
                 "approval_expired",
-                "This app-hosted question is no longer pending",
+                "This app-hosted question is no longer pending. / 此应用内的问题已不再等待回答。",
             ).into());
         }
     }
