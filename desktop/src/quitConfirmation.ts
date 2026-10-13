@@ -1,5 +1,13 @@
 import type { MessageBoxOptions, NativeImage } from 'electron';
 
+/**
+ * Test-only: real-app QA launches set this so app.close() takes the normal confirmed-quit path instead of
+ * blocking on a native dialog that automation cannot answer. Production launchers never set it.
+ */
+export function quitConfirmationPreapproved(env: Record<string, string | undefined>): boolean {
+  return env.THREADTERM_V3_QA_AUTO_CONFIRM_QUIT === '1';
+}
+
 /** Copy and standard Windows buttons; lifecycle decisions remain in main. */
 export function quitConfirmationOptions(zh: boolean, icon: NativeImage): MessageBoxOptions {
   return {
