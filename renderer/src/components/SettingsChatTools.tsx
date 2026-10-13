@@ -1,4 +1,4 @@
-import { useRef, useState } from "react";
+import { useId, useRef, useState } from "react";
 import type { Settings } from "@threadterm/protocol";
 import "./settings-chat-tools.css";
 
@@ -14,6 +14,8 @@ export function SettingsChatTools({ settings, zh, update }: Props) {
   const [busy, setBusy] = useState<string>();
   const [error, setError] = useState<string>();
   const saving = useRef(false);
+  const progressId = useId();
+  const activeTool = tools.find(tool => tool.key === busy);
   const toggle = async (key: string, enabled: boolean) => {
     if (saving.current) return;
     saving.current = true;
@@ -29,11 +31,12 @@ export function SettingsChatTools({ settings, zh, update }: Props) {
       const enabled = settings[tool.key] !== false;
       return <div className="settings-chat-tool-row" key={tool.key}>
         <span><b>{zh ? tool.zh : tool.en}</b><small>{zh ? tool.descriptionZh : tool.description}</small></span>
-        <button type="button" className="btn btn-sm btn-ghost" role="switch" aria-checked={enabled} aria-label={zh ? tool.zh : tool.en} disabled={Boolean(busy)} onClick={() => void toggle(tool.key, enabled)}>
-          {busy === tool.key ? zh ? "保存中…" : "Saving…" : enabled ? zh ? "开启" : "On" : zh ? "关闭" : "Off"}
+        <button type="button" className="btn btn-sm btn-ghost" role="switch" aria-checked={enabled} aria-label={zh ? tool.zh : tool.en} aria-describedby={busy === tool.key ? progressId : undefined} disabled={Boolean(busy)} onClick={() => void toggle(tool.key, enabled)}>
+          {enabled ? zh ? "开启" : "On" : zh ? "关闭" : "Off"}
         </button>
       </div>;
     })}
+    {activeTool && <p id={progressId} role="status">{zh ? `正在保存${activeTool.zh}…` : `Saving ${activeTool.en}…`}</p>}
     {error && <p className="surface-error" role="alert">{error}</p>}
   </section>;
 }
