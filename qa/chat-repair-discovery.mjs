@@ -130,7 +130,8 @@ try {
   const props = await page.evaluate(() => ({ provider: window.qaDiscovery.fixture.provider, sessionId: window.qaDiscovery.fixture.sessionId, font: getComputedStyle(document.querySelector('.workspace-pane')).fontSize, icons: [...document.querySelectorAll('.workspace-pane .ico')].map(icon => { const box=icon.getBoundingClientRect(); return [Math.round(box.width),Math.round(box.height)]; }) }));
   assert.equal(props.provider, 'grok');
   assert.equal(props.font, '13px', 'production workspace uses the 13px pane font');
-  assert.ok(props.icons.some(([width, height]) => width === 16 && height === 16), 'production workspace exposes a 16px icon');
+  // V1 (issue VC) sized small-control icons at 14 px; larger chrome keeps 16 px. Either proves production icon CSS loaded.
+  assert.ok(props.icons.some(([width, height]) => (width === 14 || width === 16) && height === width), 'production workspace exposes a shared-size (14/16 px) icon');
   for (const [name, width] of [['wide', 1000], ['narrow', 420]]) {
     await page.setViewportSize({ width, height: 760 });
     const path = join(output, `grok-${name}.png`);
