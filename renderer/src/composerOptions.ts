@@ -194,6 +194,13 @@ export function isRecommended(option: ChatSessionOption, choice: ChatSessionChoi
   return choice.recommended === true || (option.recommended !== undefined && option.recommended === choice.value);
 }
 
+/**
+ * One virtual menu slot, in px. Matches the shared `.menu-item` min-height.
+ * The model menu sets `--chat-menu-row-height` from this value; every virtual
+ * row (header and choice) is pinned to it.
+ */
+export const MODEL_ROW_HEIGHT = 28;
+
 /** First and last (exclusive) flat rows to render for a scroll position. */
 export function virtualWindow({
   count,
@@ -208,9 +215,11 @@ export function virtualWindow({
   viewportHeight: number;
   overscan?: number;
 }): { start: number; end: number } {
-  if (count <= 0) return { start: 0, end: 0 };
+  if (count <= 0 || rowHeight <= 0) return { start: 0, end: 0 };
+  const span = Math.max(1, Math.ceil(Math.max(0, viewportHeight) / rowHeight) + overscan * 2);
+  const maxStart = Math.max(0, count - span);
   const first = Math.floor(Math.max(0, scrollTop) / rowHeight);
-  const start = Math.max(0, first - overscan);
-  const visible = Math.ceil(viewportHeight / rowHeight) + overscan * 2;
-  return { start, end: Math.min(count, start + visible) };
+  const start = Math.min(Math.max(0, first - overscan), maxStart);
+  const end = Math.min(count, start + span);
+  return { start, end };
 }

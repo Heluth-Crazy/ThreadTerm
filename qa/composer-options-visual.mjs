@@ -69,8 +69,12 @@ const SCENARIOS = {
   ] }),
   loading: () => ({ loadState: 'loading', commands: [], options: [] }),
   many: () => ({ loadState: 'ready', commands: [], options: [
-    { id: 'model', name: 'Model', category: 'model', value: 'model-0', choices: modelChoices(120, false) },
+    { id: 'model', name: 'Model', category: 'model', value: 'openai/model-0', choices: modelChoices(120, true) },
     thinking(),
+  ] }),
+  customMode: () => ({ loadState: 'ready', commands: [], options: [
+    { id: 'model', name: 'Model', category: 'model', value: 'one', choices: [choice('one', 'One'), choice('two', 'Two')] },
+    { id: 'permission_mode', name: 'Permission mode', category: 'mode', value: 'default', choices: [choice('default', 'Default'), choice('plan', 'Plan')] },
   ] }),
 };
 const listeners = new Set();
@@ -146,6 +150,53 @@ async function rowLayout() {
     };
   });
 }
+async function activeDesc() {
+  return page.evaluate(() => {
+    const node = document.activeElement;
+    if (!node || node === document.body) return { tag: 'body', text: '' };
+    return {
+      tag: node.tagName.toLowerCase(),
+      role: node.getAttribute('role'),
+      trigger: node.getAttribute('data-menu-trigger'),
+      optionId: node.getAttribute('data-option-id'),
+      text: (node.textContent || '').replace(/\s+/g, ' ').trim(),
+      inMenu: Boolean(node.closest('.chat-compose-menu')),
+      menu: node.closest('.chat-compose-menu')?.className || '',
+      search: node.classList.contains('chat-menu-search'),
+    };
+  });
+}
+async function virtualGeometry() {
+  return page.locator('.chat-menu-virtual').evaluate(scroller => {
+    const rowHeight = parseFloat(getComputedStyle(scroller).getPropertyValue('--chat-menu-row-height'));
+    const inner = scroller.querySelector('.chat-menu-virtual-inner');
+    const win = scroller.querySelector('.chat-menu-virtual-window');
+    const rows = [...win.children];
+    const innerRect = inner.getBoundingClientRect();
+    const heights = rows.map(node => node.getBoundingClientRect().height);
+    const gaps = rows.slice(1).map((node, index) => node.getBoundingClientRect().top - rows[index].getBoundingClientRect().bottom);
+    const matrix = new DOMMatrixReadOnly(getComputedStyle(win).transform);
+    const translateY = matrix.m42;
+    const firstOffset = rows.length ? rows[0].getBoundingClientRect().top - innerRect.top : null;
+    const lastOffset = rows.length ? rows[rows.length - 1].getBoundingClientRect().bottom - innerRect.top : null;
+    return {
+      rowHeight, heights, gaps, translateY, firstOffset, lastOffset,
+      innerHeight: innerRect.height,
+      itemCount: win.querySelectorAll('.chat-menu-item').length,
+      headerCount: win.querySelectorAll('.chat-menu-group').length,
+    };
+  });
+}
+function assertVirtualAligned(geometry, label) {
+  assert.equal(geometry.rowHeight, 28, `${label}: row slot is 28 px`);
+  assert.ok(geometry.itemCount > 0, `${label}: the window renders at least one choice`);
+  assert.ok(geometry.heights.length > 0, `${label}: the window is not empty`);
+  for (const height of geometry.heights) assert.ok(Math.abs(height - 28) < 1, `${label}: a row rendered at ${height}px`);
+  for (const gap of geometry.gaps) assert.ok(Math.abs(gap) < 1, `${label}: adjacent rows have a ${gap}px gap`);
+  const remainder = Math.abs(geometry.translateY % 28);
+  assert.ok(remainder < 1 || remainder > 27, `${label}: translateY ${geometry.translateY} is off the row grid`);
+  assert.ok(Math.abs(geometry.firstOffset - geometry.translateY) < 1.5, `${label}: first row sits at ${geometry.firstOffset}, window at ${geometry.translateY}`);
+}
 async function assertSingleLine(label) {
   const layout = await rowLayout();
   assert.ok(Math.abs(layout.leftTop - layout.rightTop) < 2, `${label}: groups sit on one line (${layout.leftTop} vs ${layout.rightTop})`);
@@ -183,6 +234,7 @@ try {
   await page.locator('.chat-option-chip[data-option-id="collaboration"]').click();
   await page.locator('.chat-option-chip[data-option-id="collaboration"] + .chat-compose-menu').waitFor();
   assert.equal(await page.locator('.chat-option-chip[data-option-id="collaboration"] + .chat-compose-menu .chat-menu-item').count(), 2);
+  assert.equal(await page.locator('.chat-option-chip[data-option-id="collaboration"] + .chat-compose-menu .menu-item.chat-menu-item').count(), 2, 'choice buttons use the shared menu item');
   await page.keyboard.press('ArrowDown');
   assert.equal(await page.evaluate(() => document.activeElement?.getAttribute('role')), 'menuitemradio', 'ArrowDown moves focus into the menu');
   await page.keyboard.press('Escape');
@@ -199,6 +251,7 @@ try {
   await page.locator('.chat-model-chip').click();
   const modelMenu = page.locator('.chat-menu-model');
   await modelMenu.waitFor();
+  assert.equal((await activeDesc()).search, true, 'a model menu with more than eight choices focuses search');
   assert.equal(await modelMenu.locator('.chat-menu-search').count(), 1, 'more than 8 models shows the search field');
   assert.equal(await modelMenu.locator('.chat-menu-group').count(), 2, 'choices group by their provider prefix');
   assert.ok(await modelMenu.locator('.chat-menu-badge').count() >= 1, 'the recommended value carries a badge');
@@ -233,18 +286,88 @@ try {
   assert.equal(await page.locator('.chat-mode-chip, .chat-model-chip, .chat-option-chip').count(), 0, 'the loading state shows no per-option chips');
   report.checks.push('the loading state shows one placeholder chip');
 
-  // Virtualization above 100 models.
+  // Virtualization above 100 models. Headers and described choices share one 28 px slot.
   await setState({ scenario: 'many', width: 1280 });
   await page.locator('.chat-model-chip').click();
   await page.locator('.chat-menu-model .chat-menu-virtual').waitFor();
   const beforeScroll = await page.locator('.chat-menu-model .chat-menu-item').first().evaluate(node => node.textContent);
   assert.equal(await page.locator('.chat-menu-model .chat-menu-virtual').evaluate(node => node.scrollHeight > node.clientHeight + 1), true, 'the virtual list is scrollable');
+  const topGeometry = await virtualGeometry();
+  assert.ok(topGeometry.headerCount > 0, 'grouped catalogs virtualize their headers');
+  assertVirtualAligned(topGeometry, 'virtual top');
+  assert.equal(topGeometry.translateY, 0, 'the top window starts at the first row');
   await page.locator('.chat-menu-model .chat-menu-virtual').evaluate(node => node.scrollTo(0, 600));
   await page.waitForFunction(previous => { const node = document.querySelector('.chat-menu-model .chat-menu-item'); return Boolean(node) && node.textContent !== previous; }, beforeScroll, { timeout: 5_000 });
-  const afterScroll = await page.locator('.chat-menu-model .chat-menu-item').first().evaluate(node => node.textContent);
-  assert.notEqual(beforeScroll, afterScroll, 'the virtual window follows the scroll position');
+  const midGeometry = await virtualGeometry();
+  assertVirtualAligned(midGeometry, 'virtual mid');
+  assert.ok(midGeometry.translateY > 0, 'scrolling moves the window');
+  await page.locator('.chat-menu-model .chat-menu-virtual').evaluate(node => { node.scrollTop = node.scrollHeight; });
+  await page.waitForFunction(() => {
+    const scroller = document.querySelector('.chat-menu-virtual');
+    const inner = scroller?.querySelector('.chat-menu-virtual-inner');
+    const win = scroller?.querySelector('.chat-menu-virtual-window');
+    const rows = win ? [...win.children] : [];
+    if (!rows.length || !inner) return false;
+    const last = rows[rows.length - 1].getBoundingClientRect().bottom - inner.getBoundingClientRect().top;
+    return Math.abs(last - inner.getBoundingClientRect().height) < 1.5;
+  });
+  const endGeometry = await virtualGeometry();
+  assertVirtualAligned(endGeometry, 'virtual end');
+  assert.ok(Math.abs(endGeometry.lastOffset - endGeometry.innerHeight) < 1.5, 'the terminal window includes the last row');
+  await shot('menu-virtual-end-light-en-1100.png');
   await page.keyboard.press('Escape');
-  report.checks.push('more than 100 models virtualizes and follows the scroll position');
+  report.checks.push('more than 100 models virtualizes on a fixed row grid, including the terminal window');
+
+  // Small model menus and More settings focus an item on open. Selection and a
+  // custom mode id return focus to the trigger that opened the menu.
+  await setState({ scenario: 'claude', width: 420 });
+  await page.locator('.chat-model-chip').focus();
+  await page.keyboard.press('Enter');
+  await page.locator('.chat-menu-model').waitFor();
+  assert.equal(await page.locator('.chat-menu-model .chat-menu-search').count(), 0, 'eight or fewer models have no search field');
+  let active = await activeDesc();
+  assert.equal(active.role, 'menuitemradio', 'a small model menu focuses an item when opened from the keyboard');
+  assert.equal(active.inMenu, true);
+  const smallBefore = active.text;
+  await page.keyboard.press('ArrowDown');
+  active = await activeDesc();
+  assert.equal(active.role, 'menuitemradio');
+  assert.notEqual(active.text, smallBefore, 'arrows move between the focused model choices');
+  const focusRing = await page.evaluate(() => {
+    const node = document.activeElement;
+    if (!node?.matches(':focus-visible')) return 0;
+    return parseFloat(getComputedStyle(node).outlineWidth) || 0;
+  });
+  assert.ok(focusRing >= 2, 'the focused menu item uses the shared focus ring');
+  await page.keyboard.press('Escape');
+  assert.equal((await activeDesc()).trigger, 'model', 'Escape returns to the model chip');
+
+  await setState({ scenario: 'codex', width: 420 });
+  await page.locator('.chat-compose-more').waitFor();
+  await page.locator('.chat-compose-more').focus();
+  await page.keyboard.press('Enter');
+  await page.locator('.chat-menu-more').waitFor();
+  active = await activeDesc();
+  assert.equal(active.role, 'menuitemradio', 'More settings focuses a choice when opened from the keyboard');
+  assert.match(active.menu, /chat-menu-more/);
+  await page.keyboard.press('ArrowDown');
+  assert.equal((await activeDesc()).role, 'menuitemradio', 'arrows move inside More settings');
+  await page.keyboard.press('Escape');
+  assert.equal((await activeDesc()).trigger, 'more', 'Escape returns to the More settings cog');
+
+  await setState({ scenario: 'codex', width: 1100 });
+  await page.locator('.chat-option-chip[data-option-id="collaboration"]').click();
+  await page.locator('.chat-compose-menu .chat-menu-item', { hasText: 'Plan' }).click();
+  assert.equal((await activeDesc()).optionId, 'collaboration', 'selecting a choice returns focus to its chip');
+  assert.equal((await page.locator('.chat-option-chip[data-option-id="collaboration"]').innerText()).trim(), 'Plan');
+
+  await setState({ scenario: 'customMode', width: 1100 });
+  await page.locator('.chat-mode-chip').click();
+  await page.locator('.chat-compose-menu').waitFor();
+  await page.keyboard.press('Escape');
+  assert.equal(await page.locator('.chat-compose-menu').count(), 0, 'Escape closes a custom mode menu');
+  assert.equal((await activeDesc()).trigger, 'mode', 'Escape restores a mode chip whose option id is not "mode"');
+  report.checks.push('menus focus on open and restore the originating trigger on close');
 
   // 420 px folds the extra chips into the cog; 1100 px keeps them visible.
   await setState({ scenario: 'codex', width: 420 });
@@ -259,6 +382,34 @@ try {
   assert.equal(await page.locator('.chat-compose-more').count(), 0, 'at 1100 px nothing folds');
   assert.equal(await page.locator('.chat-option-chip').count(), 4);
   report.checks.push('the overflow fold moves extra chips into the cog at 420 px and keeps them at 1100 px');
+
+  // Consistency while each menu is open. The closed-row matrix cannot see these controls.
+  async function checkOpenMenu(name, prepare, open) {
+    await prepare();
+    await open();
+    await page.locator('.chat-compose-menu').waitFor();
+    await page.keyboard.press('ArrowDown');
+    await shot(name);
+    const consistency = await checkControlConsistency(page, '.chat-compose-shell');
+    assertNoControlViolations(consistency, name);
+    await page.keyboard.press('Escape');
+    assert.equal(await page.locator('.chat-compose-menu').count(), 0, `${name} closes`);
+  }
+  const openModel = () => page.locator('.chat-model-chip').click();
+  const openMode = () => page.locator('.chat-mode-chip').click();
+  const openMore = async () => { await page.locator('.chat-compose-more').waitFor(); await page.locator('.chat-compose-more').click(); };
+  const openSandbox = () => page.locator('.chat-option-chip[data-option-id="sandbox"]').click();
+  for (const theme of ['light', 'dark', 'custom']) {
+    await checkOpenMenu(`menu-model-${theme}-en-420.png`, () => setState({ scenario: 'codex', theme, locale: 'en', width: 420 }), openModel);
+    await checkOpenMenu(`menu-mode-${theme}-en-420.png`, () => setState({ scenario: 'codex', theme, locale: 'en', width: 420 }), openMode);
+    await checkOpenMenu(`menu-more-${theme}-en-420.png`, () => setState({ scenario: 'codex', theme, locale: 'en', width: 420 }), openMore);
+  }
+  await checkOpenMenu('menu-model-light-zh-420.png', () => setState({ scenario: 'codex', theme: 'light', locale: 'zh-CN', width: 420 }), openModel);
+  await checkOpenMenu('menu-more-light-zh-420.png', () => setState({ scenario: 'codex', theme: 'light', locale: 'zh-CN', width: 420 }), openMore);
+  await checkOpenMenu('menu-model-light-en-1100.png', () => setState({ scenario: 'codex', theme: 'light', locale: 'en', width: 1100 }), openModel);
+  await checkOpenMenu('menu-sandbox-light-en-1100.png', () => setState({ scenario: 'codex', theme: 'light', locale: 'en', width: 1100 }), openSandbox);
+  await checkOpenMenu('menu-small-light-en-420.png', () => setState({ scenario: 'claude', theme: 'light', locale: 'en', width: 420 }), openModel);
+  report.checks.push('open model, mode, sandbox and More menus pass consistency at 420 px, including dark, custom and zh-CN');
 
   // Full matrix: one single-line row and zero consistency violations per cell.
   for (const scenario of ['codex', 'claude', 'pi', 'acp', 'loading']) {

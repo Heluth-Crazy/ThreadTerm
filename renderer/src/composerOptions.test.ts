@@ -115,11 +115,19 @@ test('modelRows inserts headers only when choices are grouped and supports searc
   assert.equal(isRecommended(option({ id: 'model', value: 'a' }), { value: 'a', name: 'A' }), false);
 });
 
-test('virtualWindow clamps the slice and adds overscan', () => {
+test('virtualWindow clamps both bounds and keeps a nonempty terminal window', () => {
   assert.deepEqual(virtualWindow({ count: 200, scrollTop: 0, rowHeight: 30, viewportHeight: 240 }), { start: 0, end: 16 });
   assert.deepEqual(virtualWindow({ count: 200, scrollTop: 300, rowHeight: 30, viewportHeight: 240 }), { start: 6, end: 22 });
   assert.deepEqual(virtualWindow({ count: 5, scrollTop: 0, rowHeight: 30, viewportHeight: 240 }), { start: 0, end: 5 });
   assert.deepEqual(virtualWindow({ count: 0, scrollTop: 0, rowHeight: 30, viewportHeight: 240 }), { start: 0, end: 0 });
+  assert.deepEqual(virtualWindow({ count: 200, scrollTop: -80, rowHeight: 30, viewportHeight: 240 }), { start: 0, end: 16 });
+  // Past the last row used to return { start: 329, end: 200 } or { start: 200, end: 200 }, both empty slices.
   const last = virtualWindow({ count: 200, scrollTop: 10_000, rowHeight: 30, viewportHeight: 240 });
-  assert.equal(last.end, 200);
+  assert.deepEqual(last, { start: 184, end: 200 });
+  const exactEnd = virtualWindow({ count: 200, scrollTop: 30 * 200, rowHeight: 30, viewportHeight: 240 });
+  assert.deepEqual(exactEnd, { start: 184, end: 200 });
+  for (const scrollTop of [0, 1, 29, 30, 240, 999, 6000, 10_000]) {
+    const window = virtualWindow({ count: 200, scrollTop, rowHeight: 30, viewportHeight: 240 });
+    assert.ok(window.start >= 0 && window.end <= 200 && window.start < window.end, `scroll ${scrollTop} yielded ${window.start}..${window.end}`);
+  }
 });

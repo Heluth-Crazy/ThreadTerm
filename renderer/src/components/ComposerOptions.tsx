@@ -9,7 +9,7 @@
 // row. It is scoped to a mounted composer and fires only on layout changes -
 // there is no timer, interval or idle work.
 
-import { Fragment, useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from "react";
+import { Fragment, useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from "react";
 import type { ChatOptionsLoadState, ChatSessionChoice, ChatSessionOption } from "@threadterm/protocol";
 import { Icon } from "./PrototypeIcon";
 import { statusModelReserve } from "../contextUsage";
@@ -24,6 +24,7 @@ import {
   modelRows,
   optionTitle,
   partitionOptions,
+  MODEL_ROW_HEIGHT,
   thinkingChipText,
   virtualWindow,
   type ComposerCopy,
@@ -38,7 +39,6 @@ const MODEL_MIN = 72;
 const MODEL_MAX = 200;
 const MODEL_SEARCH_THRESHOLD = 8;
 const VIRTUAL_THRESHOLD = 100;
-const MODEL_ROW_HEIGHT = 30;
 const MODEL_VIEWPORT = 240;
 
 type OpenMenu = { kind: "model" } | { kind: "more" } | { kind: "option"; id: string };
@@ -77,25 +77,40 @@ export function ComposerOptions({
   const statusRef = useRef<HTMLSpanElement>(null);
   const measureRef = useRef<HTMLDivElement>(null);
   const triggers = useRef(new Map<string, HTMLButtonElement | null>());
+  const moreRef = useRef<HTMLDivElement>(null);
 
-  const closeAndFocus = (key: string) => {
+  const closeAndFocus = (key: string, restore: boolean) => {
     setOpen(undefined);
-    triggers.current.get(key)?.focus();
+    setSearch("");
+    if (restore) triggers.current.get(key)?.focus();
   };
 
   useEffect(() => {
     if (!open) return;
+    const key = triggerKey(open);
     const onPointerDown = (event: MouseEvent) => {
       const target = event.target instanceof Element ? event.target : undefined;
-      if (!target?.closest(".chat-compose-menu, [data-menu-trigger]")) setOpen(undefined);
+      if (target?.closest(".chat-compose-menu, [data-menu-trigger]")) return;
+      const nextFocus = target?.closest("button, a, input, textarea, select, [tabindex]");
+      closeAndFocus(key, !nextFocus);
     };
-    const onKeyDown = (event: KeyboardEvent) => { if (event.key === "Escape") closeAndFocus(triggerKey(open)); };
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      event.preventDefault();
+      closeAndFocus(key, true);
+    };
     document.addEventListener("mousedown", onPointerDown);
     document.addEventListener("keydown", onKeyDown);
     return () => {
       document.removeEventListener("mousedown", onPointerDown);
       document.removeEventListener("keydown", onKeyDown);
     };
+  }, [open]);
+
+  useEffect(() => {
+    if (open?.kind !== "more") return;
+    const menu = moreRef.current;
+    if (menu) focusMenuTarget(menu, false);
   }, [open]);
 
   // One ResizeObserver on the bar, the right group and the hidden measure row.
@@ -131,8 +146,7 @@ export function ComposerOptions({
   const visibleExtras = extras.slice(0, Math.max(0, extras.length - fold.foldedCount));
   const folded = extras.slice(visibleExtras.length);
   const choose = (optionId: string, value: string) => {
-    setOpen(undefined);
-    setSearch("");
+    closeAndFocus(open ? triggerKey(open) : optionId, true);
     onSetOption(optionId, value);
   };
 
@@ -160,7 +174,7 @@ export function ComposerOptions({
           <span className="chat-compose-anchor">
             <button
               type="button"
-              ref={node => { triggers.current.set("mode", node); }}
+              ref={node => { triggers.current.set("mode", node); triggers.current.set(mode.id, node); }}
               className={`chip chip-btn is-plain chat-compose-chip chat-mode-chip${/^(yolo|bypasspermissions|dangerfullaccess)$/.test(mode.value.replace(/[^a-z0-9]/gi, "").toLowerCase()) ? " is-warn" : ""} mode-${mode.value.replace(/[^a-z0-9]/gi, "") || "unknown"}`}
               data-menu-trigger="mode"
               aria-haspopup="menu"
@@ -211,7 +225,7 @@ export function ComposerOptions({
               <Icon name="gear" />
             </button>
             {moreOpen && (
-              <div className="chat-compose-menu chat-menu-more" role="menu" aria-label={copy("More settings", "更多设置")} onKeyDown={onMenuKeyDown}>
+              <div ref={moreRef} className="chat-compose-menu chat-menu-more" role="menu" aria-label={copy("More settings", "更多设置")} onKeyDown={onMenuKeyDown}>
                 <p className="chat-menu-label">{copy("More settings", "更多设置")}</p>
                 {folded.map(option => (
                   <div className="chat-more-row" key={option.id}>
@@ -364,8 +378,7 @@ function OptionMenu({
   const ref = useRef<HTMLDivElement>(null);
   useEffect(() => {
     const menu = ref.current;
-    const target = menu?.querySelector<HTMLElement>('[role="menuitemradio"][aria-checked="true"]') ?? menu?.querySelector<HTMLElement>('[role="menuitemradio"]');
-    target?.focus();
+    if (menu) focusMenuTarget(menu, false);
   }, []);
   return (
     <div ref={ref} className={`chat-compose-menu is-anchored${className ? ` ${className}` : ""}`} role="menu" aria-label={optionTitle(option, copy)} onKeyDown={onKeyDown}>
@@ -382,6 +395,7 @@ function MenuChoice({
   zh,
   copy,
   disabled,
+  compact = false,
   onChoose,
 }: {
   option: ChatSessionOption;
@@ -389,6 +403,8 @@ function MenuChoice({
   zh: boolean;
   copy: ComposerCopy;
   disabled: boolean;
+  /** Virtual rows are one line so every slot matches MODEL_ROW_HEIGHT. */
+  compact?: boolean;
   onChoose: (optionId: string, value: string) => void;
 }) {
   return (
@@ -396,14 +412,15 @@ function MenuChoice({
       type="button"
       role="menuitemradio"
       aria-checked={choice.value === option.value}
-      className={`chat-menu-item${choice.value === option.value ? " active" : ""}`}
+      className={`menu-item chat-menu-item${compact ? " chat-menu-virtual-row" : ""}`}
       disabled={disabled}
+      title={choice.description || undefined}
       onClick={() => onChoose(option.id, choice.value)}
     >
       <Icon name="check" className="chat-menu-check" />
       <span className="chat-menu-text">
         <span>{choiceText(option, choice, zh)}</span>
-        {choice.description && <small className="chat-menu-choice-desc">{choice.description}</small>}
+        {!compact && choice.description && <small className="chat-menu-choice-desc">{choice.description}</small>}
       </span>
       {isRecommended(option, choice) && <small className="chat-menu-badge">{copy("Recommended", "推荐")}</small>}
     </button>
@@ -435,16 +452,20 @@ function ModelMenu({
   const rows = modelRows(option.choices, search);
   const virtual = rows.length > VIRTUAL_THRESHOLD;
   const [scrollTop, setScrollTop] = useState(0);
+  const menuRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
-  useEffect(() => { if (searchable) inputRef.current?.focus(); }, [searchable]);
+  useEffect(() => {
+    const menu = menuRef.current;
+    if (menu) focusMenuTarget(menu, searchable);
+  }, [searchable]);
   const window = virtual
     ? virtualWindow({ count: rows.length, scrollTop, rowHeight: MODEL_ROW_HEIGHT, viewportHeight: MODEL_VIEWPORT })
     : { start: 0, end: rows.length };
   const renderRow = (row: ModelRow, index: number) => row.kind === "header"
-    ? <p className="chat-menu-group" key={`header-${row.key}`}>{row.key}</p>
-    : <MenuChoice key={`choice-${row.choice.value}-${index}`} option={option} choice={row.choice} zh={zh} copy={copy} disabled={disabled} onChoose={onChoose} />;
+    ? <p className={`chat-menu-group${virtual ? " chat-menu-virtual-row" : ""}`} key={`header-${row.key}`}>{row.key}</p>
+    : <MenuChoice key={`choice-${row.choice.value}-${index}`} compact={virtual} option={option} choice={row.choice} zh={zh} copy={copy} disabled={disabled} onChoose={onChoose} />;
   return (
-    <div className="chat-compose-menu chat-menu-model" role="menu" aria-label={copy("Model and thinking level", "模型与思考程度")} onKeyDown={onKeyDown}>
+    <div ref={menuRef} className="chat-compose-menu chat-menu-model" role="menu" aria-label={copy("Model and thinking level", "模型与思考程度")} onKeyDown={onKeyDown}>
       {searchable && (
         <input
           ref={inputRef}
@@ -459,7 +480,7 @@ function ModelMenu({
       <p className="chat-menu-label">{optionTitle(option, copy)}</p>
       {rows.length === 0 ? <p className="chat-menu-empty">{copy("No models found", "未找到模型")}</p>
         : virtual ? (
-          <div className="chat-menu-virtual" onScroll={event => setScrollTop(event.currentTarget.scrollTop)}>
+          <div className="chat-menu-virtual" style={{ "--chat-menu-row-height": `${MODEL_ROW_HEIGHT}px` } as CSSProperties} onScroll={event => setScrollTop(event.currentTarget.scrollTop)}>
             <div className="chat-menu-virtual-inner" style={{ height: rows.length * MODEL_ROW_HEIGHT }}>
               <div className="chat-menu-virtual-window" style={{ transform: `translateY(${window.start * MODEL_ROW_HEIGHT}px)` }}>
                 {rows.slice(window.start, window.end).map((row, index) => renderRow(row, window.start + index))}
@@ -475,6 +496,19 @@ function ModelMenu({
       )}
     </div>
   );
+}
+
+function focusMenuTarget(menu: HTMLElement, preferSearch: boolean) {
+  if (preferSearch) {
+    const search = menu.querySelector<HTMLElement>(".chat-menu-search");
+    if (search) {
+      search.focus({ preventScroll: true });
+      return;
+    }
+  }
+  const current = menu.querySelector<HTMLElement>('[role="menuitemradio"][aria-checked="true"]:not(:disabled)')
+    ?? menu.querySelector<HTMLElement>('[role="menuitemradio"]:not(:disabled)');
+  current?.focus({ preventScroll: true });
 }
 
 function onMenuKeyDown(event: ReactKeyboardEvent<HTMLElement>) {
