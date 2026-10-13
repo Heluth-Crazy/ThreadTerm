@@ -11,6 +11,8 @@ export function createInputQueue() {
       if (waiter) waiter({ value, done: false }); else values.push(value);
     },
     end() { ended = true; while (waiters.length) waiters.shift()({ value: undefined, done: true }); },
+    // Read-only depth probe for tests that drive the queue like the SDK does.
+    get size() { return values.length; },
     [Symbol.asyncIterator]() { return { next: () => values.length ? Promise.resolve({ value: values.shift(), done: false }) : ended ? Promise.resolve({ value: undefined, done: true }) : new Promise(resolve => waiters.push(resolve)) }; },
   };
 }
@@ -83,10 +85,13 @@ export class ClaudeSession {
     this.cardId = cardId; this.sdk = sdk; this.write = write; this.hostOptions = hostOptions;
     this.input = createInputQueue(); this.query = null; this.sessionId = null;
     this.activeOperationId = null; this.pending = new Map(); this.requestGeneration = randomUUID(); this.nextRequest = 1; this.closed = false; this.ended = false; this.endError = null;
-    // Steers pushed into the active turn. A uuid missing from the turn result
-    // becomes the next SDK turn; it is adopted on the following message so a
-    // query that simply ends does not leave a phantom running turn.
-    this.pendingSteers = new Map(); this.steerUuids = new Map(); this.carryArmed = false;
+    // Steers pushed into the SDK input during a turn. A steer uuid missing
+    // from the turn's result is a leftover: the SDK's FIFO input runs it as
+    // the next turn, adopted here as carry:<operationId>. A send made while
+    // leftovers remain queues behind them (queuedSends) and never claims
+    // their turn; a send the SDK batched into a carry turn folds into it.
+    this.pendingSteers = new Map(); this.steerUuids = new Map();
+    this.queuedSends = []; this.foldedSends = [];
     this.abortStart = null;
     // Chat options and command menu, from the handshake and later native updates.
     this.catalog = { commands: [], models: [] }; this.terminalCommands = new Set();
@@ -183,10 +188,10 @@ export class ClaudeSession {
   send(text, operationId) {
     if (this.ended || this.closed) throw new Error('session worker has ended');
     if (this.activeOperationId) throw new Error(`turn already active: ${this.activeOperationId}`);
-    // A new send owns the next turn: drop any carry the SDK did not start.
-    this.carryArmed = false;
-    this.pendingSteers.clear();
-    this.steerUuids.clear();
+    // Leftover steers sit ahead of this send in the SDK's FIFO input and run
+    // first. Never drop them, and never claim their turn: this send's turn
+    // starts when its own user echo arrives, or at a cleanly accounted result.
+    const deferred = this.pendingSteers.size > 0 || this.queuedSends.length > 0;
     // A prior turn's outstanding context read must not publish into this turn.
     this.contextSequence += 1;
     const before = this.backgroundTasks.size;
@@ -203,8 +208,13 @@ export class ClaudeSession {
     while (this.retiredBackgroundIds.size > 512) this.retiredBackgroundIds.delete(this.retiredBackgroundIds.values().next().value);
     this.backgroundTasks = new Map([...this.backgroundTasks].filter(([, task]) => task.status === 'running'));
     if (this.backgroundTasks.size !== before) this.publishUi();
+    const uuid = messageUuid(operationId);
+    this.input.push(userMessage(text, uuid));
+    if (deferred) {
+      this.queuedSends.push({ operationId, uuid });
+      return;
+    }
     this.activeOperationId = operationId;
-    this.input.push(userMessage(text, messageUuid(operationId)));
     this.write(event(this.cardId, 'session.status', { phase: 'running', sessionId: this.sessionId, operationId }));
   }
 
@@ -242,25 +252,65 @@ export class ClaudeSession {
     this.pendingSteers.delete(operationId);
   }
 
-  adoptCarry() {
-    if (this.activeOperationId || !this.carryArmed) return;
-    const entry = this.pendingSteers.values().next().value;
-    this.carryArmed = false;
+  /** A leftover steer becomes the active turn: carry:<operationId>. */
+  adoptCarry(uuid) {
+    if (this.activeOperationId) return;
+    const operationId = uuid !== undefined ? this.steerUuids.get(uuid) : this.pendingSteers.keys().next().value;
+    if (operationId === undefined) return;
+    const entry = this.pendingSteers.get(operationId);
     if (!entry) return;
-    this.pendingSteers.delete(entry.operationId);
+    this.pendingSteers.delete(operationId);
     this.steerUuids.delete(entry.uuid);
-    this.activeOperationId = `carry:${entry.operationId}`;
+    this.foldedSends = [];
+    this.activeOperationId = `carry:${operationId}`;
     this.write(event(this.cardId, 'session.status', { phase: 'running', sessionId: this.sessionId, operationId: this.activeOperationId }));
+  }
+
+  /** A deferred send claims its turn once the SDK actually starts it. */
+  adoptQueuedSend(uuid) {
+    if (this.activeOperationId || !this.queuedSends.length) return;
+    const head = this.queuedSends[0];
+    if (uuid !== undefined && head.uuid !== uuid) return;
+    this.queuedSends.shift();
+    if (uuid !== undefined) {
+      // The send's echo overtook every leftover steer queued ahead of it, so
+      // the SDK consumed them in an earlier turn: their echo can never arrive.
+      this.pendingSteers.clear();
+      this.steerUuids.clear();
+    }
+    this.foldedSends = [];
+    this.activeOperationId = head.operationId;
+    this.write(event(this.cardId, 'session.status', { phase: 'running', sessionId: this.sessionId, operationId: head.operationId }));
   }
 
   async run() {
     try {
       for await (const message of this.query) {
-        // A carry is a turn the SDK started from an unconsumed steer. Adopt it
-        // only on a frame that shows model activity for a new turn; a system,
-        // status or rate-limit frame must never open a phantom running turn.
-        if (message.type === 'assistant' || message.type === 'stream_event'
-          || (message.type === 'user' && typeof message.uuid === 'string' && this.steerUuids.has(message.uuid))) this.adoptCarry();
+        // With no claimed turn, the next frame decides what the SDK actually
+        // started: a leftover steer's user echo, a deferred send's echo, or
+        // model activity (the SDK input is FIFO, so that is the oldest
+        // leftover steer, else the oldest deferred send). A system, status or
+        // rate-limit frame must never open a phantom running turn.
+        if (!this.activeOperationId) {
+          if (message.type === 'user' && typeof message.uuid === 'string') {
+            if (this.steerUuids.has(message.uuid)) this.adoptCarry(message.uuid);
+            else this.adoptQueuedSend(message.uuid);
+          } else if (message.type === 'assistant' || message.type === 'stream_event') {
+            if (this.pendingSteers.size) this.adoptCarry();
+            else this.adoptQueuedSend();
+          }
+        } else if (message.type === 'user' && typeof message.uuid === 'string'
+          && this.activeOperationId.startsWith('carry:') && this.queuedSends.length) {
+          // The SDK batched a deferred send into the carry turn: its echo
+          // arrives before the carry's result and it never gets a turn of its
+          // own. Fold its turn accounting into this one.
+          const index = this.queuedSends.findIndex(entry => entry.uuid === message.uuid);
+          if (index >= 0) {
+            const [entry] = this.queuedSends.splice(index, 1);
+            this.foldedSends.push(entry);
+            this.write(event(this.cardId, 'session.status', { phase: 'running', sessionId: this.sessionId, operationId: entry.operationId }));
+          }
+        }
         if (message.type === 'system' && message.subtype === 'init') {
           this.sessionId = message.session_id;
           this.write(event(this.cardId, 'session.status', { phase: 'ready', sessionId: this.sessionId, operationId: this.activeOperationId }));
@@ -276,28 +326,37 @@ export class ClaudeSession {
           this.publishUi();
         }
         if (message.type === 'result') {
-          if (Array.isArray(message.user_message_uuids)) {
-            for (const uuid of message.user_message_uuids) this.consumeSteerUuid(uuid);
-          } else if (typeof message.user_message_uuid === 'string') {
-            this.consumeSteerUuid(message.user_message_uuid);
-          } else {
-            // Older producers, delivery failures and zeroed results report no
-            // consumption. The turn is over, so none of these steers runs next.
-            this.pendingSteers.clear();
-            this.steerUuids.clear();
-          }
+          // The result lists the client uuids the turn consumed; any other
+          // pending steer is a leftover the SDK's FIFO input runs as the next
+          // turn. A result without uuid fields (older producers, delivery
+          // failures, zeroed results) proves nothing: keep the leftovers and
+          // let their user echo claim the turn they actually start.
+          const consumed = Array.isArray(message.user_message_uuids) ? message.user_message_uuids
+            : typeof message.user_message_uuid === 'string' ? [message.user_message_uuid]
+            : null;
+          if (consumed) for (const uuid of consumed) this.consumeSteerUuid(uuid);
           // How the turn ended: a stopped or failed turn must not read as a
           // completed answer waiting for the user.
           const status = this.interruptedOperation !== null && this.interruptedOperation === this.activeOperationId ? 'interrupted'
             : message.is_error ? 'failed' : 'completed';
           this.write(event(this.cardId, 'session.status', { phase: 'idle', status, sessionId: this.sessionId, operationId: this.activeOperationId }));
+          // A send folded into a carry turn never gets its own SDK turn; close
+          // its turn accounting so the runtime does not wait on it forever.
+          for (const entry of this.foldedSends) {
+            this.write(event(this.cardId, 'session.status', { phase: 'idle', status: 'completed', sessionId: this.sessionId, operationId: entry.operationId }));
+          }
+          this.foldedSends = [];
           this.readContextUsage(message, this.activeOperationId);
           this.activeOperationId = null;
           this.interruptedOperation = null;
           this.streamedIds.clear();
-          // Arm only after this result is published. The next message, if the
-          // SDK actually starts the unconsumed steer, adopts the carry id.
-          this.carryArmed = this.pendingSteers.size > 0;
+          if (consumed && status === 'completed' && (this.pendingSteers.size || this.queuedSends.length)) {
+            // A cleanly accounted turn proves the SDK input still holds these
+            // messages and runs them next. Claim the turn now so new user
+            // messages queue in ThreadTerm instead of racing the carry.
+            if (this.pendingSteers.size) this.adoptCarry();
+            else this.adoptQueuedSend();
+          }
           // A typed /effort (or a model downgrade) changes the applied effort without
           // any other signal; re-read it after each turn.
           this.refreshApplied({ model: false }).then(changed => { if (changed) this.publishUi(); });

@@ -160,6 +160,54 @@ fn complete_streaming_items(
     Ok(())
 }
 
+/// A leftover steer that becomes its own `carry:` turn re-homes its persisted
+/// row onto that turn. The original turn never ran the text, so the transcript
+/// must show the "Inserted" row under the carry turn that actually ran it.
+fn rehome_steered_message(
+    tx: &rusqlite::Transaction<'_>,
+    session_id: &str,
+    operation_id: &str,
+    carry_turn: &str,
+    now: &str,
+) -> Result<()> {
+    let id = format!("{session_id}:user:steer:{operation_id}");
+    let previous: Option<String> = tx
+        .query_row("SELECT data FROM chat_items WHERE id=?", [&id], |row| row.get(0))
+        .optional()?;
+    let Some(raw) = previous else {
+        return Ok(());
+    };
+    let mut item: Value = serde_json::from_str(&raw)?;
+    if item.get("turnId").and_then(Value::as_str) == Some(carry_turn) {
+        return Ok(());
+    }
+    if let Some(object) = item.as_object_mut() {
+        object.insert("turnId".into(), json!(carry_turn));
+    }
+    if let Some(parts) = item.get_mut("parts").and_then(Value::as_array_mut) {
+        for part in parts {
+            if part.pointer("/data/steered").and_then(Value::as_bool) != Some(true) {
+                continue;
+            }
+            if let Some(data) = part.pointer_mut("/data").and_then(Value::as_object_mut) {
+                data.insert("turnId".into(), json!(carry_turn));
+            }
+        }
+    }
+    tx.execute(
+        "UPDATE chat_items SET data=?,turn_id=? WHERE id=?",
+        params![serde_json::to_string(&item)?, carry_turn, &id],
+    )?;
+    tx.execute(
+        "INSERT INTO outbox(event,data,created_at) VALUES ('chat.item',?,?)",
+        params![
+            serde_json::to_string(&json!({"sessionId":session_id,"item":item}))?,
+            now
+        ],
+    )?;
+    Ok(())
+}
+
 /// Removes a steered row that the provider explicitly rejected. An empty
 /// user item is the removal signal: history no longer contains the row, and
 /// the renderer drops that id instead of leaving an empty bubble.
@@ -378,6 +426,12 @@ fn record_tx(
     }
    }
    "chat.turn.started"=>{
+    // A carry turn re-homes the steered row that started it: the turn the
+    // text was inserted into never ran it, so the "Inserted" row must move
+    // with the carry instead of staying behind in a settled turn.
+    if let Some(carry)=turn.filter(|value|value.starts_with("carry:")) {
+     rehome_steered_message(tx,session_id,carry.trim_start_matches("carry:"),carry,&now)?;
+    }
     // A delayed duplicate start must not replace the model that was active
     // when this turn first began.
     if item.turn_model.is_none() {
@@ -811,6 +865,18 @@ fn project_activity(
             if current.as_ref().is_some_and(|activity| {
                 activity.state == "running" && activity.turn_id.as_deref() == turn_id
             }) =>
+        {
+            Some(("running", turn_id, None))
+        }
+        // A carry turn is the provider running a leftover steer as its own
+        // turn. It has no message.user of its own, so it may claim running
+        // from a settled previous turn; the `carry:` prefix keeps a delayed
+        // replay of an ordinary turn from reviving a completed one.
+        "chat.turn.started"
+            if turn_id.is_some_and(|id| id.starts_with("carry:"))
+                && current.as_ref().is_none_or(|activity| {
+                    matches!(activity.state.as_str(), "idle" | "awaiting_input")
+                }) =>
         {
             Some(("running", turn_id, None))
         }
@@ -1886,6 +1952,61 @@ mod tests {
             })
             .unwrap();
         assert_eq!(gone, 0);
+    }
+    #[test]
+    fn a_carry_turn_claims_running_from_a_settled_previous_turn() {
+        let db = db();
+        record(&db, "s", Some("one"), "message.user", &json!({"text":"one"})).unwrap();
+        record(&db, "s", Some("one"), "chat.turn.started", &json!({})).unwrap();
+        record(&db, "s", Some("one"), "chat.turn.completed", &json!({})).unwrap();
+        let settled = db.session_by_id("s").unwrap().unwrap().activity.unwrap();
+        assert_eq!(settled.state, "awaiting_input");
+        // The carry turn has no message.user of its own, so its start claims
+        // running from the settled previous turn.
+        record(&db, "s", Some("carry:op-1"), "chat.turn.started", &json!({})).unwrap();
+        let carrying = db.session_by_id("s").unwrap().unwrap().activity.unwrap();
+        assert_eq!(carrying.state, "running");
+        assert_eq!(carrying.turn_id.as_deref(), Some("carry:op-1"));
+        // An ordinary delayed start still cannot revive a completed turn.
+        record(&db, "s", Some("carry:op-1"), "chat.turn.completed", &json!({})).unwrap();
+        record(&db, "s", Some("old"), "chat.turn.started", &json!({})).unwrap();
+        let done = db.session_by_id("s").unwrap().unwrap().activity.unwrap();
+        assert_eq!(done.state, "awaiting_input");
+        assert_eq!(done.turn_id.as_deref(), Some("carry:op-1"));
+    }
+    #[test]
+    fn a_carry_turn_rehomes_its_steered_row() {
+        let db = db();
+        record(&db, "s", Some("turn-a"), "message.user", &json!({"text":"start"})).unwrap();
+        record(
+            &db,
+            "s",
+            Some("turn-a"),
+            "message.user",
+            &json!({"text":"while you work","steered":true,"turnId":"turn-a","item":{"id":"steer:op-1"}}),
+        )
+        .unwrap();
+        let revision = db.snapshot().unwrap().revision;
+        record(&db, "s", Some("carry:op-1"), "chat.turn.started", &json!({})).unwrap();
+        let steered: Value = db
+            .transaction(|tx| {
+                Ok(serde_json::from_str(&tx.query_row(
+                    "SELECT data FROM chat_items WHERE id='s:user:steer:op-1'",
+                    [],
+                    |row| row.get::<_, String>(0),
+                )?)?)
+            })
+            .unwrap();
+        assert_eq!(steered["turnId"], "carry:op-1");
+        assert_eq!(steered["parts"][0]["data"]["turnId"], "carry:op-1");
+        assert_eq!(steered["parts"][0]["data"]["steered"], true);
+        // The renderer learns about the move through an ordinary chat.item event.
+        let events = db.events_after(revision).unwrap();
+        assert!(events.iter().any(|event| {
+            event.1 == "chat.item"
+                && event.2["item"]["id"] == "s:user:steer:op-1"
+                && event.2["item"]["turnId"] == "carry:op-1"
+        }));
     }
     #[test]
     fn usage_projection_keeps_distinct_turns_and_unknowns_null() {
