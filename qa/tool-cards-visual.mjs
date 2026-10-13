@@ -151,6 +151,19 @@ try {
   }
   report.checks.push(`zero visual-consistency violations across ${cardControls} tool-card controls (${entryCount} entries)`);
 
+  // Disclosure semantics: JSON uses labelled buttons rather than an incomplete
+  // ARIA tree, and tool drawer entries preserve list semantics.
+  const jsonToggle = page.locator('.tool-json button[aria-expanded]').first();
+  await jsonToggle.waitFor();
+  assert.equal(await page.locator('[role="tree"], [role="treeitem"]').count(), 0, 'JSON disclosure does not expose an unsupported ARIA tree');
+  assert.match(await jsonToggle.getAttribute('aria-label'), /(?:Expand|Collapse).+/, 'JSON toggle has a contextual expand/collapse label');
+  assert.equal(await page.locator('.chat-tool-entries > [role="listitem"]').count(), entryCount, 'every direct tool entry is a list item');
+  await jsonToggle.focus(); await page.keyboard.press('Enter');
+  assert.equal(await jsonToggle.getAttribute('aria-expanded'), 'false', 'Enter collapses the JSON root disclosure');
+  await jsonToggle.focus(); await page.keyboard.press('Space');
+  assert.equal(await jsonToggle.getAttribute('aria-expanded'), 'true', 'Space reopens the JSON root disclosure');
+  report.checks.push('JSON uses contextual disclosure buttons with Enter/Space root toggling; every tool entry is a listitem');
+
   // Running command: live preview outside, Running chip and streaming output inside.
   await setState({ theme: 'light', locale: 'en', width: 1280, scenario: 'running' });
   await drawerOpen(false);
@@ -170,7 +183,7 @@ try {
   await page.evaluate(() => { window.__corpus = Array.from({ length: 300 }, (_, index) => ({ type: 'tool', toolId: `perf-${index}`, toolName: 'commandExecution', status: 'completed', data: { type: 'commandExecution', command: `run task ${index}`, aggregatedOutput: `output ${index}` } })); });
   await setState({ theme: 'light', locale: 'en', width: 1280, scenario: 'cards' });
   await drawerOpen(false);
-  const perf = await page.evaluate(() => new Promise(resolve => {
+  const measureExpansion = () => page.evaluate(() => new Promise(resolve => {
     const details = document.querySelector('.chat-tool-activity');
     const start = performance.now();
     details.open = true;
@@ -184,11 +197,23 @@ try {
     };
     setTimeout(() => (document.querySelectorAll('.tool-card-body').length >= 300 ? commit() : setTimeout(commit, 0)), 0);
   }));
-  assert.equal(perf.entries, 300, 'the 300-entry drawer keeps every entry shell');
-  assert.equal(perf.bodies, 300, 'expanding builds all 300 card bodies');
-  assert.ok(perf.commit < 100, `the 300-entry expansion frame took ${perf.commit.toFixed(1)} ms (budget 100 ms)`);
+  const warmup = await measureExpansion();
+  assert.equal(warmup.entries, 300, 'the warmup keeps every entry shell');
+  assert.equal(warmup.bodies, 300, 'the warmup builds every card body');
+  const samples = [];
+  for (let index = 0; index < 5; index += 1) {
+    await drawerOpen(false);
+    assert.equal(await page.locator('.tool-card-body').count(), 0, 'each sample starts with the bodies unmounted');
+    const sample = await measureExpansion();
+    samples.push(sample);
+    assert.equal(sample.entries, 300, `sample ${index + 1}: the drawer keeps every entry shell`);
+    assert.equal(sample.bodies, 300, `sample ${index + 1}: expanding builds all 300 card bodies`);
+  }
+  const median = values => [...values].sort((left, right) => left - right)[2];
+  const perf = { warmup, samples, elapsed: median(samples.map(sample => sample.elapsed)), commit: median(samples.map(sample => sample.commit)), entries: 300, bodies: 300 };
   report.perf = perf;
-  report.checks.push(`expanding a 300-entry turn committed in ${perf.commit.toFixed(1)} ms and laid out in ${perf.elapsed.toFixed(1)} ms (budget 100 ms)`);
+  assert.ok(perf.elapsed < 100, `the median of 5 expansions took ${perf.elapsed.toFixed(1)} ms including forced layout (budget 100 ms); samples: ${samples.map(sample => sample.elapsed.toFixed(1)).join(', ')}`);
+  report.checks.push(`after one warmup, 5 expansions had median commit ${perf.commit.toFixed(1)} ms and median layout-inclusive duration ${perf.elapsed.toFixed(1)} ms (budget 100 ms)`);
 
   // Empty state: no plan/tool DOM at all.
   await setState({ theme: 'light', locale: 'en', width: 1280, scenario: 'empty' });
