@@ -384,9 +384,18 @@ fn record_tx(
      // They are native per-turn data, unlike summary/session usage records.
      if turn.is_some() && data.get("turnUsage").and_then(turn_usage).is_some() { item.turn_usage=data.get("turnUsage").and_then(turn_usage);changed=true; }
     }
-    return Ok(());
    }
    _=>{}
+  }
+  // A context snapshot is not billing usage or a session-status change. When it
+  // carries per-turn footer usage, that assistant item still has to be saved.
+  if kind=="chat.context" {
+   if changed {
+    let payload=serde_json::to_string(&item)?;
+    tx.execute("INSERT INTO chat_items(id,session_id,turn_id,kind,data,created_at) VALUES (?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET data=excluded.data,turn_id=excluded.turn_id",params![id,session_id,turn,"message",payload,item.created_at])?;
+    tx.execute("INSERT INTO outbox(event,data,created_at) VALUES ('chat.item',?,?)",params![serde_json::to_string(&json!({"sessionId":session_id,"item":item}))?,now])?;
+   }
+   return Ok(());
   }
   // Adapters may attach a provider-native fork coordinate to the item they
   // are currently projecting. Never persist an anchor for another native
