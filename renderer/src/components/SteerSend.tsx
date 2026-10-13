@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from 'react';
 import { nextMenuIndex } from '../contextMenuActions';
-import { listenForSteerMenuDismissal } from '../steerMenu';
+import { listenForSteerMenuDismissal, steerMenuOpensOnSignal } from '../steerMenu';
 import { Icon } from './PrototypeIcon';
 
 type SendKind = 'send' | 'queue' | 'split' | 'split-note';
@@ -31,10 +31,11 @@ export function SteerSend({ kind, disabled, busy, copy, onInsert, onNote, noteDi
   useEffect(() => {
     if (openSignal === undefined || lastSignal.current === openSignal) return;
     lastSignal.current = openSignal;
-    if (kind !== 'split-note') return;
+    // Never open a menu whose only item is disabled (an empty note, or images).
+    if (!steerMenuOpensOnSignal(kind, noteDisabled)) return;
     setOpen(true);
     requestAnimationFrame(() => rootRef.current?.querySelector<HTMLButtonElement>('[role="menuitem"]:not(:disabled)')?.focus({ preventScroll: true }));
-  }, [openSignal, kind]);
+  }, [openSignal, kind, noteDisabled]);
   useEffect(() => {
     if (!open) return;
     return listenForSteerMenuDismissal(document, node => Boolean(rootRef.current?.contains(node as Node)), reason => {
