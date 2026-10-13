@@ -45,11 +45,19 @@ test('selected commits carry an exact staged snapshot and reject ambiguous or un
  assert.throws(()=>validateResult('git.status',{branch:'main',upstream:null,ahead:0,behind:0,changes:[],selectedCommit:{head,indexFingerprint:fingerprint,supported:'yes'}}));
 });
 
-test('the additive plan part type round-trips through the chat contract',()=>{
+test('the additive plan part type requires a valid plan payload',()=>{
  const part={type:'plan',toolId:'plan:turn-1',data:{entries:[{content:'Write the tests',status:'in_progress',priority:'high'},{content:'Ship it',status:'pending'}],explanation:'Two-step plan'}};
  const item={id:'plan-item',role:'assistant',createdAt:'2026-01-01T00:00:00Z',turnId:'turn-1',parts:[part]};
  validateResult('chat.read',[item]);
  validateResult('chat.snapshot',{items:[item],revision:1,repair:{offered:false,reason:'history_unavailable',degraded:false}});
+ // An empty snapshot is an explicit clearing marker.
+ validateResult('chat.read',[{...item,parts:[{...part,data:{entries:[]}}]}]);
+ for(const data of [undefined,null,{}, {entries:{}}, {entries:[{}]}, {entries:[{content:'Missing status'}]}, {entries:[{content:7,status:'pending'}]}, {entries:[{content:'Bad status',status:'started'}]}, {entries:[{content:'Bad priority',status:'pending',priority:'urgent'}]}, {entries:[],unexpected:true}, {entries:[{content:'Unexpected field',status:'pending',extra:true}]}, {entries:[],explanation:7}])
+  assert.throws(()=>validateResult('chat.read',[{...item,parts:[{...part,data}]}]),/Invalid runtime result/,JSON.stringify(data));
+ for(const invalid of [{...part,unexpected:true},{...part,phase:'draft'}])
+  assert.throws(()=>validateResult('chat.read',[{...item,parts:[invalid]}]),/Invalid runtime result/,JSON.stringify(invalid));
+ // Existing non-plan parts continue to carry opaque provider payloads.
+ validateResult('chat.read',[{...item,parts:[{type:'tool',data:{providerSpecific:['still','opaque']}}]}]);
  // The union stays closed: unknown part types are still rejected.
  assert.throws(()=>validateResult('chat.read',[{...item,parts:[{...part,type:'roadmap'}]}]));
 });
