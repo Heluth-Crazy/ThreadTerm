@@ -1,6 +1,6 @@
 // Clipboard images stay separate from text and are sent as native image inputs.
-export const MAX_CHAT_IMAGE_BYTES = 4 * 1024 * 1024;
-export const MAX_CHAT_IMAGES = 4;
+import { MAX_CHAT_IMAGE_BYTES, MAX_CHAT_IMAGES } from '@threadterm/protocol';
+export { MAX_CHAT_IMAGE_BYTES, MAX_CHAT_IMAGES };
 export function isChatImage(value: unknown): value is string {
   return typeof value === 'string' && /^data:image\/(?:png|jpeg|gif|webp);base64,[A-Za-z0-9+/]+={0,2}$/.test(value);
 }
@@ -22,15 +22,24 @@ export function readClipboardImage(file: File): Promise<string> {
     reader.readAsDataURL(file);
   });
 }
-/** Takes as many supported screenshots as fit the composer's existing count and data-URL byte budget. */
-export function selectChatImageAttachments(existing:readonly string[], incoming:readonly string[], supported:boolean):string[] {
+/**
+ * Indices of `incoming` that fit the composer's existing count and data-URL
+ * byte budget, skipping entries that do not. Index-based so callers can map a
+ * rejected image back to its source path even when data URLs repeat.
+ */
+export function selectChatImageIndices(existing:readonly string[], incoming:readonly string[], supported:boolean):number[] {
   if(!supported) return [];
-  const accepted:string[]=[];
+  const accepted:number[]=[];
   let bytes=existing.reduce((size,image)=>size+image.length,0);
-  for(const image of incoming) {
+  for(let index=0;index<incoming.length;index+=1) {
+    const image=incoming[index]!;
     if(existing.length+accepted.length>=MAX_CHAT_IMAGES) break;
     if(!isChatImage(image)||bytes+image.length>MAX_CHAT_IMAGE_BYTES) continue;
-    accepted.push(image); bytes+=image.length;
+    accepted.push(index); bytes+=image.length;
   }
   return accepted;
+}
+/** Takes as many supported screenshots as fit the composer's existing count and data-URL byte budget. */
+export function selectChatImageAttachments(existing:readonly string[], incoming:readonly string[], supported:boolean):string[] {
+  return selectChatImageIndices(existing,incoming,supported).map(index=>incoming[index]!);
 }

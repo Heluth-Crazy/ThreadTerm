@@ -17,7 +17,7 @@ import { nativeMarkdownExportFiles, saveChatMarkdown, writeChatMarkdownAtomic } 
 import { applicationIconPng, trayIconPng } from '../assets/icon-data.js';
 import { quitConfirmationOptions, quitConfirmationPreapproved } from './quitConfirmation.js';
 import { deletedRevealScope, isWithinScope, revealTarget } from './revealFile.js';
-import { readAttachFiles } from './attachFiles.js';
+import { qaAttachPathsOverride, readAttachFiles } from './attachFiles.js';
 
 ignoreBrokenStdio();
 process.on('uncaughtException', (error) => {
@@ -336,8 +336,8 @@ function registerIpc(): void {
   ipcMain.handle('threadterm:attach-files', async (event) => {
     assertTrustedRenderer(event);
     // QA can point the picker at fixture paths so the real app never opens a native dialog.
-    const qaPaths = process.env.THREADTERM_V3_ATTACH_FILES_QA;
-    if (qaPaths && !app.isPackaged) return readAttachFiles(qaPaths.split(';'));
+    const qaPaths = qaAttachPathsOverride(process.env.THREADTERM_V3_ATTACH_FILES_QA, app.isPackaged);
+    if (qaPaths) return readAttachFiles(qaPaths);
     const owner = BrowserWindow.fromWebContents(event.sender);
     const options = { title: 'Attach files', properties: ['openFile', 'multiSelections'] as Electron.OpenDialogOptions['properties'] };
     const result = owner ? await dialog.showOpenDialog(owner, options) : await dialog.showOpenDialog(options);

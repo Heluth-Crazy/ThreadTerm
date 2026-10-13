@@ -3,6 +3,10 @@ export const PROTOCOL_VERSION = 1 as const;
 /** Semantic contract includes native-history repair, snapshot integrity, Chat fork, and feedback notes. Framing/HMAC still use PROTOCOL_VERSION. */
 export const PROTOCOL_CONTRACT = 13 as const;
 export const MAX_FRAME_BYTES = 8 * 1024 * 1024;
+/** Composer image attachments: at most this many images, whose data-URL strings sum to at most MAX_CHAT_IMAGE_BYTES.
+ * Shared by the renderer composer and the desktop attach path so the picker never inlines more than the composer accepts. */
+export const MAX_CHAT_IMAGES = 4;
+export const MAX_CHAT_IMAGE_BYTES = 4 * 1024 * 1024;
 /** Agents that ship with ThreadTerm (native adapters, or `shell` / `custom` commands). */
 export type BuiltinProviderId = 'codex'|'claude'|'kimi'|'gemini'|'opencode'|'shell'|'grok'|'custom';
 /** Any agent id in the runtime's agent registry: a built-in id or one contributed by an enabled plugin
