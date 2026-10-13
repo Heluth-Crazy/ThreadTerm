@@ -3,7 +3,7 @@ import DOMPurify from "dompurify";
 import { parseChatMarkdown } from '../chatMath';
 import { ChatMarkdown } from './ChatMarkdownExtras';
 import type { ChatAnswerResponse, ChatPart, ChatQueue, ChatQueueItem, ChatSlashCommand, ChatUiState, FileReference, GitCommitInfo, Session } from "@threadterm/protocol";
-import { ChatItem, openExternal, operationId, request, subscribeEvents } from "../bridge";
+import { ChatItem, attachFiles, openExternal, operationId, request, subscribeEvents } from "../bridge";
 import { beginResync, chatUiFromEvent, completeResync, nextRepairRevision, upsertChatItem, type ChatResync } from "../chatState";
 import { acquireControl } from '../controlLease';
 import { createDraftWriter } from '../chatDraft';
@@ -59,6 +59,12 @@ import { ChatQueue as ChatQueuePanel } from './ChatQueue';
 import { ChatNotes as ChatNotesPanel } from './ChatNotes';
 import { SteerSend } from './SteerSend';
 import { steerControlKind, steerFailureMessage } from '../steerSend';
+import { ComposerPlusMenu } from './ComposerPlusMenu';
+import { fileAttachmentItem, partitionAttachedFiles } from '../chatAttachments';
+import { insertQuickMessage, parseQuickMessages } from '../quickMessages';
+import { useAppSettings } from '../appSettings';
+import { showContextMenu } from './ContextMenu';
+import { textFieldContextMenuItems } from '../contextMenuFallback';
 import { useChatContext } from '../useChatContext';
 import { ContextMessage, ContextTray } from './ContextTray';
 import { ChatMentions } from './ChatMentions';
@@ -432,6 +438,9 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession, 
   const [historyIssue, setHistoryIssue] = useState<string>();
   const context = useChatContext(session.id, zh, setError);
   const contextRef = useRef(context); contextRef.current = context;
+  const appSettings = useAppSettings();
+  const quickMessages = useMemo(() => parseQuickMessages(appSettings?.quickMessages), [appSettings?.quickMessages]);
+  const [liveFeedbackSignal, setLiveFeedbackSignal] = useState(0);
   const forkActions = useChatFork(session, Boolean(activeTurnId(items, session.status)) || Boolean(firstResponseWait) || busy, zh, setError);
   const forkActionsRef = useRef(forkActions); forkActionsRef.current = forkActions;
   const [link, setLink] = useState(() => emptyLink(session.id, "disconnected"));
@@ -957,6 +966,55 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession, 
       setError(copy('Image draft could not be saved. Remove an image or free device storage and paste again.', '无法保存图片草稿。请移除图片或释放设备存储空间后重新粘贴。'));
     }
   }
+  // F3: attach files picked in the native dialog. Images use the composer's image
+  // path when the agent accepts images; every other file becomes a context chip.
+  async function attachPickedFiles() {
+    if (!writable || busy || ended) return;
+    setError(undefined);
+    const target = lifecycle.current;
+    try {
+      const picked = await attachFiles();
+      if (lifecycle.current !== target || !picked.length) return;
+      const canImages = Boolean(ui.inputCapabilities?.images);
+      const idFor = () => `attach-${crypto.randomUUID()}`;
+      const parts = canImages
+        ? partitionAttachedFiles(picked, idFor)
+        : { images: [] as string[], files: picked.map(file => fileAttachmentItem(file.path, idFor())) };
+      const accepted = selectChatImageAttachments(imagesRef.current, parts.images, canImages);
+      if (accepted.length) updateImages([...imagesRef.current, ...accepted]);
+      for (const item of parts.files) {
+        try { context.attach(item); }
+        catch (caught) { setError(contextError(caught, zh)); break; }
+      }
+    } catch (caught) {
+      if (lifecycle.current === target) setError(asUserError(caught, copy('Files could not be attached.', '无法附加文件。')));
+    }
+  }
+  // F3: quick messages insert at the caret without replacing context chips.
+  function insertQuickMessageAtCaret(message: import('@threadterm/protocol').QuickMessage) {
+    if (!writable || ended) return;
+    const area = composeRef.current;
+    const start = area?.selectionStart ?? currentText.current.length;
+    const end = area?.selectionEnd ?? start;
+    const next = insertQuickMessage(currentText.current, start, end, message.text);
+    changeText(next.text);
+    requestAnimationFrame(() => { const field = composeRef.current; field?.focus({ preventScroll: true }); field?.setSelectionRange(next.caret, next.caret); });
+  }
+  // F3: the composer keeps its clipboard menu and gains Quick messages when any exist.
+  function openComposerContextMenu(event: ReactMouseEvent<HTMLTextAreaElement>) {
+    event.preventDefault();
+    const field = event.currentTarget;
+    const x = event.clientX, y = event.clientY;
+    const items = textFieldContextMenuItems(field);
+    if (quickMessages.length) items.push({
+      id: 'chat-quick-messages', label: copy('Quick messages', '快捷消息'),
+      onSelect: () => showContextMenu({ x, y, restoreFocus: field, items: quickMessages.map(message => ({
+        id: `chat-quick-message-${message.id}`, label: message.title, testId: 'context-quick-message',
+        onSelect: () => insertQuickMessageAtCaret(message),
+      })) }),
+    });
+    showContextMenu({ x, y, items, restoreFocus: field });
+  }
   attachImagesRef.current=(incoming:string[])=>{
     if(!writable||busy||imageReadingRef.current||!composeRef.current||composeRef.current.disabled) return 0;
     const accepted=selectChatImageAttachments(imagesRef.current,incoming,Boolean(ui.inputCapabilities?.images));
@@ -1449,7 +1507,7 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession, 
       <label className="sr-only" htmlFor={`chat-message-${session.id}`}>{copy('Message', '消息')}</label>
       {!!images.length && !submissionPreview && <div className="chat-image-draft" aria-label={copy('Image attachments', '图片附件')}>{images.map((image, index) => <figure key={index}><img src={image} alt={`${copy('Pasted image', '已粘贴图片')} ${index + 1}`} /><button type="button" disabled={busy || imageReading || !writable} aria-label={`${copy('Remove image', '移除图片')} ${index + 1}`} onClick={() => updateImages(images.filter((_, imageIndex) => imageIndex !== index))}>×</button></figure>)}<span className="chat-image-draft-note">{copy('Images saved on this device', '图片已保存在此设备')}</span></div>}
       {!submissionPreview && <ContextTray items={context.items} text={text} zh={zh} onRemove={context.remove} disabled={busy || imageReading || !writable} />}
-      <textarea id={`chat-message-${session.id}`} ref={composeRef} value={submissionPreview ? '' : text} onChange={event => { setCaret(event.target.selectionStart ?? event.target.value.length); setMentionDismissed(undefined); changeText(event.target.value); setSlashIndex(0); setMentionIndex(0); }} onSelect={event => setCaret(event.currentTarget.selectionStart ?? caret)} onClick={event => setCaret(event.currentTarget.selectionStart ?? caret)} onKeyUp={event => setCaret(event.currentTarget.selectionStart ?? caret)} onPaste={pasteImages} onKeyDown={onComposeKey} placeholder={copy('Message, or type / for commands', '发送消息，或输入 / 命令')} rows={1} disabled={busy || ended || !writable || overlay === "full" || !draftLoaded} />
+      <textarea id={`chat-message-${session.id}`} ref={composeRef} value={submissionPreview ? '' : text} onChange={event => { setCaret(event.target.selectionStart ?? event.target.value.length); setMentionDismissed(undefined); changeText(event.target.value); setSlashIndex(0); setMentionIndex(0); }} onSelect={event => setCaret(event.currentTarget.selectionStart ?? caret)} onClick={event => setCaret(event.currentTarget.selectionStart ?? caret)} onKeyUp={event => setCaret(event.currentTarget.selectionStart ?? caret)} onPaste={pasteImages} onContextMenu={writable && !ended ? openComposerContextMenu : undefined} onKeyDown={onComposeKey} placeholder={copy('Message, or type / for commands', '发送消息，或输入 / 命令')} rows={1} disabled={busy || ended || !writable || overlay === "full" || !draftLoaded} />
       <ComposerOptions
         options={ui.options}
         loadState={ui.loadState}
@@ -1458,7 +1516,7 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession, 
         disabled={ended || !writable}
         busy={busy}
         onSetOption={setOption}
-        leading={<button type="button" className="icon-btn icon-btn-sm icon-btn-round chat-compose-icon" disabled={busy || ended || !writable} aria-label={copy("Commands", "命令")} title={copy("Commands", "命令")} onClick={() => { changeText(text.startsWith("/") ? text : "/"); composeRef.current?.focus(); }}><Icon name="plus" /></button>}
+        leading={<ComposerPlusMenu quickMessages={quickMessages} disabled={busy || ended || !writable} liveFeedbackEnabled={steerKind === 'split-note'} onAttachFiles={attachPickedFiles} onPickQuickMessage={insertQuickMessageAtCaret} onSlashCommands={() => { changeText(text.startsWith("/") ? text : "/"); composeRef.current?.focus(); }} onLiveFeedback={() => { setLiveFeedbackSignal(value => value + 1); composeRef.current?.focus(); }} copy={copy} />}
         status={<Fragment>
           <ChatContextRing usage={contextUsage} copy={copy} />
           <ChatConnectionChip
@@ -1477,7 +1535,7 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession, 
           {controlIssue && <span className="dim">{controlIssue}</span>}
           {canControl && !writable && <button type="button" className="chip chip-btn chat-compose-reclaim" onClick={() => reclaimRef.current()} disabled={busy}>{copy('Reclaim control', '重新取得控制')}</button>}
           {liveTurn && <button type="button" className="icon-btn icon-btn-sm icon-btn-round is-secondary chat-compose-send is-stop" disabled={!writable || busy} onClick={() => void cancel(liveTurn)} aria-label={copy('Stop', '停止')} title={copy('Stop', '停止')}><span className="chat-stop-square" /></button>}
-          <SteerSend kind={steerKind} busy={busy} disabled={(!text.trim() && !images.length && !context.items.length) || queue?.sessionId !== session.id || imageReading || busy || !writable || !draftLoaded || draftFailed || recovery !== undefined} copy={copy} onInsert={() => void insertIntoTurn()} onNote={() => void addNote()} noteDisabled={!text.trim() || images.length > 0} noteDisabledReason={images.length ? copy('Images cannot be sent as a note.', '图片不能作为备注发送。') : undefined} />
+          <SteerSend kind={steerKind} openSignal={liveFeedbackSignal} busy={busy} disabled={(!text.trim() && !images.length && !context.items.length) || queue?.sessionId !== session.id || imageReading || busy || !writable || !draftLoaded || draftFailed || recovery !== undefined} copy={copy} onInsert={() => void insertIntoTurn()} onNote={() => void addNote()} noteDisabled={!text.trim() || images.length > 0} noteDisabledReason={images.length ? copy('Images cannot be sent as a note.', '图片不能作为备注发送。') : undefined} />
         </Fragment>}
       />
     </form>

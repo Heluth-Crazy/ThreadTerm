@@ -9,6 +9,7 @@ import {
   type RequestResult,
   type ThreadTermBridge,
   type PagePick,
+  type AttachedFile,
 } from '@threadterm/protocol';
 
 const bridge: ThreadTermBridge = {
@@ -59,6 +60,7 @@ const bridge: ThreadTermBridge = {
     };
   },
   chooseDirectory: (): Promise<string | null> => ipcRenderer.invoke('threadterm:choose-directory') as Promise<string | null>,
+  attachFiles: () => ipcRenderer.invoke('threadterm:attach-files') as Promise<AttachedFile[]>,
   chooseSavePath: (kind): Promise<string | null> => ipcRenderer.invoke('threadterm:choose-save-path', kind) as Promise<string | null>,
   exportFile: (kind) => ipcRenderer.invoke('threadterm:export-file', kind) as Promise<{ path: string } | null>,
   activateDataRelocation: (prepared) => ipcRenderer.invoke('threadterm:activate-data-relocation', prepared) as Promise<{ activated: boolean }>,

@@ -14,17 +14,27 @@ type Props = {
   onNote?: () => void;
   noteDisabled?: boolean;
   noteDisabledReason?: string;
+  /** F3: the composer's Live feedback action opens the note menu without a click. */
+  openSignal?: number;
 };
 
 /**
  * Queue stays the main action. The arrow offers a second action: insert into
  * the running turn for native steering, or a note for `feedback_check`.
  */
-export function SteerSend({ kind, disabled, busy, copy, onInsert, onNote, noteDisabled = false, noteDisabledReason }: Props) {
+export function SteerSend({ kind, disabled, busy, copy, onInsert, onNote, noteDisabled = false, noteDisabledReason, openSignal }: Props) {
   const [open, setOpen] = useState(false);
   const rootRef = useRef<HTMLDivElement>(null);
   const menuRef = useRef<HTMLDivElement>(null);
   const arrowRef = useRef<HTMLButtonElement>(null);
+  const lastSignal = useRef(openSignal);
+  useEffect(() => {
+    if (openSignal === undefined || lastSignal.current === openSignal) return;
+    lastSignal.current = openSignal;
+    if (kind !== 'split-note') return;
+    setOpen(true);
+    requestAnimationFrame(() => rootRef.current?.querySelector<HTMLButtonElement>('[role="menuitem"]:not(:disabled)')?.focus({ preventScroll: true }));
+  }, [openSignal, kind]);
   useEffect(() => {
     if (!open) return;
     return listenForSteerMenuDismissal(document, node => Boolean(rootRef.current?.contains(node as Node)), reason => {

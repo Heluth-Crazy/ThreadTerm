@@ -1577,6 +1577,12 @@
               ],
               "additionalProperties": false
             },
+            "quickMessages": {
+              "type": "array",
+              "items": {
+                "$ref": "#/definitions/QuickMessage"
+              }
+            },
             "chatTools.ask": {
               "type": "boolean"
             },
@@ -1632,6 +1638,27 @@
         "border"
       ],
       "additionalProperties": false
+    },
+    "QuickMessage": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "title": {
+          "type": "string"
+        },
+        "text": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "title",
+        "text"
+      ],
+      "additionalProperties": false,
+      "description": "A saved composer snippet inserted at the caret from the `+` menu or the composer's right-click menu."
     },
     "RequestResult<\"settings.import.preview\">": {
       "type": "object",
@@ -1711,6 +1738,12 @@
         },
         "chatTools.delegation": {
           "type": "boolean"
+        },
+        "quickMessages": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/QuickMessage"
+          }
         }
       },
       "required": [
