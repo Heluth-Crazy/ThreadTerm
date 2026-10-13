@@ -825,6 +825,15 @@
         },
         "forkAnchor": {
           "$ref": "#/definitions/NativeForkAnchor"
+        },
+        "turnModel": {
+          "type": "string"
+        },
+        "turnUsage": {
+          "$ref": "#/definitions/ChatContextUsage"
+        },
+        "turnReview": {
+          "$ref": "#/definitions/ChatTurnReview"
         }
       },
       "required": [
@@ -1037,6 +1046,60 @@
       ],
       "additionalProperties": false,
       "description": "Opaque provider-owned identifiers; only the runtime resolves a chosen reply to a native fork point."
+    },
+    "ChatContextUsage": {
+      "type": "object",
+      "properties": {
+        "usedTokens": {
+          "type": "number"
+        },
+        "windowTokens": {
+          "type": "number"
+        },
+        "percent": {
+          "type": "number"
+        },
+        "inputTokens": {
+          "type": "number"
+        },
+        "outputTokens": {
+          "type": "number"
+        },
+        "cacheReadTokens": {
+          "type": "number"
+        },
+        "cacheWriteTokens": {
+          "type": "number"
+        },
+        "totalTokens": {
+          "type": "number"
+        },
+        "updatedAt": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "description": "Latest context-window usage for one Chat session, pushed by `chat.context` and read by `chat.context.read`."
+    },
+    "ChatTurnReview": {
+      "type": "object",
+      "properties": {
+        "from": {
+          "type": "string"
+        },
+        "to": {
+          "type": "string"
+        },
+        "fileCount": {
+          "type": "number"
+        }
+      },
+      "required": [
+        "from",
+        "to",
+        "fileCount"
+      ],
+      "additionalProperties": false
     },
     "RequestResult<\"chat.subagent.read\">": {
       "$ref": "#/definitions/SubagentTranscriptRead"
@@ -3540,40 +3603,6 @@
         }
       ]
     },
-    "ChatContextUsage": {
-      "type": "object",
-      "properties": {
-        "usedTokens": {
-          "type": "number"
-        },
-        "windowTokens": {
-          "type": "number"
-        },
-        "percent": {
-          "type": "number"
-        },
-        "inputTokens": {
-          "type": "number"
-        },
-        "outputTokens": {
-          "type": "number"
-        },
-        "cacheReadTokens": {
-          "type": "number"
-        },
-        "cacheWriteTokens": {
-          "type": "number"
-        },
-        "totalTokens": {
-          "type": "number"
-        },
-        "updatedAt": {
-          "type": "string"
-        }
-      },
-      "additionalProperties": false,
-      "description": "Latest context-window usage for one Chat session, pushed by `chat.context` and read by `chat.context.read`."
-    },
     "RequestResult<\"chat.option.set\">": {
       "$ref": "#/definitions/ChatUiState"
     },
@@ -4801,6 +4830,15 @@
             "M",
             "D"
           ]
+        },
+        "added": {
+          "type": "number"
+        },
+        "removed": {
+          "type": "number"
+        },
+        "binary": {
+          "type": "boolean"
         }
       },
       "required": [

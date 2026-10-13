@@ -26,6 +26,8 @@ import { createCodexStreamQueue } from "../codexStream";
 import { FileLinkedMarkdown, FileLinkedText, FileReferenceChips, FileReferenceScopeProvider } from './FileReferenceText';
 import { isReplyTextPart, replyActionMarkdown } from '../replyMarkdown';
 import { MessageActions } from './MessageActions';
+import { TurnFooter } from './TurnFooter';
+import { createTurnChangesCache } from '../turnFooter';
 import { ChatPlanPanel } from './ChatPlanPanel';
 import { ComposerOptions } from './ComposerOptions';
 import { ChatContextRing } from './ChatContextRing';
@@ -383,6 +385,7 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession }
   const canControl = chatCanControl(session);
   const ended = isEnded(session);
   const [items, setItems] = useState<ChatItem[]>([]); const [text, setText] = useState(""); const [busy, setBusy] = useState(false); const [error, setError] = useState<string>(); const [controlIssue, setControlIssue] = useState<string>(); const [controllable, setControllable] = useState(false);
+  const turnChangesCache = useMemo(() => createTurnChangesCache<import('@threadterm/protocol').ReviewFile[]>(), [session.id]);
   const [viewportSessionId, setViewportSessionId] = useState<string>();
   const [repair, setRepair] = useState<ChatRepairAvailability>();
   const [repairDiscovery, setRepairDiscovery] = useState<RepairDiscovery>();
@@ -1170,10 +1173,11 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession }
       !group.response.some(item => usageCards.has(item.id)) && (activity.length ? <details className="codex-work" key={`${group.id}-work`}>
         <summary><span className="codex-work-label">{summary}<Icon name="chevR" /></span></summary>
         <div className="codex-work-body">{activity.length ? activity.map(item => renderItem(item)) : <p className="dim">{copy('No additional activity recorded.', '没有记录额外的过程。')}</p>}</div>
-      </details> : <p className="chat-duration" key={`${group.id}-work`}>{summary}</p>),
+      </details> : null),
       tools.length ? drawer(tools) : null,
       ...subagents.map(item => <Fragment key={`${item.id}-subagent`}>{renderItem(item)}</Fragment>),
       ...response.map(item => <Fragment key={item.parts.some(isSubagentPart) ? `${item.id}-subagent` : `${item.id}-response`}>{renderItem(item)}</Fragment>),
+      group.items.some(item => item.role !== 'user' && item.role !== 'system') && <TurnFooter key={`${group.id}-footer`} items={group.items} elapsedMs={group.elapsedMs} session={session} zh={zh} copy={copy} cache={turnChangesCache} openFile={openFile} />,
     ];
   }
   return <FileReferenceScopeProvider sourceSessionId={session.id} canonicalRoot={session.worktreePath}><section className={`chat-view v3-session-chat${overlay === "full" ? " is-connecting" : ""}`} data-provider={session.provider} data-testid={`session-chat-${session.id}`} aria-label={copy('Structured chat', '图形聊天')}>

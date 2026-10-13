@@ -1,11 +1,11 @@
 import { app, BrowserWindow, Menu, Tray, dialog, ipcMain, nativeImage, shell, globalShortcut, Notification, screen, session, type IpcMainInvokeEvent } from 'electron';
 import { randomUUID } from 'node:crypto';
-import { join } from 'node:path';
+import { dirname, isAbsolute, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { release } from 'node:os';
 import { readFileSync, renameSync, writeFileSync, unlinkSync, realpathSync, statSync, mkdirSync } from 'node:fs';
 import { validateRequest, type Method, type RequestParams, type RuntimeEvent } from '@threadterm/protocol';
-import { RuntimeClient, runtimePipeIsOpen, waitForPendingRuntimeStartup } from './runtime-client.js';
+import { RuntimeClient, RuntimeRequestError, runtimePipeIsOpen, waitForPendingRuntimeStartup } from './runtime-client.js';
 import { floatIdentity, nextFloatKey, tiledFloatBounds, type FloatMode } from './floatingWindows.js';
 import { nativeDelivery, type NotificationKind } from './notificationPreferences.js';
 import { inboxNotificationCopy, notificationLocale, terminalNotificationCopy, terminalNotificationKind, testNotificationCopy, type InboxNotice, type NotificationLocale } from './inboxNotification.js';
@@ -15,6 +15,7 @@ import { terminalWindowArguments } from './terminalEnvironment.js';
 import { registerPageComments } from './pageComments.js';
 import { applicationIconPng, trayIconPng } from '../assets/icon-data.js';
 import { quitConfirmationOptions, quitConfirmationPreapproved } from './quitConfirmation.js';
+import { deletedRevealScope, isWithinScope, revealTarget } from './revealFile.js';
 
 ignoreBrokenStdio();
 process.on('uncaughtException', (error) => {
@@ -378,6 +379,29 @@ function registerIpc(): void {
     const error = await shell.openPath(directory);
     if (error) throw new Error(error);
   });
+  ipcMain.handle('threadterm:reveal-file', async (event, sessionId: unknown, path: unknown) => {
+    assertTrustedRenderer(event);
+    if (!isRevealSessionId(sessionId) || !isRevealPath(path)) throw new Error('Invalid file reveal request');
+    let target: { scope: string; path: string };
+    try {
+      const resolved = await adminRuntime.request('filesystem.resolve', { sessionId, path });
+      if (!resolved.worktreePath) throw new Error('File project scope is unavailable');
+      target = revealTarget(resolved, realpathSync(resolved.worktreePath));
+    } catch (error) {
+      if (!(error instanceof RuntimeRequestError) || error.code !== 'file_reference_not_found') throw error;
+      const scope = deletedRevealScope(await adminRuntime.request('runtime.snapshot', {}), sessionId);
+      target = revealTarget({ worktreePath: scope, path }, realpathSync(scope));
+    }
+    try {
+      const canonicalFile = realpathSync(target.path);
+      if (!isWithinScope(target.scope, canonicalFile)) throw new Error('File is outside its project scope');
+      shell.showItemInFolder(canonicalFile);
+    } catch (error) {
+      if (!isMissingPath(error)) throw error;
+      const openError = await shell.openPath(canonicalExistingParent(target.scope, target.path));
+      if (openError) throw new Error(openError);
+    }
+  });
   ipcMain.handle('threadterm:open-plugins-folder', async (event) => {
     assertTrustedRenderer(event);
     const { directory } = await adminRuntime.request('plugin.list', {});
@@ -683,4 +707,36 @@ function isWindowOptions(value: unknown): value is { sessionId?: string; workspa
   return typeof value === 'object' && value !== null && !Array.isArray(value)
     && (typeof (value as Record<string, unknown>).sessionId === 'undefined' || typeof (value as Record<string, unknown>).sessionId === 'string')
     && (typeof (value as Record<string, unknown>).workspaceId === 'undefined' || typeof (value as Record<string, unknown>).workspaceId === 'string');
+}
+function isRevealSessionId(value: unknown): value is string {
+  return typeof value === 'string'
+    && value.length > 0
+    && value.length <= 256
+    && !/[\u0000-\u001f\u007f]/.test(value);
+}
+function isRevealPath(value: unknown): value is string {
+  return typeof value === 'string'
+    && value.length > 0
+    && value.length <= 16 * 1024
+    && !value.includes('\0')
+    && !isAbsolute(value);
+}
+function isMissingPath(error: unknown): boolean {
+  return !!error && typeof error === 'object' && ['ENOENT', 'ENOTDIR'].includes(String((error as NodeJS.ErrnoException).code));
+}
+function canonicalExistingParent(scope: string, path: string): string {
+  let candidate = dirname(path);
+  while (isWithinScope(scope, candidate)) {
+    try {
+      const canonical = realpathSync(candidate);
+      if (!statSync(canonical).isDirectory() || !isWithinScope(scope, canonical)) throw new Error('File is outside its project scope');
+      return canonical;
+    } catch (error) {
+      if (!isMissingPath(error)) throw error;
+      const next = dirname(candidate);
+      if (next === candidate) break;
+      candidate = next;
+    }
+  }
+  throw new Error('File parent directory is unavailable');
 }

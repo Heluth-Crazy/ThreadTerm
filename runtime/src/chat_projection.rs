@@ -237,7 +237,7 @@ fn record_tx(
   let key=if category=="approval"{approval_id.unwrap_or(turn_key)}else{native_item.unwrap_or(turn_key)};
   let id=format!("{session_id}:{category}:{key}");
   let previous:Option<String>=tx.query_row("SELECT data FROM chat_items WHERE id=?",[&id],|r|r.get(0)).optional()?;
-  let mut item=previous.and_then(|s|serde_json::from_str::<ChatItem>(&s).ok()).unwrap_or(ChatItem{id:id.clone(),role:if category=="user"{"user"}else{"assistant"}.into(),parts:Vec::new(),created_at:now.clone(),turn_id:turn.map(str::to_owned),elapsed_ms:None,turn_status:None,turn_origin:None,fork_anchor:None});
+  let mut item=previous.and_then(|s|serde_json::from_str::<ChatItem>(&s).ok()).unwrap_or(ChatItem{id:id.clone(),role:if category=="user"{"user"}else{"assistant"}.into(),parts:Vec::new(),created_at:now.clone(),turn_id:turn.map(str::to_owned),elapsed_ms:None,turn_status:None,turn_origin:None,fork_anchor:None,turn_model:None,turn_usage:None,turn_review:None});
   let mut changed=false;
   let mut resolved_pending_approval=false;
   // Agent delegation: while the parent agent is inside a turn, a delegated
@@ -342,6 +342,13 @@ fn record_tx(
      expire_pending_parts(tx,session_id,&now)?;
     }
    }
+   "chat.turn.started"=>{
+    // A delayed duplicate start must not replace the model that was active
+    // when this turn first began.
+    if item.turn_model.is_none() {
+     if let Some(model)=turn_model(data).or_else(|| model_from_latest_ui(tx,session_id)) { item.turn_model=Some(model);changed=true; }
+    }
+   }
    "chat.turn.completed"=>{
     let completion=completed_turn_status(data);
     item.turn_status=Some(completion);changed=true;
@@ -373,6 +380,9 @@ fn record_tx(
      // reopened chat can paint it before the next turn produces usage.
      tx.execute("INSERT INTO chat_context(session_id,data,updated_at) VALUES (?,?,?) ON CONFLICT(session_id) DO UPDATE SET data=excluded.data,updated_at=excluded.updated_at",params![session_id,serde_json::to_string(&usage)?,updated_at])?;
      tx.execute("INSERT INTO outbox(event,data,created_at) VALUES ('chat.context',?,?)",params![serde_json::to_string(&json!({"sessionId":session_id,"usage":usage}))?,now])?;
+     // Context notifications are the only source for this footer snapshot.
+     // They are native per-turn data, unlike summary/session usage records.
+     if turn.is_some() && data.get("turnUsage").and_then(turn_usage).is_some() { item.turn_usage=data.get("turnUsage").and_then(turn_usage);changed=true; }
     }
     return Ok(());
    }
@@ -474,6 +484,48 @@ fn stamp_turn_status(
  Ok(())
 }
 
+fn turn_model(data: &Value) -> Option<String> {
+    [data.get("model"), data.pointer("/turn/model"), data.pointer("/raw/params/turn/model"), data.pointer("/raw/params/model")]
+        .into_iter().flatten().find_map(Value::as_str).filter(|value| !value.is_empty()).map(str::to_owned)
+}
+
+fn model_from_latest_ui(tx: &rusqlite::Transaction<'_>, session_id: &str) -> Option<String> {
+    let raw: Option<String> = tx.query_row("SELECT data FROM outbox WHERE event='chat.ui' AND json_extract(data,'$.sessionId')=? ORDER BY seq DESC LIMIT 1", [session_id], |row| row.get(0)).optional().ok().flatten();
+    serde_json::from_str::<Value>(raw?.as_str()).ok()?.get("options")?.as_array()?.iter()
+        .find(|option| option.get("id").and_then(Value::as_str)==Some("model"))?.get("value")?.as_str()
+        .filter(|value| !value.is_empty()).map(str::to_owned)
+}
+
+fn turn_usage(usage: &Value) -> Option<Value> {
+    let mut out=serde_json::Map::new();
+    for key in ["inputTokens","outputTokens","cacheReadTokens","cacheWriteTokens","totalTokens"] {
+        if let Some(value)=usage.get(key).filter(|value| value.is_number()) { out.insert(key.into(),value.clone()); }
+    }
+    (!out.is_empty()).then_some(Value::Object(out))
+}
+
+/// Attaches review metadata after an event-triggered checkpoint pair is captured.
+/// Called only after projection and provider fencing have released their locks.
+pub(crate) fn attach_turn_review(db: &Database, session_id: &str, turn_id: &str, review: crate::domain::ChatTurnReview) -> Result<()> {
+    db.transaction(|tx| {
+        let mut statement=tx.prepare("SELECT id,data FROM chat_items WHERE session_id=? AND turn_id=? AND kind='message' ORDER BY created_at DESC,id DESC")?;
+        let rows=statement.query_map(params![session_id,turn_id],|row|Ok((row.get::<_,String>(0)?,row.get::<_,String>(1)?)))?;
+        let mut selected=None;
+        for row in rows {
+            let (id,raw)=row?;
+            let item:ChatItem=serde_json::from_str(&raw)?;
+            if item.role=="assistant" { selected=Some((id,item)); break; }
+        }
+        drop(statement);
+        let Some((id,mut item))=selected else { return Ok(()); };
+        if item.turn_review.as_ref()==Some(&review) { return Ok(()); }
+        item.turn_review=Some(review);
+        tx.execute("UPDATE chat_items SET data=? WHERE id=?",params![serde_json::to_string(&item)?,id])?;
+        tx.execute("INSERT INTO outbox(event,data,created_at) VALUES ('chat.item',?,?)",params![serde_json::to_string(&json!({"sessionId":session_id,"item":item}))?,Utc::now().to_rfc3339()])?;
+        Ok(())
+    })
+}
+
 fn terminal_subagent_status(status: &str) -> bool {
     matches!(status, "completed" | "failed" | "cancelled")
 }
@@ -572,6 +624,9 @@ fn record_subagent(
         turn_status: None,
         turn_origin: None,
             fork_anchor: None,
+        turn_model: None,
+        turn_usage: None,
+        turn_review: None,
     });
     let mut info = card.parts.first().and_then(|part| part.get("data")).filter(|v| v.is_object()).cloned()
         .unwrap_or_else(|| json!({"key":key,"provider":provider,"status":"running","transcript":"live","startedAt":now}));
@@ -604,6 +659,9 @@ fn record_subagent(
             turn_status: None,
             turn_origin: None,
             fork_anchor: None,
+            turn_model: None,
+            turn_usage: None,
+            turn_review: None,
         };
         let rev = crate::db::upsert_subagent_item(
             tx,
@@ -1321,6 +1379,9 @@ mod tests {
                 turn_status: None,
                 turn_origin: None,
             fork_anchor: None,
+                turn_model: None,
+                turn_usage: None,
+                turn_review: None,
             };
             assert_eq!(subagent_activity_label(&item), expected);
         }
@@ -1842,6 +1903,32 @@ mod tests {
             .transaction(|tx| Ok(tx.query_row("SELECT COUNT(*) FROM outbox WHERE event='chat.context'", [], |row| row.get(0))?))
             .unwrap();
         assert_eq!(events, 0);
+    }
+    #[test]
+    fn turn_footer_metadata_is_frozen_from_start_and_context_events() {
+        let db = db();
+        record(&db, "s", None, "chat.ui", &json!({"options":[{"id":"model","value":"gpt-test","choices":[]}]})).unwrap();
+        record(&db, "s", Some("turn"), "chat.turn.started", &json!({})).unwrap();
+        record(&db, "s", None, "chat.ui", &json!({"options":[{"id":"model","value":"gpt-later","choices":[]}]})).unwrap();
+        record(&db, "s", Some("turn"), "chat.turn.started", &json!({"model":"gpt-later"})).unwrap();
+        record(&db, "s", Some("turn"), "chat.context", &json!({"usage":{"usedTokens":99},"turnUsage":{"inputTokens":12,"outputTokens":3,"totalTokens":15,"sessionTotal":999}})).unwrap();
+        let item = db.chat_items("s").unwrap().into_iter().find(|item| item.id == "s:assistant:turn").unwrap();
+        assert_eq!(item.turn_model.as_deref(), Some("gpt-test"));
+        assert_eq!(item.turn_usage.as_ref().unwrap()["totalTokens"], 15);
+        assert!(item.turn_usage.as_ref().unwrap().get("sessionTotal").is_none());
+        let legacy: ChatItem = serde_json::from_value(json!({"id":"old","role":"assistant","parts":[],"createdAt":"now"})).unwrap();
+        assert!(legacy.turn_model.is_none() && legacy.turn_usage.is_none() && legacy.turn_review.is_none());
+    }
+    #[test]
+    fn turn_review_attaches_to_assistant_when_a_later_user_item_exists() {
+        let db = db();
+        record(&db, "s", Some("turn"), "chat.item", &json!({"item":{"id":"assistant"},"parts":[{"type":"text","text":"answer"}]})).unwrap();
+        record(&db, "s", Some("turn"), "message.user", &json!({"text":"follow-up"})).unwrap();
+        let review = crate::domain::ChatTurnReview { from: "before".into(), to: "after".into(), file_count: 3 };
+        attach_turn_review(&db, "s", "turn", review.clone()).unwrap();
+        let items = db.chat_items("s").unwrap();
+        assert_eq!(items.iter().find(|item| item.role == "assistant").unwrap().turn_review.as_ref(), Some(&review));
+        assert!(items.iter().find(|item| item.role == "user").unwrap().turn_review.is_none());
     }
     #[test]
     fn chat_ui_defaults_missing_input_capabilities_to_an_empty_object() {

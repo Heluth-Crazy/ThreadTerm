@@ -2310,6 +2310,9 @@ mod tests {
             turn_status: None,
             turn_origin: None,
             fork_anchor: None,
+            turn_model: None,
+            turn_usage: None,
+            turn_review: None,
         };
         db.transaction(|tx| {
             assert_eq!(
@@ -2395,6 +2398,9 @@ mod tests {
             turn_status: None,
             turn_origin: None,
             fork_anchor: None,
+            turn_model: None,
+            turn_usage: None,
+            turn_review: None,
         };
         db.transaction(|tx| {
             tx.execute(
@@ -2483,6 +2489,9 @@ mod tests {
             turn_status: Some(crate::domain::NativeTurnStatus::Completed),
             turn_origin: None,
             fork_anchor: None,
+            turn_model: None,
+            turn_usage: None,
+            turn_review: None,
         }
     }
     #[test]

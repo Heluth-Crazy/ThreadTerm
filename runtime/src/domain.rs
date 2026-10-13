@@ -153,6 +153,24 @@ pub struct ChatItem {
     pub turn_origin: Option<ChatTurnOrigin>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub fork_anchor: Option<NativeForkAnchor>,
+    /// Model selected when this turn began. Kept on the turn rather than the
+    /// session so a later model change cannot rewrite historic footers.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub turn_model: Option<String>,
+    /// Latest native per-turn context snapshot. Session-wide totals are never
+    /// copied here; adapters publish these through `chat.context`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub turn_usage: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub turn_review: Option<ChatTurnReview>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ChatTurnReview {
+    pub from: String,
+    pub to: String,
+    pub file_count: u64,
 }
 
 /// The public native-history turn states supported by the Chat presentation.

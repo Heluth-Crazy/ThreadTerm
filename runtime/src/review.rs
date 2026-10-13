@@ -243,6 +243,29 @@ impl Store {
         deadline: Instant,
     ) -> Result<Vec<Value>> {
         let env = self.env(None, extra)?;
+        let numstat = self.run(
+            &[
+                "diff",
+                "--numstat",
+                "-z",
+                "--no-ext-diff",
+                "--no-textconv",
+                "--no-renames",
+                from,
+                to,
+            ],
+            &env,
+            None,
+            deadline,
+        )?;
+        let mut counts = std::collections::HashMap::new();
+        for record in String::from_utf8_lossy(&numstat).split('\0') {
+            let Some((added, rest)) = record.split_once('\t') else { continue; };
+            let Some((removed, path)) = rest.split_once('\t') else { continue; };
+            let Some(relative) = path.strip_prefix(&self.prefix).filter(|rest| !rest.is_empty()) else { continue; };
+            let binary = added == "-" || removed == "-";
+            counts.insert(relative.to_owned(), (added.parse::<u64>().ok(), removed.parse::<u64>().ok(), binary));
+        }
         let output = self.run(
             &[
                 "diff-tree",
@@ -272,7 +295,14 @@ impl Store {
                 Some('D') => "D",
                 _ => "M",
             };
-            files.push(json!({"path":relative,"status":status}));
+            let (added, removed, binary) = counts.remove(relative).unwrap_or((None, None, false));
+            let mut file = serde_json::Map::new();
+            file.insert("path".into(), json!(relative));
+            file.insert("status".into(), json!(status));
+            if let Some(added) = added { file.insert("added".into(), json!(added)); }
+            if let Some(removed) = removed { file.insert("removed".into(), json!(removed)); }
+            if binary { file.insert("binary".into(), Value::Bool(true)); }
+            files.push(Value::Object(file));
         }
         Ok(files)
     }
@@ -471,6 +501,37 @@ pub fn attach_turn(db: &Database, checkpoint_id: &str, turn_id: Option<&str>) {
         )?;
         Ok(())
     });
+}
+
+/// Captures the immutable post-turn tree and returns the compact comparison
+/// metadata for the matching pre-turn checkpoint. This is deliberately called
+/// by the service after projection has released its provider/SQLite fences.
+pub fn capture_after_turn(db: &Database, session_id: &str, turn_id: &str) -> Option<crate::domain::ChatTurnReview> {
+    let before: Option<String> = db.transaction(|tx| {
+        Ok(tx.query_row(
+            "SELECT id FROM review_checkpoints WHERE session_id=? AND turn_id=? AND kind='turn' AND COALESCE(operation_id,'') NOT LIKE 'turn-complete:%' ORDER BY created_at ASC, rowid ASC LIMIT 1",
+            params![session_id, turn_id],
+            |row| row.get(0),
+        ).optional()?)
+    }).ok().flatten();
+    let before = before?;
+    let operation = format!("turn-complete:{session_id}:{turn_id}");
+    let after = capture(db, session_id, "turn", Some(&operation), None, TURN_BUDGET).ok()?;
+    attach_turn(db, &after, Some(turn_id));
+    // A bounded checkpoint can omit files. Do not advertise a misleading count
+    // for an incomplete pair.
+    if checkpoint_json(db, &before).ok()?["skipped"].as_array().is_some_and(|files| !files.is_empty())
+        || checkpoint_json(db, &after).ok()?["skipped"].as_array().is_some_and(|files| !files.is_empty()) {
+        return None;
+    }
+    let scope = session_scope(db, session_id).ok()??;
+    let (from, mut extra) = ready_tree(&checkpoint_row(db, session_id, &before).ok()?).ok()?;
+    let (to, stores) = ready_tree(&checkpoint_row(db, session_id, &after).ok()?).ok()?;
+    extra.extend(stores);
+    let deadline = Instant::now() + TURN_BUDGET;
+    let store = Store::open(db, &scope.root, deadline).ok()?;
+    let file_count = store.changes(&from, &to, &extra, deadline).ok()?.len() as u64;
+    Some(crate::domain::ChatTurnReview { from: before, to: after, file_count })
 }
 
 /// Terminal hook: snapshot an agent terminal launch in the background.
@@ -983,7 +1044,23 @@ mod tests {
             json!({"sessionId":session,"from":checkpoint,"to":manual["id"]}),
         )
         .unwrap();
-        assert_eq!(between["files"], json!([{"path":"src/新.ts","status":"A"}]));
+        assert_eq!(between["files"], json!([{"path":"src/新.ts","status":"A","added":1,"removed":0}]));
+    }
+
+    #[test]
+    fn completion_checkpoint_pairs_the_turn_and_counts_changed_files() {
+        let (_temp, db, repo, session) = setup();
+        let before = capture_before_turn(&db, &session, "send-pair", "edit files").unwrap();
+        attach_turn(&db, &before, Some("turn-pair"));
+        fs::write(repo.join("a.txt"), "changed\n").unwrap();
+        fs::write(repo.join("new.txt"), "new\n").unwrap();
+        fs::remove_file(repo.join("gone.txt")).unwrap();
+        let review = capture_after_turn(&db, &session, "turn-pair").unwrap();
+        assert_eq!(review.from, before);
+        assert_eq!(review.file_count, 3);
+        assert_ne!(review.from, review.to);
+        fs::write(repo.join("after-completion.txt"), "not part of this turn\n").unwrap();
+        assert_eq!(capture_after_turn(&db, &session, "turn-pair").unwrap(), review);
     }
 
     #[test]
@@ -1087,7 +1164,7 @@ mod tests {
             json!({"sessionId":session,"from":checkpoint}),
         )
         .unwrap();
-        assert_eq!(changes["files"], json!([{"path":"in.txt","status":"M"}]));
+        assert_eq!(changes["files"], json!([{"path":"in.txt","status":"M","added":1,"removed":1}]));
         let diff = call(
             &db,
             "review.diff",
