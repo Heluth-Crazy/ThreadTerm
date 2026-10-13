@@ -21,6 +21,15 @@ function userMessage(text, uuid) {
   return message;
 }
 
+const MESSAGE_UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/** A client uuid is only sent when the host genuinely minted one; otherwise the
+ * SDK would reject or ignore a non-uuid value. The chosen uuid still maps back
+ * to the renderer's operation id for result correlation. */
+function messageUuid(operationId) {
+  return typeof operationId === 'string' && MESSAGE_UUID.test(operationId) ? operationId : randomUUID();
+}
+
 const DEFAULT_HANDSHAKE_TIMEOUT_MS = 25000;
 const CONTROL_TIMEOUT_MS = 10000;
 
@@ -77,7 +86,7 @@ export class ClaudeSession {
     // Steers pushed into the active turn. A uuid missing from the turn result
     // becomes the next SDK turn; it is adopted on the following message so a
     // query that simply ends does not leave a phantom running turn.
-    this.pendingSteers = new Map(); this.carryArmed = false;
+    this.pendingSteers = new Map(); this.steerUuids = new Map(); this.carryArmed = false;
     this.abortStart = null;
     // Chat options and command menu, from the handshake and later native updates.
     this.catalog = { commands: [], models: [] }; this.terminalCommands = new Set();
@@ -174,6 +183,10 @@ export class ClaudeSession {
   send(text, operationId) {
     if (this.ended || this.closed) throw new Error('session worker has ended');
     if (this.activeOperationId) throw new Error(`turn already active: ${this.activeOperationId}`);
+    // A new send owns the next turn: drop any carry the SDK did not start.
+    this.carryArmed = false;
+    this.pendingSteers.clear();
+    this.steerUuids.clear();
     // A prior turn's outstanding context read must not publish into this turn.
     this.contextSequence += 1;
     const before = this.backgroundTasks.size;
@@ -191,7 +204,7 @@ export class ClaudeSession {
     this.backgroundTasks = new Map([...this.backgroundTasks].filter(([, task]) => task.status === 'running'));
     if (this.backgroundTasks.size !== before) this.publishUi();
     this.activeOperationId = operationId;
-    this.input.push(userMessage(text));
+    this.input.push(userMessage(text, messageUuid(operationId)));
     this.write(event(this.cardId, 'session.status', { phase: 'running', sessionId: this.sessionId, operationId }));
   }
 
@@ -201,12 +214,15 @@ export class ClaudeSession {
       error.code = 'turn_changed';
       throw error;
     }
-    const message = userMessage(text, operationId);
-    this.pendingSteers.set(operationId, { operationId });
+    const uuid = messageUuid(operationId);
+    const message = userMessage(text, uuid);
+    this.pendingSteers.set(operationId, { operationId, uuid });
+    this.steerUuids.set(uuid, operationId);
     try {
       this.input.push(message);
     } catch (cause) {
       this.pendingSteers.delete(operationId);
+      this.steerUuids.delete(uuid);
       const error = new Error('turn_changed: The turn ended before the message was inserted');
       error.code = 'turn_changed';
       error.cause = cause;
@@ -215,20 +231,33 @@ export class ClaudeSession {
     return { disposition: 'delivered' };
   }
 
+  /** A result lists the client uuids it consumed; drop the matching steers. */
+  consumeSteerUuid(uuid) {
+    const operationId = this.steerUuids.get(uuid);
+    if (operationId === undefined) return;
+    this.steerUuids.delete(uuid);
+    this.pendingSteers.delete(operationId);
+  }
+
   adoptCarry() {
     if (this.activeOperationId || !this.carryArmed) return;
-    const uuid = this.pendingSteers.keys().next().value;
+    const entry = this.pendingSteers.values().next().value;
     this.carryArmed = false;
-    if (!uuid) return;
-    this.pendingSteers.delete(uuid);
-    this.activeOperationId = `carry:${uuid}`;
+    if (!entry) return;
+    this.pendingSteers.delete(entry.operationId);
+    this.steerUuids.delete(entry.uuid);
+    this.activeOperationId = `carry:${entry.operationId}`;
     this.write(event(this.cardId, 'session.status', { phase: 'running', sessionId: this.sessionId, operationId: this.activeOperationId }));
   }
 
   async run() {
     try {
       for await (const message of this.query) {
-        this.adoptCarry();
+        // A carry is a turn the SDK started from an unconsumed steer. Adopt it
+        // only on a frame that shows model activity for a new turn; a system,
+        // status or rate-limit frame must never open a phantom running turn.
+        if (message.type === 'assistant' || message.type === 'stream_event'
+          || (message.type === 'user' && typeof message.uuid === 'string' && this.steerUuids.has(message.uuid))) this.adoptCarry();
         if (message.type === 'system' && message.subtype === 'init') {
           this.sessionId = message.session_id;
           this.write(event(this.cardId, 'session.status', { phase: 'ready', sessionId: this.sessionId, operationId: this.activeOperationId }));
@@ -244,8 +273,16 @@ export class ClaudeSession {
           this.publishUi();
         }
         if (message.type === 'result') {
-          const consumed = new Set(Array.isArray(message.user_message_uuids) ? message.user_message_uuids : []);
-          for (const uuid of consumed) this.pendingSteers.delete(uuid);
+          if (Array.isArray(message.user_message_uuids)) {
+            for (const uuid of message.user_message_uuids) this.consumeSteerUuid(uuid);
+          } else if (typeof message.user_message_uuid === 'string') {
+            this.consumeSteerUuid(message.user_message_uuid);
+          } else {
+            // Older producers, delivery failures and zeroed results report no
+            // consumption. The turn is over, so none of these steers runs next.
+            this.pendingSteers.clear();
+            this.steerUuids.clear();
+          }
           // How the turn ended: a stopped or failed turn must not read as a
           // completed answer waiting for the user.
           const status = this.interruptedOperation !== null && this.interruptedOperation === this.activeOperationId ? 'interrupted'
