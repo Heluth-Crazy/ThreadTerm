@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { event } from './protocol.mjs';
 
 export function createInputQueue() {
@@ -69,7 +70,7 @@ export class ClaudeSession {
   constructor({ cardId, sdk, write, hostOptions = {} }) {
     this.cardId = cardId; this.sdk = sdk; this.write = write; this.hostOptions = hostOptions;
     this.input = createInputQueue(); this.query = null; this.sessionId = null;
-    this.activeOperationId = null; this.pending = new Map(); this.nextRequest = 1; this.closed = false; this.ended = false; this.endError = null;
+    this.activeOperationId = null; this.pending = new Map(); this.requestGeneration = randomUUID(); this.nextRequest = 1; this.closed = false; this.ended = false; this.endError = null;
     this.abortStart = null;
     // Chat options and command menu, from the handshake and later native updates.
     this.catalog = { commands: [], models: [] }; this.terminalCommands = new Set();
@@ -205,7 +206,10 @@ export class ClaudeSession {
     if (this.closed || this.ended) return Promise.resolve({ behavior: 'deny', message: 'Session closed' });
     if (toolName === 'ExitPlanMode' && [...this.pending.values()].some(entry => entry.plan)) return Promise.resolve({ behavior: 'deny', message: 'A plan approval is already pending.' });
     if ((this.threadTermDelegationTools && THREADTERM_DELEGATION_TOOLS.has(toolName)) || (this.threadTermPreviewTools && THREADTERM_PREVIEW_TOOLS.has(toolName))) return Promise.resolve({ behavior: 'allow', updatedInput: input });
-    const requestId = `${this.cardId}-permission-${this.nextRequest++}`;
+    // Projection keys approvals by Chat session and request id. A fresh worker
+    // for the same Chat must therefore never restart the request-id sequence in
+    // the same namespace and overwrite an answered receipt from its predecessor.
+    const requestId = `${this.cardId}-permission-${this.requestGeneration}-${this.nextRequest++}`;
     const operationId = this.activeOperationId;
     const sessionId = this.sessionId;
     return new Promise(resolve => {
@@ -270,16 +274,25 @@ export class ClaudeSession {
       // Allow ExitPlanMode first, then return the streaming session to the
       // default mode Claude Code uses for implementation.
       if (this.settings.mode === 'plan') {
-        await withTimeout(this.query.setPermissionMode('default'), CONTROL_TIMEOUT_MS, 'Claude plan approval mode change');
-        this.noteMode('default');
+        try {
+          await withTimeout(this.query.setPermissionMode('default'), CONTROL_TIMEOUT_MS, 'Claude plan approval mode change');
+          this.noteMode('default');
+        } catch (error) {
+          // ExitPlanMode was already allowed, so retrying this card would target
+          // a native request that no longer exists. Return a terminal partial
+          // receipt and direct recovery through a worker reconnect.
+          const message = String(error?.message ?? error).slice(0, 500);
+          return { outcome: 'partial', nativeDecision: 'allowed', modeChanged: false, recovery: 'reconnect', message };
+        }
       }
-      return;
+      return { outcome: 'submitted', nativeDecision: 'allowed', modeChanged: true };
     }
     if (action !== 'request_changes' && action !== 'abandon') throw new Error(`unsupported plan response: ${action}`);
     const message = action === 'abandon'
       ? 'Please abandon the plan and remain in plan mode.'
       : typeof feedback === 'string' && feedback.trim() ? feedback : 'Please revise the plan.';
     entry.settle({ behavior: 'deny', message });
+    return { outcome: 'submitted', nativeDecision: 'denied', modeChanged: false };
   }
 
   answer(requestId, values) {

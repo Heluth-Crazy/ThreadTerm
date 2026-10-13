@@ -98,6 +98,12 @@ fn synthetic_plan_card_requires_a_completed_authoritative_item_in_plan_mode() {
     );
     let approvals = approval_events(&events);
     assert_eq!(approvals.len(), 1);
+    let approval_index = events.iter().position(|event| event.kind == "chat.approval").unwrap();
+    let completion_index = events.iter().position(|event| event.kind == "chat.turn.completed").unwrap();
+    assert!(
+        approval_index < completion_index,
+        "the synthetic pending-plan gate must exist before completion can dispatch the queue"
+    );
     assert_eq!(approvals[0].data["part"]["data"]["interaction"], "plan");
     assert_eq!(approvals[0].data["part"]["data"]["runtimeOwned"], true);
     assert_eq!(
@@ -475,6 +481,99 @@ fn held_plan_item_falls_back_to_transcript_text_when_no_card_owns_it() {
         1,
         "a plan superseded by a new turn must not be dropped"
     );
+}
+
+#[test]
+fn held_plan_item_is_snapshotted_for_durable_worker_retirement() {
+    let (mut chat, _received, _scratch, _log) = pending_plan_chat();
+    chat.ui.lock().unwrap().plan_candidate = Some(CodexPlanCandidate {
+        turn_id: "retiring-turn".into(),
+        item_id: Some("retiring-plan".into()),
+        text: "# Retiring plan".into(),
+    });
+    let events = chat.retirement_events();
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0].kind, "chat.item");
+    assert_eq!(events[0].turn_id.as_deref(), Some("retiring-turn"));
+    assert_eq!(events[0].data["item"]["id"], "retiring-plan");
+    assert_eq!(events[0].data["item"]["type"], "plan");
+    assert_eq!(events[0].data["item"]["text"], "# Retiring plan");
+    assert_eq!(events[0].worker_token.as_deref(), Some("plan-worker"));
+
+    let failure = chat.prepare_retirement(&|_| {
+        Err(ProviderError::new("chat_persistence", "injected persistence failure"))
+    });
+    assert_eq!(failure.unwrap_err().code, "chat_persistence");
+    assert!(!chat.ui.lock().unwrap().retiring);
+    assert!(chat.ui.lock().unwrap().plan_candidate.is_some());
+
+    let persisted = Mutex::new(Vec::new());
+    chat.prepare_retirement(&|event| {
+        persisted.lock().unwrap().push(event.clone());
+        Ok(())
+    })
+    .unwrap();
+    assert_eq!(persisted.lock().unwrap().len(), 1);
+    assert!(chat.ui.lock().unwrap().retiring);
+
+    chat.active_turn.0.lock().unwrap().replace(ActiveCodexTurn {
+        public_id: "late-public".into(),
+        native_id: Some("late-native".into()),
+        assistant_item_id: None,
+        started_at: Instant::now(),
+    });
+    emit_codex_message(
+        &chat.events,
+        &chat.session_id,
+        &Mutex::new(Some(chat.native_id.clone())),
+        &chat.approvals,
+        &chat.active_turn,
+        &chat.ui,
+        &Mutex::new(None),
+        &chat.worker_token,
+        &Mutex::new(CodexSubagents::default()),
+        json!({"method":"item/completed","params":{
+            "threadId":chat.native_id,"turnId":"late-native",
+            "item":{"id":"late-plan","type":"plan","text":"# Late plan"}
+        }}),
+    );
+    assert_eq!(
+        chat.ui.lock().unwrap().plan_candidate.as_ref().unwrap().text,
+        "# Retiring plan",
+        "native frames after the retirement boundary cannot replace the persisted candidate"
+    );
+    chat.stop().unwrap();
+    assert!(chat.ui.lock().unwrap().plan_candidate.is_none());
+}
+
+#[test]
+fn retirement_barrier_rejects_a_late_plan_when_no_candidate_was_held() {
+    let (mut chat, _received, _scratch, _log) = pending_plan_chat();
+    chat.prepare_retirement(&|_| panic!("an empty retirement has nothing to persist"))
+        .unwrap();
+    chat.active_turn.0.lock().unwrap().replace(ActiveCodexTurn {
+        public_id: "late-public".into(),
+        native_id: Some("late-native".into()),
+        assistant_item_id: None,
+        started_at: Instant::now(),
+    });
+    emit_codex_message(
+        &chat.events,
+        &chat.session_id,
+        &Mutex::new(Some(chat.native_id.clone())),
+        &chat.approvals,
+        &chat.active_turn,
+        &chat.ui,
+        &Mutex::new(None),
+        &chat.worker_token,
+        &Mutex::new(CodexSubagents::default()),
+        json!({"method":"item/completed","params":{
+            "threadId":chat.native_id,"turnId":"late-native",
+            "item":{"id":"late-plan","type":"plan","text":"# Late plan"}
+        }}),
+    );
+    assert!(chat.ui.lock().unwrap().plan_candidate.is_none());
+    chat.stop().unwrap();
 }
 
 #[test]

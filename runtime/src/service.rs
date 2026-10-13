@@ -325,6 +325,8 @@ fn answer_chat_request(
     if !db.claim_external_operation(operation_id)? {
         return Err(anyhow::anyhow!("operation_outcome_unknown"));
     }
+    let mut receipt = json!({"approvalId":approval_id,"status":"answered","outcome":"submitted"});
+    let mut receipt_kind = "chat.approval.resolved";
     if is_plan {
         // A deterministic child receipt prevents decision replay from issuing
         // another implementation turn, including after a client reconnect.
@@ -343,14 +345,35 @@ fn answer_chat_request(
                 .map_err(|error| ProviderError::new("chat_persistence", error.to_string()))
         });
         match implementation {
-            Ok(Some(result)) => {
+            Ok((result, native_receipt)) => {
+                receipt = native_receipt.unwrap_or_else(|| {
+                    let outcome = match response["action"].as_str() {
+                        Some("approve") => "approved", Some("request_changes") => "changes_requested", _ => "abandoned",
+                    };
+                    let mut receipt = json!({"approvalId":approval_id,"status":"answered","outcome":"submitted","planOutcome":outcome});
+                    if let Some(feedback) = response.get("feedback") { receipt["feedback"] = feedback.clone(); }
+                    if data["runtimeOwned"] == true {
+                        receipt["returnToIdle"] = json!(response["action"] == "abandon");
+                        receipt["preserveSessionState"] = json!(response["action"] != "abandon");
+                    }
+                    receipt
+                });
+                // Request changes first releases the composer; the next prompt
+                // is the decision. Persist that intermediate card before ack.
+                if data["runtimeOwned"] == true && response["action"] == "request_changes" {
+                    let mut pending = data.clone();
+                    pending["waitingForPrompt"] = json!(true);
+                    receipt_kind = "chat.approval";
+                    receipt = json!({"approvalId":approval_id,"part":{"type":"approval","approvalId":approval_id,"status":"pending","data":pending}});
+                }
+                if let Some(result) = result {
                 if let Some(next_turn) = result.get("turnId").and_then(Value::as_str) {
                     db.bind_chat_activity_turn(session_id, &implementation_id, next_turn)?;
                 }
                 if let Some(checkpoint) = checkpoint.as_ref() { crate::review::attach_turn(db, checkpoint, result.get("turnId").and_then(Value::as_str)); }
                 db.complete_operation(&implementation_id, "chat.send", &result)?;
+                }
             }
-            Ok(None) => {}
             Err(error) => {
                 db.record_provider_event(session_id, Some(turn_id), "chat.approval.resolved", &json!({"approvalId":approval_id,"status":"outcomeUnknown","message":"The plan decision could not be completed; review the session before retrying.","preserveSessionState":true}))?;
                 return Err(error.into());
@@ -358,8 +381,10 @@ fn answer_chat_request(
         }
     } else {
         providers.chat_answer(session_id, turn_id, approval_id, response, operation_id)?;
+        receipt["status"] = json!(if response["action"] == "dismiss" { "dismissed" } else { "answered" });
+        receipt["answerSummary"] = crate::chat_questions::answer_summary(&data, response);
     }
-    db.complete_null_operation(operation_id, "chat.answer")?;
+    crate::chat_projection::record_answer_receipt(db, session_id, turn_id, receipt_kind, &receipt, operation_id)?;
     Ok(Value::Null)
 }
 
@@ -625,6 +650,12 @@ impl RuntimeService {
         let chat_queues = Arc::new(crate::chat_queue::ChatQueues::default());
         let output = Arc::new(OutputStore::default());
         let providers = Arc::new(Providers::with_plugins(&config.data_dir, &db.settings_value().unwrap_or_else(|_| json!({}))));
+        let retirement_db = Arc::downgrade(&db);
+        providers.set_retirement_projector(Arc::new(move |event| {
+            let db = retirement_db.upgrade().ok_or_else(|| crate::providers::ProviderError::new("runtime_stopped", "Runtime stopped"))?;
+            db.record_provider_event(&event.session_id, event.turn_id.as_deref(), &event.kind, &event.data)
+                .map_err(|error| crate::providers::ProviderError::new("chat_persistence", error.to_string()))
+        }));
         // Resolve the project decision on each Pi connection. Other providers
         // neither read this table nor inspect Pi's configuration files.
         let trust_db = Arc::downgrade(&db);
@@ -3911,6 +3942,8 @@ mod tests {
 mod chat_lifecycle_tests;
 #[cfg(test)]
 mod question_tests;
+#[cfg(test)]
+mod approval_durability_tests;
 #[cfg(test)]
 mod repair_tests;
 

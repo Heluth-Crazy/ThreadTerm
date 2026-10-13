@@ -52,6 +52,10 @@ struct ClaudeSubagents {
     // ExitPlanMode is the sole native plan-approval interaction.  Keep its
     // request id bound to the public turn so a stale response cannot change mode.
     pending_plans: HashMap<String, Option<String>>,
+    // Snapshot the exact terminal receipt while the worker lock is held. The
+    // service commits it with the successful chat.answer operation so a crash
+    // cannot leave a natively settled plan card actionable after reload.
+    plan_response_receipt: Option<Value>,
 }
 
 struct ClaudeSubagent {
@@ -527,6 +531,13 @@ impl ChatSession for ClaudeChat {
         );
         Ok(())
     }
+    fn plan_response_receipt(&self) -> Option<Value> {
+        self.ui
+            .1
+            .lock()
+            .ok()
+            .and_then(|state| state.plan_response_receipt.clone())
+    }
     fn plan_response(
         &mut self,
         turn_id: &str,
@@ -546,27 +557,19 @@ impl ChatSession for ClaudeChat {
         if pending_turn.as_deref() != Some(turn_id) {
             return Err(ProviderError::new("approval_not_pending", "Claude plan approval is no longer pending"));
         }
+        if let Ok(mut state) = self.ui.1.lock() {
+            state.plan_response_receipt = None;
+        }
         let feedback = response.get("feedback").and_then(Value::as_str);
-        self.process.sidecar_request(
+        let sidecar_result = self.process.sidecar_request(
             "session.plan_response",
             json!({"cardId":self.session_id,"requestId":approval_id,"action":action,"feedback":feedback}),
         )?;
+        let resolved = claude_plan_resolution(approval_id, action, feedback, &sidecar_result);
         if let Ok(mut state) = self.ui.1.lock() {
             state.pending_plans.remove(approval_id);
+            state.plan_response_receipt = Some(resolved.clone());
         }
-        let plan_outcome = match action {
-            "approve" => "approved",
-            "request_changes" => "changes_requested",
-            "abandon" => "abandoned",
-            _ => unreachable!("plan response action was validated above"),
-        };
-        let mut resolved = json!({
-            "approvalId":approval_id,
-            "status":"answered",
-            "outcome":"submitted",
-            "planOutcome":plan_outcome,
-        });
-        if let Some(feedback) = feedback { resolved["feedback"] = json!(feedback); }
         emit_scoped(
             &self.events, "claude", &self.session_id, self.native_id.as_deref(), Some(turn_id),
             "chat.approval.resolved", resolved, self.worker_token.as_deref(),
@@ -656,6 +659,41 @@ impl ChatSession for ClaudeChat {
         }
         Ok(self.ui.wire())
     }
+}
+
+fn claude_plan_resolution(
+    approval_id: &str,
+    action: &str,
+    feedback: Option<&str>,
+    sidecar_result: &Value,
+) -> Value {
+    let plan_outcome = match action {
+        "approve" => "approved",
+        "request_changes" => "changes_requested",
+        "abandon" => "abandoned",
+        _ => unreachable!("plan response action was validated above"),
+    };
+    let partial = action == "approve"
+        && sidecar_result.get("outcome").and_then(Value::as_str) == Some("partial")
+        && sidecar_result.get("nativeDecision").and_then(Value::as_str) == Some("allowed");
+    let mut resolved = json!({
+        "approvalId":approval_id,
+        "status":"answered",
+        "outcome":if partial { "partial" } else { "submitted" },
+        "planOutcome":plan_outcome,
+    });
+    if let Some(feedback) = feedback {
+        resolved["feedback"] = json!(feedback);
+    }
+    if partial {
+        resolved["recovery"] = json!("reconnect");
+        let message = sidecar_result
+            .get("message")
+            .and_then(Value::as_str)
+            .unwrap_or("Claude approved the plan, but ThreadTerm could not switch the session to implementation mode. Reconnect the Chat before continuing.");
+        resolved["message"] = json!(message.chars().take(500).collect::<String>());
+    }
+    resolved
 }
 
 /// Typed commands that must not reach the CLI from Chat, rejected before the
@@ -2691,6 +2729,27 @@ mod tests {
     }
 
     #[test]
+    fn exit_plan_mode_partial_success_is_terminal_and_recoverable() {
+        let receipt = claude_plan_resolution(
+            "plan-request",
+            "approve",
+            None,
+            &json!({
+                "outcome":"partial",
+                "nativeDecision":"allowed",
+                "modeChanged":false,
+                "recovery":"reconnect",
+                "message":"mode control disconnected"
+            }),
+        );
+        assert_eq!(receipt["status"], "answered");
+        assert_eq!(receipt["outcome"], "partial");
+        assert_eq!(receipt["planOutcome"], "approved");
+        assert_eq!(receipt["recovery"], "reconnect");
+        assert_eq!(receipt["message"], "mode control disconnected");
+    }
+
+    #[test]
     fn request_cancelled_maps_to_a_targeted_expired_resolution() {
         let (events, mut rx) = crate::provider_events::tap_channel(16);
         let native = Mutex::new(Some("native-1".to_owned()));
@@ -2806,7 +2865,8 @@ mod tests {
 
     /// Writes a minimal sidecar-protocol host. mode: `ok` answers session.start
     /// after `delay_ms`; `fail` answers with an error; `die` answers then
-    /// reports the internal query closed shortly after.
+    /// reports the internal query closed shortly after; `plan-partial` models
+    /// ExitPlanMode succeeding before the permission-mode control rejects.
     #[cfg(windows)]
     fn fake_host(dir: &std::path::Path, mode: &str, delay_ms: u64) -> PathBuf {
         let script = format!(
@@ -2841,7 +2901,7 @@ createInterface({{ input: process.stdin, crlfDelay: Infinity }}).on('line', line
       if ('{mode}' === 'die-before') write({{ ev: 'session.status', cardId: req.cardId, phase: 'closed', sessionId: 'native-fixture' }});
       write({{ id: req.id, ok: {{ sessionId: req.sessionId ?? null, ui: ui('default') }} }});
       if ('{mode}' === 'options') write({{ ev: 'session.request', cardId: req.cardId, requestId: 'card-options-question-1', operationId: 'turn', sessionId: req.sessionId ?? null, toolName: 'AskUserQuestion', question: {{ questions: [{{ header: 'Colour', question: 'Which colour?', options: [{{ label: 'Blue' }}] }}] }} }});
-      if ('{mode}' === 'plan') write({{ ev: 'session.request', cardId: req.cardId, requestId: 'card-plan-exit-1', operationId: 'turn-plan', sessionId: req.sessionId ?? null, toolName: 'ExitPlanMode', input: {{ plan: '# Proposed plan\\n1. Build it' }} }});
+      if ('{mode}' === 'plan' || '{mode}' === 'plan-partial') write({{ ev: 'session.request', cardId: req.cardId, requestId: 'card-plan-exit-1', operationId: 'turn-plan', sessionId: req.sessionId ?? null, toolName: 'ExitPlanMode', input: {{ plan: '# Proposed plan\\n1. Build it' }} }});
       if ('{mode}' === 'die') setTimeout(() => write({{ ev: 'session.status', cardId: req.cardId, phase: 'closed', sessionId: 'native-fixture' }}), 250);
     }}, {delay_ms});
     return;
@@ -2855,7 +2915,9 @@ createInterface({{ input: process.stdin, crlfDelay: Infinity }}).on('line', line
   }}
   if (req.op === 'session.plan_response') {{
     write({{ ev: 'provider.event', cardId: req.cardId, planAction: req.action, feedback: req.feedback, requestId: req.requestId }});
-    return write({{ id: req.id, ok: {{}} }});
+    return write({{ id: req.id, ok: '{mode}' === 'plan-partial'
+      ? {{ outcome: 'partial', nativeDecision: 'allowed', modeChanged: false, recovery: 'reconnect', message: 'mode control disconnected' }}
+      : {{}} }});
   }}
   if (req.op === 'session.answer') {{
     write({{ ev: 'provider.event', cardId: req.cardId, answer: req.values, requestId: req.requestId }});
@@ -3096,12 +3158,13 @@ createInterface({{ input: process.stdin, crlfDelay: Infinity }}).on('line', line
 
         // Native ExitPlanMode cards use the dedicated sidecar operation so
         // each reply preserves its action and optional feedback exactly once.
-        for (action, feedback) in [
-            ("approve", None),
-            ("request_changes", Some("Keep the existing API.")),
-            ("abandon", None),
+        for (action, feedback, host_mode, receipt_outcome) in [
+            ("approve", None, "plan", "submitted"),
+            ("request_changes", Some("Keep the existing API."), "plan", "submitted"),
+            ("abandon", None, "plan", "submitted"),
+            ("approve", None, "plan-partial", "partial"),
         ] {
-            let plan_host = fake_host(dir.path(), "plan", 0);
+            let plan_host = fake_host(dir.path(), host_mode, 0);
             environment.set("THREADTERM_CLAUDE_SDK_HOST", &plan_host);
             let (plan_sender, mut plan_receiver) = crate::provider_events::tap_channel(16);
             let plan_adapter = ClaudeAdapter::new(plan_sender);
@@ -3127,6 +3190,11 @@ createInterface({{ input: process.stdin, crlfDelay: Infinity }}).on('line', line
                     "plan-operation",
                 )
                 .unwrap();
+            let cached_receipt = plan_chat
+                .plan_response_receipt()
+                .expect("plan response keeps a synchronous durable receipt");
+            assert_eq!(cached_receipt["status"], "answered");
+            assert_eq!(cached_receipt["outcome"], receipt_outcome);
             let deadline = std::time::Instant::now() + Duration::from_secs(5);
             let mut sidecar_action = None;
             let mut resolution = None;
@@ -3145,7 +3213,7 @@ createInterface({{ input: process.stdin, crlfDelay: Infinity }}).on('line', line
             }
             assert_eq!(sidecar_action.as_deref(), Some(action));
             assert_eq!(resolution.as_ref().unwrap()["status"], "answered");
-            assert_eq!(resolution.as_ref().unwrap()["outcome"], "submitted");
+            assert_eq!(resolution.as_ref().unwrap()["outcome"], receipt_outcome);
             let expected_outcome = match action {
                 "approve" => "approved",
                 "request_changes" => "changes_requested",
@@ -3156,6 +3224,23 @@ createInterface({{ input: process.stdin, crlfDelay: Infinity }}).on('line', line
             match feedback {
                 Some(feedback) => assert_eq!(resolution.as_ref().unwrap()["feedback"], feedback),
                 None => assert!(resolution.as_ref().unwrap().get("feedback").is_none()),
+            }
+            if receipt_outcome == "partial" {
+                assert_eq!(resolution.as_ref().unwrap()["recovery"], "reconnect");
+                assert_eq!(resolution.as_ref().unwrap()["message"], "mode control disconnected");
+                assert_eq!(
+                    plan_chat
+                        .plan_response(
+                            "turn-plan",
+                            "card-plan-exit-1",
+                            &json!({"action":"approve"}),
+                            "plan-operation-retry",
+                        )
+                        .unwrap_err()
+                        .code,
+                    "approval_not_pending",
+                    "a partial native success must be terminal rather than retryable"
+                );
             }
             plan_chat.stop().unwrap();
         }

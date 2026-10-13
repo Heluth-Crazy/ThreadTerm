@@ -23,6 +23,9 @@ export function PlanApprovalCard({ part, writable, submitting, onRespond, copy }
   const waitingForPrompt = data.waitingForPrompt === true;
   const enabled = planApprovalEnabled(part, writable, submitting);
   const outcome = data.planOutcome;
+  const partial = (part.data as { outcome?: unknown; recovery?: unknown; message?: unknown } | undefined)?.outcome === 'partial';
+  const recovery = (part.data as { recovery?: unknown } | undefined)?.recovery;
+  const partialMessage = (part.data as { message?: unknown } | undefined)?.message;
   return <section className={`chat-approval-card chat-plan-approval ${part.status ?? 'pending'}`} aria-label={copy('Plan review', '计划审核')}>
     <span className="chat-plan-approval-title">{copy('Review the plan', '审核计划')}</span>
     <div className="chat-plan-approval-body" role="region" tabIndex={0} aria-label={copy('Proposed plan', '拟议计划')}>
@@ -32,9 +35,10 @@ export function PlanApprovalCard({ part, writable, submitting, onRespond, copy }
       {outcome === 'approved' ? copy('Plan approved', '计划已批准') : outcome === 'abandoned' ? copy('Plan abandoned', '计划已放弃') : copy('Changes requested', '已要求修改')}
       {outcome === 'changes_requested' && data.feedback ? ': ' + data.feedback : ''}
     </p>}
+    {partial && <p className="chat-plan-receipt" role="status">{typeof partialMessage === 'string' ? partialMessage : recovery === 'reconnect' ? copy('The approval was accepted, but reconnect is required before continuing.', '审批已接受，但必须重新连接后才能继续。') : copy('The approval had a partial outcome and cannot be retried.', '审批产生部分结果，无法重试。')}{recovery === 'reconnect' && <> {copy('Reconnect this chat before continuing.', '请重新连接此对话后再继续。')}</>}</p>}
     {!pending && !outcome && <p>{copy('This plan review is no longer active.', '此计划审核已失效。')}</p>}
     {waitingForPrompt && <p>{copy('Send your changes in the composer below.', '请在下方输入框中发送修改意见。')}</p>}
-    {pending && !waitingForPrompt && <>
+    {pending && !partial && !waitingForPrompt && <>
       <div className="chat-plan-approval-actions">
         <button type="button" className="btn btn-sm btn-primary" disabled={!enabled} onClick={() => onRespond?.({ action: 'approve' })}>
           {submitting === 'approve' ? copy('Submitting…', '提交中…') : copy('Approve & build', '批准并执行')}
