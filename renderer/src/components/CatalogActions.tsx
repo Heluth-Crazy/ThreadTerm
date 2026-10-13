@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
+import { lazy, Suspense, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import type { CatalogVisibility, ProjectCatalogItem, Session, Worktree } from '@threadterm/protocol';
 import { openDirectory, operationId, request } from '../bridge';
@@ -15,7 +15,8 @@ import { canAcknowledgeActivity } from '../sessionActivity';
 type Kind=CatalogVisibility['kind'];
 export type CatalogTarget={kind:Kind;id:string;name:string;path:string;projectId:string;worktreeId?:string};
 type Props={target:CatalogTarget;projects:ProjectCatalogItem[];trees:Worktree[];sessions:Session[];visibility:CatalogVisibility[];onChanged:()=>void;onHidden:()=>void;onWorktree?:(id:string,path?:string)=>void;onNewSession?:(id?:string,path?:string)=>void;onMenuOpenChange?:(open:boolean)=>void};
-type Dialog='rename'|'archive'|'remove'|'remove-active'|'discover';
+const ChatExportDialog = lazy(() => import('./ChatExportDialog').then(module => ({ default: module.ChatExportDialog })));
+type Dialog='rename'|'archive'|'remove'|'remove-active'|'discover'|'export';
 type DeleteNotice='scope-changed'|'stop-failed';
 
 const isActiveSession=(session:Session)=>!session.readOnly&&['starting','running','idle','waiting'].includes(session.status);
@@ -93,6 +94,7 @@ export function CatalogActions({target,projects,trees,sessions,visibility,onChan
   const item=(label:string,icon:string,action:()=>void,danger=false,disabled=false)=><button type="button" role="menuitem" className={`menu-item${danger?' danger':''}`} disabled={busy||disabled} onClick={action}><Icon name={icon}/>{label}</button>;
   const archivedTargets:CatalogTarget[]=target.kind==='project'?trees.filter(tree=>visibility.some(row=>row.kind==='worktree'&&row.id===tree.id&&row.visibility==='archived')).map(tree=>({kind:'worktree',id:tree.id,name:tree.branch??text('Local directory','本地目录'),path:tree.path,projectId:tree.projectId,worktreeId:tree.id})):target.kind==='worktree'?sessions.filter(row=>row.projectId===target.projectId&&sameCanonicalScope(row.worktreePath??project?.path,target.path)&&(row.archived||visibility.some(entry=>entry.kind==='session'&&entry.id===row.id&&entry.visibility==='archived'))).map(row=>({...target,kind:'session',id:row.id,name:row.title})):[];
   return <>
+    {dialog==='export'&&session&&<Suspense fallback={<p role="status">{text('Loading export…','正在加载导出…')}</p>}><ChatExportDialog session={session} copy={text} onClose={()=>setDialog(undefined)} /></Suspense>}
     <button type="button" className="icon-btn row-more" aria-label={`${target.name} ${text('Manage','管理')}`} aria-expanded={Boolean(anchor)} onClick={event=>{const next=anchor?undefined:event.currentTarget;ownsOpenMenu.current=Boolean(next);setAnchor(next);onMenuOpenChange?.(Boolean(next));}}><Icon name="more"/></button>
     {anchor&&<CatalogPopover anchor={anchor} onClose={close} label={target.name}>
       <div className="menu-label">{target.name}</div>
@@ -114,6 +116,7 @@ export function CatalogActions({target,projects,trees,sessions,visibility,onChan
       <div className="menu-sep"/>
       {target.kind!=='session'&&onNewSession&&item(text('New terminal','新建终端'),'plus',()=>{close();onNewSession(target.projectId,target.path);})}
       {session&&<>
+        {session.mode==='chat'&&window.threadterm.exportChatMarkdown&&item(text('Export as Markdown…','导出为 Markdown…'),'export',()=>begin('export'))}
         {repair?.offered&&<button type="button" role="menuitem" className="menu-item" disabled={busy||!repair.writable} title={repair.writable?undefined:text('Take control of this chat to repair it.','请先取得此对话的控制权，再修复。')} onClick={()=>{requestChatRepair(session.id);close();}}><Icon name="refresh"/>{text('Repair from native history','从原生历史修复')}</button>}
         {canAcknowledgeActivity(session)&&item(text('Mark handled','标记已处理'),'check',()=>void run(acknowledgeAttention))}
         {item(session.followed?text('Unfollow','取消关注'):text('Follow','关注'),'star',()=>void run(async()=>{await request('session.update',{sessionId:session.id,followed:!session.followed,operationId:operationId()});onChanged();close();}))}

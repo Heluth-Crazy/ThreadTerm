@@ -1,0 +1,14 @@
+{
+  "meta": {
+    "title": "导出 QA / Export QA",
+    "provider": "codex",
+    "model": "gpt-6.1",
+    "createdAt": "2026-10-13T12:00:00.000Z",
+    "durationMs": 12345,
+    "tokens": { "input": 120, "output": 240 }
+  },
+  "items": [
+    { "id": "user-1", "role": "user", "createdAt": "2026-10-13T12:00:00.000Z", "parts": [{ "type": "text", "text": "请解释 `code` 与中文。", "data": { "images": ["data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScLbtAAAAABJRU5ErkJggg=="] } }] },
+    { "id": "assistant-1", "role": "assistant", "createdAt": "2026-10-13T12:00:02.000Z", "parts": [{ "type": "thinking", "text": "private thought" }, { "type": "tool", "toolName": "Read", "status": "complete", "data": { "path": "src/a.ts" } }, { "type": "text", "text": "```ts\nconst fence = `backtick`;\n```\n\n完成。" }] }
+  ]
+}
