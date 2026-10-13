@@ -381,8 +381,28 @@ try {
   assert.ok(await page.locator('.chat-option-chip').count() < 4, 'at 420 px the extra chips fold');
   await page.locator('.chat-compose-more').click();
   await page.locator('.chat-menu-more').waitFor();
+  await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
   assert.ok(await page.locator('.chat-menu-more .chat-more-row').count() >= 1, 'the cog lists the folded settings');
   assert.match(await page.locator('.chat-menu-more').innerText(), /Fast mode/);
+  // VC-MORE-420: every folded choice chip stays inside the popover and the 420 px viewport.
+  const moreOverflow = await page.locator('.chat-menu-more').evaluate(menu => {
+    const menuRect = menu.getBoundingClientRect();
+    return [...menu.querySelectorAll('.chat-more-choice')].map(chip => {
+      const rect = chip.getBoundingClientRect();
+      return {
+        label: (chip.textContent || '').trim(),
+        menu: { left: menuRect.left, right: menuRect.right, top: menuRect.top, bottom: menuRect.bottom },
+        rect: { left: rect.left, right: rect.right, top: rect.top, bottom: rect.bottom },
+        insideMenu: rect.left >= menuRect.left - 0.5 && rect.right <= menuRect.right + 0.5 && rect.top >= menuRect.top - 0.5 && rect.bottom <= menuRect.bottom + 0.5,
+        insideViewport: rect.left >= -0.5 && rect.right <= window.innerWidth + 0.5,
+      };
+    });
+  });
+  assert.ok(moreOverflow.length > 0, 'the More settings popover lists folded choice chips');
+  for (const chip of moreOverflow) {
+    assert.ok(chip.insideMenu, `${chip.label} stays inside the More settings popover ${JSON.stringify(chip)}`);
+    assert.ok(chip.insideViewport, `${chip.label} stays inside the 420px viewport ${JSON.stringify(chip)}`);
+  }
   await page.keyboard.press('Escape');
   await setState({ scenario: 'codex', width: 1100 });
   assert.equal(await page.locator('.chat-compose-more').count(), 0, 'at 1100 px nothing folds');

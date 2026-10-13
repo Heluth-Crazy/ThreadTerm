@@ -640,6 +640,12 @@ code.chat-status-value { font-family:var(--mono); font-size:11px; }
    The ring retains its full accessible label and popover token breakdown. */
 @container (max-width:480px) {
   .chat-compose-left { flex:none; }
+  /* VC-MORE-420: stack the More settings rows so the right-hand choice chips
+     wrap inside the popover, cap the popover to the composer column and give
+     it enough height that no chip sits below the fold. */
+  .chat-more-row { grid-template-columns:minmax(0, 1fr); align-items:start; }
+  .chat-more-choices { justify-content:flex-start; }
+  .chat-compose-menu.chat-menu-more { width:min(340px, calc(100cqw - 120px)); max-height:min(70vh, 460px); }
 }
 @media (prefers-reduced-motion:reduce) { .chat-context-ring-fill { transition:none; } }
 .chat-slash, .v3-session-chat form > .chat-slash { position:absolute; left:12px; right:12px; bottom:calc(100% - 8px); z-index:4; display:block; max-height:220px; overflow:auto; padding:6px; border:1px solid var(--border); border-radius:14px; background:var(--surface); box-shadow:var(--shadow); }

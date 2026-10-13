@@ -164,6 +164,7 @@ try {
             await root.locator('[data-testid="steer-send"] [aria-label="' + (locale === 'zh-CN' ? '更多发送操作' : 'More send actions') + '"]').click();
             const item = root.locator('[data-testid="steer-note"]');
             await item.waitFor();
+            assert.equal(await item.evaluate(node => node.classList.contains('menu-item') && node.classList.contains('chat-menu-item')), true, `${name}: note menu item uses the shared menu style`);
             assert.equal((await item.innerText()).trim(), label.note[locale], `${name}: note menu label`);
             await assertNoControlViolations(await checkControlConsistency(page, `[data-testid="session-chat-${id}"] [data-testid="steer-menu"]`), `${name} note menu`);
           }
