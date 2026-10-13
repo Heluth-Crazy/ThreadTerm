@@ -46,8 +46,18 @@ async function send(text) {
   // Wait for any previous turn's first-response indicator to clear, then for
   // the composer to accept input, so a cancelled turn cannot swallow the send.
   await page.locator('.chat-first-response-wait').waitFor({ state: 'detached' }).catch(() => undefined);
-  await page.locator('.chat-compose-shell textarea').fill(/^\/\w+$/u.test(text) ? `${text} ` : text);
-  await page.locator('.chat-compose-send[type="submit"]:not([disabled])').waitFor();
+  const value = /^\/\w+$/u.test(text) ? `${text} ` : text;
+  const field = page.locator('.chat-compose-shell textarea');
+  const submit = page.locator('.chat-compose-send[type="submit"]');
+  const deadline = Date.now() + 30_000;
+  for (;;) {
+    // The button can briefly stay disabled while control is re-acquired after a
+    // cancel or while a draft save settles; retype so React sees the input.
+    await field.fill(value);
+    if (await submit.isEnabled().catch(() => false)) break;
+    if (Date.now() > deadline) throw new Error(`composer submit stayed disabled after typing ${JSON.stringify(text)}`);
+    await delay(100);
+  }
   await page.locator('.chat-compose-shell').evaluate(form => form.requestSubmit());
 }
 async function waitResult(sessionId, command, text) {
