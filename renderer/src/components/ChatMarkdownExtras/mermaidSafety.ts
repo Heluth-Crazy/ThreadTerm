@@ -48,6 +48,12 @@ export function sanitizeDeclarationText(value: string): string {
 export function isScopedSelector(selector: string, scope: string): boolean {
   const text = selector.trim();
   if (!scope || !text) return false;
+  // Sibling combinators (`~`, `+`) and `:has()` can match or reach nodes
+  // outside the diagram even when the left side is the scoped id. Attribute
+  // selectors (`[class~=x]`) and pseudo-class arguments (`:nth-child(2n+1)`)
+  // are not combinators, so strip them before the check.
+  const compounds = text.replace(/\[[^\]]*\]/g, '[]').replace(/\([^()]*\)/g, '()');
+  if (/[~+]/.test(compounds) || /:has\s*\(/i.test(text)) return false;
   const escaped = scope.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   return new RegExp(`^${escaped}(?![\\w-])`).test(text);
 }
