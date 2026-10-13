@@ -1,6 +1,6 @@
 import { createContext, useContext, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
-import type { FileReference } from '@threadterm/protocol';
+import type { FileReference, Session } from '@threadterm/protocol';
 
 export type SessionSurfacePresentation = {
  primaryHost:HTMLElement|null;
@@ -13,6 +13,8 @@ export type SessionSurfacePresentation = {
  canOpenDiff?:(path:string)=>boolean;
  /** Opens an http(s) page in a tab beside the session (terminal link bar). */
  openWeb?:(url:string)=>void;
+ /** Inserts a newly created fork in this surface's pane. */
+ openFork?:(session:Session)=>void;
 };
 export const SessionSurfaceContext=createContext<SessionSurfacePresentation|undefined>(undefined);
 export function SurfaceActions({slot,children}:{slot:'primary'|'menu';children:ReactNode}) {

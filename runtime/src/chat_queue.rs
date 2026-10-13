@@ -161,6 +161,9 @@ pub(crate) fn pause_all(db: &Database, reason: &str) -> Result<()> {
 
 fn validate_message(text: &str, images: &[String]) -> Result<()> {
     crate::service::validate_chat_images(images)?;
+    if text.trim() == "/fork" && images.is_empty() {
+        return Err(failure("control_command_not_queueable"));
+    }
     if (text.trim().is_empty() && images.is_empty()) || text.len() > 1024 * 1024 {
         return Err(failure("invalid_message"));
     }

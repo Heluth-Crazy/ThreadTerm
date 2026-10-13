@@ -34,6 +34,7 @@ import { absolutePath, type WorkbenchActions } from '../workbench/types';
 import { sameCanonicalScope } from '../projectScope';
 import { sessionDiffActions } from '../sessionDiffActions';
 import { presentedSession } from '../resumedSession';
+import { openForkInPane } from '../chatFork';
 import { isDocumentPinned, sessionDocumentError } from '../sessionDocuments';
 import { fileTabMenuItems } from '../contextMenuSurfaceItems';
 import { showContextMenu } from './ContextMenu';
@@ -87,13 +88,13 @@ export function PaneWorkspace({ layout, sessions, onChange, theme, terminalCompa
   const [paneHost,setPaneHost]=useState<HTMLDivElement|null>(null),[stackHorizontal,setStackHorizontal]=useState(false);
   const [fullscreenPaneId, setFullscreenPaneId] = useState<string>();
   const [resumedSessions, setResumedSessions] = useState<Map<string,Session>>(() => new Map());
-  const viewSessions = resumedSessions.size ? sessions.map(session => presentedSession(session, resumedSessions.get(session.id))) : sessions;
+  const viewSessions = resumedSessions.size ? [...sessions.map(session => presentedSession(session, resumedSessions.get(session.id))), ...Array.from(resumedSessions.values()).filter(session => session.forkedFrom && !sessions.some(current => current.id === session.id))] : sessions;
   useEffect(() => {
     setResumedSessions(current => {
       let next: Map<string,Session> | undefined;
       for (const [id, resumed] of current) {
         const canonical = sessions.find(session => session.id === id);
-        if (!canonical || presentedSession(canonical,resumed) === canonical) {
+        if ((!canonical && !resumed.forkedFrom) || (canonical && presentedSession(canonical,resumed) === canonical)) {
           next ??= new Map(current); next.delete(id);
         }
       }
@@ -116,10 +117,18 @@ export function PaneWorkspace({ layout, sessions, onChange, theme, terminalCompa
   const focusPaneId=selectedPaneId&&paneIdsIn(visibleLayout).includes(selectedPaneId)?selectedPaneId:focused?.paneId;
   const latestFocus=useRef(focusPaneId);latestFocus.current=focusPaneId;
   const activeSession=focused?.tab.kind==='session'?focused.tab.sessionId:undefined;
+  const activeSessionKnown=Boolean(activeSession&&sessions.some(session=>session.id===activeSession));
   const activeCallback=useRef(onActiveSession);activeCallback.current=onActiveSession;
-  useEffect(()=>{if(activeSession)activeCallback.current?.(activeSession);},[activeSession]);
+  useEffect(()=>{if(activeSession)activeCallback.current?.(activeSession);},[activeSession,activeSessionKnown]);
   useEffect(()=>{if(focusTarget){setSelectedPaneId(focusTarget.paneId);setFullscreenPaneId(current=>current&&current!==focusTarget.paneId?undefined:current);}},[focusTarget]);
   const commit=(next:PaneLayout)=>{latest.current=next;onChange(next);};
+  const openFork=(paneId:string,child:Session)=>{
+    if(!mounted.current)return;
+    const next=openForkInPane(latest.current,paneId,child.id);
+    if(next===latest.current)return;
+    setResumedSessions(current=>new Map(current).set(child.id,child));
+    setSelectedPaneId(paneId);commit(next);onInteraction?.();onSessionChanged?.();
+  };
   const activation=useRef(0);
   const activateTab=async(target:WorkspaceTabTarget)=>{
    onInteraction?.();
@@ -205,6 +214,7 @@ export function PaneWorkspace({ layout, sessions, onChange, theme, terminalCompa
         onPickSession={onPickSession}
         onSessionChanged={onSessionChanged}
         onOpenSession={onOpenSession}
+        onFork={child=>openFork(node.id,child)}
         providers={providers}
         closing={closing}
         onActivateTab={target=>void activateTab(target)}
@@ -216,7 +226,7 @@ export function PaneWorkspace({ layout, sessions, onChange, theme, terminalCompa
       />
     );});
   const companionFiles=workspaceTabs(visibleLayout).filter(item=>item.tab.kind!=='session'&&item.tab.ownerSessionId===ownerSessionId&&Boolean(ownerSessionId));
-  const toolbar=<WorkspaceTabBar layout={navigationLayout} sessions={sessions} active={focused?.tab.kind==='web'?undefined:workspaceNavigationTarget(layout,focused)} busy={closing}
+  const toolbar=<WorkspaceTabBar layout={navigationLayout} sessions={viewSessions} active={focused?.tab.kind==='web'?undefined:workspaceNavigationTarget(layout,focused)} busy={closing}
    onActivate={target=>void activateTab(target)}
    onClose={(target,mode)=>void closeTabs(target,mode)} onReorder={(paneId,from,to)=>{const visible=workspaceTabs(withoutWeb(workspaceNavigationLayout(latest.current))).filter(item=>item.paneId===paneId);const all=workspaceTabs(latest.current).filter(item=>item.paneId===paneId);const source=all.findIndex(item=>item.tab.id===visible[from]?.tab.id),destination=all.findIndex(item=>item.tab.id===visible[to]?.tab.id);if(source>=0&&destination>=0)commit(reorderTab(latest.current,paneId,source,destination));}}
    fileMenuItems={item=>{const documents=workbench?.sessionDocuments;const matchingDocuments=documents&&item.projectId===documents.projectId&&sameCanonicalScope(item.worktreePath??documents.projectRoot,documents.rootPath)?documents:undefined;const root=item.worktreePath??matchingDocuments?.projectRoot;const pinned=Boolean(matchingDocuments&&isDocumentPinned(matchingDocuments.documents,item.path));const plansLabel=matchingDocuments?(zh?(pinned?'从计划与文档中移除':'添加到计划与文档'):(pinned?'Remove from Plans & docs':'Add to Plans & docs')):undefined;return fileTabMenuItems({zh,canSend:Boolean(workbench?.sendToAgent),plansLabel,canCopy:Boolean(root)}).map(menu=>({...menu,disabled:menu.id==='workspace-tab-plans-docs'&&Boolean(matchingDocuments?.loading||matchingDocuments?.error),reason:menu.id==='workspace-tab-plans-docs'&&matchingDocuments?.error?sessionDocumentError(matchingDocuments.error,zh):menu.id==='workspace-tab-plans-docs'&&matchingDocuments?.loading?(zh?'正在加载计划与文档。':'Plans & docs are loading.'):undefined,onSelect:menu.id==='workspace-tab-send-file'?()=>workbench?.sendToAgent?.({projectId:item.projectId,worktreePath:item.worktreePath,path:item.path}):menu.id==='workspace-tab-plans-docs'?()=>matchingDocuments?.toggle(item.path):menu.id==='workspace-tab-copy-path'?()=>{if(root)return navigator.clipboard.writeText(absolutePath(root,item.path));}:undefined,testId:menu.id}));}}>
@@ -321,6 +331,7 @@ function Pane({
   onPickSession,
   onSessionChanged,
   onOpenSession,
+  onFork,
   providers,
   onResumed,
   closing,onActivateTab,onCloseFile,onCloseTab,onCloseTabs,
@@ -343,6 +354,7 @@ function Pane({
   onPickSession?: (paneId: string) => void;
   onSessionChanged?: () => void;
   onOpenSession?: (sessionId: string) => void;
+  onFork: (session: Session) => void;
   providers: ProviderCapability[];
   onResumed: (session: Session) => void;
   closing:boolean;
@@ -390,7 +402,7 @@ function Pane({
   const content = node.tabs.filter(item=>visited.current.has(item.id)).map(item=>{
     const active=Boolean(visibleNode)&&item.id===tab?.id;
     const itemSession=item.kind==='session'?sessions.find(candidate=>candidate.id===item.sessionId):undefined;
-    return <SessionSurfaceContext.Provider key={item.id} value={{primaryHost,menuHost,focused:selected&&active,openFile:itemSession&&onFileReference?reference=>onFileReference(itemSession.id,reference):undefined,...sessionDiffActions(itemSession,projectPath,onOpenPath),openWeb:workbench?.openWeb}}>
+    return <SessionSurfaceContext.Provider key={item.id} value={{primaryHost,menuHost,focused:selected&&active,openFile:itemSession&&onFileReference?reference=>onFileReference(itemSession.id,reference):undefined,...sessionDiffActions(itemSession,projectPath,onOpenPath),openWeb:workbench?.openWeb,openFork:onFork}}>
     <div className={`pane-tab-surface${fileDropTarget===item.id?" file-drop-target":""}`} data-content-id={item.id} {...(item.kind==='web'?{id:`browser-panel-${node.id}-${item.id}`,role:'tabpanel','aria-labelledby':`browser-tab-${node.id}-${item.id}`}:{})} hidden={!active} inert={!active}
      {...(itemSession&&!itemSession.readOnly&&workbench?.sendToAgent&&["starting","running","idle","waiting"].includes(itemSession.status)?{
       // An Explorer file dropped here inserts the same reference as "Send to agent", into this session.
@@ -400,7 +412,7 @@ function Pane({
       onDrop:(event:ReactDragEvent<HTMLDivElement>)=>{if(!event.dataTransfer.types.includes(FILE_DRAG_TYPE))return;event.preventDefault();setFileDropTarget(undefined);const file=readFileDrag(event.dataTransfer.getData(FILE_DRAG_TYPE));if(file)workbench.sendToAgent?.({...file,sessionId:itemSession.id});},
      }:{})}>
     {itemSession?.readOnly ? (
-    <ImportedHistoryView session={itemSession} onResumed={onResumed} />
+    <ImportedHistoryView session={itemSession} onResumed={onResumed} onOpenSession={onOpenSession}/>
   ) : itemSession ? (
     itemSession.mode === "terminal" ? (
       <TerminalSurface sessionId={itemSession.id} provider={itemSession.provider} session={itemSession} theme={theme} terminalCompatibility={terminalCompatibility} resumeCapture={providers.find((candidate) => candidate.id === itemSession.provider)?.terminalResumeCapture} onChanged={onSessionChanged} onOpenSession={onOpenSession} />

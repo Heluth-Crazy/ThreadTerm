@@ -5,13 +5,17 @@ import { acquireControl } from "../controlLease";
 import { useTranslation } from "../i18n";
 import { HistoryTranscript } from "./HistoryTranscript";
 import { SurfaceDialog } from "./SurfaceDialog";
+import { ChatForkButton, ChatForkMenu, ChatForkStatus, useChatFork } from './ChatForkControls';
+import { MessageActions } from './MessageActions';
+import { replyMarkdown } from '../replyMarkdown';
+import { isCompletedForkReply } from '../chatFork';
 import "./history-rail.css";
 import "./chat-network-notice.css";
 
-type Props = { session: Session; onResumed?: (session: Session) => void };
+type Props = { session: Session; onResumed?: (session: Session) => void; onOpenSession?: (id: string) => void };
 
 /** A durable provider-history projection. It never mounts an interactive host. */
-export function ImportedHistoryView({ session, onResumed }: Props) {
+export function ImportedHistoryView({ session, onResumed, onOpenSession }: Props) {
   const { locale } = useTranslation();
   const zh = locale === "zh-CN";
   const copy = (en: string, cn: string) => zh ? cn : en;
@@ -21,6 +25,7 @@ export function ImportedHistoryView({ session, onResumed }: Props) {
   const [repair, setRepair] = useState<ChatRepairAvailability>();
   const [repairDialog, setRepairDialog] = useState(false);
   const [repairing, setRepairing] = useState(false);
+  const forkActions = useChatFork(session, repairing || resuming, zh, setIssue);
   const lifecycle = useRef(0);
   const repairDescriptionId = useId();
   useEffect(() => {
@@ -79,11 +84,16 @@ export function ImportedHistoryView({ session, onResumed }: Props) {
     }
   };
   return <section className="imported-history-view" aria-label={copy("Imported history", "已导入历史")}>
+    <ChatForkMenu disabledReason={forkActions.disabledReason} busy={forkActions.busy} onFork={id=>void forkActions.fork(id)} zh={zh}/>
+    <ChatForkStatus session={session} zh={zh} onOpenSession={onOpenSession}/>
     <header><div><strong>{session.title || copy("Imported history", "已导入历史")}</strong><small>{copy("Read-only until you explicitly resume it.", "在显式恢复前仅可读取。")}</small></div>{repair?.offered && <button className="btn" onClick={() => setRepairDialog(true)} disabled={repairing || resuming}>{copy('Reload native history', '重新加载原生历史')}</button>}{session.readOnly && <button className="btn btn-primary" onClick={() => void resume()} disabled={resuming || repairing}>{copy("Resume explicitly", "显式恢复")}</button>}</header>
     {issue && <p className="surface-error" role="alert">{issue}</p>}
     <div className="imported-history-scroll">
       {!items && !issue && <p className="history-transcript-empty">{copy("Loading saved transcript…", "正在加载已保存的记录…")}</p>}
-      {items && <HistoryTranscript items={items} empty={copy("This provider returned no structured transcript.", "该提供方未返回结构化记录。")} />}
+      {items && <HistoryTranscript items={items} empty={copy("This provider returned no structured transcript.", "该提供方未返回结构化记录。")} actions={item=>{
+        const markdown=replyMarkdown(item);
+        return markdown && isCompletedForkReply(item, items) ? <MessageActions markdown={markdown} copy={copy}><ChatForkButton itemId={item.id} disabledReason={forkActions.disabledReason} busy={forkActions.busy} onFork={id=>void forkActions.fork(id)} zh={zh}/></MessageActions> : null;
+      }}/>}
     </div>
     {repairDialog && <SurfaceDialog size="sm" icon="clock" className="chat-repair-dialog" descriptionId={repairDescriptionId} title={copy('Reload saved history?', '重新加载已保存的历史？')} subtitle={session.title} onClose={() => { if (!repairing) setRepairDialog(false); }} footer={<>
       <button className="btn" autoFocus disabled={repairing} onClick={() => setRepairDialog(false)}>{copy('Cancel', '取消')}</button>

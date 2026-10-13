@@ -616,6 +616,29 @@
       ],
       "additionalProperties": false
     },
+    "RequestParams<\"chat.fork\">": {
+      "type": "object",
+      "properties": {
+        "sessionId": {
+          "type": "string"
+        },
+        "itemId": {
+          "type": "string"
+        },
+        "operationId": {
+          "type": "string"
+        },
+        "leaseEpoch": {
+          "type": "number"
+        }
+      },
+      "required": [
+        "sessionId",
+        "operationId",
+        "leaseEpoch"
+      ],
+      "additionalProperties": false
+    },
     "RequestParams<\"chat.draft.save\">": {
       "type": "object",
       "properties": {
@@ -4497,6 +4520,32 @@
         },
         "params": {
           "$ref": "#/definitions/RequestParams%3C%22chat.feedback.read%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "params"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "chat.fork"
+        },
+        "params": {
+          "$ref": "#/definitions/RequestParams%3C%22chat.fork%22%3E"
         }
       },
       "required": [

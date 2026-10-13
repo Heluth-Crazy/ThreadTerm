@@ -545,6 +545,9 @@
         },
         "run": {
           "$ref": "#/definitions/SessionRun"
+        },
+        "forkedFrom": {
+          "$ref": "#/definitions/SessionForkOrigin"
         }
       },
       "required": [
@@ -734,6 +737,24 @@
       ],
       "description": "Quick Launch: per-project saved commands, each run as an ordinary managed terminal session in a chosen worktree. One active run per command and worktree root (the runtime admits atomically and returns the existing run)."
     },
+    "SessionForkOrigin": {
+      "type": "object",
+      "properties": {
+        "sessionId": {
+          "type": "string"
+        },
+        "itemId": {
+          "type": "string"
+        },
+        "title": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "sessionId"
+      ],
+      "additionalProperties": false
+    },
     "RequestResult<\"session.resume\">": {
       "$ref": "#/definitions/Session"
     },
@@ -801,6 +822,9 @@
         "turnOrigin": {
           "type": "string",
           "const": "history"
+        },
+        "forkAnchor": {
+          "$ref": "#/definitions/NativeForkAnchor"
         }
       },
       "required": [
@@ -809,8 +833,7 @@
         "parts",
         "createdAt"
       ],
-      "additionalProperties": false,
-      "description": "Native turn outcome is independent of measured wall-clock duration. Missing status remains unknown."
+      "additionalProperties": false
     },
     "ChatPart": {
       "anyOf": [
@@ -992,6 +1015,28 @@
         "medium",
         "low"
       ]
+    },
+    "NativeForkAnchor": {
+      "type": "object",
+      "properties": {
+        "nativeId": {
+          "type": "string"
+        },
+        "turnId": {
+          "type": "string"
+        },
+        "messageId": {
+          "type": "string"
+        },
+        "entryId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "nativeId"
+      ],
+      "additionalProperties": false,
+      "description": "Opaque provider-owned identifiers; only the runtime resolves a chosen reply to a native fork point."
     },
     "RequestResult<\"chat.subagent.read\">": {
       "$ref": "#/definitions/SubagentTranscriptRead"
@@ -1218,6 +1263,26 @@
       },
       "required": [
         "notes"
+      ],
+      "additionalProperties": false
+    },
+    "RequestResult<\"chat.fork\">": {
+      "type": "object",
+      "properties": {
+        "session": {
+          "$ref": "#/definitions/Session"
+        },
+        "mode": {
+          "type": "string",
+          "enum": [
+            "native",
+            "copy"
+          ]
+        }
+      },
+      "required": [
+        "session",
+        "mode"
       ],
       "additionalProperties": false
     },
@@ -5922,6 +5987,32 @@
         },
         "result": {
           "$ref": "#/definitions/RequestResult%3C%22chat.feedback.read%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "result"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "chat.fork"
+        },
+        "result": {
+          "$ref": "#/definitions/RequestResult%3C%22chat.fork%22%3E"
         }
       },
       "required": [

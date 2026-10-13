@@ -16,7 +16,8 @@ export type DiffContextItem = {
 export type CommitContextItem = {
   kind: 'commit'; id: string; sha: string; subject: string;
 };
-export type ContextItem = TerminalContextItem | FileContextItem | DiffContextItem | CommitContextItem;
+export type ConversationContextItem = { kind: 'conversation'; id: string; copiedAt: string; text: string };
+export type ContextItem = TerminalContextItem | FileContextItem | DiffContextItem | CommitContextItem | ConversationContextItem;
 
 export type ParsedContextItem = { header: string; body: string };
 export type ParsedContext = { items: ParsedContextItem[]; text: string };
@@ -80,6 +81,7 @@ function assertContextItem(value: unknown): asserts value is ContextItem {
   if (item.kind === 'file' && oneLine(item.path) && (item.startLine === undefined || nonNegativeLine(item.startLine) && item.startLine > 0) && (item.endLine === undefined || nonNegativeLine(item.endLine) && item.endLine > 0) && !(item.endLine !== undefined && item.startLine === undefined)) return;
   if (item.kind === 'diff' && oneLine(item.path) && typeof item.staged === 'boolean' && typeof item.text === 'string' && typeof item.truncated === 'boolean') return;
   if (item.kind === 'commit' && /^[a-f0-9]{7,64}$/i.test(item.sha ?? '') && oneLine(item.subject)) return;
+  if (item.kind === 'conversation' && oneLine(item.copiedAt) && typeof item.text === 'string' && bytes(item.text) <= 64 * 1024) return;
   throw new Error('Invalid context attachment. / 无效的上下文附件。');
 }
 
@@ -100,7 +102,8 @@ export function normalizeContextItems(items: unknown): ContextItem[] {
       normalized.push({ ...candidate, path: candidate.path.trim() });
     } else if (candidate.kind === 'terminal') normalized.push(normalizeTerminal(candidate));
     else if (candidate.kind === 'diff') normalized.push(normalizeDiff(candidate));
-    else normalized.push({ ...candidate, sha: candidate.sha.trim(), subject: candidate.subject.trim() });
+    else if (candidate.kind === 'commit') normalized.push({ ...candidate, sha: candidate.sha.trim(), subject: candidate.subject.trim() });
+    else normalized.push({ ...candidate, copiedAt: candidate.copiedAt.trim() });
   }
   if (normalized.length > MAX_CONTEXT_ITEMS) throw new Error('Attach at most 12 context items. / 最多附加 12 个上下文项。');
   return normalized;
@@ -118,13 +121,14 @@ function itemHeader(item: ContextItem): string {
     case 'file': return `File: ${item.path}${item.startLine ? `:${item.startLine}${item.endLine && item.endLine !== item.startLine ? `-${item.endLine}` : ''}` : ''}`;
     case 'diff': return `Uncommitted diff — ${item.path} (${item.staged ? 'staged' : 'unstaged'}${item.truncated ? '; truncated' : ''})`;
     case 'commit': return `Commit ${item.sha} — ${item.subject}`;
+    case 'conversation': return `Conversation up to ${item.copiedAt} (copied)`;
   }
 }
 
 function itemBody(item: ContextItem): string {
-  if (item.kind !== 'terminal' && item.kind !== 'diff') return '';
+  if (item.kind !== 'terminal' && item.kind !== 'diff' && item.kind !== 'conversation') return '';
   const marker = fence(item.text);
-  return `${marker}${item.kind === 'terminal' ? 'text' : 'diff'}\n${item.text}\n${marker}`;
+  return `${marker}${item.kind === 'diff' ? 'diff' : 'text'}\n${item.text}\n${marker}`;
 }
 
 /** Returns the exact context blocks that will precede the user's message. */
@@ -157,6 +161,7 @@ function headerKind(header: string): ContextItem['kind'] | undefined {
   if (/^File: .+$/.test(value)) return 'file';
   if (/^Uncommitted diff — .+ \((?:staged|unstaged)(?:; truncated)?\)$/.test(value)) return 'diff';
   if (/^Commit [0-9a-fA-F]{7,64} — .+$/.test(value)) return 'commit';
+  if (/^Conversation up to .+ \(copied\)$/.test(value)) return 'conversation';
   return undefined;
 }
 
@@ -179,11 +184,11 @@ export function parseContext(message: string): ParsedContext | undefined {
     total = declaredTotal;
     position = lineEnd + 1;
     let body = '';
-    if (kind === 'terminal' || kind === 'diff') {
+    if (kind === 'terminal' || kind === 'diff' || kind === 'conversation') {
       const fenceEnd = message.indexOf('\n', position);
       if (fenceEnd < 0) return undefined;
       const opening = message.slice(position, fenceEnd);
-      const fenceMatch = new RegExp(`^(` + '`{4,}' + `)${kind === 'terminal' ? 'text' : 'diff'}$`).exec(opening);
+      const fenceMatch = new RegExp(`^(` + '`{4,}' + `)${kind === 'diff' ? 'diff' : 'text'}$`).exec(opening);
       if (!fenceMatch) return undefined;
       const marker = fenceMatch[1]!;
       const closing = `\n${marker}`;
@@ -192,7 +197,7 @@ export function parseContext(message: string): ParsedContext | undefined {
       if (closingStart < 0) return undefined;
       const afterClosing = closingStart + closing.length;
       const content = message.slice(fenceEnd + 1, closingStart);
-      if (bytes(content) > (kind === 'terminal' ? MAX_TERMINAL_BYTES : MAX_DIFF_BYTES)) return undefined;
+      if (bytes(content) > (kind === 'terminal' ? MAX_TERMINAL_BYTES : kind === 'diff' ? MAX_DIFF_BYTES : 64 * 1024)) return undefined;
       if (kind === 'terminal') {
         const declaredLines = Number(/, last (\d+) lines?$/.exec(headerMatch[3]!)?.[1]);
         if (lineCount(content) !== declaredLines || declaredLines > MAX_TERMINAL_LINES) return undefined;
@@ -228,6 +233,7 @@ export function contextDisplayMetadata(header: string): ContextDisplayMetadata |
     const diff = /^Uncommitted diff — (.+?)(?: \(.+\))$/.exec(value)!;
     return { kind, label: `Diff · ${fileName(diff[1]!)}`, title: value };
   }
+  if (kind === 'conversation') return { kind, label: value, title: value };
   const commit = /^Commit ([0-9a-fA-F]{7,64}) — (.+)$/.exec(value)!;
   return { kind, label: `Commit ${commit[1]!.slice(0, 7)}`, title: value };
 }

@@ -84,6 +84,18 @@ pub struct SessionOrganization {
     pub intent: Option<String>,
     pub sort_order: i64,
     pub organization_revision: i64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub forked_from: Option<SessionForkedFrom>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionForkedFrom {
+    pub session_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub item_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -108,6 +120,18 @@ pub struct Settings {
 }
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
+pub struct NativeForkAnchor {
+    pub native_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub turn_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub message_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub entry_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
 pub struct ChatItem {
     pub id: String,
     pub role: String,
@@ -127,6 +151,8 @@ pub struct ChatItem {
     /// resumed. Live projection leaves this absent.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub turn_origin: Option<ChatTurnOrigin>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fork_anchor: Option<NativeForkAnchor>,
 }
 
 /// The public native-history turn states supported by the Chat presentation.

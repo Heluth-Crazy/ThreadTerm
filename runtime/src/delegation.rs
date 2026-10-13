@@ -899,6 +899,7 @@ mod tests {
             elapsed_ms: None,
             turn_status: None,
             turn_origin: None,
+            fork_anchor: None,
         }
     }
 

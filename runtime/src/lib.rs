@@ -9,6 +9,7 @@ pub mod config;
 pub mod agent_review;
 #[cfg(test)] mod agent_review_tests;
 mod chat_queue;
+pub(crate) mod chat_fork;
 #[cfg(test)]
 mod chat_queue_tests;
 pub(crate) mod chat_tools;

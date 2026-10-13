@@ -5,6 +5,7 @@ import { dirname, join } from 'node:path';
 import * as sdk from '@anthropic-ai/claude-agent-sdk';
 import { parseLine, ok, fail, event } from './protocol.mjs';
 import { ClaudeSession } from './session.mjs';
+import { forkHistory } from './nativeFork.mjs';
 
 for (const level of ['log', 'info', 'warn', 'debug']) console[level] = (...args) => process.stderr.write(`[claude-sdk:${level}] ${args.join(' ')}\n`);
 process.stdout.on('error', () => {});
@@ -34,6 +35,7 @@ async function handle(request) {
       const options = request.cwd ? { dir: request.cwd } : undefined;
       return { messages: await sdk.getSessionMessages(request.sessionId, options) };
     }
+    case 'history.fork': return forkHistory(sdk, request);
     case 'session.start': {
       if (!request.cardId || !request.cwd) throw new Error('cardId and cwd are required');
       if (sessions.has(request.cardId)) throw new Error(`session already exists: ${request.cardId}`);

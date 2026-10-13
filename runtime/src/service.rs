@@ -127,6 +127,10 @@ fn ensure_chat_session_open(db: &Database, providers: &Providers, session_id: &s
         Ok(false) => return Err(anyhow::anyhow!("chat_connect_superseded")),
         Err(error) => return Err(error),
     }
+    if let Err(error) = crate::chat_fork::apply_pending_options(db, providers, session_id) {
+        let _ = providers.chat_stop(session_id);
+        return Err(error);
+    }
     let _ = crate::chat_projection::expire_pending_approvals(db, session_id);
     Ok(())
 }
@@ -180,6 +184,23 @@ pub(crate) fn send_chat_message(
     images: &[String],
     operation_id: &str,
 ) -> Result<Value> {
+    if text.trim() == "/fork" && images.is_empty() {
+        let fork_operation = operation_id.strip_prefix("queue:")
+            .map(|_| format!("{operation_id}:fork"));
+        let fork_operation_id = fork_operation.as_deref().unwrap_or(operation_id);
+        crate::chat_fork::fork(db, providers, crate::chat_fork::ForkRequest {
+            session_id,
+            item_id: None,
+            operation_id: fork_operation_id,
+        })?;
+        let result = json!({"turnId":fork_operation_id});
+        if fork_operation.is_some() && db.operation(operation_id)?.is_none() {
+            db.complete_operation(operation_id, "chat.queue.dispatch", &result)?;
+        }
+        return Ok(result);
+    }
+    let admission = crate::chat_fork::session_admission(db, session_id)?;
+    let _admission = admission.lock().map_err(|_| anyhow::anyhow!("provider_internal"))?;
     let _trace_context = crate::send_trace::Context::capture(None, Some(operation_id), Some(session_id))
         .map(crate::send_trace::Context::enter);
     let _trace_span = crate::send_trace::Span::begin(
@@ -1032,7 +1053,11 @@ impl RuntimeService {
                 ));
             }
             // lookup references an existing operation; it does not reserve one.
-            if request.method != "session.lookup" && request.method != "chat.answer" && request.method != "chat.repair" && request.method != "chat.projectTrust.set" && request.method != "chat.feedback.add" {
+            let slash_fork = request.method == "chat.send"
+                && request.params.get("text").and_then(Value::as_str).is_some_and(|text| text.trim() == "/fork")
+                && request.params.get("images").and_then(Value::as_array).is_none_or(Vec::is_empty);
+            if request.method != "session.lookup" && request.method != "chat.answer" && request.method != "chat.repair" && request.method != "chat.projectTrust.set" && request.method != "chat.feedback.add"
+                && request.method != "chat.fork" && !slash_fork {
                 if let Some(operation_id) =
                     request.params.get("operationId").and_then(Value::as_str)
                 {
@@ -1399,16 +1424,41 @@ impl RuntimeService {
                         .history_read(&p.provider, &p.native_id)
                         .map_err(anyhow::Error::from)
                 }
+                "chat.fork" => {
+                    let p: ChatFork = parse(&request.params)?;
+                    self.leases.require(&self.db, &p.session_id, principal, p.lease_epoch)?;
+                    self.db.bind_operation(&p.operation_id, "chat.fork", &json!({
+                        "sessionId":p.session_id,
+                        "itemId":p.item_id,
+                        "operationId":p.operation_id,
+                    }))?;
+                    crate::chat_fork::fork(&self.db, &self.providers, crate::chat_fork::ForkRequest {
+                        session_id: &p.session_id,
+                        item_id: p.item_id.as_deref(),
+                        operation_id: &p.operation_id,
+                    })
+                }
                 "chat.send" => {
                     let p: ChatSend = parse(&request.params)?;
                     self.leases
                         .require(&self.db, &p.session_id, principal, p.lease_epoch)?;
+                    let images = p.images.unwrap_or_default();
+                    if p.text.trim() == "/fork" && images.is_empty() {
+                        self.db.bind_operation(&p.operation_id, "chat.fork", &json!({
+                            "sessionId":p.session_id,
+                            "itemId":Value::Null,
+                            "operationId":p.operation_id,
+                        }))?;
+                        return send_chat_message(
+                            &self.db, &self.providers, &p.session_id, &p.text, &images, &p.operation_id,
+                        );
+                    }
                     send_chat_message(
                         &self.db,
                         &self.providers,
                         &p.session_id,
                         &p.text,
-                        &p.images.unwrap_or_default(),
+                        &images,
                         &p.operation_id,
                     )
                 }
@@ -2644,6 +2694,14 @@ struct ChatSend {
 }
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ChatFork {
+    session_id: String,
+    item_id: Option<String>,
+    operation_id: String,
+    lease_epoch: i64,
+}
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct ChatRepair {
     session_id: String,
     lease_epoch: i64,
@@ -3328,6 +3386,7 @@ mod tests {
             elapsed_ms: None,
             turn_status: None,
             turn_origin: None,
+            fork_anchor: None,
         }];
         let (session, _) = db
             .import_history_session(crate::db::ImportHistorySession {
@@ -4058,6 +4117,8 @@ mod tests {
 mod chat_lifecycle_tests;
 #[cfg(test)]
 mod chat_tool_tests;
+#[cfg(test)]
+mod chat_fork_tests;
 #[cfg(test)]
 mod question_tests;
 #[cfg(test)]

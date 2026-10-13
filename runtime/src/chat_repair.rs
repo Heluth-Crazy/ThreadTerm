@@ -974,6 +974,7 @@ mod tests {
             elapsed_ms: None,
             turn_status: None,
             turn_origin: None,
+            fork_anchor: None,
         }
     }
 
@@ -998,6 +999,7 @@ mod tests {
             elapsed_ms: None,
             turn_status: None,
             turn_origin: None,
+            fork_anchor: None,
         }
     }
 
@@ -1258,6 +1260,7 @@ mod tests {
             elapsed_ms: None,
             turn_status: None,
             turn_origin: None,
+            fork_anchor: None,
         });
         let rows = fixture.db.chat_items(&fixture.session).unwrap();
         assert!(rows.iter().any(|item| item.turn_id.as_deref() == Some("provider-turn") && item.turn_origin.is_none()));
@@ -1670,6 +1673,7 @@ mod tests {
                 elapsed_ms: None,
                 turn_status: None,
                 turn_origin: None,
+            fork_anchor: None,
             },
             text_item(
                 &format!("{}:history:stale-prefix", fixture.session),

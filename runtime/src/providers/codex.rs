@@ -8,7 +8,7 @@ use super::{
         encode_approval_id, history_page, insert_optional, percent_used, validate_native_id,
         version_probe, CommandSpec, EnvelopeStyle, JsonLineProcess, JsonLineResponder,
     },
-    emit_scoped, ChatSession, ChatToolServer, ProviderAdapter, ProviderCapability, ProviderError,
+    emit_scoped, ChatSession, ChatToolServer, NativeForkAnchor, ProviderAdapter, ProviderCapability, ProviderError,
     TerminalCommand,
 };
 use chrono::{TimeZone, Utc};
@@ -24,11 +24,18 @@ use tokio::sync::broadcast;
 
 pub struct CodexAdapter {
     events: crate::provider_events::Sender,
+    #[cfg(test)]
+    test_app_server_spec: Option<CommandSpec>,
 }
 
 impl CodexAdapter {
     pub fn new(events: crate::provider_events::Sender) -> Self {
-        Self { events }
+        Self { events, #[cfg(test)] test_app_server_spec: None }
+    }
+
+    #[cfg(test)]
+    fn with_test_app_server_spec(events: crate::provider_events::Sender, test_app_server_spec: CommandSpec) -> Self {
+        Self { events, test_app_server_spec: Some(test_app_server_spec) }
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -50,6 +57,12 @@ impl CodexAdapter {
         let mut args = codex_tool_server_overrides(tools);
         args.push("app-server".into());
         let args: Vec<&str> = args.iter().map(String::as_str).collect();
+        #[cfg(test)]
+        let spec = match self.test_app_server_spec.as_ref() {
+            Some(spec) => spec.clone(),
+            None => CommandSpec::provider("codex", &args)?,
+        };
+        #[cfg(not(test))]
         let spec = CommandSpec::provider("codex", &args)?;
         let events = self.events.clone();
         let owned_session_id = session_id.to_owned();
@@ -308,6 +321,31 @@ impl ProviderAdapter for CodexAdapter {
         )?;
         let thread = codex_history_thread(&response, native_id)?;
         Ok(Value::Array(codex_transcript_items(thread)))
+    }
+
+    fn fork_session(
+        &self,
+        _cwd: &str,
+        native_id: &str,
+        anchor: Option<&NativeForkAnchor>,
+        _is_latest: bool,
+    ) -> Result<Option<String>, ProviderError> {
+        validate_native_id(native_id)?;
+        let Some(anchor) = anchor else {
+            // A full-session native fork has no bound; Codex accepts null.
+            return codex_fork_native_thread(self, native_id, None).map(Some);
+        };
+        if anchor.native_id != native_id {
+            return Err(ProviderError::new(
+                "invalid_fork_anchor",
+                "Codex fork anchor does not belong to this native thread",
+            ));
+        }
+        let Some(turn_id) = anchor.turn_id.as_deref().filter(|value| !value.is_empty()) else {
+            return Ok(None);
+        };
+        validate_native_id(turn_id)?;
+        codex_fork_native_thread(self, native_id, Some(turn_id)).map(Some)
     }
 
     fn open_chat(
@@ -1557,6 +1595,41 @@ fn codex_request(
         .map_err(|error| codex_protocol_error(method, error))
 }
 
+/// Fork through a separate app-server connection. The foreground `CodexChat`
+/// owns its process and is intentionally not involved: a failed fork cannot
+/// disturb its stream, approval state, or native thread binding.
+fn codex_fork_native_thread(
+    adapter: &CodexAdapter,
+    source_thread_id: &str,
+    last_turn_id: Option<&str>,
+) -> Result<String, ProviderError> {
+    let process = adapter.temporary_process()?;
+    let response = codex_request(
+        &process,
+        "thread/fork",
+        codex_fork_params(source_thread_id, last_turn_id),
+    )?;
+    let thread = response.get("thread").unwrap_or(&response);
+    let forked_id = thread.get("id").and_then(Value::as_str).ok_or_else(|| {
+        ProviderError::new(
+            "provider_protocol",
+            "Codex thread/fork returned no thread id",
+        )
+    })?;
+    validate_native_id(forked_id)?;
+    if forked_id == source_thread_id {
+        return Err(ProviderError::new(
+            "provider_protocol",
+            "Codex thread/fork returned the source thread id",
+        ));
+    }
+    Ok(forked_id.to_owned())
+}
+
+fn codex_fork_params(source_thread_id: &str, last_turn_id: Option<&str>) -> Value {
+    json!({"threadId":source_thread_id,"lastTurnId":last_turn_id})
+}
+
 fn adopt_codex_settings(state: &mut CodexUiState, settings: &Value) {
     merge_json_values(&mut state.status.thread_settings, settings);
     state.options = codex_options_from_catalog(&state.catalog, &state.status.thread_settings);
@@ -2621,6 +2694,16 @@ fn codex_turn_elapsed_ms(state: &CodexTurnState, public_id: &str) -> Option<u64>
     })
 }
 
+fn codex_turn_native_id(state: &CodexTurnState, public_id: &str) -> Option<String> {
+    let (active, _) = &**state;
+    active.lock().ok().and_then(|active| {
+        active
+            .as_ref()
+            .filter(|turn| turn.public_id == public_id)
+            .and_then(|turn| turn.native_id.clone())
+    })
+}
+
 fn codex_turn_assistant_item_id(state: &CodexTurnState, public_id: &str) -> Option<String> {
     let (active, _) = &**state;
     active.lock().ok().and_then(|active| {
@@ -3189,6 +3272,9 @@ fn emit_codex_message(
     } else {
         None
     };
+    let native_turn_id = turn_id.as_deref()
+        .and_then(|public_id| codex_turn_native_id(active_turn, public_id))
+        .or_else(|| provider_turn_id.map(ToOwned::to_owned));
     if raw.get("id").is_some() && raw.get("method").is_some() {
         if auto_respond_codex(
             responder,
@@ -3564,6 +3650,17 @@ fn emit_codex_message(
         // than creating a second, empty assistant row for the duration.
         data["item"] = json!({"id": item_id});
     }
+    let completed_assistant = (method == "item/completed" && provider_item_type == Some("agentMessage"))
+        || (method == "turn/completed" && data.get("item").is_some());
+    if completed_assistant {
+        if let (Some(source_native_id), Some(native_turn_id)) = (native_id.as_deref(), native_turn_id.as_deref()) {
+            data["forkAnchor"] = json!({
+                "nativeId":source_native_id,
+                "turnId":native_turn_id,
+                "messageId":provider_item_id.or(data.pointer("/item/id").and_then(Value::as_str)),
+            });
+        }
+    }
     emit_scoped(
         events,
         "codex",
@@ -3698,6 +3795,7 @@ fn codex_transcript_items(thread: &Value) -> Vec<Value> {
         .and_then(Value::as_array)
         .cloned()
         .unwrap_or_default();
+    let source_native_id = thread.get("id").and_then(Value::as_str);
     for (turn_index, turn) in turns.into_iter().enumerate() {
         let turn_id = turn.get("id").and_then(Value::as_str);
         for item in turn
@@ -3767,6 +3865,11 @@ fn codex_transcript_items(thread: &Value) -> Vec<Value> {
                 "createdAt":Utc::now().to_rfc3339()
             });
             insert_optional(&mut chat_item, "turnId", turn_id.map(|value| json!(value)));
+            if item_type == "agentMessage" {
+                if let (Some(native_id), Some(turn_id), Some(message_id)) = (source_native_id, turn_id, item.get("id").and_then(Value::as_str)) {
+                    chat_item["forkAnchor"] = json!({"nativeId":native_id,"turnId":turn_id,"messageId":message_id});
+                }
+            }
             transcript.push(chat_item);
         }
         transcript.push(codex_turn_boundary(&turn, turn_id, turn_index, &transcript));
@@ -5204,6 +5307,100 @@ createInterface({{ input: process.stdin, crlfDelay: Infinity }}).on('line', line
         );
         assert_eq!(items[3]["turnId"], "turn_1");
         assert_eq!(items[3]["turnStatus"], "unknown");
+    }
+
+    #[test]
+    fn transcript_assistant_reply_carries_exact_native_fork_anchor() {
+        let items = codex_transcript_items(&json!({"id":"thread-source","turns":[{
+            "id":"turn-source","items":[{"id":"reply-source","type":"agentMessage","text":"done"}]
+        }]}));
+        assert_eq!(
+            items[0]["forkAnchor"],
+            json!({"nativeId":"thread-source","turnId":"turn-source","messageId":"reply-source"})
+        );
+    }
+
+    #[test]
+    fn native_fork_request_uses_the_inclusive_native_turn_boundary() {
+        assert_eq!(
+            codex_fork_params("thread-source", Some("turn-source")),
+            json!({"threadId":"thread-source","lastTurnId":"turn-source"})
+        );
+        assert_eq!(
+            codex_fork_params("thread-source", None),
+            json!({"threadId":"thread-source","lastTurnId":null})
+        );
+    }
+
+    #[test]
+    fn native_fork_uses_an_isolated_app_server_and_never_mutates_the_source_thread() {
+        let Some(node) = crate::providers::common::find_executable("node") else {
+            eprintln!("node is unavailable; skipping Codex fork app-server fixture");
+            return;
+        };
+        let scratch = tempfile::tempdir().unwrap();
+        let requests = scratch.path().join("fork-requests.jsonl");
+        let script = scratch.path().join("fake-codex-fork.mjs");
+        std::fs::write(
+            &script,
+            format!(
+                r#"import {{ appendFileSync }} from 'node:fs';
+import {{ createInterface }} from 'node:readline';
+const output = {};
+const timeout = setTimeout(() => process.exit(124), 3000);
+createInterface({{ input: process.stdin, crlfDelay: Infinity }}).on('line', line => {{
+  appendFileSync(output, line + '\n');
+  const request = JSON.parse(line);
+  if (request.id === undefined) return;
+  const result = request.method === 'thread/fork'
+    ? {{ thread: {{ id: 'thread-forked' }} }}
+    : {{}};
+  process.stdout.write(JSON.stringify({{ id: request.id, result }}) + '\n');
+}});
+process.on('exit', () => clearTimeout(timeout));
+"#,
+                serde_json::to_string(&requests.to_string_lossy()).unwrap(),
+            ),
+        )
+        .unwrap();
+        let spec =
+            CommandSpec::from_path(node, vec![script.to_string_lossy().into_owned()]).unwrap();
+        let (events, _) = crate::provider_events::tap_channel(8);
+        let adapter = CodexAdapter::with_test_app_server_spec(events, spec);
+        let anchor = NativeForkAnchor {
+            native_id: "thread-source".into(),
+            turn_id: Some("turn-source".into()),
+            message_id: Some("reply-source".into()),
+            entry_id: None,
+        };
+        let (done, result) = std::sync::mpsc::sync_channel(1);
+        std::thread::spawn(move || {
+            let _ =
+                done.send(adapter.fork_session("D:/repo", "thread-source", Some(&anchor), false));
+        });
+        assert_eq!(
+            result
+                .recv_timeout(Duration::from_secs(3))
+                .unwrap()
+                .unwrap(),
+            Some("thread-forked".into())
+        );
+        let calls = std::fs::read_to_string(&requests)
+            .unwrap()
+            .lines()
+            .map(|line| serde_json::from_str::<Value>(line).unwrap())
+            .collect::<Vec<_>>();
+        assert!(calls.iter().any(|call| call["method"] == "initialize"));
+        assert!(calls.iter().any(|call| {
+            call["method"] == "thread/fork"
+                && call["params"] == json!({"threadId":"thread-source","lastTurnId":"turn-source"})
+        }));
+        assert!(calls.iter().all(|call| {
+            !matches!(
+                call["method"].as_str(),
+                Some("thread/resume" | "thread/start" | "thread/inject_items" | "thread/rollback")
+            )
+        }));
     }
 
     #[test]
