@@ -1486,8 +1486,40 @@ fn codex_settings_params(
             };
             Some(json!({"threadId":thread_id,"sandboxPolicy":policy}))
         }
+        "fast" => {
+            let fast_tier = codex_fast_tier(ui)?;
+            let tier = if value == "true" {
+                json!(fast_tier)
+            } else {
+                Value::Null
+            };
+            Some(json!({"threadId":thread_id,"serviceTier":tier}))
+        }
+        "reviewer" if matches!(value, "user" | "auto_review" | "guardian_subagent") => {
+            Some(json!({"threadId":thread_id,"approvalsReviewer":value}))
+        }
         _ => None,
     }
+}
+
+/// The model's selectable non-default service tier, when the catalog lists one.
+fn codex_fast_tier(ui: Option<&CodexUiState>) -> Option<String> {
+    let state = ui?;
+    let model = option_value(Some(state), "model")?;
+    let entry = state
+        .catalog
+        .get("data")
+        .and_then(Value::as_array)?
+        .iter()
+        .find(|entry| entry.get("id").and_then(Value::as_str) == Some(model.as_str()))?;
+    let default = entry.get("defaultServiceTier").and_then(Value::as_str);
+    entry
+        .get("serviceTiers")
+        .and_then(Value::as_array)?
+        .iter()
+        .filter_map(|tier| tier.get("id").and_then(Value::as_str))
+        .find(|id| Some(*id) != default)
+        .map(ToOwned::to_owned)
 }
 
 fn option_value(ui: Option<&CodexUiState>, id: &str) -> Option<String> {
@@ -2132,7 +2164,13 @@ fn codex_options_from_catalog(catalog: &Value, thread: &Value) -> Vec<Value> {
                 .get("displayName")
                 .and_then(Value::as_str)
                 .unwrap_or(value);
-            Some(json!({"value":value,"name":name}))
+            Some({
+                let mut choice = json!({"value":value,"name":name});
+                if model.get("isDefault").and_then(Value::as_bool) == Some(true) {
+                    choice["recommended"] = json!(true);
+                }
+                choice
+            })
         })
         .collect();
     if !current_model.is_empty()
@@ -2194,6 +2232,45 @@ fn codex_options_from_catalog(catalog: &Value, thread: &Value) -> Vec<Value> {
     options.push(json!({
         "id":"sandbox","name":"Sandbox","value":sandbox,
         "choices":[{"value":"read-only","name":"Read only"},{"value":"workspace-write","name":"Workspace write"},{"value":"danger-full-access","name":"Full access"}]
+    }));
+    // Fast mode is a boolean over the model's non-default service tier. Only
+    // expose it when the catalog actually lists a selectable fast tier, so the
+    // control can never stay permanently disabled.
+    let fast_tier = visible
+        .iter()
+        .find(|model| model.get("id").and_then(Value::as_str) == Some(current_model.as_str()))
+        .and_then(|model| {
+            let default = model.get("defaultServiceTier").and_then(Value::as_str);
+            model
+                .get("serviceTiers")
+                .and_then(Value::as_array)
+                .and_then(|tiers| {
+                    tiers
+                        .iter()
+                        .filter_map(|tier| tier.get("id").and_then(Value::as_str))
+                        .find(|id| Some(*id) != default)
+                        .map(ToOwned::to_owned)
+                })
+        });
+    if let Some(fast_tier) = fast_tier {
+        let fast = thread.get("serviceTier").and_then(Value::as_str) == Some(fast_tier.as_str());
+        options.push(json!({
+            "id":"fast","name":"Fast mode","kind":"boolean",
+            "value":if fast {"true"} else {"false"},
+            "choices":[{"value":"true","name":"On"},{"value":"false","name":"Off"}]
+        }));
+    }
+    let reviewer = thread
+        .get("approvalsReviewer")
+        .and_then(Value::as_str)
+        .unwrap_or("user");
+    options.push(json!({
+        "id":"reviewer","name":"Approval reviewer","value":reviewer,
+        "choices":[
+            {"value":"user","name":"User"},
+            {"value":"auto_review","name":"Auto review"},
+            {"value":"guardian_subagent","name":"Guardian subagent"}
+        ]
     }));
     options
 }
@@ -4751,7 +4828,7 @@ createInterface({{ input: process.stdin, crlfDelay: Infinity }}).on('line', line
             &process_input,
             &json!({"model":"gpt-5.5-luna","reasoningEffort":"xhigh"}),
         );
-        assert_eq!(options.len(), 5);
+        assert_eq!(options.len(), 6);
         assert_eq!(options[0]["id"], "model");
         assert_eq!(options[0]["value"], "gpt-5.5-luna");
         assert_eq!(options[0]["choices"].as_array().unwrap().len(), 2);
@@ -4760,6 +4837,56 @@ createInterface({{ input: process.stdin, crlfDelay: Infinity }}).on('line', line
         assert_eq!(options[1]["choices"][1]["name"], "Xhigh");
         assert_eq!(options[2]["id"], "collaboration");
         assert_eq!(options[2]["value"], "default");
+        assert_eq!(options[5]["id"], "reviewer");
+    }
+
+    #[test]
+    fn fast_mode_and_reviewer_come_from_the_catalog_and_thread() {
+        let catalog = json!({"data":[{
+            "id":"gpt-5.5-luna","displayName":"GPT-5.5-Luna","hidden":false,"isDefault":true,
+            "supportedReasoningEfforts":[{"reasoningEffort":"low"}],
+            "defaultServiceTier":"standard",
+            "serviceTiers":[
+                {"id":"standard","name":"Standard","description":"Standard"},
+                {"id":"priority","name":"Fast","description":"Priority processing"}
+            ]
+        }]});
+        let options = codex_options_from_catalog(
+            &catalog,
+            &json!({"model":"gpt-5.5-luna","reasoningEffort":"low","serviceTier":"priority","approvalsReviewer":"auto_review"}),
+        );
+        let fast = options.iter().find(|option| option["id"] == "fast").unwrap();
+        assert_eq!(fast["kind"], "boolean");
+        assert_eq!(fast["value"], "true");
+        assert_eq!(fast["choices"][0]["value"], "true");
+        assert_eq!(fast["choices"][1]["value"], "false");
+        let reviewer = options.iter().find(|option| option["id"] == "reviewer").unwrap();
+        assert_eq!(reviewer["value"], "auto_review");
+        assert!(reviewer["choices"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|choice| choice["value"] == "auto_review"));
+        assert_eq!(options[0]["choices"][0]["recommended"], true);
+
+        let ui = CodexUiState {
+            catalog: catalog.clone(),
+            options: options.clone(),
+            ..CodexUiState::default()
+        };
+        assert_eq!(
+            codex_settings_params("fast", "thr", "true", Some(&ui)).unwrap(),
+            json!({"threadId":"thr","serviceTier":"priority"})
+        );
+        assert_eq!(
+            codex_settings_params("fast", "thr", "false", Some(&ui)).unwrap(),
+            json!({"threadId":"thr","serviceTier":null})
+        );
+        assert_eq!(
+            codex_settings_params("reviewer", "thr", "auto_review", Some(&ui)).unwrap(),
+            json!({"threadId":"thr","approvalsReviewer":"auto_review"})
+        );
+        assert!(codex_settings_params("reviewer", "thr", "nonsense", Some(&ui)).is_none());
     }
 
     #[test]
@@ -4773,7 +4900,7 @@ createInterface({{ input: process.stdin, crlfDelay: Infinity }}).on('line', line
             &process_input,
             &json!({"model":"custom-model","reasoningEffort":"low"}),
         );
-        assert_eq!(options.len(), 4);
+        assert_eq!(options.len(), 5);
         assert_eq!(options[0]["value"], "custom-model");
         assert_eq!(options[1]["id"], "collaboration");
     }

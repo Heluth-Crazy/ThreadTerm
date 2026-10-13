@@ -330,6 +330,9 @@ struct PiUi {
     models: Vec<Value>,
     thinking_levels: Vec<String>,
     commands: Vec<Value>,
+    /// Pi's `get_state` does not report auto-retry, so the adapter tracks the
+    /// last value it set (Pi enables it by default).
+    auto_retry: Option<bool>,
 }
 
 struct PiChat {
@@ -906,6 +909,32 @@ impl ChatSession for PiChat {
             "thinking" => {
                 self.process
                     .request("set_thinking_level", json!({"level":value}))?;
+                self.refresh_ui();
+            }
+            "auto-compaction" => {
+                let enabled = pi_boolean(value)?;
+                self.process
+                    .request("set_auto_compaction", json!({"enabled":enabled}))?;
+                self.refresh_ui();
+            }
+            "auto-retry" => {
+                let enabled = pi_boolean(value)?;
+                self.process
+                    .request("set_auto_retry", json!({"enabled":enabled}))?;
+                if let Ok(mut ui) = self.shared.ui.lock() {
+                    ui.auto_retry = Some(enabled);
+                }
+            }
+            "steering" => {
+                pi_queue_mode(value)?;
+                self.process
+                    .request("set_steering_mode", json!({"mode":value}))?;
+                self.refresh_ui();
+            }
+            "follow-up" => {
+                pi_queue_mode(value)?;
+                self.process
+                    .request("set_follow_up_mode", json!({"mode":value}))?;
                 self.refresh_ui();
             }
             other => {
@@ -1583,6 +1612,47 @@ fn pi_ui_state(ui: &PiUi) -> Value {
             "choices":choices
         }));
     }
+    let state = ui.state.as_ref();
+    let boolean = |enabled: bool| if enabled { "true" } else { "false" };
+    let auto_compaction = state
+        .and_then(|state| state.get("autoCompactionEnabled"))
+        .and_then(Value::as_bool)
+        .unwrap_or(true);
+    options.push(json!({
+        "id":"auto-compaction",
+        "name":"Auto-compaction",
+        "kind":"boolean",
+        "value":boolean(auto_compaction),
+        "choices":[{"value":"true","name":"On"},{"value":"false","name":"Off"}]
+    }));
+    let auto_retry = ui.auto_retry.unwrap_or(true);
+    options.push(json!({
+        "id":"auto-retry",
+        "name":"Auto-retry",
+        "kind":"boolean",
+        "value":boolean(auto_retry),
+        "choices":[{"value":"true","name":"On"},{"value":"false","name":"Off"}]
+    }));
+    let steering = state
+        .and_then(|state| state.get("steeringMode"))
+        .and_then(Value::as_str)
+        .unwrap_or("one-at-a-time");
+    options.push(json!({
+        "id":"steering",
+        "name":"Steering mode",
+        "value":steering,
+        "choices":[{"value":"all","name":"All"},{"value":"one-at-a-time","name":"One at a time"}]
+    }));
+    let follow_up = state
+        .and_then(|state| state.get("followUpMode"))
+        .and_then(Value::as_str)
+        .unwrap_or("one-at-a-time");
+    options.push(json!({
+        "id":"follow-up",
+        "name":"Follow-up mode",
+        "value":follow_up,
+        "choices":[{"value":"all","name":"All"},{"value":"one-at-a-time","name":"One at a time"}]
+    }));
     let commands = ui
         .commands
         .iter()
@@ -1595,6 +1665,27 @@ fn pi_ui_state(ui: &PiUi) -> Value {
         })
         .collect::<Vec<_>>();
     json!({"options":options,"commands":commands})
+}
+
+fn pi_boolean(value: &str) -> Result<bool, ProviderError> {
+    match value {
+        "true" | "on" => Ok(true),
+        "false" | "off" => Ok(false),
+        _ => Err(ProviderError::new(
+            "chat_option_invalid",
+            format!("{value} is not a boolean option value"),
+        )),
+    }
+}
+
+fn pi_queue_mode(value: &str) -> Result<(), ProviderError> {
+    match value {
+        "all" | "one-at-a-time" => Ok(()),
+        _ => Err(ProviderError::new(
+            "chat_option_invalid",
+            format!("{value} is not a Pi queue mode"),
+        )),
+    }
 }
 
 fn parse_slash(text: &str) -> Option<(&str, &str)> {
@@ -2494,10 +2585,11 @@ mod tests {
     #[test]
     fn ui_state_matches_the_protocol_option_shape() {
         let ui = PiUi {
-            state: Some(json!({"model":{"id":"m","provider":"p"},"thinkingLevel":"high"})),
+            state: Some(json!({"model":{"id":"m","provider":"p"},"thinkingLevel":"high","autoCompactionEnabled":true,"steeringMode":"all","followUpMode":"one-at-a-time"})),
             models: vec![json!({"id":"m","provider":"p","name":"M"})],
             thinking_levels: vec!["off".to_owned(), "high".to_owned()],
             commands: vec![json!({"name":"demo","description":"Demo"})],
+            auto_retry: Some(false),
         };
         let value = pi_ui_state(&ui);
         // Required ChatSessionOption fields, and no extraneous ones.
@@ -2511,6 +2603,20 @@ mod tests {
             format!("p{PI_MODEL_SEPARATOR}m")
         );
         assert_eq!(value["options"][1]["value"], "high");
+        let option = |id: &str| {
+            value["options"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|option| option["id"] == id)
+                .unwrap()
+        };
+        assert_eq!(option("auto-compaction")["kind"], "boolean");
+        assert_eq!(option("auto-compaction")["value"], "true");
+        assert_eq!(option("auto-retry")["kind"], "boolean");
+        assert_eq!(option("auto-retry")["value"], "false");
+        assert_eq!(option("steering")["value"], "all");
+        assert_eq!(option("follow-up")["value"], "one-at-a-time");
         assert!(value["options"][0].get("currentValue").is_none());
         assert!(value["options"][0].get("options").is_none());
         assert_eq!(value["commands"][0]["name"], "demo");

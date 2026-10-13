@@ -3108,6 +3108,28 @@
           "items": {
             "$ref": "#/definitions/ChatSessionChoice"
           }
+        },
+        "kind": {
+          "type": "string",
+          "enum": [
+            "select",
+            "boolean"
+          ]
+        },
+        "category": {
+          "type": "string",
+          "enum": [
+            "mode",
+            "model",
+            "thinking",
+            "other"
+          ]
+        },
+        "description": {
+          "type": "string"
+        },
+        "recommended": {
+          "type": "string"
         }
       },
       "required": [
@@ -3126,6 +3148,15 @@
         },
         "name": {
           "type": "string"
+        },
+        "description": {
+          "type": "string"
+        },
+        "group": {
+          "type": "string"
+        },
+        "recommended": {
+          "type": "boolean"
         }
       },
       "required": [
