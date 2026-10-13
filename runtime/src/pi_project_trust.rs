@@ -2,7 +2,9 @@
 //!
 //! Pi owns `trust.json` and `settings.json`; this module never mutates either.
 use crate::db::Database;
-use anyhow::{anyhow, Result};
+#[cfg(test)]
+use anyhow::anyhow;
+use anyhow::Result;
 use rusqlite::OptionalExtension;
 use serde_json::{json, Value};
 use std::{
@@ -88,6 +90,7 @@ pub(crate) fn agent_dir_for(
 /// Atomically claims an externally visible decision operation and persists its
 /// value. A foreign-key or validation failure rolls the claim back, so retries
 /// never become permanently outcome-unknown.
+#[cfg(test)]
 pub(crate) fn claim_and_set(
     db: &Database,
     project_id: &str,
@@ -176,7 +179,7 @@ fn compute_with_optional_agent_dir(
     decision: Option<&str>,
 ) -> Value {
     let cwd = canonical_or_absolute(cwd);
-    let protected_resources = protected_resources(&cwd, home);
+    let resources = protected_resources(&cwd, home);
     let pi_decision = agent_dir
         .and_then(|dir| pi_saved_decision(&cwd, dir))
         .unwrap_or("none");
@@ -197,7 +200,11 @@ fn compute_with_optional_agent_dir(
         },
     };
     json!({
-        "protectedResources": protected_resources,
+        "protectedResources": resources.contained,
+        "outsideProtectedResources": resources.outside.iter().map(|resource| json!({
+            "path": resource.path,
+            "target": resource.target,
+        })).collect::<Vec<_>>(),
         "piDecision": pi_decision,
         "defaultProjectTrust": default_project_trust,
         "threadtermDecision": threadterm_decision,
@@ -206,39 +213,217 @@ fn compute_with_optional_agent_dir(
 }
 
 fn canonical_or_absolute(path: &Path) -> PathBuf {
-    path.canonicalize().unwrap_or_else(|_| {
-        if path.is_absolute() {
-            path.to_owned()
-        } else {
-            std::env::current_dir().unwrap_or_default().join(path)
-        }
-    })
+    path.canonicalize()
+        .unwrap_or_else(|_| lexical_absolute(path))
 }
 
-fn protected_resources(cwd: &Path, home: Option<OsString>) -> Vec<String> {
-    let mut found = PI_PROTECTED
-        .iter()
-        .map(|resource| cwd.join(resource))
-        .filter(|path| path.exists())
-        .map(|path| relative_display(cwd, &path))
-        .collect::<Vec<_>>();
+fn lexical_absolute(path: &Path) -> PathBuf {
+    let absolute = if path.is_absolute() {
+        path.to_owned()
+    } else {
+        std::env::current_dir().unwrap_or_default().join(path)
+    };
+    let mut normalized = PathBuf::new();
+    for component in absolute.components() {
+        match component {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                normalized.pop();
+            }
+            _ => normalized.push(component.as_os_str()),
+        }
+    }
+    normalized
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct OutsideProtectedResource {
+    path: String,
+    target: String,
+}
+
+#[derive(Default)]
+struct ProtectedResources {
+    contained: Vec<String>,
+    outside: Vec<OutsideProtectedResource>,
+}
+
+fn protected_resources(cwd: &Path, home: Option<OsString>) -> ProtectedResources {
+    let mut found = ProtectedResources::default();
+    for resource in PI_PROTECTED {
+        inspect_protected_root(cwd, cwd, &cwd.join(resource), &mut found);
+    }
     // Pi checks HOME before falling back to Node's homedir() (USERPROFILE on
     // Windows). Its `HOME` override must therefore win for this exclusion.
     let home_agents = home
         .or_else(|| std::env::var_os("HOME"))
         .or_else(|| std::env::var_os("USERPROFILE"))
-        .map(|home| canonical_or_absolute(&PathBuf::from(home).join(".agents").join("skills")));
+        .map(|home| lexical_absolute(&PathBuf::from(home).join(".agents").join("skills")));
     let mut current = Some(cwd);
     while let Some(directory) = current {
         let skills = directory.join(".agents").join("skills");
-        if skills.exists() && home_agents.as_ref() != Some(&canonical_or_absolute(&skills)) {
-            found.push(relative_display(cwd, &skills));
+        if !home_agents
+            .as_ref()
+            .is_some_and(|home_agents| same_lexical_path(home_agents, &skills))
+        {
+            inspect_protected_root(cwd, directory, &skills, &mut found);
         }
         current = directory.parent();
     }
-    found.sort();
-    found.dedup();
+    found.contained.sort();
+    found.contained.dedup();
+    found.outside.sort_by(|left, right| {
+        left.path
+            .cmp(&right.path)
+            .then_with(|| left.target.cmp(&right.target))
+    });
+    found.outside.dedup();
     found
+}
+
+fn same_lexical_path(left: &Path, right: &Path) -> bool {
+    let left = path_display(&lexical_absolute(left));
+    let right = path_display(&lexical_absolute(right));
+    #[cfg(windows)]
+    {
+        left.eq_ignore_ascii_case(&right)
+    }
+    #[cfg(not(windows))]
+    {
+        left == right
+    }
+}
+
+fn inspect_protected_root(
+    project_root: &Path,
+    lexical_root: &Path,
+    path: &Path,
+    found: &mut ProtectedResources,
+) {
+    let metadata = match lexical_path_state(lexical_root, path) {
+        LexicalPathState::Missing => return,
+        LexicalPathState::Linked(link) => {
+            let real = resolved_path(&link);
+            if real.starts_with(project_root) {
+                found.contained.push(relative_display(project_root, &link));
+            } else {
+                push_outside(project_root, &link, &real, found);
+            }
+            // The link itself is enough to explain why Pi may load project
+            // resources. Do not inspect any descendant through it, even when
+            // its target happens to remain inside the project.
+            return;
+        }
+        LexicalPathState::Plain(metadata) => metadata,
+    };
+    let real = resolved_path(path);
+    if !real.starts_with(project_root) {
+        push_outside(project_root, path, &real, found);
+        return;
+    }
+
+    found.contained.push(relative_display(project_root, path));
+    if !metadata.is_dir() {
+        return;
+    }
+    inspect_protected_directory(project_root, path, found);
+}
+
+enum LexicalPathState {
+    Missing,
+    Linked(PathBuf),
+    Plain(fs::Metadata),
+}
+
+fn lexical_path_state(root: &Path, path: &Path) -> LexicalPathState {
+    let Ok(relative) = path.strip_prefix(root) else {
+        return LexicalPathState::Missing;
+    };
+    let mut current = root.to_owned();
+    let mut last = None;
+    for component in relative.components() {
+        current.push(component.as_os_str());
+        let Ok(metadata) = fs::symlink_metadata(&current) else {
+            return LexicalPathState::Missing;
+        };
+        if is_link(&metadata) {
+            return LexicalPathState::Linked(current);
+        }
+        last = Some(metadata);
+    }
+    last.map_or(LexicalPathState::Missing, LexicalPathState::Plain)
+}
+
+fn inspect_protected_directory(
+    project_root: &Path,
+    directory: &Path,
+    found: &mut ProtectedResources,
+) {
+    let mut pending = vec![directory.to_owned()];
+    while let Some(directory) = pending.pop() {
+        let Ok(entries) = fs::read_dir(directory) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let Ok(metadata) = fs::symlink_metadata(&path) else {
+                continue;
+            };
+            let linked = is_link(&metadata);
+            let real = resolved_path(&path);
+            let contained = real.starts_with(project_root);
+            if !contained {
+                push_outside(project_root, &path, &real, found);
+            }
+            // Never traverse a symlink or Windows reparse point, even when
+            // its target is contained. Pi may load the entry, but inspection
+            // must not duplicate trees or walk a cycle through a link.
+            if !linked && metadata.is_dir() && contained {
+                pending.push(path);
+            }
+        }
+    }
+}
+
+fn push_outside(project_root: &Path, path: &Path, target: &Path, found: &mut ProtectedResources) {
+    found.outside.push(OutsideProtectedResource {
+        path: relative_display(project_root, path),
+        target: path_display(target),
+    });
+}
+
+fn resolved_path(path: &Path) -> PathBuf {
+    path.canonicalize().unwrap_or_else(|_| {
+        fs::read_link(path)
+            .ok()
+            .map(|target| {
+                if target.is_absolute() {
+                    target
+                } else {
+                    path.parent().unwrap_or_else(|| Path::new("")).join(target)
+                }
+            })
+            .map(|target| canonical_or_absolute(&target))
+            .unwrap_or_else(|| canonical_or_absolute(path))
+    })
+}
+
+fn is_link(metadata: &fs::Metadata) -> bool {
+    if metadata.file_type().is_symlink() {
+        return true;
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
+        metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0
+    }
+    #[cfg(not(windows))]
+    false
+}
+
+fn path_display(path: &Path) -> String {
+    pi_trust_key(path).replace('\\', "/")
 }
 
 fn relative_display(base: &Path, path: &Path) -> String {
@@ -323,8 +508,12 @@ fn default_project_trust(agent_dir: &Path) -> &'static str {
     };
     match serde_json::from_str::<Value>(raw.trim_start_matches('\u{feff}'))
         .ok()
-        .and_then(|value| value.get("defaultProjectTrust").and_then(Value::as_str).map(str::to_owned))
-    {
+        .and_then(|value| {
+            value
+                .get("defaultProjectTrust")
+                .and_then(Value::as_str)
+                .map(str::to_owned)
+        }) {
         Some(value) if value == "always" => "always",
         Some(value) if value == "never" => "never",
         _ => "ask",
@@ -343,6 +532,43 @@ fn read_limited(path: &Path) -> Option<String> {
 mod tests {
     use super::*;
 
+    fn outside_resources(value: &Value) -> Vec<(String, String)> {
+        value["outsideProtectedResources"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|resource| {
+                (
+                    resource["path"].as_str().unwrap().to_owned(),
+                    resource["target"].as_str().unwrap().to_owned(),
+                )
+            })
+            .collect()
+    }
+
+    #[cfg(any(unix, windows))]
+    fn create_directory_symlink(target: &Path, link: &Path) {
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(target, link).unwrap();
+        #[cfg(windows)]
+        std::os::windows::fs::symlink_dir(target, link).unwrap();
+    }
+
+    #[cfg(windows)]
+    fn create_junction(target: &Path, link: &Path) {
+        let output = std::process::Command::new("cmd")
+            .args(["/C", "mklink", "/J"])
+            .arg(link)
+            .arg(target)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "junction fixture failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
     #[test]
     fn detects_protected_resources_but_not_a_bare_pi_directory() {
         let root = tempfile::tempdir().unwrap();
@@ -351,13 +577,182 @@ mod tests {
         let agent = root.path().join("agent");
         assert_eq!(compute(&cwd, &agent, None)["protectedResources"], json!([]));
         fs::create_dir_all(cwd.join(".pi").join("extensions")).unwrap();
-        fs::create_dir_all(root.path().join(".agents").join("skills")).unwrap();
         let resources = compute(&cwd, &agent, None)["protectedResources"]
             .as_array()
             .unwrap()
             .clone();
         assert!(resources.contains(&json!(".pi/extensions")));
-        assert!(resources.contains(&json!("../.agents/skills")));
+    }
+
+    #[test]
+    fn separates_plain_ancestor_agents_skills_with_its_real_target() {
+        let root = tempfile::tempdir().unwrap();
+        let cwd = root.path().join("project");
+        let skills = root.path().join(".agents").join("skills");
+        fs::create_dir_all(&cwd).unwrap();
+        fs::create_dir_all(&skills).unwrap();
+
+        let value = compute(&cwd, &root.path().join("agent"), None);
+        assert_eq!(value["protectedResources"], json!([]));
+        assert_eq!(
+            outside_resources(&value),
+            vec![(
+                "../.agents/skills".to_owned(),
+                path_display(&skills.canonicalize().unwrap()),
+            )]
+        );
+    }
+
+    #[cfg(any(unix, windows))]
+    #[test]
+    #[cfg_attr(windows, ignore = "requires Windows symbolic-link privilege; run outside the sandbox")]
+    fn separates_a_protected_symlink_that_resolves_outside_the_project() {
+        let root = tempfile::tempdir().unwrap();
+        let cwd = root.path().join("project");
+        let outside = root.path().join("outside-skills");
+        fs::create_dir_all(cwd.join(".pi")).unwrap();
+        fs::create_dir_all(&outside).unwrap();
+        create_directory_symlink(&outside, &cwd.join(".pi").join("skills"));
+
+        let value = compute(&cwd, &root.path().join("agent"), None);
+        assert!(!value["protectedResources"]
+            .as_array()
+            .unwrap()
+            .contains(&json!(".pi/skills")));
+        assert_eq!(
+            outside_resources(&value),
+            vec![(
+                ".pi/skills".to_owned(),
+                path_display(&outside.canonicalize().unwrap()),
+            )]
+        );
+    }
+
+    #[cfg(any(unix, windows))]
+    #[test]
+    #[cfg_attr(windows, ignore = "requires Windows symbolic-link privilege; run outside the sandbox")]
+    fn finds_a_nested_outside_symlink_without_following_contained_links() {
+        let root = tempfile::tempdir().unwrap();
+        let cwd = root.path().join("project");
+        let extensions = cwd.join(".pi").join("extensions");
+        let nested = extensions.join("nested");
+        let outside = root.path().join("outside-extension");
+        fs::create_dir_all(&nested).unwrap();
+        fs::create_dir_all(&outside).unwrap();
+        create_directory_symlink(&outside, &nested.join("escape"));
+
+        // This contained link points at a project directory that itself has an
+        // outside link. Inspection deliberately stops at the first link.
+        let safe_target = cwd.join("safe-target");
+        fs::create_dir_all(&safe_target).unwrap();
+        create_directory_symlink(&outside, &safe_target.join("not-traversed"));
+        create_directory_symlink(&safe_target, &extensions.join("safe-link"));
+
+        let value = compute(&cwd, &root.path().join("agent"), None);
+        assert!(value["protectedResources"]
+            .as_array()
+            .unwrap()
+            .contains(&json!(".pi/extensions")));
+        assert_eq!(
+            outside_resources(&value),
+            vec![(
+                ".pi/extensions/nested/escape".to_owned(),
+                path_display(&outside.canonicalize().unwrap()),
+            )]
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn finds_a_nested_outside_junction_and_shows_its_real_target() {
+        let root = tempfile::tempdir().unwrap();
+        let cwd = root.path().join("project");
+        let nested = cwd.join(".pi").join("extensions").join("nested-junction");
+        let outside = root.path().join("outside-junction");
+        fs::create_dir_all(&nested).unwrap();
+        fs::create_dir_all(&outside).unwrap();
+        create_junction(&outside, &nested.join("escape"));
+        let safe_target = cwd.join("safe-junction-target");
+        fs::create_dir_all(&safe_target).unwrap();
+        create_junction(&outside, &safe_target.join("not-traversed"));
+        create_junction(
+            &safe_target,
+            &cwd.join(".pi").join("extensions").join("safe-link"),
+        );
+
+        let value = compute(&cwd, &root.path().join("agent"), None);
+        assert_eq!(
+            outside_resources(&value),
+            vec![(
+                ".pi/extensions/nested-junction/escape".to_owned(),
+                path_display(&outside.canonicalize().unwrap()),
+            )]
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn separates_an_outside_linked_pi_ancestor_without_walking_it() {
+        let root = tempfile::tempdir().unwrap();
+        let cwd = root.path().join("project");
+        let outside_pi = root.path().join("outside-pi");
+        fs::create_dir_all(&cwd).unwrap();
+        fs::create_dir_all(outside_pi.join("extensions")).unwrap();
+        create_junction(&outside_pi, &cwd.join(".pi"));
+
+        let value = compute(&cwd, &root.path().join("agent"), None);
+        assert!(!value["protectedResources"]
+            .as_array()
+            .unwrap()
+            .contains(&json!(".pi")));
+        assert_eq!(
+            outside_resources(&value),
+            vec![(
+                ".pi".to_owned(),
+                path_display(&outside_pi.canonicalize().unwrap()),
+            )]
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn contained_linked_pi_ancestor_is_reported_but_never_walked() {
+        let root = tempfile::tempdir().unwrap();
+        let cwd = root.path().join("project");
+        let linked_pi = cwd.join("linked-pi");
+        let outside = root.path().join("outside-nested-link");
+        fs::create_dir_all(linked_pi.join("extensions")).unwrap();
+        fs::create_dir_all(&outside).unwrap();
+        create_junction(
+            &outside,
+            &linked_pi.join("extensions").join("must-not-be-read"),
+        );
+        create_junction(&linked_pi, &cwd.join(".pi"));
+
+        let value = compute(&cwd, &root.path().join("agent"), None);
+        assert_eq!(value["protectedResources"], json!([".pi"]));
+        assert_eq!(value["outsideProtectedResources"], json!([]));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn linked_ancestor_agents_directory_is_stopped_at_the_link() {
+        let root = tempfile::tempdir().unwrap();
+        let cwd = root.path().join("project");
+        let outside_agents = root.path().join("outside-agents");
+        fs::create_dir_all(&cwd).unwrap();
+        fs::create_dir_all(outside_agents.join("skills")).unwrap();
+        create_junction(&outside_agents, &root.path().join(".agents"));
+
+        let value = compute(&cwd, &root.path().join("agent"), None);
+        assert_eq!(value["protectedResources"], json!([]));
+        assert_eq!(
+            outside_resources(&value),
+            vec![(
+                "../.agents".to_owned(),
+                path_display(&outside_agents.canonicalize().unwrap()),
+            )]
+        );
     }
 
     #[test]
@@ -433,6 +828,11 @@ mod tests {
             pi_trust_key(Path::new(r"\\?\UNC\server\share")),
             r"\\server\share"
         );
+        #[cfg(windows)]
+        assert!(same_lexical_path(
+            Path::new(r"\\?\D:\Repo\.agents\skills"),
+            Path::new(r"d:\repo\.agents\skills")
+        ));
     }
 
     #[test]

@@ -988,7 +988,7 @@ impl ChatSession for PiChat {
             let _ = self.process.request("abort", json!({}));
         }
         self.drain_interactions(active.as_deref());
-        Ok(())
+        self.process.terminate()
     }
 
     fn ui_state(&self) -> Value {

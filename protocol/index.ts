@@ -162,6 +162,7 @@ export interface ChatSlashCommand { name:string; description?:string }
 export type ChatOptionsLoadState = 'idle'|'loading'|'ready'|'empty'|'error'|'unknown';
 export interface PiTrustState {
  protectedResources:string[];
+ outsideProtectedResources?:{path:string;target:string}[];
  piDecision:'trusted'|'declined'|'none';
  defaultProjectTrust:'always'|'ask'|'never';
  threadtermDecision:'trusted'|'declined'|'none';

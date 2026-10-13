@@ -216,6 +216,8 @@ test('Pi project trust is additive to chat UI and has a leased decision RPC',()=
  assert.ok(METHODS.includes('chat.projectTrust.set'));
  const trust={protectedResources:['.pi/extensions','.agents/skills'],piDecision:'none',defaultProjectTrust:'ask',threadtermDecision:'none',effective:'skipped'};
  validateResult('chat.options',{options:[],commands:[],piTrust:trust});
+ validateResult('chat.options',{options:[],commands:[],piTrust:{...trust,protectedResources:[],outsideProtectedResources:[{path:'.pi/extensions/link',target:'D:/outside/extension'}]}});
+ assert.throws(()=>validateResult('chat.options',{options:[],commands:[],piTrust:{...trust,outsideProtectedResources:[{path:'.pi/extensions/link',target:4}]}}));
  validateRequest('chat.projectTrust.set',{sessionId:'s',decision:'trusted',leaseEpoch:1,operationId:'trust'});
  for(const decision of ['always','',7]) assert.throws(()=>validateRequest('chat.projectTrust.set',{sessionId:'s',decision,leaseEpoch:1,operationId:'trust'}));
  assert.throws(()=>validateRequest('chat.projectTrust.set',{sessionId:'s',decision:'trusted',operationId:'trust'}));

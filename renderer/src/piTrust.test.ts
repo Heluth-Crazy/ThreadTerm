@@ -14,6 +14,11 @@ test('trust review appears only for protected resources skipped without a saved 
   }
 });
 
+test('trust review remains visible when only an outside-project link was found', () => {
+  const outsideOnly = { ...trust, protectedResources: [], outsideProtectedResources: [{ path: '.pi/extensions/link', target: 'D:\\outside\\extension' }] };
+  assert.equal(showPiTrustBanner(outsideOnly), true);
+});
+
 test('ThreadTerm launch decisions take precedence over read-only native decisions', () => {
   assert.equal(piTrustSource(trust), undefined);
   assert.equal(piTrustSource({ ...trust, piDecision: 'trusted' }), 'pi');

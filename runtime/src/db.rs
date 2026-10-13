@@ -1793,7 +1793,7 @@ pub(crate) fn subagent_item_projection_tx(
     Ok((item_count, tool_count, newest, truncated))
 }
 
-fn complete<T: serde::Serialize>(
+pub(crate) fn complete<T: serde::Serialize>(
     tx: &Transaction<'_>,
     id: &str,
     method: &str,
