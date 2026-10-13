@@ -3191,6 +3191,50 @@
         "unknown"
       ]
     },
+    "RequestResult<\"chat.context.read\">": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/ChatContextUsage"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "ChatContextUsage": {
+      "type": "object",
+      "properties": {
+        "usedTokens": {
+          "type": "number"
+        },
+        "windowTokens": {
+          "type": "number"
+        },
+        "percent": {
+          "type": "number"
+        },
+        "inputTokens": {
+          "type": "number"
+        },
+        "outputTokens": {
+          "type": "number"
+        },
+        "cacheReadTokens": {
+          "type": "number"
+        },
+        "cacheWriteTokens": {
+          "type": "number"
+        },
+        "totalTokens": {
+          "type": "number"
+        },
+        "updatedAt": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "description": "Latest context-window usage for one Chat session, pushed by `chat.context` and read by `chat.context.read`."
+    },
     "RequestResult<\"chat.option.set\">": {
       "$ref": "#/definitions/ChatUiState"
     },
@@ -7242,6 +7286,32 @@
         },
         "result": {
           "$ref": "#/definitions/RequestResult%3C%22chat.options%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "result"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "chat.context.read"
+        },
+        "result": {
+          "$ref": "#/definitions/RequestResult%3C%22chat.context.read%22%3E"
         }
       },
       "required": [

@@ -1186,6 +1186,13 @@ impl RuntimeService {
                     let p: ChatRead = parse(&request.params)?;
                     Ok(self.connection_state(&p.session_id)?)
                 }
+                "chat.context.read" => {
+                    let p: ChatRead = parse(&request.params)?;
+                    if self.db.session_by_id(&p.session_id)?.is_none() {
+                        return Err(anyhow::anyhow!("session_not_found"));
+                    }
+                    Ok(self.db.chat_context(&p.session_id)?.unwrap_or(Value::Null))
+                }
                 "chat.connect" => {
                     let p: ChatConnect = parse(&request.params)?;
                     self.leases

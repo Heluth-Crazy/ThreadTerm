@@ -466,9 +466,96 @@ pub struct JsonLineProcess {
     child: Arc<Mutex<Child>>,
     stdin: Arc<Mutex<ChildStdin>>,
     pending: Arc<Mutex<HashMap<String, Pending>>>,
-    next_id: AtomicU64,
+    next_id: Arc<AtomicU64>,
     alive: Arc<std::sync::atomic::AtomicBool>,
     _job: SessionJob,
+}
+
+#[derive(Clone)]
+pub struct JsonLineRequester {
+    label: String,
+    style: EnvelopeStyle,
+    stdin: Arc<Mutex<ChildStdin>>,
+    pending: Arc<Mutex<HashMap<String, Pending>>>,
+    next_id: Arc<AtomicU64>,
+}
+
+impl JsonLineRequester {
+    /// Issues a request and invokes `callback` from the transport's reader
+    /// thread when the matching response arrives. Never blocks the caller.
+    pub fn request_async(
+        &self,
+        method: &str,
+        params: Value,
+        callback: impl FnOnce(Result<Value, ProviderError>) + Send + 'static,
+    ) -> Result<u64, ProviderError> {
+        let id = self.next_id.fetch_add(1, Ordering::Relaxed);
+        let frame = envelope_request_frame(self.style, id, method, params);
+        self.pending
+            .lock()
+            .map_err(|_| ProviderError::new("provider_internal", "pending request lock poisoned"))?
+            .insert(id.to_string(), Pending::Async(Box::new(callback)));
+        if let Err(error) = write_stdin(&self.stdin, &self.label, frame) {
+            if let Ok(mut pending) = self.pending.lock() {
+                pending.remove(&id.to_string());
+            }
+            return Err(error);
+        }
+        Ok(id)
+    }
+}
+
+pub(crate) fn percent_used(used: u64, window: u64) -> f64 {
+    if window == 0 {
+        return 0.0;
+    }
+    ((used as f64 / window as f64) * 100.0).clamp(0.0, 100.0)
+}
+
+/// ACP-shaped `usage_update` (`{used, size, cost?}`) into the shared context
+/// shape. Agents that send only totals produce a tokens-only snapshot.
+pub(crate) fn context_usage_from_update(update: &Value) -> Option<Value> {
+    let number = |keys: &[&str]| {
+        keys.iter().find_map(|key| {
+            update
+                .get(*key)
+                .and_then(Value::as_u64)
+                .or_else(|| update.get(*key).and_then(Value::as_i64).and_then(|value| u64::try_from(value).ok()))
+        })
+    };
+    let used = number(&["used", "usedTokens"]);
+    let window = number(&["size", "contextWindow", "windowTokens"]).filter(|window| *window > 0);
+    let total = number(&["total", "totalTokens"]);
+    if used.is_none() && window.is_none() && total.is_none() {
+        return None;
+    }
+    let mut usage = serde_json::Map::new();
+    if let Some(value) = used {
+        usage.insert("usedTokens".into(), json!(value));
+    }
+    if let Some(value) = window {
+        usage.insert("windowTokens".into(), json!(value));
+    }
+    if let Some(value) = total {
+        usage.insert("totalTokens".into(), json!(value));
+    } else if let Some(value) = used {
+        usage.insert("totalTokens".into(), json!(value));
+    }
+    if let (Some(used), Some(window)) = (used, window) {
+        usage.insert("percent".into(), json!(percent_used(used, window)));
+    }
+    Some(Value::Object(usage))
+}
+
+fn envelope_request_frame(style: EnvelopeStyle, id: u64, method: &str, params: Value) -> Value {
+    match style {
+        EnvelopeStyle::JsonRpc2 => {
+            json!({"jsonrpc":"2.0","id":id,"method":method,"params":params})
+        }
+        EnvelopeStyle::Codex => json!({"id":id,"method":method,"params":params}),
+        EnvelopeStyle::Sidecar => json!({"id":id,"op":method,"params":params}),
+        EnvelopeStyle::Pi => pi_command_frame(id, method, params),
+    }
 }
 
 #[derive(Clone)]
@@ -709,7 +796,7 @@ impl JsonLineProcess {
             child,
             stdin: Arc::new(Mutex::new(stdin)),
             pending,
-            next_id: AtomicU64::new(1),
+            next_id: Arc::new(AtomicU64::new(1)),
             alive,
             _job: job,
         })
@@ -724,6 +811,19 @@ impl JsonLineProcess {
             label: self.label.clone(),
             style: self.style,
             stdin: Arc::clone(&self.stdin),
+        }
+    }
+
+    /// A cloneable handle that can issue a request without owning the process.
+    /// Used by adapters whose event callback runs on the reader thread and must
+    /// not block; `request_async` invokes the callback from that same thread.
+    pub fn requester(&self) -> JsonLineRequester {
+        JsonLineRequester {
+            label: self.label.clone(),
+            style: self.style,
+            stdin: Arc::clone(&self.stdin),
+            pending: Arc::clone(&self.pending),
+            next_id: Arc::clone(&self.next_id),
         }
     }
 
@@ -823,17 +923,9 @@ impl JsonLineProcess {
         self.responder().respond(id, result)
     }
 
-    fn request_frame(&self, method: &str, params: Value) -> (u64, Value) {
+    pub fn request_frame(&self, method: &str, params: Value) -> (u64, Value) {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
-        let frame = match self.style {
-            EnvelopeStyle::JsonRpc2 => {
-                json!({"jsonrpc":"2.0","id":id,"method":method,"params":params})
-            }
-            EnvelopeStyle::Codex => json!({"id":id,"method":method,"params":params}),
-            EnvelopeStyle::Sidecar => json!({"id":id,"op":method,"params":params}),
-            EnvelopeStyle::Pi => pi_command_frame(id, method, params),
-        };
-        (id, frame)
+        (id, envelope_request_frame(self.style, id, method, params))
     }
 
     fn write(&self, frame: Value) -> Result<(), ProviderError> {
@@ -1037,6 +1129,21 @@ mod tests {
             let encoded = encode_approval_id(&id);
             assert_eq!(decode_approval_id(&encoded).unwrap(), id);
         }
+    }
+
+    #[test]
+    fn acp_usage_update_maps_used_and_size() {
+        let usage = context_usage_from_update(&json!({"used":60000,"size":200000})).unwrap();
+        assert_eq!(usage["usedTokens"], 60000);
+        assert_eq!(usage["windowTokens"], 200000);
+        assert_eq!(usage["percent"], 30.0);
+
+        let tokens_only = context_usage_from_update(&json!({"totalTokens":1200})).unwrap();
+        assert_eq!(tokens_only["totalTokens"], 1200);
+        assert!(tokens_only.get("windowTokens").is_none());
+        assert!(tokens_only.get("percent").is_none());
+
+        assert!(context_usage_from_update(&json!({"kind":"usage_update"})).is_none());
     }
 
     #[test]

@@ -302,6 +302,14 @@ pub fn record(
     payload["sessionId"]=json!(session_id);
     tx.execute("INSERT INTO outbox(event,data,created_at) VALUES ('chat.ui',?,?)",params![serde_json::to_string(&payload)?,now])?;
    }
+   "chat.context"=>{
+    if let Some(usage)=data.get("usage").filter(|usage|usage.is_object()){
+     // Context pressure is a latest-value snapshot: one row per session, so a
+     // reopened chat can paint it before the next turn produces usage.
+     tx.execute("INSERT INTO chat_context(session_id,data,updated_at) VALUES (?,?,?) ON CONFLICT(session_id) DO UPDATE SET data=excluded.data,updated_at=excluded.updated_at",params![session_id,serde_json::to_string(usage)?,now])?;
+     tx.execute("INSERT INTO outbox(event,data,created_at) VALUES ('chat.context',?,?)",params![serde_json::to_string(&json!({"sessionId":session_id,"usage":usage}))?,now])?;
+    }
+   }
    _=>{}
   }
   if changed {
@@ -1575,6 +1583,55 @@ mod tests {
             })
             .unwrap();
         assert_eq!(items, 0);
+    }
+    #[test]
+    fn chat_context_persists_the_latest_value_and_emits_no_transcript_row() {
+        let db = db();
+        record(
+            &db,
+            "s",
+            Some("turn-1"),
+            "chat.context",
+            &json!({"usage":{"usedTokens":94700,"windowTokens":258000,"percent":36.7,"inputTokens":90000}}),
+        )
+        .unwrap();
+        assert_eq!(db.chat_context("s").unwrap().unwrap()["usedTokens"], 94700);
+        let payload = db
+            .transaction(|tx| {
+                Ok(tx.query_row(
+                    "SELECT data FROM outbox WHERE event='chat.context' ORDER BY seq DESC LIMIT 1",
+                    [],
+                    |row| row.get::<_, String>(0),
+                )?)
+            })
+            .unwrap();
+        let value: Value = serde_json::from_str(&payload).unwrap();
+        assert_eq!(value["sessionId"], "s");
+        assert_eq!(value["usage"]["windowTokens"], 258000);
+        assert_eq!(value["usage"]["inputTokens"], 90000);
+        let items: i64 = db
+            .transaction(|tx| Ok(tx.query_row("SELECT COUNT(*) FROM chat_items", [], |row| row.get(0))?))
+            .unwrap();
+        assert_eq!(items, 0, "a context snapshot never creates a transcript row");
+
+        // A later snapshot replaces the stored value in place.
+        record(&db, "s", Some("turn-2"), "chat.context", &json!({"usage":{"usedTokens":5}})).unwrap();
+        assert_eq!(db.chat_context("s").unwrap().unwrap()["usedTokens"], 5);
+        let rows: i64 = db
+            .transaction(|tx| Ok(tx.query_row("SELECT COUNT(*) FROM chat_context", [], |row| row.get(0))?))
+            .unwrap();
+        assert_eq!(rows, 1, "one row per session keeps the latest value");
+    }
+    #[test]
+    fn chat_context_ignores_a_missing_or_malformed_usage_object() {
+        let db = db();
+        record(&db, "s", None, "chat.context", &json!({})).unwrap();
+        record(&db, "s", None, "chat.context", &json!({"usage":"bad"})).unwrap();
+        assert!(db.chat_context("s").unwrap().is_none());
+        let events: i64 = db
+            .transaction(|tx| Ok(tx.query_row("SELECT COUNT(*) FROM outbox WHERE event='chat.context'", [], |row| row.get(0))?))
+            .unwrap();
+        assert_eq!(events, 0);
     }
     #[test]
     fn chat_ui_defaults_missing_input_capabilities_to_an_empty_object() {
