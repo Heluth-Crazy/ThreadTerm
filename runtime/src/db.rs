@@ -399,6 +399,12 @@ impl Database {
                 "mode":mode,
             }))?;
             emit(tx, "state.changed", json!({"sessionId":child_session_id,"kind":"chat.fork"}))?;
+            // The fork is resolved: its native-intent fence is no longer needed
+            // and must not accumulate one row per fork.
+            tx.execute(
+                "DELETE FROM chat_fork_intents WHERE operation_id=?",
+                [operation_id],
+            )?;
             Ok(result)
         })
     }

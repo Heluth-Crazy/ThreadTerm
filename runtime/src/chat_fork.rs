@@ -274,6 +274,22 @@ fn ensure_source_idle(source: &Session) -> Result<()> {
     Ok(())
 }
 
+/// The visible message text a transcript and the reply action treat as the
+/// message body: a non-empty `text` part that is neither commentary nor the
+/// plan-usage card. Thinking, tool and error parts never qualify.
+fn visible_message_text(part: &Value) -> Option<&str> {
+    if part.get("type").and_then(Value::as_str) != Some("text")
+        || part.get("phase").and_then(Value::as_str) == Some("commentary")
+        || part.pointer("/data/kind").and_then(Value::as_str) == Some("plan")
+    {
+        return None;
+    }
+    part.get("text")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|text| !text.is_empty())
+}
+
 fn completed_reply(items: &[ChatItem], index: usize) -> bool {
     let item = &items[index];
     let group = items
@@ -297,15 +313,7 @@ fn completed_reply(items: &[ChatItem], index: usize) -> bool {
         });
     item.role == "assistant"
         && completed
-        && item.parts.iter().any(|part| {
-            part.get("type").and_then(Value::as_str) == Some("text")
-                && part.get("phase").and_then(Value::as_str) != Some("commentary")
-                && part.pointer("/data/kind").and_then(Value::as_str) != Some("plan")
-                && part
-                    .get("text")
-                    .and_then(Value::as_str)
-                    .is_some_and(|text| !text.trim().is_empty())
-        })
+        && item.parts.iter().any(|part| visible_message_text(part).is_some())
         && !item.parts.iter().any(|part| {
             matches!(
                 part.get("status").and_then(Value::as_str),
@@ -427,7 +435,7 @@ fn copied_conversation(items: &[ChatItem], copied_at: &str) -> Result<String> {
             let text = item
                 .parts
                 .iter()
-                .filter_map(|part| part.get("text").and_then(Value::as_str))
+                .filter_map(|part| visible_message_text(part))
                 .collect::<Vec<_>>()
                 .join("\n");
             (!text.trim().is_empty()).then(|| format!("{}:\n{}", item.role, text.trim()))
@@ -692,6 +700,47 @@ mod tests {
         assert!(capped.len() <= MAX_TRANSCRIPT_BYTES);
         assert!(capped.starts_with(OMITTED_NOTE));
         assert!(std::str::from_utf8(capped.as_bytes()).is_ok());
+    }
+
+    #[test]
+    fn copied_conversation_keeps_only_visible_message_text() {
+        let item = |id: &str, role: &str, parts: Vec<Value>| ChatItem {
+            id: id.into(),
+            role: role.into(),
+            parts,
+            created_at: id.into(),
+            turn_id: None,
+            elapsed_ms: None,
+            turn_status: None,
+            turn_origin: None,
+            fork_anchor: None,
+            turn_model: None,
+            turn_usage: None,
+            turn_review: None,
+        };
+        let items = vec![
+            item("u", "user", vec![json!({"type":"text","text":"visible question"})]),
+            item("a", "assistant", vec![
+                json!({"type":"thinking","text":"private chain of thought"}),
+                json!({"type":"text","text":"visible answer"}),
+                json!({"type":"text","phase":"commentary","text":"thinking out loud"}),
+                json!({"type":"text","data":{"kind":"plan"},"text":"plan body"}),
+                json!({"type":"tool","text":"tool output"}),
+                json!({"type":"error","text":"boom"}),
+                json!({"type":"text","text":"   "}),
+            ]),
+        ];
+        let envelope = copied_conversation(&items, "now").unwrap();
+        let parsed: Value = serde_json::from_str(
+            envelope.strip_prefix(COPIED_CONVERSATION_PREFIX).unwrap(),
+        )
+        .unwrap();
+        let transcript = parsed["transcript"].as_str().unwrap();
+        assert!(transcript.contains("visible question"));
+        assert!(transcript.contains("visible answer"));
+        for hidden in ["private chain of thought", "thinking out loud", "plan body", "tool output", "boom"] {
+            assert!(!transcript.contains(hidden), "{hidden} must not be copied");
+        }
     }
 
     #[test]
@@ -1012,12 +1061,9 @@ mod tests {
         assert_eq!(calls.load(Ordering::SeqCst), 0);
         assert!(!db.session_by_id(&imported.id).unwrap().unwrap().read_only);
         assert_eq!(
-            db.chat_fork_intent("fork-recover-native")
-                .unwrap()
-                .unwrap()
-                .1
-                .as_deref(),
-            Some(imported.id.as_str())
+            db.chat_fork_intent("fork-recover-native").unwrap(),
+            None,
+            "a resolved fork prunes its native intent"
         );
         assert_eq!(db.snapshot().unwrap().sessions.len(), 2);
     }

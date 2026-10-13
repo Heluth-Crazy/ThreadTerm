@@ -9,8 +9,8 @@ import './chat-fork.css';
 export function useChatFork(session: Session, running: boolean, zh: boolean, onIssue: (issue: string) => void) {
   const surface = useContext(SessionSurfaceContext);
   const [busy, setBusy] = useState(false);
-  const locked = useRef(false), generation = useRef(0);
-  useEffect(() => { generation.current++; return () => { generation.current++; }; }, [session.id]);
+  const locked = useRef(false), generation = useRef(0), pendingFork = useRef<string | undefined>(undefined);
+  useEffect(() => { generation.current++; pendingFork.current = undefined; return () => { generation.current++; pendingFork.current = undefined; }; }, [session.id]);
   const disabledReason = forkDisabledReason(running, busy, zh);
   const accept = (child: Session, mode: ForkMode) => {
     rememberForkNotice(child.id, mode);
@@ -26,16 +26,31 @@ export function useChatFork(session: Session, running: boolean, zh: boolean, onI
       control = await acquireControl(session.id, () => { lost = true; });
       await control.check();
       if (current !== generation.current || lost) return;
-      const result = await request('chat.fork', {sessionId: session.id, itemId, operationId: operationId(), leaseEpoch: control.epoch});
-      if (current === generation.current) { accept(result.session, result.mode); return result.session; }
+      const id = operationId();
+      pendingFork.current = id;
+      const result = await request('chat.fork', {sessionId: session.id, itemId, operationId: id, leaseEpoch: control.epoch});
+      if (current === generation.current) {
+        // The chat.forked event may have already opened the child; only accept
+        // the RPC result while this fork is still the pending one.
+        if (pendingFork.current === id) { pendingFork.current = undefined; accept(result.session, result.mode); }
+        return result.session;
+      }
     } catch (error) {
-      if (current === generation.current) onIssue(error instanceof Error ? error.message : String(error));
+      // A lost response that the chat.forked event already resolved is not an error.
+      if (current === generation.current && pendingFork.current !== undefined) { pendingFork.current = undefined; onIssue(error instanceof Error ? error.message : String(error)); }
     } finally {
       control?.release(); locked.current = false;
       if (current === generation.current) setBusy(false);
     }
   };
-  return { busy, disabledReason, fork, accept };
+  // A lost chat.fork response still opens the child the event reported.
+  const acceptEvent = (operationId: string, child: Session, mode: ForkMode) => {
+    if (pendingFork.current !== operationId) return false;
+    pendingFork.current = undefined;
+    accept(child, mode);
+    return true;
+  };
+  return { busy, disabledReason, fork, accept, acceptEvent };
 }
 
 export function ChatForkButton({ itemId, disabledReason, busy, onFork, zh }: {itemId?: string; disabledReason?: string; busy?: boolean; onFork: (itemId?: string) => void; zh: boolean}) {
