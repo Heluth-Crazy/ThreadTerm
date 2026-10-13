@@ -1,7 +1,7 @@
 import { useEffect, useId, useMemo, useRef, useState } from 'react';
 import mermaid from 'mermaid';
 import { SurfaceDialog } from '../SurfaceDialog';
-import { safeMermaidSvg } from './mermaidSafety';
+import { safeMermaidSvg, stripMermaidDirectives } from './mermaidSafety';
 import { diagramDimensions, diagramRasterSize } from '../../diagramGeometry';
 import type { BlockProps } from './index';
 
@@ -18,8 +18,8 @@ export default function MermaidBlock({ source, copy }: BlockProps) {
         if (source.length > 64 * 1024) throw new Error(copy('Diagram exceeds 64 KiB.', '图表不能超过 64 KiB。'));
         const theme = getComputedStyle(root.current ?? document.documentElement);
         mermaid.initialize({ startOnLoad: false, securityLevel: 'strict', suppressErrorRendering: true, theme: 'base', fontFamily: theme.fontFamily, flowchart: { htmlLabels: false }, themeVariables: { primaryColor: theme.getPropertyValue('--soft').trim(), primaryTextColor: theme.getPropertyValue('--text').trim(), primaryBorderColor: theme.getPropertyValue('--border').trim(), lineColor: theme.getPropertyValue('--muted').trim(), background: theme.getPropertyValue('--surface').trim() } });
-        const result = await mermaid.render(`ttmermaid${id}`, source);
-        if (current) setSvg(safeMermaidSvg(result.svg));
+        const result = await mermaid.render(`ttmermaid${id}`, stripMermaidDirectives(source));
+        if (current) setSvg(safeMermaidSvg(result.svg, `ttmermaid${id}`));
       } catch (error) { if (current) setIssue(String(error)); }
     };
     renderQueue = renderQueue.then(render, render);
