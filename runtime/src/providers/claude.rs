@@ -1322,6 +1322,23 @@ fn emit_claude_message(
         }
         return;
     }
+    if ev == "session.context" {
+        // One context snapshot per completed turn, produced by the sidecar's
+        // single `getContextUsage` call; never polled here.
+        if let Some(usage) = raw.get("usage").filter(|usage| usage.is_object()) {
+            emit_scoped(
+                events,
+                "claude",
+                session_id,
+                native_id.as_deref(),
+                turn_id,
+                "chat.context",
+                json!({"usage":usage}),
+                worker_token,
+            );
+        }
+        return;
+    }
     if ev == "session.request" {
         let approval_id = raw
             .get("requestId")

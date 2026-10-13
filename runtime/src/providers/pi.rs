@@ -7,8 +7,8 @@
 use super::{
     builtin_name,
     common::{
-        history_page, validate_native_id, version_probe, CommandSpec, EnvelopeStyle,
-        JsonLineProcess, JsonLineResponder,
+        history_page, percent_used, validate_native_id, version_probe, CommandSpec, EnvelopeStyle,
+        JsonLineProcess, JsonLineRequester, JsonLineResponder,
     },
     emit_bound as emit, ChatSession, ProviderAdapter, ProviderCapability, ProviderError,
     ScopedProviderEvents, TerminalCapture, TerminalCommand,
@@ -261,6 +261,9 @@ impl ProviderAdapter for PiAdapter {
             control.responder = Some(process.responder());
             std::mem::take(&mut control.queued_ui)
         };
+        if let Ok(mut slot) = shared.requester.lock() {
+            *slot = Some(process.requester());
+        }
         for raw in queued_ui {
             pi_event(&events, "pi", session_id, &shared, raw);
         }
@@ -293,6 +296,9 @@ struct PiShared {
     ui: Mutex<PiUi>,
     control: Mutex<PiControl>,
     interactions: Mutex<HashMap<String, PiInteraction>>,
+    /// Lets the stdout callback issue a non-blocking usage query after the turn
+    /// settles without owning the process.
+    requester: Mutex<Option<JsonLineRequester>>,
     /// A bounded exact-id fence prevents Pi extension replays from reopening a
     /// card after its response/cancellation has been written.
     resolved_interactions: Mutex<VecDeque<String>>,
@@ -1366,6 +1372,58 @@ fn pi_emit_tool_call(
     );
 }
 
+/// Normalizes `get_session_stats` into the shared context-usage shape. Session
+/// totals become the token counters; `contextUsage` supplies the current
+/// window and percentage. `null` context fields right after compaction are
+/// dropped, so the ring falls back to its tokens-only state.
+fn pi_context_usage(data: &Value) -> Option<Value> {
+    let number = |value: Option<&Value>, key: &str| {
+        value
+            .and_then(|value| value.get(key))
+            .and_then(Value::as_u64)
+    };
+    let tokens = data.get("tokens");
+    let input = number(tokens, "input");
+    let output = number(tokens, "output");
+    let cache_read = number(tokens, "cacheRead");
+    let cache_write = number(tokens, "cacheWrite");
+    let total = number(tokens, "total");
+    let context = data.get("contextUsage");
+    let used = number(context, "tokens");
+    let window = number(context, "contextWindow").filter(|window| *window > 0);
+    let percent = context
+        .and_then(|context| context.get("percent"))
+        .and_then(Value::as_f64)
+        .or_else(|| used.zip(window).map(|(used, window)| percent_used(used, window)));
+    if input.is_none()
+        && output.is_none()
+        && cache_read.is_none()
+        && cache_write.is_none()
+        && total.is_none()
+        && used.is_none()
+        && window.is_none()
+    {
+        return None;
+    }
+    let mut usage = serde_json::Map::new();
+    let mut put = |key: &str, value: Option<u64>| {
+        if let Some(value) = value {
+            usage.insert(key.to_owned(), json!(value));
+        }
+    };
+    put("inputTokens", input);
+    put("outputTokens", output);
+    put("cacheReadTokens", cache_read);
+    put("cacheWriteTokens", cache_write);
+    put("totalTokens", total);
+    put("usedTokens", used);
+    put("windowTokens", window);
+    if let Some(percent) = percent {
+        usage.insert("percent".into(), json!(percent.clamp(0.0, 100.0)));
+    }
+    Some(Value::Object(usage))
+}
+
 /// Translates one `pi --mode rpc` record into provider events.
 fn pi_event(
     events: &ScopedProviderEvents,
@@ -1546,6 +1604,34 @@ fn pi_event(
                     data["elapsedMs"] = json!(elapsed);
                 }
                 emit("chat.turn.completed", data);
+                // Context pressure is read once per settled turn, never polled.
+                // The query is issued asynchronously so the stdout reader never
+                // blocks on a response it would have to deliver itself.
+                if let Some(requester) = shared
+                    .requester
+                    .lock()
+                    .ok()
+                    .and_then(|slot| slot.clone())
+                {
+                    let callback_events = events.clone();
+                    let callback_session = session_id.to_owned();
+                    let callback_native = native_id.clone();
+                    let _ = requester.request_async("get_session_stats", json!({}), move |result| {
+                        if let Ok(data) = result {
+                            if let Some(usage) = pi_context_usage(&data) {
+                                super::emit_bound(
+                                    &callback_events,
+                                    "pi",
+                                    &callback_session,
+                                    callback_native.as_deref(),
+                                    None,
+                                    "chat.context",
+                                    json!({"usage":usage}),
+                                );
+                            }
+                        }
+                    });
+                }
             }
         }
         "error" => {
@@ -2122,6 +2208,35 @@ mod tests {
         );
         let completed = receiver.try_recv().unwrap();
         assert_eq!(completed.data["result"]["stopReason"], "cancelled");
+    }
+
+    #[test]
+    fn context_usage_maps_pi_session_stats_and_hides_missing_values() {
+        let usage = pi_context_usage(&json!({
+            "tokens":{"input":50000,"output":10000,"cacheRead":40000,"cacheWrite":5000,"total":105000},
+            "contextUsage":{"tokens":60000,"contextWindow":200000,"percent":30}
+        }))
+        .expect("session stats map");
+        assert_eq!(usage["inputTokens"], 50000);
+        assert_eq!(usage["outputTokens"], 10000);
+        assert_eq!(usage["cacheReadTokens"], 40000);
+        assert_eq!(usage["cacheWriteTokens"], 5000);
+        assert_eq!(usage["totalTokens"], 105000);
+        assert_eq!(usage["usedTokens"], 60000);
+        assert_eq!(usage["windowTokens"], 200000);
+        assert_eq!(usage["percent"], 30.0);
+
+        // Compaction nulls the context fields: tokens survive, window does not.
+        let compacted = pi_context_usage(&json!({
+            "tokens":{"total":10},
+            "contextUsage":{"tokens":null,"contextWindow":200000,"percent":null}
+        }))
+        .unwrap();
+        assert_eq!(compacted["totalTokens"], 10);
+        assert!(compacted.get("usedTokens").is_none());
+        assert!(compacted.get("percent").is_none());
+
+        assert!(pi_context_usage(&json!({})).is_none());
     }
 
     #[test]

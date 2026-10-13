@@ -251,6 +251,41 @@ test('a permission callback arriving after stop is denied without publishing a c
   assert.equal(session.pending.size, 0);
 });
 
+test('a completed turn reads context usage once and writes one session.context event', async () => {
+  const { session, events } = harness();
+  let reads = 0;
+  session.query = {
+    async getContextUsage(options) {
+      reads += 1;
+      assert.equal(options.detail, 'summary');
+      return { totalTokens: 94700, maxTokens: 258000, percentage: 36.7 };
+    },
+  };
+  session.readContextUsage({ usage: { input_tokens: 90000, output_tokens: 4700, cache_read_input_tokens: 60000, cache_creation_input_tokens: 1000 } }, 'turn-1');
+  await delay(10);
+  const contexts = events.filter(value => value.ev === 'session.context');
+  assert.equal(reads, 1, 'exactly one context read per turn');
+  assert.equal(contexts.length, 1, 'exactly one context event per turn');
+  assert.equal(contexts[0].usage.usedTokens, 94700);
+  assert.equal(contexts[0].usage.windowTokens, 258000);
+  assert.equal(contexts[0].usage.percent, 36.7);
+  assert.equal(contexts[0].usage.inputTokens, 90000);
+  assert.equal(contexts[0].usage.outputTokens, 4700);
+  assert.equal(contexts[0].usage.cacheReadTokens, 60000);
+  assert.equal(contexts[0].usage.cacheWriteTokens, 1000);
+  assert.equal(contexts[0].usage.totalTokens, 94700);
+  assert.equal(contexts[0].operationId, 'turn-1');
+});
+
+test('a missing context read and a failed one write no context event', async () => {
+  const { session, events } = harness();
+  session.readContextUsage({ usage: {} }, 'turn-1');
+  session.query = { async getContextUsage() { throw new Error('no context'); } };
+  session.readContextUsage({ usage: { input_tokens: 5 } }, 'turn-2');
+  await delay(10);
+  assert.equal(events.filter(value => value.ev === 'session.context').length, 0);
+});
+
 test('a preview-only ThreadTerm server auto-approves only the two preview tools', async () => {
   const { session, events } = harness();
   await session.start({

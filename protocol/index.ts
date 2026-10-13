@@ -170,6 +170,18 @@ export interface ChatConnectionError {
  retryable:boolean;
  category?:'auth'|'install'|'version'|'cwd'|'runtime'|'control'|'provider';
 }
+/** Latest context-window usage for one Chat session, pushed by `chat.context` and read by `chat.context.read`. */
+export interface ChatContextUsage {
+ usedTokens?:number;
+ windowTokens?:number;
+ percent?:number;
+ inputTokens?:number;
+ outputTokens?:number;
+ cacheReadTokens?:number;
+ cacheWriteTokens?:number;
+ totalTokens?:number;
+ updatedAt?:string;
+}
 export interface ChatConnectionState {
  sessionId:string;
  runtimeEpoch:string;
@@ -346,6 +358,7 @@ export interface RequestMap {
  'chat.approve': [{sessionId:string;turnId:string;approvalId:string;choiceId:string;leaseEpoch:number;operationId:string},null];
  'chat.answer': [{sessionId:string;turnId:string;approvalId:string;leaseEpoch:number;operationId:string;response:ChatAnswerResponse},null];
  'chat.options': [{sessionId:string},ChatUiState];
+ 'chat.context.read': [{sessionId:string},ChatContextUsage|null];
  'chat.option.set': [{sessionId:string;optionId:string;value:string;leaseEpoch:number;operationId:string},ChatUiState];
  'chat.connection': [{sessionId:string},ChatConnectionState];
  'chat.connect': [{sessionId:string;leaseEpoch:number;operationId:string},ChatConnectionState];
@@ -450,7 +463,7 @@ export interface ThreadTermBridge {
  exportDiagnostics():Promise<string|null>;
  scheduleElectronCacheCleanup(schedule:boolean):Promise<{scheduled:boolean;available:boolean;result?:string}>;
 }
-export const METHODS = ['git.commit.selected','preview.attach','preview.detach','preview.snapshot','preview.prepare','preview.ack','preview.observe','preview.close','chat.repair','filesystem.resolve','session.launch.read','catalog.visibility.list','catalog.visibility.update','session.resume','session.organize','git.merge','git.merge.abort','project.catalog.list','project.update','worktree.branches','worktree.relocate','session.rerun','git.fetch','git.pull','git.push','session.config.read','session.config.save','session.retry.read','session.retry.update','chat.draft.read','chat.draft.save','device.status','device.enable','device.disable','device.pairing.create','device.pairing.cancel','device.list','device.rename','device.renew','device.revoke','git.stage','git.unstage','git.commit','filesystem.image','chat.snapshot','terminal.read','session.lookup','session.present','chat.read','chat.subagent.read','data.status','data.backup','data.relocation.status','data.relocation.prepare','data.relocation.cancel','settings.export','settings.import.preview','settings.import.apply','preset.list','preset.save','preset.delete','usage.query','runtime.health','terminal.host','runtime.shutdown','runtime.snapshot','project.add','project.remove','session.create','history.import','session.stop','session.update','session.attention.acknowledge','session.claim','session.renew','session.release','terminal.input','terminal.resize','settings.update','provider.list','plugin.list','plugin.setEnabled','plugin.selectBrowserBinding','plugin.reload','chat.queue.read','chat.queue.add','chat.queue.update','chat.queue.remove','chat.queue.move','chat.queue.pause','chat.queue.resume','chat.queue.send','quickLaunch.list','quickLaunch.save','quickLaunch.delete','quickLaunch.run','quickLaunch.setup.read','quickLaunch.setup.save','quickLaunch.setup.run','quickLaunch.setup.status','history.list','history.read','chat.send','chat.cancel','chat.approve','chat.answer','chat.options','chat.option.set','chat.connection','chat.connect','filesystem.list','filesystem.read','filesystem.write','draft.list','draft.put','draft.delete','git.status','git.diff','worktree.list','worktree.create','worktree.remove','workspace.save','workspace.delete','inbox.read','git.index.write','git.discard','git.checkout','git.branch.delete','git.branches','git.log','git.commit.show','git.commit.diff','git.blame','filesystem.create','filesystem.rename','filesystem.delete','filesystem.files','filesystem.search','review.list','review.changes','review.diff','review.revert','review.checkpoint','agentReview.start','agentReview.list','agentReview.mark','session.documents.list','session.documents.pin','session.documents.unpin'] as const satisfies readonly Method[];
+export const METHODS = ['git.commit.selected','preview.attach','preview.detach','preview.snapshot','preview.prepare','preview.ack','preview.observe','preview.close','chat.repair','filesystem.resolve','session.launch.read','catalog.visibility.list','catalog.visibility.update','session.resume','session.organize','git.merge','git.merge.abort','project.catalog.list','project.update','worktree.branches','worktree.relocate','session.rerun','git.fetch','git.pull','git.push','session.config.read','session.config.save','session.retry.read','session.retry.update','chat.draft.read','chat.draft.save','device.status','device.enable','device.disable','device.pairing.create','device.pairing.cancel','device.list','device.rename','device.renew','device.revoke','git.stage','git.unstage','git.commit','filesystem.image','chat.snapshot','terminal.read','session.lookup','session.present','chat.read','chat.subagent.read','data.status','data.backup','data.relocation.status','data.relocation.prepare','data.relocation.cancel','settings.export','settings.import.preview','settings.import.apply','preset.list','preset.save','preset.delete','usage.query','runtime.health','terminal.host','runtime.shutdown','runtime.snapshot','project.add','project.remove','session.create','history.import','session.stop','session.update','session.attention.acknowledge','session.claim','session.renew','session.release','terminal.input','terminal.resize','settings.update','provider.list','plugin.list','plugin.setEnabled','plugin.selectBrowserBinding','plugin.reload','chat.queue.read','chat.queue.add','chat.queue.update','chat.queue.remove','chat.queue.move','chat.queue.pause','chat.queue.resume','chat.queue.send','quickLaunch.list','quickLaunch.save','quickLaunch.delete','quickLaunch.run','quickLaunch.setup.read','quickLaunch.setup.save','quickLaunch.setup.run','quickLaunch.setup.status','history.list','history.read','chat.send','chat.cancel','chat.approve','chat.answer','chat.options','chat.option.set','chat.connection','chat.context.read','chat.connect','filesystem.list','filesystem.read','filesystem.write','draft.list','draft.put','draft.delete','git.status','git.diff','worktree.list','worktree.create','worktree.remove','workspace.save','workspace.delete','inbox.read','git.index.write','git.discard','git.checkout','git.branch.delete','git.branches','git.log','git.commit.show','git.commit.diff','git.blame','filesystem.create','filesystem.rename','filesystem.delete','filesystem.files','filesystem.search','review.list','review.changes','review.diff','review.revert','review.checkpoint','agentReview.start','agentReview.list','agentReview.mark','session.documents.list','session.documents.pin','session.documents.unpin'] as const satisfies readonly Method[];
 const stringFields: Partial<Record<Method,readonly string[]>> = {
  'git.commit.selected':['projectId','message','operationId','expectedIndexFingerprint'],
  'plugin.selectBrowserBinding':['pluginId','bindingId','operationId'],
@@ -481,7 +494,7 @@ const stringFields: Partial<Record<Method,readonly string[]>> = {
  'chat.approve':['sessionId','turnId','approvalId','choiceId','operationId'],
  'chat.answer':['sessionId','turnId','approvalId','operationId'],
  'chat.options':['sessionId'],'chat.option.set':['sessionId','optionId','value','operationId'],
- 'chat.connection':['sessionId'],'chat.connect':['sessionId','operationId'],
+ 'chat.connection':['sessionId'],'chat.context.read':['sessionId'],'chat.connect':['sessionId','operationId'],
  'filesystem.list':['projectId'], 'filesystem.read':['projectId','path'],
  'filesystem.write':['projectId','path','expectedFingerprint','operationId'],
  'draft.list':['projectId'],'draft.put':['projectId','path','baseFingerprint','operationId'],

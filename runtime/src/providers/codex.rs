@@ -5,8 +5,8 @@ use super::{
         validate_codex_turn, write_failed_not_sent, ApprovalChoice, PendingApprovalState,
     },
     common::{
-        encode_approval_id, history_page, insert_optional, validate_native_id, version_probe,
-        CommandSpec, EnvelopeStyle, JsonLineProcess, JsonLineResponder,
+        encode_approval_id, history_page, insert_optional, percent_used, validate_native_id,
+        version_probe, CommandSpec, EnvelopeStyle, JsonLineProcess, JsonLineResponder,
     },
     emit_scoped, ChatSession, ChatToolServer, ProviderAdapter, ProviderCapability, ProviderError,
     TerminalCommand,
@@ -1822,6 +1822,57 @@ fn context_percent(window: u64, used: u64) -> f64 {
     ((remaining / (window - 12_000) as f64) * 100.0).clamp(0.0, 100.0)
 }
 
+/// Normalizes Codex `thread/tokenUsage/updated` into the shared context-usage
+/// shape. `usedTokens` is the last turn's total context footprint and
+/// `windowTokens` is the model's context window.
+fn codex_context_usage(token_usage: &Value) -> Option<Value> {
+    let last = token_usage.get("last");
+    let number = |value: Option<&Value>, keys: &[&str]| {
+        keys.iter().find_map(|key| {
+            value
+                .and_then(|value| value.get(*key))
+                .and_then(Value::as_u64)
+        })
+    };
+    let used = number(last, &["totalTokens", "total_tokens"])
+        .or_else(|| number(token_usage.get("total"), &["totalTokens", "total_tokens"]));
+    let window = token_usage
+        .get("modelContextWindow")
+        .and_then(Value::as_u64)
+        .filter(|window| *window > 0);
+    let input = number(last, &["inputTokens", "input_tokens"]);
+    let output = number(last, &["outputTokens", "output_tokens"]);
+    let cache_read = number(last, &["cachedInputTokens", "cached_input_tokens"]);
+    let cache_write = number(last, &["cacheWriteInputTokens", "cache_write_input_tokens"]);
+    if used.is_none() && window.is_none() && input.is_none() && output.is_none() {
+        return None;
+    }
+    let mut usage = serde_json::Map::new();
+    if let Some(value) = used {
+        usage.insert("usedTokens".into(), json!(value));
+        usage.insert("totalTokens".into(), json!(value));
+    }
+    if let Some(value) = window {
+        usage.insert("windowTokens".into(), json!(value));
+    }
+    if let (Some(used), Some(window)) = (used, window) {
+        usage.insert("percent".into(), json!(percent_used(used, window)));
+    }
+    if let Some(value) = input {
+        usage.insert("inputTokens".into(), json!(value));
+    }
+    if let Some(value) = output {
+        usage.insert("outputTokens".into(), json!(value));
+    }
+    if let Some(value) = cache_read {
+        usage.insert("cacheReadTokens".into(), json!(value));
+    }
+    if let Some(value) = cache_write {
+        usage.insert("cacheWriteTokens".into(), json!(value));
+    }
+    Some(Value::Object(usage))
+}
+
 fn codex_rate_limit_rows(rate_limits: &Value) -> Vec<Value> {
     let mut rows = Vec::new();
     let mut ids = HashSet::new();
@@ -3120,6 +3171,22 @@ fn emit_codex_message(
             }
         }
         _ => {}
+    }
+    // Context pressure is a native notification, not a poll: Codex already
+    // pushes `thread/tokenUsage/updated` and the model window beside it.
+    if method == "thread/tokenUsage/updated" {
+        if let Some(usage) = codex_context_usage(params.get("tokenUsage").unwrap_or(&params)) {
+            emit_scoped(
+                events,
+                "codex",
+                session_id,
+                native_id.as_deref(),
+                turn_id.as_deref(),
+                "chat.context",
+                json!({"usage":usage}),
+                Some(worker_token),
+            );
+        }
     }
     let kind = match method {
         "item/agentMessage/delta" => "chat.delta",
@@ -4485,6 +4552,7 @@ createInterface({{ input: process.stdin, crlfDelay: Infinity }}).on('line', line
                 "chat.turn.started",
                 "chat.approval",
                 "chat.ui",
+                "chat.context",
                 "provider.event"
             ]
         );
@@ -5048,6 +5116,37 @@ createInterface({{ input: process.stdin, crlfDelay: Infinity }}).on('line', line
         assert_eq!(report["rateLimits"].as_array().unwrap().len(), 2);
         assert_eq!(report["rateLimitsLoaded"], true);
         assert_eq!(report["collaborationMode"], "plan");
+    }
+
+    #[test]
+    fn context_usage_maps_codex_token_breakdown_and_window() {
+        let usage = codex_context_usage(&json!({
+            "last":{
+                "inputTokens":90000,"outputTokens":4700,"totalTokens":94700,
+                "cachedInputTokens":60000,"cacheWriteInputTokens":1000
+            },
+            "total":{"totalTokens":200000},
+            "modelContextWindow":258000
+        }))
+        .expect("a token breakdown maps");
+        assert_eq!(usage["usedTokens"], 94700);
+        assert_eq!(usage["totalTokens"], 94700);
+        assert_eq!(usage["windowTokens"], 258000);
+        assert_eq!(usage["inputTokens"], 90000);
+        assert_eq!(usage["outputTokens"], 4700);
+        assert_eq!(usage["cacheReadTokens"], 60000);
+        assert_eq!(usage["cacheWriteTokens"], 1000);
+        assert!((usage["percent"].as_f64().unwrap() - 36.705).abs() < 0.01);
+
+        // Tokens without a window still produce a tokens-only snapshot.
+        let tokens_only = codex_context_usage(&json!({"last":{"totalTokens":42}})).unwrap();
+        assert_eq!(tokens_only["usedTokens"], 42);
+        assert!(tokens_only.get("windowTokens").is_none());
+        assert!(tokens_only.get("percent").is_none());
+
+        // Nothing measurable means no event at all.
+        assert!(codex_context_usage(&json!({"last":{},"total":{}})).is_none());
+        assert!(codex_context_usage(&json!({"modelContextWindow":0})).is_none());
     }
 
     #[test]

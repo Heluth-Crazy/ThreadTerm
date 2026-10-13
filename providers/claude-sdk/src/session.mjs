@@ -180,6 +180,7 @@ export class ClaudeSession {
           const status = this.interruptedOperation !== null && this.interruptedOperation === this.activeOperationId ? 'interrupted'
             : message.is_error ? 'failed' : 'completed';
           this.write(event(this.cardId, 'session.status', { phase: 'idle', status, sessionId: this.sessionId, operationId: this.activeOperationId }));
+          this.readContextUsage(message, this.activeOperationId);
           this.activeOperationId = null;
           this.interruptedOperation = null;
           this.streamedIds.clear();
@@ -320,6 +321,31 @@ export class ClaudeSession {
       if (effort !== this.settings.effort) { this.settings.effort = effort; changed = true; }
     }
     return changed;
+  }
+
+  // Reads the current context window once per completed turn. This is the one
+  // place the CLI's token-count API is consulted outside warm-up, and it is
+  // never polled while idle. A failed or slow read simply produces no event.
+  readContextUsage(message, operationId) {
+    if (typeof this.query?.getContextUsage !== 'function') return;
+    const usage = message?.usage ?? {};
+    const read = withTimeout(this.query.getContextUsage({ detail: 'summary' }), CONTROL_TIMEOUT_MS, 'Claude context read');
+    Promise.resolve(read).then(info => {
+      if (this.closed) return;
+      const payload = {};
+      const put = (key, value) => { if (typeof value === 'number' && Number.isFinite(value) && value > 0) payload[key] = value; };
+      put('usedTokens', info?.totalTokens);
+      put('windowTokens', info?.maxTokens);
+      put('percent', info?.percentage);
+      put('inputTokens', usage.input_tokens);
+      put('outputTokens', usage.output_tokens);
+      put('cacheReadTokens', usage.cache_read_input_tokens);
+      put('cacheWriteTokens', usage.cache_creation_input_tokens);
+      const total = (Number(usage.input_tokens) || 0) + (Number(usage.output_tokens) || 0);
+      put('totalTokens', total);
+      if (!Object.keys(payload).length) return;
+      this.write(event(this.cardId, 'session.context', { usage: payload, sessionId: this.sessionId, operationId }));
+    }, () => {});
   }
 
   uiState() {

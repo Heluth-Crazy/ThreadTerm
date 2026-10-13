@@ -5,7 +5,7 @@ use super::{
         validate_turn, write_failed_not_sent, ApprovalChoice, PendingApprovalState,
     },
     common::{
-        dispatch_acp_message, flush_acp_messages, encode_approval_id, history_page, insert_optional, validate_native_id, version_probe,
+        dispatch_acp_message, context_usage_from_update, flush_acp_messages, encode_approval_id, history_page, insert_optional, validate_native_id, version_probe,
         ChatTextSegments, CommandSpec, EnvelopeStyle, JsonLineProcess, JsonLineResponder,
     },
     acp_mcp_servers, approve_scoped_threadterm_tool, chat_tool_policy, emit_bound as emit, ChatSession, ChatToolPolicy, ChatToolServer,
@@ -2063,6 +2063,22 @@ fn emit_grok_message(
             state.subagents.notification(&GrokSubagentEvents {
                 events, session_id, native_id: native_id.as_deref(),
             }, kind, update, turn_id.as_deref());
+        }
+        return;
+    }
+    if matches!(kind, "usage_update" | "usageUpdate") {
+        // Grok is ACP-shaped. It has no model context window in the observed
+        // session info, so a tokens-only snapshot is expected here.
+        if let Some(usage) = context_usage_from_update(update) {
+            emit(
+                events,
+                "grok",
+                session_id,
+                native_id.as_deref(),
+                turn_id.as_deref(),
+                "chat.context",
+                json!({"usage":usage}),
+            );
         }
         return;
     }

@@ -6,7 +6,7 @@ use super::{
     },
     acp_scoped_permission_option, approve_scoped_threadterm_tool, chat_tool_policy,
     common::{
-        command_output, dispatch_acp_message, flush_acp_messages, encode_approval_id, history_page, insert_optional, validate_native_id,
+        command_output, context_usage_from_update, dispatch_acp_message, flush_acp_messages, encode_approval_id, history_page, insert_optional, validate_native_id,
         version_probe, ChatTextSegments, CommandSpec, EnvelopeStyle, JsonLineProcess, JsonLineResponder,
     },
     emit_bound as emit, ChatSession, ChatToolPolicy, ChatToolServer, ProviderAdapter, ProviderCapability,
@@ -1602,6 +1602,22 @@ fn emit_acp_message(
         }
         return;
     }
+    if matches!(kind, "usage_update" | "usageUpdate") {
+        // Context pressure arrives as its own session update for agents that
+        // implement the ACP usage extension; nothing is polled.
+        if let Some(usage) = context_usage_from_update(update) {
+            emit(
+                events,
+                provider,
+                session_id,
+                native_id.as_deref(),
+                turn_id.as_deref(),
+                "chat.context",
+                json!({"usage":usage}),
+            );
+        }
+        return;
+    }
     let text = update
         .get("content")
         .and_then(|c| c.get("text"))
@@ -2840,6 +2856,49 @@ mod tests {
         }
     }
     use crate::plugins::PluginRegistry;
+
+    #[test]
+    fn acp_usage_update_emits_a_context_snapshot() {
+        let (sender, mut receiver) = crate::provider_events::tap_channel(8);
+        let events = ScopedProviderEvents::new(sender, "usage-worker");
+        let native = Mutex::new(Some("native".to_owned()));
+        let active = Mutex::new(Some("turn".to_owned()));
+        let permissions = Mutex::new(HashMap::new());
+        let think = Mutex::new(false);
+        let ui = Mutex::new(AcpUiState::default());
+        emit_acp_message(
+            &events,
+            "kimi",
+            "usage",
+            &native,
+            &active,
+            &permissions,
+            &think,
+            &ui,
+            json!({"method":"session/update","params":{"sessionId":"native","update":{"sessionUpdate":"usage_update","used":60000,"size":200000}}}),
+        );
+        let emitted: Vec<_> = std::iter::from_fn(|| receiver.try_recv().ok()).collect();
+        let context: Vec<_> = emitted.iter().filter(|event| event.kind == "chat.context").collect();
+        assert_eq!(context.len(), 1);
+        assert_eq!(context[0].data["usage"]["usedTokens"], 60000);
+        assert_eq!(context[0].data["usage"]["windowTokens"], 200000);
+        assert_eq!(context[0].data["usage"]["percent"], 30.0);
+
+        // Nothing measurable means no event, and no transcript row.
+        emit_acp_message(
+            &events,
+            "kimi",
+            "usage",
+            &native,
+            &active,
+            &permissions,
+            &think,
+            &ui,
+            json!({"method":"session/update","params":{"sessionId":"native","update":{"sessionUpdate":"usage_update"}}}),
+        );
+        let extra: Vec<_> = std::iter::from_fn(|| receiver.try_recv().ok()).collect();
+        assert!(extra.iter().all(|event| event.kind != "chat.context"));
+    }
 
     #[test]
     fn acp_replay_splits_text_at_parent_interactions() {
