@@ -1,12 +1,12 @@
-.chat-plan-panel { display:flex; flex-direction:column; align-items:flex-start; gap:6px; width:100%; box-sizing:border-box; padding:4px 8px 2px; }
+.chat-plan-panel { display:contents; }
 /* Only the chip is sticky; the expanded card stays in flow under it (V1-2), so
    it pushes the transcript down and can never cover a message. */
-.chat-plan-sticky { position:sticky; top:4px; z-index:6; display:flex; align-items:flex-start; width:100%; }
+.chat-plan-sticky { position:sticky; top:4px; z-index:6; display:flex; align-items:center; gap:6px; width:100%; padding:4px 8px 2px; box-sizing:border-box; background:var(--bg); }
 /* Size, border, radius, colour and states come from the shared .chip/.chip-btn. */
 .chat-plan-label { white-space:nowrap; }
 .chat-plan-progress { width:56px; height:4px; flex:none; border-radius:999px; background:var(--border); overflow:hidden; }
 .chat-plan-progress > i { display:block; height:100%; background:var(--primary); transition:width .2s ease; }
-.chat-plan-card { width:100%; max-width:360px; max-height:50vh; overflow:auto; padding:10px 12px; border:1px solid var(--border); border-radius:10px; background:var(--surface); box-shadow:var(--shadow-soft); }
+.chat-plan-card { width:100%; max-width:360px; max-height:50vh; overflow:auto; margin:6px 0; padding:10px 12px; border:1px solid var(--border); border-radius:var(--radius-card); background:var(--surface); box-shadow:var(--shadow-soft); }
 .chat-plan-explanation { margin:0 0 8px; color:var(--muted); font-size:12px; overflow-wrap:anywhere; }
 .chat-plan-list { display:flex; flex-direction:column; gap:6px; margin:0; padding:0; list-style:none; }
 .chat-plan-entry { display:flex; align-items:baseline; gap:8px; font-size:13px; line-height:1.45; }

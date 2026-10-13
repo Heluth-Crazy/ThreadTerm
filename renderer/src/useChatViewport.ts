@@ -65,6 +65,21 @@ export function useChatViewport(sessionId: string, snapshotReady: boolean, logRe
     remember();
   }, [logRef, remember, setFollowing]);
 
+  const navigateToMessage = useCallback((id: string) => {
+    const log = logRef.current;
+    const message = Array.from(log?.querySelectorAll<HTMLElement>('[data-chat-item]') ?? []).find(element => element.dataset.chatItem === id);
+    if (!log || !message) return;
+    inspectingRef.current = true;
+    setFollowing(false);
+    log.scrollTop += message.getBoundingClientRect().top - log.getBoundingClientRect().top - 48;
+    message.tabIndex = -1;
+    message.focus({ preventScroll: true });
+    message.classList.remove('chat-message-highlight');
+    void message.offsetWidth;
+    message.classList.add('chat-message-highlight');
+    remember();
+  }, [logRef, remember, setFollowing]);
+
   const pauseForDisclosure = (event: MouseEvent<HTMLDivElement>) => {
     const target = event.target instanceof Element ? event.target : undefined;
     const collapse = target?.closest('[data-chat-collapse]');
@@ -103,7 +118,7 @@ export function useChatViewport(sessionId: string, snapshotReady: boolean, logRe
     }
   };
 
-  return { paused, followRef, followLatest, pauseForDisclosure, onScroll, onKeyDown,
+  return { paused, followRef, followLatest, navigateToMessage, pauseForDisclosure, onScroll, onKeyDown,
     inspect: () => { inspectingRef.current = true; setFollowing(false); remember(); },
     onWheel: () => { inspectingRef.current = false; },
     onTouchStart: () => { inspectingRef.current = false; },

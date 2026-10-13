@@ -1,0 +1,9 @@
+.chat-message-navigation { position:relative; }
+.chat-message-popover { position:absolute; top:calc(100% + 6px); left:0; width:min(340px, calc(100vw - 48px)); background:var(--surface); border:1px solid var(--border); border-radius:var(--radius-card); box-shadow:var(--shadow); z-index:20; }
+.chat-message-list { max-height:420px; overflow:auto; padding:4px; }
+.chat-message-destination { height:60px; box-sizing:border-box; display:flex; flex-direction:column; align-items:stretch; gap:4px; padding:4px; }
+.chat-message-destination > button { display:block; text-align:left; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.chat-message-destination > span { font-size:11px; color:var(--muted); padding-inline:8px; }
+.chat-message-highlight { animation:chat-message-highlight 1.5s ease-out; }
+@keyframes chat-message-highlight { from { background:var(--primary-tint); } to { background:transparent; } }
+@media (prefers-reduced-motion:reduce) { .chat-message-highlight { animation-duration:.01s; } }
