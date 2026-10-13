@@ -2585,7 +2585,7 @@ require('node:readline').createInterface({input:process.stdin}).on('line', line 
         let on_message = Arc::new(move |raw| pi_event(&callback_events, "pi", "session", &callback_shared, raw));
         let process = JsonLineProcess::spawn("fake-pi-context", &spec, Some(root.path().to_str().unwrap()), &[], EnvelopeStyle::Pi, on_message).unwrap();
         *shared.requester.lock().unwrap() = Some(Arc::new(process.requester()));
-        let mut chat = PiChat { session_id: "session".into(), shared, events, process };
+        let mut chat = PiChat { session_id: "session".into(), shared, events, process, retired: false };
         let mut read_snapshot = |total: u64, reads: u64| {
             let deadline = Instant::now() + Duration::from_secs(5);
             let mut observed = Vec::new();
