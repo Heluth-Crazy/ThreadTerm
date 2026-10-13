@@ -27,6 +27,8 @@ for(const theme of ['light','dark','custom'])for(const locale of ['en','zh-CN'])
  await page.setViewportSize({width,height:900});await page.evaluate(([theme,locale])=>{document.documentElement.dataset.theme=theme==='custom'?'dark':theme;document.documentElement.dataset.customTheme=String(theme==='custom');if(theme==='custom'){document.documentElement.style.setProperty('--custom-surface','#25332b');document.documentElement.style.setProperty('--custom-accent','#c39f57');}window.qaRender(locale);},[theme,locale]);await page.locator('.chat-approval-preview').waitFor();
  assert.ok(await page.locator('.chat-approval-preview').evaluate(e=>e.clientHeight<=240&&e.scrollHeight>e.clientHeight));assert.equal(await page.locator('body').evaluate(e=>e.scrollWidth<=window.innerWidth),true);assert.equal(await page.locator('.tool-edit-file').count(),3);
  assertNoControlViolations(await checkControlConsistency(page,'.chat-approval-card'),theme+'/'+locale+'/'+width);
+ const cardBox=await page.locator('.chat-approval-card').boundingBox();const showAllBox=await page.getByRole('button',{name:locale==='en'?'Show all':'显示全部',exact:true}).boundingBox();
+ assert.ok(showAllBox.width<cardBox.width*0.5,'Show all stays compact instead of stretching across the card');assert.ok(Math.abs(showAllBox.x-cardBox.x)<24,'Show all is left-aligned with the card content');
  const name='approval-'+theme+'-'+locale+'-'+width+'.png';await page.screenshot({path:join(out,name)});report.screenshots.push(name);
  await page.getByRole('button',{name:locale==='en'?'Show all':'显示全部',exact:true}).click();assert.equal(await page.locator('.tool-edit-file').count(),5);
  assert.ok(await page.locator('.chat-approval-actions').evaluate(e=>e.getBoundingClientRect().bottom<=window.innerHeight));

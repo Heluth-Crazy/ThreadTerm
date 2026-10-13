@@ -66,7 +66,7 @@ export function ChatApprovalCard({
         <div className="chat-approval-preview" role="region" aria-label={copy("Proposed edits", "拟议修改")} tabIndex={0}>
           <EditBody view={preview} copy={copy} fileLimit={showAll ? preview.files.length : 3} />
         </div>
-        {preview.files.length > 3 && <button type="button" className="btn btn-sm" aria-expanded={showAll} onClick={() => setShowAll(value => !value)}>{showAll ? copy("Show less", "收起") : copy("Show all", "显示全部")}</button>}
+        {preview.files.length > 3 && <button type="button" className="btn btn-sm chat-approval-show-all" aria-expanded={showAll} onClick={() => setShowAll(value => !value)}>{showAll ? copy("Show less", "收起") : copy("Show all", "显示全部")}</button>}
       </>}
       {preview?.kind === "command" && <div className="chat-approval-command"><code>{preview.command}</code>{preview.cwd && <small>{copy("Working directory", "工作目录")}: {preview.cwd}</small>}</div>}
       {details && <details className="chat-approval-details"><summary>{copy("Request details", "请求详情")}</summary><pre>{details}</pre></details>}

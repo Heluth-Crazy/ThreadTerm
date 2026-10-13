@@ -1,5 +1,9 @@
-.chat-approval-preview { max-height:240px; min-width:0; overflow:auto; overscroll-behavior:contain; }
+.chat-approval-preview { max-height:240px; min-width:0; overflow:auto; overscroll-behavior:contain; scrollbar-width:none; }
+/* The preview is a bounded scroller; without its chrome the thumb cannot look
+   like an empty element rendered after the file header's +N -N counts. */
+.chat-approval-preview::-webkit-scrollbar { display:none; }
 .chat-approval-preview .tool-diff-rows { max-height:none; }
+.chat-approval-show-all { justify-self:start; }
 .chat-approval-command { display:grid; gap:4px; min-width:0; }
 .chat-approval-command code { font:12px/1.5 var(--mono); white-space:pre-wrap; overflow-wrap:anywhere; color:var(--text); }
 .chat-approval-command small { font-size:11px; color:var(--muted); overflow-wrap:anywhere; }

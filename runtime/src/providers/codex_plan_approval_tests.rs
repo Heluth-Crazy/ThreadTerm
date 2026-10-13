@@ -92,6 +92,10 @@ fn synthetic_plan_card_requires_a_completed_authoritative_item_in_plan_mode() {
         "completed",
     );
     let events = replay.drain();
+    assert!(
+        !events.iter().any(|event| event.kind == "chat.item"),
+        "the authoritative plan item must not also appear as transcript text"
+    );
     let approvals = approval_events(&events);
     assert_eq!(approvals.len(), 1);
     assert_eq!(approvals[0].data["part"]["data"]["interaction"], "plan");

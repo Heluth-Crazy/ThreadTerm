@@ -3194,14 +3194,19 @@ fn emit_codex_message(
         if let Ok(mut state) = ui.lock() { state.plan_candidate = None; }
     }
     // Plan deltas are not guaranteed to concatenate. Review the authoritative
-    // completed Markdown item, including an explicitly empty plan.
-    if method == "item/completed" && provider_item_type == Some("plan") {
-        if let (Some(public), Some(native_turn), Some(text)) = (turn_id.as_deref(), provider_turn_id, params.pointer("/item/text").and_then(Value::as_str)) {
-            let matches_active = active_turn.0.lock().ok().is_some_and(|active| active.as_ref().is_some_and(|active| active.public_id == public && active.native_id.as_deref() == Some(native_turn)));
-            if matches_active {
-                if let Ok(mut state) = ui.lock() { state.plan_candidate = Some((public.into(), text.into())); }
+    // completed Markdown item, including an explicitly empty plan. The plan
+    // approval card owns this Markdown, so the native item must not also be
+    // projected as a transcript text part.
+    if matches!(method, "item/started" | "item/completed") && provider_item_type == Some("plan") {
+        if method == "item/completed" {
+            if let (Some(public), Some(native_turn), Some(text)) = (turn_id.as_deref(), provider_turn_id, params.pointer("/item/text").and_then(Value::as_str)) {
+                let matches_active = active_turn.0.lock().ok().is_some_and(|active| active.as_ref().is_some_and(|active| active.public_id == public && active.native_id.as_deref() == Some(native_turn)));
+                if matches_active {
+                    if let Ok(mut state) = ui.lock() { state.plan_candidate = Some((public.into(), text.into())); }
+                }
             }
         }
+        return;
     }
     if method == "thread/settings/updated" {
         if params
