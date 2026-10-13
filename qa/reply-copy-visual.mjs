@@ -20,6 +20,7 @@ import {I18nProvider} from './renderer/src/i18n';
 import './renderer/src/styles.css';
 const text = value => ({type:'text',text:value,status:'complete'});
 const user = {id:'user',role:'user',turnId:'turn-done',createdAt:'now',parts:[text('Summarise the module')]};
+const before = {id:'before',role:'assistant',turnId:'turn-done',createdAt:'now',parts:[{...text('Before  \\nNext line.\\n'),phase:'final_answer'}]};
 const reply = {id:'reply',role:'assistant',turnId:'turn-done',createdAt:'now',elapsedMs:7000,turnStatus:'completed',parts:[
   {type:'thinking',text:'Private reasoning',status:'complete'},
   {type:'tool',toolName:'Read',toolId:'read-1',status:'complete',text:'renderer/src/replyMarkdown.ts'},
@@ -27,7 +28,8 @@ const reply = {id:'reply',role:'assistant',turnId:'turn-done',createdAt:'now',el
   text('\\u0060\\u0060\\u0060ts\\nconst copied = true;\\n\\u0060\\u0060\\u0060'),
 ]};
 const streaming = {id:'streaming',role:'assistant',turnId:'turn-live',createdAt:'now',turnStatus:'inProgress',parts:[{type:'text',text:'Still streaming',status:'streaming'}]};
-const transcript = [user, reply, streaming];
+const streamingTool = {id:'streaming-tool',role:'assistant',turnId:'turn-live',createdAt:'now',turnStatus:'inProgress',parts:[{type:'tool',toolId:'running-tool',toolName:'Bash',status:'running',data:{input:{command:'echo running'}}}]};
+const transcript = [user, before, reply, streaming, streamingTool];
 window.__copied = [];
 window.threadterm = {
   onEvent: () => () => {},
@@ -87,7 +89,7 @@ try {
   await copyButton.click();
   await page.waitForFunction(() => window.__copied.length === 1);
   const copiedReply = await page.evaluate(() => window.__copied[0]);
-  assert.equal(copiedReply, '# Answer\n\nThe copy action writes the reply Markdown.\n\n```ts\nconst copied = true;\n```', 'reply copy writes the Markdown source and excludes thinking and tool activity');
+  assert.equal(copiedReply, 'Before  \nNext line.\n\n\n# Answer\n\nThe copy action writes the reply Markdown.\n\n```ts\nconst copied = true;\n```', 'reply copy joins every answer segment verbatim and excludes thinking and tool activity');
   await chat.locator('.chat-message-actions .chat-message-action').filter({ hasText: 'Copied' }).waitFor();
   assert.equal(await copyButton.textContent(), 'Copied', 'the label confirms the copy');
   report.checks.push('reply Copy writes Markdown only and confirms');
