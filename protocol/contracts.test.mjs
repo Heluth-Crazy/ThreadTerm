@@ -1,5 +1,16 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+test('fork requires a lease and stable operation identity and carries additive native anchors and origin',()=>{
+ const params={sessionId:'source',operationId:'fork-op',leaseEpoch:1};
+ validateRequest('chat.fork',params);
+ validateRequest('chat.fork',{...params,itemId:'reply'});
+ for(const patch of [{leaseEpoch:undefined},{leaseEpoch:0},{operationId:''},{sessionId:''},{itemId:''},{itemId:'x'.repeat(1025)}])assert.throws(()=>validateRequest('chat.fork',{...params,...patch}));
+ const session={id:'child',title:'Source (fork)',provider:'codex',mode:'chat',status:'idle',createdAt:'now',updatedAt:'now',forkedFrom:{sessionId:'source',itemId:'reply',title:'Source'}};
+ validateResult('chat.fork',{session,mode:'native'});
+ validateResult('chat.fork',{session,mode:'copy'});
+ assert.throws(()=>validateResult('chat.fork',{session,mode:'other'}));
+ validateResult('chat.read',[{id:'reply',role:'assistant',parts:[{type:'text',text:'Done',status:'complete'}],createdAt:'now',forkAnchor:{nativeId:'native',turnId:'turn',messageId:'msg'}}]);
+});
 // Feedback is additive and remains fenced by a lease and a stable operation ID.
 test('feedback notes validate leases, unicode limits and delivery status',()=>{
  const request={sessionId:'s',turnId:'turn',text:'note',operationId:'op',leaseEpoch:1};

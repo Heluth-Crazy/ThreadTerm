@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { normalizeContextItems, serializeContext, type ContextItem } from './chatContext';
 import { contextError } from './contextErrors';
+import { copiedConversationItem, encodeCopiedConversationDraft } from './chatForkDraft';
 
 const keyFor = (sessionId: string) => `threadterm.compose.context.${sessionId}`;
 function load(sessionId: string): ContextItem[] {
@@ -44,10 +45,21 @@ export function useChatContext(sessionId: string, zh: boolean, onIssue: (message
     items: state.sessionId === sessionId ? state.items : [],
     attach: (item: ContextItem) => attachRef.current(item),
     serialize: (text: string) => serializeContext(current.current.sessionId === sessionId ? current.current.items : [], text),
+    persistedDraft: (text: string) => encodeCopiedConversationDraft(current.current.sessionId === sessionId ? current.current.items : [], text),
     remove: (id: string) => { try { update(current.current.items.filter(item => item.id !== id)); } catch (error) { onIssue(contextError(error, zh)); } },
     clear: () => {
       try { update([]); }
       catch { current.current = { sessionId, items: [] }; setState(current.current); onIssue(zh ? '消息已接受，但本地上下文草稿未能清除。' : 'Message accepted, but the local context draft could not be cleared.'); }
+    },
+    restoreCopiedConversation: (draft: string) => {
+      const item = copiedConversationItem(draft);
+      if (!item || current.current.sessionId !== sessionId) return false;
+      if (current.current.items.some(existing => existing.id === item.id || existing.kind === 'conversation')) return true;
+      let items: ContextItem[];
+      try { items = normalizeContextItems([...current.current.items, item]); serializeContext(items, ''); }
+      catch (error) { onIssue(contextError(error, zh)); return false; }
+      try { update(items); return true; }
+      catch (error) { current.current = { sessionId, items }; setState(current.current); onIssue(contextError(error, zh)); return true; }
     },
   };
 }

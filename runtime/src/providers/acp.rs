@@ -274,6 +274,42 @@ impl ProviderAdapter for AcpAdapter {
         Ok(Some(id.to_owned()))
     }
 
+    fn fork_session(
+        &self,
+        cwd: &str,
+        native_id: &str,
+        _anchor: Option<&crate::domain::NativeForkAnchor>,
+        is_latest: bool,
+    ) -> Result<Option<String>, ProviderError> {
+        // ACP session/fork has no point-in-history argument. It is therefore
+        // native only for a whole/latest-session fork; older replies fall back
+        // to the service copy-fork. A temporary control process loads the
+        // source so the visible Chat worker and its active native identity are
+        // never mutated.
+        if !is_latest {
+            return Ok(None);
+        }
+        validate_native_id(native_id)?;
+        let (process, initialized) = self.temporary(None)?;
+        if !has_capability(&initialized, "fork") {
+            return Ok(None);
+        }
+        ensure_capability(&initialized, "load", "session/load")?;
+        process.request(
+            "session/load",
+            json!({"sessionId":native_id,"cwd":cwd,"mcpServers":[]}),
+        )?;
+        let forked = process.request(
+            "session/fork",
+            json!({"sessionId":native_id,"cwd":cwd,"mcpServers":[]}),
+        )?;
+        let Some(id) = forked.get("sessionId").and_then(Value::as_str) else {
+            return Err(ProviderError::new("provider_protocol", "ACP session/fork returned no session id"));
+        };
+        validate_native_id(id)?;
+        Ok(Some(id.to_owned()))
+    }
+
     fn history_list(
         &self,
         cursor: Option<&str>,
@@ -472,7 +508,6 @@ impl ProviderAdapter for AcpAdapter {
             process,
             session_id: session_id.to_owned(),
             native_id: bound_id,
-            cwd: cwd.to_owned(),
             events,
             active_turn,
             permissions,
@@ -601,7 +636,6 @@ struct AcpChat {
     process: JsonLineProcess,
     session_id: String,
     native_id: String,
-    cwd: String,
     events: ScopedProviderEvents,
     active_turn: Arc<Mutex<Option<String>>>,
     permissions: Arc<Mutex<HashMap<String, PermissionRequest>>>,
@@ -713,7 +747,11 @@ impl AcpChat {
             "plan" => self.plan_command(args, operation_id).map(Some),
             "yolo" | "yes" => self.mode_command("yolo", operation_id).map(Some),
             "auto" => self.mode_command("auto", operation_id).map(Some),
-            "fork" => self.fork_command(operation_id).map(Some),
+            // `chat.send` routes /fork through the shared chat.fork service
+            // before an adapter receives it. Do not retain a direct ACP fork
+            // path here: it used to print a native id without creating the
+            // required ThreadTerm sidebar session.
+            "fork" => Ok(None),
             "logout" => self.logout_command(operation_id).map(Some),
             "version" => {
                 let (_, version, _) = version_probe("kimi");
@@ -857,28 +895,6 @@ impl AcpChat {
                 Ok(json!({"turnId":operation_id}))
             }
         }
-    }
-
-    fn fork_command(&mut self, operation_id: &str) -> Result<Value, ProviderError> {
-        match self.process.request(
-            "session/fork",
-            json!({"sessionId":self.native_id,"cwd":self.cwd,"mcpServers":[]}),
-        ) {
-            Ok(value) => {
-                let forked = value
-                    .get("sessionId")
-                    .and_then(Value::as_str)
-                    .unwrap_or("(unknown)");
-                self.reply_command(
-                    operation_id,
-                    &format!("Forked this session to {forked}. Resume it from the history rail; this chat stays on the original session."),
-                );
-            }
-            Err(error) => {
-                self.reply_command(operation_id, &format!("Fork failed: {}", error.message))
-            }
-        }
-        Ok(json!({"turnId":operation_id}))
     }
 
     fn logout_command(&mut self, operation_id: &str) -> Result<Value, ProviderError> {
@@ -2738,7 +2754,7 @@ mod tests {
             let active = Arc::new(Mutex::new(None));
             let permissions = Arc::new(Mutex::new(HashMap::new()));
             let ui = Arc::new(Mutex::new(AcpUiState { permission_responder: Some(process.responder()), ..AcpUiState::default() }));
-            let mut chat = AcpChat { provider: provider.into(), process, session_id: "s".into(), native_id: "parent".into(), cwd: String::new(), events,
+            let mut chat = AcpChat { provider: provider.into(), process, session_id: "s".into(), native_id: "parent".into(), events,
                 active_turn: active, permissions, ui };
             chat.start_prompt("test", "parent-turn").unwrap();
             assert_eq!(receiver.try_recv().unwrap().kind, "chat.turn.started");
@@ -2833,7 +2849,7 @@ mod tests {
             assert_eq!(ui.lock().unwrap().config_generation, 0);
             assert!(ui.lock().unwrap().parent_tool_calls.is_empty());
             assert_eq!(permissions.lock().unwrap().len(), 1);
-            let mut chat = AcpChat { provider: provider.into(), process, session_id: "s".into(), native_id: "parent".into(), cwd: String::new(), events,
+            let mut chat = AcpChat { provider: provider.into(), process, session_id: "s".into(), native_id: "parent".into(), events,
                 active_turn: active, permissions, ui };
             let id = encode_approval_id(&json!("child-permission"));
             chat.approve("turn", &id, "allow", "answer").unwrap();
@@ -3665,7 +3681,6 @@ mod tests {
                 process,
                 session_id: "settings-qa".to_owned(),
                 native_id: "qa-acp-settings-session".to_owned(),
-                cwd: dir.path().to_string_lossy().into_owned(),
                 events,
                 active_turn,
                 permissions,
@@ -4218,7 +4233,6 @@ createInterface({{ input: process.stdin, crlfDelay: Infinity }}).on('line', line
             process,
             session_id: "s".into(),
             native_id: "n".into(),
-            cwd: String::new(),
             events: ScopedProviderEvents::new(events, "test-worker"),
             active_turn: Arc::new(Mutex::new(None)),
             permissions: Arc::new(Mutex::new(HashMap::new())),
@@ -4252,6 +4266,64 @@ createInterface({{ input: process.stdin, crlfDelay: Infinity }}).on('line', line
             .lines()
             .map(str::to_owned)
             .collect()
+    }
+
+    #[cfg(windows)]
+    fn acp_fork_fixture(advertise_fork: bool) -> Option<(AcpAdapter, std::path::PathBuf, tempfile::TempDir)> {
+        let node = crate::providers::common::find_executable("node")?;
+        let dir = tempfile::tempdir().unwrap();
+        let script = dir.path().join("fake-acp-fork.mjs");
+        let log = dir.path().join("fork-calls.jsonl");
+        let source = log.to_string_lossy().replace('\\', "\\\\");
+        std::fs::write(&script, format!(r#"import {{ createInterface }} from 'node:readline';
+import {{ appendFileSync }} from 'node:fs';
+const log = {source:?};
+const fork = {advertise_fork};
+createInterface({{input:process.stdin,crlfDelay:Infinity}}).on('line', line => {{
+  const frame = JSON.parse(line);
+  appendFileSync(log, JSON.stringify(frame)+'\n');
+  if (!frame.id) return;
+  const reply = result => process.stdout.write(JSON.stringify({{jsonrpc:'2.0',id:frame.id,result}})+'\n');
+  if (frame.method === 'initialize') return reply({{agentCapabilities:{{sessionCapabilities:{{load:{{}},fork:fork?{{}}:false}}}}}});
+  if (frame.method === 'session/load') return reply({{sessionId:frame.params.sessionId}});
+  if (frame.method === 'session/fork') return reply({{sessionId:'forked-session'}});
+  reply({{}});
+}});
+"#))
+        .unwrap();
+        let descriptor = AgentDescriptor {
+            id: "fake-acp-fork".into(), name: "Fake ACP fork".into(), plugin_id: None,
+            icon: None, homepage: None, command: node.to_string_lossy().into_owned(),
+            args: vec![script.to_string_lossy().into_owned()], version_args: vec![], terminal: None,
+            chat_args: None, sign_in_args: None, plugin_dir: None,
+        };
+        let (events, _) = crate::provider_events::tap_channel(8);
+        Some((AcpAdapter::from_descriptor(descriptor, events), log, dir))
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn acp_native_fork_loads_the_source_then_returns_the_child_without_touching_it() {
+        let Some((adapter, log, _dir)) = acp_fork_fixture(true) else {
+            eprintln!("node is unavailable; skipping ACP fork fixture test");
+            return;
+        };
+        assert_eq!(
+            adapter.fork_session("C:/workspace", "source-session", None, true).unwrap(),
+            Some("forked-session".to_owned())
+        );
+        let calls = std::fs::read_to_string(&log).unwrap().lines()
+            .map(|line| serde_json::from_str::<Value>(line).unwrap()).collect::<Vec<_>>();
+        let load = calls.iter().find(|call| call["method"] == "session/load").unwrap();
+        let fork = calls.iter().find(|call| call["method"] == "session/fork").unwrap();
+        let expected = json!({"sessionId":"source-session","cwd":"C:/workspace","mcpServers":[]});
+        assert_eq!(load["params"], expected);
+        assert_eq!(fork["params"], expected);
+        assert!(!calls.iter().any(|call| call.pointer("/params/sessionId") == Some(&json!("forked-session"))), "source identity must remain the only loaded/forked session");
+
+        let Some((older, older_log, _older_dir)) = acp_fork_fixture(true) else { return; };
+        assert_eq!(older.fork_session("C:/workspace", "source-session", None, false).unwrap(), None);
+        assert!(!older_log.exists() || std::fs::read_to_string(older_log).unwrap().is_empty(), "earlier replies must not start ACP native fork traffic");
     }
 
     /// The audit reproduction: the agent rejects a thinking change, and no

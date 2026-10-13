@@ -10,7 +10,7 @@ use super::{
         history_page, percent_used, validate_native_id, version_probe, CommandSpec, EnvelopeStyle,
         JsonLineProcess, JsonLineRequester, JsonLineResponder,
     },
-    emit_bound as emit, ChatSession, ProviderAdapter, ProviderCapability, ProviderError,
+    emit_bound as emit, ChatSession, NativeForkAnchor, ProviderAdapter, ProviderCapability, ProviderError,
     ScopedProviderEvents, TerminalCapture, TerminalCommand,
 };
 use crate::pi_project_trust;
@@ -193,7 +193,73 @@ impl ProviderAdapter for PiAdapter {
                 format!("Failed reading the Pi session: {error}"),
             )
         })?;
-        Ok(Value::Array(pi_transcript(&text)))
+        Ok(Value::Array(pi_transcript(&text, native_id)))
+    }
+
+    fn fork_session(
+        &self,
+        cwd: &str,
+        native_id: &str,
+        anchor: Option<&NativeForkAnchor>,
+        is_latest: bool,
+    ) -> Result<Option<String>, ProviderError> {
+        validate_native_id(native_id)?;
+        if let Some(anchor) = anchor {
+            if anchor.native_id != native_id {
+                return Err(ProviderError::new(
+                    "invalid_fork_anchor",
+                    "Pi fork anchor does not belong to this native session",
+                ));
+            }
+        }
+
+        // Pi's fork and clone change the process's active session.  Always use
+        // a short-lived resumed control process, never the visible Chat worker.
+        let process = pi_fork_control(cwd, native_id)?;
+        let anchored_entry = anchor
+            .and_then(|anchor| anchor.entry_id.as_deref())
+            .filter(|entry_id| !entry_id.is_empty());
+        let result = if let Some(entry_id) = anchored_entry {
+            // A persisted UI transcript can be stale while Pi's active branch
+            // has already advanced. Inspect native entries even when the
+            // service classified this reply as latest: fork before the next
+            // active user entry rather than cloning a newer branch.
+            let entries = process.request("get_entries", json!({}))?;
+            let Some(next_user_entry) = pi_fork_target(&entries, entry_id) else {
+                return Ok(None);
+            };
+            match next_user_entry {
+                Some(next_user_entry) => process.request("fork", json!({"entryId":next_user_entry}))?,
+                None => process.request("clone", json!({}))?,
+            }
+        } else if is_latest {
+            // Generic live completion anchors intentionally carry no Pi entry
+            // coordinate. A whole/latest fork may still clone the current
+            // native branch, while an older unbound reply must copy-fallback.
+            process.request("clone", json!({}))?
+        } else {
+            return Ok(None);
+        };
+        if result.get("cancelled").and_then(Value::as_bool) == Some(true) {
+            return Ok(None);
+        }
+        // Pi replies to fork/clone with text only. The selected native identity
+        // is observable through get_state after the mutation.
+        let state = process.request("get_state", json!({}))?;
+        let Some(forked) = state.get("sessionId").and_then(Value::as_str) else {
+            return Err(ProviderError::new(
+                "provider_protocol",
+                "Pi fork did not select a new session id",
+            ));
+        };
+        validate_native_id(forked)?;
+        if forked == native_id {
+            return Err(ProviderError::new(
+                "provider_protocol",
+                "Pi fork retained the source session id",
+            ));
+        }
+        Ok(Some(forked.to_owned()))
     }
 
     fn open_chat(
@@ -1731,6 +1797,18 @@ fn pi_event(
             if let Ok(mut slot) = shared.pending_error.lock() {
                 *slot = pending;
             }
+            // New Pi versions may include the persisted entry coordinate on
+            // the final event. It is the only live coordinate we accept; do
+            // not mistake a provider message id for a session-tree entry id.
+            if let (Some(source), Some(entry_id)) = (
+                native_id.as_deref(),
+                raw.get("entryId").and_then(Value::as_str).filter(|id| !id.is_empty()),
+            ) {
+                emit(
+                    "chat.item",
+                    json!({"merge":true,"forkAnchor":{"nativeId":source,"entryId":entry_id}}),
+                );
+            }
         }
         "agent_settled" => {
             let aborted = raw.get("aborted").and_then(Value::as_bool) == Some(true);
@@ -1961,7 +2039,82 @@ fn pi_message_text(message: &Value) -> (String, String) {
     (text, thinking)
 }
 
-fn pi_transcript(text: &str) -> Vec<Value> {
+/// Starts an isolated Pi control process resumed at `native_id`. Pi's native
+/// fork commands mutate the selected session, so this must not share the
+/// process used by the visible Chat session.
+fn pi_fork_control(cwd: &str, native_id: &str) -> Result<JsonLineProcess, ProviderError> {
+    let spec = CommandSpec::provider("pi", &["--mode", "rpc", "--session", native_id])?;
+    JsonLineProcess::spawn(
+        "pi-fork",
+        &spec,
+        Some(cwd),
+        &[],
+        EnvelopeStyle::Pi,
+        Arc::new(|_| {}),
+    )
+}
+
+/// Returns the next user entry on the current active branch after an assistant
+/// reply. `get_entries` deliberately includes abandoned branches, therefore a
+/// selected reply must be on the ancestry of the reported leaf before it can
+/// be used as a native fork coordinate.
+/// `Some(None)` means the reply is the active leaf and can clone; `None`
+/// means it is absent, malformed, or belongs to an abandoned branch.
+fn pi_fork_target(entries: &Value, reply_entry_id: &str) -> Option<Option<String>> {
+    let leaf_id = entries.get("leafId").and_then(Value::as_str)?;
+    let rows = entries.get("entries")?.as_array()?;
+    let indexed = rows
+        .iter()
+        .filter_map(|entry| entry.get("id").and_then(Value::as_str).map(|id| (id, entry)))
+        .collect::<HashMap<_, _>>();
+    let mut active_reverse = Vec::new();
+    let mut current = leaf_id;
+    let mut seen = HashSet::new();
+    loop {
+        if !seen.insert(current) {
+            return None;
+        }
+        let entry = indexed.get(current)?;
+        active_reverse.push(*entry);
+        match entry.get("parentId").and_then(Value::as_str) {
+            Some(parent) => current = parent,
+            None => break,
+        }
+    }
+    active_reverse.reverse();
+    let reply_index = active_reverse.iter().position(|entry| {
+        entry.get("id").and_then(Value::as_str) == Some(reply_entry_id)
+            && entry.get("type").and_then(Value::as_str) == Some("message")
+            && entry.pointer("/message/role").and_then(Value::as_str) == Some("assistant")
+    })?;
+    for entry in &active_reverse[reply_index + 1..] {
+        if entry.get("type").and_then(Value::as_str) != Some("message") {
+            continue;
+        }
+        match entry.pointer("/message/role").and_then(Value::as_str) {
+            // A second assistant message means the durable native branch has
+            // advanced beyond the selected reply (for example a tool loop).
+            // Pi can only fork before a user message, so never silently carry
+            // that later assistant output into a selected-reply fork.
+            Some("assistant") => return None,
+            Some("user") => {
+                return entry
+                    .get("id")
+                    .and_then(Value::as_str)
+                    .map(|id| Some(id.to_owned()));
+            }
+            _ => {}
+        }
+    }
+    Some(None)
+}
+
+#[cfg(test)]
+fn pi_next_user_after_reply(entries: &Value, reply_entry_id: &str) -> Option<String> {
+    pi_fork_target(entries, reply_entry_id).flatten()
+}
+
+fn pi_transcript(text: &str, native_id: &str) -> Vec<Value> {
     let entries = text
         .lines()
         .filter_map(|line| serde_json::from_str::<Value>(line.trim()).ok())
@@ -1991,14 +2144,38 @@ fn pi_transcript(text: &str) -> Vec<Value> {
         if parts.is_empty() {
             continue;
         }
-        out.push(json!({
+        let mut item = json!({
             "id":format!("pi-{index}"),
             "role":role,
             "parts":parts,
             "createdAt":value.get("timestamp").and_then(Value::as_str).unwrap_or_default()
-        }));
+        });
+        // History entries are Pi's only documented durable message coordinate.
+        // Preserve it exactly so a later Fork from here can choose the next
+        // user entry on this same active branch.
+        if role == "assistant" {
+            if let Some(entry_id) = value.get("id").and_then(Value::as_str).filter(|id| !id.is_empty()) {
+                item["forkAnchor"] = json!({"nativeId":native_id,"entryId":entry_id});
+            }
+            // Native history is eligible for a point fork only when Pi wrote a
+            // terminal stop reason. Do not infer completion from timestamps or
+            // a persisted assistant entry.
+            if let Some(status) = pi_history_turn_status(message.get("stopReason").and_then(Value::as_str)) {
+                item["turnStatus"] = json!(status);
+            }
+        }
+        out.push(item);
     }
     out
+}
+
+fn pi_history_turn_status(stop_reason: Option<&str>) -> Option<&'static str> {
+    match stop_reason {
+        Some("end_turn" | "stop") => Some("completed"),
+        Some("error") => Some("failed"),
+        Some("aborted" | "cancelled" | "canceled") => Some("interrupted"),
+        _ => None,
+    }
 }
 
 /// Pi v2+ sessions are append-only trees. The session manager restores the
@@ -2813,6 +2990,25 @@ require('node:readline').createInterface({input:process.stdin}).on('line', line 
     }
 
     #[test]
+    fn completed_live_reply_uses_only_the_reported_pi_entry_id_as_fork_anchor() {
+        let (events, mut receiver) = scoped();
+        let shared = PiShared::default();
+        *shared.native_id.lock().unwrap() = Some("native-9".to_owned());
+        *shared.active_turn.lock().unwrap() = Some("turn-9".to_owned());
+        pi_event(
+            &events,
+            "pi",
+            "session",
+            &shared,
+            json!({"type":"message_end","entryId":"entry-9","message":{"role":"assistant","id":"provider-message","content":"done"}}),
+        );
+        let event = receiver.try_recv().unwrap();
+        assert_eq!(event.kind, "chat.item");
+        assert_eq!(event.data["forkAnchor"], json!({"nativeId":"native-9","entryId":"entry-9"}));
+        assert!(receiver.try_recv().is_err());
+    }
+
+    #[test]
     fn transcript_reads_text_and_thinking_from_message_entries() {
         let source = [
             json!({"type":"session","id":"s","cwd":"/w"}).to_string(),
@@ -2821,7 +3017,7 @@ require('node:readline').createInterface({input:process.stdin}).on('line', line 
             json!({"type":"session_info","name":"named"}).to_string(),
         ]
         .join("\n");
-        let transcript = pi_transcript(&source);
+        let transcript = pi_transcript(&source, "s");
         assert_eq!(transcript.len(), 2);
         assert_eq!(transcript[0]["role"], "user");
         assert_eq!(transcript[0]["parts"][0]["text"], "hi");
@@ -2846,7 +3042,7 @@ require('node:readline').createInterface({input:process.stdin}).on('line', line 
         .map(|entry| entry.to_string())
         .collect::<Vec<_>>()
         .join("\n");
-        let transcript = pi_transcript(&source);
+        let transcript = pi_transcript(&source, "s");
         assert_eq!(transcript.len(), 2);
         assert_eq!(transcript[0]["parts"][0]["text"], "root");
         assert_eq!(transcript[1]["parts"][0]["text"], "active");
@@ -2860,6 +3056,57 @@ require('node:readline').createInterface({input:process.stdin}).on('line', line 
             json!({"type":"message","id":"broken","parentId":"missing"}),
         ];
         assert!(pi_active_branch(entries).is_empty());
+    }
+
+    #[test]
+    fn pi_fork_target_uses_next_user_on_the_active_branch_only() {
+        let entries = json!({"leafId":"user-next","entries":[
+            {"type":"message","id":"root","parentId":null,"message":{"role":"user"}},
+            {"type":"message","id":"old-reply","parentId":"root","message":{"role":"assistant"}},
+            {"type":"message","id":"reply","parentId":"root","message":{"role":"assistant"}},
+            {"type":"message","id":"user-next","parentId":"reply","message":{"role":"user"}}
+        ]});
+        assert_eq!(pi_next_user_after_reply(&entries, "reply").as_deref(), Some("user-next"));
+        assert_eq!(pi_next_user_after_reply(&entries, "old-reply"), None);
+        assert_eq!(pi_next_user_after_reply(&entries, "root"), None);
+        let tip = json!({"leafId":"reply","entries":[
+            {"type":"message","id":"root","parentId":null,"message":{"role":"user"}},
+            {"type":"message","id":"reply","parentId":"root","message":{"role":"assistant"}}
+        ]});
+        assert_eq!(pi_fork_target(&tip, "reply"), Some(None));
+
+        for leaf_id in ["later-assistant", "next-user"] {
+            let advanced = json!({"leafId":leaf_id,"entries":[
+                {"type":"message","id":"root","parentId":null,"message":{"role":"user"}},
+                {"type":"message","id":"reply","parentId":"root","message":{"role":"assistant"}},
+                {"type":"toolResult","id":"tool-result","parentId":"reply"},
+                {"type":"message","id":"later-assistant","parentId":"tool-result","message":{"role":"assistant"}},
+                {"type":"message","id":"next-user","parentId":"later-assistant","message":{"role":"user"}}
+            ]});
+            assert_eq!(pi_fork_target(&advanced, "reply"), None, "leaf {leaf_id}");
+        }
+    }
+
+    #[test]
+    fn pi_history_replies_keep_the_exact_entry_fork_anchor() {
+        let source = [
+            json!({"type":"session","id":"source","cwd":"/w"}),
+            json!({"type":"message","id":"user-1","parentId":null,"message":{"role":"user","content":"hi"}}),
+            json!({"type":"message","id":"assistant-1","parentId":"user-1","message":{"role":"assistant","stopReason":"end_turn","content":"done"}}),
+        ].into_iter().map(|row| row.to_string()).collect::<Vec<_>>().join("\n");
+        let transcript = pi_transcript(&source, "source");
+        assert_eq!(transcript[1]["forkAnchor"], json!({"nativeId":"source","entryId":"assistant-1"}));
+        assert_eq!(transcript[1]["turnStatus"], "completed");
+    }
+
+    #[test]
+    fn pi_history_status_requires_a_native_terminal_stop_reason() {
+        assert_eq!(pi_history_turn_status(Some("end_turn")), Some("completed"));
+        assert_eq!(pi_history_turn_status(Some("stop")), Some("completed"));
+        assert_eq!(pi_history_turn_status(Some("error")), Some("failed"));
+        assert_eq!(pi_history_turn_status(Some("cancelled")), Some("interrupted"));
+        assert_eq!(pi_history_turn_status(None), None);
+        assert_eq!(pi_history_turn_status(Some("pending")), None);
     }
 
     #[test]
@@ -3151,12 +3398,16 @@ const path = require('node:path');
 const rl = readline.createInterface({ input: process.stdin });
 const out = o => process.stdout.write(JSON.stringify(o) + '\n');
 let prompts = 0;
+let forked = false;
 if (process.argv.includes('--version')) { console.log('1.1.0'); process.exit(0); }
 rl.on('line', line => {
   let cmd; try { cmd = JSON.parse(line); } catch { return; }
   const id = cmd.id;
   switch (cmd.type) {
-    case 'get_state': return out({id,type:'response',command:'get_state',success:true,data:{sessionId:'fake-session',model:{id:'fake-model',name:'Fake',provider:'fake'},thinkingLevel:'off',isStreaming:false}});
+    case 'get_state': return out({id,type:'response',command:'get_state',success:true,data:{sessionId:forked?'forked-session':'fake-session',model:{id:'fake-model',name:'Fake',provider:'fake'},thinkingLevel:'off',isStreaming:false}});
+    case 'get_entries': return out({id,type:'response',command:'get_entries',success:true,data:{leafId:'next-user',entries:[{type:'message',id:'first-user',parentId:null,message:{role:'user'}},{type:'message',id:'reply',parentId:'first-user',message:{role:'assistant'}},{type:'message',id:'next-user',parentId:'reply',message:{role:'user'}}]}});
+    case 'fork': fs.appendFileSync(path.join(__dirname,'fork-requests.jsonl'),JSON.stringify(cmd)+'\n'); forked=true; return out({id,type:'response',command:'fork',success:true,data:{cancelled:false}});
+    case 'clone': fs.appendFileSync(path.join(__dirname,'fork-requests.jsonl'),JSON.stringify(cmd)+'\n'); forked=true; return out({id,type:'response',command:'clone',success:true,data:{cancelled:false}});
     case 'get_available_models': return out({id,type:'response',command:'get_available_models',success:true,data:{models:[{id:'fake-model',name:'Fake',provider:'fake'}]}});
     case 'get_available_thinking_levels': return out({id,type:'response',command:'get_available_thinking_levels',success:true,data:{levels:['off','high']}});
     case 'get_commands': return out({id,type:'response',command:'get_commands',success:true,data:{commands:[{name:'demo',description:'Demo'}]}});
@@ -3373,6 +3624,51 @@ rl.on('line', line => {
         }
         assert!(help_done, "/help never completed");
         assert!(help_text.contains("/thinking"), "help text: {help_text}");
+
+        // Native forks run through an independent resumed RPC worker. The
+        // fake records the actual wire frames, so this checks more than the
+        // branch-selection helper and keeps the original chat usable.
+        let forked = adapter
+            .fork_session(
+                cwd.to_str().unwrap(),
+                "fake-session",
+                Some(&NativeForkAnchor {
+                    native_id: "fake-session".to_owned(),
+                    turn_id: None,
+                    message_id: None,
+                    entry_id: Some("reply".to_owned()),
+                }),
+                false,
+        )
+        .expect("fork request")
+        .expect("native fork id");
+        assert_eq!(forked, "forked-session");
+        // A stale service-side "latest" classification must not clone past a
+        // durable anchored reply when Pi has a later active user entry.
+        let stale_latest = adapter
+            .fork_session(
+                cwd.to_str().unwrap(),
+                "fake-session",
+                Some(&NativeForkAnchor {
+                    native_id: "fake-session".to_owned(),
+                    turn_id: None,
+                    message_id: None,
+                    entry_id: Some("reply".to_owned()),
+                }),
+                true,
+            )
+            .expect("stale latest fork request")
+            .expect("native fork id");
+        assert_eq!(stale_latest, "forked-session");
+        let cloned = adapter
+            .fork_session(cwd.to_str().unwrap(), "fake-session", None, true)
+            .expect("clone request")
+            .expect("native clone id");
+        assert_eq!(cloned, "forked-session");
+        let wire = std::fs::read_to_string(dir.path().join("fork-requests.jsonl")).unwrap();
+        assert_eq!(wire.lines().filter(|line| serde_json::from_str::<Value>(line).ok().is_some_and(|frame| frame["type"] == "fork" && frame["entryId"] == "next-user")).count(), 2, "wire: {wire}");
+        assert!(wire.lines().any(|line| serde_json::from_str::<Value>(line).ok().is_some_and(|frame| frame["type"] == "clone")), "wire: {wire}");
+        assert!(chat.is_alive(), "temporary fork control must not replace the source worker");
         std::env::set_var("PATH", previous);
     }
 }

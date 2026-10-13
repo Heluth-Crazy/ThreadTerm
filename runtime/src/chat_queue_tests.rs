@@ -306,6 +306,14 @@ fn public_queue_mutations_require_the_chat_write_lease() {
 }
 
 #[test]
+fn fork_control_command_cannot_be_added_to_the_prompt_queue() {
+    let fixture = Fixture::new(false);
+    let error = fixture.add_result(" /fork ", "queue-fork-control").unwrap_err();
+    assert!(error.to_string().contains("control_command_not_queueable"));
+    assert!(fixture.items().is_empty());
+}
+
+#[test]
 fn queue_dispatch_operation_id_cannot_be_claimed_as_chat_send() {
     let fixture = Fixture::new(false);
     let queue = fixture.add("reserved operation", "add-reserved-operation");

@@ -20,6 +20,7 @@ mod pi;
 mod retirement_tests;
 
 use serde::{Deserialize, Serialize};
+pub(crate) use crate::domain::NativeForkAnchor;
 use serde_json::{json, Value};
 use crate::provider_events::{self, ProjectionReceiver, Sender as ProviderEventSender};
 use std::{
@@ -364,6 +365,17 @@ pub(crate) trait ProviderAdapter: Send + Sync {
     /// pre-assignment channel must return `None`; terminal output is never an
     /// authoritative identity source.
     fn prepare_terminal(&self, _cwd: &str) -> Result<Option<String>, ProviderError> {
+        Ok(None)
+    }
+    /// Fork provider-owned history without opening or mutating the source
+    /// worker. `None` means the adapter has no native fork for this point.
+    fn fork_session(
+        &self,
+        _cwd: &str,
+        _native_id: &str,
+        _anchor: Option<&crate::domain::NativeForkAnchor>,
+        _is_latest: bool,
+    ) -> Result<Option<String>, ProviderError> {
         Ok(None)
     }
     /// Read-only provider validation before reserving a terminal resume. Must
@@ -1550,6 +1562,22 @@ impl Providers {
 impl Default for Providers {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+impl Providers {
+    pub(crate) fn fork_session(
+        &self,
+        provider: &str,
+        cwd: &str,
+        native_id: &str,
+        anchor: Option<&NativeForkAnchor>,
+        is_latest: bool,
+    ) -> Result<Option<String>, ProviderError> {
+        if cwd.trim().is_empty() || native_id.trim().is_empty() {
+            return Err(ProviderError::new("invalid_fork_request", "cwd and native session id are required"));
+        }
+        self.adapter(provider)?.fork_session(cwd, native_id, anchor, is_latest)
     }
 }
 

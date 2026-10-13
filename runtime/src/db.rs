@@ -1,6 +1,6 @@
 use crate::domain::{
-    ChatItem, ChatTurnOrigin, Project, Session, SessionDelegation, SessionOrganization, SessionOrganize, Settings,
-    Snapshot,
+    ChatItem, ChatTurnOrigin, Project, Session, SessionDelegation, SessionForkedFrom,
+    SessionOrganization, SessionOrganize, Settings, Snapshot,
 };
 use crate::session_activity::SessionActivity;
 use anyhow::{anyhow, Context, Result};
@@ -51,6 +51,8 @@ impl Database {
              CREATE TABLE IF NOT EXISTS chat_drafts (session_id TEXT PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE, revision INTEGER NOT NULL, text TEXT NOT NULL);
              CREATE TABLE IF NOT EXISTS chat_context (session_id TEXT PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE, data TEXT NOT NULL, updated_at TEXT NOT NULL);
              CREATE TABLE IF NOT EXISTS pi_chat_options (session_id TEXT PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE, auto_retry INTEGER NOT NULL CHECK(auto_retry IN (0,1)));
+             CREATE TABLE IF NOT EXISTS session_fork_options (session_id TEXT PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE, data TEXT NOT NULL);
+             CREATE TABLE IF NOT EXISTS chat_fork_intents (operation_id TEXT PRIMARY KEY, source_session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE, native_id TEXT NOT NULL, child_session_id TEXT REFERENCES sessions(id) ON DELETE SET NULL, created_at TEXT NOT NULL);
              CREATE TABLE IF NOT EXISTS session_organization (session_id TEXT PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE, data TEXT NOT NULL);
              CREATE TABLE IF NOT EXISTS session_activity (session_id TEXT PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE, state TEXT NOT NULL, revision INTEGER NOT NULL, turn_id TEXT, reason TEXT);
              CREATE TABLE IF NOT EXISTS inbox (id TEXT PRIMARY KEY, session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE, turn_id TEXT, kind TEXT NOT NULL, data TEXT NOT NULL, resolved INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL);
@@ -252,6 +254,153 @@ impl Database {
         result: &Value,
     ) -> Result<()> {
         self.transaction(|tx| complete(tx, operation_id, method, result))
+    }
+    pub(crate) fn clone_fork_launch_config(
+        &self,
+        source_session_id: &str,
+        child_session_id: &str,
+        title: &str,
+        options: &Value,
+    ) -> Result<()> {
+        self.transaction(|tx| {
+            let config: (String, String, String, Option<String>, Option<String>, String) = tx
+                .query_row(
+                    "SELECT provider,mode,cwd,project_id,executable,args_json FROM session_launch_configs WHERE session_id=?",
+                    [source_session_id],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?, row.get(5)?)),
+                )?;
+            tx.execute(
+                "INSERT INTO session_launch_configs(session_id,revision,provider,mode,cwd,project_id,title,executable,args_json,source_session_id) VALUES (?,1,?,?,?,?,?,?,?,?) ON CONFLICT(session_id) DO UPDATE SET revision=session_launch_configs.revision+1,provider=excluded.provider,mode=excluded.mode,cwd=excluded.cwd,project_id=excluded.project_id,title=excluded.title,executable=excluded.executable,args_json=excluded.args_json,source_session_id=excluded.source_session_id",
+                params![child_session_id, config.0, config.1, config.2, config.3, title, config.4, config.5, source_session_id],
+            )?;
+            tx.execute(
+                "INSERT INTO session_fork_options(session_id,data) VALUES (?,?) ON CONFLICT(session_id) DO UPDATE SET data=excluded.data",
+                params![child_session_id, serde_json::to_string(options)?],
+            )?;
+            Ok(())
+        })
+    }
+    pub(crate) fn chat_fork_intent(&self, operation_id: &str) -> Result<Option<(String, Option<String>)>> {
+        self.transaction(|tx| {
+            tx.query_row(
+                "SELECT native_id,child_session_id FROM chat_fork_intents WHERE operation_id=?",
+                [operation_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            ).optional().map_err(Into::into)
+        })
+    }
+    pub(crate) fn save_chat_fork_native_intent(
+        &self,
+        operation_id: &str,
+        source_session_id: &str,
+        native_id: &str,
+    ) -> Result<()> {
+        self.transaction(|tx| {
+            let prior: Option<(String, String)> = tx.query_row(
+                "SELECT source_session_id,native_id FROM chat_fork_intents WHERE operation_id=?",
+                [operation_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            ).optional()?;
+            if prior.as_ref().is_some_and(|value| value != &(source_session_id.to_owned(), native_id.to_owned())) {
+                return Err(anyhow!("operation_conflict"));
+            }
+            tx.execute(
+                "INSERT OR IGNORE INTO chat_fork_intents(operation_id,source_session_id,native_id,child_session_id,created_at) VALUES (?,?,?,NULL,?)",
+                params![operation_id, source_session_id, native_id, now()],
+            )?;
+            Ok(())
+        })
+    }
+    pub(crate) fn save_chat_fork_child_intent(&self, operation_id: &str, child_session_id: &str) -> Result<()> {
+        self.transaction(|tx| {
+            if tx.execute(
+                "UPDATE chat_fork_intents SET child_session_id=? WHERE operation_id=? AND (child_session_id IS NULL OR child_session_id=?)",
+                params![child_session_id, operation_id, child_session_id],
+            )? != 1 {
+                return Err(anyhow!("operation_outcome_unknown"));
+            }
+            Ok(())
+        })
+    }
+    pub(crate) fn recover_chat_fork_child_intent(&self, operation_id: &str, child_session_id: &str) -> Result<bool> {
+        self.transaction(|tx| {
+            let matched: bool = tx.query_row(
+                "SELECT EXISTS(SELECT 1 FROM chat_fork_intents i JOIN sessions s ON s.id=? WHERE i.operation_id=? AND i.child_session_id IS NULL AND s.native_id=i.native_id)",
+                params![child_session_id, operation_id],
+                |row| row.get(0),
+            )?;
+            if matched {
+                tx.execute(
+                    "UPDATE chat_fork_intents SET child_session_id=? WHERE operation_id=? AND child_session_id IS NULL",
+                    params![child_session_id, operation_id],
+                )?;
+            }
+            Ok(matched)
+        })
+    }
+    pub(crate) fn pending_fork_options(&self, session_id: &str) -> Result<Value> {
+        self.transaction(|tx| {
+            let raw: Option<String> = tx.query_row(
+                "SELECT data FROM session_fork_options WHERE session_id=?",
+                [session_id],
+                |row| row.get(0),
+            ).optional()?;
+            raw.map(|value| serde_json::from_str(&value).map_err(Into::into))
+                .unwrap_or_else(|| Ok(json!([])))
+        })
+    }
+    pub(crate) fn latest_chat_options(&self, session_id: &str) -> Result<Value> {
+        self.transaction(|tx| {
+            let raw: Option<String> = tx.query_row(
+                "SELECT data FROM outbox WHERE event='chat.ui' AND json_extract(data,'$.sessionId')=? ORDER BY seq DESC LIMIT 1",
+                [session_id],
+                |row| row.get(0),
+            ).optional()?;
+            let payload = raw.map(|value| serde_json::from_str::<Value>(&value)).transpose()?;
+            Ok(payload.and_then(|value| value.get("options").cloned()).unwrap_or_else(|| json!([])))
+        })
+    }
+    pub(crate) fn clear_pending_fork_options(&self, session_id: &str) -> Result<()> {
+        self.transaction(|tx| {
+            tx.execute("DELETE FROM session_fork_options WHERE session_id=?", [session_id])?;
+            Ok(())
+        })
+    }
+    pub(crate) fn complete_chat_fork(
+        &self,
+        child_session_id: &str,
+        source_session_id: &str,
+        item_id: Option<&str>,
+        source_title: &str,
+        mode: &str,
+        operation_id: &str,
+    ) -> Result<Value> {
+        self.transaction(|tx| {
+            if let Some(result) = operation_tx(tx, operation_id)? {
+                return Ok(result);
+            }
+            let mut session = session_tx(tx, child_session_id)?;
+            session.organization.forked_from = Some(SessionForkedFrom {
+                session_id: source_session_id.to_owned(),
+                item_id: item_id.map(str::to_owned),
+                title: Some(source_title.to_owned()),
+            });
+            session.organization.organization_revision += 1;
+            tx.execute(
+                "INSERT INTO session_organization(session_id,data) VALUES (?,?) ON CONFLICT(session_id) DO UPDATE SET data=excluded.data",
+                params![child_session_id, serde_json::to_string(&session.organization)?],
+            )?;
+            let result = json!({"session":session,"mode":mode});
+            complete(tx, operation_id, "chat.fork", &result)?;
+            emit(tx, "chat.forked", json!({
+                "sessionId":source_session_id,
+                "operationId":operation_id,
+                "session":session,
+                "mode":mode,
+            }))?;
+            emit(tx, "state.changed", json!({"sessionId":child_session_id,"kind":"chat.fork"}))?;
+            Ok(result)
+        })
     }
     pub fn read_inbox(&self, ids: &[String], operation_id: &str) -> Result<()> {
         self.mutate_null(operation_id, "inbox.read", |tx| {
@@ -901,7 +1050,9 @@ impl Database {
         })
     }
     pub fn import_chat_history(&self, id: &str, items: &[ChatItem]) -> Result<()> {
-        let items = normalize_history_transcript(id, items)?;
+        let native_id = self.session_by_id(id)?.and_then(|session| session.native_id);
+        let mut items = normalize_history_transcript(id, items)?;
+        add_generic_fork_anchors(&mut items, native_id.as_deref());
         self.transaction(|tx| {
             for item in &items {
                 let changed=tx.execute("INSERT OR IGNORE INTO chat_items(id,session_id,turn_id,kind,data,created_at) VALUES (?,?,?,'message',?,?)",params![item.id,id,item.turn_id,serde_json::to_string(&item)?,item.created_at])?;
@@ -923,7 +1074,8 @@ impl Database {
             }
             let timestamp=now();
             let session=Session { id:Uuid::new_v4().to_string(), project_id:request.project_id.map(str::to_owned), worktree_path:Some(request.cwd.to_owned()), title:request.title.unwrap_or(request.provider).to_owned(), provider:request.provider.to_owned(), mode:request.mode.to_owned(), status:"idle".into(), created_at:timestamp.clone(), updated_at:timestamp, native_id:Some(request.native_id.to_owned()), exit_code:None, cols:None, rows:None, followed:false, read_only:true, activity:None, delegation:None, run:None, organization:SessionOrganization::default() };
-            let transcript = normalize_history_transcript(&session.id, request.transcript)?;
+            let mut transcript = normalize_history_transcript(&session.id, request.transcript)?;
+            add_generic_fork_anchors(&mut transcript, Some(request.native_id));
             tx.execute("INSERT INTO sessions(id,project_id,worktree_path,title,provider,mode,status,created_at,updated_at,native_id,exit_code,followed,read_only) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,1)",params![session.id,session.project_id,session.worktree_path,session.title,session.provider,session.mode,session.status,session.created_at,session.updated_at,session.native_id,session.exit_code,session.followed])?;
             tx.execute(
                 "INSERT INTO session_launch_configs(session_id,revision,provider,mode,cwd,project_id,title,executable,args_json,source_session_id) VALUES(?,1,?,?,?,?,?,NULL,'[]',NULL)",
@@ -1588,6 +1740,32 @@ pub(crate) fn scoped_history_item(session_id: &str, source: &ChatItem) -> ChatIt
     item
 }
 
+fn add_generic_fork_anchors(items: &mut [ChatItem], native_id: Option<&str>) {
+    let Some(native_id) = native_id.filter(|value| !value.is_empty()) else { return };
+    for item in items {
+        let statusless_history_reply = item.turn_status.is_none()
+            && item.turn_origin == Some(ChatTurnOrigin::History)
+            && item.parts.iter().any(|part| {
+                part.get("type").and_then(Value::as_str) == Some("text")
+                    && part.get("phase").and_then(Value::as_str) != Some("commentary")
+                    && part.pointer("/data/kind").and_then(Value::as_str) != Some("plan")
+                    && part.get("text").and_then(Value::as_str).is_some_and(|text| !text.trim().is_empty())
+            })
+            && !item.parts.iter().any(|part| matches!(
+                part.get("status").and_then(Value::as_str),
+                Some("streaming" | "running" | "pending")
+            ));
+        if item.role == "assistant" && item.fork_anchor.is_none()
+            && (item.turn_status == Some(crate::domain::NativeTurnStatus::Completed)
+                || statusless_history_reply)
+        {
+            item.fork_anchor = Some(crate::domain::NativeForkAnchor {
+                native_id: native_id.to_owned(), turn_id: None, message_id: None, entry_id: None,
+            });
+        }
+    }
+}
+
 /// Validate provider data before an import transaction writes anything, then
 /// give every stored row a strictly increasing timestamp in native array order.
 /// Providers may reuse timestamps or return a clock that moves backward; read
@@ -2131,6 +2309,7 @@ mod tests {
             elapsed_ms: None,
             turn_status: None,
             turn_origin: None,
+            fork_anchor: None,
         };
         db.transaction(|tx| {
             assert_eq!(
@@ -2215,6 +2394,7 @@ mod tests {
             elapsed_ms: None,
             turn_status: None,
             turn_origin: None,
+            fork_anchor: None,
         };
         db.transaction(|tx| {
             tx.execute(
@@ -2302,6 +2482,7 @@ mod tests {
             elapsed_ms: Some(42),
             turn_status: Some(crate::domain::NativeTurnStatus::Completed),
             turn_origin: None,
+            fork_anchor: None,
         }
     }
     #[test]

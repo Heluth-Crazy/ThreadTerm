@@ -12,6 +12,10 @@ test('protocol accepts chat option and question answer operations', () => {
   assert.deepEqual(parseLine('{"id":3,"op":"session.answer","cardId":"c","requestId":"q","values":{"q0":["Blue"]}}').request.op, 'session.answer');
 });
 
+test('protocol accepts the isolated native history fork operation', () => {
+  assert.equal(parseLine('{"id":4,"op":"history.fork","sessionId":"source","messageId":"reply"}').request.op, 'history.fork');
+});
+
 test('input queue preserves messages and closes', async () => {
   const queue = createInputQueue(); const iterator = queue[Symbol.asyncIterator]();
   queue.push('one'); assert.deepEqual(await iterator.next(), { value: 'one', done: false });

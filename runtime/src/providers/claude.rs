@@ -4,8 +4,8 @@ use super::{
         command_output, find_executable, history_page, insert_optional, validate_native_id,
         version_probe, CommandSpec, EnvelopeStyle, JsonLineProcess,
     },
-    emit_scoped, ChatSession, ChatToolServer, ProviderAdapter, ProviderCapability, ProviderError,
-    TerminalCommand,
+    emit_scoped, ChatSession, ChatToolServer, NativeForkAnchor, ProviderAdapter,
+    ProviderCapability, ProviderError, TerminalCommand,
 };
 use chrono::{TimeZone, Utc};
 use serde_json::{json, Value};
@@ -244,6 +244,14 @@ impl ClaudeAdapter {
     }
 }
 
+fn claude_fork_params(cwd: &str, native_id: &str, anchor: Option<&NativeForkAnchor>) -> Value {
+    let mut params = json!({"sessionId":native_id,"cwd":cwd});
+    if let Some(message_id) = anchor.and_then(|value| value.message_id.as_deref()) {
+        params["messageId"] = json!(message_id);
+    }
+    params
+}
+
 fn claude_worker_uses_electron_node() -> bool {
     std::env::var_os("THREADTERM_CLAUDE_ELECTRON_NODE").is_some_and(|value| value == "1")
 }
@@ -420,7 +428,45 @@ impl ProviderAdapter for ClaudeAdapter {
             .and_then(Value::as_array)
             .cloned()
             .unwrap_or_default();
-        Ok(Value::Array(claude_transcript(&raw)))
+        Ok(Value::Array(claude_transcript(&raw, Some(native_id))))
+    }
+
+    fn fork_session(
+        &self,
+        cwd: &str,
+        native_id: &str,
+        anchor: Option<&NativeForkAnchor>,
+        _is_latest: bool,
+    ) -> Result<Option<String>, ProviderError> {
+        validate_native_id(native_id)?;
+        if let Some(anchor) = anchor {
+            if anchor.native_id != native_id {
+                return Err(ProviderError::new(
+                    "invalid_fork_anchor",
+                    "Claude fork anchor does not belong to this native session",
+                ));
+            }
+            if anchor.message_id.as_deref().is_none_or(str::is_empty) {
+                return Ok(None);
+            }
+        }
+        // This is a short-lived sidecar control process.  It must never ask the
+        // active query to fork: SDK forks change only the new native session,
+        // while the visible Chat continues to own the original worker.
+        let process = self.temporary()?;
+        let params = claude_fork_params(cwd, native_id, anchor);
+        let result = process.sidecar_request("history.fork", params)?;
+        let forked = result
+            .get("sessionId")
+            .and_then(Value::as_str)
+            .ok_or_else(|| {
+                ProviderError::new(
+                    "provider_protocol",
+                    "Claude SDK fork returned no session id",
+                )
+            })?;
+        validate_native_id(forked)?;
+        Ok(Some(forked.to_owned()))
     }
 
     fn open_chat(
@@ -1484,7 +1530,11 @@ fn emit_claude_message(
             if let Ok(state) = ui.1.lock() {
                 if let Some(key) = state.tasks.get(agent_id) {
                     subagent["key"] = json!(key);
-                    if let Some(agent) = state.task_agents.get(agent_id).and_then(|id| state.agents.get(id)) {
+                    if let Some(agent) = state
+                        .task_agents
+                        .get(agent_id)
+                        .and_then(|id| state.agents.get(id))
+                    {
                         subagent["label"] = json!(agent.label);
                     }
                 }
@@ -1574,10 +1624,28 @@ fn emit_claude_message(
     }
     if ev == "session.event" {
         let message = raw.get("message").cloned().unwrap_or(Value::Null);
-        let (subagent_events, handled) = ui.1.lock().map(|mut state| state.message_events(&message))
-            .unwrap_or_else(|_| (Vec::new(), message.get("parent_tool_use_id").is_some_and(|id| !id.is_null())));
+        let (subagent_events, handled) =
+            ui.1.lock()
+                .map(|mut state| state.message_events(&message))
+                .unwrap_or_else(|_| {
+                    (
+                        Vec::new(),
+                        message
+                            .get("parent_tool_use_id")
+                            .is_some_and(|id| !id.is_null()),
+                    )
+                });
         for (kind, data) in subagent_events {
-            emit_scoped(events, "claude", session_id, native_id.as_deref(), turn_id, kind, data, worker_token);
+            emit_scoped(
+                events,
+                "claude",
+                session_id,
+                native_id.as_deref(),
+                turn_id,
+                kind,
+                data,
+                worker_token,
+            );
         }
         if handled {
             return;
@@ -1592,9 +1660,18 @@ fn emit_claude_message(
         } else {
             "chat.item"
         };
-        let data = text
+        let mut data = text
             .map(|text| json!({"part":{"type":"text","text":text},"raw":raw}))
             .unwrap_or_else(|| json!({"raw":raw}));
+        let fork_anchor = claude_reply_fork_anchor(&message, native_id.as_deref());
+        // Streamed replies already occupy the operation's projection item. A
+        // final SDK assistant snapshot updates that item's opaque fork anchor
+        // without introducing a duplicate text item.
+        if text.is_none() && raw.get("streamed").and_then(Value::as_bool) != Some(false) {
+            if let Some(anchor) = fork_anchor.as_ref() {
+                data["forkAnchor"] = anchor.clone();
+            }
+        }
         emit_scoped(
             events,
             "claude",
@@ -1610,7 +1687,12 @@ fn emit_claude_message(
             // tool blocks. Never turn their text blocks into a second copy of
             // the already-streamed answer; merge each tool by its native id.
             for (tool_id, part) in claude_message_tool_parts(&message) {
-                if ui.1.lock().ok().is_some_and(|state| state.agents.contains_key(&tool_id)) {
+                if ui
+                    .1
+                    .lock()
+                    .ok()
+                    .is_some_and(|state| state.agents.contains_key(&tool_id))
+                {
                     continue;
                 }
                 emit_scoped(
@@ -1637,6 +1719,10 @@ fn emit_claude_message(
                 );
             }
             if let Some((item_id, text)) = claude_unstreamed_text(&raw, &message) {
+                let mut data = json!({"item":{"id":item_id},"part":{"type":"text","text":text,"status":"complete"}});
+                if let Some(anchor) = fork_anchor {
+                    data["forkAnchor"] = anchor;
+                }
                 emit_scoped(
                     events,
                     "claude",
@@ -1644,7 +1730,7 @@ fn emit_claude_message(
                     native_id.as_deref(),
                     turn_id,
                     "chat.item",
-                    json!({"item":{"id":item_id},"part":{"type":"text","text":text,"status":"complete"}}),
+                    data,
                     worker_token,
                 );
             }
@@ -1666,6 +1752,21 @@ fn emit_claude_message(
 /// Text the CLI produced without streaming it: local command output (`/context`,
 /// `/compact`'s "Compacted") and synthetic assistant messages. Streamed answers
 /// already arrived as deltas and are never repeated. Only kept inside a turn.
+fn claude_reply_fork_anchor(message: &Value, native_id: Option<&str>) -> Option<Value> {
+    if message.get("type").and_then(Value::as_str) != Some("assistant")
+        || message
+            .get("parent_tool_use_id")
+            .is_some_and(|value| !value.is_null())
+    {
+        return None;
+    }
+    let message_id = message
+        .get("uuid")
+        .and_then(Value::as_str)
+        .or_else(|| message.pointer("/message/id").and_then(Value::as_str))?;
+    Some(json!({"nativeId":native_id?,"messageId":message_id}))
+}
+
 fn claude_unstreamed_text(raw: &Value, message: &Value) -> Option<(String, String)> {
     raw.get("operationId").and_then(Value::as_str)?;
     let item_id = message
@@ -1725,10 +1826,7 @@ fn claude_plan_data(message: &Value) -> Option<Value> {
     let content = message
         .pointer("/message/content")
         .and_then(Value::as_array)?;
-    content
-        .iter()
-        .rev()
-        .find_map(claude_block_plan_data)
+    content.iter().rev().find_map(claude_block_plan_data)
 }
 
 fn claude_block_plan_data(block: &Value) -> Option<Value> {
@@ -1762,7 +1860,8 @@ fn claude_message_tool_parts(message: &Value) -> Vec<(String, Value)> {
         .take(64)
         .filter_map(|block| {
             let kind = block.get("type")?.as_str()?;
-            if kind == "tool_use" && claude_agent_tool(block)
+            if kind == "tool_use"
+                && claude_agent_tool(block)
                 && message.get("parent_tool_use_id").is_none_or(Value::is_null)
             {
                 return None;
@@ -1822,7 +1921,7 @@ fn claude_history_item(row: Value) -> Option<Value> {
     Some(item)
 }
 
-fn claude_transcript(raw: &[Value]) -> Vec<Value> {
+fn claude_transcript(raw: &[Value], source_native_id: Option<&str>) -> Vec<Value> {
     let agents: HashSet<&str> = raw.iter().filter_map(|entry| entry.pointer("/message/content").and_then(Value::as_array))
         .flatten().filter(|block| block.get("type").and_then(Value::as_str)==Some("tool_use") && claude_agent_tool(block))
         .filter_map(|block| block.get("id").and_then(Value::as_str)).collect();
@@ -1871,7 +1970,23 @@ fn claude_transcript(raw: &[Value]) -> Vec<Value> {
                 None => Vec::new(),
             }
         }).collect::<Vec<_>>()).unwrap_or_default();
-        Some(json!({"id":entry.get("uuid").and_then(Value::as_str).map(ToOwned::to_owned).unwrap_or_else(|| format!("claude-{index}")),"role":role,"parts":parts,"createdAt":Utc::now().to_rfc3339()}))
+        let message_id = entry.get("uuid").and_then(Value::as_str)
+            .or_else(|| entry.pointer("/message/id").and_then(Value::as_str));
+        let mut item = json!({"id":message_id.map(ToOwned::to_owned).unwrap_or_else(|| format!("claude-{index}")),"role":role,"parts":parts,"createdAt":Utc::now().to_rfc3339()});
+        if role == "assistant" {
+            if let (Some(native_id), Some(message_id)) = (source_native_id, message_id) {
+                item["forkAnchor"] = json!({"nativeId":native_id,"messageId":message_id});
+            }
+            // History has no separate turn-completed event. Only the SDK's
+            // terminal end_turn reason proves this saved assistant reply is a
+            // valid point-fork boundary; do not infer it from persistence.
+            if claude_history_turn_status(message.get("stop_reason").and_then(Value::as_str))
+                .is_some()
+            {
+                item["turnStatus"] = json!("completed");
+            }
+        }
+        Some(item)
     }).collect();
     // TodoWrite snapshots are full replacements. Retain the last snapshot by
     // turn-specific ID, including multiple TodoWrite blocks in one message.
@@ -1898,6 +2013,10 @@ fn claude_transcript(raw: &[Value]) -> Vec<Value> {
         transcript[index]["parts"] = json!(retained);
     }
     transcript
+}
+
+fn claude_history_turn_status(stop_reason: Option<&str>) -> Option<&'static str> {
+    matches!(stop_reason, Some("end_turn")).then_some("completed")
 }
 
 #[cfg(test)]
@@ -1931,13 +2050,73 @@ mod tests {
             "../../tests/fixtures/repair-native-history.json"
         ))
         .unwrap();
-        let items = claude_transcript(fixture["claude"].as_array().unwrap());
+        let items = claude_transcript(fixture["claude"].as_array().unwrap(), None);
         assert_eq!(
             items
                 .iter()
                 .map(|item| item["id"].as_str().unwrap())
                 .collect::<Vec<_>>(),
             vec!["repair-claude-user", "repair-claude-assistant"]
+        );
+    }
+
+    #[test]
+    fn claude_history_reply_carries_the_sdk_message_uuid_fork_anchor() {
+        let transcript = claude_transcript(
+            &[json!({
+                "type":"assistant","uuid":"reply-uuid","message":{"stop_reason":"end_turn","content":[{"type":"text","text":"done"}]}
+            })],
+            Some("session-source"),
+        );
+        assert_eq!(
+            transcript[0]["forkAnchor"],
+            json!({"nativeId":"session-source","messageId":"reply-uuid"})
+        );
+        assert_eq!(transcript[0]["turnStatus"], "completed");
+    }
+
+    #[test]
+    fn claude_history_does_not_infer_completion_without_a_terminal_stop_reason() {
+        let transcript = claude_transcript(
+            &[json!({
+                "type":"assistant","uuid":"reply-uuid","message":{"content":[{"type":"text","text":"done"}]}
+            })],
+            Some("session-source"),
+        );
+        assert!(transcript[0].get("turnStatus").is_none());
+    }
+
+    #[test]
+    fn claude_live_reply_anchor_uses_uuid_without_text_matching() {
+        assert_eq!(
+            claude_reply_fork_anchor(
+                &json!({"type":"assistant","uuid":"reply-uuid","message":{"content":[]}}),
+                Some("session-source")
+            ),
+            Some(json!({"nativeId":"session-source","messageId":"reply-uuid"}))
+        );
+        assert!(claude_reply_fork_anchor(
+            &json!({"type":"user","uuid":"user-uuid"}),
+            Some("session-source")
+        )
+        .is_none());
+    }
+
+    #[test]
+    fn claude_fork_request_uses_the_uuid_boundary_and_omits_it_for_full_history() {
+        let anchor = NativeForkAnchor {
+            native_id: "session-source".into(),
+            turn_id: None,
+            message_id: Some("reply-uuid".into()),
+            entry_id: None,
+        };
+        assert_eq!(
+            claude_fork_params("D:/repo", "session-source", Some(&anchor)),
+            json!({"sessionId":"session-source","cwd":"D:/repo","messageId":"reply-uuid"})
+        );
+        assert_eq!(
+            claude_fork_params("D:/repo", "session-source", None),
+            json!({"sessionId":"session-source","cwd":"D:/repo"})
         );
     }
 
@@ -2000,13 +2179,34 @@ mod tests {
     }
 
     #[test]
+    fn streamed_claude_reply_final_snapshot_updates_only_the_fork_anchor() {
+        let mut replay = SubagentReplay::new();
+        let events = replay.message(json!({
+            "type":"assistant",
+            "uuid":"reply-uuid",
+            "message":{"content":[{"type":"text","text":"done"}]}
+        }));
+        let anchor_event = events
+            .iter()
+            .find(|event| event.kind == "chat.item" && event.data.get("forkAnchor").is_some())
+            .expect("final assistant snapshot should preserve its native fork anchor");
+        assert_eq!(
+            anchor_event.data["forkAnchor"],
+            json!({"nativeId":"native","messageId":"reply-uuid"})
+        );
+        assert!(anchor_event.data.get("part").is_none());
+    }
+
+    #[test]
     fn todowrite_projects_a_plan_part_alongside_its_tool() {
         let mut replay = SubagentReplay::new();
-        let all = replay.message(json!({"type":"assistant","parent_tool_use_id":null,"message":{"content":[
-            {"type":"tool_use","id":"todo-1","name":"TodoWrite","input":{"todos":[
-                {"content":"Read","status":"completed","activeForm":"Reading"},
-                {"content":"Edit","status":"in_progress","activeForm":"Editing"}]}}
-        ]}}));
+        let all = replay.message(
+            json!({"type":"assistant","parent_tool_use_id":null,"message":{"content":[
+                {"type":"tool_use","id":"todo-1","name":"TodoWrite","input":{"todos":[
+                    {"content":"Read","status":"completed","activeForm":"Reading"},
+                    {"content":"Edit","status":"in_progress","activeForm":"Editing"}]}}
+            ]}}),
+        );
         let items: Vec<_> = all
             .iter()
             .filter(|event| event.kind == "chat.item")
@@ -2019,15 +2219,24 @@ mod tests {
             .find(|event| event.data["part"]["type"] == "plan")
             .expect("plan part");
         assert_eq!(plan.data["part"]["toolId"], "plan:turn");
-        assert_eq!(plan.data["part"]["data"]["entries"][0]["status"], "completed");
-        assert_eq!(plan.data["part"]["data"]["entries"][1]["status"], "in_progress");
+        assert_eq!(
+            plan.data["part"]["data"]["entries"][0]["status"],
+            "completed"
+        );
+        assert_eq!(
+            plan.data["part"]["data"]["entries"][1]["status"],
+            "in_progress"
+        );
     }
 
     #[test]
     fn claude_history_derives_plan_parts() {
-        let transcript = claude_transcript(&[json!({"type":"assistant","uuid":"u1","message":{"content":[
-            {"type":"tool_use","id":"todo-1","name":"TodoWrite","input":{"todos":[{"content":"One","status":"pending"}]}}
-        ]}})]);
+        let transcript = claude_transcript(
+            &[json!({"type":"assistant","uuid":"u1","message":{"content":[
+                {"type":"tool_use","id":"todo-1","name":"TodoWrite","input":{"todos":[{"content":"One","status":"pending"}]}}
+            ]}})],
+            None,
+        );
         let parts = transcript[0]["parts"].as_array().unwrap();
         assert!(parts.iter().any(|part| part["type"] == "plan"));
         assert!(parts.iter().any(|part| part["type"] == "tool"));
@@ -2410,16 +2619,18 @@ mod tests {
             "streamed":false,
             "message":{"type":"assistant", "uuid":"shared", "message":{"content":[{"type":"text","text":"parent text"}]}}
         }));
-        assert!(parent.iter().any(|event| {
-            event.kind == "chat.item" && event.data["item"]["id"] == "shared"
-        }));
+        assert!(parent
+            .iter()
+            .any(|event| { event.kind == "chat.item" && event.data["item"]["id"] == "shared" }));
 
         // A different sidecar card is a foreign session: it cannot end or
         // otherwise mutate this chat's bound native session.
-        assert!(replay.raw(json!({
-            "ev":"session.status", "cardId":"other", "sessionId":"foreign",
-            "operationId":"foreign-turn", "phase":"idle"
-        })).is_empty());
+        assert!(replay
+            .raw(json!({
+                "ev":"session.status", "cardId":"other", "sessionId":"foreign",
+                "operationId":"foreign-turn", "phase":"idle"
+            }))
+            .is_empty());
         assert_eq!(replay.native.lock().unwrap().as_deref(), Some("native"));
 
         let completed = replay.raw(json!({
@@ -2427,7 +2638,10 @@ mod tests {
             "operationId":"turn", "phase":"idle", "status":"completed"
         }));
         assert_eq!(
-            completed.iter().filter(|event| event.kind == "chat.turn.completed").count(),
+            completed
+                .iter()
+                .filter(|event| event.kind == "chat.turn.completed")
+                .count(),
             1
         );
     }
@@ -2490,14 +2704,17 @@ mod tests {
     #[test]
     fn history_agent_and_task_spawns_have_static_subagent_parts() {
         for name in ["Agent", "Task"] {
-            let items = claude_transcript(&[
-                json!({"type":"assistant","uuid":"spawn","message":{"content":[
-                    {"type":"tool_use","id":"agent","name":name,"input":{"description":"Old task"}},
-                    {"type":"tool_use","id":"read","name":"Read","input":{}}
-                ]}}),
-                json!({"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"agent","content":"done"}]}}),
-                json!({"type":"assistant","parent_tool_use_id":"agent","message":{"content":[{"type":"text","text":"child"}]}}),
-            ]);
+            let items = claude_transcript(
+                &[
+                    json!({"type":"assistant","uuid":"spawn","message":{"content":[
+                        {"type":"tool_use","id":"agent","name":name,"input":{"description":"Old task"}},
+                        {"type":"tool_use","id":"read","name":"Read","input":{}}
+                    ]}}),
+                    json!({"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"agent","content":"done"}]}}),
+                    json!({"type":"assistant","parent_tool_use_id":"agent","message":{"content":[{"type":"text","text":"child"}]}}),
+                ],
+                None,
+            );
             let part = &items[0]["parts"][0];
             assert_eq!(part["type"], "subagent");
             assert_eq!(part["toolId"], "agent");
@@ -2645,14 +2862,17 @@ mod tests {
         assert_eq!(all[4].data["part"]["status"], "failed");
         assert_eq!(all[4].data["part"]["toolId"], "toolu_1");
         assert_eq!(all[4].worker_token.as_deref(), Some("worker"));
-        let history = claude_transcript(&[
-            json!({"type":"assistant","message":{"content":[
-                {"type":"tool_use","id":"toolu_h","name":"Read","input":{"path":"history.rs"}}
-            ]}}),
-            json!({"type":"user","message":{"content":[
-                {"type":"tool_result","tool_use_id":"toolu_h","is_error":true,"content":[{"file_path":"failed.rs"}]}
-            ]}}),
-        ]);
+        let history = claude_transcript(
+            &[
+                json!({"type":"assistant","message":{"content":[
+                    {"type":"tool_use","id":"toolu_h","name":"Read","input":{"path":"history.rs"}}
+                ]}}),
+                json!({"type":"user","message":{"content":[
+                    {"type":"tool_result","tool_use_id":"toolu_h","is_error":true,"content":[{"file_path":"failed.rs"}]}
+                ]}}),
+            ],
+            None,
+        );
         assert_eq!(
             history[0]["parts"][0]["fileReferences"][0]["path"],
             "history.rs"
@@ -2697,9 +2917,12 @@ mod tests {
     #[test]
     fn extracts_text_blocks() {
         assert_eq!(
-            claude_transcript(&[
-                json!({"type":"assistant","uuid":"m1","message":{"content":[{"type":"text","text":"ok"}]}})
-            ])[0]["parts"][0]["text"],
+            claude_transcript(
+                &[
+                    json!({"type":"assistant","uuid":"m1","message":{"content":[{"type":"text","text":"ok"}]}})
+                ],
+                None
+            )[0]["parts"][0]["text"],
             "ok"
         );
     }
@@ -3071,7 +3294,10 @@ createInterface({{ input: process.stdin, crlfDelay: Infinity }}).on('line', line
         let mut resolved = Vec::new();
         let mut second_question_seen = false;
         while std::time::Instant::now() < deadline
-            && (decisions.is_empty() || answers.is_empty() || resolved.len() < 2 || !second_question_seen)
+            && (decisions.is_empty()
+                || answers.is_empty()
+                || resolved.len() < 2
+                || !second_question_seen)
         {
             while let Ok(event) = receiver.try_recv() {
                 if let Some(decision) = event.data.pointer("/raw/decision").and_then(Value::as_str)
@@ -3127,7 +3353,10 @@ createInterface({{ input: process.stdin, crlfDelay: Infinity }}).on('line', line
             .code,
             "approval_not_pending"
         );
-        assert!(receiver.try_recv().is_err(), "a duplicate answer must not reach the host");
+        assert!(
+            receiver.try_recv().is_err(),
+            "a duplicate answer must not reach the host"
+        );
         chat.answer(
             "turn-2",
             "card-options-question-2",

@@ -237,7 +237,7 @@ fn record_tx(
   let key=if category=="approval"{approval_id.unwrap_or(turn_key)}else{native_item.unwrap_or(turn_key)};
   let id=format!("{session_id}:{category}:{key}");
   let previous:Option<String>=tx.query_row("SELECT data FROM chat_items WHERE id=?",[&id],|r|r.get(0)).optional()?;
-  let mut item=previous.and_then(|s|serde_json::from_str::<ChatItem>(&s).ok()).unwrap_or(ChatItem{id:id.clone(),role:if category=="user"{"user"}else{"assistant"}.into(),parts:Vec::new(),created_at:now.clone(),turn_id:turn.map(str::to_owned),elapsed_ms:None,turn_status:None,turn_origin:None});
+  let mut item=previous.and_then(|s|serde_json::from_str::<ChatItem>(&s).ok()).unwrap_or(ChatItem{id:id.clone(),role:if category=="user"{"user"}else{"assistant"}.into(),parts:Vec::new(),created_at:now.clone(),turn_id:turn.map(str::to_owned),elapsed_ms:None,turn_status:None,turn_origin:None,fork_anchor:None});
   let mut changed=false;
   let mut resolved_pending_approval=false;
   // Agent delegation: while the parent agent is inside a turn, a delegated
@@ -343,6 +343,9 @@ fn record_tx(
     }
    }
    "chat.turn.completed"=>{
+    let completion=completed_turn_status(data);
+    item.turn_status=Some(completion);changed=true;
+    if let Some(turn)=turn {stamp_turn_status(tx,session_id,turn,&id,completion,&now)?;}
     expire_pending_parts_for_turn(tx,session_id,turn,&now)?;
     complete_streaming_items(tx,session_id,&now)?;
     // Adapters that time their turns carry elapsedMs; other providers omit it.
@@ -353,7 +356,7 @@ fn record_tx(
     // Reply notices are already-read and excluded from snapshot Inbox rows.
     if !quiet {notify_reply(tx,session_id,turn,data,&now)?;}
    }
-   "chat.error"=>{item.parts.push(json!({"type":"error","text":data.get("message").and_then(Value::as_str).unwrap_or("Provider request failed"),"data":data}));changed=true;if !quiet {insert_attention(tx,&format!("{session_id}:error:{turn_key}"),session_id,turn,"error",data,&now)?;}}
+   "chat.error"=>{item.turn_status=Some(crate::domain::NativeTurnStatus::Failed);item.parts.push(json!({"type":"error","text":data.get("message").and_then(Value::as_str).unwrap_or("Provider request failed"),"data":data}));changed=true;if !quiet {insert_attention(tx,&format!("{session_id}:error:{turn_key}"),session_id,turn,"error",data,&now)?;}}
    "chat.ui"=>{
     let mut payload=normalize_chat_ui(data.clone());
     payload["sessionId"]=json!(session_id);
@@ -374,6 +377,24 @@ fn record_tx(
     return Ok(());
    }
    _=>{}
+  }
+  // Adapters may attach a provider-native fork coordinate to the item they
+  // are currently projecting. Never persist an anchor for another native
+  // conversation, even if a malformed or stale provider event supplies one.
+  let anchor=data.get("forkAnchor")
+   .or_else(||data.pointer("/part/forkAnchor"))
+   .or_else(||raw_item.and_then(|raw|raw.get("forkAnchor")));
+  if item.role=="assistant" {
+   if let Some(anchor)=anchor.and_then(|value|serde_json::from_value::<crate::domain::NativeForkAnchor>(value.clone()).ok()) {
+    let bound:Option<String>=tx.query_row("SELECT native_id FROM sessions WHERE id=?",[session_id],|row|row.get(0)).optional()?.flatten();
+    if bound.as_deref()==Some(anchor.native_id.as_str()) {item.fork_anchor=Some(anchor);changed=true;}
+   }
+  }
+  if kind=="chat.turn.completed" && item.role=="assistant" && item.turn_status==Some(crate::domain::NativeTurnStatus::Completed) && item.fork_anchor.is_none() {
+   let native_id:Option<String>=tx.query_row("SELECT native_id FROM sessions WHERE id=?",[session_id],|row|row.get(0))?;
+   if let Some(native_id)=native_id.filter(|value|!value.is_empty()) {
+    item.fork_anchor=Some(crate::domain::NativeForkAnchor {native_id,turn_id:None,message_id:None,entry_id:None});changed=true;
+   }
   }
   if changed {
    let payload=serde_json::to_string(&item)?;
@@ -405,6 +426,52 @@ fn record_tx(
   }
   if status.is_some()||usage.is_some() {tx.execute("INSERT INTO outbox(event,data,created_at) VALUES ('state.changed',?,?)",params![serde_json::to_string(&json!({"sessionId":session_id,"kind":kind}))?,now])?;}
   Ok(())
+}
+
+fn completed_turn_status(data: &Value) -> crate::domain::NativeTurnStatus {
+ use crate::domain::NativeTurnStatus;
+ if data.get("cancelled").and_then(Value::as_bool)==Some(true)
+  || data.get("canceled").and_then(Value::as_bool)==Some(true) {
+  return NativeTurnStatus::Interrupted;
+ }
+ let status=data.get("status")
+  .or_else(||data.get("turnStatus"))
+  .or_else(||data.pointer("/result/stopReason"))
+  .or_else(||data.pointer("/raw/params/turn/status"))
+  .or_else(||data.pointer("/raw/params/status"))
+  .and_then(Value::as_str)
+  .unwrap_or("")
+  .to_ascii_lowercase();
+ match status.as_str() {
+  "cancelled"|"canceled"|"interrupted"|"stopped"|"killed"|"aborted"=>NativeTurnStatus::Interrupted,
+  "failed"|"error"=>NativeTurnStatus::Failed,
+  "unknown"=>NativeTurnStatus::Unknown,
+  "inprogress"|"in_progress"|"running"=>NativeTurnStatus::InProgress,
+  _=>NativeTurnStatus::Completed,
+ }
+}
+
+fn stamp_turn_status(
+ tx:&rusqlite::Transaction<'_>,session_id:&str,turn_id:&str,exclude_id:&str,
+ status:crate::domain::NativeTurnStatus,now:&str,
+)->Result<()> {
+ let native_id:Option<String>=tx.query_row("SELECT native_id FROM sessions WHERE id=?",[session_id],|row|row.get(0))?;
+ let rows=tx.prepare("SELECT id,data FROM chat_items WHERE session_id=? AND turn_id=? AND id<>?")?
+  .query_map(params![session_id,turn_id,exclude_id],|row|Ok((row.get::<_,String>(0)?,row.get::<_,String>(1)?)))?
+  .collect::<rusqlite::Result<Vec<_>>>()?;
+ for (id,data) in rows {
+  let Ok(mut item)=serde_json::from_str::<ChatItem>(&data) else {continue};
+  if item.role!="assistant" {continue;}
+  item.turn_status=Some(status);
+  if status==crate::domain::NativeTurnStatus::Completed && item.fork_anchor.is_none() {
+   if let Some(native_id)=native_id.as_ref().filter(|value|!value.is_empty()) {
+    item.fork_anchor=Some(crate::domain::NativeForkAnchor {native_id:native_id.clone(),turn_id:None,message_id:None,entry_id:None});
+   }
+  }
+  tx.execute("UPDATE chat_items SET data=? WHERE id=?",params![serde_json::to_string(&item)?,id])?;
+  tx.execute("INSERT INTO outbox(event,data,created_at) VALUES ('chat.item',?,?)",params![serde_json::to_string(&json!({"sessionId":session_id,"item":item}))?,now])?;
+ }
+ Ok(())
 }
 
 fn terminal_subagent_status(status: &str) -> bool {
@@ -504,6 +571,7 @@ fn record_subagent(
         elapsed_ms: None,
         turn_status: None,
         turn_origin: None,
+            fork_anchor: None,
     });
     let mut info = card.parts.first().and_then(|part| part.get("data")).filter(|v| v.is_object()).cloned()
         .unwrap_or_else(|| json!({"key":key,"provider":provider,"status":"running","transcript":"live","startedAt":now}));
@@ -535,6 +603,7 @@ fn record_subagent(
             elapsed_ms: None,
             turn_status: None,
             turn_origin: None,
+            fork_anchor: None,
         };
         let rev = crate::db::upsert_subagent_item(
             tx,
@@ -946,6 +1015,29 @@ fn expire_pending_parts_matching(
 mod tests {
     use super::*;
 
+    #[test]
+    fn completion_status_rejects_cancelled_failed_and_unknown_turns() {
+        use crate::domain::NativeTurnStatus;
+        assert_eq!(completed_turn_status(&json!({})), NativeTurnStatus::Completed);
+        assert_eq!(completed_turn_status(&json!({"cancelled":true})), NativeTurnStatus::Interrupted);
+        assert_eq!(completed_turn_status(&json!({"result":{"stopReason":"cancelled"}})), NativeTurnStatus::Interrupted);
+        assert_eq!(completed_turn_status(&json!({"raw":{"params":{"turn":{"status":"failed"}}}})), NativeTurnStatus::Failed);
+        assert_eq!(completed_turn_status(&json!({"status":"unknown"})), NativeTurnStatus::Unknown);
+    }
+
+    #[test]
+    fn completion_stamps_every_assistant_row_in_the_turn() {
+        use crate::domain::NativeTurnStatus;
+        let db=db();
+        let item=ChatItem {id:"reply".into(),role:"assistant".into(),parts:vec![json!({"type":"text","text":"reply"})],created_at:"now".into(),turn_id:Some("turn".into()),elapsed_ms:None,turn_status:None,turn_origin:None,fork_anchor:None};
+        db.transaction(|tx| {
+            tx.execute("INSERT INTO chat_items(id,session_id,turn_id,kind,data,created_at) VALUES ('reply','s','turn','message',?,'now')",[serde_json::to_string(&item)?])?;
+            stamp_turn_status(tx,"s","turn","boundary",NativeTurnStatus::Completed,"later")
+        }).unwrap();
+        let stored=db.chat_items("s").unwrap().into_iter().find(|item|item.id=="reply").unwrap();
+        assert_eq!(stored.turn_status,Some(NativeTurnStatus::Completed));
+    }
+
     fn subagent_info(db: &Database) -> Value {
         db.subagent_card("s", "child").unwrap().unwrap().parts[0]["data"].clone()
     }
@@ -1228,6 +1320,7 @@ mod tests {
                 elapsed_ms: None,
                 turn_status: None,
                 turn_origin: None,
+            fork_anchor: None,
             };
             assert_eq!(subagent_activity_label(&item), expected);
         }

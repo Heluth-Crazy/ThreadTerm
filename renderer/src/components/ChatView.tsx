@@ -33,6 +33,9 @@ import { useChatContextUsage } from '../useChatContextUsage';
 import { ChatConnectionChip } from './ChatConnectionChip';
 import { parseMarkdownFileReference } from '../fileReferences';
 import { SessionSurfaceContext } from './SessionSurfaceContext';
+import { ChatForkButton, ChatForkMenu, ChatForkStatus, useChatFork } from './ChatForkControls';
+import { decodeCopiedConversationDraft } from '../chatForkDraft';
+import { isCompletedForkReply } from '../chatFork';
 import { CatalogPopover } from './CatalogActions';
 import { isWebTabUrl } from '../workspaceTabs';
 import { registerChatInputTarget } from '../terminalInputTargets';
@@ -410,6 +413,9 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession }
   const [historyFailed, setHistoryFailed] = useState(false);
   const [historyIssue, setHistoryIssue] = useState<string>();
   const context = useChatContext(session.id, zh, setError);
+  const contextRef = useRef(context); contextRef.current = context;
+  const forkActions = useChatFork(session, Boolean(activeTurnId(items, session.status)) || Boolean(firstResponseWait) || busy, zh, setError);
+  const forkActionsRef = useRef(forkActions); forkActionsRef.current = forkActions;
   const [link, setLink] = useState(() => emptyLink(session.id, "disconnected"));
   const connection = link.connection;
   const contextUsage = useChatContextUsage(session.id);
@@ -449,7 +455,7 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession }
   }
   function persistCompose(value:string,_epoch:number) {
     if (!writer.current) return Promise.reject(new Error('Draft is not loaded'));
-    return writer.current.write(value).then(() => {
+    return writer.current.write(contextRef.current.persistedDraft(value)).then(() => {
       if (currentText.current === value) {
         try { localStorage.removeItem(recoveryKey); } catch { /* Runtime copy is durable. */ }
       }
@@ -491,7 +497,7 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession }
     const epoch = leaseSessionId.current === session.id ? lease.current : undefined; if (!canControl || epoch === undefined) return;
     try {
       const remote = await request('chat.draft.read', {sessionId: session.id});
-      if (remote.text !== lastSaved.current && remote.text !== currentText.current && !confirm(copy('The saved draft changed in another view. Replace it with this text?', '其他视图更改了已保存的草稿。用此处内容替换吗？'))) return;
+      if (remote.text !== lastSaved.current && remote.text !== contextRef.current.persistedDraft(currentText.current) && !confirm(copy('The saved draft changed in another view. Replace it with this text?', '其他视图更改了已保存的草稿。用此处内容替换吗？'))) return;
       await writer.current?.reset(remote);
       await persistCompose(currentText.current, epoch);
       setDraftFailed(false); setError(undefined); setDraftNotice(copy('Draft saved', '草稿已保存'));
@@ -565,6 +571,14 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession }
     const unsubscribe = subscribeEvents(event => {
       if (disposed || !event.data || typeof event.data !== 'object') return;
       const data = event.data as { sessionId?: string; item?: ChatItem; reason?: string };
+      if (event.event === 'chat.forked' && data.sessionId === session.id) {
+        const forked = event.data as {operationId?: string; session?: Session; mode?: 'native' | 'copy'};
+        if (forked.operationId === firstResponseWaitRef.current?.token && forked.session && (forked.mode === 'native' || forked.mode === 'copy')) {
+          clearFirstResponseWait(forked.operationId);
+          forkActionsRef.current.accept(forked.session, forked.mode);
+        }
+        return;
+      }
       if (event.event === 'runtime.degraded' && (!data.sessionId || data.sessionId === session.id)) {
         if (!data.sessionId) { ingressWasFailed = true; setIngressFailed(true); }
         integrityError = data.reason ?? 'Chat updates are incomplete.';
@@ -640,8 +654,11 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession }
     // Reading does not require the write lease: other windows remain viewers.
     void request('chat.draft.read',{sessionId:session.id}).then(draft=>{
       if(disposed)return;draftRevision.current=draft.revision;lastSaved.current=draft.text;draftReady.current=true;initializeWriter(draft,sessionLifecycle);setDraftLoaded(true);
-      if (!currentText.current) { setText(draft.text); currentText.current=draft.text; }
-      try { const local = localStorage.getItem(recoveryKey); if (local !== null && local !== draft.text && local !== currentText.current) setRecovery(local); } catch { /* Runtime draft is still available. */ }
+      const decoded = decodeCopiedConversationDraft(draft.text);
+      if (decoded) contextRef.current.restoreCopiedConversation(draft.text);
+      const value = decoded?.text ?? draft.text;
+      if (!currentText.current) { setText(value); currentText.current=value; }
+      try { const local = localStorage.getItem(recoveryKey); if (local !== null && local !== value && local !== currentText.current) setRecovery(local); } catch { /* Runtime draft is still available. */ }
     }).catch(caught=>{if(!disposed){setError(`Draft could not be loaded: ${String(caught)}`);setDraftFailed(true);setDraftLoaded(true);}});
     discoverHistoryRef.current = () => {
       const generation = ++historyGeneration.current;
@@ -665,7 +682,7 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession }
       const draftWriter = sessionLifecycle.writer;
       const value = currentText.current;
       if (draftReady.current && control?.valid && draftWriter) {
-        sessionLifecycle.flushOnExit = draftWriter.write(value).then(() => {
+        sessionLifecycle.flushOnExit = draftWriter.write(contextRef.current.persistedDraft(value)).then(() => {
           try { if (localStorage.getItem(recoveryKey) === value) localStorage.removeItem(recoveryKey); } catch { /* The runtime copy is durable. */ }
         }).catch(() => undefined);
       }
@@ -817,9 +834,15 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession }
     const epoch=lease.current;
     const timer=setTimeout(()=>{setDraftNotice(copy('Saving draft…','正在保存草稿…'));void persistCompose(text,epoch).then(()=>setDraftNotice(copy('Draft saved','草稿已保存'))).catch(caught=>{setDraftFailed(true);setDraftNotice(copy('Draft not saved','草稿未保存'));setError(String(caught));});},400);
     return()=>clearTimeout(timer);
-  },[text,writable,recovery,draftFailed]);
+  },[text,writable,recovery,draftFailed,context.items]);
   async function submit(event: FormEvent) {
     event.preventDefault();let value:string;
+    if(text.trim()==='/fork' && !images.length && !context.items.length){
+      if(forkActions.disabledReason){setError(forkActions.disabledReason);return;}
+      const child=await forkActions.fork();
+      if(child){changeText('');const epoch=lease.current;if(epoch!==undefined)void persistCompose('',epoch).catch(caught=>setError(String(caught)));}
+      return;
+    }
     try { value=context.serialize(text.trim()); } catch(caught) { setError(contextError(caught,zh)); return; }
     const epoch=leaseSessionId.current === session.id ? lease.current : undefined;
     const queueing = queueComposerMode(Boolean(activeTurnId(itemsRef.current, session.status)), queue);
@@ -1011,6 +1034,11 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession }
   }, [items, text, firstResponseWait]);
   function applySlash(command: ChatSlashCommand) {
     if (command.name === "stop" && liveTurn) { void cancel(liveTurn); changeText(""); return; }
+    if(command.name.replace(/^\//,'')==='fork'){
+      if(forkActions.disabledReason)setError(forkActions.disabledReason);
+      else void forkActions.fork().then(child=>{if(child)changeText('');});
+      return;
+    }
     changeText(`/${command.name.replace(/^\//, "")} `);
     composeRef.current?.focus();
   }
@@ -1103,7 +1131,7 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession }
           {part.status && !foldedTool && part.type !== 'text' && part.status !== 'complete' && part.status !== 'streaming' && <small>{part.status}</small>}
         </div>;
       })}
-      {showReplyActions && <MessageActions markdown={replyText} copy={copy} />}
+      {showReplyActions && <MessageActions markdown={replyText} copy={copy}>{isCompletedForkReply(item, items) && <ChatForkButton itemId={item.id} disabledReason={forkActions.disabledReason} busy={forkActions.busy} onFork={id => void forkActions.fork(id)} zh={zh}/>}</MessageActions>}
     </article>;
   }
   function renderTurn(group: CodexTurn) {
@@ -1149,6 +1177,8 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession }
     ];
   }
   return <FileReferenceScopeProvider sourceSessionId={session.id} canonicalRoot={session.worktreePath}><section className={`chat-view v3-session-chat${overlay === "full" ? " is-connecting" : ""}`} data-provider={session.provider} data-testid={`session-chat-${session.id}`} aria-label={copy('Structured chat', '图形聊天')}>
+    <ChatForkMenu disabledReason={forkActions.disabledReason} busy={forkActions.busy} onFork={id => void forkActions.fork(id)} zh={zh}/>
+    <ChatForkStatus session={session} zh={zh} onOpenSession={onOpenSession}/>
     {ended && <p className="chat-history-note" role="note">{copy('Session ended · history is read-only.', '会话已结束 · 历史记录只读。')}</p>}
     <DelegationPanel session={session} delegates={delegates} delegatedBy={delegatedBy} onOpenSession={onOpenSession} copy={copy} zh={zh} />
     {(connectionHeld || ((repair?.degraded || legacyHistoryReload) && !liveTurn && repair?.reason !== 'busy')) && <section className="chat-repair-banner" role="status" aria-label={legacyHistoryReload ? copy('Reload saved history', '重新加载已保存的历史') : copy('Chat history may be incomplete', '对话记录可能不完整')}>
