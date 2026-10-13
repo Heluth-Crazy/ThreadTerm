@@ -54,7 +54,7 @@ async function handle(request) {
       }
     }
     case 'session.send': get(request.cardId).send(request.text, request.operationId); return {};
-    case 'session.steer': return get(request.cardId).steer(request.text, request.operationId);
+    case 'session.steer': return get(request.cardId).steer(request.text, request.operationId, request.turnId);
     case 'session.interrupt': await get(request.cardId).interrupt(); return {};
     case 'session.decision': get(request.cardId).decide(request.requestId, request.behavior); return {};
     case 'session.plan_response': return await get(request.cardId).planResponse(request.requestId, request.action, request.feedback);
