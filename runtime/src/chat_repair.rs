@@ -663,6 +663,67 @@ pub(crate) fn validate_part(part: &Value) -> Result<()> {
             bail!("invalid_history_transcript: chat part string field has wrong type");
         }
     }
+    if object.get("type").and_then(Value::as_str) == Some("plan") {
+        if object.keys().any(|key| {
+            !matches!(
+                key.as_str(),
+                "type"
+                    | "text"
+                    | "toolName"
+                    | "toolId"
+                    | "approvalId"
+                    | "status"
+                    | "data"
+                    | "fileReferences"
+                    | "phase"
+            )
+        }) {
+            bail!("invalid_history_transcript: unsupported plan part field");
+        }
+        if object
+            .get("phase")
+            .is_some_and(|value| !matches!(value.as_str(), Some("commentary" | "final_answer")))
+        {
+            bail!("invalid_history_transcript: invalid plan phase");
+        }
+        let Some(data) = object.get("data").and_then(Value::as_object) else {
+            bail!("invalid_history_transcript: plan data must be an object");
+        };
+        let Some(entries) = data.get("entries").and_then(Value::as_array) else {
+            bail!("invalid_history_transcript: plan entries must be an array");
+        };
+        if data
+            .keys()
+            .any(|key| !matches!(key.as_str(), "entries" | "explanation"))
+        {
+            bail!("invalid_history_transcript: unsupported plan data field");
+        }
+        if data
+            .get("explanation")
+            .is_some_and(|value| !value.is_string())
+        {
+            bail!("invalid_history_transcript: plan explanation must be a string");
+        }
+        for entry in entries {
+            let Some(entry) = entry.as_object() else {
+                bail!("invalid_history_transcript: plan entry must be an object");
+            };
+            if entry
+                .keys()
+                .any(|key| !matches!(key.as_str(), "content" | "status" | "priority"))
+                || entry.get("content").and_then(Value::as_str).is_none()
+                || !matches!(
+                    entry.get("status").and_then(Value::as_str),
+                    Some("pending" | "in_progress" | "completed")
+                )
+                || entry.get("priority").is_some_and(|value| {
+                    !matches!(value.as_str(), Some("high" | "medium" | "low"))
+                })
+            {
+                bail!("invalid_history_transcript: malformed plan entry");
+            }
+        }
+    }
     if let Some(references) = object.get("fileReferences") {
         let Some(references) = references.as_array() else {
             bail!("invalid_history_transcript: fileReferences must be an array");
@@ -1505,6 +1566,35 @@ mod tests {
                     .contains("invalid_history_transcript")
             );
         }
+
+        // Plan payloads are protocol-owned. A valid empty entries array remains
+        // valid because it is the clearing marker for a previous snapshot.
+        for part in [
+            json!({"type":"plan"}),
+            json!({"type":"plan","data":{}}),
+            json!({"type":"plan","data":{"entries":{}}}),
+            json!({"type":"plan","data":{"entries":[{}]}}),
+            json!({"type":"plan","data":{"entries":[{"content":"missing status"}]}}),
+            json!({"type":"plan","data":{"entries":[{"content":"bad status","status":"started"}]}}),
+            json!({"type":"plan","data":{"entries":[{"content":"bad priority","status":"pending","priority":"urgent"}]}}),
+            json!({"type":"plan","data":{"entries":[]},"unexpected":true}),
+            json!({"type":"plan","data":{"entries":[]},"phase":"draft"}),
+            json!({"type":"plan","data":{"entries":[],"unexpected":true}}),
+            json!({"type":"plan","data":{"entries":[{"content":"unexpected field","status":"pending","extra":true}]}}),
+            json!({"type":"plan","data":{"entries":[],"explanation":false}}),
+        ] {
+            let mut item = text_item("native-plan", "assistant", "valid");
+            item.parts = vec![part];
+            assert!(
+                prepare(&capture, &[item])
+                    .unwrap_err()
+                    .to_string()
+                    .contains("invalid_history_transcript")
+            );
+        }
+        let mut empty_plan = text_item("empty-plan", "assistant", "valid");
+        empty_plan.parts = vec![json!({"type":"plan","data":{"entries":[]}})];
+        assert!(prepare(&capture, &[empty_plan]).is_ok());
 
         let mut nearly_full = text_item("native", "assistant", "");
         nearly_full.parts[0]["text"] =

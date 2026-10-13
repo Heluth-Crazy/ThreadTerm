@@ -103,7 +103,12 @@ export type ChatPlanEntryPriority = 'high'|'medium'|'low';
 /** Agent plan/todo snapshot. Lives on a `type:'plan'` part; distinct from the plan-usage card (`data.kind:'plan'` on a text part). */
 export interface ChatPlanEntry { content:string; status:ChatPlanEntryStatus; priority?:ChatPlanEntryPriority }
 export interface ChatPlanData { entries:ChatPlanEntry[]; explanation?:string }
-export interface ChatPart { type:'text'|'thinking'|'tool'|'approval'|'usage'|'error'|'status'|'subagent'|'plan'; text?:string; toolName?:string; toolId?:string; approvalId?:string; status?:string; data?:unknown; fileReferences?:FileReference[]; phase?:'commentary'|'final_answer' }
+/** The legacy, provider-defined chat part shapes. Their data remains opaque. */
+export interface ChatPartBase { type:'text'|'thinking'|'tool'|'approval'|'usage'|'error'|'status'|'subagent'; text?:string; toolName?:string; toolId?:string; approvalId?:string; status?:string; data?:unknown; fileReferences?:FileReference[]; phase?:'commentary'|'final_answer' }
+/** A plan snapshot is the one chat-part payload with a protocol-owned shape. Empty entries deliberately clear a prior plan. */
+export interface ChatPlanPart { type:'plan'; text?:string; toolName?:string; toolId?:string; approvalId?:string; status?:string; data:ChatPlanData; fileReferences?:FileReference[]; phase?:'commentary'|'final_answer' }
+/** Additive union: persisted non-plan provider rows retain their opaque data contract. */
+export type ChatPart = ChatPartBase|ChatPlanPart;
 /** Native turn outcome is independent of measured wall-clock duration. Missing status remains unknown. */
 export interface ChatItem { id:string; role:'user'|'assistant'|'system'|'tool'; parts:ChatPart[]; createdAt:string; turnId?:string; elapsedMs?:number; turnStatus?:'completed'|'interrupted'|'failed'|'inProgress'|'unknown'; turnOrigin?:'history' }
 /** Runtime-authored, on-demand availability. Integrity is durable; repair never resumes an agent or queue. */

@@ -813,6 +813,17 @@
       "description": "Native turn outcome is independent of measured wall-clock duration. Missing status remains unknown."
     },
     "ChatPart": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/ChatPartBase"
+        },
+        {
+          "$ref": "#/definitions/ChatPlanPart"
+        }
+      ],
+      "description": "Additive union: persisted non-plan provider rows retain their opaque data contract."
+    },
+    "ChatPartBase": {
       "type": "object",
       "properties": {
         "type": {
@@ -825,8 +836,7 @@
             "usage",
             "error",
             "status",
-            "subagent",
-            "plan"
+            "subagent"
           ]
         },
         "text": {
@@ -862,7 +872,8 @@
       "required": [
         "type"
       ],
-      "additionalProperties": false
+      "additionalProperties": false,
+      "description": "The legacy, provider-defined chat part shapes. Their data remains opaque."
     },
     "FileReference": {
       "type": "object",
@@ -881,6 +892,106 @@
         "path"
       ],
       "additionalProperties": false
+    },
+    "ChatPlanPart": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string",
+          "const": "plan"
+        },
+        "text": {
+          "type": "string"
+        },
+        "toolName": {
+          "type": "string"
+        },
+        "toolId": {
+          "type": "string"
+        },
+        "approvalId": {
+          "type": "string"
+        },
+        "status": {
+          "type": "string"
+        },
+        "data": {
+          "$ref": "#/definitions/ChatPlanData"
+        },
+        "fileReferences": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/FileReference"
+          }
+        },
+        "phase": {
+          "type": "string",
+          "enum": [
+            "commentary",
+            "final_answer"
+          ]
+        }
+      },
+      "required": [
+        "type",
+        "data"
+      ],
+      "additionalProperties": false,
+      "description": "A plan snapshot is the one chat-part payload with a protocol-owned shape. Empty entries deliberately clear a prior plan."
+    },
+    "ChatPlanData": {
+      "type": "object",
+      "properties": {
+        "entries": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/ChatPlanEntry"
+          }
+        },
+        "explanation": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "entries"
+      ],
+      "additionalProperties": false
+    },
+    "ChatPlanEntry": {
+      "type": "object",
+      "properties": {
+        "content": {
+          "type": "string"
+        },
+        "status": {
+          "$ref": "#/definitions/ChatPlanEntryStatus"
+        },
+        "priority": {
+          "$ref": "#/definitions/ChatPlanEntryPriority"
+        }
+      },
+      "required": [
+        "content",
+        "status"
+      ],
+      "additionalProperties": false,
+      "description": "Agent plan/todo snapshot. Lives on a `type:'plan'` part; distinct from the plan-usage card (`data.kind:'plan'` on a text part)."
+    },
+    "ChatPlanEntryStatus": {
+      "type": "string",
+      "enum": [
+        "pending",
+        "in_progress",
+        "completed"
+      ]
+    },
+    "ChatPlanEntryPriority": {
+      "type": "string",
+      "enum": [
+        "high",
+        "medium",
+        "low"
+      ]
     },
     "RequestResult<\"chat.subagent.read\">": {
       "$ref": "#/definitions/SubagentTranscriptRead"
