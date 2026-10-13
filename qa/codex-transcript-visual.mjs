@@ -28,6 +28,10 @@ window.threadterm = {onEvent: cb => {listeners.add(cb); return ()=>listeners.del
   if(method==='chat.snapshot')return {items,revision:1};
   if(method==='chat.draft.read')return {text:'',revision:0};
   if(method==='chat.options')return {options:[],commands:[]};
+  // ChatView mounts ChatNotes and ChatQueue, which read these on mount; return
+  // the real empty states so an unmocked read cannot render an error banner.
+  if(method==='chat.queue.read') return {sessionId:'qa',paused:false,items:[]};
+  if(method==='chat.feedback.read') return {notes:[]};
   throw Error('Unexpected QA request '+method);
 }};
 window.qaUpdate = item => listeners.forEach(cb => cb({event:'chat.item',seq:2,data:{sessionId:'qa',item}}));

@@ -43,6 +43,9 @@ window.threadterm = {
     if (method === 'chat.connection' || method === 'chat.connect') return { sessionId: params.sessionId, runtimeEpoch: 'e', connectionGeneration: 1, revision: 1, phase: 'ready', optionsLoadState: 'ready' };
     if (method === 'session.claim' || method === 'session.renew') return { leaseEpoch: 1 };
     if (method === 'session.release' || method === 'chat.approve') return null;
+    // ChatView mounts ChatNotes, which reads feedback on mount; return the real
+    // empty state so the unmocked read cannot render an error banner.
+    if (method === 'chat.feedback.read') return { notes: [] };
     throw new Error('Unexpected QA request ' + method);
   },
 };

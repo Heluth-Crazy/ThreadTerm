@@ -58,6 +58,9 @@ window.threadterm = {onEvent(cb){listeners.add(cb); return () => listeners.delet
   if(method==='chat.queue.read') return {sessionId:params.sessionId,paused:false,items:[]};
   if(method==='chat.options') return {options:[],commands:[]};
   if(method==='chat.subagent.read') { readCalls.push({...params}); const key=params.key; return transcripts[key] || {items:[],rev:params.afterRev || 0,truncated:false,source:'live'}; }
+  // ChatView mounts ChatNotes, which reads feedback on mount; return the real
+  // empty state so the unmocked read cannot render an error banner.
+  if(method==='chat.feedback.read') return {notes:[]};
   throw Error('Unexpected QA request '+method);
 }};
 window.qaReads = () => readCalls.slice();

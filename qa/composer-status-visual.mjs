@@ -58,6 +58,9 @@ window.threadterm = {
     if (method === 'chat.draft.read') return { text: '', revision: 0 };
     if (method === 'chat.queue.read') return { sessionId, paused: false, items: [] };
     if (method === 'chat.options') return CHAT_OPTIONS;
+    // ChatView mounts ChatNotes, which reads feedback on mount; return the real
+    // empty state so the unmocked read cannot render an error banner.
+    if (method === 'chat.feedback.read') return { notes: [] };
     throw Error('Unexpected QA request ' + method);
   },
 };
