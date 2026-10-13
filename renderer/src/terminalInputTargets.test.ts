@@ -21,6 +21,35 @@ test('new-chat focus is one-shot, waits for visible input and is cleared on clos
   visible = true; focusRequestedChatInput('focus'); focusRequestedChatInput('focus'); assert.equal(focused, 1);
   visible = false; requestChatInputFocus('focus'); cancelChatInputFocus('focus'); visible = true; focusRequestedChatInput('focus'); assert.equal(focused, 1); remove();
 });
+test('composer focus survives startup effect replay and only a final close cancels it', async () => {
+  let writable = false, focused = 0;
+  const target = { visible: () => writable, insert: () => assert.fail('focus must not insert'), focus: () => { focused++; return true; } };
+  requestChatInputFocus('replay');
+  const replayCleanup = registerChatInputTarget('replay', target);
+  replayCleanup();
+  const remove = registerChatInputTarget('replay', target);
+  await Promise.resolve(); // StrictMode's cleanup/setup completes before this boundary.
+  writable = true; focusRequestedChatInput('replay'); focusRequestedChatInput('replay'); assert.equal(focused, 1);
+  writable = false; requestChatInputFocus('replay'); remove(); await Promise.resolve();
+  writable = true; const reopen = registerChatInputTarget('replay', target);
+  focusRequestedChatInput('replay'); assert.equal(focused, 1, 'closed handoff cannot focus a later reopening'); reopen();
+});
+test('an unsuccessful DOM focus attempt stays pending until confirmed, or explicitly cancelled', () => {
+  let acceptsFocus = false, attempts = 0;
+  const remove = registerChatInputTarget('unfocused', { visible: () => true, insert: () => assert.fail(), focus: () => { attempts++; return acceptsFocus; } });
+  requestChatInputFocus('unfocused'); assert.equal(attempts, 1);
+  acceptsFocus = true; focusRequestedChatInput('unfocused'); focusRequestedChatInput('unfocused'); assert.equal(attempts, 2);
+  acceptsFocus = false; requestChatInputFocus('unfocused'); cancelChatInputFocus('unfocused');
+  acceptsFocus = true; focusRequestedChatInput('unfocused'); assert.equal(attempts, 3); remove();
+});
+test('a deferred close cannot cancel a newer handoff for the same session', async () => {
+  const remove = registerChatInputTarget('newer', { visible: () => false, insert: () => assert.fail() });
+  requestChatInputFocus('newer'); remove();
+  requestChatInputFocus('newer'); await Promise.resolve();
+  let focused = 0;
+  const reopen = registerChatInputTarget('newer', { visible: () => true, insert: () => assert.fail(), focus: () => { focused++; return true; } });
+  focusRequestedChatInput('newer'); assert.equal(focused, 1); reopen();
+});
 test('comment text and screenshots select the same visible Chat without submitting',()=>{
  const calls:string[]=[];
  const remove=registerChatInputTarget('chat',{visible:()=>true,insert:text=>calls.push(text),attachImages:images=>{calls.push(...images);return images.length;}});
