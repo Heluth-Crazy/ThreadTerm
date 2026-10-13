@@ -490,6 +490,11 @@ impl ChatSession for CodexChat {
     }
 
     fn validate_send(&self, _text: &str) -> Result<(), ProviderError> {
+        if self.ui.lock().ok().is_some_and(|state| state.pending_plan.as_ref().is_some_and(|plan| {
+            plan.action.is_none() || (plan.action.as_deref() == Some("approve") && _text != "Implement the plan.")
+        })) {
+            return Err(ProviderError::new("plan_decision_required", "Review the pending plan before sending another message"));
+        }
         self.validate_active_turn()
     }
 
@@ -602,6 +607,12 @@ impl ChatSession for CodexChat {
 
     fn cancel(&mut self, turn_id: &str) -> Result<(), ProviderError> {
         validate_native_id(turn_id)?;
+        let plan = self.ui.lock().ok().and_then(|mut state| {
+            if state.pending_plan.as_ref().is_some_and(|plan| plan.turn_id == turn_id) { state.pending_plan.take() } else { None }
+        });
+        if let Some(plan) = plan {
+            self.resolve_plan(&plan, None, None, true);
+        }
         let native_turn_id = wait_for_codex_native_turn(&self.active_turn, turn_id)?;
         let Some(native_turn_id) = native_turn_id else {
             // Completion can win the race with a user cancellation. Treat an
@@ -817,7 +828,41 @@ impl ChatSession for CodexChat {
         }
     }
 
+    fn plan_response(&mut self, turn_id: &str, approval_id: &str, response: &Value, _operation_id: &str) -> Result<Option<String>, ProviderError> {
+        self.validate_active_turn()?;
+        let action = response.get("action").and_then(Value::as_str).unwrap_or_default();
+        crate::chat_plan_approval::validate_response(response, true)?;
+        {
+            let state = self.ui.lock().map_err(|_| ProviderError::new("provider_internal", "Codex UI lock poisoned"))?;
+            if !state.pending_plan.as_ref().is_some_and(|plan| plan.id == approval_id && plan.turn_id == turn_id && plan.action.is_none()) {
+                return Err(ProviderError::new("approval_not_pending", "This plan is no longer waiting for a decision"));
+            }
+        }
+        if action == "approve" {
+            self.apply_option("collaboration", "default")?;
+        }
+        let mut state = self.ui.lock().map_err(|_| ProviderError::new("provider_internal", "Codex UI lock poisoned"))?;
+        let plan = state.pending_plan.as_mut().filter(|plan| plan.id == approval_id && plan.turn_id == turn_id)
+            .ok_or_else(|| ProviderError::new("approval_not_pending", "Plan superseded"))?;
+        plan.action = Some(action.into());
+        if action == "abandon" {
+            let plan = state.pending_plan.take().unwrap();
+            drop(state);
+            self.resolve_plan(&plan, Some("abandoned"), None, true);
+            return Ok(None);
+        }
+        if action == "request_changes" {
+            let data = codex_plan_payload(plan);
+            drop(state);
+            emit_scoped(&self.events, "codex", &self.session_id, Some(&self.native_id), Some(turn_id), "chat.approval",
+                json!({"approvalId":approval_id,"part":{"type":"approval","approvalId":approval_id,"status":"pending","data":data}}), Some(&self.worker_token));
+            return Ok(None);
+        }
+        Ok(Some("Implement the plan.".into()))
+    }
+
     fn stop(&mut self) -> Result<(), ProviderError> {
+        if let Ok(mut state) = self.ui.lock() { state.pending_plan = None; state.plan_candidate = None; }
         // Dropping the app-server process is the ownership boundary. Threads
         // remain provider-owned and are resumable by their native id.
         Ok(())
@@ -837,6 +882,11 @@ impl ChatSession for CodexChat {
 }
 
 impl CodexChat {
+    fn resolve_plan(&self, plan: &CodexPlanApproval, outcome: Option<&str>, feedback: Option<&str>, idle: bool) {
+        emit_scoped(&self.events, "codex", &self.session_id, Some(&self.native_id), Some(&plan.turn_id), "chat.approval.resolved",
+            json!({"approvalId":plan.id,"status":if outcome.is_some(){"answered"}else{"expired"},"outcome":"submitted","planOutcome":outcome,"feedback":feedback,"returnToIdle":idle,"preserveSessionState":!idle}), Some(&self.worker_token));
+    }
+
     fn validate_active_turn(&self) -> Result<(), ProviderError> {
         let (active, _) = &*self.active_turn;
         if active
@@ -857,13 +907,23 @@ impl CodexChat {
         operation_id: &str,
         input: Vec<Value>,
     ) -> Result<Value, ProviderError> {
-        self.start_native_turn(
+        let feedback = input.iter().filter_map(|part| part.get("text").and_then(Value::as_str)).collect::<Vec<_>>().join("\n");
+        // Take the previous plan before native callbacks can publish a new one.
+        let pending = self.ui.lock().ok().and_then(|mut state| state.pending_plan.take());
+        let result = self.start_native_turn(
             operation_id,
             "turn/start",
-            json!({
-                "threadId":self.native_id,"clientUserMessageId":operation_id,"input":input
-            }),
-        )
+            json!({"threadId":self.native_id,"clientUserMessageId":operation_id,"input":input}),
+        );
+        if let Some(plan) = pending {
+            if result.is_ok() {
+                let approved = plan.action.as_deref() == Some("approve");
+                self.resolve_plan(&plan, Some(if approved { "approved" } else { "changes_requested" }), if approved { None } else { Some(feedback.as_str()) }, false);
+            } else if let Ok(mut state) = self.ui.lock() {
+                if state.pending_plan.is_none() { state.pending_plan = Some(plan); }
+            }
+        }
+        result
     }
 
     fn start_native_turn(
@@ -1254,6 +1314,20 @@ struct CodexUiState {
     options_error: Option<ProviderError>,
     // Proposed edits are scoped by native thread, turn and item; bounded per connection.
     proposed_edits: HashMap<(String, String, String), Value>,
+    plan_candidate: Option<(String, String)>,
+    pending_plan: Option<CodexPlanApproval>,
+}
+
+#[derive(Clone)]
+struct CodexPlanApproval {
+    id: String,
+    turn_id: String,
+    plan: String,
+    action: Option<String>,
+}
+
+fn codex_plan_payload(plan: &CodexPlanApproval) -> Value {
+    json!({"approvalId":plan.id,"interaction":"plan","runtimeOwned":true,"plan":plan.plan,"submittable":true,"waitingForPrompt":plan.action.as_deref()==Some("request_changes"),"choices":[]})
 }
 
 #[derive(Clone, Default)]
@@ -3116,6 +3190,19 @@ fn emit_codex_message(
         }
         return;
     }
+    if method == "turn/started" {
+        if let Ok(mut state) = ui.lock() { state.plan_candidate = None; }
+    }
+    // Plan deltas are not guaranteed to concatenate. Review the authoritative
+    // completed Markdown item, including an explicitly empty plan.
+    if method == "item/completed" && provider_item_type == Some("plan") {
+        if let (Some(public), Some(native_turn), Some(text)) = (turn_id.as_deref(), provider_turn_id, params.pointer("/item/text").and_then(Value::as_str)) {
+            let matches_active = active_turn.0.lock().ok().is_some_and(|active| active.as_ref().is_some_and(|active| active.public_id == public && active.native_id.as_deref() == Some(native_turn)));
+            if matches_active {
+                if let Ok(mut state) = ui.lock() { state.plan_candidate = Some((public.into(), text.into())); }
+            }
+        }
+    }
     if method == "thread/settings/updated" {
         if params
             .get("threadId")
@@ -3277,6 +3364,18 @@ fn emit_codex_message(
     if matches!(method, "turn/completed" | "thread/compacted" | "error") {
         if let Some(turn_id) = turn_id {
             clear_codex_turn(active_turn, &turn_id);
+            let plan = ui.lock().ok().and_then(|mut state| {
+                let candidate = state.plan_candidate.take();
+                if method != "turn/completed" || params.pointer("/turn/status").and_then(Value::as_str) != Some("completed") || option_value(Some(&state), "collaboration").as_deref() != Some("plan") { return None; }
+                let (candidate_turn, text) = candidate.filter(|(id, _)| id == &turn_id)?;
+                let plan = CodexPlanApproval { id: format!("plan:{candidate_turn}"), turn_id: candidate_turn, plan: text, action: None };
+                state.pending_plan = Some(plan.clone());
+                Some(plan)
+            });
+            if let Some(plan) = plan {
+                let payload = codex_plan_payload(&plan);
+                emit_scoped(events, "codex", session_id, native_id.as_deref(), Some(&turn_id), "chat.approval", json!({"approvalId":plan.id,"part":{"type":"approval","approvalId":plan.id,"status":"pending","data":payload}}), Some(worker_token));
+            }
             if let Ok(mut pending) = approvals.lock() {
                 drain_inactive_approvals(&mut pending, |item| item.turn_id.as_deref(), None);
             }
@@ -3621,6 +3720,7 @@ fn extract_text(item: &Value) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    include!("codex_plan_approval_tests.rs");
 
     #[test]
     fn chat_ui_event_matches_codex_ui_state() {

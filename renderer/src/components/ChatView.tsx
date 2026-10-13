@@ -937,6 +937,7 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession }
     setApprovalBusy(key);
     try {
       await request("chat.answer", { sessionId: session.id, turnId, approvalId, response, leaseEpoch: epoch, operationId: operationId() });
+      if (response.action === "request_changes") composeRef.current?.focus();
     } catch (caught) {
       setError(asUserError(caught, copy("Answer was not recorded.", "回答未能记录。")));
     } finally {
@@ -1070,7 +1071,7 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession }
           if (statusRows) return <KimiStatusCard key={`kstatus-${index}`} rows={statusRows} zh={zh} copy={copy} />;
         }
         if (part.type === "approval") return <div className={`chat-part approval v3-tool-card ${part.status ?? ""}`} key={`${part.type}-${index}`}>
-          <ChatApprovalCard part={part} writable={writable && !busy} submitting={approvalBusy?.startsWith(`${part.approvalId ?? ""}:`) ? approvalBusy.slice((part.approvalId ?? "").length + 1) : undefined} onChoose={choiceId => { if (item.turnId && part.approvalId) void approval(item.turnId, part.approvalId, choiceId); }} onAnswer={response => { if (item.turnId && part.approvalId) void answer(item.turnId, part.approvalId, response); }} copy={copy} />
+          <ChatApprovalCard part={part} writable={writable && !busy} submitting={approvalBusy?.startsWith(`${part.approvalId ?? ""}:`) ? approvalBusy.slice((part.approvalId ?? "").length + 1) : undefined} onChoose={choiceId => { if (item.turnId && part.approvalId) void approval(item.turnId, part.approvalId, choiceId); }} onAnswer={response => { if (item.turnId && part.approvalId) void answer(item.turnId, part.approvalId, response); }} onPlanResponse={response => { if (item.turnId && part.approvalId) void answer(item.turnId, part.approvalId, response); }} copy={copy} />
         </div>;
         const label = partLabel(part, copy);
         const localizedText = asRecord(asRecord(part.data).localizedText);

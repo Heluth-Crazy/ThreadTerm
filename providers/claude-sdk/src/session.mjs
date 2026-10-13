@@ -203,6 +203,7 @@ export class ClaudeSession {
 
   requestPermission(toolName, input, { signal, suggestions, toolUseID, agentID } = {}) {
     if (this.closed || this.ended) return Promise.resolve({ behavior: 'deny', message: 'Session closed' });
+    if (toolName === 'ExitPlanMode' && [...this.pending.values()].some(entry => entry.plan)) return Promise.resolve({ behavior: 'deny', message: 'A plan approval is already pending.' });
     if ((this.threadTermDelegationTools && THREADTERM_DELEGATION_TOOLS.has(toolName)) || (this.threadTermPreviewTools && THREADTERM_PREVIEW_TOOLS.has(toolName))) return Promise.resolve({ behavior: 'allow', updatedInput: input });
     const requestId = `${this.cardId}-permission-${this.nextRequest++}`;
     const operationId = this.activeOperationId;
@@ -213,7 +214,8 @@ export class ClaudeSession {
       // The SDK's own suggestions are kept here; "always" answers never trust a
       // rule echoed back from the renderer.
       const question = toolName === 'AskUserQuestion' && Array.isArray(input?.questions);
-      const entry = { signal: signal ?? null, abort: null, published: false, settle: null, suggestions: Array.isArray(suggestions) ? suggestions : [], question, input };
+      const plan = toolName === 'ExitPlanMode';
+      const entry = { signal: signal ?? null, abort: null, published: false, settle: null, suggestions: Array.isArray(suggestions) ? suggestions : [], question, plan, input };
       const settle = (result, { cancelled = false } = {}) => {
         if (!this.pending.has(requestId)) return;
         this.pending.delete(requestId);
@@ -253,6 +255,31 @@ export class ClaudeSession {
     }
     if (behavior !== 'allow' && behavior !== 'deny') throw new Error(`unsupported permission decision: ${behavior}`);
     entry.settle(behavior === 'allow' ? { behavior: 'allow' } : { behavior: 'deny', message: 'Denied by user' });
+  }
+
+  /** Resolve the plan-mode ExitPlanMode request. */
+  async planResponse(requestId, action, feedback) {
+    const entry = this.pending.get(requestId);
+    if (!entry) throw new Error(`unknown or expired plan request: ${requestId}`);
+    if (!entry.plan) throw new Error(`request is not an ExitPlanMode plan request: ${requestId}`);
+    if (action === 'approve') {
+      entry.settle({ behavior: 'allow' });
+      // Give the SDK callback its allow result before requesting the explicit
+      // streaming-mode transition.
+      await Promise.resolve();
+      // Allow ExitPlanMode first, then return the streaming session to the
+      // default mode Claude Code uses for implementation.
+      if (this.settings.mode === 'plan') {
+        await withTimeout(this.query.setPermissionMode('default'), CONTROL_TIMEOUT_MS, 'Claude plan approval mode change');
+        this.noteMode('default');
+      }
+      return;
+    }
+    if (action !== 'request_changes' && action !== 'abandon') throw new Error(`unsupported plan response: ${action}`);
+    const message = action === 'abandon'
+      ? 'Please abandon the plan and remain in plan mode.'
+      : typeof feedback === 'string' && feedback.trim() ? feedback : 'Please revise the plan.';
+    entry.settle({ behavior: 'deny', message });
   }
 
   answer(requestId, values) {

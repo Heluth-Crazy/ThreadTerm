@@ -226,7 +226,8 @@ export type ChatInteractionForm =
  | {kind:'url';message:string;url:string};
 export type ChatAnswerResponse =
  | {action:'submit';values:Record<string,string[]|string|number|boolean>}
- | {action:'dismiss'};
+ | {action:'dismiss'}
+ | {action:'approve'|'request_changes'|'abandon';feedback?:string};
 export interface ChatApprovalData {
  approvalId:string;
  sessionId?:string;
@@ -236,7 +237,12 @@ export interface ChatApprovalData {
  title?:string;
  details?:unknown;
  choices:ChatApprovalChoice[];
- interaction?:'permission'|'userInput'|'elicitation'|'question'|'unknown';
+ interaction?:'permission'|'userInput'|'elicitation'|'question'|'plan'|'unknown';
+ waitingForPrompt?:boolean;
+ plan?:string;
+ runtimeOwned?:boolean;
+ planOutcome?:'approved'|'changes_requested'|'abandoned';
+ feedback?:string;
  form?:ChatInteractionForm;
  answerable?:boolean;
  answerSummary?:Record<string,string>;
@@ -568,6 +574,13 @@ export function validateRequest(method:unknown,params:unknown):asserts method is
  }
  if(m==='settings.update'&&(!isRecord(params.patch)||!Number.isSafeInteger(params.expectedRevision))) throw new Error('Invalid settings revision or patch');
  if(m==='chat.approve'&&(typeof params.choiceId!=='string'||!params.choiceId)) throw new Error('Invalid approval choice');
+ if(m==='chat.answer') {
+  const response=params.response;
+  if(!isRecord(response)) throw new Error('Invalid chat answer');
+  if(['approve','request_changes','abandon'].includes(String(response.action))) {
+   if(response.feedback!==undefined&&(typeof response.feedback!=='string'||response.feedback.trim().length===0||response.feedback.length>16_000)) throw new Error('Invalid plan feedback');
+  }
+ }
  if(m==='filesystem.list' && typeof params.path!=='string') throw new Error('Invalid path');
  if(m==='filesystem.resolve') {
   if(String(params.path).length>16*1024||String(params.path).includes('\0')) throw new Error('Invalid file reference');

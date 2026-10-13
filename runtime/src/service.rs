@@ -274,7 +274,7 @@ fn question_request_data(
     for item in db.chat_items(session_id)? {
         for part in item.parts {
             if part["type"] != "approval" || part["approvalId"].as_str() != Some(approval_id) { continue; }
-            if part.pointer("/data/interaction").and_then(Value::as_str) != Some("question") {
+            if !matches!(part.pointer("/data/interaction").and_then(Value::as_str), Some("question" | "plan")) {
                 if require_pending { return Err(crate::providers::ProviderError::new("answer_invalid", "This part is not a question").into()); }
                 return Ok(None);
             }
@@ -313,11 +313,49 @@ fn answer_chat_request(
     if let Some(result) = db.operation(operation_id)? { return Ok(result); }
     let data = question_request_data(db, session_id, turn_id, approval_id, true)?
         .ok_or_else(|| anyhow::anyhow!("answer_invalid"))?;
-    crate::chat_questions::validate_response(&data, response)?;
+    let is_plan = data["interaction"] == "plan";
+    if is_plan {
+        crate::chat_plan_approval::validate_response(response, data["runtimeOwned"] == true)?;
+    } else {
+        crate::chat_questions::validate_response(&data, response)?;
+    }
     if !db.claim_external_operation(operation_id)? {
         return Err(anyhow::anyhow!("operation_outcome_unknown"));
     }
-    providers.chat_answer(session_id, turn_id, approval_id, response, operation_id)?;
+    if is_plan {
+        // A deterministic child receipt prevents decision replay from issuing
+        // another implementation turn, including after a client reconnect.
+        let hash = Sha256::digest(format!("plan:{operation_id}").as_bytes());
+        let mut bytes = [0u8; 16];
+        bytes.copy_from_slice(&hash[..16]);
+        let implementation_id = uuid::Uuid::from_bytes(bytes).to_string();
+        let checkpoint = (data["runtimeOwned"] == true && response["action"] == "approve")
+            .then(|| crate::review::capture_before_turn(db, session_id, &implementation_id, "Implement the plan.")).flatten();
+        let implementation = providers.chat_plan_response_recording(crate::providers::PlanResponseRequest { session_id, turn_id, approval_id, response, operation_id, implementation_id: &implementation_id }, |prompt| {
+            use crate::providers::ProviderError;
+            if !db.claim_external_operation(&implementation_id).map_err(|error| ProviderError::new("chat_persistence", error.to_string()))? {
+                return Err(ProviderError::new("operation_outcome_unknown", "Implementation outcome is unknown"));
+            }
+            db.record_provider_event(session_id, Some(&implementation_id), "message.user", &json!({"text":prompt,"images":[],"operationId":implementation_id}))
+                .map_err(|error| ProviderError::new("chat_persistence", error.to_string()))
+        });
+        match implementation {
+            Ok(Some(result)) => {
+                if let Some(next_turn) = result.get("turnId").and_then(Value::as_str) {
+                    db.bind_chat_activity_turn(session_id, &implementation_id, next_turn)?;
+                }
+                if let Some(checkpoint) = checkpoint.as_ref() { crate::review::attach_turn(db, checkpoint, result.get("turnId").and_then(Value::as_str)); }
+                db.complete_operation(&implementation_id, "chat.send", &result)?;
+            }
+            Ok(None) => {}
+            Err(error) => {
+                db.record_provider_event(session_id, Some(turn_id), "chat.approval.resolved", &json!({"approvalId":approval_id,"status":"outcomeUnknown","message":"The plan decision could not be completed; review the session before retrying.","preserveSessionState":true}))?;
+                return Err(error.into());
+            }
+        }
+    } else {
+        providers.chat_answer(session_id, turn_id, approval_id, response, operation_id)?;
+    }
     db.complete_null_operation(operation_id, "chat.answer")?;
     Ok(Value::Null)
 }

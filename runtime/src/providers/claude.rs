@@ -49,6 +49,9 @@ struct ClaudeSubagents {
     ignored_tasks: HashSet<String>,
     pending_tasks: VecDeque<Value>,
     pending_questions: HashMap<String, Option<String>>,
+    // ExitPlanMode is the sole native plan-approval interaction.  Keep its
+    // request id bound to the public turn so a stale response cannot change mode.
+    pending_plans: HashMap<String, Option<String>>,
 }
 
 struct ClaudeSubagent {
@@ -523,6 +526,52 @@ impl ChatSession for ClaudeChat {
             self.worker_token.as_deref(),
         );
         Ok(())
+    }
+    fn plan_response(
+        &mut self,
+        turn_id: &str,
+        approval_id: &str,
+        response: &Value,
+        _operation_id: &str,
+    ) -> Result<Option<String>, ProviderError> {
+        let action = response.get("action").and_then(Value::as_str).ok_or_else(|| {
+            ProviderError::new("plan_response_invalid", "plan response has no action")
+        })?;
+        if !matches!(action, "approve" | "request_changes" | "abandon") {
+            return Err(ProviderError::new("plan_response_invalid", "plan response action is invalid"));
+        }
+        let pending_turn = self.ui.1.lock().ok().and_then(|state| {
+            state.pending_plans.get(approval_id).cloned()
+        }).flatten();
+        if pending_turn.as_deref() != Some(turn_id) {
+            return Err(ProviderError::new("approval_not_pending", "Claude plan approval is no longer pending"));
+        }
+        let feedback = response.get("feedback").and_then(Value::as_str);
+        self.process.sidecar_request(
+            "session.plan_response",
+            json!({"cardId":self.session_id,"requestId":approval_id,"action":action,"feedback":feedback}),
+        )?;
+        if let Ok(mut state) = self.ui.1.lock() {
+            state.pending_plans.remove(approval_id);
+        }
+        let plan_outcome = match action {
+            "approve" => "approved",
+            "request_changes" => "changes_requested",
+            "abandon" => "abandoned",
+            _ => unreachable!("plan response action was validated above"),
+        };
+        let mut resolved = json!({
+            "approvalId":approval_id,
+            "status":"answered",
+            "outcome":"submitted",
+            "planOutcome":plan_outcome,
+        });
+        if let Some(feedback) = feedback { resolved["feedback"] = json!(feedback); }
+        emit_scoped(
+            &self.events, "claude", &self.session_id, self.native_id.as_deref(), Some(turn_id),
+            "chat.approval.resolved", resolved, self.worker_token.as_deref(),
+        );
+        Ok(None)
     }
     fn answer(
         &mut self,
@@ -1345,14 +1394,17 @@ fn emit_claude_message(
             .and_then(Value::as_str)
             .unwrap_or("unknown");
         let is_question = raw.get("question").is_some();
-        if is_question {
+        let is_plan = raw.get("toolName").and_then(Value::as_str) == Some("ExitPlanMode");
+        if is_question || is_plan {
             if let Ok(mut state) = ui.1.lock() {
-                state
-                    .pending_questions
-                    .insert(approval_id.to_owned(), turn_id.map(ToOwned::to_owned));
+                if is_question {
+                    state.pending_questions.insert(approval_id.to_owned(), turn_id.map(ToOwned::to_owned));
+                } else {
+                    state.pending_plans.insert(approval_id.to_owned(), turn_id.map(ToOwned::to_owned));
+                }
             }
         }
-        let choices = if is_question {
+        let choices = if is_question || is_plan {
             Vec::new()
         } else {
             claude_approval_choices(&raw)
@@ -1385,6 +1437,10 @@ fn emit_claude_message(
                 true,
             )
         };
+        if is_plan {
+            payload["interaction"] = json!("plan");
+            payload["plan"] = json!(raw.pointer("/input/plan").and_then(Value::as_str).unwrap_or_default());
+        }
         if let Some(agent_id) = raw.get("agentId").and_then(Value::as_str) {
             let mut subagent = json!({"agentId":agent_id,"label":"Subagent"});
             if let Ok(state) = ui.1.lock() {
@@ -1423,6 +1479,7 @@ fn emit_claude_message(
             .unwrap_or("unknown");
         if let Ok(mut state) = ui.1.lock() {
             state.pending_questions.remove(approval_id);
+            state.pending_plans.remove(approval_id);
         }
         emit_scoped(
             events,
@@ -2610,6 +2667,30 @@ mod tests {
     }
 
     #[test]
+    fn exit_plan_mode_maps_plan_and_tracks_its_bound_turn() {
+        let mut replay = SubagentReplay::new();
+        let events = replay.raw(json!({
+            "ev":"session.request","cardId":"s","sessionId":"native","operationId":"turn-plan",
+            "requestId":"plan-request","toolName":"ExitPlanMode","input":{"plan":"# Proposed plan\n1. Edit"}
+        }));
+        assert_eq!(events.len(), 1);
+        let data = &events[0].data["part"]["data"];
+        assert_eq!(data["interaction"], "plan");
+        assert_eq!(data["plan"], "# Proposed plan\n1. Edit");
+        assert_eq!(data["choices"], json!([]));
+        assert_eq!(
+            replay.ui.1.lock().unwrap().pending_plans.get("plan-request"),
+            Some(&Some("turn-plan".to_owned()))
+        );
+        let cancelled = replay.raw(json!({
+            "ev":"session.request_cancelled","cardId":"s","sessionId":"native","operationId":"turn-plan",
+            "requestId":"plan-request","message":"Request cancelled"
+        }));
+        assert_eq!(cancelled[0].kind, "chat.approval.resolved");
+        assert!(replay.ui.1.lock().unwrap().pending_plans.is_empty());
+    }
+
+    #[test]
     fn request_cancelled_maps_to_a_targeted_expired_resolution() {
         let (events, mut rx) = crate::provider_events::tap_channel(16);
         let native = Mutex::new(Some("native-1".to_owned()));
@@ -2760,6 +2841,7 @@ createInterface({{ input: process.stdin, crlfDelay: Infinity }}).on('line', line
       if ('{mode}' === 'die-before') write({{ ev: 'session.status', cardId: req.cardId, phase: 'closed', sessionId: 'native-fixture' }});
       write({{ id: req.id, ok: {{ sessionId: req.sessionId ?? null, ui: ui('default') }} }});
       if ('{mode}' === 'options') write({{ ev: 'session.request', cardId: req.cardId, requestId: 'card-options-question-1', operationId: 'turn', sessionId: req.sessionId ?? null, toolName: 'AskUserQuestion', question: {{ questions: [{{ header: 'Colour', question: 'Which colour?', options: [{{ label: 'Blue' }}] }}] }} }});
+      if ('{mode}' === 'plan') write({{ ev: 'session.request', cardId: req.cardId, requestId: 'card-plan-exit-1', operationId: 'turn-plan', sessionId: req.sessionId ?? null, toolName: 'ExitPlanMode', input: {{ plan: '# Proposed plan\\n1. Build it' }} }});
       if ('{mode}' === 'die') setTimeout(() => write({{ ev: 'session.status', cardId: req.cardId, phase: 'closed', sessionId: 'native-fixture' }}), 250);
     }}, {delay_ms});
     return;
@@ -2769,6 +2851,10 @@ createInterface({{ input: process.stdin, crlfDelay: Infinity }}).on('line', line
     : write({{ id: req.id, error: {{ message: `${{req.value}} is not an available choice` }} }});
   if (req.op === 'session.decision') {{
     write({{ ev: 'provider.event', cardId: req.cardId, decision: req.behavior, requestId: req.requestId }});
+    return write({{ id: req.id, ok: {{}} }});
+  }}
+  if (req.op === 'session.plan_response') {{
+    write({{ ev: 'provider.event', cardId: req.cardId, planAction: req.action, feedback: req.feedback, requestId: req.requestId }});
     return write({{ id: req.id, ok: {{}} }});
   }}
   if (req.op === 'session.answer') {{
@@ -3007,6 +3093,72 @@ createInterface({{ input: process.stdin, crlfDelay: Infinity }}).on('line', line
             "chat_command_unavailable"
         );
         chat.stop().unwrap();
+
+        // Native ExitPlanMode cards use the dedicated sidecar operation so
+        // each reply preserves its action and optional feedback exactly once.
+        for (action, feedback) in [
+            ("approve", None),
+            ("request_changes", Some("Keep the existing API.")),
+            ("abandon", None),
+        ] {
+            let plan_host = fake_host(dir.path(), "plan", 0);
+            environment.set("THREADTERM_CLAUDE_SDK_HOST", &plan_host);
+            let (plan_sender, mut plan_receiver) = crate::provider_events::tap_channel(16);
+            let plan_adapter = ClaudeAdapter::new(plan_sender);
+            let mut plan_chat = plan_adapter
+                .open_chat(&format!("card-plan-{action}"), &cwd, None)
+                .unwrap();
+            let deadline = std::time::Instant::now() + Duration::from_secs(5);
+            let plan_card = loop {
+                if let Ok(event) = plan_receiver.try_recv() {
+                    if event.kind == "chat.approval" {
+                        break event;
+                    }
+                }
+                assert!(std::time::Instant::now() < deadline, "plan card did not arrive");
+                std::thread::sleep(Duration::from_millis(20));
+            };
+            assert_eq!(plan_card.data["part"]["data"]["interaction"], "plan");
+            plan_chat
+                .plan_response(
+                    "turn-plan",
+                    "card-plan-exit-1",
+                    &json!({"action":action,"feedback":feedback}),
+                    "plan-operation",
+                )
+                .unwrap();
+            let deadline = std::time::Instant::now() + Duration::from_secs(5);
+            let mut sidecar_action = None;
+            let mut resolution = None;
+            while std::time::Instant::now() < deadline
+                && (sidecar_action.is_none() || resolution.is_none())
+            {
+                while let Ok(event) = plan_receiver.try_recv() {
+                    if let Some(value) = event.data.pointer("/raw/planAction").and_then(Value::as_str) {
+                        sidecar_action = Some(value.to_owned());
+                    }
+                    if event.kind == "chat.approval.resolved" {
+                        resolution = Some(event.data);
+                    }
+                }
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            assert_eq!(sidecar_action.as_deref(), Some(action));
+            assert_eq!(resolution.as_ref().unwrap()["status"], "answered");
+            assert_eq!(resolution.as_ref().unwrap()["outcome"], "submitted");
+            let expected_outcome = match action {
+                "approve" => "approved",
+                "request_changes" => "changes_requested",
+                "abandon" => "abandoned",
+                _ => unreachable!(),
+            };
+            assert_eq!(resolution.as_ref().unwrap()["planOutcome"], expected_outcome);
+            match feedback {
+                Some(feedback) => assert_eq!(resolution.as_ref().unwrap()["feedback"], feedback),
+                None => assert!(resolution.as_ref().unwrap().get("feedback").is_none()),
+            }
+            plan_chat.stop().unwrap();
+        }
 
         // Capability: the Chat CLI's own `auth status` decides Chat availability.
         environment.set("THREADTERM_CLAUDE_SDK_HOST", &ok_host);

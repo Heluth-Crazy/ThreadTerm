@@ -477,6 +477,11 @@ pub(crate) trait ChatSession: Send {
         operation_id: &str,
     ) -> Result<(), ProviderError>;
     fn stop(&mut self) -> Result<(), ProviderError>;
+    /// Native plan decisions return no prompt; runtime-owned plans may request
+    /// a normal, durably recorded implementation turn through the service.
+    fn plan_response(&mut self, _turn_id: &str, _approval_id: &str, _response: &Value, _operation_id: &str) -> Result<Option<String>, ProviderError> {
+        Err(ProviderError::new("plan_unsupported", "This provider has no plan approval"))
+    }
     fn answer(
         &mut self,
         _turn_id: &str,
@@ -498,6 +503,15 @@ pub(crate) trait ChatSession: Send {
 }
 
 type SharedChat = Arc<Mutex<Box<dyn ChatSession>>>;
+
+pub(crate) struct PlanResponseRequest<'a> {
+    pub session_id: &'a str,
+    pub turn_id: &'a str,
+    pub approval_id: &'a str,
+    pub response: &'a Value,
+    pub operation_id: &'a str,
+    pub implementation_id: &'a str,
+}
 
 /// Normalizes the complete UI snapshot shared by `chat.options` and `chat.ui`.
 pub(crate) fn normalize_chat_ui(value: Value) -> Value {
@@ -1050,6 +1064,22 @@ impl Providers {
             .method("chat.send").outcome("ok")
             .duration_us(lock_timer.elapsed_us()));
         call(chat.as_mut())
+    }
+
+    pub(crate) fn chat_plan_response_recording(
+        &self,
+        request: PlanResponseRequest<'_>,
+        record: impl FnOnce(&str) -> Result<(), ProviderError>,
+    ) -> Result<Option<Value>, ProviderError> {
+        let PlanResponseRequest { session_id, turn_id, approval_id, response, operation_id, implementation_id } = request;
+        self.chat(session_id, |chat| {
+            let Some(prompt) = chat.plan_response(turn_id, approval_id, response, operation_id)? else { return Ok(None); };
+            // Option transition, durable user record and dispatch share the
+            // worker lock, so a queue send cannot consume the approved plan.
+            chat.validate_send(&prompt)?;
+            record(&prompt)?;
+            chat.send(&prompt, implementation_id).map(Some)
+        })
     }
 
     pub fn chat_is_open(&self, session_id: &str) -> bool {

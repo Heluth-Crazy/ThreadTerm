@@ -198,6 +198,20 @@ test('chat.answer carries a typed question response and always requires the acti
   {leaseEpoch:undefined}, {leaseEpoch:0}, {operationId:''}, {approvalId:''}, {turnId:''},
  ]) assert.throws(()=>validateRequest('chat.answer',{...base,...patch,response:{action:'dismiss'}}));
 });
+test('chat.answer accepts only the additive plan review decisions and optional feedback',()=>{
+ const base={sessionId:'s',turnId:'turn',approvalId:'plan',leaseEpoch:1,operationId:'answer'};
+ for(const response of [
+  {action:'approve'},
+  {action:'request_changes'},
+  {action:'request_changes',feedback:'Please split the migration into two commits.'},
+  {action:'abandon'},
+ ]) validateRequest('chat.answer',{...base,response});
+ for(const response of [
+  {action:'approve',feedback:7},
+  {action:'abandon',feedback:'x'.repeat(16_001)},
+  {action:'plan'},
+ ]) assert.throws(()=>validateRequest('chat.answer',{...base,response}),undefined,JSON.stringify(response));
+});
 test('mutation boundary requires conflict and idempotency fields',()=>{
  validateRequest('catalog.visibility.list',{});
  validateRequest('catalog.visibility.update',{kind:'session',id:'s',visibility:'archived',expectedRevision:0,operationId:'visibility'});

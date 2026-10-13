@@ -335,3 +335,50 @@ test('a preview-only ThreadTerm server auto-approves only the two preview tools'
   assert.equal((await delegation).behavior, 'deny');
   await session.stop();
 });
+
+
+test('ExitPlanMode approval allows the tool before returning Claude to default mode', async () => {
+  const events = [], calls = [];
+  const session = new ClaudeSession({ cardId: 'plan-card', sdk: fakeSdk(), write: value => events.push(value) });
+  let settled = false;
+  session.query = { setPermissionMode: async mode => { assert.equal(settled, true, 'ExitPlanMode must settle before changing permission mode'); calls.push(mode); } };
+  session.settings.mode = 'plan';
+  const pending = session.requestPermission('ExitPlanMode', { plan: '# Build it' });
+  const request = events.find(value => value.ev === 'session.request');
+  assert.equal(request.toolName, 'ExitPlanMode');
+  pending.then(() => { settled = true; });
+  const response = session.planResponse(request.requestId, 'approve');
+  assert.deepEqual(await within(200, pending, 'plan approval settles'), { behavior: 'allow' });
+  await response;
+  assert.deepEqual(calls, ['default']);
+  assert.equal(session.settings.mode, 'default');
+});
+
+test('ExitPlanMode feedback and abandonment deny with messages and retain plan mode', async () => {
+  for (const [action, feedback, message] of [
+    ['request_changes', 'Use the existing API.', 'Use the existing API.'],
+    ['abandon', undefined, 'Please abandon the plan and remain in plan mode.'],
+  ]) {
+    const events = [], calls = [];
+    const session = new ClaudeSession({ cardId: 'plan-card', sdk: fakeSdk(), write: value => events.push(value) });
+    session.query = { setPermissionMode: async mode => calls.push(mode) };
+    session.settings.mode = 'plan';
+    const pending = session.requestPermission('ExitPlanMode', { plan: 'x' });
+    const request = events.find(value => value.ev === 'session.request');
+    await session.planResponse(request.requestId, action, feedback);
+    assert.deepEqual(await within(200, pending, 'plan denial settles'), { behavior: 'deny', message });
+    assert.deepEqual(calls, []);
+    assert.equal(session.settings.mode, 'plan');
+  }
+});
+
+test('only one ExitPlanMode approval can remain pending', async () => {
+  const { session, events } = harness();
+  const first = session.requestPermission('ExitPlanMode', { plan: 'first' });
+  const second = await session.requestPermission('ExitPlanMode', { plan: 'second' });
+  assert.deepEqual(second, { behavior: 'deny', message: 'A plan approval is already pending.' });
+  assert.equal(events.filter(value => value.ev === 'session.request').length, 1);
+  const request = events.find(value => value.ev === 'session.request');
+  await session.planResponse(request.requestId, 'abandon');
+  assert.equal((await first).behavior, 'deny');
+});
