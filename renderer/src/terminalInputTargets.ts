@@ -1,11 +1,48 @@
 import type { ContextItem } from './chatContext';
 type Target={visible:()=>boolean;insert:(text:string)=>void;focus?:()=>boolean|void;attachImages?:(images:string[])=>number;attachContext?:(item:ContextItem)=>boolean};
 const requestedChatFocus = new Map<string, object>();
-export function cancelChatInputFocus(sessionId: string) { requestedChatFocus.delete(sessionId); }
+const focusBurst = new Map<string, number>();
+function stopFocusBurst(sessionId: string) {
+  const handle = focusBurst.get(sessionId);
+  if (handle === undefined) return;
+  focusBurst.delete(sessionId);
+  if (typeof cancelAnimationFrame === 'function') cancelAnimationFrame(handle);
+}
+export function cancelChatInputFocus(sessionId: string) {
+  stopFocusBurst(sessionId);
+  requestedChatFocus.delete(sessionId);
+}
 export function focusRequestedChatInput(sessionId: string) {
-  const target = visibleTarget(chatTargets, sessionId);
   const pending = requestedChatFocus.get(sessionId);
-  if (pending && target?.focus && target.focus() !== false && requestedChatFocus.get(sessionId) === pending) requestedChatFocus.delete(sessionId);
+  if (!pending) { stopFocusBurst(sessionId); return; }
+  const target = visibleTarget(chatTargets, sessionId);
+  const applied = !!target?.focus && target.focus() !== false && requestedChatFocus.get(sessionId) === pending;
+  // Node unit tests have no frame scheduler; a confirmed focus is consumed immediately.
+  if (typeof requestAnimationFrame !== 'function') {
+    if (applied) requestedChatFocus.delete(sessionId);
+    return;
+  }
+  if (focusBurst.has(sessionId)) return;
+  // Chromium ignores focus() in the turn that drops `inert` or `hidden`, and a
+  // new Ask composer can disable again for a frame after the first success. The
+  // browser then moves focus to the document. Keep this one handoff until focus
+  // has stayed for several frames, or for about two seconds.
+  let left = 120;
+  let stable = 0;
+  const tick = () => {
+    focusBurst.delete(sessionId);
+    if (requestedChatFocus.get(sessionId) !== pending) return;
+    const current = visibleTarget(chatTargets, sessionId);
+    const held = !!current?.focus && current.focus() !== false && requestedChatFocus.get(sessionId) === pending;
+    if (held) stable += 1; else stable = 0;
+    if (stable >= 15) {
+      requestedChatFocus.delete(sessionId);
+      return;
+    }
+    if (--left <= 0) return;
+    focusBurst.set(sessionId, requestAnimationFrame(tick));
+  };
+  focusBurst.set(sessionId, requestAnimationFrame(tick));
 }
 /** A one-shot handoff, consumed when the new chat's existing input becomes writable. */
 export function requestChatInputFocus(sessionId: string) { requestedChatFocus.set(sessionId, {}); focusRequestedChatInput(sessionId); }

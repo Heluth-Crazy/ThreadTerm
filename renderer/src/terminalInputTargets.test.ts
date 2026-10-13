@@ -50,6 +50,99 @@ test('a deferred close cannot cancel a newer handoff for the same session', asyn
   const reopen = registerChatInputTarget('newer', { visible: () => true, insert: () => assert.fail(), focus: () => { focused++; return true; } });
   focusRequestedChatInput('newer'); assert.equal(focused, 1); reopen();
 });
+test('a same-turn focus miss is retried on the next frame and a cancel drops the burst', () => {
+  const frames: Array<(time: number) => void> = [];
+  const previous = globalThis.requestAnimationFrame;
+  const previousCancel = globalThis.cancelAnimationFrame;
+  const canceled: number[] = [];
+  globalThis.requestAnimationFrame = callback => { frames.push(callback); return frames.length; };
+  globalThis.cancelAnimationFrame = handle => { canceled.push(handle); };
+  try {
+    let accepts = false, attempts = 0;
+    const remove = registerChatInputTarget('frame', { visible: () => true, insert: () => assert.fail(), focus: () => { attempts++; return accepts; } });
+    requestChatInputFocus('frame');
+    assert.equal(attempts, 1);
+    assert.equal(frames.length, 1);
+    cancelChatInputFocus('frame');
+    assert.equal(canceled.length, 1);
+    frames[0](0);
+    assert.equal(attempts, 1, 'cancelled burst does not focus again');
+    accepts = false; attempts = 0; frames.length = 0;
+    requestChatInputFocus('frame');
+    assert.equal(attempts, 1);
+    assert.equal(frames.length, 1);
+    accepts = true;
+    frames[0](0);
+    assert.equal(attempts, 2);
+    focusRequestedChatInput('frame');
+    assert.equal(attempts, 3, 'one successful frame does not consume the handoff');
+    for (let i = 0; i < 14; i++) frames[frames.length - 1](0);
+    const settled = attempts;
+    focusRequestedChatInput('frame');
+    assert.equal(attempts, settled, 'focus that stays for several frames consumes the handoff');
+    remove();
+  } finally {
+    globalThis.requestAnimationFrame = previous;
+    globalThis.cancelAnimationFrame = previousCancel;
+  }
+});
+test('a handoff keeps retrying while the composer is not visible yet', () => {
+  const frames: Array<(time: number) => void> = [];
+  const previous = globalThis.requestAnimationFrame;
+  const previousCancel = globalThis.cancelAnimationFrame;
+  globalThis.requestAnimationFrame = callback => { frames.push(callback); return frames.length; };
+  globalThis.cancelAnimationFrame = () => {};
+  try {
+    let visible = false, attempts = 0;
+    const remove = registerChatInputTarget('late', { visible: () => visible, insert: () => assert.fail(), focus: () => { attempts++; return true; } });
+    requestChatInputFocus('late');
+    assert.equal(attempts, 0);
+    assert.equal(frames.length, 1);
+    frames[0](0);
+    assert.equal(attempts, 0, 'a hidden composer does not abort the handoff');
+    assert.equal(frames.length, 2);
+    visible = true;
+    frames[1](0);
+    assert.equal(attempts, 1);
+    for (let i = 0; i < 14; i++) frames[frames.length - 1](0);
+    const settled = attempts;
+    focusRequestedChatInput('late');
+    assert.equal(attempts, settled, 'focus that stays consumes the handoff');
+    remove();
+  } finally {
+    globalThis.requestAnimationFrame = previous;
+    globalThis.cancelAnimationFrame = previousCancel;
+  }
+});
+test('a composer that disables after the first focus is focused again once it stays enabled', () => {
+  const frames: Array<(time: number) => void> = [];
+  const previous = globalThis.requestAnimationFrame;
+  const previousCancel = globalThis.cancelAnimationFrame;
+  globalThis.requestAnimationFrame = callback => { frames.push(callback); return frames.length; };
+  globalThis.cancelAnimationFrame = () => {};
+  try {
+    let visible = true, attempts = 0;
+    const remove = registerChatInputTarget('flicker', { visible: () => visible, insert: () => assert.fail(), focus: () => { attempts++; return true; } });
+    requestChatInputFocus('flicker');
+    assert.equal(attempts, 1);
+    frames[0](0);
+    assert.equal(attempts, 2);
+    visible = false;
+    frames[frames.length - 1](0);
+    assert.equal(attempts, 2, 'a disabled composer does not end the handoff');
+    visible = true;
+    frames[frames.length - 1](0);
+    assert.equal(attempts, 3, 'the handoff focuses again after the composer is enabled');
+    for (let i = 0; i < 14; i++) frames[frames.length - 1](0);
+    const settled = attempts;
+    focusRequestedChatInput('flicker');
+    assert.equal(attempts, settled, 'focus that stays consumes the handoff');
+    remove();
+  } finally {
+    globalThis.requestAnimationFrame = previous;
+    globalThis.cancelAnimationFrame = previousCancel;
+  }
+});
 test('comment text and screenshots select the same visible Chat without submitting',()=>{
  const calls:string[]=[];
  const remove=registerChatInputTarget('chat',{visible:()=>true,insert:text=>calls.push(text),attachImages:images=>{calls.push(...images);return images.length;}});
