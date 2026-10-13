@@ -565,7 +565,7 @@ fn qa_projection_failed(session_id: &str) -> bool {
     qa_projection_sessions().lock().is_ok_and(|mut sessions| sessions.get(session_id) == Some(&true) && sessions.remove(session_id).is_some())
 }
 
-fn project_provider_event(db: &Database, providers: &Providers, event: &ProviderEvent) -> bool {
+fn project_provider_event(db: &Arc<Database>, providers: &Providers, event: &ProviderEvent) -> bool {
     let accepted = providers.with_current_event(event, || {
         let injected_failure = event.provider != "runtime" && qa_fail_projection(&event.session_id);
         if injected_failure {
@@ -630,16 +630,25 @@ fn project_provider_event(db: &Database, providers: &Providers, event: &Provider
     if accepted == Some(true) && event.kind == "session.closed" {
         providers.note_session_closed_scoped(&event.session_id, event.worker_token.as_deref());
     }
+    // The pre-turn checkpoint is created before the provider knows the turn
+    // id. Tag it here, on the ordered projection path, so a completion that
+    // races the `chat.send` response still pairs with its before-tree.
+    if accepted == Some(true) && event.kind == "chat.turn.started" {
+        if let Some(turn_id) = event.turn_id.as_deref() {
+            crate::review::attach_turn_to_latest(db, &event.session_id, turn_id);
+        }
+    }
     // A completion is the only event that freezes an after-turn review tree.
-    // This deliberately happens after `with_current_event` releases the
-    // registry guard and after projection commits its transaction.
+    // The Git work runs on its own worker so the single provider-event
+    // projection thread keeps draining every other session; the worker emits
+    // the updated item once the capture is ready, after projection committed.
     if accepted == Some(true) && event.kind == "chat.turn.completed" {
         if let Some(turn_id) = event.turn_id.as_deref() {
-            if let Some(review) = crate::review::capture_after_turn(db, &event.session_id, turn_id) {
-                if let Err(error) = crate::chat_projection::attach_turn_review(db, &event.session_id, turn_id, review) {
-                    eprintln!("could not attach turn review for {}: {error}", event.session_id);
-                }
-            }
+            crate::review::capture_after_turn_in_background(
+                Arc::clone(db),
+                event.session_id.clone(),
+                turn_id.to_owned(),
+            );
         }
     }
     accepted == Some(true)
@@ -3301,7 +3310,7 @@ mod tests {
     #[test]
     fn pi_new_replacement_allows_following_context_and_fences_stale_or_foreign_identity() {
         let root = tempfile::tempdir().unwrap();
-        let db = Database::open(&root.path().join("runtime.sqlite")).unwrap();
+        let db = Arc::new(Database::open(&root.path().join("runtime.sqlite")).unwrap());
         let session = db.create_session(CreateSession {
             project_id: None,
             title: None,

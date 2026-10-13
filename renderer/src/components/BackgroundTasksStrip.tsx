@@ -13,8 +13,23 @@ export function BackgroundTasksStrip({ tasks, copy, zh, writable, onExpand, onSt
   const [open, setOpen] = useState(false), [loading, setLoading] = useState(false);
   const [pending, setPending] = useState<ReadonlySet<string>>(new Set());
   const [issue, setIssue] = useState<string>();
+  const [now, setNow] = useState(() => Date.now());
   const toggle = useRef<HTMLButtonElement>(null), inFlight = useRef(new Set<string>()), refreshing = useRef(false);
   const bodyId = useId();
+  const running = tasks.some(task => task.status === 'running');
+  // A single ticker only while the expanded strip has a live task and the
+  // window is visible. Collapsed, finished or hidden strips keep no timer.
+  useEffect(() => {
+    if (!open || !running || typeof document === 'undefined') return;
+    let timer = 0;
+    const tick = () => setNow(Date.now());
+    const start = () => { if (!timer) timer = window.setInterval(tick, 1000); };
+    const stop = () => { if (timer) { window.clearInterval(timer); timer = 0; } };
+    const onVisibility = () => { if (document.visibilityState === 'hidden') stop(); else { tick(); start(); } };
+    if (document.visibilityState !== 'hidden') start();
+    document.addEventListener('visibilitychange', onVisibility);
+    return () => { stop(); document.removeEventListener('visibilitychange', onVisibility); };
+  }, [open, running]);
   useEffect(() => {
     for (const id of inFlight.current) {
       if (!tasks.some(task => task.id === id && task.status === 'running')) inFlight.current.delete(id);
@@ -36,7 +51,6 @@ export function BackgroundTasksStrip({ tasks, copy, zh, writable, onExpand, onSt
     });
   };
   if (!tasks.length) return null;
-  const now = Date.now();
   return <section className="chat-background-tasks" data-testid="background-tasks-strip" aria-label={copy('Background tasks', '后台任务')} onKeyDown={event => {
     if (event.key === 'Escape' && open) { event.stopPropagation(); setOpen(false); toggle.current?.focus(); }
   }}>

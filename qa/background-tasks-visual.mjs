@@ -101,7 +101,7 @@ try {
   page.on('pageerror', error => report.errors.push(error.message));
   await page.waitForFunction(() => typeof window.qaSet === 'function');
   // Spy after setup: only strip lifecycle work is counted, not harness startup.
-  await page.evaluate(() => { window.__timers={interval:0,timeout:0}; const interval=window.setInterval, timeout=window.setTimeout; window.setInterval=(...args)=>{window.__timers.interval++;return interval(...args)}; window.setTimeout=(...args)=>{window.__timers.timeout++;return timeout(...args)}; });
+  await page.evaluate(() => { window.__timers={interval:0,timeout:0,active:0}; const interval=window.setInterval, clear=window.clearInterval, timeout=window.setTimeout; window.setInterval=(...args)=>{window.__timers.interval++;window.__timers.active++;return interval(...args)}; window.clearInterval=(handle)=>{window.__timers.active=Math.max(0,window.__timers.active-1);return clear(handle)}; window.setTimeout=(...args)=>{window.__timers.timeout++;return timeout(...args)}; });
 
   await state('running', 'light', 'en', 1440);
   const strip = page.locator('[data-testid="background-tasks-strip"]');
@@ -118,15 +118,16 @@ try {
   report.checks.push('collapsed strips are lazy, refresh once, and restore focus after Escape');
 
   await state('running', 'light', 'en', 1440); await openStrip();
+  assert.ok(await page.evaluate(() => window.__timers.active) >= 1, 'an expanded strip with a running task keeps one ticker');
   const beforeElapsed = await page.locator('.chat-background-elapsed').textContent();
   await page.evaluate(() => { Date.now = () => Date.parse('2026-10-13T12:03:00.000Z'); window.qaRerender(); }); await nextFrame();
-  assert.notEqual(await page.locator('.chat-background-elapsed').textContent(), beforeElapsed, 'running elapsed advances only after a render');
+  assert.notEqual(await page.locator('.chat-background-elapsed').textContent(), beforeElapsed, 'running elapsed reflects the current clock');
   await page.evaluate(() => { Date.now = () => Date.parse('2026-10-13T13:00:00.000Z'); window.qaSet('completed','en'); }); await nextFrame(); await openStrip();
   const frozen = await page.locator('.chat-background-elapsed').textContent(); await page.evaluate(() => window.qaRerender()); await nextFrame();
   assert.equal(await page.locator('.chat-background-elapsed').textContent(), frozen, 'terminal endedAt freezes elapsed time');
-  assert.equal(await page.evaluate(() => window.__timers.interval), 0, 'strip introduces no interval while idle, collapsed or expanded');
+  assert.equal(await page.evaluate(() => window.__timers.active), 0, 'no live interval once no task runs or the strip closes');
   assert.equal(await page.evaluate(() => window.__timers.timeout), 0, 'strip introduces no timeout while idle, collapsed or expanded');
-  report.checks.push('elapsed is render-time only and terminal elapsed freezes without strip timers');
+  report.checks.push('elapsed ticks only while expanded with a running task and freezes at a terminal end without idle timers');
 
   await state('stop-pending', 'light', 'en', 1440); await openStrip();
   const stop = page.getByRole('button', { name:/Stop task/ }); await stop.dblclick();
