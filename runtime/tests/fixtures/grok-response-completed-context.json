@@ -1,0 +1,1 @@
+{"jsonrpc":"2.0","method":"_x.ai/session_notification","params":{"sessionId":"session-1","update":{"sessionUpdate":"response_completed","usage":{"input_tokens":349,"output_tokens":140,"cache_read_input_tokens":16896,"cache_creation_input_tokens":0,"reasoning_tokens":119}}}}

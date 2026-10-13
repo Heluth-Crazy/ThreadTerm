@@ -1706,9 +1706,14 @@ pub(crate) fn emit_scoped(
     native_id: Option<&str>,
     turn_id: Option<&str>,
     kind: &str,
-    data: Value,
+    mut data: Value,
     worker_token: Option<&str>,
 ) {
+    if kind == "chat.context" {
+        if let Some(usage) = data.get_mut("usage").and_then(Value::as_object_mut) {
+            usage.insert("updatedAt".into(), json!(chrono::Utc::now().to_rfc3339()));
+        }
+    }
     let _ = events.send(ProviderEvent {
         provider: provider.to_owned(),
         session_id: session_id.to_owned(),
@@ -1724,6 +1729,16 @@ pub(crate) fn emit_scoped(
 mod registry_cleanup_tests {
     use super::*;
     use std::sync::{mpsc, Weak};
+
+    #[test]
+    fn context_emission_populates_timestamp_before_projection() {
+        let (sender, mut receiver) = crate::provider_events::tap_channel(8);
+        emit_scoped(&sender, "pi", "s", None, None, "chat.context", json!({"usage":{"totalTokens":5}}), Some("worker"));
+        let snapshot = receiver.try_recv().unwrap();
+        chrono::DateTime::parse_from_rfc3339(snapshot.data["usage"]["updatedAt"].as_str().unwrap()).unwrap();
+        assert_eq!(snapshot.data["usage"]["totalTokens"], 5);
+        assert_eq!(snapshot.worker_token.as_deref(), Some("worker"));
+    }
 
     #[test]
     fn normalize_chat_ui_preserves_the_existing_default_load_state_rules() {

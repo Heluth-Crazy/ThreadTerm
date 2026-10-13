@@ -1,0 +1,1 @@
+{"payload":{"id":"evt-context","type":"message.updated","properties":{"info":{"id":"msg-1","sessionID":"native-1","role":"assistant","providerID":"openai","modelID":"gpt-test","tokens":{"input":120,"output":30,"reasoning":10,"cache":{"read":80,"write":5}}}}}}

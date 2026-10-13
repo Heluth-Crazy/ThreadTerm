@@ -304,11 +304,17 @@ pub fn record(
    }
    "chat.context"=>{
     if let Some(usage)=data.get("usage").filter(|usage|usage.is_object()){
+     let mut usage=usage.clone();
+     let updated_at=usage.get("updatedAt").and_then(Value::as_str)
+      .filter(|timestamp|chrono::DateTime::parse_from_rfc3339(timestamp).is_ok())
+      .unwrap_or(&now).to_owned();
+     usage["updatedAt"]=json!(updated_at);
      // Context pressure is a latest-value snapshot: one row per session, so a
      // reopened chat can paint it before the next turn produces usage.
-     tx.execute("INSERT INTO chat_context(session_id,data,updated_at) VALUES (?,?,?) ON CONFLICT(session_id) DO UPDATE SET data=excluded.data,updated_at=excluded.updated_at",params![session_id,serde_json::to_string(usage)?,now])?;
+     tx.execute("INSERT INTO chat_context(session_id,data,updated_at) VALUES (?,?,?) ON CONFLICT(session_id) DO UPDATE SET data=excluded.data,updated_at=excluded.updated_at",params![session_id,serde_json::to_string(&usage)?,updated_at])?;
      tx.execute("INSERT INTO outbox(event,data,created_at) VALUES ('chat.context',?,?)",params![serde_json::to_string(&json!({"sessionId":session_id,"usage":usage}))?,now])?;
     }
+    return Ok(());
    }
    _=>{}
   }
@@ -1609,6 +1615,16 @@ mod tests {
         assert_eq!(value["sessionId"], "s");
         assert_eq!(value["usage"]["windowTokens"], 258000);
         assert_eq!(value["usage"]["inputTokens"], 90000);
+        let stored = db.chat_context("s").unwrap().unwrap();
+        let timestamp = stored["updatedAt"].as_str().expect("snapshot has a timestamp");
+        chrono::DateTime::parse_from_rfc3339(timestamp).unwrap();
+        assert_eq!(value["usage"]["updatedAt"], stored["updatedAt"]);
+        let (billing, recorded_at): (i64, String) = db.transaction(|tx| {
+            Ok((tx.query_row("SELECT COUNT(*) FROM usage_records", [], |r| r.get(0))?,
+                tx.query_row("SELECT updated_at FROM chat_context WHERE session_id='s'", [], |r| r.get(0))?))
+        }).unwrap();
+        assert_eq!(billing, 0, "cumulative context counters are not billing usage");
+        assert_eq!(recorded_at, timestamp);
         let items: i64 = db
             .transaction(|tx| Ok(tx.query_row("SELECT COUNT(*) FROM chat_items", [], |row| row.get(0))?))
             .unwrap();
@@ -1621,6 +1637,21 @@ mod tests {
             .transaction(|tx| Ok(tx.query_row("SELECT COUNT(*) FROM chat_context", [], |row| row.get(0))?))
             .unwrap();
         assert_eq!(rows, 1, "one row per session keeps the latest value");
+    }
+    #[test]
+    fn context_snapshots_leave_existing_billing_records_unchanged() {
+        let db = db();
+        record(&db, "s", None, "chat.turn.completed", &json!({"usage":{"inputTokens":11,"outputTokens":7}})).unwrap();
+        let billing = || db.transaction(|tx| {
+            Ok(tx.query_row("SELECT id,recorded_at,input_tokens,output_tokens FROM usage_records", [], |r| {
+                Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, i64>(2)?, r.get::<_, i64>(3)?))
+            })?)
+        }).unwrap();
+        let before = billing();
+        for total in [100, 200] {
+            record(&db, "s", None, "chat.context", &json!({"usage":{"inputTokens":total,"outputTokens":total}})).unwrap();
+        }
+        assert_eq!(billing(), before);
     }
     #[test]
     fn chat_context_ignores_a_missing_or_malformed_usage_object() {

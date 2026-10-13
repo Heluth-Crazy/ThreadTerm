@@ -2478,27 +2478,19 @@ fn parse_acp_option(value: &Value) -> Option<Value> {
 }
 
 /// ACP advertises booleans as `type:"boolean"`, or as a two-choice list whose
-/// values are on/off-style. Either way the option is an On/Off chip; its native
-/// values are preserved so `session/set_config_option` still receives them.
+/// values match the renderer's supported On/Off pairs. Native values remain
+/// preserved for `session/set_config_option`.
 fn acp_option_is_boolean(value: &Value, choices: &[Value]) -> bool {
-    if value.get("type").and_then(Value::as_str) == Some("boolean") {
-        return true;
-    }
     if choices.len() != 2 {
-        return false;
+        return choices.is_empty() && value.get("type").and_then(Value::as_str) == Some("boolean");
     }
-    choices.iter().all(|choice| {
-        choice
-            .get("value")
-            .and_then(Value::as_str)
-            .map(|candidate| {
-                matches!(
-                    candidate.to_ascii_lowercase().as_str(),
-                    "on" | "off" | "true" | "false" | "yes" | "no" | "enabled" | "disabled"
-                )
-            })
-            .unwrap_or(false)
-    })
+    let first = choices[0].get("value").and_then(Value::as_str);
+    let second = choices[1].get("value").and_then(Value::as_str);
+    matches!((first, second), (Some(a), Some(b))
+        if (a.eq_ignore_ascii_case("on") && b.eq_ignore_ascii_case("off"))
+            || (a.eq_ignore_ascii_case("off") && b.eq_ignore_ascii_case("on"))
+            || (a.eq_ignore_ascii_case("true") && b.eq_ignore_ascii_case("false"))
+            || (a.eq_ignore_ascii_case("false") && b.eq_ignore_ascii_case("true")))
 }
 
 fn parse_acp_command(value: &Value) -> Option<Value> {
@@ -4116,6 +4108,20 @@ mod tests {
         assert_eq!(state.options[0]["choices"][1]["value"], "false");
         assert_eq!(state.options[1]["kind"], "boolean");
         assert_eq!(state.options[2].get("kind"), None);
+    }
+
+    #[test]
+    fn only_renderer_supported_acp_pairs_become_boolean_chips() {
+        let choices = |yes: &str, no: &str| vec![json!({"value":yes}), json!({"value":no})];
+        for pair in [("on", "off"), ("ON", "OFF"), ("true", "false"), ("FALSE", "TRUE")] {
+            assert!(acp_option_is_boolean(&json!({}), &choices(pair.0, pair.1)), "{pair:?}");
+        }
+        for pair in [("yes", "no"), ("enabled", "disabled"), ("on", "false"), ("on", "on")] {
+            assert!(!acp_option_is_boolean(&json!({}), &choices(pair.0, pair.1)), "{pair:?}");
+        }
+        assert!(!acp_option_is_boolean(&json!({}), &[json!({"value":"yes"}), json!({"value":"no"}), json!({"value":"on"})]));
+        assert!(acp_option_is_boolean(&json!({"type":"boolean"}), &[]));
+        assert!(!acp_option_is_boolean(&json!({"type":"boolean"}), &choices("yes", "no")));
     }
 
     /// A JSON-RPC ACP fixture: rejects `thinking`, normalizes accepted model

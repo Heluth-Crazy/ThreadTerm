@@ -77,6 +77,9 @@ export class ClaudeSession {
     // API message ids that arrived as stream events; complete assistant messages
     // outside this set (local command output, synthetic errors) were never streamed.
     this.streamedIds = new Set();
+    // Context reads can settle out of order within one worker. Keep only the
+    // snapshot associated with the latest completed turn.
+    this.contextSequence = 0;
     // The turn the user asked to stop; its result reports `interrupted`.
     this.interruptedOperation = null;
   }
@@ -153,6 +156,8 @@ export class ClaudeSession {
   send(text, operationId) {
     if (this.ended || this.closed) throw new Error('session worker has ended');
     if (this.activeOperationId) throw new Error(`turn already active: ${this.activeOperationId}`);
+    // A prior turn's outstanding context read must not publish into this turn.
+    this.contextSequence += 1;
     this.activeOperationId = operationId;
     this.input.push(userMessage(text));
     this.write(event(this.cardId, 'session.status', { phase: 'running', sessionId: this.sessionId, operationId }));
@@ -327,11 +332,12 @@ export class ClaudeSession {
   // place the CLI's token-count API is consulted outside warm-up, and it is
   // never polled while idle. A failed or slow read simply produces no event.
   readContextUsage(message, operationId) {
+    const contextSequence = ++this.contextSequence;
     if (typeof this.query?.getContextUsage !== 'function') return;
     const usage = message?.usage ?? {};
     const read = withTimeout(this.query.getContextUsage({ detail: 'summary' }), CONTROL_TIMEOUT_MS, 'Claude context read');
     Promise.resolve(read).then(info => {
-      if (this.closed) return;
+      if (this.closed || contextSequence !== this.contextSequence) return;
       const payload = {};
       const put = (key, value) => { if (typeof value === 'number' && Number.isFinite(value) && value > 0) payload[key] = value; };
       put('usedTokens', info?.totalTokens);
@@ -341,7 +347,8 @@ export class ClaudeSession {
       put('outputTokens', usage.output_tokens);
       put('cacheReadTokens', usage.cache_read_input_tokens);
       put('cacheWriteTokens', usage.cache_creation_input_tokens);
-      const total = (Number(usage.input_tokens) || 0) + (Number(usage.output_tokens) || 0);
+      const total = (Number(usage.input_tokens) || 0) + (Number(usage.output_tokens) || 0)
+        + (Number(usage.cache_read_input_tokens) || 0) + (Number(usage.cache_creation_input_tokens) || 0);
       put('totalTokens', total);
       if (!Object.keys(payload).length) return;
       this.write(event(this.cardId, 'session.context', { usage: payload, sessionId: this.sessionId, operationId }));

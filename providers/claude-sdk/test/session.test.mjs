@@ -273,8 +273,42 @@ test('a completed turn reads context usage once and writes one session.context e
   assert.equal(contexts[0].usage.outputTokens, 4700);
   assert.equal(contexts[0].usage.cacheReadTokens, 60000);
   assert.equal(contexts[0].usage.cacheWriteTokens, 1000);
-  assert.equal(contexts[0].usage.totalTokens, 94700);
+  assert.equal(contexts[0].usage.totalTokens, 155700);
   assert.equal(contexts[0].operationId, 'turn-1');
+});
+
+test('an older context read settling last cannot replace the newer turn snapshot', async () => {
+  const { session, events } = harness();
+  const pending = [];
+  session.query = {
+    getContextUsage() { return new Promise(resolve => pending.push(resolve)); },
+  };
+
+  session.readContextUsage({ usage: { input_tokens: 10 } }, 'turn-1');
+  session.readContextUsage({ usage: { input_tokens: 20 } }, 'turn-2');
+  assert.equal(pending.length, 2);
+  pending[1]({ totalTokens: 20, maxTokens: 100, percentage: 20 });
+  await delay(0);
+  pending[0]({ totalTokens: 10, maxTokens: 100, percentage: 10 });
+  await delay(0);
+
+  const contexts = events.filter(value => value.ev === 'session.context');
+  assert.equal(contexts.length, 1, 'superseded context reads must not emit');
+  assert.equal(contexts[0].operationId, 'turn-2');
+  assert.equal(contexts[0].usage.usedTokens, 20);
+});
+
+test('a prior turn context read is ignored as soon as the next turn starts', async () => {
+  const { session, events } = harness();
+  let resolveContext;
+  session.query = { getContextUsage: () => new Promise(resolve => { resolveContext = resolve; }) };
+  session.send('first turn', 'turn-1');
+  session.readContextUsage({ usage: { input_tokens: 10 } }, 'turn-1');
+  session.activeOperationId = null;
+  session.send('next turn', 'turn-2');
+  resolveContext({ totalTokens: 10, maxTokens: 100, percentage: 10 });
+  await delay(0);
+  assert.equal(events.filter(value => value.ev === 'session.context').length, 0);
 });
 
 test('a missing context read and a failed one write no context event', async () => {
