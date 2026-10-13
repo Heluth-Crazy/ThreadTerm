@@ -62,7 +62,10 @@ window.threadterm={onPageContextMenu:()=>()=>{},platform:'win32',windowsPty:{bac
    return{projectId:'project',worktreePath:'D:/fixture',path,kind:'text',line:params.line,column:params.column};
   }
   if(method==='filesystem.read')return{path:params.path,content:files[params.path],readonly:false,fingerprint:'v1',size:files[params.path].length,modifiedAt:'now'};
- throw Error('Unexpected QA request '+method);
+  // ChatView mounts ChatNotes, which reads feedback on mount; return the real
+  // empty state so the unmocked read cannot render an error banner.
+  if(method==='chat.feedback.read')return{notes:[]};
+  throw Error('Unexpected QA request '+method);
  }};
 window.qaEmitUpdated=()=>listeners.forEach(listener=>listener({event:'chat.item',seq:2,epoch:'qa',data:{sessionId:session.id,item:{id:'answer',role:'assistant',createdAt:'now',parts:[{type:'text',text:answerText+'\\n\\n[updated](updated.md)'},toolPart]}}}));
 const other={...session,id:session.id+'-other',title:'Other '+provider};

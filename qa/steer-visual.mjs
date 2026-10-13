@@ -64,6 +64,9 @@ window.threadterm = {
       }
       return { disposition: 'delivered' };
     }
+    // ChatView mounts ChatNotes, which reads feedback on mount; return the real
+    // empty state so the unmocked read cannot render an error banner.
+    if (method === 'chat.feedback.read') return { notes: [] };
     throw Error('Unexpected QA request ' + method);
   },
 };
