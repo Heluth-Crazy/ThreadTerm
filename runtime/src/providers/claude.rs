@@ -559,7 +559,7 @@ impl ChatSession for ClaudeChat {
     }
     fn steer(
         &mut self,
-        _turn_id: &str,
+        turn_id: &str,
         text: &str,
         _images: &[String],
         operation_id: &str,
@@ -567,7 +567,7 @@ impl ChatSession for ClaudeChat {
         validate_native_id(operation_id)?;
         match self.process.sidecar_request(
             "session.steer",
-            json!({"cardId":self.session_id,"text":text,"operationId":operation_id}),
+            json!({"cardId":self.session_id,"text":text,"operationId":operation_id,"turnId":turn_id}),
         ) {
             Ok(_) => Ok(json!({"disposition":"delivered"})),
             Err(error) if claude_steer_rejected(&error) => Err(ProviderError::new(
@@ -3265,6 +3265,72 @@ createInterface({{ input: process.stdin, crlfDelay: Infinity }}).on('line', line
         let path = dir.join(format!("fake-host-{mode}.mjs"));
         std::fs::write(&path, script).unwrap();
         path
+    }
+
+    /// Minimal sidecar host that logs every `session.steer` request verbatim.
+    #[cfg(windows)]
+    fn fake_steer_host(dir: &std::path::Path) -> (PathBuf, PathBuf) {
+        let log = dir.join("steer-requests.jsonl");
+        let script = format!(
+            r#"import {{ createInterface }} from 'node:readline';
+import {{ appendFileSync }} from 'node:fs';
+const log = {};
+createInterface({{ input: process.stdin, crlfDelay: Infinity }}).on('line', line => {{
+  let req; try {{ req = JSON.parse(line); }} catch {{ return; }}
+  const write = value => process.stdout.write(JSON.stringify(value) + '\n');
+  if (req.op === 'host.ping') return write({{ id: req.id, ok: {{ pid: process.pid }} }});
+  if (req.op === 'session.start') return write({{ id: req.id, ok: {{ sessionId: req.sessionId ?? null, ui: {{ options: [], commands: [] }} }} }});
+  if (req.op === 'session.steer') {{
+    appendFileSync(log, JSON.stringify(req) + '\n');
+    if (req.turnId === 'stale-turn') return write({{ id: req.id, error: {{ message: 'turn_changed: The turn ended before the message was inserted' }} }});
+    return write({{ id: req.id, ok: {{ disposition: 'delivered' }} }});
+  }}
+  if (req.op === 'session.stop') return write({{ id: req.id, ok: {{}} }});
+  write({{ id: req.id, error: {{ message: 'unsupported op' }} }});
+}});
+"#,
+            serde_json::to_string(&log.to_string_lossy().into_owned()).unwrap()
+        );
+        let path = dir.join("fake-steer-host.mjs");
+        std::fs::write(&path, script).unwrap();
+        (path, log)
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn steer_forwards_the_target_turn_and_maps_turn_changed() {
+        let Some(node) = crate::providers::common::find_executable("node") else {
+            eprintln!("node is unavailable; skipping the steer fixture test");
+            return;
+        };
+        let dir = tempfile::tempdir().unwrap();
+        let mut environment = EnvironmentRestore(Vec::new());
+        environment.set("THREADTERM_CLAUDE_NODE", node);
+        let (host, log) = fake_steer_host(dir.path());
+        environment.set("THREADTERM_CLAUDE_SDK_HOST", &host);
+        let adapter = ClaudeAdapter::new(crate::provider_events::tap_channel(16).0);
+        let cwd = dir.path().to_string_lossy().into_owned();
+        let mut chat = adapter.open_chat("card-steer", &cwd, None).unwrap();
+        let delivered = chat
+            .steer("turn-1", "while you work", &[], "steer-op")
+            .unwrap();
+        assert_eq!(delivered, json!({"disposition":"delivered"}));
+        let rejected = chat
+            .steer("stale-turn", "too late", &[], "steer-stale")
+            .unwrap_err();
+        assert_eq!(rejected.code, "turn_changed");
+        chat.stop().unwrap();
+        let lines: Vec<Value> = std::fs::read_to_string(&log)
+            .unwrap()
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect();
+        assert_eq!(lines.len(), 2);
+        assert_eq!(lines[0]["op"], "session.steer");
+        assert_eq!(lines[0]["turnId"], "turn-1");
+        assert_eq!(lines[0]["operationId"], "steer-op");
+        assert_eq!(lines[0]["text"], "while you work");
+        assert_eq!(lines[1]["turnId"], "stale-turn");
     }
 
     #[cfg(windows)]

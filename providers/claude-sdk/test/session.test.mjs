@@ -545,7 +545,7 @@ test('steer while a turn is active delivers once and does not replace the turn',
   assert.equal(session.pendingSteers.size, 0);
   session.send('hello', 'op-1');
   seen.length = 0;
-  assert.deepEqual(session.steer('while you work', 'steer-1'), { disposition: 'delivered' });
+  assert.deepEqual(session.steer('while you work', 'steer-1', 'op-1'), { disposition: 'delivered' });
   assert.equal(session.activeOperationId, 'op-1');
   assert.equal(seen.length, 1);
   assert.match(seen[0].uuid, UUID_RE, 'a non-uuid operation id is never sent as the client uuid');
@@ -554,9 +554,29 @@ test('steer while a turn is active delivers once and does not replace the turn',
   assert.equal(seen[0].message.content[0].text, 'while you work');
   assert.equal(seen[0].uuid !== undefined, true);
   session.input.end();
-  assert.throws(() => session.steer('after close', 'steer-2'), /The turn ended before the message was inserted/);
+  assert.throws(() => session.steer('after close', 'steer-2', 'op-1'), /The turn ended before the message was inserted/);
   assert.equal(session.pendingSteers.has('steer-2'), false);
   assert.equal(session.activeOperationId, 'op-1');
+});
+
+test('a steer aimed at a replaced turn is refused before anything reaches the SDK input', () => {
+  const { session } = harness();
+  const seen = [];
+  const push = session.input.push.bind(session.input);
+  session.input.push = value => { seen.push(structuredClone(value)); return push(value); };
+  session.send('hello', 'op-1');
+  seen.length = 0;
+  assert.throws(() => session.steer('wrong turn', 'steer-1', 'op-2'), /The turn ended before the message was inserted/);
+  assert.equal(seen.length, 0, 'a refused steer never reaches the SDK input');
+  assert.equal(session.pendingSteers.size, 0);
+  assert.equal(session.steerUuids.size, 0);
+  assert.equal(session.activeOperationId, 'op-1');
+  assert.deepEqual(session.steer('right turn', 'steer-1', 'op-1'), { disposition: 'delivered' });
+  // The adopted carry form is the same id space: carry:<operationId>.
+  session.activeOperationId = 'carry:steer-9';
+  assert.throws(() => session.steer('stale target', 'steer-2', 'op-1'), /The turn ended before the message was inserted/);
+  assert.deepEqual(session.steer('into the carry', 'steer-3', 'carry:steer-9'), { disposition: 'delivered' });
+  assert.equal(session.pendingSteers.has('steer-3'), true);
 });
 
 test('a result consumes steered uuids and an unconsumed steer is adopted on the next message only', async () => {
@@ -566,7 +586,7 @@ test('a result consumes steered uuids and an unconsumed steer is adopted on the 
   try {
     await session.start({ cwd: 'C:/' });
     session.send('hello', 'op-1');
-    session.steer('kept', 'steer-kept');
+    session.steer('kept', 'steer-kept', 'op-1');
     const keptUuid = [...session.steerUuids.keys()][0];
     query.push({ type: 'result', user_message_uuids: [keptUuid], is_error: false });
     await delay(30);
@@ -579,7 +599,7 @@ test('a result consumes steered uuids and an unconsumed steer is adopted on the 
     assert.equal(events.filter(event => event.ev === 'session.status' && event.phase === 'running').map(event => event.operationId).join(','), 'op-1');
 
     session.send('again', 'op-2');
-    session.steer('carried', 'steer-carry');
+    session.steer('carried', 'steer-carry', 'op-2');
     query.push({ type: 'result', user_message_uuids: [], is_error: false });
     await delay(30);
     assert.equal(session.carryArmed, true);
@@ -605,7 +625,7 @@ test('a uuid operation id is sent verbatim as the client uuid for send and steer
   session.send('hello', uuid);
   assert.equal(seen[0].uuid, uuid, 'send stamps the operation id when it is a uuid');
   seen.length = 0;
-  assert.deepEqual(session.steer('while you work', uuid), { disposition: 'delivered' });
+  assert.deepEqual(session.steer('while you work', uuid, uuid), { disposition: 'delivered' });
   assert.equal(seen[0].uuid, uuid, 'steer stamps the operation id when it is a uuid');
   assert.equal(session.steerUuids.get(uuid), uuid);
   session.input.end();
@@ -618,7 +638,7 @@ test('a result consumes steers from either uuid field and a fieldless result arm
   try {
     await session.start({ cwd: 'C:/' });
     session.send('one', 'op-a');
-    session.steer('s1', 'steer-a');
+    session.steer('s1', 'steer-a', 'op-a');
     const steerAUuid = [...session.steerUuids.keys()][0];
     query.push({ type: 'result', user_message_uuid: steerAUuid, is_error: false });
     await delay(30);
@@ -627,7 +647,7 @@ test('a result consumes steers from either uuid field and a fieldless result arm
     assert.equal(session.carryArmed, false);
 
     session.send('two', 'op-b');
-    session.steer('s2', 'steer-b');
+    session.steer('s2', 'steer-b', 'op-b');
     query.push({ type: 'result', is_error: false, duration_ms: 0 });
     await delay(30);
     assert.equal(session.pendingSteers.size, 0, 'a fieldless result consumes every pending steer');
@@ -651,7 +671,7 @@ test('a carry is adopted only on model activity or the matching user echo, never
   try {
     await session.start({ cwd: 'C:/' });
     session.send('one', 'op-a');
-    session.steer('s1', 'steer-a');
+    session.steer('s1', 'steer-a', 'op-a');
     query.push({ type: 'result', user_message_uuids: [], is_error: false });
     await delay(30);
     assert.equal(session.carryArmed, true);
@@ -677,7 +697,7 @@ test('a send while a carry is armed owns the next turn and drops the stale steer
   try {
     await session.start({ cwd: 'C:/' });
     session.send('one', 'op-a');
-    session.steer('s1', 'steer-a');
+    session.steer('s1', 'steer-a', 'op-a');
     query.push({ type: 'result', user_message_uuids: [], is_error: false });
     await delay(30);
     assert.equal(session.carryArmed, true);

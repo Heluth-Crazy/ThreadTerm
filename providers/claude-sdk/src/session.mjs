@@ -208,8 +208,11 @@ export class ClaudeSession {
     this.write(event(this.cardId, 'session.status', { phase: 'running', sessionId: this.sessionId, operationId }));
   }
 
-  steer(text, operationId) {
-    if (this.ended || this.closed || !this.activeOperationId) {
+  steer(text, operationId, turnId) {
+    // The renderer names the turn it sees running; for Claude that id is the
+    // send's operation id, or the adopted carry:<op> form. A steer aimed at a
+    // turn that has since been replaced must never land in the new one.
+    if (this.ended || this.closed || !this.activeOperationId || this.activeOperationId !== turnId) {
       const error = new Error('turn_changed: The turn ended before the message was inserted');
       error.code = 'turn_changed';
       throw error;
