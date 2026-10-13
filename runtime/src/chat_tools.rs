@@ -732,13 +732,28 @@ impl ChatTools {
     /// E2: the user sent unread notes as a message, so retire exactly those
     /// rows. Scoped to the session, and only rows still `waiting` are removed.
     pub(crate) fn feedback_dismiss(&self, request: FeedbackDismiss) -> Result<Value> {
-        if request.session_id.is_empty() || request.note_ids.is_empty() || request.note_ids.len() > MAX_FEEDBACK_READ as usize {
+        if request.session_id.is_empty() || request.note_ids.is_empty() || request.operation_id.is_empty() || request.note_ids.len() > MAX_FEEDBACK_READ as usize {
             return Err(anyhow!("invalid_feedback"));
         }
         if self.db.session_by_id(&request.session_id)?.is_none() {
             return Err(anyhow!("session_not_found"));
         }
         self.db.transaction(|tx| {
+            // A bounded operation receipt makes a retried dismiss replay its
+            // exact result instead of reporting an empty removal.
+            let existing: Option<(String, String)> = tx
+                .query_row(
+                    "SELECT method,result FROM operations WHERE id=?",
+                    [&request.operation_id],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .optional()?;
+            if let Some((method, existing)) = existing {
+                if method != "chat.feedback.dismiss" {
+                    return Err(anyhow!("operation_conflict"));
+                }
+                return Ok(serde_json::from_str(&existing)?);
+            }
             let mut removed = Vec::new();
             for id in &request.note_ids {
                 let changed = tx.execute(
@@ -752,7 +767,12 @@ impl ChatTools {
             if !removed.is_empty() {
                 emit_feedback_change(tx, &request.session_id, &[], &removed)?;
             }
-            Ok(json!({"removed":removed}))
+            let result = json!({"removed":removed});
+            tx.execute(
+                "INSERT INTO operations(id,method,result,created_at) VALUES(?,?,?,?)",
+                params![request.operation_id, "chat.feedback.dismiss", serde_json::to_string(&result)?, Utc::now().to_rfc3339()],
+            )?;
+            Ok(result)
         })
     }
 
@@ -906,6 +926,7 @@ pub(crate) struct FeedbackAdd {
 pub(crate) struct FeedbackDismiss {
     pub session_id: String,
     pub note_ids: Vec<String>,
+    pub operation_id: String,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]

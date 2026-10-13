@@ -567,16 +567,30 @@ fn dismiss_removes_only_waiting_notes_of_that_session_once() {
         .feedback_dismiss(FeedbackDismiss {
             session_id: fixture.session.clone(),
             note_ids: vec![first.clone()],
+            operation_id: "dismiss-op".into(),
         })
         .unwrap();
     assert_eq!(dismissed, json!({"removed":[first]}));
-    // A replay removes nothing and is not an error.
+    // Replaying the same operation returns its stored result.
+    assert_eq!(
+        fixture
+            .tools
+            .feedback_dismiss(FeedbackDismiss {
+                session_id: fixture.session.clone(),
+                note_ids: vec![first.clone()],
+                operation_id: "dismiss-op".into(),
+            })
+            .unwrap(),
+        dismissed
+    );
+    // A different operation removes nothing and is not an error.
     assert_eq!(
         fixture
             .tools
             .feedback_dismiss(FeedbackDismiss {
                 session_id: fixture.session.clone(),
                 note_ids: vec![first],
+                operation_id: "dismiss-op-two".into(),
             })
             .unwrap(),
         json!({"removed":[]})
@@ -593,6 +607,7 @@ fn dismiss_removes_only_waiting_notes_of_that_session_once() {
         .feedback_dismiss(FeedbackDismiss {
             session_id: fixture.session,
             note_ids: vec![],
+            operation_id: "dismiss-op-three".into(),
         })
         .is_err());
 }
@@ -838,6 +853,115 @@ fn feedback_public_rpc_requires_lease_and_operation_payload_is_idempotent() {
     assert_eq!(
         service
             .dispatch("desktop", request("first", lease))
+            .unwrap_err()
+            .code,
+        "stale_lease"
+    );
+}
+
+#[test]
+fn feedback_dismiss_public_rpc_requires_lease_and_operation_replay_is_idempotent() {
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("runtime.sqlite");
+    let db = Arc::new(Database::open(&path).unwrap());
+    crate::session_configs::initialize(&db).unwrap();
+    let session = create_chat(&db, "rpc-dismiss", "rpc-dismiss-session");
+    start_turn(&db, &session, "turn");
+    let service = RuntimeService::new(
+        RuntimeConfig {
+            data_dir: root.path().to_owned(),
+            database_path: path,
+            credential_path: root.path().join("credential"),
+            pipe_base: "chat-tool-dismiss-test".into(),
+        },
+        Arc::clone(&db),
+    );
+    let lease = service
+        .dispatch(
+            "desktop",
+            RpcRequest {
+                v: 1,
+                id: "claim".into(),
+                method: "session.claim".into(),
+                params: json!({"sessionId":session}),
+            },
+        )
+        .unwrap()["leaseEpoch"]
+        .as_i64()
+        .unwrap();
+    let note_id = service
+        .dispatch(
+            "desktop",
+            RpcRequest {
+                v: 1,
+                id: "note".into(),
+                method: "chat.feedback.add".into(),
+                params: json!({
+                    "sessionId":session,
+                    "turnId":"turn",
+                    "text":"prefer the narrow reading",
+                    "operationId":"add-note",
+                    "leaseEpoch":lease,
+                }),
+            },
+        )
+        .unwrap()["note"]["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let request = |note_ids: Value, lease_epoch: i64| RpcRequest {
+        v: 1,
+        id: "dismiss".into(),
+        method: "chat.feedback.dismiss".into(),
+        params: json!({
+            "sessionId":session,
+            "noteIds":note_ids,
+            "operationId":"dismiss-operation",
+            "leaseEpoch":lease_epoch,
+        }),
+    };
+    let first = service
+        .dispatch("desktop", request(json!([note_id.clone()]), lease))
+        .unwrap();
+    assert_eq!(first, json!({"removed":[note_id.clone()]}));
+    // The same operation replays its stored result, not an empty removal.
+    assert_eq!(
+        service
+            .dispatch("desktop", request(json!([note_id.clone()]), lease))
+            .unwrap(),
+        first
+    );
+    // A different payload under the same operation id conflicts.
+    assert_eq!(
+        service
+            .dispatch("desktop", request(json!(["other-note"]), lease))
+            .unwrap_err()
+            .code,
+        "operation_conflict"
+    );
+    // A missing lease is refused before the operation is reserved.
+    assert_eq!(
+        service
+            .dispatch("desktop", request(json!([note_id.clone()]), 0))
+            .unwrap_err()
+            .code,
+        "stale_lease"
+    );
+    // A lease from a released claim is stale too.
+    service
+        .dispatch(
+            "desktop",
+            RpcRequest {
+                v: 1,
+                id: "release".into(),
+                method: "session.release".into(),
+                params: json!({"sessionId":session,"leaseEpoch":lease}),
+            },
+        )
+        .unwrap();
+    assert_eq!(
+        service
+            .dispatch("desktop", request(json!([note_id]), lease))
             .unwrap_err()
             .code,
         "stale_lease"

@@ -5,7 +5,7 @@
 // reports the exact notes it received. No provider binary is started.
 import { spawn } from 'node:child_process';
 import { createInterface } from 'node:readline';
-import { existsSync } from 'node:fs';
+import { existsSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 
 const send = value => process.stdout.write(`${JSON.stringify(value)}\n`);
@@ -51,7 +51,7 @@ const sleep = ms => new Promise(done => setTimeout(done, ms));
 async function waitForNote(cwd) {
   const marker = join(cwd, '.qa-note-sent');
   for (let index = 0; index < 300; index++) {
-    if (existsSync(marker)) return true;
+    if (existsSync(marker)) { rmSync(marker, { force: true }); return true; }
     await sleep(100);
   }
   return false;
@@ -80,6 +80,10 @@ else if (process.argv.includes('--acp')) createInterface({ input: process.stdin,
       chunk('WAITING_FOR_NOTE');
       const ready = await waitForNote(cwd);
       chunk(ready ? 'NOTE_READY' : 'NOTE_TIMEOUT');
+      // The hold marker keeps the note unread: the turn ends without a
+      // feedback_check so the UI must offer Send as message.
+      const hold = join(cwd, '.qa-note-hold');
+      if (existsSync(hold)) { rmSync(hold, { force: true }); chunk('NOTE_HELD'); return reply({}); }
       const result = await callTool(server, 'feedback_check', {});
       chunk(`NOTE_RESULT ${JSON.stringify(result)}`);
     } catch (error) {

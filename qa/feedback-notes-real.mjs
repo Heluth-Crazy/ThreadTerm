@@ -86,6 +86,33 @@ try {
   await page.screenshot({ path: join(out, 'note-received.png'), animations: 'disabled' });
   report.screenshots.push('note-received.png');
   report.checks.push('fake ACP calls feedback_check mid-turn; the note flips Waiting to Received and survives chat.feedback.read');
+
+  // E2-1: an unread note at turn end must clear through the real dismiss RPC.
+  await composer.fill('run another long job');
+  await scope.locator('.chat-compose-send').click();
+  await until(async () => (await scope.innerText()).includes('WAITING_FOR_NOTE'), 'second turn waits for a note');
+  await composer.fill('Keep this for the next check');
+  await scope.locator('[data-testid="steer-send"] [aria-label="More send actions"]').click();
+  await scope.locator('[data-testid="steer-note"]').click();
+  await until(async () => await scope.locator('[data-testid="chat-note"][data-note-status="waiting"]').count() === 1, 'waiting note appears before turn end');
+  await writeFile(join(work, '.qa-note-hold'), 'hold');
+  await writeFile(join(work, '.qa-note-sent'), 'go');
+  await until(async () => (await scope.innerText()).includes('NOTE_HELD'), 'fixture ends the turn with the note unread');
+  await until(async () => await scope.locator('[data-testid="note-send-message"]').count() === 1, 'turn end offers Send as message');
+  const waitingRead = await request('chat.feedback.read', { sessionId: session.id });
+  assert.equal(waitingRead.notes.filter(note => note.status === 'waiting').length, 1, 'the unread note is stored at turn end');
+  await page.screenshot({ path: join(out, 'turnend-waiting.png'), animations: 'disabled' });
+  report.screenshots.push('turnend-waiting.png');
+  await scope.locator('[data-testid="note-send-message"]').click();
+  await until(async () => await scope.locator('[data-testid="chat-note"][data-note-status="waiting"]').count() === 0, 'Send as message clears the note');
+  const cleared = await request('chat.feedback.read', { sessionId: session.id });
+  assert.equal(cleared.notes.filter(note => note.status === 'waiting').length, 0, 'the dismiss RPC removed the waiting note');
+  assert.doesNotMatch(await scope.innerText(), /operation_conflict/, 'no dismiss conflict is shown');
+  assert.match(await scope.innerText(), /Keep this for the next check/, 'the note was sent as a message');
+  await page.screenshot({ path: join(out, 'send-as-message.png'), animations: 'disabled' });
+  report.screenshots.push('send-as-message.png');
+  report.checks.push('turn-end Send as message sends the note text and clears it through the real chat.feedback.dismiss RPC');
+
   assert.deepEqual(report.errors, []);
   report.passed = true;
 } catch (error) {
