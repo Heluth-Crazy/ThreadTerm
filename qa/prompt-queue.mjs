@@ -118,7 +118,7 @@ try {
   // While the fixture holds the first turn open, composer Enter must enqueue.
   await submitFromComposer('slow:10000 seed');
   await until(async () => (await request('runtime.snapshot')).sessions.find(item => item.id === session.id)?.status === 'running', 'slow turn running');
-  await until(async () => /queue|加入队列|队列/i.test((await send().innerText()).trim()) ? true : undefined, 'active-turn composer switches Send to Queue');
+  await until(async () => /queue|加入队列|队列/i.test(((await send().getAttribute('aria-label')) ?? '').trim()) ? true : undefined, 'active-turn composer switches Send to Queue');
   await submitFromComposer('queue one');
   await submitFromComposer('queue two');
   await submitFromComposer('queue three');
