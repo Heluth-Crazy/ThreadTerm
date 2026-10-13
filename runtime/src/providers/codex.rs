@@ -4160,6 +4160,7 @@ fn codex_transcript_items(thread: &Value) -> Vec<Value> {
     let source_native_id = thread.get("id").and_then(Value::as_str);
     for (turn_index, turn) in turns.into_iter().enumerate() {
         let turn_id = turn.get("id").and_then(Value::as_str);
+        let turn_start = transcript.len();
         for item in turn
             .get("items")
             .and_then(Value::as_array)
@@ -4234,7 +4235,9 @@ fn codex_transcript_items(thread: &Value) -> Vec<Value> {
             }
             transcript.push(chat_item);
         }
-        transcript.push(codex_turn_boundary(&turn, turn_id, turn_index, &transcript));
+        // Live completion attaches status to the assistant item. An empty
+        // history boundary would otherwise show up as a second assistant row.
+        attach_codex_turn_boundary(&mut transcript, turn_start, &turn, turn_id, turn_index);
     }
     transcript
 }
@@ -4317,6 +4320,36 @@ fn codex_message_phase(item: &Value) -> Option<String> {
             .map(str::to_owned),
         _ => None,
     }
+}
+
+fn attach_codex_turn_boundary(
+    transcript: &mut Vec<Value>,
+    turn_start: usize,
+    turn: &Value,
+    turn_id: Option<&str>,
+    turn_index: usize,
+) {
+    let boundary = codex_turn_boundary(turn, turn_id, turn_index, transcript);
+    let empty = boundary
+        .get("parts")
+        .and_then(Value::as_array)
+        .is_some_and(|parts| parts.is_empty());
+    if empty {
+        if let Some(target) = transcript[turn_start..]
+            .iter_mut()
+            .rev()
+            .find(|item| item.get("role").and_then(Value::as_str) == Some("assistant"))
+        {
+            if let Some(status) = boundary.get("turnStatus").cloned() {
+                target["turnStatus"] = status;
+            }
+            if let Some(elapsed) = boundary.get("elapsedMs").cloned() {
+                target["elapsedMs"] = elapsed;
+            }
+            return;
+        }
+    }
+    transcript.push(boundary);
 }
 
 fn codex_turn_boundary(
@@ -5418,7 +5451,7 @@ createInterface({{ input: process.stdin, crlfDelay: Infinity }}).on('line', line
                 "prompt":"task","model":"test-model","agentsStates":{"one":{"status":"errored"},"two":{"status":"shutdown"}}},
             {"id":"answer","type":"agentMessage","text":"parent answer"}
         ]}]}));
-        assert_eq!(items.len(), 4);
+        assert_eq!(items.len(), 3);
         assert_eq!(items[0]["parts"][0]["status"], "completed");
         assert_eq!(items[1]["parts"][0]["status"], "failed");
         assert_eq!(items[1]["parts"][1]["status"], "cancelled");
@@ -5433,8 +5466,14 @@ createInterface({{ input: process.stdin, crlfDelay: Infinity }}).on('line', line
             assert_eq!(part["data"]["native"]["id"], part["toolId"]);
         }
         assert_eq!(items[2]["parts"][0]["text"], "parent answer");
-        assert_eq!(items[3]["turnId"], "history-turn");
-        assert_eq!(items[3]["turnStatus"], "unknown");
+        assert_eq!(items[2]["turnId"], "history-turn");
+        assert_eq!(items[2]["turnStatus"], "unknown");
+        assert!(items.iter().all(|item| {
+            !item["id"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("boundary")
+        }));
     }
 
     #[test]
@@ -5453,9 +5492,9 @@ createInterface({{ input: process.stdin, crlfDelay: Infinity }}).on('line', line
                 "repair-codex-user",
                 "repair-codex-assistant",
                 "repair-codex-tool",
-                "turn:repair-codex-turn:boundary"
             ]
         );
+        assert_eq!(items[1]["turnStatus"], "unknown");
     }
 
     #[test]
@@ -5805,8 +5844,9 @@ createInterface({{ input: process.stdin, crlfDelay: Infinity }}).on('line', line
             items[2]["parts"][0]["fileReferences"],
             json!([{"path":"src/a.rs"},{"path":"src/b.rs"}])
         );
-        assert_eq!(items[3]["turnId"], "turn_1");
-        assert_eq!(items[3]["turnStatus"], "unknown");
+        assert_eq!(items.len(), 3);
+        assert_eq!(items[0]["turnId"], "turn_1");
+        assert_eq!(items[0]["turnStatus"], "unknown");
     }
 
     #[test]
@@ -5914,20 +5954,54 @@ process.on('exit', () => clearTimeout(timeout));
             {"id":"unknown","durationMs":23,"items":[]}
         ]}));
         assert_eq!(items.iter().map(|item| item["id"].as_str().unwrap()).collect::<Vec<_>>(), vec![
-            "thought", "answer", "turn:finished:boundary", "turn:failed:boundary", "turn:unknown:boundary"
+            "thought", "answer", "turn:failed:boundary", "turn:unknown:boundary"
         ]);
         assert_eq!(items[0]["parts"][0]["type"], "thinking");
         assert_eq!(items[0]["parts"][0]["text"], "inspect\nthen report");
         assert_eq!(items[0]["parts"][0]["data"]["content"][0], "private");
         assert_eq!(items[1]["parts"][0]["phase"], "final_answer");
-        assert_eq!(items[2]["turnStatus"], "completed");
-        assert_eq!(items[2]["elapsedMs"], 0);
-        assert_eq!(items[3]["turnStatus"], "failed");
-        assert_eq!(items[3]["elapsedMs"], 17);
-        assert_eq!(items[3]["parts"][0]["type"], "error");
-        assert_eq!(items[3]["parts"][0]["data"]["native"]["message"], "native failure");
-        assert_eq!(items[4]["turnStatus"], "unknown");
-        assert_eq!(items[4]["elapsedMs"], 23);
+        assert_eq!(items[1]["turnStatus"], "completed");
+        assert_eq!(items[1]["elapsedMs"], 0);
+        assert_eq!(items[2]["turnStatus"], "failed");
+        assert_eq!(items[2]["elapsedMs"], 17);
+        assert_eq!(items[2]["parts"][0]["type"], "error");
+        assert_eq!(items[2]["parts"][0]["data"]["native"]["message"], "native failure");
+        assert_eq!(items[3]["turnStatus"], "unknown");
+        assert_eq!(items[3]["elapsedMs"], 23);
+    }
+
+    #[test]
+    fn fork_from_the_first_reply_keeps_only_that_turn_without_a_duplicate_assistant() {
+        let first = json!({
+            "id":"turn-1","status":"completed","items":[
+                {"id":"user-1","type":"userMessage","content":[{"type":"text","text":"first point"}]},
+                {"id":"reply-1","type":"agentMessage","text":"QA reply 1: first point","phase":"final_answer"}
+            ]
+        });
+        let second = json!({
+            "id":"turn-2","status":"completed","items":[
+                {"id":"user-2","type":"userMessage","content":[{"type":"text","text":"second point"}]},
+                {"id":"reply-2","type":"agentMessage","text":"QA reply 2: second point","phase":"final_answer"}
+            ]
+        });
+        let child = codex_transcript_items(&json!({"id":"forked-thread","turns":[first.clone()]}));
+        assert_eq!(
+            child.iter().map(|item| item["role"].as_str().unwrap()).collect::<Vec<_>>(),
+            vec!["user", "assistant"]
+        );
+        assert!(child.iter().any(|item| item["parts"].as_array().unwrap().iter().any(|part| {
+            part["text"].as_str().unwrap_or_default().contains("first point")
+        })));
+        assert!(child.iter().all(|item| item["parts"].as_array().unwrap().iter().all(|part| {
+            !part["text"].as_str().unwrap_or_default().contains("second point")
+        })));
+        assert_eq!(child[1]["turnStatus"], "completed");
+        assert_eq!(child[1]["forkAnchor"]["turnId"], "turn-1");
+        let whole = codex_transcript_items(&json!({"id":"source-thread","turns":[first, second]}));
+        assert_eq!(
+            whole.iter().map(|item| item["role"].as_str().unwrap()).collect::<Vec<_>>(),
+            vec!["user", "assistant", "user", "assistant"]
+        );
     }
 
     #[test]
