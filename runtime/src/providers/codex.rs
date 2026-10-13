@@ -1314,8 +1314,31 @@ struct CodexUiState {
     options_error: Option<ProviderError>,
     // Proposed edits are scoped by native thread, turn and item; bounded per connection.
     proposed_edits: HashMap<(String, String, String), Value>,
-    plan_candidate: Option<(String, String)>,
+    plan_candidate: Option<CodexPlanCandidate>,
     pending_plan: Option<CodexPlanApproval>,
+}
+
+/// A native Codex `plan` item held until its turn ends. The plan approval
+/// card owns the Markdown when the turn completes in plan mode; every other
+/// ending (interrupted, failed, default mode, a stale turn, or a new turn
+/// without a completion) still has to reach the transcript, so the text is
+/// kept until ownership is decided.
+#[derive(Clone)]
+struct CodexPlanCandidate {
+    turn_id: String,
+    item_id: Option<String>,
+    text: String,
+}
+
+impl CodexPlanCandidate {
+    fn into_approval(self) -> CodexPlanApproval {
+        CodexPlanApproval {
+            id: format!("plan:{}", self.turn_id),
+            turn_id: self.turn_id,
+            plan: self.text,
+            action: None,
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -2909,6 +2932,31 @@ fn remember_codex_edits(ui: &Mutex<CodexUiState>, method: &str, params: &Value) 
     }
 }
 
+/// Project a held native plan item as ordinary transcript text. Used whenever
+/// no plan approval card takes ownership of the Markdown, so a plan can never
+/// be silently dropped by the card suppression. The `plan` item type is the
+/// same shape the shared projection already renders as a text part.
+fn emit_codex_plan_text(
+    events: &crate::provider_events::Sender,
+    session_id: &str,
+    native_id: Option<&str>,
+    turn_id: Option<&str>,
+    worker_token: &str,
+    item_id: Option<&str>,
+    text: &str,
+) {
+    emit_scoped(
+        events,
+        "codex",
+        session_id,
+        native_id,
+        turn_id,
+        "chat.item",
+        json!({"item":{"id":item_id,"type":"plan","text":text}}),
+        Some(worker_token),
+    );
+}
+
 #[allow(clippy::too_many_arguments)]
 fn emit_codex_message(
     events: &crate::provider_events::Sender,
@@ -3191,18 +3239,37 @@ fn emit_codex_message(
         return;
     }
     if method == "turn/started" {
-        if let Ok(mut state) = ui.lock() { state.plan_candidate = None; }
+        // A new turn means the previous one will never complete. Flush a held
+        // plan item instead of dropping it when its completion never arrives.
+        let stale = ui.lock().ok().and_then(|mut state| state.plan_candidate.take());
+        if let Some(stale) = stale {
+            emit_codex_plan_text(events, session_id, native_id.as_deref(), Some(&stale.turn_id), worker_token, stale.item_id.as_deref(), &stale.text);
+        }
     }
     // Plan deltas are not guaranteed to concatenate. Review the authoritative
-    // completed Markdown item, including an explicitly empty plan. The plan
-    // approval card owns this Markdown, so the native item must not also be
-    // projected as a transcript text part.
+    // completed Markdown item, including an explicitly empty plan. In plan mode
+    // the approval card owns this Markdown, so the native item is held until
+    // the turn ends and only projected as transcript text when no card takes
+    // ownership (interrupted, failed, default mode, stale or missing turn).
     if matches!(method, "item/started" | "item/completed") && provider_item_type == Some("plan") {
         if method == "item/completed" {
-            if let (Some(public), Some(native_turn), Some(text)) = (turn_id.as_deref(), provider_turn_id, params.pointer("/item/text").and_then(Value::as_str)) {
-                let matches_active = active_turn.0.lock().ok().is_some_and(|active| active.as_ref().is_some_and(|active| active.public_id == public && active.native_id.as_deref() == Some(native_turn)));
+            if let Some(text) = params.pointer("/item/text").and_then(Value::as_str) {
+                let matches_active = match (turn_id.as_deref(), provider_turn_id) {
+                    (Some(public), Some(native_turn)) => active_turn.0.lock().ok().is_some_and(|active| active.as_ref().is_some_and(|active| active.public_id == public && active.native_id.as_deref() == Some(native_turn))),
+                    _ => false,
+                };
                 if matches_active {
-                    if let Ok(mut state) = ui.lock() { state.plan_candidate = Some((public.into(), text.into())); }
+                    if let (Ok(mut state), Some(public)) = (ui.lock(), turn_id.as_deref()) {
+                        state.plan_candidate = Some(CodexPlanCandidate {
+                            turn_id: public.into(),
+                            item_id: provider_item_id.map(ToOwned::to_owned),
+                            text: text.into(),
+                        });
+                    }
+                } else {
+                    // The item belongs to a turn this connection no longer
+                    // tracks, so it can never become a card; show it as text.
+                    emit_codex_plan_text(events, session_id, native_id.as_deref(), turn_id.as_deref(), worker_token, provider_item_id, text);
                 }
             }
         }
@@ -3369,17 +3436,32 @@ fn emit_codex_message(
     if matches!(method, "turn/completed" | "thread/compacted" | "error") {
         if let Some(turn_id) = turn_id {
             clear_codex_turn(active_turn, &turn_id);
-            let plan = ui.lock().ok().and_then(|mut state| {
-                let candidate = state.plan_candidate.take();
-                if method != "turn/completed" || params.pointer("/turn/status").and_then(Value::as_str) != Some("completed") || option_value(Some(&state), "collaboration").as_deref() != Some("plan") { return None; }
-                let (candidate_turn, text) = candidate.filter(|(id, _)| id == &turn_id)?;
-                let plan = CodexPlanApproval { id: format!("plan:{candidate_turn}"), turn_id: candidate_turn, plan: text, action: None };
-                state.pending_plan = Some(plan.clone());
-                Some(plan)
-            });
+            // The card owns the held plan only when this turn really completed
+            // in plan mode. Everything else falls back to transcript text so the
+            // plan is never lost.
+            let (plan, orphan) = match ui.lock() {
+                Ok(mut state) => {
+                    let candidate = state.plan_candidate.take();
+                    let owns = method == "turn/completed"
+                        && params.pointer("/turn/status").and_then(Value::as_str) == Some("completed")
+                        && option_value(Some(&state), "collaboration").as_deref() == Some("plan");
+                    match candidate.filter(|candidate| candidate.turn_id == turn_id) {
+                        Some(candidate) if owns => {
+                            let plan = candidate.into_approval();
+                            state.pending_plan = Some(plan.clone());
+                            (Some(plan), None)
+                        }
+                        candidate => (None, candidate),
+                    }
+                }
+                Err(_) => (None, None),
+            };
             if let Some(plan) = plan {
                 let payload = codex_plan_payload(&plan);
                 emit_scoped(events, "codex", session_id, native_id.as_deref(), Some(&turn_id), "chat.approval", json!({"approvalId":plan.id,"part":{"type":"approval","approvalId":plan.id,"status":"pending","data":payload}}), Some(worker_token));
+            }
+            if let Some(candidate) = orphan {
+                emit_codex_plan_text(events, session_id, native_id.as_deref(), Some(&turn_id), worker_token, candidate.item_id.as_deref(), &candidate.text);
             }
             if let Ok(mut pending) = approvals.lock() {
                 drain_inactive_approvals(&mut pending, |item| item.turn_id.as_deref(), None);
@@ -3519,7 +3601,7 @@ fn codex_transcript_items(thread: &Value) -> Vec<Value> {
                     "user",
                     vec![json!({"type":"text","text":extract_text(item)})],
                 ),
-                "agentMessage" => ("assistant", vec![codex_history_text_part(item)]),
+                "agentMessage" | "plan" => ("assistant", vec![codex_history_text_part(item)]),
                 "reasoning" => (
                     "assistant",
                     vec![codex_history_reasoning_part(item)],
