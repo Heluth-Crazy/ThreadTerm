@@ -53,11 +53,11 @@ export function ChatQuestionCard({ form, answerable, resolved, dismissed, summar
       return { ...current, [question.id]: value ? [...selected, value] : selected };
     })} /></label>}</fieldset>)}
     {form.kind === "form" && <><p className="chat-question-message">{form.message}</p>{form.fields.map(field => <FormField key={field.id} field={field} value={values[field.id]} disabled={!canAct} copy={copy} onChange={value => setValues(current => { const next = { ...current }; if (value === undefined) delete next[field.id]; else next[field.id] = value; return next; })} />)}</>}
-    {form.kind === "url" && <><p className="chat-question-message">{form.message}</p><button type="button" className="btn chat-question-link" disabled={!canAct} onClick={() => void openExternal(form.url).catch(error => setIssue(error instanceof Error ? error.message : String(error)))}>{copy("Open link", "打开链接")}</button></>}
+    {form.kind === "url" && <><p className="chat-question-message">{form.message}</p><button type="button" className="btn btn-sm chat-question-link" disabled={!canAct} onClick={() => void openExternal(form.url).catch(error => setIssue(error instanceof Error ? error.message : String(error)))}>{copy("Open link", "打开链接")}</button></>}
     {nonBlocking && <p className="chat-question-note">{copy("The agent keeps working while you decide.", "你决定期间，代理会继续工作。")}</p>}
     {autoResolutionMs != null && <p className="chat-question-note">{copy(`Continues automatically in ${Math.ceil(autoResolutionMs / 1000)} s.`, `${Math.ceil(autoResolutionMs / 1000)} 秒后自动继续。`)}</p>}
     {issue && <p role="alert" className="surface-error">{issue}</p>}
-    <div className="chat-approval-actions chat-question-actions">{answerable && <button type="submit" className="btn btn-primary chat-approval-choice" disabled={!canAct || !valid}>{submitting ? copy("Submitting…", "提交中…") : form.kind === "url" ? copy("Done", "完成") : copy("Submit", "提交")}</button>}<button type="button" className="btn chat-approval-choice" disabled={!canAct} onClick={() => onAnswer?.({ action: "dismiss" })}>{copy("Dismiss", "忽略")}</button></div>
+    <div className="chat-approval-actions chat-question-actions">{answerable && <button type="submit" className="btn btn-sm btn-primary chat-approval-choice" disabled={!canAct || !valid}>{submitting ? copy("Submitting…", "提交中…") : form.kind === "url" ? copy("Done", "完成") : copy("Submit", "提交")}</button>}<button type="button" className="btn btn-sm chat-approval-choice" disabled={!canAct} onClick={() => onAnswer?.({ action: "dismiss" })}>{copy("Dismiss", "忽略")}</button></div>
   </form>;
 }
 

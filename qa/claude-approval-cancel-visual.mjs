@@ -8,9 +8,10 @@ import { _electron as electron } from '@playwright/test';
 import { mkdir, mkdtemp, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
+import { assertNoControlViolations, checkControlConsistency } from './lib/visual-consistency.mjs';
 
 const scratch = await mkdtemp(join(tmpdir(), 'threadterm-approval-cancel-'));
-const out = resolve('qa/results/approval-cancel');
+const out = resolve('qa/results/chat-parity/D1/claude-approval-cancel');
 await mkdir(out, { recursive: true });
 const entry = `
 import React from 'react';
@@ -38,6 +39,7 @@ window.threadterm = {
     if (method === 'chat.draft.read') return { text: '', revision: 0 };
     if (method === 'chat.draft.save') return { text: params.text, revision: (params.expectedRevision || 0) + 1 };
     if (method === 'chat.options') return { options: [], commands: [], loadState: 'ready' };
+    if (method === 'chat.queue.read') return { sessionId: params.sessionId, paused: false, items: [] };
     if (method === 'chat.connection' || method === 'chat.connect') return { sessionId: params.sessionId, runtimeEpoch: 'e', connectionGeneration: 1, revision: 1, phase: 'ready', optionsLoadState: 'ready' };
     if (method === 'session.claim' || method === 'session.renew') return { leaseEpoch: 1 };
     if (method === 'session.release' || method === 'chat.approve') return null;
@@ -56,15 +58,17 @@ window.qaRender('light');
 `;
 await build({ stdin: { contents: entry, resolveDir: resolve('.'), loader: 'tsx' }, bundle: true, outfile: join(scratch, 'qa.js'), jsx: 'automatic', loader: { '.woff2': 'dataurl', '.woff': 'dataurl', '.ttf': 'dataurl' } });
 await writeFile(join(scratch, 'index.html'), '<meta charset="utf-8"><link rel="stylesheet" href="qa.css"><style>html,body,#root{height:100%;margin:0}#root>*{height:100%}</style><div id="root"></div><script src="qa.js"></script>');
-await writeFile(join(scratch, 'main.cjs'), `const {app,BrowserWindow}=require('electron');app.setPath('userData',${JSON.stringify(join(scratch, 'profile'))});app.whenReady().then(()=>{const w=new BrowserWindow({width:1280,height:900,show:true,webPreferences:{contextIsolation:true,nodeIntegration:false,sandbox:true}});w.loadFile(${JSON.stringify(join(scratch, 'index.html'))});});`);
+await writeFile(join(scratch, 'main.cjs'), `const {app,BrowserWindow}=require('electron');app.setPath('userData',${JSON.stringify(join(scratch, 'profile-lane2'))});app.whenReady().then(()=>{const w=new BrowserWindow({width:1280,height:900,title:'ThreadTerm Lane 2 — Claude approval cancel QA',width:1280,height:900,show:false,webPreferences:{contextIsolation:true,nodeIntegration:false,sandbox:true}});w.loadFile(${JSON.stringify(join(scratch, 'index.html'))});});`);
 
 let app;
 try {
-  app = await electron.launch({ args: [join(scratch, 'main.cjs')] });
+  const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => key.toLowerCase() !== 'path'));
+  app = await electron.launch({ args: [join(scratch, 'main.cjs'), '--disable-gpu', '--in-process-gpu', '--no-sandbox'], env });
   const page = await app.firstWindow();
   const errors = [];
   page.on('pageerror', error => errors.push(error.message));
   await page.waitForFunction(() => window.qaRender);
+  await page.evaluate(() => Object.defineProperty(navigator,'clipboard',{configurable:true,value:{writeText:async value=>{window.__lane2Clipboard=value;},readText:async()=>window.__lane2Clipboard??''}}));
 
   // Both cards start pending and actionable.
   const cards = page.locator('.chat-approval-card');
@@ -74,6 +78,7 @@ try {
   const cardA2 = page.locator('.chat-approval-card', { hasText: 'Write file' });
   assert.ok(await cardA1.locator('button').first().isEnabled(), 'a1 must start actionable');
   assert.ok(await cardA2.locator('button').first().isEnabled(), 'a2 must start actionable');
+  assertNoControlViolations(await checkControlConsistency(page, '.chat-approval-card'), 'Claude approval card');
 
   // The runtime cancels a1 (e.g. the Claude turn was interrupted): the card
   // expires in place and its actions disable, while a2 stays actionable.
@@ -82,6 +87,7 @@ try {
   assert.equal(await cardA1.locator('button:enabled').count(), 0, 'expired card must not keep enabled buttons');
   assert.ok(await cardA1.getByText('该请求已失效').count(), 'expired card must show the invalid notice');
   assert.ok(await cardA2.locator('button').first().isEnabled(), 'a2 must stay actionable');
+  assertNoControlViolations(await checkControlConsistency(page, '.chat-approval-card'), 'approval cancellation');
   await page.screenshot({ path: join(out, 'claude-approval-cancel-light.png') });
 
   // A duplicate cancellation is idempotent; the sibling card is unaffected.

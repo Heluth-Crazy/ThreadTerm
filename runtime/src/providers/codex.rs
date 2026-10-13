@@ -1252,6 +1252,8 @@ struct CodexUiState {
     settings_generation: u64,
     skills_error: Option<String>,
     options_error: Option<ProviderError>,
+    // Proposed edits are scoped by native thread, turn and item; bounded per connection.
+    proposed_edits: HashMap<(String, String, String), Value>,
 }
 
 #[derive(Clone, Default)]
@@ -2812,6 +2814,27 @@ fn emit_codex_child_notification(
     );
 }
 
+// Called only after root/recognized-child admission; never retain foreign frames.
+fn remember_codex_edits(ui: &Mutex<CodexUiState>, method: &str, params: &Value) {
+    if let Some(thread) = params.get("threadId").and_then(Value::as_str) {
+        let turn = params.get("turnId").or_else(|| params.pointer("/turn/id")).and_then(Value::as_str);
+        if let Ok(mut state) = ui.lock() {
+            if matches!(method, "turn/started" | "turn/completed") {
+                state.proposed_edits.retain(|(saved_thread, saved_turn, _), _| saved_thread != thread || (method == "turn/completed" && Some(saved_turn.as_str()) != turn));
+            }
+            if method == "item/started" && params.pointer("/item/type").and_then(Value::as_str) == Some("fileChange") {
+                if let (Some(turn), Some(item), Some(changes)) = (turn, params.pointer("/item/id").and_then(Value::as_str), params.pointer("/item/changes")) {
+                    // 128 entries × 256 KiB maximum; skip oversized previews rather
+                    // than presenting a silently incomplete diff as a full edit.
+                    if state.proposed_edits.len() < 128 && serde_json::to_vec(changes).is_ok_and(|bytes| bytes.len() <= 256 * 1024) {
+                        state.proposed_edits.insert((thread.into(), turn.into(), item.into()), changes.clone());
+                    }
+                }
+            }
+        }
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn emit_codex_message(
     events: &crate::provider_events::Sender,
@@ -2841,7 +2864,7 @@ fn emit_codex_message(
     {
         return;
     }
-    let params = raw.get("params").cloned().unwrap_or_else(|| raw.clone());
+    let mut params = raw.get("params").cloned().unwrap_or_else(|| raw.clone());
     let thread_id = params
         .get("threadId")
         .and_then(Value::as_str)
@@ -2854,6 +2877,7 @@ fn emit_codex_message(
         let Some(child) = child else {
             return;
         };
+        remember_codex_edits(ui, method, &params);
         if raw.get("id").is_none() && method != "serverRequest/resolved" {
             emit_codex_child_notification(
                 events,
@@ -2871,6 +2895,9 @@ fn emit_codex_message(
     } else {
         None
     };
+    if thread_id == native_id.as_deref() {
+        remember_codex_edits(ui, method, &params);
+    }
     // A native resolution is an authoritative expiry when another client (or
     // Codex's auto-resolution) wins.  It must name the stored card; projecting
     // only the raw app-server frame leaves the interaction actionable.
@@ -2981,6 +3008,14 @@ fn emit_codex_message(
                 Some(worker_token),
             );
             return;
+        }
+        if method == "item/fileChange/requestApproval" {
+            if let (Some(thread), Some(turn), Some(item)) = (thread_id, provider_turn_id, provider_item_id) {
+                let changes = ui.lock().ok().and_then(|state| state.proposed_edits.get(&(thread.into(), turn.into(), item.into())).cloned());
+                if let Some(changes) = changes {
+                    params["changes"] = changes;
+                }
+            }
         }
         let approval_id = encode_approval_id(raw.get("id").unwrap_or(&Value::Null));
         let (choices, submittable) = codex_choices(method, &params);
@@ -3598,6 +3633,23 @@ mod tests {
         let mut expected = ui.lock().unwrap().wire();
         expected["sessionId"] = json!("s");
         assert_eq!(event.data, expected);
+    }
+
+    #[test]
+    fn file_approval_attaches_only_the_matching_started_changes() {
+        let mut replay = CodexSubagentReplay::new();
+        replay.emit("item/started", json!({"threadId":"foreign","turnId":"foreign-turn","item":{"id":"foreign-edit","type":"fileChange","changes":[{"path":"foreign.ts","diff":"+foreign"}]}}));
+        assert!(replay.ui.lock().unwrap().proposed_edits.is_empty());
+        let changes = json!([{"path":"src/a.ts","kind":{"type":"update"},"diff":"@@ -1 +1 @@\n-before\n+after"}]);
+        replay.emit("item/started", json!({"threadId":SUBAGENT_PARENT,"turnId":"parent-turn","item":{"id":"edit-1","type":"fileChange","changes":changes}}));
+        replay.raw(json!({"id":901,"method":"item/fileChange/requestApproval","params":{"threadId":SUBAGENT_PARENT,"turnId":"parent-turn","itemId":"edit-1"}}));
+        replay.raw(json!({"id":902,"method":"item/fileChange/requestApproval","params":{"threadId":SUBAGENT_PARENT,"turnId":"parent-turn","itemId":"other"}}));
+        let approvals: Vec<_> = std::iter::from_fn(|| replay.received.try_recv().ok()).filter(|event| event.kind == "chat.approval").collect();
+        assert_eq!(approvals.len(), 2);
+        assert_eq!(approvals[0].data.pointer("/part/data/details/changes"), Some(&changes));
+        assert!(approvals[1].data.pointer("/part/data/details/changes").is_none());
+        replay.emit("turn/completed", json!({"threadId":SUBAGENT_PARENT,"turn":{"id":"parent-turn","status":"completed"}}));
+        assert!(replay.ui.lock().unwrap().proposed_edits.is_empty());
     }
 
     const SUBAGENT_PARENT: &str = "01a10cc5-adcf-7532-8366-f82284f88ff9";
