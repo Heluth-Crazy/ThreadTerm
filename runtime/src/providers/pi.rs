@@ -3814,6 +3814,7 @@ createInterface({{ input: process.stdin, crlfDelay: Infinity }}).on('line', line
             shared: Arc::clone(&shared),
             events,
             process,
+            retired: false,
         };
         let image = "data:image/png;base64,aGVsbG8=";
         let delivered = chat
