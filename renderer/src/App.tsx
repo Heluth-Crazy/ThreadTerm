@@ -48,6 +48,7 @@ import { rememberBootAppearance, settleBootSplash } from "./bootSplash";
 import { PresetRestoreDialog } from "./components/PresetRestoreDialog";
 import { sessionIds as presetSessionIds } from "./presetRestore";
 import { SettingsDialog } from "./components/SettingsDialog";
+import { AppSettingsProvider } from "./appSettings";
 import { I18nProvider, localeFromSettings, translate, useTranslation, type Locale } from "./i18n";
 import { confirmCloseEditors } from "./dirtyEditors";
 import { argumentLines, commandLines, commandPreset, commandPresets, type CommandPresetId } from "./commandPresets";
@@ -345,6 +346,7 @@ export function App() {
   return (
     <I18nProvider locale={locale}>
       <AgentIconsProvider providers={data?.providers ?? []}>
+      <AppSettingsProvider settings={data?.settings}>
       <div className={`${floatingWindow ? "app-shell floating-shell" : "app-shell"}${windowMaximized ? " is-maximized" : ""}${nativeChrome ? " native-chrome" : ""}`}>
         <header className="titlebar app-chrome">
           <div className="drag-region"><span className="chrome-title">ThreadTerm</span></div>
@@ -644,6 +646,7 @@ export function App() {
           />
         )}
       </div>
+      </AppSettingsProvider>
       </AgentIconsProvider>
     </I18nProvider>
   );

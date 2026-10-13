@@ -23,6 +23,7 @@ const ALLOWED_SETTINGS: &[&str] = &[
     "customThemes",
     "themeSelection",
     "terminalCompatibility",
+    "quickMessages",
     "chatTools.ask",
     "chatTools.sessionInfo",
     "chatTools.feedback",
@@ -43,6 +44,7 @@ const RUNTIME_SETTINGS: &[&str] = &[
     "floatMode",
     "supervision",
     "providerNetwork",
+    "quickMessages",
     "chatTools.ask",
     "chatTools.sessionInfo",
     "chatTools.feedback",
@@ -703,6 +705,47 @@ fn valid_model_prices(value: &Value) -> bool {
     })
 }
 
+fn valid_quick_messages(value: &Value) -> bool {
+    const MAX_QUICK_MESSAGES: usize = 50;
+    let Some(items) = value.as_array() else {
+        return false;
+    };
+    if items.len() > MAX_QUICK_MESSAGES {
+        return false;
+    }
+    let mut ids: Vec<&str> = Vec::with_capacity(items.len());
+    items.iter().all(|item| {
+        let Some(record) = item.as_object() else {
+            return false;
+        };
+        if record.len() != 3 {
+            return false;
+        }
+        let Some(id) = record.get("id").and_then(Value::as_str) else {
+            return false;
+        };
+        let Some(title) = record.get("title").and_then(Value::as_str) else {
+            return false;
+        };
+        let Some(text) = record.get("text").and_then(Value::as_str) else {
+            return false;
+        };
+        if id.is_empty()
+            || id.chars().count() > 128
+            || id.chars().any(char::is_control)
+            || title.trim().is_empty()
+            || title.chars().count() > 200
+            || text.trim().is_empty()
+            || text.chars().count() > 4000
+            || ids.contains(&id)
+        {
+            return false;
+        }
+        ids.push(id);
+        true
+    })
+}
+
 fn valid_setting(key: &str, value: &Value) -> Result<()> {
     match key {
         "theme" if matches!(value.as_str(), Some("light" | "dark" | "system")) => Ok(()),
@@ -749,6 +792,7 @@ fn valid_setting(key: &str, value: &Value) -> Result<()> {
         }
         "chatTools.ask" | "chatTools.sessionInfo" | "chatTools.feedback" | "chatTools.delegation"
             if value.is_boolean() => Ok(()),
+        "quickMessages" if valid_quick_messages(value) => Ok(()),
         "providerNetwork"
             if value
                 .as_object()
@@ -961,6 +1005,42 @@ mod tests {
         assert_eq!(exported["settings"]["chatTools.sessionInfo"], true);
         assert_eq!(exported["settings"]["chatTools.feedback"], false);
         assert_eq!(exported["settings"]["chatTools.delegation"], true);
+    }
+
+    #[test]
+    fn quick_messages_are_bounded_and_portable() {
+        let valid = json!({"quickMessages":[
+            {"id":"summarize","title":"Summarize","text":"Summarize the current diff."},
+            {"id":"tests","title":"Run tests","text":"Run the test suite."}
+        ]});
+        assert!(valid_runtime_patch(&valid).is_ok());
+        let root = tempfile::tempdir().unwrap();
+        let db = Database::open(&root.path().join("settings.sqlite")).unwrap();
+        db.update_settings(&valid, 0, "quick-messages").unwrap();
+        let exported = settings_export(&db).unwrap();
+        assert_eq!(exported["settings"]["quickMessages"][0]["id"], "summarize");
+        assert!(ALLOWED_SETTINGS.contains(&"quickMessages"));
+        assert!(valid_runtime_patch(&json!({"quickMessages":[]})).is_ok());
+        for invalid in [
+            json!([{"id":"a","title":"A","text":"T","extra":1}]),
+            json!([{"id":"","title":"A","text":"T"}]),
+            json!([{"id":"a","title":"  ","text":"T"}]),
+            json!([{"id":"a","title":"A","text":""}]),
+            json!([{"id":"a","title":"A"}]),
+            json!("not-an-array"),
+        ] {
+            assert!(
+                valid_runtime_patch(&json!({"quickMessages":invalid})).is_err(),
+                "{invalid}"
+            );
+        }
+        assert!(valid_runtime_patch(&json!({"quickMessages":[{"id":"a","title":"A","text":"T"},{"id":"a","title":"B","text":"U"}]})).is_err());
+        let overflow = (0..51)
+            .map(|index| json!({"id":format!("m{index}"),"title":"T","text":"body"}))
+            .collect::<Vec<_>>();
+        assert!(valid_runtime_patch(&json!({"quickMessages":overflow})).is_err());
+        assert!(valid_runtime_patch(&json!({"quickMessages":[{"id":"a","title":"A","text":"x".repeat(4000)}]})).is_ok());
+        assert!(valid_runtime_patch(&json!({"quickMessages":[{"id":"a","title":"A","text":"x".repeat(4001)}]})).is_err());
     }
 
     #[test]

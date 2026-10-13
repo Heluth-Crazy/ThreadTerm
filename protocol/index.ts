@@ -93,7 +93,11 @@ export interface PageShot { id:string; path:string; width:number; height:number;
 export interface PagePick { url:string; title:string; viewport:{ width:number; height:number }; target:PageElementTarget|PageAreaTarget; shot?:PageShot }
 export interface PageTargetRef { selector?:string; rect?:PageRect }
 export interface PluginList { /** Where user plugins are installed (one folder per plugin, each with threadterm-plugin.json). */ directory:string; plugins:PluginInfo[] }
-export interface Settings { revision:number; theme?:'light'|'dark'|'system'; language?:'zh-CN'|'en'; 'chatTools.ask'?:boolean; 'chatTools.sessionInfo'?:boolean; 'chatTools.feedback'?:boolean; 'chatTools.delegation'?:boolean; [key:string]:unknown }
+/** A saved composer snippet inserted at the caret from the `+` menu or the composer's right-click menu. */
+export interface QuickMessage { id:string; title:string; text:string }
+export interface Settings { revision:number; theme?:'light'|'dark'|'system'; language?:'zh-CN'|'en'; 'chatTools.ask'?:boolean; 'chatTools.sessionInfo'?:boolean; 'chatTools.feedback'?:boolean; 'chatTools.delegation'?:boolean; quickMessages?:QuickMessage[]; [key:string]:unknown }
+/** A file picked through the desktop's native open dialog. */
+export interface AttachedFile { path:string; name:string; dataUrl?:string }
 export interface Workspace { id:string; name:string; revision:number; layout:PaneLayout; projectId?:string; worktreePath?:string }
 export interface Preset { id:string; name:string; revision:number; sessions:unknown[]; layout:PaneLayout; commands:string[] }
 export interface InboxItem { id:string; sessionId:string; kind:string; title:string; createdAt:string; read:boolean }
@@ -492,6 +496,10 @@ export interface ThreadTermBridge {
  onWindowState(listener:(state:{maximized:boolean})=>void):()=>void;
  subscribeOutput(sessionId:string,cursor:number,onChunk:(chunk:OutputChunk)=>void|Promise<void>):Promise<()=>void>;
  chooseDirectory():Promise<string|null>;
+ /** Files picked through the native open dialog. Images within the composer's
+  * size budget carry a data URL so they use the existing image attachment path;
+  * every other file is a `file` context chip the agent can read by path. */
+ attachFiles():Promise<AttachedFile[]>;
  chooseSavePath(kind:'database'|'settings'|'theme'):Promise<string|null>;
  exportFile(kind:'settings'|'theme'):Promise<{path:string}|null>;
  exportChatMarkdown?(payload:{title:string;markdown:string;locale?:'en'|'zh-CN';images?:{name:string;dataUrl:string}[];assetToken?:string}):Promise<string|null>;
@@ -847,7 +855,7 @@ export type WireSuccess = { [M in Method]: { v:1; id:string; method:M; result:Re
 
 export interface DataStatus { root:string;database:{path:string;sizeBytes:number};counts:{projects:number;sessions:number;workspaces:number;presets:number;drafts:number;usageRecords:number} }
 export interface ThemeTokens { background:string;surface:string;text:string;muted:string;accent:string;border:string }
-export interface SettingsBundle { marker:'threadterm-v3-settings';version:1;exportedAt:string;settings:{theme?:'light'|'dark'|'system';language?:'zh-CN'|'en';shortcuts?:Record<string,string>;notifications?:Record<string,boolean>;customThemes?:Record<string,ThemeTokens>;themeSelection?:string;terminalCompatibility?:{aiCompletionHints:boolean};'chatTools.ask'?:boolean;'chatTools.sessionInfo'?:boolean;'chatTools.feedback'?:boolean;'chatTools.delegation'?:boolean} }
+export interface SettingsBundle { marker:'threadterm-v3-settings';version:1;exportedAt:string;settings:{theme?:'light'|'dark'|'system';language?:'zh-CN'|'en';shortcuts?:Record<string,string>;notifications?:Record<string,boolean>;customThemes?:Record<string,ThemeTokens>;themeSelection?:string;terminalCompatibility?:{aiCompletionHints:boolean};quickMessages?:QuickMessage[];'chatTools.ask'?:boolean;'chatTools.sessionInfo'?:boolean;'chatTools.feedback'?:boolean;'chatTools.delegation'?:boolean} }
 export interface UsageRecord { source?:UsageSource;status?:SessionStatus;sessionId:string;provider:ProviderId;recordedAt:string;inputTokens?:number;outputTokens?:number;estimatedCost?:number;currency?:string;model?:string }
 export type UsageSource = 'created'|'native-history'|'rerun';
 export interface SessionLifecycleMetric { sessionId:string;projectId?:string;provider:ProviderId;mode:SessionMode;status:SessionStatus;source?:UsageSource;sourceSessionId?:string;startedAt:string;endedAt?:string;sessionLifetimeSeconds?:number;durationKind:'session_lifetime';history:{status:SessionStatus;recordedAt:string}[] }
