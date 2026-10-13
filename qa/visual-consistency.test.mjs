@@ -7,6 +7,7 @@ import { resolve } from 'node:path';
 import {
   analyzeControls,
   compareGroup,
+  disabledHoverChanged,
   groupControls,
   tokenLintDiff,
 } from './lib/visual-consistency.mjs';
@@ -193,4 +194,22 @@ test('this task adds no new colour literals to CSS', () => {
     [],
     `new CSS colour literals since 846c272:\n${violations.map(violation => `${violation.file}:${violation.line} ${violation.content}`).join('\n')}`,
   );
+});
+
+test('a disabled control that changes on hover while still disabled is a violation', () => {
+  assert.equal(disabledHoverChanged(
+    { backgroundColor: 'rgb(1,1,1)', color: 'rgb(2,2,2)', borderTopColor: 'rgb(3,3,3)', opacity: '1', disabled: true },
+    { backgroundColor: 'rgb(9,9,9)', color: 'rgb(2,2,2)', borderTopColor: 'rgb(3,3,3)', opacity: '1', disabled: true },
+  ), true);
+});
+
+test('a control that becomes enabled during the probe is skipped, not reported', () => {
+  assert.equal(disabledHoverChanged(
+    { backgroundColor: 'rgb(1,1,1)', color: 'rgb(2,2,2)', borderTopColor: 'rgb(3,3,3)', opacity: '0.5', disabled: true },
+    { backgroundColor: 'rgb(9,9,9)', color: 'rgb(2,2,2)', borderTopColor: 'rgb(3,3,3)', opacity: '1', disabled: false },
+  ), false);
+  assert.equal(disabledHoverChanged(
+    { backgroundColor: 'rgb(1,1,1)', color: 'rgb(2,2,2)', borderTopColor: 'rgb(3,3,3)', opacity: '0.5', disabled: true },
+    null,
+  ), false);
 });
