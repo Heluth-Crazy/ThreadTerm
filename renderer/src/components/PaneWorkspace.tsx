@@ -103,6 +103,18 @@ export function PaneWorkspace({ layout, sessions, onChange, theme, terminalCompa
   }, [sessions]);
   const [primaryHost,setPrimaryHost]=useState<HTMLDivElement|null>(null),[menuHost,setMenuHost]=useState<HTMLDivElement|null>(null);
   const [menuAnchor,setMenuAnchor]=useState<HTMLElement>(),[closing,setClosing]=useState(false),[closeIssue,setCloseIssue]=useState<string>();
+  // Actions are portaled into the host, so they are not React children of it.
+  // Close on a microtask after the click: the action runs, then the menu stops covering the surface.
+  useEffect(() => {
+    if (!menuHost) return;
+    const close = (event: MouseEvent) => {
+      const target = event.target;
+      if (!(target instanceof Element) || !menuHost.contains(target) || !target.closest('button')) return;
+      queueMicrotask(() => setMenuAnchor(undefined));
+    };
+    menuHost.addEventListener('click', close);
+    return () => menuHost.removeEventListener('click', close);
+  }, [menuHost]);
   const closingRef=useRef(false),latest=useRef(layout);latest.current=layout;
   const fileSelections=useRef(new Map<string,string>());
   const visibleLayout=visibleSessionLayout(layout,ownerSessionId,fileSelections.current);
