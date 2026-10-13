@@ -158,7 +158,7 @@ export function ComposerOptions({
           <button type="button" className="chip chip-btn is-plain chat-compose-chip" disabled>{copy("Loading settings…", "正在加载设置…")}</button>
         </div>
         <div className="chat-compose-right" ref={rightRef}>{status && <span className="chat-compose-status" ref={statusRef}>{status}</span>}{trailing}</div>
-        <div className="chat-compose-measure" aria-hidden="true" ref={measureRef} />
+        <div className="chat-compose-measure-clip"><div className="chat-compose-measure" aria-hidden="true" ref={measureRef} /></div>
       </div>
     );
   }
@@ -276,7 +276,7 @@ export function ComposerOptions({
         {status && <span className="chat-compose-status" ref={statusRef}>{status}</span>}
         {trailing}
       </div>
-      <div className="chat-compose-measure" aria-hidden="true" ref={measureRef}>
+      <div className="chat-compose-measure-clip"><div className="chat-compose-measure" aria-hidden="true" ref={measureRef}>
         {extras.map(option => (
           <span key={option.id} data-measure-width="" className="chip chip-btn chat-compose-measure-chip">
             <span>{isBooleanOption(option) ? `${optionTitle(option, copy)}: ${booleanText(option.value, copy)}` : chipValueText(option, zh)}</span>
@@ -289,7 +289,7 @@ export function ComposerOptions({
             <Icon name="chevD" />
           </span>
         )}
-      </div>
+      </div></div>
     </div>
   );
 }
