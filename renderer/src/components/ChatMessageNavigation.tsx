@@ -12,9 +12,22 @@ export function ChatMessageNavigation({ items, copy, onNavigate, stats }: Props)
   useEffect(() => {
     if (!open) return;
     const outside = (event: PointerEvent) => { if (!root.current?.contains(event.target as Node)) setOpen(false); };
+    // The list is a dialog. Escape must close it even when programmatic focus
+    // could not move into the list (the key then targets document, not this div).
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape') return;
+      event.preventDefault();
+      event.stopPropagation();
+      setOpen(false);
+      trigger.current?.focus({ preventScroll: true });
+    };
     document.addEventListener('pointerdown', outside);
+    document.addEventListener('keydown', onKey);
     list.current?.querySelector<HTMLButtonElement>('button')?.focus();
-    return () => document.removeEventListener('pointerdown', outside);
+    return () => {
+      document.removeEventListener('pointerdown', outside);
+      document.removeEventListener('keydown', onKey);
+    };
   }, [open]);
   useLayoutEffect(() => {
     if (!open || !root.current) return;
