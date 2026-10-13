@@ -2298,8 +2298,8 @@ fn grok_part_type(kind: &str) -> Option<&'static str> {
 /// Grok is ACP-shaped; map the same `plan` update when the agent sends one.
 fn grok_plan_data(update: &Value) -> Option<Value> {
     let entries = update.get("entries").and_then(Value::as_array)?;
-    let entries = entries.iter().filter_map(|entry| {
-        let content = entry.get("content").and_then(Value::as_str)?.to_owned();
+    let entries = entries.iter().map(|entry| {
+        let content = entry.get("content").and_then(Value::as_str).unwrap_or_default().to_owned();
         let status = entry
             .get("status")
             .and_then(Value::as_str)
@@ -2309,7 +2309,7 @@ fn grok_plan_data(update: &Value) -> Option<Value> {
             .get("priority")
             .and_then(Value::as_str)
             .map(ToOwned::to_owned);
-        Some((content, status, priority))
+        (content, status, priority)
     });
     crate::chat_plan::plan_data(entries, update.get("explanation").and_then(Value::as_str))
 }
@@ -2716,6 +2716,11 @@ fn grok_transcript(raw: &[Value]) -> Vec<Value> {
                 .get("sessionUpdate")
                 .or_else(|| update.get("type"))?
                 .as_str()?;
+            if kind == "plan" {
+                let data = grok_plan_data(update)?;
+                return Some(json!({"id":format!("grok-plan-{index}"),"role":"assistant",
+                    "parts":[crate::chat_plan::plan_part(data, None)],"createdAt":Utc::now().to_rfc3339()}));
+            }
             if kind == "tool_call" || kind == "tool_call_update" || kind.contains("toolCall") {
                 if let Some(key) = grok_spawn_update(&mut subagents, update, None) {
                     let mut info = subagents.calls.get(&key)?.info.clone();
@@ -2767,7 +2772,27 @@ fn grok_transcript(raw: &[Value]) -> Vec<Value> {
             transcript.push(entry);
         }
     }
-    transcript
+    let mut current_turn = 0usize;
+    let mut coalesced = Vec::with_capacity(transcript.len());
+    for mut entry in transcript {
+        if entry.get("role").and_then(Value::as_str) == Some("user") {
+            current_turn += 1;
+        }
+        let plan_id = crate::chat_plan::plan_tool_id(Some(&format!("history-{current_turn}")));
+        let plan = entry.get_mut("parts").and_then(Value::as_array_mut).and_then(|parts| {
+            parts.iter().position(|part| part["type"] == "plan").map(|index| parts.remove(index))
+        });
+        if let Some(mut plan) = plan {
+            plan["toolId"] = json!(plan_id.clone());
+            if let Some(existing) = coalesced.iter_mut().flat_map(|item: &mut Value| item.get_mut("parts").and_then(Value::as_array_mut).into_iter().flatten()).find(|part| part.get("toolId").and_then(Value::as_str) == Some(plan_id.as_str())) {
+                *existing = plan;
+                continue;
+            }
+            entry["parts"].as_array_mut().unwrap().push(plan);
+        }
+        coalesced.push(entry);
+    }
+    coalesced
 }
 
 fn grok_billing_part(value: &Value) -> Option<Value> {
@@ -3013,6 +3038,23 @@ mod tests {
     }
 
     #[test]
+    fn grok_history_projects_and_upserts_plan_frames_per_user_turn() {
+        let transcript = grok_transcript(&[
+            json!({"params":{"update":{"sessionUpdate":"user_message_chunk","content":{"text":"first"}}}}),
+            json!({"params":{"update":{"sessionUpdate":"plan","entries":[{"content":"Inspect","status":"pending"}]}}}),
+            json!({"params":{"update":{"sessionUpdate":"plan","entries":[{"content":"Inspect","status":"completed"},{"content":"Edit","status":"in_progress"}]}}}),
+            json!({"params":{"update":{"sessionUpdate":"user_message_chunk","content":{"text":"second"}}}}),
+            json!({"params":{"update":{"sessionUpdate":"plan","entries":[{"content":"Verify","status":"pending"}]}}}),
+        ]);
+        let plans: Vec<_> = transcript.iter().flat_map(|item| item["parts"].as_array().unwrap()).filter(|part| part["type"] == "plan").collect();
+        assert_eq!(plans.len(), 2);
+        assert_eq!(plans[0]["toolId"], "plan:history-1");
+        assert_eq!(plans[0]["data"]["entries"].as_array().unwrap().len(), 2);
+        assert_eq!(plans[1]["toolId"], "plan:history-2");
+        assert_eq!(plans[1]["data"]["entries"][0]["content"], "Verify");
+    }
+
+    #[test]
     fn grok_plan_update_maps_acp_entries() {
         // Grok is ACP-shaped. A live Grok turn (qa/grok-plan-probe.mjs, recorded
         // in progress.md) was observed to send text, tool_call and hook updates but
@@ -3046,8 +3088,11 @@ mod tests {
         assert!(normalized["entries"][0].get("priority").is_none());
         assert!(normalized.get("explanation").is_none());
 
-        // A plan frame with no usable entries yields no part.
+        // Missing and malformed entries yield no part; an explicit empty list
+        // is the native clearing snapshot.
         assert!(grok_plan_data(&json!({"sessionUpdate": "plan"})).is_none());
+        assert_eq!(grok_plan_data(&json!({"entries":[]})).unwrap()["entries"], json!([]));
+        assert!(grok_plan_data(&json!({"entries":[{}]})).is_none());
         assert!(grok_plan_data(&json!({"entries": [{"content": "  "}]})).is_none());
     }
 

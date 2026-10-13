@@ -29,13 +29,18 @@ fn normalized_priority(priority: &str) -> Option<&'static str> {
 }
 
 /// Build the plan data object. Entries are `(content, status, priority?)`.
-/// Returns `None` when no entry has usable content.
+/// An explicitly empty entry list is a snapshot that clears the prior plan;
+/// malformed nonempty lists with no usable entry are still ignored.
 pub(crate) fn plan_data(
     entries: impl IntoIterator<Item = (String, String, Option<String>)>,
     explanation: Option<&str>,
 ) -> Option<Value> {
+    let mut entries = entries.into_iter().peekable();
+    if entries.peek().is_none() {
+        return Some(json!({"entries": []}));
+    }
     let mut out = Vec::new();
-    for (content, status, priority) in entries.into_iter().take(MAX_PLAN_ENTRIES) {
+    for (content, status, priority) in entries.take(MAX_PLAN_ENTRIES) {
         let content = content.trim();
         if content.is_empty() {
             continue;
@@ -98,8 +103,8 @@ mod tests {
     }
 
     #[test]
-    fn empty_plans_are_dropped() {
-        assert!(plan_data(Vec::new(), None).is_none());
+    fn empty_plan_snapshot_clears_the_prior_plan() {
+        assert_eq!(plan_data(Vec::new(), None).unwrap(), json!({"entries":[]}));
         assert!(plan_data(vec![("  ".into(), "pending".into(), None)], None).is_none());
     }
 
