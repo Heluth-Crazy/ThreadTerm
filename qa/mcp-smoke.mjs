@@ -1,12 +1,13 @@
 import {spawn} from 'node:child_process';
 import {randomUUID} from 'node:crypto';
 import {existsSync} from 'node:fs';
-import {mkdtemp, mkdir, readFile, rm} from 'node:fs/promises';
+import {mkdtemp, mkdir, readFile} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join, resolve} from 'node:path';
 import {fileURLToPath} from 'node:url';
 import assert from 'node:assert/strict';
 import {connectPeer} from './pipe-client.mjs';
+import {removeScratch, stopChild, waitForChildExit} from './lib/qa-cleanup.mjs';
 
 const root = resolve(fileURLToPath(new URL('..', import.meta.url)));
 const delay = ms => new Promise(resolveDelay => setTimeout(resolveDelay, ms));
@@ -27,12 +28,36 @@ const children = new Set();
 let daemon;
 let peer;
 let diagnostics = '';
+let runtimeLaunchFailure;
 
 function launch(file, args, options = {}) {
   const child = spawn(file, args, {windowsHide: true, ...options});
   children.add(child);
   child.once('exit', () => children.delete(child));
+  child.once('error', error => {
+    if (child === daemon) runtimeLaunchFailure = error;
+    if (child.pid === undefined) children.delete(child);
+  });
   return child;
+}
+async function shutdownRuntime() {
+  if (!daemon || daemon.pid === undefined || daemon.exitCode !== null || daemon.signalCode !== null) return;
+  if (!peer) return stopChild(daemon, {label: 'runtime'});
+  // Register the listener before the RPC: runtime.shutdown can acknowledge
+  // after the process has already exited on a fast local machine.
+  const exitWait = waitForChildExit(daemon, {label: 'runtime shutdown'});
+  const [shutdown, exit] = await Promise.allSettled([
+    peer.request('runtime.shutdown', {operationId: randomUUID()}),
+    exitWait,
+  ]);
+  if (exit.status === 'rejected') {
+    const exitError = exit.reason;
+    try { await stopChild(daemon, {label: 'runtime'}); }
+    catch (stopError) { stopError.cause = exitError; throw stopError; }
+    if (shutdown.status === 'rejected') exitError.cause = shutdown.reason;
+    throw exitError;
+  }
+  if (shutdown.status === 'rejected') throw shutdown.reason;
 }
 function mcpRequest(lines, extraEnv = {}) {
   return new Promise((resolveRequest, reject) => {
@@ -66,6 +91,7 @@ async function chatCatalog(flags) {
 }
 async function waitForRuntime() {
   for (let attempt = 0; attempt < 100; attempt += 1) {
+    if (runtimeLaunchFailure) throw runtimeLaunchFailure;
     try {
       const credential = (await readFile(join(data, 'runtime.credential'), 'utf8')).trim();
       const candidate = await connectPeer(`${pipe}-control`);
@@ -79,6 +105,8 @@ async function waitForRuntime() {
   throw new Error('runtime did not become available');
 }
 
+let primaryFailure;
+let passed;
 try {
   daemon = launch(runtimeExe, [], {env, stdio: ['ignore', 'ignore', 'pipe']});
   daemon.stderr.setEncoding('utf8');
@@ -128,11 +156,26 @@ try {
   const closed = await mcpRequest([...baseRequests(), {jsonrpc: '2.0', id: 8, method: 'tools/call', params: {name: 'terminal_close', arguments: {handle: created.id}}}]);
   assert.equal(response(closed, 8).structuredContent.closed, true);
 
-  await peer.request('runtime.shutdown', {operationId: randomUUID()});
-  await new Promise((resolveExit, reject) => { const timer = setTimeout(() => reject(new Error('runtime shutdown timed out')), 10_000); daemon.once('exit', () => { clearTimeout(timer); resolveExit(); }); });
-  console.log(JSON.stringify({passed: true, checks: ['MCP chat-tools catalog follows ask/session-info/feedback switches', 'MCP chat-tools rejects forged caller identity', 'MCP initialize/tools list', 'create idempotency', 'list', 'durable lookup/read actual PTY output', 'queued present', 'close', 'graceful runtime shutdown']}));
-} finally {
-  peer?.close();
-  for (const child of children) if (child.exitCode === null) child.kill();
-  await rm(scratch, {recursive: true, force: true});
+  passed = {passed: true, checks: ['MCP chat-tools catalog follows ask/session-info/feedback switches', 'MCP chat-tools rejects forged caller identity', 'MCP initialize/tools list', 'create idempotency', 'list', 'durable lookup/read actual PTY output', 'queued present', 'close', 'graceful runtime shutdown']};
+} catch (error) {
+  primaryFailure = error;
+  console.error(`MCP smoke original failure: ${error.stack || error}`);
+}
+
+let cleanupFailure;
+async function cleanup(step) {
+  try { await step(); }
+  catch (error) { cleanupFailure ??= error; }
+}
+await cleanup(shutdownRuntime);
+await cleanup(() => peer?.close());
+for (const child of [...children]) await cleanup(() => stopChild(child, {label: 'MCP helper'}));
+await cleanup(() => removeScratch(scratch));
+if (primaryFailure) {
+  if (cleanupFailure) console.error(`MCP smoke cleanup failure (original test failure preserved): ${cleanupFailure.stack || cleanupFailure}`);
+  throw primaryFailure;
+}
+if (cleanupFailure) throw cleanupFailure;
+if (passed) {
+  console.log(JSON.stringify(passed));
 }
