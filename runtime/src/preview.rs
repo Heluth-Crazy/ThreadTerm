@@ -987,9 +987,11 @@ mod tests {
         assert!(mcp_handoff_capable(&providers, "gemini"));
         assert!(!mcp_handoff_capable(&providers, "opencode"));
         let config = RuntimeConfig { data_dir: root.path().to_owned(), database_path: root.path().join("runtime.sqlite"), credential_path: root.path().join("credential"), pipe_base: "generated-ui-test".into() };
+        let chat_tools = crate::chat_tools::shared(&config.database_path, Arc::clone(&db)).unwrap();
         let resolver = tool_server_resolver(
             Arc::clone(&db),
             Arc::new(crate::delegation::Delegations::default()),
+            chat_tools,
             Arc::new(Previews::new(Arc::clone(&db)).unwrap()),
             Arc::downgrade(&providers),
             config,
