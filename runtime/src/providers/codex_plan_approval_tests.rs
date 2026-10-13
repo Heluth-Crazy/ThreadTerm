@@ -383,3 +383,123 @@ fn approve_sends_the_exact_prompt_once_and_cancel_stop_clear_stale_plan_state() 
         "stop/reconnect cannot retain a stale plan card"
     );
 }
+
+fn plan_text_events(events: &[super::super::ProviderEvent]) -> Vec<&super::super::ProviderEvent> {
+    events
+        .iter()
+        .filter(|event| {
+            event.kind == "chat.item"
+                && event.data.pointer("/item/type").and_then(Value::as_str) == Some("plan")
+        })
+        .collect()
+}
+
+#[test]
+fn held_plan_item_falls_back_to_transcript_text_when_no_card_owns_it() {
+    // Interrupted in plan mode: no card, so the plan still reaches the transcript.
+    let mut interrupted = PlanApprovalReplay::new("plan");
+    let _ = interrupted.drain();
+    interrupted.complete(
+        json!({"id":"plan","type":"plan","text":"# plan"}),
+        "interrupted",
+    );
+    let events = interrupted.drain();
+    assert!(approval_events(&events).is_empty());
+    let text = plan_text_events(&events);
+    assert_eq!(text.len(), 1, "an interrupted plan must not be dropped");
+    assert_eq!(text[0].data["item"]["text"], "# plan");
+    assert_eq!(text[0].data["item"]["id"], "plan");
+    assert_eq!(text[0].turn_id.as_deref(), Some("plan-turn"));
+
+    // Default mode completes without a plan card; the plan is shown once as text.
+    let mut default_mode = PlanApprovalReplay::new("default");
+    let _ = default_mode.drain();
+    default_mode.complete(
+        json!({"id":"plan","type":"plan","text":"# plan"}),
+        "completed",
+    );
+    let events = default_mode.drain();
+    assert!(approval_events(&events).is_empty());
+    assert_eq!(plan_text_events(&events).len(), 1);
+
+    // A failed turn flushes the held plan before the session ends.
+    let mut failed = PlanApprovalReplay::new("plan");
+    let _ = failed.drain();
+    failed.emit(
+        "item/completed",
+        json!({"threadId":"qa-codex-plan-approval-thread","turnId":"native-plan-turn","item":{"id":"plan","type":"plan","text":"# plan"}}),
+    );
+    let _ = failed.drain();
+    failed.emit(
+        "error",
+        json!({"threadId":"qa-codex-plan-approval-thread","turnId":"native-plan-turn","message":"boom"}),
+    );
+    let events = failed.drain();
+    assert!(approval_events(&events).is_empty());
+    assert_eq!(
+        plan_text_events(&events).len(),
+        1,
+        "a failed plan must not be dropped"
+    );
+
+    // A plan item whose turn never becomes the active turn cannot own a card.
+    let mut mismatched = PlanApprovalReplay::new("plan");
+    let _ = mismatched.drain();
+    mismatched.emit(
+        "item/completed",
+        json!({"threadId":"qa-codex-plan-approval-thread","turnId":"stale-native-turn","item":{"id":"plan","type":"plan","text":"# plan"}}),
+    );
+    let events = mismatched.drain();
+    assert!(approval_events(&events).is_empty());
+    assert_eq!(
+        plan_text_events(&events).len(),
+        1,
+        "a non-matching turn's plan must not be dropped"
+    );
+
+    // A new turn flushes a held plan whose turn never completed.
+    let mut superseded = PlanApprovalReplay::new("plan");
+    let _ = superseded.drain();
+    superseded.emit(
+        "item/completed",
+        json!({"threadId":"qa-codex-plan-approval-thread","turnId":"native-plan-turn","item":{"id":"plan","type":"plan","text":"# plan"}}),
+    );
+    superseded.emit(
+        "turn/started",
+        json!({"threadId":"qa-codex-plan-approval-thread","turn":{"id":"next-native-turn"}}),
+    );
+    let events = superseded.drain();
+    assert!(approval_events(&events).is_empty());
+    assert_eq!(
+        plan_text_events(&events).len(),
+        1,
+        "a plan superseded by a new turn must not be dropped"
+    );
+}
+
+#[test]
+fn plan_card_and_history_text_never_both_own_the_same_plan() {
+    // The card path shows no transcript text.
+    let mut card = PlanApprovalReplay::new("plan");
+    let _ = card.drain();
+    card.complete(
+        json!({"id":"plan","type":"plan","text":"# plan"}),
+        "completed",
+    );
+    let events = card.drain();
+    assert_eq!(approval_events(&events).len(), 1);
+    assert!(plan_text_events(&events).is_empty());
+
+    // The history reload of a plan item renders it as text once, not as a tool.
+    let items = codex_transcript_items(&json!({"turns":[{"id":"history-turn","items":[
+        {"id":"plan","type":"plan","text":"# Plan\n1. Build"},
+        {"id":"answer","type":"agentMessage","text":"done"}
+    ]}]}));
+    let plans = items
+        .iter()
+        .filter(|item| item["id"].as_str() == Some("plan"))
+        .collect::<Vec<_>>();
+    assert_eq!(plans.len(), 1);
+    assert_eq!(plans[0]["parts"][0]["type"], "text");
+    assert_eq!(plans[0]["parts"][0]["text"], "# Plan\n1. Build");
+}
