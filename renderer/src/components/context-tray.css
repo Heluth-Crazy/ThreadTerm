@@ -4,15 +4,12 @@
 .context-chips-wrap { position:relative; min-width:0; }
 .context-chips, .context-chip-measure { display:flex; flex-wrap:wrap; gap:6px; align-items:center; justify-content:flex-start; }
 .context-chip-measure { position:absolute; inset:0 0 auto; visibility:hidden; pointer-events:none; }
-.context-chip { display:inline-flex; align-items:center; max-width:100%; min-width:0; height:28px; border:1px solid var(--border); border-radius:8px; background:var(--surface); color:var(--text); font-size:12px; }
-.context-chip-label { display:flex; gap:5px; align-items:center; min-width:0; max-width:240px; padding:4px 8px; border:0; background:transparent; color:inherit; font:inherit; white-space:nowrap; cursor:pointer; }
-.context-chip-label span { overflow:hidden; text-overflow:ellipsis; }
-.context-chip-label svg { width:14px; height:14px; flex:none; }
-.context-chip-remove { display:grid; place-items:center; flex:none; width:26px; height:26px; border:0; border-left:1px solid var(--border); background:transparent; color:var(--muted); cursor:pointer; }
-.context-chip-remove:hover { color:var(--text); }
-.context-chip-remove:disabled { opacity:.5; cursor:default; }
-.context-more { display:inline-flex; align-items:center; height:28px; padding:4px 8px; border:1px solid var(--border); border-radius:8px; color:var(--muted); background:var(--surface); font-size:12px; white-space:nowrap; cursor:pointer; }
-.context-chip button:focus-visible, .context-more:focus-visible { outline:2px solid var(--primary); outline-offset:2px; }
+.context-chip { display:inline-flex; align-items:center; max-width:100%; min-width:0; }
+/* Layout only: size, border, radius, colour, focus and disabled states come from the shared .btn/.btn-sm and .icon-btn/.icon-btn-sm. */
+.context-chip-label { min-width:0; max-width:240px; }
+.context-chip-label span { min-width:0; overflow:hidden; text-overflow:ellipsis; }
+.context-chip-remove { flex:none; }
+.context-more { flex:none; }
 .context-budget { display:block; margin-top:6px; font-size:12px; color:var(--muted); }
 .context-transcript-row { margin:0 0 8px; white-space:normal; }
 .context-preview { margin:0; padding:12px; max-height:55vh; overflow:auto; white-space:pre-wrap; overflow-wrap:anywhere; font:12px/1.5 var(--font-mono, "Cascadia Code", Consolas, monospace); background:var(--surface); border:1px solid var(--border); border-radius:8px; color:var(--text); user-select:text; }
