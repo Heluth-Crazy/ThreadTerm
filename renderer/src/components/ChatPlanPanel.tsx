@@ -44,10 +44,12 @@ export function ChatPlanPanel({ items, copy, liveTurnId }: { items: readonly Cha
       setOpen(false);
     }
   }}>
-    <button type="button" className="chip chip-btn chat-plan-chip" aria-expanded={open} aria-label={label} title={title} onClick={() => setOpen(current => !current)}>
-      <span className="chat-plan-label">{label}</span>
-      <span className="chat-plan-progress" role="presentation"><i style={{ width: `${percent}%` }} /></span>
-    </button>
+    <div className="chat-plan-sticky">
+      <button type="button" className="chip chip-btn chat-plan-chip" aria-expanded={open} aria-label={label} title={title} onClick={() => setOpen(current => !current)}>
+        <span className="chat-plan-label">{label}</span>
+        <span className="chat-plan-progress" role="presentation"><i style={{ width: `${percent}%` }} /></span>
+      </button>
+    </div>
     {open && <div className="chat-plan-card" role="group" aria-label={copy('Agent plan', '代理计划')}>
       {plan.data.explanation && <p className="chat-plan-explanation">{plan.data.explanation}</p>}
       <ol className="chat-plan-list">

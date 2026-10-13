@@ -1,5 +1,7 @@
-/* Agent plan panel (B4). A small sticky chip that expands into the step list. */
-.chat-plan-panel { position:sticky; top:4px; z-index:6; display:flex; flex-direction:column; align-items:flex-start; gap:6px; width:100%; box-sizing:border-box; padding:4px 8px 2px; }
+.chat-plan-panel { display:flex; flex-direction:column; align-items:flex-start; gap:6px; width:100%; box-sizing:border-box; padding:4px 8px 2px; }
+/* Only the chip is sticky; the expanded card stays in flow under it (V1-2), so
+   it pushes the transcript down and can never cover a message. */
+.chat-plan-sticky { position:sticky; top:4px; z-index:6; display:flex; align-items:flex-start; width:100%; }
 /* Size, border, radius, colour and states come from the shared .chip/.chip-btn. */
 .chat-plan-label { white-space:nowrap; }
 .chat-plan-progress { width:56px; height:4px; flex:none; border-radius:999px; background:var(--border); overflow:hidden; }
