@@ -24,7 +24,7 @@ export function PlanApprovalCard({ part, writable, submitting, onRespond, copy }
   const enabled = planApprovalEnabled(part, writable, submitting);
   const outcome = data.planOutcome;
   return <section className={`chat-approval-card chat-plan-approval ${part.status ?? 'pending'}`} aria-label={copy('Plan review', '计划审核')}>
-    <strong>{copy('Review the plan', '审核计划')}</strong>
+    <span className="chat-plan-approval-title">{copy('Review the plan', '审核计划')}</span>
     <div className="chat-plan-approval-body" role="region" tabIndex={0} aria-label={copy('Proposed plan', '拟议计划')}>
       {data.plan?.trim() ? <div className="codex-markdown" dangerouslySetInnerHTML={{ __html: html }} /> : <p>{copy('The agent submitted an empty plan.', '代理提交了空计划。')}</p>}
     </div>

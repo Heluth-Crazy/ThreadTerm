@@ -4,3 +4,8 @@
 .pi-project-trust-list code { font-family:var(--mono); color:var(--text); }
 .pi-project-trust-disabled { color:var(--muted); font-size:12px; }
 .pi-project-trust-details { display:flex; align-items:center; gap:8px; margin:0; color:var(--muted); font-size:12px; }
+/* Size to the content instead of the fixed sheet height, and give the body the
+   same side padding as the header (the shared sheet body has none). */
+.dialog.sheet.sheet-sm.pi-project-trust-dialog { height:auto; max-height:min(560px, calc(100% - 32px)); }
+.dialog.sheet.sheet-sm.pi-project-trust-dialog .dlg-body { gap:8px; padding:16px 20px; overflow-y:auto; }
+.dialog.sheet.sheet-sm.pi-project-trust-dialog .pi-project-trust-list { max-height:min(240px, 40vh); overflow:auto; }
