@@ -74,6 +74,7 @@ window.threadterm = {onEvent: cb => {listeners.add(cb); return () => listeners.d
   if(method==='chat.snapshot') return {items:scenario==='b10-pending'?b10Items():scenario==='b10-answered'?b10Items('answered'):scenario.startsWith('b11-')?b11Items(scenario.split('-')[1],scenario.includes('-completed'),scenario.endsWith('only')):items,revision:1};
   if(method==='chat.draft.read') return {text:'',revision:0};
   if(method==='chat.queue.read') return {sessionId:activeSessionId,paused:false,items:[]};
+  if(method==='chat.feedback.read') return {notes:[]};
   if(method==='chat.options') return {options:[],commands:[]};
   throw Error('Unexpected QA request '+method);
 }};
@@ -175,7 +176,8 @@ try {
   assert.match(await live.locator('.chat-tool-current-action').textContent() ?? '', /Tool activity/i, 'idle session suppresses stale running labels');
   assert.equal(await live.evaluate(node => node.open), true, 'idle transition preserves expanded disclosure state');
   await page.evaluate(() => window.qaUpdate({id:'live-complete',role:'assistant',turnId:'turn-live',createdAt:'later',parts:[],elapsedMs:4000}));
-  await page.locator('.chat-duration').filter({ hasText: '4s' }).waitFor({ state: 'visible' });
+  // F1 moves the elapsed time out of .chat-duration into the completed-turn footer.
+  await page.locator('.chat-turn-footer .chat-turn-segment.is-duration').filter({ hasText: '4s' }).waitFor({ state: 'visible' });
   assert.equal(await live.evaluate(node => node.open), true, 'whole-turn completion preserves expanded disclosure state');
   report.checks.push('append, output update, idle transition, and whole-turn completion preserve open and closed disclosure state without stale running labels');
 
