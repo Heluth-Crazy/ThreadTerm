@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import type { ChatFeedbackNote, ChatPart } from '@threadterm/protocol';
-import { applyNoteEvent, feedbackNotesFromPart, isFeedbackCheck, notesMessage, sortNotes, waitingNotes } from './feedbackNotes';
+import { applyNoteEvent, feedbackNotesFromPart, isFeedbackCheck, MAX_NOTE_CHARS, noteBodyFits, notesMessage, readIsCurrent, sortNotes, waitingNotes } from './feedbackNotes';
+import { serializeContext } from './chatContext';
 
 const note = (id: string, status: ChatFeedbackNote['status'] = 'waiting', turnId = 'turn-1'): ChatFeedbackNote => ({
   id, sessionId: 's', turnId, text: `note ${id}`, status, createdAt: `2026-01-01T00:00:0${id.at(-1) ?? '0'}Z`,
@@ -42,4 +43,29 @@ test('only waiting notes are offered and all of them join one message', () => {
   const notes = [note('a'), note('b', 'received'), note('c')];
   assert.deepEqual(waitingNotes(notes).map(entry => entry.id), ['a', 'c']);
   assert.equal(notesMessage(waitingNotes(notes)), 'note a\n\nnote c');
+});
+
+test('note bodies are capped at the runtime 4,000-character limit', () => {
+  assert.equal(noteBodyFits('a'.repeat(MAX_NOTE_CHARS)), true);
+  assert.equal(noteBodyFits('a'.repeat(MAX_NOTE_CHARS + 1)), false);
+  // Astral characters count as one, matching the runtime's chars().count().
+  assert.equal(noteBodyFits('😀'.repeat(MAX_NOTE_CHARS)), true);
+  assert.equal(noteBodyFits('😀'.repeat(MAX_NOTE_CHARS + 1)), false);
+});
+
+test('a serialized context envelope counts against the note cap and keeps the text', () => {
+  const body = serializeContext([{ kind: 'file', id: 'f', path: 'src/cart.ts' }], 'prefer the narrow reading');
+  assert.equal(noteBodyFits(body), true);
+  assert.match(body, /prefer the narrow reading/);
+  assert.equal(noteBodyFits(serializeContext([], 'x'.repeat(MAX_NOTE_CHARS + 1))), false);
+});
+
+test('a feedback event supersedes an in-flight read snapshot', () => {
+  let revision = 0;
+  const read = ++revision;
+  assert.equal(readIsCurrent(read, revision), true);
+  revision += 1; // a chat.feedback event bumps the sequence
+  assert.equal(readIsCurrent(read, revision), false);
+  const next = ++revision;
+  assert.equal(readIsCurrent(next, revision), true);
 });

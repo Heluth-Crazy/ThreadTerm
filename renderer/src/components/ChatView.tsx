@@ -54,7 +54,7 @@ import { isChatImage, readClipboardImage, selectChatImageAttachments, validateCh
 import './chat-images.css';
 import { queueComposerMode } from '../chatQueue';
 import { slashPaletteEnter } from '../composeKeys';
-import { parseContext } from '../chatContext';
+import { noteBodyFits } from '../feedbackNotes';
 import { ChatQueue as ChatQueuePanel } from './ChatQueue';
 import { ChatNotes as ChatNotesPanel } from './ChatNotes';
 import { SteerSend } from './SteerSend';
@@ -1034,34 +1034,35 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession, 
       if (queued) throw new Error(message);
     } finally { if (lifecycle.current === submittingLifecycle) setBusy(false); }
   }
-  /** E2: the agent reads a note on its next `feedback_check`. Text guidance only. */
-  async function addNote(queued?: ChatQueueItem) {
+  /** E2: the agent reads a note on its next `feedback_check`. The note carries
+   * the same serialized context the send path uses, inside the store's cap. */
+  async function addNote() {
     const epoch = leaseSessionId.current === session.id ? lease.current : undefined;
     const turnId = activeTurnId(itemsRef.current, session.status);
-    if (!writable || epoch === undefined || !turnId || busy) {
-      if (queued) throw new Error(copy('The queued prompt was not sent as a note.', '队列提示未能作为备注发送。'));
-      return;
-    }
-    const value = queued ? (parseContext(queued.text)?.text ?? queued.text) : text.trim();
-    if (!value.trim()) { if (queued) throw new Error(copy('The queued prompt was not sent as a note.', '队列提示未能作为备注发送。')); return; }
+    if (!writable || epoch === undefined || !turnId || busy) return;
+    let value: string;
+    try { value = context.serialize(text.trim()); } catch (caught) { setError(contextError(caught, zh)); return; }
+    if (!value.trim()) return;
+    if (!noteBodyFits(value)) { setError(copy('The note and its attached context must not exceed 4,000 characters.', '备注及其附加上下文不能超过 4,000 个字符。')); return; }
     const submittingLifecycle = lifecycle.current;
     setBusy(true); setError(undefined);
     try {
       await request('chat.feedback.add', { sessionId: session.id, turnId, text: value, operationId: operationId(), leaseEpoch: epoch });
-      if (lifecycle.current !== submittingLifecycle || queued) return;
+      if (lifecycle.current !== submittingLifecycle) return;
       changeText(''); context.clear();
       await persistCompose('', epoch);
     } catch (caught) {
       if (lifecycle.current === submittingLifecycle) setError(asUserError(caught, copy('The note was not sent.', '备注未能发送。')));
-      if (queued) throw new Error(String(caught));
     } finally { if (lifecycle.current === submittingLifecycle) setBusy(false); }
   }
-  /** E2: a queued prompt becomes a note, and only then leaves the queue. */
+  /** E2: a queued prompt becomes a note, and only then leaves the queue. Its
+   * serialized context is already part of the queue text, so it is preserved. */
   async function sendNoteFromQueue(item: ChatQueueItem): Promise<ChatQueue> {
     const epoch = leaseSessionId.current === session.id ? lease.current : undefined;
     const turnId = activeTurnId(itemsRef.current, session.status);
     if (!writable || epoch === undefined || !turnId) throw new Error(copy('The queued prompt was not sent as a note.', '队列提示未能作为备注发送。'));
-    await request('chat.feedback.add', { sessionId: session.id, turnId, text: parseContext(item.text)?.text ?? item.text, operationId: operationId(), leaseEpoch: epoch });
+    if (!noteBodyFits(item.text)) throw new Error(copy('The note and its attached context must not exceed 4,000 characters.', '备注及其附加上下文不能超过 4,000 个字符。'));
+    await request('chat.feedback.add', { sessionId: session.id, turnId, text: item.text, operationId: operationId(), leaseEpoch: epoch });
     return await request('chat.queue.remove', { sessionId: session.id, itemId: item.id, operationId: operationId(), leaseEpoch: epoch });
   }
   async function answer(turnId: string, approvalId: string, response: ChatAnswerResponse) {

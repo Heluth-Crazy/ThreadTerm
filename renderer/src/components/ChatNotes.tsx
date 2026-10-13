@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import type { ChatFeedbackNote } from '@threadterm/protocol';
 import { operationId, request, subscribeEvents } from '../bridge';
-import { applyNoteEvent, notesMessage, sortNotes, waitingNotes } from '../feedbackNotes';
+import { applyNoteEvent, notesMessage, readIsCurrent, sortNotes, waitingNotes } from '../feedbackNotes';
 import './feedback-notes.css';
 
 type Props = {
@@ -26,6 +26,7 @@ export function ChatNotes({ sessionId, liveTurn, leaseEpoch, writable, busy, zh,
   const currentSession = useRef(sessionId); currentSession.current = sessionId;
   const lifecycleGeneration = useRef(0);
   const refreshSequence = useRef(0);
+  const sendingRef = useRef(false);
   const copy = (en: string, cn: string) => zh ? cn : en;
 
   useEffect(() => {
@@ -35,9 +36,9 @@ export function ChatNotes({ sessionId, liveTurn, leaseEpoch, writable, busy, zh,
     const load = () => {
       const sequence = ++refreshSequence.current;
       return request('chat.feedback.read', { sessionId }).then(read => {
-        if (!disposed && lifecycleGeneration.current === generation && currentSession.current === sessionId && sequence === refreshSequence.current) setNotes(sortNotes(read.notes));
+        if (!disposed && lifecycleGeneration.current === generation && currentSession.current === sessionId && readIsCurrent(sequence, refreshSequence.current)) setNotes(sortNotes(read.notes));
       }).catch(error => {
-        if (!disposed && lifecycleGeneration.current === generation && currentSession.current === sessionId && sequence === refreshSequence.current) onIssue(String(error));
+        if (!disposed && lifecycleGeneration.current === generation && currentSession.current === sessionId && readIsCurrent(sequence, refreshSequence.current)) onIssue(String(error));
       });
     };
     void load();
@@ -49,6 +50,8 @@ export function ChatNotes({ sessionId, liveTurn, leaseEpoch, writable, busy, zh,
         return;
       }
       if (event.event !== 'chat.feedback' || data?.sessionId !== sessionId) return;
+      // An event is newer than any read already in flight, so supersede it.
+      refreshSequence.current += 1;
       const incoming = Array.isArray(data.notes) ? data.notes as ChatFeedbackNote[] : [];
       const removed = Array.isArray(data.removedIds) ? data.removedIds.filter((id): id is string => typeof id === 'string') : [];
       setNotes(current => applyNoteEvent(current, sessionId, incoming, removed));
@@ -57,8 +60,9 @@ export function ChatNotes({ sessionId, liveTurn, leaseEpoch, writable, busy, zh,
   }, [sessionId]);
 
   const sendNotes = async (targets: ChatFeedbackNote[]) => {
-    if (!writable || leaseEpoch === undefined || !targets.length || sending) return;
+    if (!writable || leaseEpoch === undefined || !targets.length || sendingRef.current) return;
     const generation = lifecycleGeneration.current;
+    sendingRef.current = true;
     setSending(targets.length === 1 ? targets[0]!.id : 'all');
     try {
       await request('chat.send', { sessionId, text: notesMessage(targets), operationId: operationId(), leaseEpoch });
@@ -70,6 +74,7 @@ export function ChatNotes({ sessionId, liveTurn, leaseEpoch, writable, busy, zh,
     } catch (error) {
       if (lifecycleGeneration.current === generation && currentSession.current === sessionId) onIssue(String(error));
     } finally {
+      sendingRef.current = false;
       if (lifecycleGeneration.current === generation && currentSession.current === sessionId) setSending(undefined);
     }
   };
