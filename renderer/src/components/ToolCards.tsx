@@ -239,7 +239,7 @@ export function ToolCard({ entry, index, open, active, awaitingApproval, session
   const view = toolView(entry.part);
   const status = toolStatusLabel(view.status, active, awaitingApproval, copy);
   const body = entry.part.text ?? (entry.part.fileReferences?.length ? partBody(entry.part) : '');
-  return <div className={`chat-tool-entry tool-card is-${status.key} is-${view.kind}`} data-tool-id={entry.part.toolId || entry.id} data-tool-kind={view.kind} data-tool-status={view.status}>
+  return <div role="listitem" className={`chat-tool-entry tool-card is-${status.key} is-${view.kind}`} data-tool-id={entry.part.toolId || entry.id} data-tool-kind={view.kind} data-tool-status={view.status}>
     <div className="chat-tool-entry-label tool-card-head">
       <span className="chat-tool-step">{index + 1}</span>
       <Icon name={icons[view.kind]} />
