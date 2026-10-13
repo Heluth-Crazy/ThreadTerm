@@ -35,7 +35,12 @@ const CHIP_GAP = 6;
 const BAR_GAP = 8;
 const SAFETY = 2;
 const COG_WIDTH = 26;
-const MODEL_MIN = 72;
+// The model chip keeps at least 8 readable characters (~48 px) plus its
+// padding, gap and chevron; the mode chip collapses to its icon first, then
+// the effort label hides (VC-COMPOSER-420).
+const MODEL_MIN = 88;
+const MODE_ICON_BREAKPOINT = 600;
+const EFFORT_BREAKPOINT = 480;
 const MODEL_MAX = 200;
 const MODEL_SEARCH_THRESHOLD = 8;
 const VIRTUAL_THRESHOLD = 100;
@@ -70,6 +75,7 @@ export function ComposerOptions({
   const [open, setOpen] = useState<OpenMenu | undefined>(undefined);
   const [search, setSearch] = useState("");
   const [fold, setFold] = useState({ visibleCount: Number.MAX_SAFE_INTEGER, foldedCount: 0 });
+  const [collapse, setCollapse] = useState({ modeIconOnly: false, hideEffort: false });
   const barRef = useRef<HTMLDivElement>(null);
   const leadingRef = useRef<HTMLSpanElement>(null);
   const rightRef = useRef<HTMLDivElement>(null);
@@ -133,6 +139,9 @@ export function ComposerOptions({
       const widths = [...(measureRef.current?.querySelectorAll<HTMLElement>("[data-measure-width]") ?? [])].map(node => node.offsetWidth);
       const next = foldExtraChips({ available, gap: CHIP_GAP, widths, cogWidth: COG_WIDTH });
       setFold(current => (current.visibleCount === next.visibleCount && current.foldedCount === next.foldedCount ? current : next));
+      const modeIconOnly = Boolean(mode) && barWidth < MODE_ICON_BREAKPOINT;
+      const hideEffort = Boolean(thinking) && barWidth < EFFORT_BREAKPOINT;
+      setCollapse(current => (current.modeIconOnly === modeIconOnly && current.hideEffort === hideEffort ? current : { modeIconOnly, hideEffort }));
     };
     measure();
     const observer = new ResizeObserver(measure);
@@ -141,7 +150,7 @@ export function ComposerOptions({
     if (statusRef.current) observer.observe(statusRef.current);
     if (measureRef.current) observer.observe(measureRef.current);
     return () => observer.disconnect();
-  }, [options, loadState, busy, zh, model, mode, extras.length]);
+  }, [options, loadState, busy, zh, model, thinking, mode, extras.length]);
 
   const visibleExtras = extras.slice(0, Math.max(0, extras.length - fold.foldedCount));
   const folded = extras.slice(visibleExtras.length);
@@ -175,15 +184,16 @@ export function ComposerOptions({
             <button
               type="button"
               ref={node => { triggers.current.set("mode", node); triggers.current.set(mode.id, node); }}
-              className={`chip chip-btn is-plain chat-compose-chip chat-mode-chip${/^(yolo|bypasspermissions|dangerfullaccess)$/.test(mode.value.replace(/[^a-z0-9]/gi, "").toLowerCase()) ? " is-warn" : ""} mode-${mode.value.replace(/[^a-z0-9]/gi, "") || "unknown"}`}
+              className={`chip chip-btn is-plain chat-compose-chip chat-mode-chip${collapse.modeIconOnly ? " is-icon" : ""}${/^(yolo|bypasspermissions|dangerfullaccess)$/.test(mode.value.replace(/[^a-z0-9]/gi, "").toLowerCase()) ? " is-warn" : ""} mode-${mode.value.replace(/[^a-z0-9]/gi, "") || "unknown"}`}
               data-menu-trigger="mode"
               aria-haspopup="menu"
               aria-expanded={open?.kind === "option" && open.id === mode.id}
               disabled={disabled}
+              aria-label={`${optionTitle(mode, copy)}: ${chipValueText(mode, zh)}`}
               title={`${optionTitle(mode, copy)}: ${chipValueText(mode, zh)}`}
               onClick={() => setOpen(open?.kind === "option" && open.id === mode.id ? undefined : { kind: "option", id: mode.id })}
             >
-              <Icon name="shield" /><span>{chipValueText(mode, zh)}</span>
+              <Icon name="shield" />{!collapse.modeIconOnly && <span>{chipValueText(mode, zh)}</span>}
             </button>
             {open?.kind === "option" && open.id === mode.id && (
               <OptionMenu option={mode} zh={zh} copy={copy} disabled={disabled || busy} className="chat-menu-mode" onChoose={choose} onKeyDown={onMenuKeyDown} />
@@ -267,7 +277,7 @@ export function ComposerOptions({
               onClick={() => setOpen(modelOpen ? undefined : { kind: "model" })}
             >
               <span className="chat-model-name">{currentChoiceName(model) || copy("Model", "模型")}</span>
-              {thinking && <span className="chat-model-think">{thinkingChipText(thinking, zh)}</span>}
+              {thinking && !collapse.hideEffort && <span className="chat-model-think">{thinkingChipText(thinking, zh)}</span>}
               <Icon name="chevD" className="chat-model-chev" />
             </button>
             {modelOpen && <ModelMenu option={model} thinking={thinking} zh={zh} copy={copy} disabled={disabled || busy} search={search} onSearch={setSearch} onChoose={choose} onKeyDown={onMenuKeyDown} />}
