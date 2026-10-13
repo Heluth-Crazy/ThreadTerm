@@ -58,11 +58,11 @@ function ContextChips({ chips, zh, remove, disabled, children }: { chips: Chip[]
   const label = (chip: Chip) => localized(chip, zh);
   return <>
     <div className="context-chips-wrap">
-      <div className="context-chip-measure" ref={measure} aria-hidden="true">{chips.map(chip => <span className="context-chip" key={chip.id}><span className="context-chip-label"><Icon name={icons[chip.kind]}/>{label(chip)}</span>{remove && <span className="context-chip-remove">×</span>}</span>)}<span className="context-more">{copy(`+${chips.length} more`, `+${chips.length} 项`)}</span></div>
+      <div className="context-chip-measure" ref={measure} aria-hidden="true">{chips.map(chip => <span className="context-chip" key={chip.id}><span className="btn btn-sm context-chip-label"><Icon name={icons[chip.kind]}/>{label(chip)}</span>{remove && <span className="icon-btn icon-btn-sm context-chip-remove"><Icon name="close"/></span>}</span>)}<span className="btn btn-sm btn-ghost context-more">{copy(`+${chips.length} more`, `+${chips.length} 项`)}</span></div>
       <div className="context-chips">{chips.slice(0, shown).map(chip => <span className="context-chip" key={chip.id}>
-        <button type="button" className="context-chip-label" title={fullTitle(chip,zh)} aria-label={fullTitle(chip,zh)} data-testid="context-chip" onClick={() => setPreview(chip)}><Icon name={icons[chip.kind]}/><span>{label(chip)}</span></button>
-        {remove && <button type="button" className="context-chip-remove" disabled={disabled} title={copy('Remove context', '移除上下文')} aria-label={copy(`Remove context: ${label(chip)}`, `移除上下文：${label(chip)}`)} data-testid="context-chip-remove" onClick={() => remove(chip.id)}>×</button>}
-      </span>)}{shown < chips.length && <button type="button" className="context-more" onClick={() => setPreview('all')}>{copy(`+${chips.length - shown} more`, `+${chips.length - shown} 项`)}</button>}</div>
+        <button type="button" className="btn btn-sm context-chip-label" title={fullTitle(chip,zh)} aria-label={fullTitle(chip,zh)} data-testid="context-chip" onClick={() => setPreview(chip)}><Icon name={icons[chip.kind]}/><span>{label(chip)}</span></button>
+        {remove && <button type="button" className="icon-btn icon-btn-sm context-chip-remove" disabled={disabled} title={copy('Remove context', '移除上下文')} aria-label={copy(`Remove context: ${label(chip)}`, `移除上下文：${label(chip)}`)} data-testid="context-chip-remove" onClick={() => remove(chip.id)}><Icon name="close"/></button>}
+      </span>)}{shown < chips.length && <button type="button" className="btn btn-sm btn-ghost context-more" onClick={() => setPreview('all')}>{copy(`+${chips.length - shown} more`, `+${chips.length - shown} 项`)}</button>}</div>
     </div>
     {children}
     {preview && <SurfaceDialog title={copy('Context preview', '上下文预览')} variant="plain" size="wide" className="context-preview-dialog" onClose={() => setPreview(undefined)}>

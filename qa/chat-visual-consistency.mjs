@@ -16,18 +16,29 @@ import { spawnSync } from 'node:child_process';
 import { build as esbuild } from 'esbuild';
 import { build as viteBuild } from 'vite';
 import { electron } from './lib/desktop1.mjs';
-import { assertNoControlViolations, checkControlConsistency } from './lib/visual-consistency.mjs';
+import { checkControlConsistency } from './lib/visual-consistency.mjs';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const runtime = join(root, 'runtime/target-qa/debug/threadterm-v3-runtime.exe');
 const fixture = join(root, 'qa/fixtures/chat-visual-echo-acp');
+const requiredSurfacesFixture = join(root, 'qa/fixtures/chat-visual-required-surfaces.tsx');
 const out = join(root, 'qa/results/chat-parity/V1/chat-visual-consistency');
 const scratch = await mkdtemp(join(tmpdir(), 'tt-chat-visual-'));
 const appDir = join(scratch, 'app');
 const plugins = join(scratch, 'plugins');
 const work = join(scratch, 'repo');
 const report = { passed: false, checks: [], screenshots: [], visualConsistency: [], errors: [] };
-let app; let page;
+// Finding 13 needs the complete violation list in one run. Collect every
+// surface/cell violation here while keeping every assertion, then fail once
+// before the run can be considered passed.
+const controlViolations = [];
+const surfaceFailures = [];
+function recordControlViolations(label, result) {
+  if (result.error) { surfaceFailures.push(`${label}: ${result.error}`); return; }
+  if (result.violations.length) controlViolations.push({ label, violations: result.violations });
+}
+function recordSurfaceFailure(message) { surfaceFailures.push(message); }
+let app; let page; let supplementaryApp;
 const delay = ms => new Promise(done => setTimeout(done, ms));
 const check = value => { report.checks.push(value); console.log(`PASS ${value}`); };
 const request = (method, params = {}) => page.evaluate(([name, value]) => window.threadterm.request(name, value), [method, params]);
@@ -44,13 +55,102 @@ async function buildApp() {
 
 /** Runs the helper on one surface after scrolling it into view. */
 async function checkSurface(selector, label) {
-  await page.locator(selector).first().scrollIntoViewIfNeeded().catch(() => undefined);
-  await page.evaluate(() => new Promise(done => requestAnimationFrame(() => requestAnimationFrame(done)))).catch(() => undefined);
-  const result = await checkControlConsistency(page, selector);
-  report.visualConsistency.push({ label, ...result, violations: result.violations });
-  assertNoControlViolations(result, label);
-  return result;
+  const instances = page.locator(selector);
+  const count = await instances.count();
+  if (!count) { recordSurfaceFailure(`${label}: required surface is present`); return { checked: 0 }; }
+  let checked = 0;
+  for (let index = 0; index < count; index += 1) {
+    const instance = instances.nth(index);
+    const probe = `vc-surface-${label.replace(/[^a-z0-9]+/gi, '-').toLowerCase()}-${index}`;
+    try {
+      await instance.evaluate((node, value) => node.setAttribute('data-vc-surface', value), probe);
+      await instance.scrollIntoViewIfNeeded().catch(() => undefined);
+      await page.evaluate(() => new Promise(done => requestAnimationFrame(() => requestAnimationFrame(done)))).catch(() => undefined);
+      const result = await checkControlConsistency(page, `[data-vc-surface="${probe}"]`);
+      assert.ok(result.checked > 0, `${label} #${index + 1}: the helper collected visible controls`);
+      checked += result.checked;
+      report.visualConsistency.push({ label: `${label} #${index + 1}`, ...result, violations: result.violations });
+      recordControlViolations(`${label} #${index + 1}`, result);
+    } catch (error) {
+      recordSurfaceFailure(`${label} #${index + 1}: ${error instanceof Error ? error.message : String(error)}`);
+    } finally {
+      await instance.evaluate(node => node.removeAttribute('data-vc-surface')).catch(() => undefined);
+    }
+  }
+  return { checked };
 }
+
+// BEGIN supplementary required-surface fixture (finding 13)
+// The ACP fixture above owns plan/tool/reply coverage. These cards come from
+// incompatible native protocols, so this production-ChatView bundle supplies
+// contract-shaped fake bridge snapshots without starting another provider.
+async function checkRequiredSurfacesMatrix() {
+  const fixtureDir = join(scratch, 'required-surfaces');
+  await mkdir(fixtureDir, { recursive: true });
+  await esbuild({ entryPoints: [requiredSurfacesFixture], bundle: true, platform: 'browser', format: 'iife', target: 'chrome120', outfile: join(fixtureDir, 'fixture.js'), logLevel: 'error' });
+  await writeFile(join(fixtureDir, 'index.html'), '<!doctype html><meta charset="utf-8"><link rel="stylesheet" href="fixture.css"><style>html,body,#root{height:100%;margin:0}#root{display:flex;min-height:0}</style><div id="root"></div><script src="fixture.js"></script>');
+  await writeFile(join(fixtureDir, 'main.cjs'), `const { app, BrowserWindow } = require('electron'); app.setPath('userData', ${JSON.stringify(join(fixtureDir, 'profile'))}); app.whenReady().then(() => new BrowserWindow({ width: 1440, height: 900, show: false, webPreferences: { contextIsolation: true, nodeIntegration: false, sandbox: true } }).loadFile(${JSON.stringify(join(fixtureDir, 'index.html'))}));`);
+  const supplementaryEnv = Object.fromEntries(Object.entries(process.env).filter(([key]) => key.toLowerCase() !== 'path'));
+  supplementaryEnv.PATH = [dirname(process.execPath), join(process.env.SystemRoot || 'C:\\Windows', 'System32')].join(';');
+  assert.equal(Object.keys(supplementaryEnv).filter(key => key.toLowerCase() === 'path').length, 1, 'supplementary fixture PATH is isolated');
+  supplementaryApp = await electron.launch({ args: ['--disable-gpu', '--in-process-gpu', '--no-sandbox', join(fixtureDir, 'main.cjs')], cwd: root, env: supplementaryEnv, timeout: 60_000 });
+  const supplementaryPage = await supplementaryApp.firstWindow({ timeout: 30_000 });
+  supplementaryPage.setDefaultTimeout(20_000);
+  supplementaryPage.on('pageerror', error => report.errors.push(`required surfaces page: ${error.message}`));
+  await supplementaryPage.waitForFunction(() => typeof window.qaRequiredSurfaces?.mount === 'function');
+  await supplementaryPage.evaluate(() => localStorage.setItem('threadterm.compose.context.visual-required-surfaces', JSON.stringify([{ kind: 'file', id: 'required-context', path: 'src/required.ts', startLine: 1, endLine: 2 }])));
+  const required = [
+    ['approval card', '.chat-approval-card:not(.chat-question-wrapper)'],
+    ['question card', '.chat-question-wrapper'],
+    ['queue row', '[data-testid="chat-queue-item"]'],
+    ['context tray', '[data-testid="context-tray"]'],
+    ['subagent card', '.chat-subagent-card'],
+    ['usage card', '[data-testid="plan-usage-card"]'],
+    ['repair banner', '.chat-repair-banner'],
+    ['network banner', '.chat-network-notice'],
+  ];
+  for (const theme of ['light', 'dark', 'custom']) for (const locale of ['en', 'zh-CN']) for (const width of [1440, 420]) {
+    await supplementaryApp.evaluate(({ BrowserWindow }, nextWidth) => BrowserWindow.getAllWindows()[0].setContentSize(nextWidth, 900), width);
+    await supplementaryPage.evaluate(([nextLocale, nextTheme]) => window.qaRequiredSurfaces.mount(nextLocale, nextTheme), [locale, theme]);
+    await supplementaryPage.locator('.chat-compose-shell').waitFor();
+    await supplementaryPage.evaluate(() => new Promise(done => requestAnimationFrame(() => requestAnimationFrame(done))));
+    for (const [label, selector] of required) {
+      const instances = supplementaryPage.locator(selector);
+      const count = await instances.count();
+      if (!count) { recordSurfaceFailure(`${label} ${theme}/${locale}/${width}: required surface is present`); continue; }
+      for (let index = 0; index < count; index += 1) {
+        const instance = instances.nth(index);
+        const probe = `vc-required-${theme}-${locale}-${width}-${label.replace(/[^a-z0-9]+/gi, '-').toLowerCase()}-${index}`;
+        try {
+          await instance.evaluate((node, value) => node.setAttribute('data-vc-surface', value), probe);
+          await instance.scrollIntoViewIfNeeded();
+          const bounds = await instance.boundingBox();
+          assert.ok(bounds && bounds.width > 0 && bounds.height > 0, `${label} ${theme}/${locale}/${width} #${index + 1}: the required surface is visible`);
+          const result = await checkControlConsistency(supplementaryPage, `[data-vc-surface="${probe}"]`);
+          if (['approval card', 'question card', 'queue row', 'context tray'].includes(label)) {
+            assert.ok(result.checked > 0, `${label} ${theme}/${locale}/${width} #${index + 1}: controls are visible to the helper`);
+          }
+          report.visualConsistency.push({ label: `${label} ${theme}/${locale}/${width} #${index + 1}`, ...result, violations: result.violations });
+          recordControlViolations(`${label} ${theme}/${locale}/${width} #${index + 1}`, result);
+          const name = `required-${label.replace(/[^a-z0-9]+/gi, '-').toLowerCase()}-${index + 1}-${theme}-${width}-${locale}.png`;
+          await supplementaryPage.screenshot({ path: join(out, name), animations: 'disabled' }); report.screenshots.push(name);
+        } catch (error) {
+          recordSurfaceFailure(`${label} ${theme}/${locale}/${width} #${index + 1}: ${error instanceof Error ? error.message : String(error)}`);
+        } finally {
+          await instance.evaluate(node => node.removeAttribute('data-vc-surface')).catch(() => undefined);
+        }
+      }
+    }
+    if (theme === 'custom') {
+      const surface = await supplementaryPage.evaluate(() => getComputedStyle(document.documentElement).getPropertyValue('--surface').trim());
+      assert.equal(surface.toLowerCase(), '#182430', `custom ${locale}/${width} remaps the supplementary surface token`);
+    }
+  }
+  await supplementaryApp.evaluate(({ app: electronApp }) => electronApp.exit(0)).catch(() => {});
+  await supplementaryApp.close().catch(() => {}); supplementaryApp = undefined;
+  check('wide/420, light/dark/custom, en/zh-CN: approval/question, queue, context, subagent/usage, repair and network surfaces are present and have zero helper violations');
+}
+// END supplementary required-surface fixture
 
 try {
   assert.ok(existsSync(runtime), `missing ${runtime}; build runtime/target-qa before running this QA`);
@@ -155,10 +255,10 @@ try {
     await page.waitForFunction(expected => document.documentElement.dataset.theme === expected, theme === 'custom' ? 'dark' : theme);
     if (theme === 'custom') await page.waitForFunction(() => document.documentElement.dataset.customTheme === 'true');
     for (const [label, selector] of surfaces) {
-      if (await page.locator(selector).count() === 0) continue;
+      if (!(await page.locator(selector).count() > 0)) { recordSurfaceFailure(`${label} ${theme}/${locale}/${width}: required surface is present`); continue; }
       const result = await checkSurface(selector, `${label} ${theme}/${locale}/${width}`);
       assert.ok(result.checked >= 1, `${label} ${theme}/${locale}/${width}: the helper saw at least one control`);
-      if (result.checked < 1) report.errors.push(`${label} ${theme}/${locale}/${width}: no control collected`);
+      if (result.checked < 1) surfaceFailures.push(`${label} ${theme}/${locale}/${width}: no control collected`);
     }
     // V1-1: the tool header is one deliberate line. The headline ellipsizes and
     // the failure/Collapse/chevron controls stay on line 1; the turn summary is
@@ -202,6 +302,7 @@ try {
   check('V1-1 the tool header keeps its controls on one line with an ellipsized headline and an own-line summary');
   check('V1-5 the back-to-bottom overlay keeps a shared .btn surface, a real shadow and a 52 px reserve');
   check('wide/420, light/dark/custom, en/zh-CN: zero helper violations on the plan, tool cards, drawer, reply actions, code copy and composer');
+  await checkRequiredSurfacesMatrix();
 
   // The custom-theme screenshot must show a measurably different surface.
   const snapshot = await request('runtime.snapshot');
@@ -211,6 +312,17 @@ try {
   assert.equal(customSurface.toLowerCase(), custom.surface, 'the custom surface token is applied');
   check('the custom theme remaps the surface/accent tokens (helper ran against it)');
 
+  // Fail once with the complete list after every surface and matrix cell ran.
+  if (controlViolations.length || surfaceFailures.length) {
+    report.controlViolations = controlViolations;
+    report.surfaceFailures = surfaceFailures;
+    const lines = [
+      ...controlViolations.flatMap(entry => entry.violations.map(violation => `  - ${entry.label}: [${violation.kind}] ${violation.message}`)),
+      ...surfaceFailures.map(message => `  - ${message}`),
+    ];
+    throw new Error(`${controlViolations.length} surface(s) with control-consistency violations and ${surfaceFailures.length} surface failure(s):\n${lines.join('\n')}`);
+  }
+
   assert.deepEqual(report.errors, [], report.errors.join('\n'));
   report.passed = true;
 } catch (error) {
@@ -219,6 +331,7 @@ try {
   process.exitCode = 1;
 } finally {
   if (page) await page.evaluate(() => window.threadterm.request('runtime.shutdown', { operationId: crypto.randomUUID() })).catch(() => {});
+  if (supplementaryApp) { await supplementaryApp.evaluate(({ app: electronApp }) => electronApp.exit(0)).catch(() => {}); await supplementaryApp.close().catch(() => {}); }
   if (app) { await app.evaluate(({ app: electronApp }) => electronApp.exit(0)).catch(() => {}); await app.close().catch(() => {}); }
   await mkdir(out, { recursive: true }); await writeFile(join(out, 'report.json'), JSON.stringify(report, null, 2));
   await rm(scratch, { recursive: true, force: true, maxRetries: 10, retryDelay: 250 }).catch(() => {});
