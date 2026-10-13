@@ -2840,7 +2840,7 @@ mod tests {
             assert!(chat.approve("turn", &id, "allow", "answer").is_err());
             // Delegation must precede a closed replay gate.
             let delegation = json!({"id":"delegation","method":"session/request_permission","params":{"sessionId":"parent","toolCall":{"title":"mcp__threadterm__delegate_start","kind":"other"},"options":[{"optionId":"once","kind":"allow_once","name":"Allow"}]}});
-            assert!(!handle_acp_message(&responder, &delegation, ChatToolPolicy { delegation: true, preview: false }, false));
+            assert!(!handle_acp_message(&responder, &delegation, ChatToolPolicy { delegation: true, preview: false, ..Default::default() }, false));
             chat.process.request("barrier", json!({})).unwrap();
             let responses: Vec<Value> = std::fs::read_to_string(log).unwrap().lines().map(|line| serde_json::from_str(line).unwrap()).collect();
             assert_exactly_once(&responses, &[json!("unknown"), json!("replay"), json!("child-permission"), json!("delegation"), json!("early-unknown"), json!("early-permission")]);

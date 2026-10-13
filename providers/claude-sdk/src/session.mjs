@@ -34,6 +34,7 @@ const AUTO_MODE = { value: 'auto', name: 'Auto' };
 // ThreadTerm's delegation tools as the SDK names them (runtime `delegation::TOOL_NAMES`).
 export const THREADTERM_DELEGATION_TOOLS = new Set(['delegate_start', 'delegate_status', 'delegate_wait', 'delegate_respond', 'delegate_result', 'delegate_cancel'].map(name => `mcp__threadterm__${name}`));
 export const THREADTERM_PREVIEW_TOOLS = new Set(['preview_present', 'preview_status'].map(name => `mcp__threadterm__${name}`));
+export const THREADTERM_CHAT_TOOLS = new Set(['ask_user', 'session_info', 'feedback_check'].map(name => `mcp__threadterm__${name}`));
 const EFFORT_NAMES = { low: 'Low', medium: 'Medium', high: 'High', xhigh: 'Extra high', max: 'Max' };
 
 // Commands the CLI advertises that cannot work from Chat: /clear replaces the native
@@ -94,6 +95,9 @@ export class ClaudeSession {
     const environment = threadterm?.env && typeof threadterm.env === 'object' ? threadterm.env : {};
     this.threadTermDelegationTools = threadterm?.name === undefined && typeof environment.THREADTERM_SESSION_TOKEN === 'string' && environment.THREADTERM_SESSION_TOKEN.length > 0;
     this.threadTermPreviewTools = threadterm?.name === undefined && typeof environment.THREADTERM_PREVIEW_TOKEN === 'string' && environment.THREADTERM_PREVIEW_TOKEN.length > 0;
+    this.threadTermAskTool = threadterm?.name === undefined && typeof environment.THREADTERM_CHAT_TOKEN === 'string' && environment.THREADTERM_CHAT_TOKEN.length > 0 && environment.THREADTERM_CHAT_TOOL_ASK === '1';
+    this.threadTermSessionInfoTool = threadterm?.name === undefined && typeof environment.THREADTERM_CHAT_TOKEN === 'string' && environment.THREADTERM_CHAT_TOKEN.length > 0 && environment.THREADTERM_CHAT_TOOL_SESSION_INFO === '1';
+    this.threadTermFeedbackTool = threadterm?.name === undefined && typeof environment.THREADTERM_CHAT_TOKEN === 'string' && environment.THREADTERM_CHAT_TOKEN.length > 0 && environment.THREADTERM_CHAT_TOOL_FEEDBACK === '1';
     const options = {
       cwd,
       settingSources: this.hostOptions.settingSources ?? ['user', 'project', 'local'],
@@ -205,7 +209,11 @@ export class ClaudeSession {
   requestPermission(toolName, input, { signal, suggestions, toolUseID, agentID } = {}) {
     if (this.closed || this.ended) return Promise.resolve({ behavior: 'deny', message: 'Session closed' });
     if (toolName === 'ExitPlanMode' && [...this.pending.values()].some(entry => entry.plan)) return Promise.resolve({ behavior: 'deny', message: 'A plan approval is already pending.' });
-    if ((this.threadTermDelegationTools && THREADTERM_DELEGATION_TOOLS.has(toolName)) || (this.threadTermPreviewTools && THREADTERM_PREVIEW_TOOLS.has(toolName))) return Promise.resolve({ behavior: 'allow', updatedInput: input });
+    if ((this.threadTermDelegationTools && THREADTERM_DELEGATION_TOOLS.has(toolName))
+      || (this.threadTermPreviewTools && THREADTERM_PREVIEW_TOOLS.has(toolName))
+      || (this.threadTermAskTool && toolName === 'mcp__threadterm__ask_user')
+      || (this.threadTermSessionInfoTool && toolName === 'mcp__threadterm__session_info')
+      || (this.threadTermFeedbackTool && toolName === 'mcp__threadterm__feedback_check')) return Promise.resolve({ behavior: 'allow', updatedInput: input });
     // Projection keys approvals by Chat session and request id. A fresh worker
     // for the same Chat must therefore never restart the request-id sequence in
     // the same namespace and overwrite an answered receipt from its predecessor.

@@ -1157,6 +1157,70 @@
       ],
       "additionalProperties": false
     },
+    "RequestResult<\"chat.feedback.add\">": {
+      "type": "object",
+      "properties": {
+        "note": {
+          "$ref": "#/definitions/ChatFeedbackNote"
+        }
+      },
+      "required": [
+        "note"
+      ],
+      "additionalProperties": false
+    },
+    "ChatFeedbackNote": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "sessionId": {
+          "type": "string"
+        },
+        "turnId": {
+          "type": "string"
+        },
+        "text": {
+          "type": "string"
+        },
+        "status": {
+          "type": "string",
+          "enum": [
+            "waiting",
+            "received"
+          ]
+        },
+        "createdAt": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "sessionId",
+        "turnId",
+        "text",
+        "status",
+        "createdAt"
+      ],
+      "additionalProperties": false,
+      "description": "User feedback is delivered once when the running agent checks its app-hosted tool."
+    },
+    "RequestResult<\"chat.feedback.read\">": {
+      "type": "object",
+      "properties": {
+        "notes": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/ChatFeedbackNote"
+          }
+        }
+      },
+      "required": [
+        "notes"
+      ],
+      "additionalProperties": false
+    },
     "RequestResult<\"chat.draft.save\">": {
       "type": "object",
       "properties": {
@@ -1369,6 +1433,18 @@
                 "aiCompletionHints"
               ],
               "additionalProperties": false
+            },
+            "chatTools.ask": {
+              "type": "boolean"
+            },
+            "chatTools.sessionInfo": {
+              "type": "boolean"
+            },
+            "chatTools.feedback": {
+              "type": "boolean"
+            },
+            "chatTools.delegation": {
+              "type": "boolean"
             }
           },
           "additionalProperties": false
@@ -1480,6 +1556,18 @@
             "zh-CN",
             "en"
           ]
+        },
+        "chatTools.ask": {
+          "type": "boolean"
+        },
+        "chatTools.sessionInfo": {
+          "type": "boolean"
+        },
+        "chatTools.feedback": {
+          "type": "boolean"
+        },
+        "chatTools.delegation": {
+          "type": "boolean"
         }
       },
       "required": [
@@ -5782,6 +5870,58 @@
         },
         "result": {
           "$ref": "#/definitions/RequestResult%3C%22chat.draft.read%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "result"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "chat.feedback.add"
+        },
+        "result": {
+          "$ref": "#/definitions/RequestResult%3C%22chat.feedback.add%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "result"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "chat.feedback.read"
+        },
+        "result": {
+          "$ref": "#/definitions/RequestResult%3C%22chat.feedback.read%22%3E"
         }
       },
       "required": [

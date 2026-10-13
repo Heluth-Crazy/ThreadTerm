@@ -1,5 +1,6 @@
 import {spawn} from 'node:child_process';
 import {randomUUID} from 'node:crypto';
+import {existsSync} from 'node:fs';
 import {mkdtemp, mkdir, readFile, rm} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join, resolve} from 'node:path';
@@ -14,9 +15,14 @@ const data = join(scratch, 'data');
 const project = join(scratch, 'project');
 await Promise.all([mkdir(data), mkdir(project)]);
 const pipe = `\\\\.\\pipe\\threadterm-v3-mcp-smoke-${randomUUID()}`;
-const env = {...process.env, THREADTERM_V3_DATA: data, THREADTERM_V3_PIPE: pipe};
-const runtimeExe = join(root, 'runtime/target/debug/threadterm-v3-runtime.exe');
-const mcpExe = join(root, 'runtime/target/debug/threadterm-v3-mcp.exe');
+const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => key.toLowerCase() !== 'path'));
+env.Path = [join(process.env.SystemRoot || 'C:\\Windows', 'System32')].join(';');
+env.THREADTERM_V3_DATA = data; env.THREADTERM_V3_PIPE = pipe;
+const qaRuntime = join(root, 'runtime/target-qa/debug/threadterm-v3-runtime.exe');
+const qaMcp = join(root, 'runtime/target-qa/debug/threadterm-v3-mcp.exe');
+const runtimeExe = process.env.THREADTERM_QA_RUNTIME_EXE || process.env.THREADTERM_QA_E1_RUNTIME_EXE || (existsSync(qaRuntime) ? qaRuntime : join(root, 'runtime/target/debug/threadterm-v3-runtime.exe'));
+const mcpExe = process.env.THREADTERM_QA_E1_HOST_EXE || process.env.THREADTERM_QA_MCP_EXE || (existsSync(qaMcp) ? qaMcp : join(root, 'runtime/target/debug/threadterm-v3-mcp.exe'));
+assert.deepEqual(Object.keys(env).filter(key => key.toLowerCase() === 'path'), ['Path']);
 const children = new Set();
 let daemon;
 let peer;
@@ -28,9 +34,9 @@ function launch(file, args, options = {}) {
   child.once('exit', () => children.delete(child));
   return child;
 }
-function mcpRequest(lines) {
+function mcpRequest(lines, extraEnv = {}) {
   return new Promise((resolveRequest, reject) => {
-    const child = launch(mcpExe, [], {env, stdio: ['pipe', 'pipe', 'pipe']});
+    const child = launch(mcpExe, [], {env: {...env, ...extraEnv}, stdio: ['pipe', 'pipe', 'pipe']});
     let stdout = ''; let stderr = '';
     child.stdout.setEncoding('utf8'); child.stderr.setEncoding('utf8');
     child.stdout.on('data', dataChunk => { stdout += dataChunk; });
@@ -51,6 +57,13 @@ function baseRequests() {
   ];
 }
 function response(rows, id) { return rows.find(row => row.id === id)?.result; }
+async function chatCatalog(flags) {
+  const rows = await mcpRequest([...baseRequests(), {jsonrpc: '2.0', id: 91, method: 'tools/list', params: {}}], {
+    THREADTERM_MCP_PROFILE: 'chat-tools', THREADTERM_CHAT_SESSION_ID: 'qa-session', THREADTERM_CHAT_TOKEN: 'qa-token',
+    THREADTERM_CHAT_TOOL_ASK: flags.ask ? '1' : '0', THREADTERM_CHAT_TOOL_SESSION_INFO: flags.sessionInfo ? '1' : '0', THREADTERM_CHAT_TOOL_FEEDBACK: flags.feedback ? '1' : '0',
+  });
+  return response(rows, 91).tools.map(tool => tool.name).sort();
+}
 async function waitForRuntime() {
   for (let attempt = 0; attempt < 100; attempt += 1) {
     try {
@@ -71,6 +84,18 @@ try {
   daemon.stderr.setEncoding('utf8');
   daemon.stderr.on('data', chunk => { diagnostics += chunk; });
   peer = await waitForRuntime();
+
+  // E1 host profile: availability is fixed for a newly connected chat by the
+  // three explicit env switches.  This is intentionally a host-only check:
+  // it does not create a provider process or a live agent.
+  const fullCatalog = await chatCatalog({ask:true, sessionInfo:true, feedback:true});
+  assert.deepEqual(fullCatalog, ['ask_user', 'feedback_check', 'session_info']);
+  assert.deepEqual(await chatCatalog({ask:false, sessionInfo:true, feedback:true}), ['feedback_check', 'session_info']);
+  assert.deepEqual(await chatCatalog({ask:true, sessionInfo:false, feedback:false}), ['ask_user']);
+  const forged = await mcpRequest([...baseRequests(), {jsonrpc:'2.0',id:92,method:'tools/call',params:{name:'ask_user',arguments:{callerSessionId:'foreign',callerToken:'foreign',questions:[{question:'x',options:[{label:'a'},{label:'b'}]}]}}}], {
+    THREADTERM_MCP_PROFILE:'chat-tools', THREADTERM_CHAT_SESSION_ID:'qa-session', THREADTERM_CHAT_TOKEN:'qa-token', THREADTERM_CHAT_TOOL_ASK:'1', THREADTERM_CHAT_TOOL_SESSION_INFO:'0', THREADTERM_CHAT_TOOL_FEEDBACK:'0',
+  });
+  assert.equal(response(forged, 92).isError, true, 'caller identity passed in tool arguments is rejected');
 
   const requestId = `mcp-smoke-${randomUUID()}`;
   const create = {jsonrpc: '2.0', id: 3, method: 'tools/call', params: {name: 'terminal_create', arguments: {
@@ -105,7 +130,7 @@ try {
 
   await peer.request('runtime.shutdown', {operationId: randomUUID()});
   await new Promise((resolveExit, reject) => { const timer = setTimeout(() => reject(new Error('runtime shutdown timed out')), 10_000); daemon.once('exit', () => { clearTimeout(timer); resolveExit(); }); });
-  console.log(JSON.stringify({passed: true, checks: ['MCP initialize/tools list', 'create idempotency', 'list', 'durable lookup/read actual PTY output', 'queued present', 'close', 'graceful runtime shutdown']}));
+  console.log(JSON.stringify({passed: true, checks: ['MCP chat-tools catalog follows ask/session-info/feedback switches', 'MCP chat-tools rejects forged caller identity', 'MCP initialize/tools list', 'create idempotency', 'list', 'durable lookup/read actual PTY output', 'queued present', 'close', 'graceful runtime shutdown']}));
 } finally {
   peer?.close();
   for (const child of children) if (child.exitCode === null) child.kill();

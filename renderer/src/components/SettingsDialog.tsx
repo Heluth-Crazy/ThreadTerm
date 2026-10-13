@@ -6,6 +6,7 @@ import { operationId, request } from "../bridge";
 import { useModalFocus } from "../useModalFocus";
 import { Icon } from "./PrototypeIcon";
 import { SettingsTools } from "./SettingsTools";
+import { SettingsChatTools } from "./SettingsChatTools";
 import { ProviderNetworkSettings } from "./ProviderNetworkSettings";
 import { DeviceSettings } from "./DeviceSettings";
 import { SettingsAppearance } from "./SettingsAppearance";
@@ -36,7 +37,7 @@ export function SettingsDialog({ data, onClose, onSaved, onSessionCreated, super
       <section className={`settings-group ${tab === "controls" ? "active" : ""}`}><SettingsControls settings={data.settings} zh={zh} update={update} counts={supervisionCounts} /></section>
       <section className={`settings-group ${tab === "data" ? "active" : ""}`}><SettingsData settings={data.settings} zh={zh} onSaved={onSaved} /></section>
       <section className={`settings-group ${tab === "mobile" ? "active" : ""}`}><DeviceSettings language={zh ? "zh-CN" : "en"} /></section>
-      <section className={`settings-group ${tab === "tools" ? "active" : ""}`}><ProviderNetworkSettings settings={data.settings} zh={zh} update={update} /><SettingsTools data={data} onSaved={onSaved} /></section>
+      <section className={`settings-group ${tab === "tools" ? "active" : ""}`}><SettingsChatTools settings={data.settings} zh={zh} update={update} /><ProviderNetworkSettings settings={data.settings} zh={zh} update={update} /><SettingsTools data={data} onSaved={onSaved} /></section>
       {tab === "plugins" && <section className="settings-group active"><SettingsPlugins zh={zh} onSaved={onSaved} /></section>}
     </div></div>
   </section></div>, document.body);

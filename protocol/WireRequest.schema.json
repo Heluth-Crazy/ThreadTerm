@@ -576,6 +576,46 @@
       ],
       "additionalProperties": false
     },
+    "RequestParams<\"chat.feedback.add\">": {
+      "type": "object",
+      "properties": {
+        "sessionId": {
+          "type": "string"
+        },
+        "turnId": {
+          "type": "string"
+        },
+        "text": {
+          "type": "string"
+        },
+        "operationId": {
+          "type": "string"
+        },
+        "leaseEpoch": {
+          "type": "number"
+        }
+      },
+      "required": [
+        "sessionId",
+        "turnId",
+        "text",
+        "operationId",
+        "leaseEpoch"
+      ],
+      "additionalProperties": false
+    },
+    "RequestParams<\"chat.feedback.read\">": {
+      "type": "object",
+      "properties": {
+        "sessionId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "sessionId"
+      ],
+      "additionalProperties": false
+    },
     "RequestParams<\"chat.draft.save\">": {
       "type": "object",
       "properties": {
@@ -4405,6 +4445,58 @@
         },
         "params": {
           "$ref": "#/definitions/RequestParams%3C%22chat.draft.read%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "params"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "chat.feedback.add"
+        },
+        "params": {
+          "$ref": "#/definitions/RequestParams%3C%22chat.feedback.add%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "params"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "chat.feedback.read"
+        },
+        "params": {
+          "$ref": "#/definitions/RequestParams%3C%22chat.feedback.read%22%3E"
         }
       },
       "required": [

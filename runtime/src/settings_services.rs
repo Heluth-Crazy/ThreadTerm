@@ -23,6 +23,10 @@ const ALLOWED_SETTINGS: &[&str] = &[
     "customThemes",
     "themeSelection",
     "terminalCompatibility",
+    "chatTools.ask",
+    "chatTools.sessionInfo",
+    "chatTools.feedback",
+    "chatTools.delegation",
 ];
 const RUNTIME_SETTINGS: &[&str] = &[
     "theme",
@@ -39,6 +43,10 @@ const RUNTIME_SETTINGS: &[&str] = &[
     "floatMode",
     "supervision",
     "providerNetwork",
+    "chatTools.ask",
+    "chatTools.sessionInfo",
+    "chatTools.feedback",
+    "chatTools.delegation",
     // Machine-specific (not exported): the console host for Windows terminals (conpty.rs); read at runtime start.
     "conptyHost",
 ];
@@ -738,6 +746,8 @@ fn valid_setting(key: &str, value: &Value) -> Result<()> {
         {
             Ok(())
         }
+        "chatTools.ask" | "chatTools.sessionInfo" | "chatTools.feedback" | "chatTools.delegation"
+            if value.is_boolean() => Ok(()),
         "providerNetwork"
             if value
                 .as_object()
@@ -911,6 +921,24 @@ mod tests {
         ] {
             assert!(valid_runtime_patch(&json!({"supervision":invalid})).is_err());
         }
+    }
+
+    #[test]
+    fn chat_tool_switches_are_boolean_and_portable() {
+        let patch = json!({"chatTools.ask":false,"chatTools.sessionInfo":true,"chatTools.feedback":false,"chatTools.delegation":true});
+        assert!(valid_runtime_patch(&patch).is_ok());
+        assert!(valid_runtime_patch(&json!({"chatTools.ask":"false"})).is_err());
+        for key in ["chatTools.ask", "chatTools.sessionInfo", "chatTools.feedback", "chatTools.delegation"] {
+            assert!(ALLOWED_SETTINGS.contains(&key));
+        }
+        let root = tempfile::tempdir().unwrap();
+        let db = Database::open(&root.path().join("settings.sqlite")).unwrap();
+        db.update_settings(&patch, 0, "chat-tool-settings").unwrap();
+        let exported = settings_export(&db).unwrap();
+        assert_eq!(exported["settings"]["chatTools.ask"], false);
+        assert_eq!(exported["settings"]["chatTools.sessionInfo"], true);
+        assert_eq!(exported["settings"]["chatTools.feedback"], false);
+        assert_eq!(exported["settings"]["chatTools.delegation"], true);
     }
 
     #[test]

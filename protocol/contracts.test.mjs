@@ -1,5 +1,24 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+// Feedback is additive and remains fenced by a lease and a stable operation ID.
+test('feedback notes validate leases, unicode limits and delivery status',()=>{
+ const request={sessionId:'s',turnId:'turn',text:'note',operationId:'op',leaseEpoch:1};
+ validateRequest('chat.feedback.add',request);
+ validateRequest('chat.feedback.add',{...request,text:'😀'.repeat(4000)});
+ validateRequest('chat.feedback.read',{sessionId:'s'});
+ for(const patch of [{text:''},{text:' '},{text:'中'.repeat(4001)},{leaseEpoch:0},{leaseEpoch:undefined},{turnId:''},{operationId:''},{callerToken:'injected'}]) assert.throws(()=>validateRequest('chat.feedback.add',{...request,...patch}));
+ const note={id:'n',sessionId:'s',turnId:'turn',text:'note',status:'waiting',createdAt:'now'};
+ validateResult('chat.feedback.add',{note});
+ validateResult('chat.feedback.read',{notes:[{...note,status:'received'}]});
+ assert.throws(()=>validateResult('chat.feedback.read',{notes:[{...note,status:'sent'}]}));
+});
+test('all four tool switches remain optional boolean portable settings',()=>{
+ const settings={'chatTools.ask':true,'chatTools.sessionInfo':false,'chatTools.feedback':true,'chatTools.delegation':false};
+ const bundle={marker:'threadterm-v3-settings',version:1,exportedAt:'now',settings};
+ validateResult('settings.export',bundle);
+ validateResult('settings.export',{...bundle,settings:{}});
+ for(const key of Object.keys(settings)) assert.throws(()=>validateResult('settings.export',{...bundle,settings:{[key]:'true'}}));
+});
 import {validateRequest,validateResult,validateLayout,METHODS,isRuntimeEvent,PROTOCOL_CONTRACT,PROTOCOL_VERSION,protocolIncompatibleReason} from './index.ts';
 
 test('context read preserves timestamp and all counters, with an empty-session null result',()=>{

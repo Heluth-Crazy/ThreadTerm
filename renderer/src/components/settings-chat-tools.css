@@ -1,0 +1,9 @@
+.settings-chat-tools { display: flex; flex-direction: column; gap: 12px; }
+.settings-chat-tools h3, .settings-chat-tools p { margin: 0; }
+.settings-chat-tools h3 { font-size: 13px; font-weight: 600; }
+.settings-chat-tools > p { color: var(--muted); font-size: 12px; }
+.settings-chat-tool-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.settings-chat-tool-row > span { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.settings-chat-tool-row b { font-size: 13px; font-weight: 500; }
+.settings-chat-tool-row small { color: var(--muted); font-size: 12px; }
+.settings-chat-tool-row > button { flex-shrink: 0; }

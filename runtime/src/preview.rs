@@ -718,6 +718,7 @@ fn contains_session(layout: &Value, session: &str) -> bool {
 pub(crate) fn tool_server_resolver(
     db: Arc<Database>,
     delegations: Arc<crate::delegation::Delegations>,
+    chat_tools: Arc<crate::chat_tools::ChatTools>,
     previews: Arc<Previews>,
     providers: Weak<Providers>,
     config: RuntimeConfig,
@@ -734,13 +735,48 @@ pub(crate) fn tool_server_resolver(
         let Some(registry) = providers.upgrade() else {
             return spec;
         };
-        let eligible = db
+        let app_eligible = db
             .session_by_id(session)
             .ok()
             .flatten()
-            .is_some_and(|s| s.mode == "chat" && s.delegation.is_none() && !s.read_only)
+            .is_some_and(|s| s.mode == "chat" && !s.read_only)
             && !crate::agent_review::is_reviewer(&db, session).unwrap_or(true);
-        if !eligible {
+        if !app_eligible {
+            return spec;
+        }
+        // All MCP-capable built-ins use the same app-hosted tools. The
+        // settings snapshot is read while this process is opened, so changing
+        // a switch affects subsequent connections only.
+        let supported = matches!(provider, "codex" | "claude" | "kimi" | "grok" | "gemini")
+            || registry.plugin_registry().is_some_and(|r| r.agents.iter().any(|a| a.id == provider && a.chat_args.is_some()));
+        let Ok(settings) = crate::delegation::chat_tool_settings(&db) else {
+            return spec;
+        };
+        if supported && (settings.ask || settings.session_info || settings.feedback) {
+            if let (Some(command), Some(generation)) = (mcp.as_ref(), registry.preview_worker_token(session)) {
+                if let Ok(token) = chat_tools.issue(session, generation, settings.ask, settings.session_info, settings.feedback) {
+                    let server = spec.get_or_insert_with(|| ChatToolServer {
+                        name: "threadterm".into(), command: command.to_string_lossy().into_owned(), args: vec![],
+                        env: vec![
+                            ("THREADTERM_SESSION_ID".into(), String::new()), ("THREADTERM_SESSION_TOKEN".into(), String::new()),
+                            ("THREADTERM_V3_DATA".into(), config.data_dir.to_string_lossy().into_owned()), ("THREADTERM_V3_PIPE".into(), config.pipe_base.clone()),
+                        ],
+                    });
+                    server.env.retain(|(key, _)| !matches!(key.as_str(), "THREADTERM_MCP_PROFILE" | "THREADTERM_CHAT_SESSION_ID" | "THREADTERM_CHAT_TOKEN" | "THREADTERM_CHAT_TOOL_ASK" | "THREADTERM_CHAT_TOOL_SESSION_INFO" | "THREADTERM_CHAT_TOOL_FEEDBACK"));
+                    server.env.push(("THREADTERM_MCP_PROFILE".into(), "chat-tools".into()));
+                    server.env.push(("THREADTERM_CHAT_SESSION_ID".into(), session.into()));
+                    server.env.push(("THREADTERM_CHAT_TOKEN".into(), token));
+                    server.env.push(("THREADTERM_CHAT_TOOL_ASK".into(), if settings.ask { "1" } else { "0" }.into()));
+                    server.env.push(("THREADTERM_CHAT_TOOL_SESSION_INFO".into(), if settings.session_info { "1" } else { "0" }.into()));
+                    server.env.push(("THREADTERM_CHAT_TOOL_FEEDBACK".into(), if settings.feedback { "1" } else { "0" }.into()));
+                }
+            }
+        }
+        // Browser presentation is intentionally narrower: a delegated child
+        // may ask its user or read its own session info, but never inherits a
+        // preview authority reserved for top-level Chats.
+        let preview_eligible = db.session_by_id(session).ok().flatten().is_some_and(|s| s.delegation.is_none());
+        if !preview_eligible {
             return spec;
         }
         let Some(binding) = registry.plugin_registry().and_then(|r| {
@@ -752,13 +788,7 @@ pub(crate) fn tool_server_resolver(
             return spec;
         };
         // Only adapters with implemented MCP handoff may receive this capability.
-        if !matches!(provider, "codex" | "claude" | "kimi" | "grok" | "gemini")
-            && !registry.plugin_registry().is_some_and(|r| {
-                r.agents
-                    .iter()
-                    .any(|a| a.id == provider && a.chat_args.is_some())
-            })
-        {
+        if !supported {
             return spec;
         }
         let Some(command) = mcp.as_ref() else {

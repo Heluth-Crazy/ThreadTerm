@@ -298,3 +298,19 @@ test('ThreadTerm delegation tools reach the SDK and only their exact names are a
   assert.equal(await settledWithin(plain.requestPermission('mcp__threadterm__delegate_start', {}, {}), 50), 'pending', 'without injection the user decides');
   await plain.stop();
 });
+
+test('ThreadTerm app tools are approved only when their per-open switch is enabled', async () => {
+  const sdk = controllableSdk();
+  const session = new ClaudeSession({ cardId: 'card-chat-tools', sdk, write() {} });
+  await session.start({ cwd: 'C:/', sessionId: null, mcpServers: { threadterm: { type: 'stdio', command: 'threadterm-v3-mcp', args: [], env: { THREADTERM_CHAT_TOKEN: 'chat-token', THREADTERM_CHAT_TOOL_ASK: '1', THREADTERM_CHAT_TOOL_SESSION_INFO: '0', THREADTERM_CHAT_TOOL_FEEDBACK: '1' } } } });
+  assert.equal((await session.requestPermission('mcp__threadterm__ask_user', {})).behavior, 'allow');
+  assert.equal((await session.requestPermission('mcp__threadterm__feedback_check', {})).behavior, 'allow');
+  const disabled = session.requestPermission('mcp__threadterm__session_info', {});
+  await new Promise(resolve => setTimeout(resolve, 0));
+  const request = session.pending.values().next().value;
+  assert.ok(request, 'a disabled app tool asks the user normally');
+  session.decide([...session.pending.keys()][0], 'deny');
+  assert.equal((await disabled).behavior, 'deny');
+  assert.equal(await settledWithin(session.requestPermission('mcp__threadterm__ask_user_extra', {}), 50), 'pending');
+  await session.stop();
+});

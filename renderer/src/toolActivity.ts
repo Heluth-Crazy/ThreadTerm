@@ -21,6 +21,8 @@ const hiddenSubagentTool = (part: ChatPart): boolean => part.toolName === 'subAg
 export function hiddenQuestionTool(part: ChatPart): boolean {
   const data = record(part.data);
   const xaiTool = record(record(data._meta)['x.ai/tool']);
+  if (part.toolName === 'mcp__threadterm__ask_user' || part.toolName === 'threadterm__ask_user'
+    || data.server === 'threadterm' && data.tool === 'ask_user') return true;
   const questionName = (value: unknown): boolean => {
     const normalized = string(value)?.toLowerCase().replace(/[\s_-]/g, '');
     return normalized === 'askuser' || normalized === 'askuserquestion' || normalized === 'askinguserquestions' || normalized === 'question';
