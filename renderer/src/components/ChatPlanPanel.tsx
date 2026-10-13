@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type { ChatItem, ChatPlanEntry } from '@threadterm/protocol';
-import { latestPlan, planEntryLabel, planPriorityLabel, planProgress } from '../chatPlan';
+import { latestPlan, planEntryLabel, planPriorityLabel, planProgress, shouldAutoOpenPlan } from '../chatPlan';
 import './chat-plan.css';
 
 type Copy = (en: string, zh: string) => string;
@@ -18,17 +18,22 @@ function StatusMark({ status, active }: { status: ChatPlanEntry['status']; activ
  * transcript, opens once when a live turn first writes a plan, and renders
  * nothing at all when no plan exists.
  */
-export function ChatPlanPanel({ items, copy, liveTurnId }: { items: readonly ChatItem[]; copy: Copy; liveTurnId?: string }) {
+export function ChatPlanPanel({ items, copy, liveTurnId, historyReady = true }: { items: readonly ChatItem[]; copy: Copy; liveTurnId?: string; historyReady?: boolean }) {
   const plan = useMemo(() => latestPlan(items), [items]);
   const [open, setOpen] = useState(false);
   const autoOpened = useRef(false);
+  const previousPlan = useRef(plan);
+  const wasHistoryReady = useRef(historyReady);
 
   useEffect(() => {
-    if (plan?.live && !autoOpened.current) {
+    const shouldOpen = shouldAutoOpenPlan(plan, previousPlan.current, autoOpened.current, historyReady && wasHistoryReady.current);
+    previousPlan.current = plan;
+    wasHistoryReady.current = historyReady;
+    if (shouldOpen) {
       autoOpened.current = true;
       setOpen(true);
     }
-  }, [plan?.live, plan?.part.toolId]);
+  }, [plan, historyReady]);
 
   if (!plan) return null;
   const entries = plan.data.entries;

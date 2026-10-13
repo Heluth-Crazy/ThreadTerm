@@ -58,6 +58,10 @@ window.threadterm = {onEvent: cb => {listeners.add(cb); return () => listeners.d
   throw Error('Unexpected QA request '+method);
 }};
 const root = createRoot(document.getElementById('root'));
+window.qaEmitPlan = () => {
+  const item = items(scenario).find(item => item.id === 'p');
+  for (const listener of listeners) listener({event:'chat.item',seq:2,data:{sessionId:activeSessionId,item}});
+};
 window.qaRender = (locale='en', nextScenario='live') => {
   scenario = nextScenario;
   activeSessionId = 'chat-plan-'+locale+'-'+nextScenario+'-'+(sequence++);
@@ -82,6 +86,12 @@ async function setState({ theme = 'light', locale = 'en', width = 1280, scenario
   await page.evaluate(value => { document.documentElement.dataset.theme = value; }, theme);
   await page.setViewportSize({ width, height: 900 });
   await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+  if (scenario === 'live') {
+    await page.locator('.chat-plan-panel').waitFor();
+    assert.equal(await page.locator('.chat-plan-chip').getAttribute('aria-expanded'), 'false', 'even a running saved-plan snapshot stays closed during hydration');
+    await page.evaluate(() => window.qaEmitPlan());
+    await page.waitForFunction(() => document.querySelector('.chat-plan-chip')?.getAttribute('aria-expanded') === 'true');
+  }
 }
 
 try {
@@ -116,6 +126,13 @@ try {
   await page.locator('.chat-plan-chip').click();
   assert.equal(await page.locator('.chat-plan-mark.is-active i').count(), 0, 'history never shows a running spinner');
   report.checks.push('a reloaded history plan shows collapsed and never spins');
+
+  // Lane 3: ordinary persisted live rows have no turnOrigin on idle reload.
+  await setState({ scenario: 'saved' });
+  await page.locator('.chat-plan-panel').waitFor();
+  assert.equal(await page.locator('.chat-plan-chip').getAttribute('aria-expanded'), 'false', 'an idle saved plan without history origin never auto-opens');
+  assert.equal(await page.locator('.chat-plan-mark.is-active i').count(), 0, 'idle saved rows have no active spinner');
+  report.checks.push('idle saved live-origin plans stay collapsed');
 
   // Matrix screenshots.
   for (const theme of ['light', 'dark']) for (const locale of ['en', 'zh-CN']) for (const width of [1280, 420]) {
