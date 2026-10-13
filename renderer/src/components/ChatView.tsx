@@ -40,7 +40,7 @@ import { ChatMessageNavigation } from './ChatMessageNavigation';
 import { SelectionBubble } from './SelectionBubble';
 import { quoteSelection } from '../chatSelection';
 import { askSelectionChat } from '../askSelectionChat';
-import { cancelChatInputFocus, focusRequestedChatInput, insertChatText, registerChatInputTarget } from '../terminalInputTargets';
+import { focusRequestedChatInput, insertChatText, registerChatInputTarget } from '../terminalInputTargets';
 import { parseMarkdownFileReference } from '../fileReferences';
 import { SessionSurfaceContext } from './SessionSurfaceContext';
 import { ChatForkButton, ChatForkMenu, ChatForkStatus, useChatFork } from './ChatForkControls';
@@ -509,7 +509,7 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession }
     visible: () => Boolean(composeRef.current && !composeRef.current.disabled && composeRef.current.getClientRects().length > 0),
     attachImages: incoming => attachImagesRef.current(incoming),
     attachContext: context.attach,
-    focus: () => composeRef.current?.focus(),
+    focus: () => { const area = composeRef.current; area?.focus({ preventScroll: true }); return !!area && document.activeElement === area; },
     insert: (reference) => {
       const area = composeRef.current;
       const next = insertAtCaret(currentText.current, area?.selectionStart ?? currentText.current.length, reference);
@@ -780,7 +780,6 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession }
   const discoveryFailed = discoveryCurrent && repairDiscovery?.phase === 'failed';
   const writable = canControl && controllable && connected && discoveryClear && leaseSessionId.current === session.id && lease.current !== undefined;
   useEffect(() => { if (writable && draftLoaded && !busy && surface?.focused !== false) focusRequestedChatInput(session.id); }, [writable, draftLoaded, busy, session.id, surface?.focused]);
-  useEffect(() => () => cancelChatInputFocus(session.id), [session.id]);
   const repairWritable = controllable && leaseSessionId.current === session.id && lease.current !== undefined;
   const repairHasLiveTurn = !ended && Boolean(activeTurnId(items, session.status));
   useEffect(() => {

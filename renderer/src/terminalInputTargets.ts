@@ -1,13 +1,14 @@
 import type { ContextItem } from './chatContext';
-type Target={visible:()=>boolean;insert:(text:string)=>void;focus?:()=>void;attachImages?:(images:string[])=>number;attachContext?:(item:ContextItem)=>boolean};
-const requestedChatFocus = new Set<string>();
+type Target={visible:()=>boolean;insert:(text:string)=>void;focus?:()=>boolean|void;attachImages?:(images:string[])=>number;attachContext?:(item:ContextItem)=>boolean};
+const requestedChatFocus = new Map<string, object>();
 export function cancelChatInputFocus(sessionId: string) { requestedChatFocus.delete(sessionId); }
 export function focusRequestedChatInput(sessionId: string) {
   const target = visibleTarget(chatTargets, sessionId);
-  if (requestedChatFocus.has(sessionId) && target?.focus) { requestedChatFocus.delete(sessionId); target.focus(); }
+  const pending = requestedChatFocus.get(sessionId);
+  if (pending && target?.focus && target.focus() !== false && requestedChatFocus.get(sessionId) === pending) requestedChatFocus.delete(sessionId);
 }
 /** A one-shot handoff, consumed when the new chat's existing input becomes writable. */
-export function requestChatInputFocus(sessionId: string) { requestedChatFocus.add(sessionId); focusRequestedChatInput(sessionId); }
+export function requestChatInputFocus(sessionId: string) { requestedChatFocus.set(sessionId, {}); focusRequestedChatInput(sessionId); }
 const targets=new Map<string,Set<Target>>();
 const chatTargets=new Map<string,Set<Target>>();
 const register=(registry:Map<string,Set<Target>>,sessionId:string,target:Target)=>{
@@ -20,7 +21,16 @@ export function registerTerminalInputTarget(sessionId:string,target:Target){
 }
 /** Chat composers accept inserted text at the caret; they never submit it. */
 export function registerChatInputTarget(sessionId:string,target:Target){
-  return register(chatTargets,sessionId,target);
+  const remove = register(chatTargets,sessionId,target);
+  return () => {
+    remove();
+    const pending = requestedChatFocus.get(sessionId);
+    // Effect replay/replacement registers the next target in this commit. Only
+    // a genuine final close retires its still-pending handoff; no idle timer.
+    if (pending && !chatTargets.has(sessionId)) queueMicrotask(() => {
+      if (!chatTargets.has(sessionId) && requestedChatFocus.get(sessionId) === pending) cancelChatInputFocus(sessionId);
+    });
+  };
 }
 export function insertTerminalText(sessionId:string,text:string){
   if(!text||/[\x00-\x1f\x7f]/.test(text))throw new Error('terminal_command_requires_single_line');
