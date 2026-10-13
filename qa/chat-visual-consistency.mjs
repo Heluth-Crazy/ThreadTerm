@@ -111,6 +111,29 @@ try {
   await until(async () => (await scope.locator('.tool-card-body').count()) === 4, 'four card bodies');
   check('one session shows the plan, the tool drawer/cards, the reply copy and the code-block copy');
 
+  // V1-6: the drawer chevron follows the app's shared disclosure convention:
+  // closed points right (no rotation), open rotates a quarter turn to point down.
+  // This is the rule 846c272 used and workbench.css / subagent-card.css still use.
+  const chevronRotation = () => scope.locator('.chat-tool-chevron').first().evaluate(node => {
+    const transform = getComputedStyle(node).transform;
+    if (transform === 'none') return 0;
+    const match = transform.match(/^matrix\(([^)]+)\)$/);
+    if (!match) return null;
+    const [a, b] = match[1].split(',').map(value => Number(value.trim()));
+    return Math.round(Math.atan2(b, a) * 180 / Math.PI);
+  });
+  if (await drawer.evaluate(node => node.open)) {
+    await drawer.locator('> summary').click();
+    await until(async () => !(await drawer.evaluate(node => node.open)), 'drawer collapsed for the chevron check');
+  }
+  const collapsedChevron = await chevronRotation();
+  assert.equal(collapsedChevron, 0, `the collapsed drawer chevron points right (rotation ${collapsedChevron})`);
+  await drawer.locator('> summary').click();
+  await until(async () => (await drawer.evaluate(node => node.open)), 'drawer re-expanded for the chevron check');
+  const expandedChevron = await chevronRotation();
+  assert.equal(((expandedChevron % 360) + 360) % 360, 90, `the expanded drawer chevron points down (rotation ${expandedChevron})`);
+  check('V1-6 the tool drawer chevron keeps the shared disclosure direction (right collapsed, down expanded)');
+
   const custom = { background: '#0b1016', surface: '#182430', text: '#f2f6fb', muted: '#93a3b5', accent: '#ff7a45', border: '#26323f' };
   const surfaces = [
     ['plan panel', '.chat-plan-panel'],
@@ -148,7 +171,14 @@ try {
       }
       const count = node.parentElement && node.parentElement.querySelector('.chat-tool-count');
       const headRect = node.getBoundingClientRect();
-      return { boxes, countTop: count ? count.getBoundingClientRect().top : null, headBottom: headRect.bottom, clientWidth: node.clientWidth, scrollWidth: node.scrollWidth, flexWrap: getComputedStyle(node).flexWrap };
+      const chevron = node.querySelector('.chat-tool-chevron');
+      const chevronTransform = chevron ? getComputedStyle(chevron).transform : 'none';
+      let chevronRotation = 0;
+      if (chevronTransform && chevronTransform !== 'none') {
+        const match = chevronTransform.match(/^matrix\(([^)]+)\)$/);
+        if (match) { const [a, b] = match[1].split(',').map(value => Number(value.trim())); chevronRotation = Math.round(Math.atan2(b, a) * 180 / Math.PI); }
+      }
+      return { boxes, countTop: count ? count.getBoundingClientRect().top : null, headBottom: headRect.bottom, clientWidth: node.clientWidth, scrollWidth: node.scrollWidth, flexWrap: getComputedStyle(node).flexWrap, chevronRotation };
     });
     const headerCenters = Object.values(header.boxes).map(box => box.center);
     assert.ok(headerCenters.length >= 3, `${theme}/${locale}/${width}: the header exposes the headline, failure count and chevron`);
@@ -156,6 +186,7 @@ try {
     assert.equal(header.flexWrap, 'nowrap', `${theme}/${locale}/${width}: the header never wraps`);
     assert.ok(header.scrollWidth <= header.clientWidth + 1, `${theme}/${locale}/${width}: the headline ellipsizes instead of overflowing (${header.scrollWidth} > ${header.clientWidth})`);
     assert.ok(header.countTop === null || header.countTop >= header.headBottom - 1, `${theme}/${locale}/${width}: the turn summary sits on its own line below the header`);
+    assert.equal(((header.chevronRotation % 360) + 360) % 360, 90, `${theme}/${locale}/${width}: the expanded drawer chevron points down (rotation ${header.chevronRotation})`);
     // V1-5: the floating overlay keeps the shared .btn surface and a real shadow,
     // and the transcript reserve clears its height so it cannot cover the card.
     await scope.locator('.v3-chat-log').evaluate(node => { node.scrollTop = 0; });
