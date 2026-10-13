@@ -13,6 +13,7 @@ import {
 
 const bridge: ThreadTermBridge = {
   platform: process.platform,
+  exportChatMarkdown: payload => ipcRenderer.invoke('threadterm:export-chat-markdown', payload) as Promise<string | null>,
   windowsPty: terminalPtyFromArguments(process.platform, process.argv),
   request: async <M extends Method>(method: M, params: RequestParams<M>): Promise<RequestResult<M>> =>
     ipcRenderer.invoke('threadterm:request', method, params) as Promise<RequestResult<M>>,

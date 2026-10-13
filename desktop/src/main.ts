@@ -13,6 +13,7 @@ import { ignoreBrokenStdio, isBrokenPipeError } from './stdioGuards.js';
 import { resolveWindowChrome } from './windowChrome.js';
 import { terminalWindowArguments } from './terminalEnvironment.js';
 import { registerPageComments } from './pageComments.js';
+import { nativeMarkdownExportFiles, saveChatMarkdown, writeChatMarkdownAtomic } from './chatMarkdownExport.js';
 import { applicationIconPng, trayIconPng } from '../assets/icon-data.js';
 import { quitConfirmationOptions, quitConfirmationPreapproved } from './quitConfirmation.js';
 import { deletedRevealScope, isWithinScope, revealTarget } from './revealFile.js';
@@ -267,6 +268,13 @@ async function notifyNative(kind: NotificationKind, copy: (locale: NotificationL
 
 function registerIpc(): void {
   registerPageComments(assertTrustedRenderer);
+  ipcMain.handle('threadterm:export-chat-markdown', (event, payload: unknown) => saveChatMarkdown(event, payload, {
+    assertTrusted: assertTrustedRenderer,
+    choosePath: async options => { const owner = BrowserWindow.fromWebContents(event.sender); return owner ? dialog.showSaveDialog(owner, options) : dialog.showSaveDialog(options); },
+    write: writeChatMarkdownAtomic,
+    files: nativeMarkdownExportFiles,
+    alive: () => !event.sender.isDestroyed(),
+  }));
   ipcMain.handle('threadterm:request', async (event, method: unknown, params: unknown) => {
     assertTrustedRenderer(event);
     validateRequest(method, params);

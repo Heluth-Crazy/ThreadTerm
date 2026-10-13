@@ -486,6 +486,7 @@ export interface ThreadTermBridge {
  chooseDirectory():Promise<string|null>;
  chooseSavePath(kind:'database'|'settings'|'theme'):Promise<string|null>;
  exportFile(kind:'settings'|'theme'):Promise<{path:string}|null>;
+ exportChatMarkdown?(payload:{title:string;markdown:string;locale?:'en'|'zh-CN';images?:{name:string;dataUrl:string}[];assetToken?:string}):Promise<string|null>;
  activateDataRelocation(prepared:DataRelocationPrepared):Promise<{activated:boolean}>;
  windowAction(action:'minimize'|'maximize'|'close'|'quit'):Promise<void>;
  openWindow(options:{sessionId?:string;workspaceId?:string}):Promise<void>;
