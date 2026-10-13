@@ -1,17 +1,17 @@
 // Real ChatView + isolated runtime + fake Codex. No account or model request.
 import assert from 'node:assert/strict';
-import { copyFile, mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { _electron as electron } from '@playwright/test';
+import { electron } from './lib/desktop1.mjs';
 const delay = milliseconds => new Promise(resolveDelay => setTimeout(resolveDelay, milliseconds));
 
 const qaDir = dirname(fileURLToPath(import.meta.url));
 const v3Root = resolve(qaDir, '..');
 const fixture = resolve(qaDir, 'fixtures/fake-codex-slash.cjs');
-const runtime = process.env.THREADTERM_V3_RUNTIME_BIN ?? resolve(v3Root, 'runtime/target/debug/threadterm-v3-runtime.exe');
+const runtime = process.env.THREADTERM_V3_RUNTIME_BIN ?? process.env.THREADTERM_QA_RUNTIME_EXE ?? resolve(v3Root, 'runtime/target-qa/debug/threadterm-v3-runtime.exe');
 const scratch = await mkdtemp(join(tmpdir(), 'threadterm-codex-slash-'));
 const bin = join(scratch, 'bin');
 const workspace = join(scratch, 'workspace');
@@ -25,6 +25,15 @@ let page;
 
 async function request(method, params = {}) {
   return page.evaluate(([name, value]) => window.threadterm.request(name, value), [method, params]);
+}
+async function until(probe, label, timeout = 30_000) {
+  const end = Date.now() + timeout;
+  let error;
+  for (;;) {
+    try { const value = await probe(); if (value) return value; } catch (caught) { error = caught; }
+    if (Date.now() > end) throw new Error(`Timed out: ${label}${error ? `: ${error.message}` : ''}`);
+    await delay(150);
+  }
 }
 async function requests() {
   return (await readFile(log, 'utf8')).split(/\r?\n/u).filter(Boolean).map(JSON.parse);
@@ -51,8 +60,8 @@ async function waitResult(sessionId, command, text) {
 try {
   await Promise.all([mkdir(bin), mkdir(workspace), mkdir(data), mkdir(profile)]);
   await writeFile(log, '');
-  await copyFile(process.execPath, join(bin, 'codex.exe'));
-  await writeFile(join(bin, 'app-server'), `require(${JSON.stringify(fixture)});\n`);
+  // Swallow Codex `-c` overrides (node-as-codex.exe treated `-c` as `--check`).
+  await writeFile(join(bin, 'codex.cmd'), `@echo off\r\nnode ${JSON.stringify(fixture)}\r\n`);
   const forbidden = new Set(['path', 'codex_home', 'openai_api_key', 'threadterm_v3_data', 'threadterm_v3_user_data', 'threadterm_v3_pipe']);
   const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !forbidden.has(key.toLowerCase())));
   env.Path = [bin, dirname(process.execPath), join(process.env.SystemRoot ?? 'C:\\Windows', 'System32')].join(';');
@@ -69,10 +78,11 @@ try {
   page.setDefaultTimeout(20_000);
   await page.waitForFunction(() => Boolean(window.threadterm));
   await page.locator('.app-shell').waitFor();
+  await page.locator('#boot-splash').waitFor({ state: 'detached', timeout: 30_000 });
   await request('project.add', { path: workspace, name: 'Codex slash QA', operationId: randomUUID() });
   const session = await request('session.create', { cwd: workspace, provider: 'codex', mode: 'chat', title: 'Codex slash QA', operationId: randomUUID() });
   await request('session.present', { sessionId: session.id, placement: 'workspace', presentation: 'focused', operationId: randomUUID() });
-  await page.locator('.chat-compose-shell textarea').waitFor();
+  await until(() => page.locator('.chat-compose-shell textarea').isEnabled(), 'chat composer ready');
   await page.locator('.chat-model-chip').filter({ hasText: 'QA Model A' }).waitFor({ timeout: 30_000 });
   report.checks.push('real ChatView connected through isolated runtime to fake Codex');
 

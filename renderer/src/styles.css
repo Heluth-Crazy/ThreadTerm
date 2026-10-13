@@ -52,7 +52,7 @@
    available to every surface (Chat, isolated QA) without a workbench import. */
 .btn.btn-sm { height:26px; padding:0 10px; font-size:12px; }
 .btn.btn-sm .ico { width:14px; height:14px; }
-.icon-btn.icon-btn-sm { width:26px; height:26px; }
+.icon-btn.icon-btn-sm { width:26px; height:26px; padding:0; font-size:12px; }
 .icon-btn.icon-btn-sm .ico { width:14px; height:14px; }
 .icon-btn-round { width:32px; height:32px; border-radius:999px; }
 /* Round icon buttons that sit in a chip row take the chip height. */
@@ -71,6 +71,8 @@
 .chip-btn { height:26px; padding:0 10px; gap:6px; font-size:12px; background:var(--surface); border:1px solid var(--border); color:var(--text); cursor:pointer; }
 .chip-btn:hover:not(:disabled) { background:var(--soft); color:var(--text); }
 .chip-btn[aria-expanded="true"], .chip-btn[aria-pressed="true"] { background:var(--soft); color:var(--text); }
+/* Shared icon-sized chip: the same 26 px target, 12 px small-control text and pill radius as the row. */
+.chip-btn.is-icon { width:26px; padding:0; font-size:12px; justify-content:center; gap:0; }
 .chip.is-accent { color:var(--primary); background:color-mix(in srgb, var(--primary) 11%, transparent); border-color:color-mix(in srgb, var(--primary) 45%, var(--border)); }
 .chip.is-warn { color:color-mix(in srgb, var(--amber) 72%, var(--text)); }
 /* Interactive chips that carry a label, not a status: keep the chip geometry and drop the status dot. */
@@ -590,6 +592,47 @@ html[data-theme="dark"] { color-scheme:dark; }
 .chat-more-name small { color:var(--muted); font-size:11px; }
 .chat-more-choices { display:flex; flex-wrap:wrap; gap:4px; justify-content:flex-end; }
 .chat-more-choice { min-width:0; }
+/* Context ring and connection chip (C3). Geometry and states come from the
+   shared .chip/.chip-btn; these rules are layout and status colour only. */
+.chat-compose-shell { container-type:inline-size; }
+.chat-compose-right { position:relative; }
+.chat-compose-status { display:inline-flex; align-items:center; gap:6px; flex:none; }
+.chat-status-anchor { position:static; flex:none; }
+/* The connection overlay keeps the rest of the composer hidden, while status
+   controls remain available above it in every provider phase. */
+.chat-view.v3-session-chat.is-connecting > .chat-compose-shell { z-index:21; }
+.chat-view.v3-session-chat.is-connecting .chat-status-anchor { visibility:visible; pointer-events:auto; }
+.chat-status-chip { flex:none; }
+.chat-context-ring-svg { display:block; flex:none; }
+.chat-context-ring-track { stroke:var(--border); }
+.chat-context-ring-fill { stroke:var(--muted); transition:stroke-dashoffset .25s ease; }
+.chat-context-ring-fill.is-warn { stroke:var(--amber); }
+.chat-context-ring-fill.is-danger { stroke:var(--danger); }
+.chat-context-percent, .chat-context-tokens { font-variant-numeric:tabular-nums; }
+.chat-context-tokens { color:var(--muted); }
+.chat-connection-dot { width:8px; height:8px; flex:none; border-radius:50%; background:var(--st-ended); }
+.chat-connection-chip.is-ok .chat-connection-dot { background:var(--st-running); }
+.chat-connection-chip.is-busy .chat-connection-dot { background:var(--st-needs); }
+.chat-connection-chip.is-error .chat-connection-dot { background:var(--st-failed); }
+.chat-connection-chip.is-muted .chat-connection-dot { background:var(--st-ended); }
+.chat-connection-label { min-width:0; }
+.chat-compose-menu.chat-status-menu { left:auto; right:0; width:min(300px, calc(100vw - 32px)); max-height:min(70vh, 420px); }
+.chat-status-row { display:grid; grid-template-columns:minmax(64px,auto) minmax(0,1fr) auto; align-items:center; gap:8px; padding:5px 8px; font-size:12px; }
+.chat-status-key { color:var(--muted); font-size:11px; overflow-wrap:anywhere; }
+.chat-status-value { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:var(--text); font-variant-numeric:tabular-nums; }
+code.chat-status-value { font-family:var(--mono); font-size:11px; }
+.chat-status-meta { color:var(--muted); font-size:11px; }
+.chat-status-copy { margin:0; }
+.chat-status-reconnect { margin:6px 8px 2px; }
+.chat-status-warn { margin:4px 8px 2px; color:var(--muted); font-size:11px; line-height:1.4; }
+/* Keep the model, phase label and actions available in a narrow composer.
+   The ring retains its full accessible label and popover token breakdown. */
+@container (max-width:480px) {
+  .chat-mode-chip > span { max-width:72px; }
+  .chat-mode-chip .ico, .chat-model-chev { display:none; }
+  .chat-compose-left { flex:none; }
+}
+@media (prefers-reduced-motion:reduce) { .chat-context-ring-fill { transition:none; } }
 .chat-slash, .v3-session-chat form > .chat-slash { position:absolute; left:12px; right:12px; bottom:calc(100% - 8px); z-index:4; display:block; max-height:220px; overflow:auto; padding:6px; border:1px solid var(--border); border-radius:14px; background:var(--surface); box-shadow:var(--shadow); }
 .chat-slash button { width:100%; display:flex; gap:8px; align-items:baseline; border:0; background:transparent; text-align:left; padding:8px 10px; border-radius:10px; color:inherit; }
 .chat-slash button.active, .chat-slash button:hover { background:var(--soft, var(--raised)); }

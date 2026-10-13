@@ -4,16 +4,24 @@ const { createInterface } = require('node:readline');
 
 const log = process.env.THREADTERM_QA_CODEX_SLASH_LOG;
 if (!log) process.exit(2);
-let model = 'qa-model-a';
-let mode = 'default';
 let turn = 0;
 const nativeId = 'qa-codex-slash-thread';
 const record = (method, params) => appendFileSync(log, `${JSON.stringify({ method, params })}\n`);
 const result = (id, value) => process.stdout.write(`${JSON.stringify({ id, result: value })}\n`);
 const error = (id, message) => process.stdout.write(`${JSON.stringify({ id, error: { code: -32000, message } })}\n`);
 const event = (method, params) => process.stdout.write(`${JSON.stringify({ method, params })}\n`);
-const thread = () => ({ id: nativeId, cwd: process.env.THREADTERM_QA_CODEX_SLASH_CWD, model, reasoningEffort: 'medium', collaborationMode: { mode }, status: { type: 'idle' } });
-const threadResponse = () => ({ thread: thread(), threadSettings: { collaborationMode: { mode } }, model, reasoningEffort: 'medium' });
+const settings = {
+  model: 'qa-model-a',
+  reasoningEffort: 'medium',
+  collaborationMode: { mode: 'default' },
+};
+function apply(params) {
+  if (typeof params.model === 'string') settings.model = params.model;
+  if (typeof params.effort === 'string') { settings.effort = params.effort; settings.reasoningEffort = params.effort; }
+  if (params.collaborationMode && typeof params.collaborationMode === 'object') settings.collaborationMode = params.collaborationMode;
+}
+const thread = () => ({ id: nativeId, cwd: process.env.THREADTERM_QA_CODEX_SLASH_CWD, ...settings, status: { type: 'idle' } });
+const threadResponse = () => ({ thread: thread(), threadSettings: settings, model: settings.model, reasoningEffort: settings.reasoningEffort });
 
 const lines = createInterface({ input: process.stdin, crlfDelay: Infinity });
 lines.on('line', (line) => {
@@ -33,9 +41,9 @@ lines.on('line', (line) => {
   if (method === 'account/rateLimits/read') return result(id, {});
   if (method === 'thread/settings/update') {
     if (params.model === 'qa-rejected') return error(id, 'QA model rejected');
-    if (params.model) model = params.model;
-    if (params.collaborationMode?.mode) mode = params.collaborationMode.mode;
-    return result(id, threadResponse());
+    apply(params);
+    event('thread/settings/updated', { threadId: nativeId, threadSettings: settings });
+    return result(id, { threadSettings: settings });
   }
   if (method === 'turn/start') {
     if (params.input?.some(item => item.text === 'qa fail ordinary turn')) return error(id, 'QA ordinary turn failed');

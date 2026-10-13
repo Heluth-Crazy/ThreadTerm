@@ -12,6 +12,7 @@
 import { Fragment, useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from "react";
 import type { ChatOptionsLoadState, ChatSessionChoice, ChatSessionOption } from "@threadterm/protocol";
 import { Icon } from "./PrototypeIcon";
+import { statusModelReserve } from "../contextUsage";
 import {
   booleanText,
   chipValueText,
@@ -52,6 +53,7 @@ export function ComposerOptions({
   onSetOption,
   leading,
   trailing,
+  status,
 }: {
   options: ChatSessionOption[];
   loadState?: ChatOptionsLoadState;
@@ -62,6 +64,7 @@ export function ComposerOptions({
   onSetOption: (optionId: string, value: string) => void;
   leading: ReactNode;
   trailing: ReactNode;
+  status?: ReactNode;
 }) {
   const { model, thinking, mode, extras } = partitionOptions(options);
   const [open, setOpen] = useState<OpenMenu | undefined>(undefined);
@@ -71,6 +74,7 @@ export function ComposerOptions({
   const leadingRef = useRef<HTMLSpanElement>(null);
   const rightRef = useRef<HTMLDivElement>(null);
   const modelRef = useRef<HTMLButtonElement>(null);
+  const statusRef = useRef<HTMLSpanElement>(null);
   const measureRef = useRef<HTMLDivElement>(null);
   const triggers = useRef(new Map<string, HTMLButtonElement | null>());
 
@@ -105,7 +109,9 @@ export function ComposerOptions({
       const rightWidth = rightRef.current?.offsetWidth ?? 0;
       const modelWidth = model ? (modelRef.current?.offsetWidth ?? 0) : 0;
       const natural = measureRef.current?.querySelector<HTMLElement>(".chat-model-measure")?.offsetWidth ?? MODEL_MIN;
-      const modelReserve = Math.min(MODEL_MAX, Math.max(MODEL_MIN, natural));
+      const naturalReserve = Math.min(MODEL_MAX, Math.max(MODEL_MIN, natural));
+      const statusWidth = statusRef.current?.offsetWidth ?? 0;
+      const modelReserve = statusModelReserve(naturalReserve, statusWidth ? statusWidth + CHIP_GAP : 0, MODEL_MIN);
       const rightFixed = Math.max(0, rightWidth - modelWidth);
       const left = leadingWidth + (modeWidth ? modeWidth + CHIP_GAP : 0);
       const available = barWidth - left - rightFixed - modelReserve - CHIP_GAP - BAR_GAP - SAFETY;
@@ -117,6 +123,7 @@ export function ComposerOptions({
     const observer = new ResizeObserver(measure);
     observer.observe(bar);
     if (rightRef.current) observer.observe(rightRef.current);
+    if (statusRef.current) observer.observe(statusRef.current);
     if (measureRef.current) observer.observe(measureRef.current);
     return () => observer.disconnect();
   }, [options, loadState, busy, zh, model, mode, extras.length]);
@@ -136,7 +143,7 @@ export function ComposerOptions({
           <span className="chat-compose-leading" ref={leadingRef}>{leading}</span>
           <button type="button" className="chip chip-btn is-plain chat-compose-chip" disabled>{copy("Loading settings…", "正在加载设置…")}</button>
         </div>
-        <div className="chat-compose-right" ref={rightRef}>{trailing}</div>
+        <div className="chat-compose-right" ref={rightRef}>{status && <span className="chat-compose-status" ref={statusRef}>{status}</span>}{trailing}</div>
         <div className="chat-compose-measure" aria-hidden="true" ref={measureRef} />
       </div>
     );
@@ -159,7 +166,7 @@ export function ComposerOptions({
               aria-haspopup="menu"
               aria-expanded={open?.kind === "option" && open.id === mode.id}
               disabled={disabled}
-              title={optionTitle(mode, copy)}
+              title={`${optionTitle(mode, copy)}: ${chipValueText(mode, zh)}`}
               onClick={() => setOpen(open?.kind === "option" && open.id === mode.id ? undefined : { kind: "option", id: mode.id })}
             >
               <Icon name="shield" /><span>{chipValueText(mode, zh)}</span>
@@ -252,6 +259,7 @@ export function ComposerOptions({
             {modelOpen && <ModelMenu option={model} thinking={thinking} zh={zh} copy={copy} disabled={disabled || busy} search={search} onSearch={setSearch} onChoose={choose} onKeyDown={onMenuKeyDown} />}
           </span>
         )}
+        {status && <span className="chat-compose-status" ref={statusRef}>{status}</span>}
         {trailing}
       </div>
       <div className="chat-compose-measure" aria-hidden="true" ref={measureRef}>

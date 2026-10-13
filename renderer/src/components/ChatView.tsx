@@ -7,14 +7,14 @@ import { beginResync, chatUiFromEvent, completeResync, nextRepairRevision, upser
 import { acquireControl } from '../controlLease';
 import { createDraftWriter } from '../chatDraft';
 import { useTranslation } from '../i18n';
-import { Icon } from "./PrototypeIcon";
+import { Icon, useAgentCapabilities } from "./PrototypeIcon";
 import { ChatApprovalCard } from "./ChatApprovalCard";
 import { ChatConnectOverlay } from "./ChatConnectOverlay";
 import { DelegationPanel } from "./DelegationPanel";
 import { delegationTool, delegationToolLabel } from "../delegation";
 import { UsageCard } from './UsageCard';
 import { usageCardsForItems } from '../usageCard';
-import { connectionStatusText, emptyLink, overlayKind, reduceChatLink } from "../chatConnection";
+import { connectionStatusText, emptyLink, overlayKind, providerLabel, reduceChatLink } from "../chatConnection";
 import { activeTurnId, chatCanControl, formatChatDuration, itemShowsStreaming, matchSlashCommands, partBody, partLabel, shouldRenderPart, slashQuery } from "../chatPresentation";
 import { groupCodexTranscript, type CodexTurn } from "../codexTranscript";
 import { completedTurnPresentation, groupToolActivity, toolEntriesForItems, type ToolActivityEntry } from "../toolActivity";
@@ -27,6 +27,9 @@ import { replyMarkdown } from '../replyMarkdown';
 import { MessageActions } from './MessageActions';
 import { ChatPlanPanel } from './ChatPlanPanel';
 import { ComposerOptions } from './ComposerOptions';
+import { ChatContextRing } from './ChatContextRing';
+import { useChatContextUsage } from '../useChatContextUsage';
+import { ChatConnectionChip } from './ChatConnectionChip';
 import { parseMarkdownFileReference } from '../fileReferences';
 import { SessionSurfaceContext } from './SessionSurfaceContext';
 import { CatalogPopover } from './CatalogActions';
@@ -408,6 +411,8 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession }
   const context = useChatContext(session.id, zh, setError);
   const [link, setLink] = useState(() => emptyLink(session.id, "disconnected"));
   const connection = link.connection;
+  const contextUsage = useChatContextUsage(session.id);
+  const capabilities = useAgentCapabilities();
   const [connectSlow, setConnectSlow] = useState(false);
   const connectInFlight = useRef(false);
   const transportGeneration = useRef(0);
@@ -1212,11 +1217,25 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession }
         busy={busy}
         onSetOption={setOption}
         leading={<button type="button" className="icon-btn icon-btn-sm icon-btn-round chat-compose-icon" disabled={busy || ended || !writable} aria-label={copy("Commands", "命令")} title={copy("Commands", "命令")} onClick={() => { changeText(text.startsWith("/") ? text : "/"); composeRef.current?.focus(); }}><Icon name="plus" /></button>}
+        status={<Fragment>
+          <ChatContextRing usage={contextUsage} copy={copy} />
+          <ChatConnectionChip
+            phase={connection.phase}
+            transportDown={link.transport !== "up"}
+            providerName={providerLabel(session.provider, capabilities)}
+            providerVersion={capabilities.find(capability => capability.id === session.provider)?.version}
+            cwd={session.worktreePath}
+            nativeId={connection.nativeId ?? session.nativeId}
+            reconnectDisabled={Boolean(liveTurn) || busy || ended || !canControl || link.transport !== "up" || connection.phase === "connecting"}
+            onReconnect={retryConnection}
+            copy={copy}
+          />
+        </Fragment>}
         trailing={<Fragment>
           {controlIssue && <span className="dim">{controlIssue}</span>}
           {canControl && !writable && <button type="button" className="chip chip-btn chat-compose-reclaim" onClick={() => reclaimRef.current()} disabled={busy}>{copy('Reclaim control', '重新取得控制')}</button>}
           {liveTurn && <button type="button" className="icon-btn icon-btn-sm icon-btn-round is-secondary chat-compose-send is-stop" disabled={!writable || busy} onClick={() => void cancel(liveTurn)} aria-label={copy('Stop', '停止')} title={copy('Stop', '停止')}><span className="chat-stop-square" /></button>}
-          <button className={`icon-btn icon-btn-sm icon-btn-round is-primary chat-compose-send${queueMode ? ' is-queue' : ''}`} type="submit" disabled={(!text.trim() && !images.length && !context.items.length) || queue?.sessionId !== session.id || imageReading || busy || !writable || !draftLoaded || draftFailed || recovery !== undefined} aria-label={busy ? copy('Sending…', '正在发送…') : queueMode ? copy('Queue', '加入队列') : copy('Send', '发送')}>{queueMode ? copy('Queue', '加入队列') : <Icon name="arrowUp" />}</button>
+          <button className={`icon-btn icon-btn-sm icon-btn-round is-primary chat-compose-send${queueMode ? ' is-queue' : ''}`} type="submit" disabled={(!text.trim() && !images.length && !context.items.length) || queue?.sessionId !== session.id || imageReading || busy || !writable || !draftLoaded || draftFailed || recovery !== undefined} aria-label={busy ? copy('Sending…', '正在发送…') : queueMode ? copy('Queue', '加入队列') : copy('Send', '发送')}><Icon name={queueMode ? "clock" : "arrowUp"} /></button>
         </Fragment>}
       />
     </form>
