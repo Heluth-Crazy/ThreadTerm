@@ -62,7 +62,7 @@ button.ov-metric:focus-visible { outline:2px solid var(--primary); outline-offse
 .ov-sec-head h2 { min-width:0; margin:0; font-size:13px; font-weight:600; }
 .ov-sec-head .count { margin-left:6px; color:var(--faint); font-size:13px; font-weight:400; }
 .ov-sec-head .btn.ov-head-btn { height:24px; min-height:24px; padding:0 8px; gap:4px; color:var(--muted); font-size:12px; }
-.ov-sec-head .btn.ov-head-btn:hover { color:var(--text); }
+.ov-sec-head .btn.ov-head-btn:hover:not(:disabled) { color:var(--text); }
 .ov-head-btn .ico { width:14px; height:14px; }
 .ov-empty { margin:0; padding:4px 0 8px; color:var(--muted); font-size:12px; line-height:1.5; }
 .ov-list { display:grid; margin:0 -8px; }
