@@ -6,6 +6,7 @@ Object.assign(globalThis, { require: createRequire(import.meta.url) });
 const { renderToStaticMarkup } = await import('react-dom/server');
 import { SteerSend } from './SteerSend';
 import { ChatQueue } from './ChatQueue';
+import { steerMenuOpensOnSignal } from '../steerMenu';
 import type { ChatQueue as ChatQueueState } from '@threadterm/protocol';
 
 const renderSend = (kind: 'send' | 'queue' | 'split', disabled = false) => renderToStaticMarkup(createElement(SteerSend, {
@@ -32,8 +33,14 @@ test('the split control keeps Queue as the main action and parks Insert in a clo
   assert.match(renderSend('split', true), /disabled=""/);
 });
 
-const queue = (state: ChatQueueState['items'][number]['state'] = 'queued'): ChatQueueState => ({
-  sessionId: 's', paused: false, items: [{ id: 'q1', text: 'follow up', images: [], revision: 1, createdAt: 'now', updatedAt: 'now', state }],
+test('Live feedback opens the steer note menu only when the note item is enabled', () => {
+  assert.equal(steerMenuOpensOnSignal('split-note', false), true, 'a note with text and no images opens');
+  assert.equal(steerMenuOpensOnSignal('split-note', true), false, 'an empty or image note never opens a dead-end menu');
+  assert.equal(steerMenuOpensOnSignal('split', false), false, 'a native-steer split does not open the note menu');
+  assert.equal(steerMenuOpensOnSignal('send', false), false);
+});
+
+const queue = (state: ChatQueueState['items'][number]['state'] = 'queued'): ChatQueueState => ({  sessionId: 's', paused: false, items: [{ id: 'q1', text: 'follow up', images: [], revision: 1, createdAt: 'now', updatedAt: 'now', state }],
 });
 
 test('Insert now and Send now are mutually exclusive', () => {

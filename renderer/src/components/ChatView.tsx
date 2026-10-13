@@ -60,7 +60,7 @@ import { ChatNotes as ChatNotesPanel } from './ChatNotes';
 import { SteerSend } from './SteerSend';
 import { steerControlKind, steerFailureMessage } from '../steerSend';
 import { ComposerPlusMenu } from './ComposerPlusMenu';
-import { fileAttachmentItem, partitionAttachedFiles } from '../chatAttachments';
+import { partitionAttachedFiles } from '../chatAttachments';
 import { insertQuickMessage, parseQuickMessages } from '../quickMessages';
 import { useAppSettings } from '../appSettings';
 import { showContextMenu } from './ContextMenu';
@@ -977,29 +977,46 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession, 
       if (lifecycle.current !== target || !picked.length) return;
       const canImages = Boolean(ui.inputCapabilities?.images);
       const idFor = () => `attach-${crypto.randomUUID()}`;
-      const parts = canImages
-        ? partitionAttachedFiles(picked, idFor)
-        : { images: [] as string[], files: picked.map(file => fileAttachmentItem(file.path, idFor())) };
-      const accepted = selectChatImageAttachments(imagesRef.current, parts.images, canImages);
-      if (accepted.length) updateImages([...imagesRef.current, ...accepted]);
-      for (const item of parts.files) {
+      const plan = partitionAttachedFiles(picked, imagesRef.current, canImages, idFor);
+      if (plan.images.length) updateImages([...imagesRef.current, ...plan.images]);
+      for (const item of plan.files) {
         try { context.attach(item); }
         catch (caught) { setError(contextError(caught, zh)); break; }
+      }
+      if (plan.imagesAsFiles > 0) {
+        setError(copy(
+          `${plan.imagesAsFiles} image${plan.imagesAsFiles === 1 ? '' : 's'} attached as a file because the image limit was reached.`,
+          `由于达到图片数量或大小上限，${plan.imagesAsFiles} 张图片已作为文件附加。`,
+        ));
       }
     } catch (caught) {
       if (lifecycle.current === target) setError(asUserError(caught, copy('Files could not be attached.', '无法附加文件。')));
     }
   }
-  // F3: quick messages insert at the caret without replacing context chips.
-  function insertQuickMessageAtCaret(message: import('@threadterm/protocol').QuickMessage) {
+  // F3: insert a snippet at the caret without replacing context chips. The
+  // browser's own text insertion keeps the snippet on the native undo stack.
+  function insertSnippetAtCaret(snippet: string) {
     if (!writable || ended) return;
     const area = composeRef.current;
     const start = area?.selectionStart ?? currentText.current.length;
     const end = area?.selectionEnd ?? start;
-    const next = insertQuickMessage(currentText.current, start, end, message.text);
+    const next = insertQuickMessage(currentText.current, start, end, snippet);
+    if (area && typeof document.execCommand === "function") {
+      area.focus({ preventScroll: true });
+      area.setSelectionRange(start, end);
+      let inserted = false;
+      try { inserted = document.execCommand("insertText", false, snippet); } catch { inserted = false; }
+      if (inserted) {
+        changeText(area.value);
+        const caret = area.selectionStart ?? next.caret;
+        requestAnimationFrame(() => { const field = composeRef.current; field?.focus({ preventScroll: true }); field?.setSelectionRange(caret, caret); });
+        return;
+      }
+    }
     changeText(next.text);
     requestAnimationFrame(() => { const field = composeRef.current; field?.focus({ preventScroll: true }); field?.setSelectionRange(next.caret, next.caret); });
   }
+  function insertQuickMessageAtCaret(message: import('@threadterm/protocol').QuickMessage) { insertSnippetAtCaret(message.text); }
   // F3: the composer keeps its clipboard menu and gains Quick messages when any exist.
   function openComposerContextMenu(event: ReactMouseEvent<HTMLTextAreaElement>) {
     event.preventDefault();
@@ -1516,7 +1533,7 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession, 
         disabled={ended || !writable}
         busy={busy}
         onSetOption={setOption}
-        leading={<ComposerPlusMenu quickMessages={quickMessages} disabled={busy || ended || !writable} liveFeedbackEnabled={steerKind === 'split-note'} onAttachFiles={attachPickedFiles} onPickQuickMessage={insertQuickMessageAtCaret} onSlashCommands={() => { changeText(text.startsWith("/") ? text : "/"); composeRef.current?.focus(); }} onLiveFeedback={() => { setLiveFeedbackSignal(value => value + 1); composeRef.current?.focus(); }} copy={copy} />}
+        leading={<ComposerPlusMenu quickMessages={quickMessages} disabled={busy || ended || !writable} liveFeedbackEnabled={steerKind === 'split-note' && Boolean(text.trim()) && !images.length} onAttachFiles={attachPickedFiles} onPickQuickMessage={insertQuickMessageAtCaret} onSlashCommands={() => insertSnippetAtCaret("/")} onLiveFeedback={() => { setLiveFeedbackSignal(value => value + 1); composeRef.current?.focus(); }} copy={copy} />}
         status={<Fragment>
           <ChatContextRing usage={contextUsage} copy={copy} />
           <ChatConnectionChip
@@ -1535,7 +1552,7 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession, 
           {controlIssue && <span className="dim">{controlIssue}</span>}
           {canControl && !writable && <button type="button" className="chip chip-btn chat-compose-reclaim" onClick={() => reclaimRef.current()} disabled={busy}>{copy('Reclaim control', '重新取得控制')}</button>}
           {liveTurn && <button type="button" className="icon-btn icon-btn-sm icon-btn-round is-secondary chat-compose-send is-stop" disabled={!writable || busy} onClick={() => void cancel(liveTurn)} aria-label={copy('Stop', '停止')} title={copy('Stop', '停止')}><span className="chat-stop-square" /></button>}
-          <SteerSend kind={steerKind} openSignal={liveFeedbackSignal} busy={busy} disabled={(!text.trim() && !images.length && !context.items.length) || queue?.sessionId !== session.id || imageReading || busy || !writable || !draftLoaded || draftFailed || recovery !== undefined} copy={copy} onInsert={() => void insertIntoTurn()} onNote={() => void addNote()} noteDisabled={!text.trim() || images.length > 0} noteDisabledReason={images.length ? copy('Images cannot be sent as a note.', '图片不能作为备注发送。') : undefined} />
+          <SteerSend kind={steerKind} openSignal={liveFeedbackSignal} busy={busy} disabled={(!text.trim() && !images.length && !context.items.length) || queue?.sessionId !== session.id || imageReading || busy || !writable || !draftLoaded || draftFailed || recovery !== undefined} copy={copy} onInsert={() => void insertIntoTurn()} onNote={() => void addNote()} noteDisabled={!text.trim() || images.length > 0} noteDisabledReason={!text.trim() ? copy('Type a note first.', '请先输入备注。') : images.length ? copy('Images cannot be sent as a note.', '图片不能作为备注发送。') : undefined} />
         </Fragment>}
       />
     </form>

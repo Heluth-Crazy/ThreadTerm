@@ -1,6 +1,15 @@
 export type SteerMenuDismissReason = 'escape' | 'pointer';
 
 /**
+ * The composer's Live-feedback action opens the steer menu only when the menu
+ * has an enabled item: a note-capable split turn with a non-empty, image-free
+ * note. Opening otherwise would show a menu whose only item is disabled.
+ */
+export function steerMenuOpensOnSignal(kind: string, noteDisabled: boolean): boolean {
+  return kind === 'split-note' && !noteDisabled;
+}
+
+/**
  * An open split-Send menu closes on Escape, returning focus to the arrow, or on
  * an outside pointer-down, which leaves focus where the user clicked (clicking
  * the textarea must not yank it back to the arrow). Returns a disposer.
