@@ -61,6 +61,9 @@ try {
 
   const reply = scope.locator('article.has-reply-actions').first();
   await reply.waitFor();
+  // E4 adds "Fork from here" to the same row, so target Copy by its accessible
+  // name (localized, and it flips to Copied/已复制 after a copy).
+  const copyAction = reply.getByRole('button', { name: /^(Copy|Copied|复制|已复制)$/ });
   assert.equal(await scope.locator('.chat-message-actions').count(), 1, 'exactly the completed assistant reply owns a copy row');
   assert.equal(await scope.locator('article.user .chat-message-actions').count(), 0, 'the user message has no copy row');
   check('real app shows the copy row only on the completed assistant reply');
@@ -74,10 +77,10 @@ try {
   assert.equal(heightAfter, heightBefore, 'hovering does not change the message height');
   check('hover reveals the row without reflow in the real app');
 
-  await scope.locator('.chat-message-actions .chat-message-action').click();
+  await copyAction.click();
   await until(async () => (await clipboardText()) === answer, 'reply copy wrote the Markdown source');
   assert.equal(await clipboardText(), answer, 'reply Copy writes the Markdown source exactly');
-  assert.equal(await scope.locator('.chat-message-actions .chat-message-action').textContent(), 'Copied', 'the label confirms the copy');
+  assert.equal(await copyAction.textContent(), 'Copied', 'the label confirms the copy');
   check('real-app reply Copy writes the Markdown source and confirms');
 
   await scope.locator('.md-code-block .md-code-copy').click();
@@ -85,11 +88,11 @@ try {
   assert.equal(await clipboardText(), 'const copied = true;\n', 'code-block Copy writes only the code');
   check('real-app code-block Copy writes only the code');
 
-  await scope.locator('.chat-message-actions .chat-message-action').focus();
+  await copyAction.focus();
   await page.keyboard.press('Enter');
   await until(async () => (await clipboardText()) === answer, 'keyboard Enter copied the reply');
   check('real-app keyboard Enter copies the reply');
-  await until(async () => (await scope.locator('.chat-message-action').first().textContent()) === 'Copy', 'copy label reset');
+  await until(async () => (await copyAction.textContent()) === 'Copy', 'copy label reset');
 
   for (const theme of ['light', 'dark']) {
     for (const width of [1440, 420]) {
@@ -102,7 +105,7 @@ try {
         await reply.hover();
         await page.waitForFunction(() => getComputedStyle(document.querySelector('article.has-reply-actions .chat-message-actions')).opacity === '1');
         await shot(`reply-copy-${theme}-${width}-${locale}.png`);
-        const label = await scope.locator('.chat-message-action').first().textContent();
+        const label = await copyAction.textContent();
         assert.equal(label, locale === 'zh-CN' ? '复制' : 'Copy', `${locale} reply label`);
         const codeLabel = await scope.locator('.md-code-copy').first().getAttribute('title');
         assert.equal(codeLabel, locale === 'zh-CN' ? '复制代码' : 'Copy code', `${locale} code label`);
