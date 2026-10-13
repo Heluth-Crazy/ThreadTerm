@@ -1,7 +1,9 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { createElement } from 'react';
-import { renderToStaticMarkup } from 'react-dom/server';
+import { createRequire } from 'node:module';
+Object.assign(globalThis, { require: createRequire(import.meta.url) });
+const { renderToStaticMarkup } = await import('react-dom/server');
 import type { ChatPart } from '@threadterm/protocol';
 import { ChatApprovalCard } from './ChatApprovalCard';
 import { EditBody } from './ToolCards';
