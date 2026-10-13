@@ -4,12 +4,14 @@ import { steerControlKind, steerFailureMessage } from './steerSend';
 
 const copy = (en: string, zh: string) => en;
 
-test('split send is only the native steer control while a turn is running', () => {
+test('split send is only the steer control while a turn is running', () => {
   assert.equal(steerControlKind(true, 'native', true), 'split');
   assert.equal(steerControlKind(false, 'native', false), 'send');
   assert.equal(steerControlKind(false, 'native', true), 'queue');
   assert.equal(steerControlKind(true, undefined, true), 'queue');
-  assert.equal(steerControlKind(true, 'note', true), 'queue');
+  assert.equal(steerControlKind(true, 'note', true), 'split-note');
+  assert.equal(steerControlKind(false, 'note', false), 'send');
+  assert.equal(steerControlKind(false, 'note', true), 'queue');
 });
 
 test('turn_changed keeps the bilingual sentence and other failures stay visible', () => {

@@ -435,6 +435,10 @@ impl ProviderAdapter for AcpAdapter {
         let active_turn = Arc::new(Mutex::new(None));
         let permissions = Arc::new(Mutex::new(HashMap::new()));
         let ui = Arc::new(Mutex::new(AcpUiState::default()));
+        let policy = chat_tool_policy(tools);
+        if let Ok(mut state) = ui.lock() {
+            state.note_steer = policy.feedback;
+        }
         let replay_gate = Arc::new(AtomicBool::new(false));
         let (process, initialized) = self.spawn(
             session_id,
@@ -446,7 +450,7 @@ impl ProviderAdapter for AcpAdapter {
             Arc::clone(&replay_gate),
             events.clone(),
             true,
-            chat_tool_policy(tools),
+            policy,
         )?;
         let response = if let Some(id) = native_id {
             validate_native_id(id)?;
@@ -540,11 +544,18 @@ struct AcpUiState {
     config_generation: u64,
     last_emitted: Option<String>,
     usage_reply: Option<PendingUsageReply>,
+    /// E2: this open was granted the Feedback tool, and ACP agents never steer
+    /// natively, so the composer offers "Send note for next check" instead.
+    note_steer: bool,
 }
 
 impl AcpUiState {
     fn wire(&self, provider: &str) -> Value {
-        json!({"options":self.options.clone(),"commands":merge_local_commands(provider, self.commands.clone())})
+        let mut state = json!({"options":self.options.clone(),"commands":merge_local_commands(provider, self.commands.clone())});
+        if self.note_steer {
+            state["inputCapabilities"] = json!({"steer":"note"});
+        }
+        state
     }
 }
 
@@ -2728,6 +2739,14 @@ fn kimi_terminal_cwd(cwd: &str) -> std::borrow::Cow<'_, str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_granted_feedback_tool_offers_a_note_not_native_steering() {
+        let mut state = AcpUiState::default();
+        assert!(state.wire("kimi").get("inputCapabilities").is_none());
+        state.note_steer = true;
+        assert_eq!(state.wire("kimi")["inputCapabilities"], json!({"steer":"note"}));
+    }
 
     #[cfg(windows)]
     fn conformance_response_sink(dir: &std::path::Path) -> (JsonLineProcess, std::path::PathBuf) {

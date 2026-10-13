@@ -1,6 +1,9 @@
-/** Split Send is only offered while a native-steer turn is already running. */
-export function steerControlKind(live: boolean, steer: string | undefined, queueMode: boolean): 'send' | 'queue' | 'split' {
-  if (live && steer === 'native' && queueMode) return 'split';
+/** Split Send is offered while a steer-capable turn is already running. */
+export type SteerControlKind = 'send' | 'queue' | 'split' | 'split-note';
+
+/** `native` splits into Insert; `note` (E2) splits into Send note for next check. */
+export function steerControlKind(live: boolean, steer: string | undefined, queueMode: boolean): SteerControlKind {
+  if (live && queueMode && (steer === 'native' || steer === 'note')) return steer === 'note' ? 'split-note' : 'split';
   return queueMode ? 'queue' : 'send';
 }
 

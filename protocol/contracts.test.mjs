@@ -22,6 +22,10 @@ test('feedback notes validate leases, unicode limits and delivery status',()=>{
  validateResult('chat.feedback.add',{note});
  validateResult('chat.feedback.read',{notes:[{...note,status:'received'}]});
  assert.throws(()=>validateResult('chat.feedback.read',{notes:[{...note,status:'sent'}]}));
+ const dismiss={sessionId:'s',noteIds:['n'],operationId:'op',leaseEpoch:1};
+ validateRequest('chat.feedback.dismiss',dismiss);
+ validateResult('chat.feedback.dismiss',{removed:['n']});
+ for(const patch of [{noteIds:[]},{noteIds:Array(41).fill('n')},{noteIds:['n','n']},{noteIds:['']},{leaseEpoch:0},{leaseEpoch:undefined},{operationId:''}]) assert.throws(()=>validateRequest('chat.feedback.dismiss',{...dismiss,...patch}));
 });
 test('all four tool switches remain optional boolean portable settings',()=>{
  const settings={'chatTools.ask':true,'chatTools.sessionInfo':false,'chatTools.feedback':true,'chatTools.delegation':false};

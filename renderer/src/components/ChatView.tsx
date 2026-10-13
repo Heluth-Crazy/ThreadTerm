@@ -2,7 +2,7 @@ import { ClipboardEvent, FormEvent, Fragment, KeyboardEvent, type MouseEvent as 
 import DOMPurify from "dompurify";
 import { parseChatMarkdown } from '../chatMath';
 import { ChatMarkdown } from './ChatMarkdownExtras';
-import type { ChatAnswerResponse, ChatPart, ChatQueue, ChatSlashCommand, ChatUiState, FileReference, GitCommitInfo, Session } from "@threadterm/protocol";
+import type { ChatAnswerResponse, ChatPart, ChatQueue, ChatQueueItem, ChatSlashCommand, ChatUiState, FileReference, GitCommitInfo, Session } from "@threadterm/protocol";
 import { ChatItem, openExternal, operationId, request, subscribeEvents } from "../bridge";
 import { beginResync, chatUiFromEvent, completeResync, nextRepairRevision, upsertChatItem, type ChatResync } from "../chatState";
 import { acquireControl } from '../controlLease';
@@ -54,7 +54,9 @@ import { isChatImage, readClipboardImage, selectChatImageAttachments, validateCh
 import './chat-images.css';
 import { queueComposerMode } from '../chatQueue';
 import { slashPaletteEnter } from '../composeKeys';
+import { parseContext } from '../chatContext';
 import { ChatQueue as ChatQueuePanel } from './ChatQueue';
+import { ChatNotes as ChatNotesPanel } from './ChatNotes';
 import { SteerSend } from './SteerSend';
 import { steerControlKind, steerFailureMessage } from '../steerSend';
 import { useChatContext } from '../useChatContext';
@@ -1032,6 +1034,36 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession, 
       if (queued) throw new Error(message);
     } finally { if (lifecycle.current === submittingLifecycle) setBusy(false); }
   }
+  /** E2: the agent reads a note on its next `feedback_check`. Text guidance only. */
+  async function addNote(queued?: ChatQueueItem) {
+    const epoch = leaseSessionId.current === session.id ? lease.current : undefined;
+    const turnId = activeTurnId(itemsRef.current, session.status);
+    if (!writable || epoch === undefined || !turnId || busy) {
+      if (queued) throw new Error(copy('The queued prompt was not sent as a note.', '队列提示未能作为备注发送。'));
+      return;
+    }
+    const value = queued ? (parseContext(queued.text)?.text ?? queued.text) : text.trim();
+    if (!value.trim()) { if (queued) throw new Error(copy('The queued prompt was not sent as a note.', '队列提示未能作为备注发送。')); return; }
+    const submittingLifecycle = lifecycle.current;
+    setBusy(true); setError(undefined);
+    try {
+      await request('chat.feedback.add', { sessionId: session.id, turnId, text: value, operationId: operationId(), leaseEpoch: epoch });
+      if (lifecycle.current !== submittingLifecycle || queued) return;
+      changeText(''); context.clear();
+      await persistCompose('', epoch);
+    } catch (caught) {
+      if (lifecycle.current === submittingLifecycle) setError(asUserError(caught, copy('The note was not sent.', '备注未能发送。')));
+      if (queued) throw new Error(String(caught));
+    } finally { if (lifecycle.current === submittingLifecycle) setBusy(false); }
+  }
+  /** E2: a queued prompt becomes a note, and only then leaves the queue. */
+  async function sendNoteFromQueue(item: ChatQueueItem): Promise<ChatQueue> {
+    const epoch = leaseSessionId.current === session.id ? lease.current : undefined;
+    const turnId = activeTurnId(itemsRef.current, session.status);
+    if (!writable || epoch === undefined || !turnId) throw new Error(copy('The queued prompt was not sent as a note.', '队列提示未能作为备注发送。'));
+    await request('chat.feedback.add', { sessionId: session.id, turnId, text: parseContext(item.text)?.text ?? item.text, operationId: operationId(), leaseEpoch: epoch });
+    return await request('chat.queue.remove', { sessionId: session.id, itemId: item.id, operationId: operationId(), leaseEpoch: epoch });
+  }
   async function answer(turnId: string, approvalId: string, response: ChatAnswerResponse) {
     const epoch = leaseSessionId.current === session.id ? lease.current : undefined;
     if (!writable || epoch === undefined || approvalBusy) return;
@@ -1404,7 +1436,8 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession, 
       : repairNotice.kind === 'unchanged' ? copy("History already matches the agent's saved record.", '历史已与代理保存的记录一致。')
       : repairNotice.kind === 'superseded' ? copy('This chat changed during repair. Review it and try again.', '修复期间此对话发生了变化。请检查后重试。')
       : copy('Could not repair history. The local transcript is unchanged.', '未能修复历史。本地对话记录未更改。')}</p>}
-    <ChatQueuePanel sessionId={session.id} queue={queue} leaseEpoch={leaseSessionId.current === session.id ? lease.current : undefined} writable={writable} idle={!liveTurn} canInsert={steerKind === 'split'} onInsertNow={item => insertIntoTurn({ text: item.text, images: item.images, id: item.id })} ingressFailed={ingressFailed} onChange={setQueue} onIssue={message => setError(message)} zh={zh} />
+    <ChatNotesPanel sessionId={session.id} liveTurn={liveTurn} leaseEpoch={leaseSessionId.current === session.id ? lease.current : undefined} writable={writable} busy={busy} zh={zh} onIssue={message => setError(message)} />
+    <ChatQueuePanel sessionId={session.id} queue={queue} leaseEpoch={leaseSessionId.current === session.id ? lease.current : undefined} writable={writable} idle={!liveTurn} canInsert={steerKind === 'split'} onInsertNow={item => insertIntoTurn({ text: item.text, images: item.images, id: item.id })} canNote={steerKind === 'split-note'} onSendNote={sendNoteFromQueue} ingressFailed={ingressFailed} onChange={setQueue} onIssue={message => setError(message)} zh={zh} />
     <form className="chat-compose chat-compose-shell" data-v3-chat-form={session.id} onSubmit={submit} inert={overlay === "full" || undefined}>
       {slash !== undefined && <div className="chat-slash" role="listbox" aria-label={copy("Commands", "命令")}>
         {slashCommands.length ? slashCommands.map((command, index) => <button type="button" role="option" aria-selected={index === slashIndex} className={index === slashIndex ? "active" : ""} key={command.name} onMouseEnter={() => setSlashIndex(index)} onClick={() => applySlash(command)}>
@@ -1443,7 +1476,7 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession, 
           {controlIssue && <span className="dim">{controlIssue}</span>}
           {canControl && !writable && <button type="button" className="chip chip-btn chat-compose-reclaim" onClick={() => reclaimRef.current()} disabled={busy}>{copy('Reclaim control', '重新取得控制')}</button>}
           {liveTurn && <button type="button" className="icon-btn icon-btn-sm icon-btn-round is-secondary chat-compose-send is-stop" disabled={!writable || busy} onClick={() => void cancel(liveTurn)} aria-label={copy('Stop', '停止')} title={copy('Stop', '停止')}><span className="chat-stop-square" /></button>}
-          <SteerSend kind={steerKind} busy={busy} disabled={(!text.trim() && !images.length && !context.items.length) || queue?.sessionId !== session.id || imageReading || busy || !writable || !draftLoaded || draftFailed || recovery !== undefined} copy={copy} onInsert={() => void insertIntoTurn()} />
+          <SteerSend kind={steerKind} busy={busy} disabled={(!text.trim() && !images.length && !context.items.length) || queue?.sessionId !== session.id || imageReading || busy || !writable || !draftLoaded || draftFailed || recovery !== undefined} copy={copy} onInsert={() => void insertIntoTurn()} onNote={() => void addNote()} noteDisabled={!text.trim() || images.length > 0} noteDisabledReason={images.length ? copy('Images cannot be sent as a note.', '图片不能作为备注发送。') : undefined} />
         </Fragment>}
       />
     </form>

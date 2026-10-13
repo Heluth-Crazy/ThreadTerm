@@ -1677,8 +1677,28 @@ impl RuntimeService {
                     #[serde(rename_all = "camelCase", deny_unknown_fields)]
                     struct ReadFeedback { session_id: String }
                     let p: ReadFeedback = parse(&request.params)?;
+                    // Reads follow the existing unleased local-read model
+                    // (`chat.read`, `chat.snapshot`): the local control pipe is
+                    // trusted, and the write path above still requires a lease.
                     crate::chat_tools::shared(&self.config.database_path, Arc::clone(&self.db))?
                         .feedback_read(&p.session_id)
+                }
+                "chat.feedback.dismiss" => {
+                    #[derive(Deserialize)]
+                    #[serde(rename_all = "camelCase", deny_unknown_fields)]
+                    struct DismissFeedback { session_id: String, note_ids: Vec<String>, operation_id: String, lease_epoch: i64 }
+                    let p: DismissFeedback = parse(&request.params)?;
+                    self.leases.require(&self.db, &p.session_id, principal, p.lease_epoch)?;
+                    self.db.bind_operation(&p.operation_id, "chat.feedback.dismiss", &json!({
+                        "sessionId":p.session_id,
+                        "noteIds":p.note_ids,
+                        "operationId":p.operation_id,
+                    }))?;
+                    crate::chat_tools::shared(&self.config.database_path, Arc::clone(&self.db))?
+                        .feedback_dismiss(crate::chat_tools::FeedbackDismiss {
+                            session_id: p.session_id,
+                            note_ids: p.note_ids,
+                        })
                 }
                 "chat.repair" => {
                     let p: ChatRepair = parse(&request.params)?;
