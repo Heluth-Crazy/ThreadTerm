@@ -44,6 +44,20 @@ test('the additive plan part type round-trips through the chat contract',()=>{
  assert.throws(()=>validateResult('chat.read',[{...item,parts:[{...part,type:'roadmap'}]}]));
 });
 
+test('session options carry additive kind, category, description and recommendation metadata',()=>{
+ const ui={options:[
+  {id:'model',name:'Model',value:'openai/gpt-5',category:'model',recommended:'openai/gpt-5',choices:[{value:'openai/gpt-5',name:'GPT-5',group:'openai',recommended:true},{value:'m',name:'M',description:'Fast'}]},
+  {id:'fast',name:'Fast mode',value:'true',kind:'boolean',category:'other',description:'Priority processing',choices:[{value:'true',name:'On'},{value:'false',name:'Off'}]}
+ ],commands:[],loadState:'ready'};
+ validateResult('chat.options',ui);
+ validateResult('chat.options',{...ui,options:[{id:'bare',name:'Bare',value:'a',choices:[]}]});
+ validateResult('chat.option.set',ui);
+ // The union stays closed: unknown kinds and categories are rejected.
+ assert.throws(()=>validateResult('chat.options',{...ui,options:[{...ui.options[1],kind:'toggle'}]}));
+ assert.throws(()=>validateResult('chat.options',{...ui,options:[{...ui.options[1],category:'speed'}]}));
+ assert.throws(()=>validateResult('chat.options',{...ui,options:[{...ui.options[1],choices:[{value:'true',name:'On',group:2}]}]}));
+});
+
 test('native turn outcome and message phase are typed independently of duration',()=>{
  const item={id:'native-boundary',role:'assistant',parts:[],createdAt:'2026-01-01T00:00:00Z',turnId:'scoped-turn',turnStatus:'completed'};
  validateResult('chat.read',[item]);

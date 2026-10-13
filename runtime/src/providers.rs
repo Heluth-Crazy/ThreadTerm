@@ -501,11 +501,12 @@ type SharedChat = Arc<Mutex<Box<dyn ChatSession>>>;
 
 /// Normalizes the complete UI snapshot shared by `chat.options` and `chat.ui`.
 pub(crate) fn normalize_chat_ui(value: Value) -> Value {
-    let options = value
+    let mut options = value
         .get("options")
         .filter(|value| value.is_array())
         .cloned()
         .unwrap_or_else(|| json!([]));
+    enrich_chat_options(&mut options);
     let commands = value
         .get("commands")
         .filter(|value| value.is_array())
@@ -533,6 +534,72 @@ pub(crate) fn normalize_chat_ui(value: Value) -> Value {
         normalized["error"] = error.clone();
     }
     normalized
+}
+
+fn option_category(id: &str) -> &'static str {
+    let lower = id.to_ascii_lowercase();
+    if lower.contains("model") {
+        "model"
+    } else if lower.contains("think") || lower.contains("reason") {
+        "thinking"
+    } else if lower.contains("mode") {
+        "mode"
+    } else {
+        "other"
+    }
+}
+
+/// Additive option metadata (task 10-11-chat-parity C1). Every option carries a
+/// `category`; a model choice carries a `group` when its value has a provider
+/// prefix; a choice marked `recommended` also names the option's recommended
+/// value. Adapters may set any of these themselves - the runtime fills only what
+/// is missing, so adapters that do not describe their options keep working.
+fn enrich_chat_options(options: &mut Value) {
+    let Some(rows) = options.as_array_mut() else {
+        return;
+    };
+    for option in rows.iter_mut() {
+        let Some(object) = option.as_object_mut() else {
+            continue;
+        };
+        let id = object
+            .get("id")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_owned();
+        if !object.contains_key("category") {
+            object.insert("category".into(), json!(option_category(&id)));
+        }
+        let Some(choices) = object.get_mut("choices").and_then(Value::as_array_mut) else {
+            continue;
+        };
+        let mut recommended_value: Option<String> = None;
+        for choice in choices.iter_mut() {
+            let Some(choice) = choice.as_object_mut() else {
+                continue;
+            };
+            let value = choice
+                .get("value")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_owned();
+            if !choice.contains_key("group") {
+                if let Some((group, rest)) = value.split_once('/') {
+                    if !group.is_empty() && !rest.is_empty() {
+                        choice.insert("group".into(), json!(group));
+                    }
+                }
+            }
+            if choice.get("recommended").and_then(Value::as_bool) == Some(true) {
+                recommended_value = Some(value);
+            }
+        }
+        if !object.contains_key("recommended") {
+            if let Some(value) = recommended_value {
+                object.insert("recommended".into(), json!(value));
+            }
+        }
+    }
 }
 
 struct ChatSlot {
@@ -1686,6 +1753,43 @@ mod registry_cleanup_tests {
         assert_eq!(normalized["inputCapabilities"], json!({}));
         assert_eq!(normalized["loadState"], "error");
         assert_eq!(normalized["error"]["code"], "options_failed");
+    }
+
+    #[test]
+    fn normalize_chat_ui_adds_option_categories_groups_and_recommendations() {
+        let normalized = normalize_chat_ui(json!({
+            "options":[
+                {"id":"model","name":"Model","value":"openai/gpt-5","choices":[
+                    {"value":"openai/gpt-5","name":"GPT-5","recommended":true},
+                    {"value":"anthropic/claude","name":"Claude"}
+                ]},
+                {"id":"thinking","name":"Thinking","value":"high","choices":[]},
+                {"id":"mode","name":"Mode","value":"default","choices":[]},
+                {"id":"fast","name":"Fast mode","kind":"boolean","choices":[
+                    {"value":"true","name":"On"},{"value":"false","name":"Off"}
+                ]}
+            ]
+        }));
+        let options = normalized["options"].as_array().unwrap();
+        assert_eq!(options[0]["category"], "model");
+        assert_eq!(options[0]["choices"][0]["group"], "openai");
+        assert_eq!(options[0]["choices"][1]["group"], "anthropic");
+        assert_eq!(options[0]["recommended"], "openai/gpt-5");
+        assert_eq!(options[0]["choices"][0]["recommended"], true);
+        assert_eq!(options[1]["category"], "thinking");
+        assert_eq!(options[2]["category"], "mode");
+        assert_eq!(options[3]["category"], "other");
+        assert_eq!(options[3]["kind"], "boolean");
+    }
+
+    #[test]
+    fn normalize_chat_ui_keeps_adapter_supplied_metadata() {
+        let normalized = normalize_chat_ui(json!({
+            "options":[{"id":"custom","name":"Custom","value":"a","category":"mode",
+                "choices":[{"value":"a","name":"A","group":"own"}]}]
+        }));
+        assert_eq!(normalized["options"][0]["category"], "mode");
+        assert_eq!(normalized["options"][0]["choices"][0]["group"], "own");
     }
 
     #[test]

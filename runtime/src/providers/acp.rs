@@ -2451,7 +2451,38 @@ fn parse_acp_option(value: &Value) -> Option<Value> {
             Some(json!({"value":option_value,"name":option_name}))
         })
         .collect::<Vec<_>>();
-    Some(json!({"id":id,"name":name,"value":current,"choices":choices}))
+    Some({
+        let boolean = acp_option_is_boolean(value, &choices);
+        let mut option = json!({"id":id,"name":name,"value":current,"choices":choices});
+        if boolean {
+            option["kind"] = json!("boolean");
+        }
+        option
+    })
+}
+
+/// ACP advertises booleans as `type:"boolean"`, or as a two-choice list whose
+/// values are on/off-style. Either way the option is an On/Off chip; its native
+/// values are preserved so `session/set_config_option` still receives them.
+fn acp_option_is_boolean(value: &Value, choices: &[Value]) -> bool {
+    if value.get("type").and_then(Value::as_str) == Some("boolean") {
+        return true;
+    }
+    if choices.len() != 2 {
+        return false;
+    }
+    choices.iter().all(|choice| {
+        choice
+            .get("value")
+            .and_then(Value::as_str)
+            .map(|candidate| {
+                matches!(
+                    candidate.to_ascii_lowercase().as_str(),
+                    "on" | "off" | "true" | "false" | "yes" | "no" | "enabled" | "disabled"
+                )
+            })
+            .unwrap_or(false)
+    })
 }
 
 fn parse_acp_command(value: &Value) -> Option<Value> {
@@ -4007,6 +4038,25 @@ mod tests {
         assert_eq!(state.options[0]["id"], "model");
         assert_eq!(state.options[0]["value"], "kimi-for-coding");
         assert_eq!(state.commands[0]["name"], "compact");
+    }
+
+    #[test]
+    fn maps_boolean_like_config_options_to_on_off_chips() {
+        let mut state = AcpUiState::default();
+        merge_acp_ui(
+            &mut state,
+            &json!({
+                "configOptions":[
+                    {"configId":"web","name":"Web access","type":"boolean","currentValue":"true","options":[{"value":"true","name":"On"},{"value":"false","name":"Off"}]},
+                    {"configId":"review","name":"Review","currentValue":"on","options":[{"value":"on","name":"On"},{"value":"off","name":"Off"}]},
+                    {"configId":"model","name":"Model","currentValue":"m","options":[{"value":"m","name":"M"}]}
+                ]
+            }),
+        );
+        assert_eq!(state.options[0]["kind"], "boolean");
+        assert_eq!(state.options[0]["choices"][1]["value"], "false");
+        assert_eq!(state.options[1]["kind"], "boolean");
+        assert_eq!(state.options[2].get("kind"), None);
     }
 
     /// A JSON-RPC ACP fixture: rejects `thinking`, normalizes accepted model

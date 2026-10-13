@@ -151,8 +151,8 @@ export interface SubagentInfo {
  truncated?:boolean;
 }
 export interface SubagentTranscriptRead { items:ChatItem[]; rev:number; truncated:boolean; source:SubagentTranscript; error?:string }
-export interface ChatSessionChoice { value:string; name:string }
-export interface ChatSessionOption { id:string; name:string; value:string; choices:ChatSessionChoice[] }
+export interface ChatSessionChoice { value:string; name:string; description?:string; group?:string; recommended?:boolean }
+export interface ChatSessionOption { id:string; name:string; value:string; choices:ChatSessionChoice[]; kind?:'select'|'boolean'; category?:'mode'|'model'|'thinking'|'other'; description?:string; recommended?:string }
 export interface ChatSlashCommand { name:string; description?:string }
 export type ChatOptionsLoadState = 'idle'|'loading'|'ready'|'empty'|'error'|'unknown';
 /** A complete composer UI snapshot, sent by both `chat.options` and `chat.ui`; it replaces prior UI state. */
