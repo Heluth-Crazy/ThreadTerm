@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import type { PaneLayout } from '@threadterm/protocol';
-import { forkDisabledReason, isCompletedForkReply, openForkInPane, peekForkNotice, rememberForkNotice, takeForkNotice } from './chatFork';
+import { composerTextAfterFork, forkDisabledReason, isCompletedForkReply, openForkInPane, peekForkNotice, rememberForkNotice, takeForkNotice } from './chatFork';
 
 test('fork inserts once and activates in originating pane without changing its siblings', () => {
   const first: PaneLayout = {kind:'pane',id:'left',tabs:[{kind:'session',id:'source',sessionId:'source'}],activeTabId:'source'};
@@ -15,6 +15,12 @@ test('fork inserts once and activates in originating pane without changing its s
   assert.equal(forked.second.activeTabId,'session:child');
   assert.deepEqual(openForkInPane(forked,'right','child'),forked);
   assert.equal(openForkInPane(layout,'removed','child'),layout);
+});
+test('an in-flight fork clears only the text captured when it started', () => {
+  assert.equal(composerTextAfterFork('/fork', '/fork'), '');
+  assert.equal(composerTextAfterFork('/fork ', '/fork '), '');
+  assert.equal(composerTextAfterFork('typed while forking', '/fork'), 'typed while forking');
+  assert.equal(composerTextAfterFork('/fork and more', '/fork'), '/fork and more');
 });
 test('fork running and pending states are disabled with localized explanations', () => {
   assert.match(forkDisabledReason(true,false,false)!,/turn is running/);

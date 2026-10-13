@@ -39,7 +39,7 @@ import { parseMarkdownFileReference } from '../fileReferences';
 import { SessionSurfaceContext } from './SessionSurfaceContext';
 import { ChatForkButton, ChatForkMenu, ChatForkStatus, useChatFork } from './ChatForkControls';
 import { decodeCopiedConversationDraft } from '../chatForkDraft';
-import { isCompletedForkReply } from '../chatFork';
+import { composerTextAfterFork, isCompletedForkReply } from '../chatFork';
 import { CatalogPopover } from './CatalogActions';
 import { isWebTabUrl } from '../workspaceTabs';
 import { registerChatInputTarget } from '../terminalInputTargets';
@@ -857,8 +857,16 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession }
     event.preventDefault();let value:string;
     if(text.trim()==='/fork' && !images.length && !context.items.length){
       if(forkActions.disabledReason){setError(forkActions.disabledReason);return;}
+      const captured=text;
       const child=await forkActions.fork();
-      if(child){changeText('');const epoch=lease.current;if(epoch!==undefined)void persistCompose('',epoch).catch(caught=>setError(String(caught)));}
+      if(child){
+        const remaining=composerTextAfterFork(currentText.current,captured);
+        if(remaining!==currentText.current){
+          changeText(remaining);
+          const epoch=lease.current;
+          if(epoch!==undefined)void persistCompose(remaining,epoch).catch(caught=>setError(String(caught)));
+        }
+      }
       return;
     }
     try { value=context.serialize(text.trim()); } catch(caught) { setError(contextError(caught,zh)); return; }
@@ -1054,7 +1062,14 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession }
     if (command.name === "stop" && liveTurn) { void cancel(liveTurn); changeText(""); return; }
     if(command.name.replace(/^\//,'')==='fork'){
       if(forkActions.disabledReason)setError(forkActions.disabledReason);
-      else void forkActions.fork().then(child=>{if(child)changeText('');});
+      else {
+        const captured=text;
+        void forkActions.fork().then(child=>{
+          if(!child)return;
+          const remaining=composerTextAfterFork(currentText.current,captured);
+          if(remaining!==currentText.current)changeText(remaining);
+        });
+      }
       return;
     }
     changeText(`/${command.name.replace(/^\//, "")} `);
