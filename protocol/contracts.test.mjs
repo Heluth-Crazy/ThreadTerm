@@ -163,6 +163,15 @@ test('chat allows image-only input while retaining empty-message and type guards
  validateRequest('chat.send',{...base,text:'existing text-only call'});
  assert.throws(()=>validateRequest('chat.send',{...base,images:[2]}));
  assert.throws(()=>validateRequest('chat.send',{...base,text:2,images:['image']}));
+ const steer={sessionId:'s',turnId:'turn-1',text:'',operationId:'steer-op',leaseEpoch:1};
+ assert.throws(()=>validateRequest('chat.steer',steer),/Invalid text/);
+ validateRequest('chat.steer',{...steer,text:'while you work'});
+ validateRequest('chat.steer',{...steer,images:['data:image/png;base64,aGVsbG8='],queueItemId:'q1'});
+ assert.throws(()=>validateRequest('chat.steer',{...steer,text:'while you work',leaseEpoch:undefined}));
+ validateResult('chat.steer',{disposition:'delivered'});
+ validateResult('chat.steer',{disposition:'queued'});
+ validateResult('chat.steer',{disposition:'note'});
+ assert.throws(()=>validateResult('chat.steer',{disposition:'sent'}));
 });
 
 test('file preview owners are additive and validated without changing file scope',()=>{

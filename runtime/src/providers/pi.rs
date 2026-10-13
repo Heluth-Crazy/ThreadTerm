@@ -894,6 +894,63 @@ impl ChatSession for PiChat {
         }
     }
 
+    fn validate_steer(&self, text: &str, images: &[String]) -> Result<(), ProviderError> {
+        for image in images {
+            pi_steer_image(image)?;
+        }
+        if text.trim().is_empty() && images.is_empty() {
+            return Err(ProviderError::new("invalid_message", "invalid_message"));
+        }
+        Ok(())
+    }
+    fn steer_turn_ready(&self, turn_id: &str) -> Result<(), ProviderError> {
+        if self.active_turn().as_deref() == Some(turn_id) {
+            Ok(())
+        } else {
+            Err(ProviderError::new(
+                "turn_changed",
+                crate::providers::STEER_TURN_ENDED,
+            ))
+        }
+    }
+    fn steer(
+        &mut self,
+        turn_id: &str,
+        text: &str,
+        images: &[String],
+        _operation_id: &str,
+    ) -> Result<Value, ProviderError> {
+        self.steer_turn_ready(turn_id)?;
+        let mut params = json!({"message":text});
+        if !images.is_empty() {
+            let converted = images
+                .iter()
+                .map(|image| pi_steer_image(image))
+                .collect::<Result<Vec<_>, _>>()?;
+            params["images"] = json!(converted);
+        }
+        // The active turn stays owned by the prompt that started it.
+        match self.process.request("steer", params) {
+            Ok(data) => {
+                let disposition = match data.get("disposition").and_then(Value::as_str) {
+                    Some("handled") => "delivered",
+                    Some("queued") => "queued",
+                    _ => {
+                        return Err(ProviderError::new(
+                            "provider_error",
+                            "Pi steer returned an unknown disposition",
+                        ))
+                    }
+                };
+                Ok(json!({"disposition":disposition}))
+            }
+            Err(error) if pi_steer_rejected(&error) => Err(ProviderError::new(
+                "turn_changed",
+                crate::providers::STEER_TURN_ENDED,
+            )),
+            Err(error) => Err(error),
+        }
+    }
     fn cancel(&mut self, turn_id: &str) -> Result<(), ProviderError> {
         if self.active_turn().as_deref() != Some(turn_id) {
             return Err(ProviderError::new(
@@ -1840,6 +1897,35 @@ fn pi_event(
     }
 }
 
+fn pi_steer_image(url: &str) -> Result<Value, ProviderError> {
+    let invalid = || {
+        ProviderError::new(
+            "images_unsupported",
+            "Pi steer images must be base64 data URLs. / Pi 插入图片必须使用 base64 data URL。",
+        )
+    };
+    let Some(rest) = url.strip_prefix("data:") else {
+        return Err(invalid());
+    };
+    let Some((meta, data)) = rest.split_once(";base64,") else {
+        return Err(invalid());
+    };
+    if !meta.starts_with("image/") || data.is_empty() {
+        return Err(invalid());
+    }
+    Ok(json!({"type":"image","data":data,"mimeType":meta}))
+}
+
+fn pi_steer_rejected(error: &ProviderError) -> bool {
+    if error.code == "provider_timeout" {
+        return false;
+    }
+    let message = error.message.to_ascii_lowercase();
+    message.contains("no active turn")
+        || message.contains("not active")
+        || message.contains("turn_changed")
+}
+
 /// Builds the `ChatUiState` payload. The protocol requires `value` and
 /// `choices` on every option and forbids additional properties.
 fn pi_ui_state(ui: &PiUi) -> Value {
@@ -1932,7 +2018,7 @@ fn pi_ui_state(ui: &PiUi) -> Value {
             }))
         })
         .collect::<Vec<_>>();
-    let mut state = json!({"options":options,"commands":commands});
+    let mut state = json!({"options":options,"commands":commands,"inputCapabilities":{"steer":"native"}});
     if let Some(trust) = &ui.trust {
         state["piTrust"] = trust.clone();
     }
@@ -3670,5 +3756,100 @@ rl.on('line', line => {
         assert!(wire.lines().any(|line| serde_json::from_str::<Value>(line).ok().is_some_and(|frame| frame["type"] == "clone")), "wire: {wire}");
         assert!(chat.is_alive(), "temporary fork control must not replace the source worker");
         std::env::set_var("PATH", previous);
+    }
+
+    /// Pi `steer` keeps the prompt's turn id and maps handled/queued once.
+    #[test]
+    fn steer_uses_the_pi_command_and_keeps_the_active_turn() {
+        let Some(node) = crate::providers::common::find_executable("node") else {
+            eprintln!("node is unavailable; skipping Pi steer fixture");
+            return;
+        };
+        let dir = tempfile::tempdir().unwrap();
+        let log = dir.path().join("requests.jsonl");
+        let script = dir.path().join("fake-pi-steer.mjs");
+        let log_json = serde_json::to_string(&log.to_string_lossy().replace('\\', "/")).unwrap();
+        std::fs::write(
+            &script,
+            format!(
+                r#"import {{ appendFileSync }} from 'node:fs';
+import {{ createInterface }} from 'node:readline';
+const log = {log_json};
+createInterface({{ input: process.stdin, crlfDelay: Infinity }}).on('line', line => {{
+  if (!line.trim()) return;
+  const request = JSON.parse(line);
+  appendFileSync(log, JSON.stringify(request) + '\n');
+  if (request.type !== 'steer') return;
+  if (request.message === 'reject-me') {{
+    process.stdout.write(JSON.stringify({{ id: request.id, type: 'response', command: 'steer', success: false, error: 'no active turn' }}) + '\n');
+    return;
+  }}
+  if (request.message === 'unknown-me') {{
+    process.stdout.write(JSON.stringify({{ id: request.id, type: 'response', command: 'steer', success: true, data: {{ disposition: 'later' }} }}) + '\n');
+    return;
+  }}
+  const disposition = request.message === 'queue-me' ? 'queued' : 'handled';
+  process.stdout.write(JSON.stringify({{ id: request.id, type: 'response', command: 'steer', success: true, data: {{ disposition }} }}) + '\n');
+}});
+"#
+            ),
+        )
+        .unwrap();
+        let spec = CommandSpec::from_path(node, vec![script.to_string_lossy().into_owned()]).unwrap();
+        let (sender, _receiver) = tap_channel(8);
+        let events = ScopedProviderEvents::new(sender, "steer-worker");
+        let shared = Arc::new(PiShared::default());
+        *shared.active_turn.lock().unwrap() = Some("turn-1".into());
+        let process = JsonLineProcess::spawn(
+            "fake-pi-steer",
+            &spec,
+            None,
+            &[],
+            EnvelopeStyle::Pi,
+            Arc::new(|_| {}),
+        )
+        .unwrap();
+        let mut chat = PiChat {
+            session_id: "pi-chat".into(),
+            shared: Arc::clone(&shared),
+            events,
+            process,
+        };
+        let image = "data:image/png;base64,aGVsbG8=";
+        let delivered = chat
+            .steer("turn-1", "while you work", &[image.to_owned()], "steer-op")
+            .unwrap();
+        assert_eq!(delivered["disposition"], "delivered");
+        let queued = chat.steer("turn-1", "queue-me", &[], "steer-queue").unwrap();
+        assert_eq!(queued["disposition"], "queued");
+        let rejected = chat.steer("turn-1", "reject-me", &[], "steer-reject").unwrap_err();
+        assert_eq!(rejected.code, "turn_changed");
+        assert_eq!(rejected.message, crate::providers::STEER_TURN_ENDED);
+        let unknown = chat.steer("turn-1", "unknown-me", &[], "steer-unknown").unwrap_err();
+        assert_eq!(unknown.code, "provider_error");
+        let missed = chat.steer("other-turn", "nope", &[], "steer-miss").unwrap_err();
+        assert_eq!(missed.code, "turn_changed");
+        assert!(chat.validate_steer("x", &["https://example.test/a.png".into()]).is_err());
+        assert_eq!(
+            shared.active_turn.lock().unwrap().as_deref(),
+            Some("turn-1"),
+            "steer must not replace the prompt turn"
+        );
+        let lines: Vec<Value> = std::fs::read_to_string(&log)
+            .unwrap()
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect();
+        assert_eq!(lines.len(), 4, "a local turn mismatch must not reach Pi: {lines:?}");
+        assert_eq!(lines[0]["type"], "steer");
+        assert_eq!(lines[0]["message"], "while you work");
+        assert_eq!(
+            lines[0]["images"],
+            json!([{"type":"image","data":"aGVsbG8=","mimeType":"image/png"}])
+        );
+        assert_eq!(lines[1]["message"], "queue-me");
+        assert!(lines[1].get("images").is_none());
+        assert_eq!(lines[2]["message"], "reject-me");
+        assert_eq!(lines[3]["message"], "unknown-me");
     }
 }

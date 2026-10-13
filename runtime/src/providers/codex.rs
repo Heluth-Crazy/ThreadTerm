@@ -665,6 +665,40 @@ impl ChatSession for CodexChat {
         self.start_turn(operation_id, input)
     }
 
+    fn validate_steer(&self, text: &str, images: &[String]) -> Result<(), ProviderError> {
+        self.validate_images(images)?;
+        if text.trim().is_empty() && images.is_empty() {
+            return Err(ProviderError::new("invalid_message", "invalid_message"));
+        }
+        Ok(())
+    }
+    fn steer_turn_ready(&self, turn_id: &str) -> Result<(), ProviderError> {
+        codex_steer_native_id(&self.active_turn, turn_id).map(|_| ())
+    }
+    fn steer(
+        &mut self,
+        turn_id: &str,
+        text: &str,
+        images: &[String],
+        _operation_id: &str,
+    ) -> Result<Value, ProviderError> {
+        let native_turn_id = codex_steer_native_id(&self.active_turn, turn_id)?;
+        let mut input = native_image_inputs(images);
+        if !text.trim().is_empty() {
+            input.push(json!({"type":"text","text":text}));
+        }
+        match self.process.request(
+            "turn/steer",
+            json!({"threadId":self.native_id,"expectedTurnId":native_turn_id,"input":input}),
+        ) {
+            Ok(_) => Ok(json!({"disposition":"delivered"})),
+            Err(error) if codex_steer_rejected(&error) => Err(ProviderError::new(
+                "turn_changed",
+                crate::providers::STEER_TURN_ENDED,
+            )),
+            Err(error) => Err(error),
+        }
+    }
     fn cancel(&mut self, turn_id: &str) -> Result<(), ProviderError> {
         validate_native_id(turn_id)?;
         let plan = self.ui.lock().ok().and_then(|mut state| {
@@ -1684,7 +1718,7 @@ struct CodexSkill {
 
 impl CodexUiState {
     fn wire(&self) -> Value {
-        let mut wire = json!({"options":self.options.clone(),"commands":self.commands.clone(),"inputCapabilities":{"images":true}});
+        let mut wire = json!({"options":self.options.clone(),"commands":self.commands.clone(),"inputCapabilities":{"images":true,"steer":"native"}});
         wire["backgroundTasks"] = json!(self.background_tasks);
         if let Some(error) = &self.options_error {
             wire["loadState"] = json!("error");
@@ -3054,6 +3088,61 @@ fn codex_turn_assistant_item_id(state: &CodexTurnState, public_id: &str) -> Opti
             .filter(|turn| turn.public_id == public_id)
             .and_then(|turn| turn.assistant_item_id.clone())
     })
+}
+
+fn codex_steer_rejected(error: &ProviderError) -> bool {
+    if error.code == "provider_timeout" {
+        return false;
+    }
+    let message = error.message.to_ascii_lowercase();
+    message.contains("expectedturnid")
+        || message.contains("expected turn")
+        || message.contains("turn mismatch")
+        || message.contains("not the active")
+        || message.contains("no active turn")
+        || message.contains("turn is not active")
+        || message.contains("turn_changed")
+}
+
+/// Maps the public id the renderer sends, or the native id already on the
+/// transcript, to the `expectedTurnId` Codex requires. A missing turn fails
+/// before the request, so the caller can drop an unsent row.
+fn codex_steer_native_id(state: &CodexTurnState, turn_id: &str) -> Result<String, ProviderError> {
+    let public_id = {
+        let active = state.0.lock().map_err(|_| {
+            ProviderError::new("provider_internal", "Codex turn lock poisoned")
+        })?;
+        let Some(turn) = active.as_ref() else {
+            return Err(ProviderError::new(
+                "turn_changed",
+                crate::providers::STEER_TURN_ENDED,
+            ));
+        };
+        if turn.public_id != turn_id && turn.native_id.as_deref() != Some(turn_id) {
+            return Err(ProviderError::new(
+                "turn_changed",
+                crate::providers::STEER_TURN_ENDED,
+            ));
+        }
+        if let Some(native) = turn.native_id.clone() {
+            return Ok(native);
+        }
+        turn.public_id.clone()
+    };
+    match wait_for_codex_native_turn(state, &public_id) {
+        Ok(Some(native)) => Ok(native),
+        Ok(None) => Err(ProviderError::new(
+            "turn_changed",
+            crate::providers::STEER_TURN_ENDED,
+        )),
+        Err(error) if matches!(error.code.as_str(), "turn_not_active" | "turn_not_started") => {
+            Err(ProviderError::new(
+                "turn_changed",
+                crate::providers::STEER_TURN_ENDED,
+            ))
+        }
+        Err(error) => Err(error),
+    }
 }
 
 fn wait_for_codex_native_turn(
@@ -6698,5 +6787,109 @@ process.on('exit', () => clearTimeout(timeout));
             &Mutex::new(None),
             &request(json!({"serverName":"threadterm","threadId":"t","mode":"form"}))
         ));
+    }
+
+    /// The public turn id the renderer sends is mapped to Codex `expectedTurnId`
+    /// before `turn/steer`. A mismatch is rejected without starting a new turn.
+    #[test]
+    fn steer_sends_the_native_turn_once_and_a_mismatch_does_not_clear_it() {
+        let Some(node) = crate::providers::common::find_executable("node") else {
+            eprintln!("node is unavailable; skipping Codex steer fixture");
+            return;
+        };
+        let dir = tempfile::tempdir().unwrap();
+        let log = dir.path().join("requests.jsonl");
+        let script = dir.path().join("fake-codex-steer.mjs");
+        let log_json = serde_json::to_string(&log.to_string_lossy().replace('\\', "/")).unwrap();
+        std::fs::write(
+            &script,
+            format!(
+                r#"import {{ appendFileSync }} from 'node:fs';
+import {{ createInterface }} from 'node:readline';
+const log = {log_json};
+createInterface({{ input: process.stdin, crlfDelay: Infinity }}).on('line', line => {{
+  if (!line.trim()) return;
+  const request = JSON.parse(line);
+  appendFileSync(log, JSON.stringify(request) + '\n');
+  if (request.id === undefined || request.method !== 'turn/steer') return;
+  const text = (request.params.input ?? []).find(item => item.type === 'text')?.text ?? '';
+  if (text === 'reject-me') {{
+    process.stdout.write(JSON.stringify({{ id: request.id, error: {{ message: 'expectedTurnId does not match the active turn' }} }}) + '\n');
+    return;
+  }}
+  process.stdout.write(JSON.stringify({{ id: request.id, result: {{ turnId: request.params.expectedTurnId }} }}) + '\n');
+}});
+"#
+            ),
+        )
+        .unwrap();
+        let spec = CommandSpec::from_path(node, vec![script.to_string_lossy().into_owned()]).unwrap();
+        let (events, _received) = crate::provider_events::tap_channel(8);
+        let active = new_codex_turn_state();
+        active.0.lock().unwrap().replace(ActiveCodexTurn {
+            public_id: "public-turn".into(),
+            native_id: Some("native-turn".into()),
+            assistant_item_id: None,
+            started_at: Instant::now(),
+        });
+        let process = JsonLineProcess::spawn(
+            "fake-codex-steer",
+            &spec,
+            None,
+            &[],
+            EnvelopeStyle::Codex,
+            Arc::new(|_| {}),
+        )
+        .unwrap();
+        let mut chat = CodexChat {
+            process,
+            native_id: "thread-1".into(),
+            approvals: Arc::new(Mutex::new(HashMap::new())),
+            active_turn: Arc::clone(&active),
+            session_id: "codex-chat".into(),
+            cwd: String::new(),
+            events,
+            ui: Arc::new(Mutex::new(CodexUiState::default())),
+            worker_token: "steer-worker".into(),
+        };
+        let image = "data:image/png;base64,aGVsbG8=";
+        let delivered = chat
+            .steer("public-turn", "while you work", &[image.to_owned()], "steer-op")
+            .unwrap();
+        assert_eq!(delivered["disposition"], "delivered");
+        assert_eq!(
+            active.0.lock().unwrap().as_ref().map(|turn| turn.public_id.as_str()),
+            Some("public-turn"),
+            "a steer must not replace the running turn"
+        );
+        let wrong = chat
+            .steer("other-turn", "nope", &[], "steer-miss")
+            .unwrap_err();
+        assert_eq!(wrong.code, "turn_changed");
+        assert_eq!(wrong.message, crate::providers::STEER_TURN_ENDED);
+        let rejected = chat
+            .steer("native-turn", "reject-me", &[], "steer-reject")
+            .unwrap_err();
+        assert_eq!(rejected.code, "turn_changed");
+        assert_eq!(rejected.message, crate::providers::STEER_TURN_ENDED);
+        assert!(active.0.lock().unwrap().is_some());
+        let lines: Vec<Value> = std::fs::read_to_string(&log)
+            .unwrap()
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect();
+        assert_eq!(lines.len(), 2, "a local turn mismatch must not reach Codex: {lines:?}");
+        assert_eq!(lines[0]["method"], "turn/steer");
+        assert_eq!(lines[0]["params"]["threadId"], "thread-1");
+        assert_eq!(lines[0]["params"]["expectedTurnId"], "native-turn");
+        assert_eq!(
+            lines[0]["params"]["input"],
+            json!([
+                {"type":"image","url":image},
+                {"type":"text","text":"while you work"}
+            ])
+        );
+        assert_eq!(lines[1]["params"]["expectedTurnId"], "native-turn");
+        assert_eq!(lines[1]["params"]["input"], json!([{"type":"text","text":"reject-me"}]));
     }
 }

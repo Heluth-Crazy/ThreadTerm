@@ -2163,6 +2163,43 @@
       ],
       "additionalProperties": false
     },
+    "RequestParams<\"chat.steer\">": {
+      "type": "object",
+      "properties": {
+        "sessionId": {
+          "type": "string"
+        },
+        "turnId": {
+          "type": "string"
+        },
+        "text": {
+          "type": "string"
+        },
+        "images": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "operationId": {
+          "type": "string"
+        },
+        "leaseEpoch": {
+          "type": "number"
+        },
+        "queueItemId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "sessionId",
+        "turnId",
+        "text",
+        "operationId",
+        "leaseEpoch"
+      ],
+      "additionalProperties": false
+    },
     "RequestParams<\"chat.cancel\">": {
       "type": "object",
       "properties": {
@@ -6168,6 +6205,32 @@
         },
         "params": {
           "$ref": "#/definitions/RequestParams%3C%22chat.send%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "params"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "chat.steer"
+        },
+        "params": {
+          "$ref": "#/definitions/RequestParams%3C%22chat.steer%22%3E"
         }
       },
       "required": [

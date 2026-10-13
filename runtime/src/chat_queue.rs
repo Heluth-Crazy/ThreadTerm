@@ -53,6 +53,25 @@ fn failure(code: &str) -> anyhow::Error {
     ProviderError::new(code, code).into()
 }
 
+/// A known rejection never delivered the text, so the queue item goes back.
+/// Timeouts and outcome-unknown stay failed so dispatch cannot send them again.
+fn steer_failure_restores_queue(error: &anyhow::Error) -> bool {
+    if let Some(provider) = error.downcast_ref::<ProviderError>() {
+        return matches!(
+            provider.code.as_str(),
+            "turn_changed"
+                | "steer_unsupported"
+                | "images_unsupported"
+                | "invalid_image"
+                | "invalid_message"
+                | "empty_message"
+                | "chat_not_open"
+                | "images_not_supported_for_command"
+        );
+    }
+    matches!(error.to_string().as_str(), "invalid_message" | "chat_not_open")
+}
+
 pub(crate) fn initialize(db: &Database) -> Result<()> {
     db.transaction(|tx| {
         tx.execute_batch("CREATE TABLE IF NOT EXISTS chat_queue_items (
@@ -439,6 +458,8 @@ impl ChatQueues {
         let Some(item) = item else {
             return Ok(());
         };
+        // steer_queued holds this same gate and reserves `sending` first, so
+        // an insert-now of this item cannot also dispatch here.
         let operation = format!("queue:{}", item.id);
         // The reservation is committed above; no transaction/DB lock survives this call.
         let sent = crate::service::send_chat_message(
@@ -462,6 +483,81 @@ impl ChatQueues {
             }
             changed(tx,id)
         })
+    }
+
+    /// Holds the queue gate, then the chat worker, and deletes the item only
+    /// after the provider accepts the steer. A known rejection puts the item
+    /// back. A timeout or any other uncertain outcome marks it failed so the
+    /// dispatcher cannot send a second copy.
+    pub(crate) fn steer_queued(
+        &self,
+        db: &Database,
+        providers: &Providers,
+        session_id: &str,
+        turn_id: &str,
+        item_id: &str,
+        operation_id: &str,
+    ) -> Result<Value> {
+        let gate = self.gate(session_id)?;
+        let _guard = gate.lock().map_err(|_| failure("queue_lock_poisoned"))?;
+        let (text, images) = db.transaction(|tx| {
+            require_chat(tx, session_id, true)?;
+            let prior: Option<(String, String, String)> = tx
+                .query_row(
+                    "SELECT state,text,images_json FROM chat_queue_items WHERE session_id=? AND id=?",
+                    params![session_id, item_id],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                )
+                .optional()?;
+            let Some((state, text, images)) = prior else {
+                return Err(failure("queue_item_not_found"));
+            };
+            if state == "sending" {
+                return Err(failure("queue_item_sending"));
+            }
+            if state != "queued" && state != "failed" {
+                return Err(failure("queue_item_not_found"));
+            }
+            tx.execute(
+                "UPDATE chat_queue_items SET state='sending',error=NULL,revision=revision+1,updated_at=? WHERE id=?",
+                params![Utc::now().to_rfc3339(), item_id],
+            )?;
+            changed(tx, session_id)?;
+            Ok((text, serde_json::from_str::<Vec<String>>(&images)?))
+        })?;
+        let steered = crate::service::steer_chat_message(
+            db,
+            providers,
+            session_id,
+            turn_id,
+            &text,
+            &images,
+            operation_id,
+        );
+        db.transaction(|tx| {
+            match &steered {
+                Ok(_) => {
+                    tx.execute("DELETE FROM chat_queue_items WHERE id=?", [item_id])?;
+                }
+                Err(error) if steer_failure_restores_queue(error) => {
+                    tx.execute(
+                        "UPDATE chat_queue_items SET state='queued',error=NULL,revision=revision+1,updated_at=? WHERE id=? AND state='sending'",
+                        params![Utc::now().to_rfc3339(), item_id],
+                    )?;
+                }
+                Err(error) => {
+                    let message = format!("May have been sent — check the transcript: {error}");
+                    let message: String = message.chars().take(500).collect();
+                    tx.execute(
+                        "UPDATE chat_queue_items SET state='failed',error=?,revision=revision+1,updated_at=? WHERE id=?",
+                        params![message, Utc::now().to_rfc3339(), item_id],
+                    )?;
+                    pause_tx(tx, session_id, "failed")?;
+                }
+            }
+            changed(tx, session_id)
+        })?;
+        steered
     }
 
     pub(crate) fn schedule(
@@ -530,5 +626,24 @@ impl ChatQueues {
             self.schedule(db, providers, &p.session_id);
         }
         Ok(result)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::steer_failure_restores_queue;
+    use crate::providers::ProviderError;
+
+    #[test]
+    fn a_rejected_steer_returns_the_queue_item_and_a_timeout_does_not() {
+        let rejected = ProviderError::new("turn_changed", "ended").into();
+        let unsupported = ProviderError::new("steer_unsupported", "no").into();
+        let timeout = ProviderError::new("provider_timeout", "timed out").into();
+        let unknown = ProviderError::new("operation_outcome_unknown", "unknown").into();
+        assert!(steer_failure_restores_queue(&rejected));
+        assert!(steer_failure_restores_queue(&unsupported));
+        assert!(!steer_failure_restores_queue(&timeout));
+        assert!(!steer_failure_restores_queue(&unknown));
+        assert!(steer_failure_restores_queue(&anyhow::anyhow!("invalid_message")));
     }
 }

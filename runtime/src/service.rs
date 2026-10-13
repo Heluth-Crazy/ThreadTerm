@@ -259,6 +259,98 @@ pub(crate) fn send_chat_message(
     Ok(result)
 }
 
+/// Inserts into the turn that is already running. The row is recorded before
+/// the provider call. A completed operation replays its disposition and does
+/// not dispatch again. An explicit `turn_changed` removes the row; a timeout
+/// or any other post-dispatch failure leaves the row and the claim so a retry
+/// of the same operation cannot send a second copy.
+pub(crate) fn steer_chat_message(
+    db: &Database,
+    providers: &Providers,
+    session_id: &str,
+    turn_id: &str,
+    text: &str,
+    images: &[String],
+    operation_id: &str,
+) -> Result<Value> {
+    db.require_interactive(session_id)?;
+    if !providers.chat_is_open(session_id) {
+        return Err(anyhow::anyhow!("chat_not_open"));
+    }
+    validate_chat_images(images)?;
+    if (text.trim().is_empty() && images.is_empty()) || text.len() > 1024 * 1024 {
+        return Err(anyhow::anyhow!("invalid_message"));
+    }
+    if let Some(result) = db.operation(operation_id)? {
+        return Ok(result);
+    }
+    if !steer_activity_open(db, session_id)? {
+        return Err(crate::providers::ProviderError::new(
+            "turn_changed",
+            crate::providers::STEER_TURN_ENDED,
+        )
+        .into());
+    }
+    let recorded = providers.chat_steer_recording(
+        session_id,
+        turn_id,
+        text,
+        images,
+        operation_id,
+        || {
+            use crate::providers::ProviderError;
+            if !db
+                .claim_external_operation(operation_id)
+                .map_err(|error| ProviderError::new("chat_persistence", error.to_string()))?
+            {
+                return Err(ProviderError::new(
+                    "operation_outcome_unknown",
+                    "operation_outcome_unknown",
+                ));
+            }
+            db.record_provider_event(
+                session_id,
+                Some(turn_id),
+                "message.user",
+                &json!({
+                    "text": text,
+                    "images": images,
+                    "operationId": operation_id,
+                    "steered": true,
+                    "turnId": turn_id,
+                    "item": {"id": format!("steer:{operation_id}")},
+                }),
+            )
+            .map_err(|error| ProviderError::new("chat_persistence", error.to_string()))
+        },
+    );
+    match recorded {
+        Ok(result) => {
+            db.complete_operation(operation_id, "chat.steer", &result)?;
+            Ok(result)
+        }
+        Err(error) if error.code == "turn_changed" => {
+            // The provider rejected the insert. Drop the row so the composer
+            // still holds the only copy. A failed retract leaves the row.
+            let _ = crate::chat_projection::retract_steered_message(db, session_id, operation_id);
+            Err(error.into())
+        }
+        Err(error) => Err(error.into()),
+    }
+}
+
+fn steer_activity_open(db: &Database, session_id: &str) -> Result<bool> {
+    db.transaction(|tx| {
+        let activity = crate::db::session_activity_tx(tx, session_id)?;
+        Ok(activity.is_some_and(|activity| {
+            matches!(
+                activity.state.as_str(),
+                "running" | "awaiting_approval" | "awaiting_parent"
+            )
+        }))
+    })
+}
+
 /// Answers one pending Chat approval. Shared by `chat.approve` (after the
 /// ChatView lease check) and a parent agent's `delegation.respond`.
 pub(crate) fn approve_chat_request(
@@ -1473,6 +1565,32 @@ impl RuntimeService {
                         &images,
                         &p.operation_id,
                     )
+                }
+                "chat.steer" => {
+                    let p: ChatSteer = parse(&request.params)?;
+                    self.leases
+                        .require(&self.db, &p.session_id, principal, p.lease_epoch)?;
+                    let images = p.images.unwrap_or_default();
+                    if let Some(item_id) = p.queue_item_id.filter(|item_id| !item_id.is_empty()) {
+                        self.chat_queues.steer_queued(
+                            &self.db,
+                            &self.providers,
+                            &p.session_id,
+                            &p.turn_id,
+                            &item_id,
+                            &p.operation_id,
+                        )
+                    } else {
+                        steer_chat_message(
+                            &self.db,
+                            &self.providers,
+                            &p.session_id,
+                            &p.turn_id,
+                            &p.text,
+                            &images,
+                            &p.operation_id,
+                        )
+                    }
                 }
                 "chat.read" => {
                     let p: ChatRead = parse(&request.params)?;
@@ -2722,6 +2840,19 @@ struct ChatSend {
     images: Option<Vec<String>>,
     operation_id: String,
     lease_epoch: i64,
+}
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ChatSteer {
+    session_id: String,
+    turn_id: String,
+    text: String,
+    #[serde(default)]
+    images: Option<Vec<String>>,
+    operation_id: String,
+    lease_epoch: i64,
+    #[serde(default)]
+    queue_item_id: Option<String>,
 }
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
