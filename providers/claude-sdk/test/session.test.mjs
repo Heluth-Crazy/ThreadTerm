@@ -579,39 +579,98 @@ test('a steer aimed at a replaced turn is refused before anything reaches the SD
   assert.equal(session.pendingSteers.has('steer-3'), true);
 });
 
-test('a result consumes steered uuids and an unconsumed steer is adopted on the next message only', async () => {
-  const { sdk, query } = controllableSdk();
+// A fake SDK whose query consumes the session's real input queue FIFO and
+// answers every consumed message with a user echo, an assistant reply and a
+// result, so tests assert which operation each frame is attributed to. With
+// `batch`, every message already queued is drained into one turn.
+// control.hold() parks consumption before the next turn until release();
+// control.results queues per-turn result overrides ({fieldless:true} omits
+// the uuid fields).
+function fifoSdk({ batch = false } = {}) {
+  const controls = [];
+  const sdk = {
+    query({ prompt }) {
+      const control = { results: [], turns: [], release: null };
+      let gate = null;
+      control.hold = () => { gate = new Promise(resolve => { control.release = resolve; }); };
+      controls.push(control);
+      const input = prompt[Symbol.asyncIterator]();
+      const query = {
+        async initializationResult() { return { commands: [], models: [], account: {} }; },
+        async interrupt() {},
+        close() {},
+        async return() { return { done: true }; },
+        async *[Symbol.asyncIterator]() {
+          for (;;) {
+            if (gate) { await gate; gate = null; }
+            const step = await input.next();
+            if (step.done) return;
+            const consumed = [step.value];
+            while (batch && prompt.size > 0) consumed.push((await input.next()).value);
+            control.turns.push(consumed);
+            for (const message of consumed) {
+              yield { type: 'user', uuid: message.uuid, message: { role: 'user', content: message.message.content }, parent_tool_use_id: null };
+            }
+            const index = control.turns.length;
+            yield { type: 'assistant', message: { id: `m-${index}`, content: [{ type: 'text', text: `reply ${index}` }] } };
+            const { fieldless = false, ...overrides } = control.results.shift() ?? {};
+            const result = { type: 'result', is_error: false, ...overrides };
+            if (!fieldless && result.user_message_uuids === undefined && result.user_message_uuid === undefined) {
+              result.user_message_uuids = consumed.map(message => message.uuid);
+            }
+            yield result;
+          }
+        },
+      };
+      return query;
+    },
+  };
+  return { sdk, controls };
+}
+
+const waitFor = async (probe, label) => {
+  const deadline = Date.now() + 2000;
+  for (;;) {
+    const value = probe();
+    if (value) return value;
+    if (Date.now() > deadline) throw new Error(`TIMEOUT: ${label}`);
+    await delay(5);
+  }
+};
+
+const statuses = events => events.filter(e => e.ev === 'session.status').map(e => `${e.phase}:${e.operationId ?? '-'}`);
+const frames = events => events.filter(e => e.ev === 'session.event').map(e => `${e.message.type}:${e.operationId ?? '-'}`);
+
+test('a leftover steer after a clean result owns the next turn immediately', async () => {
+  const { sdk, controls } = fifoSdk();
   const events = [];
-  const session = new ClaudeSession({ cardId: 'card-steer', sdk, write: value => events.push(value), hostOptions: { warmUp: false } });
+  const session = new ClaudeSession({ cardId: 'card-carry', sdk, write: value => events.push(value), hostOptions: { warmUp: false } });
   try {
     await session.start({ cwd: 'C:/' });
-    session.send('hello', 'op-1');
-    session.steer('kept', 'steer-kept', 'op-1');
-    const keptUuid = [...session.steerUuids.keys()][0];
-    query.push({ type: 'result', user_message_uuids: [keptUuid], is_error: false });
-    await delay(30);
+    const control = controls[0];
+    session.send('one', 'op-a');
+    session.steer('s1', 'steer-a', 'op-a');
+    control.hold();
+    await waitFor(() => events.some(e => e.ev === 'session.status' && e.phase === 'idle' && e.operationId === 'op-a'), 'turn A completes');
+    // The cleanly accounted turn left the steer in the SDK input and the SDK
+    // runs it next: the carry is claimed before any frame arrives, so a send
+    // during it queues in ThreadTerm instead of racing.
+    assert.equal(session.activeOperationId, 'carry:steer-a');
+    assert.deepEqual(statuses(events), ['running:op-a', 'idle:op-a', 'running:carry:steer-a']);
+    assert.throws(() => session.send('two', 'op-b'), /turn already active: carry:steer-a/);
+    control.release();
+    await waitFor(() => events.some(e => e.ev === 'session.status' && e.phase === 'idle' && e.operationId === 'carry:steer-a'), 'carry completes');
+    assert.deepEqual(statuses(events), ['running:op-a', 'idle:op-a', 'running:carry:steer-a', 'idle:carry:steer-a']);
+    assert.deepEqual(frames(events), [
+      'user:op-a', 'assistant:op-a', 'result:op-a',
+      'user:carry:steer-a', 'assistant:carry:steer-a', 'result:carry:steer-a',
+    ]);
+    assert.equal(session.activeOperationId, null);
     assert.equal(session.pendingSteers.size, 0);
-    assert.equal(session.carryArmed, false);
-    assert.equal(session.activeOperationId, null);
-    query.push({ type: 'assistant', message: { id: 'm-kept', content: [] } });
-    await delay(30);
-    assert.equal(session.activeOperationId, null, 'a consumed steer must not start another turn');
-    assert.equal(events.filter(event => event.ev === 'session.status' && event.phase === 'running').map(event => event.operationId).join(','), 'op-1');
-
-    session.send('again', 'op-2');
-    session.steer('carried', 'steer-carry', 'op-2');
-    query.push({ type: 'result', user_message_uuids: [], is_error: false });
-    await delay(30);
-    assert.equal(session.carryArmed, true);
-    assert.equal(session.activeOperationId, null);
-    assert.equal(events.filter(event => event.phase === 'running' && String(event.operationId).startsWith('carry:')).length, 0);
-    query.push({ type: 'assistant', message: { id: 'm-carry', content: [] } });
-    await delay(30);
-    assert.equal(session.activeOperationId, 'carry:steer-carry');
-    assert.equal(session.pendingSteers.has('steer-carry'), false);
-    assert.equal(events.filter(event => event.ev === 'session.status' && event.phase === 'running' && event.operationId === 'carry:steer-carry').length, 1);
+    // The steered message itself ran as the second SDK turn.
+    assert.deepEqual(control.turns.map(turn => turn.map(message => message.message.content[0].text)), [['one'], ['s1']]);
   } finally {
-    query.finish();
+    await session.stop();
     await session.pump;
   }
 });
@@ -631,7 +690,7 @@ test('a uuid operation id is sent verbatim as the client uuid for send and steer
   session.input.end();
 });
 
-test('a result consumes steers from either uuid field and a fieldless result arms no carry', async () => {
+test('a singular result uuid consumes its steer and leaves no carry', async () => {
   const { sdk, query } = controllableSdk();
   const events = [];
   const session = new ClaudeSession({ cardId: 'card-consume', sdk, write: value => events.push(value), hostOptions: { warmUp: false } });
@@ -639,32 +698,46 @@ test('a result consumes steers from either uuid field and a fieldless result arm
     await session.start({ cwd: 'C:/' });
     session.send('one', 'op-a');
     session.steer('s1', 'steer-a', 'op-a');
-    const steerAUuid = [...session.steerUuids.keys()][0];
-    query.push({ type: 'result', user_message_uuid: steerAUuid, is_error: false });
+    const steerUuid = [...session.steerUuids.keys()][0];
+    query.push({ type: 'result', user_message_uuid: steerUuid, is_error: false });
     await delay(30);
     assert.equal(session.pendingSteers.size, 0, 'the singular fallback consumes the steer');
     assert.equal(session.steerUuids.size, 0);
-    assert.equal(session.carryArmed, false);
-
-    session.send('two', 'op-b');
-    session.steer('s2', 'steer-b', 'op-b');
-    query.push({ type: 'result', is_error: false, duration_ms: 0 });
-    await delay(30);
-    assert.equal(session.pendingSteers.size, 0, 'a fieldless result consumes every pending steer');
-    assert.equal(session.steerUuids.size, 0);
-    assert.equal(session.carryArmed, false, 'a fieldless result never arms a carry');
-
-    query.push({ type: 'system', subtype: 'status', permissionMode: 'default' });
-    await delay(30);
     assert.equal(session.activeOperationId, null);
-    assert.equal(events.filter(event => String(event.operationId).startsWith('carry:')).length, 0);
+    assert.equal(events.filter(event => event.ev === 'session.status' && event.phase === 'running' && String(event.operationId).startsWith('carry:')).length, 0);
   } finally {
     query.finish();
     await session.pump;
   }
 });
 
-test('a carry is adopted only on model activity or the matching user echo, never on a system frame', async () => {
+test('a result without uuid fields keeps leftover steers and a send never drops them', async () => {
+  const { sdk, query } = controllableSdk();
+  const events = [];
+  const session = new ClaudeSession({ cardId: 'card-fieldless', sdk, write: value => events.push(value), hostOptions: { warmUp: false } });
+  try {
+    await session.start({ cwd: 'C:/' });
+    session.send('one', 'op-a');
+    session.steer('s1', 'steer-a', 'op-a');
+    query.push({ type: 'result', is_error: false, duration_ms: 0 });
+    await delay(30);
+    assert.equal(session.pendingSteers.size, 1, 'a fieldless result proves nothing and keeps the leftover');
+    assert.equal(session.steerUuids.size, 1);
+    assert.equal(session.activeOperationId, null, 'a fieldless result never adopts a carry eagerly');
+    // A send while leftovers are pending queues behind them instead of
+    // clearing them or racing their turn.
+    session.send('two', 'op-b');
+    assert.equal(session.queuedSends.length, 1);
+    assert.equal(session.pendingSteers.size, 1, 'send must never drop pending steer uuids');
+    assert.equal(session.activeOperationId, null);
+    assert.equal(events.filter(event => event.ev === 'session.status' && event.phase === 'running' && String(event.operationId).startsWith('carry:')).length, 0);
+  } finally {
+    query.finish();
+    await session.pump;
+  }
+});
+
+test('a carry is adopted on the echoed steer, never on a system frame', async () => {
   const { sdk, query } = controllableSdk();
   const events = [];
   const session = new ClaudeSession({ cardId: 'card-adopt', sdk, write: value => events.push(value), hostOptions: { warmUp: false } });
@@ -672,9 +745,8 @@ test('a carry is adopted only on model activity or the matching user echo, never
     await session.start({ cwd: 'C:/' });
     session.send('one', 'op-a');
     session.steer('s1', 'steer-a', 'op-a');
-    query.push({ type: 'result', user_message_uuids: [], is_error: false });
+    query.push({ type: 'result', is_error: false, duration_ms: 0 });
     await delay(30);
-    assert.equal(session.carryArmed, true);
     query.push({ type: 'system', subtype: 'status', permissionMode: 'default' });
     await delay(30);
     assert.equal(session.activeOperationId, null, 'a system status frame never starts the carry');
@@ -690,25 +762,115 @@ test('a carry is adopted only on model activity or the matching user echo, never
   }
 });
 
-test('a send while a carry is armed owns the next turn and drops the stale steers', async () => {
+test('model activity with nothing active adopts the oldest pending steer', async () => {
   const { sdk, query } = controllableSdk();
   const events = [];
-  const session = new ClaudeSession({ cardId: 'card-send-carry', sdk, write: value => events.push(value), hostOptions: { warmUp: false } });
+  const session = new ClaudeSession({ cardId: 'card-activity', sdk, write: value => events.push(value), hostOptions: { warmUp: false } });
   try {
     await session.start({ cwd: 'C:/' });
     session.send('one', 'op-a');
     session.steer('s1', 'steer-a', 'op-a');
-    query.push({ type: 'result', user_message_uuids: [], is_error: false });
+    query.push({ type: 'result', is_error: false, duration_ms: 0 });
     await delay(30);
-    assert.equal(session.carryArmed, true);
-    session.send('two', 'op-b');
-    assert.equal(session.carryArmed, false);
+    query.push({ type: 'assistant', message: { id: 'm-carry', content: [] } });
+    await delay(30);
+    assert.equal(session.activeOperationId, 'carry:steer-a');
     assert.equal(session.pendingSteers.size, 0);
-    assert.equal(session.steerUuids.size, 0);
-    query.push({ type: 'assistant', message: { id: 'm-after-send', content: [] } });
+    assert.equal(events.filter(event => event.ev === 'session.status' && event.phase === 'running' && event.operationId === 'carry:steer-a').length, 1);
+  } finally {
+    query.finish();
+    await session.pump;
+  }
+});
+
+test('an interrupted or failed result leaves a steer for the carry it starts', async () => {
+  for (const [label, isError, expected] of [['interrupted', false, 'interrupted'], ['failed', true, 'failed']]) {
+    const { sdk, query } = controllableSdk();
+    const events = [];
+    const session = new ClaudeSession({ cardId: `card-${label}`, sdk, write: value => events.push(value), hostOptions: { warmUp: false } });
+    try {
+      await session.start({ cwd: 'C:/' });
+      session.send('one', 'op-a');
+      session.steer('s1', 'steer-a', 'op-a');
+      if (label === 'interrupted') await session.interrupt();
+      query.push({ type: 'result', user_message_uuids: [], is_error: isError });
+      await delay(30);
+      assert.equal(session.activeOperationId, null, `${label}: no eager carry`);
+      assert.equal(session.pendingSteers.size, 1, `${label}: the leftover survives`);
+      const idle = events.filter(event => event.ev === 'session.status' && event.phase === 'idle' && event.operationId === 'op-a');
+      assert.equal(idle.at(-1)?.status, expected, `${label}: the completion status is reported`);
+      const steerUuid = [...session.steerUuids.keys()][0];
+      query.push({ type: 'user', uuid: steerUuid, message: { role: 'user', content: [] } });
+      await delay(30);
+      assert.equal(session.activeOperationId, 'carry:steer-a', `${label}: the echo adopts the carry`);
+    } finally {
+      query.finish();
+      await session.pump;
+    }
+  }
+});
+
+test('a batched steer and send fold into the carry turn', async () => {
+  const { sdk, query } = controllableSdk();
+  const events = [];
+  const session = new ClaudeSession({ cardId: 'card-batch', sdk, write: value => events.push(value), hostOptions: { warmUp: false } });
+  try {
+    await session.start({ cwd: 'C:/' });
+    session.send('one', 'op-a');
+    session.steer('s1', 'steer-a', 'op-a');
+    query.push({ type: 'result', is_error: false, duration_ms: 0 });
     await delay(30);
-    assert.equal(session.activeOperationId, 'op-b');
-    assert.equal(events.filter(event => String(event.operationId).startsWith('carry:')).length, 0, 'the dropped carry never resurrects');
+    session.send('two', 'op-b');
+    const steerUuid = [...session.steerUuids.keys()][0];
+    const sendUuid = session.queuedSends[0].uuid;
+    // The SDK begins the carry turn and echoes both messages inside it.
+    query.push({ type: 'user', uuid: steerUuid, message: { role: 'user', content: [] } });
+    await delay(30);
+    assert.equal(session.activeOperationId, 'carry:steer-a');
+    query.push({ type: 'user', uuid: sendUuid, message: { role: 'user', content: [] } });
+    await delay(30);
+    assert.equal(session.activeOperationId, 'carry:steer-a', 'the batched send does not steal the carry turn');
+    assert.equal(session.queuedSends.length, 0);
+    assert.equal(session.foldedSends.length, 1);
+    query.push({ type: 'assistant', message: { id: 'm-batch', content: [] } });
+    query.push({ type: 'result', user_message_uuids: [steerUuid, sendUuid], is_error: false });
+    await delay(30);
+    assert.equal(session.activeOperationId, null);
+    assert.equal(session.foldedSends.length, 0);
+    const statuses = events.filter(event => event.ev === 'session.status').map(event => `${event.phase}:${event.operationId}`);
+    assert.deepEqual(statuses, ['running:op-a', 'idle:op-a', 'running:carry:steer-a', 'running:op-b', 'idle:carry:steer-a', 'idle:op-b']);
+  } finally {
+    query.finish();
+    await session.pump;
+  }
+});
+
+test('a leftover steer runs before a later send and the send still gets its turn', async () => {
+  const { sdk, query } = controllableSdk();
+  const events = [];
+  const session = new ClaudeSession({ cardId: 'card-separate', sdk, write: value => events.push(value), hostOptions: { warmUp: false } });
+  try {
+    await session.start({ cwd: 'C:/' });
+    session.send('one', 'op-a');
+    session.steer('s1', 'steer-a', 'op-a');
+    query.push({ type: 'result', is_error: false, duration_ms: 0 });
+    await delay(30);
+    session.send('two', 'op-b');
+    const steerUuid = [...session.steerUuids.keys()][0];
+    const sendUuid = session.queuedSends[0].uuid;
+    query.push({ type: 'user', uuid: steerUuid, message: { role: 'user', content: [] } });
+    await delay(30);
+    assert.equal(session.activeOperationId, 'carry:steer-a');
+    query.push({ type: 'result', user_message_uuids: [steerUuid], is_error: false });
+    await delay(30);
+    assert.equal(session.activeOperationId, 'op-b', 'the queued send claims the next turn after the carry');
+    assert.equal(session.queuedSends.length, 0);
+    query.push({ type: 'assistant', message: { id: 'm-op-b', content: [] } });
+    query.push({ type: 'result', user_message_uuids: [sendUuid], is_error: false });
+    await delay(30);
+    assert.equal(session.activeOperationId, null);
+    const running = events.filter(event => event.ev === 'session.status' && event.phase === 'running').map(event => event.operationId);
+    assert.deepEqual(running, ['op-a', 'carry:steer-a', 'op-b']);
   } finally {
     query.finish();
     await session.pump;
