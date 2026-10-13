@@ -1,0 +1,17 @@
+.chat-turn-footer { container-type:inline-size; margin:8px 0 12px; color:var(--muted); font-size:11px; min-width:0; }
+.chat-turn-meta { display:flex; align-items:center; gap:4px; white-space:nowrap; margin:0 0 4px; min-width:0; }
+.chat-turn-segment { flex:none; }
+.chat-turn-segment + .chat-turn-segment::before { content:'·'; margin-right:4px; }
+.chat-turn-segment.is-model { flex:0 1 auto; min-width:0; overflow:hidden; text-overflow:ellipsis; }
+@container (max-width:560px) { .chat-turn-segment.is-cache { display:none; } }
+@container (max-width:480px) { .chat-turn-segment.is-out { display:none; } }
+@container (max-width:400px) { .chat-turn-segment.is-in { display:none; } }
+.chat-turn-files { display:grid; gap:8px; padding:8px; margin-top:4px; border:1px solid var(--border); border-radius:var(--radius-card); background:var(--surface); font-size:12px; }
+.chat-turn-files p { margin:0; }
+.chat-turn-file { min-width:0; display:grid; gap:6px; }
+.chat-turn-file-heading { display:flex; align-items:center; gap:8px; }
+.chat-turn-file-heading > :first-child { min-width:0; overflow-wrap:anywhere; }
+.chat-turn-file-counts { margin-left:auto; flex:none; font-size:11px; }
+.chat-turn-file-actions { display:flex; align-items:center; flex-wrap:wrap; gap:4px; }
+.chat-turn-diff-dialog .dlg-body { min-width:0; padding:12px; }
+.chat-turn-diff-dialog .tt-diff-shell { min-height:240px; max-height:65vh; }

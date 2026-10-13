@@ -1459,6 +1459,11 @@ fn emit_claude_message(
         // One context snapshot per completed turn, produced by the sidecar's
         // single `getContextUsage` call; never polled here.
         if let Some(usage) = raw.get("usage").filter(|usage| usage.is_object()) {
+            let mut data = serde_json::Map::new();
+            data.insert("usage".into(), usage.clone());
+            if let Some(turn_usage) = claude_turn_usage(usage) {
+                data.insert("turnUsage".into(), turn_usage);
+            }
             emit_scoped(
                 events,
                 "claude",
@@ -1466,7 +1471,7 @@ fn emit_claude_message(
                 native_id.as_deref(),
                 turn_id,
                 "chat.context",
-                json!({"usage":usage}),
+                Value::Object(data),
                 worker_token,
             );
         }
@@ -1747,6 +1752,29 @@ fn emit_claude_message(
         json!({"raw":raw}),
         worker_token,
     );
+}
+
+/// Context usage also carries the session window. Keep only the SDK result
+/// message's token fields in the immutable turn footer.
+fn claude_turn_usage(usage: &Value) -> Option<Value> {
+    let usage = usage.as_object()?;
+    let mut turn = serde_json::Map::new();
+    for (source, target) in [
+        ("inputTokens", "inputTokens"),
+        ("outputTokens", "outputTokens"),
+        ("cacheReadTokens", "cacheReadTokens"),
+        ("cacheWriteTokens", "cacheWriteTokens"),
+    ] {
+        if let Some(value) = usage.get(source).filter(|value| value.is_u64()) {
+            turn.insert(target.into(), value.clone());
+        }
+    }
+    let total = ["inputTokens", "outputTokens", "cacheReadTokens", "cacheWriteTokens"]
+        .iter()
+        .filter_map(|key| turn.get(*key).and_then(Value::as_u64))
+        .sum::<u64>();
+    if total > 0 { turn.insert("totalTokens".into(), json!(total)); }
+    (!turn.is_empty()).then_some(Value::Object(turn))
 }
 
 /// Text the CLI produced without streaming it: local command output (`/context`,

@@ -900,6 +900,9 @@ mod tests {
             turn_status: None,
             turn_origin: None,
             fork_anchor: None,
+            turn_model: None,
+            turn_usage: None,
+            turn_review: None,
         }
     }
 

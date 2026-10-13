@@ -2113,6 +2113,30 @@ fn codex_context_usage(token_usage: &Value) -> Option<Value> {
     Some(Value::Object(usage))
 }
 
+/// `tokenUsage.total` is cumulative session accounting. The footer only keeps
+/// the native `last` turn breakdown.
+fn codex_turn_usage(token_usage: &Value) -> Option<Value> {
+    let last = token_usage.get("last")?.as_object()?;
+    let mut usage = serde_json::Map::new();
+    for (source, target) in [
+        ("inputTokens", "inputTokens"),
+        ("input_tokens", "inputTokens"),
+        ("outputTokens", "outputTokens"),
+        ("output_tokens", "outputTokens"),
+        ("totalTokens", "totalTokens"),
+        ("total_tokens", "totalTokens"),
+        ("cachedInputTokens", "cacheReadTokens"),
+        ("cached_input_tokens", "cacheReadTokens"),
+        ("cacheWriteInputTokens", "cacheWriteTokens"),
+        ("cache_write_input_tokens", "cacheWriteTokens"),
+    ] {
+        if let Some(value) = last.get(source).filter(|value| value.is_u64()) {
+            usage.entry(target.to_owned()).or_insert_with(|| value.clone());
+        }
+    }
+    (!usage.is_empty()).then_some(Value::Object(usage))
+}
+
 fn codex_rate_limit_rows(rate_limits: &Value) -> Vec<Value> {
     let mut rows = Vec::new();
     let mut ids = HashSet::new();
@@ -3564,7 +3588,13 @@ fn emit_codex_message(
     // Context pressure is a native notification, not a poll: Codex already
     // pushes `thread/tokenUsage/updated` and the model window beside it.
     if method == "thread/tokenUsage/updated" {
-        if let Some(usage) = codex_context_usage(params.get("tokenUsage").unwrap_or(&params)) {
+        let token_usage = params.get("tokenUsage").unwrap_or(&params);
+        if let Some(usage) = codex_context_usage(token_usage) {
+            let mut data = serde_json::Map::new();
+            data.insert("usage".into(), usage);
+            if let Some(turn_usage) = codex_turn_usage(token_usage) {
+                data.insert("turnUsage".into(), turn_usage);
+            }
             emit_scoped(
                 events,
                 "codex",
@@ -3572,7 +3602,7 @@ fn emit_codex_message(
                 native_id.as_deref(),
                 turn_id.as_deref(),
                 "chat.context",
-                json!({"usage":usage}),
+                Value::Object(data),
                 Some(worker_token),
             );
         }

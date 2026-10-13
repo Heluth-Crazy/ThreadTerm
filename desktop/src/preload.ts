@@ -79,6 +79,7 @@ const bridge: ThreadTermBridge = {
   },
   openPluginsFolder: () => ipcRenderer.invoke('threadterm:open-plugins-folder') as Promise<void>,
   openDirectory: (projectId, worktreeId) => ipcRenderer.invoke('threadterm:open-directory', projectId, worktreeId) as Promise<void>,
+  revealFile: (sessionId, path) => ipcRenderer.invoke('threadterm:reveal-file', sessionId, path) as Promise<void>,
   desktopPreferences: () => ipcRenderer.invoke('threadterm:desktop-preferences') as Promise<{ shortcuts: Record<string, string> }>,
   exportDiagnostics: () => ipcRenderer.invoke('threadterm:export-diagnostics') as Promise<string | null>,
   testNotification: () => ipcRenderer.invoke('threadterm:test-notification') as Promise<{ sent: boolean; reason?: string }>,

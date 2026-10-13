@@ -115,7 +115,8 @@ export type ChatPart = ChatPartBase|ChatPlanPart;
 /** Native turn outcome is independent of measured wall-clock duration. Missing status remains unknown. */
 /** Opaque provider-owned identifiers; only the runtime resolves a chosen reply to a native fork point. */
 export interface NativeForkAnchor { nativeId:string; turnId?:string; messageId?:string; entryId?:string }
-export interface ChatItem { id:string; role:'user'|'assistant'|'system'|'tool'; parts:ChatPart[]; createdAt:string; turnId?:string; elapsedMs?:number; turnStatus?:'completed'|'interrupted'|'failed'|'inProgress'|'unknown'; turnOrigin?:'history'; forkAnchor?:NativeForkAnchor }
+export interface ChatTurnReview { from:string; to:string; fileCount:number }
+export interface ChatItem { id:string; role:'user'|'assistant'|'system'|'tool'; parts:ChatPart[]; createdAt:string; turnId?:string; elapsedMs?:number; turnStatus?:'completed'|'interrupted'|'failed'|'inProgress'|'unknown'; turnOrigin?:'history'; forkAnchor?:NativeForkAnchor; turnModel?:string; turnUsage?:ChatContextUsage; turnReview?:ChatTurnReview }
 /** Runtime-authored, on-demand availability. Integrity is durable; repair never resumes an agent or queue. */
 export interface ChatRepairAvailability {
  offered:boolean;
@@ -491,6 +492,7 @@ export interface ThreadTermBridge {
   /** Desktop preview element menu. This is an Electron-only event and never reaches the runtime. */
   onPageContextMenu(listener:(value:{frameName:string;x:number;y:number;pick?:PagePick;staticFrame?:boolean;selectionText:string})=>void):()=>void;
  openDirectory(projectId:string,worktreeId?:string):Promise<void>;
+ revealFile?(sessionId:string,path:string):Promise<void>;
  desktopPreferences():Promise<{shortcuts:Record<string,string>}>;
  testNotification():Promise<{sent:boolean;reason?:string}>;
  exportDiagnostics():Promise<string|null>;
@@ -762,7 +764,7 @@ export interface GitBranch { name:string; remote:boolean; current:boolean; upstr
 export interface GitBranches { current:string|null; detached:boolean; branches:GitBranch[] }
 export interface ReviewCheckpoint { id:string; sessionId:string; kind:'turn'|'launch'|'manual'|'baseline'; turnId?:string; label?:string; createdAt:string; status:'ready'|'failed'; error?:string; skipped:string[] }
 export interface ReviewState { available:boolean; reason?:string; projectId?:string; worktreePath?:string; checkpoints:ReviewCheckpoint[] }
-export interface ReviewFile { path:string; status:'A'|'M'|'D' }
+export interface ReviewFile { path:string; status:'A'|'M'|'D'; added?:number; removed?:number; binary?:boolean }
 /** exists/fingerprint describe the current working file when `to` is omitted. */
 export interface ReviewDiff { path:string; oldText:string; newText:string; binary:boolean; exists:boolean; fingerprint?:string }
 /** A plan, spec or research note pinned to a session ("Plans & docs" in Session details). `path` is relative to the

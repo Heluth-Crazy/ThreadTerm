@@ -538,6 +538,18 @@ fn project_provider_event(db: &Database, providers: &Providers, event: &Provider
     if accepted == Some(true) && event.kind == "session.closed" {
         providers.note_session_closed_scoped(&event.session_id, event.worker_token.as_deref());
     }
+    // A completion is the only event that freezes an after-turn review tree.
+    // This deliberately happens after `with_current_event` releases the
+    // registry guard and after projection commits its transaction.
+    if accepted == Some(true) && event.kind == "chat.turn.completed" {
+        if let Some(turn_id) = event.turn_id.as_deref() {
+            if let Some(review) = crate::review::capture_after_turn(db, &event.session_id, turn_id) {
+                if let Err(error) = crate::chat_projection::attach_turn_review(db, &event.session_id, turn_id, review) {
+                    eprintln!("could not attach turn review for {}: {error}", event.session_id);
+                }
+            }
+        }
+    }
     accepted == Some(true)
 }
 
@@ -3387,6 +3399,9 @@ mod tests {
             turn_status: None,
             turn_origin: None,
             fork_anchor: None,
+            turn_model: None,
+            turn_usage: None,
+            turn_review: None,
         }];
         let (session, _) = db
             .import_history_session(crate::db::ImportHistorySession {
