@@ -74,11 +74,19 @@ try {
   await until(async () => (await scope.locator('.chat-compose-shell textarea').count()) > 0, 'chat composer ready');
   await until(async () => (await scope.locator('.chat-model-chip').innerText()).trim().length > 1, 'model chip loaded');
 
-  // One chip per native option, in runtime order.
-  await until(async () => (await scope.locator('.chat-option-chip[data-option-id]').count()) === 4, 'the four extra Codex option chips');
+  // One chip per native option, in runtime order. The runtime sends the option
+  // snapshot once, but React commits the four extra chips over more than one
+  // frame; wait for every named chip rather than a count that can briefly match
+  // a partially committed set, then assert the exact count.
+  const extraChipIds = ['collaboration', 'sandbox', 'fast', 'reviewer'];
+  await until(async () => {
+    const ids = await scope.locator('.chat-option-chip[data-option-id]').evaluateAll(nodes => nodes.map(node => node.getAttribute('data-option-id')));
+    return extraChipIds.every(id => ids.includes(id));
+  }, 'the four extra Codex option chips');
+  assert.equal(await scope.locator('.chat-option-chip[data-option-id]').count(), 4, 'exactly four extra Codex option chips');
   assert.equal(await scope.locator('.chat-mode-chip').count(), 1, 'one mode chip');
   assert.equal(await scope.locator('.chat-model-chip').count(), 1, 'one model chip');
-  for (const id of ['collaboration', 'sandbox', 'fast', 'reviewer']) assert.equal(await scope.locator(`.chat-option-chip[data-option-id="${id}"]`).count(), 1, `${id} chip`);
+  for (const id of extraChipIds) assert.equal(await scope.locator(`.chat-option-chip[data-option-id="${id}"]`).count(), 1, `${id} chip`);
   assert.match(await scope.locator('.chat-option-chip[data-option-id="fast"]').innerText(), /Fast mode: Off/);
   assert.match(await scope.locator('.chat-option-chip[data-option-id="collaboration"]').innerText(), /Default/);
   assert.match(await scope.locator('.chat-option-chip[data-option-id="sandbox"]').innerText(), /Workspace write/);

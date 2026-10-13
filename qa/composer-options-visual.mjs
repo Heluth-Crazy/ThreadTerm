@@ -207,7 +207,13 @@ async function assertSingleLine(label) {
 }
 
 try {
-  app = await electron.launch({ args: ['--disable-gpu', '--in-process-gpu', '--no-sandbox', join(scratch, 'main.cjs')], env });
+  // Pin the device scale factor so the focus-ring assertion below measures the
+  // authored `outline: 2px` in CSS pixels. On a display at 125 % Chromium snaps
+  // the outline to whole device pixels, so getComputedStyle() reports 1.6 px and
+  // the check depends on which monitor the window lands on. This is the only
+  // isolated harness that reads an outline width numerically, so it is the only
+  // one that needs the ring measured at 1:1.
+  app = await electron.launch({ args: ['--disable-gpu', '--in-process-gpu', '--no-sandbox', '--force-device-scale-factor=1', join(scratch, 'main.cjs')], env });
   page = await app.firstWindow();
   page.on('pageerror', error => report.errors.push(error.message));
   await page.waitForFunction(() => typeof window.qaRender === 'function');
