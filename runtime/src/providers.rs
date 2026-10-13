@@ -175,6 +175,23 @@ pub struct ProviderError {
     pub details: Option<Value>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ChatBackgroundTask {
+    pub id: String,
+    pub title: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub command: Option<String>,
+    pub status: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub started_at: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ended_at: Option<String>,
+    pub can_stop: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_id: Option<String>,
+}
+
 impl ProviderError {
     pub fn new(code: impl Into<String>, message: impl Into<String>) -> Self {
         Self {
@@ -333,6 +350,12 @@ pub trait ProviderRuntime: Send + Sync {
         operation_id: &str,
     ) -> Result<(), ProviderError>;
     fn chat_options(&self, session_id: &str) -> Result<Value, ProviderError>;
+    fn chat_background_tasks(&self, session_id: &str) -> Result<Value, ProviderError>;
+    fn chat_background_task_stop(
+        &self,
+        session_id: &str,
+        task_id: &str,
+    ) -> Result<bool, ProviderError>;
     fn chat_connection(&self, session_id: &str) -> Value;
     fn chat_set_option(
         &self,
@@ -530,6 +553,15 @@ pub(crate) trait ChatSession: Send {
     fn ui_state(&self) -> Value {
         json!({"options":[],"commands":[]})
     }
+    fn background_tasks(&mut self) -> Result<Vec<ChatBackgroundTask>, ProviderError> {
+        Ok(Vec::new())
+    }
+    fn stop_background_task(&mut self, _task_id: &str) -> Result<bool, ProviderError> {
+        Err(ProviderError::new(
+            "background_task_stop_unsupported",
+            "This provider cannot stop background tasks",
+        ))
+    }
     fn set_option(&mut self, _option_id: &str, _value: &str) -> Result<Value, ProviderError> {
         Err(ProviderError::new(
             "chat_options_unsupported",
@@ -562,6 +594,24 @@ pub(crate) fn normalize_chat_ui(value: Value) -> Value {
         .filter(|value| value.is_array())
         .cloned()
         .unwrap_or_else(|| json!([]));
+    let background_tasks = value
+        .get("backgroundTasks")
+        .filter(|value| value.is_array())
+        .and_then(Value::as_array)
+        .map(|tasks| {
+            tasks
+                .iter()
+                .filter_map(|task| serde_json::from_value::<ChatBackgroundTask>(task.clone()).ok())
+                .filter(|task| {
+                    !task.id.trim().is_empty()
+                        && !task.title.trim().is_empty()
+                        && matches!(task.status.as_str(), "running" | "completed" | "failed" | "stopped")
+                        && (task.status == "running" || !task.can_stop)
+                })
+                .collect::<Vec<_>>()
+        })
+        .and_then(|tasks| serde_json::to_value(tasks).ok())
+        .unwrap_or_else(|| json!([]));
     let input_capabilities = value
         .get("inputCapabilities")
         .filter(|value| value.is_object())
@@ -577,6 +627,7 @@ pub(crate) fn normalize_chat_ui(value: Value) -> Value {
     let mut normalized = json!({
         "options": options,
         "commands": commands,
+        "backgroundTasks": background_tasks,
         "inputCapabilities": input_capabilities,
         "loadState": load_state,
     });
@@ -1896,6 +1947,25 @@ impl ProviderRuntime for Providers {
         }
     }
 
+    fn chat_background_tasks(&self, session_id: &str) -> Result<Value, ProviderError> {
+        let tasks = self.chat(session_id, |chat| chat.background_tasks())?;
+        Ok(json!({"tasks":tasks}))
+    }
+
+    fn chat_background_task_stop(
+        &self,
+        session_id: &str,
+        task_id: &str,
+    ) -> Result<bool, ProviderError> {
+        if task_id.trim().is_empty() {
+            return Err(ProviderError::new(
+                "background_task_invalid",
+                "Background task id is required",
+            ));
+        }
+        self.chat(session_id, |chat| chat.stop_background_task(task_id))
+    }
+
     fn chat_connection(&self, session_id: &str) -> Value {
         let mut chats = match self.chats.lock() {
             Ok(chats) => chats,
@@ -2086,6 +2156,21 @@ mod registry_cleanup_tests {
         assert_eq!(normalized["inputCapabilities"], json!({}));
         assert_eq!(normalized["loadState"], "error");
         assert_eq!(normalized["error"]["code"], "options_failed");
+    }
+
+    #[test]
+    fn normalize_chat_ui_preserves_valid_background_tasks_and_drops_invalid_rows() {
+        let normalized = normalize_chat_ui(json!({
+            "backgroundTasks":[
+                {"id":"p1","title":"Build","command":"npm test","status":"running","startedAt":"now","canStop":true,"toolId":"tool-1"},
+                {"id":"p2","title":"Done","status":"completed","endedAt":"later","canStop":false},
+                {"id":"bad","title":"Bad","status":"unknown","canStop":false},
+                {"id":"bad-terminal","title":"Bad","status":"failed","canStop":true}
+            ]
+        }));
+        assert_eq!(normalized["backgroundTasks"].as_array().unwrap().len(), 2);
+        assert_eq!(normalized["backgroundTasks"][0]["toolId"], "tool-1");
+        assert_eq!(normalized["backgroundTasks"][1]["endedAt"], "later");
     }
 
     #[test]

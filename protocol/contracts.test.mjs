@@ -106,6 +106,24 @@ test('session options carry additive kind, category, description and recommendat
  assert.throws(()=>validateResult('chat.options',{...ui,options:[{...ui.options[1],choices:[{value:'true',name:'On',group:2}]}]}));
 });
 
+test('background tasks are additive UI state with explicit lazy list and leased stop',()=>{
+ const running={id:'proc-1',title:'Build docs',command:'npm run docs',status:'running',startedAt:'2026-10-13T12:00:00Z',canStop:true,toolId:'tool-1'};
+ const finished={id:'task-2',title:'Inspect tests',status:'completed',startedAt:'2026-10-13T12:00:00Z',endedAt:'2026-10-13T12:00:05Z',canStop:false};
+ validateResult('chat.options',{options:[],commands:[],backgroundTasks:[running,finished]});
+ validateRequest('chat.backgroundTasks.list',{sessionId:'s'});
+ validateResult('chat.backgroundTasks.list',{tasks:[running,finished]});
+ const stop={sessionId:'s',taskId:'proc-1',leaseEpoch:2,operationId:'stop-1'};
+ validateRequest('chat.backgroundTask.stop',stop);
+ validateResult('chat.backgroundTask.stop',{accepted:true});
+ assert.ok(METHODS.includes('chat.backgroundTasks.list'));
+ assert.ok(METHODS.includes('chat.backgroundTask.stop'));
+ for(const patch of [{sessionId:''},{taskId:''},{operationId:''},{leaseEpoch:0},{leaseEpoch:undefined}])
+  assert.throws(()=>validateRequest('chat.backgroundTask.stop',{...stop,...patch}));
+ for(const taskPatch of [{status:'cancelled'},{canStop:'yes'},{id:2},{title:2},{endedAt:2},{toolId:2}])
+  assert.throws(()=>validateResult('chat.backgroundTasks.list',{tasks:[{...running,...taskPatch}]}));
+ assert.throws(()=>validateResult('chat.backgroundTasks.list',{tasks:[{...running,provider:'codex'}]}));
+});
+
 test('native turn outcome and message phase are typed independently of duration',()=>{
  const item={id:'native-boundary',role:'assistant',parts:[],createdAt:'2026-01-01T00:00:00Z',turnId:'scoped-turn',turnStatus:'completed'};
  validateResult('chat.read',[item]);

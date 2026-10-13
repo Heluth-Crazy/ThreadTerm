@@ -10,6 +10,7 @@ export function chatUiFromEvent(data: Partial<ChatUiState>): ChatUiState {
     loadState: data.loadState ?? (options.length ? 'ready' : 'empty'),
     ...(data.error !== undefined ? { error: data.error } : {}),
     ...(data.piTrust !== undefined ? { piTrust: data.piTrust } : {}),
+    ...(Array.isArray(data.backgroundTasks) ? { backgroundTasks: data.backgroundTasks } : {}),
   };
 }
 

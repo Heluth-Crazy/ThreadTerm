@@ -15,6 +15,13 @@ test('chat.ui preserves images and optional load/error fields as a complete snap
   assert.equal(chatUiFromEvent({ options: [{ id: 'model', name: 'Model', value: 'new', choices: [] }] }).loadState, 'ready');
 });
 
+test('background tasks survive full UI snapshots, and old/empty snapshots remove stale tasks', () => {
+  const backgroundTasks = [{ id: 'bg', title: 'Build', status: 'running' as const, canStop: false }];
+  assert.deepEqual(chatUiFromEvent({ backgroundTasks }).backgroundTasks, backgroundTasks);
+  assert.deepEqual(chatUiFromEvent({ backgroundTasks: [] }).backgroundTasks, []);
+  assert.equal(chatUiFromEvent({}).backgroundTasks, undefined);
+});
+
 test('resync restores snapshot and only newer buffered events without duplicates', () => {
   const resync = beginResync('s', 2);
   resync.buffered.push({ seq: 9, item: item('a', 'stale') }, { seq: 11, item: item('a', 'new') }, { seq: 12, item: item('b') }, { seq: 12, item: item('b') });

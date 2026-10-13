@@ -2361,6 +2361,42 @@
       ],
       "additionalProperties": false
     },
+    "RequestParams<\"chat.backgroundTasks.list\">": {
+      "type": "object",
+      "properties": {
+        "sessionId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "sessionId"
+      ],
+      "additionalProperties": false
+    },
+    "RequestParams<\"chat.backgroundTask.stop\">": {
+      "type": "object",
+      "properties": {
+        "sessionId": {
+          "type": "string"
+        },
+        "taskId": {
+          "type": "string"
+        },
+        "leaseEpoch": {
+          "type": "number"
+        },
+        "operationId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "sessionId",
+        "taskId",
+        "leaseEpoch",
+        "operationId"
+      ],
+      "additionalProperties": false
+    },
     "RequestParams<\"chat.context.read\">": {
       "type": "object",
       "properties": {
@@ -6262,6 +6298,58 @@
         },
         "params": {
           "$ref": "#/definitions/RequestParams%3C%22chat.options%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "params"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "chat.backgroundTasks.list"
+        },
+        "params": {
+          "$ref": "#/definitions/RequestParams%3C%22chat.backgroundTasks.list%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "params"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "chat.backgroundTask.stop"
+        },
+        "params": {
+          "$ref": "#/definitions/RequestParams%3C%22chat.backgroundTask.stop%22%3E"
         }
       },
       "required": [

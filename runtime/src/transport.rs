@@ -227,7 +227,7 @@ fn trace_method(method: &str) -> &'static str {
     const KNOWN: &[&str] = &[
         "agentReview.list", "agentReview.mark", "agentReview.start",
         "catalog.visibility.list", "catalog.visibility.update",
-        "chat.answer", "chat.approve", "chat.cancel", "chat.connect",
+        "chat.answer", "chat.approve", "chat.backgroundTask.stop", "chat.backgroundTasks.list", "chat.cancel", "chat.connect",
         "chat.connection", "chat.context.read", "chat.draft.read", "chat.draft.save", "chat.option.set",
         "chat.options", "chat.queue.add", "chat.queue.move", "chat.queue.pause",
         "chat.queue.read", "chat.queue.remove", "chat.queue.resume", "chat.queue.send",

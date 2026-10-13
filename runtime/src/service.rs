@@ -1615,6 +1615,25 @@ impl RuntimeService {
                         .chat_options(&p.session_id)
                         .map_err(anyhow::Error::from)
                 }
+                "chat.backgroundTasks.list" => {
+                    let p: ChatRead = parse(&request.params)?;
+                    if self.db.session_by_id(&p.session_id)?.is_none() {
+                        return Err(anyhow::anyhow!("session_not_found"));
+                    }
+                    self.providers
+                        .chat_background_tasks(&p.session_id)
+                        .map_err(anyhow::Error::from)
+                }
+                "chat.backgroundTask.stop" => {
+                    let p: ChatBackgroundTaskStop = parse(&request.params)?;
+                    self.leases
+                        .require(&self.db, &p.session_id, principal, p.lease_epoch)?;
+                    self.db.require_interactive(&p.session_id)?;
+                    background_task_stop_recording(&self.db, &p.operation_id, || {
+                        self.providers.chat_background_task_stop(&p.session_id, &p.task_id)
+                            .map_err(anyhow::Error::from)
+                    })
+                }
                 "chat.connection" => {
                     let p: ChatRead = parse(&request.params)?;
                     Ok(self.connection_state(&p.session_id)?)
@@ -2773,6 +2792,32 @@ struct ChatCancel {
     turn_id: String,
     lease_epoch: i64,
 }
+
+/// Native Stop is an external action: claim before dispatch and never replay
+/// an uncertain outcome. Concurrent same-operation calls cannot both deliver.
+fn background_task_stop_recording(
+    db: &Database,
+    operation_id: &str,
+    stop: impl FnOnce() -> Result<bool>,
+) -> Result<Value> {
+    if let Some(receipt) = db.operation(operation_id)? { return Ok(receipt); }
+    if !db.claim_external_operation(operation_id)? {
+        // The first call may have receipted between our read and failed claim.
+        return db.operation(operation_id)?.ok_or_else(|| anyhow::anyhow!("operation_outcome_unknown"));
+    }
+    let result = json!({"accepted":stop()?});
+    db.complete_operation(operation_id, "chat.backgroundTask.stop", &result)?;
+    Ok(result)
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ChatBackgroundTaskStop {
+    session_id: String,
+    task_id: String,
+    lease_epoch: i64,
+    operation_id: String,
+}
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct ChatApprove {
@@ -3011,6 +3056,38 @@ mod tests {
 
     fn pi_test_providers(values: Arc<Mutex<Vec<String>>>, fail_set: Arc<AtomicBool>) -> Providers {
         Providers::for_test(vec![Arc::new(PiOptionAdapter { values, fail_set })])
+    }
+
+    #[test]
+    fn background_stop_receipts_and_uncertain_calls_never_dispatch_twice() {
+        let root = tempfile::tempdir().unwrap();
+        let db = Database::open(&root.path().join("stop.sqlite")).unwrap();
+        let calls = std::cell::Cell::new(0);
+        let stop = || { calls.set(calls.get()+1); Ok(true) };
+        assert_eq!(background_task_stop_recording(&db,"once",stop).unwrap(),json!({"accepted":true}));
+        assert_eq!(background_task_stop_recording(&db,"once",stop).unwrap(),json!({"accepted":true}));
+        assert_eq!(calls.get(),1);
+        let uncertain = || { calls.set(calls.get()+1); Err(anyhow::anyhow!("lost native response")) };
+        assert!(background_task_stop_recording(&db,"uncertain",uncertain).is_err());
+        assert_eq!(background_task_stop_recording(&db,"uncertain",stop).unwrap_err().to_string(),"operation_outcome_unknown");
+        assert_eq!(calls.get(),2);
+    }
+
+    #[test]
+    fn concurrent_background_stop_claims_deliver_one_native_action() {
+        let root = tempfile::tempdir().unwrap();
+        let db = Arc::new(Database::open(&root.path().join("stop.sqlite")).unwrap());
+        let (entered_tx,entered_rx)=std::sync::mpsc::channel();
+        let (release_tx,release_rx)=std::sync::mpsc::channel();
+        let first_db=Arc::clone(&db);
+        let first=std::thread::spawn(move || background_task_stop_recording(&first_db,"same",|| {
+            entered_tx.send(()).unwrap(); release_rx.recv().unwrap(); Ok(true)
+        }));
+        entered_rx.recv().unwrap();
+        assert_eq!(background_task_stop_recording(&db,"same",|| panic!("duplicate native Stop")).unwrap_err().to_string(),"operation_outcome_unknown");
+        release_tx.send(()).unwrap();
+        assert_eq!(first.join().unwrap().unwrap(),json!({"accepted":true}));
+        assert_eq!(background_task_stop_recording(&db,"same",|| panic!("replayed native Stop")).unwrap(),json!({"accepted":true}));
     }
 
     fn test_service(root: &std::path::Path, db: Arc<Database>) -> RuntimeService {

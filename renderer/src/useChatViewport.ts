@@ -104,6 +104,7 @@ export function useChatViewport(sessionId: string, snapshotReady: boolean, logRe
   };
 
   return { paused, followRef, followLatest, pauseForDisclosure, onScroll, onKeyDown,
+    inspect: () => { inspectingRef.current = true; setFollowing(false); remember(); },
     onWheel: () => { inspectingRef.current = false; },
     onTouchStart: () => { inspectingRef.current = false; },
     onPointerDown: (event: MouseEvent<HTMLDivElement>) => {

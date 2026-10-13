@@ -8,14 +8,14 @@ use super::{
         encode_approval_id, history_page, insert_optional, percent_used, validate_native_id,
         version_probe, CommandSpec, EnvelopeStyle, JsonLineProcess, JsonLineResponder,
     },
-    emit_scoped, ChatSession, ChatToolServer, NativeForkAnchor, ProviderAdapter, ProviderCapability, ProviderError,
-    TerminalCommand,
+    emit_scoped, ChatBackgroundTask, ChatSession, ChatToolServer, NativeForkAnchor, ProviderAdapter,
+    ProviderCapability, ProviderError, TerminalCommand,
 };
 use chrono::{TimeZone, Utc};
 use crate::chat_questions::answer_summary;
 use serde_json::{json, Value};
 use std::{
-    collections::{HashMap, HashSet},
+    collections::{HashMap, HashSet, VecDeque},
     sync::{Arc, Condvar, Mutex},
     time::{Duration, Instant},
 };
@@ -444,6 +444,12 @@ impl ProviderAdapter for CodexAdapter {
             merge_status_runtime_data(&mut loaded.status, prior_status);
         }
         if let Ok(mut state) = ui.lock() {
+            // Native task events can arrive while model/skill discovery reads
+            // are pending. Replacing option metadata must preserve that state.
+            loaded.background_tasks = std::mem::take(&mut state.background_tasks);
+            loaded.background_candidates = std::mem::take(&mut state.background_candidates);
+            loaded.background_terminal_items = std::mem::take(&mut state.background_terminal_items);
+            loaded.background_revision = state.background_revision;
             *state = loaded;
         }
         emit_chat_ui(
@@ -963,6 +969,86 @@ impl ChatSession for CodexChat {
             .unwrap_or_else(|| json!({"options":[],"commands":[]}))
     }
 
+    fn background_tasks(&mut self) -> Result<Vec<ChatBackgroundTask>, ProviderError> {
+        let expected_revision = self
+            .ui
+            .lock()
+            .map(|ui| ui.background_revision)
+            .map_err(|_| ProviderError::new("provider_internal", "Codex UI lock poisoned"))?;
+        let mut pages = CodexBackgroundPages::default();
+        loop {
+            let response = self.process.request(
+                "thread/backgroundTerminals/list",
+                json!({"threadId":self.native_id,"cursor":pages.cursor,"limit":100}),
+            )?;
+            if pages.push(&response)? {
+                break;
+            }
+        }
+        let snapshot = {
+            let mut ui = self.ui.lock().map_err(|_| {
+                ProviderError::new("provider_internal", "Codex UI lock poisoned")
+            })?;
+            ui.reconcile_native_background_tasks(expected_revision, pages.tasks);
+            ui.background_tasks.clone()
+        };
+        emit_chat_ui(
+            &self.events,
+            &self.session_id,
+            Some(&self.native_id),
+            &self.ui,
+            &self.worker_token,
+        );
+        Ok(snapshot)
+    }
+
+    fn stop_background_task(&mut self, task_id: &str) -> Result<bool, ProviderError> {
+        {
+            let ui = self.ui.lock().map_err(|_| {
+                ProviderError::new("provider_internal", "Codex UI lock poisoned")
+            })?;
+            let task = ui.background_tasks.iter().find(|task| task.id == task_id).ok_or_else(|| {
+                ProviderError::new("background_task_not_found", "Background task does not belong to this Chat session")
+            })?;
+            if task.status != "running" || !task.can_stop {
+                return Err(ProviderError::new(
+                    "background_task_not_running",
+                    "Background task is no longer running",
+                ));
+            }
+        }
+        let response = self.process.request(
+            "thread/backgroundTerminals/terminate",
+            json!({"threadId":self.native_id,"processId":task_id}),
+        )?;
+        let accepted = response.get("terminated").and_then(Value::as_bool).ok_or_else(|| {
+            ProviderError::new("provider_protocol", "Codex returned no termination result")
+        })?;
+        if accepted {
+            if let Ok(mut ui) = self.ui.lock() {
+                let mut changed = false;
+                let mut terminal_tool = None;
+                if let Some(task) = ui.background_tasks.iter_mut().find(|task| task.id == task_id && task.status == "running") {
+                    task.status = "stopped".into();
+                    task.can_stop = false;
+                    task.ended_at = Some(Utc::now().to_rfc3339());
+                    changed = true;
+                    terminal_tool = task.tool_id.clone();
+                }
+                if let Some(tool_id) = terminal_tool { ui.remember_background_terminal(task_id, &tool_id); }
+                if changed { ui.background_revision = ui.background_revision.saturating_add(1); }
+            }
+            emit_chat_ui(
+                &self.events,
+                &self.session_id,
+                Some(&self.native_id),
+                &self.ui,
+                &self.worker_token,
+            );
+        }
+        Ok(accepted)
+    }
+
     fn set_option(&mut self, option_id: &str, value: &str) -> Result<Value, ProviderError> {
         self.apply_option(option_id, value)
     }
@@ -1416,6 +1502,10 @@ struct CodexUiState {
     plan_candidate: Option<CodexPlanCandidate>,
     pending_plan: Option<CodexPlanApproval>,
     retiring: bool,
+    background_tasks: Vec<ChatBackgroundTask>,
+    background_candidates: HashMap<String, CodexBackgroundCandidate>,
+    background_revision: u64,
+    background_terminal_items: VecDeque<(String, String)>,
 }
 
 /// A native Codex `plan` item held until its turn ends. The plan approval
@@ -1459,6 +1549,103 @@ fn codex_plan_payload(plan: &CodexPlanApproval) -> Value {
     json!({"approvalId":plan.id,"interaction":"plan","runtimeOwned":true,"plan":plan.plan,"submittable":true,"waitingForPrompt":plan.action.as_deref()==Some("request_changes"),"choices":[]})
 }
 
+
+fn codex_background_task(row: &Value) -> Result<ChatBackgroundTask, ProviderError> {
+    let (Some(process_id), Some(command), Some(item_id)) = (
+        row.get("processId").and_then(Value::as_str),
+        row.get("command").and_then(Value::as_str),
+        row.get("itemId").and_then(Value::as_str),
+    ) else {
+        return Err(ProviderError::new(
+            "provider_protocol",
+            "Codex returned a malformed background terminal",
+        ));
+    };
+    if process_id.is_empty() || command.is_empty() || item_id.is_empty() {
+        return Err(ProviderError::new(
+            "provider_protocol",
+            "Codex returned an empty background terminal identity",
+        ));
+    }
+    Ok(ChatBackgroundTask {
+        id: process_id.to_owned(),
+        title: command.to_owned(),
+        command: Some(command.to_owned()),
+        status: "running".into(),
+        started_at: None,
+        ended_at: None,
+        can_stop: true,
+        tool_id: Some(item_id.to_owned()),
+    })
+}
+
+#[derive(Default)]
+struct CodexBackgroundPages {
+    cursor: Option<String>,
+    seen_cursors: HashSet<String>,
+    seen_tasks: HashSet<String>,
+    tasks: Vec<ChatBackgroundTask>,
+    count: usize,
+}
+
+impl CodexBackgroundPages {
+    /// Returns true only after a complete native snapshot has been validated.
+    /// Keeping partial rows here prevents a malformed/cyclic response from
+    /// reconciling the visible state.
+    fn push(&mut self, response: &Value) -> Result<bool, ProviderError> {
+        self.count += 1;
+        let rows = response.get("data").and_then(Value::as_array).ok_or_else(|| {
+            ProviderError::new(
+                "provider_protocol",
+                "Codex returned no background terminal data",
+            )
+        })?;
+        for row in rows {
+            let task = codex_background_task(row)?;
+            if self.seen_tasks.insert(task.id.clone()) {
+                self.tasks.push(task);
+            }
+        }
+        let next = match response.get("nextCursor") {
+            None | Some(Value::Null) => None,
+            Some(Value::String(cursor)) if !cursor.is_empty() => Some(cursor.clone()),
+            Some(_) => {
+                return Err(ProviderError::new(
+                    "provider_protocol",
+                    "Codex returned a malformed background terminal cursor",
+                ))
+            }
+        };
+        let Some(next) = next else {
+            return Ok(true);
+        };
+        if self.count >= 100 {
+            return Err(ProviderError::new(
+                "provider_protocol",
+                "Codex background terminal pagination exceeded 100 pages",
+            ));
+        }
+        if !self.seen_cursors.insert(next.clone()) {
+            return Err(ProviderError::new(
+                "provider_protocol",
+                "Codex repeated a background terminal cursor",
+            ));
+        }
+        self.cursor = Some(next);
+        Ok(false)
+    }
+}
+
+#[derive(Clone)]
+struct CodexBackgroundCandidate {
+    id: String,
+    title: String,
+    command: String,
+    tool_id: String,
+    started_at: String,
+}
+
+
 #[derive(Clone, Default)]
 struct CodexStatusState {
     /// The inner thread object returned by thread/start, thread/resume, or
@@ -1498,11 +1685,142 @@ struct CodexSkill {
 impl CodexUiState {
     fn wire(&self) -> Value {
         let mut wire = json!({"options":self.options.clone(),"commands":self.commands.clone(),"inputCapabilities":{"images":true}});
+        wire["backgroundTasks"] = json!(self.background_tasks);
         if let Some(error) = &self.options_error {
             wire["loadState"] = json!("error");
             wire["error"] = json!({"code":error.code,"message":error.message});
         }
         wire
+    }
+
+
+    fn begin_turn(&mut self) -> bool {
+        let before = self.background_tasks.len();
+        let finished = self.background_tasks.iter().filter(|task| task.status != "running")
+            .filter_map(|task| task.tool_id.as_ref().map(|tool| (task.id.clone(), tool.clone()))).collect::<Vec<_>>();
+        for (process, tool) in finished { self.remember_background_terminal(&process, &tool); }
+        self.background_tasks.retain(|task| task.status == "running");
+        let had_candidates = !self.background_candidates.is_empty();
+        self.background_candidates.clear();
+        let changed = before != self.background_tasks.len();
+        if changed || had_candidates { self.background_revision = self.background_revision.saturating_add(1); }
+        changed
+    }
+
+    fn remember_background_terminal(&mut self, process_id: &str, tool_id: &str) {
+        let identity = (process_id.to_owned(), tool_id.to_owned());
+        if self.background_terminal_items.contains(&identity) { return; }
+        if self.background_terminal_items.len() >= 512 { self.background_terminal_items.pop_front(); }
+        self.background_terminal_items.push_back(identity);
+    }
+
+    fn observe_command_item(&mut self, item: &Value, completed_event: bool) -> bool {
+        if item.get("type").and_then(Value::as_str) != Some("commandExecution") {
+            return false;
+        }
+        let (Some(process_id), Some(tool_id)) = (
+            item.get("processId").and_then(Value::as_str),
+            item.get("id").and_then(Value::as_str),
+        ) else {
+            return false;
+        };
+        if process_id.trim().is_empty() || tool_id.trim().is_empty() { return false; }
+        let status = item.get("status").and_then(Value::as_str).unwrap_or("inProgress");
+        if !completed_event || status == "inProgress" {
+            if self.background_terminal_items.iter().any(|(process, tool)| process == process_id && tool == tool_id) { return false; }
+            let Some(command) = item.get("command").and_then(Value::as_str).filter(|command| !command.trim().is_empty()) else { return false; };
+            let inserted = !self.background_candidates.contains_key(process_id);
+            self.background_candidates.entry(process_id.to_owned()).or_insert_with(|| {
+                CodexBackgroundCandidate {
+                    id: process_id.to_owned(),
+                    title: command.to_owned(),
+                    command: command.to_owned(),
+                    tool_id: tool_id.to_owned(),
+                    started_at: Utc::now().to_rfc3339(),
+                }
+            });
+            if inserted { self.background_revision = self.background_revision.saturating_add(1); }
+            if !completed_event || status == "inProgress" {
+                return false;
+            }
+        }
+        // Even an untracked completion fences a list already in flight. Its
+        // item identity also prevents a later stale snapshot from re-adding it.
+        self.remember_background_terminal(process_id, tool_id);
+        self.background_revision = self.background_revision.saturating_add(1);
+        if self.background_candidates.remove(process_id).is_some() {
+            self.background_revision = self.background_revision.saturating_add(1);
+        }
+        let Some(task) = self.background_tasks.iter_mut().find(|task| task.id == process_id) else {
+            return false;
+        };
+        let next = match status {
+            "failed" => "failed",
+            "declined" => "stopped",
+            _ => "completed",
+        };
+        if task.status == next || matches!(task.status.as_str(), "failed" | "stopped") {
+            return false;
+        }
+        task.status = next.into();
+        task.can_stop = false;
+        task.ended_at = Some(Utc::now().to_rfc3339());
+        self.background_revision = self.background_revision.saturating_add(1);
+        true
+    }
+
+    fn promote_background_candidates(&mut self) -> bool {
+        let candidates = std::mem::take(&mut self.background_candidates);
+        let mut changed = false;
+        for candidate in candidates.into_values() {
+            if self.background_tasks.iter().any(|task| task.id == candidate.id) {
+                continue;
+            }
+            self.background_tasks.push(ChatBackgroundTask {
+                id: candidate.id,
+                title: candidate.title,
+                command: Some(candidate.command),
+                status: "running".into(),
+                started_at: Some(candidate.started_at),
+                ended_at: None,
+                can_stop: true,
+                tool_id: Some(candidate.tool_id),
+            });
+            changed = true;
+        }
+        if changed { self.background_revision = self.background_revision.saturating_add(1); }
+        changed
+    }
+
+    fn reconcile_native_background_tasks(&mut self, expected_revision: u64, native: Vec<ChatBackgroundTask>) {
+        if self.background_revision != expected_revision {
+            return;
+        }
+        let now = Utc::now().to_rfc3339();
+        let live = native.iter().map(|task| task.id.as_str()).collect::<HashSet<_>>();
+        for task in &mut self.background_tasks {
+            if task.status == "running" && !live.contains(task.id.as_str()) {
+                task.status = "completed".into();
+                task.can_stop = false;
+                task.ended_at = Some(now.clone());
+            }
+        }
+        for task in native {
+            if self.background_terminal_items.iter().any(|(process, tool)| process == &task.id && task.tool_id.as_deref() == Some(tool.as_str())) { continue; }
+            if let Some(existing) = self.background_tasks.iter_mut().find(|item| item.id == task.id) {
+                if existing.status != "running" {
+                    continue;
+                }
+                let started_at = existing.started_at.clone();
+                *existing = task;
+                existing.started_at = started_at.or(existing.started_at.take());
+            } else {
+                let mut task = task;
+                task.started_at.get_or_insert_with(|| now.clone());
+                self.background_tasks.push(task);
+            }
+        }
+        self.background_revision = self.background_revision.saturating_add(1);
     }
 }
 
@@ -3299,6 +3617,17 @@ fn emit_codex_message(
     let native_turn_id = turn_id.as_deref()
         .and_then(|public_id| codex_turn_native_id(active_turn, public_id))
         .or_else(|| provider_turn_id.map(ToOwned::to_owned));
+    let background_changed = ui.lock().ok().is_some_and(|mut state| match method {
+        "turn/started" => state.begin_turn(),
+        "turn/completed" => state.promote_background_candidates(),
+        "item/started" => params
+            .get("item")
+            .is_some_and(|item| state.observe_command_item(item, false)),
+        "item/completed" => params
+            .get("item")
+            .is_some_and(|item| state.observe_command_item(item, true)),
+        _ => false,
+    });
     if raw.get("id").is_some() && raw.get("method").is_some() {
         if auto_respond_codex(
             responder,
@@ -3701,6 +4030,9 @@ fn emit_codex_message(
         data,
         Some(worker_token),
     );
+    if background_changed {
+        emit_chat_ui(events, session_id, native_id.as_deref(), ui, worker_token);
+    }
     if matches!(method, "turn/completed" | "thread/compacted" | "error") {
         if let Some(turn_id) = turn_id {
             clear_codex_turn(active_turn, &turn_id);
@@ -4139,6 +4471,144 @@ mod tests {
             .pointer("/part/data/previewUnavailableReason")
             .and_then(Value::as_str)
             .is_some_and(|reason| reason.contains("128-edit")));
+    }
+
+    #[test]
+    fn foreground_commands_never_enter_the_background_strip() {
+        let mut state = CodexUiState::default();
+        let started = json!({"id":"tool-fg","type":"commandExecution","command":"cargo check","status":"inProgress","processId":"proc-fg"});
+        assert!(!state.observe_command_item(&started, false));
+        assert!(state.background_tasks.is_empty());
+        let completed = json!({"id":"tool-fg","type":"commandExecution","command":"cargo check","status":"completed","processId":"proc-fg"});
+        assert!(!state.observe_command_item(&completed, true));
+        assert!(!state.promote_background_candidates());
+        assert!(state.background_tasks.is_empty());
+    }
+
+    #[test]
+    fn native_background_rows_require_the_exact_schema_identity() {
+        let row = json!({"processId":"proc","command":"npm test","cwd":"C:/repo","itemId":"tool"});
+        let task = codex_background_task(&row).unwrap();
+        assert_eq!(task.id, "proc");
+        assert_eq!(task.tool_id.as_deref(), Some("tool"));
+        for invalid in [
+            json!({"command":"npm test","itemId":"tool"}),
+            json!({"processId":"proc","itemId":"tool"}),
+            json!({"processId":"proc","command":"npm test"}),
+            json!({"processId":"","command":"npm test","itemId":"tool"}),
+        ] {
+            assert_eq!(codex_background_task(&invalid).unwrap_err().code, "provider_protocol");
+        }
+    }
+
+    #[test]
+    fn native_background_pages_require_complete_acyclic_schema() {
+        let row = |id: &str| json!({"processId":id,"command":format!("watch {id}"),"cwd":"C:/repo","itemId":format!("tool-{id}")});
+        let mut pages = CodexBackgroundPages::default();
+        assert!(!pages.push(&json!({"data":[row("one")],"nextCursor":"page-2"})).unwrap());
+        assert!(pages.push(&json!({"data":[row("two"),row("one")],"nextCursor":null})).unwrap());
+        assert_eq!(pages.tasks.iter().map(|task| task.id.as_str()).collect::<Vec<_>>(), vec!["one", "two"]);
+
+        for malformed in [json!({}), json!({"data":null}), json!({"data":[],"nextCursor":7}), json!({"data":[],"nextCursor":""})] {
+            assert_eq!(CodexBackgroundPages::default().push(&malformed).unwrap_err().code, "provider_protocol");
+        }
+        let mut cycle = CodexBackgroundPages::default();
+        assert!(!cycle.push(&json!({"data":[],"nextCursor":"a"})).unwrap());
+        assert!(!cycle.push(&json!({"data":[],"nextCursor":"b"})).unwrap());
+        assert_eq!(cycle.push(&json!({"data":[],"nextCursor":"a"})).unwrap_err().code, "provider_protocol");
+
+        let mut over_budget = CodexBackgroundPages::default();
+        for page in 1..100 {
+            assert!(!over_budget.push(&json!({"data":[],"nextCursor":format!("page-{page}")})).unwrap());
+        }
+        assert_eq!(over_budget.push(&json!({"data":[],"nextCursor":"page-100"})).unwrap_err().code, "provider_protocol");
+    }
+
+    #[test]
+    fn outstanding_command_survives_parent_end_and_settles_from_its_native_item() {
+        let mut state = CodexUiState::default();
+        let running = json!({"id":"tool-bg","type":"commandExecution","command":"npm run watch","status":"inProgress","processId":"proc-bg"});
+        state.observe_command_item(&running, false);
+        assert!(state.promote_background_candidates());
+        let started_at = state.background_tasks[0].started_at.clone();
+        assert_eq!(state.background_tasks[0].tool_id.as_deref(), Some("tool-bg"));
+        assert!(!state.begin_turn(), "a running task survives the next parent turn");
+        let completed = json!({"id":"tool-bg","type":"commandExecution","command":"npm run watch","status":"failed","processId":"proc-bg"});
+        assert!(state.observe_command_item(&completed, true));
+        assert_eq!(state.background_tasks[0].status, "failed");
+        assert_eq!(state.background_tasks[0].started_at, started_at);
+        assert!(state.background_tasks[0].ended_at.is_some());
+        assert!(state.begin_turn(), "the following turn clears terminal tasks");
+        assert!(state.background_tasks.is_empty());
+    }
+
+    #[test]
+    fn an_untracked_terminal_event_fences_stale_lists_and_late_starts() {
+        let mut state=CodexUiState::default();
+        let revision=state.background_revision;
+        let completed=json!({"id":"tool-old","type":"commandExecution","processId":"p","command":"watch","status":"completed"});
+        state.observe_command_item(&completed,true);
+        let row=|| codex_background_task(&json!({"processId":"p","itemId":"tool-old","command":"watch","cwd":"C:/repo"})).unwrap();
+        state.reconcile_native_background_tasks(revision,vec![row()]);
+        assert!(state.background_tasks.is_empty());
+        state.reconcile_native_background_tasks(state.background_revision,vec![row()]);
+        assert!(state.background_tasks.is_empty(),"even a later stale native list cannot resurrect the same item");
+        let started=json!({"id":"tool-old","type":"commandExecution","processId":"p","command":"watch","status":"inProgress"});
+        state.observe_command_item(&started,false);
+        assert!(!state.promote_background_candidates());
+        state.reconcile_native_background_tasks(state.background_revision,vec![codex_background_task(&json!({"processId":"p","itemId":"tool-new","command":"new watch","cwd":"C:/repo"})).unwrap()]);
+        assert_eq!(state.background_tasks[0].tool_id.as_deref(),Some("tool-new"));
+    }
+
+    #[test]
+    fn malformed_event_identities_do_not_promote_background_tasks() {
+        let mut state=CodexUiState::default();
+        for item in [
+            json!({"id":"","processId":"p","command":"watch","type":"commandExecution"}),
+            json!({"id":"tool","processId":"","command":"watch","type":"commandExecution"}),
+            json!({"id":"tool","processId":"p","command":"","type":"commandExecution"}),
+            json!({"id":"tool","processId":"p","type":"commandExecution"}),
+        ] { state.observe_command_item(&item,false); }
+        assert!(!state.promote_background_candidates());
+        assert!(state.background_tasks.is_empty());
+    }
+
+    #[test]
+    fn native_list_preserves_finished_rows_and_loses_to_newer_events() {
+        let mut state = CodexUiState::default();
+        state.background_tasks.push(ChatBackgroundTask {
+            id: "finished".into(), title: "Finished".into(), command: None,
+            status: "completed".into(), started_at: Some("original".into()),
+            ended_at: Some("ended".into()), can_stop: false, tool_id: Some("tool-finished".into()),
+        });
+        state.background_tasks.push(ChatBackgroundTask {
+            id: "live".into(), title: "Live".into(), command: Some("watch".into()),
+            status: "running".into(), started_at: Some("original-live".into()),
+            ended_at: None, can_stop: true, tool_id: Some("tool-live".into()),
+        });
+        let revision = state.background_revision;
+        state.reconcile_native_background_tasks(revision, vec![ChatBackgroundTask {
+            id: "live".into(), title: "Live renamed".into(), command: Some("watch".into()),
+            status: "running".into(), started_at: None, ended_at: None, can_stop: true,
+            tool_id: Some("tool-live".into()),
+        }, ChatBackgroundTask {
+            id: "finished".into(), title: "Stale native running".into(), command: None,
+            status: "running".into(), started_at: None, ended_at: None, can_stop: true,
+            tool_id: Some("tool-finished".into()),
+        }]);
+        assert_eq!(state.background_tasks[0].status, "completed", "list never erases current-turn finished rows");
+        assert_eq!(state.background_tasks[0].ended_at.as_deref(), Some("ended"));
+        assert_eq!(state.background_tasks[1].started_at.as_deref(), Some("original-live"));
+        let stale_revision = state.background_revision;
+        state.background_tasks[1].status = "failed".into();
+        state.background_tasks[1].can_stop = false;
+        state.background_revision += 1;
+        state.reconcile_native_background_tasks(stale_revision, vec![ChatBackgroundTask {
+            id: "live".into(), title: "Stale running".into(), command: None,
+            status: "running".into(), started_at: None, ended_at: None, can_stop: true,
+            tool_id: Some("tool-live".into()),
+        }]);
+        assert_eq!(state.background_tasks[1].status, "failed", "a list response cannot resurrect a newer terminal event");
     }
 
     const SUBAGENT_PARENT: &str = "01a10cc5-adcf-7532-8366-f82284f88ff9";
