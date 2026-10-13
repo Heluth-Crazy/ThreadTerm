@@ -12,6 +12,12 @@ import { useStatusPopover } from "./useStatusPopover";
 import type { ChatConnectionPhase } from "@threadterm/protocol";
 import type { ComposerCopy } from "../composerOptions";
 import { connectionChipLabel, connectionTone } from "../contextUsage";
+import { displayPath } from "../projectScope";
+
+/** The connection popover shows the user-facing path, never the verbatim runtime form. */
+export function connectionWorkingDirectory(cwd: string | undefined): string {
+  return displayPath(cwd);
+}
 
 export function ChatConnectionChip({
   phase,
@@ -89,7 +95,7 @@ export function ChatConnectionChip({
             <span className="chat-status-key">{copy("State", "状态")}</span>
             <span className="chat-status-value">{status}</span>
           </div>
-          {cwd && valueRow("cwd", copy("Working directory", "工作目录"), cwd)}
+          {cwd && valueRow("cwd", copy("Working directory", "工作目录"), connectionWorkingDirectory(cwd))}
           {nativeId && valueRow("session", copy("Provider session", "Provider 会话"), nativeId)}
           <div className="chat-status-row">
             <span className="chat-status-key">{copy("Provider", "Provider")}</span>
