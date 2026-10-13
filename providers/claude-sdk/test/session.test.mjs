@@ -2,6 +2,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { ClaudeSession } from '../src/session.mjs';
 
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
 
 function fakeSdk({ initDelay = 0, initError = null, hangInit = false } = {}) {
@@ -546,7 +548,9 @@ test('steer while a turn is active delivers once and does not replace the turn',
   assert.deepEqual(session.steer('while you work', 'steer-1'), { disposition: 'delivered' });
   assert.equal(session.activeOperationId, 'op-1');
   assert.equal(seen.length, 1);
-  assert.equal(seen[0].uuid, 'steer-1');
+  assert.match(seen[0].uuid, UUID_RE, 'a non-uuid operation id is never sent as the client uuid');
+  assert.notEqual(seen[0].uuid, 'steer-1');
+  assert.equal(session.steerUuids.get(seen[0].uuid), 'steer-1', 'the generated uuid maps back to the operation id');
   assert.equal(seen[0].message.content[0].text, 'while you work');
   assert.equal(seen[0].uuid !== undefined, true);
   session.input.end();
@@ -563,7 +567,8 @@ test('a result consumes steered uuids and an unconsumed steer is adopted on the 
     await session.start({ cwd: 'C:/' });
     session.send('hello', 'op-1');
     session.steer('kept', 'steer-kept');
-    query.push({ type: 'result', user_message_uuids: ['steer-kept'], is_error: false });
+    const keptUuid = [...session.steerUuids.keys()][0];
+    query.push({ type: 'result', user_message_uuids: [keptUuid], is_error: false });
     await delay(30);
     assert.equal(session.pendingSteers.size, 0);
     assert.equal(session.carryArmed, false);
@@ -585,6 +590,105 @@ test('a result consumes steered uuids and an unconsumed steer is adopted on the 
     assert.equal(session.activeOperationId, 'carry:steer-carry');
     assert.equal(session.pendingSteers.has('steer-carry'), false);
     assert.equal(events.filter(event => event.ev === 'session.status' && event.phase === 'running' && event.operationId === 'carry:steer-carry').length, 1);
+  } finally {
+    query.finish();
+    await session.pump;
+  }
+});
+
+test('a uuid operation id is sent verbatim as the client uuid for send and steer', async () => {
+  const { session } = harness();
+  const seen = [];
+  const push = session.input.push.bind(session.input);
+  session.input.push = value => { seen.push(structuredClone(value)); return push(value); };
+  const uuid = '11111111-2222-4333-8444-555555555555';
+  session.send('hello', uuid);
+  assert.equal(seen[0].uuid, uuid, 'send stamps the operation id when it is a uuid');
+  seen.length = 0;
+  assert.deepEqual(session.steer('while you work', uuid), { disposition: 'delivered' });
+  assert.equal(seen[0].uuid, uuid, 'steer stamps the operation id when it is a uuid');
+  assert.equal(session.steerUuids.get(uuid), uuid);
+  session.input.end();
+});
+
+test('a result consumes steers from either uuid field and a fieldless result arms no carry', async () => {
+  const { sdk, query } = controllableSdk();
+  const events = [];
+  const session = new ClaudeSession({ cardId: 'card-consume', sdk, write: value => events.push(value), hostOptions: { warmUp: false } });
+  try {
+    await session.start({ cwd: 'C:/' });
+    session.send('one', 'op-a');
+    session.steer('s1', 'steer-a');
+    const steerAUuid = [...session.steerUuids.keys()][0];
+    query.push({ type: 'result', user_message_uuid: steerAUuid, is_error: false });
+    await delay(30);
+    assert.equal(session.pendingSteers.size, 0, 'the singular fallback consumes the steer');
+    assert.equal(session.steerUuids.size, 0);
+    assert.equal(session.carryArmed, false);
+
+    session.send('two', 'op-b');
+    session.steer('s2', 'steer-b');
+    query.push({ type: 'result', is_error: false, duration_ms: 0 });
+    await delay(30);
+    assert.equal(session.pendingSteers.size, 0, 'a fieldless result consumes every pending steer');
+    assert.equal(session.steerUuids.size, 0);
+    assert.equal(session.carryArmed, false, 'a fieldless result never arms a carry');
+
+    query.push({ type: 'system', subtype: 'status', permissionMode: 'default' });
+    await delay(30);
+    assert.equal(session.activeOperationId, null);
+    assert.equal(events.filter(event => String(event.operationId).startsWith('carry:')).length, 0);
+  } finally {
+    query.finish();
+    await session.pump;
+  }
+});
+
+test('a carry is adopted only on model activity or the matching user echo, never on a system frame', async () => {
+  const { sdk, query } = controllableSdk();
+  const events = [];
+  const session = new ClaudeSession({ cardId: 'card-adopt', sdk, write: value => events.push(value), hostOptions: { warmUp: false } });
+  try {
+    await session.start({ cwd: 'C:/' });
+    session.send('one', 'op-a');
+    session.steer('s1', 'steer-a');
+    query.push({ type: 'result', user_message_uuids: [], is_error: false });
+    await delay(30);
+    assert.equal(session.carryArmed, true);
+    query.push({ type: 'system', subtype: 'status', permissionMode: 'default' });
+    await delay(30);
+    assert.equal(session.activeOperationId, null, 'a system status frame never starts the carry');
+    const steerUuid = [...session.steerUuids.keys()][0];
+    query.push({ type: 'user', uuid: steerUuid, message: { role: 'user', content: [] } });
+    await delay(30);
+    assert.equal(session.activeOperationId, 'carry:steer-a');
+    assert.equal(session.pendingSteers.size, 0);
+    assert.equal(events.filter(event => event.ev === 'session.status' && event.phase === 'running' && event.operationId === 'carry:steer-a').length, 1);
+  } finally {
+    query.finish();
+    await session.pump;
+  }
+});
+
+test('a send while a carry is armed owns the next turn and drops the stale steers', async () => {
+  const { sdk, query } = controllableSdk();
+  const events = [];
+  const session = new ClaudeSession({ cardId: 'card-send-carry', sdk, write: value => events.push(value), hostOptions: { warmUp: false } });
+  try {
+    await session.start({ cwd: 'C:/' });
+    session.send('one', 'op-a');
+    session.steer('s1', 'steer-a');
+    query.push({ type: 'result', user_message_uuids: [], is_error: false });
+    await delay(30);
+    assert.equal(session.carryArmed, true);
+    session.send('two', 'op-b');
+    assert.equal(session.carryArmed, false);
+    assert.equal(session.pendingSteers.size, 0);
+    assert.equal(session.steerUuids.size, 0);
+    query.push({ type: 'assistant', message: { id: 'm-after-send', content: [] } });
+    await delay(30);
+    assert.equal(session.activeOperationId, 'op-b');
+    assert.equal(events.filter(event => String(event.operationId).startsWith('carry:')).length, 0, 'the dropped carry never resurrects');
   } finally {
     query.finish();
     await session.pump;
