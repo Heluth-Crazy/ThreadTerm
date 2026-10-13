@@ -50,8 +50,8 @@ export function SteerSend({ kind, disabled, busy, copy, onInsert, onNote, noteDi
     <button ref={arrowRef} type="button" className="icon-btn icon-btn-sm icon-btn-round is-primary chat-compose-send" disabled={disabled} aria-haspopup="menu" aria-expanded={open} aria-label={copy('More send actions', '更多发送操作')} onClick={() => setOpen(value => !value)}><Icon name="chevD" /></button>
     {open && <div className="chat-compose-menu chat-steer-menu" role="menu" data-testid="steer-menu" ref={menuRef} onKeyDown={onMenuKey}>
       {note
-        ? <button type="button" role="menuitem" className="chat-menu-item" data-testid="steer-note" disabled={itemDisabled} title={noteDisabled ? noteDisabledReason : undefined} onClick={() => { setOpen(false); arrowRef.current?.focus(); onNote?.(); }}>{copy('Send note for next check', '发送备注供下次检查')}</button>
-        : <button type="button" role="menuitem" className="chat-menu-item" data-testid="steer-insert" disabled={itemDisabled} onClick={() => { setOpen(false); arrowRef.current?.focus(); onInsert(); }}>{copy('Insert into current turn', '插入当前回合')}</button>}
+        ? <button type="button" role="menuitem" className="menu-item chat-menu-item" data-testid="steer-note" disabled={itemDisabled} title={noteDisabled ? noteDisabledReason : undefined} onClick={() => { setOpen(false); arrowRef.current?.focus(); onNote?.(); }}>{copy('Send note for next check', '发送备注供下次检查')}</button>
+        : <button type="button" role="menuitem" className="menu-item chat-menu-item" data-testid="steer-insert" disabled={itemDisabled} onClick={() => { setOpen(false); arrowRef.current?.focus(); onInsert(); }}>{copy('Insert into current turn', '插入当前回合')}</button>}
     </div>}
   </div>;
 }
