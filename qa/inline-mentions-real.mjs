@@ -188,8 +188,8 @@ try {
   check('the provider receives the mention map, the item header, and the token in place');
   const sentBubble = chatScope(chat.id).locator('.v3-chat-message.user').last();
   await until(async () => (await sentBubble.locator('.chat-mention-badge').count()) === 1, 'sent bubble shows the mention badge');
-  assert.equal(await sentBubble.locator('.chat-mention-badge').innerText(), '@cart.ts', 'the badge shows the token');
-  assert.equal(await sentBubble.locator('[data-testid="context-chip"]').count(), 0, 'a badged item is not repeated as a chip');
+  await until(async () => (await sentBubble.locator('.chat-mention-badge').innerText()) === '@cart.ts', 'the badge shows the token');
+  await until(async () => (await sentBubble.locator('[data-testid="context-chip"]').count()) === 0, 'a badged item is not repeated as a chip');
   check('the sent user bubble renders the mention as a badge, not a chip');
 
   // 7. Three colliding index.ts files get distinct tokens (relative path fallback).
@@ -269,7 +269,7 @@ try {
   check('a queue edit keeps both accepted blocks and the mentions line, changing only the text');
   const queueBubble = chatScope(chat.id).locator('.v3-chat-message.user').last();
   await until(async () => (await queueBubble.locator('.chat-mention-badge').count()) === 1, 'queue bubble shows the winning badge');
-  assert.equal(await queueBubble.locator('[data-testid="context-chip"]').count(), 1, 'the token removed in the queue editor keeps its fallback chip');
+  await until(async () => (await queueBubble.locator('[data-testid="context-chip"]').count()) === 1, 'the token removed in the queue editor keeps its fallback chip');
   check('an edited queue message badges the kept token and chips the removed one');
 
   // 5. Restore: switch away and back; the runtime v2 draft restores text + mentions.
