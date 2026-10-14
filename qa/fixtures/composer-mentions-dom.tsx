@@ -13,6 +13,7 @@ type QaListeners = Array<(event: unknown) => void>;
 type QaState = {
   sessionId: string;
   status: string;
+  locale: 'en' | 'zh-CN';
   draft: string;
   revision: number;
   items: unknown[];
@@ -38,6 +39,7 @@ type QaState = {
 const qa: QaState = {
   sessionId: 'composer-dom',
   status: 'idle',
+  locale: 'en',
   draft: '',
   revision: 0,
   items: [],
@@ -151,7 +153,7 @@ function render() {
     updatedAt: 'now',
   };
   root.render(
-    React.createElement(I18nProvider, { locale: 'en' },
+    React.createElement(I18nProvider, { locale: qa.locale },
       React.createElement(ChatView, {
         key: qa.sessionId,
         session,
@@ -171,7 +173,7 @@ const api = {
   calls: qa.calls,
   reset: (patch?: Partial<QaState>) => {
     Object.assign(qa, {
-      sessionId: 'composer-dom', status: 'idle', draft: '', revision: 0, items: [], queue: { sessionId: 'composer-dom', paused: false, items: [] },
+      sessionId: 'composer-dom', status: 'idle', locale: 'en', draft: '', revision: 0, items: [], queue: { sessionId: 'composer-dom', paused: false, items: [] },
       readGate: false, clearError: false, savedDrafts: [], sent: [], queued: [], steered: [], notes: [], calls: [], resolvers: [],
       sendError: undefined, saveError: undefined,
     }, patch ?? {});
