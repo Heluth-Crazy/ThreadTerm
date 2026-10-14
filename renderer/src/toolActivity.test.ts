@@ -216,6 +216,8 @@ test('tool output previews use only provider result fields and normalize the las
   assert.equal(toolOutputPreview(tool('malformed', 'bash', 'complete', { result: { content: [{ type: 'image' }, null, { text: 42 }] } })), undefined);
   // Live Kimi ExitPlanMode: the empty argument object arrives as content.
   assert.equal(toolOutputPreview(tool('kimi-args', 'ExitPlanMode', 'running', { content: [{ type: 'content', content: { type: 'text', text: '{}' } }] })), undefined);
+  // A pretty-printed JSON result previews its last real line, not the closing brace.
+  assert.equal(toolOutputPreview(tool('json', 'delegate_result', 'complete', { result: { content: [{ type: 'text', text: '{\n  "finalAnswer": "DONE-A"\n}' }] } })), '"finalAnswer": "DONE-A"');
   const long = 'x'.repeat(250);
   assert.equal(toolOutputPreview(tool('long', 'bash', 'complete', { output: long })), `${'x'.repeat(239)}…`);
 });

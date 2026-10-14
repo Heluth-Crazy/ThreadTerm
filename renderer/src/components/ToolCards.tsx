@@ -5,7 +5,7 @@ import { partBody } from '../chatPresentation';
 import { isChatImage } from '../chatImages';
 import { toolView, type ToolView } from '../toolView';
 import { feedbackNotesFromPart } from '../feedbackNotes';
-import type { ToolActivityEntry } from '../toolActivity';
+import { describeTool, type ToolActivityEntry } from '../toolActivity';
 import { FileLinkedText, FileReferenceChips } from './FileReferenceText';
 import { JsonTree } from './JsonTree';
 import { Icon } from './PrototypeIcon';
@@ -257,13 +257,16 @@ export function ToolCard({ entry, index, open, active, awaitingApproval, session
   canOpenDiff?: (path: string) => boolean;
 }) {
   const view = toolView(entry.part);
+  // Delegation tools keep the drawer header's localized name, not the raw "threadterm: delegate_start".
+  const described = describeTool(entry.part, copy);
+  const title = described.kind === 'delegation' ? described.name : view.title;
   const status = toolStatusLabel(view.status, active, awaitingApproval, copy);
   const body = entry.part.text ?? (entry.part.fileReferences?.length ? partBody(entry.part) : '');
   return <div role="listitem" className={`chat-tool-entry tool-card is-${status.key} is-${view.kind}`} data-tool-id={entry.part.toolId || entry.id} data-tool-kind={view.kind} data-tool-status={view.status}>
     <div className="chat-tool-entry-label tool-card-head">
       <span className="chat-tool-step">{index + 1}</span>
       <Icon name={icons[view.kind]} />
-      <strong className="tool-card-title" title={view.title}>{view.title}</strong>
+      <strong className="tool-card-title" title={title}>{title}</strong>
       <span className={`chip tool-card-status ${statusChip[status.key] ?? 'flat'}`}>{status.label}</span>
     </div>
     {open && <div className="tool-card-body">

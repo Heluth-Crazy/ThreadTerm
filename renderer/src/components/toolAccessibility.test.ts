@@ -4,6 +4,7 @@ import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server.edge';
 import { JsonTree } from './JsonTree';
 import { ToolCard } from './ToolCards';
+import type { ChatPart } from '@threadterm/protocol';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 
@@ -21,6 +22,14 @@ test('each tool card is a list item even before its body is opened', () => {
     const html = renderToStaticMarkup(createElement(ToolCard, { entry: { id: 'tool', itemId: 'item', part: { type: 'tool', toolId: 'read', toolName: 'Read', status: 'complete', data: { input: { file_path: 'src/app.ts' } } } }, index: 0, open, active: false, awaitingApproval: false, copy }));
     assert.match(html, /^<div role="listitem"/);
   }
+});
+
+test('a delegation tool row carries the same name as the drawer header', () => {
+  // Live Claude delegate_start through the threadterm MCP server.
+  const part: ChatPart = { type: 'tool', toolId: 'd1', toolName: 'mcp__threadterm__delegate_start', status: 'complete', data: { server: 'threadterm', tool: 'delegate_start', type: 'mcpToolCall' } };
+  const html = renderToStaticMarkup(createElement(ToolCard, { entry: { id: 'd1', itemId: 'item', part }, index: 0, open: false, active: false, awaitingApproval: false, copy }));
+  assert.match(html, /class="tool-card-title" title="Start delegate">Start delegate</);
+  assert.doesNotMatch(html, /threadterm: delegate_start/);
 });
 
 test('typed-card row gaps use the shared spacing scale', () => {

@@ -589,6 +589,11 @@ impl PiChat {
                 ui.commands = merge_builtin_commands(commands);
             }
         }
+        // Other open views (and a change made by a Pi slash command) learn the
+        // new state only from this event; without it the model chip stayed stale.
+        let mut data = self.ui_state();
+        data["sessionId"] = json!(self.session_id);
+        emit(&self.events, "pi", &self.session_id, self.native().as_deref(), None, "chat.ui", data);
     }
 
     /// Publishes a locally-handled slash command as one complete text turn.
@@ -601,7 +606,7 @@ impl PiChat {
             native.as_deref(),
             Some(operation_id),
             "chat.turn.started",
-            json!({}),
+            pi_turn_start(&self.shared),
         );
         emit(
             &self.events,
@@ -879,10 +884,6 @@ impl ChatSession for PiChat {
         if let Ok(mut started) = self.shared.started.lock() {
             *started = Some(Instant::now());
         }
-        // The footer names the turn's model; Pi publishes no chat.ui event the
-        // projection could fall back to.
-        let model = self.shared.ui.lock().ok()
-            .and_then(|ui| ui.state.as_ref()?.pointer("/model/id")?.as_str().map(ToOwned::to_owned));
         emit(
             &self.events,
             "pi",
@@ -890,7 +891,7 @@ impl ChatSession for PiChat {
             self.native().as_deref(),
             Some(operation_id),
             "chat.turn.started",
-            model.map_or_else(|| json!({}), |model| json!({"model":model})),
+            pi_turn_start(&self.shared),
         );
         match self.process.request("prompt", json!({"message":text})) {
             Ok(data) => {
@@ -1536,6 +1537,14 @@ fn pi_take_active_turn(shared: &PiShared) -> Option<(String, u64)> {
         *sequence
     };
     Some((turn, sequence))
+}
+
+/// `chat.turn.started` data naming the model the turn starts on: the footer's
+/// model. Pi's own model value (`provider\u{1f}id`) is not a display name.
+fn pi_turn_start(shared: &PiShared) -> Value {
+    shared.ui.lock().ok()
+        .and_then(|ui| ui.state.as_ref()?.pointer("/model/id")?.as_str().map(ToOwned::to_owned))
+        .map_or_else(|| json!({}), |model| json!({"model":model}))
 }
 
 fn pi_finish_turn(events: &ScopedProviderEvents, session_id: &str, shared: &PiShared, stop_reason: &str, elapsed_ms: Option<u64>) {
