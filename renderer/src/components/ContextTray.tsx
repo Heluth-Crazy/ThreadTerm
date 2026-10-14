@@ -1,5 +1,6 @@
 import { useLayoutEffect, useRef, useState, type ReactNode } from 'react';
-import { contextDisplayMetadata, contextSerializedBlocks, parseContext, serializeContext, type ContextItem } from '../chatContext';
+import { contextDisplayMetadata, contextSerializedBlocks, parseContext, serializeMentionedContext, type ContextItem } from '../chatContext';
+import { contextIdentityBudget, type MentionEntry } from '../inlineMentions';
 import { SurfaceDialog } from './SurfaceDialog';
 import { Icon } from './PrototypeIcon';
 import './context-tray.css';
@@ -96,15 +97,20 @@ function chipsFor(blocks: string[], ids?: string[]): Chip[] {
   });
 }
 
-export function ContextTray({ items, text, zh, onRemove, disabled }: { items: ContextItem[]; text: string; zh: boolean; onRemove: (id: string) => void; disabled?: boolean }) {
-  if (!items.length) return null;
+export function ContextTray({ items, text, zh, onRemove, disabled, mentions = [], workspaceRoot }: { items: ContextItem[]; text: string; zh: boolean; onRemove: (id: string) => void; disabled?: boolean; mentions?: readonly MentionEntry[]; workspaceRoot?: string }) {
+  if (!items.length && !mentions.length) return null;
   const blocks = contextSerializedBlocks(items);
+  const identityCount = contextIdentityBudget(items, mentions, workspaceRoot).identities;
   let bytes: number;
-  try { bytes = new TextEncoder().encode(serializeContext(items, text.trim())).length; }
-  catch { bytes = new TextEncoder().encode(blocks.join('\n') + '\n[ThreadTerm message]\n' + text.trim()).length; }
-  return <div className="context-tray" data-testid="context-tray" aria-label={zh ? '消息上下文' : 'Message context'}><ContextChips chips={chipsFor(blocks, items.map(item => item.id))} zh={zh} remove={onRemove} disabled={disabled}>
-    {(items.length > 9 || bytes > 96 * 1024) && <span className="context-budget" role="status">{zh ? `${items.length}/12 · ${Math.ceil(bytes / 1024)} KiB / 128 KiB` : `${items.length}/12 · ${Math.ceil(bytes / 1024)} KiB of 128 KiB`}</span>}
-  </ContextChips></div>;
+  try { bytes = new TextEncoder().encode(serializeMentionedContext({ trayItems: items, active: mentions, workspaceRoot }, text.trim())).length; }
+  catch { bytes = 0; }
+  const showReadout = mentions.length > 0 || items.length > 9 || bytes > 96 * 1024;
+  const readout = zh ? `${identityCount}/12 · ${Math.ceil(bytes / 1024)} KiB / 128 KiB` : `${identityCount}/12 · ${Math.ceil(bytes / 1024)} KiB of 128 KiB`;
+  return <div className="context-tray" data-testid="context-tray" aria-label={zh ? '消息上下文' : 'Message context'}>{items.length > 0 && <ContextChips chips={chipsFor(blocks, items.map(item => item.id))} zh={zh} remove={onRemove} disabled={disabled}>
+    {showReadout && <span className="context-budget" role="status">{readout}</span>}
+  </ContextChips>}
+  {!items.length && <div className="context-chips-wrap"><div className="context-chips"><span className="context-budget" role="status">{readout}</span></div></div>}
+  </div>;
 }
 
 /** Shared by submitted user bubbles and the pending-send preview. */
