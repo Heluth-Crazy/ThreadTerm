@@ -14,6 +14,13 @@ import {
 
 const event = (data: unknown): RuntimeEvent => ({ v: 1, event: 'state.changed', epoch: 'provider-refresh-test', seq: 1, data });
 
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (error: unknown) => void;
+  const promise = new Promise<T>((res, rej) => { resolve = res; reject = rej; });
+  return { promise, resolve, reject };
+}
+
 function harness(send: () => Promise<{ refreshId: number }> = async () => ({ refreshId: 7 })) {
   let listener: ((event: RuntimeEvent) => void) | undefined;
   const states: ProviderRefreshState[] = [];
@@ -39,29 +46,67 @@ function harness(send: () => Promise<{ refreshId: number }> = async () => ({ ref
   };
 }
 
-test('refresh calls provider.refresh and enters the checking state with the returned id', async () => {
-  const qa = harness();
-  await qa.handle.refresh();
+test('refresh calls provider.refresh and shows checking before the reply arrives', async () => {
+  const gate = deferred<{ refreshId: number }>();
+  const qa = harness(() => gate.promise);
+  const pending = qa.handle.refresh();
   assert.deepEqual(qa.calls, ['provider.refresh'], 'the forced path must never call provider.list');
-  assert.deepEqual(qa.lastState(), { phase: 'checking', refreshId: 7 });
-  assert.equal(qa.hasTimer(), true, 'a checking round arms its 120 s status timer');
+  assert.deepEqual(qa.lastState(), { phase: 'checking' }, 'the button shows checking immediately');
+  assert.equal(qa.hasTimer(), true, 'the 120 s status timer is armed from the click');
   assert.equal(PROVIDER_REFRESH_TIMEOUT_MS, 120_000);
+  gate.resolve({ refreshId: 7 });
+  await pending;
+  assert.deepEqual(qa.lastState(), { phase: 'checking', refreshId: 7 });
 });
 
-test('only a matching providers completion ends the round', async () => {
+test('a completion that arrives before the RPC reply still finishes the round', async () => {
+  const gate = deferred<{ refreshId: number }>();
+  const qa = harness(() => gate.promise);
+  const pending = qa.handle.refresh();
+  qa.emit({ kind: 'providers', generation: 7, outcome: 'ok' });
+  assert.equal(qa.lastState()?.phase, 'checking', 'the early completion is buffered, not applied');
+  gate.resolve({ refreshId: 7 });
+  await pending;
+  assert.equal(qa.lastState()?.phase, 'updated');
+  assert.deepEqual(qa.outcomes, ['ok']);
+  assert.equal(qa.hasTimer(), false, 'the buffered completion cleared the timer');
+});
+
+test('a pre-reply completion from an older round does not finish the check', async () => {
+  const gate = deferred<{ refreshId: number }>();
+  const qa = harness(() => gate.promise);
+  const pending = qa.handle.refresh();
+  qa.emit({ kind: 'providers', generation: 6, outcome: 'ok' });
+  gate.resolve({ refreshId: 7 });
+  await pending;
+  assert.equal(qa.lastState()?.phase, 'checking');
+  assert.deepEqual(qa.outcomes, []);
+  qa.emit({ kind: 'providers', generation: 7, outcome: 'failed' });
+  assert.equal(qa.lastState()?.phase, 'failed');
+});
+
+test('only a providers completion at or after the refresh id ends the round', async () => {
   const qa = harness();
   await qa.handle.refresh();
-  qa.emit({ kind: 'plugins', refreshId: 7, outcome: 'ok' });
+  qa.emit({ kind: 'plugins', generation: 7, outcome: 'ok' });
   qa.emit({ kind: 'providers' });
-  qa.emit({ kind: 'providers', refreshId: 6, outcome: 'ok' });
+  qa.emit({ kind: 'providers', generation: 6, outcome: 'ok' });
   qa.emit(null);
   assert.deepEqual(qa.lastState(), { phase: 'checking', refreshId: 7 }, 'unrelated events must not end checking');
   assert.deepEqual(qa.outcomes, []);
   assert.equal(qa.hasTimer(), true, 'a non-matching event must not clear the timeout');
-  qa.emit({ kind: 'providers', refreshId: 7, outcome: 'ok' });
+  qa.emit({ kind: 'providers', generation: 7, outcome: 'ok' });
   assert.equal(qa.lastState()?.phase, 'updated');
   assert.deepEqual(qa.outcomes, ['ok']);
   assert.equal(qa.hasTimer(), false, 'completion clears the status timer');
+});
+
+test('a plugin-started newer generation supersedes and finishes the check', async () => {
+  const qa = harness();
+  await qa.handle.refresh();
+  qa.emit({ kind: 'providers', generation: 9, outcome: 'failed' });
+  assert.equal(qa.lastState()?.phase, 'failed', 'a newer round completes the check with its outcome');
+  assert.deepEqual(qa.outcomes, ['failed']);
 });
 
 test('a newer refresh supersedes an older round and the older completion is ignored', async () => {
@@ -70,12 +115,11 @@ test('a newer refresh supersedes an older round and the older completion is igno
   await qa.handle.refresh();
   await qa.handle.refresh();
   assert.equal(qa.lastState()?.refreshId, 8);
-  qa.emit({ kind: 'providers', refreshId: 7, outcome: 'failed' });
+  qa.emit({ kind: 'providers', generation: 7, outcome: 'failed' });
   assert.equal(qa.lastState()?.phase, 'checking', 'an older completion does not end the newer round');
   assert.deepEqual(qa.outcomes, []);
-  qa.emit({ kind: 'providers', refreshId: 9, outcome: 'ok' });
-  assert.equal(qa.lastState()?.phase, 'updated', 'a newer-than-expected completion still lands');
-  assert.deepEqual(qa.outcomes, ['ok']);
+  qa.emit({ kind: 'providers', generation: 8, outcome: 'ok' });
+  assert.equal(qa.lastState()?.phase, 'updated');
 });
 
 test('the timeout keeps the round open and a late failure still applies', async () => {
@@ -83,7 +127,7 @@ test('the timeout keeps the round open and a late failure still applies', async 
   await qa.handle.refresh();
   qa.fireTimeout();
   assert.deepEqual(qa.lastState(), { phase: 'timeout', refreshId: 7 });
-  qa.emit({ kind: 'providers', refreshId: 7, outcome: 'failed' });
+  qa.emit({ kind: 'providers', generation: 7, outcome: 'failed' });
   assert.equal(qa.lastState()?.phase, 'failed');
   assert.deepEqual(qa.outcomes, ['failed']);
 });
@@ -93,27 +137,24 @@ test('a disposed tracker ignores later events and never notifies the update sink
   await qa.handle.refresh();
   const seen = qa.states.length;
   qa.handle.dispose();
-  qa.emit({ kind: 'providers', refreshId: 7, outcome: 'ok' });
+  qa.emit({ kind: 'providers', generation: 7, outcome: 'ok' });
   assert.equal(qa.states.length, seen, 'events after dispose must not reach the UI');
   assert.deepEqual(qa.outcomes, []);
 });
 
-test('a rejected provider.refresh request rejects so the panel can show the runtime error', async () => {
-  let listener: ((event: RuntimeEvent) => void) | undefined;
-  const handle = observeProviderRefresh(
-    async () => { throw new Error('runtime unavailable'); },
-    next => { listener = next; return () => { listener = undefined; }; },
-    () => {},
-  );
-  await assert.rejects(handle.refresh(), /runtime unavailable/);
+test('a rejected provider.refresh request resets to idle and rejects', async () => {
+  const qa = harness(async () => { throw new Error('runtime unavailable'); });
+  await assert.rejects(qa.handle.refresh(), /runtime unavailable/);
+  assert.equal(qa.lastState()?.phase, 'idle');
+  assert.equal(qa.hasTimer(), false);
 });
 
 test('the event helpers stay total for malformed provider payloads', () => {
-  assert.deepEqual(providerRefreshEvent({ kind: 'providers' }), { refreshId: undefined, outcome: undefined });
-  assert.deepEqual(providerRefreshEvent({ kind: 'providers', refreshId: 2, outcome: 'ok' }), { refreshId: 2, outcome: 'ok' });
-  assert.equal(providerRefreshEvent({ kind: 'providers', refreshId: 2, outcome: 'other' })?.outcome, undefined);
-  assert.deepEqual(providerRefreshEvent({ kind: 'providers', refreshId: -1 }), { refreshId: undefined, outcome: undefined });
-  assert.deepEqual(providerRefreshEvent({ kind: 'providers', refreshId: 1.5 }), { refreshId: undefined, outcome: undefined });
+  assert.deepEqual(providerRefreshEvent({ kind: 'providers' }), { generation: undefined, outcome: undefined });
+  assert.deepEqual(providerRefreshEvent({ kind: 'providers', generation: 2, outcome: 'ok' }), { generation: 2, outcome: 'ok' });
+  assert.equal(providerRefreshEvent({ kind: 'providers', generation: 2, outcome: 'other' })?.outcome, undefined);
+  assert.deepEqual(providerRefreshEvent({ kind: 'providers', generation: -1 }), { generation: undefined, outcome: undefined });
+  assert.deepEqual(providerRefreshEvent({ kind: 'providers', generation: 1.5 }), { generation: undefined, outcome: undefined });
   assert.equal(providerRefreshEvent('providers'), undefined);
   assert.equal(providerRefreshEvent([{ kind: 'providers' }]), undefined);
   assert.equal(providerRefreshCompletes(3, 3), true);

@@ -1,10 +1,12 @@
 // Manual provider-refresh tracking (task 10-14 P1).
 //
-// The runtime answers `provider.refresh` with a refresh id and publishes the
-// round's completion later as `state.changed {kind:"providers", refreshId?,
-// outcome}`. This module owns the small state machine and the pure helpers, so
-// the component stays about rendering and the behavior can be unit-tested
-// without a DOM. It never calls `provider.list`, which is a cached read.
+// The runtime answers `provider.refresh` with a refresh id and publishes each
+// capability round's completion later as `state.changed {kind:"providers",
+// generation, outcome}`. This module owns the small state machine and the pure
+// helpers, so the component stays about rendering and the behavior can be
+// unit-tested without a DOM. It never calls `provider.list`, which is a cached
+// read. RPC replies and events have separate delivery paths, so a completion
+// can arrive before the reply; those are buffered until the refresh id is known.
 
 import type { RuntimeEvent } from "@threadterm/protocol";
 
@@ -17,25 +19,25 @@ export type ProviderRefreshOutcome = "ok" | "failed";
 
 export interface ProviderRefreshState {
   phase: ProviderRefreshPhase;
-  /** The generation of the tracked round; stays set after a timeout so a late event still lands. */
+  /** The generation claimed by the tracked round; stays set after a timeout so a late event still lands. */
   refreshId?: number;
 }
 
 export const IDLE_PROVIDER_REFRESH: ProviderRefreshState = { phase: "idle" };
 
 /** The provider fields of a `state.changed` event; undefined for every other event. */
-export function providerRefreshEvent(data: unknown): { refreshId?: number; outcome?: ProviderRefreshOutcome } | undefined {
+export function providerRefreshEvent(data: unknown): { generation?: number; outcome?: ProviderRefreshOutcome } | undefined {
   if (!data || typeof data !== "object" || Array.isArray(data)) return undefined;
   const record = data as Record<string, unknown>;
   if (record.kind !== "providers") return undefined;
-  const refreshId = typeof record.refreshId === "number" && Number.isSafeInteger(record.refreshId) && record.refreshId >= 0
-    ? record.refreshId
+  const generation = typeof record.generation === "number" && Number.isSafeInteger(record.generation) && record.generation >= 0
+    ? record.generation
     : undefined;
   const outcome = record.outcome === "ok" || record.outcome === "failed" ? record.outcome : undefined;
-  return { refreshId, outcome };
+  return { generation, outcome };
 }
 
-/** True when an event completes the round started for `expected`. */
+/** True when a completion belongs to the tracked round or a newer (superseding) one. */
 export function providerRefreshCompletes(expected: number, incoming: number | undefined): boolean {
   return incoming !== undefined && Number.isSafeInteger(incoming) && incoming >= expected;
 }
@@ -57,10 +59,13 @@ export interface ProviderRefreshOptions {
 }
 
 /**
- * Tracks one manual provider refresh at a time. A newer refresh supersedes an
- * older one; only a providers event whose `refreshId` is at least the tracked
- * one ends the round, so an unrelated snapshot cannot clear the checking state.
- * Events and completions after `dispose()` (unmount) are ignored.
+ * Tracks one manual provider refresh at a time. It subscribes before the first
+ * request, buffers completions that arrive before the reply, and then finishes
+ * on the first buffered or later providers completion whose `generation` is at
+ * least the returned refresh id, so a newer round (another refresh or a plugin
+ * reload) supersedes and also finishes the check. An unrelated snapshot or an
+ * older generation never ends it. Events and completions after `dispose()`
+ * (unmount) are ignored.
  */
 export function observeProviderRefresh(
   send: () => Promise<{ refreshId: number }>,
@@ -72,46 +77,85 @@ export function observeProviderRefresh(
   const setTimer = options.setTimer ?? ((handler, timeout) => setTimeout(handler, timeout) as unknown as number);
   const clearTimer = options.clearTimer ?? (handle => clearTimeout(handle));
   let disposed = false;
-  let state: ProviderRefreshState = IDLE_PROVIDER_REFRESH;
+  let phase: ProviderRefreshPhase = "idle";
+  let refreshId: number | undefined;
+  let inFlight = false;
+  let buffered: { generation?: number; outcome: ProviderRefreshOutcome } | undefined;
   let timer: number | undefined;
 
   const clearTimerHandle = () => {
     if (timer !== undefined) { clearTimer(timer); timer = undefined; }
   };
-  const publish = (next: ProviderRefreshState) => {
-    state = next;
-    if (!disposed) update(state);
+  // A function call defeats TypeScript's narrowing of `buffered` to undefined
+  // in this scope: it is assigned from the event subscriber callback.
+  const peekBuffered = () => buffered;
+  const publish = () => {
+    if (disposed) return;
+    update(refreshId === undefined ? { phase } : { phase, refreshId });
   };
-  const active = () => !disposed && state.refreshId !== undefined && (state.phase === "checking" || state.phase === "timeout");
+  const armTimeout = () => {
+    clearTimerHandle();
+    timer = setTimer(() => {
+      if (!disposed && phase === "checking") { phase = "timeout"; publish(); }
+    }, timeoutMs);
+  };
+  const complete = (outcome: ProviderRefreshOutcome) => {
+    clearTimerHandle();
+    phase = outcome === "failed" ? "failed" : "updated";
+    publish();
+    options.onOutcome?.(outcome);
+  };
 
   const unsubscribe = subscribe(event => {
-    if (!active() || event.event !== "state.changed") return;
+    if (disposed || event.event !== "state.changed") return;
     const parsed = providerRefreshEvent(event.data);
-    if (!parsed || !providerRefreshCompletes(state.refreshId as number, parsed.refreshId)) return;
-    clearTimerHandle();
-    const outcome = parsed.outcome ?? "ok";
-    publish({ phase: outcome === "failed" ? "failed" : "updated", refreshId: state.refreshId });
-    options.onOutcome?.(outcome);
+    if (!parsed) return;
+    // The reply may still be on its way; keep the newest completion until the id is known.
+    if (inFlight) { buffered = { generation: parsed.generation, outcome: parsed.outcome ?? "ok" }; return; }
+    if (phase !== "checking" && phase !== "timeout") return;
+    if (refreshId === undefined || !providerRefreshCompletes(refreshId, parsed.generation)) return;
+    complete(parsed.outcome ?? "ok");
   });
 
   return {
     async refresh() {
+      if (disposed) return;
+      inFlight = true;
+      buffered = undefined;
+      phase = "checking";
+      refreshId = undefined;
+      publish();
+      armTimeout();
+      let id: number;
       try {
-        const { refreshId } = await send();
-        if (disposed || !Number.isSafeInteger(refreshId)) return;
-        clearTimerHandle();
-        publish({ phase: "checking", refreshId });
-        timer = setTimer(() => {
-          if (!disposed && state.refreshId === refreshId && state.phase === "checking") {
-            publish({ phase: "timeout", refreshId });
-          }
-        }, timeoutMs);
+        ({ refreshId: id } = await send());
       } catch (error) {
+        inFlight = false;
+        clearTimerHandle();
+        phase = "idle";
+        publish();
         if (!disposed) throw error;
+        return;
+      }
+      if (disposed) return;
+      inFlight = false;
+      if (!Number.isSafeInteger(id)) {
+        clearTimerHandle();
+        phase = "idle";
+        publish();
+        return;
+      }
+      refreshId = id;
+      publish();
+      const early = peekBuffered();
+      if (early && providerRefreshCompletes(id, early.generation)) {
+        complete(early.outcome);
       }
     },
     dispose() {
       disposed = true;
+      inFlight = false;
+      buffered = undefined;
       clearTimerHandle();
       unsubscribe();
     },
