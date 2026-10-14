@@ -5,7 +5,8 @@ import { createRequire } from 'node:module';
 Object.assign(globalThis, { require: createRequire(import.meta.url) });
 const { renderToStaticMarkup } = await import('react-dom/server');
 import { ContextMessage, ContextQueueBadge, ContextTray } from './components/ContextTray';
-import { serializeContext, type ContextItem } from './chatContext';
+import { MessageMentionText } from './components/MessageMentionText';
+import { serializeContext, serializeMentionedContext, type ContextItem } from './chatContext';
 import type { MentionEntry } from './inlineMentions';
 import { contextError } from './contextErrors';
 
@@ -46,4 +47,14 @@ test('queue context badge and limit errors are localized without exposing serial
   assert.match(contextError(new Error('Context exceeds 128 KiB.'), true), /128 KiB/);
   assert.match(contextError(new Error('Attach at most 12 context items.'), true), /12/);
   assert.equal(contextError(new Error('Invalid / 无效'), false), 'Invalid');
+});
+
+test('sent-message badge tooltips use the localized context title', () => {
+  const message = serializeMentionedContext({ trayItems: [], active: [{ token: '@cart.ts', item: { kind: 'file', id: 'file:src/cart.ts', path: 'src/cart.ts' } }] }, 'see @cart.ts');
+  const render = (zh: boolean) => renderToStaticMarkup(createElement(ContextMessage, {
+    text: message, zh,
+    children: (value, badges) => createElement(MessageMentionText, { text: value, badges, zh }),
+  }));
+  assert.match(render(false), /title="File: src\/cart\.ts"/);
+  assert.match(render(true), /title="文件： src\/cart\.ts"/);
 });
