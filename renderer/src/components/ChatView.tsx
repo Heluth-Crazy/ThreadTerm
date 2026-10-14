@@ -63,7 +63,7 @@ import { ComposerPlusMenu } from './ComposerPlusMenu';
 import { partitionAttachedFiles } from '../chatAttachments';
 import { parseQuickMessages } from '../quickMessages';
 import { useAppSettings } from '../appSettings';
-import { showContextMenu } from './ContextMenu';
+import { showContextMenu, type ContextMenuItem } from './ContextMenu';
 import { textFieldContextMenuItems } from '../contextMenuFallback';
 import { useChatContext } from '../useChatContext';
 import { ContextMessage, ContextTray } from './ContextTray';
@@ -71,10 +71,11 @@ import { ChatMentions } from './ChatMentions';
 import { ComposerMentionHighlights } from './ComposerMentionHighlights';
 import { MessageMentionText } from './MessageMentionText';
 import { agentMentionItems, beginMentionLoad, commitMentionItems, fileMentionItems, flatMentionItems, initialMentionLoadState, mentionGroups as buildMentionGroups, mentionKeyAction, mentionLoadCurrent, mentionLoadKey, mentionQuery, sessionContextItem, sessionMentionItems, skillMentionItems, type MentionItem, type MentionLoadState, type MentionSources } from '../chatMentions';
-import { activeMentionEntries, addMentionEntry, deletionRange, resolveMentions, type MentionEntry, type MentionableItem } from '../inlineMentions';
+import { activeMentionEntries, addMentionEntry, deletionRange, mentionAtCaret, resolveMentions, type MentionEntry, type MentionableItem, type ResolvedMention } from '../inlineMentions';
+import { mentionActionSnapshot, mentionActionStillValid, mentionContainingSelection, pointerMentionTarget, type MentionMark } from '../mentionActions';
 import { composerEditable, composerSnapshot, decodeLocalRecovery, encodeLocalRecovery, localRecoveryDiffers, MAX_MENTION_MESSAGE, mentionDescription, mentionInsertedText, mentionPickStillValid, serializeComposerSnapshot, tentativeMentionPick, type ComposerInputState, type ComposerSnapshot, type LocalRecovery, type MentionPickTicket } from '../composerMentions';
 import { applyNativeEdit } from '../nativeTextEdit';
-import type { SessionContextItem } from '../chatContext';
+import { contextSerializedBlocks, type SessionContextItem } from '../chatContext';
 import { contextError } from '../contextErrors';
 import { CHAT_REPAIR_REQUEST, setChatRepairAvailability, type ChatRepairAvailability } from '../chatRepair';
 import { discoveredRepair, discoveryMatches, type RepairDiscovery } from '../chatRepairDiscovery';
@@ -408,6 +409,7 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession, 
   // A clicked http(s) link in the transcript: the same actions as the terminal's link bar, as a menu at the link.
   const [linkMenu, setLinkMenu] = useState<{ anchor: HTMLElement; url: string }>();
   const [linkIssue, setLinkIssue] = useState<string>();
+  const [mentionPreview, setMentionPreview] = useState<string>();
   const recoveryKey = `threadterm.compose.${session.id}`;
   const canControl = chatCanControl(session);
   const ended = isEnded(session);
@@ -441,6 +443,7 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession, 
   const [draftLoaded,setDraftLoaded]=useState(false);
   const [mentionCatalogue,setMentionCatalogue]=useState<MentionEntry[]>([]);
   const mentionCatalogueRef=useRef(mentionCatalogue); mentionCatalogueRef.current=mentionCatalogue;
+  const resolvedMentionsRef=useRef<readonly ResolvedMention[]>([]);
   const composerGeneration=useRef(0);
   const composingRef=useRef(false);
   const pickTicketId=useRef(0);
@@ -645,7 +648,7 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession, 
     setViewportSessionId(undefined);
     setHistoryIssue(undefined);
     setSubmissionPreview(undefined);
-    setItems([]); setText(''); setBusy(false); setQueue(undefined); setDraftLoaded(false); setHistoryLoaded(false); setHistoryFailed(false); setLink(emptyLink(session.id, canControl && !ended ? "connecting" : "unavailable")); setConnectSlow(false); setError(undefined); setRepair(undefined); setRepairDialog(false); setRepairBusy(false); setRepairNotice(undefined); setIngressFailed(false); setRepairFollowup(false); setChatRepairAvailability(session.id, repairDescriptionId, undefined);draftReady.current=false;writer.current=undefined;setDraftFailed(false);setRecovery(undefined);setApprovalBusy(undefined);composingRef.current=false;pickTicket.current=undefined;composerGeneration.current+=1;mentionCatalogueRef.current=[];setMentionCatalogue([]);
+    setItems([]); setText(''); setBusy(false); setQueue(undefined); setDraftLoaded(false); setHistoryLoaded(false); setHistoryFailed(false); setLink(emptyLink(session.id, canControl && !ended ? "connecting" : "unavailable")); setConnectSlow(false); setError(undefined); setRepair(undefined); setRepairDialog(false); setRepairBusy(false); setRepairNotice(undefined); setIngressFailed(false); setRepairFollowup(false); setChatRepairAvailability(session.id, repairDescriptionId, undefined);draftReady.current=false;writer.current=undefined;setDraftFailed(false);setRecovery(undefined);setApprovalBusy(undefined);composingRef.current=false;pickTicket.current=undefined;composerGeneration.current+=1;mentionCatalogueRef.current=[];setMentionCatalogue([]);setMentionPreview(undefined);
     const unsubscribe = subscribeEvents(event => {
       if (disposed || !event.data || typeof event.data !== 'object') return;
       const data = event.data as { sessionId?: string; item?: ChatItem; reason?: string };
@@ -1074,12 +1077,47 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession, 
     nativeEdit(start, end, snippet);
   }
   function insertQuickMessageAtCaret(message: import('@threadterm/protocol').QuickMessage) { insertSnippetAtCaret(message.text); }
-  // F3: the composer keeps its clipboard menu and gains Quick messages when any exist.
-  function openComposerContextMenu(event: ReactMouseEvent<HTMLTextAreaElement>) {
-    event.preventDefault();
-    const field = event.currentTarget;
-    const x = event.clientX, y = event.clientY;
-    const items = textFieldContextMenuItems(field);
+  // M5: the highlight layer's marks with each wrapped fragment's client rect, so a
+  // right-click can be hit-tested against the rendered badge instead of the caret.
+  function liveMentionMarks(): MentionMark[] {
+    const host = composeRef.current?.closest('.chat-compose-input');
+    if (!host) return [];
+    return Array.from(host.querySelectorAll<HTMLElement>('.chat-mention-badge[data-start]')).flatMap(node => {
+      const start = Number(node.dataset.start), end = Number(node.dataset.end);
+      const token = node.dataset.token;
+      if (!Number.isInteger(start) || !Number.isInteger(end) || !token) return [];
+      const rects = Array.from(node.getClientRects()).map(rect => ({ x: rect.x, y: rect.y, width: rect.width, height: rect.height }));
+      return rects.length ? [{ start, end, token, itemId: node.dataset.id ?? '', rects }] : [];
+    });
+  }
+  // M5: Show details / Open file / Remove mention for a live token, revalidated when run.
+  function mentionMenuItems(target: ResolvedMention): ContextMenuItem[] {
+    const item = mentionCatalogueRef.current.find(entry => entry.token === target.token)?.item;
+    if (!item) return [];
+    const snapshot = mentionActionSnapshot(target, lifecycle.current);
+    const valid = () => mentionActionStillValid(snapshot, { lifecycle: lifecycle.current, resolved: resolvedMentionsRef.current });
+    const changed = copy('The mention changed before the action ran. Reopen the menu and try again.', '执行操作前提及已更改。请重新打开菜单后重试。');
+    const canOpen = item.kind === 'file' && Boolean(openFile);
+    return [
+      { id: 'mention-details', label: copy('Show details', '查看详情'), testId: 'mention-action-details', onSelect: () => {
+        if (!valid()) { setError(changed); return; }
+        setMentionPreview(contextSerializedBlocks([item])[0]);
+      } },
+      { id: 'mention-open-file', label: copy('Open file', '打开文件'), testId: 'mention-action-open-file', disabled: !canOpen, reason: canOpen ? undefined : copy('This mention cannot be opened as a file.', '此提及无法作为文件打开。'), onSelect: () => {
+        if (!valid()) { setError(changed); return; }
+        if (item.kind !== 'file' || !openFile) return;
+        openFile({ path: item.path, ...(item.startLine ? { line: item.startLine } : {}) });
+      } },
+      { id: 'mention-remove', label: copy('Remove mention', '移除提及'), testId: 'mention-action-remove', onSelect: () => {
+        if (!valid()) { setError(changed); return; }
+        deleteMention({ start: snapshot.start, end: snapshot.end });
+      } },
+      { id: 'mention-actions-end', label: '', separator: true },
+    ];
+  }
+  function showComposerMenu(field: HTMLTextAreaElement, x: number, y: number, target?: ResolvedMention) {
+    const items: ContextMenuItem[] = target ? mentionMenuItems(target) : [];
+    items.push(...textFieldContextMenuItems(field));
     if (quickMessages.length) items.push({
       id: 'chat-quick-messages', label: copy('Quick messages', '快捷消息'),
       onSelect: () => showContextMenu({ x, y, restoreFocus: field, items: quickMessages.map(message => ({
@@ -1088,6 +1126,32 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession, 
       })) }),
     });
     showContextMenu({ x, y, items, restoreFocus: field });
+  }
+  // F3/M5: the composer keeps its clipboard menu and gains mention actions when the pointer lands on a token.
+  function openComposerContextMenu(event: ReactMouseEvent<HTMLTextAreaElement>) {
+    event.preventDefault();
+    const field = event.currentTarget;
+    const target = pointerMentionTarget({
+      resolved: resolvedMentionsRef.current,
+      marks: liveMentionMarks(),
+      selectionStart: field.selectionStart ?? 0,
+      selectionEnd: field.selectionEnd ?? 0,
+      x: event.clientX,
+      y: event.clientY,
+    });
+    showComposerMenu(field, event.clientX, event.clientY, target);
+  }
+  // M5: Shift+F10 / the Menu key targets the resolved range at the caret or selection.
+  function openComposerMentionMenuFromKeyboard(event: KeyboardEvent<HTMLTextAreaElement>): boolean {
+    const area = event.currentTarget;
+    const start = area.selectionStart ?? 0, end = area.selectionEnd ?? start;
+    const target = start === end
+      ? mentionAtCaret(resolvedMentionsRef.current, start)
+      : mentionContainingSelection(resolvedMentionsRef.current, start, end);
+    if (!target) return false;
+    const rect = area.getBoundingClientRect();
+    showComposerMenu(area, rect.left + Math.min(20, rect.width / 2), rect.top + Math.min(rect.height, 24), target);
+    return true;
   }
   attachImagesRef.current=(incoming:string[])=>{
     if(!composerEditable(composerStateRef.current)||imageReadingRef.current||!composeRef.current||composeRef.current.disabled) return 0;
@@ -1258,6 +1322,7 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession, 
   const steerKind = steerControlKind(Boolean(liveTurn), ui.inputCapabilities?.steer, queueMode);
   const resolutionReady = draftLoaded && recovery === undefined;
   const resolvedMentions = useMemo(() => resolutionReady ? resolveMentions(text, mentionCatalogue) : [], [resolutionReady, text, mentionCatalogue]);
+  resolvedMentionsRef.current = resolvedMentions;
   const activeMentions = useMemo(() => activeMentionEntries(mentionCatalogue, resolvedMentions), [mentionCatalogue, resolvedMentions]);
   const rawMention = mentionQuery(text, caret);
   const mention = composerEditableNow && rawMention && rawMention.start !== mentionDismissed && !resolvedMentions.some(range => range.start <= caret && caret <= range.end) ? rawMention : undefined;
@@ -1409,6 +1474,9 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession, 
   }
   function onComposeKey(event: KeyboardEvent<HTMLTextAreaElement>) {
     const composing = event.nativeEvent.isComposing || event.keyCode === 229 || composingRef.current;
+    if (!composing && (event.key === 'ContextMenu' || (event.key === 'F10' && event.shiftKey))) {
+      if (openComposerMentionMenuFromKeyboard(event)) { event.preventDefault(); return; }
+    }
     if (!composing && !event.ctrlKey && !event.altKey && !event.metaKey && (event.key === 'Backspace' || event.key === 'Delete')) {
       const area = event.currentTarget;
       const position = area.selectionStart ?? caret;
@@ -1675,5 +1743,6 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession, 
     </form>
     {overlay === "full" && <ChatConnectOverlay provider={session.provider} phase={connection.phase} slow={connectSlow} error={connection.error} variant="full" onRetry={connection.phase === "failed" && link.transport === "up" ? retryConnection : undefined} copy={copy} transportDown={link.transport !== "up"} />}
     {repairDialog && <SurfaceDialog title={legacyHistoryReload ? copy('Reload saved history?', '重新加载已保存的历史？') : copy('Repair chat history?', '修复对话记录？')} subtitle={session.title} icon={legacyHistoryReload ? 'clock' : 'refresh'} size="sm" className="chat-repair-dialog" descriptionId={repairDescriptionId} onClose={() => { if (!repairBusy) setRepairDialog(false); }} footer={<><button autoFocus className="btn" disabled={repairBusy} onClick={() => setRepairDialog(false)}>{copy('Cancel', '取消')}</button><button className="btn btn-primary" disabled={repairBusy} onClick={() => void confirmRepair()}>{repairBusy ? (legacyHistoryReload ? copy('Reloading…', '正在重新加载…') : copy('Repairing…', '正在修复…')) : (legacyHistoryReload ? copy('Reload history', '重新加载历史') : copy('Repair history', '修复历史'))}</button></>}><div id={repairDescriptionId} className="chat-repair-confirm"><p>{copy("The local transcript will be replaced by the agent's saved record. Some local details may be lost: tool details, subagent cards, question answers, usage and timings. A backup of the current transcript is kept, and pending requests will expire.", '本地对话记录将被代理保存的记录替换。部分本地细节可能丢失：工具详情、子代理卡片、问题回答、用量和耗时。当前记录会保留一份备份，待处理的请求将过期。')}</p><p>{copy('Queued prompts, drafts and review checkpoints are not changed.', '排队的提示词、草稿和审查检查点不受影响。')}</p><p className="note">{copy('This only reads the agent\'s saved history. It does not send a prompt or continue the conversation.', '此操作仅读取代理保存的历史，不会发送提示词，也不会继续对话。')}</p></div></SurfaceDialog>}
+    {mentionPreview !== undefined && <SurfaceDialog title={copy('Context preview', '上下文预览')} variant="plain" size="wide" className="context-preview-dialog" onClose={() => setMentionPreview(undefined)}><pre className="context-preview" data-testid="context-preview">{mentionPreview}</pre></SurfaceDialog>}
   </section></FileReferenceScopeProvider>;
 }

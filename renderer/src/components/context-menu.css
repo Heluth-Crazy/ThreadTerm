@@ -6,6 +6,10 @@
 .app-context-menu .app-context-item:hover:not([aria-disabled="true"]), .app-context-menu .app-context-item:focus-visible { background:var(--soft,var(--raised)); }
 .app-context-menu .app-context-item:focus-visible { outline:2px solid var(--primary); outline-offset:-2px; }
 .app-context-menu .app-context-item[aria-disabled="true"] { color:var(--muted); cursor:default; opacity:.65; }
+/* Disabled items must not react to hover. The global `.menu-item:hover:not(:disabled)`
+   rule still matches `aria-disabled` items (they are not natively disabled), so the
+   shared context menu opts them out explicitly (VC: disabled states never change). */
+.app-context-menu .app-context-item[aria-disabled="true"]:hover { background:transparent; }
 .app-context-menu .app-context-item.danger { color:var(--danger); }
 .app-context-icon { display:flex; align-items:center; justify-content:center; flex:0 0 16px; width:16px; color:var(--muted); }
 .app-context-icon .ico { width:15px; height:15px; }
