@@ -540,7 +540,25 @@ html[data-theme="dark"] { color-scheme:dark; }
 /* The composer shares the transcript's 920px reading column so wide panes do not stretch it. */
 .chat-compose-shell { margin:8px max(16px, calc((100% - 920px) / 2)) 16px; padding:2px 8px 8px 12px; border:1px solid var(--border); border-radius:20px; background:var(--surface); box-shadow:var(--shadow-soft, 0 8px 24px color-mix(in srgb, var(--text) 8%, transparent)); transition:border-color .15s ease, box-shadow .15s ease; }
 .chat-compose-shell:focus-within { border-color:color-mix(in srgb, var(--primary) 45%, var(--border)); box-shadow:0 0 0 3px color-mix(in srgb, var(--primary) 12%, transparent), var(--shadow-soft, 0 8px 24px color-mix(in srgb, var(--text) 8%, transparent)); }
-.chat-compose-shell textarea { width:100%; min-height:44px; max-height:200px; padding:10px 6px 4px; border:0; resize:none; background:transparent; box-shadow:none; font-size:14px; line-height:1.55; overflow-y:auto; }
+.chat-compose-shell textarea { width:100%; min-height:44px; max-height:200px; resize:none; background:transparent; box-shadow:none; overflow-y:auto; scrollbar-gutter:stable; }
+/* One metric rule for the textarea glyphs and the highlight layer so both wrap
+   identically. Keep these values in sync with each other, never with .chat-compose-shell textarea. */
+.chat-compose-shell textarea,
+.chat-compose-highlights-scroll {
+  box-sizing:border-box; margin:0; border:0; padding:10px 6px 4px;
+  font:inherit; font-size:14px; line-height:1.55; letter-spacing:inherit;
+  white-space:pre-wrap; overflow-wrap:break-word; word-break:break-word; tab-size:4;
+}
+/* Inline mention highlight layer (design-inline-mentions.md §7): a transparent
+   text layer behind the native textarea; badged marks are painted under the glyphs. */
+.chat-compose-input { position:relative; }
+.chat-compose-input > textarea { position:relative; z-index:1; }
+.chat-compose-highlights { position:absolute; inset:0; z-index:0; overflow:hidden; pointer-events:none; }
+.chat-compose-highlights-scroll { height:100%; overflow:hidden; scrollbar-gutter:stable; color:transparent; }
+.chat-mention-badge { border-radius:4px; background:color-mix(in srgb, var(--primary) 14%, transparent); box-shadow:0 0 0 1px color-mix(in srgb, var(--primary) 42%, transparent); color:transparent; }
+.chat-mention-badge[data-kind="session"] { background:color-mix(in srgb, var(--st-running) 16%, transparent); box-shadow:0 0 0 1px color-mix(in srgb, var(--st-running) 45%, transparent); }
+.chat-mention-badge[data-kind="commit"] { background:color-mix(in srgb, var(--amber) 18%, transparent); box-shadow:0 0 0 1px color-mix(in srgb, var(--amber) 48%, transparent); }
+.chat-mention-badge[data-kind="skill"] { background:color-mix(in srgb, var(--st-needs) 16%, transparent); box-shadow:0 0 0 1px color-mix(in srgb, var(--st-needs) 45%, transparent); }
 .chat-compose-shell textarea::placeholder { color:color-mix(in srgb, var(--muted) 85%, transparent); }
 /* The hint stays one line: while the placeholder shows, clip it with an ellipsis. Typing restores normal wrapping. */
 .chat-compose-shell textarea:placeholder-shown { white-space:nowrap; overflow-x:hidden; text-overflow:ellipsis; }

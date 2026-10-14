@@ -68,6 +68,7 @@ import { textFieldContextMenuItems } from '../contextMenuFallback';
 import { useChatContext } from '../useChatContext';
 import { ContextMessage, ContextTray } from './ContextTray';
 import { ChatMentions } from './ChatMentions';
+import { ComposerMentionHighlights } from './ComposerMentionHighlights';
 import { agentMentionItems, beginMentionLoad, commitMentionItems, fileMentionItems, flatMentionItems, initialMentionLoadState, mentionGroups as buildMentionGroups, mentionKeyAction, mentionLoadCurrent, mentionLoadKey, mentionQuery, sessionContextItem, sessionMentionItems, skillMentionItems, type MentionItem, type MentionLoadState, type MentionSources } from '../chatMentions';
 import { activeMentionEntries, addMentionEntry, deletionRange, resolveMentions, type MentionEntry, type MentionableItem } from '../inlineMentions';
 import { composerEditable, composerSnapshot, decodeLocalRecovery, encodeLocalRecovery, localRecoveryDiffers, MAX_MENTION_MESSAGE, mentionDescription, mentionInsertedText, mentionPickStillValid, serializeComposerSnapshot, tentativeMentionPick, type ComposerInputState, type ComposerSnapshot, type LocalRecovery, type MentionPickTicket } from '../composerMentions';
@@ -1636,7 +1637,10 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession, 
       {!!images.length && !submissionPreview && <div className="chat-image-draft" aria-label={copy('Image attachments', '图片附件')}>{images.map((image, index) => <figure key={index}><img src={image} alt={`${copy('Pasted image', '已粘贴图片')} ${index + 1}`} /><button type="button" disabled={busy || imageReading || !writable} aria-label={`${copy('Remove image', '移除图片')} ${index + 1}`} onClick={() => updateImages(images.filter((_, imageIndex) => imageIndex !== index))}>×</button></figure>)}<span className="chat-image-draft-note">{copy('Images saved on this device', '图片已保存在此设备')}</span></div>}
       {!submissionPreview && <ContextTray items={context.items} text={text} zh={zh} onRemove={context.remove} disabled={busy || imageReading || !writable} mentions={activeMentions} workspaceRoot={session.worktreePath} />}
       {!!activeMentions.length && <p id={mentionDescriptionId} className="sr-only">{mentionDescription(activeMentions, zh)}</p>}
+      <div className="chat-compose-input">
+        {!submissionPreview && <ComposerMentionHighlights text={text} resolved={resolvedMentions} catalogue={mentionCatalogue} areaRef={composeRef} />}
       <textarea id={`chat-message-${session.id}`} ref={composeRef} value={submissionPreview ? '' : text} onChange={event => { setCaret(event.target.selectionStart ?? event.target.value.length); setMentionDismissed(undefined); changeText(event.target.value); setSlashIndex(0); setMentionIndex(0); }} onCompositionStart={() => { composingRef.current = true; }} onCompositionEnd={event => { composingRef.current = false; changeText(event.currentTarget.value); }} onSelect={event => setCaret(event.currentTarget.selectionStart ?? caret)} onClick={event => setCaret(event.currentTarget.selectionStart ?? caret)} onKeyUp={event => setCaret(event.currentTarget.selectionStart ?? caret)} onPaste={pasteImages} onContextMenu={composerEditableNow ? openComposerContextMenu : undefined} onKeyDown={onComposeKey} aria-describedby={activeMentions.length ? mentionDescriptionId : undefined} placeholder={copy('Message, or type / for commands', '发送消息，或输入 / 命令')} rows={1} disabled={!composerEditableNow} />
+      </div>
       <ComposerOptions
         options={ui.options}
         loadState={ui.loadState}
