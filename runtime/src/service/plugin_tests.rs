@@ -59,7 +59,7 @@ fn echo_fixture(root: &std::path::Path) -> std::path::PathBuf {
 
 fn attach_test_capability_notifier(providers: &Providers, db: &Arc<Database>) {
     let capability_db = Arc::downgrade(db);
-    providers.set_capability_listener(Arc::new(move || {
+    providers.set_capability_listener(Arc::new(move |_update: crate::providers::CapabilityUpdate| {
         let Some(db) = capability_db.upgrade() else { return };
         if let Err(error) = db.transaction(|tx| {
             tx.execute(
@@ -471,3 +471,53 @@ fn enabled_plugin_terminal_session_launches_the_temporary_echo_script() {
     )
     .unwrap();
 }
+
+#[test]
+fn provider_refresh_returns_before_the_probe_completes() {
+    use crate::providers::{ChatSession, ProviderAdapter, ProviderCapability, ProviderError, TerminalCommand};
+    use std::sync::{Condvar, Mutex};
+    use std::time::{Duration, Instant};
+
+    struct BlockingProbe(Arc<(Mutex<bool>, Condvar)>);
+    impl ProviderAdapter for BlockingProbe {
+        fn id(&self) -> &'static str { "codex" }
+        fn capability(&self) -> ProviderCapability {
+            let (lock, wait) = &*self.0;
+            let mut released = lock.lock().unwrap();
+            while !*released { released = wait.wait(released).unwrap(); }
+            ProviderCapability {
+                source: "builtin", plugin_id: None, icon: None, sign_in: None, homepage: None,
+                id: "codex".into(), name: "blocked".into(), installed: true, version: None,
+                terminal: false, chat: false, history: false, resume: false,
+                terminal_resume_capture: "none", reason: None, auth: "unknown".into(),
+            }
+        }
+        fn terminal_command(&self, _: Option<&str>, _: Option<&str>) -> std::result::Result<TerminalCommand, ProviderError> {
+            Err(ProviderError::new("unsupported", "fixture"))
+        }
+        fn history_list(&self, _: Option<&str>, _: u32, _: Option<&str>) -> std::result::Result<Value, ProviderError> { Ok(json!({})) }
+        fn history_read(&self, _: &str) -> std::result::Result<Value, ProviderError> { Ok(json!([])) }
+        fn open_chat(&self, _: &str, _: &str, _: Option<&str>) -> std::result::Result<Box<dyn ChatSession>, ProviderError> {
+            Err(ProviderError::new("unsupported", "fixture"))
+        }
+    }
+
+    let root = tempfile::tempdir().unwrap();
+    let db = Arc::new(Database::open(&root.path().join("runtime.sqlite")).unwrap());
+    let mut service = test_service(root.path(), Arc::clone(&db));
+    let gate = Arc::new((Mutex::new(false), Condvar::new()));
+    service.providers = Arc::new(Providers::for_test(vec![Arc::new(BlockingProbe(Arc::clone(&gate)))]));
+    let started = Instant::now();
+    let result = request(&service, "provider.refresh", json!({})).unwrap();
+    assert!(started.elapsed() < Duration::from_millis(200), "provider.refresh waited for the probe");
+    assert!(result["refreshId"].as_u64().unwrap() >= 1);
+    // Release the gate so the worker can finish before the service drops.
+    *gate.0.lock().unwrap() = true;
+    gate.1.notify_all();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while service.providers.capability_snapshot().is_empty() && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert!(!service.providers.capability_snapshot().is_empty());
+}
+

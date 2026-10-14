@@ -2811,6 +2811,18 @@
         "$ref": "#/definitions/ProviderCapability"
       }
     },
+    "RequestResult<\"provider.refresh\">": {
+      "type": "object",
+      "properties": {
+        "refreshId": {
+          "type": "number"
+        }
+      },
+      "required": [
+        "refreshId"
+      ],
+      "additionalProperties": false
+    },
     "RequestResult<\"plugin.list\">": {
       "$ref": "#/definitions/PluginList"
     },
@@ -7240,6 +7252,32 @@
         },
         "result": {
           "$ref": "#/definitions/RequestResult%3C%22provider.list%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "result"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "provider.refresh"
+        },
+        "result": {
+          "$ref": "#/definitions/RequestResult%3C%22provider.refresh%22%3E"
         }
       },
       "required": [

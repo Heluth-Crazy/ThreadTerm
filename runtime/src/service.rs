@@ -835,11 +835,15 @@ impl RuntimeService {
                 })
         }));
         let capability_db = Arc::downgrade(&db);
-        providers.set_capability_listener(Arc::new(move || {
+        providers.set_capability_listener(Arc::new(move |update: crate::providers::CapabilityUpdate| {
             let Some(db) = capability_db.upgrade() else { return };
+            let mut payload = json!({"kind":"providers","outcome":update.outcome});
+            if let Some(refresh_id) = update.refresh_id {
+                payload["refreshId"] = json!(refresh_id);
+            }
             if let Err(error) = db.transaction(|tx| {
                 tx.execute("INSERT INTO outbox(event,data,created_at) VALUES ('state.changed',?,?)",
-                    rusqlite::params![json!({"kind":"providers"}).to_string(), chrono::Utc::now().to_rfc3339()])?;
+                    rusqlite::params![payload.to_string(), chrono::Utc::now().to_rfc3339()])?;
                 Ok(())
             }) {
                 eprintln!("provider capability notification failed: {error}");
@@ -1513,6 +1517,7 @@ impl RuntimeService {
                     Ok(serde_json::to_value(settings)?)
                 }
                 "provider.list" => Ok(Value::Array(self.providers.capability_snapshot_result()?)),
+                "provider.refresh" => Ok(json!({"refreshId": self.providers.request_capability_refresh()})),
                 "plugin.list" | "plugin.setEnabled" | "plugin.reload" | "plugin.selectBrowserBinding" => {
                     let _plugins = self.plugin_gate.lock().map_err(|_| anyhow::anyhow!("plugin registry lock poisoned"))?;
                     let _settings = self.settings_apply_gate.lock().map_err(|_| anyhow::anyhow!("settings apply lock poisoned"))?;

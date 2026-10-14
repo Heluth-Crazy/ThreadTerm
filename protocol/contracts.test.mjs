@@ -532,3 +532,13 @@ test('quick launch commands are bounded: relative cwd inside the root, known she
  validateRequest('quickLaunch.run',{commandId:'c',cwd:'C:\\repo',operationId:'o'});
  validateResult('quickLaunch.run',{existing:false,session:{id:'s',title:'Web dev server',provider:'custom',mode:'terminal',status:'running',createdAt:'t',updatedAt:'t',run:{commandId:'c',name:'Web dev server',kind:'service',shell:'cmd',url:'http://localhost:5174/',urlSource:'output'}}});
 });
+
+test('provider refresh is additive and carries the claimed generation',()=>{
+ validateRequest('provider.refresh',{});
+ validateResult('provider.refresh',{refreshId:1});
+ validateResult('provider.refresh',{refreshId:0});
+ assert.throws(()=>validateResult('provider.refresh',{}));
+ assert.throws(()=>validateResult('provider.refresh',{refreshId:'1'}));
+ assert.throws(()=>validateRequest('provider.refresh',{callerToken:'secret'}));
+});
+
