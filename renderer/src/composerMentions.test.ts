@@ -83,7 +83,7 @@ test('the local recovery value is one versioned pair; legacy plain text still re
 });
 
 test('the screen-reader line lists every active mention in en and zh-CN', () => {
-  const active = [entry('src/cart.ts'), { token: '@codex', item: { kind: 'agent', id: 'agent:codex', provider: 'codex' } }];
+  const active: MentionEntry[] = [entry('src/cart.ts'), { token: '@codex', item: { kind: 'agent', id: 'agent:codex', provider: 'codex' } }];
   assert.equal(mentionDescription(active, false), 'Mentions: cart.ts (file), codex (agent)');
   assert.equal(mentionDescription(active, true), '提及：cart.ts（文件）、codex（代理）');
   assert.equal(mentionDescription([], false), '');
