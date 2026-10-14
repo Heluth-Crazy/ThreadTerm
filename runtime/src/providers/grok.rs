@@ -138,7 +138,8 @@ impl GrokAdapter {
                 "clientInfo": {"name":"threadterm","title":"ThreadTerm","version":env!("CARGO_PKG_VERSION")}
             }),
         )?;
-        process.notification("initialized", json!({}))?;
+        // ACP has no `initialized` notification; grok 1.0.52 logs each one as
+        // "Method not found", once per launch (every capability probe).
         Ok((process, initialized))
     }
 
@@ -1421,6 +1422,9 @@ impl GrokChat {
                         json!({"parts":[{"type":"text","text":"Grok completed conversation compaction.","status":"complete"}]}),
                     );
                 }
+                if let Some(context) = result.as_ref().ok().and_then(grok_turn_context) {
+                    emit(&events, "grok", &session_id, Some(&native_id), Some(&turn_id), "chat.context", context);
+                }
                 match result {
                     Ok(value) => emit(
                         &events,
@@ -2480,6 +2484,17 @@ fn grok_context_usage(value: &Value) -> Option<Value> {
         if let Some(used) = used { usage.insert("percent".into(), json!(((used as f64 / v as f64) * 100.0).clamp(0.0, 100.0))); }
     }
     Some(Value::Object(usage))
+}
+
+/// The prompt result's `_meta` (grok 1.0.52) holds the last request's tokens
+/// (the context occupancy) and, under `usage`, the whole turn's total for the
+/// footer.
+fn grok_turn_context(result: &Value) -> Option<Value> {
+    let meta = result.get("_meta")?;
+    let turn = grok_context_usage(&json!({"usage":meta.get("usage")?}))?;
+    let mut last = meta.clone();
+    last.as_object_mut()?.remove("usage");
+    Some(json!({"usage":grok_context_usage(&last).unwrap_or_else(|| turn.clone()),"turnUsage":turn}))
 }
 
 fn emit_grok_retry(
@@ -4459,6 +4474,22 @@ mod tests {
             }
             assert!(count > 0);
         }
+    }
+
+    #[test]
+    fn the_prompt_result_gives_the_turn_total_and_the_context_occupancy() {
+        // Live grok 1.0.52 prompt result (trimmed).
+        let result = json!({"stopReason":"end_turn","_meta":{"promptId":"p","modelId":"grok-4.7",
+            "totalTokens":19151,"inputTokens":19034,"outputTokens":110,"cachedReadTokens":18816,"reasoningTokens":49,
+            "usage":{"inputTokens":128413,"outputTokens":1075,"totalTokens":129488,"cachedReadTokens":120320}}});
+        let context = grok_turn_context(&result).unwrap();
+        assert_eq!(context["turnUsage"]["inputTokens"], 128413);
+        assert_eq!(context["turnUsage"]["outputTokens"], 1075);
+        assert_eq!(context["turnUsage"]["cacheReadTokens"], 120320);
+        assert_eq!(context["usage"]["inputTokens"], 19034);
+        assert_eq!(context["usage"]["usedTokens"], 19151);
+        assert!(grok_turn_context(&json!({"stopReason":"end_turn"})).is_none());
+        assert!(grok_turn_context(&json!({"stopReason":"end_turn","_meta":{"promptId":"p"}})).is_none());
     }
 
     #[test]
