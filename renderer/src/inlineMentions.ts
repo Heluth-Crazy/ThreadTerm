@@ -13,7 +13,8 @@ const BARE_END = /[.,;:!?)\]}']$/;
 // Han, Hiragana, Katakana, Bopomofo, Hangul, CJK radicals, symbols and fullwidth forms.
 const CJK = /[\u2E80-\u2EFF\u3000-\u303F\u3040-\u30FF\u3100-\u312F\u31A0-\u31BF\u3400-\u4DBF\u4E00-\u9FFF\uF900-\uFAFF\uFE30-\uFE4F\uFF00-\uFFEF\uAC00-\uD7AF]/;
 const BEFORE_BOUNDARY = /[([{"'“‘（【「《]/;
-const AFTER_BOUNDARY = /[.,;:!?)}\]"”’）】」》]/;
+// ASCII `'` is part of the binding boundary set (§3.3); without it `'@cart.ts'` loses its badge.
+const AFTER_BOUNDARY = /[.,;:!?)}\]"'”’）】」》]/;
 
 /** A token is `@bare` or `@"quoted"`, at most 64 UTF-16 code units. */
 export function isValidMentionToken(token: string): boolean {
@@ -24,7 +25,9 @@ export function isValidMentionToken(token: string): boolean {
     const inner = rest.slice(1, -1);
     return inner.length > 0 && !/["\r\n]/.test(inner);
   }
-  if (rest.length === 0 || /[\s",\r\n]/.test(rest)) return false;
+  // The binding grammar (§3.1) forbids only whitespace and `"` inside a bare token; internal
+  // commas and apostrophes are legal (only a *trailing* one of BARE_END is rejected).
+  if (rest.length === 0 || /[\s"]/.test(rest)) return false;
   return !BARE_END.test(rest);
 }
 
@@ -101,8 +104,12 @@ function boundLabel(label: string): { label: string; cut: boolean } {
 }
 
 function tokenForLabel(label: string, forceQuote: boolean): string {
+  // Quote when the *original* label needs it (§3.2 step 4), but never let CR/LF or `"` reach the
+  // token: a quoted token rejects them, and a label made only of those would otherwise leave every
+  // candidate invalid and spin the suffix loop forever.
+  const cleaned = label.replace(/[\r\n]/g, ' ').replace(/"/g, "'");
   const needsQuote = forceQuote || /[\s"]/.test(label) || BARE_END.test(label);
-  return needsQuote ? `@"${label.replace(/"/g, "'")}"` : `@${label}`;
+  return needsQuote ? `@"${cleaned}"` : `@${cleaned}`;
 }
 
 /** The kind-specific fallback label (§3.2 step 5); `undefined` for kinds without one. */
@@ -134,10 +141,18 @@ export function inlineMentionToken(item: MentionableItem, catalogue: readonly Me
     candidates.push(tokenForLabel(boundedFallback.label, boundedFallback.cut));
   }
   for (const candidate of candidates) if (isValidMentionToken(candidate) && !used.has(candidate)) return candidate;
-  for (let suffix = 2; ; suffix += 1) {
+  // The catalogue holds at most 64 entries, so 65 distinct suffixed candidates cannot all be used;
+  // bound the loop instead of trusting that invariant at runtime.
+  for (let suffix = 2; suffix <= MAX_MENTION_CATALOGUE + 2; suffix += 1) {
     const candidate = tokenForLabel(`${bounded.label}~${suffix}`, bounded.cut);
     if (isValidMentionToken(candidate) && !used.has(candidate)) return candidate;
   }
+  // Guaranteed-valid final fallback: `@mentionN` is always a legal token, and the used set is finite.
+  for (let index = 1; index <= MAX_MENTION_CATALOGUE + 1; index += 1) {
+    const candidate = `@mention${index}`;
+    if (!used.has(candidate)) return candidate;
+  }
+  throw new Error('mention catalogue has no free token');
 }
 
 /** Reserves the identity's token, or reports `capacity` once 64 identities exist (no eviction). */

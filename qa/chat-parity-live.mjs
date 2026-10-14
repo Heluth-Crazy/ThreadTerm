@@ -16,6 +16,7 @@ import { fileURLToPath } from 'node:url';
 import { build as esbuild } from 'esbuild';
 import { build as viteBuild } from 'vite';
 import { electron } from './lib/desktop1.mjs';
+import { assertNoControlViolations, checkControlConsistency } from './lib/visual-consistency.mjs';
 import { scenarios } from './chat-parity-live-scenarios.mjs';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
@@ -157,13 +158,16 @@ async function attachChat(session, { dir, cwd }) {
         await delay(1000);
       }
     },
-    async shot(name, { widths = [1100], theme = 'light' } = {}) {
+    async shot(name, { widths = [1100], theme = 'light', container } = {}) {
       const files = [];
+      const selector = container ?? `[data-testid="session-chat-${session.id}"]`;
       for (const width of widths) {
         await appearance({ theme, width });
         await delay(400);
         const file = join(dir, `${name}-${theme}-${width}.png`);
         await page.screenshot({ path: file, animations: 'disabled' });
+        // Every captured state must satisfy the shared VC rules before the presentation resets.
+        assertNoControlViolations(await checkControlConsistency(page, selector), `${name} ${theme}/${width}`);
         files.push(file);
       }
       await appearance({ theme: 'light', width: 1100 });
