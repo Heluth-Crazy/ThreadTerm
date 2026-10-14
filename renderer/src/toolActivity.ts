@@ -158,8 +158,9 @@ const outputText = (value: unknown): string[] => {
 const ANSI = /\x1B(?:\[[0-?]*[ -/]*[@-~]|\][^\x07\x1B]*(?:\x07|\x1B\\))/g;
 const CONTROL = /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F-\u009F]/g;
 const OUTPUT_PREVIEW_LIMIT = 240;
-// Kimi streams a call's empty arguments as content ("{}"); that is not output.
-const EMPTY_JSON = /^(?:\{\s*\}|\[\s*\])$/;
+// A line of only brackets is not output: Kimi streams a call's empty arguments as "{}", and a JSON result
+// (delegate_result) ends with "}".
+const EMPTY_JSON = /^[[\]{}(),;\s]+$/;
 
 /** A compact real result line only; tool inputs are never serialized as output. */
 export function toolOutputPreview(part: ChatPart): string | undefined {
