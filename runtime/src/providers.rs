@@ -1092,7 +1092,7 @@ impl Providers {
         #[cfg(not(test))]
         let forced_failure = false;
         let spawned = if forced_failure {
-            Err(std::io::Error::new(std::io::ErrorKind::Other, "forced capability probe spawn failure"))
+            Err(std::io::Error::other("forced capability probe spawn failure"))
         } else {
             std::thread::Builder::new()
                 .name("provider-capabilities".into())
