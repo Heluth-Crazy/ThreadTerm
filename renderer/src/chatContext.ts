@@ -190,11 +190,11 @@ export function serializeContext(items: unknown, text: string): string {
 export type ContextEnvelopeInput = { trayItems: readonly ContextItem[]; active: readonly MentionEntry[]; workspaceRoot?: string };
 
 /**
- * Serializes the context tray plus the active mentions: one block per identity
- * (tray data wins) and a `mentions v1` map from each live token to its block.
+ * The merged composer context: one block per identity (tray data wins) plus the
+ * block index of every live token. Shared by the send envelope and §9 Show details
+ * so both always agree on the `i/n` numbering.
  */
-export function serializeMentionedContext(input: ContextEnvelopeInput, text: string): string {
-  if (typeof text !== 'string') throw new Error('Invalid message text. / 无效的消息文本。');
+function mergedMentionBlocks(input: ContextEnvelopeInput): { blocks: string[]; tokenIndex: Map<string, number> } {
   const { trayItems, active, workspaceRoot } = input;
   if (!Array.isArray(trayItems) || !Array.isArray(active)) throw new Error('Invalid context attachments. / 无效的上下文附件。');
   const order: string[] = [];
@@ -211,12 +211,34 @@ export function serializeMentionedContext(input: ContextEnvelopeInput, text: str
   }
   if (order.length > MAX_CONTEXT_ITEMS) throw new Error('Attach at most 12 context items. / 最多附加 12 个上下文项。');
   const blocks = contextSerializedBlocks(order.map(key => itemByIdentity.get(key)!));
-  const mentions: Record<string, number> = {};
+  const tokenIndex = new Map<string, number>();
   order.forEach((key, index) => {
     const token = tokenByIdentity.get(key);
-    if (token) mentions[token] = index + 1;
+    if (token) tokenIndex.set(token, index + 1);
   });
-  const header = Object.keys(mentions).length ? `[ThreadTerm message; mentions v1 ${JSON.stringify(mentions)}]` : messageHeader;
+  return { blocks, tokenIndex };
+}
+
+/**
+ * The exact merged block for one live mention token (tray data wins), so Show
+ * details previews the same `i/n` block the submission envelope would carry.
+ */
+export function mentionSerializedBlock(input: ContextEnvelopeInput, token: string): string | undefined {
+  const { blocks, tokenIndex } = mergedMentionBlocks(input);
+  const index = tokenIndex.get(token);
+  return index === undefined ? undefined : blocks[index - 1];
+}
+
+/**
+ * Serializes the context tray plus the active mentions: one block per identity
+ * (tray data wins) and a `mentions v1` map from each live token to its block.
+ */
+export function serializeMentionedContext(input: ContextEnvelopeInput, text: string): string {
+  if (typeof text !== 'string') throw new Error('Invalid message text. / 无效的消息文本。');
+  const { blocks, tokenIndex } = mergedMentionBlocks(input);
+  const mentions: Record<string, number> = {};
+  for (const [token, index] of tokenIndex) mentions[token] = index;
+  const header = tokenIndex.size ? `[ThreadTerm message; mentions v1 ${JSON.stringify(mentions)}]` : messageHeader;
   const serialized = blocks.length ? `${blocks.join('\n')}\n${header}\n${text}` : text;
   if (bytes(serialized) > MAX_CONTEXT_BYTES) {
     throw new Error('Context attachments and message must not exceed 128 KiB. / 上下文附件和消息总大小不能超过 128 KiB。');

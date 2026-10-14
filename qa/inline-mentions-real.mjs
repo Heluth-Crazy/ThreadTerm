@@ -101,10 +101,12 @@ async function setCaret(id, position) { await composer(id).evaluate((node, value
 // M5: right-click a mention mark by its wrapped fragment (the last one by default),
 // then drive the shared context menu and the details dialog.
 const mentionMarks = id => chatScope(id).locator('.chat-compose-highlights .chat-mention-badge');
-async function rightClickMark(id, index) {
+async function rightClickMark(id, index, fraction = 0) {
   const rects = await mentionMarks(id).nth(index).evaluate(node => [...node.getClientRects()].map(rect => ({ x: rect.x, y: rect.y, width: rect.width, height: rect.height })));
   const rect = rects[rects.length - 1];
-  await page.mouse.click(Math.round(rect.x + Math.min(4, rect.width / 2)), Math.round(rect.y + rect.height / 2), { button: 'right' });
+  // fraction > 0 clicks inside the fragment (for a selection hit test); otherwise near its left edge.
+  const x = fraction > 0 ? rect.x + Math.max(1, Math.min(rect.width - 1, rect.width * fraction)) : rect.x + Math.min(4, rect.width / 2);
+  await page.mouse.click(Math.round(x), Math.round(rect.y + rect.height / 2), { button: 'right' });
   await page.locator('[data-testid="context-menu"]').waitFor({ timeout: 15_000 });
 }
 async function closeMentionMenu() { await page.keyboard.press('Escape'); await page.locator('[data-testid="context-menu"]').waitFor({ state: 'detached', timeout: 15_000 }); }
@@ -449,12 +451,20 @@ try {
   assert.equal(await page.locator('[data-testid="mention-action-details"]').count(), 1, 'right-click shows Show details');
   assert.equal(await page.locator('[data-testid="mention-action-open-file"]').count(), 1, 'right-click shows Open file');
   assert.equal(await page.locator('[data-testid="mention-action-remove"]').count(), 1, 'right-click shows Remove mention');
-  assert.equal(await menuDetailsText(), '[ThreadTerm context 1/1] File: src/checkout.ts', 'the clicked token B is the target');
+  assert.equal(await menuDetailsText(), '[ThreadTerm context 2/2] File: src/checkout.ts', 'the clicked token B is the target');
   // (b) selection on A, right-click inside A -> the action targets A.
   await composer(chat.id).evaluate((node, end) => node.setSelectionRange(0, end), '@cart.ts'.length);
   await delay(80);
   await rightClickMark(chat.id, 0);
-  assert.equal(await menuDetailsText(), '[ThreadTerm context 1/1] File: src/cart.ts', 'a click inside the selection targets A');
+  assert.equal(await menuDetailsText(), '[ThreadTerm context 1/2] File: src/cart.ts', 'a click inside the selection targets A');
+  // (b2) a selection only partly covering a token yields no mention actions when
+  // the pointer is inside the selected part.
+  await composer(chat.id).evaluate(node => node.setSelectionRange(3, 10));
+  await delay(80);
+  await rightClickMark(chat.id, 0, 0.8);
+  assert.equal(await page.locator('[data-testid="mention-action-details"]').count(), 0, 'a partial selection overlapping the token yields no mention actions');
+  assert.equal(await page.locator('[data-testid="context-menu-copy"]').count(), 1, 'the clipboard menu is still offered');
+  await closeMentionMenu();
   // (c) right-click on plain text -> no mention actions, clipboard still there.
   const plainPoint = await composer(chat.id).evaluate(node => { const rect = node.getBoundingClientRect(); return { x: rect.right - 16, y: rect.top + rect.height / 2 }; });
   await page.mouse.click(Math.round(plainPoint.x), Math.round(plainPoint.y), { button: 'right' });
@@ -484,6 +494,32 @@ try {
   await rightClickMark(chat.id, 0);
   assert.equal(await page.locator('[data-testid="mention-action-open-file"]').getAttribute('aria-disabled'), 'true', 'Open file is disabled for a session mention');
   await closeMentionMenu();
+  // (d2) Shift+F10 / the Menu key with the caret outside every token still opens
+  // the clipboard menu and never falls through to the global fallback, which
+  // would dispatch a synthetic right-click and could hit an unrelated token.
+  await composer(chat.id).fill('');
+  await pickQuery(chat.id, 'cart', 'files');
+  await composer(chat.id).focus(); await page.keyboard.press('End'); await page.keyboard.type('plain text');
+  await setCaret(chat.id, (await composer(chat.id).inputValue()).length);
+  await page.keyboard.press('Shift+F10');
+  await page.locator('[data-testid="context-menu"]').waitFor({ timeout: 15_000 });
+  assert.equal(await page.locator('[data-testid="mention-action-details"]').count(), 0, 'Shift+F10 outside a token shows no mention actions');
+  assert.equal(await page.locator('[data-testid="context-menu-copy"]').count(), 1, 'Shift+F10 outside a token shows the clipboard menu');
+  await closeMentionMenu();
+  await page.keyboard.press('ContextMenu');
+  await page.locator('[data-testid="context-menu"]').waitFor({ timeout: 15_000 });
+  assert.equal(await page.locator('[data-testid="mention-action-details"]').count(), 0, 'the Menu key outside a token shows no mention actions');
+  assert.equal(await page.locator('[data-testid="context-menu-copy"]').count(), 1, 'the Menu key outside a token shows the clipboard menu');
+  await closeMentionMenu();
+  await until(async () => (await composer(chat.id).inputValue()).includes('@cart.ts plain text'), 'the token survives both keyboard invocations');
+  // (f2) Open file is disabled for a directory mention, with a reason.
+  await composer(chat.id).fill('');
+  await pickQuery(chat.id, 'src', 'files');
+  await until(async () => (await composer(chat.id).inputValue()).includes('@src/'), 'directory mention token inserted');
+  await rightClickMark(chat.id, 0);
+  assert.equal(await page.locator('[data-testid="mention-action-open-file"]').getAttribute('aria-disabled'), 'true', 'Open file is disabled for a directory mention');
+  assert.match(await page.locator('[data-testid="mention-action-open-file"]').getAttribute('title') ?? '', /folder|directory/i, 'the directory reason is shown');
+  await closeMentionMenu();
   // (g) a wrapped fragment and a scrolled draft still hit-test.
   await writeFile(join(ws, 'src/a-very-long-module-name-that-wraps-across-lines.ts'), 'export const longName = 1;\n');
   await app.evaluate(({ BrowserWindow }) => { BrowserWindow.getAllWindows()[0].setContentSize(480, 900); BrowserWindow.getAllWindows()[0].webContents.setZoomFactor(2); });
@@ -505,9 +541,10 @@ try {
   await rightClickMark(chat.id, 0);
   assert.equal(await page.locator('[data-testid="mention-action-details"]').count(), 1, 'a scrolled token hit-tests');
   await closeMentionMenu();
-  // (h) wrapped and scrolled coverage is above; the stale-action revalidation is
-  // driven in the isolated Electron harness (qa/inline-mentions-visual.mjs) and
-  // the mentionActions unit tests, because the shared menu dismisses on scroll.
+  // (h) wrapped and scrolled coverage is above; the stale-token and
+  // session-switch revalidation is driven in the isolated Electron harness
+  // (qa/inline-mentions-visual.mjs) and the mentionActions unit tests, because
+  // the shared menu dismisses on the transcript scroll a real switch produces.
   await composer(chat.id).fill('');
   check('mention actions: pointer/keyboard targeting, Remove undo, Open file states and wrapped/scrolled hit tests');
 

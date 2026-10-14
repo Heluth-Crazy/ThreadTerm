@@ -29,26 +29,27 @@ export function mentionContainingSelection(resolved: readonly ResolvedMention[],
 }
 
 /**
- * Pointer invocation: the mark under the pointer. When the pointer lands on a
- * mark the current non-collapsed selection fully covers, the target becomes the
- * resolved range fully containing that selection (so a selection wider than a
- * single token deliberately yields no mention actions). The caret is never used
- * for pointer invocation, so right-clicking plain text shows no mention actions
- * even when the caret happens to sit in a token.
+ * Pointer invocation: the mark under the pointer. When the pointer itself is
+ * inside the current non-collapsed selection, the target becomes the resolved
+ * range fully containing that selection (so a selection that only partly covers
+ * a token deliberately yields no mention actions). The caret is never used for
+ * pointer invocation, so right-clicking plain text shows no mention actions even
+ * when the caret happens to sit in a token.
  */
 export function pointerMentionTarget(input: {
   resolved: readonly ResolvedMention[];
   marks: readonly MentionMark[];
   selectionStart: number;
   selectionEnd: number;
+  selectionRects: readonly MentionRect[];
   x: number;
   y: number;
 }): ResolvedMention | undefined {
   const mark = mentionMarkAtPoint(input.marks, input.x, input.y);
   if (!mark) return undefined;
-  const selected = input.selectionStart !== input.selectionEnd
-    && input.selectionStart <= mark.start && input.selectionEnd >= mark.end;
-  if (selected) return mentionContainingSelection(input.resolved, input.selectionStart, input.selectionEnd);
+  const pointerInSelection = input.selectionStart !== input.selectionEnd
+    && input.selectionRects.some(rect => contains(rect, input.x, input.y));
+  if (pointerInSelection) return mentionContainingSelection(input.resolved, input.selectionStart, input.selectionEnd);
   return mark;
 }
 

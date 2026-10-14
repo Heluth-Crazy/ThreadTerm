@@ -72,10 +72,10 @@ import { ComposerMentionHighlights } from './ComposerMentionHighlights';
 import { MessageMentionText } from './MessageMentionText';
 import { agentMentionItems, beginMentionLoad, commitMentionItems, fileMentionItems, flatMentionItems, initialMentionLoadState, mentionGroups as buildMentionGroups, mentionKeyAction, mentionLoadCurrent, mentionLoadKey, mentionQuery, sessionContextItem, sessionMentionItems, skillMentionItems, type MentionItem, type MentionLoadState, type MentionSources } from '../chatMentions';
 import { activeMentionEntries, addMentionEntry, deletionRange, mentionAtCaret, resolveMentions, type MentionEntry, type MentionableItem, type ResolvedMention } from '../inlineMentions';
-import { mentionActionSnapshot, mentionActionStillValid, mentionContainingSelection, pointerMentionTarget, type MentionMark } from '../mentionActions';
+import { mentionActionSnapshot, mentionActionStillValid, mentionContainingSelection, pointerMentionTarget, type MentionMark, type MentionRect } from '../mentionActions';
 import { composerEditable, composerSnapshot, decodeLocalRecovery, encodeLocalRecovery, localRecoveryDiffers, MAX_MENTION_MESSAGE, mentionDescription, mentionInsertedText, mentionPickStillValid, serializeComposerSnapshot, tentativeMentionPick, type ComposerInputState, type ComposerSnapshot, type LocalRecovery, type MentionPickTicket } from '../composerMentions';
 import { applyNativeEdit } from '../nativeTextEdit';
-import { contextSerializedBlocks, type SessionContextItem } from '../chatContext';
+import { mentionSerializedBlock, type SessionContextItem } from '../chatContext';
 import { contextError } from '../contextErrors';
 import { CHAT_REPAIR_REQUEST, setChatRepairAvailability, type ChatRepairAvailability } from '../chatRepair';
 import { discoveredRepair, discoveryMatches, type RepairDiscovery } from '../chatRepairDiscovery';
@@ -1090,6 +1090,30 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession, 
       return rects.length ? [{ start, end, token, itemId: node.dataset.id ?? '', rects }] : [];
     });
   }
+  // M5: the client rects of the current selection, measured from the highlight
+  // layer (which mirrors the textarea exactly) so a pointer inside the selection
+  // is distinguishable from one on an unselected part of the same token.
+  function selectionClientRects(start: number, end: number): MentionRect[] {
+    if (start >= end) return [];
+    const scroll = composeRef.current?.closest('.chat-compose-input')?.querySelector('.chat-compose-highlights-scroll');
+    if (!scroll) return [];
+    const walker = document.createTreeWalker(scroll, NodeFilter.SHOW_TEXT);
+    const range = document.createRange();
+    let position = 0;
+    let started = false;
+    let ended = false;
+    while (!ended) {
+      const node = walker.nextNode();
+      if (!node) break;
+      const length = node.textContent?.length ?? 0;
+      const nodeEnd = position + length;
+      if (!started && start < nodeEnd && end > position) { range.setStart(node, Math.max(0, start - position)); started = true; }
+      if (started && end <= nodeEnd) { range.setEnd(node, Math.min(length, end - position)); ended = true; }
+      position = nodeEnd;
+    }
+    if (!started || !ended) return [];
+    return Array.from(range.getClientRects()).map(rect => ({ x: rect.x, y: rect.y, width: rect.width, height: rect.height }));
+  }
   // M5: Show details / Open file / Remove mention for a live token, revalidated when run.
   function mentionMenuItems(target: ResolvedMention): ContextMenuItem[] {
     const item = mentionCatalogueRef.current.find(entry => entry.token === target.token)?.item;
@@ -1097,15 +1121,24 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession, 
     const snapshot = mentionActionSnapshot(target, lifecycle.current);
     const valid = () => mentionActionStillValid(snapshot, { lifecycle: lifecycle.current, resolved: resolvedMentionsRef.current });
     const changed = copy('The mention changed before the action ran. Reopen the menu and try again.', '执行操作前提及已更改。请重新打开菜单后重试。');
-    const canOpen = item.kind === 'file' && Boolean(openFile);
+    const directory = item.kind === 'file' && /[\\/]$/.test(item.path);
+    const canOpen = item.kind === 'file' && !directory && Boolean(openFile);
+    const openReason = canOpen ? undefined
+      : directory ? copy('Folders cannot be opened as a file.', '文件夹无法作为文件打开。')
+        : copy('This mention cannot be opened as a file.', '此提及无法作为文件打开。');
     return [
       { id: 'mention-details', label: copy('Show details', '查看详情'), testId: 'mention-action-details', onSelect: () => {
         if (!valid()) { setError(changed); return; }
-        setMentionPreview(contextSerializedBlocks([item])[0]);
+        // The identity's block inside the merged composer context, so its `i/n`
+        // numbering and data match the envelope the send path would build.
+        const active = activeMentionEntries(mentionCatalogueRef.current, resolvedMentionsRef.current);
+        const block = mentionSerializedBlock({ trayItems: contextRef.current.items, active, workspaceRoot: session.worktreePath }, snapshot.token);
+        if (block === undefined) { setError(changed); return; }
+        setMentionPreview(block);
       } },
-      { id: 'mention-open-file', label: copy('Open file', '打开文件'), testId: 'mention-action-open-file', disabled: !canOpen, reason: canOpen ? undefined : copy('This mention cannot be opened as a file.', '此提及无法作为文件打开。'), onSelect: () => {
+      { id: 'mention-open-file', label: copy('Open file', '打开文件'), testId: 'mention-action-open-file', disabled: !canOpen, reason: openReason, onSelect: () => {
         if (!valid()) { setError(changed); return; }
-        if (item.kind !== 'file' || !openFile) return;
+        if (item.kind !== 'file' || directory || !openFile) return;
         openFile({ path: item.path, ...(item.startLine ? { line: item.startLine } : {}) });
       } },
       { id: 'mention-remove', label: copy('Remove mention', '移除提及'), testId: 'mention-action-remove', onSelect: () => {
@@ -1131,27 +1164,31 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession, 
   function openComposerContextMenu(event: ReactMouseEvent<HTMLTextAreaElement>) {
     event.preventDefault();
     const field = event.currentTarget;
+    const selectionStart = field.selectionStart ?? 0;
+    const selectionEnd = field.selectionEnd ?? selectionStart;
     const target = pointerMentionTarget({
       resolved: resolvedMentionsRef.current,
       marks: liveMentionMarks(),
-      selectionStart: field.selectionStart ?? 0,
-      selectionEnd: field.selectionEnd ?? 0,
+      selectionStart,
+      selectionEnd,
+      selectionRects: selectionClientRects(selectionStart, selectionEnd),
       x: event.clientX,
       y: event.clientY,
     });
     showComposerMenu(field, event.clientX, event.clientY, target);
   }
-  // M5: Shift+F10 / the Menu key targets the resolved range at the caret or selection.
-  function openComposerMentionMenuFromKeyboard(event: KeyboardEvent<HTMLTextAreaElement>): boolean {
+  // M5: Shift+F10 / the Menu key targets the resolved range at the caret or
+  // selection. The event is always handled - a clipboard-only menu opens when no
+  // mention is at the caret - so the global fallback never dispatches a synthetic
+  // right-click near the textarea origin that could hit an unrelated token.
+  function openComposerMenuFromKeyboard(event: KeyboardEvent<HTMLTextAreaElement>) {
     const area = event.currentTarget;
     const start = area.selectionStart ?? 0, end = area.selectionEnd ?? start;
     const target = start === end
       ? mentionAtCaret(resolvedMentionsRef.current, start)
       : mentionContainingSelection(resolvedMentionsRef.current, start, end);
-    if (!target) return false;
     const rect = area.getBoundingClientRect();
     showComposerMenu(area, rect.left + Math.min(20, rect.width / 2), rect.top + Math.min(rect.height, 24), target);
-    return true;
   }
   attachImagesRef.current=(incoming:string[])=>{
     if(!composerEditable(composerStateRef.current)||imageReadingRef.current||!composeRef.current||composeRef.current.disabled) return 0;
@@ -1475,7 +1512,7 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession, 
   function onComposeKey(event: KeyboardEvent<HTMLTextAreaElement>) {
     const composing = event.nativeEvent.isComposing || event.keyCode === 229 || composingRef.current;
     if (!composing && (event.key === 'ContextMenu' || (event.key === 'F10' && event.shiftKey))) {
-      if (openComposerMentionMenuFromKeyboard(event)) { event.preventDefault(); return; }
+      openComposerMenuFromKeyboard(event); event.preventDefault(); return;
     }
     if (!composing && !event.ctrlKey && !event.altKey && !event.metaKey && (event.key === 'Backspace' || event.key === 'Delete')) {
       const area = event.currentTarget;
