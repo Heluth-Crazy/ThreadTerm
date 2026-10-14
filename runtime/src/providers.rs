@@ -2709,17 +2709,19 @@ mod capability_cache_tests {
     /// that exact round, so a stale round can be made to finish after a newer
     /// one. Rounds are numbered by entry order, matching the generation order
     /// the tests assert.
+    type ProbeGate = Arc<(Mutex<bool>, Condvar)>;
+
     struct GateProbe {
         probes: Arc<AtomicUsize>,
         entered: Arc<AtomicUsize>,
-        gates: Mutex<Vec<Arc<(Mutex<bool>, Condvar)>>>,
+        gates: Mutex<Vec<ProbeGate>>,
     }
 
     impl GateProbe {
         fn new(probes: &Arc<AtomicUsize>, entered: &Arc<AtomicUsize>) -> Self {
             Self { probes: Arc::clone(probes), entered: Arc::clone(entered), gates: Mutex::new(Vec::new()) }
         }
-        fn gate(&self, round: usize) -> Arc<(Mutex<bool>, Condvar)> {
+        fn gate(&self, round: usize) -> ProbeGate {
             let mut gates = self.gates.lock().unwrap();
             while gates.len() < round { gates.push(Arc::new((Mutex::new(false), Condvar::new()))); }
             Arc::clone(&gates[round - 1])
