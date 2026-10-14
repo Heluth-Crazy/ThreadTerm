@@ -530,6 +530,8 @@ struct PermissionRequest {
     turn_id: Option<String>,
     choices: Vec<ApprovalChoice>,
     question_data: Option<Value>,
+    /// Kimi's plan review: answered through the plan card, not choices.
+    plan: bool,
     state: PendingApprovalState,
 }
 
@@ -1025,6 +1027,78 @@ impl AcpChat {
         );
         Ok(json!({"turnId":operation_id}))
     }
+
+    fn submit_choice(
+        &mut self,
+        turn_id: &str,
+        approval_id: &str,
+        choice_id: &str,
+        operation_id: &str,
+        resolved: Value,
+    ) -> Result<(), ProviderError> {
+        // Terminal drain and submission share active -> permissions lock order.
+        let active_turn = self.active_turn.lock()
+            .map_err(|_| ProviderError::new("provider_internal", "ACP turn lock poisoned"))?;
+        let mut permissions = self
+            .permissions
+            .lock()
+            .map_err(|_| ProviderError::new("provider_internal", "ACP permission lock poisoned"))?;
+        let pending = permissions.get_mut(approval_id).ok_or_else(|| {
+            ProviderError::new(
+                "approval_not_pending",
+                "ACP approval is unknown or already resolved",
+            )
+        })?;
+        validate_turn(pending.turn_id.as_deref(), active_turn.as_deref(), turn_id)?;
+        find_choice(&pending.choices, choice_id)?;
+        match pending.state.begin_submit(operation_id) {
+            Ok(()) => {}
+            Err(error) if error.code == "approval_duplicate" => return Ok(()),
+            Err(error) => return Err(error),
+        }
+        let rpc_id = pending.rpc_id.clone();
+        let outcome = json!({"outcome":{"outcome":"selected","optionId":choice_id}});
+        let result = self.process.respond(rpc_id, outcome);
+        match result {
+            Ok(()) => {
+                permissions.remove(approval_id);
+                emit(
+                    &self.events,
+                    &self.provider,
+                    &self.session_id,
+                    Some(&self.native_id),
+                    Some(turn_id),
+                    "chat.approval.resolved",
+                    resolved,
+                );
+                Ok(())
+            }
+            Err(error) if write_failed_not_sent(&error) => {
+                if let Some(pending) = permissions.get_mut(approval_id) {
+                    pending.state.clear_submit();
+                }
+                Err(error)
+            }
+            Err(error) => {
+                if let Some(pending) = permissions.get_mut(approval_id) {
+                    pending.state.mark_unknown();
+                }
+                emit(
+                    &self.events,
+                    &self.provider,
+                    &self.session_id,
+                    Some(&self.native_id),
+                    Some(turn_id),
+                    "chat.approval.resolved",
+                    json!({"approvalId":approval_id,"status":"outcomeUnknown","outcome":"unknown"}),
+                );
+                Err(ProviderError::new(
+                    "approval_outcome_unknown",
+                    error.message,
+                ))
+            }
+        }
+    }
 }
 
 impl ChatSession for AcpChat {
@@ -1085,68 +1159,67 @@ impl ChatSession for AcpChat {
         choice_id: &str,
         operation_id: &str,
     ) -> Result<(), ProviderError> {
-        // Terminal drain and submission share active -> permissions lock order.
-        let active_turn = self.active_turn.lock()
-            .map_err(|_| ProviderError::new("provider_internal", "ACP turn lock poisoned"))?;
-        let mut permissions = self
-            .permissions
-            .lock()
-            .map_err(|_| ProviderError::new("provider_internal", "ACP permission lock poisoned"))?;
-        let pending = permissions.get_mut(approval_id).ok_or_else(|| {
-            ProviderError::new(
-                "approval_not_pending",
-                "ACP approval is unknown or already resolved",
-            )
-        })?;
-        validate_turn(pending.turn_id.as_deref(), active_turn.as_deref(), turn_id)?;
-        find_choice(&pending.choices, choice_id)?;
-        match pending.state.begin_submit(operation_id) {
+        self.submit_choice(turn_id, approval_id, choice_id, operation_id,
+            json!({"approvalId":approval_id,"outcome":"submitted"}))
+    }
+
+    fn plan_response(
+        &mut self,
+        turn_id: &str,
+        approval_id: &str,
+        response: &Value,
+        operation_id: &str,
+    ) -> Result<Option<String>, ProviderError> {
+        crate::chat_plan_approval::validate_response(response, false)?;
+        let pending_plan = self.permissions.lock().ok()
+            .is_some_and(|values| values.get(approval_id).is_some_and(|pending| pending.plan));
+        if !pending_plan {
+            return Err(ProviderError::new("approval_not_pending", "This plan is no longer waiting for a decision"));
+        }
+        let (choice_id, outcome) = match response.get("action").and_then(Value::as_str) {
+            Some("approve") => ("plan_approve", "approved"),
+            Some("abandon") => ("plan_reject_and_exit", "abandoned"),
+            _ => ("plan_revise", "changes_requested"),
+        };
+        let mut resolved = json!({"approvalId":approval_id,"status":"answered","outcome":"submitted","planOutcome":outcome});
+        let feedback = response.get("feedback").and_then(Value::as_str).map(str::trim)
+            .filter(|text| outcome == "changes_requested" && !text.is_empty());
+        if let Some(feedback) = feedback {
+            resolved["feedback"] = json!(feedback);
+        }
+        self.submit_choice(turn_id, approval_id, choice_id, operation_id, resolved)?;
+        if outcome != "changes_requested" {
+            // Approve and Reject and Exit both leave plan mode, but Kimi reports
+            // a mode change only for session/set_mode (live 2.0.2).
+            let moved = self.ui.lock().ok().is_some_and(|mut state| {
+                state.options.iter_mut()
+                    .find(|option| option.get("id").and_then(Value::as_str) == Some("mode")
+                        && option.get("value").and_then(Value::as_str) == Some("plan"))
+                    .map(|option| option["value"] = json!("default"))
+                    .is_some()
+            });
+            if moved {
+                emit_chat_ui(&self.events, &self.provider, &self.session_id, Some(&self.native_id), &self.ui);
+            }
+        }
+        let Some(feedback) = feedback else { return Ok(None); };
+        // Kimi's ACP reply has no feedback field: Revise keeps plan mode and the
+        // agent goes on to ask what to change. End that turn, then the feedback
+        // is the next prompt and Kimi revises the plan.
+        match self.cancel(turn_id) {
             Ok(()) => {}
-            Err(error) if error.code == "approval_duplicate" => return Ok(()),
+            Err(error) if error.code == "turn_not_active" => {}
             Err(error) => return Err(error),
         }
-        let rpc_id = pending.rpc_id.clone();
-        let outcome = json!({"outcome":{"outcome":"selected","optionId":choice_id}});
-        let result = self.process.respond(rpc_id, outcome);
-        match result {
-            Ok(()) => {
-                permissions.remove(approval_id);
-                emit(
-                    &self.events,
-                    &self.provider,
-                    &self.session_id,
-                    Some(&self.native_id),
-                    Some(turn_id),
-                    "chat.approval.resolved",
-                    json!({"approvalId":approval_id,"outcome":"submitted"}),
-                );
-                Ok(())
+        let deadline = std::time::Instant::now() + KIMI_REVISE_STOP_WAIT;
+        while self.active_turn.lock().ok().is_some_and(|active| active.as_deref() == Some(turn_id)) {
+            if std::time::Instant::now() >= deadline {
+                return Err(ProviderError::new("turn_in_progress",
+                    "Kimi has not stopped the planning turn yet; send your plan changes once it ends."));
             }
-            Err(error) if write_failed_not_sent(&error) => {
-                if let Some(pending) = permissions.get_mut(approval_id) {
-                    pending.state.clear_submit();
-                }
-                Err(error)
-            }
-            Err(error) => {
-                if let Some(pending) = permissions.get_mut(approval_id) {
-                    pending.state.mark_unknown();
-                }
-                emit(
-                    &self.events,
-                    &self.provider,
-                    &self.session_id,
-                    Some(&self.native_id),
-                    Some(turn_id),
-                    "chat.approval.resolved",
-                    json!({"approvalId":approval_id,"status":"outcomeUnknown","outcome":"unknown"}),
-                );
-                Err(ProviderError::new(
-                    "approval_outcome_unknown",
-                    error.message,
-                ))
-            }
+            std::thread::sleep(Duration::from_millis(50));
         }
+        Ok(Some(format!("Revise the plan with this feedback:\n\n{feedback}")))
     }
 
     fn answer(
@@ -1532,6 +1605,7 @@ fn emit_acp_message(
             .unwrap_or_default();
         let choices = acp_choices(&options);
         let question_data = kimi_question_payload(provider, &params, &options);
+        let plan = kimi_plan_text(provider, &params, &options);
         if let Ok(mut values) = permissions.lock() {
             values.insert(
                 approval_id.clone(),
@@ -1540,17 +1614,19 @@ fn emit_acp_message(
                     turn_id: turn_id.clone(),
                     choices: choices.clone(),
                     question_data: question_data.clone(),
+                    plan: plan.is_some(),
                     state: PendingApprovalState::default(),
                 },
             );
         }
+        let card_choices = if plan.is_some() { &[][..] } else { &choices[..] };
         let mut payload = approval_payload(
             &approval_id,
             provider,
             "session/request_permission",
             &acp_title(&params),
             &params,
-            &choices,
+            card_choices,
             turn_id.as_deref(),
             !choices.is_empty(),
         );
@@ -1558,6 +1634,11 @@ fn emit_acp_message(
             payload["interaction"] = json!("question");
             payload["answerable"] = json!(true);
             payload["form"] = question_data["form"].clone();
+        }
+        if let Some(plan) = plan {
+            payload["interaction"] = json!("plan");
+            payload["title"] = json!("Plan review");
+            payload["plan"] = json!(plan);
         }
         if foreign {
             payload["subagent"] = json!({"label":"Subagent"});
@@ -1582,7 +1663,7 @@ fn emit_acp_message(
             json!({
                 "approvalId":approval_id,
                 "request":params,
-                "choices":choices,
+                "choices":card_choices,
                 "part":{"type":"approval","approvalId":approval_id,"status":"pending","data":payload}
             }),
         );
@@ -1810,6 +1891,29 @@ fn kimi_question_payload(provider: &str, params: &Value, options: &[Value]) -> O
         "id":"q0","question":question,"options":labels.into_iter().map(|label| json!({"label":label})).collect::<Vec<_>>(),
         "multiSelect":false,"allowOther":false,"secret":false
     }]}}))
+}
+
+/// Kimi 2.0 ends plan mode with a permission request offering exactly
+/// `plan_approve` / `plan_revise` / `plan_reject_and_exit`; its first text block
+/// is the plan, after an optional "Plan saved to: <path>" line. A review with
+/// alternative approaches (`plan_opt_<i>`) keeps the generic choice card.
+fn kimi_plan_text(provider: &str, params: &Value, options: &[Value]) -> Option<String> {
+    if provider != "kimi" {
+        return None;
+    }
+    let mut ids: Vec<&str> = options.iter().filter_map(|option| option.get("optionId")?.as_str()).collect();
+    ids.sort_unstable();
+    if ids != ["plan_approve", "plan_reject_and_exit", "plan_revise"] {
+        return None;
+    }
+    let text = params.pointer("/toolCall/content")?.as_array()?.iter()
+        .filter_map(|block| block.pointer("/content/text")?.as_str())
+        .find(|text| !text.starts_with("Requesting approval to "))?;
+    let plan = match text.strip_prefix("Plan saved to: ").and_then(|rest| rest.split_once("\n\n")) {
+        Some((_, plan)) => plan,
+        None => text,
+    };
+    (!plan.trim().is_empty()).then(|| plan.trim_end().to_owned())
 }
 
 fn kimi_question_choice(
@@ -2245,6 +2349,10 @@ fn split_kimi_think_stream(in_think: &mut bool, chunk: &str) -> Vec<(&'static st
         .filter(|(_, text)| !text.is_empty())
         .collect()
 }
+
+/// How long Request changes waits for Kimi to stop the planning turn before
+/// the feedback can go out as the next prompt.
+const KIMI_REVISE_STOP_WAIT: Duration = Duration::from_secs(15);
 
 /// Locally handled kimi commands, merged into the slash menu alongside the
 /// agent's ACP-advertised commands.
@@ -2758,6 +2866,84 @@ mod tests {
         let spec = CommandSpec::from_path(powershell, vec!["-NoProfile".into(), "-NonInteractive".into(), "-Command".into(), script]).unwrap();
         let process = JsonLineProcess::spawn("conformance-acp", &spec, None, &[], EnvelopeStyle::JsonRpc2, Arc::new(|_| {})).unwrap();
         (process, log)
+    }
+
+    fn kimi_plan_review(id: &str) -> Value {
+        // Live Kimi 2.0.2 ExitPlanMode request.
+        json!({"id":id,"method":"session/request_permission","params":{"sessionId":"parent",
+            "options":[{"kind":"allow_once","name":"Approve","optionId":"plan_approve"},
+                {"kind":"reject_once","name":"Revise","optionId":"plan_revise"},
+                {"kind":"reject_once","name":"Reject and Exit","optionId":"plan_reject_and_exit"}],
+            "toolCall":{"title":"ExitPlanMode","toolCallId":"0:tool_plan","content":[
+                {"type":"content","content":{"type":"text","text":"Plan saved to: C:/Users/me/.kimi-code/sessions/s/plans/plan.md\n\n# Plan: add subtract\n\n1. Edit `src/math.js`.\n"}},
+                {"type":"content","content":{"type":"text","text":"Requesting approval to Presenting plan and exiting plan mode"}}]}}})
+    }
+
+    #[test]
+    fn only_kimis_plain_plan_review_becomes_a_plan() {
+        let request = kimi_plan_review("plan");
+        let options = request["params"]["options"].as_array().unwrap().clone();
+        assert_eq!(kimi_plan_text("kimi", &request["params"], &options).as_deref(), Some("# Plan: add subtract\n\n1. Edit `src/math.js`."));
+        assert!(kimi_plan_text("gemini", &request["params"], &options).is_none());
+        let mut approaches = options.clone();
+        approaches[0] = json!({"kind":"allow_once","name":"A","optionId":"plan_opt_0"});
+        assert!(kimi_plan_text("kimi", &request["params"], &approaches).is_none(), "alternative approaches keep their choices");
+        let mut bare = request["params"].clone();
+        bare["toolCall"]["content"][0]["content"]["text"] = json!("# Plan\n\nStep");
+        assert_eq!(kimi_plan_text("kimi", &bare, &options).as_deref(), Some("# Plan\n\nStep"));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn kimi_plan_card_answers_with_the_native_plan_options() {
+        let dir = tempfile::tempdir().unwrap();
+        let (process, log) = conformance_response_sink(dir.path());
+        let (sender, mut receiver) = crate::provider_events::tap_channel(64);
+        let events = ScopedProviderEvents::new(sender, "worker");
+        let native = Mutex::new(Some("parent".to_owned()));
+        let ui = Arc::new(Mutex::new(AcpUiState { permission_responder: Some(process.responder()), ..AcpUiState::default() }));
+        let mut chat = AcpChat { provider: "kimi".into(), process, session_id: "s".into(), native_id: "parent".into(), events,
+            active_turn: Arc::new(Mutex::new(None)), permissions: Arc::new(Mutex::new(HashMap::new())), ui };
+        chat.start_prompt("plan it", "turn").unwrap();
+        macro_rules! card { ($id:expr) => {{
+            emit_acp_message(&chat.events, "kimi", "s", &native, &chat.active_turn, &chat.permissions, &Mutex::new(false), &chat.ui, kimi_plan_review($id));
+            std::iter::from_fn(|| receiver.try_recv().ok()).find(|event| event.kind == "chat.approval").expect("plan card")
+        }}; }
+        let first = card!("first");
+        let data = &first.data["part"]["data"];
+        assert_eq!((data["interaction"].as_str(), data["title"].as_str()), (Some("plan"), Some("Plan review")));
+        assert_eq!(data["plan"], "# Plan: add subtract\n\n1. Edit `src/math.js`.");
+        assert_eq!(data["choices"], json!([]));
+        assert_eq!(data["submittable"], true);
+        assert!(chat.plan_response("turn", "not-a-plan", &json!({"action":"approve"}), "op").is_err());
+        assert!(chat.plan_response("turn", &encode_approval_id(&json!("first")), &json!({"action":"request_changes"}), "op").is_err(), "changes need feedback");
+        chat.ui.lock().unwrap().options.push(json!({"id":"mode","name":"Mode","value":"plan","choices":[]}));
+        assert_eq!(chat.plan_response("turn", &encode_approval_id(&json!("first")), &json!({"action":"approve"}), "op-approve").unwrap(), None);
+        // Kimi leaves plan mode silently; the chip follows.
+        let ui = std::iter::from_fn(|| receiver.try_recv().ok()).find(|event| event.kind == "chat.ui").expect("mode chip update");
+        assert!(ui.data["options"].as_array().unwrap().iter().any(|option| option["id"] == "mode" && option["value"] == "default"));
+
+        card!("second");
+        // Revise carries no feedback natively: the planning turn is stopped and
+        // the feedback becomes the next prompt.
+        let active = Arc::clone(&chat.active_turn);
+        let ender = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(200));
+            *active.lock().unwrap() = None;
+        });
+        let prompt = chat.plan_response("turn", &encode_approval_id(&json!("second")),
+            &json!({"action":"request_changes","feedback":" Also add multiply "}), "op-revise").unwrap();
+        ender.join().unwrap();
+        assert_eq!(prompt.as_deref(), Some("Revise the plan with this feedback:\n\nAlso add multiply"));
+        let resolved: Vec<_> = std::iter::from_fn(|| receiver.try_recv().ok()).filter(|event| event.kind == "chat.approval.resolved").collect();
+        assert_eq!(resolved.len(), 1);
+        assert_eq!((resolved[0].data["planOutcome"].as_str(), resolved[0].data["feedback"].as_str()), (Some("changes_requested"), Some("Also add multiply")));
+        chat.process.request("barrier", json!({})).unwrap();
+        let frames: Vec<Value> = std::fs::read_to_string(log).unwrap().lines().map(|line| serde_json::from_str(line).unwrap()).collect();
+        let reply = |id: &str| frames.iter().find(|frame| frame["id"] == id).map(|frame| frame["result"]["outcome"]["optionId"].clone());
+        assert_eq!(reply("first"), Some(json!("plan_approve")));
+        assert_eq!(reply("second"), Some(json!("plan_revise")));
+        assert!(frames.iter().any(|frame| frame["method"] == "session/cancel"));
     }
 
     #[cfg(windows)]

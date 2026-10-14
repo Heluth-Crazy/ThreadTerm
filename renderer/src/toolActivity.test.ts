@@ -214,6 +214,8 @@ test('tool output previews use only provider result fields and normalize the las
   for (const [provider, part, expected] of cases) assert.equal(toolOutputPreview(part), expected, provider);
   assert.equal(toolOutputPreview(tool('input-only', 'bash', 'running', { args: { command: 'never preview this' }, input: { output: 'also input' } })), undefined);
   assert.equal(toolOutputPreview(tool('malformed', 'bash', 'complete', { result: { content: [{ type: 'image' }, null, { text: 42 }] } })), undefined);
+  // Live Kimi ExitPlanMode: the empty argument object arrives as content.
+  assert.equal(toolOutputPreview(tool('kimi-args', 'ExitPlanMode', 'running', { content: [{ type: 'content', content: { type: 'text', text: '{}' } }] })), undefined);
   const long = 'x'.repeat(250);
   assert.equal(toolOutputPreview(tool('long', 'bash', 'complete', { output: long })), `${'x'.repeat(239)}…`);
 });
