@@ -6,13 +6,20 @@ import './context-tray.css';
 
 type Chip = { id: string; kind: ContextItem['kind']; label: string; title: string; block: string };
 const icons = { terminal: 'terminal', file: 'file', diff: 'branch', commit: 'clock', conversation: 'clock', quote: 'file', session: 'layers', agent: 'export', skill: 'spark' };
+// A copy-fork header keeps the exact ISO time for the agent; its chip shows a readable one.
+function readableCopiedAt(label: string, zh: boolean) {
+  return label.replace(/\d{4}-\d{2}-\d{2}T[\d:.]+(?:Z|[+-]\d{2}:\d{2})/, iso => {
+    const date = new Date(iso);
+    return Number.isNaN(date.getTime()) ? iso : date.toLocaleString(zh ? 'zh-CN' : 'en', { dateStyle: 'medium', timeStyle: 'short' });
+  });
+}
 function localized(chip: Chip, zh: boolean) {
   if (chip.kind === 'file') return chip.label.replace(/:(\d+)-(\d+)$/, ':$1–$2');
+  if (chip.kind === 'conversation') return readableCopiedAt(zh ? fullTitle(chip, true) : chip.label, zh);
   if (!zh) return chip.label;
   if (chip.kind === 'terminal') return chip.label.replace(/(\d+) lines?$/, '$1 行');
   if (chip.kind === 'diff') return chip.label.replace(/^Diff/, '差异');
   if (chip.kind === 'commit') return chip.label.replace(/^Commit/, '提交');
-  if (chip.kind === 'conversation') return fullTitle(chip, true);
   if (chip.kind === 'quote') return chip.label.replace(/^Quote:/, '引用：');
   if (chip.kind === 'session') return chip.label.replace(/^Session/, '会话');
   if (chip.kind === 'agent') return chip.label.replace(/^Agent/, '代理');
