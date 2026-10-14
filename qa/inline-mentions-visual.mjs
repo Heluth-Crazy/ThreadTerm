@@ -48,7 +48,7 @@ await writeFile(join(scratch, 'main.cjs'), `const {app,BrowserWindow}=require('e
 const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => key.toLowerCase() !== 'path'));
 Object.assign(env, { PATH: [dirname(process.execPath), join(process.env.SystemRoot || 'C:\\Windows', 'System32')].join(';') });
 
-const report = { passed: false, checks: [], screenshots: [], alignment: {}, latency: {}, errors: [] };
+const report = { passed: false, checks: [], screenshots: [], alignment: {}, latency: {}, vcChecks: [], errors: [] };
 let app; let page;
 const delay = ms => new Promise(done => setTimeout(done, ms));
 const check = value => { report.checks.push(value); };
@@ -70,6 +70,13 @@ const MIX_CATALOGUE = [
   agentEntry('@codex', 'codex'),
   skillEntry('@review', 'review', '/skill:review'),
 ];
+
+// The alignment oracle uses its own draft: every token is separated by several
+// spaces (and the long token wraps across two lines) so a glyph mask measured
+// from a region larger than the badge cannot pick up a neighbouring glyph.
+const ORACLE_LONG_TOKEN = '@a-very-long-module-name-that-wraps-across-two-full-lines.ts';
+const ORACLE_TEXT = 'Review    @cart.ts    ask    @other-chat    about    @6e0f22b    then    @codex    and    @review    with    several    more    filler    words    before    the    wrapping    token    ' + ORACLE_LONG_TOKEN + '    end.';
+const ORACLE_CATALOGUE = [...MIX_CATALOGUE, fileEntry(ORACLE_LONG_TOKEN, 'src/a-very-long-module-name-that-wraps-across-two-full-lines.ts')];
 
 // --- page helpers -----------------------------------------------------------
 const scope = id => page.locator(`[data-testid="session-chat-${id}"]`);
@@ -113,10 +120,20 @@ async function applyTheme(theme) {
   }, theme);
 }
 
-async function capture(name, box) {
+// Visual consistency is binding for every new screenshot state, so every state
+// (theme/width/locale/zoom included) is checked and a failure names the state.
+async function checkState(label, sessionId) {
+  const consistency = await checkControlConsistency(page, `[data-testid="session-chat-${sessionId}"] .chat-compose-shell`);
+  assertNoControlViolations(consistency, `screenshot ${label}`);
+  report.vcChecks.push({ state: label, controls: consistency.checked });
+  return consistency;
+}
+
+async function capture(name, box, sessionId) {
   const file = join(out, `${name}.png`);
   await page.screenshot({ path: file, clip: box });
   report.screenshots.push(file);
+  if (sessionId) await checkState(name, sessionId);
   return file;
 }
 
@@ -209,11 +226,11 @@ try {
   // --- 1. Special states ----------------------------------------------------
   const fileOnly = fileEntry('@cart.ts', 'src/cart.ts');
   await mountState('vis-file', { text: 'Please review @cart.ts before shipping.', mentions: [fileOnly] });
-  await capture('state-one-file', await shellBox('vis-file'));
+  await capture('state-one-file', await shellBox('vis-file'), 'vis-file');
   ok('one file mention renders a badge');
 
   await mountState('vis-kinds', { text: MIX_TEXT, mentions: MIX_CATALOGUE });
-  await capture('state-all-kinds', await shellBox('vis-kinds'));
+  await capture('state-all-kinds', await shellBox('vis-kinds'), 'vis-kinds');
   const kindCount = await scope('vis-kinds').locator('.chat-mention-badge').evaluateAll(nodes => nodes.map(node => node.dataset.kind));
   assert.deepEqual(kindCount.sort(), ['agent', 'commit', 'file', 'session', 'skill'], 'one badge per kind');
   ok('one of each mention kind renders');
@@ -226,20 +243,20 @@ try {
   await mountState('vis-wrap', { text: wrapped, mentions: MIX_CATALOGUE });
   const lines = await scope('vis-wrap').locator('.chat-mention-badge').evaluateAll(nodes => [...new Set(nodes.flatMap(node => [...node.getClientRects()].map(rect => Math.round(rect.top))))]);
   assert.ok(lines.length >= 3, `mentions wrap across three lines (${lines.length} distinct lines)`);
-  await capture('state-wrapped', await shellBox('vis-wrap'));
+  await capture('state-wrapped', await shellBox('vis-wrap'), 'vis-wrap');
   ok(`a wrapped draft shows mentions on ${lines.length} lines`);
 
   await mountState('vis-zh', { text: '请看@cart.ts。然后问@other-chat，提交@6e0f22b。', mentions: MIX_CATALOGUE, locale: 'zh-CN' });
   for (const width of [420, 700, 1100]) {
     await app.evaluate(({ BrowserWindow }, nextWidth) => BrowserWindow.getAllWindows()[0].setContentSize(nextWidth, 900), width);
     await delay(60);
-    await capture(`state-zh-${width}`, await shellBox('vis-zh'));
+    await capture(`state-zh-${width}`, await shellBox('vis-zh'), 'vis-zh');
   }
   ok('zh-CN CJK-adjacent tokens and full-width punctuation render');
 
   const positions = '@cart.ts starts the line\nends the line @codex\n\n@other-chat after a blank line';
   await mountState('vis-positions', { text: positions, mentions: MIX_CATALOGUE });
-  await capture('state-line-positions', await shellBox('vis-positions'));
+  await capture('state-line-positions', await shellBox('vis-positions'), 'vis-positions');
   ok('tokens at line start, line end and after a newline render');
 
   await mountState('vis-trailing', { text: 'A draft with @cart.ts that ends with a newline\n', mentions: [fileOnly] });
@@ -248,16 +265,16 @@ try {
   // the zero-width-space line; both still register their glyphs at the same y, so allow one line of slack.
   const heightSlack = parseFloat(trailingMetrics.area.lineHeight) + 2;
   assert.ok(Math.abs(trailingMetrics.areaScrollHeight - trailingMetrics.layerScrollHeight) <= heightSlack, `trailing newline stays within one line of the textarea (${trailingMetrics.areaScrollHeight}/${trailingMetrics.layerScrollHeight})`);
-  await capture('state-trailing-newline', await shellBox('vis-trailing'));
+  await capture('state-trailing-newline', await shellBox('vis-trailing'), 'vis-trailing');
   ok('a trailing newline keeps the layer height aligned');
 
   const quoted = fileEntry('@"a very long quoted file name that needs quoting.ts"', 'src/a very long quoted file name that needs quoting.ts');
   await mountState('vis-quoted', { text: 'Open @"a very long quoted file name that needs quoting.ts" please.', mentions: [quoted] });
-  await capture('state-long-quoted', await shellBox('vis-quoted'));
+  await capture('state-long-quoted', await shellBox('vis-quoted'), 'vis-quoted');
   ok('a long quoted token renders one badge');
 
   await mountState('vis-tabs', { text: 'Col1\tCol2 with @cart.ts\tanother column', mentions: [fileOnly] });
-  await capture('state-tabs', await shellBox('vis-tabs'));
+  await capture('state-tabs', await shellBox('vis-tabs'), 'vis-tabs');
   ok('tabs keep the badge registered');
 
   // Scrolled draft beyond the 200 px max height.
@@ -273,10 +290,10 @@ try {
     const layer = document.querySelector(`[data-testid="session-chat-${sessionId}"] .chat-compose-highlights-scroll`);
     return area.scrollTop > 0 && layer.scrollTop === area.scrollTop;
   }, 'vis-scroll', { timeout: 5000 });
-  await capture('state-scrolled-middle', await shellBox('vis-scroll'));
+  await capture('state-scrolled-middle', await shellBox('vis-scroll'), 'vis-scroll');
   await page.evaluate(sessionId => { const area = document.querySelector(`[data-testid="session-chat-${sessionId}"] .chat-compose-input textarea`); area.scrollTop = area.scrollHeight; }, 'vis-scroll');
   await delay(80);
-  await capture('state-scrolled-end', await shellBox('vis-scroll'));
+  await capture('state-scrolled-end', await shellBox('vis-scroll'), 'vis-scroll');
   ok('a draft longer than 200 px scrolls with the layer mirrored');
 
   // Scrollbar appears and disappears as the text grows and shrinks.
@@ -297,7 +314,7 @@ try {
     const area = document.querySelector(`[data-testid="session-chat-${sessionId}"] .chat-compose-input textarea`);
     return area.offsetWidth - area.clientWidth;
   }, 'vis-grow');
-  await capture('state-scrollbar-shown', await shellBox('vis-grow'));
+  await capture('state-scrollbar-shown', await shellBox('vis-grow'), 'vis-grow');
   assert.equal(shortOffset, longOffset, 'scrollbar-gutter keeps the content width stable while the draft grows');
   assert.equal(await scope('vis-grow').locator('.chat-compose-highlights').count(), 1, 'the layer stays with the grown draft');
   // Shrinking the draft brings the scrollbar back to the reserved-gutter width only.
@@ -312,7 +329,7 @@ try {
   assert.ok(shrunk.scrollHeight <= shrunk.clientHeight + 20, 'shrinking the draft hides the scrollbar');
   assert.equal(shrunk.offset, shortOffset, 'the content width is stable after shrinking too');
   assert.equal(await scope('vis-grow').locator('.chat-compose-highlights').count(), 1, 'the layer stays after shrinking');
-  await capture('state-scrollbar-hidden', await shellBox('vis-grow'));
+  await capture('state-scrollbar-hidden', await shellBox('vis-grow'), 'vis-grow');
   ok('the scrollbar appears and disappears with stable content width as the draft grows and shrinks');
 
   await mountState('vis-narrow', { text: MIX_TEXT, mentions: MIX_CATALOGUE });
@@ -323,7 +340,7 @@ try {
   await delay(120);
   const narrowAfter = await inputBox('vis-narrow');
   assert.notEqual(wideBefore.width, narrowAfter.width, 'resizing narrows the input');
-  await capture('state-narrow-resized', await shellBox('vis-narrow'));
+  await capture('state-narrow-resized', await shellBox('vis-narrow'), 'vis-narrow');
   ok('resizing the pane narrower keeps the layer aligned');
 
   // --- 2. Matrix ------------------------------------------------------------
@@ -336,7 +353,7 @@ try {
         const id = `vis-matrix-${theme}-${width}-${locale}`;
         const text = locale === 'zh-CN' ? '请看@cart.ts。然后问@other-chat，提交@6e0f22b。' : MIX_TEXT;
         await mountState(id, { text, mentions: MIX_CATALOGUE, locale });
-        await capture(`matrix-${theme}-${width}-${locale}`, await shellBox(id));
+        await capture(`matrix-${theme}-${width}-${locale}`, await shellBox(id), id);
       }
     }
   }
@@ -357,14 +374,17 @@ try {
     const file = join(out, `zoom-${Math.round(factor * 100)}.png`);
     await writeFile(file, Buffer.from(png, 'base64'));
     report.screenshots.push(file);
+    await checkState(`zoom-${Math.round(factor * 100)}`, 'vis-zoom');
   }
   await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].webContents.setZoomFactor(1));
   ok('zoom 100 % and 125 % screenshots captured');
 
   // --- 3. Alignment oracle --------------------------------------------------
-  await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].setContentSize(700, 900));
+  // A narrower pane makes the long token wrap across two lines.
+  await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].setContentSize(420, 900));
   await applyTheme('light');
-  await mountState('vis-oracle', { text: MIX_TEXT, mentions: MIX_CATALOGUE });
+  await mountState('vis-oracle', { text: ORACLE_TEXT, mentions: ORACLE_CATALOGUE });
+  await checkState('oracle', 'vis-oracle');
   await page.evaluate(sessionId => {
     const area = document.querySelector(`[data-testid="session-chat-${sessionId}"] .chat-compose-input textarea`);
     area.scrollTop = 0; area.blur();
@@ -406,32 +426,45 @@ try {
   const scaleY = nativeImage.height / oracleBox.height;
   const nativeBg = backgroundOf(nativeImage);
   const layerBg = backgroundOf(layerImage);
+  // Badge coverage measures the native glyph mask from a region larger than the
+  // badge, so a glyph edge outside the badge is still seen. The oracle draft
+  // separates every token by several spaces and wraps the long token on
+  // consecutive lines, so the expanded region never reaches a neighbouring glyph.
+  const COVERAGE_MARGIN_X = 8; const COVERAGE_MARGIN_Y = 1;
+  const slack = parseFloat(metrics.area.lineHeight) - parseFloat(metrics.area.fontSize);
   let worstRegistration = 0; let worstBadge = 0; let checkedFragments = 0;
   for (const fragment of fragments) {
     for (const rect of fragment.rects) {
-      const region = { x: (rect.x - oracleBox.x) * scaleX, y: (rect.y - oracleBox.y) * scaleY, width: rect.width * scaleX, height: rect.height * scaleY };
-      const nativeStats = glyphStats(nativeImage, nativeBg, region);
-      const layerStats = glyphStats(layerImage, layerBg, region);
+      const badgeRegion = { x: (rect.x - oracleBox.x) * scaleX, y: (rect.y - oracleBox.y) * scaleY, width: rect.width * scaleX, height: rect.height * scaleY };
+      const nativeStats = glyphStats(nativeImage, nativeBg, badgeRegion);
+      const layerStats = glyphStats(layerImage, layerBg, badgeRegion);
       assert.ok(nativeStats.count > 0 && layerStats.count > 0, `fragment of ${fragment.token} has glyph pixels in both modes`);
       const registration = Math.hypot(nativeStats.cx - layerStats.cx, nativeStats.cy - layerStats.cy) / scaleX;
       worstRegistration = Math.max(worstRegistration, registration);
-      const badgeRegion = { x: region.x, y: region.y, width: rect.width * scaleX, height: rect.height * scaleY };
-      const leftGap = nativeStats.minX - badgeRegion.x;
-      const rightGap = (badgeRegion.x + badgeRegion.width) - nativeStats.maxX;
-      const slack = parseFloat(metrics.area.lineHeight) - parseFloat(metrics.area.fontSize);
-      const topGap = nativeStats.minY - badgeRegion.y;
-      const bottomGap = (badgeRegion.y + badgeRegion.height) - nativeStats.maxY;
+      const searchRegion = {
+        x: badgeRegion.x - COVERAGE_MARGIN_X * scaleX, y: badgeRegion.y - COVERAGE_MARGIN_Y * scaleY,
+        width: badgeRegion.width + 2 * COVERAGE_MARGIN_X * scaleX, height: badgeRegion.height + 2 * COVERAGE_MARGIN_Y * scaleY,
+      };
+      const coverage = glyphStats(nativeImage, nativeBg, searchRegion);
+      assert.ok(coverage.count > 0, `fragment of ${fragment.token} has native glyph pixels in the coverage region`);
+      const leftGap = coverage.minX - badgeRegion.x;
+      const rightGap = (badgeRegion.x + badgeRegion.width) - coverage.maxX;
+      const topGap = coverage.minY - badgeRegion.y;
+      const bottomGap = (badgeRegion.y + badgeRegion.height) - coverage.maxY;
       const horizontalMiss = Math.max(0, -leftGap, -rightGap) / scaleX;
       const verticalMiss = Math.max(0, -topGap, -bottomGap) / scaleY - slack;
       worstBadge = Math.max(worstBadge, horizontalMiss, verticalMiss);
       checkedFragments += 1;
     }
   }
-  assert.ok(checkedFragments >= 5, `the oracle checked ${checkedFragments} badge fragments`);
+  assert.ok(fragments.some(fragment => fragment.rects.length >= 2), 'the oracle exercises a token that wraps across lines');
+  assert.ok(checkedFragments >= 7, `the oracle checked ${checkedFragments} badge fragments`);
   assert.ok(worstRegistration <= 1, `glyph registration displacement ${worstRegistration.toFixed(3)} CSS px ≤ 1`);
   assert.ok(worstBadge <= 1, `badge coverage overrun ${worstBadge.toFixed(3)} CSS px ≤ 1`);
   report.alignment = { devicePixelRatio: dpr, fragments: checkedFragments, worstRegistration, worstBadge };
   ok(`alignment oracle: ${checkedFragments} fragments, registration ${worstRegistration.toFixed(3)} px, coverage overrun ${worstBadge.toFixed(3)} px`);
+  // Back to the latency width used before the oracle.
+  await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].setContentSize(700, 900));
 
   // --- 4. Zero cost without mentions ---------------------------------------
   await mountState('vis-none', { text: MIX_TEXT, mentions: [] });
@@ -441,13 +474,17 @@ try {
 
   // --- 5. Latency -----------------------------------------------------------
   async function installLatency(id) {
-    await page.evaluate(sessionId => {
+    const supported = await page.evaluate(sessionId => {
       const area = document.querySelector(`[data-testid="session-chat-${sessionId}"] .chat-compose-input textarea`);
       window.__lat = [];
       window.__long = [];
       if (!window.__longObserver) {
         window.__longObserver = true;
-        try { new PerformanceObserver(list => { for (const entry of list.getEntries()) window.__long.push({ start: entry.startTime, duration: entry.duration }); }).observe({ type: 'longtask' }); } catch { /* longtask unsupported */ }
+        window.__longSupported = false;
+        try {
+          new PerformanceObserver(list => { for (const entry of list.getEntries()) window.__long.push({ start: entry.startTime, duration: entry.duration }); }).observe({ type: 'longtask' });
+          window.__longSupported = true;
+        } catch { window.__longSupported = false; }
       }
       if (!area.__latInstalled) {
         area.__latInstalled = true;
@@ -457,19 +494,28 @@ try {
           requestAnimationFrame(stamp => window.__lat.push(stamp - start));
         }, true);
       }
+      return window.__longSupported;
     }, id);
+    // A silent catch here would let an unsupported observer masquerade as "no long tasks".
+    assert.ok(supported, 'longtask PerformanceObserver is supported in this Electron build');
   }
   async function typeKeys(id, count) {
     const area = scope(id).locator('.chat-compose-input textarea');
     await area.click();
     await page.keyboard.press('End');
+    const before = await area.inputValue();
     await installLatency(id);
-    for (let index = 0; index < count; index += 1) {
-      const before = await page.evaluate(() => window.__lat.length);
-      await page.keyboard.press('a');
-      await page.waitForFunction(expected => window.__lat.length > expected, before, { timeout: 3000 }).catch(() => undefined);
-    }
-    return page.evaluate(() => ({ lat: window.__lat.slice(), long: window.__long.slice() }));
+    // The specified workload is one keyboard.type burst; the short inter-key
+    // delay keeps one keystroke per frame so each sample measures one input.
+    await page.keyboard.type('a'.repeat(count), { delay: 20 });
+    // Missing samples are a failure, never silently averaged away.
+    await page.waitForFunction(expected => window.__lat.length >= expected, count, { timeout: 15_000 });
+    await delay(150); // let pending longtask entries be delivered
+    const result = await page.evaluate(() => ({ lat: window.__lat.slice(), long: window.__long.slice() }));
+    const after = await area.inputValue();
+    assert.equal(result.lat.length, count, `${id}: ${count} keystrokes produced ${result.lat.length} latency samples`);
+    assert.equal(after.length, before.length + count, `${id}: typing inserted ${count} characters`);
+    return result;
   }
   function summarize(values) {
     const sorted = [...values].sort((a, b) => a - b);
@@ -495,6 +541,8 @@ try {
       assert.ok(result.long.length === 0, `no longtask > 50 ms during the ${variant} typing run (${JSON.stringify(result.long)})`);
     }
   }
+  assert.equal(withSamples.length, 300, `three with-mention runs produced ${withSamples.length}/300 samples`);
+  assert.equal(withoutSamples.length, 300, `three without-mention runs produced ${withoutSamples.length}/300 samples`);
   const withStats = summarize(withSamples);
   const withoutStats = summarize(withoutSamples);
   const meanDelta = withStats.mean - withoutStats.mean;
