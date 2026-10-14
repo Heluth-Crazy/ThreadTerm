@@ -358,8 +358,15 @@ impl PiAdapter {
         }
         if let Some(id) = native_id {
             validate_native_id(id)?;
-            args.push("--session".to_owned());
+            // Pi saves a session with its first message. A chat reopened before
+            // that (project trust, Reconnect, a runtime restart) has nothing to
+            // resume and `--session` would exit; `--session-id` creates it under
+            // the same id instead.
+            args.push(if pi_session_saved(id) { "--session" } else { "--session-id" }.to_owned());
             args.push(id.to_owned());
+            if let Ok(mut value) = shared.native_id.lock() {
+                value.get_or_insert_with(|| id.to_owned());
+            }
         } else {
             // Bind the native identity before the first turn so the session can
             // be resumed even if it ends before any message arrives.
@@ -430,9 +437,23 @@ struct PiShared {
     /// A bounded exact-id fence prevents Pi extension replays from reopening a
     /// card after its response/cancellation has been written.
     resolved_interactions: Mutex<VecDeque<String>>,
+    /// The turn whose reply text has started, and whether its next text opens a
+    /// new paragraph. Every assistant message of a turn streams into one item.
+    reply_text: Mutex<Option<(String, bool)>>,
 }
 
 const PI_TOOL_CALL_LIMIT: usize = 128;
+
+/// A later assistant message's text starts a new paragraph instead of running on
+/// from the previous message ("…searching for TODOs.Steps 1–2 complete").
+fn pi_reply_delta(shared: &PiShared, turn: Option<&str>, delta: &str) -> String {
+    let (Some(turn), Ok(mut reply)) = (turn, shared.reply_text.lock()) else {
+        return delta.to_owned();
+    };
+    let paragraph = matches!(reply.as_ref(), Some((current, true)) if current == turn);
+    *reply = Some((turn.to_owned(), false));
+    if paragraph { format!("\n\n{delta}") } else { delta.to_owned() }
+}
 
 type PiStatsCallback = Box<dyn FnOnce(Result<Value, ProviderError>) + Send>;
 
@@ -1804,6 +1825,11 @@ fn pi_event(
                 _ => ("", None),
             };
             if let Some(delta) = delta.filter(|value| !value.is_empty()) {
+                let delta = if part_type == "text" {
+                    pi_reply_delta(shared, turn_id.as_deref(), delta)
+                } else {
+                    delta.to_owned()
+                };
                 emit(
                     "chat.delta",
                     json!({"part":{"type":part_type,"text":delta,"status":"streaming"},"raw":raw}),
@@ -1828,6 +1854,11 @@ fn pi_event(
             let message = raw.get("message").cloned().unwrap_or(Value::Null);
             if message.get("role").and_then(Value::as_str) != Some("assistant") {
                 return;
+            }
+            if let (Some(turn), Ok(mut reply)) = (turn_id.as_deref(), shared.reply_text.lock()) {
+                if let Some((current, paragraph)) = reply.as_mut() {
+                    *paragraph = current == turn;
+                }
             }
             let stop_reason = message
                 .get("stopReason")
@@ -2432,6 +2463,28 @@ fn read_bounded(path: &Path, maximum: u64, tail: bool) -> Option<String> {
     Some(String::from_utf8_lossy(&buffer).into_owned())
 }
 
+/// Whether Pi has written the session file for `native_id`. An unreadable
+/// session directory counts as saved, which keeps the strict `--session` path.
+fn pi_session_saved(native_id: &str) -> bool {
+    let Ok(directory) = pi_sessions_dir() else {
+        return true;
+    };
+    pi_session_saved_in(&directory, native_id)
+}
+
+fn pi_session_saved_in(directory: &Path, native_id: &str) -> bool {
+    let mut files = Vec::new();
+    walk_jsonl(directory, &mut files, MAX_SESSION_FILES);
+    let suffix = format!("_{native_id}.jsonl");
+    files.iter().any(|path| {
+        path.file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| name.ends_with(&suffix))
+    }) || files
+        .iter()
+        .any(|path| pi_session_identity(path).is_some_and(|(id, _)| id == native_id))
+}
+
 fn pi_session_identity(path: &Path) -> Option<(String, String)> {
     let head = read_bounded(path, HEAD_BYTES, false)?;
     let line = head.lines().next()?;
@@ -2550,6 +2603,29 @@ mod tests {
         assert_eq!(text.turn_id.as_deref(), Some("turn-1"));
         let thinking = receiver.try_recv().unwrap();
         assert_eq!(thinking.data["part"]["type"], "thinking");
+    }
+
+    #[test]
+    fn a_later_assistant_message_starts_a_new_paragraph() {
+        let (events, mut receiver) = scoped();
+        let shared = PiShared::default();
+        let text = |shared: &PiShared, delta: &str| pi_event(&events, "pi", "session", shared,
+            json!({"type":"message_update","assistantMessageEvent":{"type":"text_delta","delta":delta}}));
+        let end = |shared: &PiShared| pi_event(&events, "pi", "session", shared,
+            json!({"type":"message_end","message":{"role":"assistant","stopReason":"toolUse","content":[]}}));
+        *shared.active_turn.lock().unwrap() = Some("turn-1".into());
+        text(&shared, "Reading the README.");
+        end(&shared);
+        text(&shared, "Steps 1-2 complete.");
+        text(&shared, " Next.");
+        *shared.active_turn.lock().unwrap() = Some("turn-2".into());
+        end(&shared);
+        text(&shared, "Fresh turn.");
+        let deltas = std::iter::from_fn(|| receiver.try_recv().ok())
+            .filter(|event| event.kind == "chat.delta")
+            .map(|event| event.data["part"]["text"].as_str().unwrap().to_owned())
+            .collect::<Vec<_>>();
+        assert_eq!(deltas, ["Reading the README.", "\n\nSteps 1-2 complete.", " Next.", "Fresh turn."]);
     }
 
     #[test]
@@ -3202,6 +3278,18 @@ require('node:readline').createInterface({input:process.stdin}).on('line', line 
         let transcript = pi_transcript(&source, "source");
         assert_eq!(transcript[1]["forkAnchor"], json!({"nativeId":"source","entryId":"assistant-1"}));
         assert_eq!(transcript[1]["turnStatus"], "completed");
+    }
+
+    #[test]
+    fn only_a_written_session_file_counts_as_saved() {
+        let root = tempfile::tempdir().unwrap();
+        let project = root.path().join("--C--work--");
+        fs::create_dir_all(&project).unwrap();
+        fs::write(project.join("2026-10-14T01-00-00-000Z_saved-id.jsonl"), "{\"type\":\"session\",\"id\":\"saved-id\",\"cwd\":\"C:\\\\work\"}\n").unwrap();
+        fs::write(project.join("renamed.jsonl"), "{\"type\":\"session\",\"id\":\"renamed-id\",\"cwd\":\"C:\\\\work\"}\n").unwrap();
+        assert!(pi_session_saved_in(root.path(), "saved-id"));
+        assert!(pi_session_saved_in(root.path(), "renamed-id"), "the session header also identifies a file");
+        assert!(!pi_session_saved_in(root.path(), "never-sent-id"));
     }
 
     #[test]
