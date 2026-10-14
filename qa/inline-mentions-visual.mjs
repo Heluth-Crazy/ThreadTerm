@@ -300,7 +300,20 @@ try {
   await capture('state-scrollbar-shown', await shellBox('vis-grow'));
   assert.equal(shortOffset, longOffset, 'scrollbar-gutter keeps the content width stable while the draft grows');
   assert.equal(await scope('vis-grow').locator('.chat-compose-highlights').count(), 1, 'the layer stays with the grown draft');
-  ok('scrollbar-gutter keeps the content width stable as a draft grows');
+  // Shrinking the draft brings the scrollbar back to the reserved-gutter width only.
+  await page.evaluate(sessionId => { const area = document.querySelector(`[data-testid="session-chat-${sessionId}"] .chat-compose-input textarea`); area.focus(); }, 'vis-grow');
+  await page.keyboard.press('Control+a');
+  await page.keyboard.type('short @cart.ts');
+  await delay(120);
+  const shrunk = await page.evaluate(sessionId => {
+    const area = document.querySelector(`[data-testid="session-chat-${sessionId}"] .chat-compose-input textarea`);
+    return { scrollHeight: area.scrollHeight, clientHeight: area.clientHeight, offset: area.offsetWidth - area.clientWidth };
+  }, 'vis-grow');
+  assert.ok(shrunk.scrollHeight <= shrunk.clientHeight + 20, 'shrinking the draft hides the scrollbar');
+  assert.equal(shrunk.offset, shortOffset, 'the content width is stable after shrinking too');
+  assert.equal(await scope('vis-grow').locator('.chat-compose-highlights').count(), 1, 'the layer stays after shrinking');
+  await capture('state-scrollbar-hidden', await shellBox('vis-grow'));
+  ok('the scrollbar appears and disappears with stable content width as the draft grows and shrinks');
 
   await mountState('vis-narrow', { text: MIX_TEXT, mentions: MIX_CATALOGUE });
   await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].setContentSize(1100, 900));
