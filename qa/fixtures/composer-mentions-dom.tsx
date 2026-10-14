@@ -23,6 +23,8 @@ type QaState = {
   queue: { sessionId: string; paused: boolean; items: unknown[] };
   readGate: boolean;
   readItems: unknown[];
+  sendGate: boolean;
+  sendResolvers: Array<() => void>;
   sendError?: string;
   saveError?: string;
   clearError: boolean;
@@ -52,6 +54,8 @@ const qa: QaState = {
   queue: { sessionId: 'composer-dom', paused: false, items: [] },
   readGate: false,
   readItems: [{ id: 'm1', role: 'user', turnId: 't', createdAt: 'now', parts: [{ type: 'text', text: 'hello from the other chat' }] }],
+  sendGate: false,
+  sendResolvers: [],
   clearError: false,
   savedDrafts: [],
   sent: [],
@@ -89,10 +93,13 @@ function route(method: string, params: Record<string, unknown>): Promise<unknown
     case 'chat.read':
       if (qa.readGate) return new Promise(resolve => { qa.resolvers.push(() => resolve(qa.readItems)); });
       return qa.readItems;
-    case 'chat.send':
+    case 'chat.send': {
       if (qa.sendError) throw new Error(qa.sendError);
-      qa.sent.push(String(params.text));
-      return { turnId: `turn-${qa.sent.length}` };
+      const text = String(params.text);
+      const complete = () => { qa.sent.push(text); return { turnId: `turn-${qa.sent.length}` }; };
+      if (qa.sendGate) return new Promise(resolve => { qa.sendResolvers.push(() => resolve(complete())); });
+      return complete();
+    }
     case 'chat.queue.add':
       qa.queued.push(String(params.text));
       qa.queue = { sessionId: qa.sessionId, paused: false, items: [{ id: `q-${qa.queued.length}`, text: params.text, images: params.images ?? [] }] };
@@ -169,13 +176,14 @@ const api = {
   render: (patch?: Partial<QaState>) => { if (patch) Object.assign(qa, patch); render(); },
   update: (patch: Partial<QaState>) => { Object.assign(qa, patch); render(); },
   releaseRead: () => { qa.readGate = false; const resolvers = qa.resolvers.splice(0); for (const resolve of resolvers) resolve(); },
+  releaseSend: () => { qa.sendGate = false; const resolvers = qa.sendResolvers.splice(0); for (const resolve of resolvers) resolve(); },
   emit: (event: unknown) => { for (const listener of [...qa.listeners]) listener(event); },
   calls: qa.calls,
   reset: (patch?: Partial<QaState>) => {
     Object.assign(qa, {
       sessionId: 'composer-dom', status: 'idle', locale: 'en', draft: '', revision: 0, items: [], queue: { sessionId: 'composer-dom', paused: false, items: [] },
       readGate: false, clearError: false, savedDrafts: [], sent: [], queued: [], steered: [], notes: [], calls: [], resolvers: [],
-      sendError: undefined, saveError: undefined,
+      sendGate: false, sendResolvers: [], sendError: undefined, saveError: undefined,
     }, patch ?? {});
     if (!patch || !('queue' in patch)) qa.queue = { sessionId: qa.sessionId, paused: false, items: [] };
     render();
