@@ -53,7 +53,7 @@ export function ToolActivity({ entries, active, awaitingApproval = false, awaiti
   const summaryCounts = toolSummary(entries);
   const summaryText = toolSummaryText(summaryCounts, copy);
   const summaryLabel = toolSummaryLabel(summaryCounts, copy);
-  const countLabel = current || waiting || !summaryLabel ? `${entries.length} ${copy('tools', '项工具')}` : summaryLabel;
+  const countLabel = current || waiting || !summaryLabel ? copy(`${entries.length} ${entries.length === 1 ? 'tool' : 'tools'}`, `${entries.length} 项工具`) : summaryLabel;
   return <article className={`v3-chat-message assistant is-native is-${provider} chat-tool-activity-card`}>
     <details className="chat-tool-activity" open={open} onToggle={event => setOpen(event.currentTarget.open)}>
       <summary ref={summaryRef} onClick={() => { onInspect?.(); if (open) revealAfterCollapse.current = true; }} onKeyDown={event => { if (event.key === 'Enter' || event.key === ' ') { onInspect?.(); if (open) revealAfterCollapse.current = true; } }}>
