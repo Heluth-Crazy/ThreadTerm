@@ -76,6 +76,21 @@ async function userTexts(sessionId) {
 async function sentUserText(sessionId, needle) {
   return until(async () => (await userTexts(sessionId)).find(text => text.includes(needle)), `user text containing ${needle}`);
 }
+/** The exact prompt text the fake provider received (the echo fixture returns it). */
+async function echoedPrompts(sessionId) {
+  const snapshot = await request('chat.snapshot', { sessionId });
+  return snapshot.items.filter(item => item.role === 'assistant').flatMap(item => (item.parts || [])
+    .filter(part => part.type === 'text' && typeof part.text === 'string' && part.text.startsWith('Echo: '))
+    .map(part => part.text.slice('Echo: '.length)));
+}
+async function receivedPrompt(sessionId, needle) {
+  // The newest matching echo: earlier turns can contain the same item header.
+  return until(async () => {
+    const prompts = await echoedPrompts(sessionId);
+    for (let index = prompts.length - 1; index >= 0; index -= 1) if (prompts[index].includes(needle)) return prompts[index];
+    return undefined;
+  }, `provider prompt containing ${needle}`);
+}
 async function sendAndWait(id, needle) {
   await composer(id).click();
   await page.keyboard.press('Enter');
@@ -84,13 +99,14 @@ async function sendAndWait(id, needle) {
 async function waitIdle(id) { await until(async () => !(await chatScope(id).locator('.chat-compose-send.is-stop').count()), 'turn finished'); }
 async function setCaret(id, position) { await composer(id).evaluate((node, value) => { node.focus(); node.setSelectionRange(value, value); }, position); await delay(80); }
 /** Reloads the renderer so the composer/tray reload from the runtime draft and localStorage. */
-async function reloadApp() {
+async function reloadApp({ ready = true } = {}) {
   await page.reload({ waitUntil: 'domcontentloaded' });
   await page.waitForFunction(() => Boolean(window.threadterm));
   await page.locator('.app-shell').waitFor();
   await page.locator('#boot-splash').waitFor({ state: 'detached', timeout: 30_000 });
   await request('session.present', { sessionId: chat.id, placement: 'workspace', presentation: 'focused', operationId: randomUUID() }).catch(() => undefined);
-  await until(() => composer(chat.id).isEnabled(), 'composer ready after reload');
+  if (ready) await until(() => composer(chat.id).isEnabled(), 'composer ready after reload');
+  else await until(() => composer(chat.id).count(), 'composer mounted after reload');
   cdp = await page.context().newCDPSession(page);
 }
 
@@ -100,7 +116,9 @@ try {
   await rm(out, { recursive: true, force: true }); await mkdir(out, { recursive: true }); await buildApp();
   const pluginDir = join(scratch, 'plugins'); for (const plugin of plugins) cpSync(join(fixtures, plugin), join(pluginDir, plugin), { recursive: true });
   const gitExe = spawnSync('where', ['git'], { encoding: 'utf8', windowsHide: true }).stdout.split(/\r?\n/).find(value => /\\cmd\\git\.exe$/i.test(value)) || spawnSync('where', ['git'], { encoding: 'utf8', windowsHide: true }).stdout.split(/\r?\n/).find(Boolean); assert.ok(gitExe, 'git was not found');
-  const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => key.toLowerCase() !== 'path'));
+  // Drop every PATH case variant and the Claude Code environment (plan launch rules).
+  const dropped = key => key.toLowerCase() === 'path' || key === 'CLAUDECODE' || key.startsWith('CLAUDE_CODE_') || key === 'CLAUDE_PID' || key === 'CLAUDE_EFFORT';
+  const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !dropped(key)));
   Object.assign(env, { PATH: [dirname(process.execPath), dirname(gitExe), join(process.env.SystemRoot || 'C:\\Windows', 'System32')].join(';'), THREADTERM_V3_DATA: join(scratch, 'data'), THREADTERM_V3_USER_DATA: join(scratch, 'profile'), THREADTERM_V3_PIPE: `\\\\.\\pipe\\tt-inline-mentions-${randomUUID()}`, THREADTERM_V3_RUNTIME: runtime, THREADTERM_V3_PLUGIN_DIRS: pluginDir });
   app = await electron.launch({ args: [appDir], cwd: root, env, timeout: 60_000 }); page = await app.firstWindow({ timeout: 45_000 }); page.setDefaultTimeout(20_000);
   page.on('pageerror', error => report.errors.push(`page: ${error.message}`));
@@ -161,6 +179,8 @@ try {
   const sent = await sendAndWait(chat.id, 'Please check @cart.ts');
   assert.match(sent, /\[ThreadTerm context 1\/1\] File: src\/cart\.ts/);
   assert.match(sent, /\[ThreadTerm message; mentions v1 \{"@cart\.ts":1\}\]\nPlease check @cart\.ts$/);
+  const received = await receivedPrompt(chat.id, 'Please check @cart.ts');
+  assert.equal(received, sent, 'the provider received the exact stored envelope, not just the stored user message');
   await until(async () => (await composer(chat.id).inputValue()) === '', 'composer cleared after send');
   assert.equal(await tray(chat.id).getByTestId('context-chip').count(), 0, 'no live token after send');
   await waitIdle(chat.id);
@@ -238,6 +258,8 @@ try {
   assert.match(queuedEnvelope, /\[ThreadTerm context 1\/2\] File: src\/cart\.ts/);
   assert.match(queuedEnvelope, /\[ThreadTerm context 2\/2\] File: src\/checkout\.ts/);
   assert.match(queuedEnvelope, /\[ThreadTerm message; mentions v1 \{"@cart\.ts":1,"@checkout\.ts":2\}\]/);
+  const queuedReceived = await receivedPrompt(chat.id, 'review @cart.ts only');
+  assert.equal(queuedReceived, queuedEnvelope, 'the provider received the edited queue envelope with both blocks');
   await shot('03-queue-envelope.png');
   check('a queue edit keeps both accepted blocks and the mentions line, changing only the text');
 
@@ -249,25 +271,32 @@ try {
   await reloadApp();
   await until(async () => (await composer(chat.id).inputValue()).startsWith('@cart.ts'), 'runtime draft restored');
   await until(async () => (await readout(chat.id).innerText()).includes('1/12'), 'restored mention is active');
-  // A differing local recovery pair surfaces the banner; Recover text swaps both parts.
-  await page.evaluate(([key]) => localStorage.setItem(key, JSON.stringify({ v: 2, text: 'local draft', mentions: [] })), [`threadterm.compose.${chat.id}`]);
-  await reloadApp();
+  // A local pair with a real mention catalogue: same text, different identity mapping.
+  const localCheckout = { token: '@cart.ts', item: { kind: 'file', id: 'file:src/checkout.ts', path: 'src/checkout.ts' } };
+  await page.evaluate(([key, value]) => localStorage.setItem(key, value), [`threadterm.compose.${chat.id}`, JSON.stringify({ v: 2, text: '@cart.ts ', mentions: [localCheckout] })]);
+  await reloadApp({ ready: false });
   await page.getByText('An unsaved draft is available on this device.').waitFor();
   await shot('04-recovery-banner.png');
   await page.getByRole('button', { name: 'Recover text' }).click();
-  await until(async () => (await composer(chat.id).inputValue()) === 'local draft', 'Recover text swaps in the local text');
-  assert.equal(await readout(chat.id).count(), 0, 'the local pair had no mentions');
+  await until(async () => (await composer(chat.id).inputValue()) === '@cart.ts ', 'Recover text swaps in the local text');
+  await until(async () => (await readout(chat.id).innerText()).includes('1/12'), 'Recover text swaps in the local catalogue');
+  await sendAndWait(chat.id, 'File: src/checkout.ts');
+  assert.match(await receivedPrompt(chat.id, 'File: src/checkout.ts'), /\[ThreadTerm context 1\/1\] File: src\/checkout\.ts/, 'Recover text restored the local identity, not the runtime one');
+  await waitIdle(chat.id);
   // Keep saved draft keeps the runtime pair.
-  await composer(chat.id).fill('');
   await pickQuery(chat.id, 'cart', 'files');
   await delay(700);
-  await page.evaluate(([key]) => localStorage.setItem(key, JSON.stringify({ v: 2, text: 'other local', mentions: [] })), [`threadterm.compose.${chat.id}`]);
-  await reloadApp();
+  await page.evaluate(([key, value]) => localStorage.setItem(key, value), [`threadterm.compose.${chat.id}`, JSON.stringify({ v: 2, text: '@checkout.ts ', mentions: [localCheckout] })]);
+  await reloadApp({ ready: false });
   await page.getByText('An unsaved draft is available on this device.').waitFor();
   await page.getByRole('button', { name: 'Keep saved draft' }).click();
-  await until(async () => (await composer(chat.id).inputValue()).startsWith('@cart.ts'), 'Keep saved draft keeps the runtime pair');
+  await until(async () => (await composer(chat.id).inputValue()).startsWith('@cart.ts'), 'Keep saved draft keeps the runtime text');
+  await until(async () => (await readout(chat.id).innerText()).includes('1/12'), 'Keep saved draft keeps the runtime catalogue');
+  await sendAndWait(chat.id, 'File: src/cart.ts');
+  assert.match(await receivedPrompt(chat.id, 'File: src/cart.ts'), /File: src\/cart\.ts/, 'Keep saved draft kept the runtime identity');
+  await waitIdle(chat.id);
   await composer(chat.id).fill('');
-  check('the runtime v2 draft restores text+mentions and the recovery banner honors both choices');
+  check('the runtime v2 draft restores text+mentions; both recovery choices swap or keep the whole pair');
 
   // 4. IME composition through CDP. Directly before, after and inside a token.
   await composer(chat.id).fill('');
@@ -276,6 +305,10 @@ try {
   await composer(chat.id).click();
   await page.keyboard.press('End');
   const beforeImeUsers = (await userTexts(chat.id)).length;
+  const beforeImeEchoes = (await echoedPrompts(chat.id)).length;
+  // Chromium IME composition (imeSetComposition) followed by its commit (insertText).
+  await cdp.send('Input.imeSetComposition', { text: 'ni', selectionStart: 2, selectionEnd: 2 });
+  await cdp.send('Input.imeSetComposition', { text: 'nihao', selectionStart: 5, selectionEnd: 5 });
   await cdp.send('Input.insertText', { text: '你好' });
   await until(async () => (await composer(chat.id).inputValue()).includes('你好'), 'IME text committed after the token');
   const afterIme = await composer(chat.id).inputValue();
@@ -285,6 +318,7 @@ try {
   await composer(chat.id).fill('');
   await pickQuery(chat.id, 'cart', 'files');
   await setCaret(chat.id, 0);
+  await cdp.send('Input.imeSetComposition', { text: '请看', selectionStart: 2, selectionEnd: 2 });
   await cdp.send('Input.insertText', { text: '请看' });
   await until(async () => (await composer(chat.id).inputValue()).startsWith('请看@cart.ts'), 'CJK text inserted directly before the token');
   await until(async () => (await readout(chat.id).innerText()).includes('1/12'), 'CJK text before the token keeps the mention active');
@@ -304,21 +338,49 @@ try {
   await page.evaluate(() => { const area = document.activeElement; area.dispatchEvent(new CompositionEvent('compositionend', { bubbles: true, data: 'ni' })); });
   await until(async () => /@nicart\.ts/.test(await composer(chat.id).inputValue()), 'composition inside the token edits it');
   await composer(chat.id).fill('');
-  // Enter during composition never sends.
+  // Escape cancels a composition without editing the draft.
+  await composer(chat.id).fill('keep @cart.ts ');
   await composer(chat.id).click();
+  await page.keyboard.press('End');
+  await cdp.send('Input.imeSetComposition', { text: 'nihao', selectionStart: 5, selectionEnd: 5 });
+  await delay(120);
+  await page.keyboard.press('Escape');
+  await cdp.send('Input.imeSetComposition', { text: '', selectionStart: 0, selectionEnd: 0 });
+  await delay(120);
+  assert.equal(await composer(chat.id).inputValue(), 'keep @cart.ts ', 'Escape cancels the composition without editing the draft');
+  // A pick while an IME owns the field is ignored.
+  await composer(chat.id).fill('');
+  await composer(chat.id).click();
+  await page.keyboard.type('@car');
+  await popup(chat.id).waitFor();
+  await page.evaluate(id => document.querySelector(`#chat-message-${id}`).dispatchEvent(new CompositionEvent('compositionstart', { bubbles: true })), chat.id);
+  await popup(chat.id).locator('[data-testid="mention-option"]').first().click();
+  await delay(150);
+  assert.equal(await composer(chat.id).inputValue(), '@car', 'a pick during composition is ignored');
+  await page.evaluate(id => document.querySelector(`#chat-message-${id}`).dispatchEvent(new CompositionEvent('compositionend', { bubbles: true })), chat.id);
+  // Enter during composition (isComposing) never sends a non-empty draft.
+  await composer(chat.id).fill('composing guard');
   await page.evaluate(id => { const area = document.querySelector(`#chat-message-${id}`); area.dispatchEvent(new CompositionEvent('compositionstart', { bubbles: true })); area.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', isComposing: true, bubbles: true })); }, chat.id);
   await delay(250);
-  assert.equal((await userTexts(chat.id)).length, beforeImeUsers, 'Enter during composition does not send');
-  await page.evaluate(id => { document.querySelector(`#chat-message-${id}`).dispatchEvent(new CompositionEvent('compositionend', { bubbles: true })); }, chat.id);
+  assert.equal(await composer(chat.id).inputValue(), 'composing guard', 'the isComposing Enter leaves a sendable draft');
+  assert.equal((await userTexts(chat.id)).length, beforeImeUsers, 'isComposing Enter does not send');
+  assert.equal((await echoedPrompts(chat.id)).length, beforeImeEchoes, 'isComposing Enter reaches no provider');
+  await page.evaluate(id => document.querySelector(`#chat-message-${id}`).dispatchEvent(new CompositionEvent('compositionend', { bubbles: true })), chat.id);
+  // The legacy keyCode 229 path is guarded even without the isComposing flag.
+  await page.evaluate(id => { const area = document.querySelector(`#chat-message-${id}`); const event = new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', bubbles: true }); Object.defineProperty(event, 'keyCode', { value: 229 }); Object.defineProperty(event, 'which', { value: 229 }); area.dispatchEvent(event); }, chat.id);
+  await delay(250);
+  assert.equal((await userTexts(chat.id)).length, beforeImeUsers, 'keyCode 229 Enter does not send');
+  assert.equal((await echoedPrompts(chat.id)).length, beforeImeEchoes, 'keyCode 229 Enter reaches no provider');
+  assert.equal(await composer(chat.id).inputValue(), 'composing guard', 'the draft survives both composing Enters');
   await composer(chat.id).fill('');
-  check('CDP/CJK composition keeps the token active and composing Enter never sends');
+  check('CDP/CJK composition keeps the token active; composing picks, Escape and both Enter guards hold');
 
   // Visual consistency on the mention-only tray row and the composer.
   await request('session.present', { sessionId: chat.id, placement: 'workspace', presentation: 'focused', operationId: randomUUID() });
   await composer(chat.id).fill('');
   await pickQuery(chat.id, 'cart', 'files');
   await until(() => readout(chat.id).isVisible(), 'readout visible for consistency check');
-  assertNoControlViolations(await checkControlConsistency(page, `[data-testid="session-chat-${chat.id}"]`), 'composer with a mention');
+  assertNoControlViolations(await checkControlConsistency(page, `[data-testid="session-chat-${chat.id}"] .chat-compose-shell`), 'composer with a mention');
   await shot('05-mention-tray.png');
   check('the mention-only tray row and composer keep zero control-consistency violations');
 

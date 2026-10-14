@@ -3,7 +3,7 @@ import { test } from 'node:test';
 import type { ContextItem } from './chatContext';
 import { MAX_TERMINAL_BYTES } from './chatContext';
 import {
-  composerSnapshot, decodeLocalRecovery, encodeLocalRecovery, liveMentionSignatures, localRecoveryDiffers,
+  composerEditable, composerSnapshot, decodeLocalRecovery, encodeLocalRecovery, liveMentionSignatures, localRecoveryDiffers,
   mentionDescription, mentionInsertedText, mentionPickStillValid, serializeComposerSnapshot, tentativeMentionPick,
   type MentionPickTicket,
 } from './composerMentions';
@@ -52,15 +52,24 @@ test('tentativeMentionPick rejects the 13th identity and the byte limit without 
 });
 
 test('a pick ticket is dropped after every transition and kept when nothing changed', () => {
-  const base = { lifecycle: {}, sessionId: 'a', composerGeneration: 2, text: 'x @car', busy: false, composing: false };
+  const base = { lifecycle: {}, sessionId: 'a', composerGeneration: 2, text: 'x @car', composing: false, editable: true };
   const ticket: MentionPickTicket = { id: 1, lifecycle: base.lifecycle, sessionId: 'a', composerGeneration: 2, start: 2, end: 6, queryText: '@car' };
   assert.equal(mentionPickStillValid(ticket, base), true);
   assert.equal(mentionPickStillValid(ticket, { ...base, text: 'x @rar' }), false, 'token edited');
-  assert.equal(mentionPickStillValid(ticket, { ...base, busy: true }), false, 'submission started');
+  assert.equal(mentionPickStillValid(ticket, { ...base, editable: false }), false, 'submission started / not writable / recovery pending');
   assert.equal(mentionPickStillValid(ticket, { ...base, composing: true }), false, 'composing');
   assert.equal(mentionPickStillValid(ticket, { ...base, composerGeneration: 3 }), false, 'restored/cleared');
   assert.equal(mentionPickStillValid(ticket, { ...base, sessionId: 'b' }), false, 'session switched');
   assert.equal(mentionPickStillValid(ticket, { ...base, lifecycle: {} }), false, 'A→B→A lifecycle');
+});
+
+test('composerEditable mirrors the textarea disabled conditions', () => {
+  const open = { writable: true, ended: false, busy: false, draftLoaded: true, overlayFull: false, recoveryPending: false };
+  assert.equal(composerEditable(open), true);
+  for (const key of ['writable', 'ended', 'busy', 'draftLoaded', 'overlayFull', 'recoveryPending'] as const) {
+    const blocked = key === 'writable' || key === 'draftLoaded' ? false : true;
+    assert.equal(composerEditable({ ...open, [key]: blocked }), false, `${key} blocks edits`);
+  }
 });
 
 test('the local recovery value is one versioned pair; legacy plain text still reads', () => {

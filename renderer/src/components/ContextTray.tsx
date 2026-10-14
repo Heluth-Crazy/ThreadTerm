@@ -101,11 +101,14 @@ export function ContextTray({ items, text, zh, onRemove, disabled, mentions = []
   if (!items.length && !mentions.length) return null;
   const blocks = contextSerializedBlocks(items);
   const identityCount = contextIdentityBudget(items, mentions, workspaceRoot).identities;
-  let bytes: number;
+  // Size the payload even when validation rejects it (over budget): an
+  // over-limit draft must not read out as `0 KiB` exactly when it is largest.
+  let bytes: number | undefined;
   try { bytes = new TextEncoder().encode(serializeMentionedContext({ trayItems: items, active: mentions, workspaceRoot }, text.trim())).length; }
-  catch { bytes = 0; }
-  const showReadout = mentions.length > 0 || items.length > 9 || bytes > 96 * 1024;
-  const readout = zh ? `${identityCount}/12 · ${Math.ceil(bytes / 1024)} KiB / 128 KiB` : `${identityCount}/12 · ${Math.ceil(bytes / 1024)} KiB of 128 KiB`;
+  catch { bytes = undefined; }
+  const showReadout = mentions.length > 0 || items.length > 9 || bytes === undefined || bytes > 96 * 1024;
+  const size = bytes === undefined ? (zh ? '超过 128 KiB' : 'over 128 KiB') : (zh ? `${Math.ceil(bytes / 1024)} KiB / 128 KiB` : `${Math.ceil(bytes / 1024)} KiB of 128 KiB`);
+  const readout = `${identityCount}/12 · ${size}`;
   return <div className="context-tray" data-testid="context-tray" aria-label={zh ? '消息上下文' : 'Message context'}>{items.length > 0 && <ContextChips chips={chipsFor(blocks, items.map(item => item.id))} zh={zh} remove={onRemove} disabled={disabled}>
     {showReadout && <span className="context-budget" role="status">{readout}</span>}
   </ContextChips>}
