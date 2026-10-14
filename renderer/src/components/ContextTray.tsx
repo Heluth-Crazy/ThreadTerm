@@ -1,7 +1,7 @@
-import { useLayoutEffect, useRef, useState, type ReactNode } from 'react';
+import { useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { contextDisplayMetadata, contextSerializedBlocks, parseContext, serializeMentionedContext, type ContextItem } from '../chatContext';
 import { contextIdentityBudget, type MentionEntry } from '../inlineMentions';
-import { parseMessageMentions, type MessageMentionBadge } from '../messageMentions';
+import { createMessageMentionsMemo, type MessageMentionBadge } from '../messageMentions';
 import { SurfaceDialog } from './SurfaceDialog';
 import { Icon } from './PrototypeIcon';
 import './context-tray.css';
@@ -119,7 +119,10 @@ export function ContextTray({ items, text, zh, onRemove, disabled, mentions = []
 
 /** Shared by submitted user bubbles and the pending-send preview. */
 export function ContextMessage({ text, zh, children }: { text: string; zh: boolean; children: (text: string, badges: readonly MessageMentionBadge[]) => ReactNode }) {
-  const message = parseMessageMentions(text);
+  // One memo per mounted message: an unrelated parent re-render (composer keystrokes) reuses it
+  // instead of rescanning history, however long the transcript is.
+  const memo = useMemo(() => createMessageMentionsMemo(), []);
+  const message = memo(text);
   if (!message) return <>{children(text, [])}</>;
   const { parsed, layout } = message;
   const { badges, chipItems } = layout;

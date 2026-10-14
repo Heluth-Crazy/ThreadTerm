@@ -49,23 +49,33 @@ export function layoutMessageMentions(parsed: ParsedContext): MessageMentionLayo
 
 export type ParsedMessageMentions = { parsed: ParsedContext; layout: MessageMentionLayout };
 
-// Sent-message text is immutable, but ChatView re-renders the whole transcript on
-// every composer keystroke. Caching the parse + resolution + chip split by text
-// keeps that work O(1) per rendered message instead of rescanning history. The
-// cache is bounded so a long session cannot grow it without limit.
-const parsedCache = new Map<string, ParsedMessageMentions | null>();
-const PARSED_CACHE_LIMIT = 256;
-
-/** Parses and lays out one message body once per distinct text. */
+/** Parses and lays out one message body. Callers memoize this per mounted message. */
 export function parseMessageMentions(text: string): ParsedMessageMentions | undefined {
-  const cached = parsedCache.get(text);
-  if (cached !== undefined) return cached ?? undefined;
   const parsed = parseContext(text);
-  const entry: ParsedMessageMentions | null = parsed ? { parsed, layout: layoutMessageMentions(parsed) } : null;
-  if (parsedCache.size >= PARSED_CACHE_LIMIT) {
-    const oldest = parsedCache.keys().next().value;
-    if (oldest !== undefined) parsedCache.delete(oldest);
-  }
-  parsedCache.set(text, entry);
-  return entry ?? undefined;
+  return parsed ? { parsed, layout: layoutMessageMentions(parsed) } : undefined;
+}
+
+export type MessageMentionsMemo = (text: string) => ParsedMessageMentions | undefined;
+
+/**
+ * A one-slot memoizer owned by one mounted message. ChatView re-renders the
+ * whole transcript on every composer keystroke, so the previous shared 256-entry
+ * cache thrashed once a transcript held more distinct messages than its capacity:
+ * each render evicted the entry the next render needed and reparsed all history.
+ * A memo per message instance retains each parse for as long as that message is
+ * mounted, so unchanged messages never rescan, whatever the transcript length.
+ * One slot (not a map) also keeps a live submission preview from growing with
+ * keystrokes. `parse` is injectable so the memoization contract is unit-tested.
+ */
+export function createMessageMentionsMemo(parse: (text: string) => ParsedMessageMentions | undefined = parseMessageMentions): MessageMentionsMemo {
+  let lastText: string | undefined;
+  let lastValue: ParsedMessageMentions | undefined;
+  let primed = false;
+  return text => {
+    if (primed && text === lastText) return lastValue;
+    lastText = text;
+    lastValue = parse(text);
+    primed = true;
+    return lastValue;
+  };
 }

@@ -41,6 +41,20 @@ test('isValidMentionToken accepts bare and quoted tokens and rejects malformed o
   }
 });
 
+test('comma-containing names are valid tokens and never trap generation in an unbounded loop', () => {
+  // Internal commas are legal per the grammar §3.1; only a trailing one is rejected.
+  assert.equal(isValidMentionToken('@a,b.ts'), true);
+  assert.equal(isValidMentionToken('@a,b'), true);
+  assert.equal(isValidMentionToken('@a,'), false);
+  assert.equal(inlineMentionToken(file('src/a,b.ts'), []), '@a,b.ts');
+  assert.equal(inlineMentionToken(skill('a,b'), []), '@a,b');
+  const taken = [entry('@a,b.ts', skill('x')), entry('@src/a,b.ts', skill('y'))];
+  assert.equal(inlineMentionToken(file('src/a,b.ts'), taken), '@a,b.ts~2');
+  // A newline in a title cannot survive into a token; generation still terminates with a valid one.
+  const newline = inlineMentionToken(session('s', 'line1\nline2'), []);
+  assert.equal(isValidMentionToken(newline), true);
+});
+
 test('contextIdentityKey covers every kind and normalizes file paths', () => {
   assert.equal(contextIdentityKey(file('src/cart.ts')), 'file:src/cart.ts');
   assert.equal(contextIdentityKey(file('src\\cart.ts')), 'file:src/cart.ts');
@@ -176,6 +190,14 @@ test('resolveMentions honors ASCII, full-width and CJK boundaries on both sides'
   assert.deepEqual(at('@cartx'), []);
   assert.deepEqual(at('x@cart.ts'), []);
   assert.deepEqual(at('@cart.tsx'), []);
+});
+
+test('resolveMentions accepts every specified boundary character on both sides', () => {
+  const catalogue = [entry('@cart.ts', file('src/cart.ts'))];
+  const before = ['(', '[', '{', '"', "'", '“', '‘', '（', '【', '「', '《'];
+  const after = ['.', ',', ';', ':', '!', '?', ')', ']', '}', '"', "'", '”', '’', '）', '】', '」', '》'];
+  for (const char of before) assert.deepEqual(resolveMentions(`${char}@cart.ts`, catalogue).map(range => range.start), [1], `before ${JSON.stringify(char)}`);
+  for (const char of after) assert.deepEqual(resolveMentions(`@cart.ts${char}`, catalogue).map(range => [range.start, range.end]), [[0, 8]], `after ${JSON.stringify(char)}`);
 });
 
 test('resolveMentions keeps the longer token on overlap and every occurrence', () => {

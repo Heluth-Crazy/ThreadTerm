@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { parseContext, serializeMentionedContext, type ContextItem } from './chatContext';
 import { highlightSegments, type MentionEntry } from './inlineMentions';
-import { layoutMessageMentions, parseMessageMentions } from './messageMentions';
+import { layoutMessageMentions, parseMessageMentions, createMessageMentionsMemo } from './messageMentions';
 
 const fileItem = (path: string): ContextItem => ({ kind: 'file', id: `file:${path}`, path });
 const fileEntry = (token: string, path: string): MentionEntry => ({ token, item: { kind: 'file', id: `file:${path}`, path } });
@@ -68,15 +68,30 @@ test('resolution never rewrites the user text used for plain-text copy', () => {
   assert.equal(highlightSegments(parsed.text, layout.badges).map(segment => segment.text).join(''), body);
 });
 
-test('message parsing is cached by text so transcript re-renders do not rescan history', () => {
-  const message = serializeMentionedContext({ trayItems: [fileItem('src/cart.ts')], active: [fileEntry('@cart.ts', 'src/cart.ts')] }, 'Please check @cart.ts now');
-  const first = parseMessageMentions(message);
-  const second = parseMessageMentions(message);
-  assert.ok(first && second);
-  assert.equal(first, second, 'the same text returns the identical parsed layout');
-  assert.equal(first.layout, second.layout);
-  const other = parseMessageMentions(serializeMentionedContext({ trayItems: [fileItem('src/other.ts')], active: [] }, 'a different message'));
-  assert.ok(other);
-  assert.notEqual(other, first);
+test('a mention wrapped in single quotes still resolves and serializes as a badge', () => {
+  const { layout } = resolve("'@cart.ts'", [fileItem('src/cart.ts')], [fileEntry('@cart.ts', 'src/cart.ts')]);
+  assert.equal(layout.badges.length, 1);
+  assert.equal(layout.badges[0]!.start, 1);
+  assert.equal(layout.badges[0]!.end, 9);
+  assert.equal(layout.chipItems.length, 0);
+});
+
+test('a per-message memo keeps every mounted message parsed once beyond the old 256-entry cache', () => {
+  const messages = Array.from({ length: 300 }, (_, index) => serializeMentionedContext(
+    { trayItems: [fileItem(`src/file-${index}.ts`)], active: [fileEntry(`@file-${index}.ts`, `src/file-${index}.ts`)] },
+    `Please check @file-${index}.ts now`,
+  ));
+  let parses = 0;
+  const parse = (text: string) => { parses += 1; return parseMessageMentions(text); };
+  const memos = messages.map(() => createMessageMentionsMemo(parse));
+  // First render: exactly one parse per mounted message.
+  messages.forEach((text, index) => assert.ok(memos[index]!(text)));
+  assert.equal(parses, messages.length);
+  // Re-render the whole transcript with unchanged text: nothing is reparsed.
+  messages.forEach((text, index) => memos[index]!(text));
+  assert.equal(parses, messages.length, 'unchanged messages are not reparsed');
+  // Only a message whose text changed pays for a parse.
+  memos[5]!('plain text with no envelope');
+  assert.equal(parses, messages.length + 1);
   assert.equal(parseMessageMentions('plain text with no envelope'), undefined);
 });
