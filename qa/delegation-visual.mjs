@@ -95,7 +95,12 @@ async function send(sessionId, text) {
   const input = chat(sessionId).locator('.chat-compose-shell textarea');
   await until(async () => await input.count() && !(await input.isDisabled()), 'writable composer', 90000);
   await input.fill(text);
-  await chat(sessionId).locator('.chat-compose-shell').evaluate(form => form.requestSubmit());
+  // The composer ignores a submit until its lease, queue and draft have loaded; resubmit until it takes the text.
+  await until(async () => {
+    await chat(sessionId).locator('.chat-compose-shell').evaluate(form => form.requestSubmit());
+    await delay(1500);
+    return !(await input.inputValue());
+  }, 'message accepted by the composer', 90000);
 }
 /** Clicks the first allow choice ("Allow once") of the pending card in the visible chat. */
 async function allowInCard(sessionId) {
@@ -180,10 +185,11 @@ async function scenarioRelay(parent) {
   assert.match(await card.locator('.delegate-card-preview').innerText(), /DONE-A/);
   await bothLanguages('a4-parent-delegate-completed', async language => {
     assert.equal((await card.locator('.delegation-state').innerText()).trim(), language === 'en' ? 'Completed' : '已完成');
-    const tools = (await chat(parent.id).locator('.codex-tool-disclosure summary').allInnerTexts()).join(' | ');
+    // Tool rows live in the (possibly collapsed) tool activity drawer; textContent includes closed <details>.
+    const tools = (await chat(parent.id).locator('.chat-tool-activity').evaluateAll(nodes => nodes.map(node => node.textContent ?? ''))).join(' | ');
     const labels = language === 'en'
-      ? ['Started a delegate', 'Waited for delegates', "Answered a delegate's request", "Read a delegate's result"]
-      : ['启动了委派', '等待了委派', '答复了委派的请求', '读取了委派结果'];
+      ? ['Start delegate', 'Wait for delegate', 'Answer delegate', 'Read delegate result']
+      : ['启动委派', '等待委派', '答复委派请求', '读取委派结果'];
     for (const label of labels) assert.ok(tools.includes(label), `delegation tool label "${label}" in: ${tools}`);
   });
   // The parent's own approval the driver allowed (Claude) is settled, not expired at turn end.
@@ -286,7 +292,8 @@ try {
     THREADTERM_V3_USER_DATA: join(scratch, 'profile'),
     THREADTERM_V3_PIPE: `\\\\.\\pipe\\tt-deleg-visual-${randomUUID()}`,
     THREADTERM_V3_RUNTIME: runtime,
-    THREADTERM_CLAUDE_SDK_HOST: join(root, 'providers/claude-sdk/src/main.mjs'),
+    // The built sidecar (providers/claude-sdk/dist, as shipped). With the source host (src/main.mjs) the parent
+    // chat lost control right after it became writable ("Chat is read-only", 2026-10-14), so its turn never began.
     THREADTERM_CLAUDE_NODE: process.execPath,
   });
   app = await electron.launch({ args: [appDir], cwd: root, env, timeout: 60000 });

@@ -31,15 +31,16 @@ assert.deepEqual(Object.keys(env).filter(key => key.toLowerCase() === 'path'), [
 let app, page, sessionId; const report = { passed: false, checks: [], screenshots: [], paneWidths: [] };
 const delay = ms => new Promise(done => setTimeout(done, ms));
 async function until(check, label, timeout = 180_000) { const end = Date.now() + timeout; while (Date.now() < end) { const value = await check(); if (value) return value; await delay(250); } throw Error(`Timed out: ${label}`); }
+// The sidebar collapses below ~720 px, so a narrow pane needs a viewport under 720.
 async function shot(name, target) {
   const chat = page.locator(`[data-testid="session-chat-${sessionId}"]`);
   const viewport = page.viewportSize()?.width ?? 1440;
   const initialPane = await chat.evaluate(node => node.getBoundingClientRect().width);
-  let width = Math.max(720, Math.round(target + viewport - initialPane));
+  let width = Math.max(360, Math.round(target + viewport - initialPane));
   await page.setViewportSize({ width, height: 900 });
   let paneWidth = await chat.evaluate(node => Math.round(node.getBoundingClientRect().width));
   if (Math.abs(paneWidth - target) > 8) {
-    width = Math.max(720, width + target - paneWidth);
+    width = Math.max(360, width + target - paneWidth);
     await page.setViewportSize({ width, height: 900 });
     paneWidth = await chat.evaluate(node => Math.round(node.getBoundingClientRect().width));
   }

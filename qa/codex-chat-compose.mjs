@@ -1,5 +1,5 @@
 // QA-only: visual check of Codex chat compose (slash commands, model, thinking).
-// Isolated temp data/profile/pipe; test model gpt-5.5-luna.
+// Isolated temp data/profile/pipe; test model gpt-6-luna (only GPT-6 Luna / 6.1 Sol are used in QA).
 import assert from 'node:assert/strict';
 import {spawn} from 'node:child_process';
 import {existsSync} from 'node:fs';
@@ -9,7 +9,7 @@ import {tmpdir} from 'node:os';
 import {randomUUID} from 'node:crypto';
 import {_electron as electron} from '@playwright/test';
 
-const TEST_MODEL=/gpt-5\.5-luna|5\.5-luna|5\.5.*luna/i;
+const TEST_MODEL=/gpt-6-luna/i;
 const out=join('qa','results','codex-chat-compose-'+new Date().toISOString().replace(/[:.]/g,'-'));
 const scratch=await mkdtemp(join(tmpdir(),'threadterm-codex-compose-'));
 const project=join(scratch,'project');
@@ -62,9 +62,9 @@ try {
     await luna.first().click();
     await page.waitForFunction(()=>{
       const chip=document.querySelector('.chat-model-chip');
-      return chip && /5\.5/i.test(chip.innerText) && /luna/i.test(chip.innerText);
+      return chip && /6/i.test(chip.innerText) && /luna/i.test(chip.innerText);
     },undefined,{timeout:20000});
-    report.checks.push('clicked gpt-5.5-luna in the model menu');
+    report.checks.push('clicked gpt-6-luna in the model menu');
   } else {
     const before=await page.evaluate(()=>document.querySelector('.chat-model-chip')?.innerText);
     await page.locator('.chat-menu-model .chat-menu-item').nth(1).click();
@@ -72,7 +72,7 @@ try {
       const chip=document.querySelector('.chat-model-chip');
       return chip && chip.innerText!==prev;
     },before,{timeout:20000});
-    report.checks.push('gpt-5.5-luna not in picker; switched another catalog model');
+    report.checks.push('gpt-6-luna not in picker; switched another catalog model');
   }
   report.observations.modelAfterSwitch=await page.evaluate(()=>document.querySelector('.chat-model-chip')?.innerText);
   await page.locator('.chat-model-chip').click();
