@@ -875,8 +875,8 @@ type RetirementProjector = Arc<dyn Fn(&ProviderEvent) -> Result<(), ProviderErro
 /// installed by the runtime service.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct CapabilityUpdate {
-    /// Set only when the round was started by `request_capability_refresh`.
-    pub refresh_id: Option<u64>,
+    /// The round's claimed generation, strictly increasing across rounds.
+    pub generation: u64,
     /// `"ok"` or `"failed"`.
     pub outcome: &'static str,
 }
@@ -898,8 +898,6 @@ struct CapabilityCache {
     /// Newest claimed generation. A completion for an older generation is
     /// discarded instead of overwriting newer values.
     generation: u64,
-    /// The generation claimed by the last forced refresh, until it completes.
-    manual_request: Option<u64>,
     on_updated: Option<Arc<dyn Fn(CapabilityUpdate) + Send + Sync>>,
     /// A failed cold probe. Kept until an explicit refresh or plugin rebuild.
     failed_at: Option<Instant>,
@@ -1072,9 +1070,7 @@ impl Providers {
         let generation = {
             let Ok(mut cache) = self.capability_cache.lock() else { return 0 };
             cache.failed_at = None;
-            let generation = cache.start_probe_locked();
-            cache.manual_request = Some(generation);
-            generation
+            cache.start_probe_locked()
         };
         let adapters = self.supported_adapters();
         self.spawn_capability_probe(generation, adapters);
@@ -1109,16 +1105,12 @@ impl Providers {
                                 }
                                 Err(_) => { cache.failed_at = Some(Instant::now()); }
                             }
-                            let refresh_id = (cache.manual_request == Some(generation)).then_some(generation);
-                            if refresh_id.is_some() { cache.manual_request = None; }
-                            cache.on_updated.clone().map(|notify| (notify, refresh_id))
+                            cache.on_updated.clone().map(|notify| (notify, CapabilityUpdate { generation, outcome: if outcome_ok { "ok" } else { "failed" } }))
                         } else { None }
                     } else { None };
                     wait.notify_all();
                     // Notification can re-enter snapshot: release the cache first.
-                    if let Some((notify, refresh_id)) = notification {
-                        notify(CapabilityUpdate { refresh_id, outcome: if outcome_ok { "ok" } else { "failed" } });
-                    }
+                    if let Some((notify, update)) = notification { notify(update); }
                 })
         };
         if spawned.is_err() {
@@ -1126,15 +1118,11 @@ impl Providers {
                 if cache.generation == generation {
                     cache.refreshing = None;
                     cache.failed_at = Some(Instant::now());
-                    let refresh_id = (cache.manual_request == Some(generation)).then_some(generation);
-                    if refresh_id.is_some() { cache.manual_request = None; }
-                    cache.on_updated.clone().map(|notify| (notify, refresh_id))
+                    cache.on_updated.clone().map(|notify| (notify, CapabilityUpdate { generation, outcome: "failed" }))
                 } else { None }
             } else { None };
             self.capability_wait.notify_all();
-            if let Some((notify, refresh_id)) = notification {
-                notify(CapabilityUpdate { refresh_id, outcome: "failed" });
-            }
+            if let Some((notify, update)) = notification { notify(update); }
         }
     }
 
@@ -1341,7 +1329,6 @@ impl Providers {
             cache.values = None;
             cache.refreshing = None;
             cache.failed_at = None;
-            cache.manual_request = None;
             cache.generation += 1;
         }
         self.capability_wait.notify_all();
@@ -2725,6 +2712,10 @@ mod capability_cache_tests {
             *lock.lock().unwrap() = true;
             wait.notify_all();
         }
+        fn arm(&self) {
+            let (lock, _) = &*self.gate;
+            *lock.lock().unwrap() = false;
+        }
         fn wait_entered(&self, count: usize) {
             let deadline = Instant::now() + Duration::from_secs(5);
             while self.entered.load(SeqCst) < count && Instant::now() < deadline {
@@ -2870,7 +2861,7 @@ mod capability_cache_tests {
         wait_for_updates(&updates, 1);
         let seen = updates.lock().unwrap().clone();
         assert_eq!(seen.len(), 1, "one completion publishes once: {seen:?}");
-        assert_eq!(seen[0].refresh_id, Some(refresh_id));
+        assert_eq!(seen[0].generation, refresh_id);
         assert_eq!(seen[0].outcome, "ok");
     }
 
@@ -2912,6 +2903,67 @@ mod capability_cache_tests {
         assert_eq!(probes.load(SeqCst), 2, "the rebuild started exactly one new round");
     }
 
+    // A3: a second forced refresh during the first wins; the older completion is
+    // discarded and only the newer round owns the values.
+    #[test]
+    fn second_refresh_during_a_refresh_wins() {
+        let probes = Arc::new(AtomicUsize::new(0));
+        let entered = Arc::new(AtomicUsize::new(0));
+        let probe = Arc::new(GateProbe::new(&probes, &entered));
+        let providers = Arc::new(Providers::for_test(vec![probe.clone()]));
+        let warming = Arc::clone(&providers);
+        let warm = std::thread::spawn(move || warming.capabilities());
+        probe.wait_entered(1);
+        probe.release();
+        assert_eq!(name(&warm.join().unwrap()), "probe 1");
+        probe.arm();
+        let first = providers.request_capability_refresh();
+        probe.wait_entered(2);
+        let second = providers.request_capability_refresh();
+        assert_eq!(second, first + 1, "the second refresh claims the next generation");
+        probe.wait_entered(3);
+        probe.release();
+        wait_for_name(&providers, "probe 3");
+        assert_eq!(probes.load(SeqCst), 3, "one warm round plus two refreshes = three rounds");
+        let cache = providers.capability_cache.lock().unwrap();
+        assert_eq!(cache.refreshing, None);
+        assert_eq!(cache.generation, second);
+    }
+
+    // A3/5b: warm admission reads return immediately during a forced refresh;
+    // after a plugin rebuild clears the values they wait for the new round.
+    #[test]
+    fn warm_admission_reads_do_not_wait_but_cold_ones_do() {
+        let probes = Arc::new(AtomicUsize::new(0));
+        let entered = Arc::new(AtomicUsize::new(0));
+        let probe = Arc::new(GateProbe::new(&probes, &entered));
+        let providers = Arc::new(Providers::for_test(vec![probe.clone()]));
+        let warming = Arc::clone(&providers);
+        let warm = std::thread::spawn(move || warming.capabilities());
+        probe.wait_entered(1);
+        probe.release();
+        assert_eq!(name(&warm.join().unwrap()), "probe 1");
+        probe.arm();
+        let refresh_id = providers.request_capability_refresh();
+        assert_eq!(refresh_id, 2);
+        probe.wait_entered(2);
+        // Warm admission must not block while the forced refresh is in flight.
+        let started = Instant::now();
+        assert_eq!(name(&providers.capabilities()), "probe 1");
+        assert!(started.elapsed() < Duration::from_millis(200), "warm admission waited for the forced refresh");
+        probe.release();
+        wait_for_name(&providers, "probe 2");
+        // A plugin rebuild clears the confirmed values, so the next admission
+        // waits for and receives the new generation's values.
+        providers.refresh_capabilities();
+        probe.arm();
+        let waiting = Arc::clone(&providers);
+        let admission = std::thread::spawn(move || waiting.capabilities());
+        probe.wait_entered(3);
+        probe.release();
+        assert_eq!(name(&admission.join().unwrap()), "probe 3");
+    }
+
     // A3: an adapter panic publishes a failure, releases waiters and leaves the
     // cache usable (the failed cold probe stays failed, warm values survive).
     #[test]
@@ -2928,7 +2980,7 @@ mod capability_cache_tests {
         wait_for_updates(&updates, 1);
         let seen = updates.lock().unwrap().clone();
         assert_eq!(seen[0].outcome, "failed");
-        assert_eq!(seen[0].refresh_id, None);
+        assert_eq!(seen[0].generation, 1);
         assert_eq!(joined.join().unwrap(), Vec::<Value>::new(), "admission waiters are released on failure");
         assert_eq!(providers.capability_snapshot_result().unwrap_err().code, "provider_detection_failed");
         assert_eq!(probes.load(SeqCst), 1, "a panicked cold probe is never retried by a read");
@@ -2943,7 +2995,7 @@ mod capability_cache_tests {
         wait_for_updates(&updates, 3);
         let seen = updates.lock().unwrap().clone();
         assert_eq!(seen[2].outcome, "failed");
-        assert_eq!(seen[2].refresh_id, Some(refresh_id));
+        assert_eq!(seen[2].generation, refresh_id);
         assert_eq!(name(&providers.capability_snapshot()), "probe 2", "a failed warm refresh keeps the previous values");
     }
 
@@ -2960,7 +3012,7 @@ mod capability_cache_tests {
         wait_for_updates(&updates, 1);
         let seen = updates.lock().unwrap().clone();
         assert_eq!(seen[0].outcome, "failed");
-        assert_eq!(seen[0].refresh_id, Some(refresh_id));
+        assert_eq!(seen[0].generation, refresh_id);
         assert_eq!(providers.capability_cache.lock().unwrap().refreshing, None);
         assert_eq!(name(&providers.capability_snapshot()), "probe 1", "warm values survive a spawn failure");
         let second = providers.request_capability_refresh();
@@ -2995,14 +3047,14 @@ mod capability_cache_tests {
         wait_for_updates(&updates, 2);
         let recovered = updates.lock().unwrap().clone();
         assert_eq!(recovered[1].outcome, "ok");
-        assert_eq!(recovered[1].refresh_id, Some(refresh_id));
+        assert_eq!(recovered[1].generation, refresh_id);
 
         fail.store(true, SeqCst);
         let warm = providers.request_capability_refresh();
         wait_for_updates(&updates, 3);
         let seen = updates.lock().unwrap().clone();
         assert_eq!(seen[2].outcome, "failed");
-        assert_eq!(seen[2].refresh_id, Some(warm));
+        assert_eq!(seen[2].generation, warm);
         assert_eq!(name(&providers.capability_snapshot()), "probe 2");
         for _ in 0..16 { assert_eq!(name(&providers.capability_snapshot()), "probe 2"); }
         assert_eq!(probes.load(SeqCst), 3);
