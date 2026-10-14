@@ -133,7 +133,16 @@ try {
   await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].setContentSize(1100, 900));
   const present = async (language, theme) => {
     const snapshot = await request('runtime.snapshot');
-    await request('settings.update', { patch: { language, theme, notifications: { native: false, attention: false, completed: false, sound: false } }, expectedRevision: snapshot.settings.revision, operationId: randomUUID() });
+    const patch = { language, notifications: { native: false, attention: false, completed: false, sound: false } };
+    if (theme === 'custom') {
+      patch.theme = 'dark';
+      patch.themeSelection = 'custom:qa';
+      patch.customThemes = { qa: { background: '#e8eef4', surface: '#f7fbff', text: '#142f42', muted: '#4b6477', accent: '#b65912', border: '#a6b6c5' } };
+    } else {
+      patch.theme = theme;
+      patch.themeSelection = theme;
+    }
+    await request('settings.update', { patch, expectedRevision: snapshot.settings.revision, operationId: randomUUID() });
   };
 
   // 1. Wait for the startup detection round to finish.
@@ -206,10 +215,11 @@ try {
   // 6. Screenshot and VC matrix: idle, checking and updated at 420/1100 px,
   // light/dark, en/zh-CN. Each cell clicks Refresh so the checking state is
   // really the live state, then waits for the updated status.
-  for (const [language, theme, width] of [['en', 'light', 1100], ['en', 'dark', 1100], ['en', 'light', 420], ['en', 'dark', 420], ['zh-CN', 'light', 1100], ['zh-CN', 'dark', 1100], ['zh-CN', 'light', 420], ['zh-CN', 'dark', 420]]) {
+  for (const [language, theme, width] of [['en', 'light', 1100], ['en', 'dark', 1100], ['en', 'light', 420], ['en', 'dark', 420], ['zh-CN', 'light', 1100], ['zh-CN', 'dark', 1100], ['zh-CN', 'light', 420], ['zh-CN', 'dark', 420], ['en', 'custom', 1100]]) {
     await present(language, theme);
     await app.evaluate(({ BrowserWindow }, nextWidth) => BrowserWindow.getAllWindows()[0].setContentSize(nextWidth, 900), width);
-    await until(async () => (await page.evaluate(() => document.documentElement.lang)) === language && (await page.evaluate(() => document.documentElement.dataset.theme)) === theme, `${language}/${theme} presentation`);
+    const expectedTheme = theme === 'custom' ? 'dark' : theme;
+    await until(async () => (await page.evaluate(() => document.documentElement.lang)) === language && (await page.evaluate(() => document.documentElement.dataset.theme)) === expectedTheme && (await page.evaluate(() => document.documentElement.dataset.customTheme)) === (theme === 'custom' ? 'true' : 'false'), `${language}/${theme} presentation`);
     const name = label => `provider-refresh-${label}-${language}-${theme}-${width}.png`;
     await panel.scrollIntoViewIfNeeded();
     await panel.getByText(language === 'zh-CN' ? '提供商状态已更新。' : 'Provider status updated.', { exact: true }).waitFor({ state: 'detached', timeout: 15_000 });
@@ -225,7 +235,7 @@ try {
       assertNoControlViolations(consistency, `${name(label)} provider-settings`);
     }
   }
-  check('the idle/checking/updated surfaces pass the VC control check at 420/1100 px, light/dark, en/zh-CN');
+  check('the idle/checking/updated surfaces pass the VC control check at 420/1100 px, light/dark/custom, en/zh-CN');
 
   assert.deepEqual(report.errors, [], report.errors.join('\n'));
   report.passed = true;
