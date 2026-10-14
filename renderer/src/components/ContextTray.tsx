@@ -1,6 +1,7 @@
 import { useLayoutEffect, useRef, useState, type ReactNode } from 'react';
 import { contextDisplayMetadata, contextSerializedBlocks, parseContext, serializeMentionedContext, type ContextItem } from '../chatContext';
 import { contextIdentityBudget, type MentionEntry } from '../inlineMentions';
+import { layoutMessageMentions, type MessageMentionBadge } from '../messageMentions';
 import { SurfaceDialog } from './SurfaceDialog';
 import { Icon } from './PrototypeIcon';
 import './context-tray.css';
@@ -117,11 +118,12 @@ export function ContextTray({ items, text, zh, onRemove, disabled, mentions = []
 }
 
 /** Shared by submitted user bubbles and the pending-send preview. */
-export function ContextMessage({ text, zh, children }: { text: string; zh: boolean; children: (text: string) => ReactNode }) {
+export function ContextMessage({ text, zh, children }: { text: string; zh: boolean; children: (text: string, badges: readonly MessageMentionBadge[]) => ReactNode }) {
   const parsed = parseContext(text);
-  if (!parsed) return <>{children(text)}</>;
-  const blocks = parsed.items.map(({ header, body }) => header + (body ? `\n${body}` : ''));
-  return <><div className="context-transcript-row" data-testid="context-transcript-row"><ContextChips chips={chipsFor(blocks)} zh={zh}/></div>{children(parsed.text)}</>;
+  if (!parsed) return <>{children(text, [])}</>;
+  const { badges, chipItems } = layoutMessageMentions(parsed);
+  const blocks = chipItems.map(({ header, body }) => header + (body ? `\n${body}` : ''));
+  return <>{blocks.length > 0 && <div className="context-transcript-row" data-testid="context-transcript-row"><ContextChips chips={chipsFor(blocks)} zh={zh}/></div>}{children(parsed.text, badges)}</>;
 }
 
 export function ContextQueueBadge({ text, zh }: { text: string; zh: boolean }) {

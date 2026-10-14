@@ -559,6 +559,8 @@ html[data-theme="dark"] { color-scheme:dark; }
 .chat-mention-badge[data-kind="session"] { background:color-mix(in srgb, var(--st-running) 16%, transparent); box-shadow:0 0 0 1px color-mix(in srgb, var(--st-running) 45%, transparent); }
 .chat-mention-badge[data-kind="commit"] { background:color-mix(in srgb, var(--amber) 18%, transparent); box-shadow:0 0 0 1px color-mix(in srgb, var(--amber) 48%, transparent); }
 .chat-mention-badge[data-kind="skill"] { background:color-mix(in srgb, var(--st-needs) 16%, transparent); box-shadow:0 0 0 1px color-mix(in srgb, var(--st-needs) 45%, transparent); }
+/* Sent/pending message badges keep the real text color (the composer layer hides its own glyphs). */
+.v3-message-text .chat-mention-badge { color:inherit; }
 .chat-compose-shell textarea::placeholder { color:color-mix(in srgb, var(--muted) 85%, transparent); }
 /* The hint stays one line: while the placeholder shows, clip it with an ellipsis. Typing restores normal wrapping. */
 .chat-compose-shell textarea:placeholder-shown { white-space:nowrap; overflow-x:hidden; text-overflow:ellipsis; }

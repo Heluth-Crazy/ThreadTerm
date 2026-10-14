@@ -189,21 +189,21 @@ function boundaryAfter(text: string, index: number): boolean {
   return /\s/.test(char) || AFTER_BOUNDARY.test(char) || CJK.test(char);
 }
 
-/**
- * Every place a catalogue token occurs with word/CJK boundaries. Overlaps are
- * resolved by start index and, at the same start, the longer token wins.
- */
-export function resolveMentions(text: string, catalogue: readonly MentionEntry[]): ResolvedMention[] {
-  if (typeof text !== 'string' || text.length === 0 || catalogue.length === 0) return [];
+/** A `{token, itemId}` pair: the resolution rule needs no full catalogue entry. */
+export type MentionTokenPair = { token: string; itemId: string };
+
+/** The shared occurrence + overlap selection rule over plain token/identity pairs. */
+function resolveRanges(text: string, tokens: readonly MentionTokenPair[]): ResolvedMention[] {
+  if (typeof text !== 'string' || text.length === 0 || tokens.length === 0) return [];
   const found: ResolvedMention[] = [];
-  for (const entry of catalogue) {
+  for (const entry of tokens) {
     const token = entry.token;
     let from = 0;
     while (from <= text.length - token.length) {
       const start = text.indexOf(token, from);
       if (start < 0) break;
       const end = start + token.length;
-      if (boundaryBefore(text, start) && boundaryAfter(text, end)) found.push({ start, end, token, itemId: entry.item.id });
+      if (boundaryBefore(text, start) && boundaryAfter(text, end)) found.push({ start, end, token, itemId: entry.itemId });
       from = start + 1;
     }
   }
@@ -216,6 +216,19 @@ export function resolveMentions(text: string, catalogue: readonly MentionEntry[]
     cursor = candidate.end;
   }
   return resolved;
+}
+
+/**
+ * Every place a catalogue token occurs with word/CJK boundaries. Overlaps are
+ * resolved by start index and, at the same start, the longer token wins.
+ */
+export function resolveMentions(text: string, catalogue: readonly MentionEntry[]): ResolvedMention[] {
+  return resolveRanges(text, catalogue.map(entry => ({ token: entry.token, itemId: entry.item.id })));
+}
+
+/** The same rule over raw `{token, itemId}` pairs (message envelopes resolve their map once). */
+export function resolveMentionTokens(text: string, tokens: readonly MentionTokenPair[]): ResolvedMention[] {
+  return resolveRanges(text, tokens);
 }
 
 /** Catalogue entries that own at least one resolved range, in catalogue order. */

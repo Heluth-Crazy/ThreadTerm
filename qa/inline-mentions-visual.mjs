@@ -552,7 +552,103 @@ try {
   assert.ok(Math.abs(meanDelta) <= 3, `mean latency delta ${meanDelta.toFixed(2)} ms ≤ 3`);
   ok(`latency: with mentions mean ${withStats.mean.toFixed(2)} ms p95 ${withStats.p95.toFixed(2)} ms; without mean ${withoutStats.mean.toFixed(2)} ms p95 ${withoutStats.p95.toFixed(2)} ms`);
 
-  // --- 6. VC check ----------------------------------------------------------
+  // --- 6. Sent-message rendering (M4) --------------------------------------
+  const SENT_BADGE_ENVELOPE = '[ThreadTerm context 1/1] File: src/cart.ts\n[ThreadTerm message; mentions v1 {"@cart.ts":1}]\nPlease check @cart.ts and src/other.ts.';
+  const sentMixed = body => [
+    '[ThreadTerm context 1/2] File: src/cart.ts',
+    '[ThreadTerm context 2/2] Session other-1: Other chat (codex). Call session_info with this id.',
+    '[ThreadTerm message; mentions v1 {"@cart.ts":1,"@other-chat":2}]',
+    body,
+  ].join('\n');
+  const userItem = (id, text) => ({ id, role: 'user', turnId: `${id}-turn`, createdAt: '2026-01-01T00:00:00.000Z', parts: [{ type: 'text', text }] });
+  async function mountTranscript(id, { items = [], locale = 'en', queue, status = 'idle' } = {}) {
+    await page.evaluate(([sessionId, lang, sessionStatus, transcript, q]) => window.qa.reset({
+      sessionId, draft: '', locale: lang, status: sessionStatus, items: transcript, ...(q ? { queue: q } : {}),
+    }), [id, locale, status, items, queue]);
+    await scope(id).waitFor({ timeout: 15_000 });
+  }
+  async function messageBox(id) {
+    const box = await scope(id).locator('.v3-chat-message.user').first().boundingBox();
+    return { x: Math.floor(box.x) - 4, y: Math.floor(box.y) - 4, width: Math.ceil(box.width) + 8, height: Math.ceil(box.height) + 8 };
+  }
+  const userBadges = id => scope(id).locator('.v3-chat-message.user .chat-mention-badge');
+  const userChips = id => scope(id).locator('.v3-chat-message.user [data-testid="context-chip"]');
+
+  // A saved-history message: the mapped token is one badge, its item is not
+  // repeated as a chip, and the surrounding plain text (a file path included)
+  // stays plain text for FileLinkedText.
+  await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].setContentSize(700, 900));
+  await applyTheme('light');
+  await mountTranscript('sent-history', { items: [userItem('sent-u1', SENT_BADGE_ENVELOPE)] });
+  await userBadges('sent-history').waitFor({ timeout: 15_000 });
+  assert.deepEqual(await userBadges('sent-history').evaluateAll(nodes => nodes.map(node => ({ text: node.textContent, kind: node.dataset.kind }))), [{ text: '@cart.ts', kind: 'file' }]);
+  assert.equal(await userChips('sent-history').count(), 0, 'a badged item is not repeated as a chip');
+  const historyHtml = await scope('sent-history').locator('.v3-chat-message.user').first().innerHTML();
+  await capture('sent-history', await messageBox('sent-history'), 'sent-history');
+  ok('a sent message renders its mention as a badge without a duplicate chip');
+
+  // The same envelope delivered live (chat.item) and reopened from saved history
+  // (chat.snapshot on a fresh mount) render identically.
+  await mountTranscript('sent-live', { items: [] });
+  await delay(300);
+  await page.evaluate(([id, item]) => window.qa.emit({ event: 'chat.item', seq: 1, data: { sessionId: id, item } }), ['sent-live', userItem('sent-u1', SENT_BADGE_ENVELOPE)]);
+  await userBadges('sent-live').waitFor({ timeout: 15_000 });
+  assert.equal(await scope('sent-live').locator('.v3-chat-message.user').first().innerHTML(), historyHtml, 'a live message and the reopened history render identically');
+  ok('a live sent message and the reopened chat render identically');
+
+  // The queue stores the accepted envelope verbatim; when it is sent later the
+  // same envelope renders as the same badge.
+  await mountTranscript('sent-queue', { items: [], queue: { sessionId: 'sent-queue', paused: false, items: [{ id: 'q1', text: SENT_BADGE_ENVELOPE, images: [] }] } });
+  await scope('sent-queue').locator('[data-testid="chat-queue-context-badge"]').waitFor({ timeout: 15_000 });
+  assert.match(await scope('sent-queue').locator('[data-testid="chat-queue-context-badge"]').innerText(), /1 context/);
+  const queueBox = await scope('sent-queue').locator('[data-testid="chat-queue"]').boundingBox();
+  await capture('sent-queue', { x: Math.floor(queueBox.x) - 4, y: Math.floor(queueBox.y) - 4, width: Math.ceil(queueBox.width) + 8, height: Math.ceil(queueBox.height) + 8 }, 'sent-queue');
+  await mountTranscript('sent-queue-sent', { items: [userItem('sent-q1', SENT_BADGE_ENVELOPE)] });
+  await userBadges('sent-queue-sent').waitFor({ timeout: 15_000 });
+  assert.deepEqual(await userBadges('sent-queue-sent').evaluateAll(nodes => nodes.map(node => node.textContent)), ['@cart.ts']);
+  ok('a queued envelope keeps its mentions when it is sent later');
+
+  // A token removed while editing the queue keeps its fallback chip.
+  await mountTranscript('sent-fallback', { items: [userItem('sent-f2', sentMixed('review @cart.ts only'))] });
+  await userBadges('sent-fallback').waitFor({ timeout: 15_000 });
+  assert.equal(await userBadges('sent-fallback').count(), 1, 'only the winning token is a badge');
+  assert.equal(await userChips('sent-fallback').count(), 1, 'the token removed in the queue editor keeps its chip');
+  await capture('sent-fallback', await messageBox('sent-fallback'), 'sent-fallback');
+  ok('a mapped token missing from the text keeps its fallback chip');
+
+  // Pending-send preview: the same badge rendering while the request is in flight.
+  await mountState('sent-pending', { text: 'Please check @cart.ts', mentions: [fileOnly] });
+  await page.evaluate(() => window.qa.update({ sendGate: true }));
+  await scope('sent-pending').locator('.chat-compose-input textarea').click();
+  await page.keyboard.press('Enter');
+  await scope('sent-pending').locator('.chat-pending-submission .chat-mention-badge').waitFor({ timeout: 15_000 });
+  assert.equal(await scope('sent-pending').locator('.chat-pending-submission [data-testid="context-chip"]').count(), 0, 'the pending preview has no duplicate chip');
+  await capture('sent-pending-preview', await messageBox('sent-pending'), 'sent-pending');
+  await page.evaluate(() => window.qa.releaseSend());
+  ok('a pending-send preview shows the mention badge');
+
+  // Matrix: 420/1100 x light/dark x en/zh-CN, with a CJK-adjacent badge and a
+  // fallback chip so the localized chip labels are exercised too.
+  for (const theme of ['light', 'dark']) {
+    await applyTheme(theme);
+    for (const width of [420, 1100]) {
+      await app.evaluate(({ BrowserWindow }, nextWidth) => BrowserWindow.getAllWindows()[0].setContentSize(nextWidth, 900), width);
+      await delay(60);
+      for (const locale of ['en', 'zh-CN']) {
+        const id = `sent-${theme}-${width}-${locale}`;
+        const body = locale === 'zh-CN' ? '请看@cart.ts。' : 'review @cart.ts only';
+        await mountTranscript(id, { items: [userItem(`${id}-u1`, sentMixed(body))], locale });
+        await userBadges(id).waitFor({ timeout: 15_000 });
+        assert.equal(await userBadges(id).count(), 1, `one badge at ${theme}/${width}/${locale}`);
+        assert.equal(await userChips(id).count(), 1, `one fallback chip at ${theme}/${width}/${locale}`);
+        await capture(`sent-${theme}-${width}-${locale}`, await messageBox(id), id);
+      }
+    }
+  }
+  await applyTheme('light');
+  ok('sent-message matrix: 420/1100 x light/dark x en/zh-CN captured');
+
+  // --- 7. VC check ----------------------------------------------------------
   await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].setContentSize(700, 900));
   await mountState('vis-vc', { text: MIX_TEXT, mentions: MIX_CATALOGUE });
   const consistency = await checkControlConsistency(page, `[data-testid="session-chat-vis-vc"] .chat-compose-shell`);
