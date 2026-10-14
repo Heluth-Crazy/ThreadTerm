@@ -34,6 +34,9 @@ function messageUuid(operationId) {
 
 const DEFAULT_HANDSHAKE_TIMEOUT_MS = 25000;
 const CONTROL_TIMEOUT_MS = 10000;
+// An option change waits at most this long for the connection warm-up, so the wait plus
+// CONTROL_TIMEOUT_MS stays inside the runtime's 30 s sidecar request budget.
+const WARM_UP_WAIT_MS = 15000;
 
 // Permission modes Chat offers. bypassPermissions is deliberately absent: it needs
 // allowDangerouslySkipPermissions at query start, which the user declined for Chat.
@@ -595,6 +598,14 @@ export class ClaudeSession {
     const option = this.uiState().options.find(candidate => candidate.id === optionId);
     if (!option) throw new Error(`unknown Claude option: ${optionId}`);
     if (!option.choices.some(choice => choice.value === value)) throw new Error(`${value} is not an available ${option.name} choice`);
+    // The warm-up is itself a control request and the CLI answers control requests in
+    // order, so a change made right after connect queues behind it (live: about 10 s).
+    // Let the warm-up finish before this change's own timeout starts.
+    if (this.warmUpDone) {
+      let timer;
+      await Promise.race([this.warmUpDone, new Promise(resolve => { timer = setTimeout(resolve, WARM_UP_WAIT_MS); timer.unref?.(); })]);
+      clearTimeout(timer);
+    }
     if (optionId === 'model') {
       await withTimeout(this.query.setModel(value), CONTROL_TIMEOUT_MS, 'Claude model change');
       this.settings.model = value;
@@ -622,7 +633,10 @@ export class ClaudeSession {
       const command = typeof input.command === 'string' && input.command ? input.command : undefined;
       const title = (typeof input.description === 'string' && input.description) || command || block.name || 'Background task';
       this.backgroundToolIds.add(block.id);
-      if (!this.backgroundTasks.has(block.id)) {
+      // A native task that already adopted this tool owns its row; a repeated
+      // assistant snapshot must not add the tool back as a second task.
+      const adopted = [...this.backgroundTasks.values()].some(task => task.toolId === block.id && task.id !== block.id);
+      if (!adopted && !this.backgroundTasks.has(block.id)) {
         this.backgroundTasks.set(block.id, { id: block.id, title, ...(command ? { command } : {}), status: 'running', startedAt: new Date().toISOString(), canStop: false, toolId: block.id });
         changed = true;
       }
@@ -689,6 +703,11 @@ export class ClaudeSession {
     };
     if (JSON.stringify(prior) !== JSON.stringify(next)) {
       this.backgroundTasks.set(taskId, next);
+      changed = true;
+    }
+    // One command is one row: the native task replaces the row its tool started.
+    if (typeof next.toolId === 'string' && next.toolId !== taskId && this.backgroundTasks.has(next.toolId)) {
+      this.backgroundTasks.delete(next.toolId);
       changed = true;
     }
     if (status !== 'running') this.backgroundStops.delete(taskId);

@@ -345,6 +345,25 @@ test('background tasks require explicit native background membership and retain 
   assert.ok(events.some(value => value.ev === 'session.ui'), 'task changes can publish complete UI snapshots');
 });
 
+test('a background command stays one row whatever order its tool and native task arrive in', () => {
+  const toolMessage = { type: 'assistant', message: { content: [{ type: 'tool_use', id: 'bash-tool', name: 'Bash', input: { command: 'node serve.js', run_in_background: true } }] } };
+  const rows = session => session.uiState().backgroundTasks.map(task => [task.id, task.canStop, task.toolId]);
+  // The final assistant snapshot repeats the tool after the native task adopted it.
+  let { session } = harness();
+  session.query = { async stopTask() {} };
+  session.observeBackgroundMessage(toolMessage);
+  session.observeBackgroundMessage({ type: 'system', subtype: 'task_started', task_id: 'native-task', tool_use_id: 'bash-tool', is_backgrounded: true });
+  session.observeBackgroundMessage(toolMessage);
+  assert.deepEqual(rows(session), [['native-task', true, 'bash-tool']]);
+  // The membership snapshot names the task before the event that links its tool.
+  ({ session } = harness());
+  session.query = { async stopTask() {} };
+  session.observeBackgroundMessage(toolMessage);
+  session.observeBackgroundMessage({ type: 'system', subtype: 'background_tasks_changed', tasks: [{ task_id: 'native-task' }] });
+  session.observeBackgroundMessage({ type: 'system', subtype: 'task_updated', task_id: 'native-task', tool_use_id: 'bash-tool', patch: {} });
+  assert.deepEqual(rows(session), [['native-task', true, 'bash-tool']]);
+});
+
 test('running background tasks survive parent completion and the next turn', () => {
   const { session } = harness();
   session.query = { async stopTask() {} };

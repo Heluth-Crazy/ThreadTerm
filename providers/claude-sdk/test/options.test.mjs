@@ -142,6 +142,20 @@ test('setOption switches model, effort and mode through SDK control requests and
   assert.deepEqual(events.at(-1).ui, ui);
 });
 
+test('an option change made during the connection warm-up waits for it before its own control request', async () => {
+  let finishWarmUp;
+  const { session, sdk } = await started();
+  sdk.state.warmUp = new Promise(resolve => { finishWarmUp = resolve; });
+  session.warmUp();
+  const pending = session.setOption('mode', 'plan');
+  await delay(30);
+  assert.equal(sdk.state.calls.some(([name]) => name === 'setPermissionMode'), false, 'the change queues behind the warm-up');
+  finishWarmUp({ model: 'claude-sonnet-5' });
+  const ui = await pending;
+  assert.deepEqual(sdk.state.calls.filter(([name]) => name === 'setPermissionMode'), [['setPermissionMode', 'plan']]);
+  assert.equal(option(ui, 'mode').value, 'plan');
+});
+
 test('setOption rejects unknown options, unavailable values and Bypass without calling the SDK', async () => {
   const { session, sdk } = await started();
   const before = sdk.state.calls.length;
