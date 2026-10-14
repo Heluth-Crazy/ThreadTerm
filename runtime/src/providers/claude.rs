@@ -3040,12 +3040,28 @@ mod tests {
         );
     }
 
-    struct EnvironmentRestore(Vec<(&'static str, Option<std::ffi::OsString>)>);
+    /// Serializes the tests that mutate process-global environment variables so
+    /// a concurrent `open_chat` cannot observe another test's fake host.
+    static CLAUDE_ENV_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    struct EnvironmentRestore {
+        saved: Vec<(&'static str, Option<std::ffi::OsString>)>,
+        _lock: std::sync::MutexGuard<'static, ()>,
+    }
 
     impl EnvironmentRestore {
+        fn new() -> Self {
+            Self {
+                saved: Vec::new(),
+                _lock: CLAUDE_ENV_TEST_LOCK
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner()),
+            }
+        }
+
         fn set(&mut self, key: &'static str, value: impl AsRef<std::ffi::OsStr>) {
-            if !self.0.iter().any(|(existing, _)| *existing == key) {
-                self.0.push((key, std::env::var_os(key)));
+            if !self.saved.iter().any(|(existing, _)| *existing == key) {
+                self.saved.push((key, std::env::var_os(key)));
             }
             std::env::set_var(key, value);
         }
@@ -3053,7 +3069,7 @@ mod tests {
 
     impl Drop for EnvironmentRestore {
         fn drop(&mut self) {
-            for (key, value) in self.0.drain(..) {
+            for (key, value) in self.saved.drain(..) {
                 if let Some(value) = value {
                     std::env::set_var(key, value);
                 } else {
@@ -3350,7 +3366,7 @@ createInterface({{ input: process.stdin, crlfDelay: Infinity }}).on('line', line
             return;
         };
         let dir = tempfile::tempdir().unwrap();
-        let mut environment = EnvironmentRestore(Vec::new());
+        let mut environment = EnvironmentRestore::new();
         environment.set("THREADTERM_CLAUDE_NODE", node);
         let (host, log) = fake_steer_host(dir.path());
         environment.set("THREADTERM_CLAUDE_SDK_HOST", &host);
@@ -3387,7 +3403,7 @@ createInterface({{ input: process.stdin, crlfDelay: Infinity }}).on('line', line
             return;
         };
         let dir = tempfile::tempdir().unwrap();
-        let mut environment = EnvironmentRestore(Vec::new());
+        let mut environment = EnvironmentRestore::new();
         environment.set("THREADTERM_CLAUDE_NODE", node);
         let cwd = dir.path().to_string_lossy().into_owned();
 
