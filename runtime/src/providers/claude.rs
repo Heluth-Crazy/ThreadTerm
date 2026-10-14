@@ -56,6 +56,10 @@ struct ClaudeSubagents {
     // service commits it with the successful chat.answer operation so a crash
     // cannot leave a natively settled plan card actionable after reload.
     plan_response_receipt: Option<Value>,
+    // A turn's streamed reply text lands in one item. A later assistant
+    // message's text block starts a new paragraph instead of running on.
+    reply_text_started: bool,
+    reply_break_pending: bool,
 }
 
 struct ClaudeSubagent {
@@ -1681,6 +1685,12 @@ fn emit_claude_message(
         if matches!(phase, "closed" | "error") {
             liveness.mark_ended();
         }
+        if phase == "running" {
+            if let Ok(mut state) = ui.1.lock() {
+                state.reply_text_started = false;
+                state.reply_break_pending = false;
+            }
+        }
         let kind = match phase {
             "ready" => "session.ready",
             "running" => "chat.turn.started",
@@ -1737,11 +1747,27 @@ fn emit_claude_message(
         if handled {
             return;
         }
+        if message.get("type").and_then(Value::as_str) == Some("stream_event")
+            && message.pointer("/event/type").and_then(Value::as_str) == Some("content_block_start")
+            && message.pointer("/event/content_block/type").and_then(Value::as_str) == Some("text")
+        {
+            if let Ok(mut state) = ui.1.lock() {
+                state.reply_break_pending = state.reply_text_started;
+            }
+        }
         let text = message
             .get("event")
             .and_then(|e| e.get("delta"))
             .and_then(|d| d.get("text"))
-            .and_then(Value::as_str);
+            .and_then(Value::as_str)
+            .map(|text| {
+                let paragraph = ui.1.lock().ok().is_some_and(|mut state| {
+                    state.reply_text_started = true;
+                    std::mem::take(&mut state.reply_break_pending)
+                });
+                if paragraph { format!("\n\n{text}") } else { text.to_owned() }
+            });
+        let text = text.as_deref();
         let kind = if text.is_some() {
             "chat.delta"
         } else {
@@ -2686,6 +2712,26 @@ mod tests {
         assert_eq!(all[0].data["part"]["text"], "Parent answer");
         let all = replay.message(json!({"type":"assistant","parent_tool_use_id":"unknown-child","uuid":"early","message":{"content":[{"type":"text","text":"Early child"}]}}));
         assert_eq!(all[0].data["key"], "unknown-child");
+    }
+
+    #[test]
+    fn a_later_text_block_in_the_turn_starts_a_new_paragraph() {
+        let mut replay = SubagentReplay::new();
+        let block = || json!({"type":"stream_event","parent_tool_use_id":null,"event":{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}});
+        let delta = |text: &str| json!({"type":"stream_event","parent_tool_use_id":null,"event":{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":text}}});
+        let texts = |events: Vec<super::super::ProviderEvent>| events.iter().filter(|event| event.kind == "chat.delta").map(|event| event.data["part"]["text"].as_str().unwrap().to_owned()).collect::<Vec<_>>();
+        replay.raw(json!({"ev":"session.status","cardId":"s","phase":"running","operationId":"turn"}));
+        replay.message(block());
+        assert_eq!(texts(replay.message(delta("Checking the files."))), ["Checking the files."]);
+        assert_eq!(texts(replay.message(delta(" Next."))), [" Next."], "deltas of one block run on");
+        // A tool round, then the next assistant message's text block.
+        replay.message(block());
+        assert_eq!(texts(replay.message(delta("All done."))), ["\n\nAll done."]);
+        assert_eq!(texts(replay.message(delta(" Bye."))), [" Bye."]);
+        // A new turn starts without a leading break.
+        replay.raw(json!({"ev":"session.status","cardId":"s","phase":"running","operationId":"turn-2"}));
+        replay.message(block());
+        assert_eq!(texts(replay.message(delta("Fresh."))), ["Fresh."]);
     }
 
     #[test]
