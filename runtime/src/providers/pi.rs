@@ -1580,6 +1580,7 @@ fn pi_add_turn_usage(shared: &PiShared, turn: &str, message: &Value) {
     }
 }
 
+#[cfg(test)]
 fn pi_publish_context(events: &ScopedProviderEvents, session_id: &str, native: Option<&str>, sequence: &Mutex<u64>, expected: u64, usage: Value) {
     pi_publish_turn_context(events, session_id, native, sequence, expected, usage, None);
 }
