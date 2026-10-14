@@ -1457,6 +1457,11 @@ impl CodexChat {
     }
 
     fn apply_option(&mut self, option_id: &str, value: &str) -> Result<Value, ProviderError> {
+        // Codex confirms a change with a settings notification. Re-selecting the
+        // current value changes nothing, so it would never be confirmed.
+        if self.current_setting(option_id).as_deref() == Some(value) {
+            return Ok(self.ui_state());
+        }
         let current = self.ui.lock().ok().map(|state| state.clone());
         let params = codex_settings_params(option_id, &self.native_id, value, current.as_ref())
             .ok_or_else(|| {
@@ -1994,6 +1999,10 @@ fn codex_settings_confirmed(settings: &Value, requested: &Value) -> bool {
             "threadId" => true,
             // Native collaboration settings include generated developer instructions.
             "collaborationMode" => settings.pointer("/collaborationMode/mode") == value.get("mode"),
+            // Clearing Fast is reported as Codex's own "default" tier (0.161), not null.
+            "serviceTier" if value.is_null() => settings
+                .get(key)
+                .is_none_or(|tier| tier.is_null() || tier.as_str() == Some("default")),
             "sandboxPolicy" => value.as_object().is_some_and(|fields| {
                 fields.iter().all(|(field, expected)| {
                     settings.get(key).and_then(|policy| policy.get(field)) == Some(expected)
@@ -6667,6 +6676,10 @@ process.on('exit', () => clearTimeout(timeout));
             &json!({"approvalPolicy":"never"}),
             &params
         ));
+        let fast_off = json!({"threadId":"thr","serviceTier":null});
+        assert!(codex_settings_confirmed(&json!({"serviceTier":"default"}), &fast_off));
+        assert!(codex_settings_confirmed(&json!({"serviceTier":null}), &fast_off));
+        assert!(!codex_settings_confirmed(&json!({"serviceTier":"priority"}), &fast_off));
         for (code, message) in [
             (-32601, "Method not found"),
             (
