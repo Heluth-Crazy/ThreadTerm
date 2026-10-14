@@ -67,6 +67,7 @@ async function pickAtCaret(id, query, group, key = 'Enter') {
   await popup(id).waitFor();
   await until(async () => (await popup(id).locator(`[data-testid="mention-option"][data-mention-group="${group}"]`).count()) > 0, `${group} row for ${query}`);
   await page.keyboard.press(key);
+  await delay(150);
 }
 async function userTexts(sessionId) {
   const snapshot = await request('chat.snapshot', { sessionId });
@@ -225,7 +226,7 @@ try {
   await page.keyboard.type(' and ');
   await pickAtCaret(chat.id, 'checkout', 'files');
   const queuedText = await composer(chat.id).inputValue();
-  assert.match(queuedText, /review @cart\.ts  and @checkout\.ts /);
+  assert.match(queuedText, /review @cart\.ts\s+and @checkout\.ts/);
   await composer(chat.id).click(); await page.keyboard.press('Enter');
   await until(async () => (await page.locator('[data-testid="chat-queue-item"]').count()) === 1, 'queued item present');
   await page.locator('[data-testid="chat-queue-item"] .btn-subtle', { hasText: 'Edit' }).click();
@@ -279,6 +280,21 @@ try {
   await until(async () => (await composer(chat.id).inputValue()).includes('你好'), 'IME text committed after the token');
   const afterIme = await composer(chat.id).inputValue();
   assert.ok(afterIme.startsWith('@cart.ts '), `token intact after CJK insertion: ${afterIme}`);
+  await until(async () => (await readout(chat.id).innerText()).includes('1/12'), 'CJK text after the token keeps the mention active');
+  // Composition directly before the token (CJK adjacency also keeps it active).
+  await composer(chat.id).fill('');
+  await pickQuery(chat.id, 'cart', 'files');
+  await setCaret(chat.id, 0);
+  await cdp.send('Input.insertText', { text: '请看' });
+  await until(async () => (await composer(chat.id).inputValue()).startsWith('请看@cart.ts'), 'CJK text inserted directly before the token');
+  await until(async () => (await readout(chat.id).innerText()).includes('1/12'), 'CJK text before the token keeps the mention active');
+  // A session switch during composition is a no-op with a consistent state.
+  await page.evaluate(id => { document.querySelector(`#chat-message-${id}`).dispatchEvent(new CompositionEvent('compositionstart', { bubbles: true })); }, chat.id);
+  await request('session.present', { sessionId: other.id, placement: 'workspace', presentation: 'focused', operationId: randomUUID() });
+  await request('session.present', { sessionId: chat.id, placement: 'workspace', presentation: 'focused', operationId: randomUUID() });
+  await until(() => composer(chat.id).isEnabled(), 'composer ready after switching during composition');
+  assert.equal(await composer(chat.id).inputValue(), '请看@cart.ts ', 'state stays consistent after switching during composition');
+  await page.evaluate(id => { document.querySelector(`#chat-message-${id}`).dispatchEvent(new CompositionEvent('compositionend', { bubbles: true })); }, chat.id);
   // Composition directly inside the token breaks the mention (still no exception).
   await composer(chat.id).fill('');
   await pickQuery(chat.id, 'cart', 'files');
