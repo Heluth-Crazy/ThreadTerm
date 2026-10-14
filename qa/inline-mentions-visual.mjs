@@ -602,6 +602,9 @@ try {
   await scope('sent-queue').locator('[data-testid="chat-queue-context-badge"]').waitFor({ timeout: 15_000 });
   assert.match(await scope('sent-queue').locator('[data-testid="chat-queue-context-badge"]').innerText(), /1 context/);
   const queueBox = await scope('sent-queue').locator('[data-testid="chat-queue"]').boundingBox();
+  // The queue row's pre-existing `.btn-subtle` vs `.chat-queue-context-badge` mismatch is the documented
+  // VC backlog item "Queue rows (Chat-adjacent, deliberately not migrated)", so this state's VC check stays
+  // scoped to the composer shell (the surface M4 changed) exactly as M2 scoped its final real-app check.
   await capture('sent-queue', { x: Math.floor(queueBox.x) - 4, y: Math.floor(queueBox.y) - 4, width: Math.ceil(queueBox.width) + 8, height: Math.ceil(queueBox.height) + 8 }, 'sent-queue');
   await mountTranscript('sent-queue-sent', { items: [userItem('sent-q1', SENT_BADGE_ENVELOPE)] });
   await userBadges('sent-queue-sent').waitFor({ timeout: 15_000 });
