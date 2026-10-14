@@ -160,7 +160,9 @@ async function attachChat(session, { dir, cwd }) {
     },
     async shot(name, { widths = [1100], theme = 'light', container } = {}) {
       const files = [];
-      const selector = container ?? `[data-testid="session-chat-${session.id}"]`;
+      // The F1 feature surface is the composer (the transcript's inline file links are a pre-existing,
+      // unrelated control family and are checked by their own QAs).
+      const selector = container ?? `[data-testid="session-chat-${session.id}"] .chat-compose-shell`;
       for (const width of widths) {
         await appearance({ theme, width });
         await delay(400);
