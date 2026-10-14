@@ -414,6 +414,8 @@ struct PermissionRequest {
     turn_id: Option<String>,
     choices: Vec<ApprovalChoice>,
     question: Option<Vec<GrokQuestion>>,
+    /// `_x.ai/exit_plan_mode`: answered through the plan card, not choices.
+    plan: bool,
     state: PendingApprovalState,
 }
 
@@ -1586,6 +1588,24 @@ impl ChatSession for GrokChat {
         }
     }
 
+    fn plan_response(
+        &mut self,
+        turn_id: &str,
+        approval_id: &str,
+        response: &Value,
+        operation_id: &str,
+    ) -> Result<Option<String>, ProviderError> {
+        crate::chat_plan_approval::validate_response(response, false)?;
+        let pending_plan = self.permissions.lock().ok()
+            .is_some_and(|values| values.get(approval_id).is_some_and(|pending| pending.plan));
+        if !pending_plan {
+            return Err(ProviderError::new("approval_not_pending", "This plan is no longer waiting for a decision"));
+        }
+        // Grok's reply carries the decision itself; no implementation prompt follows.
+        self.answer(turn_id, approval_id, response, operation_id)?;
+        Ok(None)
+    }
+
     fn answer(
         &mut self,
         turn_id: &str,
@@ -1599,18 +1619,23 @@ impl ChatSession for GrokChat {
         let pending = permissions.get_mut(approval_id).ok_or_else(|| {
             ProviderError::new("approval_not_pending", "Grok question is unknown or already resolved")
         })?;
-        let Some(questions) = pending.question.as_ref() else {
-            return Err(ProviderError::new("answer_invalid", "interaction is not a question"));
-        };
         let active_turn = self.active_turn.lock().ok().and_then(|value| value.clone());
         validate_turn(pending.turn_id.as_deref(), active_turn.as_deref(), turn_id)?;
-        let native_response = grok_question_response(questions, response)?;
-        let status = if response.get("action").and_then(Value::as_str) == Some("dismiss") {
-            "dismissed"
+        let (native_response, mut resolved) = if pending.plan {
+            grok_plan_response(response)?
         } else {
-            "answered"
+            let Some(questions) = pending.question.as_ref() else {
+                return Err(ProviderError::new("answer_invalid", "interaction is not a question"));
+            };
+            let status = if response.get("action").and_then(Value::as_str) == Some("dismiss") {
+                "dismissed"
+            } else {
+                "answered"
+            };
+            (grok_question_response(questions, response)?,
+                json!({"status":status,"outcome":"submitted","answerSummary":grok_question_summary(questions, response)}))
         };
-        let summary = grok_question_summary(questions, response);
+        resolved["approvalId"] = json!(approval_id);
         match pending.state.begin_submit(operation_id) {
             Ok(()) => {}
             Err(error) if error.code == "approval_duplicate" => return Ok(()),
@@ -1629,8 +1654,7 @@ impl ChatSession for GrokChat {
             Ok(()) => {
                 permissions.remove(approval_id);
                 emit(&self.events, "grok", &self.session_id, Some(&self.native_id), Some(turn_id),
-                    "chat.approval.resolved",
-                    json!({"approvalId":approval_id,"status":status,"outcome":"submitted","answerSummary":summary}));
+                    "chat.approval.resolved", resolved);
                 Ok(())
             }
             Err(error) if write_failed_not_sent(&error) => {
@@ -1855,7 +1879,7 @@ fn reject_unknown_grok_rpc(responder: &Mutex<Option<JsonLineResponder>>, raw: &V
     let Some((id, method)) = grok_reverse_rpc(raw) else {
         return false;
     };
-    if matches!(method.as_str(), "session/request_permission" | "_x.ai/ask_user_question") {
+    if matches!(method.as_str(), "session/request_permission" | "_x.ai/ask_user_question" | "_x.ai/exit_plan_mode") {
         return false;
     }
     if let Ok(slot) = responder.lock() {
@@ -1912,6 +1936,27 @@ fn grok_question_response(questions: &[GrokQuestion], response: &Value) -> Resul
         }
         _ => Err(ProviderError::new("answer_invalid", "Grok question action is invalid")),
     }
+}
+
+/// Native replies verified against grok 1.0.52: `approved` leaves plan mode and
+/// builds; `rejected` with feedback revises and asks again. `cancelled` only makes
+/// Grok ask what to change, so Abandon is a rejection that tells it to stop.
+fn grok_plan_response(response: &Value) -> Result<(Value, Value), ProviderError> {
+    let feedback = response.get("feedback").and_then(Value::as_str).map(str::trim).filter(|text| !text.is_empty());
+    let (native, outcome) = match response.get("action").and_then(Value::as_str) {
+        Some("approve") => (json!({"outcome":"approved"}), "approved"),
+        Some("request_changes") => {
+            let feedback = feedback.ok_or_else(|| ProviderError::new("answer_invalid", "Describe the changes to request"))?;
+            (json!({"outcome":"rejected","feedback":feedback}), "changes_requested")
+        }
+        Some("abandon") => (json!({"outcome":"rejected","feedback":"The user abandoned this plan. Stop here and do not implement it."}), "abandoned"),
+        _ => return Err(ProviderError::new("answer_invalid", "Grok plan action is invalid")),
+    };
+    let mut resolved = json!({"status":"answered","outcome":"submitted","planOutcome":outcome});
+    if let (Some(feedback), "changes_requested") = (feedback, outcome) {
+        resolved["feedback"] = json!(feedback);
+    }
+    Ok((native, resolved))
 }
 
 fn grok_question_summary(questions: &[GrokQuestion], response: &Value) -> Value {
@@ -2110,7 +2155,7 @@ fn emit_grok_message(
             let Ok(mut state) = ui.lock() else { return false; };
             if !live || state.cancel_requested { return false; }
             values.insert(approval_id.clone(), PermissionRequest {
-                rpc_id: rpc_id.clone(), turn_id: turn_id.clone(), choices: choices.clone(), question: None,
+                rpc_id: rpc_id.clone(), turn_id: turn_id.clone(), choices: choices.clone(), question: None, plan: false,
                 state: PendingApprovalState::default(),
             });
             state.subagents.text_segments.advance(turn_id.as_deref());
@@ -2157,7 +2202,7 @@ fn emit_grok_message(
             let Ok(mut state) = ui.lock() else { return false; };
             if !live || state.cancel_requested { return false; }
             values.insert(approval_id.clone(), PermissionRequest {
-                rpc_id: rpc_id.clone(), turn_id: turn_id.clone(), choices: Vec::new(), question: Some(question),
+                rpc_id: rpc_id.clone(), turn_id: turn_id.clone(), choices: Vec::new(), question: Some(question), plan: false,
                 state: PendingApprovalState::default(),
             });
             // Stop/cancel takes this same guard before it drains the map, so
@@ -2173,6 +2218,38 @@ fn emit_grok_message(
                 let _ = responder.respond(rpc_id, json!({"outcome":"cancelled"}));
             }}
             return;
+        }
+        return;
+    }
+    // Plan mode ends with `_x.ai/exit_plan_mode {planContent}` (grok 1.0.52). A
+    // "Method not found" reply reads to Grok as a disconnected client, so the
+    // plan stays unapproved; the plan card answers it instead.
+    if method == "_x.ai/exit_plan_mode" && raw.get("id").is_some() {
+        let rpc_id = raw.get("id").cloned().unwrap_or(Value::Null);
+        let approval_id = encode_approval_id(&rpc_id);
+        let mut payload = approval_payload(&approval_id, "grok", "_x.ai/exit_plan_mode", "Plan review", &params, &[], turn_id.as_deref(), true);
+        payload["interaction"] = json!("plan");
+        payload["plan"] = json!(params.get("planContent").and_then(Value::as_str).unwrap_or_default());
+        let published = permissions.lock().ok().is_some_and(|mut values| {
+            let live = turn_id.as_deref().is_some_and(|turn| {
+                active_turn.lock().ok().and_then(|active| active.clone()).as_deref() == Some(turn)
+            });
+            let Ok(mut state) = ui.lock() else { return false; };
+            if !live || state.cancel_requested { return false; }
+            values.insert(approval_id.clone(), PermissionRequest {
+                rpc_id: rpc_id.clone(), turn_id: turn_id.clone(), choices: Vec::new(), question: None, plan: true,
+                state: PendingApprovalState::default(),
+            });
+            state.subagents.text_segments.advance(turn_id.as_deref());
+            emit(events, "grok", session_id, native_id.as_deref(), turn_id.as_deref(), "chat.approval",
+                json!({"approvalId":approval_id,"request":params,
+                    "part":{"type":"approval","approvalId":approval_id,"status":"pending","data":payload}}));
+            true
+        });
+        if !published {
+            if let Ok(slot) = responder.lock() { if let Some(responder) = slot.as_ref() {
+                let _ = responder.respond(rpc_id, json!({"outcome":"cancelled"}));
+            }}
         }
         return;
     }
@@ -2274,6 +2351,19 @@ fn emit_grok_message(
                 state.retry = Some(retry.clone());
             }
             emit_grok_retry(events, session_id, native_id.as_deref(), turn_id, retry);
+        }
+        return;
+    }
+    // The agent changed its own mode; approving a plan returns Grok to default.
+    if kind == "current_mode_update" {
+        if let Some(mode) = update.get("currentModeId").and_then(Value::as_str) {
+            if let Ok(mut state) = ui.lock() {
+                ensure_permission_mode(&mut state);
+                if let Some(option) = state.options.iter_mut().find(|option| option.get("id").and_then(Value::as_str) == Some("mode")) {
+                    option["value"] = json!(mode);
+                }
+            }
+            emit_chat_ui(events, session_id, native_id.as_deref(), ui);
         }
         return;
     }
@@ -3100,6 +3190,33 @@ mod tests {
         assert!(state.wire().get("inputCapabilities").is_none());
         state.note_steer = true;
         assert_eq!(state.wire()["inputCapabilities"], json!({"steer":"note"}));
+    }
+
+    #[test]
+    fn exit_plan_mode_becomes_a_plan_card_with_the_native_replies() {
+        // Live grok 1.0.52: plan mode ends with this reverse request.
+        let mut replay = GrokSubagentReplay::new();
+        assert!(!reject_unknown_grok_rpc(&replay.responder, &json!({"id":9,"method":"_x.ai/exit_plan_mode"})));
+        replay.raw(json!({"id":9,"method":"_x.ai/exit_plan_mode","params":{
+            "sessionId":GROK_PROBE_PARENT,"toolCallId":"call-plan","planContent":"# Add subtract\n\n1. Edit src/math.js"}}));
+        let card = replay.drain().into_iter().find(|event| event.kind == "chat.approval").expect("plan card");
+        let data = &card.data["part"]["data"];
+        assert_eq!(data["interaction"], "plan");
+        assert_eq!(data["plan"], "# Add subtract\n\n1. Edit src/math.js");
+        assert_eq!(data["submittable"], true);
+        assert!(replay.permissions.lock().unwrap().values().any(|pending| pending.plan));
+
+        let (approve, resolved) = grok_plan_response(&json!({"action":"approve"})).unwrap();
+        assert_eq!(approve, json!({"outcome":"approved"}));
+        assert_eq!(resolved["planOutcome"], "approved");
+        let (revise, resolved) = grok_plan_response(&json!({"action":"request_changes","feedback":" Add multiply "})).unwrap();
+        assert_eq!(revise, json!({"outcome":"rejected","feedback":"Add multiply"}));
+        assert_eq!((resolved["planOutcome"].as_str(), resolved["feedback"].as_str()), (Some("changes_requested"), Some("Add multiply")));
+        let (abandon, resolved) = grok_plan_response(&json!({"action":"abandon"})).unwrap();
+        assert_eq!(abandon["outcome"], "rejected");
+        assert_eq!(resolved["planOutcome"], "abandoned");
+        assert!(grok_plan_response(&json!({"action":"request_changes"})).is_err(), "changes need feedback");
+        assert!(grok_plan_response(&json!({"action":"submit"})).is_err());
     }
 
     #[test]
@@ -4342,6 +4459,28 @@ mod tests {
             }
             assert!(count > 0);
         }
+    }
+
+    #[test]
+    fn a_native_mode_change_moves_the_mode_chip() {
+        let (sender, mut receiver) = crate::provider_events::tap_channel(8);
+        let events = ScopedProviderEvents::new(sender, "worker");
+        let ui = Mutex::new(GrokUiState::default());
+        ui.lock().unwrap().options.push(grok_permission_mode_option("plan"));
+        emit_grok_message(
+            &events,
+            "session",
+            &Mutex::new(Some("native".to_owned())),
+            &Mutex::new(Some("turn".to_owned())),
+            &Mutex::new(HashMap::new()),
+            &ui,
+            &Mutex::new(None),
+            json!({"method":"session/update","params":{"sessionId":"native","update":{"sessionUpdate":"current_mode_update","currentModeId":"default"}}}),
+        );
+        let event = receiver.try_recv().unwrap();
+        assert_eq!(event.kind, "chat.ui");
+        let mode = event.data["options"].as_array().unwrap().iter().find(|option| option["id"] == "mode").unwrap();
+        assert_eq!(mode["value"], "default");
     }
 
     #[test]
