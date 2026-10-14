@@ -243,6 +243,7 @@ fn trace_method(method: &str) -> &'static str {
         "history.import", "inbox.read", "plugin.list", "plugin.reload",
         "plugin.selectBrowserBinding", "plugin.setEnabled", "preset.delete", "preset.list",
         "preset.save", "project.add", "project.remove", "project.update", "provider.list",
+        "provider.refresh",
         "quickLaunch.delete", "quickLaunch.list", "quickLaunch.run", "quickLaunch.save",
         "quickLaunch.setup.read", "quickLaunch.setup.run", "quickLaunch.setup.save",
         "quickLaunch.setup.status", "review.checkpoint", "review.revert", "runtime.health",
@@ -800,6 +801,7 @@ mod decoder_tests {
             "review.checkpoint",
             "review.revert",
             "runtime.shutdown",
+            "provider.refresh",
             "not.a.method",
         ] {
             assert_eq!(request_lane(method), Lane::Ordered, "{method}");

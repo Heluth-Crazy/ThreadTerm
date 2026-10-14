@@ -26,8 +26,10 @@ use crate::provider_events::{self, ProjectionReceiver, Sender as ProviderEventSe
 use std::{
     collections::HashMap,
     sync::{Arc, Condvar, Mutex, RwLock},
-    time::{Duration, Instant},
+    time::Instant,
 };
+#[cfg(test)]
+use std::time::Duration;
 use tokio::sync::broadcast;
 
 /// A stdio MCP server attached to one Chat session when it opens (ThreadTerm's
@@ -863,26 +865,56 @@ pub struct Providers {
     tool_servers: RwLock<Option<ToolServerResolver>>,
     project_trust: RwLock<Option<ProjectTrustResolver>>,
     retirement_projector: RwLock<Option<RetirementProjector>>,
+    #[cfg(test)]
+    probe_spawn_should_fail: std::sync::atomic::AtomicBool,
 }
 
 type RetirementProjector = Arc<dyn Fn(&ProviderEvent) -> Result<(), ProviderError> + Send + Sync>;
+
+/// Completion of one provider capability probe round, published to the listener
+/// installed by the runtime service.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct CapabilityUpdate {
+    /// Set only when the round was started by `request_capability_refresh`.
+    pub refresh_id: Option<u64>,
+    /// `"ok"` or `"failed"`.
+    pub outcome: &'static str,
+}
 
 /// Last provider capability probe. Probing runs every provider CLI and takes
 /// seconds, while `runtime.snapshot`/`provider.list` share the ordered request
 /// lane with `chat.send`. Cold UI reads get an empty pending list; admission
 /// readers wait for confirmed values from the same background job.
+///
+/// Successful values never expire: a read returns them until something
+/// invalidates the cache (a plugin rebuild or an explicit refresh). A failed
+/// cold probe is remembered, so later reads never retry on their own.
 #[derive(Default)]
 struct CapabilityCache {
     values: Option<(Instant, Vec<Value>)>,
-    refreshing: bool,
-    /// Bumped by `refresh_capabilities`; an older background probe is discarded.
+    /// The generation of the probe currently running, if any. A completion only
+    /// clears this when its own generation is still current.
+    refreshing: Option<u64>,
+    /// Newest claimed generation. A completion for an older generation is
+    /// discarded instead of overwriting newer values.
     generation: u64,
-    on_updated: Option<Arc<dyn Fn() + Send + Sync>>,
-    /// Keep a failed cold probe distinct from pending, and bound retry loops.
+    /// The generation claimed by the last forced refresh, until it completes.
+    manual_request: Option<u64>,
+    on_updated: Option<Arc<dyn Fn(CapabilityUpdate) + Send + Sync>>,
+    /// A failed cold probe. Kept until an explicit refresh or plugin rebuild.
     failed_at: Option<Instant>,
 }
 
-const CAPABILITY_TTL: Duration = Duration::from_secs(30);
+impl CapabilityCache {
+    /// Claims a new generation and marks it refreshing. Every probe start goes
+    /// through here so a completion can tell whether it is still current.
+    fn start_probe_locked(&mut self) -> u64 {
+        self.generation += 1;
+        let generation = self.generation;
+        self.refreshing = Some(generation);
+        generation
+    }
+}
 
 fn probe_capabilities(adapters: &[Arc<dyn ProviderAdapter>]) -> Vec<Value> {
     adapters
@@ -1001,47 +1033,22 @@ impl Providers {
 
     /// Nonblocking provider information for snapshots and settings UI.
     /// An empty cold result means detection is pending, not uninstalled.
+    /// Successful values are returned as-is; only a cold, unfailed, idle cache
+    /// starts the shared probe.
     pub(crate) fn capability_snapshot(&self) -> Vec<Value> {
-        let Ok(mut cache) = self.capability_cache.lock() else { return Vec::new() };
-        let values = cache.values.as_ref().map(|(_, values)| values.clone()).unwrap_or_default();
-        let needs_probe = cache.values.as_ref().is_none_or(|(created, _)| created.elapsed() >= CAPABILITY_TTL);
-        let can_retry = cache.failed_at.is_none_or(|failed| failed.elapsed() >= CAPABILITY_TTL);
-        let mut spawn_failure_notification = None;
-        if needs_probe && can_retry && !cache.refreshing {
-            cache.refreshing = true;
-            cache.failed_at = None;
-            let generation = cache.generation;
-            let shared = Arc::clone(&self.capability_cache);
-            let wait = Arc::clone(&self.capability_wait);
-            let adapters = self.supported_adapters();
-            let spawned = std::thread::Builder::new()
-                .name("provider-capabilities".into())
-                .spawn(move || {
-                    let fresh = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| probe_capabilities(&adapters)));
-                    let notify = if let Ok(mut cache) = shared.lock() {
-                        if cache.generation == generation {
-                            cache.refreshing = false;
-                            if let Ok(fresh) = fresh {
-                                cache.values = Some((Instant::now(), fresh));
-                            } else {
-                                cache.failed_at = Some(Instant::now());
-                            }
-                            cache.on_updated.clone()
-                        } else { None }
-                    } else { None };
-                    wait.notify_all();
-                    // Notification can re-enter snapshot: release the cache first.
-                    if let Some(notify) = notify { notify(); }
-                });
-            if spawned.is_err() {
-                cache.refreshing = false;
-                cache.failed_at = Some(Instant::now());
-                spawn_failure_notification = cache.on_updated.clone();
-                self.capability_wait.notify_all();
+        let mut start = None;
+        let values = {
+            let Ok(mut cache) = self.capability_cache.lock() else { return Vec::new() };
+            let values = cache.values.as_ref().map(|(_, values)| values.clone()).unwrap_or_default();
+            if cache.values.is_none() && cache.failed_at.is_none() && cache.refreshing.is_none() {
+                start = Some(cache.start_probe_locked());
             }
+            values
+        };
+        if let Some(generation) = start {
+            let adapters = self.supported_adapters();
+            self.spawn_capability_probe(generation, adapters);
         }
-        drop(cache);
-        if let Some(notify) = spawn_failure_notification { notify(); }
         values
     }
 
@@ -1053,12 +1060,90 @@ impl Providers {
         })?;
         if cache.values.is_none() && cache.failed_at.is_some() {
             return Err(ProviderError::new("provider_detection_failed",
-                "Provider detection failed. Retry after 30 seconds or reload the provider plugins."));
+                "Provider detection failed. Use Refresh provider status in Settings, or reload the provider plugins."));
         }
         Ok(values)
     }
 
-    pub(crate) fn set_capability_listener(&self, listener: Arc<dyn Fn() + Send + Sync>) {
+    /// Forces one fresh capability round and returns its refresh id. The current
+    /// values stay visible and a failed refresh keeps them. The probe runs on a
+    /// worker thread, so this returns before detection completes.
+    pub(crate) fn request_capability_refresh(&self) -> u64 {
+        let generation = {
+            let Ok(mut cache) = self.capability_cache.lock() else { return 0 };
+            cache.failed_at = None;
+            let generation = cache.start_probe_locked();
+            cache.manual_request = Some(generation);
+            generation
+        };
+        let adapters = self.supported_adapters();
+        self.spawn_capability_probe(generation, adapters);
+        generation
+    }
+
+    /// Runs one claimed capability round on a worker thread. Only a completion
+    /// whose generation is still current writes values, clears `refreshing` and
+    /// reaches the listener; an obsolete round just wakes waiters.
+    fn spawn_capability_probe(&self, generation: u64, adapters: Vec<Arc<dyn ProviderAdapter>>) {
+        let shared = Arc::clone(&self.capability_cache);
+        let wait = Arc::clone(&self.capability_wait);
+        #[cfg(test)]
+        let forced_failure = self.probe_spawn_should_fail.swap(false, std::sync::atomic::Ordering::SeqCst);
+        #[cfg(not(test))]
+        let forced_failure = false;
+        let spawned = if forced_failure {
+            Err(std::io::Error::new(std::io::ErrorKind::Other, "forced capability probe spawn failure"))
+        } else {
+            std::thread::Builder::new()
+                .name("provider-capabilities".into())
+                .spawn(move || {
+                    let fresh = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| probe_capabilities(&adapters)));
+                    let outcome_ok = fresh.is_ok();
+                    let notification = if let Ok(mut cache) = shared.lock() {
+                        if cache.generation == generation {
+                            cache.refreshing = None;
+                            match fresh {
+                                Ok(values) => {
+                                    cache.values = Some((Instant::now(), values));
+                                    cache.failed_at = None;
+                                }
+                                Err(_) => { cache.failed_at = Some(Instant::now()); }
+                            }
+                            let refresh_id = (cache.manual_request == Some(generation)).then_some(generation);
+                            if refresh_id.is_some() { cache.manual_request = None; }
+                            cache.on_updated.clone().map(|notify| (notify, refresh_id))
+                        } else { None }
+                    } else { None };
+                    wait.notify_all();
+                    // Notification can re-enter snapshot: release the cache first.
+                    if let Some((notify, refresh_id)) = notification {
+                        notify(CapabilityUpdate { refresh_id, outcome: if outcome_ok { "ok" } else { "failed" } });
+                    }
+                })
+        };
+        if spawned.is_err() {
+            let notification = if let Ok(mut cache) = self.capability_cache.lock() {
+                if cache.generation == generation {
+                    cache.refreshing = None;
+                    cache.failed_at = Some(Instant::now());
+                    let refresh_id = (cache.manual_request == Some(generation)).then_some(generation);
+                    if refresh_id.is_some() { cache.manual_request = None; }
+                    cache.on_updated.clone().map(|notify| (notify, refresh_id))
+                } else { None }
+            } else { None };
+            self.capability_wait.notify_all();
+            if let Some((notify, refresh_id)) = notification {
+                notify(CapabilityUpdate { refresh_id, outcome: "failed" });
+            }
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn fail_next_probe_spawn(&self) {
+        self.probe_spawn_should_fail.store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    pub(crate) fn set_capability_listener(&self, listener: Arc<dyn Fn(CapabilityUpdate) + Send + Sync>) {
         if let Ok(mut cache) = self.capability_cache.lock() {
             cache.on_updated = Some(listener);
         }
@@ -1068,7 +1153,7 @@ impl Providers {
         let Ok(mut cache) = self.capability_cache.lock() else { return Vec::new() };
         loop {
             if let Some((_, values)) = cache.values.as_ref() { return values.clone(); }
-            if cache.refreshing {
+            if cache.refreshing.is_some() {
                 let Ok(next) = self.capability_wait.wait(cache) else { return Vec::new() };
                 cache = next;
             } else if cache.generation != generation {
@@ -1174,6 +1259,8 @@ impl Providers {
             tool_servers: RwLock::new(None),
             project_trust: RwLock::new(None),
             retirement_projector: RwLock::new(None),
+            #[cfg(test)]
+            probe_spawn_should_fail: std::sync::atomic::AtomicBool::new(false),
         }
     }
 
@@ -1246,13 +1333,15 @@ impl Providers {
         self.network.update(settings)
     }
 
-    /// Invalidates executable/auth probes. The normal snapshot path uses a
-    /// short-lived cache; setup UI can call this after login or installation.
+    /// Invalidates executable/auth probes after a plugin install, removal or
+    /// reload. Values are cleared and the next read starts the shared probe;
+    /// any round already running is discarded by the generation bump.
     pub fn refresh_capabilities(&self) {
         if let Ok(mut cache) = self.capability_cache.lock() {
             cache.values = None;
-            cache.refreshing = false;
+            cache.refreshing = None;
             cache.failed_at = None;
+            cache.manual_request = None;
             cache.generation += 1;
         }
         self.capability_wait.notify_all();
@@ -2578,57 +2667,89 @@ mod capability_cache_tests {
     use super::*;
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering::SeqCst};
 
+    fn capability(id: &str, name: String) -> ProviderCapability {
+        ProviderCapability {
+            source: "builtin", plugin_id: None, icon: None, sign_in: None, homepage: None,
+            id: id.into(), name, installed: true, version: None, terminal: false, chat: false,
+            history: false, resume: false, terminal_resume_capture: "none", reason: None,
+            auth: "unknown".into(),
+        }
+    }
+
     /// A provider whose capability probe is slow and numbered.
     struct SlowProbe {
         probes: Arc<AtomicUsize>,
+        delay: Duration,
+    }
+
+    impl SlowProbe {
+        fn new(probes: &Arc<AtomicUsize>) -> Self {
+            Self { probes: Arc::clone(probes), delay: Duration::from_millis(300) }
+        }
     }
 
     impl ProviderAdapter for SlowProbe {
-        fn id(&self) -> &'static str {
-            "codex"
-        }
+        fn id(&self) -> &'static str { "codex" }
         fn capability(&self) -> ProviderCapability {
             let probe = self.probes.fetch_add(1, SeqCst) + 1;
-            std::thread::sleep(Duration::from_millis(300));
-            ProviderCapability {
-                source: "builtin", plugin_id: None, icon: None, sign_in: None, homepage: None,
-                id: "codex".into(),
-                name: format!("probe {probe}"),
-                installed: true,
-                version: None,
-                terminal: false,
-                chat: false,
-                history: false,
-                resume: false,
-                terminal_resume_capture: "none",
-                reason: None,
-                auth: "unknown".into(),
-            }
+            std::thread::sleep(self.delay);
+            capability("codex", format!("probe {probe}"))
         }
-        fn terminal_command(
-            &self,
-            _: Option<&str>,
-            _: Option<&str>,
-        ) -> Result<TerminalCommand, ProviderError> {
+        fn terminal_command(&self, _: Option<&str>, _: Option<&str>) -> Result<TerminalCommand, ProviderError> {
             Err(ProviderError::new("unsupported", "capability fixture"))
         }
-        fn history_list(
-            &self,
-            _: Option<&str>,
-            _: u32,
-            _: Option<&str>,
-        ) -> Result<Value, ProviderError> {
+        fn history_list(&self, _: Option<&str>, _: u32, _: Option<&str>) -> Result<Value, ProviderError> {
             Ok(json!({}))
         }
         fn history_read(&self, _: &str) -> Result<Value, ProviderError> {
             Ok(json!([]))
         }
-        fn open_chat(
-            &self,
-            _: &str,
-            _: &str,
-            _: Option<&str>,
-        ) -> Result<Box<dyn ChatSession>, ProviderError> {
+        fn open_chat(&self, _: &str, _: &str, _: Option<&str>) -> Result<Box<dyn ChatSession>, ProviderError> {
+            Err(ProviderError::new("unsupported", "capability fixture"))
+        }
+    }
+
+    /// A probe that blocks every call until the test releases the gate.
+    struct GateProbe {
+        probes: Arc<AtomicUsize>,
+        entered: Arc<AtomicUsize>,
+        gate: Arc<(Mutex<bool>, Condvar)>,
+    }
+
+    impl GateProbe {
+        fn new(probes: &Arc<AtomicUsize>, entered: &Arc<AtomicUsize>) -> Self {
+            Self { probes: Arc::clone(probes), entered: Arc::clone(entered), gate: Arc::new((Mutex::new(false), Condvar::new())) }
+        }
+        fn release(&self) {
+            let (lock, wait) = &*self.gate;
+            *lock.lock().unwrap() = true;
+            wait.notify_all();
+        }
+        fn wait_entered(&self, count: usize) {
+            let deadline = Instant::now() + Duration::from_secs(5);
+            while self.entered.load(SeqCst) < count && Instant::now() < deadline {
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            assert!(self.entered.load(SeqCst) >= count, "only {} probe(s) entered; expected {count}", self.entered.load(SeqCst));
+        }
+    }
+
+    impl ProviderAdapter for GateProbe {
+        fn id(&self) -> &'static str { "codex" }
+        fn capability(&self) -> ProviderCapability {
+            let probe = self.probes.fetch_add(1, SeqCst) + 1;
+            self.entered.fetch_add(1, SeqCst);
+            let (lock, wait) = &*self.gate;
+            let mut released = lock.lock().unwrap();
+            while !*released { released = wait.wait(released).unwrap(); }
+            capability("codex", format!("probe {probe}"))
+        }
+        fn terminal_command(&self, _: Option<&str>, _: Option<&str>) -> Result<TerminalCommand, ProviderError> {
+            Err(ProviderError::new("unsupported", "capability fixture"))
+        }
+        fn history_list(&self, _: Option<&str>, _: u32, _: Option<&str>) -> Result<Value, ProviderError> { Ok(json!({})) }
+        fn history_read(&self, _: &str) -> Result<Value, ProviderError> { Ok(json!([])) }
+        fn open_chat(&self, _: &str, _: &str, _: Option<&str>) -> Result<Box<dyn ChatSession>, ProviderError> {
             Err(ProviderError::new("unsupported", "capability fixture"))
         }
     }
@@ -2641,7 +2762,7 @@ mod capability_cache_tests {
     impl ProviderAdapter for FailingProbe {
         fn id(&self) -> &'static str { "codex" }
         fn capability(&self) -> ProviderCapability {
-            if self.fail.swap(false, SeqCst) {
+            if self.fail.load(SeqCst) {
                 self.inner.probes.fetch_add(1, SeqCst);
                 panic!("isolated capability failure fixture");
             }
@@ -2659,9 +2780,46 @@ mod capability_cache_tests {
         }
     }
 
+    fn name(values: &[Value]) -> String {
+        values[0]["name"].as_str().unwrap().to_owned()
+    }
+
+    /// Moves a cached value's timestamp back; only the tests use it because
+    /// successful values must never expire by time.
+    fn age(providers: &Providers, by: Duration) {
+        let mut cache = providers.capability_cache.lock().unwrap();
+        let (created, _) = cache.values.as_mut().unwrap();
+        *created = created.checked_sub(by).unwrap();
+    }
+
+    fn wait_for_name(providers: &Providers, expected: &str) {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            let values = providers.capability_snapshot();
+            if values.first().is_some_and(|value| value["name"] == expected) { return; }
+            assert!(Instant::now() < deadline, "capability probe did not reach {expected}");
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    }
+
+    fn recorder(providers: &Providers) -> Arc<Mutex<Vec<CapabilityUpdate>>> {
+        let updates = Arc::new(Mutex::new(Vec::new()));
+        let sink = Arc::clone(&updates);
+        providers.set_capability_listener(Arc::new(move |update| sink.lock().unwrap().push(update)));
+        updates
+    }
+
+    fn wait_for_updates(updates: &Arc<Mutex<Vec<CapabilityUpdate>>>, count: usize) {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while updates.lock().unwrap().len() < count {
+            assert!(Instant::now() < deadline, "capability completion did not publish");
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    }
+
     #[test]
     fn trust_resolver_runs_after_connection_admission_and_failure_does_not_stall_retry() {
-        let providers = Arc::new(Providers::for_test(vec![Arc::new(SlowProbe { probes: Arc::new(AtomicUsize::new(0)) })]));
+        let providers = Arc::new(Providers::for_test(vec![Arc::new(SlowProbe::new(&Arc::new(AtomicUsize::new(0))))]));
         let observer = Arc::downgrade(&providers);
         providers.set_project_trust_resolver(Arc::new(move |session_id, _| {
             let providers = observer.upgrade().unwrap();
@@ -2676,67 +2834,187 @@ mod capability_cache_tests {
         }
     }
 
+    // A1: successful values never expire and reads never start another round.
     #[test]
-    fn failed_cold_detection_is_visible_bounded_and_recovers_without_losing_warm_values() {
+    fn successful_values_never_expire_by_time() {
+        let probes = Arc::new(AtomicUsize::new(0));
+        let providers = Providers::for_test(vec![Arc::new(SlowProbe::new(&probes))]);
+        assert_eq!(name(&providers.capabilities()), "probe 1");
+        for _ in 0..50 {
+            assert_eq!(name(&providers.capability_snapshot()), "probe 1");
+            assert_eq!(name(&providers.capability_snapshot_result().unwrap()), "probe 1");
+        }
+        age(&providers, Duration::from_secs(3700));
+        for _ in 0..50 {
+            assert_eq!(name(&providers.capability_snapshot()), "probe 1");
+            assert_eq!(name(&providers.capability_snapshot_result().unwrap()), "probe 1");
+        }
+        assert_eq!(probes.load(SeqCst), 1, "reads started a time-based re-probe");
+    }
+
+    // A2: a forced refresh keeps warm values visible, probes once and publishes
+    // exactly one completion carrying its refresh id.
+    #[test]
+    fn forced_refresh_keeps_values_then_publishes_new_ones_once() {
+        let probes = Arc::new(AtomicUsize::new(0));
+        let providers = Providers::for_test(vec![Arc::new(SlowProbe { probes: Arc::clone(&probes), delay: Duration::from_millis(200) })]);
+        assert_eq!(name(&providers.capabilities()), "probe 1");
+        let updates = recorder(&providers);
+        let refresh_id = providers.request_capability_refresh();
+        assert!(refresh_id >= 1);
+        // During the round the old non-empty values still answer.
+        assert_eq!(name(&providers.capability_snapshot()), "probe 1");
+        assert_eq!(name(&providers.capability_snapshot_result().unwrap()), "probe 1");
+        wait_for_name(&providers, "probe 2");
+        assert_eq!(probes.load(SeqCst), 2, "one forced refresh must run exactly one round");
+        wait_for_updates(&updates, 1);
+        let seen = updates.lock().unwrap().clone();
+        assert_eq!(seen.len(), 1, "one completion publishes once: {seen:?}");
+        assert_eq!(seen[0].refresh_id, Some(refresh_id));
+        assert_eq!(seen[0].outcome, "ok");
+    }
+
+    // A3: a forced refresh during a cold probe supersedes the older round; the
+    // newer generation owns the values and `refreshing`.
+    #[test]
+    fn refresh_during_cold_probe_supersedes_the_older_round() {
+        let probes = Arc::new(AtomicUsize::new(0));
+        let entered = Arc::new(AtomicUsize::new(0));
+        let probe = Arc::new(GateProbe::new(&probes, &entered));
+        let providers = Providers::for_test(vec![probe.clone()]);
+        assert!(providers.capability_snapshot().is_empty());
+        probe.wait_entered(1);
+        let refresh_id = providers.request_capability_refresh();
+        assert_eq!(refresh_id, 2, "the forced refresh claims a new generation");
+        probe.wait_entered(2);
+        probe.release();
+        wait_for_name(&providers, "probe 2");
+        assert_eq!(probes.load(SeqCst), 2, "at most two rounds run: {}", probes.load(SeqCst));
+        let cache = providers.capability_cache.lock().unwrap();
+        assert_eq!(cache.refreshing, None, "the newer round cleared refreshing");
+        assert_eq!(cache.generation, 2);
+    }
+
+    // A3: a plugin rebuild during a probe discards the obsolete round and the
+    // next read probes again.
+    #[test]
+    fn plugin_rebuild_during_a_probe_discards_the_obsolete_round() {
+        let probes = Arc::new(AtomicUsize::new(0));
+        let entered = Arc::new(AtomicUsize::new(0));
+        let probe = Arc::new(GateProbe::new(&probes, &entered));
+        let providers = Providers::for_test(vec![probe.clone()]);
+        assert!(providers.capability_snapshot().is_empty());
+        probe.wait_entered(1);
+        providers.refresh_capabilities();
+        assert!(providers.capability_snapshot().is_empty(), "a rebuild clears values");
+        probe.release();
+        wait_for_name(&providers, "probe 2");
+        assert_eq!(probes.load(SeqCst), 2, "the rebuild started exactly one new round");
+    }
+
+    // A3: an adapter panic publishes a failure, releases waiters and leaves the
+    // cache usable (the failed cold probe stays failed, warm values survive).
+    #[test]
+    fn adapter_panic_publishes_failed_and_releases_waiters() {
         let probes = Arc::new(AtomicUsize::new(0));
         let fail = Arc::new(AtomicBool::new(true));
         let providers = Arc::new(Providers::for_test(vec![Arc::new(FailingProbe {
-            inner: SlowProbe { probes: Arc::clone(&probes) }, fail: Arc::clone(&fail),
+            inner: SlowProbe::new(&probes), fail: Arc::clone(&fail),
         })]));
-        let (notified, notification) = std::sync::mpsc::channel();
-        let observer = Arc::downgrade(&providers);
-        providers.set_capability_listener(Arc::new(move || {
-            // Both success and failure publish after unlocking the cache.
-            let failed = observer.upgrade().unwrap().capability_snapshot_result().is_err();
-            notified.send(failed).unwrap();
-        }));
+        let updates = recorder(&providers);
+        // A cold admission call must not hang when the adapter panics.
+        let waiting = Arc::clone(&providers);
+        let joined = std::thread::spawn(move || waiting.capabilities());
+        wait_for_updates(&updates, 1);
+        let seen = updates.lock().unwrap().clone();
+        assert_eq!(seen[0].outcome, "failed");
+        assert_eq!(seen[0].refresh_id, None);
+        assert_eq!(joined.join().unwrap(), Vec::<Value>::new(), "admission waiters are released on failure");
+        assert_eq!(providers.capability_snapshot_result().unwrap_err().code, "provider_detection_failed");
+        assert_eq!(probes.load(SeqCst), 1, "a panicked cold probe is never retried by a read");
+        assert_eq!(providers.capability_cache.lock().unwrap().refreshing, None);
+
+        // A warm forced refresh that panics keeps the confirmed values.
+        fail.store(false, SeqCst);
+        providers.refresh_capabilities();
+        assert_eq!(name(&providers.capabilities()), "probe 2");
+        fail.store(true, SeqCst);
+        let refresh_id = providers.request_capability_refresh();
+        wait_for_updates(&updates, 3);
+        let seen = updates.lock().unwrap().clone();
+        assert_eq!(seen[2].outcome, "failed");
+        assert_eq!(seen[2].refresh_id, Some(refresh_id));
+        assert_eq!(name(&providers.capability_snapshot()), "probe 2", "a failed warm refresh keeps the previous values");
+    }
+
+    // A3: a thread-spawn failure reports failed, clears `refreshing` and lets a
+    // later refresh retry.
+    #[test]
+    fn spawn_failure_publishes_failed_and_clears_refreshing() {
+        let probes = Arc::new(AtomicUsize::new(0));
+        let providers = Providers::for_test(vec![Arc::new(SlowProbe::new(&probes))]);
+        assert_eq!(name(&providers.capabilities()), "probe 1");
+        let updates = recorder(&providers);
+        providers.fail_next_probe_spawn();
+        let refresh_id = providers.request_capability_refresh();
+        wait_for_updates(&updates, 1);
+        let seen = updates.lock().unwrap().clone();
+        assert_eq!(seen[0].outcome, "failed");
+        assert_eq!(seen[0].refresh_id, Some(refresh_id));
+        assert_eq!(providers.capability_cache.lock().unwrap().refreshing, None);
+        assert_eq!(name(&providers.capability_snapshot()), "probe 1", "warm values survive a spawn failure");
+        let second = providers.request_capability_refresh();
+        wait_for_name(&providers, "probe 2");
+        assert!(second > refresh_id);
+        assert_eq!(probes.load(SeqCst), 2, "the retry after a spawn failure probes once");
+    }
+
+    // A4: a failed cold probe never retries on later reads; an explicit refresh
+    // recovers, and a failed warm refresh keeps the previous values.
+    #[test]
+    fn failed_cold_probe_never_retries_until_an_explicit_refresh() {
+        let probes = Arc::new(AtomicUsize::new(0));
+        let fail = Arc::new(AtomicBool::new(true));
+        let providers = Providers::for_test(vec![Arc::new(FailingProbe {
+            inner: SlowProbe::new(&probes), fail: Arc::clone(&fail),
+        })]);
+        let updates = recorder(&providers);
         let initial = providers.capability_snapshot_result();
         if let Ok(values) = initial { assert!(values.is_empty()); }
-        assert!(notification.recv_timeout(Duration::from_secs(5)).unwrap());
+        wait_for_updates(&updates, 1);
+        assert_eq!(updates.lock().unwrap()[0].outcome, "failed");
         for _ in 0..16 {
             assert_eq!(providers.capability_snapshot_result().unwrap_err().code, "provider_detection_failed");
         }
-        assert_eq!(probes.load(SeqCst), 1, "failure notification/read started an unbounded retry loop");
+        assert_eq!(probes.load(SeqCst), 1, "a failed cold probe must not retry on later reads");
         assert!(providers.capabilities().is_empty(), "failed discovery cannot admit an unconfirmed provider");
 
-        providers.refresh_capabilities();
-        assert!(providers.capability_snapshot_result().unwrap().is_empty());
-        assert!(!notification.recv_timeout(Duration::from_secs(5)).unwrap());
-        assert_eq!(name(&providers.capability_snapshot_result().unwrap()), "probe 2");
+        fail.store(false, SeqCst);
+        let refresh_id = providers.request_capability_refresh();
+        wait_for_name(&providers, "probe 2");
+        wait_for_updates(&updates, 2);
+        let recovered = updates.lock().unwrap().clone();
+        assert_eq!(recovered[1].outcome, "ok");
+        assert_eq!(recovered[1].refresh_id, Some(refresh_id));
 
         fail.store(true, SeqCst);
-        expire(&providers);
-        assert_eq!(name(&providers.capability_snapshot_result().unwrap()), "probe 2");
-        assert!(!notification.recv_timeout(Duration::from_secs(5)).unwrap(), "failed warm refresh must retain confirmed values");
-        for _ in 0..16 { assert_eq!(name(&providers.capability_snapshot_result().unwrap()), "probe 2"); }
+        let warm = providers.request_capability_refresh();
+        wait_for_updates(&updates, 3);
+        let seen = updates.lock().unwrap().clone();
+        assert_eq!(seen[2].outcome, "failed");
+        assert_eq!(seen[2].refresh_id, Some(warm));
+        assert_eq!(name(&providers.capability_snapshot()), "probe 2");
+        for _ in 0..16 { assert_eq!(name(&providers.capability_snapshot()), "probe 2"); }
         assert_eq!(probes.load(SeqCst), 3);
-        assert!(notification.try_recv().is_err());
-
-        providers.refresh_capabilities();
-        assert!(providers.capability_snapshot_result().unwrap().is_empty());
-        assert!(!notification.recv_timeout(Duration::from_secs(5)).unwrap());
-        assert_eq!(name(&providers.capability_snapshot_result().unwrap()), "probe 4");
-    }
-
-    fn name(values: &[Value]) -> String {
-        values[0]["name"].as_str().unwrap().to_owned()
-    }
-
-    fn expire(providers: &Providers) {
-        let expired = Instant::now()
-            .checked_sub(CAPABILITY_TTL + Duration::from_secs(1))
-            .unwrap();
-        let mut cache = providers.capability_cache.lock().unwrap();
-        cache.values.as_mut().unwrap().0 = expired;
     }
 
     #[test]
     fn cold_ui_reads_are_pending_and_share_one_probe_with_confirmed_admission() {
         let probes = Arc::new(AtomicUsize::new(0));
-        let providers = Arc::new(Providers::for_test(vec![Arc::new(SlowProbe { probes: Arc::clone(&probes) })]));
+        let providers = Arc::new(Providers::for_test(vec![Arc::new(SlowProbe::new(&probes))]));
         let (notified, notification) = std::sync::mpsc::sync_channel(1);
         let observer = Arc::downgrade(&providers);
-        providers.set_capability_listener(Arc::new(move || {
+        providers.set_capability_listener(Arc::new(move |_update| {
             let providers = observer.upgrade().unwrap();
             // Publication must not hold the cache: snapshot readers can re-enter.
             let current = providers.capability_snapshot();
@@ -2757,7 +3035,7 @@ mod capability_cache_tests {
     #[test]
     fn invalidation_between_pending_snapshot_and_admission_wait_restarts_current_probe() {
         let probes = Arc::new(AtomicUsize::new(0));
-        let providers = Providers::for_test(vec![Arc::new(SlowProbe { probes: Arc::clone(&probes) })]);
+        let providers = Providers::for_test(vec![Arc::new(SlowProbe::new(&probes))]);
         let generation = providers.capability_cache.lock().unwrap().generation;
         assert!(providers.capability_snapshot().is_empty());
         let deadline = Instant::now() + Duration::from_secs(5);
@@ -2770,45 +3048,6 @@ mod capability_cache_tests {
         assert_eq!(name(&values), "probe 2");
         assert_eq!(probes.load(SeqCst), 2);
         assert_eq!(name(&providers.capability_snapshot()), "probe 2");
-    }
-
-    #[test]
-    fn expired_capabilities_answer_immediately_and_refresh_once_in_the_background() {
-        let probes = Arc::new(AtomicUsize::new(0));
-        let providers = Providers::for_test(vec![Arc::new(SlowProbe {
-            probes: Arc::clone(&probes),
-        })]);
-        // First probe is synchronous; fresh values are cached.
-        assert_eq!(name(&providers.capabilities()), "probe 1");
-        assert_eq!(name(&providers.capabilities()), "probe 1");
-        assert_eq!(probes.load(SeqCst), 1);
-
-        // Expired values still answer, without waiting for the probes.
-        expire(&providers);
-        let started = Instant::now();
-        assert_eq!(name(&providers.capabilities()), "probe 1");
-        assert_eq!(name(&providers.capabilities()), "probe 1");
-        assert!(
-            started.elapsed() < Duration::from_millis(200),
-            "an expired cache must not make the caller wait for the probes"
-        );
-        let deadline = Instant::now() + Duration::from_secs(5);
-        while name(&providers.capabilities()) != "probe 2" && Instant::now() < deadline {
-            std::thread::sleep(Duration::from_millis(20));
-        }
-        assert_eq!(name(&providers.capabilities()), "probe 2");
-        // Repeated expired reads started a single refresh.
-        assert_eq!(probes.load(SeqCst), 2);
-
-        // An explicit refresh probes synchronously; the in-flight background
-        // probe it superseded must not overwrite the newer values later.
-        expire(&providers);
-        let _ = providers.capabilities();
-        providers.refresh_capabilities();
-        let current = name(&providers.capabilities());
-        std::thread::sleep(Duration::from_millis(600));
-        assert_eq!(probes.load(SeqCst), 4);
-        assert_eq!(name(&providers.capabilities()), current);
     }
 }
 
