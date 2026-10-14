@@ -6,6 +6,7 @@
 import React from 'react';
 import { createRoot } from 'react-dom/client';
 import { ChatView } from '../../renderer/src/components/ChatView';
+import { SessionSurfaceContext } from '../../renderer/src/components/SessionSurfaceContext';
 import { I18nProvider } from '../../renderer/src/i18n';
 import '../../renderer/src/styles.css';
 
@@ -34,6 +35,8 @@ type QaState = {
   steered: string[];
   notes: string[];
   calls: Array<{ method: string; params: Record<string, unknown> }>;
+  openedFiles: unknown[];
+  openFileEnabled: boolean;
   resolvers: Array<() => void>;
   listeners: QaListeners;
 };
@@ -63,6 +66,8 @@ const qa: QaState = {
   steered: [],
   notes: [],
   calls: [],
+  openedFiles: [],
+  openFileEnabled: false,
   resolvers: [],
   listeners: [],
 };
@@ -89,6 +94,7 @@ function route(method: string, params: Record<string, unknown>): Promise<unknown
     case 'chat.context.read': return null;
     case 'chat.backgroundTasks.list': return { tasks: [] };
     case 'filesystem.files': return { paths: qa.files };
+    case 'filesystem.resolve': return { path: params.path, worktreePath: 'C:/repo' };
     case 'git.log': return { commits: [] };
     case 'chat.read':
       if (qa.readGate) return new Promise(resolve => { qa.resolvers.push(() => resolve(qa.readItems)); });
@@ -159,15 +165,20 @@ function render() {
     createdAt: 'now',
     updatedAt: 'now',
   };
+  const view = React.createElement(ChatView, {
+    key: qa.sessionId,
+    session,
+    sessions: qa.sessions as never,
+    delegationEnabled: false,
+    sessionInfoEnabled: false,
+  });
   root.render(
     React.createElement(I18nProvider, { locale: qa.locale },
-      React.createElement(ChatView, {
-        key: qa.sessionId,
-        session,
-        sessions: qa.sessions as never,
-        delegationEnabled: false,
-        sessionInfoEnabled: false,
-      })),
+      qa.openFileEnabled
+        ? React.createElement(SessionSurfaceContext.Provider, {
+            value: { openFile: (reference: unknown) => { qa.openedFiles.push(reference); } } as never,
+          }, view)
+        : view),
   );
 }
 
@@ -182,7 +193,7 @@ const api = {
   reset: (patch?: Partial<QaState>) => {
     Object.assign(qa, {
       sessionId: 'composer-dom', status: 'idle', locale: 'en', draft: '', revision: 0, items: [], queue: { sessionId: 'composer-dom', paused: false, items: [] },
-      readGate: false, clearError: false, savedDrafts: [], sent: [], queued: [], steered: [], notes: [], calls: [], resolvers: [],
+      readGate: false, clearError: false, savedDrafts: [], sent: [], queued: [], steered: [], notes: [], calls: [], openedFiles: [], openFileEnabled: false, resolvers: [],
       sendGate: false, sendResolvers: [], sendError: undefined, saveError: undefined,
     }, patch ?? {});
     if (!patch || !('queue' in patch)) qa.queue = { sessionId: qa.sessionId, paused: false, items: [] };

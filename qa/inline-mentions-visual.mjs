@@ -561,10 +561,10 @@ try {
     body,
   ].join('\n');
   const userItem = (id, text) => ({ id, role: 'user', turnId: `${id}-turn`, createdAt: '2026-01-01T00:00:00.000Z', parts: [{ type: 'text', text }] });
-  async function mountTranscript(id, { items = [], locale = 'en', queue, status = 'idle' } = {}) {
-    await page.evaluate(([sessionId, lang, sessionStatus, transcript, q]) => window.qa.reset({
-      sessionId, draft: '', locale: lang, status: sessionStatus, items: transcript, ...(q ? { queue: q } : {}),
-    }), [id, locale, status, items, queue]);
+  async function mountTranscript(id, { items = [], locale = 'en', queue, status = 'idle', openFile = false } = {}) {
+    await page.evaluate(([sessionId, lang, sessionStatus, transcript, q, files]) => window.qa.reset({
+      sessionId, draft: '', locale: lang, status: sessionStatus, items: transcript, openFileEnabled: files, ...(q ? { queue: q } : {}),
+    }), [id, locale, status, items, queue, openFile]);
     await scope(id).waitFor({ timeout: 15_000 });
   }
   async function messageBox(id) {
@@ -586,6 +586,18 @@ try {
   const historyHtml = await scope('sent-history').locator('.v3-chat-message.user').first().innerHTML();
   await capture('sent-history', await messageBox('sent-history'), 'sent-history');
   ok('a sent message renders its mention as a badge without a duplicate chip');
+
+  // A plain path beside the badge stays a clickable FileLinkedText link and
+  // opens the expected reference (a string-only unit test could pass even if
+  // plain runs stopped producing links).
+  await mountTranscript('sent-link', { items: [userItem('sent-link-u1', SENT_BADGE_ENVELOPE)], openFile: true });
+  await userBadges('sent-link').waitFor({ timeout: 15_000 });
+  const otherLink = scope('sent-link').locator('.v3-chat-message.user .file-reference-link', { hasText: 'src/other.ts' });
+  await otherLink.waitFor({ timeout: 15_000 });
+  assert.equal(await otherLink.innerText(), 'src/other.ts');
+  await otherLink.click();
+  assert.deepEqual(await page.evaluate(() => window.qa.state.openedFiles), [{ path: 'src/other.ts' }]);
+  ok('a plain file path beside a badge stays a working file link');
 
   // The same envelope delivered live (chat.item) and reopened from saved history
   // (chat.snapshot on a fresh mount) render identically.

@@ -192,6 +192,18 @@ try {
   await until(async () => (await sentBubble.locator('[data-testid="context-chip"]').count()) === 0, 'a badged item is not repeated as a chip');
   check('the sent user bubble renders the mention as a badge, not a chip');
 
+  // Reopening the persisted history (the renderer reload reads chat.snapshot)
+  // must re-render the same composition from the stored envelope, so a broken
+  // persistence path cannot hide behind the live DOM.
+  const sentTextHtml = await sentBubble.locator('.v3-message-text').innerHTML();
+  await reloadApp();
+  const reopenedBubble = chatScope(chat.id).locator('.v3-chat-message.user').last();
+  await until(async () => (await reopenedBubble.locator('.chat-mention-badge').count()) === 1, 'reopened history shows the mention badge');
+  assert.equal(await reopenedBubble.locator('.chat-mention-badge').innerText(), '@cart.ts', 'reopened history shows the token');
+  assert.equal(await reopenedBubble.locator('[data-testid="context-chip"]').count(), 0, 'reopened history keeps the item out of the chip row');
+  assert.equal(await reopenedBubble.locator('.v3-message-text').innerHTML(), sentTextHtml, 'live and reopened rendering are identical');
+  check('reopened persisted history re-renders the same badge and drops the duplicate chip');
+
   // 7. Three colliding index.ts files get distinct tokens (relative path fallback).
   await pickQuery(chat.id, 'index', 'files');
   await until(async () => /@index\.ts /.test(await composer(chat.id).inputValue()), 'first index.ts token');
@@ -271,6 +283,28 @@ try {
   await until(async () => (await queueBubble.locator('.chat-mention-badge').count()) === 1, 'queue bubble shows the winning badge');
   await until(async () => (await queueBubble.locator('[data-testid="context-chip"]').count()) === 1, 'the token removed in the queue editor keeps its fallback chip');
   check('an edited queue message badges the kept token and chips the removed one');
+
+  // Queue an UNEDITED mention message and let the real queue deliver it; the
+  // stored envelope and the rendered badge must survive queue serialization.
+  await composer(chat.id).click();
+  await page.keyboard.type('slow:6000 hold');
+  await page.keyboard.press('Enter');
+  await until(async () => (await chatScope(chat.id).locator('.chat-compose-send.is-stop').count()) === 1, 'slow turn started for the unedited queue');
+  await composer(chat.id).click();
+  await page.keyboard.type('unedited ');
+  await pickAtCaret(chat.id, 'cart', 'files');
+  assert.equal(await composer(chat.id).inputValue(), 'unedited @cart.ts ', 'the unedited queue draft holds the token');
+  await composer(chat.id).click(); await page.keyboard.press('Enter');
+  await until(async () => (await page.locator('[data-testid="chat-queue-item"]').count()) === 1, 'unedited queue item present');
+  await until(async () => (await chatScope(chat.id).locator('.chat-compose-send.is-stop').count()) === 0, 'slow turn finished and the unedited queue drained', 30_000);
+  const uneditedEnvelope = await sentUserText(chat.id, 'unedited @cart.ts');
+  assert.match(uneditedEnvelope, /\[ThreadTerm message; mentions v1 \{"@cart\.ts":1\}\]/, 'the unedited queue kept its mention map');
+  assert.equal(await receivedPrompt(chat.id, 'unedited @cart.ts'), uneditedEnvelope, 'the provider received the unedited queue envelope');
+  const uneditedBubble = chatScope(chat.id).locator('.v3-chat-message.user').last();
+  await until(async () => (await uneditedBubble.locator('.chat-mention-badge').count()) === 1, 'the unedited queued message shows its badge');
+  assert.equal(await uneditedBubble.locator('.chat-mention-badge').innerText(), '@cart.ts', 'the unedited queued message badges the token');
+  assert.equal(await uneditedBubble.locator('[data-testid="context-chip"]').count(), 0, 'the unedited queued message has no duplicate chip');
+  check('an unedited queued mention drains through the real queue and keeps its map and badge');
 
   // 5. Restore: switch away and back; the runtime v2 draft restores text + mentions.
   await composer(chat.id).fill('');

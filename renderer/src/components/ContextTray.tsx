@@ -1,7 +1,7 @@
 import { useLayoutEffect, useRef, useState, type ReactNode } from 'react';
 import { contextDisplayMetadata, contextSerializedBlocks, parseContext, serializeMentionedContext, type ContextItem } from '../chatContext';
 import { contextIdentityBudget, type MentionEntry } from '../inlineMentions';
-import { layoutMessageMentions, type MessageMentionBadge } from '../messageMentions';
+import { parseMessageMentions, type MessageMentionBadge } from '../messageMentions';
 import { SurfaceDialog } from './SurfaceDialog';
 import { Icon } from './PrototypeIcon';
 import './context-tray.css';
@@ -29,7 +29,7 @@ function localized(chip: Chip, zh: boolean) {
   return chip.label;
 }
 
-function fullTitle(chip: Chip, zh: boolean) {
+export function fullTitle(chip: { kind: ContextItem['kind']; title: string }, zh: boolean) {
   if (!zh) return chip.title;
   if (chip.kind === 'file') return chip.title.replace(/^File:/, '文件：');
   if (chip.kind === 'commit') return chip.title.replace(/^Commit/, '提交');
@@ -119,9 +119,10 @@ export function ContextTray({ items, text, zh, onRemove, disabled, mentions = []
 
 /** Shared by submitted user bubbles and the pending-send preview. */
 export function ContextMessage({ text, zh, children }: { text: string; zh: boolean; children: (text: string, badges: readonly MessageMentionBadge[]) => ReactNode }) {
-  const parsed = parseContext(text);
-  if (!parsed) return <>{children(text, [])}</>;
-  const { badges, chipItems } = layoutMessageMentions(parsed);
+  const message = parseMessageMentions(text);
+  if (!message) return <>{children(text, [])}</>;
+  const { parsed, layout } = message;
+  const { badges, chipItems } = layout;
   const blocks = chipItems.map(({ header, body }) => header + (body ? `\n${body}` : ''));
   return <>{blocks.length > 0 && <div className="context-transcript-row" data-testid="context-transcript-row"><ContextChips chips={chipsFor(blocks)} zh={zh}/></div>}{children(parsed.text, badges)}</>;
 }

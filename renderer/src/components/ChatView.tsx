@@ -1507,7 +1507,7 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession, 
             {label && <strong>{label}</strong>}
             {body ? codexMarkdown
               ? <ChatMarkdown sanitizedHtml={renderCodexMarkdown(body, zh)} references={part.fileReferences} openFile={openFile} copy={copy} onInsert={writable ? text => insertChatText(session.id, text) : undefined} />
-              : item.role === 'user' ? <><ContextMessage text={body} zh={zh}>{(value, badges) => <div className="v3-message-text"><MessageMentionText text={value} badges={badges} openFile={openFile} /></div>}</ContextMessage>{asRecord(part.data).steered === true && <span className="chip is-plain chat-inserted-tag" data-testid="inserted-tag">{copy('Inserted', '已插入')}</span>}</> : <div className="v3-message-text"><FileLinkedText text={body} openFile={openFile} /></div>
+              : item.role === 'user' ? <><ContextMessage text={body} zh={zh}>{(value, badges) => <div className="v3-message-text"><MessageMentionText text={value} badges={badges} openFile={openFile} zh={zh} /></div>}</ContextMessage>{asRecord(part.data).steered === true && <span className="chip is-plain chat-inserted-tag" data-testid="inserted-tag">{copy('Inserted', '已插入')}</span>}</> : <div className="v3-message-text"><FileLinkedText text={body} openFile={openFile} /></div>
               : null}
             {!codexMarkdown && <FileReferenceChips references={part.fileReferences} visibleText={body} openFile={openFile} />}
           </>}
@@ -1598,7 +1598,7 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession, 
       {submissionPreview && !items.some(item => item.role === 'user' && item.turnId === submissionPreview.token) && <article className={`v3-chat-message user is-native is-${session.provider} chat-pending-submission`} aria-label={copy('Message being sent', '正在发送的消息')}>
         <div className="chat-part text">
           {!!submissionPreview.images.length && <div className="chat-message-images">{submissionPreview.images.map((image, index) => <img key={index} src={image} alt={`${copy('Pasted image', '已粘贴图片')} ${index + 1}`} />)}</div>}
-          {!!submissionPreview.text && <ContextMessage text={submissionPreview.text} zh={zh}>{(value, badges) => <div className="v3-message-text"><MessageMentionText text={value} badges={badges} /></div>}</ContextMessage>}
+          {!!submissionPreview.text && <ContextMessage text={submissionPreview.text} zh={zh}>{(value, badges) => <div className="v3-message-text"><MessageMentionText text={value} badges={badges} zh={zh} /></div>}</ContextMessage>}
         </div>
       </article>}
       {firstResponseWait && <div className="chat-first-response-wait" role="status" aria-live="polite" aria-label={submissionPreview && busy ? copy('Sending…', '正在发送…') : copy("Thinking", "思考中")}><span>{submissionPreview && busy ? copy('Sending…', '正在发送…') : copy("Thinking", "思考中")}</span><span className="chat-first-response-dots" aria-hidden="true"><i /><i /><i /></span></div>}

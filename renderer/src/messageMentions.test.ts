@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { parseContext, serializeMentionedContext, type ContextItem } from './chatContext';
 import { highlightSegments, type MentionEntry } from './inlineMentions';
-import { layoutMessageMentions } from './messageMentions';
+import { layoutMessageMentions, parseMessageMentions } from './messageMentions';
 
 const fileItem = (path: string): ContextItem => ({ kind: 'file', id: `file:${path}`, path });
 const fileEntry = (token: string, path: string): MentionEntry => ({ token, item: { kind: 'file', id: `file:${path}`, path } });
@@ -66,4 +66,17 @@ test('resolution never rewrites the user text used for plain-text copy', () => {
   const { parsed, layout } = resolve(body, [fileItem('src/cart.ts')], [fileEntry('@cart.ts', 'src/cart.ts')]);
   assert.equal(parsed.text, body);
   assert.equal(highlightSegments(parsed.text, layout.badges).map(segment => segment.text).join(''), body);
+});
+
+test('message parsing is cached by text so transcript re-renders do not rescan history', () => {
+  const message = serializeMentionedContext({ trayItems: [fileItem('src/cart.ts')], active: [fileEntry('@cart.ts', 'src/cart.ts')] }, 'Please check @cart.ts now');
+  const first = parseMessageMentions(message);
+  const second = parseMessageMentions(message);
+  assert.ok(first && second);
+  assert.equal(first, second, 'the same text returns the identical parsed layout');
+  assert.equal(first.layout, second.layout);
+  const other = parseMessageMentions(serializeMentionedContext({ trayItems: [fileItem('src/other.ts')], active: [] }, 'a different message'));
+  assert.ok(other);
+  assert.notEqual(other, first);
+  assert.equal(parseMessageMentions('plain text with no envelope'), undefined);
 });
