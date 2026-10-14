@@ -628,6 +628,62 @@ function instructionsScenario(provider, { mcpPrefix, options = {} } = {}) {
   };
 }
 
+// F1: a file @mention typed and picked through the real composer, sent through the real send button, so the
+// stored envelope carries the context block and the `mentions v1` map and the sent bubble paints the badge.
+function inlineMentionScenario(provider, { options = {} } = {}) {
+  return async (h) => {
+    const { expect, note, report, dir } = h;
+    const ctx = await h.openChat(provider, `${provider} live inline mention`, { dir });
+    try {
+      await ctx.connect();
+      for (const [id, value] of Object.entries(options)) note(`${provider} option ${id} -> ${await setOption(h, ctx, id, value)}`);
+      const composer = ctx.scope.locator('.chat-compose-shell textarea');
+      const popup = ctx.scope.locator('.chat-mentions');
+      await composer.click();
+      await composer.fill('What is the magic number in @READ');
+      await popup.waitFor();
+      const row = popup.locator('[data-testid="mention-option"][data-mention-group="files"]', { hasText: 'README.md' }).first();
+      await row.waitFor({ timeout: 20_000 });
+      await row.click();
+      await h.until(async () => (await composer.inputValue()).includes('@README.md'), 'README token inserted', 10_000);
+      const afterPick = await composer.inputValue();
+      report.data.afterPick = afterPick;
+      expect(/@README\.md/.test(afterPick), `${provider} picking README.md keeps the token in the sentence`, afterPick);
+      expect(await ctx.scope.locator('[data-testid="context-tray"] [data-testid="context-chip"]').count() === 0, `${provider} the mention adds no tray chip`);
+      const badgeBefore = await ctx.scope.locator('.chat-compose-highlights .chat-mention-badge').count();
+      expect(badgeBefore >= 1, `${provider} composer highlights the token as a badge`, badgeBefore);
+      await ctx.shot('inline-mention-composed', { widths: [1100, 420] });
+      await composer.focus();
+      await composer.evaluate(node => node.setSelectionRange(node.value.length, node.value.length));
+      await ctx.page.keyboard.type('? Answer with the number only.');
+      const full = await composer.inputValue();
+      report.data.composerText = full;
+      expect(/^What is the magic number in @README\.md \? Answer with the number only\.$/.test(full), `${provider} composer holds the final sentence`, full);
+      await ctx.scope.locator('.chat-compose-send[aria-label="Send"]').click();
+      const turnId = await h.until(async () => (await ctx.snapshot()).filter(item => item.role === 'user').at(-1)?.turnId, 'inline-mention turn', 20_000);
+      const userItem = (await ctx.snapshot()).filter(item => item.role === 'user').at(-1);
+      const userText = (userItem?.parts ?? []).filter(part => part.type === 'text').map(part => part.text).join('');
+      report.data.userText = userText;
+      expect(/\[ThreadTerm message; mentions v1/.test(userText), `${provider} stored user text carries the mentions v1 header`, userText.slice(0, 400));
+      expect(/File: README\.md/.test(userText), `${provider} stored user text carries the README item header`, userText.slice(0, 400));
+      const result = await settle(h, ctx, turnId, { timeout: 300_000 });
+      await save(dir, 'items.json', result.items);
+      const reply = replyText(result.items, turnId);
+      report.data.reply = reply;
+      expect(!result.ended, `${provider} inline-mention turn ended normally`, result.ended);
+      expect(/4817/.test(reply), `${provider} answer names the magic number`, reply.slice(-300));
+      const bubble = ctx.scope.locator('.v3-chat-message.user').last();
+      await h.until(async () => (await bubble.locator('.chat-mention-badge').count()) >= 1, 'sent bubble badge', 15_000);
+      const badgeText = await bubble.locator('.chat-mention-badge').first().innerText();
+      report.data.badgeText = badgeText;
+      expect(/@README\.md/.test(badgeText), `${provider} sent user bubble shows the inline README badge`, badgeText);
+      expect(await bubble.locator('[data-testid="context-chip"]').count() === 0, `${provider} the badged item is not repeated as a chip`);
+      await ctx.shot('inline-mention-sent', { widths: [1100, 420] });
+      await ctx.shot('inline-mention-sent', { widths: [1100], theme: 'dark' });
+    } finally { await ctx.stop(); }
+  };
+}
+
 const claudeTool = name => `mcp__threadterm__${name}`;
 // The user's default Pi model has an invalid DeepSeek key; pick the working command provider for this session only
 // (Pi's RPC set_model does not persist a default).
@@ -775,6 +831,8 @@ export const scenarios = {
   'codex:generated-ui': generatedUiScenario('codex'),
   'grok:generated-ui': generatedUiScenario('grok', { options: { mode: 'acceptEdits' } }),
   'claude:mention': mentionScenario('claude', { agent: 'codex', options: { mode: 'acceptEdits' } }),
+  'claude:inline-mention': inlineMentionScenario('claude', { options: { mode: 'acceptEdits' } }),
+  'codex:inline-mention': inlineMentionScenario('codex'),
 
   // D3 + E3: a protected Pi skill loads only after ThreadTerm trusts the project, then shows as a skill.
   async 'pi:trust'(h) {
