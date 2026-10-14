@@ -667,6 +667,7 @@ try {
   // Right-click menu, the disabled Open file state and the details dialog, in
   // light/dark and en/zh-CN, each checked for control consistency.
   const actionFile = fileEntry('@cart.ts', 'src/cart.ts');
+  const actionDirectory = fileEntry('@src/', 'src/');
   const actionSession = sessionEntry('@"Other chat"', 'other-1', 'Other chat');
   const ACTION_TEXT = 'Ask @cart.ts and @"Other chat" now.';
   async function mountActionState(id, locale) {
@@ -696,7 +697,7 @@ try {
       assertNoControlViolations(await checkControlConsistency(page, '[data-testid="context-menu"]'), `mention menu ${theme}/${locale}`);
       await page.locator('[data-testid="mention-action-details"]').click();
       await page.locator('.context-preview-dialog').waitFor({ timeout: 15_000 });
-      assert.equal(await page.locator('.context-preview-dialog [data-testid="context-preview"]').innerText(), '[ThreadTerm context 1/1] File: src/cart.ts', `details block ${theme}/${locale}`);
+      assert.equal(await page.locator('.context-preview-dialog [data-testid="context-preview"]').innerText(), '[ThreadTerm context 1/2] File: src/cart.ts', `details block ${theme}/${locale}`);
       const dialogBox = await page.locator('.context-preview-dialog').boundingBox();
       await page.screenshot({ path: join(out, `m5-details-${theme}-${locale}.png`), clip: { x: Math.floor(dialogBox.x) - 6, y: Math.floor(dialogBox.y) - 6, width: Math.ceil(dialogBox.width) + 12, height: Math.ceil(dialogBox.height) + 12 } });
       report.screenshots.push(join(out, `m5-details-${theme}-${locale}.png`));
@@ -719,6 +720,55 @@ try {
   await page.keyboard.press('Escape');
   await page.locator('[data-testid="context-menu"]').waitFor({ state: 'detached' });
   ok('mention actions: menu and details dialog in both themes/locales; Open file opens the item path and is disabled off files');
+
+  // A directory mention cannot be opened as a file and says why.
+  await mountState('m5-dir', { text: 'open @src/ now', mentions: [actionDirectory], locale: 'en' });
+  await page.evaluate(() => window.qa.update({ openFileEnabled: true }));
+  await scope('m5-dir').locator('.chat-compose-highlights').waitFor({ timeout: 15_000 });
+  await openMentionMenu('m5-dir', 0);
+  assert.equal(await page.locator('[data-testid="mention-action-open-file"]').getAttribute('aria-disabled'), 'true', 'open file disabled for a directory mention');
+  assert.match(await page.locator('[data-testid="mention-action-open-file"]').getAttribute('title') ?? '', /folder/i, 'the directory reason is shown');
+  await page.keyboard.press('Escape');
+  await page.locator('[data-testid="context-menu"]').waitFor({ state: 'detached' });
+  ok('a directory mention disables Open file with a localized reason');
+
+  // A session/lifecycle switch while the menu is open invalidates the action: no
+  // preview, no navigation, no draft mutation, and the notice (design §9).
+  async function switchDuringMenu(id, nextId) {
+    await mountActionState(id, 'en');
+    await openMentionMenu(id, 0);
+    // Gate the new session's draft read so it applies only after the switch has
+    // cleared the composer (otherwise the in-place session effect races the read).
+    await page.evaluate(([next, draft]) => { window.qa.state.draftGate = true; window.qa.switchSession(next, draft); }, [nextId, 'switched session draft']);
+    await page.locator(`[data-testid="session-chat-${nextId}"]`).waitFor({ timeout: 15_000 });
+    await page.waitForFunction(target => {
+      const area = document.querySelector(`[data-testid="session-chat-${target}"] .chat-compose-input textarea`);
+      return Boolean(area) && area.value === '';
+    }, nextId, { timeout: 15_000 });
+    await page.evaluate(() => window.qa.releaseDraft());
+    await page.waitForFunction(target => {
+      const area = document.querySelector(`[data-testid="session-chat-${target}"] .chat-compose-input textarea`);
+      return Boolean(area) && area.value === 'switched session draft';
+    }, nextId, { timeout: 15_000 });
+    assert.equal(await page.locator('[data-testid="context-menu"]').count(), 1, 'the menu survives the session switch');
+  }
+  const noticeFor = async nextId => {
+    await page.locator(`[data-testid="session-chat-${nextId}"] .surface-error`).waitFor({ timeout: 15_000 });
+    assert.match(await page.locator(`[data-testid="session-chat-${nextId}"] .surface-error`).innerText(), /changed before the action ran/);
+  };
+  await switchDuringMenu('m5-life-details', 'm5-life-details-b');
+  await page.locator('[data-testid="mention-action-details"]').click();
+  await noticeFor('m5-life-details-b');
+  assert.equal(await page.locator('.context-preview-dialog').count(), 0, 'a stale Show details opens no preview');
+  await switchDuringMenu('m5-life-open', 'm5-life-open-b');
+  await page.locator('[data-testid="mention-action-open-file"]').click();
+  await noticeFor('m5-life-open-b');
+  assert.deepEqual(await page.evaluate(() => window.qa.state.openedFiles), [], 'a stale Open file navigates nowhere');
+  await switchDuringMenu('m5-life-remove', 'm5-life-remove-b');
+  await page.locator('[data-testid="mention-action-remove"]').click();
+  await noticeFor('m5-life-remove-b');
+  assert.equal(await page.locator('[data-testid="session-chat-m5-life-remove-b"] .chat-compose-input textarea').inputValue(), 'switched session draft', 'a stale Remove does not mutate the new draft');
+  ok('a session switch invalidates an opened mention action with no preview/navigation/mutation and a notice');
 
   // A stale action (the token changed after the menu opened) is a no-op with a notice.
   await mountActionState('m5-stale', 'en');

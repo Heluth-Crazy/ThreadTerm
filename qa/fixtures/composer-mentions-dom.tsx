@@ -13,6 +13,8 @@ import '../../renderer/src/styles.css';
 type QaListeners = Array<(event: unknown) => void>;
 type QaState = {
   sessionId: string;
+  /** React key for the mounted ChatView; `switchSession` keeps it so the session prop updates in place. */
+  mountKey: string;
   status: string;
   locale: 'en' | 'zh-CN';
   draft: string;
@@ -24,6 +26,8 @@ type QaState = {
   queue: { sessionId: string; paused: boolean; items: unknown[] };
   readGate: boolean;
   readItems: unknown[];
+  draftGate: boolean;
+  draftResolvers: Array<() => void>;
   sendGate: boolean;
   sendResolvers: Array<() => void>;
   sendError?: string;
@@ -43,6 +47,7 @@ type QaState = {
 
 const qa: QaState = {
   sessionId: 'composer-dom',
+  mountKey: 'composer-dom',
   status: 'idle',
   locale: 'en',
   draft: '',
@@ -57,6 +62,8 @@ const qa: QaState = {
   queue: { sessionId: 'composer-dom', paused: false, items: [] },
   readGate: false,
   readItems: [{ id: 'm1', role: 'user', turnId: 't', createdAt: 'now', parts: [{ type: 'text', text: 'hello from the other chat' }] }],
+  draftGate: false,
+  draftResolvers: [],
   sendGate: false,
   sendResolvers: [],
   clearError: false,
@@ -75,7 +82,9 @@ const qa: QaState = {
 function route(method: string, params: Record<string, unknown>): Promise<unknown> | unknown {
   qa.calls.push({ method, params });
   switch (method) {
-    case 'chat.draft.read': return { text: qa.draft, revision: qa.revision };
+    case 'chat.draft.read':
+      if (qa.draftGate) return new Promise(resolve => { qa.draftResolvers.push(() => resolve({ text: qa.draft, revision: qa.revision })); });
+      return { text: qa.draft, revision: qa.revision };
     case 'chat.draft.save':
       if (qa.saveError) throw new Error(qa.saveError);
       if (qa.clearError && params.text === '') throw new Error('');
@@ -166,7 +175,7 @@ function render() {
     updatedAt: 'now',
   };
   const view = React.createElement(ChatView, {
-    key: qa.sessionId,
+    key: qa.mountKey,
     session,
     sessions: qa.sessions as never,
     delegationEnabled: false,
@@ -187,16 +196,22 @@ const api = {
   render: (patch?: Partial<QaState>) => { if (patch) Object.assign(qa, patch); render(); },
   update: (patch: Partial<QaState>) => { Object.assign(qa, patch); render(); },
   releaseRead: () => { qa.readGate = false; const resolvers = qa.resolvers.splice(0); for (const resolve of resolvers) resolve(); },
+  releaseDraft: () => { qa.draftGate = false; const resolvers = qa.draftResolvers.splice(0); for (const resolve of resolvers) resolve(); },
   releaseSend: () => { qa.sendGate = false; const resolvers = qa.sendResolvers.splice(0); for (const resolve of resolvers) resolve(); },
   emit: (event: unknown) => { for (const listener of [...qa.listeners]) listener(event); },
+  // A session/lifecycle switch that keeps the ChatView instance mounted (the key
+  // is unchanged), so the real `[session.id]` effect invalidates the old lifecycle.
+  switchSession: (sessionId: string, draft = '') => { qa.sessionId = sessionId; qa.draft = draft; qa.revision = 0; qa.items = []; render(); },
   calls: qa.calls,
   reset: (patch?: Partial<QaState>) => {
     Object.assign(qa, {
       sessionId: 'composer-dom', status: 'idle', locale: 'en', draft: '', revision: 0, items: [], queue: { sessionId: 'composer-dom', paused: false, items: [] },
       readGate: false, clearError: false, savedDrafts: [], sent: [], queued: [], steered: [], notes: [], calls: [], openedFiles: [], openFileEnabled: false, resolvers: [],
+      draftGate: false, draftResolvers: [],
       sendGate: false, sendResolvers: [], sendError: undefined, saveError: undefined,
     }, patch ?? {});
     if (!patch || !('queue' in patch)) qa.queue = { sessionId: qa.sessionId, paused: false, items: [] };
+    qa.mountKey = qa.sessionId;
     render();
   },
 };

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { MAX_CONTEXT_BYTES, MAX_DIFF_BYTES, MAX_SESSION_SUMMARY_BYTES, MAX_TERMINAL_BYTES, MAX_TERMINAL_LINES, contextDisplayMetadata, contextSerializedBlocks, normalizeContextItems, parseContext, serializeContext, serializeMentionedContext, stripAnsi } from './chatContext';
+import { MAX_CONTEXT_BYTES, MAX_DIFF_BYTES, MAX_SESSION_SUMMARY_BYTES, MAX_TERMINAL_BYTES, MAX_TERMINAL_LINES, contextDisplayMetadata, contextSerializedBlocks, mentionSerializedBlock, normalizeContextItems, parseContext, serializeContext, serializeMentionedContext, stripAnsi } from './chatContext';
 import type { MentionEntry } from './inlineMentions';
 
 test('serializes and parses every context kind without exposing the user text to the envelope', () => {
@@ -197,6 +197,20 @@ test('a v1 mentions header maps tokens to block indexes and exposes inlineToken'
   // Legacy messages cannot acquire the new meaning.
   const older = parseContext(serializeContext(active.map(entry => entry.item), 'see @cart.ts'))!;
   assert.equal(older.items[0]!.inlineToken, undefined);
+});
+
+test('mentionSerializedBlock returns the identity block from the merged context, not a standalone 1/1', () => {
+  const active: MentionEntry[] = [
+    { token: '@cart.ts', item: { kind: 'file', id: 'file:src/cart.ts', path: 'src/cart.ts' } },
+    { token: '@codex', item: { kind: 'agent', id: 'agent:codex', provider: 'codex' } },
+  ];
+  assert.equal(mentionSerializedBlock({ trayItems: [], active }, '@cart.ts'), '[ThreadTerm context 1/2] File: src/cart.ts');
+  assert.equal(mentionSerializedBlock({ trayItems: [], active }, '@codex'), '[ThreadTerm context 2/2] Agent: delegate the following task to codex with delegate_start.');
+  // The tray item wins the identity, and the token still points at the shared block.
+  const trayItem = { kind: 'file' as const, id: 'attach-1', path: 'src\\cart.ts' };
+  const merged = mentionSerializedBlock({ trayItems: [trayItem], active }, '@cart.ts');
+  assert.match(merged!, /\[ThreadTerm context 1\/2\] File: src\\cart\.ts$/);
+  assert.equal(mentionSerializedBlock({ trayItems: [], active }, '@missing'), undefined);
 });
 
 test('one block per identity: a tray attachment and a mention share the block (tray data wins)', () => {
