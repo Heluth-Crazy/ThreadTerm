@@ -98,6 +98,24 @@ async function sendAndWait(id, needle) {
 }
 async function waitIdle(id) { await until(async () => !(await chatScope(id).locator('.chat-compose-send.is-stop').count()), 'turn finished'); }
 async function setCaret(id, position) { await composer(id).evaluate((node, value) => { node.focus(); node.setSelectionRange(value, value); }, position); await delay(80); }
+// M5: right-click a mention mark by its wrapped fragment (the last one by default),
+// then drive the shared context menu and the details dialog.
+const mentionMarks = id => chatScope(id).locator('.chat-compose-highlights .chat-mention-badge');
+async function rightClickMark(id, index) {
+  const rects = await mentionMarks(id).nth(index).evaluate(node => [...node.getClientRects()].map(rect => ({ x: rect.x, y: rect.y, width: rect.width, height: rect.height })));
+  const rect = rects[rects.length - 1];
+  await page.mouse.click(Math.round(rect.x + Math.min(4, rect.width / 2)), Math.round(rect.y + rect.height / 2), { button: 'right' });
+  await page.locator('[data-testid="context-menu"]').waitFor({ timeout: 15_000 });
+}
+async function closeMentionMenu() { await page.keyboard.press('Escape'); await page.locator('[data-testid="context-menu"]').waitFor({ state: 'detached', timeout: 15_000 }); }
+async function menuDetailsText() {
+  await page.locator('[data-testid="mention-action-details"]').click();
+  await page.locator('.context-preview-dialog').waitFor({ timeout: 15_000 });
+  const text = await page.locator('.context-preview-dialog [data-testid="context-preview"]').innerText();
+  await page.locator('.context-preview-dialog .icon-btn').click();
+  await page.locator('.context-preview-dialog').waitFor({ state: 'detached' });
+  return text;
+}
 /** Reloads the renderer so the composer/tray reload from the runtime draft and localStorage. */
 async function reloadApp({ ready = true } = {}) {
   await page.reload({ waitUntil: 'domcontentloaded' });
@@ -417,6 +435,81 @@ try {
   assert.equal(await composer(chat.id).inputValue(), 'composing guard', 'the draft survives both composing Enters');
   await composer(chat.id).fill('');
   check('CDP/CJK composition keeps the token active; composing picks, Escape and both Enter guards hold');
+
+  // M5 — mention actions and inspection (design §9).
+  await request('session.present', { sessionId: chat.id, placement: 'workspace', presentation: 'focused', operationId: randomUUID() });
+  await composer(chat.id).fill('');
+  await pickQuery(chat.id, 'cart', 'files');
+  await composer(chat.id).focus(); await page.keyboard.press('End'); await page.keyboard.type('and ');
+  await pickAtCaret(chat.id, 'checkout', 'files');
+  await until(async () => (await composer(chat.id).inputValue()) === '@cart.ts and @checkout.ts ', 'two mentions for the action menu');
+  // (a) caret on token A, right-click token B -> the action targets B.
+  await setCaret(chat.id, '@cart.ts'.length);
+  await rightClickMark(chat.id, 1);
+  assert.equal(await page.locator('[data-testid="mention-action-details"]').count(), 1, 'right-click shows Show details');
+  assert.equal(await page.locator('[data-testid="mention-action-open-file"]').count(), 1, 'right-click shows Open file');
+  assert.equal(await page.locator('[data-testid="mention-action-remove"]').count(), 1, 'right-click shows Remove mention');
+  assert.equal(await menuDetailsText(), '[ThreadTerm context 1/1] File: src/checkout.ts', 'the clicked token B is the target');
+  // (b) selection on A, right-click inside A -> the action targets A.
+  await composer(chat.id).evaluate((node, end) => node.setSelectionRange(0, end), '@cart.ts'.length);
+  await delay(80);
+  await rightClickMark(chat.id, 0);
+  assert.equal(await menuDetailsText(), '[ThreadTerm context 1/1] File: src/cart.ts', 'a click inside the selection targets A');
+  // (c) right-click on plain text -> no mention actions, clipboard still there.
+  const plainPoint = await composer(chat.id).evaluate(node => { const rect = node.getBoundingClientRect(); return { x: rect.right - 16, y: rect.top + rect.height / 2 }; });
+  await page.mouse.click(Math.round(plainPoint.x), Math.round(plainPoint.y), { button: 'right' });
+  await page.locator('[data-testid="context-menu"]').waitFor({ timeout: 15_000 });
+  assert.equal(await page.locator('[data-testid="mention-action-details"]').count(), 0, 'plain text shows no mention actions');
+  assert.equal(await page.locator('[data-testid="context-menu-copy"]').count(), 1, 'the clipboard menu is still offered');
+  await closeMentionMenu();
+  // (d) Shift+F10 with the caret in a token shows the same actions.
+  await setCaret(chat.id, 3);
+  await page.keyboard.press('Shift+F10');
+  await page.locator('[data-testid="context-menu"]').waitFor({ timeout: 15_000 });
+  assert.equal(await page.locator('[data-testid="mention-action-details"]').count(), 1, 'Shift+F10 shows the mention actions');
+  await closeMentionMenu();
+  // (e) Remove deletes the whole token and is undoable.
+  await rightClickMark(chat.id, 0);
+  await page.locator('[data-testid="mention-action-remove"]').click();
+  await until(async () => (await composer(chat.id).inputValue()) === ' and @checkout.ts ', 'Remove deletes the whole token');
+  await page.keyboard.press('Control+z');
+  await until(async () => (await composer(chat.id).inputValue()) === '@cart.ts and @checkout.ts ', 'undo restores the removed mention');
+  // (f) Open file enabled for a file mention, disabled for a session mention.
+  await rightClickMark(chat.id, 0);
+  assert.equal(await page.locator('[data-testid="mention-action-open-file"]').getAttribute('aria-disabled'), null, 'Open file is enabled for a file mention');
+  await closeMentionMenu();
+  await composer(chat.id).fill('');
+  await pickQuery(chat.id, 'Other', 'sessions');
+  await until(async () => (await composer(chat.id).inputValue()).includes('@"Other chat"'), 'session mention token inserted');
+  await rightClickMark(chat.id, 0);
+  assert.equal(await page.locator('[data-testid="mention-action-open-file"]').getAttribute('aria-disabled'), 'true', 'Open file is disabled for a session mention');
+  await closeMentionMenu();
+  // (g) a wrapped fragment and a scrolled draft still hit-test.
+  await writeFile(join(ws, 'src/a-very-long-module-name-that-wraps-across-lines.ts'), 'export const longName = 1;\n');
+  await app.evaluate(({ BrowserWindow }) => { BrowserWindow.getAllWindows()[0].setContentSize(480, 900); BrowserWindow.getAllWindows()[0].webContents.setZoomFactor(2); });
+  await composer(chat.id).fill('');
+  await composer(chat.id).click(); await page.keyboard.type('x'.repeat(160) + ' ');
+  await pickAtCaret(chat.id, 'a-very', 'files');
+  await until(async () => (await mentionMarks(chat.id).count()) === 1, 'wrapped long-name mention');
+  const wrappedFragments = await mentionMarks(chat.id).first().evaluate(node => node.getClientRects().length);
+  assert.ok(wrappedFragments >= 2, `the mention wraps across ${wrappedFragments} fragments`);
+  await rightClickMark(chat.id, 0);
+  assert.equal(await page.locator('[data-testid="mention-action-details"]').count(), 1, 'a wrapped fragment hit-tests');
+  await closeMentionMenu();
+  await app.evaluate(({ BrowserWindow }) => { BrowserWindow.getAllWindows()[0].webContents.setZoomFactor(1); BrowserWindow.getAllWindows()[0].setContentSize(1440, 900); });
+  await composer(chat.id).fill('');
+  await composer(chat.id).fill(Array.from({ length: 30 }, (_, line) => `line ${line} of the scrolled draft`).join('\n') + '\n');
+  await pickAtCaret(chat.id, 'cart', 'files');
+  await composer(chat.id).evaluate(node => { node.scrollTop = node.scrollHeight; });
+  await delay(150);
+  await rightClickMark(chat.id, 0);
+  assert.equal(await page.locator('[data-testid="mention-action-details"]').count(), 1, 'a scrolled token hit-tests');
+  await closeMentionMenu();
+  // (h) wrapped and scrolled coverage is above; the stale-action revalidation is
+  // driven in the isolated Electron harness (qa/inline-mentions-visual.mjs) and
+  // the mentionActions unit tests, because the shared menu dismisses on scroll.
+  await composer(chat.id).fill('');
+  check('mention actions: pointer/keyboard targeting, Remove undo, Open file states and wrapped/scrolled hit tests');
 
   // Visual consistency on the mention-only tray row and the composer.
   await request('session.present', { sessionId: chat.id, placement: 'workspace', presentation: 'focused', operationId: randomUUID() });

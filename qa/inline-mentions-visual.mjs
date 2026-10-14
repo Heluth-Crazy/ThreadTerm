@@ -663,7 +663,79 @@ try {
   await applyTheme('light');
   ok('sent-message matrix: 420/1100 x light/dark x en/zh-CN captured');
 
-  // --- 7. VC check ----------------------------------------------------------
+  // --- 7. Mention actions (M5) ---------------------------------------------
+  // Right-click menu, the disabled Open file state and the details dialog, in
+  // light/dark and en/zh-CN, each checked for control consistency.
+  const actionFile = fileEntry('@cart.ts', 'src/cart.ts');
+  const actionSession = sessionEntry('@"Other chat"', 'other-1', 'Other chat');
+  const ACTION_TEXT = 'Ask @cart.ts and @"Other chat" now.';
+  async function mountActionState(id, locale) {
+    await mountState(id, { text: ACTION_TEXT, mentions: [actionFile, actionSession], locale });
+    await page.evaluate(() => window.qa.update({ openFileEnabled: true }));
+    await scope(id).locator('.chat-compose-highlights').waitFor({ timeout: 15_000 });
+  }
+  async function openMentionMenu(id, tokenIndex) {
+    const target = scope(id).locator('.chat-compose-highlights .chat-mention-badge').nth(tokenIndex);
+    const box = await target.boundingBox();
+    await page.mouse.click(Math.round(box.x + Math.min(4, box.width / 2)), Math.round(box.y + box.height / 2), { button: 'right' });
+    await page.locator('[data-testid="context-menu"]').waitFor({ timeout: 15_000 });
+    return page.locator('[data-testid="context-menu"]').boundingBox();
+  }
+  for (const theme of ['light', 'dark']) {
+    await applyTheme(theme);
+    for (const locale of ['en', 'zh-CN']) {
+      const id = `m5-${theme}-${locale}`;
+      await page.evaluate(lang => { document.documentElement.lang = lang; }, locale);
+      await mountActionState(id, locale);
+      const menuBox = await openMentionMenu(id, 0);
+      assert.equal(await page.locator('[data-testid="mention-action-details"]').count(), 1, 'details action present');
+      assert.equal(await page.locator('[data-testid="mention-action-remove"]').count(), 1, 'remove action present');
+      assert.equal(await page.locator('[data-testid="mention-action-open-file"]').getAttribute('aria-disabled'), null, 'open file enabled for a file mention');
+      await page.screenshot({ path: join(out, `m5-menu-${theme}-${locale}.png`), clip: { x: Math.floor(menuBox.x) - 4, y: Math.floor(menuBox.y) - 4, width: Math.ceil(menuBox.width) + 8, height: Math.ceil(menuBox.height) + 8 } });
+      report.screenshots.push(join(out, `m5-menu-${theme}-${locale}.png`));
+      assertNoControlViolations(await checkControlConsistency(page, '[data-testid="context-menu"]'), `mention menu ${theme}/${locale}`);
+      await page.locator('[data-testid="mention-action-details"]').click();
+      await page.locator('.context-preview-dialog').waitFor({ timeout: 15_000 });
+      assert.equal(await page.locator('.context-preview-dialog [data-testid="context-preview"]').innerText(), '[ThreadTerm context 1/1] File: src/cart.ts', `details block ${theme}/${locale}`);
+      const dialogBox = await page.locator('.context-preview-dialog').boundingBox();
+      await page.screenshot({ path: join(out, `m5-details-${theme}-${locale}.png`), clip: { x: Math.floor(dialogBox.x) - 6, y: Math.floor(dialogBox.y) - 6, width: Math.ceil(dialogBox.width) + 12, height: Math.ceil(dialogBox.height) + 12 } });
+      report.screenshots.push(join(out, `m5-details-${theme}-${locale}.png`));
+      assertNoControlViolations(await checkControlConsistency(page, '.context-preview-dialog'), `mention details ${theme}/${locale}`);
+      await page.locator('.context-preview-dialog .icon-btn').click();
+      await page.locator('.context-preview-dialog').waitFor({ state: 'detached' });
+    }
+  }
+  await applyTheme('light');
+  // Open file passes the item's existing path to the surface; a session mention
+  // cannot be opened and stays disabled.
+  await page.evaluate(() => { document.documentElement.lang = 'en'; });
+  await mountActionState('m5-open', 'en');
+  await openMentionMenu('m5-open', 0);
+  await page.locator('[data-testid="mention-action-open-file"]').click();
+  await page.locator('[data-testid="context-menu"]').waitFor({ state: 'detached' });
+  assert.deepEqual(await page.evaluate(() => window.qa.state.openedFiles), [{ path: 'src/cart.ts' }], 'open file uses the item path');
+  await openMentionMenu('m5-open', 1);
+  assert.equal(await page.locator('[data-testid="mention-action-open-file"]').getAttribute('aria-disabled'), 'true', 'open file disabled for a session mention');
+  await page.keyboard.press('Escape');
+  await page.locator('[data-testid="context-menu"]').waitFor({ state: 'detached' });
+  ok('mention actions: menu and details dialog in both themes/locales; Open file opens the item path and is disabled off files');
+
+  // A stale action (the token changed after the menu opened) is a no-op with a notice.
+  await mountActionState('m5-stale', 'en');
+  await openMentionMenu('m5-stale', 0);
+  await page.evaluate(id => {
+    const area = document.querySelector(`[data-testid="session-chat-${id}"] .chat-compose-input textarea`);
+    Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value').set.call(area, 'plain text');
+    area.dispatchEvent(new InputEvent('input', { bubbles: true }));
+  }, 'm5-stale');
+  await delay(200);
+  await page.locator('[data-testid="mention-action-remove"]').click();
+  await page.locator('[data-testid="session-chat-m5-stale"] .surface-error').waitFor({ timeout: 15_000 });
+  assert.match(await page.locator('[data-testid="session-chat-m5-stale"] .surface-error').innerText(), /changed before the action ran/);
+  assert.equal(await page.locator('[data-testid="session-chat-m5-stale"] .chat-compose-input textarea').inputValue(), 'plain text', 'a stale mention action is a no-op');
+  ok('a mention action after the token changed is a no-op with a notice');
+
+  // --- 8. VC check ----------------------------------------------------------
   await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].setContentSize(700, 900));
   await mountState('vis-vc', { text: MIX_TEXT, mentions: MIX_CATALOGUE });
   const consistency = await checkControlConsistency(page, `[data-testid="session-chat-vis-vc"] .chat-compose-shell`);

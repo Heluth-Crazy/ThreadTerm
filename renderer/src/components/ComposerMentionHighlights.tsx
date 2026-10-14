@@ -33,7 +33,7 @@ export function ComposerMentionHighlights({ text, resolved, catalogue, areaRef }
     <div className="chat-compose-highlights" aria-hidden="true">
       <div className="chat-compose-highlights-scroll" ref={scrollRef}>
         {segments.map((segment, index) => segment.mention
-          ? <mark key={index} className="chat-mention-badge" data-kind={kinds.get(segment.mention.token) ?? 'file'} data-token={segment.mention.token}>{segment.text}</mark>
+          ? <mark key={index} className="chat-mention-badge" data-kind={kinds.get(segment.mention.token) ?? 'file'} data-token={segment.mention.token} data-start={segment.mention.start} data-end={segment.mention.end} data-id={segment.mention.itemId}>{segment.text}</mark>
           : <span key={index}>{segment.text}</span>)}
         {/* A trailing newline needs one more line box so the layer's height matches the textarea's. */}
         {text.endsWith('\n') ? '\u200b' : null}
