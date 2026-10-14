@@ -131,6 +131,8 @@ try {
   // Copy credentials only; config, sessions, history, and plugin state stay isolated.
   const sourceAuth = join(process.env.USERPROFILE ?? '', '.codex', 'auth.json');
   await copyFile(sourceAuth, join(codexHome, 'auth.json'));
+  // Without a config the isolated home would run Codex's built-in default model; QA uses only GPT-6 Luna / 6.1 Sol.
+  await writeFile(join(codexHome, 'config.toml'), 'model = "gpt-6-luna"\n');
   const forbidden = new Set(['codex_home', 'threadterm_v3_data', 'threadterm_v3_user_data', 'threadterm_v3_pipe', 'threadterm_v3_runtime']);
   const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !forbidden.has(key.toLowerCase())));
   Object.assign(env, { CODEX_HOME: codexHome, THREADTERM_V3_DATA: data, THREADTERM_V3_USER_DATA: profile, THREADTERM_V3_PIPE: pipe, THREADTERM_V3_RUNTIME: runtime });
@@ -235,6 +237,8 @@ try {
   assert.ok(report.observations.review.items.some(item => item.role === 'assistant'), 'inline /review did not produce an assistant item on its public operation');
   report.checks.push('inline custom /review completed on the same public operation without a separate session');
 
+  // Plan collaboration was selected above; Fast exists only for models with a fast service tier.
+  const hasFast = (await request('chat.options', { sessionId: session.id })).options.some(option => option.id === 'fast');
   for (const locale of ['en', 'zh-CN']) for (const theme of ['light', 'dark']) for (const width of [1280, 1440, 1920]) {
     await updateSettings({ language: locale, theme });
     await page.waitForFunction(expected => document.documentElement.lang === expected, locale);
@@ -242,14 +246,14 @@ try {
     await page.locator('.chat-model-chip').click();
     const modelMenu = page.locator('.chat-menu-model');
     const labels = locale === 'en'
-      ? { collaboration: 'Default', sandbox: 'Workspace write', shield: 'Ask as needed', fast: 'Fast mode' }
-      : { collaboration: '默认', sandbox: '工作区可写', shield: '按需询问', fast: '快速模式' };
+      ? { collaboration: 'Plan', sandbox: 'Workspace write', shield: 'Ask as needed', fast: 'Fast mode' }
+      : { collaboration: '规划', sandbox: '工作区可写', shield: '按需询问', fast: '快速模式' };
     await modelMenu.waitFor();
     await page.keyboard.press('Escape');
     await page.locator('.chat-mode-chip').filter({ hasText: labels.shield }).waitFor();
     await page.locator('.chat-option-chip[data-option-id="collaboration"]').filter({ hasText: labels.collaboration }).waitFor();
     await page.locator('.chat-option-chip[data-option-id="sandbox"]').filter({ hasText: labels.sandbox }).waitFor();
-    await page.locator('.chat-option-chip[data-option-id="fast"]').filter({ hasText: labels.fast }).waitFor();
+    if (hasFast) await page.locator('.chat-option-chip[data-option-id="fast"]').filter({ hasText: labels.fast }).waitFor();
     await page.locator('.chat-option-chip[data-option-id="reviewer"]').waitFor();
     await page.screenshot({ path: join(scratch, `success-${locale}-${theme}-${width}.png`), fullPage: true });
   }

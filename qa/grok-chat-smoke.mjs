@@ -57,8 +57,12 @@ try {
     });
     report.checks.push('saved custom Grok proxy through settings.update');
   }
-  const capabilities = await peer.request('provider.list');
-  const grok = capabilities.find((provider) => provider.id === 'grok');
+  // provider.list is empty until the cold-start discovery finishes.
+  let grok;
+  for (let attempt = 0; attempt < 120 && !grok; attempt += 1) {
+    grok = (await peer.request('provider.list')).find((provider) => provider.id === 'grok');
+    if (!grok) await delay(500);
+  }
   report.observations.capability = grok;
   assert.ok(grok?.installed, `Grok not installed: ${JSON.stringify(grok)}`);
   assert.equal(grok.chat, true, `Grok chat not advertised: ${JSON.stringify(grok)}`);
