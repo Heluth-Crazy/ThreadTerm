@@ -837,10 +837,7 @@ impl RuntimeService {
         let capability_db = Arc::downgrade(&db);
         providers.set_capability_listener(Arc::new(move |update: crate::providers::CapabilityUpdate| {
             let Some(db) = capability_db.upgrade() else { return };
-            let mut payload = json!({"kind":"providers","outcome":update.outcome});
-            if let Some(refresh_id) = update.refresh_id {
-                payload["refreshId"] = json!(refresh_id);
-            }
+            let payload = json!({"kind":"providers","generation":update.generation,"outcome":update.outcome});
             if let Err(error) = db.transaction(|tx| {
                 tx.execute("INSERT INTO outbox(event,data,created_at) VALUES ('state.changed',?,?)",
                     rusqlite::params![payload.to_string(), chrono::Utc::now().to_rfc3339()])?;
