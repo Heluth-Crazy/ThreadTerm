@@ -127,6 +127,9 @@ fn generated_ui_from_env()->bool {
 }
 fn composed_instructions(delegation:bool,preview:bool,chat:Option<&ChatCaller>,generated_ui:bool)->String {
     let mut text=format!("ThreadTerm capabilities: delegation={} (delegate_start/wait/result); local preview={} (preview_present/status). Preview: verify the server URL first; presentation/load events never prove application readiness. Browser and delegation permissions are independent.\n",delegation,preview);
+    // Claude Code keeps only the first 2048 characters. Generated UI has no tool
+    // description to fall back on, so it goes first; the rest repeat in tools.
+    if generated_ui {text.push_str(GENERATED_UI_INSTRUCTIONS)}
     if preview {text.push_str(crate::preview::INSTRUCTIONS);text.push('\n');}
     if delegation {text.push_str(INSTRUCTIONS)}
     if let Some(chat)=chat {
@@ -134,7 +137,6 @@ fn composed_instructions(delegation:bool,preview:bool,chat:Option<&ChatCaller>,g
         if chat.session_info { text.push_str("\nUse session_info to read a referenced ThreadTerm chat; it returns bounded plain-text history."); }
         if chat.feedback { text.push_str("\nFor long tasks, call feedback_check between major steps to receive user notes sent during this turn."); }
     }
-    if generated_ui {text.push_str(GENERATED_UI_INSTRUCTIONS)}
     text
 }
 async fn call_chat_tool(config:&RuntimeConfig,caller:Option<&Caller>,preview:Option<&PreviewCaller>,chat:Option<&ChatCaller>,name:&str,arguments:&Value,cancelled:&AtomicBool)->Result<Value,Value> {
@@ -579,6 +581,16 @@ mod tests {
         assert!(instructions.contains("at most 256 nodes and depth 6"));
         assert_eq!(composed_tools(false, false, None), Vec::<Value>::new());
         assert!(!composed_instructions(false, false, None, false).contains(GENERATED_UI_INSTRUCTIONS));
+    }
+
+    #[test]
+    fn generated_ui_instructions_survive_claude_codes_2048_character_cut() {
+        // Live 2026-10-14: appended after delegation guidance, Claude never saw it.
+        let chat = ChatCaller { session_id: "s".into(), token: "t".into(), ask: true, session_info: true, feedback: true };
+        let instructions = composed_instructions(true, true, Some(&chat), true);
+        let kept = instructions.chars().take(2048).collect::<String>();
+        assert!(kept.contains(GENERATED_UI_INSTRUCTIONS), "generated UI must fit inside the kept prefix");
+        assert!(kept.starts_with("ThreadTerm capabilities: delegation=true"));
     }
 
     #[tokio::test]
