@@ -12,7 +12,8 @@ import {
   type ProviderRefreshState,
 } from './providerRefresh';
 
-const event = (data: unknown): RuntimeEvent => ({ v: 1, event: 'state.changed', epoch: 'provider-refresh-test', seq: 1, data });
+const event = (data: unknown, epoch = 'provider-refresh-test'): RuntimeEvent => ({ v: 1, event: 'state.changed', epoch, seq: 1, data });
+const transport = (data: unknown, epoch = 'provider-refresh-test'): RuntimeEvent => ({ v: 1, event: 'runtime.transport', epoch, seq: 1, data });
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
@@ -40,6 +41,7 @@ function harness(send: () => Promise<{ refreshId: number }> = async () => ({ ref
   return {
     handle, states, outcomes, calls,
     emit: (data: unknown) => listener?.(event(data)),
+    emitRaw: (next: RuntimeEvent) => listener?.(next),
     fireTimeout: () => { const pending = timer; timer = undefined; pending?.(); },
     hasTimer: () => Boolean(timer),
     lastState: () => states.at(-1),
@@ -70,6 +72,69 @@ test('a completion that arrives before the RPC reply still finishes the round', 
   assert.equal(qa.lastState()?.phase, 'updated');
   assert.deepEqual(qa.outcomes, ['ok']);
   assert.equal(qa.hasTimer(), false, 'the buffered completion cleared the timer');
+});
+
+test('an older pre-reply completion that arrives after a newer one cannot erase the match', async () => {
+  const gate = deferred<{ refreshId: number }>();
+  const qa = harness(() => gate.promise);
+  const pending = qa.handle.refresh();
+  // Out-of-order delivery: the superseding round publishes first, then the
+  // older round the reply names. Buffering the last event would discard the
+  // completion that matches refreshId and leave the check stuck.
+  qa.emitRaw(event({ kind: 'providers', generation: 8, outcome: 'ok' }));
+  qa.emitRaw(event({ kind: 'providers', generation: 7, outcome: 'failed' }));
+  gate.resolve({ refreshId: 8 });
+  await pending;
+  assert.equal(qa.lastState()?.phase, 'updated');
+  assert.deepEqual(qa.outcomes, ['ok'], 'the newer completion must win');
+});
+
+test('a runtime restart abandons the check and re-enables Refresh without re-probing', async () => {
+  const qa = harness();
+  await qa.handle.refresh();
+  assert.equal(qa.lastState()?.phase, 'checking');
+  qa.emitRaw(transport({ state: 'reconnected', epochChanged: true }, 'restarted-runtime'));
+  assert.deepEqual(qa.lastState(), { phase: 'idle' }, 'the orphaned check ends and the button re-enables');
+  assert.equal(qa.hasTimer(), false, 'the abandoned check must not keep the timeout armed');
+  assert.deepEqual(qa.calls, ['provider.refresh'], 'abandoning must not start another probe');
+  qa.emitRaw(event({ kind: 'providers', generation: 7, outcome: 'ok' }, 'restarted-runtime'));
+  assert.deepEqual(qa.lastState(), { phase: 'idle' }, 'a completion from the replacement runtime must not revive the check');
+  assert.deepEqual(qa.outcomes, []);
+});
+
+test('an epoch change on any event abandons the check', async () => {
+  const qa = harness();
+  qa.emitRaw(event({ kind: 'plugins' }, 'first-runtime'));
+  await qa.handle.refresh();
+  assert.equal(qa.lastState()?.phase, 'checking');
+  qa.emitRaw(event({ kind: 'providers', generation: 7, outcome: 'ok' }, 'second-runtime'));
+  assert.deepEqual(qa.lastState(), { phase: 'idle' });
+  assert.deepEqual(qa.outcomes, []);
+  // The next check starts on the replacement epoch instead of abandoning again.
+  await qa.handle.refresh();
+  assert.equal(qa.lastState()?.phase, 'checking');
+  qa.emitRaw(event({ kind: 'providers', generation: 7, outcome: 'ok' }, 'second-runtime'));
+  assert.equal(qa.lastState()?.phase, 'updated');
+});
+
+test('a disconnect abandons the check', async () => {
+  const qa = harness();
+  await qa.handle.refresh();
+  qa.emitRaw(transport({ state: 'disconnected' }));
+  assert.deepEqual(qa.lastState(), { phase: 'idle' });
+  assert.equal(qa.hasTimer(), false);
+  assert.deepEqual(qa.calls, ['provider.refresh']);
+});
+
+test('a reconnect that keeps the runtime epoch does not abandon the check', async () => {
+  const qa = harness();
+  qa.emitRaw(event({ kind: 'plugins' }, 'stable-runtime'));
+  await qa.handle.refresh();
+  qa.emitRaw(transport({ state: 'reconnected', epochChanged: false, epoch: 'stable-runtime' }, 'stable-runtime'));
+  assert.equal(qa.lastState()?.phase, 'checking');
+  qa.emitRaw(event({ kind: 'providers', generation: 7, outcome: 'ok' }, 'stable-runtime'));
+  assert.equal(qa.lastState()?.phase, 'updated');
+  assert.deepEqual(qa.outcomes, ['ok']);
 });
 
 test('a pre-reply completion from an older round does not finish the check', async () => {

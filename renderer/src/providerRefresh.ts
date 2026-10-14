@@ -64,8 +64,11 @@ export interface ProviderRefreshOptions {
  * on the first buffered or later providers completion whose `generation` is at
  * least the returned refresh id, so a newer round (another refresh or a plugin
  * reload) supersedes and also finishes the check. An unrelated snapshot or an
- * older generation never ends it. Events and completions after `dispose()`
- * (unmount) are ignored.
+ * older generation never ends it. A disconnect or a runtime restart (an epoch
+ * change) abandons the orphaned check and re-enables Refresh without starting
+ * another probe, because the replacement runtime's generation counter restarts
+ * and can never be compared with the old refresh id. Events and completions
+ * after `dispose()` (unmount) are ignored.
  */
 export function observeProviderRefresh(
   send: () => Promise<{ refreshId: number }>,
@@ -82,6 +85,12 @@ export function observeProviderRefresh(
   let inFlight = false;
   let buffered: { generation?: number; outcome: ProviderRefreshOutcome } | undefined;
   let timer: number | undefined;
+  /** Invalidates an in-flight request when its runtime goes away. */
+  let attempt = 0;
+  /** The most recent runtime epoch seen, used as the baseline for the next check. */
+  let lastEpoch: string | undefined;
+  /** The epoch the tracked check started on, or the first one seen while checking. */
+  let checkEpoch: string | undefined;
 
   const clearTimerHandle = () => {
     if (timer !== undefined) { clearTimer(timer); timer = undefined; }
@@ -105,14 +114,56 @@ export function observeProviderRefresh(
     publish();
     options.onOutcome?.(outcome);
   };
+  const abandon = () => {
+    if (disposed) return;
+    attempt += 1;
+    inFlight = false;
+    buffered = undefined;
+    refreshId = undefined;
+    clearTimerHandle();
+    phase = "idle";
+    publish();
+  };
 
   const unsubscribe = subscribe(event => {
-    if (disposed || event.event !== "state.changed") return;
+    if (disposed) return;
+    const checking = phase === "checking" || phase === "timeout";
+    if (typeof event.epoch === "string" && event.epoch.length > 0) {
+      lastEpoch = event.epoch;
+      if (checking) {
+        if (checkEpoch === undefined) checkEpoch = event.epoch;
+        else if (event.epoch !== checkEpoch) { abandon(); return; }
+      }
+    }
+    if (event.event === "runtime.transport") {
+      if (!checking) return;
+      const data = event.data && typeof event.data === "object" && !Array.isArray(event.data)
+        ? event.data as { state?: unknown; epoch?: unknown; epochChanged?: unknown }
+        : undefined;
+      const state = typeof data?.state === "string" ? data.state : undefined;
+      const reported = typeof data?.epoch === "string" ? data.epoch : undefined;
+      const changed = data?.epochChanged === true
+        || (checkEpoch !== undefined && reported !== undefined && reported !== checkEpoch);
+      if (state === "reconnected" && changed) { abandon(); return; }
+      if (state === "disconnected" || state === "incompatible") abandon();
+      return;
+    }
+    if (event.event !== "state.changed") return;
     const parsed = providerRefreshEvent(event.data);
     if (!parsed) return;
-    // The reply may still be on its way; keep the newest completion until the id is known.
-    if (inFlight) { buffered = { generation: parsed.generation, outcome: parsed.outcome ?? "ok" }; return; }
-    if (phase !== "checking" && phase !== "timeout") return;
+    // The reply may still be on its way; keep the highest claimed generation so
+    // an out-of-order older completion cannot erase the one that matches (or
+    // supersedes) the pending reply.
+    if (inFlight) {
+      const candidate = { generation: parsed.generation, outcome: parsed.outcome ?? ("ok" as ProviderRefreshOutcome) };
+      if (candidate.generation !== undefined) {
+        if (buffered?.generation === undefined || candidate.generation >= buffered.generation) buffered = candidate;
+      } else if (!buffered) {
+        buffered = candidate;
+      }
+      return;
+    }
+    if (!checking) return;
     if (refreshId === undefined || !providerRefreshCompletes(refreshId, parsed.generation)) return;
     complete(parsed.outcome ?? "ok");
   });
@@ -120,24 +171,28 @@ export function observeProviderRefresh(
   return {
     async refresh() {
       if (disposed) return;
+      const ticket = ++attempt;
       inFlight = true;
       buffered = undefined;
       phase = "checking";
       refreshId = undefined;
+      checkEpoch = lastEpoch;
       publish();
       armTimeout();
       let id: number;
       try {
         ({ refreshId: id } = await send());
       } catch (error) {
-        inFlight = false;
-        clearTimerHandle();
-        phase = "idle";
-        publish();
+        if (ticket === attempt) {
+          inFlight = false;
+          clearTimerHandle();
+          phase = "idle";
+          publish();
+        }
         if (!disposed) throw error;
         return;
       }
-      if (disposed) return;
+      if (disposed || ticket !== attempt) return;
       inFlight = false;
       if (!Number.isSafeInteger(id)) {
         clearTimerHandle();

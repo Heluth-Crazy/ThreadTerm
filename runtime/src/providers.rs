@@ -901,6 +901,11 @@ struct CapabilityCache {
     on_updated: Option<Arc<dyn Fn(CapabilityUpdate) + Send + Sync>>,
     /// A failed cold probe. Kept until an explicit refresh or plugin rebuild.
     failed_at: Option<Instant>,
+    /// Test-only count of completions that arrived after a newer round claimed
+    /// the cache. It lets the fencing tests wait for the stale worker instead
+    /// of sleeping.
+    #[cfg(test)]
+    obsolete_completions: usize,
 }
 
 impl CapabilityCache {
@@ -1106,7 +1111,11 @@ impl Providers {
                                 Err(_) => { cache.failed_at = Some(Instant::now()); }
                             }
                             cache.on_updated.clone().map(|notify| (notify, CapabilityUpdate { generation, outcome: if outcome_ok { "ok" } else { "failed" } }))
-                        } else { None }
+                        } else {
+                            #[cfg(test)]
+                            { cache.obsolete_completions += 1; }
+                            None
+                        }
                     } else { None };
                     wait.notify_all();
                     // Notification can re-enter snapshot: release the cache first.
@@ -2696,25 +2705,29 @@ mod capability_cache_tests {
         }
     }
 
-    /// A probe that blocks every call until the test releases the gate.
+    /// A probe that blocks every round on its own gate until the test releases
+    /// that exact round, so a stale round can be made to finish after a newer
+    /// one. Rounds are numbered by entry order, matching the generation order
+    /// the tests assert.
     struct GateProbe {
         probes: Arc<AtomicUsize>,
         entered: Arc<AtomicUsize>,
-        gate: Arc<(Mutex<bool>, Condvar)>,
+        gates: Mutex<Vec<Arc<(Mutex<bool>, Condvar)>>>,
     }
 
     impl GateProbe {
         fn new(probes: &Arc<AtomicUsize>, entered: &Arc<AtomicUsize>) -> Self {
-            Self { probes: Arc::clone(probes), entered: Arc::clone(entered), gate: Arc::new((Mutex::new(false), Condvar::new())) }
+            Self { probes: Arc::clone(probes), entered: Arc::clone(entered), gates: Mutex::new(Vec::new()) }
         }
-        fn release(&self) {
-            let (lock, wait) = &*self.gate;
+        fn gate(&self, round: usize) -> Arc<(Mutex<bool>, Condvar)> {
+            let mut gates = self.gates.lock().unwrap();
+            while gates.len() < round { gates.push(Arc::new((Mutex::new(false), Condvar::new()))); }
+            Arc::clone(&gates[round - 1])
+        }
+        fn release(&self, round: usize) {
+            let (lock, wait) = &*self.gate(round);
             *lock.lock().unwrap() = true;
             wait.notify_all();
-        }
-        fn arm(&self) {
-            let (lock, _) = &*self.gate;
-            *lock.lock().unwrap() = false;
         }
         fn wait_entered(&self, count: usize) {
             let deadline = Instant::now() + Duration::from_secs(5);
@@ -2730,7 +2743,8 @@ mod capability_cache_tests {
         fn capability(&self) -> ProviderCapability {
             let probe = self.probes.fetch_add(1, SeqCst) + 1;
             self.entered.fetch_add(1, SeqCst);
-            let (lock, wait) = &*self.gate;
+            let gate = self.gate(probe);
+            let (lock, wait) = &*gate;
             let mut released = lock.lock().unwrap();
             while !*released { released = wait.wait(released).unwrap(); }
             capability("codex", format!("probe {probe}"))
@@ -2808,6 +2822,16 @@ mod capability_cache_tests {
         }
     }
 
+    /// Waits until `count` completions from superseded rounds have been processed.
+    /// Without it a fencing test could assert before the stale worker ran.
+    fn wait_for_obsolete(providers: &Providers, count: usize) {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while providers.capability_cache.lock().unwrap().obsolete_completions < count {
+            assert!(Instant::now() < deadline, "stale capability completion did not finish");
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    }
+
     #[test]
     fn trust_resolver_runs_after_connection_admission_and_failure_does_not_stall_retry() {
         let providers = Arc::new(Providers::for_test(vec![Arc::new(SlowProbe::new(&Arc::new(AtomicUsize::new(0))))]));
@@ -2878,9 +2902,14 @@ mod capability_cache_tests {
         let refresh_id = providers.request_capability_refresh();
         assert_eq!(refresh_id, 2, "the forced refresh claims a new generation");
         probe.wait_entered(2);
-        probe.release();
+        // Finish the current round first, then the superseded one, so a stale
+        // completion that overwrites newer values cannot hide behind a race.
+        probe.release(2);
         wait_for_name(&providers, "probe 2");
+        probe.release(1);
+        wait_for_obsolete(&providers, 1);
         assert_eq!(probes.load(SeqCst), 2, "at most two rounds run: {}", probes.load(SeqCst));
+        assert_eq!(name(&providers.capability_snapshot()), "probe 2", "the stale completion must not overwrite the current values");
         let cache = providers.capability_cache.lock().unwrap();
         assert_eq!(cache.refreshing, None, "the newer round cleared refreshing");
         assert_eq!(cache.generation, 2);
@@ -2898,9 +2927,18 @@ mod capability_cache_tests {
         probe.wait_entered(1);
         providers.refresh_capabilities();
         assert!(providers.capability_snapshot().is_empty(), "a rebuild clears values");
-        probe.release();
+        probe.wait_entered(2);
+        probe.release(2);
         wait_for_name(&providers, "probe 2");
+        probe.release(1);
+        wait_for_obsolete(&providers, 1);
         assert_eq!(probes.load(SeqCst), 2, "the rebuild started exactly one new round");
+        assert_eq!(name(&providers.capability_snapshot()), "probe 2");
+        let cache = providers.capability_cache.lock().unwrap();
+        assert_eq!(cache.refreshing, None);
+        // `refresh_capabilities` bumps the generation and the next read's
+        // `start_probe_locked` bumps it again, so the rebuild round is 3.
+        assert_eq!(cache.generation, 3);
     }
 
     // A3: a second forced refresh during the first wins; the older completion is
@@ -2911,20 +2949,30 @@ mod capability_cache_tests {
         let entered = Arc::new(AtomicUsize::new(0));
         let probe = Arc::new(GateProbe::new(&probes, &entered));
         let providers = Arc::new(Providers::for_test(vec![probe.clone()]));
+        let updates = recorder(&providers);
         let warming = Arc::clone(&providers);
         let warm = std::thread::spawn(move || warming.capabilities());
         probe.wait_entered(1);
-        probe.release();
+        probe.release(1);
         assert_eq!(name(&warm.join().unwrap()), "probe 1");
-        probe.arm();
+        wait_for_updates(&updates, 1);
         let first = providers.request_capability_refresh();
         probe.wait_entered(2);
         let second = providers.request_capability_refresh();
         assert_eq!(second, first + 1, "the second refresh claims the next generation");
         probe.wait_entered(3);
-        probe.release();
+        // Complete the newest round first, then release the superseded one.
+        probe.release(3);
         wait_for_name(&providers, "probe 3");
+        wait_for_updates(&updates, 2);
+        probe.release(2);
+        wait_for_obsolete(&providers, 1);
         assert_eq!(probes.load(SeqCst), 3, "one warm round plus two refreshes = three rounds");
+        assert_eq!(name(&providers.capability_snapshot()), "probe 3", "the stale round must not overwrite the newest values");
+        let seen = updates.lock().unwrap().clone();
+        assert_eq!(seen.len(), 2, "the superseded round must not publish: {seen:?}");
+        assert_eq!(seen[1].generation, second);
+        assert_eq!(seen[1].outcome, "ok");
         let cache = providers.capability_cache.lock().unwrap();
         assert_eq!(cache.refreshing, None);
         assert_eq!(cache.generation, second);
@@ -2941,9 +2989,8 @@ mod capability_cache_tests {
         let warming = Arc::clone(&providers);
         let warm = std::thread::spawn(move || warming.capabilities());
         probe.wait_entered(1);
-        probe.release();
+        probe.release(1);
         assert_eq!(name(&warm.join().unwrap()), "probe 1");
-        probe.arm();
         let refresh_id = providers.request_capability_refresh();
         assert_eq!(refresh_id, 2);
         probe.wait_entered(2);
@@ -2951,17 +2998,58 @@ mod capability_cache_tests {
         let started = Instant::now();
         assert_eq!(name(&providers.capabilities()), "probe 1");
         assert!(started.elapsed() < Duration::from_millis(200), "warm admission waited for the forced refresh");
-        probe.release();
+        probe.release(2);
         wait_for_name(&providers, "probe 2");
         // A plugin rebuild clears the confirmed values, so the next admission
         // waits for and receives the new generation's values.
         providers.refresh_capabilities();
-        probe.arm();
         let waiting = Arc::clone(&providers);
         let admission = std::thread::spawn(move || waiting.capabilities());
         probe.wait_entered(3);
-        probe.release();
+        probe.release(3);
         assert_eq!(name(&admission.join().unwrap()), "probe 3");
+    }
+
+    // A3: a plugin rebuild during a forced warm refresh discards the forced
+    // round's stale completion; the rebuild's round owns the values.
+    #[test]
+    fn plugin_invalidation_during_a_forced_warm_refresh_discards_the_forced_round() {
+        let probes = Arc::new(AtomicUsize::new(0));
+        let entered = Arc::new(AtomicUsize::new(0));
+        let probe = Arc::new(GateProbe::new(&probes, &entered));
+        let providers = Arc::new(Providers::for_test(vec![probe.clone()]));
+        let updates = recorder(&providers);
+        let warming = Arc::clone(&providers);
+        let warm = std::thread::spawn(move || warming.capabilities());
+        probe.wait_entered(1);
+        probe.release(1);
+        assert_eq!(name(&warm.join().unwrap()), "probe 1");
+        wait_for_updates(&updates, 1);
+        // Force a refresh: round 2 starts and keeps the warm values visible.
+        let forced = providers.request_capability_refresh();
+        probe.wait_entered(2);
+        assert_eq!(name(&providers.capability_snapshot()), "probe 1");
+        // A plugin rebuild during the forced refresh clears the values and bumps
+        // the generation; the next read starts round 3.
+        providers.refresh_capabilities();
+        assert!(providers.capability_snapshot().is_empty());
+        probe.wait_entered(3);
+        probe.release(3);
+        wait_for_name(&providers, "probe 3");
+        wait_for_updates(&updates, 2);
+        // The forced round finishes last and must not publish or overwrite.
+        probe.release(2);
+        wait_for_obsolete(&providers, 1);
+        let seen = updates.lock().unwrap().clone();
+        assert_eq!(seen.len(), 2, "the superseded forced round must not publish: {seen:?}");
+        // `refresh_capabilities` bumps the generation and the rebuild read's
+        // `start_probe_locked` bumps it again, so the rebuild round is 4.
+        assert_eq!(seen[1].generation, 4);
+        assert_eq!(name(&providers.capability_snapshot()), "probe 3");
+        let cache = providers.capability_cache.lock().unwrap();
+        assert_eq!(cache.refreshing, None);
+        assert_eq!(cache.generation, 4);
+        assert!(forced < 4);
     }
 
     // A3: an adapter panic publishes a failure, releases waiters and leaves the
