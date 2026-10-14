@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { MAX_CONTEXT_BYTES, MAX_DIFF_BYTES, MAX_SESSION_SUMMARY_BYTES, MAX_TERMINAL_BYTES, MAX_TERMINAL_LINES, contextDisplayMetadata, contextSerializedBlocks, normalizeContextItems, parseContext, serializeContext, stripAnsi } from './chatContext';
+import { MAX_CONTEXT_BYTES, MAX_DIFF_BYTES, MAX_SESSION_SUMMARY_BYTES, MAX_TERMINAL_BYTES, MAX_TERMINAL_LINES, contextDisplayMetadata, contextSerializedBlocks, normalizeContextItems, parseContext, serializeContext, serializeMentionedContext, stripAnsi } from './chatContext';
+import type { MentionEntry } from './inlineMentions';
 
 test('serializes and parses every context kind without exposing the user text to the envelope', () => {
   const items = [
@@ -179,4 +180,71 @@ test('rejects malformed mention kinds and still parses legacy envelopes', () => 
   const parsed = parseContext(legacy)!;
   assert.equal(parsed.items.length, 1);
   assert.equal(parsed.text, 'legacy text');
+});
+
+test('a v1 mentions header maps tokens to block indexes and exposes inlineToken', () => {
+  const active: MentionEntry[] = [
+    { token: '@cart.ts', item: { kind: 'file', id: 'file:src/cart.ts', path: 'src/cart.ts' } },
+    { token: '@codex', item: { kind: 'agent', id: 'agent:codex', provider: 'codex' } },
+  ];
+  const message = serializeMentionedContext({ trayItems: [], active }, 'Please ask @codex to review @cart.ts.');
+  assert.match(message, /\[ThreadTerm message; mentions v1 \{"@cart\.ts":1,"@codex":2\}\]/);
+  const parsed = parseContext(message)!;
+  assert.equal(parsed.items.length, 2);
+  assert.equal(parsed.items[0]!.inlineToken, '@cart.ts');
+  assert.equal(parsed.items[1]!.inlineToken, '@codex');
+  assert.equal(parsed.text, 'Please ask @codex to review @cart.ts.');
+  // Legacy messages cannot acquire the new meaning.
+  const older = parseContext(serializeContext(active.map(entry => entry.item), 'see @cart.ts'))!;
+  assert.equal(older.items[0]!.inlineToken, undefined);
+});
+
+test('one block per identity: a tray attachment and a mention share the block (tray data wins)', () => {
+  const trayItem = { kind: 'file' as const, id: 'random-42', path: 'src\\cart.ts' };
+  const mention = { kind: 'file' as const, id: 'file:src/cart.ts', path: 'src/cart.ts' };
+  const message = serializeMentionedContext({ trayItems: [trayItem], active: [{ token: '@cart.ts', item: mention }] }, 'see @cart.ts');
+  const parsed = parseContext(message)!;
+  assert.equal(parsed.items.length, 1);
+  assert.match(parsed.items[0]!.header, /File: src\\cart\.ts$/);
+  assert.equal(parsed.items[0]!.inlineToken, '@cart.ts');
+  assert.match(message, /mentions v1 \{"@cart\.ts":1\}/);
+});
+
+test('a legacy commit subject ending in an inline marker keeps its legacy meaning', () => {
+  const message = serializeContext([{ kind: 'commit', id: 'c', sha: '6e0f22b1234', subject: 'Fix review (inline: @review)' }], 'text');
+  const parsed = parseContext(message)!;
+  assert.equal(parsed.items[0]!.inlineToken, undefined);
+  assert.match(parsed.items[0]!.header, /\(inline: @review\)$/);
+});
+
+test('quoted tokens with parentheses and session summaries round-trip through the map', () => {
+  const token = '@"Review (draft)"';
+  const withSummary = { kind: 'session' as const, id: 's', sessionId: 's-1', title: 'Review (draft)', provider: 'claude', summary: 'User: hi' };
+  const message = serializeMentionedContext({ trayItems: [], active: [{ token, item: withSummary }] }, `ask ${token}`);
+  const parsed = parseContext(message)!;
+  assert.equal(parsed.items[0]!.inlineToken, token);
+  assert.match(parsed.items[0]!.body, /User: hi/);
+  assert.match(parsed.items[0]!.header, /Summary attached; session_info unavailable\.$/);
+});
+
+test('malformed mention headers make the whole envelope fall back to plain text', () => {
+  const block = contextSerializedBlocks([{ kind: 'file', id: 'f', path: 'src/cart.ts' }])[0]!;
+  for (const header of [
+    '[ThreadTerm message; mentions v1 {bad',
+    '[ThreadTerm message; mentions v1 []',
+    '[ThreadTerm message; mentions v1 {"@cart.ts":0}',
+    '[ThreadTerm message; mentions v1 {"@cart.ts":2}',
+    '[ThreadTerm message; mentions v1 {"@cart.ts":1,"@x":1}',
+    '[ThreadTerm message; mentions v1 {"bad token":1}',
+    '[ThreadTerm message; mentions v1 {"@a.":1}',
+    '[ThreadTerm message] trailing',
+  ]) {
+    assert.equal(parseContext(`${block}\n${header}\ntext`), undefined, header);
+  }
+});
+
+test('mention serialization enforces the 12-identity and 128 KiB budgets', () => {
+  const active: MentionEntry[] = Array.from({ length: 13 }, (_, index) => ({ token: `@s${index}`, item: { kind: 'skill', id: `skill:s${index}`, name: `s${index}`, invocation: `/${index}` } }));
+  assert.throws(() => serializeMentionedContext({ trayItems: [], active }, 'x'), /12 context items/);
+  assert.throws(() => serializeMentionedContext({ trayItems: [], active: [] }, 'x'.repeat(MAX_CONTEXT_BYTES + 1)), /128 KiB/);
 });
