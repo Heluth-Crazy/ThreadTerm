@@ -95,6 +95,16 @@ test('labels are bounded to 40 units without splitting a surrogate pair', () => 
   assert.ok(cjk.startsWith('@"中'), cjk);
 });
 
+test('long Windows-style fallback paths and quoted titles stay bounded and quoted', () => {
+  const windows = inlineMentionToken(file('C:\\a\\very long folder name\\another folder\\cart.ts'), [entry('@cart.ts', skill('x'))], 'D:\\other');
+  assert.ok(windows.startsWith('@"c:/a/'), windows);
+  assert.ok(windows.endsWith('…"'), windows);
+  assert.ok(windows.length <= 64);
+  const quoted = inlineMentionToken(session('s', 'a very long session title that keeps going on'), []);
+  assert.ok(quoted.startsWith('@"a very long'), quoted);
+  assert.ok(quoted.endsWith('…"'), quoted);
+});
+
 test('kind fallbacks and the deterministic suffix loop avoid collisions', () => {
   // File: base basename taken, the workspace-relative fallback is the second candidate.
   assert.equal(inlineMentionToken(file('src/cart.ts'), [entry('@cart.ts', skill('other'))]), '@src/cart.ts');
