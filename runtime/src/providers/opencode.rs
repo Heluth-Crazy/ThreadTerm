@@ -1002,6 +1002,9 @@ struct OpenCodeAssembly {
     messages: HashMap<String, MessageAssembly>,
     seeded: HashSet<String>,
     authoritative_only: bool,
+    /// The user's own messages. Chat already shows the prompt it sent, so their
+    /// parts must never become an assistant item.
+    user_messages: HashSet<String>,
 }
 
 #[derive(Default)]
@@ -1182,7 +1185,9 @@ fn native_message_parts(
         .map(|parts: Vec<(String, Value)>| {
             parts
                 .into_iter()
-                .filter(|(_, part)| !part.get("data").is_some_and(opencode_task_part))
+                .filter(|(_, part)| {
+                    !part.get("data").is_some_and(|data| opencode_task_part(data) || !opencode_visible_part(data))
+                })
                 .collect()
         })
 }
@@ -1242,6 +1247,15 @@ impl OpenCodeSubagents {
         }
         pending
     }
+}
+
+/// OpenCode's bookkeeping parts (step boundaries, file snapshots, patch lists,
+/// retries, compaction markers) carry no reply content and are not tools.
+fn opencode_visible_part(part: &Value) -> bool {
+    !matches!(
+        part.get("type").and_then(Value::as_str),
+        Some("step-start" | "step-finish" | "snapshot" | "patch" | "retry" | "compaction")
+    )
 }
 
 fn opencode_task_part(part: &Value) -> bool {
@@ -1410,6 +1424,9 @@ fn emit_opencode_child_event(target: &EventTarget, raw: Value) {
             };
             if opencode_task_part(part) {
                 opencode_task_update(target, part, Some(&key), None);
+                return;
+            }
+            if !opencode_visible_part(part) {
                 return;
             }
             let (Some(message), Some(id)) = (
@@ -2235,6 +2252,31 @@ fn emit_opencode_event(target: &EventTarget, raw: Value) {
         ),
         "message.updated" => {
             let info = properties.get("info").unwrap_or(properties);
+            if info.get("role").and_then(Value::as_str) == Some("user") {
+                if let Some(message_id) = info.get("id").and_then(Value::as_str) {
+                    let shown = target.assembly.lock().ok().is_some_and(|mut assembly| {
+                        if assembly.user_messages.len() >= MAX_ASSEMBLED_MESSAGES {
+                            assembly.user_messages.clear();
+                        }
+                        assembly.user_messages.insert(message_id.to_owned());
+                        assembly.order.retain(|id| id != message_id);
+                        assembly.messages.remove(message_id).is_some()
+                    });
+                    // A part published before its role was known is withdrawn.
+                    if shown {
+                        emit_scoped(
+                            &target.events,
+                            "opencode",
+                            &target.threadterm_session,
+                            native_id,
+                            turn.as_deref(),
+                            "chat.item",
+                            json!({"item":{"id":message_id},"parts":[]}),
+                            Some(&target.worker_token),
+                        );
+                    }
+                }
+            }
             if info.get("role").and_then(Value::as_str) == Some("assistant") {
                 if let Some(usage) = opencode_context_usage(info, &target.model_limits) {
                     emit_scoped(
@@ -2268,6 +2310,11 @@ fn emit_opencode_event(target: &EventTarget, raw: Value) {
             ) else {
                 return;
             };
+            if !opencode_visible_part(&part)
+                || target.assembly.lock().ok().is_some_and(|assembly| assembly.user_messages.contains(message_id))
+            {
+                return;
+            }
             if opencode_task_part(&part) {
                 // Remove any cached representation, including one seeded from
                 // native history. Task activity belongs only to its card.
@@ -2322,7 +2369,10 @@ fn emit_opencode_event(target: &EventTarget, raw: Value) {
                 .get("delta")
                 .and_then(Value::as_str)
                 .unwrap_or_default();
-            if field != "text" || delta.is_empty() {
+            if field != "text"
+                || delta.is_empty()
+                || target.assembly.lock().ok().is_some_and(|assembly| assembly.user_messages.contains(message_id))
+            {
                 return;
             }
             drop(commit_guard);
@@ -2541,7 +2591,7 @@ fn opencode_transcript(raw: &Value) -> Vec<Value> {
         .unwrap_or_default();
     messages.into_iter().enumerate().filter_map(|(index,entry)|{
         let info=entry.get("info").unwrap_or(&entry);let role=info.get("role").and_then(Value::as_str)?;
-        if !matches!(role,"user"|"assistant"){return None;}let parts=entry.get("parts").and_then(Value::as_array).cloned().unwrap_or_default().into_iter().map(|part|{
+        if !matches!(role,"user"|"assistant"){return None;}let parts=entry.get("parts").and_then(Value::as_array).cloned().unwrap_or_default().into_iter().filter(opencode_visible_part).map(|part|{
             if part.get("type").and_then(Value::as_str)==Some("text"){json!({"type":"text","text":part.get("text").and_then(Value::as_str).unwrap_or_default()})}
             else {
                 let mut tool = json!({"type":"tool","toolName":part.get("type").and_then(Value::as_str).unwrap_or("tool"),"data":part});
@@ -3645,6 +3695,35 @@ mod tests {
             Some("turn-1".to_owned()),
             "another session's idle must not take this chat's active turn"
         );
+    }
+
+    #[test]
+    fn user_prompt_parts_and_step_markers_never_become_reply_items() {
+        let (events, mut rx) = crate::provider_events::tap_channel(16);
+        let target = event_target(&events, Arc::new(Mutex::new(Some("turn-1".to_owned()))));
+        let part = |message: &str, id: &str, kind: &str| frame("message.part.updated",
+            json!({"part":{"sessionID":"native-1","messageID":message,"id":id,"type":kind,"text":"Work in this repository"}}));
+        let items = |rx: &mut tokio::sync::broadcast::Receiver<super::super::ProviderEvent>| std::iter::from_fn(|| rx.try_recv().ok())
+            .filter(|event| event.kind == "chat.item").map(|event| event.data).collect::<Vec<_>>();
+        // Live 1.18.35: the prompt's own text part was shown as the reply.
+        emit_opencode_event(&target, frame("message.updated", json!({"info":{"id":"user-msg","sessionID":"native-1","role":"user"}})));
+        emit_opencode_event(&target, part("user-msg", "user-text", "text"));
+        emit_opencode_event(&target, frame("message.part.delta", json!({"sessionID":"native-1","messageID":"user-msg","partID":"user-text","field":"text","delta":"more"})));
+        for kind in ["step-start", "step-finish", "snapshot", "patch"] {
+            emit_opencode_event(&target, part("reply-msg", kind, kind));
+        }
+        assert!(items(&mut rx).is_empty(), "no prompt echo and no bookkeeping parts");
+        // A part that arrives before its message's role is withdrawn once the role is known.
+        emit_opencode_event(&target, part("late-user", "late-text", "text"));
+        assert_eq!(items(&mut rx).len(), 1);
+        emit_opencode_event(&target, frame("message.updated", json!({"info":{"id":"late-user","sessionID":"native-1","role":"user"}})));
+        let withdrawn = items(&mut rx);
+        assert_eq!(withdrawn.len(), 1);
+        assert_eq!(withdrawn[0]["item"]["id"], "late-user");
+        assert_eq!(withdrawn[0]["parts"], json!([]));
+        // Assistant text still projects.
+        emit_opencode_event(&target, part("reply-msg", "reply-text", "text"));
+        assert_eq!(items(&mut rx)[0]["parts"][0]["type"], "text");
     }
 
     #[test]
