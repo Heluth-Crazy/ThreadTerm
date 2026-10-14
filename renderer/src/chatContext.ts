@@ -1,3 +1,5 @@
+import { contextIdentityKey, isValidMentionToken, type MentionEntry } from './inlineMentions';
+
 export const MAX_CONTEXT_ITEMS = 12;
 export const MAX_CONTEXT_BYTES = 128 * 1024;
 export const MAX_TERMINAL_LINES = 400;
@@ -27,7 +29,7 @@ export type AgentContextItem = { kind: 'agent'; id: string; provider: string };
 export type SkillContextItem = { kind: 'skill'; id: string; name: string; invocation: string };
 export type ContextItem = TerminalContextItem | FileContextItem | DiffContextItem | CommitContextItem | ConversationContextItem | QuoteContextItem | SessionContextItem | AgentContextItem | SkillContextItem;
 
-export type ParsedContextItem = { header: string; body: string };
+export type ParsedContextItem = { header: string; body: string; inlineToken?: string };
 export type ParsedContext = { items: ParsedContextItem[]; text: string };
 export type ContextDisplayMetadata = { kind: ContextItem['kind']; label: string; title: string };
 
@@ -125,6 +127,12 @@ export function normalizeContextItems(items: unknown): ContextItem[] {
   return normalized;
 }
 
+/** Validates and normalizes a single item with the exact same shape checks as the tray. */
+export function normalizeSingleContextItem(value: unknown): ContextItem | undefined {
+  try { assertContextItem(value); } catch { return undefined; }
+  try { return normalizeContextItems([value])[0]; } catch { return undefined; }
+}
+
 function longestBacktickRun(value: string): number {
   return Math.max(0, ...Array.from(value.matchAll(/`+/g), match => match[0].length));
 }
@@ -179,6 +187,43 @@ export function serializeContext(items: unknown, text: string): string {
   return serialized;
 }
 
+export type ContextEnvelopeInput = { trayItems: readonly ContextItem[]; active: readonly MentionEntry[]; workspaceRoot?: string };
+
+/**
+ * Serializes the context tray plus the active mentions: one block per identity
+ * (tray data wins) and a `mentions v1` map from each live token to its block.
+ */
+export function serializeMentionedContext(input: ContextEnvelopeInput, text: string): string {
+  if (typeof text !== 'string') throw new Error('Invalid message text. / 无效的消息文本。');
+  const { trayItems, active, workspaceRoot } = input;
+  if (!Array.isArray(trayItems) || !Array.isArray(active)) throw new Error('Invalid context attachments. / 无效的上下文附件。');
+  const order: string[] = [];
+  const itemByIdentity = new Map<string, ContextItem>();
+  const tokenByIdentity = new Map<string, string>();
+  for (const item of trayItems) {
+    const key = contextIdentityKey(item, workspaceRoot);
+    if (!itemByIdentity.has(key)) { itemByIdentity.set(key, item); order.push(key); }
+  }
+  for (const entry of active) {
+    const key = contextIdentityKey(entry.item, workspaceRoot);
+    if (!itemByIdentity.has(key)) { itemByIdentity.set(key, entry.item); order.push(key); }
+    tokenByIdentity.set(key, entry.token);
+  }
+  if (order.length > MAX_CONTEXT_ITEMS) throw new Error('Attach at most 12 context items. / 最多附加 12 个上下文项。');
+  const blocks = contextSerializedBlocks(order.map(key => itemByIdentity.get(key)!));
+  const mentions: Record<string, number> = {};
+  order.forEach((key, index) => {
+    const token = tokenByIdentity.get(key);
+    if (token) mentions[token] = index + 1;
+  });
+  const header = Object.keys(mentions).length ? `[ThreadTerm message; mentions v1 ${JSON.stringify(mentions)}]` : messageHeader;
+  const serialized = blocks.length ? `${blocks.join('\n')}\n${header}\n${text}` : text;
+  if (bytes(serialized) > MAX_CONTEXT_BYTES) {
+    throw new Error('Context attachments and message must not exceed 128 KiB. / 上下文附件和消息总大小不能超过 128 KiB。');
+  }
+  return serialized;
+}
+
 function headerKind(header: string): ContextItem['kind'] | undefined {
   if (header.includes('\r')) return undefined;
   const match = headerPrefix.exec(header);
@@ -196,6 +241,41 @@ function headerKind(header: string): ContextItem['kind'] | undefined {
   return undefined;
 }
 
+type ParsedItemHeader = { number: number; total: number; value: string; kind: ContextItem['kind'] };
+
+/** The single envelope parser used by `parseContext` and `contextDisplayMetadata`. */
+function parseItemHeader(header: string): ParsedItemHeader | undefined {
+  if (header.includes('\r')) return undefined;
+  const match = headerPrefix.exec(header);
+  const kind = headerKind(header);
+  if (!match || !kind) return undefined;
+  return { number: Number(match[1]), total: Number(match[2]), value: match[3]!, kind };
+}
+
+const messageHeaderWithMentions = /^\[ThreadTerm message(?:; mentions v1 (.+))?\]$/;
+
+/** Parses the terminating message header, including the optional v1 mention map. */
+function parseMessageHeader(message: string, position: number, total: number): { text: string; tokens: Map<number, string> } | undefined {
+  const lineEnd = message.indexOf('\n', position);
+  if (lineEnd < 0) return undefined;
+  const match = messageHeaderWithMentions.exec(message.slice(position, lineEnd));
+  if (!match) return undefined;
+  const tokens = new Map<number, string>();
+  if (match[1] !== undefined) {
+    let parsed: unknown;
+    try { parsed = JSON.parse(match[1]); } catch { return undefined; }
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return undefined;
+    const indexes = new Set<number>();
+    for (const [token, index] of Object.entries(parsed)) {
+      if (!isValidMentionToken(token)) return undefined;
+      if (typeof index !== 'number' || !Number.isInteger(index) || index < 1 || index > total || indexes.has(index)) return undefined;
+      indexes.add(index);
+      tokens.set(index, token);
+    }
+  }
+  return { text: message.slice(lineEnd + 1), tokens };
+}
+
 /** Extracts ThreadTerm context only when the whole leading envelope is well formed. */
 export function parseContext(message: string): ParsedContext | undefined {
   if (typeof message !== 'string' || bytes(message) > MAX_CONTEXT_BYTES || !message.startsWith('[ThreadTerm context 1/')) return undefined;
@@ -206,13 +286,10 @@ export function parseContext(message: string): ParsedContext | undefined {
     const lineEnd = message.indexOf('\n', position);
     if (lineEnd < 0) return undefined;
     const header = message.slice(position, lineEnd);
-    const headerMatch = headerPrefix.exec(header);
-    const kind = headerKind(header);
-    if (!headerMatch || !kind) return undefined;
-    const number = Number(headerMatch[1]);
-    const declaredTotal = Number(headerMatch[2]);
-    if (!Number.isSafeInteger(number) || !Number.isSafeInteger(declaredTotal) || declaredTotal < 1 || declaredTotal > MAX_CONTEXT_ITEMS || number !== items.length + 1 || (total && total !== declaredTotal)) return undefined;
-    total = declaredTotal;
+    const parsed = parseItemHeader(header);
+    if (!parsed || !Number.isSafeInteger(parsed.number) || !Number.isSafeInteger(parsed.total) || parsed.total < 1 || parsed.total > MAX_CONTEXT_ITEMS || parsed.number !== items.length + 1 || (total && total !== parsed.total)) return undefined;
+    const kind = parsed.kind;
+    total = parsed.total;
     position = lineEnd + 1;
     let body = '';
     // A session summary is optional; the other body kinds must carry their fence.
@@ -231,7 +308,7 @@ export function parseContext(message: string): ParsedContext | undefined {
         const content = message.slice(fenceEnd + 1, closingStart);
         if (bytes(content) > (kind === 'terminal' ? MAX_TERMINAL_BYTES : kind === 'diff' ? MAX_DIFF_BYTES : kind === 'session' ? MAX_SESSION_SUMMARY_BYTES : 64 * 1024)) return undefined;
         if (kind === 'terminal') {
-          const declaredLines = Number(/, last (\d+) lines?$/.exec(headerMatch[3]!)?.[1]);
+          const declaredLines = Number(/, last (\d+) lines?$/.exec(parsed.value)?.[1]);
           if (lineCount(content) !== declaredLines || declaredLines > MAX_TERMINAL_LINES) return undefined;
         }
         body = message.slice(position, afterClosing);
@@ -244,16 +321,17 @@ export function parseContext(message: string): ParsedContext | undefined {
     if (items.length === total) break;
     if (position >= message.length) return undefined;
   }
-  if (message.slice(position, position + messageHeader.length) !== messageHeader || message[position + messageHeader.length] !== '\n') return undefined;
-  return { items, text: message.slice(position + messageHeader.length + 1) };
+  const parsedMessage = parseMessageHeader(message, position, total);
+  if (!parsedMessage) return undefined;
+  for (const [index, token] of parsedMessage.tokens) items[index - 1]!.inlineToken = token;
+  return { items, text: parsedMessage.text };
 }
 
 /** Produces compact chip labels from a parsed serialized header. */
 export function contextDisplayMetadata(header: string): ContextDisplayMetadata | undefined {
-  const match = headerPrefix.exec(header);
-  const kind = headerKind(header);
-  if (!match || !kind) return undefined;
-  const value = match[3]!;
+  const parsed = parseItemHeader(header);
+  if (!parsed) return undefined;
+  const { kind, value } = parsed;
   if (kind === 'terminal') {
     const terminal = /^Terminal output — "(.+)"(?: \((.+)\))?, last (\d+) lines?$/.exec(value)!;
     return { kind, label: `${terminal[1]} · ${terminal[3]} ${terminal[3] === '1' ? 'line' : 'lines'}`, title: value };
