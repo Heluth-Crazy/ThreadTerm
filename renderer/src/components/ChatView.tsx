@@ -70,7 +70,7 @@ import { ContextMessage, ContextTray } from './ContextTray';
 import { ChatMentions } from './ChatMentions';
 import { agentMentionItems, beginMentionLoad, commitMentionItems, fileMentionItems, flatMentionItems, initialMentionLoadState, mentionGroups as buildMentionGroups, mentionKeyAction, mentionLoadCurrent, mentionLoadKey, mentionQuery, sessionContextItem, sessionMentionItems, skillMentionItems, type MentionItem, type MentionLoadState, type MentionSources } from '../chatMentions';
 import { activeMentionEntries, addMentionEntry, deletionRange, resolveMentions, type MentionEntry, type MentionableItem } from '../inlineMentions';
-import { composerSnapshot, decodeLocalRecovery, encodeLocalRecovery, localRecoveryDiffers, MAX_MENTION_MESSAGE, mentionDescription, mentionInsertedText, mentionPickStillValid, serializeComposerSnapshot, tentativeMentionPick, type ComposerSnapshot, type LocalRecovery, type MentionPickTicket } from '../composerMentions';
+import { composerEditable, composerSnapshot, decodeLocalRecovery, encodeLocalRecovery, localRecoveryDiffers, MAX_MENTION_MESSAGE, mentionDescription, mentionInsertedText, mentionPickStillValid, serializeComposerSnapshot, tentativeMentionPick, type ComposerInputState, type ComposerSnapshot, type LocalRecovery, type MentionPickTicket } from '../composerMentions';
 import { applyNativeEdit } from '../nativeTextEdit';
 import type { SessionContextItem } from '../chatContext';
 import { contextError } from '../contextErrors';
@@ -443,7 +443,6 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession, 
   const composingRef=useRef(false);
   const pickTicketId=useRef(0);
   const pickTicket=useRef<MentionPickTicket|undefined>(undefined);
-  const busyRef=useRef(busy); busyRef.current=busy;
   const [historyLoaded, setHistoryLoaded] = useState(false);
   const [historyFailed, setHistoryFailed] = useState(false);
   const [historyIssue, setHistoryIssue] = useState<string>();
@@ -903,6 +902,15 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession, 
     hasTranscript: items.length > 0,
     transportDown: link.transport !== "up",
   });
+  // One live snapshot of the composer's editability. Every guard (native edits,
+  // picks, submission, attachment) and the textarea's disabled state read it, so
+  // an async continuation can never act on permissions captured before an await.
+  const composerStateRef = useRef<ComposerInputState>({ writable: false, ended: false, busy: false, draftLoaded: false, overlayFull: false, recoveryPending: false });
+  composerStateRef.current = { writable, ended, busy, draftLoaded, overlayFull: overlay === 'full', recoveryPending: recovery !== undefined };
+  const composerEditableNow = composerEditable(composerStateRef.current);
+  // Losing control, a connection change or a pending recovery choice cancels an
+  // outstanding session pick before it can mutate the catalogue.
+  useEffect(() => { if (!composerEditable(composerStateRef.current)) pickTicket.current = undefined; }, [writable, ended, busy, draftLoaded, overlay, recovery]);
   useEffect(() => {
     if (overlay !== "full" || connection.phase === "failed") {
       setConnectSlow(false);
@@ -945,7 +953,7 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession, 
     try { value=serializeSubmission(text.trim()); } catch(caught) { setError(contextError(caught,zh)); return; }
     const epoch=leaseSessionId.current === session.id ? lease.current : undefined;
     const queueing = queueComposerMode(Boolean(activeTurnId(itemsRef.current, session.status)), queue);
-    if((!value&&!images.length)||queue?.sessionId!==session.id||imageReading||epoch===undefined||!writable||!draftLoaded||busy||(!queueing&&(firstResponseWaitRef.current||activeTurnId(itemsRef.current,session.status))))return;
+    if((!value&&!images.length)||queue?.sessionId!==session.id||imageReading||epoch===undefined||!composerEditable(composerStateRef.current)||(!queueing&&(firstResponseWaitRef.current||activeTurnId(itemsRef.current,session.status))))return;
     pickTicket.current = undefined;
     const submittingLifecycle = lifecycle.current;
     const token = operationId();
@@ -1017,7 +1025,7 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession, 
   // F3: attach files picked in the native dialog. Images use the composer's image
   // path when the agent accepts images; every other file becomes a context chip.
   async function attachPickedFiles() {
-    if (!writable || busy || ended) return;
+    if (!composerEditable(composerStateRef.current)) return;
     setError(undefined);
     const target = lifecycle.current;
     try {
@@ -1050,14 +1058,14 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession, 
       end,
       insert,
       blocked: composingRef.current,
-      allowed: () => writable && !ended,
+      allowed: () => composerEditable(composerStateRef.current),
       apply: value => changeTextRef.current(value),
       execCommand: typeof document.execCommand === 'function' ? document.execCommand.bind(document) : undefined,
       schedule: run => requestAnimationFrame(run),
     });
   }
   function insertSnippetAtCaret(snippet: string) {
-    if (!writable || ended) return;
+    if (!composerEditable(composerStateRef.current)) return;
     const area = composeRef.current;
     const start = area?.selectionStart ?? currentText.current.length;
     const end = area?.selectionEnd ?? start;
@@ -1080,7 +1088,7 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession, 
     showContextMenu({ x, y, items, restoreFocus: field });
   }
   attachImagesRef.current=(incoming:string[])=>{
-    if(!writable||busy||imageReadingRef.current||!composeRef.current||composeRef.current.disabled) return 0;
+    if(!composerEditable(composerStateRef.current)||imageReadingRef.current||!composeRef.current||composeRef.current.disabled) return 0;
     const accepted=selectChatImageAttachments(imagesRef.current,incoming,Boolean(ui.inputCapabilities?.images));
     if(!accepted.length) return 0;
     const next=[...imagesRef.current,...accepted];
@@ -1095,7 +1103,7 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession, 
     const files = Array.from(event.clipboardData.files).filter(file => file.type.startsWith('image/'));
     if (!files.length || !ui.inputCapabilities?.images) return;
     event.preventDefault();
-    if (!writable || busy || imageReadingRef.current) return;
+    if (!composerEditable(composerStateRef.current) || imageReadingRef.current) return;
     const target = lifecycle.current;
     imageReadingRef.current = true; setImageReading(true); setError(undefined);
     try {
@@ -1126,7 +1134,7 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession, 
     const epoch = leaseSessionId.current === session.id ? lease.current : undefined;
     const turnId = activeTurnId(itemsRef.current, session.status);
     const refused = () => { throw new Error(copy('Message was not inserted.', '消息未能插入。')); };
-    if (!writable || epoch === undefined || !turnId || busy) { if (queued) refused(); return; }
+    if (!writable || epoch === undefined || !turnId || busy || (!queued && !composerEditable(composerStateRef.current))) { if (queued) refused(); return; }
     let value = queued?.text ?? '';
     if (!queued) {
       try { value = serializeSubmission(text.trim()); } catch (caught) { setError(contextError(caught, zh)); return; }
@@ -1163,7 +1171,7 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession, 
   async function addNote() {
     const epoch = leaseSessionId.current === session.id ? lease.current : undefined;
     const turnId = activeTurnId(itemsRef.current, session.status);
-    if (!writable || epoch === undefined || !turnId || busy) return;
+    if (!writable || epoch === undefined || !turnId || busy || !composerEditable(composerStateRef.current)) return;
     let value: string;
     try { value = serializeSubmission(text.trim()); } catch (caught) { setError(contextError(caught, zh)); return; }
     if (!value.trim()) return;
@@ -1250,7 +1258,7 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession, 
   const resolvedMentions = useMemo(() => resolutionReady ? resolveMentions(text, mentionCatalogue) : [], [resolutionReady, text, mentionCatalogue]);
   const activeMentions = useMemo(() => activeMentionEntries(mentionCatalogue, resolvedMentions), [mentionCatalogue, resolvedMentions]);
   const rawMention = mentionQuery(text, caret);
-  const mention = rawMention && rawMention.start !== mentionDismissed && !resolvedMentions.some(range => range.start <= caret && caret <= range.end) ? rawMention : undefined;
+  const mention = composerEditableNow && rawMention && rawMention.start !== mentionDismissed && !resolvedMentions.some(range => range.start <= caret && caret <= range.end) ? rawMention : undefined;
   const mentionKey = mentionLoadKey(session.projectId, session.worktreePath);
   useEffect(() => {
     // Reload on every closed->open transition and on a session, project or
@@ -1288,7 +1296,7 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession, 
     return sources;
   }, [mentionData, mentionKey, sessions, session.id, session.projectId, session.provider, delegationEnabled, capabilities, ui.skills]);
   const mentionGroups = useMemo(() => mention ? buildMentionGroups(mentionSourceItems, mention.query) : [], [mention?.query, mentionSourceItems]);
-  const slash = slashQuery(text);
+  const slash = composerEditableNow ? slashQuery(text) : undefined;
   const slashCommands = useMemo(() => {
     const commands: ChatSlashCommand[] = [...ui.commands];
     if (liveTurn && !commands.some(command => command.name === "stop")) commands.unshift({ name: "stop", description: copy("Stop this turn", "停止此轮") });
@@ -1312,6 +1320,7 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession, 
     if (el && viewport.followRef.current) el.scrollTop = el.scrollHeight;
   }, [items, text, firstResponseWait]);
   function applySlash(command: ChatSlashCommand) {
+    if (!composerEditable(composerStateRef.current)) return;
     if (command.name === "stop" && liveTurn) { void cancel(liveTurn); changeText(""); return; }
     if(command.name.replace(/^\//,'')==='fork'){
       if(forkActions.disabledReason)setError(forkActions.disabledReason);
@@ -1329,8 +1338,11 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession, 
     composeRef.current?.focus();
   }
   function applyMention(pick: MentionItem) {
+    // Every pick cancels an outstanding async session pick, including a newer
+    // synchronous pick and a pick this method then rejects (design §6.4).
+    pickTicket.current = undefined;
     const range = mention;
-    if (!range || composingRef.current) return;
+    if (!range || composingRef.current || !composerEditable(composerStateRef.current)) return;
     const item = pick.item;
     if (item.kind !== 'file' && item.kind !== 'session' && item.kind !== 'commit' && item.kind !== 'agent' && item.kind !== 'skill') return;
     setMentionIndex(0); setMentionDismissed(undefined);
@@ -1356,8 +1368,8 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession, 
             sessionId: lifecycle.current?.sessionId,
             composerGeneration: composerGeneration.current,
             text: currentText.current,
-            busy: busyRef.current,
             composing: composingRef.current,
+            editable: composerEditable(composerStateRef.current),
           });
           if (!stillValid) { setError(copy('The mention was not added because the draft changed.', '草稿已更改，未添加提及。')); return; }
           const item = sessionContextItem(sessionItem, items, false);
@@ -1378,6 +1390,9 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession, 
   }
   /** Reserves the identity and inserts its token without leaving a tray chip. */
   function commitMention(item: MentionableItem, range: { start: number; end: number }) {
+    // Re-read the live permissions: this is also reached from a resolved async
+    // session read, whose closure captured an older render.
+    if (!composerEditable(composerStateRef.current) || composingRef.current) return;
     const added = addMentionEntry(mentionCatalogueRef.current, item, session.worktreePath);
     if ('error' in added) { setError(contextError(new Error(MAX_MENTION_MESSAGE), zh)); return; }
     const nextText = mentionInsertedText(currentText.current, range, added.token);
@@ -1621,7 +1636,7 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession, 
       {!!images.length && !submissionPreview && <div className="chat-image-draft" aria-label={copy('Image attachments', '图片附件')}>{images.map((image, index) => <figure key={index}><img src={image} alt={`${copy('Pasted image', '已粘贴图片')} ${index + 1}`} /><button type="button" disabled={busy || imageReading || !writable} aria-label={`${copy('Remove image', '移除图片')} ${index + 1}`} onClick={() => updateImages(images.filter((_, imageIndex) => imageIndex !== index))}>×</button></figure>)}<span className="chat-image-draft-note">{copy('Images saved on this device', '图片已保存在此设备')}</span></div>}
       {!submissionPreview && <ContextTray items={context.items} text={text} zh={zh} onRemove={context.remove} disabled={busy || imageReading || !writable} mentions={activeMentions} workspaceRoot={session.worktreePath} />}
       {!!activeMentions.length && <p id={mentionDescriptionId} className="sr-only">{mentionDescription(activeMentions, zh)}</p>}
-      <textarea id={`chat-message-${session.id}`} ref={composeRef} value={submissionPreview ? '' : text} onChange={event => { setCaret(event.target.selectionStart ?? event.target.value.length); setMentionDismissed(undefined); changeText(event.target.value); setSlashIndex(0); setMentionIndex(0); }} onCompositionStart={() => { composingRef.current = true; }} onCompositionEnd={event => { composingRef.current = false; changeText(event.currentTarget.value); }} onSelect={event => setCaret(event.currentTarget.selectionStart ?? caret)} onClick={event => setCaret(event.currentTarget.selectionStart ?? caret)} onKeyUp={event => setCaret(event.currentTarget.selectionStart ?? caret)} onPaste={pasteImages} onContextMenu={writable && !ended ? openComposerContextMenu : undefined} onKeyDown={onComposeKey} aria-describedby={activeMentions.length ? mentionDescriptionId : undefined} placeholder={copy('Message, or type / for commands', '发送消息，或输入 / 命令')} rows={1} disabled={busy || ended || !writable || overlay === "full" || !draftLoaded} />
+      <textarea id={`chat-message-${session.id}`} ref={composeRef} value={submissionPreview ? '' : text} onChange={event => { setCaret(event.target.selectionStart ?? event.target.value.length); setMentionDismissed(undefined); changeText(event.target.value); setSlashIndex(0); setMentionIndex(0); }} onCompositionStart={() => { composingRef.current = true; }} onCompositionEnd={event => { composingRef.current = false; changeText(event.currentTarget.value); }} onSelect={event => setCaret(event.currentTarget.selectionStart ?? caret)} onClick={event => setCaret(event.currentTarget.selectionStart ?? caret)} onKeyUp={event => setCaret(event.currentTarget.selectionStart ?? caret)} onPaste={pasteImages} onContextMenu={composerEditableNow ? openComposerContextMenu : undefined} onKeyDown={onComposeKey} aria-describedby={activeMentions.length ? mentionDescriptionId : undefined} placeholder={copy('Message, or type / for commands', '发送消息，或输入 / 命令')} rows={1} disabled={!composerEditableNow} />
       <ComposerOptions
         options={ui.options}
         loadState={ui.loadState}

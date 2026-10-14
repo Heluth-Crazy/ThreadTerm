@@ -59,13 +59,34 @@ export type MentionPickTicket = {
   queryText: string;
 };
 
+/**
+ * The composer conditions that decide whether it accepts any edit at all. The
+ * textarea is disabled in exactly these states, so every programmatic edit and
+ * every async pick must re-read them from live refs instead of a render
+ * closure captured before an `await`.
+ */
+export type ComposerInputState = {
+  writable: boolean;
+  ended: boolean;
+  busy: boolean;
+  draftLoaded: boolean;
+  overlayFull: boolean;
+  recoveryPending: boolean;
+};
+
+/** Whether the composer is currently editable (textarea enabled, no recovery choice pending). */
+export function composerEditable(state: ComposerInputState): boolean {
+  return state.writable && !state.ended && !state.busy && state.draftLoaded && !state.overlayFull && !state.recoveryPending;
+}
+
 export type MentionPickCurrent = {
   lifecycle: unknown;
   sessionId: string | undefined;
   composerGeneration: number;
   text: string;
-  busy: boolean;
   composing: boolean;
+  /** `composerEditable` evaluated from the live refs at resolution time. */
+  editable: boolean;
 };
 
 /** Whether a resolved session read still belongs to the pick that started it. */
@@ -73,7 +94,7 @@ export function mentionPickStillValid(ticket: MentionPickTicket, current: Mentio
   return ticket.lifecycle === current.lifecycle
     && ticket.sessionId === current.sessionId
     && ticket.composerGeneration === current.composerGeneration
-    && !current.busy
+    && current.editable
     && !current.composing
     && current.text.slice(ticket.start, ticket.end) === ticket.queryText;
 }

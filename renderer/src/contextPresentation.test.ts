@@ -6,6 +6,7 @@ Object.assign(globalThis, { require: createRequire(import.meta.url) });
 const { renderToStaticMarkup } = await import('react-dom/server');
 import { ContextMessage, ContextQueueBadge, ContextTray } from './components/ContextTray';
 import { serializeContext, type ContextItem } from './chatContext';
+import type { MentionEntry } from './inlineMentions';
 import { contextError } from './contextErrors';
 
 const items: ContextItem[] = [{ kind: 'terminal', id: 'build', sessionTitle: 'build', lines: 1, text: 'PRIVATE OUTPUT WALL' }, { kind: 'file', id: 'file', path: 'src/cart.ts', startLine: 12, endLine: 20 }];
@@ -27,6 +28,15 @@ test('empty trays render nothing and budget hints appear only near the limits', 
   assert.doesNotMatch(render(items), /context-budget/);
   assert.match(render(items, 'x'.repeat(100 * 1024)), /KiB of 128 KiB/);
   assert.match(render(items), /aria-label="Remove context:/);
+});
+
+test('an over-budget draft reports an over-limit readout instead of zero bytes', () => {
+  const over: ContextItem[] = Array.from({ length: 12 }, (_, index) => ({ kind: 'quote', id: `q${index}`, sourceTitle: `Quote ${index}`, text: 'body' }));
+  const mentions: MentionEntry[] = [{ token: '@cart.ts', item: { kind: 'file', id: 'file:src/cart.ts', path: 'src/cart.ts' } }];
+  const html = renderToStaticMarkup(createElement(ContextTray, { items: over, text: '@cart.ts', zh: false, onRemove: () => {}, mentions }));
+  assert.match(html, /13\/12/);
+  assert.match(html, /over 128 KiB/);
+  assert.doesNotMatch(html, /0 KiB/);
 });
 
 test('queue context badge and limit errors are localized without exposing serialized context', () => {
