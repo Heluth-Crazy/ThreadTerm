@@ -19,9 +19,14 @@ export function decodeCopiedConversationDraft(value: string): Payload | undefine
   } catch { return; }
 }
 
-export function encodeCopiedConversationDraft(items: ContextItem[], text: string): string {
+export function copiedConversationPayload(items: ContextItem[]): { copiedAt: string; transcript: string } | undefined {
   const conversation = normalizeContextItems(items).find((item): item is Conversation => item.kind === 'conversation');
-  return conversation ? header + JSON.stringify({copiedAt: conversation.copiedAt, transcript: conversation.text, text}) : text;
+  return conversation ? { copiedAt: conversation.copiedAt, transcript: conversation.text } : undefined;
+}
+
+export function encodeCopiedConversationDraft(items: ContextItem[], text: string): string {
+  const conversation = copiedConversationPayload(items);
+  return conversation ? header + JSON.stringify({copiedAt: conversation.copiedAt, transcript: conversation.transcript, text}) : text;
 }
 
 export function copiedConversationItem(value: string, id = 'fork-context'): Conversation | undefined {

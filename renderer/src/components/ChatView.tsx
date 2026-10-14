@@ -44,7 +44,7 @@ import { focusRequestedChatInput, insertChatText, registerChatInputTarget } from
 import { parseMarkdownFileReference } from '../fileReferences';
 import { SessionSurfaceContext } from './SessionSurfaceContext';
 import { ChatForkButton, ChatForkMenu, ChatForkStatus, useChatFork } from './ChatForkControls';
-import { decodeCopiedConversationDraft } from '../chatForkDraft';
+import { decodeCopiedConversationDraft, decodeForkDraftV2, encodeForkDraftV2, copiedConversationPayload } from '../chatForkDraft';
 import { composerTextAfterFork, isCompletedForkReply } from '../chatFork';
 import { CatalogPopover } from './CatalogActions';
 import { isWebTabUrl } from '../workspaceTabs';
@@ -61,15 +61,18 @@ import { SteerSend } from './SteerSend';
 import { steerControlKind, steerFailureMessage } from '../steerSend';
 import { ComposerPlusMenu } from './ComposerPlusMenu';
 import { partitionAttachedFiles } from '../chatAttachments';
-import { insertQuickMessage, parseQuickMessages } from '../quickMessages';
+import { parseQuickMessages } from '../quickMessages';
 import { useAppSettings } from '../appSettings';
 import { showContextMenu } from './ContextMenu';
 import { textFieldContextMenuItems } from '../contextMenuFallback';
 import { useChatContext } from '../useChatContext';
 import { ContextMessage, ContextTray } from './ContextTray';
 import { ChatMentions } from './ChatMentions';
-import { agentMentionItems, beginMentionLoad, commitMentionItems, fileMentionItems, flatMentionItems, initialMentionLoadState, mentionAttachIsCurrent, mentionGroups as buildMentionGroups, mentionKeyAction, mentionLoadCurrent, mentionLoadKey, mentionQuery, sessionContextItem, sessionMentionItems, skillMentionItems, type MentionItem, type MentionLoadState, type MentionSources } from '../chatMentions';
-import type { ContextItem, SessionContextItem } from '../chatContext';
+import { agentMentionItems, beginMentionLoad, commitMentionItems, fileMentionItems, flatMentionItems, initialMentionLoadState, mentionGroups as buildMentionGroups, mentionKeyAction, mentionLoadCurrent, mentionLoadKey, mentionQuery, sessionContextItem, sessionMentionItems, skillMentionItems, type MentionItem, type MentionLoadState, type MentionSources } from '../chatMentions';
+import { activeMentionEntries, addMentionEntry, deletionRange, resolveMentions, type MentionEntry, type MentionableItem } from '../inlineMentions';
+import { composerSnapshot, decodeLocalRecovery, encodeLocalRecovery, localRecoveryDiffers, MAX_MENTION_MESSAGE, mentionDescription, mentionInsertedText, mentionPickStillValid, serializeComposerSnapshot, tentativeMentionPick, type ComposerSnapshot, type LocalRecovery, type MentionPickTicket } from '../composerMentions';
+import { applyNativeEdit } from '../nativeTextEdit';
+import type { SessionContextItem } from '../chatContext';
 import { contextError } from '../contextErrors';
 import { CHAT_REPAIR_REQUEST, setChatRepairAvailability, type ChatRepairAvailability } from '../chatRepair';
 import { discoveredRepair, discoveryMatches, type RepairDiscovery } from '../chatRepairDiscovery';
@@ -399,6 +402,7 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession, 
   const zhRef = useRef(zh); zhRef.current = zh;
   const copy = (en: string, cn: string) => zh ? cn : en;
   const repairDescriptionId = useId();
+  const mentionDescriptionId = useId();
   // A clicked http(s) link in the transcript: the same actions as the terminal's link bar, as a menu at the link.
   const [linkMenu, setLinkMenu] = useState<{ anchor: HTMLElement; url: string }>();
   const [linkIssue, setLinkIssue] = useState<string>();
@@ -430,9 +434,16 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession, 
   const draftRevision=useRef(0), draftReady=useRef(false), currentText=useRef(text), lastSaved=useRef(''); currentText.current=text;
   const writer=useRef<DraftWriter | undefined>(undefined);
   const [draftFailed, setDraftFailed] = useState(false);
-  const [recovery, setRecovery] = useState<string>();
+  const [recovery, setRecovery] = useState<LocalRecovery>();
   const [draftNotice,setDraftNotice]=useState('');
   const [draftLoaded,setDraftLoaded]=useState(false);
+  const [mentionCatalogue,setMentionCatalogue]=useState<MentionEntry[]>([]);
+  const mentionCatalogueRef=useRef(mentionCatalogue); mentionCatalogueRef.current=mentionCatalogue;
+  const composerGeneration=useRef(0);
+  const composingRef=useRef(false);
+  const pickTicketId=useRef(0);
+  const pickTicket=useRef<MentionPickTicket|undefined>(undefined);
+  const busyRef=useRef(busy); busyRef.current=busy;
   const [historyLoaded, setHistoryLoaded] = useState(false);
   const [historyFailed, setHistoryFailed] = useState(false);
   const [historyIssue, setHistoryIssue] = useState<string>();
@@ -498,13 +509,39 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession, 
     firstResponseWaitRef.current = undefined;
     setFirstResponseWait(undefined);
   }
+  function activeMentionsFor(value: string): MentionEntry[] {
+    return activeMentionEntries(mentionCatalogueRef.current, resolveMentions(value, mentionCatalogueRef.current));
+  }
+  function composerDraftValue(value: string): string {
+    const active = activeMentionsFor(value);
+    if (!active.length) return contextRef.current.persistedDraft(value);
+    const copied = copiedConversationPayload(contextRef.current.items);
+    return encodeForkDraftV2({ text: value, mentions: active, ...(copied ? { copiedConversation: copied } : {}) });
+  }
   function persistCompose(value:string,_epoch:number) {
     if (!writer.current) return Promise.reject(new Error('Draft is not loaded'));
-    return writer.current.write(contextRef.current.persistedDraft(value)).then(() => {
+    return writer.current.write(composerDraftValue(value)).then(() => {
       if (currentText.current === value) {
         try { localStorage.removeItem(recoveryKey); } catch { /* Runtime copy is durable. */ }
       }
     });
+  }
+  function submissionSnapshot(value: string): ComposerSnapshot {
+    return composerSnapshot(value, contextRef.current.items, mentionCatalogueRef.current, session.worktreePath);
+  }
+  function serializeSubmission(value: string): string {
+    return serializeComposerSnapshot(submissionSnapshot(value), session.worktreePath);
+  }
+  function clearMentions() {
+    mentionCatalogueRef.current = [];
+    setMentionCatalogue([]);
+    pickTicket.current = undefined;
+  }
+  function changeText(value: string) {
+    currentText.current = value; setText(value);
+    if (recovery !== undefined) setRecovery(undefined);
+    try { localStorage.setItem(recoveryKey, encodeLocalRecovery(value, mentionCatalogueRef.current, session.worktreePath)); }
+    catch { setError(copy('Local recovery is unavailable. Keep this view open until the draft is saved.', '本地恢复不可用，请在草稿保存成功前保持此视图打开。')); }
   }
   function initializeWriter(draft: {revision: number; text: string}, sessionLifecycle: ChatLifecycle) {
     const draftWriter = createDraftWriter(draft, async (value, revision) => {
@@ -516,12 +553,6 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession, 
     });
     sessionLifecycle.writer = draftWriter;
     writer.current = draftWriter;
-  }
-  function changeText(value: string) {
-    currentText.current = value; setText(value);
-    if (recovery !== undefined) setRecovery(undefined);
-    try { localStorage.setItem(recoveryKey, value); }
-    catch { setError(copy('Local recovery is unavailable. Keep this view open until the draft is saved.', '本地恢复不可用，请在草稿保存成功前保持此视图打开。')); }
   }
   const changeTextRef = useRef(changeText);
   changeTextRef.current = changeText;
@@ -543,7 +574,7 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession, 
     const epoch = leaseSessionId.current === session.id ? lease.current : undefined; if (!canControl || epoch === undefined) return;
     try {
       const remote = await request('chat.draft.read', {sessionId: session.id});
-      if (remote.text !== lastSaved.current && remote.text !== contextRef.current.persistedDraft(currentText.current) && !confirm(copy('The saved draft changed in another view. Replace it with this text?', '其他视图更改了已保存的草稿。用此处内容替换吗？'))) return;
+      if (remote.text !== lastSaved.current && remote.text !== composerDraftValue(currentText.current) && !confirm(copy('The saved draft changed in another view. Replace it with this text?', '其他视图更改了已保存的草稿。用此处内容替换吗？'))) return;
       await writer.current?.reset(remote);
       await persistCompose(currentText.current, epoch);
       setDraftFailed(false); setError(undefined); setDraftNotice(copy('Draft saved', '草稿已保存'));
@@ -613,7 +644,7 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession, 
     setViewportSessionId(undefined);
     setHistoryIssue(undefined);
     setSubmissionPreview(undefined);
-    setItems([]); setText(''); setBusy(false); setQueue(undefined); setDraftLoaded(false); setHistoryLoaded(false); setHistoryFailed(false); setLink(emptyLink(session.id, canControl && !ended ? "connecting" : "unavailable")); setConnectSlow(false); setError(undefined); setRepair(undefined); setRepairDialog(false); setRepairBusy(false); setRepairNotice(undefined); setIngressFailed(false); setRepairFollowup(false); setChatRepairAvailability(session.id, repairDescriptionId, undefined);draftReady.current=false;writer.current=undefined;setDraftFailed(false);setRecovery(undefined);setApprovalBusy(undefined);
+    setItems([]); setText(''); setBusy(false); setQueue(undefined); setDraftLoaded(false); setHistoryLoaded(false); setHistoryFailed(false); setLink(emptyLink(session.id, canControl && !ended ? "connecting" : "unavailable")); setConnectSlow(false); setError(undefined); setRepair(undefined); setRepairDialog(false); setRepairBusy(false); setRepairNotice(undefined); setIngressFailed(false); setRepairFollowup(false); setChatRepairAvailability(session.id, repairDescriptionId, undefined);draftReady.current=false;writer.current=undefined;setDraftFailed(false);setRecovery(undefined);setApprovalBusy(undefined);composingRef.current=false;pickTicket.current=undefined;composerGeneration.current+=1;mentionCatalogueRef.current=[];setMentionCatalogue([]);
     const unsubscribe = subscribeEvents(event => {
       if (disposed || !event.data || typeof event.data !== 'object') return;
       const data = event.data as { sessionId?: string; item?: ChatItem; reason?: string };
@@ -699,11 +730,25 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession, 
     // Reading does not require the write lease: other windows remain viewers.
     void request('chat.draft.read',{sessionId:session.id}).then(draft=>{
       if(disposed)return;draftRevision.current=draft.revision;lastSaved.current=draft.text;draftReady.current=true;initializeWriter(draft,sessionLifecycle);setDraftLoaded(true);
-      const decoded = decodeCopiedConversationDraft(draft.text);
-      if (decoded) contextRef.current.restoreCopiedConversation(draft.text);
-      const value = decoded?.text ?? draft.text;
-      if (!currentText.current) { setText(value); currentText.current=value; }
-      try { const local = localStorage.getItem(recoveryKey); if (local !== null && local !== value && local !== currentText.current) setRecovery(local); } catch { /* Runtime draft is still available. */ }
+      const v2 = decodeForkDraftV2(draft.text);
+      const v1 = v2 ? undefined : decodeCopiedConversationDraft(draft.text);
+      const value = v2?.text ?? v1?.text ?? draft.text;
+      const runtimeMentions = v2?.mentions ?? [];
+      if (v2?.copiedConversation) contextRef.current.restoreConversationPayload(v2.copiedConversation);
+      else if (v1) contextRef.current.restoreCopiedConversation(draft.text);
+      mentionCatalogueRef.current = runtimeMentions; setMentionCatalogue(runtimeMentions);
+      const preexisting = currentText.current;
+      if (!preexisting) { setText(value); currentText.current=value; }
+      try {
+        const local = localStorage.getItem(recoveryKey);
+        if (local !== null) {
+          const pair = decodeLocalRecovery(local);
+          const differs = preexisting
+            ? pair.text !== preexisting || pair.text !== value
+            : localRecoveryDiffers(pair, { text: value, mentions: runtimeMentions }, session.worktreePath);
+          if (differs) setRecovery(pair);
+        }
+      } catch { /* Runtime draft is still available. */ }
     }).catch(caught=>{if(!disposed){setError(`Draft could not be loaded: ${String(caught)}`);setDraftFailed(true);setDraftLoaded(true);}});
     discoverHistoryRef.current = () => {
       const generation = ++historyGeneration.current;
@@ -727,7 +772,7 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession, 
       const draftWriter = sessionLifecycle.writer;
       const value = currentText.current;
       if (draftReady.current && control?.valid && draftWriter) {
-        sessionLifecycle.flushOnExit = draftWriter.write(contextRef.current.persistedDraft(value)).then(() => {
+        sessionLifecycle.flushOnExit = draftWriter.write(composerDraftValue(value)).then(() => {
           try { if (localStorage.getItem(recoveryKey) === value) localStorage.removeItem(recoveryKey); } catch { /* The runtime copy is durable. */ }
         }).catch(() => undefined);
       }
@@ -880,7 +925,7 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession, 
     const epoch=lease.current;
     const timer=setTimeout(()=>{setDraftNotice(copy('Saving draft…','正在保存草稿…'));void persistCompose(text,epoch).then(()=>setDraftNotice(copy('Draft saved','草稿已保存'))).catch(caught=>{setDraftFailed(true);setDraftNotice(copy('Draft not saved','草稿未保存'));setError(String(caught));});},400);
     return()=>clearTimeout(timer);
-  },[text,writable,recovery,draftFailed,context.items]);
+  },[text,writable,recovery,draftFailed,context.items,mentionCatalogue]);
   async function submit(event: FormEvent) {
     event.preventDefault();let value:string;
     if(text.trim()==='/fork' && !images.length && !context.items.length){
@@ -897,10 +942,11 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession, 
       }
       return;
     }
-    try { value=context.serialize(text.trim()); } catch(caught) { setError(contextError(caught,zh)); return; }
+    try { value=serializeSubmission(text.trim()); } catch(caught) { setError(contextError(caught,zh)); return; }
     const epoch=leaseSessionId.current === session.id ? lease.current : undefined;
     const queueing = queueComposerMode(Boolean(activeTurnId(itemsRef.current, session.status)), queue);
     if((!value&&!images.length)||queue?.sessionId!==session.id||imageReading||epoch===undefined||!writable||!draftLoaded||busy||(!queueing&&(firstResponseWaitRef.current||activeTurnId(itemsRef.current,session.status))))return;
+    pickTicket.current = undefined;
     const submittingLifecycle = lifecycle.current;
     const token = operationId();
     if (queueing) {
@@ -911,6 +957,7 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession, 
         const nextQueue = await request('chat.queue.add', {sessionId:session.id, text:value, ...(images.length ? {images} : {}), operationId:token, leaseEpoch:epoch});
         if (lifecycle.current !== submittingLifecycle) return;
         setQueue(nextQueue);
+        clearMentions(); composerGeneration.current += 1;
         changeText(''); setImages([]); context.clear();
         try { localStorage.removeItem(imageDraftKey); } catch { /* The accepted queue item is already durable. */ }
         await persistCompose('', epoch);
@@ -932,6 +979,7 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession, 
       if (lifecycle.current !== submittingLifecycle) return;
       accepted = true;
       setSubmissionPreview(undefined);
+      clearMentions(); composerGeneration.current += 1;
       if (firstResponseWaitRef.current?.token === token) {
         const pending = { token, sessionUpdatedAt: session.updatedAt, turnId: sent.turnId };
         firstResponseWaitRef.current = pending;
@@ -995,26 +1043,25 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession, 
   }
   // F3: insert a snippet at the caret without replacing context chips. The
   // browser's own text insertion keeps the snippet on the native undo stack.
+  function nativeEdit(start: number, end: number, insert: string) {
+    return applyNativeEdit({
+      area: composeRef.current,
+      start,
+      end,
+      insert,
+      blocked: composingRef.current,
+      allowed: () => writable && !ended,
+      apply: value => changeTextRef.current(value),
+      execCommand: typeof document.execCommand === 'function' ? document.execCommand.bind(document) : undefined,
+      schedule: run => requestAnimationFrame(run),
+    });
+  }
   function insertSnippetAtCaret(snippet: string) {
     if (!writable || ended) return;
     const area = composeRef.current;
     const start = area?.selectionStart ?? currentText.current.length;
     const end = area?.selectionEnd ?? start;
-    const next = insertQuickMessage(currentText.current, start, end, snippet);
-    if (area && typeof document.execCommand === "function") {
-      area.focus({ preventScroll: true });
-      area.setSelectionRange(start, end);
-      let inserted = false;
-      try { inserted = document.execCommand("insertText", false, snippet); } catch { inserted = false; }
-      if (inserted) {
-        changeText(area.value);
-        const caret = area.selectionStart ?? next.caret;
-        requestAnimationFrame(() => { const field = composeRef.current; field?.focus({ preventScroll: true }); field?.setSelectionRange(caret, caret); });
-        return;
-      }
-    }
-    changeText(next.text);
-    requestAnimationFrame(() => { const field = composeRef.current; field?.focus({ preventScroll: true }); field?.setSelectionRange(next.caret, next.caret); });
+    nativeEdit(start, end, snippet);
   }
   function insertQuickMessageAtCaret(message: import('@threadterm/protocol').QuickMessage) { insertSnippetAtCaret(message.text); }
   // F3: the composer keeps its clipboard menu and gains Quick messages when any exist.
@@ -1082,10 +1129,11 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession, 
     if (!writable || epoch === undefined || !turnId || busy) { if (queued) refused(); return; }
     let value = queued?.text ?? '';
     if (!queued) {
-      try { value = context.serialize(text.trim()); } catch (caught) { setError(contextError(caught, zh)); return; }
+      try { value = serializeSubmission(text.trim()); } catch (caught) { setError(contextError(caught, zh)); return; }
     }
     const attachment = queued ? queued.images ?? [] : images;
     if ((!value && !attachment.length) || imageReading) { if (queued) refused(); return; }
+    pickTicket.current = undefined;
     const submittingLifecycle = lifecycle.current;
     setBusy(true); setError(undefined);
     try {
@@ -1098,6 +1146,7 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession, 
         operationId: operationId(), leaseEpoch: epoch,
       });
       if (lifecycle.current !== submittingLifecycle || queued) return;
+      clearMentions(); composerGeneration.current += 1;
       changeText(''); setImages([]); context.clear();
       try { localStorage.removeItem(imageDraftKey); } catch { /* The accepted insert is already durable. */ }
       await persistCompose('', epoch);
@@ -1116,14 +1165,16 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession, 
     const turnId = activeTurnId(itemsRef.current, session.status);
     if (!writable || epoch === undefined || !turnId || busy) return;
     let value: string;
-    try { value = context.serialize(text.trim()); } catch (caught) { setError(contextError(caught, zh)); return; }
+    try { value = serializeSubmission(text.trim()); } catch (caught) { setError(contextError(caught, zh)); return; }
     if (!value.trim()) return;
     if (!noteBodyFits(value)) { setError(copy('The note and its attached context must not exceed 4,000 characters.', '备注及其附加上下文不能超过 4,000 个字符。')); return; }
+    pickTicket.current = undefined;
     const submittingLifecycle = lifecycle.current;
     setBusy(true); setError(undefined);
     try {
       await request('chat.feedback.add', { sessionId: session.id, turnId, text: value, operationId: operationId(), leaseEpoch: epoch });
       if (lifecycle.current !== submittingLifecycle) return;
+      clearMentions(); composerGeneration.current += 1;
       changeText(''); context.clear();
       await persistCompose('', epoch);
     } catch (caught) {
@@ -1195,8 +1246,11 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession, 
   }
   const queueMode = queueComposerMode(Boolean(liveTurn), queue);
   const steerKind = steerControlKind(Boolean(liveTurn), ui.inputCapabilities?.steer, queueMode);
+  const resolutionReady = draftLoaded && recovery === undefined;
+  const resolvedMentions = useMemo(() => resolutionReady ? resolveMentions(text, mentionCatalogue) : [], [resolutionReady, text, mentionCatalogue]);
+  const activeMentions = useMemo(() => activeMentionEntries(mentionCatalogue, resolvedMentions), [mentionCatalogue, resolvedMentions]);
   const rawMention = mentionQuery(text, caret);
-  const mention = rawMention && rawMention.start !== mentionDismissed ? rawMention : undefined;
+  const mention = rawMention && rawMention.start !== mentionDismissed && !resolvedMentions.some(range => range.start <= caret && caret <= range.end) ? rawMention : undefined;
   const mentionKey = mentionLoadKey(session.projectId, session.worktreePath);
   useEffect(() => {
     // Reload on every closed->open transition and on a session, project or
@@ -1276,41 +1330,78 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession, 
   }
   function applyMention(pick: MentionItem) {
     const range = mention;
-    if (!range) return;
+    if (!range || composingRef.current) return;
+    const item = pick.item;
+    if (item.kind !== 'file' && item.kind !== 'session' && item.kind !== 'commit' && item.kind !== 'agent' && item.kind !== 'skill') return;
     setMentionIndex(0); setMentionDismissed(undefined);
-    changeText(text.slice(0, range.start) + text.slice(range.end));
-    composeRef.current?.focus();
-    const attach = (item: ContextItem) => { if (context.items.some(existing => existing.id === item.id)) return; try { context.attach(item); } catch (caught) { setError(asUserError(caught, copy("Context could not be attached.", "无法附加上下文。"))); } };
-    const sessionItem: SessionContextItem | undefined = pick.item.kind === 'session' ? pick.item : undefined;
+    const sessionItem: SessionContextItem | undefined = item.kind === 'session' ? item : undefined;
     if (sessionItem && !sessionInfoEnabled) {
-      // The session-info tool is off: embed a bounded inline reading instead.
-      // Capture the lifecycle and session id before the await so a switch wins
-      // over the late response instead of landing the chip in the new tray.
-      const guard = (): { sessionId?: string; lifecycle: unknown } => ({ sessionId: lifecycle.current?.sessionId, lifecycle: lifecycle.current });
-      const captured = guard();
+      // The session-info tool is off: read a bounded inline summary first.
+      // Nothing is inserted until the read resolves and the ticket still holds.
+      const ticket: MentionPickTicket = {
+        id: ++pickTicketId.current,
+        lifecycle: lifecycle.current,
+        sessionId: lifecycle.current?.sessionId,
+        composerGeneration: composerGeneration.current,
+        start: range.start,
+        end: range.end,
+        queryText: currentText.current.slice(range.start, range.end),
+      };
+      pickTicket.current = ticket;
       void request('chat.read', { sessionId: sessionItem.sessionId })
         .then(items => {
-          if (!mentionAttachIsCurrent(captured, guard())) return;
+          if (pickTicket.current?.id !== ticket.id) return;
+          const stillValid = mentionPickStillValid(ticket, {
+            lifecycle: lifecycle.current,
+            sessionId: lifecycle.current?.sessionId,
+            composerGeneration: composerGeneration.current,
+            text: currentText.current,
+            busy: busyRef.current,
+            composing: composingRef.current,
+          });
+          if (!stillValid) { setError(copy('The mention was not added because the draft changed.', '草稿已更改，未添加提及。')); return; }
           const item = sessionContextItem(sessionItem, items, false);
           // Without the tool and without a transcript there is nothing to
           // reference, and the header must never promise a call that is off.
-          if (!item.summary) {
-            setError(copy('This session has no readable transcript to attach.', '此会话没有可附加的对话记录。'));
-            return;
-          }
-          attach(item);
+          if (!item.summary) { pickTicket.current = undefined; setError(copy('This session has no readable transcript to attach.', '此会话没有可附加的对话记录。')); return; }
+          pickTicket.current = undefined;
+          commitMention(item, { start: ticket.start, end: ticket.end });
         })
         .catch(caught => {
-          if (!mentionAttachIsCurrent(captured, guard())) return;
+          if (pickTicket.current?.id !== ticket.id) return;
+          pickTicket.current = undefined;
           setError(asUserError(caught, copy('Session context could not be attached.', '无法附加会话上下文。')));
         });
       return;
     }
-    attach(pick.item);
+    commitMention(item, range);
+  }
+  /** Reserves the identity and inserts its token without leaving a tray chip. */
+  function commitMention(item: MentionableItem, range: { start: number; end: number }) {
+    const added = addMentionEntry(mentionCatalogueRef.current, item, session.worktreePath);
+    if ('error' in added) { setError(contextError(new Error(MAX_MENTION_MESSAGE), zh)); return; }
+    const nextText = mentionInsertedText(currentText.current, range, added.token);
+    const tentative = tentativeMentionPick({ text: nextText, trayItems: contextRef.current.items, catalogue: added.catalogue, workspaceRoot: session.worktreePath });
+    if (!tentative.ok) { setError(contextError(tentative.error, zh)); return; }
+    mentionCatalogueRef.current = added.catalogue;
+    setMentionCatalogue(added.catalogue);
+    nativeEdit(range.start, range.end, `${added.token} `);
+  }
+  function deleteMention(range: { start: number; end: number }) {
+    nativeEdit(range.start, range.end, '');
   }
   function onComposeKey(event: KeyboardEvent<HTMLTextAreaElement>) {
+    const composing = event.nativeEvent.isComposing || event.keyCode === 229 || composingRef.current;
+    if (!composing && !event.ctrlKey && !event.altKey && !event.metaKey && (event.key === 'Backspace' || event.key === 'Delete')) {
+      const area = event.currentTarget;
+      const position = area.selectionStart ?? caret;
+      if (area.selectionStart === area.selectionEnd) {
+        const hit = deletionRange(resolvedMentions, position, event.key);
+        if (hit) { event.preventDefault(); deleteMention(hit); return; }
+      }
+    }
     if (mention) {
-      const action = mentionKeyAction(event.key, { count: mentionGroups.length ? flatMentionItems(mentionGroups).length : 0, composing: event.nativeEvent.isComposing || event.keyCode === 229, shiftKey: event.shiftKey });
+      const action = mentionKeyAction(event.key, { count: mentionGroups.length ? flatMentionItems(mentionGroups).length : 0, composing, shiftKey: event.shiftKey });
       if (action === "next") { event.preventDefault(); setMentionIndex(value => Math.min(value + 1, flatMentionItems(mentionGroups).length - 1)); return; }
       if (action === "previous") { event.preventDefault(); setMentionIndex(value => Math.max(0, value - 1)); return; }
       if (action === "pick") { event.preventDefault(); const flat = flatMentionItems(mentionGroups); const pick = flat[mentionIndex] ?? flat[0]; if (pick) applyMention(pick); return; }
@@ -1322,7 +1413,7 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession, 
       if (slashPaletteEnter({ key: event.key, shiftKey: event.shiftKey, isComposing: event.nativeEvent.isComposing })) { event.preventDefault(); applySlash(slashCommands[slashIndex] ?? slashCommands[0]!); return; }
       if (event.key === "Escape") { event.preventDefault(); changeText(""); return; }
     }
-    if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {
+    if (event.key === "Enter" && !event.shiftKey && !composing) {
       event.preventDefault();
       event.currentTarget.form?.requestSubmit();
     }
@@ -1500,8 +1591,13 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession, 
     </div>
     {recovery !== undefined && <div role="alert" className="surface-error">
       <p>{copy('An unsaved draft is available on this device.', '此设备上有一份未保存的草稿。')}</p>
-      <pre>{recovery || copy('(Empty draft)', '（空草稿）')}</pre>
-      <button className="btn" disabled={!writable} onClick={() => { changeText(recovery); setRecovery(undefined); }}>{copy('Recover text', '恢复内容')}</button>
+      <pre>{recovery.text || copy('(Empty draft)', '（空草稿）')}</pre>
+      <button className="btn" disabled={!writable} onClick={() => {
+        const local = recovery;
+        mentionCatalogueRef.current = local.mentions; setMentionCatalogue(local.mentions);
+        composerGeneration.current += 1; pickTicket.current = undefined;
+        changeText(local.text);
+      }}>{copy('Recover text', '恢复内容')}</button>
       <button className="btn" onClick={() => { setRecovery(undefined); try { localStorage.removeItem(recoveryKey); } catch {} }}>{copy('Keep saved draft', '保留已保存草稿')}</button>
     </div>}
     {draftFailed && <button className="btn" disabled={!writable} onClick={() => void retryDraft()}>{copy('Retry draft save', '重试保存草稿')}</button>}
@@ -1523,8 +1619,9 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession, 
       {mention && <ChatMentions groups={mentionGroups} index={mentionIndex} zh={zh} onHover={setMentionIndex} onPick={applyMention} />}
       <label className="sr-only" htmlFor={`chat-message-${session.id}`}>{copy('Message', '消息')}</label>
       {!!images.length && !submissionPreview && <div className="chat-image-draft" aria-label={copy('Image attachments', '图片附件')}>{images.map((image, index) => <figure key={index}><img src={image} alt={`${copy('Pasted image', '已粘贴图片')} ${index + 1}`} /><button type="button" disabled={busy || imageReading || !writable} aria-label={`${copy('Remove image', '移除图片')} ${index + 1}`} onClick={() => updateImages(images.filter((_, imageIndex) => imageIndex !== index))}>×</button></figure>)}<span className="chat-image-draft-note">{copy('Images saved on this device', '图片已保存在此设备')}</span></div>}
-      {!submissionPreview && <ContextTray items={context.items} text={text} zh={zh} onRemove={context.remove} disabled={busy || imageReading || !writable} />}
-      <textarea id={`chat-message-${session.id}`} ref={composeRef} value={submissionPreview ? '' : text} onChange={event => { setCaret(event.target.selectionStart ?? event.target.value.length); setMentionDismissed(undefined); changeText(event.target.value); setSlashIndex(0); setMentionIndex(0); }} onSelect={event => setCaret(event.currentTarget.selectionStart ?? caret)} onClick={event => setCaret(event.currentTarget.selectionStart ?? caret)} onKeyUp={event => setCaret(event.currentTarget.selectionStart ?? caret)} onPaste={pasteImages} onContextMenu={writable && !ended ? openComposerContextMenu : undefined} onKeyDown={onComposeKey} placeholder={copy('Message, or type / for commands', '发送消息，或输入 / 命令')} rows={1} disabled={busy || ended || !writable || overlay === "full" || !draftLoaded} />
+      {!submissionPreview && <ContextTray items={context.items} text={text} zh={zh} onRemove={context.remove} disabled={busy || imageReading || !writable} mentions={activeMentions} workspaceRoot={session.worktreePath} />}
+      {!!activeMentions.length && <p id={mentionDescriptionId} className="sr-only">{mentionDescription(activeMentions, zh)}</p>}
+      <textarea id={`chat-message-${session.id}`} ref={composeRef} value={submissionPreview ? '' : text} onChange={event => { setCaret(event.target.selectionStart ?? event.target.value.length); setMentionDismissed(undefined); changeText(event.target.value); setSlashIndex(0); setMentionIndex(0); }} onCompositionStart={() => { composingRef.current = true; }} onCompositionEnd={event => { composingRef.current = false; changeText(event.currentTarget.value); }} onSelect={event => setCaret(event.currentTarget.selectionStart ?? caret)} onClick={event => setCaret(event.currentTarget.selectionStart ?? caret)} onKeyUp={event => setCaret(event.currentTarget.selectionStart ?? caret)} onPaste={pasteImages} onContextMenu={writable && !ended ? openComposerContextMenu : undefined} onKeyDown={onComposeKey} aria-describedby={activeMentions.length ? mentionDescriptionId : undefined} placeholder={copy('Message, or type / for commands', '发送消息，或输入 / 命令')} rows={1} disabled={busy || ended || !writable || overlay === "full" || !draftLoaded} />
       <ComposerOptions
         options={ui.options}
         loadState={ui.loadState}

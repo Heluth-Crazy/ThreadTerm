@@ -60,13 +60,18 @@ export function useChatContext(sessionId: string, zh: boolean, onIssue: (message
     },
     restoreCopiedConversation: (draft: string) => {
       const item = copiedConversationItem(draft);
-      if (!item || current.current.sessionId !== sessionId) return false;
-      if (current.current.items.some(existing => existing.id === item.id || existing.kind === 'conversation')) return true;
-      let items: ContextItem[];
-      try { items = normalizeContextItems([...current.current.items, item]); serializeContext(items, ''); }
-      catch (error) { onIssue(contextError(error, zh)); return false; }
-      try { update(items); return true; }
-      catch (error) { current.current = { sessionId, items }; setState(current.current); onIssue(contextError(error, zh)); return true; }
+      return item ? restoreConversation(item) : false;
     },
+    restoreConversationPayload: (payload: { copiedAt: string; transcript: string }) => restoreConversation({ kind: 'conversation', id: 'fork-context', copiedAt: payload.copiedAt, text: payload.transcript }),
   };
+
+  function restoreConversation(item: Extract<ContextItem, { kind: 'conversation' }>): boolean {
+    if (current.current.sessionId !== sessionId) return false;
+    if (current.current.items.some(existing => existing.id === item.id || existing.kind === 'conversation')) return true;
+    let items: ContextItem[];
+    try { items = normalizeContextItems([...current.current.items, item]); serializeContext(items, ''); }
+    catch (error) { options.current.onIssue(contextError(error, options.current.zh)); return false; }
+    try { update(items); return true; }
+    catch (error) { current.current = { sessionId, items }; setState(current.current); options.current.onIssue(contextError(error, options.current.zh)); return true; }
+  }
 }
