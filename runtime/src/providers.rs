@@ -667,6 +667,17 @@ pub(crate) fn normalize_chat_ui(value: Value) -> Value {
     if let Some(trust) = normalized_pi_trust(value.get("piTrust")) {
         normalized["piTrust"] = trust;
     }
+    // Skills stay absent unless the adapter can tell them apart (E3); a
+    // malformed row is dropped rather than shown as an invocable skill.
+    if let Some(skills) = value.get("skills").and_then(Value::as_array) {
+        let valid = |skill: &&Value| {
+            let text = |key: &str| skill.get(key).and_then(Value::as_str).filter(|value| !value.trim().is_empty());
+            text("name").is_some_and(|name| !name.chars().any(char::is_whitespace))
+                && text("invocation").is_some()
+                && skill.get("description").is_none_or(Value::is_string)
+        };
+        normalized["skills"] = Value::Array(skills.iter().filter(valid).cloned().collect());
+    }
     normalized
 }
 
@@ -2270,6 +2281,19 @@ mod registry_cleanup_tests {
         }));
         assert_eq!(normalized["options"][0]["category"], "mode");
         assert_eq!(normalized["options"][0]["choices"][0]["group"], "own");
+    }
+
+    #[test]
+    fn normalize_chat_ui_passes_adapter_skills_through_and_drops_malformed_rows() {
+        // Live 2026-10-14: Pi's skills reached the adapter state but never the client.
+        let ui = normalize_chat_ui(json!({"options":[],"skills":[
+            {"name":"skill:review","description":"Review","invocation":"/skill:review"},
+            {"name":"two words","invocation":"/two words"},
+            {"name":"skill:bare","invocation":""},
+            {"name":"skill:odd","invocation":"/skill:odd","description":7}
+        ]}));
+        assert_eq!(ui["skills"], json!([{"name":"skill:review","description":"Review","invocation":"/skill:review"}]));
+        assert!(normalize_chat_ui(json!({"options":[]})).get("skills").is_none(), "absent stays absent");
     }
 
     #[test]
