@@ -440,6 +440,8 @@ struct PiShared {
     /// The turn whose reply text has started, and whether its next text opens a
     /// new paragraph. Every assistant message of a turn streams into one item.
     reply_text: Mutex<Option<(String, bool)>>,
+    /// Token usage summed over the turn's assistant messages, for its footer.
+    turn_usage: Mutex<Option<(String, Value)>>,
 }
 
 const PI_TOOL_CALL_LIMIT: usize = 128;
@@ -877,6 +879,10 @@ impl ChatSession for PiChat {
         if let Ok(mut started) = self.shared.started.lock() {
             *started = Some(Instant::now());
         }
+        // The footer names the turn's model; Pi publishes no chat.ui event the
+        // projection could fall back to.
+        let model = self.shared.ui.lock().ok()
+            .and_then(|ui| ui.state.as_ref()?.pointer("/model/id")?.as_str().map(ToOwned::to_owned));
         emit(
             &self.events,
             "pi",
@@ -884,7 +890,7 @@ impl ChatSession for PiChat {
             self.native().as_deref(),
             Some(operation_id),
             "chat.turn.started",
-            json!({}),
+            model.map_or_else(|| json!({}), |model| json!({"model":model})),
         );
         match self.process.request("prompt", json!({"message":text})) {
             Ok(data) => {
@@ -1545,17 +1551,46 @@ fn pi_finish_turn(events: &ScopedProviderEvents, session_id: &str, shared: &PiSh
     let mut data = json!({"result":{"stopReason":stop_reason}});
     if let Some(elapsed) = elapsed_ms { data["elapsedMs"] = json!(elapsed); }
     emit(events, "pi", session_id, native.as_deref(), Some(&turn), "chat.turn.completed", data);
-    pi_refresh_context(events, session_id, shared, sequence);
+    let usage = shared.turn_usage.lock().ok().and_then(|mut slot| slot.take()).filter(|(owner, _)| *owner == turn);
+    pi_refresh_turn_context(events, session_id, shared, sequence, usage);
+}
+
+/// Adds one assistant message's `usage` (input/output/cacheRead/cacheWrite/
+/// totalTokens) to its turn's footer total.
+fn pi_add_turn_usage(shared: &PiShared, turn: &str, message: &Value) {
+    let Some(usage) = message.get("usage").filter(|usage| usage.is_object()) else { return; };
+    let Ok(mut slot) = shared.turn_usage.lock() else { return; };
+    if slot.as_ref().is_none_or(|(owner, _)| owner != turn) {
+        *slot = Some((turn.to_owned(), json!({})));
+    }
+    let Some((_, total)) = slot.as_mut() else { return; };
+    for (source, target) in [("input", "inputTokens"), ("output", "outputTokens"), ("cacheRead", "cacheReadTokens"), ("cacheWrite", "cacheWriteTokens"), ("totalTokens", "totalTokens")] {
+        if let Some(value) = usage.get(source).and_then(Value::as_u64) {
+            total[target] = json!(total.get(target).and_then(Value::as_u64).unwrap_or(0) + value);
+        }
+    }
 }
 
 fn pi_publish_context(events: &ScopedProviderEvents, session_id: &str, native: Option<&str>, sequence: &Mutex<u64>, expected: u64, usage: Value) {
+    pi_publish_turn_context(events, session_id, native, sequence, expected, usage, None);
+}
+
+/// A settled turn's stats read also carries that turn's footer usage.
+fn pi_publish_turn_context(events: &ScopedProviderEvents, session_id: &str, native: Option<&str>, sequence: &Mutex<u64>, expected: u64, usage: Value, turn: Option<(String, Value)>) {
     let Ok(current) = sequence.lock() else { return; };
     if *current == expected {
-        emit(events, "pi", session_id, native, None, "chat.context", json!({"usage":usage}));
+        match turn {
+            Some((turn, turn_usage)) => emit(events, "pi", session_id, native, Some(&turn), "chat.context", json!({"usage":usage,"turnUsage":turn_usage})),
+            None => emit(events, "pi", session_id, native, None, "chat.context", json!({"usage":usage})),
+        }
     }
 }
 
 fn pi_refresh_context(events: &ScopedProviderEvents, session_id: &str, shared: &PiShared, expected: u64) {
+    pi_refresh_turn_context(events, session_id, shared, expected, None);
+}
+
+fn pi_refresh_turn_context(events: &ScopedProviderEvents, session_id: &str, shared: &PiShared, expected: u64, turn: Option<(String, Value)>) {
     let requester = shared.requester.lock().ok().and_then(|slot| slot.clone());
     let Some(requester) = requester else { return; };
     let Ok(current) = shared.context_sequence.lock() else { return; };
@@ -1567,7 +1602,7 @@ fn pi_refresh_context(events: &ScopedProviderEvents, session_id: &str, shared: &
     let _ = requester.request_stats(Box::new(move |result| {
         if let Ok(data) = result {
             if let Some(usage) = pi_context_usage(&data) {
-                pi_publish_context(&callback_events, &callback_session, callback_native.as_deref(), &sequence, expected, usage);
+                pi_publish_turn_context(&callback_events, &callback_session, callback_native.as_deref(), &sequence, expected, usage, turn);
             }
         }
     }));
@@ -1859,6 +1894,9 @@ fn pi_event(
                 if let Some((current, paragraph)) = reply.as_mut() {
                     *paragraph = current == turn;
                 }
+            }
+            if let Some(turn) = turn_id.as_deref() {
+                pi_add_turn_usage(shared, turn, &message);
             }
             let stop_reason = message
                 .get("stopReason")
@@ -2685,6 +2723,27 @@ mod tests {
         *shared.context_sequence.lock().unwrap() = 3;
         pi_publish_context(&events, "session", None, &shared.context_sequence, 2, json!({"totalTokens":20}));
         assert!(receiver.try_recv().is_err());
+    }
+
+    #[test]
+    fn a_settled_turn_reports_its_summed_usage_with_the_stats_read() {
+        let (events, mut receiver) = scoped();
+        let shared = PiShared::default();
+        let reader = stats_reader(&shared);
+        *shared.active_turn.lock().unwrap() = Some("turn-1".into());
+        for (input, output) in [(1200, 40), (300, 25)] {
+            // Pi 1.1 assistant message usage.
+            pi_event(&events, "pi", "session", &shared, json!({"type":"message_end","message":{"role":"assistant","model":"deepseek/deepseek-v4.1-flash",
+                "content":[],"usage":{"input":input,"output":output,"cacheRead":1000,"cacheWrite":0,"totalTokens":input + output + 1000,"cost":{"total":0}}}}));
+        }
+        pi_event(&events, "pi", "session", &shared, json!({"type":"agent_settled"}));
+        while receiver.try_recv().is_ok() {}
+        reader.0.lock().unwrap().pop().unwrap()(Ok(json!({"tokens":{"total":20}})));
+        let context = receiver.try_recv().unwrap();
+        assert_eq!((context.kind.as_str(), context.turn_id.as_deref()), ("chat.context", Some("turn-1")));
+        assert_eq!(context.data["usage"]["totalTokens"], 20);
+        assert_eq!(context.data["turnUsage"], json!({"inputTokens":1500,"outputTokens":65,"cacheReadTokens":2000,"cacheWriteTokens":0,"totalTokens":3565}));
+        assert!(shared.turn_usage.lock().unwrap().is_none());
     }
 
     #[test]

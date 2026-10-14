@@ -2279,6 +2279,15 @@ fn emit_opencode_event(target: &EventTarget, raw: Value) {
             }
             if info.get("role").and_then(Value::as_str) == Some("assistant") {
                 if let Some(usage) = opencode_context_usage(info, &target.model_limits) {
+                    // An assistant message's tokens are its latest step, like
+                    // Codex's `last` usage; they also fill the turn footer.
+                    let mut data = json!({"usage":usage});
+                    if turn.is_some() {
+                        data["turnUsage"] = usage.clone();
+                        if let (Some(provider), Some(model)) = (info.get("providerID").and_then(Value::as_str), info.get("modelID").and_then(Value::as_str)) {
+                            data["model"] = json!(format!("{provider}/{model}"));
+                        }
+                    }
                     emit_scoped(
                         &target.events,
                         "opencode",
@@ -2286,7 +2295,7 @@ fn emit_opencode_event(target: &EventTarget, raw: Value) {
                         native_id,
                         turn.as_deref(),
                         "chat.context",
-                        json!({"usage":usage}),
+                        data,
                         Some(&target.worker_token),
                     );
                 }
@@ -2459,6 +2468,29 @@ fn emit_opencode_event(target: &EventTarget, raw: Value) {
                 json!({"raw":raw}),
                 Some(&target.worker_token),
             );
+        }
+        // OpenCode 1.18 publishes the session todo list (`todowrite`) as
+        // `todo.updated {sessionID, todos:[{content, status, priority}]}`, the
+        // same entries as an ACP plan update; it feeds the turn's plan panel.
+        "todo.updated" if turn.is_some() => {
+            let todos = properties.get("todos").and_then(Value::as_array).cloned().unwrap_or_default();
+            let entries = todos.iter().map(|todo| (
+                todo.get("content").and_then(Value::as_str).unwrap_or_default().to_owned(),
+                todo.get("status").and_then(Value::as_str).unwrap_or("pending").to_owned(),
+                todo.get("priority").and_then(Value::as_str).map(ToOwned::to_owned),
+            ));
+            if let Some(data) = crate::chat_plan::plan_data(entries, None) {
+                emit_scoped(
+                    &target.events,
+                    "opencode",
+                    &target.threadterm_session,
+                    native_id,
+                    turn.as_deref(),
+                    "chat.item",
+                    json!({"merge":true,"part":crate::chat_plan::plan_part(data, turn.as_deref())}),
+                    Some(&target.worker_token),
+                );
+            }
         }
         _ => {
             emit_scoped(
@@ -2685,6 +2717,26 @@ mod tests {
     }
 
     #[test]
+    fn the_session_todo_list_becomes_the_turn_plan() {
+        let (events, mut rx) = crate::provider_events::tap_channel(8);
+        let active = Arc::new(Mutex::new(None));
+        let target = event_target(&events, Arc::clone(&active));
+        // Live OpenCode 1.18 todo.updated (from todowrite).
+        let todos = frame("todo.updated", json!({"sessionID":"native-1","todos":[
+            {"content":"Read README","status":"completed","priority":"high"},
+            {"content":"Write notes.txt","status":"in_progress","priority":"medium"}]}));
+        emit_opencode_event(&target, todos.clone());
+        assert!(std::iter::from_fn(|| rx.try_recv().ok()).all(|event| event.kind != "chat.item"), "no plan outside a turn");
+        *active.lock().unwrap() = Some("turn-1".into());
+        emit_opencode_event(&target, todos);
+        let event = std::iter::from_fn(|| rx.try_recv().ok()).find(|event| event.kind == "chat.item").unwrap();
+        assert_eq!(event.turn_id.as_deref(), Some("turn-1"));
+        let part = &event.data["part"];
+        assert_eq!((part["type"].as_str(), part["toolId"].as_str()), (Some("plan"), Some("plan:turn-1")));
+        assert_eq!(part["data"]["entries"][1], json!({"content":"Write notes.txt","status":"in_progress","priority":"medium"}));
+    }
+
+    #[test]
     fn established_message_updated_event_emits_context_usage() {
         let fixture: Value = serde_json::from_str(include_str!("../../tests/fixtures/opencode-context-event.json")).unwrap();
         let (events, mut rx) = crate::provider_events::tap_channel(8);
@@ -2701,6 +2753,9 @@ mod tests {
         assert_eq!(event.data["usage"]["cacheWriteTokens"], 5);
         assert_eq!(event.data["usage"]["totalTokens"], 235, "native output already includes reasoning tokens");
         assert_eq!(event.data["usage"]["windowTokens"], 200000);
+        // The same step fills the turn footer: its usage and the answering model.
+        assert_eq!(event.data["turnUsage"]["inputTokens"], 120);
+        assert_eq!(event.data["model"], "openai/gpt-test");
     }
 
     /// Event frames below mirror the real OpenCode 1.18.31 `/global/event`

@@ -472,6 +472,11 @@ fn record_tx(
      // Context notifications are the only source for this footer snapshot.
      // They are native per-turn data, unlike summary/session usage records.
      if turn.is_some() && data.get("turnUsage").and_then(turn_usage).is_some() { item.turn_usage=data.get("turnUsage").and_then(turn_usage);changed=true; }
+     // Agents that name the answering model only on its message (OpenCode)
+     // send it here; a model known when the turn started is kept.
+     if turn.is_some() && item.turn_model.is_none() {
+      if let Some(model)=turn_model(data) { item.turn_model=Some(model);changed=true; }
+     }
     }
    }
    _=>{}
@@ -2168,6 +2173,15 @@ mod tests {
         assert!(item.turn_usage.as_ref().unwrap().get("sessionTotal").is_none());
         let legacy: ChatItem = serde_json::from_value(json!({"id":"old","role":"assistant","parts":[],"createdAt":"now"})).unwrap();
         assert!(legacy.turn_model.is_none() && legacy.turn_usage.is_none() && legacy.turn_review.is_none());
+    }
+    #[test]
+    fn a_context_event_names_the_turn_model_only_when_none_is_frozen() {
+        let late = db();
+        record(&late, "s", Some("turn"), "chat.turn.started", &json!({})).unwrap();
+        record(&late, "s", Some("turn"), "chat.context", &json!({"usage":{"usedTokens":9},"model":"anthropic/claude-x"})).unwrap();
+        record(&late, "s", Some("turn"), "chat.context", &json!({"usage":{"usedTokens":9},"model":"other"})).unwrap();
+        let item = late.chat_items("s").unwrap().into_iter().find(|item| item.id == "s:assistant:turn").unwrap();
+        assert_eq!(item.turn_model.as_deref(), Some("anthropic/claude-x"));
     }
     #[test]
     fn turn_review_attaches_to_assistant_when_a_later_user_item_exists() {
