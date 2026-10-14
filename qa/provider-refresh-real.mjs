@@ -224,16 +224,18 @@ try {
     await panel.scrollIntoViewIfNeeded();
     await panel.getByText(language === 'zh-CN' ? '提供商状态已更新。' : 'Provider status updated.', { exact: true }).waitFor({ state: 'detached', timeout: 15_000 });
     await page.screenshot({ path: join(out, name('idle')), animations: 'disabled' }); report.screenshots.push(name('idle'));
+    // Check each state while it is actually on screen: the helper reads the
+    // live DOM, so a single check after the loop would only ever inspect the
+    // final updated surface and could miss checking-state violations.
+    assertNoControlViolations(await checkControlConsistency(page, '.provider-settings'), `${name('idle')} provider-settings`);
     const button = panel.getByRole('button', { name: language === 'zh-CN' ? '刷新提供商状态' : 'Refresh provider status', exact: true });
     await button.click();
     await until(() => panel.locator('button[aria-busy="true"]').count(), `checking ${language}/${theme}/${width}`);
     await page.screenshot({ path: join(out, name('checking')), animations: 'disabled' }); report.screenshots.push(name('checking'));
+    assertNoControlViolations(await checkControlConsistency(page, '.provider-settings'), `${name('checking')} provider-settings`);
     await until(() => panel.getByText(language === 'zh-CN' ? '提供商状态已更新。' : 'Provider status updated.', { exact: true }).count(), `updated ${language}/${theme}/${width}`, 30_000);
     await page.screenshot({ path: join(out, name('updated')), animations: 'disabled' }); report.screenshots.push(name('updated'));
-    for (const label of ['idle', 'checking', 'updated']) {
-      const consistency = await checkControlConsistency(page, '.provider-settings');
-      assertNoControlViolations(consistency, `${name(label)} provider-settings`);
-    }
+    assertNoControlViolations(await checkControlConsistency(page, '.provider-settings'), `${name('updated')} provider-settings`);
   }
   check('the idle/checking/updated surfaces pass the VC control check at 420/1100 px, light/dark/custom, en/zh-CN');
 
