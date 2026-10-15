@@ -155,7 +155,7 @@ async function assertNeutralPalette(page, tag) {
     const runFg = rgba(runStyle.color);
     const text = rgba(token('--text')), surface = rgba(token('--surface')), muted = rgba(token('--muted'));
     return {
-      tokens: { text: colorString(text), surface: colorString(surface), muted: colorString(muted), bg: token('--bg'), soft: token('--soft') },
+      tokens: { text: colorString(text), surface: colorString(surface), muted: colorString(muted), focus: colorString(rgba(token('--primary'))), bg: token('--bg'), soft: token('--soft') },
       primary: { background: colorString(actualPrimaryBg), foreground: colorString(actualPrimaryFg), backgroundTokenMatch: colorString(actualPrimaryBg) === colorString(text), foregroundTokenMatch: colorString(actualPrimaryFg) === colorString(surface), contrast: contrast(actualPrimaryFg, actualPrimaryBg) },
       secondary: { background: colorString(actualSecondaryBg), border: secondaryStyle.borderTopColor, foreground: colorString(actualSecondaryFg), transparentFill: actualSecondaryBg[3] === 0, transparentBorder: actualSecondaryBorder[3] === 0, mutedTokenMatch: colorString(actualSecondaryFg) === colorString(muted), contrast: contrast(composite(actualSecondaryFg, background.color), background.color), pageBackground: colorString(background.color), pageBackgroundSource: background.source },
       run: { foreground: colorString(runFg), mutedTokenMatch: colorString(runFg) === colorString(muted), contrast: contrast(composite(runFg, background.color), background.color) },
@@ -214,7 +214,7 @@ async function assertNeutralPalette(page, tag) {
   const secondaryFocus = await secondary.evaluate(element => ({ active: element === document.activeElement, visible: element.matches(':focus-visible'), outlineColor: getComputedStyle(element).outlineColor, outlineWidth: getComputedStyle(element).outlineWidth }));
   for (const [name, focus] of [['primary', primaryFocus], ['secondary', secondaryFocus]]) {
     assert.ok(focus.active && focus.visible && parseFloat(focus.outlineWidth) >= 1, `${tag}: ${name} action retains keyboard focus indication`);
-    assert.equal(focus.outlineColor, colors.tokens.text, `${tag}: ${name} focus outline follows --text`);
+    assert.equal(focus.outlineColor, colors.tokens.focus, `${tag}: ${name} focus outline follows --primary`);
   }
 
   await openSession(page);
@@ -278,10 +278,12 @@ try {
     note(`geometry-${tag}`, { passed: true, geometry });
     if (phase === 'after') {
       for (const item of [...sessionGeometry.filter(item => item.selector.includes('.ws-chip') || item.selector.includes('.ql-trigger')),
-        ...projectGeometry.filter(item => item.selector.includes('.page-actions'))]) {
+        ...projectGeometry]) {
         assert.ok(Math.abs(item.height - 32) <= 1, `${tag}: ${item.selector} ${item.text} height ${item.height}, expected 32`);
-        assert.match(item.radius, /8px/, `${tag}: ${item.selector} ${item.text} radius ${item.radius}`);
+        assert.equal(item.radius, item.selector.includes('.ov-page-head') ? '6px' : '8px', `${tag}: ${item.selector} ${item.text} radius ${item.radius}`);
       }
+      const title = await page.locator('.ov-title-row .page-title').evaluate(element => ({ width: element.clientWidth, contentWidth: element.scrollWidth, text: element.textContent }));
+      assert.ok(title.width >= Math.min(title.contentWidth, 240), tag + ': header keeps useful title identity before actions (' + JSON.stringify(title) + ')');
       const primary = actionSemantics.filter(item => item.primary);
       assert.equal(primary.length, 1, `${tag}: exactly New terminal is primary`);
       assert.match(primary[0].text, /new terminal|新建终端/i, `${tag}: primary action label`);

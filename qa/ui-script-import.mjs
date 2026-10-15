@@ -85,8 +85,8 @@ try {
     assert.equal(geometry.primary.height, 32, `import height at ${width}/${locale}/${theme}`);
     assert.equal(geometry.input.fontSize, '13px'); assert.equal(geometry.load.fontSize, '13px');
     assert.equal(geometry.cancel.fontSize, '13px'); assert.equal(geometry.primary.fontSize, '13px'); assert.equal(geometry.count.fontSize, '13px');
-    assert.equal(geometry.input.radius, '8px'); assert.equal(geometry.load.radius, '8px');
-    assert.equal(geometry.cancel.radius, '8px'); assert.equal(geometry.primary.radius, '8px');
+    assert.equal(geometry.input.radius, '6px'); assert.equal(geometry.load.radius, '6px');
+    assert.equal(geometry.cancel.radius, '6px'); assert.equal(geometry.primary.radius, '6px');
     assert.ok(Math.abs(geometry.load.x - geometry.input.x - geometry.input.width - 8) < 1, 'directory input and load action keep an 8 px gap');
     assert.ok(Math.abs(geometry.primary.x - geometry.cancel.x - geometry.cancel.width - 8) < 1, 'footer actions keep an 8 px gap');
     if (width <= 520) assert.ok(geometry.count.y < geometry.cancel.y, 'compact layout puts count above both actions');

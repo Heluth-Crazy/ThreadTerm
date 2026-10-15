@@ -86,7 +86,7 @@ export function ImportedHistoryView({ session, onResumed, onOpenSession }: Props
   return <section className="imported-history-view" aria-label={copy("Imported history", "已导入历史")}>
     <ChatForkMenu disabledReason={forkActions.disabledReason} busy={forkActions.busy} onFork={id=>void forkActions.fork(id)} zh={zh}/>
     <ChatForkStatus session={session} zh={zh} onOpenSession={onOpenSession}/>
-    <header><div><strong>{session.title || copy("Imported history", "已导入历史")}</strong><small>{copy("Read-only until you explicitly resume it.", "在显式恢复前仅可读取。")}</small></div>{repair?.offered && <button className="btn" onClick={() => setRepairDialog(true)} disabled={repairing || resuming}>{copy('Reload native history', '重新加载原生历史')}</button>}{session.readOnly && <button className="btn btn-primary" onClick={() => void resume()} disabled={resuming || repairing}>{copy("Resume explicitly", "显式恢复")}</button>}</header>
+    <header className="control-row-lg"><div><strong>{session.title || copy("Imported history", "已导入历史")}</strong><small>{copy("Read-only until you explicitly resume it.", "在显式恢复前仅可读取。")}</small></div>{repair?.offered && <button className="btn" onClick={() => setRepairDialog(true)} disabled={repairing || resuming}>{copy('Reload native history', '重新加载原生历史')}</button>}{session.readOnly && <button className="btn btn-primary" onClick={() => void resume()} disabled={resuming || repairing}>{copy("Resume explicitly", "显式恢复")}</button>}</header>
     {issue && <p className="surface-error" role="alert">{issue}</p>}
     <div className="imported-history-scroll">
       {!items && !issue && <p className="history-transcript-empty">{copy("Loading saved transcript…", "正在加载已保存的记录…")}</p>}

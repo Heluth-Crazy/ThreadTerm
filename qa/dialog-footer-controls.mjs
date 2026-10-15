@@ -105,7 +105,7 @@ try {
         const rect=element=>{const r=element.getBoundingClientRect();return{x:r.x,y:r.y,width:r.width,height:r.height,right:r.right,bottom:r.bottom};};
         return{footer:{...rect(footer),gap:getComputedStyle(footer).gap},dialog:rect(footer.closest('[role="dialog"]')),buttons:[...footer.querySelectorAll(':scope > button')].map(button=>({...rect(button),label:button.innerText.trim(),fontSize:getComputedStyle(button).fontSize,borderRadius:getComputedStyle(button).borderRadius}))};
       });
-      for(const button of measured.buttons){assert.ok(Math.abs(button.height-32)<=1,tag+': '+button.label+' height is 32px');assert.equal(button.fontSize,'13px',tag+': '+button.label+' font is 13px');assert.match(button.borderRadius,/8px/,tag+': '+button.label+' radius is 8px');}
+      for(const button of measured.buttons){assert.ok(Math.abs(button.height-32)<=1,tag+': '+button.label+' height is 32px');assert.equal(button.fontSize,'13px',tag+': '+button.label+' font is 13px');assert.equal(button.borderRadius,'6px',tag+': '+button.label+' radius follows --radius (6px)');}
       assert.equal(measured.footer.gap,'8px',tag+': footer gap is 8px');
       assert.equal(measured.buttons.length,3,tag+': all actions remain available');
       assert.ok(measured.buttons.every(button=>button.x>=measured.footer.x-1&&button.right<=measured.footer.right+1),tag+': footer buttons do not clip horizontally');

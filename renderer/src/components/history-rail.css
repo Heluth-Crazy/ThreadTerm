@@ -3,8 +3,8 @@
 .dialog.sheet.wide.local-history-dialog { width:min(780px,calc(100vw - 24px)); height:min(760px,calc(100dvh - 48px)); max-height:calc(100dvh - 48px); }
 .local-history-dialog > .dlg-body { display:flex; flex:1; flex-direction:column; min-height:0; padding:0; overflow:hidden; }
 .history-source-switch { display:flex; flex:none; gap:8px; padding:12px 16px; border-bottom:1px solid var(--border); }
-.history-source-switch .btn { flex:1; min-height:36px; justify-content:center; }
-.history-source-switch .btn[aria-pressed="true"] { color:var(--primary); background:var(--primary-tint); border-color:var(--primary); }
+.history-source-switch > .seg { display:flex; flex:1; }
+.history-source-switch .seg-btn { flex:1; }
 .local-history-dialog .history-rail { flex:1; min-height:0; height:auto; border:0; border-radius:0; }
 .history-tools.history-saved-filters { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:10px 12px; }
 .history-saved-filters > label { display:grid; min-width:0; gap:5px; color:var(--muted); font-size:12px; }
@@ -20,10 +20,6 @@
 .history-rail-heading h3 { margin:0; font-size:13px; line-height:1.35; }
 .history-rail-heading p { margin:4px 0 0; color:var(--muted); font-size:11px; line-height:1.45; }
 .history-scan { display:flex; gap:6px; padding:0 12px 10px; border-bottom:1px solid var(--border); }.history-scan .history-scan-run { flex:1; justify-content:center; }.history-scan .history-scan-run + .btn { flex:0 0 auto; }
-.history-rail button { min-height:26px; padding:4px 7px; border:1px solid var(--border); border-radius:6px; color:var(--text); background:var(--surface); font:inherit; font-size:11px; cursor:pointer; }
-.history-rail button.primary, .history-rail button.btn-primary { color:var(--primary-contrast,#fff); border-color:var(--primary); background:var(--primary); }
-.history-rail button:disabled { opacity:.5; cursor:default; }
-.history-close { font-size:16px !important; line-height:1; }
 .history-tools { display:flex; flex:0 0 auto; flex-wrap:wrap; gap:6px; padding:8px 12px; border-bottom:1px solid var(--border); }
 .history-tools input, .history-tools .tt-select, .history-import .tt-select { box-sizing:border-box; min-width:0; min-height:30px; color:var(--text); border:1px solid var(--border); border-radius:6px; background:var(--surface); font:inherit; font-size:12px; }
 .history-tools .tt-select-trigger, .history-import .tt-select-trigger { min-height:28px; padding:6px 8px; }
@@ -64,7 +60,7 @@
 .history-action-row, .history-import-options { display:flex; align-items:end; gap:8px; }
 .history-action-row > button { flex:1; }
 .history-import-options > label { flex:1; min-width:0; }
-.history-import-options > button { flex:none; min-height:30px; }
+.history-import-options > button { flex:none; }
 .history-import label { display:grid; gap:4px; color:var(--muted); font-size:11px; }
 .history-import .tt-select { width:100%; }
 .history-import small, .history-created { color:var(--muted); font-size:11px; }
@@ -72,9 +68,9 @@
 .history-created { display:flex; align-items:center; gap:8px; margin-top:8px; }
 .history-created > span { flex:1; min-width:0; }
 .history-scan .tt-select { flex:none; width:68px; }
-.history-scan .tt-select-trigger { min-height:30px; font-size:11px; }
+.history-scan .tt-select-trigger { min-height:30px; font-size:12px; }
 .imported-history-view { display:flex; flex:1; flex-direction:column; height:100%; min-height:0; min-width:0; gap:10px; padding:14px; overflow:hidden; box-sizing:border-box; }
-.imported-history-view > header { display:flex; flex-wrap:wrap; flex:none; align-items:start; justify-content:space-between; gap:10px; width:min(100%,780px); margin:0 auto; }
+.imported-history-view > header { display:flex; flex-wrap:wrap; flex:none; align-items:center; justify-content:space-between; gap:10px; width:min(100%,780px); margin:0 auto; }
 .imported-history-view header > div { display:grid; flex:1 1 220px; gap:3px; min-width:0; }
 .imported-history-view header strong { overflow-wrap:anywhere; }
 .imported-history-view header small { color:var(--muted); font-size:12px; }

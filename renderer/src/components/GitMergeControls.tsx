@@ -23,8 +23,8 @@ export function GitMergeControls({scope,disabled,onChanged}:{scope:FileScope;dis
     }catch(error){setIssue(String(error));await onChanged();}finally{setBusy(false);}
   }
   return <div className="git-merge-controls">
-    <button disabled={busy||disabled} onClick={()=>void open()}>{zh?'合并分支…':'Merge branch…'}</button>
-    {opened&&<><label>{zh?'来源分支':'Source branch'}<Select value={branch} onChange={event=>setBranch(event.target.value)}><option value="">{zh?'选择分支':'Choose branch'}</option>{branches.map(item=><option key={item.name} value={item.name}>{item.name}</option>)}</Select></label><button disabled={busy||disabled||!branch} onClick={()=>void merge()}>{zh?'合并':'Merge'}</button><button disabled={busy||disabled} onClick={()=>void merge(true)}>{zh?'中止当前合并':'Abort current merge'}</button></>}
+    <button className="btn" disabled={busy||disabled} onClick={()=>void open()}>{zh?'合并分支…':'Merge branch…'}</button>
+    {opened&&<><label>{zh?'来源分支':'Source branch'}<Select value={branch} onChange={event=>setBranch(event.target.value)}><option value="">{zh?'选择分支':'Choose branch'}</option>{branches.map(item=><option key={item.name} value={item.name}>{item.name}</option>)}</Select></label><button className="btn" disabled={busy||disabled||!branch} onClick={()=>void merge()}>{zh?'合并':'Merge'}</button><button className="btn" disabled={busy||disabled} onClick={()=>void merge(true)}>{zh?'中止当前合并':'Abort current merge'}</button></>}
     {issue&&<p role="status">{issue}</p>}
   </div>;
 }
