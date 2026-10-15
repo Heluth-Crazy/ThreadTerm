@@ -17,6 +17,7 @@ import { build as esbuild } from 'esbuild';
 import { build as viteBuild } from 'vite';
 import { electron } from './lib/desktop1.mjs';
 import { checkControlConsistency } from './lib/visual-consistency.mjs';
+import { sendChatPrompt } from './lib/chat-send.mjs';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const runtime = join(root, 'runtime/target-qa/debug/threadterm-v3-runtime.exe');
@@ -27,7 +28,8 @@ const scratch = await mkdtemp(join(tmpdir(), 'tt-chat-visual-'));
 const appDir = join(scratch, 'app');
 const plugins = join(scratch, 'plugins');
 const work = join(scratch, 'repo');
-const report = { passed: false, checks: [], screenshots: [], visualConsistency: [], errors: [] };
+const report = { passed: false, checks: [], screenshots: [], visualConsistency: [], paneWidths: [], sendDiagnostics: [], coverage: [], errors: [] };
+const consistencyOptions = { checkStates: true, checkDisabledRows: true };
 // Finding 13 needs the complete violation list in one run. Collect every
 // surface/cell violation here while keeping every assertion, then fail once
 // before the run can be considered passed.
@@ -44,7 +46,65 @@ const check = value => { report.checks.push(value); console.log(`PASS ${value}`)
 const request = (method, params = {}) => page.evaluate(([name, value]) => window.threadterm.request(name, value), [method, params]);
 const chatScope = id => page.locator(`[data-testid="session-chat-${id}"]`);
 async function until(probe, label, timeout = 30_000) { const end = Date.now() + timeout; let error; for (;;) { try { const value = await probe(); if (value) return value; } catch (caught) { error = caught; } if (Date.now() > end) throw new Error(`Timed out: ${label}${error ? `: ${error.message}` : ''}`); await delay(150); } }
-async function shot(name) { await page.mouse.move(2, 2).catch(() => undefined); await delay(150); await page.screenshot({ path: join(out, name), animations: 'disabled' }); report.screenshots.push(name); }
+async function shot(name) { await page.locator('.workspace-action-menu').waitFor({ state: 'hidden' }); await page.mouse.move(2, 2).catch(() => undefined); await delay(150); await page.screenshot({ path: join(out, name), animations: 'disabled' }); report.screenshots.push(name); }
+
+async function recordPaneWidth(view, width, label, surface = 'workspace') {
+  const measured = await view.evaluate(node => ({
+    chatWidth: node.getBoundingClientRect().width,
+    paneWidth: (node.closest('[data-pane-id]') ?? node).getBoundingClientRect().width,
+    viewportWidth: window.innerWidth,
+  }));
+  report.paneWidths.push({ surface, label, requestedWidth: width, ...measured });
+  if (width === 420) {
+    assert.ok(measured.chatWidth >= 380 && measured.chatWidth <= 420, `${label}: Chat itself must be 380–420 px, measured ${measured.chatWidth}`);
+    assert.ok(measured.paneWidth >= 380 && measured.paneWidth <= 420, `${label}: containing pane must be 380–420 px, measured ${measured.paneWidth}`);
+  }
+}
+
+async function sizeChatPane(scope, width) {
+  // Keep wide cells in the original single-pane layout. Narrow cells use a
+  // genuine Split right + divider drag in the same 1440 px desktop window.
+  // At a 960 px window the sidebar/padding leave a grid around the 680 px
+  // stacking breakpoint, so keep the full shell wide and resize only Chat.
+  const actions = () => page.getByRole('button', { name: /^(Workspace actions|工作区操作)$/ });
+  if (width === 1440) {
+    const empty = page.locator('[data-pane-id]').filter({ has: page.locator('.pane-empty') });
+    if (await empty.count()) {
+      await empty.locator('.pane-empty > strong').click();
+      await actions().click();
+      await page.getByRole('button', { name: /^(Close pane|关闭窗格)$/ }).click();
+      await page.keyboard.press('Escape');
+      await page.locator('.workspace-action-menu').waitFor({ state: 'hidden' });
+      await until(async () => (await page.locator('[data-pane-id]').count()) === 1, 'restore single-pane wide layout');
+    }
+    await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].setContentSize(1440, 900));
+    await page.waitForFunction(() => window.innerWidth === 1440);
+    await page.evaluate(() => new Promise(done => requestAnimationFrame(() => requestAnimationFrame(done))));
+    return;
+  }
+  await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].setContentSize(1440, 900));
+  await page.waitForFunction(() => window.innerWidth === 1440);
+  await page.evaluate(() => new Promise(done => requestAnimationFrame(() => requestAnimationFrame(done))));
+  assert.equal(await page.locator('[data-pane-id]').count(), 1, 'narrow cell starts with the original single Chat pane');
+  await scope.locator('textarea').click();
+  await actions().click();
+  await page.getByRole('button', { name: /^(Split right|左右拆分)$/ }).click();
+  await page.keyboard.press('Escape');
+  await page.locator('.workspace-action-menu').waitFor({ state: 'hidden' });
+  await until(async () => (await page.locator('[data-pane-id]').count()) === 2, 'real two-pane workspace');
+  const divider = page.locator('[data-split-id] > .pane-divider');
+  await until(() => divider.evaluate(node => node.parentElement.classList.contains('horizontal')), 'horizontal split at desktop width');
+  const target = await divider.evaluate(node => {
+    const split = node.parentElement, box = split.getBoundingClientRect(), rect = node.getBoundingClientRect();
+    const gap = parseFloat(getComputedStyle(split).columnGap) || 0;
+    return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2, endX: box.left + 400 + gap + rect.width / 2 };
+  });
+  assert.equal(await divider.evaluate((node, point) => node.contains(document.elementFromPoint(point.x, point.y)), target), true, 'divider is the real pointer target');
+  await page.mouse.move(target.x, target.y); await page.mouse.down();
+  await page.mouse.move(target.endX, target.y, { steps: 8 }); await page.mouse.up();
+  await until(() => scope.evaluate(node => { const width = node.getBoundingClientRect().width; return width >= 380 && width <= 420; }), 'Chat resized to 380–420 px');
+}
+
 function git(cwd, ...args) { const result = spawnSync('git', args, { cwd, encoding: 'utf8', windowsHide: true }); assert.equal(result.status, 0, result.stderr); return result.stdout; }
 async function buildApp() {
   await mkdir(appDir, { recursive: true });
@@ -66,7 +126,7 @@ async function checkSurface(selector, label) {
       await instance.evaluate((node, value) => node.setAttribute('data-vc-surface', value), probe);
       await instance.scrollIntoViewIfNeeded().catch(() => undefined);
       await page.evaluate(() => new Promise(done => requestAnimationFrame(() => requestAnimationFrame(done)))).catch(() => undefined);
-      const result = await checkControlConsistency(page, `[data-vc-surface="${probe}"]`);
+      const result = await checkControlConsistency(page, `[data-vc-surface="${probe}"]`, consistencyOptions);
       assert.ok(result.checked > 0, `${label} #${index + 1}: the helper collected visible controls`);
       checked += result.checked;
       report.visualConsistency.push({ label: `${label} #${index + 1}`, ...result, violations: result.violations });
@@ -114,6 +174,7 @@ async function checkRequiredSurfacesMatrix() {
     await supplementaryPage.evaluate(([nextLocale, nextTheme]) => window.qaRequiredSurfaces.mount(nextLocale, nextTheme), [locale, theme]);
     await supplementaryPage.locator('.chat-compose-shell').waitFor();
     await supplementaryPage.evaluate(() => new Promise(done => requestAnimationFrame(() => requestAnimationFrame(done))));
+    await recordPaneWidth(supplementaryPage.locator('[data-testid^="session-chat-"]'), width, `required surfaces ${theme}/${locale}/${width}`, 'supplementary-fixture');
     for (const [label, selector] of required) {
       const instances = supplementaryPage.locator(selector);
       const count = await instances.count();
@@ -126,7 +187,7 @@ async function checkRequiredSurfacesMatrix() {
           await instance.scrollIntoViewIfNeeded();
           const bounds = await instance.boundingBox();
           assert.ok(bounds && bounds.width > 0 && bounds.height > 0, `${label} ${theme}/${locale}/${width} #${index + 1}: the required surface is visible`);
-          const result = await checkControlConsistency(supplementaryPage, `[data-vc-surface="${probe}"]`);
+          const result = await checkControlConsistency(supplementaryPage, `[data-vc-surface="${probe}"]`, consistencyOptions);
           if (['approval card', 'question card', 'queue row', 'context tray'].includes(label)) {
             assert.ok(result.checked > 0, `${label} ${theme}/${locale}/${width} #${index + 1}: controls are visible to the helper`);
           }
@@ -199,8 +260,12 @@ try {
   const scope = chatScope(chat.id);
   const composer = scope.locator('.chat-compose-shell textarea');
   await until(() => composer.isEnabled(), 'chat composer ready');
-  await composer.fill('Emit the plan, tools and a final answer.');
-  await scope.locator('.chat-compose-send[type=submit]').click();
+  await sendChatPrompt({
+    composer, sendButton: scope.locator('.chat-compose-send[type=submit]'), text: 'Emit the plan, tools and a final answer.',
+    readSnapshot: () => request('chat.snapshot', { sessionId: chat.id }),
+    readConnection: () => request('chat.connection', { sessionId: chat.id }),
+    onDiagnostic: diagnostic => { report.sendDiagnostics.push(diagnostic); console.warn(`Chat send did not start: ${JSON.stringify(diagnostic)}`); },
+  });
   await until(async () => (await scope.locator('.chat-tool-activity').count()) > 0, 'tool drawer appears');
   await until(async () => (await request('chat.snapshot', { sessionId: chat.id })).items.some(item => item.parts?.some(part => part.type === 'text' && /Chat visual fixture complete/.test(part.text ?? ''))), 'turn completion');
   await until(() => scope.locator('.chat-plan-panel').count(), 'plan panel appears');
@@ -250,16 +315,28 @@ try {
       ? { language: locale, theme: 'dark', themeSelection: 'custom:qa', customThemes: { qa: custom } }
       : { language: locale, theme, themeSelection: theme };
     await request('settings.update', { patch, expectedRevision: snapshot.settings.revision, operationId: randomUUID() });
-    await app.evaluate(({ BrowserWindow }, nextWidth) => BrowserWindow.getAllWindows()[0].setContentSize(nextWidth, 900), width);
+    await sizeChatPane(scope, width);
     await until(async () => (await scope.locator('.chat-tool-activity').count()) > 0, `${theme}/${locale}/${width} drawer`);
     await page.waitForFunction(expected => document.documentElement.dataset.theme === expected, theme === 'custom' ? 'dark' : theme);
     if (theme === 'custom') await page.waitForFunction(() => document.documentElement.dataset.customTheme === 'true');
+    await recordPaneWidth(scope, width, `chat ${theme}/${locale}/${width}`);
     for (const [label, selector] of surfaces) {
       if (!(await page.locator(selector).count() > 0)) { recordSurfaceFailure(`${label} ${theme}/${locale}/${width}: required surface is present`); continue; }
       const result = await checkSurface(selector, `${label} ${theme}/${locale}/${width}`);
       assert.ok(result.checked >= 1, `${label} ${theme}/${locale}/${width}: the helper saw at least one control`);
       if (result.checked < 1) surfaceFailures.push(`${label} ${theme}/${locale}/${width}: no control collected`);
     }
+    const more = scope.locator('[data-menu-trigger="more"]');
+    if (await more.count()) {
+      await more.click();
+      await scope.locator('.chat-menu-more').waitFor();
+      await checkSurface('.chat-menu-more', `More settings ${theme}/${locale}/${width}`);
+      await shot(`chat-more-settings-${theme}-${width}-${locale}.png`);
+      await page.keyboard.press('Escape');
+    } else recordSurfaceFailure(`More settings ${theme}/${locale}/${width}: fixture options must expose the overflow menu`);
+    const mermaid = scope.locator('.mermaid-extra');
+    if (await mermaid.count()) await checkSurface('.mermaid-extra .markdown-extra-toolbar', `Mermaid toolbar ${theme}/${locale}/${width}`);
+    else report.coverage.push({ label: `Mermaid toolbar ${theme}/${locale}/${width}`, skipped: 'ACP fixture final answer has a TypeScript block only; no Mermaid block' });
     // V1-1: the tool header is one deliberate line. The headline ellipsizes and
     // the failure/Collapse/chevron controls stay on line 1; the turn summary is
     // its own line 2. No control is ever alone on a wrapped line.
@@ -297,6 +374,7 @@ try {
     assert.notEqual(backToBottom.shadow, 'none', `${theme}/${locale}/${width}: the overlay has the shared overlay shadow`);
     const reserve = await scope.locator('.v3-chat-log').evaluate(node => parseFloat(getComputedStyle(node).paddingBottom) || 0);
     assert.ok(reserve >= 40, `${theme}/${locale}/${width}: the transcript reserves the overlay height (${reserve}px)`);
+    await recordPaneWidth(scope, width, `chat screenshot ${theme}/${locale}/${width}`);
     await shot(`chat-${theme}-${width}-${locale}.png`);
   }
   check('V1-1 the tool header keeps its controls on one line with an ellipsized headline and an own-line summary');
