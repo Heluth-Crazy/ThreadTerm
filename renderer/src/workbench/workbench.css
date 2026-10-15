@@ -111,8 +111,6 @@
 .wb-deco-dot { flex:none; width:6px; height:6px; margin:0 5px; border-radius:50%; background:currentColor; opacity:.85; }
 .wb-badge-muted { color:var(--muted); font-size:11px; }
 .wb-time { flex:none; color:var(--faint); font-size:11px; white-space:nowrap; }
-.btn.btn-sm { height:26px; padding:0 10px; font-size:12px; }
-.btn.btn-sm .ico { width:14px; height:14px; }
 .tone-modified { --wb-tone:var(--wb-modified); }
 .tone-added, .tone-untracked { --wb-tone:var(--wb-added); }
 .tone-deleted { --wb-tone:var(--wb-deleted); }

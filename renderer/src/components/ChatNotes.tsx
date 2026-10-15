@@ -85,12 +85,12 @@ export function ChatNotes({ sessionId, liveTurn, leaseEpoch, writable, busy, zh,
   return <section className="chat-notes" aria-label={copy('Feedback notes', '反馈备注')} data-testid="chat-notes">
     <header className="chat-notes-header">
       <strong>{copy(`Feedback notes (${notes.length})`, `反馈备注（${notes.length}）`)}</strong>
-      {!liveTurn && waiting.length > 1 && <button type="button" className="btn-subtle" data-testid="notes-send-all" disabled={!canSend} onClick={() => void sendNotes(waiting)}>{copy('Send all as message', '全部作为消息发送')}</button>}
+      {!liveTurn && waiting.length > 1 && <button type="button" className="btn btn-sm" data-testid="notes-send-all" disabled={!canSend} onClick={() => void sendNotes(waiting)}>{copy('Send all as message', '全部作为消息发送')}</button>}
     </header>
     <ul className="chat-notes-list">{notes.map(note => <li className={`chat-notes-item is-${note.status}`} key={note.id} data-testid="chat-note" data-note-status={note.status}>
       <div className="chat-notes-item-head">
         <span className={`chat-note-status is-${note.status}`} role="status">{note.status === 'received' ? copy('Received', '已接收') : copy('Waiting', '等待中')}</span>
-        {!liveTurn && note.status === 'waiting' && <button type="button" className="btn-subtle" data-testid="note-send-message" disabled={!canSend} onClick={() => void sendNotes([note])}>{copy('Send as message', '作为消息发送')}</button>}
+        {!liveTurn && note.status === 'waiting' && <button type="button" className="btn btn-sm" data-testid="note-send-message" disabled={!canSend} onClick={() => void sendNotes([note])}>{copy('Send as message', '作为消息发送')}</button>}
       </div>
       <p className="chat-note-text" title={note.text}>{note.text}</p>
     </li>)}</ul>

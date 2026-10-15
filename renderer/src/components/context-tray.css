@@ -16,4 +16,4 @@
 .context-preview-list { max-height:60vh; overflow:auto; }
 .context-preview-list-head { display:flex; justify-content:space-between; gap:8px; margin:8px 0; }
 .context-preview-list section + section { margin-top:16px; }
-.chat-queue-context-badge { flex:none; padding:2px 6px; border:1px solid var(--border); border-radius:6px; font-size:11px; color:var(--muted); white-space:nowrap; }
+.chat-queue-context-badge { flex:none; }

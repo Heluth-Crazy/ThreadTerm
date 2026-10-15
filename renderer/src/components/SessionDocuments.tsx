@@ -47,7 +47,7 @@ export function SessionDocuments({sessionId, zh, state, onPick, openFile}:Props)
  const error = issue || state.error || suggestionError;
  return <div className="ins-block session-documents" data-testid="session-documents">
   <div className="session-documents-head"><h3>{text('Plans & docs', '计划与文档')} <span className="session-documents-count">{state.documents.length}</span></h3>
-   <button type="button" className="btn-subtle" onClick={onPick} disabled={busy}>{text('Add file…', '添加文件…')}</button>
+   <button type="button" className="btn btn-sm" onClick={onPick} disabled={busy}>{text('Add file…', '添加文件…')}</button>
   </div>
   {error && <p className="session-documents-error" role="alert">{error}</p>}
   {state.loading && !state.documents.length ? <p className="session-documents-empty" role="status">{text('Loading documents…', '正在读取文档…')}</p> : !state.documents.length && <p className="session-documents-empty" title={text('Add plans or notes to keep them one click away.', '添加计划或笔记，随时一键打开。')}>{text('Add plans or notes to keep them one click away.', '添加计划或笔记，随时一键打开。')}</p>}
@@ -63,7 +63,7 @@ export function SessionDocuments({sessionId, zh, state, onPick, openFile}:Props)
   {suggestions.length > 0 && <div className="session-document-suggestions"><h4>{text('Changed in this session', '此会话中的更改')}</h4>
    {suggestions.map(path => <div className="session-document-row" key={path} data-suggested-path={path}>
     <button type="button" className="session-document-open" title={path} onClick={() => openFile(path)}><Icon name="file"/><span className="session-document-label"><b>{path.split('/').at(-1)}</b><span className="mono" title={path}>{path}</span></span></button>
-    <button type="button" className="btn-subtle session-document-pin" disabled={busy || state.loading} aria-label={text(`Add ${path}`, `添加 ${path}`)} onClick={() => void mutate(path, true)}>{text('Add', '添加')}</button>
+    <button type="button" className="btn btn-sm session-document-pin" disabled={busy || state.loading} aria-label={text(`Add ${path}`, `添加 ${path}`)} onClick={() => void mutate(path, true)}>{text('Add', '添加')}</button>
    </div>)}
   </div>}
  </div>;

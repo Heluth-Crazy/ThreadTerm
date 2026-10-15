@@ -1,3 +1,4 @@
+import { Icon } from "./PrototypeIcon";
 import { Select } from "./ui/Select";
 import { FormEvent, useEffect, useState } from "react";
 import type { ProviderId, Session, SessionConfig, Snapshot } from "@threadterm/protocol";
@@ -151,7 +152,7 @@ export function SessionConfigDialog({
       >
         <div className="dialog-title">
           <h2 id="session-config-title">{text.heading}</h2>
-          <button onClick={onClose}>{t("close")}</button>
+          <button type="button" className="icon-btn" aria-label={t("close")} onClick={onClose}><Icon name="close" /></button>
         </div>
         {config ? (
           <form
@@ -222,16 +223,16 @@ export function SessionConfigDialog({
               </p>
             )}
             <div className="dialog-actions">
-              <button type="button" onClick={onClose}>
+              <button className="btn btn-lg" type="button" onClick={onClose}>
                 {t("cancel")}
               </button>
-              <button className="primary" disabled={busy} type="submit">
+              <button className="btn btn-primary" disabled={busy} type="submit">
                 {text.save}
               </button>
               {isActive(session) ? (
                 <button
                   type="button"
-                  className="danger"
+                  className="btn btn-lg btn-danger"
                   disabled={busy}
                   onClick={() => void rerun(true)}
                 >
@@ -240,6 +241,7 @@ export function SessionConfigDialog({
               ) : (
                 <button
                   type="button"
+                  className="btn btn-lg"
                   disabled={busy}
                   onClick={() => void rerun(false)}
                 >

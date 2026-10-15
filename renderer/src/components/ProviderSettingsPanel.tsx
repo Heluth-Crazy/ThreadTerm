@@ -140,7 +140,7 @@ export function ProviderSettingsPanel({ data, onCreated, onRefreshed }: Props) {
   };
 
   return <section className="settings-card provider-settings" aria-labelledby="provider-settings-title">
-    <div className="settings-card-row"><div><div className="settings-card-title" id="provider-settings-title">{copy.title}</div><p>{copy.managed}</p></div><button className="btn-subtle" type="button" aria-busy={checking} onClick={() => void refresh()} disabled={Boolean(busyProvider) || checking}>{checking ? copy.checking : copy.refresh}</button></div>
+    <div className="settings-card-row"><div><div className="settings-card-title" id="provider-settings-title">{copy.title}</div><p>{copy.managed}</p></div><button className="btn btn-sm" type="button" aria-busy={checking} onClick={() => void refresh()} disabled={Boolean(busyProvider) || checking}>{checking ? copy.checking : copy.refresh}</button></div>
     <label>{copy.folder} <Select value={projectId} onChange={(event) => setProjectId(event.target.value)}>
       <option value="">{copy.chooseFolder}</option>
       {data.projects.map((project) => <option key={project.id} value={project.id}>{project.name} — {displayPath(project.path)}</option>)}
@@ -158,7 +158,7 @@ export function ProviderSettingsPanel({ data, onCreated, onRefreshed }: Props) {
           <div><strong>{capability.name}</strong><p>{capability.installed ? `${copy.installed}${capability.version ? ` · ${capability.version}` : ""}` : copy.notInstalled} · {copy.authentication}: {capability.auth ?? copy.unknown}</p>
             <p>{copy.terminal}: {yesNo(capability.terminal, copy)} · {copy.chat}: {yesNo(capability.chat, copy)} · {copy.history}: {yesNo(capability.history, copy)} · {copy.resume}: {yesNo(capability.resume, copy)}</p>
             {capability.reason && <p>{capability.reason}</p>}</div>
-          {command && <button className="btn-subtle" type="button" onClick={() => void openSignIn(capability)} disabled={!canOpen}>{busyProvider === capability.id ? copy.opening : copy.open}</button>}
+          {command && <button className="btn btn-sm" type="button" onClick={() => void openSignIn(capability)} disabled={!canOpen}>{busyProvider === capability.id ? copy.opening : copy.open}</button>}
         </article>;
       })}
     </div>

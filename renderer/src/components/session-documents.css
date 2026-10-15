@@ -1,7 +1,7 @@
 .ins-block.session-documents { min-width:0; max-width:100%; }
 .session-documents .session-documents-head { display:flex; align-items:center; gap:8px; margin-bottom:8px; min-width:0; }
 .session-documents .session-documents-head h3 { flex:1; min-width:0; margin:0; white-space:nowrap; }
-.session-documents .session-documents-head > button { flex:none; font-size:12px; white-space:nowrap; }
+.session-documents .session-documents-head > button { flex:none; }
 .session-documents .session-documents-count { color:var(--muted); font-weight:400; margin-left:4px; }
 .session-documents .session-document-row { display:flex; align-items:center; gap:6px; min-width:0; width:100%; border-radius:var(--radius); }
 .session-documents .session-document-row:hover,.session-documents .session-document-row:focus-within { background:var(--soft); }
@@ -20,4 +20,4 @@
 .session-documents .session-documents-error { font-size:12px; overflow-wrap:anywhere; color:var(--text); }
 .session-documents .session-document-suggestions { margin-top:12px; }
 .session-documents .session-document-suggestions h4 { margin:0 0 4px; color:var(--muted); font-size:11px; font-weight:500; }
-.session-documents .session-document-pin { flex:none; font-size:12px; white-space:nowrap; }
+.session-documents .session-document-pin { flex:none; }

@@ -47,9 +47,7 @@
 .chip.st-ended::before { background:var(--st-ended); }
 .chip.st-stalled::before { background:var(--st-stalled); }
 
-/* Shared control sizes (issue VC). The prototype owns .btn/.btn-sm geometry when
-   workbench.css is loaded; these identical declarations make the small size
-   available to every surface (Chat, isolated QA) without a workbench import. */
+/* Shared compact controls (issue VC), loaded app-wide and by isolated QA fixtures. */
 .btn.btn-sm { height:26px; padding:0 10px; font-size:12px; }
 .btn.btn-sm .ico { width:14px; height:14px; }
 .icon-btn.icon-btn-sm { width:26px; height:26px; padding:0; font-size:12px; }
@@ -692,7 +690,7 @@ code.chat-status-value { font-family:var(--mono); font-size:11px; }
 .desktop-companion-title { display:flex; align-items:center; gap:7px; margin-bottom:7px; }
 .desktop-companion-title strong { flex:1; font-size:12px; }
 .desktop-companion-drag { cursor:grab; touch-action:none; }
-.desktop-companion-summary { display:flex; width:100%; justify-content:space-between; text-align:left; padding:6px; }
+.desktop-companion-summary { display:flex; width:100%; height:auto; justify-content:space-between; text-align:left; padding:6px; }
 .desktop-companion-summary span { display:grid; gap:2px; color:var(--muted); }
 .desktop-companion-summary b { color:var(--text); font-size:14px; }
 .desktop-companion-inbox, .desktop-companion-reset { width:100%; margin-top:6px; }

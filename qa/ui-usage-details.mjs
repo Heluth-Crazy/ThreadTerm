@@ -62,7 +62,7 @@ await build({
       settings.language = language === 'zh' ? 'zh-CN' : 'en'; settings.theme = theme;
       document.documentElement.dataset.theme = theme;
       const data = { settings, projects, providers: [{id:'codex', name:'Codex'}, {id:'claude', name:'Claude'}], sessions: [] };
-      const app = <I18nProvider locale={settings.language}><SurfaceDialog title={language==='zh'?'用量明细':'Usage details'} subtitle="Usage fixture project" icon="layers" size="wide" onClose={()=>{ window.__usageFixture.modalEscapes = (window.__usageFixture.modalEscapes ?? 0) + 1; }}><UsagePanel data={data} initialProjectId={scoped ? projects[0].id : undefined}/></SurfaceDialog></I18nProvider>;
+      const app = <I18nProvider locale={settings.language}><SurfaceDialog className="sheet-fill sheet-edge-to-edge" title={language==='zh'?'用量明细':'Usage details'} subtitle="Usage fixture project" icon="layers" size="wide" onClose={()=>{ window.__usageFixture.modalEscapes = (window.__usageFixture.modalEscapes ?? 0) + 1; }}><UsagePanel data={data} initialProjectId={scoped ? projects[0].id : undefined}/></SurfaceDialog></I18nProvider>;
       window.__usageReactRoot?.unmount();
       window.__usageReactRoot = createRoot(document.getElementById('mount'));
       window.__usageReactRoot.render(app);

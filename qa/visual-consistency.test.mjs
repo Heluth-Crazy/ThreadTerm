@@ -4,6 +4,7 @@ import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { test } from 'node:test';
 import { resolve } from 'node:path';
+import { runInNewContext } from 'node:vm';
 import {
   analyzeControls,
   compareGroup,
@@ -15,6 +16,25 @@ import {
   tokenLintDiff,
 } from './lib/visual-consistency.mjs';
 import { sendChatPrompt } from './lib/chat-send.mjs';
+import { installVisualFixture } from './parity/fixture.mjs';
+
+test('visual fixture reports no worktree setup runs for idle projects', async () => {
+  const window = {};
+  const seed = { store: { recentSessionIds: [], followed: [], bookmarks: [] }, projects: {}, sessions: [], trees: {
+    'orbit-checkout': { id: 'orbit-checkout', path: 'D:/fixture/checkout' },
+    'orbit-hotfix': { id: 'orbit-hotfix', path: 'D:/fixture/hotfix' },
+  } };
+  runInNewContext(`(${installVisualFixture.toString()})({seed,theme:'light'})`, {
+    window, seed, URLSearchParams, structuredClone, location: { search: '?lang=en' }, localStorage: { setItem() {} },
+  });
+  for (const projectId of ['orbit', 'missing-project']) {
+    const result = await window.threadterm.request('quickLaunch.setup.status', { projectId });
+    assert.ok(Array.isArray(result), 'protocol requires WorktreeSetupRun[]');
+    assert.equal(result.length, 0, 'no setup run is fabricated for an idle fixture');
+  }
+  assert.equal(window.__parityFixture.calls.filter(call => call.method === 'quickLaunch.setup.status').length, 2);
+  assert.equal((await window.threadterm.request('runtime.snapshot', {})).revision, 1, 'status reads do not mutate state');
+});
 
 const control = (overrides = {}) => ({
   selector: 'button.btn',

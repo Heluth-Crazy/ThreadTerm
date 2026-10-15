@@ -181,7 +181,20 @@ try {
   await clickUrl();
   const linkBar = page.locator('.pane-tab-surface:not([hidden]) .terminal-link-actions');
   await linkBar.waitFor();
-  assert.deepEqual((await linkBar.locator('button').allInnerTexts()).map(text => text.trim()), ['Open in preview', 'Open in browser', 'Copy link', 'Close']);
+  const assertLinkBar = async names => {
+    const controls = await linkBar.locator('button').evaluateAll(buttons => buttons.map(button => ({
+      name: (button.getAttribute('aria-label') || button.textContent).trim(),
+      textButton: button.matches('.btn.btn-sm'), iconButton: button.matches('.icon-btn.icon-btn-sm'),
+      height: button.getBoundingClientRect().height, fontSize: getComputedStyle(button).fontSize,
+      radius: getComputedStyle(button).borderRadius, icon: Boolean(button.querySelector('svg')),
+    })));
+    assert.deepEqual(controls.map(control => control.name), names, 'all four terminal link actions have the expected accessible names');
+    assert.ok(controls.slice(0, 3).every(control => control.textButton), 'text actions use shared compact buttons');
+    assert.ok(controls[3].iconButton && controls[3].icon, 'Close uses the shared compact icon button and SVG');
+    assert.ok(controls.every(control => Math.abs(control.height - 26) <= 0.5 && control.fontSize === '12px'), 'link actions share the 26px / 12px compact scale');
+    assert.equal(new Set(controls.map(control => control.radius)).size, 1, 'link actions share one control radius');
+  };
+  await assertLinkBar(['Open in preview', 'Open in browser', 'Copy link', 'Close link actions']);
   await shot('en-2-link-bar.png');
   await linkBar.getByRole('button', { name: 'Open in preview', exact: true }).click();
   const preview = page.locator('.wb-web-preview').first();
@@ -340,6 +353,7 @@ try {
   await tab('Dev server').click();
   await clickUrl();
   await linkBar.getByRole('button', { name: '在预览中打开', exact: true }).waitFor();
+  await assertLinkBar(['在预览中打开', '在浏览器中打开', '复制链接', '关闭链接操作']);
   await shot('zh-2-link-bar.png');
   await linkBar.getByRole('button', { name: '在预览中打开', exact: true }).click();
   await page.locator('.wb-web-preview').first().waitFor();

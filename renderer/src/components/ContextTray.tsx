@@ -85,7 +85,7 @@ function ContextChips({ chips, zh, remove, disabled, children }: { chips: Chip[]
     </div>
     {children}
     {preview && <SurfaceDialog title={copy('Context preview', '上下文预览')} variant="plain" size="wide" className="context-preview-dialog" onClose={() => setPreview(undefined)}>
-      {preview === 'all' ? <div className="context-preview-list">{chips.map(chip => <section key={chip.id}><div className="context-preview-list-head"><button type="button" className="btn-subtle" onClick={() => setPreview(chip)}>{label(chip)}</button>{remove && <button type="button" className="btn-subtle" disabled={disabled} onClick={() => remove(chip.id)}>{copy('Remove context', '移除上下文')}</button>}</div><pre className="context-preview" data-testid="context-preview">{chip.block}</pre></section>)}</div> : <pre className="context-preview" data-testid="context-preview">{preview.block}</pre>}
+      {preview === 'all' ? <div className="context-preview-list">{chips.map(chip => <section key={chip.id}><div className="context-preview-list-head"><button type="button" className="btn btn-sm" onClick={() => setPreview(chip)}>{label(chip)}</button>{remove && <button type="button" className="btn btn-sm btn-danger" disabled={disabled} onClick={() => remove(chip.id)}>{copy('Remove context', '移除上下文')}</button>}</div><pre className="context-preview" data-testid="context-preview">{chip.block}</pre></section>)}</div> : <pre className="context-preview" data-testid="context-preview">{preview.block}</pre>}
     </SurfaceDialog>}
   </>;
 }
@@ -134,5 +134,5 @@ export function ContextQueueBadge({ text, zh }: { text: string; zh: boolean }) {
   const [open, setOpen] = useState(false);
   const parsed = parseContext(text);
   if (!parsed) return null;
-  return <><button type="button" className="chat-queue-context-badge" data-testid="chat-queue-context-badge" onClick={() => setOpen(true)}>{zh ? `${parsed.items.length} 项上下文` : `${parsed.items.length} context`}</button>{open && <SurfaceDialog title={zh ? '上下文预览' : 'Context preview'} variant="plain" size="wide" onClose={() => setOpen(false)}><pre className="context-preview" data-testid="context-preview">{parsed.items.map(({ header, body }) => header + (body ? `\n${body}` : '')).join('\n')}</pre></SurfaceDialog>}</>;
+  return <><button type="button" className="btn btn-sm chat-queue-context-badge" data-testid="chat-queue-context-badge" onClick={() => setOpen(true)}>{zh ? `${parsed.items.length} 项上下文` : `${parsed.items.length} context`}</button>{open && <SurfaceDialog title={zh ? '上下文预览' : 'Context preview'} variant="plain" size="wide" onClose={() => setOpen(false)}><pre className="context-preview" data-testid="context-preview">{parsed.items.map(({ header, body }) => header + (body ? `\n${body}` : '')).join('\n')}</pre></SurfaceDialog>}</>;
 }

@@ -614,9 +614,12 @@ try {
   await scope('sent-queue').locator('[data-testid="chat-queue-context-badge"]').waitFor({ timeout: 15_000 });
   assert.match(await scope('sent-queue').locator('[data-testid="chat-queue-context-badge"]').innerText(), /1 context/);
   const queueBox = await scope('sent-queue').locator('[data-testid="chat-queue"]').boundingBox();
-  // The queue row's pre-existing `.btn-subtle` vs `.chat-queue-context-badge` mismatch is the documented
-  // VC backlog item "Queue rows (Chat-adjacent, deliberately not migrated)", so this state's VC check stays
-  // scoped to the composer shell (the surface M4 changed) exactly as M2 scoped its final real-app check.
+  assertNoControlViolations(await checkControlConsistency(page, '[data-testid="session-chat-sent-queue"] .chat-queue'), 'queued context and actions use shared compact controls');
+  const queueAlignment = await scope('sent-queue').locator('.chat-queue-item').evaluate(row => {
+    const center = node => { const box = node.getBoundingClientRect(); return box.y + box.height / 2; };
+    return { context: center(row.querySelector('.chat-queue-context-badge')), actions: [...row.querySelectorAll('.chat-queue-actions .btn')].map(center) };
+  });
+  assert.ok(queueAlignment.actions.every(center => Math.abs(center - queueAlignment.context) <= 1.5), 'context preview and queue actions share their vertical center');
   await capture('sent-queue', { x: Math.floor(queueBox.x) - 4, y: Math.floor(queueBox.y) - 4, width: Math.ceil(queueBox.width) + 8, height: Math.ceil(queueBox.height) + 8 }, 'sent-queue');
   await mountTranscript('sent-queue-sent', { items: [userItem('sent-q1', SENT_BADGE_ENVELOPE)] });
   await userBadges('sent-queue-sent').waitFor({ timeout: 15_000 });

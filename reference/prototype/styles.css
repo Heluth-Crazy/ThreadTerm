@@ -199,10 +199,8 @@ code, kbd, pre, .mono { font-family: var(--mono); }
 .btn-ghost:hover:not(:disabled) { background: var(--soft); color: var(--text); }
 .btn-danger { background: transparent; color: var(--danger); }
 .btn-danger:hover:not(:disabled) { background: color-mix(in srgb, var(--danger) 12%, transparent); }
-.btn-subtle {
-  border: 0; background: transparent; color: var(--muted);
-  height: auto; padding: 2px 4px; font-size: 13px;
-}
+.btn-subtle { border-color: transparent; background: transparent; color: var(--muted); }
+.btn.btn-lg { height: 32px; }
 .btn-subtle:hover:not(:disabled) { color: var(--text); text-decoration: underline; }
 .icon-btn {
   width: 28px; height: 28px;
@@ -1338,7 +1336,7 @@ button.metric:hover:where(:not(:disabled)) { background: var(--soft); }
   background: var(--surface);
   color: var(--muted);
 }
-.input-wrap input {
+.input-wrap > input[type], .input-wrap > input:not([type]) {
   flex: 1;
   border: 0;
   background: transparent;
@@ -1346,6 +1344,8 @@ button.metric:hover:where(:not(:disabled)) { background: var(--soft); }
   outline: none;
   font-size: 13px;
   min-width: 0;
+  border-radius: 0;
+  padding: 0;
 }
 .field label, .filter-label {
   display: block;
@@ -2078,7 +2078,7 @@ button.preset-card:hover:where(:not(:disabled)) { border-color: var(--faint); }
 .dialog.create-dlg .dlg-foot .btn { height: 32px; font-size: 13px; padding: 0 12px; }
 .dialog.sheet {
   width: min(720px, 92%);
-  height: min(640px, calc(100% - 32px));
+  height: auto;
   max-height: min(640px, calc(100% - 32px));
   background: var(--bg);
   overflow: hidden;
@@ -2086,11 +2086,9 @@ button.preset-card:hover:where(:not(:disabled)) { border-color: var(--faint); }
 .dialog.sheet.wide { width: min(720px, 92%); }
 .dialog.sheet.sheet-sm {
   width: min(560px, 92%);
-  height: min(560px, calc(100% - 32px));
 }
 .dialog.sheet.sheet-md {
   width: min(672px, 92%);
-  height: min(720px, calc(100% - 32px));
   max-height: min(720px, calc(100% - 32px));
 }
 .dlg-head {
@@ -2112,6 +2110,7 @@ button.preset-card:hover:where(:not(:disabled)) { border-color: var(--faint); }
   border-top: 0;
 }
 .dialog.sheet .dlg-head.sheet-head {
+  flex: 0 0 auto;
   align-items: center;
   padding: 14px 20px;
   gap: 12px;
@@ -2121,17 +2120,24 @@ button.preset-card:hover:where(:not(:disabled)) { border-color: var(--faint); }
 .dialog.sheet .dlg-body {
   display: flex;
   flex-direction: column;
-  flex: 1;
+  flex: 0 1 auto;
   min-height: 0;
-  padding: 0;
-  overflow: hidden;
+  padding: 16px 20px;
+  overflow-y: auto;
 }
+.dialog.sheet.sheet-fill { height: min(640px, calc(100% - 32px)); }
+.dialog.sheet.sheet-fill.sheet-sm { height: min(560px, calc(100% - 32px)); }
+.dialog.sheet.sheet-fill.sheet-md { height: min(720px, calc(100% - 32px)); }
+.dialog.sheet.sheet-fill .dlg-body { flex: 1; }
+/* Embedded workspaces and self-padded list/filter layouts retain their own scroll host. */
+.dialog.sheet.sheet-edge-to-edge .dlg-body { padding: 0; overflow: hidden; }
 .dialog.sheet .dlg-foot {
+  flex: 0 0 auto;
   align-items: center;
   padding: 12px 20px;
   border-top: 1px solid var(--border);
 }
-.dialog.sheet .dlg-foot .btn { height: 32px; font-size: 11px; }
+.dialog.sheet .dlg-foot .btn { height: 32px; font-size: 13px; }
 .sheet-icon {
   display: grid;
   place-items: center;

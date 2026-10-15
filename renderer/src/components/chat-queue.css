@@ -3,7 +3,8 @@
 .chat-queue-header { flex-wrap:wrap; }
 .chat-queue-paused { color:var(--muted); font-size:12px; }
 .chat-queue-list { display:grid; gap:4px; max-height:min(200px, 30vh); margin:8px 0 0; padding:0; overflow-y:auto; overscroll-behavior:contain; list-style:none; }
-.chat-queue-item { justify-content:space-between; min-width:0; padding-top:4px; border-top:1px solid color-mix(in srgb, var(--border) 70%, transparent); }
+/* Align actions with the context button below the summary, rather than centering against both lines. */
+.chat-queue-item { align-items:flex-end; justify-content:space-between; min-width:0; padding-top:4px; border-top:1px solid color-mix(in srgb, var(--border) 70%, transparent); }
 .chat-queue-item-main { min-width:0; display:grid; gap:2px; overflow-wrap:anywhere; }
 .chat-queue-item-main > span { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .chat-queue-item-main small { color:var(--muted); }
@@ -14,5 +15,3 @@
 .chat-queue button:focus-visible, .chat-queue textarea:focus-visible { outline:2px solid var(--primary); outline-offset:2px; }
 /* Queue is the same 26 px round icon as Stop/Send; the clock icon and aria-label carry the meaning. */
 @media (max-width:640px) { .chat-queue-item { align-items:flex-start; flex-direction:column; } .chat-queue-actions { justify-content:flex-start; } }
-/* Compact controls: a long queue must not push the transcript out of view. */
-.chat-queue-actions .btn-subtle, .chat-queue-header .btn-subtle, .chat-queue-edit .btn-subtle { min-height:24px; padding:2px 8px; font-size:11px; }
