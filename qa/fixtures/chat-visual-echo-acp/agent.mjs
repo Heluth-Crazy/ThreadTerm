@@ -10,6 +10,12 @@ import { createInterface } from 'node:readline';
 
 const sessions = new Map();
 const send = value => process.stdout.write(`${JSON.stringify(value)}\n`);
+// Enough ordinary ACP options to exercise the real overflow menu even at the
+// wide cell. Each folded row contains selected and unselected peer pills.
+const configOptions = Array.from({ length: 20 }, (_, index) => ({
+  configId: `visual-option-${index + 1}`, name: `Visual setting ${index + 1}`, currentValue: 'balanced',
+  options: [{ value: 'balanced', name: 'Balanced' }, { value: 'detailed', name: 'Detailed' }],
+}));
 
 const READ_PATH = 'src/app.ts';
 const EDIT_FILES = [
@@ -99,10 +105,15 @@ if (process.argv.includes('--version')) {
     if (method === 'session/new') {
       const sessionId = `chat-visual-${randomUUID()}`;
       sessions.set(sessionId, []);
-      return reply({ sessionId });
+      return reply({ sessionId, configOptions });
     }
     if (method === 'session/list') return reply({ sessions: [...sessions].map(([sessionId]) => ({ sessionId, title: 'Chat visual Echo' })) });
-    if (method === 'session/load') return reply({ sessionId: params.sessionId });
+    if (method === 'session/load') return reply({ sessionId: params.sessionId, configOptions });
+    if (method === 'session/set_config_option') {
+      const option = configOptions.find(row => row.configId === params.configId);
+      if (option && option.options.some(choice => choice.value === params.value)) option.currentValue = params.value;
+      return reply({ configOptions });
+    }
     if (method === 'session/prompt') {
       const messages = sessions.get(params.sessionId);
       if (!messages) return send({ jsonrpc: '2.0', id, error: { code: -32004, message: 'session not found' } });

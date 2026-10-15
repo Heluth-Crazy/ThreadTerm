@@ -5,7 +5,8 @@
 // row (same DOM parent and an overlapping vertical band) and compares the
 // rendered control geometry inside each group. It also checks that every
 // control gets a focus-visible outline and that disabled controls do not change
-// on hover.
+// on hover. Opt in with { checkStates: true, checkDisabledRows: true } to also
+// compare selected siblings and hover backgrounds of disabled input rows.
 //
 // The grouping/comparison half is pure so it can be unit-tested without a
 // browser (`qa/visual-consistency.test.mjs`). `tokenLintDiff(diffText)` is the
@@ -88,7 +89,7 @@ export function groupControls(controls) {
 }
 
 /** Compares the controls inside one row group and returns violations. */
-export function compareGroup(group) {
+export function compareGroup(group, options = {}) {
   const violations = [];
   if (group.controls.length < 2) return violations;
   const heights = group.controls.map(control => control.height);
@@ -113,13 +114,31 @@ export function compareGroup(group) {
       valueViolation('border-width', like, peers.map(control => control.borderTopWidth)),
     );
   }
+  if (options.checkStates) {
+    for (const control of group.controls.filter(candidate => candidate.on === true)) {
+      // Geometry groups can span multiple parents. State peers must be actual
+      // siblings with the same shared variant, not unrelated controls in a band.
+      const peers = group.controls.filter(candidate => candidate.on === false
+        && candidate.parentKey === control.parentKey
+        && controlVariant(candidate) === controlVariant(control)
+        && candidate.stateVariant === control.stateVariant
+        && candidate.disabled === control.disabled);
+      const identical = peers.filter(peer => ['backgroundColor', 'color', 'borderColor', 'boxShadow']
+        .every(property => control[property] === peer[property]));
+      if (identical.length) violations.push({
+        kind: 'state', parent: control.parentPath,
+        message: `${control.selector} looks identical to off siblings of the same variant`,
+        controls: [control.selector, ...identical.map(peer => peer.selector)],
+      });
+    }
+  }
   return violations.filter(Boolean);
 }
 
 /** Analyses a raw control list (as returned by the page evaluate). */
-export function analyzeControls(controls) {
+export function analyzeControls(controls, options = {}) {
   const violations = [];
-  for (const group of groupControls(controls)) violations.push(...compareGroup(group));
+  for (const group of groupControls(controls)) violations.push(...compareGroup(group, options));
   for (const control of controls) {
     if (control.focusVisibleOutline !== null && control.focusVisibleOutline <= 0) {
       violations.push({
@@ -134,7 +153,7 @@ export function analyzeControls(controls) {
 }
 
 /** Collects the control geometry in the page. Serialized and run in Chromium. */
-export function collectControlsInPage({ containerSelector, controlSelector }) {
+export function collectControlsInPage({ containerSelector, controlSelector, checkStates = false, checkDisabledRows = false }) {
   const root = containerSelector ? document.querySelector(containerSelector) : document.body;
   if (!root) return { error: `container not found: ${containerSelector}` };
   const all = [...root.querySelectorAll(controlSelector || 'button, [role="button"], .chip')];
@@ -185,6 +204,11 @@ export function collectControlsInPage({ containerSelector, controlSelector }) {
     const style = window.getComputedStyle(element);
     const text = (element.textContent ?? '').replace(/\s+/g, ' ').trim();
     const disabled = element.matches(':disabled') || element.getAttribute('aria-disabled') === 'true';
+    const state = checkStates ? {
+      on: ['aria-pressed', 'aria-expanded', 'aria-checked'].some(attribute => element.getAttribute(attribute) === 'true') || element.classList.contains('is-on'),
+      stateVariant: [...element.classList].filter(name => /^(btn(?:-.+)?|icon-btn(?:-.+)?|chip(?:-btn)?|is-plain|is-icon)$/.test(name)).sort().join(' '),
+      backgroundColor: style.backgroundColor, color: style.color, borderColor: style.borderColor, boxShadow: style.boxShadow,
+    } : {};
     let focusVisibleOutline = null;
     if (typeof element.focus === 'function') {
       const selection = document.getSelection();
@@ -213,6 +237,7 @@ export function collectControlsInPage({ containerSelector, controlSelector }) {
       element.setAttribute('data-vc-probe', probe);
     }
     controls.push({
+      ...state,
       selector: cssPath(element),
       parentKey: parentIds.get(parent),
       parentPath: nameOf(parent),
@@ -232,7 +257,16 @@ export function collectControlsInPage({ containerSelector, controlSelector }) {
       focusVisibleOutline,
     });
   }
-  return { controls, error: undefined };
+  const disabledRows = [];
+  if (checkDisabledRows) {
+    for (const element of root.querySelectorAll('label, [role="option"], [role="menuitemradio"]')) {
+      if (!element.querySelector('input:disabled') || !isVisible(element)) continue;
+      const probe = String(probeIndex++);
+      element.setAttribute('data-vc-probe', probe);
+      disabledRows.push({ selector: cssPath(element), parentPath: nameOf(element.parentElement ?? root), probe, hoverOnly: true });
+    }
+  }
+  return { controls, ...(checkDisabledRows ? { disabledRows } : {}), error: undefined };
 }
 
 function sameStyle(a, b) {
@@ -252,6 +286,11 @@ export function disabledHoverChanged(before, after) {
   return !sameStyle(before, after);
 }
 
+/** Disabled input rows are checked for background changes only. */
+export function disabledRowHoverChanged(before, after) {
+  return Boolean(before?.disabled && after?.disabled && before.backgroundColor !== after.backgroundColor);
+}
+
 /**
  * Checks a container for control-consistency violations.
  * Returns `{ violations, checked, groups, error? }`; never throws on a missing
@@ -259,43 +298,48 @@ export function disabledHoverChanged(before, after) {
  */
 export async function checkControlConsistency(page, containerSelector, options = {}) {
   const controlSelector = options.controlSelector ?? CONTROL_SELECTOR;
+  // State paint is compared at rest, not with one sibling under the pointer.
+  if (options.checkStates) await page.mouse.move(0, 0);
   const collected = await page
-    .evaluate(collectControlsInPage, { containerSelector: containerSelector ?? null, controlSelector })
+    .evaluate(collectControlsInPage, { containerSelector: containerSelector ?? null, controlSelector, checkStates: options.checkStates === true, checkDisabledRows: options.checkDisabledRows === true })
     .catch(error => ({ error: String(error), controls: [] }));
   if (collected.error) return { violations: [], checked: 0, groups: [], error: collected.error };
   const controls = collected.controls ?? [];
   const groups = groupControls(controls);
-  const violations = analyzeControls(controls);
+  const violations = analyzeControls(controls, options);
 
   // Disabled controls must not react to hover. The collect pass tagged each one
   // with data-vc-probe so the selector stays unambiguous. A control whose state
   // settles after the first paint (for example a question card that enables
   // once its lease lands) is re-probed once and skipped if it stays enabled.
-  const probes = controls.filter(control => control.probe !== undefined);
-  const readProbe = locator => locator
-    .evaluate(element => {
+  const probes = [...controls.filter(control => control.probe !== undefined), ...(collected.disabledRows ?? [])];
+  const readProbe = (locator, hoverOnly) => locator
+    .evaluate((element, isRow) => {
       const style = window.getComputedStyle(element);
       return {
         backgroundColor: style.backgroundColor,
         color: style.color,
         borderTopColor: style.borderTopColor,
         opacity: style.opacity,
-        disabled: element.matches(':disabled') || element.getAttribute('aria-disabled') === 'true',
+        disabled: isRow ? Boolean(element.querySelector('input:disabled')) : element.matches(':disabled') || element.getAttribute('aria-disabled') === 'true',
       };
-    })
+    }, Boolean(hoverOnly))
     .catch(() => null);
   for (const control of probes) {
     const locator = page.locator(`[data-vc-probe="${control.probe}"]`);
-    const before = await readProbe(locator);
+    if (options.checkDisabledRows) await page.mouse.move(0, 0);
+    if (control.hoverOnly) await locator.evaluate(() => new Promise(done => requestAnimationFrame(() => requestAnimationFrame(done)))).catch(() => undefined);
+    const before = await readProbe(locator, control.hoverOnly);
     if (!before?.disabled) continue;
     await locator.hover({ force: true }).catch(() => undefined);
-    let after = await readProbe(locator);
+    if (control.hoverOnly) await locator.evaluate(() => new Promise(done => requestAnimationFrame(() => requestAnimationFrame(done)))).catch(() => undefined);
+    let after = await readProbe(locator, control.hoverOnly);
     if (after && !after.disabled) {
       await locator.hover({ force: true }).catch(() => undefined);
-      after = await readProbe(locator);
+      after = await readProbe(locator, control.hoverOnly);
       if (!after?.disabled) continue;
     }
-    if (disabledHoverChanged(before, after)) {
+    if (control.hoverOnly ? disabledRowHoverChanged(before, after) : disabledHoverChanged(before, after)) {
       violations.push({
         kind: 'disabled-hover',
         parent: control.parentPath,
@@ -311,6 +355,7 @@ export async function checkControlConsistency(page, containerSelector, options =
   return {
     violations,
     checked: controls.length,
+    ...(options.checkDisabledRows ? { disabledRowsChecked: (collected.disabledRows ?? []).length } : {}),
     groups: groups.map(group => ({ parent: group.parentPath, size: group.controls.length })),
   };
 }
