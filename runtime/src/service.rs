@@ -105,14 +105,15 @@ fn ensure_chat_session_open(db: &Database, providers: &Providers, session_id: &s
     if !db.begin_chat_connection(session_id)? {
         return Err(anyhow::anyhow!("session_read_only_resume_required"));
     }
-    let opened = providers
-        .chat_open(
-            session_id,
-            &session.provider,
-            cwd,
-            session.native_id.as_deref(),
-        )
-        .map_err(anyhow::Error::from)?;
+    let opened = open_chat_with_empty_native_recovery(
+        db,
+        providers,
+        session_id,
+        &session.provider,
+        cwd,
+        session.native_id.as_deref(),
+    )
+    .map_err(anyhow::Error::from)?;
     if let Err(error) = restore_pi_auto_retry(db, providers, session_id, &session.provider) {
         let _ = providers.chat_stop(session_id);
         return Err(error);
@@ -133,6 +134,38 @@ fn ensure_chat_session_open(db: &Database, providers: &Providers, session_id: &s
     }
     let _ = crate::chat_projection::expire_pending_approvals(db, session_id);
     Ok(())
+}
+
+fn open_chat_with_empty_native_recovery(
+    db: &Database,
+    providers: &Providers,
+    session_id: &str,
+    provider: &str,
+    cwd: &str,
+    expected_native_id: Option<&str>,
+) -> Result<Value, crate::providers::ProviderError> {
+    providers.chat_open_recovering(
+        session_id,
+        provider,
+        cwd,
+        expected_native_id,
+        &|replacement| {
+            let Some(expected_native_id) = expected_native_id else {
+                return Ok(false);
+            };
+            let result = match replacement {
+                Some(replacement) => db.replace_empty_chat_native_id(
+                    session_id,
+                    expected_native_id,
+                    replacement,
+                ),
+                None => db.empty_chat_native_recovery_eligible(session_id, expected_native_id),
+            };
+            result.map_err(|error| {
+                crate::providers::ProviderError::new("chat_persistence", error.to_string())
+            })
+        },
+    )
 }
 
 fn restore_pi_auto_retry(
@@ -2249,7 +2282,14 @@ impl RuntimeService {
             }
         } else {
             let opened =
-                match providers.chat_open(session_id, &p.provider, cwd, p.native_id.as_deref()) {
+                match open_chat_with_empty_native_recovery(
+                    db,
+                    providers,
+                    session_id,
+                    &p.provider,
+                    cwd,
+                    p.native_id.as_deref(),
+                ) {
                     Ok(value) => value,
                     Err(error) => {
                         db.set_session_status(session_id, "error", None)?;
