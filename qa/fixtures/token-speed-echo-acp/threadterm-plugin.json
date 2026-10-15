@@ -1,0 +1,16 @@
+{
+  "schemaVersion": 1,
+  "id": "token-speed-echo-acp",
+  "name": "Token speed Echo (QA fixture)",
+  "version": "1.0.0",
+  "publisher": "ThreadTerm QA",
+  "description": "Deterministic ACP fixture for token-speed Desktop QA.",
+  "homepage": "https://example.invalid/token-speed-echo",
+  "contributes": { "agents": [{
+    "id": "token-speed-echo", "name": "Token speed Echo", "icon": "icon.svg",
+    "command": "node", "args": ["{pluginDir}/agent.mjs"], "versionArgs": ["--version"],
+    "terminal": { "args": [], "resumeArgs": ["--resume", "{sessionId}"] },
+    "chat": { "protocol": "acp", "args": ["--acp"] }, "signIn": { "args": ["login"] },
+    "homepage": "https://example.invalid/token-speed-echo"
+  }] }
+}

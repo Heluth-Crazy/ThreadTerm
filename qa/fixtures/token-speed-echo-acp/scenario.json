@@ -1,0 +1,17 @@
+{
+  "id": "token-speed-echo-acp",
+  "modelId": "token-speed-echo",
+  "firstTokenMs": 600,
+  "firstStreamMs": 2000,
+  "toolMs": 1500,
+  "secondStreamMs": 1500,
+  "firstChunks": [
+    "Measured output begins after a predictable pause. ",
+    "English words stream steadily so the estimate is stable. ",
+    "这里有中文文本，用来验证中英文混合的估算。 "
+  ],
+  "secondChunks": [
+    "The simulated tool has finished, and generation resumes. ",
+    "第二段继续输出，工具等待时间不应计入生成速度。"
+  ]
+}
