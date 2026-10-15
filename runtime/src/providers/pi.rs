@@ -96,15 +96,7 @@ impl ProviderAdapter for PiAdapter {
                 "terminal resume and assignment cannot both be requested",
             ));
         }
-        let owned: Vec<String> = if let Some(id) = resume_id {
-            validate_native_id(id)?;
-            vec!["--session".to_owned(), id.to_owned()]
-        } else if let Some(id) = assign_id {
-            validate_native_id(id)?;
-            vec!["--session-id".to_owned(), id.to_owned()]
-        } else {
-            Vec::new()
-        };
+        let owned = pi_terminal_args(resume_id, assign_id, pi_session_saved)?;
         let refs: Vec<&str> = owned.iter().map(String::as_str).collect();
         let spec = CommandSpec::provider("pi", &refs)?;
         Ok(TerminalCommand {
@@ -362,7 +354,7 @@ impl PiAdapter {
             // that (project trust, Reconnect, a runtime restart) has nothing to
             // resume and `--session` would exit; `--session-id` creates it under
             // the same id instead.
-            args.push(if pi_session_saved(id) { "--session" } else { "--session-id" }.to_owned());
+            args.push(pi_resume_flag(pi_session_saved(id)).to_owned());
             args.push(id.to_owned());
             if let Ok(mut value) = shared.native_id.lock() {
                 value.get_or_insert_with(|| id.to_owned());
@@ -2533,6 +2525,33 @@ fn pi_session_saved_in(directory: &Path, native_id: &str) -> bool {
         .any(|path| pi_session_identity(path).is_some_and(|(id, _)| id == native_id))
 }
 
+fn pi_resume_flag(saved: bool) -> &'static str {
+    if saved {
+        "--session"
+    } else {
+        "--session-id"
+    }
+}
+
+fn pi_terminal_args(
+    resume_id: Option<&str>,
+    assign_id: Option<&str>,
+    session_saved: impl FnOnce(&str) -> bool,
+) -> Result<Vec<String>, ProviderError> {
+    if let Some(id) = resume_id {
+        validate_native_id(id)?;
+        // Pi writes the session JSONL only after its first user or assistant
+        // message. Retain a preassigned but unpersisted terminal identity by
+        // asking Pi to create it under this same id.
+        return Ok(vec![pi_resume_flag(session_saved(id)).to_owned(), id.to_owned()]);
+    }
+    if let Some(id) = assign_id {
+        validate_native_id(id)?;
+        return Ok(vec!["--session-id".to_owned(), id.to_owned()]);
+    }
+    Ok(Vec::new())
+}
+
 fn pi_session_identity(path: &Path) -> Option<(String, String)> {
     let head = read_bounded(path, HEAD_BYTES, false)?;
     let line = head.lines().next()?;
@@ -3445,8 +3464,16 @@ require('node:readline').createInterface({input:process.stdin}).on('line', line 
     fn terminal_mapping_preserves_pi_resume_and_preassigned_identity_contracts() {
         let (sender, _receiver) = tap_channel(8);
         let adapter = PiAdapter::new(sender);
-        let resumed = adapter.terminal_command(Some("session-9"), None).unwrap();
-        assert_eq!(resumed.args, vec!["--session", "session-9"]);
+        assert_eq!(pi_resume_flag(true), "--session");
+        assert_eq!(pi_resume_flag(false), "--session-id");
+        assert_eq!(
+            pi_terminal_args(Some("session-9"), None, |_| true).unwrap(),
+            vec!["--session", "session-9"]
+        );
+        assert_eq!(
+            pi_terminal_args(Some("session-9"), None, |_| false).unwrap(),
+            vec!["--session-id", "session-9"]
+        );
         let fresh = adapter.terminal_command(None, Some("assigned-9")).unwrap();
         assert_eq!(fresh.args, vec!["--session-id", "assigned-9"]);
         assert_eq!(adapter.terminal_capture(), TerminalCapture::PreAssigned);

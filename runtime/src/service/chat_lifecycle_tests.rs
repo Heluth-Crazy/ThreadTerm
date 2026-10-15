@@ -18,7 +18,7 @@ struct OpenGate {
 
 struct FixtureAdapter {
     gate: Option<OpenGate>,
-    failure: Mutex<Option<ProviderError>>,
+    failures: Mutex<Vec<ProviderError>>,
     status_before_return: Option<(Arc<Database>, &'static str)>,
     opens: Arc<AtomicUsize>,
     stops: Arc<AtomicUsize>,
@@ -128,12 +128,14 @@ impl ProviderAdapter for FixtureAdapter {
                 .recv()
                 .map_err(|error| ProviderError::new("fixture_failed", error.to_string()))?;
         }
-        if let Some(error) = self
-            .failure
-            .lock()
-            .map_err(|_| ProviderError::new("fixture_failed", "failure lock poisoned"))?
-            .take()
-        {
+        let failure = {
+            let mut failures = self
+                .failures
+                .lock()
+                .map_err(|_| ProviderError::new("fixture_failed", "failure lock poisoned"))?;
+            (!failures.is_empty()).then(|| failures.remove(0))
+        };
+        if let Some(error) = failure {
             return Err(error);
         }
         if let Some((db, status)) = &self.status_before_return {
@@ -213,19 +215,37 @@ impl Fixture {
         failure: Option<ProviderError>,
         status_before_return: Option<&'static str>,
     ) -> Self {
-        Self::build(slow, failure, status_before_return, false)
+        Self::build(
+            slow,
+            failure.into_iter().collect(),
+            status_before_return,
+            false,
+            true,
+        )
+    }
+
+    fn with_failures(failures: Vec<ProviderError>) -> Self {
+        Self::build(false, failures, None, false, true)
+    }
+
+    fn with_failures_and_liveness(
+        failures: Vec<ProviderError>,
+        initial_liveness: bool,
+    ) -> Self {
+        Self::build(false, failures, None, false, initial_liveness)
     }
 
     /// Several concurrent chats (parent and delegates) with distinct native ids.
     fn for_delegation() -> Self {
-        Self::build(false, None, None, true)
+        Self::build(false, Vec::new(), None, true, true)
     }
 
     fn build(
         slow: bool,
-        failure: Option<ProviderError>,
+        failures: Vec<ProviderError>,
         status_before_return: Option<&'static str>,
         unique_native_ids: bool,
+        initial_liveness: bool,
     ) -> Self {
         let root = tempfile::tempdir().unwrap();
         let db = Arc::new(Database::open(&root.path().join("runtime.sqlite")).unwrap());
@@ -245,13 +265,13 @@ impl Fixture {
                 started: started_tx,
                 release: Mutex::new(release_rx),
             }),
-            failure: Mutex::new(failure),
+            failures: Mutex::new(failures),
             status_before_return: status_before_return.map(|status| (Arc::clone(&db), status)),
             opens: Arc::clone(&opens),
             stops: Arc::clone(&stops),
             alive: Arc::clone(&alive),
             worker_tokens: Arc::clone(&worker_tokens),
-            initial_liveness: true,
+            initial_liveness,
             unique_native_ids,
         });
         let output = Arc::new(OutputStore::default());
@@ -304,6 +324,26 @@ impl Fixture {
                         "cwd": self.root.path(),
                         "provider": "grok",
                         "mode": "chat",
+                        "operationId": operation_id
+                    }),
+                },
+            )
+            .unwrap()
+    }
+
+    fn create_with_native(&self, operation_id: &str, native_id: &str) -> Value {
+        self.service
+            .dispatch(
+                "desktop",
+                RpcRequest {
+                    v: 1,
+                    id: format!("request-{operation_id}"),
+                    method: "session.create".into(),
+                    params: json!({
+                        "cwd": self.root.path(),
+                        "provider": "grok",
+                        "mode": "chat",
+                        "nativeId": native_id,
                         "operationId": operation_id
                     }),
                 },
@@ -382,6 +422,346 @@ fn terminal_resume_preflight_failure_preserves_identity_status_output_and_operat
         assert!(fixture.db.operation("preflight-resume").unwrap().is_none());
         assert_eq!(fixture.opens.load(AtomicOrdering::SeqCst), 0);
     }
+}
+
+fn missing_native_thread() -> ProviderError {
+    ProviderError::new("native_thread_missing", "the native thread does not exist")
+}
+
+#[test]
+fn missing_native_thread_recovers_only_an_empty_chat_and_replaces_its_identity() {
+    let fixture = Fixture::new(false, Some(missing_native_thread()));
+    let created = fixture.create_with_native("create-missing-empty", "missing-native");
+    let session_id = created["id"].as_str().unwrap();
+    let lease_epoch = fixture.claim(session_id);
+    let connected = fixture
+        .service
+        .dispatch(
+            "desktop",
+            Fixture::connect_request(session_id, lease_epoch, "connect-missing-empty"),
+        )
+        .unwrap();
+
+    assert_eq!(connected["phase"], "ready");
+    assert_eq!(connected["nativeId"], "fixture-native");
+    assert_eq!(fixture.opens.load(AtomicOrdering::SeqCst), 2);
+    let tokens = fixture.worker_tokens.lock().unwrap();
+    assert_eq!(tokens.len(), 2);
+    assert_ne!(tokens[0], tokens[1]);
+    drop(tokens);
+    let stored = fixture.db.session_by_id(session_id).unwrap().unwrap();
+    assert_eq!(stored.native_id.as_deref(), Some("fixture-native"));
+    assert_eq!(stored.status, "idle");
+}
+
+#[test]
+fn explicit_resume_recovers_a_missing_native_thread_for_an_empty_chat() {
+    let fixture = Fixture::new(false, Some(missing_native_thread()));
+    let created = fixture.create_with_native("create-resumable-empty", "missing-native");
+    let session_id = created["id"].as_str().unwrap();
+    fixture
+        .db
+        .set_session_status(session_id, "exited", Some(0))
+        .unwrap();
+
+    let resumed = fixture
+        .service
+        .dispatch(
+            "desktop",
+            RpcRequest {
+                v: 1,
+                id: "resume-missing-empty".into(),
+                method: "session.resume".into(),
+                params: json!({
+                    "sessionId": session_id,
+                    "cwd": fixture.root.path(),
+                    "operationId": "resume-missing-empty"
+                }),
+            },
+        )
+        .unwrap();
+
+    assert_eq!(resumed["nativeId"], "fixture-native");
+    assert_eq!(resumed["status"], "idle");
+    assert_eq!(fixture.opens.load(AtomicOrdering::SeqCst), 2);
+    let stored = fixture.db.session_by_id(session_id).unwrap().unwrap();
+    assert_eq!(stored.native_id.as_deref(), Some("fixture-native"));
+}
+
+#[test]
+fn missing_native_thread_with_any_chat_item_keeps_the_original_failure_and_identity() {
+    let fixture = Fixture::new(false, Some(missing_native_thread()));
+    let created = fixture.create_with_native("create-missing-message", "missing-native");
+    let session_id = created["id"].as_str().unwrap();
+    fixture
+        .db
+        .transaction(|tx| {
+            tx.execute(
+                "INSERT INTO chat_items(id,session_id,kind,data,created_at) VALUES ('evidence',?,'system','{}','now')",
+                [session_id],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+    let lease_epoch = fixture.claim(session_id);
+    let error = fixture
+        .service
+        .dispatch(
+            "desktop",
+            Fixture::connect_request(session_id, lease_epoch, "connect-missing-message"),
+        )
+        .unwrap_err();
+
+    assert_eq!(error.code, "native_resume_failed");
+    assert_eq!(fixture.opens.load(AtomicOrdering::SeqCst), 1);
+    assert_eq!(
+        fixture
+            .db
+            .session_by_id(session_id)
+            .unwrap()
+            .unwrap()
+            .native_id
+            .as_deref(),
+        Some("missing-native")
+    );
+}
+
+#[test]
+fn non_missing_resume_errors_never_open_a_replacement() {
+    for (case, error) in [
+        (
+            "auth",
+            ProviderError::new("auth_required", "authentication required"),
+        ),
+        (
+            "network",
+            ProviderError::new("provider_network", "network unavailable"),
+        ),
+        (
+            "timeout",
+            ProviderError::new("provider_timeout", "provider timed out"),
+        ),
+        (
+            "cwd",
+            ProviderError::new("cwd_missing", "working directory is missing"),
+        ),
+        (
+            "invalid-id",
+            ProviderError::new("invalid_native_id", "native id is invalid"),
+        ),
+        (
+            "protocol",
+            ProviderError::new("provider_protocol", "bad response"),
+        ),
+    ] {
+        let fixture = Fixture::new(false, Some(error));
+        let created = fixture.create_with_native(&format!("create-{case}"), "missing-native");
+        let session_id = created["id"].as_str().unwrap();
+        let lease_epoch = fixture.claim(session_id);
+        fixture
+            .service
+            .dispatch(
+                "desktop",
+                Fixture::connect_request(session_id, lease_epoch, &format!("connect-{case}")),
+            )
+            .unwrap_err();
+
+        assert_eq!(
+            fixture.opens.load(AtomicOrdering::SeqCst),
+            1,
+            "case {case}"
+        );
+        assert_eq!(
+            fixture
+                .db
+                .session_by_id(session_id)
+                .unwrap()
+                .unwrap()
+                .native_id
+                .as_deref(),
+            Some("missing-native"),
+            "case {case}"
+        );
+    }
+}
+
+#[test]
+fn failed_fresh_open_leaves_the_missing_native_identity_unchanged() {
+    let fixture = Fixture::with_failures(vec![
+        missing_native_thread(),
+        ProviderError::new("provider_unavailable", "fresh provider failed"),
+    ]);
+    let created = fixture.create_with_native("create-fresh-failure", "missing-native");
+    let session_id = created["id"].as_str().unwrap();
+    let lease_epoch = fixture.claim(session_id);
+    let error = fixture
+        .service
+        .dispatch(
+            "desktop",
+            Fixture::connect_request(session_id, lease_epoch, "connect-fresh-failure"),
+        )
+        .unwrap_err();
+
+    assert_eq!(error.code, "provider_unavailable");
+    assert_eq!(fixture.opens.load(AtomicOrdering::SeqCst), 2);
+    assert_eq!(
+        fixture
+            .db
+            .session_by_id(session_id)
+            .unwrap()
+            .unwrap()
+            .native_id
+            .as_deref(),
+        Some("missing-native")
+    );
+}
+
+#[test]
+fn dead_fresh_worker_is_stopped_before_any_native_identity_replacement() {
+    let fixture = Fixture::with_failures_and_liveness(vec![missing_native_thread()], false);
+    let created = fixture.create_with_native("create-dead-fresh", "missing-native");
+    let session_id = created["id"].as_str().unwrap();
+    let lease_epoch = fixture.claim(session_id);
+    let error = fixture
+        .service
+        .dispatch(
+            "desktop",
+            Fixture::connect_request(session_id, lease_epoch, "connect-dead-fresh"),
+        )
+        .unwrap_err();
+
+    assert_eq!(error.code, "native_resume_failed");
+    assert_eq!(fixture.opens.load(AtomicOrdering::SeqCst), 2);
+    assert_eq!(fixture.stops.load(AtomicOrdering::SeqCst), 1);
+    assert_eq!(
+        fixture
+            .db
+            .session_by_id(session_id)
+            .unwrap()
+            .unwrap()
+            .native_id
+            .as_deref(),
+        Some("missing-native")
+    );
+}
+
+#[test]
+fn recovery_candidate_token_is_for_tools_only_until_identity_commit() {
+    let fixture = Fixture::new(true, Some(missing_native_thread()));
+    let created = fixture.create_with_native("create-token-fence", "missing-native");
+    let session_id = created["id"].as_str().unwrap().to_owned();
+    let lease_epoch = fixture.claim(&session_id);
+    let service = Arc::clone(&fixture.service);
+    let connecting_id = session_id.clone();
+    let opening = std::thread::spawn(move || {
+        service.dispatch(
+            "desktop",
+            Fixture::connect_request(&connecting_id, lease_epoch, "connect-token-fence"),
+        )
+    });
+
+    fixture
+        .started
+        .as_ref()
+        .unwrap()
+        .recv_timeout(Duration::from_secs(2))
+        .unwrap();
+    fixture.release.as_ref().unwrap().send(()).unwrap();
+    fixture
+        .started
+        .as_ref()
+        .unwrap()
+        .recv_timeout(Duration::from_secs(2))
+        .unwrap();
+    let tokens = fixture.worker_tokens.lock().unwrap().clone();
+    assert_eq!(tokens.len(), 2);
+    let old = scoped_event(&session_id, Some(&tokens[0]), "session.ready", json!({}));
+    let candidate = scoped_event(&session_id, Some(&tokens[1]), "session.ready", json!({}));
+    assert_eq!(
+        fixture.service.providers.preview_worker_token(&session_id),
+        Some(tokens[1].clone()),
+        "tool grants must use the fresh candidate token"
+    );
+    assert!(fixture
+        .service
+        .providers
+        .with_current_event(&old, || ())
+        .is_none());
+    assert!(fixture
+        .service
+        .providers
+        .with_current_event(&candidate, || ())
+        .is_none());
+
+    fixture.release.as_ref().unwrap().send(()).unwrap();
+    assert_eq!(opening.join().unwrap().unwrap()["phase"], "ready");
+    assert_eq!(
+        fixture
+            .service
+            .providers
+            .with_current_event(&candidate, || "accepted"),
+        Some("accepted")
+    );
+    assert!(fixture
+        .service
+        .providers
+        .with_current_event(&old, || ())
+        .is_none());
+}
+
+#[test]
+fn stop_during_fresh_recovery_supersedes_the_same_generation_and_keeps_old_identity() {
+    let fixture = Fixture::new(true, Some(missing_native_thread()));
+    let created = fixture.create_with_native("create-stop-recovery", "missing-native");
+    let session_id = created["id"].as_str().unwrap().to_owned();
+    let lease_epoch = fixture.claim(&session_id);
+    let service = Arc::clone(&fixture.service);
+    let connecting_id = session_id.clone();
+    let opening = std::thread::spawn(move || {
+        service.dispatch(
+            "desktop",
+            Fixture::connect_request(&connecting_id, lease_epoch, "connect-stop-recovery"),
+        )
+    });
+    fixture
+        .started
+        .as_ref()
+        .unwrap()
+        .recv_timeout(Duration::from_secs(2))
+        .unwrap();
+    fixture.release.as_ref().unwrap().send(()).unwrap();
+    fixture
+        .started
+        .as_ref()
+        .unwrap()
+        .recv_timeout(Duration::from_secs(2))
+        .unwrap();
+
+    fixture
+        .service
+        .dispatch(
+            "desktop",
+            RpcRequest {
+                v: 1,
+                id: "stop-recovery".into(),
+                method: "session.stop".into(),
+                params: json!({
+                    "sessionId":session_id,
+                    "operationId":"stop-recovery"
+                }),
+            },
+        )
+        .unwrap();
+    fixture.release.as_ref().unwrap().send(()).unwrap();
+    assert_eq!(
+        opening.join().unwrap().unwrap_err().code,
+        "chat_connect_superseded"
+    );
+    let stored = fixture.db.session_by_id(&session_id).unwrap().unwrap();
+    assert_eq!(stored.native_id.as_deref(), Some("missing-native"));
+    assert_eq!(stored.status, "exited");
+    assert_eq!(fixture.opens.load(AtomicOrdering::SeqCst), 2);
+    assert_eq!(fixture.stops.load(AtomicOrdering::SeqCst), 1);
 }
 
 #[test]
@@ -874,7 +1254,7 @@ fn final_worker_error_survives_liveness_poll_but_not_explicit_stop() {
 fn provider_handoff_does_not_publish_an_already_dead_worker() {
     let adapter = FixtureAdapter {
         gate: None,
-        failure: Mutex::new(None),
+        failures: Mutex::new(Vec::new()),
         status_before_return: None,
         opens: Arc::new(AtomicUsize::new(0)),
         stops: Arc::new(AtomicUsize::new(0)),

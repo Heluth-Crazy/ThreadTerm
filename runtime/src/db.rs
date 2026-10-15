@@ -979,6 +979,65 @@ impl Database {
             Ok(true)
         })
     }
+    /// Checks whether replacing a missing provider-native Chat identity is
+    /// conservative. Absence means no projected record of any kind, no prompt
+    /// queue row, no claimed native Chat action, no fork/delegation/rerun
+    /// provenance, and no degraded or repaired transcript evidence.
+    pub(crate) fn empty_chat_native_recovery_eligible(
+        &self,
+        id: &str,
+        expected_native_id: &str,
+    ) -> Result<bool> {
+        self.transaction(|tx| empty_chat_native_recovery_eligible_tx(tx, id, expected_native_id))
+    }
+
+    /// Rechecks the complete empty-Chat predicate and replaces the exact
+    /// missing identity in one transaction. The provider registry holds its
+    /// generation fence while this runs, so the new worker cannot be accepted
+    /// against an obsolete or unowned durable identity.
+    pub(crate) fn replace_empty_chat_native_id(
+        &self,
+        id: &str,
+        expected_native_id: &str,
+        replacement_native_id: &str,
+    ) -> Result<bool> {
+        if replacement_native_id.trim().is_empty() {
+            return Err(anyhow!("invalid_native_id"));
+        }
+        if replacement_native_id == expected_native_id {
+            return Err(anyhow!("native_identity_conflict"));
+        }
+        self.transaction(|tx| {
+            if !empty_chat_native_recovery_eligible_tx(tx, id, expected_native_id)? {
+                return Ok(false);
+            }
+            let provider: String =
+                tx.query_row("SELECT provider FROM sessions WHERE id=?", [id], |row| row.get(0))?;
+            let owner: Option<String> = tx
+                .query_row(
+                    "SELECT id FROM sessions WHERE provider=? AND native_id=? AND id<>? LIMIT 1",
+                    params![provider, replacement_native_id, id],
+                    |row| row.get(0),
+                )
+                .optional()?;
+            if let Some(owner) = owner {
+                return Err(anyhow!("native_session_exists:{owner}"));
+            }
+            if tx.execute(
+                "UPDATE sessions SET native_id=?,updated_at=? WHERE id=? AND native_id=?",
+                params![replacement_native_id, now(), id, expected_native_id],
+            )? != 1
+            {
+                return Ok(false);
+            }
+            emit(
+                tx,
+                "state.changed",
+                json!({"sessionId":id,"kind":"session.native_replaced"}),
+            )?;
+            Ok(true)
+        })
+    }
     /// Reserves an explicit provider connection against the current durable
     /// lifecycle. Failed and restart-interrupted sessions become live attempts
     /// before provider startup, allowing a concurrent stop to fence them with
@@ -2127,6 +2186,106 @@ fn collect_presets(conn: &Connection) -> Result<Vec<Value>> {
             }))
         })
         .collect()
+}
+fn empty_chat_native_recovery_eligible_tx(
+    tx: &Transaction<'_>,
+    id: &str,
+    expected_native_id: &str,
+) -> Result<bool> {
+    struct RecoveryState {
+        mode: String,
+        status: String,
+        read_only: bool,
+        native_id: Option<String>,
+        activity: Option<String>,
+        activity_turn: Option<String>,
+    }
+
+    if expected_native_id.trim().is_empty() {
+        return Ok(false);
+    }
+    let session: Option<RecoveryState> = tx
+        .query_row(
+            "SELECT s.mode,s.status,s.read_only,s.native_id,a.state,a.turn_id \
+             FROM sessions s LEFT JOIN session_activity a ON a.session_id=s.id WHERE s.id=?",
+            [id],
+            |row| {
+                Ok(RecoveryState {
+                    mode: row.get(0)?,
+                    status: row.get(1)?,
+                    read_only: row.get(2)?,
+                    native_id: row.get(3)?,
+                    activity: row.get(4)?,
+                    activity_turn: row.get(5)?,
+                })
+            },
+        )
+        .optional()?;
+    let Some(session) = session else {
+        return Ok(false);
+    };
+    if session.mode != "chat"
+        || session.read_only
+        || !matches!(session.status.as_str(), "starting" | "idle")
+        || session.native_id.as_deref() != Some(expected_native_id)
+        || session.activity.as_deref() != Some("idle")
+        || session.activity_turn.is_some()
+    {
+        return Ok(false);
+    }
+
+    // A missing launch row is ambiguous. A source link identifies a rerun or
+    // fork lineage whose native history must never be silently replaced.
+    let launch_source: Option<Option<String>> = tx
+        .query_row(
+            "SELECT source_session_id FROM session_launch_configs WHERE session_id=?",
+            [id],
+            |row| row.get(0),
+        )
+        .optional()?;
+    if !matches!(launch_source, Some(None)) {
+        return Ok(false);
+    }
+    let organization: Option<String> = tx
+        .query_row(
+            "SELECT data FROM session_organization WHERE session_id=?",
+            [id],
+            |row| row.get(0),
+        )
+        .optional()?;
+    if organization
+        .map(|raw| serde_json::from_str::<SessionOrganization>(&raw))
+        .transpose()?
+        .is_some_and(|organization| organization.forked_from.is_some())
+    {
+        return Ok(false);
+    }
+
+    let integrity_key = format!("chat.integrity:{id}");
+    let conflicting_evidence: bool = tx.query_row(
+        "SELECT
+           EXISTS(SELECT 1 FROM chat_items WHERE session_id=?1)
+        OR EXISTS(SELECT 1 FROM chat_queue_items WHERE session_id=?1)
+        OR EXISTS(SELECT 1 FROM subagent_items WHERE session_id=?1)
+        OR EXISTS(SELECT 1 FROM inbox WHERE session_id=?1)
+        OR EXISTS(SELECT 1 FROM session_fork_options WHERE session_id=?1)
+        OR EXISTS(SELECT 1 FROM chat_fork_intents WHERE source_session_id=?1 OR child_session_id=?1)
+        OR EXISTS(SELECT 1 FROM delegations WHERE parent_session_id=?1 OR child_session_id=?1)
+        OR EXISTS(SELECT 1 FROM chat_repair_backups WHERE session_id=?1)
+        OR EXISTS(SELECT 1 FROM metadata WHERE key=?2)
+        OR EXISTS(
+             SELECT 1 FROM operation_requests
+             WHERE method='chat.repair' AND json_extract(params,'$.sessionId')=?1
+           )
+        OR EXISTS(
+             SELECT 1 FROM external_operations e
+             JOIN operation_requests r ON r.id=e.id
+             WHERE r.method LIKE 'chat.%' AND json_extract(r.params,'$.sessionId')=?1
+           )",
+        params![id, integrity_key],
+        |row| row.get(0),
+    )?;
+    Ok(!conflicting_evidence)
 }
 fn session_organization(conn: &Connection, id: &str) -> Result<SessionOrganization> {
     let data: Option<String> = conn
@@ -3680,5 +3839,255 @@ mod tests {
         assert!(db.replace_pi_chat_native_id(&session.id, Some("pi-new"), "pi-taken").unwrap_err().to_string().contains(&owner.id));
         assert!(db.bind_session(&session.id, None, Some("pi-generic-change")).is_err());
         assert_eq!(db.session_by_id(&session.id).unwrap().unwrap().native_id.as_deref(), Some("pi-new"));
+    }
+
+    fn empty_recovery_session(db: &Database, cwd: &Path, operation: &str) -> Session {
+        crate::session_configs::initialize(db).unwrap();
+        crate::chat_queue::initialize(db).unwrap();
+        let session = db
+            .create_session(CreateSession {
+                project_id: None,
+                title: None,
+                provider: "codex",
+                mode: "chat",
+                native_id: Some("missing-native"),
+                operation_id: operation,
+            })
+            .unwrap();
+        crate::session_configs::save_new(
+            db,
+            &session.id,
+            &crate::session_configs::LaunchSpec {
+                provider: "codex".into(),
+                mode: "chat".into(),
+                cwd: cwd.to_string_lossy().into_owned(),
+                project_id: None,
+                title: None,
+                executable: None,
+                args: Vec::new(),
+            },
+            None,
+        )
+        .unwrap();
+        session
+    }
+
+    #[test]
+    fn empty_chat_native_replacement_is_atomic_and_preserves_unique_ownership() {
+        let root = tempfile::tempdir().unwrap();
+        let db = Database::open(&root.path().join("empty-recovery.sqlite")).unwrap();
+        let session = empty_recovery_session(&db, root.path(), "empty-recovery");
+        assert!(db
+            .empty_chat_native_recovery_eligible(&session.id, "missing-native")
+            .unwrap());
+        assert!(db
+            .replace_empty_chat_native_id(&session.id, "missing-native", "fresh-native")
+            .unwrap());
+        assert_eq!(
+            db.session_by_id(&session.id)
+                .unwrap()
+                .unwrap()
+                .native_id
+                .as_deref(),
+            Some("fresh-native")
+        );
+        assert!(!db
+            .replace_empty_chat_native_id(&session.id, "missing-native", "another-native")
+            .unwrap());
+
+        let second = empty_recovery_session(&db, root.path(), "empty-recovery-owner");
+        assert!(db
+            .replace_empty_chat_native_id(&second.id, "missing-native", "fresh-native")
+            .unwrap_err()
+            .to_string()
+            .contains(&session.id));
+        assert_eq!(
+            db.session_by_id(&second.id)
+                .unwrap()
+                .unwrap()
+                .native_id
+                .as_deref(),
+            Some("missing-native")
+        );
+    }
+
+    #[test]
+    fn empty_chat_recovery_rejects_every_durable_sign_of_content_or_lineage() {
+        for evidence in [
+            "chat-item",
+            "queue-item",
+            "subagent-item",
+            "inbox",
+            "fork-options",
+            "fork-intent",
+            "fork-organization",
+            "launch-source",
+            "delegation",
+            "degraded",
+            "repair-backup",
+            "repair-request",
+            "claimed-chat-action",
+        ] {
+            let root = tempfile::tempdir().unwrap();
+            let db = Database::open(&root.path().join(format!("{evidence}.sqlite"))).unwrap();
+            let session = empty_recovery_session(&db, root.path(), evidence);
+            assert!(db
+                .empty_chat_native_recovery_eligible(&session.id, "missing-native")
+                .unwrap(),
+                "base {evidence}"
+            );
+            match evidence {
+                "chat-item" => db
+                    .transaction(|tx| {
+                        tx.execute(
+                            "INSERT INTO chat_items(id,session_id,kind,data,created_at) VALUES ('item',?,'system','{}','now')",
+                            [&session.id],
+                        )?;
+                        Ok(())
+                    })
+                    .unwrap(),
+                "queue-item" => db
+                    .transaction(|tx| {
+                        tx.execute(
+                            "INSERT INTO chat_queue_items(id,session_id,position,text,images_json,revision,state,created_at,updated_at) VALUES ('queue',?,0,'queued','[]',1,'failed','now','now')",
+                            [&session.id],
+                        )?;
+                        Ok(())
+                    })
+                    .unwrap(),
+                "subagent-item" => db
+                    .transaction(|tx| {
+                        tx.execute(
+                            "INSERT INTO subagent_items(session_id,subagent_key,item_id,seq,rev,data,created_at) VALUES (?,'child','item',1,1,'{}','now')",
+                            [&session.id],
+                        )?;
+                        Ok(())
+                    })
+                    .unwrap(),
+                "inbox" => db
+                    .transaction(|tx| {
+                        tx.execute(
+                            "INSERT INTO inbox(id,session_id,kind,data,created_at) VALUES ('inbox',?,'approval','{}','now')",
+                            [&session.id],
+                        )?;
+                        Ok(())
+                    })
+                    .unwrap(),
+                "fork-options" => db
+                    .transaction(|tx| {
+                        tx.execute(
+                            "INSERT INTO session_fork_options(session_id,data) VALUES (?,'[]')",
+                            [&session.id],
+                        )?;
+                        Ok(())
+                    })
+                    .unwrap(),
+                "fork-intent" => db
+                    .transaction(|tx| {
+                        tx.execute(
+                            "INSERT INTO chat_fork_intents(operation_id,source_session_id,native_id,created_at) VALUES ('fork',?,'fork-native','now')",
+                            [&session.id],
+                        )?;
+                        Ok(())
+                    })
+                    .unwrap(),
+                "fork-organization" => db
+                    .transaction(|tx| {
+                        tx.execute(
+                            "INSERT INTO session_organization(session_id,data) VALUES (?,?)",
+                            params![session.id, json!({"forkedFrom":{"sessionId":"parent"}}).to_string()],
+                        )?;
+                        Ok(())
+                    })
+                    .unwrap(),
+                "launch-source" => {
+                    let source = db
+                        .create_session(CreateSession {
+                            project_id: None,
+                            title: None,
+                            provider: "codex",
+                            mode: "chat",
+                            native_id: None,
+                            operation_id: "source",
+                        })
+                        .unwrap();
+                    crate::session_configs::link_source(&db, &session.id, &source.id).unwrap();
+                }
+                "delegation" => {
+                    let child = db
+                        .create_session(CreateSession {
+                            project_id: None,
+                            title: None,
+                            provider: "codex",
+                            mode: "chat",
+                            native_id: None,
+                            operation_id: "delegate-child",
+                        })
+                        .unwrap();
+                    db.transaction(|tx| {
+                        tx.execute(
+                            "INSERT INTO delegations(id,parent_session_id,child_session_id,agent,workspace,workspace_path,prompt,operation_id,state,created_at,updated_at) VALUES ('delegation',?,?,'codex','shared',?,'prompt','delegate','starting','now','now')",
+                            params![session.id, child.id, root.path().to_string_lossy()],
+                        )?;
+                        Ok(())
+                    })
+                    .unwrap();
+                }
+                "degraded" => db
+                    .transaction(|tx| {
+                        tx.execute(
+                            "INSERT INTO metadata(key,value) VALUES (?, 'projection failed')",
+                            [format!("chat.integrity:{}", session.id)],
+                        )?;
+                        Ok(())
+                    })
+                    .unwrap(),
+                "repair-backup" => db
+                    .transaction(|tx| {
+                        tx.execute(
+                            "INSERT INTO chat_repair_backups(session_id,created_at,items_json) VALUES (?,'now','[]')",
+                            [&session.id],
+                        )?;
+                        Ok(())
+                    })
+                    .unwrap(),
+                "repair-request" => db
+                    .bind_operation(
+                        "repair",
+                        "chat.repair",
+                        &json!({"sessionId":session.id}),
+                    )
+                    .unwrap(),
+                "claimed-chat-action" => {
+                    db.bind_operation(
+                        "send",
+                        "chat.send",
+                        &json!({"sessionId":session.id,"text":"lost intent"}),
+                    )
+                    .unwrap();
+                    assert!(db.claim_external_operation("send").unwrap());
+                }
+                _ => unreachable!(),
+            }
+            assert!(!db
+                .empty_chat_native_recovery_eligible(&session.id, "missing-native")
+                .unwrap(),
+                "evidence {evidence}"
+            );
+            assert!(!db
+                .replace_empty_chat_native_id(&session.id, "missing-native", "fresh-native")
+                .unwrap(),
+                "atomic recheck {evidence}"
+            );
+            assert_eq!(
+                db.session_by_id(&session.id)
+                    .unwrap()
+                    .unwrap()
+                    .native_id
+                    .as_deref(),
+                Some("missing-native"),
+                "identity {evidence}"
+            );
+        }
     }
 }

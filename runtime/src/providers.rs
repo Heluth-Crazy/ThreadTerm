@@ -331,6 +331,17 @@ pub trait ProviderRuntime: Send + Sync {
         cwd: &str,
         native_id: Option<&str>,
     ) -> Result<Value, ProviderError>;
+    fn chat_open_recovering(
+        &self,
+        session_id: &str,
+        provider: &str,
+        cwd: &str,
+        native_id: Option<&str>,
+        recover_missing: &dyn Fn(Option<&str>) -> Result<bool, ProviderError>,
+    ) -> Result<Value, ProviderError> {
+        let _ = recover_missing;
+        self.chat_open(session_id, provider, cwd, native_id)
+    }
     fn chat_send(
         &self,
         session_id: &str,
@@ -790,6 +801,9 @@ struct ChatSlot {
     worker: Option<SharedChat>,
     connecting: bool,
     worker_token: Option<String>,
+    /// Candidate token exposed only to tool-grant construction while a
+    /// missing-thread replacement is still fenced from event projection.
+    pending_worker_token: Option<String>,
     requires_scoped_events: bool,
 }
 
@@ -804,6 +818,7 @@ impl ChatSlot {
             worker: None,
             connecting: false,
             worker_token: None,
+            pending_worker_token: None,
             requires_scoped_events: false,
         }
     }
@@ -818,6 +833,7 @@ impl ChatSlot {
     fn mark_disconnected(&mut self) -> Option<SharedChat> {
         let retired = self.worker.take();
         self.connecting = false;
+        self.pending_worker_token = None;
         if self.phase != "failed" && self.phase != "unavailable" {
             self.phase = "disconnected";
         }
@@ -850,6 +866,13 @@ impl ChatSlot {
         }
         value
     }
+}
+
+struct ChatOpenAttempt {
+    generation: u64,
+    worker_token: String,
+    resumed: bool,
+    opened: Result<Box<dyn ChatSession>, ProviderError>,
 }
 
 pub struct Providers {
@@ -1554,7 +1577,7 @@ impl Providers {
         let chats=self.chats.lock().ok()?;
         let slot=chats.get(session_id)?;
         if !slot.connecting&&slot.worker.is_none(){return None}
-        slot.worker_token.clone()
+        slot.pending_worker_token.clone().or_else(|| slot.worker_token.clone())
     }
     /// Holds the chat registry fence while the caller verifies that an MCP
     /// grant still belongs to the current worker. The callback may use the
@@ -1775,6 +1798,125 @@ impl Default for Providers {
 }
 
 impl Providers {
+    fn finish_chat_open_attempt(
+        &self,
+        session_id: &str,
+        attempt: ChatOpenAttempt,
+        before_accept: impl FnOnce(Option<&str>) -> Result<bool, ProviderError>,
+    ) -> Result<Value, ProviderError> {
+        let ChatOpenAttempt {
+            generation,
+            worker_token,
+            resumed,
+            opened,
+        } = attempt;
+        let mut chats = self
+            .chats
+            .lock()
+            .map_err(|_| ProviderError::new("provider_internal", "provider chat lock poisoned"))?;
+        let slot = chats
+            .entry(session_id.to_owned())
+            .or_insert_with(ChatSlot::new);
+        if slot.generation != generation {
+            drop(chats);
+            self.connect_wait.notify_all();
+            if let Ok(mut worker) = opened {
+                let _ = worker.stop();
+            }
+            return Err(ProviderError::new(
+                "chat_connect_superseded",
+                "a newer Chat connection attempt replaced this one",
+            ));
+        }
+        slot.connecting = false;
+        let mut rejected_worker = None;
+        let opened = opened.and_then(|worker| {
+            if worker.is_alive() {
+                Ok(worker)
+            } else {
+                rejected_worker = Some(worker);
+                Err(ProviderError::new(
+                    "provider_disconnected",
+                    "provider Chat ended before the connection handoff",
+                ))
+            }
+        });
+        let result = match opened {
+            Ok(worker) => {
+                let native = worker.native_id();
+                match before_accept(native.as_deref()) {
+                    Ok(true) => {
+                        // Recovery candidates use a fresh token which is not
+                        // accepted until durable identity replacement commits.
+                        slot.worker_token = Some(worker_token);
+                        slot.pending_worker_token = None;
+                        slot.phase = "ready";
+                        slot.native_id = native.clone();
+                        slot.error = None;
+                        slot.worker = Some(Arc::new(Mutex::new(worker)));
+                        slot.revision = slot.revision.saturating_add(1);
+                        Ok(json!({"nativeId": native, "status": "ready"}))
+                    }
+                    Ok(false) => {
+                        rejected_worker = Some(worker);
+                        Err(ProviderError::new(
+                            "chat_connect_superseded",
+                            "the Chat changed while its missing native thread was being recovered",
+                        ))
+                    }
+                    Err(error) => {
+                        rejected_worker = Some(worker);
+                        Err(error)
+                    }
+                }
+            }
+            Err(error) => Err(error),
+        };
+        let result = match result {
+            Ok(result) => result,
+            Err(error) => {
+                let mut failed = error;
+                if resumed
+                    && !matches!(
+                        failed.code.as_str(),
+                        "native_resume_failed"
+                            | "resume_unsupported"
+                            | "invalid_native_id"
+                            | "provider_unavailable"
+                            | "unauthenticated"
+                            | "auth_required"
+                            | "cwd_missing"
+                            | "cwd_required"
+                            | "cwd_missing_choose_relocation"
+                            | "chat_connect_superseded"
+                    )
+                {
+                    failed = ProviderError::new("native_resume_failed", failed.message.clone())
+                        .with_details(json!({"cause": failed.code.clone()}));
+                }
+                slot.phase = "failed";
+                slot.error = Some(Self::connection_error_value(&failed));
+                slot.worker = None;
+                slot.worker_token = None;
+                slot.pending_worker_token = None;
+                slot.revision = slot.revision.saturating_add(1);
+                let state = slot.wire(session_id, "error", slot.error.clone());
+                drop(chats);
+                self.connect_wait.notify_all();
+                self.emit_connection(session_id, state);
+                if let Some(mut worker) = rejected_worker {
+                    let _ = worker.stop();
+                }
+                return Err(failed);
+            }
+        };
+        let state = slot.wire(session_id, "unknown", None);
+        drop(chats);
+        self.connect_wait.notify_all();
+        self.emit_connection(session_id, state);
+        Ok(result)
+    }
+
     pub(crate) fn fork_session(
         &self,
         provider: &str,
@@ -1840,12 +1982,13 @@ impl ProviderRuntime for Providers {
         self.adapter(provider)?.history_read(native_id)
     }
 
-    fn chat_open(
+    fn chat_open_recovering(
         &self,
         session_id: &str,
         provider: &str,
         cwd: &str,
         native_id: Option<&str>,
+        recover_missing: &dyn Fn(Option<&str>) -> Result<bool, ProviderError>,
     ) -> Result<Value, ProviderError> {
         if session_id.trim().is_empty() || cwd.trim().is_empty() {
             return Err(ProviderError::new(
@@ -1907,6 +2050,7 @@ impl ProviderRuntime for Providers {
             slot.phase = "connecting";
             slot.error = None;
             slot.worker_token = Some(worker_token.clone());
+            slot.pending_worker_token = None;
             slot.requires_scoped_events = adapter.scopes_chat_events();
             slot.generation = slot.generation.saturating_add(1);
             slot.revision = slot.revision.saturating_add(1);
@@ -1925,88 +2069,123 @@ impl ProviderRuntime for Providers {
         let opened = self.project_trust(session_id, provider).and_then(|trust| {
             adapter.open_chat_with_project_trust(session_id, cwd, native_id, &worker_token, tools.as_ref(), trust.as_deref())
         });
-        let mut chats = self
-            .chats
-            .lock()
-            .map_err(|_| ProviderError::new("provider_internal", "provider chat lock poisoned"))?;
-        let slot = chats
-            .entry(session_id.to_owned())
-            .or_insert_with(ChatSlot::new);
-        if slot.generation != generation {
-            drop(chats);
-            self.connect_wait.notify_all();
-            if let Ok(mut worker) = opened {
-                let _ = worker.stop();
-            }
-            return Err(ProviderError::new(
-                "chat_connect_superseded",
-                "a newer Chat connection attempt replaced this one",
-            ));
-        }
-        slot.connecting = false;
-        let mut rejected_worker = None;
-        let opened = opened.and_then(|worker| {
-            if worker.is_alive() {
-                Ok(worker)
-            } else {
-                rejected_worker = Some(worker);
-                Err(ProviderError::new(
-                    "provider_disconnected",
-                    "provider Chat ended before the connection handoff",
-                ))
-            }
-        });
-        let result = match opened {
-            Ok(worker) => {
-                let native = worker.native_id();
-                slot.phase = "ready";
-                slot.native_id = native.clone();
-                slot.error = None;
-                slot.worker = Some(Arc::new(Mutex::new(worker)));
-                slot.revision = slot.revision.saturating_add(1);
-                json!({"nativeId": native, "status": "ready"})
-            }
-            Err(error) => {
-                let mut failed = error;
-                if native_id.is_some()
-                    && !matches!(
-                        failed.code.as_str(),
-                        "native_resume_failed"
-                            | "resume_unsupported"
-                            | "invalid_native_id"
-                            | "provider_unavailable"
-                            | "unauthenticated"
-                            | "auth_required"
-                            | "cwd_missing"
-                            | "cwd_required"
-                            | "cwd_missing_choose_relocation"
-                    )
-                {
-                    failed = ProviderError::new("native_resume_failed", failed.message.clone())
-                        .with_details(json!({"cause": failed.code.clone()}));
+        if native_id.is_some()
+            && opened
+                .as_ref()
+                .err()
+                .is_some_and(|error| error.code == "native_thread_missing")
+        {
+            let eligibility = {
+                let mut chats = self.chats.lock().map_err(|_| {
+                    ProviderError::new("provider_internal", "provider chat lock poisoned")
+                })?;
+                let slot = chats
+                    .entry(session_id.to_owned())
+                    .or_insert_with(ChatSlot::new);
+                if slot.generation != generation {
+                    drop(chats);
+                    self.connect_wait.notify_all();
+                    return Err(ProviderError::new(
+                        "chat_connect_superseded",
+                        "a newer Chat connection attempt replaced this one",
+                    ));
                 }
-                slot.phase = "failed";
-                slot.error = Some(Self::connection_error_value(&failed));
-                slot.worker = None;
+                // Fence every event from the failed process before consulting
+                // durable state. The replacement gets another token below.
                 slot.worker_token = None;
-                slot.revision = slot.revision.saturating_add(1);
-                let state = slot.wire(session_id, "error", slot.error.clone());
-                drop(chats);
-                self.connect_wait.notify_all();
-                self.emit_connection(session_id, state);
-                // Provider stop/drop may wait on native I/O. The registry is
-                // already released so unrelated sessions/projection stay live.
-                if let Some(mut worker) = rejected_worker {
-                    let _ = worker.stop();
+                recover_missing(None)
+            };
+            match eligibility {
+                Ok(true) => {
+                    let recovery_token = uuid::Uuid::new_v4().to_string();
+                    {
+                        let mut chats = self.chats.lock().map_err(|_| {
+                            ProviderError::new(
+                                "provider_internal",
+                                "provider chat lock poisoned",
+                            )
+                        })?;
+                        let slot = chats
+                            .entry(session_id.to_owned())
+                            .or_insert_with(ChatSlot::new);
+                        if slot.generation != generation {
+                            drop(chats);
+                            self.connect_wait.notify_all();
+                            return Err(ProviderError::new(
+                                "chat_connect_superseded",
+                                "a newer Chat connection attempt replaced this one",
+                            ));
+                        }
+                        // Tool grants need the candidate identity before its
+                        // process starts, while event projection must continue
+                        // to reject that identity until the DB swap commits.
+                        slot.pending_worker_token = Some(recovery_token.clone());
+                    }
+                    let recovery_tools = self.tool_server(session_id, provider);
+                    let recovered = self.project_trust(session_id, provider).and_then(|trust| {
+                        adapter.open_chat_with_project_trust(
+                            session_id,
+                            cwd,
+                            None,
+                            &recovery_token,
+                            recovery_tools.as_ref(),
+                            trust.as_deref(),
+                        )
+                    });
+                    return self.finish_chat_open_attempt(
+                        session_id,
+                        ChatOpenAttempt {
+                            generation,
+                            worker_token: recovery_token,
+                            resumed: true,
+                            opened: recovered,
+                        },
+                        |replacement| {
+                            let replacement = replacement.ok_or_else(|| {
+                                ProviderError::new(
+                                    "provider_protocol",
+                                    "provider recovery returned no native session id",
+                                )
+                            })?;
+                            recover_missing(Some(replacement))
+                        },
+                    );
                 }
-                return Err(failed);
+                Ok(false) => {}
+                Err(error) => {
+                    return self.finish_chat_open_attempt(
+                        session_id,
+                        ChatOpenAttempt {
+                            generation,
+                            worker_token,
+                            resumed: true,
+                            opened: Err(error),
+                        },
+                        |_| Ok(true),
+                    );
+                }
             }
-        };
-        let state = slot.wire(session_id, "unknown", None);
-        drop(chats);
-        self.connect_wait.notify_all();
-        self.emit_connection(session_id, state);
-        Ok(result)
+        }
+        self.finish_chat_open_attempt(
+            session_id,
+            ChatOpenAttempt {
+                generation,
+                worker_token,
+                resumed: native_id.is_some(),
+                opened,
+            },
+            |_| Ok(true),
+        )
+    }
+
+    fn chat_open(
+        &self,
+        session_id: &str,
+        provider: &str,
+        cwd: &str,
+        native_id: Option<&str>,
+    ) -> Result<Value, ProviderError> {
+        self.chat_open_recovering(session_id, provider, cwd, native_id, &|_| Ok(false))
     }
 
     fn chat_send(

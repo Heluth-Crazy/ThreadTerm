@@ -121,6 +121,35 @@ impl CodexAdapter {
             None,
         )
     }
+
+    fn start_persistent_thread(
+        &self,
+        process: &JsonLineProcess,
+        cwd: &str,
+    ) -> Result<Value, ProviderError> {
+        let response = process.request("thread/start", json!({"cwd":cwd,"threadSource":"user"}))?;
+        let thread = response.get("thread").unwrap_or(&response);
+        let native_id = thread.get("id").and_then(Value::as_str).ok_or_else(|| {
+            ProviderError::new("provider_protocol", "Codex returned no thread id")
+        })?;
+        validate_native_id(native_id)?;
+        // thread/start allocates an id but does not persist an empty rollout.
+        // This native history item adds no instructions or model/user turn.
+        codex_request(
+            process,
+            "thread/inject_items",
+            json!({"threadId":native_id,"items":[{"type":"message","role":"developer","content":[]}]}),
+        )?;
+        // Keep the caller's thread loaded in its original process, but prove
+        // another process can resume it before advertising a durable identity.
+        let verifier = self.temporary_process()?;
+        let stored = verifier.request(
+            "thread/read",
+            json!({"threadId":native_id,"includeTurns":true}),
+        )?;
+        validate_resume_thread(codex_history_thread(&stored, native_id)?)?;
+        Ok(response)
+    }
 }
 
 /// `-c mcp_servers.<name>.*` overrides for a session's tool server. Values
@@ -266,7 +295,7 @@ impl ProviderAdapter for CodexAdapter {
 
     fn prepare_terminal(&self, cwd: &str) -> Result<Option<String>, ProviderError> {
         let process = self.temporary_process()?;
-        let response = process.request("thread/start", json!({"cwd":cwd,"threadSource":"user"}))?;
+        let response = self.start_persistent_thread(&process, cwd)?;
         let thread = response
             .get("thread")
             .cloned()
@@ -275,22 +304,6 @@ impl ProviderAdapter for CodexAdapter {
             ProviderError::new("provider_protocol", "Codex returned no thread id")
         })?;
         validate_native_id(native_id)?;
-        // thread/start allocates an id but Codex does not persist an empty
-        // rollout. Materialize it through the native history API without a
-        // model turn, user message, or additional developer instructions.
-        codex_request(
-            &process,
-            "thread/inject_items",
-            json!({"threadId":native_id,"items":[{"type":"message","role":"developer","content":[]}]}),
-        )?;
-        // A different process must be able to load it before the PTY is
-        // launched. Never return a merely in-memory thread as resumable.
-        let verifier = self.temporary_process()?;
-        let stored = verifier.request(
-            "thread/read",
-            json!({"threadId":native_id,"includeTurns":true}),
-        )?;
-        validate_resume_thread(stored.get("thread").unwrap_or(&stored))?;
         Ok(Some(native_id.to_owned()))
     }
 
@@ -405,16 +418,16 @@ impl ProviderAdapter for CodexAdapter {
         }
         let thread_response = if let Some(native_id) = native_id {
             validate_native_id(native_id)?;
-            // Never replace an unavailable requested identity with a fresh
-            // thread. Read first so a stale/child identity fails visibly.
+            // Report missing identities precisely; only a caller that knows
+            // the durable Chat history may authorize empty-chat recovery.
             let existing = process.request(
                 "thread/read",
                 json!({"threadId":native_id,"includeTurns":false}),
-            )?;
+            ).map_err(|error| codex_missing_thread_error(native_id, error))?;
             validate_resume_thread(existing.get("thread").unwrap_or(&existing))?;
             process.request("thread/resume", json!({"threadId":native_id,"cwd":cwd}))?
         } else {
-            process.request("thread/start", json!({"cwd":cwd,"threadSource":"user"}))?
+            self.start_persistent_thread(&process, cwd)?
         };
         let thread = thread_response
             .get("thread")
@@ -1921,6 +1934,27 @@ fn codex_local_command_text(name: &str, ui: Option<&CodexUiState>) -> (String, S
         }
         _ => (format!("/{name} is not implemented in Chat. Use Codex Terminal for this action. No model prompt or workspace change was submitted."),
               format!("聊天模式尚未实现 /{name}。请在 Codex 终端中执行此操作。未向模型发送提示词，也未修改工作区。")),
+    }
+}
+
+fn codex_missing_thread_error(native_id: &str, error: ProviderError) -> ProviderError {
+    // Match only native read's exact missing-thread replies for a valid Codex
+    // UUID. A generic "not found" can describe a cwd, executable, or auth file.
+    let missing = [
+        format!("thread not loaded: {native_id}"),
+        format!("thread not found: {native_id}"),
+        format!("no rollout found for thread id {native_id}"),
+    ];
+    if super::common::is_uuid(native_id)
+        && error.code == "provider_error"
+        && error.details.as_ref().and_then(|details| details.get("code")).and_then(Value::as_i64) == Some(-32600)
+        && missing.iter().any(|message| message == &error.message)
+    {
+        ProviderError::new("native_thread_missing", error.message).with_details(
+            json!({"nativeId":native_id,"nativeError":error.details}),
+        )
+    } else {
+        error
     }
 }
 
@@ -4518,6 +4552,7 @@ fn extract_text(item: &Value) -> String {
 mod tests {
     use super::*;
     include!("codex_plan_approval_tests.rs");
+    include!("codex_persistence_tests.rs");
 
     #[test]
     fn chat_ui_event_matches_codex_ui_state() {
