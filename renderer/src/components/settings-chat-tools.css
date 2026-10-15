@@ -6,4 +6,4 @@
 .settings-chat-tool-row > span { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
 .settings-chat-tool-row b { font-size: 13px; font-weight: 500; }
 .settings-chat-tool-row small { color: var(--muted); font-size: 12px; }
-.settings-chat-tool-row > button { flex-shrink: 0; }
+.settings-chat-tool-row > .setting-switch { flex-shrink: 0; margin: 0; }

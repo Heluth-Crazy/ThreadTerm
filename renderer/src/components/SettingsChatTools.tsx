@@ -1,5 +1,6 @@
 import { useId, useRef, useState } from "react";
 import type { Settings } from "@threadterm/protocol";
+import { SettingsSwitch } from "./SettingsControls";
 import "./settings-chat-tools.css";
 
 type Props = { settings: Settings; zh: boolean; update: (patch: Record<string, unknown>) => Promise<void> };
@@ -13,7 +14,7 @@ type ToolSpec = {
   /** Off-tools are on unless explicitly false; opt-in tools are on only when true. */
   optIn?: boolean;
   read: (settings: Settings) => boolean;
-  /** The patch that flips the tool to the opposite of `enabled`. */
+  /** The patch that persists the selected `enabled` value. */
   patch: (enabled: boolean) => Record<string, unknown>;
   testId?: string;
 };
@@ -21,7 +22,7 @@ type ToolSpec = {
 const flatTool = (id: string, en: string, zh: string, description: string, descriptionZh: string): ToolSpec => ({
   id, en, zh, description, descriptionZh,
   read: settings => (settings as Record<string, unknown>)[id] !== false,
-  patch: enabled => ({ [id]: !enabled }),
+  patch: enabled => ({ [id]: enabled }),
 });
 
 const tools: ToolSpec[] = [
@@ -37,7 +38,7 @@ const tools: ToolSpec[] = [
     descriptionZh: "在后续对话中引导支持的代理生成卡片和图表。已有内容始终可以显示。",
     optIn: true,
     read: settings => (settings as { chatTools?: { generatedUi?: unknown } }).chatTools?.generatedUi === true,
-    patch: enabled => ({ chatTools: { generatedUi: !enabled } }),
+    patch: enabled => ({ chatTools: { generatedUi: enabled } }),
     testId: "generated-ui-switch",
   },
 ];
@@ -63,9 +64,9 @@ export function SettingsChatTools({ settings, zh, update }: Props) {
       const enabled = tool.read(settings);
       return <div className="settings-chat-tool-row" key={tool.id}>
         <span><b>{zh ? tool.zh : tool.en}</b><small>{zh ? tool.descriptionZh : tool.description}</small></span>
-        <button type="button" className="btn btn-sm btn-ghost" role="switch" data-testid={tool.testId} aria-checked={enabled} aria-label={zh ? tool.zh : tool.en} aria-describedby={busy === tool.id ? progressId : undefined} disabled={Boolean(busy)} onClick={() => void toggle(tool, enabled)}>
+        <SettingsSwitch data-testid={tool.testId} aria-label={zh ? tool.zh : tool.en} aria-describedby={busy === tool.id ? progressId : undefined} checked={enabled} disabled={Boolean(busy)} onChange={value => void toggle(tool, value)}>
           {enabled ? zh ? "开启" : "On" : zh ? "关闭" : "Off"}
-        </button>
+        </SettingsSwitch>
       </div>;
     })}
     {activeTool && <p id={progressId} role="status">{zh ? `正在保存${activeTool.zh}…` : `Saving ${activeTool.en}…`}</p>}

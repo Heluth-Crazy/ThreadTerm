@@ -3,11 +3,26 @@ import mermaid from 'mermaid';
 import { SurfaceDialog } from '../SurfaceDialog';
 import { safeMermaidSvg, stripMermaidDirectives } from './mermaidSafety';
 import { diagramDimensions, diagramRasterSize } from '../../diagramGeometry';
+import { useThemeState } from '../../themes';
 import type { BlockProps } from './index';
 
 let renderQueue: Promise<unknown> = Promise.resolve();
+const resolvedThemeColor = (root: HTMLElement | null, property: string) => {
+  const swatch = document.createElement('span');
+  swatch.style.color = `var(${property})`;
+  (root ?? document.body ?? document.documentElement).append(swatch);
+  const color = getComputedStyle(swatch).color;
+  swatch.remove();
+  const canvas = document.createElement('canvas'); canvas.width = canvas.height = 1;
+  const context = canvas.getContext('2d');
+  if (!context) return color;
+  context.fillStyle = color; context.fillRect(0, 0, 1, 1);
+  const [red, green, blue, alpha] = context.getImageData(0, 0, 1, 1).data;
+  return `rgba(${red}, ${green}, ${blue}, ${alpha / 255})`;
+};
 export default function MermaidBlock({ source, copy }: BlockProps) {
   const id = useId().replace(/[^a-zA-Z0-9]/g, ''), root = useRef<HTMLDivElement>(null);
+  const { tokens: themeTokens, theme } = useThemeState();
   const [svg, setSvg] = useState(''), [issue, setIssue] = useState(''), [raw, setRaw] = useState(false), [zoom, setZoom] = useState<number>(), [fullscreen, setFullscreen] = useState(false), [downloading, setDownloading] = useState(false);
   const dimensions = useMemo(() => diagramDimensions(svg), [svg]);
   useEffect(() => {
@@ -17,14 +32,14 @@ export default function MermaidBlock({ source, copy }: BlockProps) {
       try {
         if (source.length > 64 * 1024) throw new Error(copy('Diagram exceeds 64 KiB.', '图表不能超过 64 KiB。'));
         const theme = getComputedStyle(root.current ?? document.documentElement);
-        mermaid.initialize({ startOnLoad: false, securityLevel: 'strict', suppressErrorRendering: true, theme: 'base', fontFamily: theme.fontFamily, flowchart: { htmlLabels: false }, themeVariables: { primaryColor: theme.getPropertyValue('--soft').trim(), primaryTextColor: theme.getPropertyValue('--text').trim(), primaryBorderColor: theme.getPropertyValue('--border').trim(), lineColor: theme.getPropertyValue('--muted').trim(), background: theme.getPropertyValue('--surface').trim() } });
+        mermaid.initialize({ startOnLoad: false, securityLevel: 'strict', suppressErrorRendering: true, theme: 'base', fontFamily: theme.fontFamily, flowchart: { htmlLabels: false }, themeVariables: { primaryColor: resolvedThemeColor(root.current, '--soft'), primaryTextColor: resolvedThemeColor(root.current, '--text'), primaryBorderColor: resolvedThemeColor(root.current, '--border'), lineColor: resolvedThemeColor(root.current, '--muted'), background: resolvedThemeColor(root.current, '--surface') } });
         const result = await mermaid.render(`ttmermaid${id}`, stripMermaidDirectives(source));
         if (current) setSvg(safeMermaidSvg(result.svg, `ttmermaid${id}`));
       } catch (error) { if (current) setIssue(String(error)); }
     };
     renderQueue = renderQueue.then(render, render);
     return () => { current = false; };
-  }, [source, id]);
+  }, [source, id, theme, themeTokens]);
   const download = async (format: 'svg' | 'png' | 'mmd') => {
     if (downloading) return; setDownloading(true); setIssue('');
     try {

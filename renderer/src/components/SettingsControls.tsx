@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ComponentPropsWithoutRef, type KeyboardEvent, type ReactNode } from "react";
 import type { Settings } from "@threadterm/protocol";
 import { desktopPreferences, testNotification } from "../bridge";
 import { parseSupervision, type SupervisionSettings } from "../supervision";
@@ -8,8 +8,8 @@ import { selectedConptyHost, terminalHostInfo, type ConptyHost, type TerminalHos
 const defaults = { showMainWindow: "CommandOrControl+Shift+Space", floatLastSession: "CommandOrControl+Shift+O" };
 const displayKey = (value: string) => value.replace(/CommandOrControl/g, navigator.platform.includes("Mac") ? "Cmd" : "Ctrl");
 const record = (value: unknown): Record<string, unknown> => value && typeof value === "object" ? value as Record<string, unknown> : {};
-export function SettingsSwitch({ checked, onChange, disabled, children }: { checked: boolean; onChange: (value: boolean) => void; disabled?: boolean; children: ReactNode }) {
-  return <label className="setting-switch"><input type="checkbox" checked={checked} disabled={disabled} onChange={event => onChange(event.target.checked)} /><span />{children}</label>;
+export function SettingsSwitch({ checked, onChange, disabled, children, ...inputProps }: { checked: boolean; onChange: (value: boolean) => void; disabled?: boolean; children: ReactNode } & Omit<ComponentPropsWithoutRef<"input">, "type" | "checked" | "disabled" | "onChange" | "children">) {
+  return <label className="setting-switch"><input {...inputProps} type="checkbox" role="switch" checked={checked} aria-checked={checked} disabled={disabled} onChange={event => onChange(event.target.checked)} /><span />{children}</label>;
 }
 export function SettingsControls({ settings, zh, update, counts }: { settings: Settings; zh: boolean; update: (patch: Record<string, unknown>) => Promise<void>; counts: { checks: number; alertCount: number } }) {
   const keys = { ...defaults, ...record(settings.shortcuts) } as typeof defaults;

@@ -134,7 +134,7 @@ button { color: inherit; }
 button:not(:disabled), summary { cursor: pointer; }
 button:disabled { opacity: 0.5; cursor: default; }
 /* focus：iris 描边 + 外环 */
-:focus-visible { outline: 2px solid var(--primary); outline-offset: 1px; }
+:focus-visible, .input-wrap:has(input:focus-visible), .setting-switch input:focus-visible + span { outline: 2px solid var(--primary); outline-offset: 1px; }
 h1, h2, h3, p { margin: 0; }
 ul, ol { margin: 0; padding-left: 20px; }
 code, kbd, pre, .mono { font-family: var(--mono); }
@@ -197,7 +197,6 @@ code, kbd, pre, .mono { font-family: var(--mono); }
 .btn-primary:hover:not(:disabled) { background: var(--primary-hover); }
 .btn-ghost { background: transparent; color: var(--muted); }
 .btn-ghost:hover:not(:disabled) { background: var(--soft); color: var(--text); }
-.btn-ghost[aria-pressed="true"] { background: var(--soft); color: var(--text); }
 .btn-danger { background: transparent; color: var(--danger); }
 .btn-danger:hover:not(:disabled) { background: color-mix(in srgb, var(--danger) 12%, transparent); }
 .btn-subtle {
@@ -215,7 +214,9 @@ code, kbd, pre, .mono { font-family: var(--mono); }
   color: var(--muted);
   position: relative;
 }
-.icon-btn:hover:not(:disabled), .icon-btn[aria-expanded="true"] { background: var(--soft); color: var(--text); }
+.icon-btn:hover:not(:disabled) { background: var(--soft); color: var(--text); }
+/* Shared toggle state: persists after hover and stays separate from the focus outline. */
+:is(.btn, .btn-ghost, .icon-btn, .chip-btn):is([aria-pressed="true"], [aria-expanded="true"]) { background: var(--soft); color: var(--text); }
 
 .kbd {
   font-size: 11px;
@@ -511,7 +512,7 @@ code, kbd, pre, .mono { font-family: var(--mono); }
   color: var(--text);
   text-align: left;
 }
-.brand-home:hover { background: var(--soft); }
+.brand-home:hover:where(:not(:disabled)) { background: var(--soft); }
 .brand-mark {
   width: 20px; height: 20px;
   border-radius: var(--radius);
@@ -539,7 +540,7 @@ code, kbd, pre, .mono { font-family: var(--mono); }
   font-size: 13px;
   text-align: left;
 }
-.nav-item:hover { background: var(--soft); color: var(--text); }
+.nav-item:hover:where(:not(:disabled)) { background: var(--soft); color: var(--text); }
 .nav-item.active { background: var(--soft); color: var(--text); font-weight: 500; }
 .nav-item .grow { flex: 1; }
 /* 「新建终端」等同 ChatGPT 新对话：导航第一项 */
@@ -569,7 +570,7 @@ code, kbd, pre, .mono { font-family: var(--mono); }
   font-size: 13px;
   text-align: left;
 }
-.proj-row:hover { background: var(--soft); }
+.proj-row:hover:where(:not(:disabled)) { background: var(--soft); }
 .proj-row .grow { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 /* 项目行：chevron 负责展开收起，项目名进入项目总览 */
 .proj-row-wrap { position: relative; display: flex; align-items: center; gap: 2px; }
@@ -583,7 +584,7 @@ code, kbd, pre, .mono { font-family: var(--mono); }
   background: transparent;
   color: var(--faint);
 }
-.proj-disclosure:hover { background: var(--soft); color: var(--text); }
+.proj-disclosure:hover:where(:not(:disabled)) { background: var(--soft); color: var(--text); }
 .proj-disclosure .chev { transition: transform 0.15s ease; }
 .proj-disclosure:not(.open) .chev { transform: rotate(-90deg); }
 .proj-row-wrap .proj-row { flex: 1; min-width: 0; }
@@ -604,7 +605,7 @@ code, kbd, pre, .mono { font-family: var(--mono); }
   font-size: 13px;
   text-align: left;
 }
-.tree-row:hover { background: var(--soft); color: var(--text); }
+.tree-row:hover:where(:not(:disabled)) { background: var(--soft); color: var(--text); }
 .tree-row .branch {
   flex: 1;
   font-family: var(--mono);
@@ -631,7 +632,7 @@ code, kbd, pre, .mono { font-family: var(--mono); }
   font-size: 13px;
   text-align: left;
 }
-.sess-row:hover { background: var(--soft); color: var(--text); }
+.sess-row:hover:where(:not(:disabled)) { background: var(--soft); color: var(--text); }
 .sess-row .grow { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .sess-row.active { background: var(--primary-tint); color: var(--text); }
 .tree-row-wrap,
@@ -702,7 +703,7 @@ code, kbd, pre, .mono { font-family: var(--mono); }
   font-size: 13px;
   text-align: left;
 }
-.user-row:hover { background: var(--soft); }
+.user-row:hover:where(:not(:disabled)) { background: var(--soft); }
 .avatar {
   width: 20px; height: 20px;
   border-radius: 50%;
@@ -749,7 +750,7 @@ code, kbd, pre, .mono { font-family: var(--mono); }
   color: var(--muted);
   font-size: 12px;
 }
-.sb-btn:hover { background: var(--soft); color: var(--text); }
+.sb-btn:hover:where(:not(:disabled)) { background: var(--soft); color: var(--text); }
 .sb-note { display: inline-flex; align-items: center; gap: 4px; }
 .sb-note .ico { width: 12px; height: 12px; }
 
@@ -842,7 +843,7 @@ code, kbd, pre, .mono { font-family: var(--mono); }
   white-space: nowrap;
   max-width: 220px;
 }
-.composer-chip:hover { color: var(--text); background: var(--raised); }
+.composer-chip:hover:where(:not(:disabled):not(.disabled):not(:has(:disabled))) { color: var(--text); background: var(--raised); }
 .composer-chip b { font-weight: 500; color: var(--text); overflow: hidden; text-overflow: ellipsis; }
 .composer-send {
   margin-left: auto;
@@ -855,7 +856,7 @@ code, kbd, pre, .mono { font-family: var(--mono); }
   place-items: center;
   flex: 0 0 auto;
 }
-.composer-send:hover { filter: brightness(1.15); }
+.composer-send:hover:where(:not(:disabled)) { filter: brightness(1.15); }
 .composer-send .ico { width: 14px; height: 14px; }
 /* 安静的横条与行式列表 */
 .quiet-block { display: grid; }
@@ -873,7 +874,7 @@ code, kbd, pre, .mono { font-family: var(--mono); }
   text-align: left;
 }
 .quiet-row:last-child { border-bottom: 0; }
-.quiet-row:hover .quiet-name { color: var(--mint); }
+.quiet-row:hover:where(:not(:disabled)) .quiet-name { color: var(--mint); }
 .quiet-row .quiet-name { font-weight: 600; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .quiet-row .meta { color: var(--muted); font-size: 12px; white-space: nowrap; }
 .quiet-row .grow { flex: 1; min-width: 0; }
@@ -895,7 +896,7 @@ code, kbd, pre, .mono { font-family: var(--mono); }
   font-size: 13px;
   text-align: left;
 }
-.inbox-strip:hover .link { text-decoration: underline; }
+.inbox-strip:hover:where(:not(:disabled)) .link { text-decoration: underline; }
 .inbox-strip .grow { flex: 1; }
 .inbox-strip .link { color: var(--mint); white-space: nowrap; }
 .follow-panel { padding: 12px; }
@@ -915,7 +916,7 @@ code, kbd, pre, .mono { font-family: var(--mono); }
   border-radius: var(--radius);
   font-size: 13px;
 }
-.follow-row:hover { background: var(--soft); }
+.follow-row:hover:where(:not(:disabled)) { background: var(--soft); }
 .follow-row .star { color: var(--amber); flex: 0 0 auto; }
 .follow-row .ops { display: none; gap: 4px; flex: 0 0 auto; }
 .follow-row:hover .ops, .follow-row:focus-within .ops { display: inline-flex; }
@@ -935,7 +936,7 @@ code, kbd, pre, .mono { font-family: var(--mono); }
   text-align: left;
 }
 .recent-row:last-child { border-bottom: 0; }
-.recent-row:hover { background: var(--raised); }
+.recent-row:hover:where(:not(:disabled)) { background: var(--raised); }
 .recent-row strong { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; flex: 0 1 auto; }
 .recent-row .meta { color: var(--muted); font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; flex: 1 1 auto; }
 .recent-row .meta:last-of-type { flex: 0 0 auto; }
@@ -965,7 +966,7 @@ code, kbd, pre, .mono { font-family: var(--mono); }
 .metric b.st-stalled { color: var(--st-stalled); }
 .metric b.st-needs { color: var(--st-needs); }
 .metric span { font-size: 11px; color: var(--muted); }
-button.metric:hover { background: var(--soft); }
+button.metric:hover:where(:not(:disabled)) { background: var(--soft); }
 .brief-row { min-height: 40px; }
 .meta-s { color: var(--faint); font-size: 12px; white-space: nowrap; }
 .brief-row > .ico { color: var(--faint); }
@@ -988,7 +989,7 @@ button.metric:hover { background: var(--soft); }
   text-align: left;
 }
 .tl-row:last-child { border-bottom: 0; }
-.tl-row:hover { background: var(--soft); }
+.tl-row:hover:where(:not(:disabled)) { background: var(--soft); }
 .tl-time { width: 76px; flex: 0 0 auto; color: var(--faint); font-size: 12px; font-variant-numeric: tabular-nums; }
 .tl-row .grow { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .tl-row > .ico { margin-left: auto; color: var(--faint); }
@@ -1166,7 +1167,7 @@ button.metric:hover { background: var(--soft); }
   text-align: left;
   font-size: 13px;
 }
-.brief-page .brief-row:hover { background: var(--soft); }
+.brief-page .brief-row:hover:where(:not(:disabled)) { background: var(--soft); }
 .brief-row-main { display: flex; align-items: center; gap: 8px; min-width: 0; }
 .brief-stack .ir-main { min-width: 0; }
 .brief-stack .ir-title {
@@ -1274,7 +1275,7 @@ button.metric:hover { background: var(--soft); }
   color: var(--muted);
   font-size: 13px;
 }
-.fchip:hover { color: var(--text); background: var(--raised); }
+.fchip:hover:where(:not(:disabled)) { color: var(--text); background: var(--raised); }
 .fchip.active { background: var(--soft); color: var(--text); font-weight: 600; }
 .inbox-list { display: grid; grid-template-columns: minmax(0, 1fr); align-content: start; }
 .inbox-row {
@@ -1337,7 +1338,6 @@ button.metric:hover { background: var(--soft); }
   background: var(--surface);
   color: var(--muted);
 }
-.input-wrap:focus-within { border-color: var(--primary); box-shadow: 0 0 0 2px rgba(94, 106, 210, 0.25); }
 .input-wrap input {
   flex: 1;
   border: 0;
@@ -1378,7 +1378,7 @@ select { height: 32px; padding: 0 8px; }
   font-size: 13px;
 }
 .seg-btn:last-child { border-right: 0; }
-.seg-btn:hover { color: var(--text); }
+.seg-btn:hover:where(:not(:disabled)) { color: var(--text); }
 .seg-btn.active { background: var(--soft); color: var(--text); font-weight: 600; }
 .terminals-page {
   max-width: none;
@@ -1511,7 +1511,7 @@ select { height: 32px; padding: 0 8px; }
   font-size: 13px;
 }
 .h-row:last-child { border-bottom: 0; }
-.h-row:hover { background: var(--soft); }
+.h-row:hover:where(:not(:disabled)) { background: var(--soft); }
 .h-row.selected { background: var(--soft); box-shadow: inset 2px 0 0 var(--mint); }
 .h-row .top { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
 .h-row strong { font-weight: 600; font-size: 13px; display: inline-flex; align-items: center; gap: 6px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -1547,7 +1547,7 @@ select { height: 32px; padding: 0 8px; }
   gap: 12px;
 }
 .preset-card { display: block; width: 100%; padding: 16px; text-align: left; color: inherit; }
-button.preset-card:hover { border-color: var(--faint); }
+button.preset-card:hover:where(:not(:disabled)) { border-color: var(--faint); }
 .preset-head {
   display: flex;
   align-items: center;
@@ -1686,7 +1686,7 @@ button.preset-card:hover { border-color: var(--faint); }
   font-size: 13px;
   white-space: nowrap;
 }
-.ws-back:hover { background: var(--soft); color: var(--text); }
+.ws-back:hover:where(:not(:disabled)) { background: var(--soft); color: var(--text); }
 .ws-chip {
   display: inline-flex;
   align-items: center;
@@ -1738,7 +1738,7 @@ button.preset-card:hover { border-color: var(--faint); }
   color: var(--muted);
   font-size: 13px;
 }
-.segctrl .tab:hover { color: var(--text); }
+.segctrl .tab:hover:where(:not(:disabled)) { color: var(--text); }
 .segctrl .tab.active {
   background: var(--surface);
   color: var(--text);
@@ -1766,7 +1766,7 @@ button.preset-card:hover { border-color: var(--faint); }
   font-size: 12px;
   white-space: nowrap;
 }
-.sess-chip:hover { color: var(--text); background: var(--raised); }
+.sess-chip:hover:where(:not(:disabled)) { color: var(--text); background: var(--raised); }
 .sess-chip.active { background: var(--soft); color: var(--text); font-weight: 600; }
 /* 内容网格：抽屉打开时成为与终端卡同行的卡片 */
 .ws-content { flex: 1; min-height: 0; display: flex; padding: 8px 16px 16px; overflow: hidden; }
@@ -2004,7 +2004,7 @@ button.preset-card:hover { border-color: var(--faint); }
   font-family: var(--mono);
   text-align: left;
 }
-.ins-block .file-link:hover { color: var(--mint); }
+.ins-block .file-link:hover:where(:not(:disabled)) { color: var(--mint); }
 .ins-block .cmd-opt {
   display: block;
   width: 100%;
@@ -2018,7 +2018,7 @@ button.preset-card:hover { border-color: var(--faint); }
   font-size: 12px;
   text-align: left;
 }
-.ins-block .cmd-opt:hover { border-color: var(--mint); }
+.ins-block .cmd-opt:hover:where(:not(:disabled)) { border-color: var(--mint); }
 .ins-block .btn { width: 100%; justify-content: center; margin-top: 8px; }
 
 /* ---------- 浮层：对话框 / 命令面板 / 弹出菜单 / toast ---------- */
@@ -2172,7 +2172,7 @@ button.preset-card:hover { border-color: var(--faint); }
   color: var(--muted);
   font-size: 11px;
 }
-.sheet-chip:hover { background: color-mix(in srgb, var(--text) 4%, transparent); color: var(--text); }
+.sheet-chip:hover:where(:not(:disabled)) { background: color-mix(in srgb, var(--text) 4%, transparent); color: var(--text); }
 .sheet-chip[aria-pressed="true"] {
   border-color: var(--border);
   background: color-mix(in srgb, var(--text) 8%, transparent);
@@ -2242,7 +2242,7 @@ button.preset-card:hover { border-color: var(--faint); }
   text-align: left;
 }
 .sheet-card + .sheet-card { margin-top: 6px; }
-.sheet-card:hover { border-color: color-mix(in srgb, var(--primary) 30%, var(--border)); background: var(--soft); }
+.sheet-card:hover:where(:not(:disabled)) { border-color: color-mix(in srgb, var(--primary) 30%, var(--border)); background: var(--soft); }
 .sheet-card-icon {
   display: grid;
   place-items: center;
@@ -2402,7 +2402,7 @@ button.preset-card:hover { border-color: var(--faint); }
   text-align: left;
   font-size: 13px;
 }
-.notif-item:hover { background: var(--soft); }
+.notif-item:hover:where(:not(:disabled)) { background: var(--soft); }
 .notif-item .unread-dot {
   width: 7px; height: 7px;
   border-radius: 50%;
@@ -2426,7 +2426,7 @@ button.preset-card:hover { border-color: var(--faint); }
   font-size: 13px;
   text-align: left;
 }
-.switcher-row:hover { background: var(--soft); }
+.switcher-row:hover:where(:not(:disabled)) { background: var(--soft); }
 .switcher-row small { margin-left: auto; color: var(--faint); font-size: 12px; }
 .switcher .tools { display: grid; gap: 8px; padding: 8px 10px; border-bottom: 1px solid var(--border); }
 .switcher .tools select { width: 100%; }
@@ -2485,9 +2485,7 @@ button.preset-card:hover { border-color: var(--faint); }
   background: var(--bg);
   color: var(--text);
   font-size: 13px;
-  outline: none;
 }
-.create-input:focus { border-color: var(--primary); box-shadow: 0 0 0 3px var(--primary-tint); }
 .create-input-mono { font-family: var(--mono); font-size: 12px; }
 .create-path-row { display: flex; gap: 6px; margin-bottom: 6px; }
 .create-path-row .create-input { flex: 1; min-width: 0; }
@@ -2501,11 +2499,11 @@ button.preset-card:hover { border-color: var(--faint); }
   border-radius: var(--radius);
   background: var(--bg);
   color: var(--text);
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 500;
   flex: 0 0 auto;
 }
-.create-browse:hover { background: var(--soft); }
+.create-browse:hover:not(:disabled) { background: var(--soft); }
 .create-browse .ico { width: 14px; height: 14px; }
 .create-chips { display: flex; flex-wrap: wrap; gap: 6px; }
 .create-chip {
@@ -2523,8 +2521,9 @@ button.preset-card:hover { border-color: var(--faint); }
 }
 .create-chip .ico { width: 12px; height: 12px; flex: 0 0 auto; color: var(--muted); }
 .create-chip span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.create-chip:hover, .create-chip.is-on { background: var(--soft); color: var(--text); }
-.create-chip.is-on { box-shadow: inset 0 0 0 1px var(--primary); color: var(--primary); }
+.create-chip:hover:where(:not(:disabled)) { background: var(--soft); color: var(--text); }
+/* Choice chips reuse the creation form's selected treatment. The inset stroke is not a focus ring. */
+.create-chip.is-on, .chip-btn.is-on, .chip-btn[aria-checked="true"] { background: var(--soft); box-shadow: inset 0 0 0 1px var(--primary); color: var(--primary); }
 .create-type-grid {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
@@ -2544,7 +2543,7 @@ button.preset-card:hover { border-color: var(--faint); }
   font-size: 11px;
 }
 .create-type-ico { width: 16px; height: 16px; }
-.create-type:hover { border-color: color-mix(in srgb, var(--primary) 40%, var(--border)); background: var(--soft); }
+.create-type:hover:where(:not(:disabled)) { border-color: color-mix(in srgb, var(--primary) 40%, var(--border)); background: var(--soft); }
 .create-type.is-on {
   border-color: var(--primary);
   background: var(--primary-tint);
@@ -2565,7 +2564,7 @@ button.preset-card:hover { border-color: var(--faint); }
   font-size: 11px;
   text-align: center;
 }
-.create-choice:hover { background: var(--soft); }
+.create-choice:hover:where(:not(:disabled):not(:has(input:disabled))) { background: var(--soft); }
 .create-choice.is-on,
 .create-choice:has(input:checked) {
   border-color: var(--primary);
@@ -2714,7 +2713,7 @@ button.preset-card:hover { border-color: var(--faint); }
   .ov-panel-body { overflow: visible; }
 }
 button.ws-chip { cursor: pointer; }
-button.ws-chip:hover { border-color: var(--faint); }
+button.ws-chip:hover:where(:not(:disabled)) { border-color: var(--faint); }
 .follow-name {
   flex: 1;
   min-width: 0;
@@ -2728,7 +2727,7 @@ button.ws-chip:hover { border-color: var(--faint); }
   white-space: nowrap;
   padding: 0;
 }
-.follow-name:hover { color: var(--mint); }
+.follow-name:hover:where(:not(:disabled)) { color: var(--mint); }
 .follow-row .ops .icon-btn { width: 26px; height: 26px; }
 
 /* ---------- 预设布局态工作区（v8）：N 栏并排 ---------- */
@@ -2803,7 +2802,7 @@ button.ws-chip:hover { border-color: var(--faint); }
   font-size: 12px;
   text-align: left;
 }
-.pcol-ctx .cmd-opt:hover { border-color: var(--primary); }
+.pcol-ctx .cmd-opt:hover:where(:not(:disabled)) { border-color: var(--primary); }
 .pcol-ctx .file-link {
   display: flex;
   align-items: center;
@@ -2814,7 +2813,7 @@ button.ws-chip:hover { border-color: var(--faint); }
   font-family: var(--mono);
 }
 .file-link.as-text { cursor: default; }
-.file-link.as-text:hover { color: var(--muted); }
+.file-link.as-text:hover:where(:not(:disabled)) { color: var(--muted); }
 
 /* ---------- 浮动终端层（页面内真浮层） ---------- */
 .float-term {
