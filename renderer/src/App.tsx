@@ -221,7 +221,7 @@ export function App() {
       ? "true"
       : "false";
     document.documentElement.lang = locale;
-    applyThemeTokens(themeTokens);
+    applyThemeTokens(themeTokens, theme);
   }, [locale, theme, themeTokens]);
   const loaded = data !== undefined;
   const themeSetting = data?.settings.theme === "light" || data?.settings.theme === "dark" ? data.settings.theme : "system";

@@ -143,6 +143,8 @@
   color: var(--text);
   box-shadow: 0 1px 2px color-mix(in srgb, var(--text) 10%, transparent);
 }
+.theme-choice:hover:not(:disabled) { background: var(--soft); color: var(--text); }
+.theme-choice.selected:hover:not(:disabled) { background: var(--bg); }
 .settings-select {
   height: 40px;
   min-width: 160px;
@@ -178,7 +180,7 @@
   width: 31px;
   height: 18px;
   border-radius: 20px;
-  background: #59636c;
+  background: var(--muted);
   position: relative;
   pointer-events: none;
   flex: 0 0 auto;
@@ -189,12 +191,13 @@
   width: 14px;
   height: 14px;
   border-radius: 50%;
-  background: white;
+  background: var(--switch-off-fg, var(--surface));
   left: 2px;
   top: 2px;
   transition: 0.15s;
 }
 .setting-switch input:checked + span { background: var(--primary); }
+.setting-switch input:checked + span:after { background: var(--primary-fg); }
 .setting-switch input:checked + span:after { left: 15px; }
 .shortcut-row {
   display: grid;

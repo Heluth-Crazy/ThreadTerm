@@ -67,7 +67,6 @@
    interactive chips add .chip-btn for the 26 px size. Colours are tokens. */
 .chip-btn { height:26px; padding:0 10px; gap:6px; font-size:12px; background:var(--surface); border:1px solid var(--border); color:var(--text); cursor:pointer; }
 .chip-btn:hover:not(:disabled) { background:var(--soft); color:var(--text); }
-.chip-btn[aria-expanded="true"], .chip-btn[aria-pressed="true"] { background:var(--soft); color:var(--text); }
 /* Shared icon-sized chip: the same 26 px target, 12 px small-control text and pill radius as the row. */
 .chip-btn.is-icon { width:26px; padding:0; font-size:12px; justify-content:center; gap:0; }
 .chip.is-accent { color:var(--primary); background:color-mix(in srgb, var(--primary) 11%, transparent); border-color:color-mix(in srgb, var(--primary) 45%, var(--border)); }
@@ -98,8 +97,8 @@ html[data-theme="dark"] { color-scheme:dark; }
 .chrome-title { font-size:12px; color:var(--muted); }
 .window-controls { display:flex; height:36px; -webkit-app-region:no-drag; }
 .window-controls button { display:grid; place-items:center; width:46px; height:36px; padding:0; border:0; border-radius:0; background:transparent; }
-.window-controls button:hover { background:var(--soft); }
-.window-controls button:last-child:hover { background:#cf222e; color:white; }
+.window-controls button:hover:not(:disabled) { background:var(--soft); }
+.window-controls button:last-child:hover:not(:disabled) { background:var(--danger); color:var(--bg); }
 .window-controls svg { width:12px; height:12px; }
 .app-shell > .sidebar, .app-shell > .content.main { grid-row:2; }
 .app-shell > .sidebar { grid-column:1; }
@@ -169,9 +168,8 @@ html[data-theme="dark"] { color-scheme:dark; }
 .session-identity p { margin-top:2px; font-size:11px; color:var(--muted); }
 .session-nav .tt-select { max-width:150px; min-width:0; border:1px solid var(--border); border-radius:var(--radius); background:var(--raised); color:var(--text); height:28px; font-size:12px; }
 .tt-select { position:relative; display:inline-flex; box-sizing:border-box; min-width:0; min-height:32px; padding:0; border:1px solid var(--border); border-radius:9px; background:var(--surface); color:var(--text); font-size:13px; }
-.tt-select-trigger { box-sizing:border-box; display:flex; align-items:center; justify-content:space-between; gap:8px; width:100%; min-width:0; min-height:30px; padding:0 8px; border:0; border-radius:inherit; outline:0; background:transparent; color:inherit; font:inherit; text-align:left; cursor:pointer; }
+.tt-select-trigger { box-sizing:border-box; display:flex; align-items:center; justify-content:space-between; gap:8px; width:100%; min-width:0; min-height:30px; padding:0 8px; border:0; border-radius:inherit; background:transparent; color:inherit; font:inherit; text-align:left; cursor:pointer; }
 .tt-select-trigger:hover:not(:disabled) { background:var(--soft); }
-.tt-select-trigger:focus-visible { border-color:var(--primary); box-shadow:0 0 0 3px var(--primary-tint); }
 .tt-select-trigger:disabled { cursor:default; opacity:.6; }
 .tt-select-value, .tt-select-option-label { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .tt-select-chevron { flex:0 0 auto; width:14px; height:14px; color:var(--muted); }
@@ -434,7 +432,7 @@ html[data-theme="dark"] { color-scheme:dark; }
 .codex-status-title { font-size:14px; }
 .codex-status-title span, .codex-status-section-title span, .codex-limit-heading span { color:var(--muted); font-size:11px; }
 .codex-status-usage { width:max-content; color:var(--primary); font-size:11px; text-decoration:none; }
-.codex-status-usage:hover { text-decoration:underline; }
+.codex-status-usage:hover:not(:disabled) { text-decoration:underline; }
 .codex-status-grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:10px 18px; margin:0; }
 .codex-status-grid > div { min-width:0; }
 .codex-status-grid dt { margin-bottom:3px; color:var(--muted); font-size:10px; text-transform:uppercase; letter-spacing:.04em; }
@@ -506,7 +504,7 @@ html[data-theme="dark"] { color-scheme:dark; }
 .chat-question-number { display:block; margin-bottom:4px; color:var(--muted); font-size:11px; font-weight:500; }
 .chat-question-title { display:block; margin-top:4px; color:var(--text); font-size:14px; font-weight:600; }
 .chat-question-option { display:flex; align-items:flex-start; gap:10px; width:100%; max-width:560px; min-width:0; min-height:42px; padding:10px 12px; border:1px solid var(--border); border-radius:7px; background:var(--raised); font-size:13px; cursor:pointer; transition:background .12s, border-color .12s; }
-.chat-question-option:hover { background:var(--soft); }
+.chat-question-option:hover:where(:not(:has(input:disabled))) { background:var(--soft); }
 .chat-question-option.is-selected { border-color:color-mix(in srgb,var(--primary) 55%,var(--border)); background:color-mix(in srgb,var(--primary) 8%,var(--surface)); }
 .chat-question-option:focus-within { outline:2px solid var(--primary); outline-offset:2px; }
 .chat-question-option:has(input:disabled) { cursor:default; }
@@ -670,7 +668,7 @@ code.chat-status-value { font-family:var(--mono); font-size:11px; }
 @media (prefers-reduced-motion:reduce) { .chat-context-ring-fill { transition:none; } }
 .chat-slash, .v3-session-chat form > .chat-slash { position:absolute; left:12px; right:12px; bottom:calc(100% - 8px); z-index:4; display:block; max-height:220px; overflow:auto; padding:6px; border:1px solid var(--border); border-radius:14px; background:var(--surface); box-shadow:var(--shadow); }
 .chat-slash button { width:100%; display:flex; gap:8px; align-items:baseline; border:0; background:transparent; text-align:left; padding:8px 10px; border-radius:10px; color:inherit; }
-.chat-slash button.active, .chat-slash button:hover { background:var(--soft, var(--raised)); }
+.chat-slash button.active, .chat-slash button:hover:not(:disabled) { background:var(--soft, var(--raised)); }
 .chat-slash b { font-size:12px; }
 .chat-slash span { color:var(--muted); font-size:11px; }
 .chat-slash-empty { margin:8px 10px; color:var(--muted); font-size:12px; }
@@ -699,5 +697,13 @@ code.chat-status-value { font-family:var(--mono); font-size:11px; }
 .desktop-companion-summary b { color:var(--text); font-size:14px; }
 .desktop-companion-inbox, .desktop-companion-reset { width:100%; margin-top:6px; }
 
-:root[data-custom-theme="true"] { --bg:var(--custom-background); --side:var(--custom-background); --surface:var(--custom-surface); --raised:var(--custom-surface); --text:var(--custom-text); --muted:var(--custom-muted); --primary:var(--custom-accent); --border:var(--custom-border); --term-bg:var(--custom-background); --term-fg:var(--custom-text); --primary-tint:color-mix(in srgb,var(--custom-accent) 12%,transparent); }
+/* Custom palettes own surface/accent aliases; status, depth and wallpaper keep the base theme. */
+:root[data-custom-theme="true"] {
+  --bg:var(--custom-background); --side:var(--custom-background); --surface:var(--custom-surface); --raised:var(--custom-surface);
+  --text:var(--custom-text); --muted:var(--custom-muted); --faint:color-mix(in srgb,var(--custom-muted) 70%,var(--custom-surface)); --border:var(--custom-border); --soft:color-mix(in srgb,var(--custom-text) 5%,transparent);
+  --primary:var(--custom-accent); --primary-fg:var(--custom-primary-fg,var(--custom-text)); --primary-contrast:var(--primary-fg); --primary-hover:color-mix(in srgb,var(--custom-accent) 88%,var(--custom-hover-target,var(--custom-text))); --primary-tint:color-mix(in srgb,var(--custom-accent) 12%,transparent); --switch-off-fg:var(--custom-switch-off-fg,var(--custom-surface));
+  --mint:var(--primary); --mint-ink:var(--primary-fg); --ink:var(--primary); --ink-fg:var(--primary-fg); --accent:var(--primary-tint); --accent-fg:var(--primary); --blue:var(--primary);
+  --term-bg:var(--custom-background); --term-fg:var(--custom-text); --term-dim:var(--custom-muted); --term-line:var(--custom-border); --term-prompt:var(--custom-accent);
+  --app-window-stroke:var(--custom-border);
+}
 @media (prefers-reduced-motion:reduce) { .spinner, .chat-first-response-dots i { animation:none; } }

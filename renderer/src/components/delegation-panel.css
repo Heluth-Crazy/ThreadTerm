@@ -5,8 +5,8 @@
 .delegation-link:hover { text-decoration:underline; }
 .delegation-state { flex:none; padding:0 6px; border-radius:var(--radius); background:var(--soft); color:var(--muted); font-size:11px; line-height:18px; }
 .delegation-state.st-running, .delegation-state.st-starting, .delegation-state.st-awaiting_parent { color:var(--text); }
-.delegation-state.st-awaiting_user { background:rgba(214,153,41,.16); color:var(--text); }
-.delegation-state.st-failed { background:rgba(204,72,60,.14); color:var(--text); }
+.delegation-state.st-awaiting_user { background:color-mix(in srgb,var(--st-needs) 16%,transparent); color:var(--text); }
+.delegation-state.st-failed { background:color-mix(in srgb,var(--st-failed) 14%,transparent); color:var(--text); }
 .delegation-branch { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:var(--faint); font-family:var(--mono, ui-monospace, monospace); font-size:11px; }
 .delegation-cards { display:grid; gap:6px; }
 .delegation-cards > header { color:var(--muted); font-weight:600; }

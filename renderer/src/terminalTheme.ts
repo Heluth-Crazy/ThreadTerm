@@ -1,8 +1,10 @@
 import type { ITheme } from '@xterm/xterm';
+import { customPrimaryForeground, type ThemeTokens } from './themes';
 
 /** Terminal colors are independent of the application's accent color. The background equals the card it sits in
  * (`--term-bg`/`--surface` of the warm palette in styles.css); keep the two in step. */
-export function terminalTheme(theme: 'light' | 'dark'): ITheme {
+export function terminalTheme(theme: 'light' | 'dark', customTokens?: ThemeTokens): ITheme {
+  if (customTokens) return { ...terminalTheme(theme), background: customTokens.background, foreground: customTokens.text, cursor: customTokens.accent, cursorAccent: customPrimaryForeground(customTokens), selectionBackground: customTokens.accent, selectionInactiveBackground: customTokens.accent, selectionForeground: customPrimaryForeground(customTokens) };
   if (theme === 'dark') return { background: '#2c2c2a', foreground: '#ecebe5', cursor: '#b3baf0', cursorAccent: '#2c2c2a' };
   return {
     background: '#fefdfb', foreground: '#23221f', cursor: '#23221f', cursorAccent: '#fefdfb',
