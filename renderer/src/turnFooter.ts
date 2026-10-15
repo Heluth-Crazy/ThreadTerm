@@ -1,7 +1,8 @@
 import type { ChatContextUsage, ChatItem } from '@threadterm/protocol';
 import { formatChatDuration } from './chatPresentation';
+import { turnSpeed, turnSpeedText, turnSpeedTooltip } from './turnSpeed';
 
-export type FooterSegment = { kind: 'duration' | 'model' | 'in' | 'out' | 'cache'; text: string };
+export type FooterSegment = { kind: 'duration' | 'model' | 'in' | 'out' | 'cache' | 'speed'; text: string; title?: string; estimated?: boolean; tokensPerSecond?: number };
 const record = (value: unknown): Record<string, unknown> => value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {};
 const token = (value: unknown): number | undefined => typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : undefined;
 export function compactTokens(value: number): string {
@@ -25,10 +26,23 @@ export function turnFooterSegments(items: readonly ChatItem[], elapsedMs: number
   };
   const input = token(usage.inputTokens), output = token(usage.outputTokens);
   if (input !== undefined) segments.push({ kind: 'in', text: `${compactTokens(input)} ${zh ? '输入' : 'in'}` });
-  if (output !== undefined) segments.push({ kind: 'out', text: `${compactTokens(output)} ${zh ? '输出' : 'out'}` });
+  if (output !== undefined) segments.push({ kind: 'out', text: `${usage.outputTokensEstimated ? '≈ ' : ''}${compactTokens(output)} ${zh ? '输出' : 'out'}` });
+  const speed = turnSpeed(usage);
+  if (speed) segments.push({ kind: 'speed', text: turnSpeedText(speed), title: turnSpeedTooltip(speed, zh), estimated: speed.estimated, tokensPerSecond: speed.tokensPerSecond });
   const read = token(usage.cacheReadTokens), write = token(usage.cacheWriteTokens);
   if (read !== undefined || write !== undefined) segments.push({ kind: 'cache', text: `${compactTokens((read ?? 0) + (write ?? 0))} ${zh ? '缓存' : 'cache'}` });
   return segments;
+}
+
+/** Attributes shared by the footer span and pure contract tests. */
+export function turnFooterSegmentProps(segment: FooterSegment, previous: readonly FooterSegment[] = []) {
+  // Follow the preceding segment that survives longest as the footer narrows.
+  const separator = previous.some(part => part.kind === 'duration' || part.kind === 'model' || part.kind === 'speed')
+    ? 'always' : (['in', 'out', 'cache'] as const).find(kind => previous.some(part => part.kind === kind)) ?? 'none';
+  return { 'data-separator': separator, ...(segment.kind === 'speed' ? {
+    'data-testid': 'turn-speed', 'data-estimated': String(segment.estimated),
+    'data-tokens-per-second': String(segment.tokensPerSecond), title: segment.title,
+  } : {}) };
 }
 
 export function turnReview(items: readonly ChatItem[]): ChatItem['turnReview'] {

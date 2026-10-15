@@ -3123,6 +3123,29 @@ mod tests {
     }
 
     #[test]
+    fn acp_stream_output_stays_estimated_in_the_neutral_tracker() {
+        let (sender, mut receiver) = crate::provider_events::tap_channel(8);
+        let events = ScopedProviderEvents::new(sender, "speed-worker");
+        let native = Mutex::new(Some("native".to_owned()));
+        let active = Mutex::new(Some("turn".to_owned()));
+        let permissions = Mutex::new(HashMap::new());
+        let think = Mutex::new(false);
+        let ui = Mutex::new(AcpUiState::default());
+        for update in [
+            json!({"sessionUpdate":"agent_thought_chunk","content":{"text":"plan"}}),
+            json!({"sessionUpdate":"agent_message_chunk","content":{"text":"answer"}}),
+        ] {
+            emit_acp_message(&events, "kimi", "speed", &native, &active, &permissions, &think, &ui,
+                json!({"method":"session/update","params":{"sessionId":"native","update":update}}));
+        }
+        let mut speed = crate::turn_speed::TurnSpeed::new(0);
+        for (index, event) in std::iter::from_fn(|| receiver.try_recv().ok()).enumerate() {
+            speed.observe(&event.kind, &event.data, 100 + index as u64 * 100);
+        }
+        assert_eq!(speed.usage(1000).unwrap()["outputTokensEstimated"], true);
+    }
+
+    #[test]
     fn acp_replay_splits_text_at_parent_interactions() {
         for provider in ["kimi", "gemini", "custom"] {
             for boundary in ["tool", "permission", "question", "subagent"] {

@@ -62,6 +62,7 @@ pub mod mcp_delegation;
 pub(crate) mod preview;
 pub mod mcp_host;
 
+pub mod turn_speed;
 pub mod chat_projection;
 pub(crate) mod chat_plan;
 pub(crate) mod chat_plan_approval;

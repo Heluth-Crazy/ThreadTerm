@@ -38,12 +38,16 @@ import {validateRequest,validateResult,validateLayout,METHODS,isRuntimeEvent,PRO
 
 test('context read preserves timestamp and all counters, with an empty-session null result',()=>{
  validateRequest('chat.context.read',{sessionId:'s'});
- const usage={usedTokens:60000,windowTokens:200000,percent:30,inputTokens:30000,outputTokens:4700,cacheReadTokens:60000,cacheWriteTokens:1000,totalTokens:95700,updatedAt:'2026-10-13T10:00:00Z'};
+ const usage={usedTokens:60000,windowTokens:200000,percent:30,inputTokens:30000,outputTokens:4700,generationMs:1840,firstTokenMs:420,outputTokensEstimated:false,cacheReadTokens:60000,cacheWriteTokens:1000,totalTokens:95700,updatedAt:'2026-10-13T10:00:00Z'};
  validateResult('chat.context.read',usage);
+ validateResult('chat.read',[{id:'reply',role:'assistant',parts:[],createdAt:'now',turnId:'turn',turnUsage:usage}]);
+ assert.throws(()=>validateResult('chat.read',[{id:'reply',role:'assistant',parts:[],createdAt:'now',turnUsage:{generationMs:'1840'}}]));
  validateResult('chat.context.read',null);
  assert.throws(()=>validateResult('chat.context.read',{...usage,updatedAt:1}));
+ for(const patch of [{generationMs:'1840'},{firstTokenMs:null},{outputTokensEstimated:'false'}]) assert.throws(()=>validateResult('chat.context.read',{...usage,...patch}));
  assert.throws(()=>validateResult('chat.context.read',{...usage,contextSequence:2}));
  assert.equal(isRuntimeEvent({v:1,event:'chat.context',epoch:'e',seq:1,data:{sessionId:'s',usage}}),true);
+ assert.equal(isRuntimeEvent({v:1,event:'chat.turnSpeed',epoch:'e',seq:2,data:{sessionId:'s',turnId:'t',active:true,usage}}),true);
 });
 
 test('selected commits carry an exact staged snapshot and reject ambiguous or unsafe selections',()=>{

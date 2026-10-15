@@ -221,11 +221,19 @@ export interface ChatContextUsage {
  percent?:number;
  inputTokens?:number;
  outputTokens?:number;
+ /** Model generation time for this turn, excluding tool execution and user waits. */
+ generationMs?:number;
+ /** Milliseconds from turn start to the first model output event. */
+ firstTokenMs?:number;
+ /** True when outputTokens was estimated from streamed text rather than reported by the provider. */
+ outputTokensEstimated?:boolean;
  cacheReadTokens?:number;
  cacheWriteTokens?:number;
  totalTokens?:number;
  updatedAt?:string;
 }
+/** Ephemeral turn-speed update. Published as `chat.turnSpeed`; it is never persisted by this event. */
+export interface ChatTurnSpeed { sessionId:string; turnId:string; active:boolean; usage?:ChatContextUsage }
 export interface ChatConnectionState {
  sessionId:string;
  runtimeEpoch:string;
@@ -300,7 +308,8 @@ export interface PairingOffer { id:string; code:string; qrPayload:string; permis
 export interface PairedDevice { id:string; name:string; permission:DevicePermission; createdAt:string; expiresAt:string; lastSeenAt?:string; revokedAt?:string }
 export interface DataRelocationStatus { frozen:boolean; sourceRoot:string; targetRoot?:string }
 export interface DataRelocationPrepared { sourceRoot:string; targetRoot:string; activationToken:string }
-export interface RuntimeEvent { v:1; event:string; epoch:string; seq:number; data:unknown }
+export interface RuntimeEvent<E extends string=string,D=unknown> { v:1; event:E; epoch:string; seq:number; data:D }
+export type ChatTurnSpeedEvent=RuntimeEvent<'chat.turnSpeed',ChatTurnSpeed>;
 export interface TerminalLaunchState { phase:'preparing'|'launching'|'running'|'failed'|'cancelled'; error?:{code:string;message:string} }
 export interface RequestMap {
  'preview.attach': [{sessionId:string;viewId:string;workspaceId?:string},{attachmentId:string;associations:PreviewAssociation[]}];

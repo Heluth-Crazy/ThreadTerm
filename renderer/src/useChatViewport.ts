@@ -1,13 +1,26 @@
-import { useCallback, useLayoutEffect, useRef, useState, type KeyboardEvent, type MouseEvent, type RefObject } from 'react';
+import { useCallback, useLayoutEffect, useRef, useState, type KeyboardEvent, type MouseEvent, type RefObject, type TouchEvent, type WheelEvent } from 'react';
 
 type Viewport = { top: number; follow: boolean };
 const viewports = new Map<string, Viewport>();
 const FOLLOW_THRESHOLD = 24;
+type ScrollPosition = { scrollTop: number; scrollHeight: number; clientHeight: number; clientWidth: number };
+const scrollPosition = (log: HTMLDivElement): ScrollPosition => ({ scrollTop: log.scrollTop, scrollHeight: log.scrollHeight, clientHeight: log.clientHeight, clientWidth: log.clientWidth });
+
+/** Layout scroll events can precede ResizeObserver; only an upward scroll at
+ * unchanged dimensions can revoke follow without an explicit input pause. */
+export function nextViewportFollow(follow: boolean, inspecting: boolean, previous: ScrollPosition | undefined, current: ScrollPosition): boolean {
+  if (inspecting) return false;
+  if (current.scrollHeight - current.scrollTop - current.clientHeight < FOLLOW_THRESHOLD) return true;
+  const layoutChanged = !previous || current.scrollHeight !== previous.scrollHeight || current.clientHeight !== previous.clientHeight || current.clientWidth !== previous.clientWidth;
+  return follow && (layoutChanged || current.scrollTop >= previous.scrollTop);
+}
 
 /** User inspection must stop follow before a disclosure changes layout. */
 export function useChatViewport(sessionId: string, snapshotReady: boolean, logRef: RefObject<HTMLDivElement | null>, contentRef: RefObject<HTMLDivElement | null>) {
   const followRef = useRef(true);
   const inspectingRef = useRef(false);
+  const previousScrollRef = useRef<ScrollPosition | undefined>(undefined);
+  const touchYRef = useRef<number | undefined>(undefined);
   const restoredRef = useRef<{ sessionId: string; pending: boolean } | undefined>(undefined);
   const [paused, setPaused] = useState(false);
 
@@ -37,6 +50,7 @@ export function useChatViewport(sessionId: string, snapshotReady: boolean, logRe
     inspectingRef.current = false;
     setFollowing(saved?.follow ?? true);
     log.scrollTop = !saved || saved.follow ? log.scrollHeight : saved.top;
+    previousScrollRef.current = scrollPosition(log);
     // Readiness is tied to the confirmed snapshot's session, not items.length:
     // a new session briefly renders the previous session's items before reset.
     restoredRef.current = { sessionId, pending: !snapshotReady };
@@ -62,6 +76,7 @@ export function useChatViewport(sessionId: string, snapshotReady: boolean, logRe
     log.focus({ preventScroll: true });
     // An immediate jump avoids smooth-scroll frames fighting live output.
     log.scrollTop = log.scrollHeight;
+    previousScrollRef.current = scrollPosition(log);
     remember();
   }, [logRef, remember, setFollowing]);
 
@@ -93,9 +108,18 @@ export function useChatViewport(sessionId: string, snapshotReady: boolean, logRe
   const onScroll = () => {
     const log = logRef.current;
     if (!log) return;
-    const nearBottom = log.scrollHeight - log.scrollTop - log.clientHeight < FOLLOW_THRESHOLD;
-    setFollowing(nearBottom && !inspectingRef.current);
+    const follow = nextViewportFollow(followRef.current, inspectingRef.current, previousScrollRef.current, scrollPosition(log));
+    setFollowing(follow);
+    // Correct layout-driven movement even when its scroll event beats the observer.
+    if (follow) log.scrollTop = log.scrollHeight;
+    previousScrollRef.current = scrollPosition(log);
     if (!restoredRef.current?.pending) remember();
+  };
+
+  const pauseForScrollUp = () => {
+    if ((logRef.current?.scrollTop ?? 0) <= 0) return;
+    setFollowing(false);
+    remember();
   };
 
   const onKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
@@ -115,13 +139,27 @@ export function useChatViewport(sessionId: string, snapshotReady: boolean, logRe
       followLatest();
     } else if (['End', 'PageDown', 'PageUp', 'ArrowDown', 'ArrowUp', 'Home'].includes(event.key) && !target?.closest('button, a, summary')) {
       inspectingRef.current = false;
+      if (['PageUp', 'ArrowUp', 'Home'].includes(event.key)) pauseForScrollUp();
     }
   };
 
   return { paused, followRef, followLatest, navigateToMessage, pauseForDisclosure, onScroll, onKeyDown,
     inspect: () => { inspectingRef.current = true; setFollowing(false); remember(); },
-    onWheel: () => { inspectingRef.current = false; },
-    onTouchStart: () => { inspectingRef.current = false; },
+    onWheel: (event: WheelEvent<HTMLDivElement>) => {
+      if (event.ctrlKey) return;
+      inspectingRef.current = false;
+      // Pause before scrolling so a concurrent resize/output callback cannot win.
+      if (event.deltaY < 0) pauseForScrollUp();
+    },
+    onTouchStart: (event: TouchEvent<HTMLDivElement>) => {
+      inspectingRef.current = false;
+      touchYRef.current = event.touches[0]?.clientY;
+    },
+    onTouchMove: (event: TouchEvent<HTMLDivElement>) => {
+      const y = event.touches[0]?.clientY;
+      if (y !== undefined && touchYRef.current !== undefined && y > touchYRef.current) pauseForScrollUp();
+      touchYRef.current = y;
+    },
     onPointerDown: (event: MouseEvent<HTMLDivElement>) => {
       if (event.target === logRef.current) inspectingRef.current = false;
     },

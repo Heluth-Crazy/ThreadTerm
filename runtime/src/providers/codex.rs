@@ -2532,6 +2532,25 @@ fn codex_turn_usage(token_usage: &Value) -> Option<Value> {
     (!usage.is_empty()).then_some(Value::Object(usage))
 }
 
+/// `tokenUsage.last` is a model-call delta. Most calls have an agent-message
+/// id, but reasoning/tool-only calls do not. The cumulative output prefix
+/// before `last` is stable across revisions of one call and advances for the
+/// next call.
+fn codex_usage_call_id(token_usage: &Value) -> Option<String> {
+    let token = |value: Option<&Value>, camel: &str, snake: &str| value.and_then(|value| {
+        value
+            .get(camel)
+            .or_else(|| value.get(snake))
+            .and_then(Value::as_u64)
+    });
+    let total = token_usage.get("total");
+    let last = token_usage.get("last");
+    Some(format!("usage:{}:{}",
+        token(total, "inputTokens", "input_tokens")?.saturating_sub(token(last, "inputTokens", "input_tokens")?),
+        token(total, "outputTokens", "output_tokens")?.saturating_sub(token(last, "outputTokens", "output_tokens")?),
+    ))
+}
+
 fn codex_rate_limit_rows(rate_limits: &Value) -> Vec<Value> {
     let mut rows = Vec::new();
     let mut ids = HashSet::new();
@@ -4054,6 +4073,21 @@ fn emit_codex_message(
             let mut data = serde_json::Map::new();
             data.insert("usage".into(), usage);
             if let Some(turn_usage) = codex_turn_usage(token_usage) {
+                let speed_call_id = codex_usage_call_id(token_usage)
+                    .or_else(|| turn_id.as_deref().and_then(|public_id| codex_turn_assistant_item_id(active_turn, public_id)))
+                    .unwrap_or_else(|| format!("turn:{}", turn_id.as_deref().unwrap_or("unknown")));
+                if let Some(output_tokens) = turn_usage.get("outputTokens").and_then(Value::as_u64) {
+                    emit_scoped(
+                        events,
+                        "codex",
+                        session_id,
+                        native_id.as_deref(),
+                        turn_id.as_deref(),
+                        "chat.speed.usage",
+                        json!({"callId":speed_call_id,"outputTokens":output_tokens}),
+                        Some(worker_token),
+                    );
+                }
                 data.insert("turnUsage".into(), turn_usage);
             }
             emit_scoped(
@@ -5735,10 +5769,12 @@ createInterface({{ input: process.stdin, crlfDelay: Infinity }}).on('line', line
                 "chat.turn.started",
                 "chat.approval",
                 "chat.ui",
+                "chat.speed.usage",
                 "chat.context",
                 "provider.event"
             ]
         );
+        assert_eq!(observed.iter().find(|event|event.kind=="chat.speed.usage").unwrap().worker_token.as_deref(),Some("reserved-token"));
         assert!(observed
             .iter()
             .all(|event| event.worker_token.as_deref() == Some("reserved-token")));
@@ -5747,6 +5783,34 @@ createInterface({{ input: process.stdin, crlfDelay: Infinity }}).on('line', line
             1,
             "approval is not auto-submitted"
         );
+    }
+
+    #[test]
+    fn cumulative_usage_prefix_keys_distinguish_tool_only_calls_and_stay_stable() {
+        let first = json!({"total":{"inputTokens":10,"outputTokens":4},"last":{"inputTokens":10,"outputTokens":4}});
+        let first_revision = json!({"total":{"inputTokens":10,"outputTokens":6},"last":{"inputTokens":10,"outputTokens":6}});
+        let second = json!({"total":{"inputTokens":25,"outputTokens":9},"last":{"inputTokens":15,"outputTokens":3}});
+        assert_eq!(codex_usage_call_id(&first).as_deref(), Some("usage:0:0"));
+        assert_eq!(codex_usage_call_id(&first_revision).as_deref(), Some("usage:0:0"));
+        assert_eq!(codex_usage_call_id(&second).as_deref(), Some("usage:10:6"));
+    }
+
+    #[test]
+    fn emitted_codex_usage_accumulates_two_no_total_assistant_calls() {
+        let mut replay = CodexSubagentReplay::new();
+        let _ = replay.drain();
+        for (id, output) in [("assistant-a", 5), ("assistant-b", 7), ("assistant-b", 8)] {
+            replay.emit("item/agentMessage/delta", json!({"threadId":SUBAGENT_PARENT,"itemId":id,"delta":"reply"}));
+            replay.emit("thread/tokenUsage/updated", json!({"threadId":SUBAGENT_PARENT,"tokenUsage":{"last":{"outputTokens":output}}}));
+        }
+        let events = replay.drain();
+        let speed_events = events.iter().filter(|event| event.kind == "chat.speed.usage").collect::<Vec<_>>();
+        assert_eq!(speed_events.iter().map(|event| event.data["callId"].as_str()).collect::<Vec<_>>(), vec![Some("assistant-a"), Some("assistant-b"), Some("assistant-b")]);
+        let mut speed = crate::turn_speed::TurnSpeed::new(0);
+        for (index, event) in events.iter().enumerate() { speed.observe(&event.kind, &event.data, 100 + index as u64 * 10); }
+        let usage = speed.usage(1000).unwrap();
+        assert_eq!(usage["outputTokens"], 13);
+        assert_eq!(usage["outputTokensEstimated"], false);
     }
 
     #[test]

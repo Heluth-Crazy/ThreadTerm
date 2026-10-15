@@ -2288,6 +2288,21 @@ fn emit_opencode_event(target: &EventTarget, raw: Value) {
                             data["model"] = json!(format!("{provider}/{model}"));
                         }
                     }
+                    if let (Some(call_id), Some(output_tokens)) = (
+                        info.get("id").and_then(Value::as_str),
+                        usage.get("outputTokens").and_then(Value::as_u64),
+                    ) {
+                        emit_scoped(
+                            &target.events,
+                            "opencode",
+                            &target.threadterm_session,
+                            native_id,
+                            turn.as_deref(),
+                            "chat.speed.usage",
+                            json!({"callId":call_id,"outputTokens":output_tokens}),
+                            Some(&target.worker_token),
+                        );
+                    }
                     emit_scoped(
                         &target.events,
                         "opencode",
@@ -2359,7 +2374,7 @@ fn emit_opencode_event(target: &EventTarget, raw: Value) {
                 native_id,
                 turn.as_deref(),
                 "chat.item",
-                json!({"item":{"id":message_id},"parts":snapshot,"raw":raw}),
+                json!({"item":{"id":message_id},"parts":snapshot,"raw":raw,"speedCallId":message_id}),
                 Some(&target.worker_token),
             );
         }
@@ -2407,7 +2422,7 @@ fn emit_opencode_event(target: &EventTarget, raw: Value) {
                 native_id,
                 turn.as_deref(),
                 "chat.item",
-                json!({"item":{"id":message_id},"parts":snapshot,"raw":raw}),
+                json!({"item":{"id":message_id},"parts":snapshot,"raw":raw,"speedCallId":message_id}),
                 Some(&target.worker_token),
             );
         }
@@ -2824,6 +2839,32 @@ mod tests {
             password: String::new(),
             model_limits: HashMap::new(),
         }
+    }
+
+    #[test]
+    fn assistant_message_usage_emits_distinct_exact_speed_calls_before_context() {
+        let (events, mut receiver) = crate::provider_events::tap_channel(16);
+        let target = event_target(&events, Arc::new(Mutex::new(Some("turn-1".into()))));
+        emit_opencode_event(&target, frame("message.part.updated", json!({"part":{
+            "id":"reasoning-a","messageID":"assistant-a","sessionID":"native-1","type":"reasoning","text":"plan"
+        }})));
+        for (id, output) in [("assistant-a", 12), ("assistant-b", 7)] {
+            emit_opencode_event(
+                &target,
+                frame("message.updated", json!({"info":{
+                    "id":id,"sessionID":"native-1","role":"assistant",
+                    "tokens":{"input":1,"output":output,"total":output + 1}
+                }})),
+            );
+        }
+        let emitted: Vec<_> = std::iter::from_fn(|| receiver.try_recv().ok()).collect();
+        let speed = emitted.iter().filter(|event| event.kind == "chat.speed.usage").collect::<Vec<_>>();
+        assert!(emitted.iter().any(|event| event.kind == "chat.item"
+            && event.data["speedCallId"] == "assistant-a"
+            && event.data["parts"][0]["type"] == "thinking"));
+        assert_eq!(speed.iter().map(|event| event.data["callId"].as_str()).collect::<Vec<_>>(), vec![Some("assistant-a"), Some("assistant-b")]);
+        assert_eq!(speed.iter().map(|event| event.data["outputTokens"].as_u64()).collect::<Vec<_>>(), vec![Some(12), Some(7)]);
+        assert!(emitted.windows(2).all(|pair| pair[0].kind != "chat.context" || pair[1].kind != "chat.speed.usage"));
     }
 
     fn task_frame(call: &str, status: &str, child: Option<&str>) -> Value {

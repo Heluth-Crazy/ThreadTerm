@@ -1,7 +1,7 @@
 import { lazy, Suspense, useId, useRef, useState } from 'react';
 import type { ChatItem, FileReference, ReviewFile, Session } from '@threadterm/protocol';
 import { request, revealFile } from '../bridge';
-import { createTurnChangesCache, turnFooterSegments, turnReview } from '../turnFooter';
+import { createTurnChangesCache, turnFooterSegmentProps, turnFooterSegments, turnReview } from '../turnFooter';
 import { SurfaceDialog } from './SurfaceDialog';
 import './turn-footer.css';
 
@@ -32,7 +32,8 @@ export function TurnFooter({ items, elapsedMs, session, zh, copy, cache, openFil
     if (event.key === 'Escape' && open && !diff) { event.stopPropagation(); setOpen(false); toggle.current?.focus(); }
   }}>
     {!!segments.length && <p className="chat-turn-meta" aria-label={segments.map(segment => segment.text).join(' · ')} title={segments.map(segment => segment.text).join(' · ')}>
-      {segments.map(segment => <span className={`chat-turn-segment is-${segment.kind}`} key={segment.kind}>{segment.text}</span>)}
+      {segments.map((segment, index) => <span className={`chat-turn-segment is-${segment.kind}`} key={segment.kind}
+        {...turnFooterSegmentProps(segment, segments.slice(0, index))}>{segment.text}</span>)}
     </p>}
     {valid && <>
       <button ref={toggle} type="button" className="btn btn-sm btn-ghost" aria-expanded={open} aria-controls={id} onClick={() => { if (!open) load(); setOpen(value => !value); }}>

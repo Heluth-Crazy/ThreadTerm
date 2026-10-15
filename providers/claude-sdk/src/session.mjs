@@ -319,10 +319,15 @@ export class ClaudeSession {
           this.write(event(this.cardId, 'session.status', { phase: 'ready', sessionId: this.sessionId, operationId: this.activeOperationId }));
           this.adoptTurnInit(message);
         }
-        if (message.type === 'stream_event' && message.event?.type === 'message_start' && message.event.message?.id) this.streamedIds.add(message.event.message.id);
+        if (message.type === 'stream_event' && message.event?.type === 'message_start' && message.event.message?.id) {
+          this.streamedIds.add(message.event.message.id);
+          this.activeStreamMessageId = message.event.message.id;
+        }
         if (this.observeBackgroundMessage(message)) this.publishUi();
         const streamed = message.type === 'assistant' ? { streamed: this.streamedIds.has(message.message?.id) } : {};
-        this.write(event(this.cardId, 'session.event', { message, sessionId: this.sessionId, operationId: this.activeOperationId, ...streamed }));
+        const speedCallId = message.type === 'stream_event' ? this.activeStreamMessageId
+          : message.type === 'assistant' ? (message.message?.id ?? message.uuid) : undefined;
+        this.write(event(this.cardId, 'session.event', { message, sessionId: this.sessionId, operationId: this.activeOperationId, ...streamed, ...(speedCallId ? { speedCallId } : {}) }));
         if (message.type === 'system' && message.subtype === 'status' && typeof message.permissionMode === 'string') this.noteMode(message.permissionMode);
         if (message.type === 'system' && message.subtype === 'commands_changed' && Array.isArray(message.commands)) {
           this.catalog.commands = message.commands;
@@ -353,6 +358,7 @@ export class ClaudeSession {
           this.activeOperationId = null;
           this.interruptedOperation = null;
           this.streamedIds.clear();
+          this.activeStreamMessageId = null;
           if (consumed && status === 'completed' && (this.pendingSteers.size || this.queuedSends.length)) {
             // A cleanly accounted turn proves the SDK input still holds these
             // messages and runs them next. Claim the turn now so new user

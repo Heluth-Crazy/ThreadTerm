@@ -1543,16 +1543,19 @@ fn pi_finish_turn(events: &ScopedProviderEvents, session_id: &str, shared: &PiSh
     let Some((turn, sequence)) = pi_take_active_turn(shared) else { return; };
     let native = shared.native_id.lock().ok().and_then(|id| id.clone());
     pi_drain_interactions(events, session_id, native.as_deref(), shared, Some(&turn));
+    let usage = shared.turn_usage.lock().ok().and_then(|mut slot| slot.take()).filter(|(owner, _)| *owner == turn);
+    let turn_usage = usage.as_ref().map(|(_, usage)| usage.clone());
     let pending = shared.pending_error.lock().ok().and_then(|mut slot| slot.take());
     if stop_reason != "cancelled" {
-        if let Some(error) = pending {
+        if let Some(mut error) = pending {
+            if let Some(usage) = turn_usage.as_ref() { error["turnUsage"] = usage.clone(); }
             emit(events, "pi", session_id, native.as_deref(), Some(&turn), "chat.error", error);
         }
     }
     let mut data = json!({"result":{"stopReason":stop_reason}});
     if let Some(elapsed) = elapsed_ms { data["elapsedMs"] = json!(elapsed); }
+    if let Some(usage) = turn_usage { data["turnUsage"] = usage; }
     emit(events, "pi", session_id, native.as_deref(), Some(&turn), "chat.turn.completed", data);
-    let usage = shared.turn_usage.lock().ok().and_then(|mut slot| slot.take()).filter(|(owner, _)| *owner == turn);
     pi_refresh_turn_context(events, session_id, shared, sequence, usage);
 }
 
@@ -2766,12 +2769,19 @@ mod tests {
                 "content":[],"usage":{"input":input,"output":output,"cacheRead":1000,"cacheWrite":0,"totalTokens":input + output + 1000,"cost":{"total":0}}}}));
         }
         pi_event(&events, "pi", "session", &shared, json!({"type":"agent_settled"}));
-        while receiver.try_recv().is_ok() {}
+        let terminal: Vec<_> = std::iter::from_fn(|| receiver.try_recv().ok()).collect();
+        let completed = terminal.iter().find(|event| event.kind == "chat.turn.completed").unwrap();
+        assert_eq!(completed.data["turnUsage"]["outputTokens"], 65);
         reader.0.lock().unwrap().pop().unwrap()(Ok(json!({"tokens":{"total":20}})));
         let context = receiver.try_recv().unwrap();
         assert_eq!((context.kind.as_str(), context.turn_id.as_deref()), ("chat.context", Some("turn-1")));
         assert_eq!(context.data["usage"]["totalTokens"], 20);
         assert_eq!(context.data["turnUsage"], json!({"inputTokens":1500,"outputTokens":65,"cacheReadTokens":2000,"cacheWriteTokens":0,"totalTokens":3565}));
+        let mut speed = crate::turn_speed::TurnSpeed::new(0);
+        speed.observe("chat.delta", &json!({"part":{"type":"text","text":"streamed"}}), 100);
+        speed.observe(&context.kind, &context.data, 400);
+        assert_eq!(speed.usage(1000).unwrap()["outputTokens"], 65);
+        assert_eq!(speed.usage(1000).unwrap()["outputTokensEstimated"], false);
         assert!(shared.turn_usage.lock().unwrap().is_none());
     }
 
