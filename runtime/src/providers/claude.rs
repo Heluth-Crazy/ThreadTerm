@@ -1776,6 +1776,9 @@ fn emit_claude_message(
         let mut data = text
             .map(|text| json!({"part":{"type":"text","text":text},"raw":raw}))
             .unwrap_or_else(|| json!({"raw":raw}));
+        if let Some(call_id) = raw.get("speedCallId").and_then(Value::as_str) {
+            data["speedCallId"] = json!(call_id);
+        }
         let fork_anchor = claude_reply_fork_anchor(&message, native_id.as_deref());
         // Streamed replies already occupy the operation's projection item. A
         // final SDK assistant snapshot updates that item's opaque fork anchor
@@ -1833,6 +1836,9 @@ fn emit_claude_message(
             }
             if let Some((item_id, text)) = claude_unstreamed_text(&raw, &message) {
                 let mut data = json!({"item":{"id":item_id},"part":{"type":"text","text":text,"status":"complete"}});
+                if let Some(call_id) = raw.get("speedCallId").and_then(Value::as_str) {
+                    data["speedCallId"] = json!(call_id);
+                }
                 if let Some(anchor) = fork_anchor {
                     data["forkAnchor"] = anchor;
                 }
@@ -1848,6 +1854,18 @@ fn emit_claude_message(
                 );
             }
         }
+        if let Some((call_id, output_tokens)) = claude_speed_usage(&raw) {
+            emit_scoped(
+                events,
+                "claude",
+                session_id,
+                native_id.as_deref(),
+                turn_id,
+                "chat.speed.usage",
+                json!({"callId":call_id,"outputTokens":output_tokens}),
+                worker_token,
+            );
+        }
         return;
     }
     emit_scoped(
@@ -1860,6 +1878,25 @@ fn emit_claude_message(
         json!({"raw":raw}),
         worker_token,
     );
+}
+
+/// Claude's stream `message_delta` and completed assistant messages both carry
+/// per-message usage.  The sidecar supplies one stable message id for the
+/// streamed frames, so a later snapshot replaces that call's estimate.
+fn claude_speed_usage(raw: &Value) -> Option<(String, u64)> {
+    let message = raw.get("message")?;
+    let usage = message.pointer("/event/usage")
+        .or_else(|| message.pointer("/event/message/usage"))
+        .or_else(|| message.get("usage"))
+        .or_else(|| message.pointer("/message/usage"))?;
+    let output_tokens = usage.get("output_tokens")
+        .or_else(|| usage.get("outputTokens"))
+        .and_then(Value::as_u64)?;
+    let call_id = raw.get("speedCallId").and_then(Value::as_str)
+        .or_else(|| message.pointer("/event/message/id").and_then(Value::as_str))
+        .or_else(|| message.pointer("/message/id").and_then(Value::as_str))
+        .or_else(|| message.get("uuid").and_then(Value::as_str))?;
+    Some((call_id.to_owned(), output_tokens))
 }
 
 /// Context usage also carries the session window. Keep only the SDK result
@@ -2178,6 +2215,36 @@ mod tests {
         let mut expected = ui.wire();
         expected["sessionId"] = json!("s");
         assert_eq!(event.data, expected);
+    }
+
+    #[test]
+    fn per_message_speed_usage_uses_the_native_stream_message_id() {
+        let stream = json!({"speedCallId":"message-a","message":{"type":"stream_event","event":{"usage":{"output_tokens":0}}}});
+        let final_a = json!({"speedCallId":"message-a","message":{"type":"assistant","message":{"id":"message-a","usage":{"output_tokens":12}}}});
+        let final_b = json!({"speedCallId":"message-b","message":{"type":"assistant","message":{"id":"message-b","usage":{"output_tokens":7}}}});
+        assert_eq!(claude_speed_usage(&stream), Some(("message-a".into(), 0)));
+        assert_eq!(claude_speed_usage(&final_a), Some(("message-a".into(), 12)));
+        assert_eq!(claude_speed_usage(&final_b), Some(("message-b".into(), 7)));
+    }
+
+    #[test]
+    fn emitted_claude_usage_replaces_a_message_and_accumulates_calls() {
+        let (events, mut receiver) = crate::provider_events::tap_channel(16);
+        let native = Mutex::new(Some("native".to_owned()));
+        let liveness = WorkerLiveness::default();
+        let ui = ClaudeUi::default();
+        for (id, output) in [("message-a", 4), ("message-b", 6), ("message-b", 7)] {
+            emit_claude_message(&events, "card", &native, &liveness, &ui, Some("worker"), json!({
+                "ev":"session.event","cardId":"card","sessionId":"native","operationId":"turn","speedCallId":id,
+                "streamed":false,"message":{"type":"assistant","message":{"id":id,"usage":{"output_tokens":output},"content":[{"type":"text","text":"reply"}]}}
+            }));
+        }
+        let emitted: Vec<_> = std::iter::from_fn(|| receiver.try_recv().ok()).collect();
+        let exact = emitted.iter().filter(|event| event.kind == "chat.speed.usage").collect::<Vec<_>>();
+        assert_eq!(exact.iter().map(|event| event.data["callId"].as_str()).collect::<Vec<_>>(), vec![Some("message-a"), Some("message-b"), Some("message-b")]);
+        let mut speed = crate::turn_speed::TurnSpeed::new(0);
+        for (index, event) in emitted.iter().enumerate() { speed.observe(&event.kind, &event.data, 100 + index as u64 * 10); }
+        assert_eq!(speed.usage(1000).unwrap()["outputTokens"], 11);
     }
 
     #[test]

@@ -1065,6 +1065,18 @@
         "outputTokens": {
           "type": "number"
         },
+        "generationMs": {
+          "type": "number",
+          "description": "Model generation time for this turn, excluding tool execution and user waits."
+        },
+        "firstTokenMs": {
+          "type": "number",
+          "description": "Milliseconds from turn start to the first model output event."
+        },
+        "outputTokensEstimated": {
+          "type": "boolean",
+          "description": "True when outputTokens was estimated from streamed text rather than reported by the provider."
+        },
         "cacheReadTokens": {
           "type": "number"
         },

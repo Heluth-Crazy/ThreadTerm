@@ -900,6 +900,7 @@ impl RuntimeService {
             config.clone(),
             crate::delegation::default_mcp_executable(),
         ));
+        let turn_speeds = crate::turn_speed::shared(db.path());
         let mut events = providers.take_projection_events().expect("new provider projection receiver");
         let event_db = Arc::clone(&db);
         let event_providers = Arc::clone(&providers);
@@ -907,6 +908,8 @@ impl RuntimeService {
         let event_previews = Arc::clone(&previews);
         let event_chat_tools = Arc::clone(&chat_tools);
         std::thread::spawn(move || loop {
+            // Own the shared tracker for the lifetime of canonical projection.
+            let _keep_speed_tracker_alive = &turn_speeds;
             match events.blocking_recv() {
                 Ok(event) => {
                     // Drain a bounded burst before taking the provider/DB locks.
@@ -1060,6 +1063,11 @@ impl RuntimeService {
         if self.shutdown_pending.load(Ordering::Acquire) {
             self.shutdown_requested.store(true, Ordering::Release);
         }
+    }
+    /// Ephemeral Chat-only pushes. The transport subscribes per connection;
+    /// payloads use the protocol chat.turnSpeed event and never enter SQLite.
+    pub fn subscribe_turn_speed(&self) -> tokio::sync::broadcast::Receiver<Value> {
+        crate::turn_speed::shared(self.db.path()).subscribe()
     }
     pub fn output_notified(&self) -> impl std::future::Future<Output = ()> + '_ {
         self.output.notified()

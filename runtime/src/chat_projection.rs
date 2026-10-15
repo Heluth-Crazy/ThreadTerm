@@ -241,7 +241,18 @@ pub fn record(
     kind: &str,
     data: &Value,
 ) -> Result<()> {
-    db.transaction(|tx| record_tx(tx, session_id, turn_id, kind, data))
+    let speeds = crate::turn_speed::shared(db.path());
+    if kind == "chat.speed.usage" { speeds.observe(session_id, turn_id, kind, data); return Ok(()); }
+    db.transaction(|tx| {
+        let data = speeds.observe(session_id, turn_id, kind, data);
+        if matches!(kind,"session.closed"|"chat.connection") {
+            if let (Some(turn),Some(usage)) = (data.get("speedTurnId").and_then(Value::as_str),data.get("turnUsage").and_then(turn_usage)) {
+                attach_turn_speed(tx,session_id,turn,&usage)?;
+            }
+        }
+        let turn_id = if matches!(kind,"session.closed"|"chat.connection") {turn_id} else {turn_id.or_else(|| data.get("speedTurnId").and_then(Value::as_str))};
+        record_tx(tx, session_id, turn_id, kind, &data)
+    })
 }
 
 /// A successful answer and its non-actionable transcript receipt share one
@@ -255,7 +266,9 @@ pub(crate) fn record_answer_receipt(
     operation_id: &str,
 ) -> Result<()> {
     db.transaction(|tx| {
-        record_tx(tx, session_id, Some(turn_id), kind, data)?;
+        let speeds = crate::turn_speed::shared(db.path());
+        let data = speeds.observe(session_id, Some(turn_id), kind, data);
+        record_tx(tx, session_id, Some(turn_id), kind, &data)?;
         crate::db::complete(tx, operation_id, "chat.answer", &Value::Null)
     })
 }
@@ -286,7 +299,9 @@ pub(crate) fn record_if_active(
         if !active {
             return Ok(false);
         }
-        record_tx(tx, session_id, Some(turn_id), kind, data)?;
+        let speeds = crate::turn_speed::shared(db.path());
+        let data = speeds.observe(session_id, Some(turn_id), kind, data);
+        record_tx(tx, session_id, Some(turn_id), kind, &data)?;
         Ok(true)
     })
 }
@@ -469,9 +484,9 @@ fn record_tx(
      // reopened chat can paint it before the next turn produces usage.
      tx.execute("INSERT INTO chat_context(session_id,data,updated_at) VALUES (?,?,?) ON CONFLICT(session_id) DO UPDATE SET data=excluded.data,updated_at=excluded.updated_at",params![session_id,serde_json::to_string(&usage)?,updated_at])?;
      tx.execute("INSERT INTO outbox(event,data,created_at) VALUES ('chat.context',?,?)",params![serde_json::to_string(&json!({"sessionId":session_id,"usage":usage}))?,now])?;
-     // Context notifications are the only source for this footer snapshot.
-     // They are native per-turn data, unlike summary/session usage records.
-     if turn.is_some() && data.get("turnUsage").and_then(turn_usage).is_some() { item.turn_usage=data.get("turnUsage").and_then(turn_usage);changed=true; }
+     // Native per-turn context usage can enrich the saved footer. The speed
+     // tracker freezes per-call output aggregates on the terminal event.
+     if turn.is_some() { if let Some(usage)=data.get("turnUsage").and_then(turn_usage) { item.turn_usage=Some(crate::turn_speed::merge_usage(item.turn_usage.as_ref(),&usage));changed=true; } }
      // Agents that name the answering model only on its message (OpenCode)
      // send it here; a model known when the turn started is kept.
      if turn.is_some() && item.turn_model.is_none() {
@@ -480,6 +495,11 @@ fn record_tx(
     }
    }
    _=>{}
+  }
+  if matches!(kind,"chat.turn.completed"|"chat.error") {
+   if let Some(usage)=data.get("turnUsage").and_then(turn_usage) {
+    item.turn_usage=Some(crate::turn_speed::merge_usage(item.turn_usage.as_ref(),&usage));changed=true;
+   }
   }
   // A context snapshot is not billing usage or a session-status change. When it
   // carries per-turn footer usage, that assistant item still has to be saved.
@@ -599,11 +619,29 @@ fn model_from_latest_ui(tx: &rusqlite::Transaction<'_>, session_id: &str) -> Opt
         .filter(|value| !value.is_empty()).map(str::to_owned)
 }
 
+// A worker close/replacement has its own lifecycle. Save its last measurement
+// without manufacturing a completion that could change the new worker's state.
+fn attach_turn_speed(tx:&rusqlite::Transaction<'_>,session_id:&str,turn_id:&str,usage:&Value)->Result<()> {
+    let rows=tx.prepare("SELECT id,data FROM chat_items WHERE session_id=? AND turn_id=? ORDER BY created_at DESC,id DESC")?
+        .query_map(params![session_id,turn_id],|row|Ok((row.get::<_,String>(0)?,row.get::<_,String>(1)?)))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    for (id,raw) in rows {
+        let Ok(mut item)=serde_json::from_str::<ChatItem>(&raw) else {continue};
+        if item.role!="assistant" {continue;}
+        item.turn_usage=Some(crate::turn_speed::merge_usage(item.turn_usage.as_ref(),usage));
+        tx.execute("UPDATE chat_items SET data=? WHERE id=?",params![serde_json::to_string(&item)?,id])?;
+        tx.execute("INSERT INTO outbox(event,data,created_at) VALUES ('chat.item',?,?)",params![serde_json::to_string(&json!({"sessionId":session_id,"item":item}))?,Utc::now().to_rfc3339()])?;
+        break;
+    }
+    Ok(())
+}
+
 fn turn_usage(usage: &Value) -> Option<Value> {
     let mut out=serde_json::Map::new();
-    for key in ["inputTokens","outputTokens","cacheReadTokens","cacheWriteTokens","totalTokens"] {
+    for key in ["inputTokens","outputTokens","cacheReadTokens","cacheWriteTokens","totalTokens","generationMs","firstTokenMs"] {
         if let Some(value)=usage.get(key).filter(|value| value.is_number()) { out.insert(key.into(),value.clone()); }
     }
+    if let Some(value)=usage.get("outputTokensEstimated").filter(|value|value.is_boolean()) { out.insert("outputTokensEstimated".into(),value.clone()); }
     (!out.is_empty()).then_some(Value::Object(out))
 }
 
@@ -1570,6 +1608,64 @@ mod tests {
         let db = Database::open(&path).unwrap();
         db.transaction(|tx| { tx.execute("INSERT INTO sessions(id,title,provider,mode,status,created_at,updated_at) VALUES ('s','test','codex','chat','idle','now','now')",[])?; Ok(()) }).unwrap();
         db
+    }
+    #[test]
+    fn speed_projection_persists_final_usage_and_keeps_native_exact_counts() {
+        let db=db();
+        let _speeds=crate::turn_speed::shared(db.path());
+        record(&db,"s",Some("turn"),"chat.turn.started",&json!({})).unwrap();
+        record(&db,"s",Some("turn"),"chat.delta",&json!({"text":"中文 reasoning"})).unwrap();
+        record(&db,"s",Some("turn"),"chat.turn.completed",&json!({"turnUsage":{"outputTokens":50,"inputTokens":80},"status":"interrupted"})).unwrap();
+        let items=db.chat_items("s").unwrap();
+        let usage=items.iter().find_map(|item|item.turn_usage.as_ref()).unwrap();
+        assert_eq!(usage["outputTokens"],50);
+        assert_eq!(usage["outputTokensEstimated"],false);
+        assert_eq!(usage["inputTokens"],80);
+        assert!(usage["generationMs"].is_number() && usage["firstTokenMs"].is_number());
+        assert_eq!(items.iter().find(|item|item.turn_usage.is_some()).unwrap().turn_status,Some(crate::domain::NativeTurnStatus::Interrupted));
+        record(&db,"s",Some("turn"),"chat.context",&json!({"usage":{},"turnUsage":{"outputTokens":5,"outputTokensEstimated":true}})).unwrap();
+        assert_eq!(db.chat_items("s").unwrap().iter().find_map(|item|item.turn_usage.as_ref()).unwrap()["outputTokens"],50);
+    }
+    #[test]
+    fn speed_projection_estimates_without_context_and_creates_nothing_before_output() {
+        let db=db();let _speeds=crate::turn_speed::shared(db.path());
+        record(&db,"s",Some("empty"),"chat.turn.started",&json!({})).unwrap();
+        record(&db,"s",Some("empty"),"chat.turn.completed",&json!({"status":"cancelled"})).unwrap();
+        assert!(db.chat_items("s").unwrap().iter().all(|item|item.turn_usage.is_none()));
+        record(&db,"s",Some("acp"),"chat.turn.started",&json!({})).unwrap();
+        record(&db,"s",Some("acp"),"chat.delta",&json!({"part":{"type":"thinking","text":"中文abcd"}})).unwrap();
+        record(&db,"s",Some("acp"),"chat.error",&json!({"message":"interrupted"})).unwrap();
+        let items=db.chat_items("s").unwrap();
+        let usage=items.iter().find_map(|item|item.turn_usage.as_ref()).unwrap();
+        assert_eq!(usage["outputTokens"],3);assert_eq!(usage["outputTokensEstimated"],true);
+        assert!(usage["generationMs"].is_number());
+    }
+    #[test]
+    fn speed_projection_accumulates_calls_and_does_not_write_live_updates() {
+        let db=db();let speeds=crate::turn_speed::shared(db.path());let mut live=speeds.subscribe();
+        record(&db,"s",Some("turn"),"chat.turn.started",&json!({})).unwrap();
+        record(&db,"s",Some("turn"),"chat.delta",&json!({"text":"a"})).unwrap();
+        let before=db.events_after(0).unwrap().len();
+        for id in ["a","b"] {record(&db,"s",Some("turn"),"chat.speed.usage",&json!({"callId":id,"outputTokens":20})).unwrap();}
+        assert_eq!(db.events_after(0).unwrap().len(),before);
+        record(&db,"s",Some("turn"),"chat.context",&json!({"usage":{},"turnUsage":{"outputTokens":20}})).unwrap();
+        assert!(db.chat_items("s").unwrap().iter().all(|item|item.turn_usage.is_none()));
+        record(&db,"s",Some("turn"),"chat.turn.completed",&json!({})).unwrap();
+        assert_eq!(db.chat_items("s").unwrap().iter().find_map(|item|item.turn_usage.as_ref()).unwrap()["outputTokens"],40);
+        let events=std::iter::from_fn(||live.try_recv().ok()).collect::<Vec<_>>();assert_eq!(events.last().unwrap()["active"],false);
+    }
+    #[test]
+    fn speed_projection_disconnect_saves_usage_without_manufacturing_a_completion() {
+        let db=db();let _speeds=crate::turn_speed::shared(db.path());
+        record(&db,"s",Some("turn"),"chat.turn.started",&json!({})).unwrap();
+        record(&db,"s",Some("turn"),"chat.delta",&json!({"text":"abcd"})).unwrap();
+        let before=db.session_by_id("s").unwrap().unwrap().status;
+        record(&db,"s",None,"chat.connection",&json!({"phase":"disconnected"})).unwrap();
+        assert_eq!(db.session_by_id("s").unwrap().unwrap().status,before);
+        let items=db.chat_items("s").unwrap();let item=items.iter().find(|item|item.turn_usage.is_some()).unwrap();
+        assert_eq!(item.turn_usage.as_ref().unwrap()["outputTokens"],1);
+        assert!(item.turn_usage.as_ref().unwrap()["generationMs"].is_number());
+        assert!(item.turn_status.is_none());
     }
     fn usage(_turn: &str, input: Option<u64>, output: Option<u64>, model: Option<&str>) -> Value {
         let mut u = json!({});

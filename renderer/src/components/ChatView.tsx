@@ -2,7 +2,7 @@ import { ClipboardEvent, FormEvent, Fragment, KeyboardEvent, type MouseEvent as 
 import DOMPurify from "dompurify";
 import { parseChatMarkdown } from '../chatMath';
 import { ChatMarkdown } from './ChatMarkdownExtras';
-import type { ChatAnswerResponse, ChatPart, ChatQueue, ChatQueueItem, ChatSlashCommand, ChatUiState, FileReference, GitCommitInfo, Session } from "@threadterm/protocol";
+import type { ChatAnswerResponse, ChatContextUsage, ChatPart, ChatQueue, ChatQueueItem, ChatSlashCommand, ChatUiState, FileReference, GitCommitInfo, Session } from "@threadterm/protocol";
 import { ChatItem, attachFiles, openExternal, operationId, request, subscribeEvents } from "../bridge";
 import { beginResync, chatUiFromEvent, completeResync, nextRepairRevision, upsertChatItem, type ChatResync } from "../chatState";
 import { acquireControl } from '../controlLease';
@@ -29,6 +29,7 @@ import { isReplyTextPart, replyActionMarkdown } from '../replyMarkdown';
 import { MessageActions } from './MessageActions';
 import { TurnFooter } from './TurnFooter';
 import { createTurnChangesCache } from '../turnFooter';
+import { liveSpeedGroupIndex, liveTurnSpeed, nextLiveTurnUsage, turnSpeedText, turnSpeedTooltip, type LiveTurnUsage } from '../turnSpeed';
 import { BackgroundTasksStrip } from './BackgroundTasksStrip';
 import { backgroundHasOutput, revealBackgroundOutput } from '../backgroundTasks';
 import { ChatPlanPanel } from './ChatPlanPanel';
@@ -431,6 +432,7 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession, 
   const itemsRef = useRef(items); itemsRef.current = items;
   const [firstResponseWait, setFirstResponseWait] = useState<FirstResponseWait | undefined>(undefined);
   const firstResponseWaitRef = useRef<FirstResponseWait | undefined>(undefined);
+  const [liveTurnUsage, setLiveTurnUsage] = useState<LiveTurnUsage>();
   const reclaimRef = useRef<() => void>(() => undefined);
   const lease = useRef<number | undefined>(undefined);
   const leaseSessionId = useRef<string | undefined>(undefined);
@@ -648,10 +650,17 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession, 
     setViewportSessionId(undefined);
     setHistoryIssue(undefined);
     setSubmissionPreview(undefined);
-    setItems([]); setText(''); setBusy(false); setQueue(undefined); setDraftLoaded(false); setHistoryLoaded(false); setHistoryFailed(false); setLink(emptyLink(session.id, canControl && !ended ? "connecting" : "unavailable")); setConnectSlow(false); setError(undefined); setRepair(undefined); setRepairDialog(false); setRepairBusy(false); setRepairNotice(undefined); setIngressFailed(false); setRepairFollowup(false); setChatRepairAvailability(session.id, repairDescriptionId, undefined);draftReady.current=false;writer.current=undefined;setDraftFailed(false);setRecovery(undefined);setApprovalBusy(undefined);composingRef.current=false;pickTicket.current=undefined;composerGeneration.current+=1;mentionCatalogueRef.current=[];setMentionCatalogue([]);setMentionPreview(undefined);
+    setItems([]); setText(''); setBusy(false); setQueue(undefined); setDraftLoaded(false); setHistoryLoaded(false); setHistoryFailed(false); setLiveTurnUsage(undefined); setLink(emptyLink(session.id, canControl && !ended ? "connecting" : "unavailable")); setConnectSlow(false); setError(undefined); setRepair(undefined); setRepairDialog(false); setRepairBusy(false); setRepairNotice(undefined); setIngressFailed(false); setRepairFollowup(false); setChatRepairAvailability(session.id, repairDescriptionId, undefined);draftReady.current=false;writer.current=undefined;setDraftFailed(false);setRecovery(undefined);setApprovalBusy(undefined);composingRef.current=false;pickTicket.current=undefined;composerGeneration.current+=1;mentionCatalogueRef.current=[];setMentionCatalogue([]);setMentionPreview(undefined);
     const unsubscribe = subscribeEvents(event => {
       if (disposed || !event.data || typeof event.data !== 'object') return;
       const data = event.data as { sessionId?: string; item?: ChatItem; reason?: string };
+      if (event.event === 'chat.turnSpeed' && data.sessionId === session.id) {
+        const speed = event.data as { turnId?: unknown; active?: unknown; usage?: ChatContextUsage };
+        const turnId = speed.turnId, active = speed.active;
+        if (typeof turnId !== 'string') return;
+        if (typeof active === 'boolean') setLiveTurnUsage(current => nextLiveTurnUsage(current, { turnId, active, usage: speed.usage }));
+        return;
+      }
       if (event.event === 'chat.forked' && data.sessionId === session.id) {
         const forked = event.data as {operationId?: string; session?: Session; mode?: 'native' | 'copy'};
         if (forked.operationId && forked.session && (forked.mode === 'native' || forked.mode === 'copy')) {
@@ -1325,6 +1334,9 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession, 
     finally { setTrustBusy(false); }
   }
   const liveTurn = ended ? undefined : activeTurnId(items, session.status);
+  const liveSpeed = liveTurnSpeed(liveTurn, liveTurnUsage);
+  const turnGroups = useMemo(() => groupCodexTranscript(items, session.provider === "codex"), [items, session.provider]);
+  const speedGroupIndex = liveSpeed ? liveSpeedGroupIndex(turnGroups, liveTurnUsage?.turnId) : -1;
   const legacyHistoryReload = repair?.reason === 'history_metadata_missing' || (connectionHeld && repairDiscovery?.recovery === 'legacy');
   const repairOffered = Boolean(repair?.offered && !liveTurn);
   const repairDisabled = !repairOffered || !repairWritable || repairBusy;
@@ -1622,7 +1634,7 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession, 
       {showReplyActions && <MessageActions markdown={replyText} copy={copy}>{isCompletedForkReply(item, items) && <ChatForkButton itemId={item.id} disabledReason={forkActions.disabledReason} busy={forkActions.busy} onFork={id => void forkActions.fork(id)} zh={zh}/>}</MessageActions>}
     </article>;
   }
-  function renderTurn(group: CodexTurn) {
+  function renderTurn(group: CodexTurn, groupIndex: number) {
     // Display activity follows runtime liveness even in a read-only observer;
     // it is independent of whether this window owns the control lease.
     const displayTurn = activeTurnId(items, session.status);
@@ -1646,6 +1658,7 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession, 
         visible.push(<p className="chat-duration" key={`${group.id}-status`}>{group.turnStatus === 'inProgress'
           ? copy('Saved turn: in progress', '保存的回合：进行中') : copy('Saved turn: status unknown', '保存的回合：状态未知')}</p>);
       }
+      if (liveSpeed && groupIndex === speedGroupIndex) visible.push(<p className="chat-turn-speed-live" key={`${group.id}-turn-speed`} data-testid="turn-speed-live" data-estimated={String(liveSpeed.estimated)} data-tokens-per-second={String(liveSpeed.tokensPerSecond)} title={turnSpeedTooltip(liveSpeed, zh)}>{turnSpeedText(liveSpeed)}</p>);
       return visible;
     }
     const tools = toolEntriesForItems(group.items);
@@ -1690,15 +1703,15 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession, 
     </CatalogPopover>}
     <SelectionBubble rootRef={logRef} visible={surface?.focused !== false && overlay !== 'full'} copy={copy} quoteEnabled={writable} askEnabled={!!onOpenSession} onQuote={text => insertChatText(session.id, quoteSelection(text))} onAsk={(text, current) => askSelectionChat(session, text, current, id => onOpenSession?.(id))} />
     <div className="chat-log-shell" onKeyDown={viewport.onKeyDown}>
-    <div className="chat-scroll v3-chat-log" data-chat-log={session.id} ref={logRef} tabIndex={0} aria-label={copy('Chat transcript', '聊天记录')} inert={overlay === "full" || undefined} onClickCapture={viewport.pauseForDisclosure} onWheelCapture={viewport.onWheel} onTouchStartCapture={viewport.onTouchStart} onMouseDownCapture={viewport.onPointerDown} onClick={event => {
+    <div className="chat-scroll v3-chat-log" data-chat-log={session.id} ref={logRef} tabIndex={0} aria-label={copy('Chat transcript', '聊天记录')} inert={overlay === "full" || undefined} onClickCapture={viewport.pauseForDisclosure} onWheelCapture={viewport.onWheel} onTouchStartCapture={viewport.onTouchStart} onTouchMoveCapture={viewport.onTouchMove} onMouseDownCapture={viewport.onPointerDown} onClick={event => {
       // Links never navigate the app window (the desktop blocks that, so they used to do nothing).
       const anchor = event.target instanceof Element ? event.target.closest<HTMLAnchorElement>('a[href]') : null;
       if (!anchor || !event.currentTarget.contains(anchor)) return;
       event.preventDefault();
       const url = anchor.getAttribute('href') ?? '';
       if (isWebTabUrl(url)) { setLinkIssue(undefined); setLinkMenu({ anchor, url }); }
-    }} onScroll={viewport.onScroll}><ChatPlanPanel items={items} copy={copy} liveTurnId={activeTurnId(items, session.status)} historyReady={historyLoaded} navigation={items.filter(item => item.role === 'user').length >= 3 ? <ChatMessageNavigation items={items} copy={copy} onNavigate={viewport.navigateToMessage} /> : undefined} /><div ref={logContentRef}>{items.length ? groupCodexTranscript(items, session.provider === "codex").map(group => <section className="codex-turn chat-turn" key={group.id}>
-      {renderTurn(group)}
+    }} onScroll={viewport.onScroll}><ChatPlanPanel items={items} copy={copy} liveTurnId={activeTurnId(items, session.status)} historyReady={historyLoaded} navigation={items.filter(item => item.role === 'user').length >= 3 ? <ChatMessageNavigation items={items} copy={copy} onNavigate={viewport.navigateToMessage} /> : undefined} /><div ref={logContentRef}>{items.length ? turnGroups.map((group, groupIndex) => <section className="codex-turn chat-turn" key={group.id}>
+      {renderTurn(group, groupIndex)}
     </section>) : firstResponseWait ? null : <div className="empty v3-empty"><strong>{copy('No messages yet.', '暂无消息。')}</strong><p>{copy('Send a message to start working with this provider.', '发送消息，开始与此提供方协作。')}</p></div>}
       {submissionPreview && !items.some(item => item.role === 'user' && item.turnId === submissionPreview.token) && <article className={`v3-chat-message user is-native is-${session.provider} chat-pending-submission`} aria-label={copy('Message being sent', '正在发送的消息')}>
         <div className="chat-part text">

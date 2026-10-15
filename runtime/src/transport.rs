@@ -386,6 +386,8 @@ async fn serve_control(
     // Leases follow the principal's control connections; this one counts until serve_control returns.
     let _presence = service.leases.connect(&principal);
     let _preview_presence = service.previews.connect(&principal);
+    let mut turn_speeds = service.subscribe_turn_speed();
+    let mut turn_speeds_open = true;
     let mut sent_seq = service.db.snapshot()?.revision;
     let (mut reader, mut writer) = tokio::io::split(pipe);
     let mut decoder = FrameDecoder::default();
@@ -438,6 +440,10 @@ async fn serve_control(
                 }
                 delivery?;
             }
+            received = turn_speeds.recv(), if turn_speeds_open && sequenced_in_flight == 0 => {
+                let epoch = service.db.epoch()?;
+                turn_speeds_open = forward_turn_speed(&mut writer, &epoch, received).await?;
+            }
             _ = tokio::time::sleep(std::time::Duration::from_millis(100)) => {}
         }
         if sequenced_in_flight == 0 {
@@ -456,6 +462,26 @@ async fn serve_control(
         }
     }
 }
+/// Ephemeral speed events have no durable sequence and never enter the outbox.
+/// Lag loses samples only; a closed source disables its select branch so the
+/// connection keeps serving requests and durable events without a busy loop.
+#[cfg(windows)]
+async fn forward_turn_speed<T: tokio::io::AsyncWrite + Unpin>(
+    writer: &mut T,
+    epoch: &str,
+    received: std::result::Result<Value, tokio::sync::broadcast::error::RecvError>,
+) -> Result<bool> {
+    use tokio::sync::broadcast::error::RecvError;
+    match received {
+        Ok(data) => {
+            write_json(writer, &json!({"v":PROTOCOL_VERSION,"event":"chat.turnSpeed","epoch":epoch,"seq":0,"data":data})).await?;
+            Ok(true)
+        }
+        Err(RecvError::Lagged(_)) => Ok(true),
+        Err(RecvError::Closed) => Ok(false),
+    }
+}
+
 #[cfg(windows)]
 async fn serve_output(
     mut pipe: tokio::net::windows::named_pipe::NamedPipeServer,
@@ -719,6 +745,43 @@ async fn write_output<T: tokio::io::AsyncWrite + Unpin>(
 mod decoder_tests {
     use super::*;
     use tokio::io::AsyncWriteExt;
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn turn_speed_forwarding_uses_current_epoch_and_an_ephemeral_sequence() {
+        let (mut writer, mut reader) = tokio::io::duplex(4096);
+        let (sender, mut receiver) = tokio::sync::broadcast::channel(4);
+        for data in [
+            json!({"sessionId":"s","turnId":"t","active":true,"usage":{"outputTokens":52,"generationMs":1000,"outputTokensEstimated":false}}),
+            json!({"sessionId":"s","turnId":"t","active":false}),
+        ] {
+            sender.send(data.clone()).unwrap();
+            assert!(forward_turn_speed(&mut writer, "current-epoch", receiver.recv().await).await.unwrap());
+            let event = read_json(&mut reader).await.unwrap();
+            assert_eq!(event, json!({"v":PROTOCOL_VERSION,"event":"chat.turnSpeed","epoch":"current-epoch","seq":0,"data":data}));
+        }
+        // A new control connection observes only future broadcasts, never the
+        // prior connection's speed history or a durable outbox replay.
+        let mut reconnected = sender.subscribe();
+        assert!(matches!(reconnected.try_recv(), Err(tokio::sync::broadcast::error::TryRecvError::Empty)));
+        sender.send(json!({"sessionId":"s","turnId":"next","active":true})).unwrap();
+        assert!(forward_turn_speed(&mut writer, "next-epoch", reconnected.recv().await).await.unwrap());
+        assert_eq!(read_json(&mut reader).await.unwrap()["epoch"], "next-epoch");
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn turn_speed_lag_and_close_do_not_interrupt_the_control_writer() {
+        use tokio::sync::broadcast::error::RecvError;
+        let (mut writer, mut reader) = tokio::io::duplex(4096);
+        assert!(forward_turn_speed(&mut writer, "epoch", Err(RecvError::Lagged(3))).await.unwrap());
+        assert!(!forward_turn_speed(&mut writer, "epoch", Err(RecvError::Closed)).await.unwrap());
+        // Neither condition creates a frame. The same writer remains usable
+        // for ordinary durable events at their original sequence.
+        let durable = json!({"v":PROTOCOL_VERSION,"event":"chat.item","epoch":"epoch","seq":42,"data":{"sessionId":"s"}});
+        write_json(&mut writer, &durable).await.unwrap();
+        assert_eq!(read_json(&mut reader).await.unwrap(), durable);
+    }
+
     #[tokio::test]
     async fn fragmented_frame_survives_repeated_future_cancellation() {
         let (mut writer, mut reader) = tokio::io::duplex(128);

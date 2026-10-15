@@ -4488,6 +4488,11 @@ mod tests {
         assert_eq!(context["turnUsage"]["cacheReadTokens"], 120320);
         assert_eq!(context["usage"]["inputTokens"], 19034);
         assert_eq!(context["usage"]["usedTokens"], 19151);
+        let mut speed = crate::turn_speed::TurnSpeed::new(0);
+        speed.observe("chat.delta", &json!({"part":{"type":"thinking","text":"streamed"}}), 100);
+        speed.observe("chat.context", &context, 400);
+        assert_eq!(speed.usage(1000).unwrap()["outputTokens"], 1075);
+        assert_eq!(speed.usage(1000).unwrap()["outputTokensEstimated"], false);
         assert!(grok_turn_context(&json!({"stopReason":"end_turn"})).is_none());
         assert!(grok_turn_context(&json!({"stopReason":"end_turn","_meta":{"promptId":"p"}})).is_none());
     }

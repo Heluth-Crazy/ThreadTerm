@@ -19,6 +19,7 @@ type ClientInternals = {
   output?: { write(payload: Buffer): void; close(): void };
   outputGroups: Map<string, { cursor: number }>;
   request: RuntimeClient['request'];
+  handleControlFrame(frame: Buffer): void;
   handleOutputFrame(frame: Buffer, origin?: { write(payload: Buffer): void; close(): void }): Promise<void>;
 };
 
@@ -482,6 +483,49 @@ test('a stale control frame cannot publish an event from the replaced transport'
     assert.deepEqual(events, []);
     assert.equal(internal.control, current);
   } finally {
+    unsubscribe();
+    client.dispose();
+  }
+});
+
+test('ephemeral chat turn-speed events are neither deduplicated nor replayed and do not change output replay cursors', () => {
+  const { client, writes } = clientWithPipes();
+  const internal = client as unknown as ClientInternals;
+  internal.outputGroups.set('terminal-session', { cursor: 37 });
+  const events: Array<{ event: string; seq: number; active?: boolean }> = [];
+  const unsubscribe = client.onEvent(event => {
+    const active = (event.data as { active?: unknown }).active;
+    events.push({ event: event.event, seq: event.seq, ...(typeof active === 'boolean' ? { active } : {}) });
+  });
+  const lateEvents: string[] = [];
+  let unsubscribeLate: (() => void) | undefined;
+  try {
+    internal.handleControlFrame(Buffer.from(JSON.stringify({
+      v: 1, event: 'state.changed', epoch: 'runtime-epoch', seq: 18, data: { kind: 'settings' },
+    }), 'utf8'));
+    internal.handleControlFrame(Buffer.from(JSON.stringify({
+      v: 1, event: 'chat.turnSpeed', epoch: 'runtime-epoch', seq: 0,
+      data: { sessionId: 'chat-session', turnId: 'turn-1', active: true },
+    }), 'utf8'));
+    internal.handleControlFrame(Buffer.from(JSON.stringify({
+      v: 1, event: 'chat.turnSpeed', epoch: 'runtime-epoch', seq: 0,
+      data: { sessionId: 'chat-session', turnId: 'turn-1', active: false },
+    }), 'utf8'));
+    assert.deepEqual(events, [
+      { event: 'state.changed', seq: 18 },
+      { event: 'chat.turnSpeed', seq: 0, active: true },
+      { event: 'chat.turnSpeed', seq: 0, active: false },
+    ], 'the ephemeral event is neither replay-filtered nor deduplicated by the control client');
+    unsubscribeLate = client.onEvent(event => { lateEvents.push(event.event); });
+    assert.deepEqual(lateEvents, [], 'late listeners cannot replay ephemeral turn-speed samples');
+    internal.handleControlFrame(Buffer.from(JSON.stringify({
+      v: 1, event: 'state.changed', epoch: 'runtime-epoch', seq: 19, data: { kind: 'settings' },
+    }), 'utf8'));
+    assert.deepEqual(lateEvents, ['state.changed'], 'late listeners receive only subsequent live events');
+    assert.equal(internal.outputGroups.get('terminal-session')?.cursor, 37, 'control events never advance terminal replay cursors');
+    assert.deepEqual(writes, [], 'an ephemeral control event never requests or credits output replay');
+  } finally {
+    unsubscribeLate?.();
     unsubscribe();
     client.dispose();
   }
