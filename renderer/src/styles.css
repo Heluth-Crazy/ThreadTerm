@@ -52,6 +52,10 @@
 .btn.btn-sm .ico { width:14px; height:14px; }
 .icon-btn.icon-btn-sm { width:26px; height:26px; padding:0; font-size:12px; }
 .icon-btn.icon-btn-sm .ico { width:14px; height:14px; }
+/* Shared full-size action rows and top-level tab controls. */
+.control-row-lg :is(.btn, .icon-btn) { height:32px; }
+.control-row-lg .icon-btn { width:32px; }
+.btn.btn-tab, .seg-btn.btn-tab { height:30px; }
 .icon-btn-round { width:32px; height:32px; border-radius:999px; }
 /* Round icon buttons that sit in a chip row take the chip height. */
 .icon-btn.icon-btn-sm.icon-btn-round { width:26px; height:26px; }

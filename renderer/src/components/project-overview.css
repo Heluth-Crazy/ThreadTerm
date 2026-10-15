@@ -8,14 +8,8 @@
 .project-tree-form > label { display:grid; gap:6px; font-size:12px; }
 .project-tree-form input, .project-tree-form .tt-select { min-width:0; border:1px solid var(--border); border-radius:var(--radius); background:var(--bg); color:var(--text); }
 .project-tree-form .tt-select-trigger { min-height:30px; padding:7px 9px; }
-/* One primary action, with a shared size and quiet theme-based secondaries. */
-.ov-page-head .page-actions { flex-wrap:wrap; gap:8px; justify-content:flex-end; }
-.ov-page-head .page-actions .btn { height:32px; min-height:32px; padding:0 12px; gap:8px; border-radius:8px; font-size:13px; font-weight:500; }
-.ov-page-head .page-actions .btn:not(.btn-primary) { background:transparent; border-color:transparent; color:var(--muted); }
-.ov-page-head .page-actions .btn:not(.btn-primary):hover:not(:disabled) { background:var(--soft); border-color:transparent; color:var(--text); }
-.ov-page-head .page-actions .btn-primary { background:var(--text); border-color:transparent; color:var(--surface); }
-.ov-page-head .page-actions .btn-primary:hover:not(:disabled) { background:color-mix(in srgb,var(--text) 88%,var(--bg)); }
-.ov-page-head .page-actions .btn:focus-visible { outline:2px solid var(--text); outline-offset:2px; }
+/* The title keeps its identity before actions wrap onto their own row. */
+.ov-page-head .page-actions { flex:0 1 auto; max-width:100%; flex-wrap:wrap; gap:8px; justify-content:flex-end; }
 
 /* Project / branch home (user decision 2026-09-28: departs from the prototype's fixed 3:2:3 brief slots).
    Sections take their natural height and the page scrolls as a whole; no inner scrollers, no empty slots.
@@ -23,8 +17,8 @@
    `section.` outranks the prototype's own `.ov-page` (height:100%; overflow:hidden; max-width:none), which loads later
    and clipped a long page at app widths >= 1080px with nothing to scroll. */
 section.ov-page { container:ov-page / inline-size; display:flex; flex-direction:column; gap:16px; width:100%; max-width:1200px; height:auto; min-height:100%; margin-inline:auto; padding:20px 32px 16px; overflow:visible; font-variant-numeric:tabular-nums; }
-.ov-page-head { display:flex; align-items:flex-start; justify-content:space-between; gap:16px; padding-bottom:16px; border-bottom:1px solid var(--border); }
-.ov-head-main { min-width:0; }
+.ov-page-head { display:flex; flex-wrap:wrap; align-items:flex-start; justify-content:space-between; gap:12px; padding-bottom:16px; border-bottom:1px solid var(--border); }
+.ov-head-main { min-width:0; flex:1 1 320px; }
 .ov-title-row { display:flex; align-items:center; gap:10px; min-width:0; }
 .ov-title-row .page-title { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .ov-title-row .chip { flex:0 0 auto; }

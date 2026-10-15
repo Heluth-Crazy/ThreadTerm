@@ -32,7 +32,7 @@ export function WebPreview({url, zh, commentScope, commentsHost, commentProvenan
    <span className="path" title={url}>{url}</span>
    <span className="grow"/>
    <PageCommentControls preview={preview} zh={zh}/>
-   <button type="button" className="icon-btn" title={copy('Reload', '重新加载')} aria-label={copy('Reload', '重新加载')} onClick={() => { preview.cancel();setLoad(value => value + 1); }}><WbIcon name="refresh"/></button>
+   <button type="button" className="icon-btn icon-btn-sm" title={copy('Reload', '重新加载')} aria-label={copy('Reload', '重新加载')} onClick={() => { preview.cancel();setLoad(value => value + 1); }}><WbIcon name="refresh"/></button>
    <button type="button" className="btn btn-sm" onClick={() => void openExternal(url).catch(error => setIssue(String(error)))}>{copy('Open in browser', '在浏览器中打开')}</button>
   </div>
   {issue && <p className="wb-issue" role="alert">{issue}</p>}

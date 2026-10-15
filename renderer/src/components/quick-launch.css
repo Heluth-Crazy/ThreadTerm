@@ -2,11 +2,13 @@
 .ql-menu { width:480px; display:flex; flex-direction:column; overflow:hidden; }
 .ql-menu .surface-error { margin:8px 12px; }.ql-menu .surface-error .btn { margin-left:6px; }
 .ql-list { overflow:auto; min-height:0; }
+.ql-menu > .shell-menu-foot { flex:none; flex-wrap:wrap; }
+.ql-menu > .shell-menu-foot .menu-item { flex:1 0 auto; width:auto; }
 /* One compact line per command: name + command on the left, state and actions on the right. */
 .ql-command { display:grid; grid-template-columns:minmax(0,1fr) auto; grid-template-areas:"head actions" "code actions"; column-gap:10px; align-items:center; padding:8px 12px; border-bottom:1px solid var(--border); }
 .ql-command-head { grid-area:head; display:flex; align-items:center; gap:8px; min-width:0; }.ql-command-head strong { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:13px; }
 .ql-command code { grid-area:code; display:block; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:11px; color:var(--muted); margin:2px 0 0; }
-.ql-actions { grid-area:actions; display:flex; flex-wrap:wrap; justify-content:flex-end; gap:4px; }.ql-actions .btn { min-height:26px; font-size:11px; padding:3px 8px; }
+.ql-actions { grid-area:actions; display:flex; flex-wrap:wrap; justify-content:flex-end; gap:4px; }
 .ql-state { display:inline-flex; align-items:center; gap:5px; font-size:11px; white-space:nowrap; color:var(--muted); }.ql-state .dot { width:6px; height:6px; flex-shrink:0; background:currentColor; }
 .ql-running,.ql-starting { color:var(--primary); }.ql-failed,.ql-interrupted { color:var(--danger); }.ql-completed { color:var(--success,var(--primary)); }
 .ql-run-chip { border:1px solid var(--border); border-radius:var(--radius); padding:5px 8px; min-width:0; max-width:260px; }.ql-run-chip>span:last-child { overflow:hidden; text-overflow:ellipsis; }
@@ -15,11 +17,10 @@
 .ql-advanced { border-top:1px solid var(--border); padding-top:12px; }.ql-advanced summary { cursor:pointer; font-size:12px; margin-bottom:10px; }.ql-advanced .field>label { display:block; margin-bottom:6px; }
 .ql-env-row { display:flex; gap:6px; margin-bottom:6px; }.ql-env-row input { min-width:0; width:0; flex:2; }.ql-env-row input:first-child { flex:1; }
 .ql-directory { display:flex; gap:8px; }.ql-directory input { flex:1; min-width:0; }.ql-directory .btn { flex-shrink:0; }
-.ql-import .ql-directory { align-items:stretch; }.ql-import .ql-directory input { box-sizing:border-box; height:32px; min-height:32px; padding:6px 10px; border-radius:8px; font-size:13px; }.ql-import .ql-directory .btn { flex:0 0 auto; height:32px; min-height:32px; padding:0 12px; border-radius:8px; font-size:13px; }
+.ql-import .ql-directory { align-items:stretch; }.ql-import .ql-directory input { box-sizing:border-box; height:32px; min-height:32px; padding:6px 10px; border-radius:var(--radius); font-size:13px; }.ql-import .ql-directory .btn { flex:0 0 auto; }
 .ql-import .dlg-foot { display:flex; flex-wrap:wrap; align-items:center; gap:8px; }
 .ql-import .dlg-foot .sheet-foot-meta { margin-right:auto; color:var(--muted); font-size:13px; line-height:1.25; font-variant-numeric:tabular-nums; }
-.ql-import .dlg-foot > .btn { height:32px; min-height:32px; padding:0 12px; border-radius:8px; font-size:13px; }
 .ql-script-list { max-height:320px; overflow:auto; }.ql-script { display:flex; align-items:center; gap:10px; border-top:1px solid var(--border); padding:10px 0; font-size:12px; }.ql-script>span:nth-child(2) { flex:1; min-width:0; }.ql-script code { display:block; color:var(--muted); margin-top:3px; overflow-wrap:anywhere; }
-.ql-menu button:focus-visible,.ql-editor summary:focus-visible,.ql-editor button:focus-visible,.ql-import button:focus-visible { outline:2px solid var(--primary); outline-offset:2px; }
+.ql-editor summary:focus-visible { outline:2px solid var(--primary); outline-offset:2px; }
 @media(max-width:800px) { .ql-run-chip { max-width:160px; }.ql-menu { max-width:calc(100vw - 16px); } }
-@media(max-width:520px) { .ql-import .dlg-foot .sheet-foot-meta { flex:1 0 100%; margin-right:0; }.ql-import .dlg-foot > .btn { flex:1 1 calc(50% - 4px); min-width:0; justify-content:center; white-space:normal; } }
+@media(max-width:520px) { .ql-import .dlg-foot .sheet-foot-meta { flex:1 0 100%; margin-right:0; }.ql-import .dlg-foot > .btn { flex:1 1 calc(50% - 4px); min-width:0; justify-content:center; } }

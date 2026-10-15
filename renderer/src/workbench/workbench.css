@@ -77,10 +77,14 @@
 .wb-tools-section { border-top:1px solid var(--border); }
 .wb-tools-section > .wb-tools-head { position:sticky; top:0; z-index:1; }
 .wb-tools-scroll .git-merge-controls { display:flex; gap:6px; padding:2px 10px 14px 10px; }
-.wb-tools-scroll .git-merge-controls > button { display:inline-flex; align-items:center; height:28px; padding:0 12px; border:1px solid var(--border); border-radius:var(--radius); background:var(--surface); color:var(--text); font:inherit; font-size:12.5px; cursor:pointer; }
-.wb-tools-scroll .git-merge-controls > button:hover:not(:disabled) { background:var(--soft); }
 
 /* ---- Shared pieces ---- */
+/* Neutral action palette chosen for page actions (app-pages.md, 2026-10-11).
+   This shared modifier preserves that choice without page-local button primitives. */
+.control-row-neutral .btn:where(:not(.btn-primary, [aria-pressed="true"], [aria-expanded="true"])) { background:transparent; border-color:transparent; color:var(--muted); }
+.control-row-neutral .btn:where(:not(.btn-primary, [aria-pressed="true"], [aria-expanded="true"])):hover:not(:disabled) { background:var(--soft); color:var(--text); }
+.control-row-neutral .btn-primary { background:var(--text); border-color:transparent; color:var(--surface); }
+.control-row-neutral .btn-primary:hover:not(:disabled) { background:color-mix(in srgb,var(--text) 88%,var(--bg)); }
 .wb-view-actions { display:flex; justify-content:flex-end; gap:1px; padding:6px 6px 2px; }
 .wb-view-actions .icon-btn, .wb-row-actions .icon-btn { width:26px; height:26px; }
 .wb-sync-actions .icon-btn { width:28px; height:28px; }
@@ -350,15 +354,12 @@ button.wb-change-row { width:100%; border:0; background:transparent; color:var(-
 .cm-blame-entry { max-width:180px; overflow:hidden; text-overflow:ellipsis; cursor:pointer; }
 .cm-blame-entry:hover { color:var(--primary); }
 .cm-blame-entry.uncommitted { color:var(--faint); font-style:italic; cursor:default; }
-.editor-toolbar-toggle[aria-pressed="true"] { border-color:color-mix(in srgb,var(--primary) 45%,var(--border)); background:var(--primary-tint); color:var(--primary); }
 
 /* ---- Diff tab toolbar ----
    In narrow panes the actions wrap to a second row instead of squeezing the path or clipping. */
 .tt-diff-shell > .file-bar { flex-wrap:wrap; row-gap:6px; min-height:38px; padding-top:5px; padding-bottom:5px; }
 .tt-diff-shell > .file-bar .path { flex:0 1 auto; min-width:80px; }
 .wb-hunk-nav { display:inline-flex; flex:none; align-items:center; gap:2px; white-space:nowrap; }
-.wb-hunk-nav .icon-btn { width:26px; height:26px; }
-.wb-hunk-nav .icon-btn .ico { width:15px; height:15px; }
 .wb-hunk-count { min-width:34px; color:var(--muted); font:11px var(--mono); text-align:center; font-variant-numeric:tabular-nums; }
 .wb-hunk-nav .btn { margin-left:6px; }
 

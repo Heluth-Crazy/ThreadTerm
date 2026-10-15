@@ -765,7 +765,7 @@ function FileWorkspaceInstance({
     embedded && previewNavigation ? (
       <button
         type="button"
-        className="icon-btn embedded-file-close"
+        className="icon-btn icon-btn-sm embedded-file-close"
         title={zh ? "关闭文件预览" : "Close file preview"}
         aria-label={zh ? "关闭文件预览" : "Close file preview"}
         disabled={previewNavigation.closing}
@@ -848,7 +848,7 @@ function FileWorkspaceInstance({
                 <span className="grow" />
                 {embedded && /\.(md|mdx|html?)$/i.test(document.path) && (
                   <button
-                    className="btn"
+                    className="btn btn-sm"
                     onClick={() => setView(view === "preview" ? "file" : "preview")}
                   >
                     {view === "preview"
@@ -861,7 +861,7 @@ function FileWorkspaceInstance({
                 {view === "file" && !image && gitState.status && (
                   <button
                     type="button"
-                    className="btn editor-toolbar-toggle"
+                    className="btn btn-sm editor-toolbar-toggle"
                     aria-pressed={blameOn}
                     disabled={dirty && !blameOn}
                     title={dirty ? (zh ? "保存后可查看逐行追溯" : "Save to show blame") : zh ? "显示每行最后修改的提交" : "Show the last commit for each line"}
@@ -871,19 +871,19 @@ function FileWorkspaceInstance({
                   </button>
                 )}
                 {onOpenHistory && !image && (
-                  <button type="button" className="icon-btn" title={zh ? "文件历史" : "File history"} aria-label={zh ? "文件历史" : "File history"} onClick={() => onOpenHistory({ path: document.path })}>
+                  <button type="button" className="icon-btn icon-btn-sm" title={zh ? "文件历史" : "File history"} aria-label={zh ? "文件历史" : "File history"} onClick={() => onOpenHistory({ path: document.path })}>
                     <Icon name="clock" />
                   </button>
                 )}
                 {onSendToAgent && !image && (
-                  <button type="button" className="icon-btn" title={zh ? "发送给 Agent（Ctrl+L 发送选中行）" : "Send to agent (Ctrl+L sends the selected lines)"} aria-label={zh ? "发送给 Agent" : "Send to agent"} onClick={() => onSendToAgent({ path: document.path })}>
+                  <button type="button" className="icon-btn icon-btn-sm" title={zh ? "发送给 Agent（Ctrl+L 发送选中行）" : "Send to agent (Ctrl+L sends the selected lines)"} aria-label={zh ? "发送给 Agent" : "Send to agent"} onClick={() => onSendToAgent({ path: document.path })}>
                     <Icon name="spark" />
                   </button>
                 )}
                 {sessionDocuments && !image && (
                   <button
                     type="button"
-                    className="icon-btn"
+                    className="icon-btn icon-btn-sm"
                     aria-pressed={Boolean(pinnedDocument)}
                     disabled={sessionDocuments.loading || documentPinning || Boolean(sessionDocumentIssue)}
                     title={pinnedDocument ? (zh ? "从计划与文档中移除" : "Remove from Plans & docs") : (zh ? "添加到计划与文档（会话详情）" : "Add to Plans & docs (Session details)")}
@@ -898,7 +898,7 @@ function FileWorkspaceInstance({
                 )}
                 {embedded && (
                   <button
-                    className="btn"
+                    className="btn btn-sm"
                     onClick={() => void saveFile()}
                     disabled={busy || document.readonly || !dirty}
                   >
@@ -907,7 +907,7 @@ function FileWorkspaceInstance({
                 )}
                 {!embedded && (
                   <button
-                    className="icon-btn file-tools-button"
+                    className="icon-btn icon-btn-sm file-tools-button"
                     title={zh ? "文件与 Git" : "Files & Git"}
                     aria-label={zh ? "文件与 Git" : "Files & Git"}
                     aria-pressed={toolsOpen}
@@ -919,7 +919,7 @@ function FileWorkspaceInstance({
                 {embeddedClose()}
                 {draftStatus === "conflict" && (
                   <button
-                    className="btn"
+                    className="btn btn-sm"
                     onClick={() =>
                       void persistDraft(document, text, base.current)
                     }
@@ -939,7 +939,7 @@ function FileWorkspaceInstance({
                   {embeddedNavigation()}
                   {!embedded && (
                     <button
-                      className="icon-btn file-tools-button"
+                      className="icon-btn icon-btn-sm file-tools-button"
                       title={zh ? "文件与 Git" : "Files & Git"}
                       aria-label={zh ? "文件与 Git" : "Files & Git"}
                       aria-pressed={toolsOpen}
@@ -961,7 +961,7 @@ function FileWorkspaceInstance({
                   {sessionDocuments && !image && (
                     <button
                       type="button"
-                      className="icon-btn"
+                      className="icon-btn icon-btn-sm"
                       aria-pressed={Boolean(pinnedDocument)}
                       disabled={sessionDocuments.loading || documentPinning || Boolean(sessionDocumentIssue)}
                       title={pinnedDocument ? (zh ? "从计划与文档中移除" : "Remove from Plans & docs") : (zh ? "添加到计划与文档（会话详情）" : "Add to Plans & docs (Session details)")}
@@ -973,12 +973,12 @@ function FileWorkspaceInstance({
                   )}
                   {diff && !diff.binary && hunkCount > 0 && (
                     <span className="wb-hunk-nav" role="group" aria-label={zh ? "更改块" : "Hunks"}>
-                      <button type="button" className="icon-btn" aria-label={zh ? "上一个更改块" : "Previous hunk"} onClick={() => moveHunk(-1)}><WbIcon name="chev-up" /></button>
+                      <button type="button" className="icon-btn icon-btn-sm" aria-label={zh ? "上一个更改块" : "Previous hunk"} onClick={() => moveHunk(-1)}><WbIcon name="chev-up" /></button>
                       <span className="wb-hunk-count">{hunk + 1}/{hunkCount}</span>
-                      <button type="button" className="icon-btn" aria-label={zh ? "下一个更改块" : "Next hunk"} onClick={() => moveHunk(1)}><Icon name="chevron" /></button>
+                      <button type="button" className="icon-btn icon-btn-sm" aria-label={zh ? "下一个更改块" : "Next hunk"} onClick={() => moveHunk(1)}><Icon name="chevron" /></button>
                       <button
                         type="button"
-                        className="btn"
+                        className="btn btn-sm"
                         disabled={busy || dirty}
                         title={dirty ? (zh ? "请先保存文件" : "Save the file first") : undefined}
                         onClick={() => void applyHunk()}
@@ -988,7 +988,7 @@ function FileWorkspaceInstance({
                     </span>
                   )}
                   <button
-                    className="btn"
+                    className="btn btn-sm"
                     disabled={busy || dirty}
                     onClick={() => void changeIndex(staged)}
                   >
@@ -1003,19 +1003,19 @@ function FileWorkspaceInstance({
                   {!staged && diff && !diff.binary && (
                     <>
                       <button
-                        className="btn"
+                        className="btn btn-sm"
                         onClick={() => mergeEditor.current?.revertLine()}
                       >
                         {zh ? "还原当前行" : "Revert current line"}
                       </button>
                       <button
-                        className="btn"
+                        className="btn btn-sm"
                         onClick={() => mergeEditor.current?.revertHunk()}
                       >
                         {zh ? "还原当前块" : "Revert current hunk"}
                       </button>
                       <button
-                        className="btn"
+                        className="btn btn-sm"
                         disabled={busy || document.readonly || !dirty}
                         onClick={() => void saveFile()}
                       >
