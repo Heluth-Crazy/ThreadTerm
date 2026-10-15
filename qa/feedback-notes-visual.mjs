@@ -213,7 +213,7 @@ try {
   await page.waitForFunction(count => document.querySelectorAll('[data-testid="chat-note"]').length < count, before);
   assert.equal(await root.locator('[data-testid="chat-note"]').count(), before - 1, 'Send as message clears exactly that note');
   report.checks.push('send-as-message clears one note and leaves the rest');
-  await note('buttons', 'The split note control is two icon-btn icon-btn-sm icon-btn-round controls at one height; note and queue actions stay btn-subtle, so no mixed control size appears in a row.');
+  await note('buttons', 'The split note control is two icon-btn icon-btn-sm icon-btn-round controls at one height; note and queue actions stay bordered .btn.btn-sm, so no mixed control size appears in a row.');
   await note('spacing', 'The strip uses the queue panel radius and 8px/6px gaps; the head row keeps 8px between the status and its action.');
   await note('alignment', 'The status label and the action share one center line; the note text sits on its own wrapped line below, never squeezed between controls.');
   await note('type', 'Status text is 11px, the note body 12px, and the action uses the shared small-button text. zh-CN labels stay on one line at 420px.');

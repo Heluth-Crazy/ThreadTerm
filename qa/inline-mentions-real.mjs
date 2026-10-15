@@ -286,10 +286,10 @@ try {
   assert.match(queuedText, /review @cart\.ts\s+and @checkout\.ts/);
   await composer(chat.id).click(); await page.keyboard.press('Enter');
   await until(async () => (await page.locator('[data-testid="chat-queue-item"]').count()) === 1, 'queued item present');
-  await page.locator('[data-testid="chat-queue-item"] .btn-subtle', { hasText: 'Edit' }).click();
+  await page.locator('[data-testid="chat-queue-item"] .btn.btn-sm', { hasText: 'Edit' }).click();
   const queueField = page.locator('[data-testid="chat-queue-item"] textarea');
   await queueField.waitFor(); await queueField.fill('review @cart.ts only');
-  await page.locator('[data-testid="chat-queue-item"] .btn-subtle', { hasText: 'Save' }).click();
+  await page.locator('[data-testid="chat-queue-item"] .btn.btn-sm', { hasText: 'Save' }).click();
   await until(async () => (await chatScope(chat.id).locator('.chat-compose-send.is-stop').count()) === 0, 'slow turn finished and queue drained', 30_000);
   const queuedEnvelope = await sentUserText(chat.id, 'review @cart.ts only');
   assert.match(queuedEnvelope, /\[ThreadTerm context 1\/2\] File: src\/cart\.ts/);

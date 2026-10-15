@@ -63,7 +63,7 @@ function DelegateCard({ delegate, onOpenSession, copy, zh }: { delegate: Session
       <AgentIcon provider={delegate.provider} size={14} />
       <button type="button" className="delegation-link delegate-card-title" title={copy("Open this delegated session", "打开这个委派会话")} onClick={() => onOpenSession?.(delegate.id)}>{delegate.title}</button>
       <span className={`delegation-state st-${state}`}>{delegationStateLabel(state, zh)}</span>
-      {active && <button type="button" className="btn btn-subtle delegate-stop" disabled={stopping} onClick={stop}>{stopping ? copy("Stopping…", "停止中…") : copy("Stop", "停止")}</button>}
+      {active && <button type="button" className="btn btn-sm btn-danger delegate-stop" disabled={stopping} onClick={stop}>{stopping ? copy("Stopping…", "停止中…") : copy("Stop", "停止")}</button>}
     </div>
     {delegate.delegation!.branch && <small className="delegation-branch" title={delegate.delegation!.branch}>{delegate.delegation!.branch}</small>}
     {attached && <small className="delegate-card-attached" title={attached.title}>{attached.label}</small>}

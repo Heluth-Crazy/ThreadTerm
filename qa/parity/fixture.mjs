@@ -34,6 +34,7 @@ export function installVisualFixture({ seed, theme }) {
       case 'catalog.visibility.list':return [];
       case 'provider.list':return clone(providers);
       case 'project.catalog.list':return projects.map((p,i)=>({...p,revision:0,pinned:false,sortOrder:i,git:{available:true,branch:trees.find(t=>t.projectId===p.id&&t.isMain)?.branch}}));
+      case 'quickLaunch.setup.status':return [];
       case 'worktree.list':return clone(trees.filter(t=>t.projectId===params.projectId));
       case 'worktree.branches':return trees.filter(t=>t.projectId===params.projectId).map(t=>({name:t.branch,current:t.isMain,lastCommit:{id:'fixture',subject:'Fixture commit',committedAt:date}}));
       case 'history.list':return {items:[]};

@@ -38,7 +38,7 @@ export function RetrySettings({ sessionId, terminal }: { sessionId:string; termi
     <label className="retry-toggle"><input type="checkbox" checked={state?.enabled ?? false} disabled={!state || busy} onChange={(event) => void update(event.target.checked)} /> {text.enabled}</label>
     <p id="retry-detail">{text.detail}</p>
     <label>{text.max}<input type="number" min={1} max={10} value={maximum} disabled={!state || busy || !state.enabled} onChange={(event) => setMaximum(Math.max(1,Math.min(10,Number(event.target.value)||1)))} /></label>
-    {state?.enabled && <button type="button" onClick={() => void update(true)} disabled={busy}>{busy ? text.saving : text.save}</button>}
+    {state?.enabled && <button className="btn" type="button" onClick={() => void update(true)} disabled={busy}>{busy ? text.saving : text.save}</button>}
     {!state?.enabled && <p className="retry-note">{text.disableNote}</p>}
     {pending && <p className="retry-countdown" aria-live="polite">{text.pending.replace("{time}", remaining(pending.dueAt, locale, now))}</p>}
     <section aria-label={text.attempts} className="retry-history"><strong>{text.attempts}</strong>{state?.attempts.length ? <ol>{state.attempts.map((attempt) => <li key={attempt.id}><span>{attempt.status === "pending" ? text.pending.replace("{time}", remaining(attempt.dueAt, locale, now)) : statusLabel(attempt.status,text)}</span><time dateTime={attempt.createdAt}>{formatDate(attempt.createdAt)}</time></li>)}</ol> : <p>{text.detail}</p>}</section>

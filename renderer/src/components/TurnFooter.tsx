@@ -51,7 +51,7 @@ export function TurnFooter({ items, elapsedMs, session, zh, copy, cache, openFil
           </div>
         </div>)}
       </div>}
-      {diff && session.projectId && <SurfaceDialog title={copy('Turn changes', '本回合更改')} subtitle={diff} size="wide" onClose={() => setDiff(undefined)} className="chat-turn-diff-dialog">
+      {diff && session.projectId && <SurfaceDialog title={copy('Turn changes', '本回合更改')} subtitle={diff} size="wide" onClose={() => setDiff(undefined)} className="chat-turn-diff-dialog sheet-fill sheet-edge-to-edge">
         <Suspense fallback={<p role="status">{copy('Loading diff…', '正在读取差异…')}</p>}><ReviewDiffView projectId={session.projectId} worktreePath={session.worktreePath} path={diff} sessionId={session.id} checkpointId={review.from} toCheckpointId={review.to} editorId={`turn:${session.id}:${review.from}:${diff}`} zh={zh} onOpenFile={openFile ? path => openFile({ path }) : undefined} /></Suspense>
       </SurfaceDialog>}
     </>}

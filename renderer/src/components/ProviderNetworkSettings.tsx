@@ -138,7 +138,7 @@ export function ProviderNetworkSettings({ settings, zh, update }: Props) {
     </div>}
     <p className="provider-network-apply-note">{text.applyNote}</p>
     <div className="provider-network-actions">
-      {dirty && <button className="btn-subtle" type="button" disabled={busy} onClick={() => { setDraft(saved.current.value); setTouched({ proxyUrl: false, noProxy: false }); setIssue(undefined); setNotice(undefined); }}>{text.discard}</button>}
+      {dirty && <button className="btn btn-lg" type="button" disabled={busy} onClick={() => { setDraft(saved.current.value); setTouched({ proxyUrl: false, noProxy: false }); setIssue(undefined); setNotice(undefined); }}>{text.discard}</button>}
       <button className="btn btn-primary" type="button" disabled={busy || !dirty} onClick={() => void save()}>{busy ? text.saving : text.save}</button>
     </div>
     {notice && <p className="provider-network-notice" role="status" aria-live="polite">{notice}</p>}

@@ -1,6 +1,7 @@
 import { useRef, useState, type PointerEvent } from "react";
 import type { Session } from "@threadterm/protocol";
 import type { Locale } from "../i18n";
+import { Icon } from "./PrototypeIcon";
 
 type Props = {
   sessions: Session[];
@@ -58,15 +59,15 @@ export function DesktopCompanion({
   return (
     <aside className="desktop-companion" aria-label={text.title} style={{ transform: `translate(${position.x}px, ${position.y}px)` }}>
       <div className="desktop-companion-title">
-        <button className="desktop-companion-drag" aria-label={text.move} title={text.move} onPointerDown={startDrag} onPointerMove={moveDrag} onPointerUp={endDrag} onPointerCancel={endDrag} onKeyDown={moveByKey}>⠿</button>
+        <button className="icon-btn icon-btn-sm desktop-companion-drag" aria-label={text.move} title={text.move} onPointerDown={startDrag} onPointerMove={moveDrag} onPointerUp={endDrag} onPointerCancel={endDrag} onKeyDown={moveByKey}><svg className="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 5h.01M15 5h.01M9 12h.01M15 12h.01M9 19h.01M15 19h.01" /></svg></button>
         <strong>{text.title}</strong>
-        <button aria-label={text.close} title={text.close} onClick={onClose}>×</button>
+        <button className="icon-btn icon-btn-sm" aria-label={text.close} title={text.close} onClick={onClose}><Icon name="close" /></button>
       </div>
-      <button className="desktop-companion-summary" onClick={onOpenActive} aria-label={`${text.open}: ${counts.active}`}>
+      <button className="btn desktop-companion-summary" onClick={onOpenActive} aria-label={`${text.open}: ${counts.active}`}>
         <span>{text.active}<b>{counts.active}</b></span><span>{text.waiting}<b>{counts.waiting}</b></span><span>{text.errors}<b>{counts.errors}</b></span>
       </button>
-      {(counts.errors > 0 || unreadInbox > 0) && <button className="desktop-companion-inbox" onClick={onOpenInbox}>{text.inbox} ({Math.max(counts.errors, unreadInbox)})</button>}
-      <button className="desktop-companion-reset" onClick={() => setPosition({ x: 0, y: 0 })}>{text.reset}</button>
+      {(counts.errors > 0 || unreadInbox > 0) && <button className="btn btn-sm desktop-companion-inbox" onClick={onOpenInbox}>{text.inbox} ({Math.max(counts.errors, unreadInbox)})</button>}
+      <button className="btn btn-sm desktop-companion-reset" onClick={() => setPosition({ x: 0, y: 0 })}>{text.reset}</button>
     </aside>
   );
 }

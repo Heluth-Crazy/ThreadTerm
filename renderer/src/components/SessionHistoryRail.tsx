@@ -55,7 +55,7 @@ export function SessionHistoryRail({ data, onClose, onNavigateAll, onChanged }: 
       onChanged();
     } catch (cause) { setIssue(cause instanceof Error ? cause.message : copy('Could not update the bookmark.', '无法更新书签。')); }
   };
-  return <SurfaceDialog title={copy('Local history', '本机历史')} subtitle={copy('Native sessions and saved ThreadTerm records.', '本机会话与 ThreadTerm 保存记录')} icon="archive" size="wide" className="local-history-dialog" onClose={() => onClose?.()}>
+  return <SurfaceDialog title={copy('Local history', '本机历史')} subtitle={copy('Native sessions and saved ThreadTerm records.', '本机会话与 ThreadTerm 保存记录')} icon="archive" size="wide" className="local-history-dialog sheet-fill sheet-edge-to-edge" onClose={() => onClose?.()}>
     <div className="history-source-switch" role="group" aria-label={copy('History source', '历史来源')}>
       <button className="btn" aria-pressed={source === 'native'} onClick={() => setSource('native')}>{copy('Native sessions', '本机会话')}</button>
       <button className="btn" aria-pressed={source === 'saved'} onClick={() => setSource('saved')}>{copy('ThreadTerm records', 'ThreadTerm 记录')}</button>

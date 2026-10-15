@@ -203,12 +203,15 @@
   display: grid;
   grid-template-columns: minmax(0, 1fr) 190px;
   align-items: center;
-  gap: 10px;
+  gap: 8px;
   border-bottom: 1px solid var(--border);
   padding: 9px 0;
   font-size: 13px;
 }
 .shortcut-row input { font-family: var(--mono); }
+.shortcut-row em { grid-column: 1 / -1; }
+.shortcut-row em:empty { display: none; }
+.shortcut-row:not(:has(~ .shortcut-row)) { border-bottom: 0; }
 .setting-divider { height: 1px; background: var(--border); margin: 22px 0; }
 .hint { font-size: 12px; color: var(--muted); }
 .hint kbd { padding: 2px 5px; border: 1px solid var(--border); border-radius: 4px; color: inherit; }
@@ -260,7 +263,7 @@
   border-radius: 50%;
   flex: 0 0 auto;
 }
-.theme-pack .btn-subtle { margin-left: auto; flex: 0 0 auto; }
+.theme-pack > .btn { margin-left: auto; flex: 0 0 auto; }
 .device-list span,
 .tool-row span { display: grid; gap: 3px; min-width: 0; }
 .device-list small,
@@ -275,17 +278,6 @@
 .migration-state progress { height: 8px; flex: 1; min-width: 120px; }
 .pair-code { padding: 10px; border-radius: 8px; background: var(--raised); }
 .mock-qr { font-family: var(--mono); letter-spacing: 4px; line-height: 0.85; width: max-content; padding: 11px; background: #fff; color: #111; border-radius: 5px; }
-.btn-subtle {
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  background: var(--bg);
-  color: inherit;
-  padding: 8px 12px;
-  font: inherit;
-  font-size: 13px;
-  font-weight: 500;
-}
-.btn-subtle:hover:not(:disabled) { background: var(--soft); }
 body:has(.dialog) .settings-drawer,
 .settings-drawer.settings-dialog-open { visibility: hidden; }
 .settings-drawer button:focus-visible,

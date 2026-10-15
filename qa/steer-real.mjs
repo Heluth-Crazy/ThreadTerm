@@ -233,7 +233,7 @@ try {
   await page.screenshot({ path: join(out, 'real-pi-inserted-light-en-1100.png'), animations: 'disabled' });
   report.screenshots.push('real-pi-inserted-light-en-1100.png');
   check('fake Pi steer uses the steer command once and does not start a second turn');
-  report.layout.push('buttons: two matching round icon buttons; queue Insert now is btn-subtle with the other queue actions');
+  report.layout.push('buttons: two matching round icon buttons; queue Insert now is bordered .btn.btn-sm with the other queue actions');
   report.layout.push('spacing: 4px between the split buttons, 6px menu offset, composer bar gap unchanged');
   report.layout.push('alignment: Queue and the arrow share one center. Inserted sits inline after the user text.');
   report.layout.push('type: zh-CN Insert into current turn and Insert now stay on one line at 420px');

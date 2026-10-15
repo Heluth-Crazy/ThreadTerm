@@ -238,14 +238,14 @@ try {
       }
     }
   }
-  await note('buttons', 'Split Send is two icon-btn icon-btn-sm icon-btn-round controls, same height, 4px apart. Queue and Insert now stay btn-subtle. No second text size or radius was introduced.');
+  await note('buttons', 'Split Send is two icon-btn icon-btn-sm icon-btn-round controls, same height, 4px apart. Queue and Insert now stay bordered .btn.btn-sm. No second text size or radius was introduced.');
   await note('spacing', 'The composer bar keeps its 8px outer gap and 6px cluster gap. The steer pair uses a 4px gap. The menu sits 6px above the arrow.');
   await note('alignment', 'The arrow and the Queue button share one center line. Inserted is a plain chip inline after the user text, not a second heading.');
   await note('type', 'Menu and queue labels use the shared 12px menu/button text. zh-CN labels stay on one line at 420px.');
   await note('color', 'No new hex, rgb, or hsl was added. Light, dark, and the custom token pack recolor the same controls.');
   await note('states', 'The arrow exposes aria-expanded. Disabled split buttons share the icon-button disabled treatment. The menu closes by its own item click.');
   await note('theme', 'Custom theme sets dataset.customTheme and the --custom-* tokens. Borders and text follow those tokens.');
-  await note('missing-mixed-widths', 'The two split buttons are the same 26px circle. Queue actions share btn-subtle. Nothing in the card mixes a wide button with a short one.');
+  await note('missing-mixed-widths', 'The two split buttons are the same 26px circle. Queue actions share bordered .btn.btn-sm. Nothing in the card mixes a wide button with a short one.');
   await note('missing-duplicate', 'Inserted is one tag on the steered user row. The running reply stays a single streaming bubble.');
   await note('missing-padding', 'The composer shell keeps its existing side padding. The menu uses the shared 6px menu padding.');
   await note('missing-dead-space', 'No dialog was added. The menu is only as tall as its one item.');
