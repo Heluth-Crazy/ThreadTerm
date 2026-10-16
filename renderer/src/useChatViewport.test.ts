@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { nextViewportFollow } from './useChatViewport';
+import { nextViewportFollow, shouldPauseViewportForFocus } from './useChatViewport';
 
 const position = (scrollTop: number, scrollHeight = 2_044, clientHeight = 562, clientWidth = 400) => ({ scrollTop, scrollHeight, clientHeight, clientWidth });
 
@@ -117,4 +117,28 @@ test('reversing a scrollbar drag down to the bottom resumes after its upward pau
   assert.equal(nextViewportFollow(false, true, up, up, true), false, 'queued stationary event keeps pause');
   assert.equal(nextViewportFollow(false, true, up, position(1_350), true), false, 'downward drag still above bottom');
   assert.equal(nextViewportFollow(false, true, position(1_350), bottom, true), true);
+});
+
+test('focus on earlier content pauses before the browser applies its scroll', () => {
+  const bottom = position(1_482);
+  assert.equal(shouldPauseViewportForFocus(bottom, 900), true);
+  assert.equal(nextViewportFollow(false, true, bottom, bottom), false, 'queued bottom scroll cannot clear navigation intent');
+  assert.equal(nextViewportFollow(false, true, bottom, position(900, 2_200)), false, 'stream and layout preserve the focused card');
+});
+
+test('focus after the browser reveals a card pauses even if its target is in the last viewport', () => {
+  assert.equal(shouldPauseViewportForFocus(position(1_200), 1_500), true);
+  assert.equal(shouldPauseViewportForFocus(position(1_458), 1_500), true, 'same 24 px follow threshold');
+});
+
+test('focus inside the latest viewport or a transcript without overflow keeps follow', () => {
+  assert.equal(shouldPauseViewportForFocus(position(1_482), 1_500), false);
+  assert.equal(shouldPauseViewportForFocus(position(1_481.6), 1_458), false, 'fractional layout and threshold tolerance');
+  assert.equal(shouldPauseViewportForFocus(position(0, 300, 562), 0), false);
+});
+
+test('focus pause stays latched until an explicit downward input or jump resumes follow', () => {
+  const bottom = position(1_482), target = position(900);
+  assert.equal(nextViewportFollow(false, true, target, bottom), false, 'focus inspection survives a passive bottom observation');
+  assert.equal(nextViewportFollow(false, false, target, bottom), true, 'downward intent reaching bottom resumes');
 });

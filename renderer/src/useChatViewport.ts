@@ -1,4 +1,4 @@
-import { useCallback, useLayoutEffect, useRef, useState, type KeyboardEvent, type MouseEvent, type RefObject, type TouchEvent, type WheelEvent } from 'react';
+import { useCallback, useLayoutEffect, useRef, useState, type FocusEvent, type KeyboardEvent, type MouseEvent, type RefObject, type TouchEvent, type WheelEvent } from 'react';
 
 type Viewport = { top: number; follow: boolean };
 const viewports = new Map<string, Viewport>();
@@ -14,6 +14,13 @@ export function nextViewportFollow(follow: boolean, inspecting: boolean, previou
   if (inspecting) return false;
   if (scrollbarDragging && previous && current.scrollTop < previous.scrollTop) return false;
   return follow || current.scrollHeight - current.scrollTop - current.clientHeight < FOLLOW_THRESHOLD;
+}
+
+/** Focus can scroll before or after focusin; test both the current viewport and
+ * the target's content position against the final viewport. */
+export function shouldPauseViewportForFocus(current: ScrollPosition, targetTop: number): boolean {
+  const latestTop = Math.max(0, current.scrollHeight - current.clientHeight);
+  return latestTop - current.scrollTop >= FOLLOW_THRESHOLD || targetTop < latestTop - FOLLOW_THRESHOLD;
 }
 
 /** User inspection must stop follow before a disclosure changes layout. */
@@ -85,12 +92,26 @@ export function useChatViewport(sessionId: string, snapshotReady: boolean, logRe
     remember();
   }, [logRef, remember, setFollowing]);
 
+  // All user-directed transcript navigation pauses before focus or layout changes.
+  const pauseForNavigation = useCallback(() => {
+    inspectingRef.current = true;
+    setFollowing(false);
+    remember();
+  }, [remember, setFollowing]);
+
+  const onFocus = (event: FocusEvent<HTMLDivElement>) => {
+    const log = logRef.current;
+    const target = event.target;
+    if (!log || target === log || !log.contains(target)) return;
+    const targetTop = log.scrollTop + target.getBoundingClientRect().top - log.getBoundingClientRect().top - log.clientTop;
+    if (shouldPauseViewportForFocus(scrollPosition(log), targetTop)) pauseForNavigation();
+  };
+
   const navigateToMessage = useCallback((id: string) => {
     const log = logRef.current;
     const message = Array.from(log?.querySelectorAll<HTMLElement>('[data-chat-item]') ?? []).find(element => element.dataset.chatItem === id);
     if (!log || !message) return;
-    inspectingRef.current = true;
-    setFollowing(false);
+    pauseForNavigation();
     log.scrollTop += message.getBoundingClientRect().top - log.getBoundingClientRect().top - 48;
     message.tabIndex = -1;
     message.focus({ preventScroll: true });
@@ -98,16 +119,14 @@ export function useChatViewport(sessionId: string, snapshotReady: boolean, logRe
     void message.offsetWidth;
     message.classList.add('chat-message-highlight');
     remember();
-  }, [logRef, remember, setFollowing]);
+  }, [logRef, remember, pauseForNavigation]);
 
   const pauseForDisclosure = (event: MouseEvent<HTMLDivElement>) => {
     const target = event.target instanceof Element ? event.target : undefined;
     const collapse = target?.closest('[data-chat-collapse]');
     const summary = target?.closest('summary');
     if (!collapse && (!summary || target?.closest('button, input, textarea, a, [contenteditable="true"]'))) return;
-    inspectingRef.current = true;
-    setFollowing(false);
-    remember();
+    pauseForNavigation();
   };
 
   const onScroll = () => {
@@ -126,9 +145,7 @@ export function useChatViewport(sessionId: string, snapshotReady: boolean, logRe
   const pauseForScrollUp = () => {
     if ((logRef.current?.scrollTop ?? 0) <= 0) return;
     // Keep the pause through queued bottom scrolls before this input applies.
-    inspectingRef.current = true;
-    setFollowing(false);
-    remember();
+    pauseForNavigation();
   };
 
   const onKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
@@ -137,9 +154,7 @@ export function useChatViewport(sessionId: string, snapshotReady: boolean, logRe
     // navigation can use it to resume follow.
     if (target?.closest('input, textarea, select, [contenteditable="true"], [role="dialog"], [role="menu"], .chat-question-wrapper, .chat-part.approval')) return;
     if (['Enter', ' '].includes(event.key) && target?.closest('summary') && !target.closest('button, a')) {
-      inspectingRef.current = true;
-      setFollowing(false);
-      remember();
+      pauseForNavigation();
       return;
     }
     if (event.key === 'Escape' && paused && (!target?.closest('button, a') || target.closest('.chat-back-to-bottom'))) {
@@ -152,8 +167,7 @@ export function useChatViewport(sessionId: string, snapshotReady: boolean, logRe
     }
   };
 
-  return { paused, followRef, followLatest, navigateToMessage, pauseForDisclosure, onScroll, onKeyDown,
-    inspect: () => { inspectingRef.current = true; setFollowing(false); remember(); },
+  return { paused, followRef, followLatest, navigateToMessage, pauseForNavigation, pauseForDisclosure, onFocus, onScroll, onKeyDown,
     onWheel: (event: WheelEvent<HTMLDivElement>) => {
       if (event.ctrlKey) return;
       if (event.deltaY > 0) inspectingRef.current = false;

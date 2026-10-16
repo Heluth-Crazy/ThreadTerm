@@ -558,3 +558,95 @@ test('footer collector ignores hidden segments and accepts generated or explicit
     assert.doesNotMatch(presentation.renderedText, /88 out/);
   }
 });
+
+// Exercise real hook handlers as well as the pure focus geometry rules.
+function focusViewportHarness() {
+  const fixture = turnProbeHarness({ installProduct: installViewportProduct });
+  const { log } = fixture.state, { viewport } = fixture.product;
+  const target = { getBoundingClientRect: () => ({ top: 102 + target.contentTop - log.scrollTop }), contentTop: 200 };
+  log.clientTop = 2;
+  log.getBoundingClientRect = () => ({ top: 100 });
+  log.contains = element => element === target;
+  log.focus = () => viewport.onFocus({ target: log });
+  const resize = () => { for (const observer of fixture.resizeObservers) observer.callback(); };
+  return { fixture, log, target, viewport, resize };
+}
+
+test('actual focus handler preserves an earlier card across scroll, output and resize in either browser ordering', () => {
+  for (const focusAfterScroll of [false, true]) {
+    const { fixture, log, target, viewport, resize } = focusViewportHarness();
+    if (focusAfterScroll) log.scrollTop = 200;
+    viewport.onFocus({ target });
+    assert.equal(viewport.followRef.current, false);
+    viewport.onScroll(); // May still contain the queued old bottom position.
+    assert.equal(viewport.followRef.current, false);
+    log.scrollTop = 200;
+    viewport.onScroll();
+    log.scrollHeight += 173;
+    resize();
+    assert.equal(log.scrollTop, 200, 'streaming cannot yank focus back to the bottom');
+    viewport.followLatest();
+    assert.equal(viewport.followRef.current, true, 'focus on transcript root does not undo jump-to-latest');
+    assert.equal(log.scrollTop, 773);
+    fixture.product.stop();
+  }
+});
+
+test('actual focus handler ignores the root, outside targets and controls in the latest viewport', () => {
+  const { fixture, log, target, viewport, resize } = focusViewportHarness();
+  viewport.onFocus({ target: log });
+  viewport.onFocus({ target: {} });
+  target.contentTop = 700;
+  viewport.onFocus({ target });
+  assert.equal(viewport.followRef.current, true);
+  log.scrollHeight += 49;
+  resize();
+  assert.equal(log.scrollTop, 649);
+  fixture.product.stop();
+});
+
+test('explicit navigation API pauses before a product jump and keeps its position through layout changes', () => {
+  const { fixture, log, viewport, resize } = focusViewportHarness();
+  viewport.pauseForNavigation();
+  viewport.onScroll();
+  log.scrollTop = 120;
+  viewport.onScroll();
+  log.scrollHeight += 173;
+  resize();
+  assert.equal(viewport.followRef.current, false);
+  assert.equal(log.scrollTop, 120);
+  viewport.onWheel({ deltaY: 1, ctrlKey: false });
+  log.scrollTop = log.scrollHeight;
+  viewport.onScroll();
+  assert.equal(viewport.followRef.current, true, 'scrolling down to bottom resumes');
+  fixture.product.stop();
+});
+
+test('visual consistency reveal helper focuses the real card control before scrolling and survives the next resize', async () => {
+  const path = new URL('../qa/chat-visual-consistency.mjs', import.meta.url);
+  const source = ts.createSourceFile(path.pathname, readFileSync(path, 'utf8'), ts.ScriptTarget.ES2022, true, ts.ScriptKind.JS);
+  const declaration = source.statements.find(statement => ts.isFunctionDeclaration(statement) && statement.name?.text === 'revealSurface');
+  assert.ok(declaration, 'exercise the actual visual consistency scroll helper');
+  const revealSurface = runInNewContext(`(${declaration.getText(source)})`);
+  const { fixture, log, target, viewport, resize } = focusViewportHarness();
+  const actions = [];
+  target.getClientRects = () => [{}];
+  target.closest = () => null;
+  target.getAttribute = () => null;
+  target.focus = () => {
+    actions.push('focus');
+    viewport.onFocus({ target });
+    log.scrollTop = target.contentTop;
+    viewport.onScroll();
+  };
+  const node = { closest: () => log, querySelectorAll: () => [target] };
+  await revealSurface({ evaluate: callback => callback(node), scrollIntoViewIfNeeded: async () => {
+    actions.push('reveal'); log.scrollTop = target.contentTop; viewport.onScroll();
+  } });
+  assert.deepEqual(actions, ['focus', 'reveal']);
+  assert.equal(viewport.followRef.current, false);
+  log.scrollHeight += 173;
+  resize();
+  assert.equal(log.scrollTop, 200, 'card controls stay visible through helper layout checks');
+  fixture.product.stop();
+});
