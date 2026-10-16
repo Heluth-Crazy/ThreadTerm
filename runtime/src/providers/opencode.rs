@@ -689,64 +689,17 @@ impl ChatSession for OpenCodeChat {
                 Some(&self.worker_token),
             );
         }
+        // The blocking client exposes response headers, not a request-written
+        // acknowledgement. Do not acknowledge a queued thread as a dispatched
+        // prompt: Stop could otherwise overtake it, and late replies could use
+        // the next turn's native_turn_observed state. Keep this acceptance
+        // boundary until dispatch and per-request outcome fencing are explicit.
         let sent = self.server.request(
             reqwest::Method::POST,
             &format!("/session/{}/prompt_async", self.native_id),
             Some(json!({"parts":[{"type":"text","text":text}]})),
         );
-        if let Err(error) = sent {
-            let commit = self.server.event_gate.lock().map_err(|_| {
-                self.sse_target.liveness.store(false, Ordering::SeqCst);
-                ProviderError::new("provider_internal", "OpenCode event gate poisoned")
-            })?;
-            let status = error
-                .details
-                .as_ref()
-                .and_then(|details| details.get("httpStatus"))
-                .and_then(Value::as_u64);
-            let uncertain = error.code == "provider_disconnected"
-                || status.is_none_or(|status| status >= 500)
-                || self.sse_target.native_turn_observed.load(Ordering::SeqCst);
-            if uncertain {
-                // A 5xx, lost reply, or native event before the HTTP failure
-                // cannot prove the prompt was rejected. Never replay it.
-                expire_stream_locked(
-                    &self.sse_target,
-                    "send_result_unknown",
-                    &error.message,
-                    &commit,
-                );
-            } else {
-                if let Ok(mut active) = self.server.active_turn.lock() {
-                    if active.as_deref() == Some(operation_id) {
-                        *active = None;
-                        emit_scoped(
-                            &self.events,
-                            "opencode",
-                            &self.session_id,
-                            Some(&self.native_id),
-                            Some(operation_id),
-                            "chat.error",
-                            json!({"message":error.message.clone(),"reason":"prompt_rejected"}),
-                            Some(&self.worker_token),
-                        );
-                    }
-                }
-            }
-            return Err(error);
-        }
-        let _commit =
-            self.server.event_gate.lock().map_err(|_| {
-                ProviderError::new("provider_internal", "OpenCode event gate poisoned")
-            })?;
-        if !self.sse_target.liveness.load(Ordering::SeqCst)
-            || self.server.stopped.load(Ordering::SeqCst)
-        {
-            return Err(ProviderError::new(
-                "provider_disconnected",
-                "OpenCode prompt result is uncertain after event-stream loss",
-            ));
-        }
+        self.sse_target.finish_prompt(operation_id, sent.map(|_| ()))?;
         Ok(json!({"turnId":operation_id}))
     }
     fn cancel(&mut self, turn_id: &str) -> Result<(), ProviderError> {
@@ -1851,6 +1804,50 @@ struct EventTarget {
 }
 
 impl EventTarget {
+    /// HTTP and native events settle under the same gate; an early native
+    /// permission/idle/error must never be followed by a late turn-start.
+    fn finish_prompt(
+        &self,
+        operation_id: &str,
+        result: Result<(), ProviderError>,
+    ) -> Result<(), ProviderError> {
+        let commit = self.event_gate.lock().map_err(|_| {
+            self.liveness.store(false, Ordering::SeqCst);
+            ProviderError::new("provider_internal", "OpenCode event gate poisoned")
+        })?;
+        if let Err(error) = result {
+            let status = error.details.as_ref()
+                .and_then(|details| details.get("httpStatus"))
+                .and_then(Value::as_u64);
+            let uncertain = error.code == "provider_disconnected"
+                || status.is_none_or(|status| status >= 500)
+                || self.native_turn_observed.load(Ordering::SeqCst);
+            if uncertain {
+                // A 5xx, lost reply, or native event before the HTTP failure
+                // cannot prove the prompt was rejected. Never replay it.
+                expire_stream_locked(self, "send_result_unknown", &error.message, &commit);
+            } else if let Ok(mut active) = self.active.lock() {
+                if active.as_deref() == Some(operation_id) {
+                    *active = None;
+                    emit_scoped(
+                        &self.events, "opencode", &self.threadterm_session,
+                        Some(&self.native_id), Some(operation_id), "chat.error",
+                        json!({"message":error.message.clone(),"reason":"prompt_rejected"}),
+                        Some(&self.worker_token),
+                    );
+                }
+            }
+            return Err(error);
+        }
+        if !self.liveness.load(Ordering::SeqCst) || self.stopped.load(Ordering::SeqCst) {
+            return Err(ProviderError::new(
+                "provider_disconnected",
+                "OpenCode prompt result is uncertain after event-stream loss",
+            ));
+        }
+        Ok(())
+    }
+
     fn assembled_parts(
         &self,
         message_id: &str,
@@ -2839,6 +2836,85 @@ mod tests {
             password: String::new(),
             model_limits: HashMap::new(),
         }
+    }
+
+    #[test]
+    fn prompt_http_acceptance_keeps_active_and_never_reopens_an_early_idle() {
+        let (events, mut rx) = crate::provider_events::tap_channel(16);
+        let target = event_target(&events, Arc::new(Mutex::new(Some("turn-1".into()))));
+        target.finish_prompt("turn-1", Ok(())).unwrap();
+        assert_eq!(target.active.lock().unwrap().as_deref(), Some("turn-1"));
+        assert!(rx.try_recv().is_err(), "HTTP acceptance is not another turn-start");
+        emit_opencode_event(&target, frame("session.idle", json!({"sessionID":"native-1"})));
+        let emitted = std::iter::from_fn(|| rx.try_recv().ok()).collect::<Vec<_>>();
+        assert_eq!(emitted.iter().filter(|event| event.kind == "chat.turn.completed").count(), 1);
+        assert!(target.active.lock().unwrap().is_none());
+        target.finish_prompt("turn-1", Ok(())).unwrap();
+        assert!(target.active.lock().unwrap().is_none());
+        assert!(target.liveness.load(Ordering::SeqCst));
+        assert!(rx.try_recv().is_err(), "a late success cannot restart or complete the turn again");
+    }
+
+    #[test]
+    fn prompt_http_rejection_clears_only_its_turn_and_retains_the_stream() {
+        let (events, mut rx) = crate::provider_events::tap_channel(16);
+        let target = event_target(&events, Arc::new(Mutex::new(Some("turn-1".into()))));
+        let rejection = || ProviderError::new("provider_error", "rejected").with_details(json!({"httpStatus":422}));
+        assert_eq!(target.finish_prompt("turn-1", Err(rejection())).unwrap_err().code, "provider_error");
+        assert!(target.active.lock().unwrap().is_none());
+        assert!(target.liveness.load(Ordering::SeqCst));
+        let rejected = rx.try_recv().unwrap();
+        assert_eq!(rejected.kind, "chat.error");
+        assert_eq!(rejected.turn_id.as_deref(), Some("turn-1"));
+        assert_eq!(rejected.data["reason"], "prompt_rejected");
+        assert_eq!(rejected.worker_token.as_deref(), Some("test-worker"));
+        assert!(rx.try_recv().is_err());
+        *target.active.lock().unwrap() = Some("turn-2".into());
+        target.finish_prompt("turn-1", Err(rejection())).unwrap_err();
+        assert_eq!(target.active.lock().unwrap().as_deref(), Some("turn-2"));
+        assert!(rx.try_recv().is_err(), "a rejection cannot settle another operation");
+    }
+
+    #[test]
+    fn prompt_http_uncertain_results_expire_permissions_and_stream_exactly_once() {
+        for (status, native_activity) in [(Some(503), false), (None, false), (Some(422), true)] {
+            let (events, mut rx) = crate::provider_events::tap_channel(32);
+            let target = event_target(&events, Arc::new(Mutex::new(Some("turn-1".into()))));
+            if native_activity {
+                emit_opencode_event(&target, frame("permission.asked", json!({
+                    "id":"permission-1","sessionID":"native-1","permission":"bash","patterns":["*"],"metadata":{},"always":[]
+                })));
+                assert_eq!(rx.try_recv().unwrap().kind, "chat.approval");
+            }
+            let error = || match status {
+                Some(status) => ProviderError::new("provider_error", "HTTP failed").with_details(json!({"httpStatus":status})),
+                None => ProviderError::new("provider_disconnected", "reply lost"),
+            };
+            target.finish_prompt("turn-1", Err(error())).unwrap_err();
+            assert!(!target.liveness.load(Ordering::SeqCst));
+            assert!(target.active.lock().unwrap().is_none());
+            assert!(target.permissions.lock().unwrap().is_empty());
+            let emitted = std::iter::from_fn(|| rx.try_recv().ok()).collect::<Vec<_>>();
+            assert_eq!(emitted.iter().filter(|event| event.kind == "chat.error" && event.data["reason"] == "send_result_unknown").count(), 1);
+            assert_eq!(emitted.iter().filter(|event| event.kind == "session.closed").count(), 1);
+            assert_eq!(emitted.iter().filter(|event| event.kind == "chat.approval.resolved" && event.data["status"] == "expired").count(), usize::from(native_activity));
+            assert!(emitted.iter().all(|event| event.worker_token.as_deref() == Some("test-worker")));
+            target.finish_prompt("turn-1", Err(error())).unwrap_err();
+            emit_opencode_event(&target, frame("session.idle", json!({"sessionID":"native-1"})));
+            assert!(rx.try_recv().is_err(), "late replies/events cannot duplicate terminal projection");
+        }
+    }
+
+    #[test]
+    fn prompt_http_success_after_stream_loss_stays_disconnected() {
+        let (events, mut rx) = crate::provider_events::tap_channel(16);
+        let target = event_target(&events, Arc::new(Mutex::new(Some("turn-1".into()))));
+        expire_stream(&target, "event_stream_disconnected", "closed");
+        while rx.try_recv().is_ok() {}
+        assert_eq!(target.finish_prompt("turn-1", Ok(())).unwrap_err().code, "provider_disconnected");
+        assert!(!target.liveness.load(Ordering::SeqCst));
+        assert!(target.active.lock().unwrap().is_none());
+        assert!(rx.try_recv().is_err());
     }
 
     #[test]

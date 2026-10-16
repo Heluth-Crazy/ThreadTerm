@@ -24,7 +24,11 @@ const MAX_LOG_PAGE: usize = 200;
 const ZERO_COMMIT: &str = "0000000000000000000000000000000000000000";
 
 fn send_trace_git_step(args: &[&str]) -> &'static str {
-    match args.first().copied() {
+    let mut command = 0;
+    while args.get(command) == Some(&"-c") && args.get(command + 1).is_some() {
+        command += 2;
+    }
+    match args.get(command).copied() {
         Some("rev-parse") => "rev-parse",
         Some("status") => "status",
         Some("update-index") => "update-index",
@@ -735,6 +739,21 @@ mod tests {
     use super::*;
     use crate::workspace_services::git;
     use std::fs;
+
+    #[test]
+    fn send_trace_classifies_commands_after_command_scope_config() {
+        assert_eq!(
+            send_trace_git_step(&[
+                "-c",
+                "core.splitIndex=false",
+                "-c",
+                "core.quotepath=off",
+                "update-index",
+            ]),
+            "update-index"
+        );
+        assert_eq!(send_trace_git_step(&["status"]), "status");
+    }
 
     #[test]
     fn shared_deadline_refuses_expired_git_without_starting_a_command() {
