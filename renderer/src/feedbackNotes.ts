@@ -1,4 +1,5 @@
 import type { ChatFeedbackNote, ChatPart } from '@threadterm/protocol';
+import { hasRedactedBrowserResult } from './browserToolActivity';
 
 /**
  * E2 feedback notes. The store lives in the runtime; this module only reads
@@ -27,6 +28,7 @@ export function readIsCurrent(sequence: number, current: number): boolean {
 
 /** The exact `feedback_check` tool, whatever envelope a provider used. */
 export function isFeedbackCheck(part: ChatPart): boolean {
+  if (hasRedactedBrowserResult(part)) return false;
   const data = record(part.data);
   const tool = text(data.tool);
   const server = text(data.server);

@@ -58,3 +58,30 @@ test('export images cover non-text attachments and reject active or remote file 
   assert.match(bundle.markdown, /C:\\local\\a.jpg/); assert.match(bundle.markdown, /\/local\/b.webp/); assert.match(bundle.markdown, /local\/c.gif/);
   assert.doesNotMatch(bundle.markdown, /file:|ftp:|blob:|smb:|custom:|server|\.svg|bad\npath/);
 });
+
+
+test('managed browser exports omit raw images and paths even with contradictory identities or missing receipts', () => {
+  const png = 'data:image/png;base64,cHJpdmF0ZQ==';
+  for (const tool of ['browser_list_tabs', 'browser_snapshot', 'browser_screenshot', 'browser_console_messages'])
+    for (const inverse of [false, true]) for (const resultRedacted of [undefined, false]) {
+      const input: ChatItem[] = [{ id: 'private', role: 'assistant', createdAt: '', parts: [{
+        type: 'tool', toolName: `mcp__${inverse ? 'foreign' : 'threadterm'}__${tool}`, status: 'completed',
+        text: 'PRIVATE echo', fileReferences: [{ path: 'D:/PRIVATE.png' }], data: {
+          server: inverse ? 'threadterm' : 'PRIVATE SERVER', tool: inverse ? tool : 'PRIVATE TOOL', resultRedacted,
+          images: [png, 'D:/PRIVATE.png'], result: 'PRIVATE', input: { text: 'PRIVATE' },
+        },
+      }] }];
+      const original = JSON.stringify(input);
+      const bundle = chatMarkdownExportBundle(input, meta, 'assets');
+      assert.deepEqual(bundle.images, []);
+      assert.doesNotMatch(bundle.markdown, /PRIVATE|base64|image-1/);
+      assert.doesNotMatch(chatMarkdownExport(input, meta, new Map([[png, 'PRIVATE/asset.png']])), /PRIVATE|base64/);
+      assert.equal(JSON.stringify(input), original);
+    }
+  const ordinary: ChatItem[] = [{ id: 'ordinary', role: 'assistant', createdAt: '', parts: [{
+    type: 'tool', toolName: 'mcp__foreign__browser_snapshot', data: { server: 'foreign', tool: 'browser_snapshot', images: [png, 'D:/ordinary.png'] },
+  }] }];
+  const bundle = chatMarkdownExportBundle(ordinary, meta, 'assets');
+  assert.equal(bundle.images.length, 1);
+  assert.match(bundle.markdown, /ordinary.png/);
+});

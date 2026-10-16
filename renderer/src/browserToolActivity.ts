@@ -1,3 +1,5 @@
+type BrowserReadTool = 'browser_list_tabs' | 'browser_snapshot' | 'browser_screenshot' | 'browser_console_messages';
+
 /** Bounded browser receipts contain provenance, never the private read body. */
 export interface BrowserToolActivity {
   tool: string;
@@ -18,19 +20,37 @@ const bounded = (value: unknown, bytes: number): string | undefined =>
 
 type ToolPart = { data?: unknown; toolName?: string };
 
-export function browserToolActivityFromPart(part: ToolPart): BrowserToolActivity | undefined {
+const managedTool = (value: unknown): BrowserReadTool | undefined =>
+  typeof value === 'string' && tools.has(value) ? value as BrowserReadTool : undefined;
+
+/** Conflicting identities suppress receipt attribution while retaining redaction. */
+export function browserToolIdentity(part: ToolPart): { displayTool?: BrowserReadTool; receiptTool?: BrowserReadTool; redact: boolean } {
   const data = part?.data && typeof part.data === 'object' && !Array.isArray(part.data) ? part.data as Record<string, unknown> : {};
-  const native = /^mcp__threadterm__(.+)$/.exec(part?.toolName ?? '');
-  const server = typeof data.server === 'string' && data.server.trim() ? data.server.trim() : native ? 'threadterm' : undefined;
-  const tool = typeof data.tool === 'string' && data.tool.trim() ? data.tool.trim() : native?.[1];
-  return server === 'threadterm' && tool ? browserToolActivity(data.browserActivity, tool) : undefined;
+  const native = /^mcp__(.+?)__(.+)$/.exec(part?.toolName ?? '');
+  const nativeTool = native?.[1] === 'threadterm' ? managedTool(native[2]) : undefined;
+  const dataTool = data.server === 'threadterm' ? managedTool(data.tool) : undefined;
+  const displayTool = nativeTool ?? (native ? undefined : dataTool);
+  const consistent = displayTool && (data.server === undefined || data.server === 'threadterm')
+    && (data.tool === undefined || data.tool === displayTool);
+  return { displayTool, receiptTool: consistent ? displayTool : undefined, redact: Boolean(nativeTool || dataTool) };
+}
+
+export function browserToolNameFromPart(part: ToolPart): BrowserReadTool | undefined {
+  return browserToolIdentity(part).receiptTool;
+}
+
+export function browserToolActivityFromPart(part: ToolPart): BrowserToolActivity | undefined {
+  const tool = browserToolNameFromPart(part);
+  const data = part?.data && typeof part.data === 'object' && !Array.isArray(part.data) ? part.data as Record<string, unknown> : {};
+  return tool ? browserToolActivity(data.browserActivity, tool) : undefined;
 }
 
 export function hasRedactedBrowserResult(part: ToolPart): boolean {
   const data = part?.data;
+  if (browserToolIdentity(part).redact) return true;
   if (!data || typeof data !== 'object' || Array.isArray(data)) return false;
   const value = data as Record<string, unknown>;
-  return value.resultRedacted === true || browserToolActivityFromPart(part) !== undefined;
+  return value.resultRedacted === true;
 }
 
 export function browserToolActivity(value: unknown, tool: string): BrowserToolActivity | undefined {

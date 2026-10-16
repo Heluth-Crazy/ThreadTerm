@@ -267,6 +267,7 @@ export function ToolCard({ entry, index, open, active, awaitingApproval, session
   openDiff?: (path: string) => void;
   canOpenDiff?: (path: string) => boolean;
 }) {
+  const references = hasRedactedBrowserResult(entry.part) ? undefined : entry.part.fileReferences;
   const view = toolView(entry.part);
   // Delegation tools keep the drawer header's localized name, not the raw "threadterm: delegate_start".
   const described = describeTool(entry.part, copy);
@@ -281,9 +282,9 @@ export function ToolCard({ entry, index, open, active, awaitingApproval, session
       <span className={`chip tool-card-status ${statusChip[status.key] ?? 'flat'}`}>{status.label}</span>
     </div>
     {open && <div className="tool-card-body">
-      <CardBody part={entry.part} view={view} copy={copy} sessionCwd={sessionCwd} openFile={openFile} openDiff={openDiff} canOpenDiff={canOpenDiff} references={entry.part.fileReferences} />
+      <CardBody part={entry.part} view={view} copy={copy} sessionCwd={sessionCwd} openFile={openFile} openDiff={openDiff} canOpenDiff={canOpenDiff} references={references} />
     </div>}
     <CardImages part={entry.part} copy={copy} />
-    {view.kind !== 'read' && <FileReferenceChips references={entry.part.fileReferences} visibleText={body} openFile={openFile} />}
+    {view.kind !== 'read' && <FileReferenceChips references={references} visibleText={body} openFile={openFile} />}
   </div>;
 }
