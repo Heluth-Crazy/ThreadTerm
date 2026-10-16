@@ -1,5 +1,5 @@
 import type { ChatItem, ChatPart } from '@threadterm/protocol';
-import { hasRedactedBrowserResult } from './browserToolActivity';
+import { browserToolActivityFromPart, browserToolIdentity, hasRedactedBrowserResult } from './browserToolActivity';
 import { delegationTool } from './delegation';
 import { isSubagentPart, subagentItemsOf } from './subagentActivity';
 import { toolInputs, toolStatus, toolView } from './toolView';
@@ -202,6 +202,15 @@ export function toolActivityPreview(entries: readonly ToolActivityEntry[], turnA
 }
 
 export function describeTool(part: ChatPart, copy: Copy): { kind: ToolKind; name: string; action: string; detail?: string } {
+  const browser = browserToolIdentity(part);
+  if (browser.redact) {
+    const names = {
+      browser_list_tabs: copy('List tabs', '列出标签页'), browser_snapshot: copy('Read page', '读取页面'),
+      browser_screenshot: copy('Take screenshot', '截取页面'), browser_console_messages: copy('Read console', '读取控制台'),
+    };
+    return { kind: 'browser', name: browser.displayTool ? names[browser.displayTool] : copy('Browser tool', '浏览器工具'),
+      action: copy('Browsing', '正在操作浏览器'), detail: browserToolActivityFromPart(part)?.origin };
+  }
   const data = record(part.data), delegation = delegationTool(part);
   const nativeName = string(data.tool) || string(part.toolName) || string(data.title) || copy('Tool', '工具');
   const leaf = nativeName.split('__').at(-1)!;

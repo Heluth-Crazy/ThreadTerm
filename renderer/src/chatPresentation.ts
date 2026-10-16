@@ -1,6 +1,11 @@
 import type { ChatItem, ChatPart } from "@threadterm/protocol";
+import { browserToolActivityFromPart, browserToolIdentity, hasRedactedBrowserResult } from "./browserToolActivity";
 
 export function partBody(part: ChatPart): string {
+  if (hasRedactedBrowserResult(part)) {
+    const activity = browserToolActivityFromPart(part);
+    return activity ? JSON.stringify(activity, null, 2) : "";
+  }
   if (typeof part.text === "string") return part.text;
   if (typeof part.data === "string") return part.data;
   if (part.data == null) return "";
@@ -26,7 +31,10 @@ export function shouldRenderPart(part: ChatPart): boolean {
 
 export function partLabel(part: ChatPart, copy: (en: string, zh: string) => string): string | undefined {
   if (part.type === "text" || part.type === "usage" || part.type === "thinking" || part.type === "status") return undefined;
-  if (part.type === "tool") return part.toolName || copy("Tool", "工具");
+  if (part.type === "tool") {
+    if (hasRedactedBrowserResult(part)) return browserToolIdentity(part).displayTool ?? copy("Browser tool", "浏览器工具");
+    return part.toolName || copy("Tool", "工具");
+  }
   if (part.type === "approval") return copy("Approval required", "需要批准");
   if (part.type === "error") return copy("Error", "错误");
   return part.type;

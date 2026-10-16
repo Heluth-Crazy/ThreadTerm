@@ -1,4 +1,5 @@
 import type { ChatItem, UsageRecord } from '@threadterm/protocol';
+import { hasRedactedBrowserResult } from './browserToolActivity';
 import { describeTool, toolEntriesForItems, toolSummary, toolSummaryText } from './toolActivity';
 import { formatChatDuration } from './chatPresentation';
 export type ChatExportMeta = { title: string; provider: string; model?: string; createdAt: string; durationMs?: number; tokens?: { input?: number; output?: number; total?: number }; includeThinking?: boolean; locale?: 'en' | 'zh-CN' };
@@ -28,6 +29,7 @@ export function chatMarkdownExportBundle(items: readonly ChatItem[], meta: ChatE
     images.push({ name, dataUrl: value }); references.set(value, `${assetToken}/${name}`);
   };
   for (const item of items) if (item.role === 'user' || item.role === 'assistant') for (const part of item.parts) {
+    if (hasRedactedBrowserResult(part)) continue;
     if (part.text?.includes(assetToken)) throw new Error('Image export token collision');
     if (part.type === 'thinking' && !meta.includeThinking) continue;
     if (part.type === 'text' || part.type === 'error') for (const match of part.text?.matchAll(imageData) ?? []) collect(match[0].replace(/^<|>$/g, ''));
@@ -59,6 +61,7 @@ export function chatMarkdownExport(items: readonly ChatItem[], meta: ChatExportM
     rows.push(item);
     const content: string[] = [];
     for (const part of item.parts) {
+      if (hasRedactedBrowserResult(part)) continue;
       if (part.type === 'text' || part.type === 'error') {
         if (part.text) content.push(part.text.replace(imageData, match => { const path = imageReferences?.get(match.replace(/^<|>$/g, '')); return path ? `<${path}>` : '[image omitted]'; }));
       } else if (part.type === 'thinking' && meta.includeThinking && part.text) content.push(`<details>\n<summary>${copy('Thinking', '思考过程')}</summary>\n<pre>${html(part.text.replace(imageData, '[image omitted]'))}</pre>\n</details>`);

@@ -1,5 +1,5 @@
 import type { ChatPart } from '@threadterm/protocol';
-import { browserToolActivityFromPart, type BrowserToolActivity } from './browserToolActivity';
+import { browserToolActivityFromPart, browserToolIdentity, hasRedactedBrowserResult, type BrowserToolActivity } from './browserToolActivity';
 
 /**
  * One pure, total classifier that turns any provider's tool part into a typed
@@ -166,9 +166,15 @@ function classify(part: ChatPart): ToolView {
   const mcpCall = data.type === 'mcpToolCall' || /^mcp(?:__|toolcall)/i.test(part?.toolName ?? '')
     || (text(data.server) !== undefined && text(data.tool) !== undefined);
   if (mcpCall) {
+    const browser = browserToolIdentity(part);
+    if (browser.redact) {
+      const tool = browser.displayTool ?? 'Browser tool';
+      return { kind: 'mcp', status, title: browser.displayTool ? `threadterm: ${tool}` : tool,
+        server: browser.displayTool ? 'threadterm' : undefined, tool, browserActivity: browserToolActivityFromPart(part) };
+    }
     const tool = text(data.tool) ?? (/^mcp__[^_]+__(.+)$/.exec(part?.toolName ?? '')?.[1]) ?? leaf;
     const activity = browserToolActivityFromPart(part);
-    const redacted = activity !== undefined || data.resultRedacted === true;
+    const redacted = hasRedactedBrowserResult(part);
     return { kind: 'mcp', status, title: server ? `${server}: ${tool}` : tool, server, tool,
       args: redacted ? undefined : arg('arguments', 'input', 'rawInput', 'args'), result: redacted ? undefined : data.result, browserActivity: activity };
   }
