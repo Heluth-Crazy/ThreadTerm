@@ -19,6 +19,7 @@ const glyphs: Record<string, string> = {
  'chev-up': '<path d="m6 15 6-6 6 6"/>',
  checkpoint: '<circle cx="12" cy="12" r="3.5"/><path d="M3 12h5.5M15.5 12H21"/>',
 };
+const glyphHtml=Object.fromEntries(Object.entries(glyphs).map(([name,__html])=>[name,Object.freeze({__html})]));
 
 /** SVG markup of a workbench glyph for DOM built outside React (e.g. CodeMirror widgets). */
 export const wbIconMarkup = (name:string) => `<svg class="ico" viewBox="0 0 24 24" aria-hidden="true">${glyphs[name] ?? ''}</svg>`;
@@ -27,5 +28,5 @@ export const wbIconMarkup = (name:string) => `<svg class="ico" viewBox="0 0 24 2
 export function WbIcon({name, className, ...props}:{name:string;className?:string}&SVGProps<SVGSVGElement>) {
  const body = glyphs[name];
  if(!body) return <Icon name={name} className={className} {...props}/>;
- return <svg className={['ico', className].filter(Boolean).join(' ')} viewBox="0 0 24 24" aria-hidden="true" {...props} dangerouslySetInnerHTML={{__html:body}}/>;
+ return <svg className={['ico', className].filter(Boolean).join(' ')} viewBox="0 0 24 24" aria-hidden="true" {...props} dangerouslySetInnerHTML={glyphHtml[name]}/>;
 }
