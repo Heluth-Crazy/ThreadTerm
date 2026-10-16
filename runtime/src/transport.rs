@@ -35,7 +35,8 @@ pub async fn serve(service: Arc<RuntimeService>, credential: String) -> Result<(
     service.leases.adopt_previous(&service.db)?;
     tokio::try_join!(
         accept_control(Arc::clone(&service), credential.clone()),
-        accept_output(Arc::clone(&service), credential)
+        accept_output(Arc::clone(&service), credential.clone()),
+        accept_browser(Arc::clone(&service), credential)
     )?;
     Ok(())
 }
@@ -75,6 +76,102 @@ async fn accept_control(service: Arc<RuntimeService>, credential: String) -> Res
         }
     }
 }
+#[cfg(windows)]
+async fn accept_browser(service: Arc<RuntimeService>, credential: String) -> Result<()> {
+    use tokio::net::windows::named_pipe::ServerOptions;
+    let name = service.config.browser_pipe();
+    let mut first = true;
+    loop {
+        let mut acl = crate::windows_security::SecurityAttributes::current_user_only()?;
+        let pipe = unsafe {
+            ServerOptions::new().first_pipe_instance(first)
+                .create_with_security_attributes_raw(&name, acl.raw().cast())
+        }.context("creating private browser named pipe")?;
+        first = false;
+        tokio::select! {
+            connected = pipe.connect() => { connected?; }
+            _ = service.wait_for_shutdown() => return Ok(()),
+        }
+        let service = Arc::clone(&service);
+        let credential = credential.clone();
+        tokio::spawn(async move { let _ = serve_browser(pipe, service, &credential).await; });
+    }
+}
+
+#[cfg(windows)]
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct BrowserRequest {
+    v: u32,
+    id: String,
+    method: String,
+    params: Value,
+}
+
+/// This connection carries only private browser traffic. Admission never
+/// waits in the decoder; replies retain capacity independently of admin work.
+#[cfg(windows)]
+async fn serve_browser(
+    mut pipe: tokio::net::windows::named_pipe::NamedPipeServer,
+    service: Arc<RuntimeService>,
+    credential: &str,
+) -> Result<()> {
+    let principal = authenticate(&mut pipe, credential, &service.db.epoch()?).await?;
+    let connection_id = uuid::Uuid::new_v4().to_string();
+    let (events, mut notifications) = tokio::sync::mpsc::channel::<Value>(128);
+    let _presence = service.browser_tools.connect(&principal, &connection_id, events)?;
+    let (mut reader, mut writer) = tokio::io::split(pipe);
+    let mut decoder = FrameDecoder::default();
+    let (completed, mut replies) = tokio::sync::mpsc::channel::<Value>(64);
+    let administration = Arc::new(tokio::sync::Semaphore::new(48));
+    let acknowledgements = Arc::new(tokio::sync::Semaphore::new(16));
+    loop {
+        tokio::select! {
+            frame = decoder.read(&mut reader) => {
+                let frame = frame?;
+                if frame.len() > 916 * 1024 { bail!("private browser frame exceeds limit"); }
+                let request: BrowserRequest = serde_json::from_slice(&frame)?;
+                if request.v != PROTOCOL_VERSION || request.id.is_empty() || request.id.len() > 256
+                    || !request.params.is_object() || !matches!(request.method.as_str(),
+                        "browser.attach" | "browser.registerTab" | "browser.unregisterTab" | "browser.detach" | "browser.desktop.reply") {
+                    bail!("invalid private browser request");
+                }
+                let pool = if request.method == "browser.desktop.reply" { &acknowledgements } else { &administration };
+                let permit = match Arc::clone(pool).try_acquire_owned() {
+                    Ok(permit) => permit,
+                    Err(_) => {
+                        let body = json!({"v":PROTOCOL_VERSION,"id":request.id,"error":{"code":"browser_busy","message":"Browser connection is busy"}});
+                        // A stalled private writer invalidates this connection;
+                        // it cannot create an unbounded completion queue.
+                        completed.try_send(body).map_err(|_| anyhow::anyhow!("private browser reply queue full"))?;
+                        continue;
+                    }
+                };
+                let service = Arc::clone(&service);
+                let principal = principal.clone();
+                let connection_id = connection_id.clone();
+                let completed = completed.clone();
+                tokio::spawn(async move {
+                    let id = request.id;
+                    let result = tokio::task::spawn_blocking(move || {
+                        service.browser_tools.desktop_dispatch(&principal, &connection_id, &request.method, &request.params)
+                    }).await;
+                    let body = match result {
+                        Ok(Ok(result)) => json!({"v":PROTOCOL_VERSION,"id":id,"result":result}),
+                        Ok(Err(error)) => json!({"v":PROTOCOL_VERSION,"id":id,"error":crate::service::browser_rpc_error(error)}),
+                        Err(_) => json!({"v":PROTOCOL_VERSION,"id":id,"error":{"code":"browser_request_failed","message":"Browser request could not be completed"}}),
+                    };
+                    let _ = completed.send(body).await;
+                    drop(permit);
+                });
+            }
+            Some(reply) = replies.recv() => { write_json(&mut writer, &reply).await?; }
+            Some(notification) = notifications.recv() => { write_json(&mut writer, &notification).await?; }
+            _ = service.wait_for_shutdown() => return Ok(()),
+        }
+    }
+}
+
 #[cfg(windows)]
 async fn accept_output(service: Arc<RuntimeService>, credential: String) -> Result<()> {
     use tokio::net::windows::named_pipe::ServerOptions;
@@ -135,6 +232,7 @@ enum Lane {
 
 #[cfg_attr(not(windows), allow(dead_code))]
 fn request_lane(method: &str) -> Lane {
+    if matches!(method, "browser.tool.call" | "browser.tool.cancel") { return Lane::Concurrent; }
     if method.starts_with("preview.") { return Lane::Concurrent; }
     match method {
         "chat.tool.ask" | "chat.tool.sessionInfo" | "chat.tool.feedback" | "chat.feedback.read" => Lane::Concurrent,
@@ -291,7 +389,9 @@ async fn run_request(
         ))
         .flatten();
     let trace_timer = is_chat_send.then(SendTraceTimer::start);
-    let result = tokio::task::spawn_blocking(move || {
+    let result = if request.method == "browser.tool.call" {
+        service.browser_tool_call(&principal, request).await
+    } else { tokio::task::spawn_blocking(move || {
         let _trace_context = trace_context.map(SendTraceContext::enter);
         if is_chat_send {
             send_trace::emit(SendTraceEvent::new("transport.dispatch.begin").method("chat.send"));
@@ -312,7 +412,7 @@ async fn run_request(
                 message: "runtime command worker failed".into(),
                 details: None,
             })
-        });
+        }) };
     let accepted_shutdown = is_shutdown && result.is_ok();
     let response = match result {
         Ok(result) => RpcResponse::Ok {
@@ -386,6 +486,7 @@ async fn serve_control(
     // Leases follow the principal's control connections; this one counts until serve_control returns.
     let _presence = service.leases.connect(&principal);
     let _preview_presence = service.previews.connect(&principal);
+    let _browser_presence = service.browser_tools.connect_control(&principal)?;
     let mut turn_speeds = service.subscribe_turn_speed();
     let mut turn_speeds_open = true;
     let mut sent_seq = service.db.snapshot()?.revision;

@@ -146,6 +146,8 @@ impl Fixture {
         let output = Arc::new(OutputStore::default());
         RuntimeService {
             previews: Arc::new(crate::preview::Previews::new(Arc::clone(&db)).unwrap()),
+            browser_tools: RuntimeService::browser_test_tools(&db),
+            shutdown_changed: tokio::sync::Notify::new(),
             config: RuntimeConfig { data_dir: root.to_owned(), database_path: root.join("runtime.sqlite"), credential_path: root.join("credential"), pipe_base: r"\\.\pipe\threadterm-v3-project-trust-test".into() },
             db, leases: LeaseManager::default(), output: Arc::clone(&output), providers,
             pty: Arc::new(PtyManager::new(output)), deferred_launch: Arc::new(Mutex::new(DeferredLaunchGate::default())),

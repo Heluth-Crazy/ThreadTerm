@@ -6,6 +6,7 @@ import * as sdk from '@anthropic-ai/claude-agent-sdk';
 import { parseLine, ok, fail, event } from './protocol.mjs';
 import { ClaudeSession } from './session.mjs';
 import { forkHistory } from './nativeFork.mjs';
+import { sanitizeBrowserMessages } from './browser-activity.mjs';
 
 for (const level of ['log', 'info', 'warn', 'debug']) console[level] = (...args) => process.stderr.write(`[claude-sdk:${level}] ${args.join(' ')}\n`);
 process.stdout.on('error', () => {});
@@ -33,7 +34,7 @@ async function handle(request) {
     case 'history.read': {
       if (!request.sessionId) throw new Error('sessionId is required');
       const options = request.cwd ? { dir: request.cwd } : undefined;
-      return { messages: await sdk.getSessionMessages(request.sessionId, options) };
+      return { messages: sanitizeBrowserMessages(await sdk.getSessionMessages(request.sessionId, options)) };
     }
     case 'history.fork': return forkHistory(sdk, request);
     case 'session.start': {

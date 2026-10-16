@@ -200,6 +200,11 @@ fn codex_auto_approved_threadterm_tools(tools: &ChatToolServer) -> Vec<&'static 
     if env("THREADTERM_PREVIEW_TOKEN").is_some_and(|value| !value.is_empty()) {
         result.extend(crate::preview::TOOL_NAMES);
     }
+    if env("THREADTERM_MCP_PROFILE") == Some("chat-tools")
+        && env("THREADTERM_BROWSER_TOKEN").is_some_and(|value| !value.is_empty())
+    {
+        result.extend(crate::browser_tools::TOOL_NAMES);
+    }
     if env("THREADTERM_CHAT_TOKEN").is_some_and(|value| !value.is_empty()) {
         if env("THREADTERM_CHAT_TOOL_ASK") == Some("1") { result.push("ask_user"); }
         if env("THREADTERM_CHAT_TOOL_SESSION_INFO") == Some("1") { result.push("session_info"); }
@@ -1541,6 +1546,7 @@ const CODEX_SLASH_COMMANDS: &[(&str, &str)] = &[
 
 #[derive(Clone, Default)]
 struct CodexUiState {
+    browser_activity: super::browser_activity::BrowserActivityTracker,
     options: Vec<Value>,
     commands: Vec<Value>,
     skills: Vec<CodexSkill>,
@@ -3635,9 +3641,15 @@ fn emit_codex_message(
     responder: &Mutex<Option<JsonLineResponder>>,
     worker_token: &str,
     subagents: &Mutex<CodexSubagents>,
-    raw: Value,
+    mut raw: Value,
 ) {
     let native_id = native.lock().ok().and_then(|value| value.clone());
+    let activity_scope=raw.pointer("/params/threadId").and_then(Value::as_str).or(native_id.as_deref()).unwrap_or_default().to_owned();
+    let browser_completed = raw["method"] == "item/completed";
+    if let Some(item)=raw.pointer_mut("/params/item") {
+        let context=super::browser_activity::Context {session:Some(session_id),worker:Some(worker_token),scope:&activity_scope};
+        ui.lock().unwrap_or_else(|p|p.into_inner()).browser_activity.codex(item,&context,browser_completed);
+    }
     let method = raw
         .get("method")
         .and_then(Value::as_str)
@@ -4318,6 +4330,7 @@ fn codex_history_item(thread: &Value) -> Option<Value> {
 
 fn codex_transcript_items(thread: &Value) -> Vec<Value> {
     let mut transcript = Vec::new();
+    let mut browser_activity=super::browser_activity::BrowserActivityTracker::default();
     let turns = thread
         .get("turns")
         .and_then(Value::as_array)
@@ -4327,12 +4340,15 @@ fn codex_transcript_items(thread: &Value) -> Vec<Value> {
     for (turn_index, turn) in turns.into_iter().enumerate() {
         let turn_id = turn.get("id").and_then(Value::as_str);
         let turn_start = transcript.len();
-        for item in turn
+        for source_item in turn
             .get("items")
             .and_then(Value::as_array)
             .into_iter()
             .flatten()
         {
+            let mut safe_item=source_item.clone();
+            browser_activity.codex(&mut safe_item,&super::browser_activity::Context {session:None,worker:None,scope:source_native_id.unwrap_or_default()},true);
+            let item=&safe_item;
             let item_type = item
                 .get("type")
                 .and_then(Value::as_str)
@@ -4366,7 +4382,7 @@ fn codex_transcript_items(thread: &Value) -> Vec<Value> {
                 _ => {
                     let mut part = json!({
                         "type":"tool",
-                        "toolName":item_type,
+                        "toolName":item.pointer("/browserActivity/tool").and_then(Value::as_str).unwrap_or(item_type),
                         "data":item
                     });
                     insert_optional(
@@ -4898,6 +4914,28 @@ mod tests {
         fn drain(&mut self) -> Vec<super::super::ProviderEvent> {
             std::iter::from_fn(|| self.received.try_recv().ok()).collect()
         }
+    }
+
+    #[test]
+    fn browser_privacy_codex_live_and_history_redact_before_fanout() {
+        let mut replay = CodexSubagentReplay::new();
+        replay.drain();
+        let start=json!({"id":"browser","type":"mcpToolCall","server":"threadterm","tool":"browser_snapshot","arguments":{"tabId":"tab"}});
+        replay.emit("item/started",json!({"threadId":SUBAGENT_PARENT,"turnId":"parent-turn","item":start}));
+        let completed=json!({"id":"browser","type":"mcpToolCall","result":{"content":[{"type":"text","text":"RAW_CODEX_PAGE_SECRET"},{"type":"image","data":"RAW_CODEX_BASE64_SECRET","mimeType":"image/jpeg"}]}});
+        replay.emit("item/completed",json!({"threadId":SUBAGENT_PARENT,"turnId":"parent-turn","item":completed}));
+        let events=replay.drain();
+        assert!(events.iter().any(|event|event.data.pointer("/raw/params/item/status")==Some(&json!("completed"))));
+        let observed=serde_json::to_string(&events.iter().map(|event|&event.data).collect::<Vec<_>>()).unwrap();
+        assert!(!observed.contains("RAW_CODEX"));
+        assert!(observed.contains("resultRedacted"));
+        assert!(observed.contains("browser_snapshot"));
+        let explicit=json!({"id":"history-browser","type":"mcpToolCall","server":"threadterm","tool":"browser_snapshot","arguments":{"tabId":"tab"},"result":"RAW_CODEX_HISTORY_SECRET"});
+        let history=codex_transcript_items(&json!({"id":"native","turns":[{"id":"turn","items":[explicit,{"id":"ordinary","type":"commandExecution","command":"echo keep","aggregatedOutput":"KEEP_ORDINARY"}]}]}));
+        let history=serde_json::to_string(&history).unwrap();
+        assert!(!history.contains("RAW_CODEX_HISTORY_SECRET"));
+        assert!(history.contains("provenanceUnavailable"));
+        assert!(history.contains("KEEP_ORDINARY"));
     }
 
     #[test]
@@ -6874,6 +6912,37 @@ process.on('exit', () => clearTimeout(timeout));
         assert!(!overrides.contains("ask_user_extra"));
         let foreign = ChatToolServer { name: "other".into(), ..tools.clone() };
         assert!(codex_auto_approved_threadterm_tools(&foreign).is_empty());
+    }
+
+    #[test]
+    fn codex_browser_auto_approval_requires_exact_managed_read_capability() {
+        let managed = ChatToolServer {
+            name: "threadterm".into(), command: "mcp".into(), args: vec![],
+            env: vec![
+                ("THREADTERM_MCP_PROFILE".into(), "chat-tools".into()),
+                ("THREADTERM_BROWSER_TOKEN".into(), "browser-only".into()),
+            ],
+        };
+        assert_eq!(codex_auto_approved_threadterm_tools(&managed), crate::browser_tools::TOOL_NAMES);
+        let overrides = codex_tool_server_overrides(Some(&managed)).join("\n");
+        for tool in crate::browser_tools::TOOL_NAMES {
+            assert!(overrides.contains(&format!("tools.{tool}.approval_mode='auto'")));
+        }
+        for tool in ["browser_eval", "browser_click", "browser_snapshot_extra", "preview_present", "delegate_start", "ask_user", "shell", "exec_command"] {
+            assert!(!overrides.contains(&format!("tools.{tool}.approval_mode='auto'")));
+        }
+        let foreign = ChatToolServer { name: "foreign".into(), ..managed.clone() };
+        assert!(codex_auto_approved_threadterm_tools(&foreign).is_empty());
+        for (key, replacement) in [("THREADTERM_MCP_PROFILE", Some("preview")), ("THREADTERM_MCP_PROFILE", None), ("THREADTERM_BROWSER_TOKEN", Some("")), ("THREADTERM_BROWSER_TOKEN", None)] {
+            let mut disabled = managed.clone();
+            disabled.env.retain(|(name, _)| name != key);
+            if let Some(value) = replacement { disabled.env.push((key.into(), value.into())); }
+            assert!(codex_auto_approved_threadterm_tools(&disabled).is_empty());
+        }
+        let mut preview_only = managed;
+        preview_only.env.retain(|(key, _)| key != "THREADTERM_BROWSER_TOKEN");
+        preview_only.env.push(("THREADTERM_PREVIEW_TOKEN".into(), "preview-only".into()));
+        assert_eq!(codex_auto_approved_threadterm_tools(&preview_only), crate::preview::TOOL_NAMES);
     }
 
     #[test]

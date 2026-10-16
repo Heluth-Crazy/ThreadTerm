@@ -43,6 +43,7 @@ pub(crate) struct ClaudeUi(Arc<Mutex<Option<Value>>>, Arc<Mutex<ClaudeSubagents>
 
 #[derive(Default)]
 struct ClaudeSubagents {
+    browser_activity: super::browser_activity::BrowserActivityTracker,
     agents: HashMap<String, ClaudeSubagent>,
     tasks: HashMap<String, String>,
     task_agents: HashMap<String, String>,
@@ -1467,8 +1468,12 @@ fn emit_claude_message(
     liveness: &WorkerLiveness,
     ui: &ClaudeUi,
     worker_token: Option<&str>,
-    raw: Value,
+    mut raw: Value,
 ) {
+    if let Some(message)=raw.get_mut("message") {
+        let context=super::browser_activity::Context {session:Some(session_id),worker:worker_token,scope:""};
+        ui.1.lock().unwrap_or_else(|p|p.into_inner()).browser_activity.claude(message,&context);
+    }
     let ev = raw
         .get("ev")
         .and_then(Value::as_str)
@@ -2095,6 +2100,9 @@ fn claude_history_item(row: Value) -> Option<Value> {
 }
 
 fn claude_transcript(raw: &[Value], source_native_id: Option<&str>) -> Vec<Value> {
+    let mut browser_activity=super::browser_activity::BrowserActivityTracker::default();
+    let safe_raw:Vec<_>=raw.iter().map(|entry|{let mut entry=entry.clone();browser_activity.claude(&mut entry,&super::browser_activity::Context {session:None,worker:None,scope:""});entry}).collect();
+    let raw=&safe_raw;
     let agents: HashSet<&str> = raw.iter().filter_map(|entry| entry.pointer("/message/content").and_then(Value::as_array))
         .flatten().filter(|block| block.get("type").and_then(Value::as_str)==Some("tool_use") && claude_agent_tool(block))
         .filter_map(|block| block.get("id").and_then(Value::as_str)).collect();
@@ -2124,7 +2132,7 @@ fn claude_transcript(raw: &[Value], source_native_id: Option<&str>) -> Vec<Value
                 }
                 Some("tool_result") if part.get("tool_use_id").and_then(Value::as_str).is_some_and(|id| agents.contains(id)) => Vec::new(),
                 Some(kind) => {
-                    let mut tool = json!({"type":"tool","toolName":kind,"data":part});
+                    let mut tool = json!({"type":"tool","toolName":part.pointer("/browserActivity/tool").and_then(Value::as_str).unwrap_or(kind),"data":part});
                     insert_optional(
                         &mut tool,
                         "toolId",
@@ -2379,6 +2387,23 @@ mod tests {
             }
             self.message(message)
         }
+    }
+
+    #[test]
+    fn browser_privacy_claude_live_and_history_remove_block_and_enclosing_results() {
+        let mut replay=SubagentReplay::new();
+        let start=json!({"type":"assistant","message":{"content":[{"type":"tool_use","id":"browser","name":"mcp__threadterm__browser_screenshot","input":{"tabId":"tab"}}]}});
+        let complete=json!({"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"browser","content":[{"type":"text","text":"RAW_CLAUDE_PAGE_SECRET"},{"type":"image","source":{"data":"RAW_CLAUDE_BASE64_SECRET"}}]}]},"tool_use_result":{"content":[{"type":"text","text":"RAW_CLAUDE_PARENT_SECRET"}]}});
+        let mut events=replay.message(start.clone());
+        events.extend(replay.message(complete.clone()));
+        assert!(events.iter().any(|event|event.data.pointer("/part/data/browserActivity/callerSessionId")==Some(&json!("s"))));
+        let live=serde_json::to_string(&events.iter().map(|event|&event.data).collect::<Vec<_>>()).unwrap();
+        assert!(!live.contains("RAW_CLAUDE"));
+        assert!(live.contains("resultRedacted"));
+        let history=serde_json::to_string(&claude_transcript(&[start,complete],Some("native"))).unwrap();
+        assert!(!history.contains("RAW_CLAUDE"));
+        assert!(history.contains("browser_screenshot"));
+        assert!(!history.contains("callerSessionId"));
     }
 
     #[test]

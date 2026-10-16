@@ -537,6 +537,7 @@ struct PermissionRequest {
 
 #[derive(Clone, Default)]
 struct AcpUiState {
+    browser_activity: super::browser_activity::BrowserActivityTracker,
     permission_responder: Option<JsonLineResponder>,
     text_segments: ChatTextSegments,
     subagent_calls: HashMap<String, Value>,
@@ -1551,9 +1552,14 @@ fn emit_acp_message(
     permissions: &Mutex<HashMap<String, PermissionRequest>>,
     think_open: &Mutex<bool>,
     ui: &Mutex<AcpUiState>,
-    raw: Value,
+    mut raw: Value,
 ) {
     let bound_native = native.lock().ok().and_then(|value| value.clone());
+    let activity_scope=raw.pointer("/params/sessionId").and_then(Value::as_str).or(bound_native.as_deref()).unwrap_or_default().to_owned();
+    if let Some(update)=raw.pointer_mut("/params/update") {
+        let context=super::browser_activity::Context {session:Some(session_id),worker:Some(&events.worker_token),scope:&activity_scope};
+        ui.lock().unwrap_or_else(|p|p.into_inner()).browser_activity.acp(update,&context);
+    }
     let foreign = raw.pointer("/params/sessionId").and_then(Value::as_str)
         .is_some_and(|event_session| bound_native.as_deref().is_some_and(|parent| parent != event_session));
     let permission = raw["method"] == "session/request_permission"
@@ -2136,16 +2142,20 @@ fn kimi_subagent_transcript(
 
 fn kimi_wire_transcript(bytes: &[u8]) -> Vec<Value> {
     let mut items: Vec<Value> = Vec::new();
+    let mut browser_activity=super::browser_activity::BrowserActivityTracker::default();
     let mut prompt_seen = false;
     for (index, line) in bytes.split(|byte| *byte == b'\n').enumerate() {
         let Ok(record) = serde_json::from_slice::<Value>(line) else {
             continue;
         };
-        let event = if record["type"] == "context.append_loop_event" {
+        let source_event = if record["type"] == "context.append_loop_event" {
             record.get("event").unwrap_or(&record)
         } else {
             &record
         };
+        let mut safe_event=source_event.clone();
+        browser_activity.kimi(&mut safe_event,&super::browser_activity::Context {session:None,worker:None,scope:""});
+        let event=&safe_event;
         let kind = event
             .get("type")
             .and_then(Value::as_str)
@@ -2186,11 +2196,13 @@ fn kimi_wire_transcript(bytes: &[u8]) -> Vec<Value> {
                 role = "tool";
                 id = format!("kimi-tool-{tool_id}");
                 if kind == "tool.call" {
+                    if event["resultRedacted"]==true {json!({"type":"tool","toolId":tool_id,"toolName":event["name"],"status":"running","data":event})}else{
                     json!({"type":"tool","toolId":tool_id,"toolName":event["name"],"status":"running",
                         "data":{"args":event["args"],"display":event["display"]}})
+                    }
                 } else {
                     let status = if event.pointer("/result/isError").and_then(Value::as_bool)
-                        == Some(true)
+                        == Some(true) || event.pointer("/browserActivity/outcome").and_then(Value::as_str) == Some("failed")
                     {
                         "failed"
                     } else {
@@ -2203,11 +2215,11 @@ fn kimi_wire_transcript(bytes: &[u8]) -> Vec<Value> {
                     if let Some(item) = items.iter_mut().find(|item| item["id"] == id) {
                         let part = &mut item["parts"][0];
                         part["status"] = json!(status);
-                        part["data"]["output"] = output;
+                        if event["resultRedacted"]==true {part["data"]=event.clone();}else{part["data"]["output"] = output;}
                         crate::db::bound_json(item);
                         continue;
                     }
-                    json!({"type":"tool","toolId":tool_id,"status":status,"data":{"output":output}})
+                    if event["resultRedacted"]==true {json!({"type":"tool","toolId":tool_id,"toolName":event["name"],"status":status,"data":event})}else{json!({"type":"tool","toolId":tool_id,"status":status,"data":{"output":output}})}
                 }
             }
             "turn.ended" if event["reason"] == "failed" => {
@@ -2676,12 +2688,16 @@ fn acp_transcript(raw: &[Value]) -> Vec<Value> {
 
 fn acp_transcript_for_provider(provider: &str, raw: &[Value]) -> Vec<Value> {
     let mut transcript = Vec::new();
+    let mut browser_activity=super::browser_activity::BrowserActivityTracker::default();
     let mut last_message = None;
     let mut subagents = HashMap::new();
     for (index, message) in raw.iter().enumerate() {
         let Some(update) = message.get("params").and_then(|params| params.get("update")) else {
             continue;
         };
+        let mut safe_update=update.clone();
+        browser_activity.acp(&mut safe_update,&super::browser_activity::Context {session:None,worker:None,scope:message.pointer("/params/sessionId").and_then(Value::as_str).unwrap_or_default()});
+        let update=&safe_update;
         let Some(kind) = update
             .get("sessionUpdate")
             .or_else(|| update.get("type"))
@@ -2847,6 +2863,49 @@ fn kimi_terminal_cwd(cwd: &str) -> std::borrow::Cow<'_, str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn browser_privacy_acp_nameless_completion_and_history_redact_before_fanout() {
+        for provider in ["gemini","kimi"] {
+            let (sender,mut receiver)=crate::provider_events::tap_channel(32);
+            let events=ScopedProviderEvents::new(sender,"worker");
+            let native=Mutex::new(Some("native".into()));
+            let active=Mutex::new(Some("turn".into()));
+            let permissions=Mutex::new(HashMap::new());
+            let ui=Mutex::new(AcpUiState::default());
+            let think=Mutex::new(false);
+            let frames=vec![
+                json!({"method":"session/update","params":{"sessionId":"native","update":{"sessionUpdate":"tool_call","toolCallId":"browser","title":"browser_console_messages","rawInput":{"tabId":"tab"},"status":"in_progress"}}}),
+                json!({"method":"session/update","params":{"sessionId":"native","update":{"sessionUpdate":"tool_call_update","toolCallId":"browser","status":"completed","rawOutput":{"content":[{"type":"text","text":"RAW_ACP_CONSOLE_SECRET"},{"type":"image","data":"RAW_ACP_BASE64_SECRET"}]}}}}),
+            ];
+            for frame in &frames {emit_acp_message(&events,provider,"chat",&native,&active,&permissions,&think,&ui,frame.clone());}
+            let observed:Vec<_>=std::iter::from_fn(||receiver.try_recv().ok()).collect();
+            assert!(observed.iter().any(|event|event.data.pointer("/part/data/resultRedacted")==Some(&json!(true))));
+            let live=serde_json::to_string(&observed.iter().map(|event|&event.data).collect::<Vec<_>>()).unwrap();
+            assert!(!live.contains("RAW_ACP"));
+            assert!(live.contains("browser_console_messages"));
+            let history=serde_json::to_string(&acp_transcript_for_provider(provider,&frames)).unwrap();
+            assert!(!history.contains("RAW_ACP"));
+            assert!(history.contains("provenanceUnavailable"));
+        }
+    }
+
+    #[test]
+    fn browser_privacy_kimi_wire_history_removes_result_and_retains_failure() {
+        let frames=[
+            json!({"type":"tool.call","toolCallId":"browser","name":"browser_screenshot","args":{"tabId":"tab"}}),
+            json!({"type":"tool.result","toolCallId":"browser","result":{"isError":true,"output":"RAW_KIMI_IMAGE_SECRET"}}),
+            json!({"type":"tool.call","toolCallId":"ordinary","name":"read_file","args":{"path":"keep"}}),
+            json!({"type":"tool.result","toolCallId":"ordinary","result":{"output":"KEEP_ORDINARY"}}),
+        ];
+        let wire=frames.iter().map(Value::to_string).collect::<Vec<_>>().join("\n");
+        let history=kimi_wire_transcript(wire.as_bytes());
+        assert_eq!(history[0]["parts"][0]["status"],"failed");
+        let history=serde_json::to_string(&history).unwrap();
+        assert!(!history.contains("RAW_KIMI"));
+        assert!(history.contains("browser_screenshot"));
+        assert!(history.contains("KEEP_ORDINARY"));
+    }
 
     #[test]
     fn a_granted_feedback_tool_offers_a_note_not_native_steering() {
@@ -3609,17 +3668,22 @@ mod tests {
             kimi_subagent_transcript(home.path(), &session, &info).unwrap(),
             kimi_wire_transcript(KIMI_WIRE)
         );
-        // The call can fall outside the bounded tail while its result survives.
+        // An explicitly ordinary tool can survive without its call in the tail.
         let mut file = std::fs::File::create(&path).unwrap();
         file.write_all(KIMI_WIRE).unwrap();
         file.write_all(&vec![b'x'; 4 * 1024 * 1024]).unwrap();
-        file.write_all(b"\n{\"type\":\"context.append_loop_event\",\"event\":{\"type\":\"tool.result\",\"toolCallId\":\"orphan\",\"result\":{\"output\":\"tail result\"}}}\n").unwrap();
+        file.write_all(b"\n{\"type\":\"context.append_loop_event\",\"event\":{\"type\":\"tool.result\",\"toolCallId\":\"orphan\",\"name\":\"read_file\",\"result\":{\"output\":\"tail result\"}}}\n").unwrap();
         drop(file);
         let items = kimi_subagent_transcript(home.path(), &session, &info).unwrap();
         assert_eq!(items.len(), 1);
         assert_eq!(items[0]["parts"][0]["toolId"], "orphan");
         assert_eq!(items[0]["parts"][0]["status"], "complete");
         assert_eq!(items[0]["parts"][0]["data"]["output"], "tail result");
+        // A genuinely nameless tail result could contain a browser read. Its
+        // bytes are unavailable when the identifying call is outside the tail.
+        let orphan = kimi_wire_transcript(b"{\"type\":\"tool.result\",\"toolCallId\":\"unknown\",\"result\":{\"output\":\"private orphan\"}}\n");
+        assert_eq!(orphan[0]["parts"][0]["data"]["resultRedacted"],true);
+        assert!(!orphan[0].to_string().contains("private orphan"));
         let mut file = std::fs::File::create(&path).unwrap();
         file.write_all(
             b"{\"type\":\"turn.prompt\",\"input\":[{\"type\":\"text\",\"text\":\"old\"}]}\n",

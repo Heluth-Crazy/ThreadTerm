@@ -77,6 +77,11 @@ impl RuntimeConfig {
     pub fn output_pipe(&self) -> String {
         format!("{}-output", self.pipe_base)
     }
+    /// Main-only browser requests use an independent authenticated connection
+    /// so saturated ordinary control reads cannot block execution replies.
+    pub fn browser_pipe(&self) -> String {
+        format!("{}-browser", self.pipe_base)
+    }
 }
 
 fn default_data_dir() -> Result<PathBuf> {

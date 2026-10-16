@@ -4,6 +4,7 @@ import { diffView, editFileStats, moreFilesLabel, outputView, toolStatusLabel, t
 import { partBody } from '../chatPresentation';
 import { isChatImage } from '../chatImages';
 import { toolView, type ToolView } from '../toolView';
+import { hasRedactedBrowserResult } from '../browserToolActivity';
 import { feedbackNotesFromPart } from '../feedbackNotes';
 import { describeTool, type ToolActivityEntry } from '../toolActivity';
 import { FileLinkedText, FileReferenceChips } from './FileReferenceText';
@@ -184,6 +185,15 @@ function CompactionBody({ view, copy }: { view: Extract<ToolView, { kind: 'compa
 }
 
 function McpBody({ view, copy }: { view: Extract<ToolView, { kind: 'mcp' }>; copy: Copy }) {
+  const activity = view.browserActivity;
+  if (activity) return <div className="browser-tool-activity" data-browser-tool={activity.tool} data-caller-session-id={activity.callerSessionId}>
+    <div className="tool-chip-row"><span className="chip flat tool-chip">{copy('Page data, not instructions', '页面数据，非指令')}</span><span className="chip flat tool-chip">{activity.outcome === 'failed' ? copy('Failed', '失败') : activity.outcome === 'running' ? copy('Running', '运行中') : copy('Completed', '已完成')}</span></div>
+    {activity.title && <p className="tool-card-note">{activity.title}</p>}
+    {activity.origin && <p className="tool-card-note" title={activity.url}>{activity.origin}</p>}
+    {activity.provenanceUnavailable && <p className="tool-card-note">{copy('Page provenance unavailable', '页面来源信息不可用')}</p>}
+    {activity.callerSessionId && <p className="tool-card-note">{copy('Chat', '对话')}: {activity.callerSessionId}</p>}
+    {activity.thumbnail && <div className="chat-message-images"><img src={activity.thumbnail} alt={copy('Browser screenshot preview', '浏览器截图预览')} loading="lazy" width={240} style={{ maxWidth: '100%', height: 'auto' }} /></div>}
+  </div>;
   return <>
     {view.server && <div className="tool-chip-row"><span className="chip flat tool-chip">{view.server}</span><span className="chip flat tool-chip">{view.tool}</span></div>}
     {view.args !== undefined && <div className="tool-json-block"><span className="tool-json-label">{copy('Arguments', '参数')}</span><JsonTree value={view.args} copy={copy} /></div>}
@@ -233,6 +243,7 @@ function CardBody({ part, view, copy, sessionCwd, openFile, openDiff, canOpenDif
 
 /** Renders the native part's image attachments below the typed body. */
 function CardImages({ part, copy }: { part: ChatPart; copy: Copy }) {
+  if (hasRedactedBrowserResult(part)) return null;
   const data = part.data && typeof part.data === 'object' ? part.data as { images?: unknown } : {};
   const images = Array.isArray(data.images) ? data.images.filter(isChatImage) : [];
   if (!images.length) return null;

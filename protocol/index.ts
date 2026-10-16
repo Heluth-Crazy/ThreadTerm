@@ -1,7 +1,8 @@
 import { validateWireRequest, validateWireSuccess } from './generated-validators.js';
+export * from './browser.js';
 export const PROTOCOL_VERSION = 1 as const;
 /** Semantic contract includes native-history repair, snapshot integrity, Chat fork, and feedback notes. Framing/HMAC still use PROTOCOL_VERSION. */
-export const PROTOCOL_CONTRACT = 13 as const;
+export const PROTOCOL_CONTRACT = 14 as const;
 export const MAX_FRAME_BYTES = 8 * 1024 * 1024;
 /** Composer image attachments: at most this many images, whose data-URL strings sum to at most MAX_CHAT_IMAGE_BYTES.
  * Shared by the renderer composer and the desktop attach path so the picker never inlines more than the composer accepts. */

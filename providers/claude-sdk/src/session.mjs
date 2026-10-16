@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { event } from './protocol.mjs';
+import { BrowserToolResultScrubber } from './browser-activity.mjs';
 
 export function createInputQueue() {
   const values = [], waiters = [];
@@ -50,6 +51,7 @@ const AUTO_MODE = { value: 'auto', name: 'Auto' };
 // ThreadTerm's delegation tools as the SDK names them (runtime `delegation::TOOL_NAMES`).
 export const THREADTERM_DELEGATION_TOOLS = new Set(['delegate_start', 'delegate_status', 'delegate_wait', 'delegate_respond', 'delegate_result', 'delegate_cancel'].map(name => `mcp__threadterm__${name}`));
 export const THREADTERM_PREVIEW_TOOLS = new Set(['preview_present', 'preview_status'].map(name => `mcp__threadterm__${name}`));
+export const THREADTERM_BROWSER_TOOLS = new Set(['browser_list_tabs', 'browser_snapshot', 'browser_screenshot', 'browser_console_messages'].map(name => `mcp__threadterm__${name}`));
 export const THREADTERM_CHAT_TOOLS = new Set(['ask_user', 'session_info', 'feedback_check'].map(name => `mcp__threadterm__${name}`));
 const EFFORT_NAMES = { low: 'Low', medium: 'Medium', high: 'High', xhigh: 'Extra high', max: 'Max' };
 
@@ -87,6 +89,7 @@ export class ClaudeSession {
   constructor({ cardId, sdk, write, hostOptions = {} }) {
     this.cardId = cardId; this.sdk = sdk; this.write = write; this.hostOptions = hostOptions;
     this.input = createInputQueue(); this.query = null; this.sessionId = null;
+    this.browserResults = new BrowserToolResultScrubber();
     this.activeOperationId = null; this.pending = new Map(); this.requestGeneration = randomUUID(); this.nextRequest = 1; this.closed = false; this.ended = false; this.endError = null;
     // Steers pushed into the SDK input during a turn. A steer uuid missing
     // from the turn's result is a leftover: the SDK's FIFO input runs it as
@@ -125,6 +128,7 @@ export class ClaudeSession {
     const environment = threadterm?.env && typeof threadterm.env === 'object' ? threadterm.env : {};
     this.threadTermDelegationTools = threadterm?.name === undefined && typeof environment.THREADTERM_SESSION_TOKEN === 'string' && environment.THREADTERM_SESSION_TOKEN.length > 0;
     this.threadTermPreviewTools = threadterm?.name === undefined && typeof environment.THREADTERM_PREVIEW_TOKEN === 'string' && environment.THREADTERM_PREVIEW_TOKEN.length > 0;
+    this.threadTermBrowserTools = threadterm?.name === undefined && environment.THREADTERM_MCP_PROFILE === 'chat-tools' && typeof environment.THREADTERM_BROWSER_TOKEN === 'string' && environment.THREADTERM_BROWSER_TOKEN.length > 0;
     this.threadTermAskTool = threadterm?.name === undefined && typeof environment.THREADTERM_CHAT_TOKEN === 'string' && environment.THREADTERM_CHAT_TOKEN.length > 0 && environment.THREADTERM_CHAT_TOOL_ASK === '1';
     this.threadTermSessionInfoTool = threadterm?.name === undefined && typeof environment.THREADTERM_CHAT_TOKEN === 'string' && environment.THREADTERM_CHAT_TOKEN.length > 0 && environment.THREADTERM_CHAT_TOOL_SESSION_INFO === '1';
     this.threadTermFeedbackTool = threadterm?.name === undefined && typeof environment.THREADTERM_CHAT_TOKEN === 'string' && environment.THREADTERM_CHAT_TOKEN.length > 0 && environment.THREADTERM_CHAT_TOOL_FEEDBACK === '1';
@@ -327,7 +331,7 @@ export class ClaudeSession {
         const streamed = message.type === 'assistant' ? { streamed: this.streamedIds.has(message.message?.id) } : {};
         const speedCallId = message.type === 'stream_event' ? this.activeStreamMessageId
           : message.type === 'assistant' ? (message.message?.id ?? message.uuid) : undefined;
-        this.write(event(this.cardId, 'session.event', { message, sessionId: this.sessionId, operationId: this.activeOperationId, ...streamed, ...(speedCallId ? { speedCallId } : {}) }));
+        this.write(event(this.cardId, 'session.event', { message: this.browserResults.sanitize(message), sessionId: this.sessionId, operationId: this.activeOperationId, ...streamed, ...(speedCallId ? { speedCallId } : {}) }));
         if (message.type === 'system' && message.subtype === 'status' && typeof message.permissionMode === 'string') this.noteMode(message.permissionMode);
         if (message.type === 'system' && message.subtype === 'commands_changed' && Array.isArray(message.commands)) {
           this.catalog.commands = message.commands;
@@ -383,6 +387,7 @@ export class ClaudeSession {
     if (toolName === 'ExitPlanMode' && [...this.pending.values()].some(entry => entry.plan)) return Promise.resolve({ behavior: 'deny', message: 'A plan approval is already pending.' });
     if ((this.threadTermDelegationTools && THREADTERM_DELEGATION_TOOLS.has(toolName))
       || (this.threadTermPreviewTools && THREADTERM_PREVIEW_TOOLS.has(toolName))
+      || (this.threadTermBrowserTools && THREADTERM_BROWSER_TOOLS.has(toolName))
       || (this.threadTermAskTool && toolName === 'mcp__threadterm__ask_user')
       || (this.threadTermSessionInfoTool && toolName === 'mcp__threadterm__session_info')
       || (this.threadTermFeedbackTool && toolName === 'mcp__threadterm__feedback_check')) return Promise.resolve({ behavior: 'allow', updatedInput: input });

@@ -1,4 +1,5 @@
 import type { ChatPart } from '@threadterm/protocol';
+import { browserToolActivityFromPart, type BrowserToolActivity } from './browserToolActivity';
 
 /**
  * One pure, total classifier that turns any provider's tool part into a typed
@@ -30,7 +31,7 @@ export type ToolView =
   | (ToolViewBase & { kind: 'todo'; items: ToolTodoItem[]; done: number; total: number })
   | (ToolViewBase & { kind: 'skill'; name: string; args?: string })
   | (ToolViewBase & { kind: 'subagent' })
-  | (ToolViewBase & { kind: 'mcp'; server?: string; tool: string; args?: unknown; result?: unknown })
+  | (ToolViewBase & { kind: 'mcp'; server?: string; tool: string; args?: unknown; result?: unknown; browserActivity?: BrowserToolActivity })
   | (ToolViewBase & { kind: 'image'; images: string[]; path?: string; imageStatus?: string })
   | (ToolViewBase & { kind: 'compaction'; before?: number; after?: number; trigger?: string })
   | (ToolViewBase & { kind: 'generic'; name: string; args?: unknown; result?: unknown });
@@ -54,7 +55,9 @@ export function toolStatus(part: ChatPart): ToolStatus {
   const data = record(part?.data), state = record(data.state);
   const status = (part?.status || text(state.status) || text(data.status) || '').toLowerCase().replace(/[\s_-]/g, '');
   if (['cancelled', 'canceled', 'interrupted', 'aborted'].includes(status)) return 'cancelled';
+  const activity = browserToolActivityFromPart(part);
   if (['failed', 'error', 'declined', 'rejected'].includes(status)
+    || activity?.outcome === 'failed'
     || data.isError === true || data.is_error === true
     || (typeof data.exitCode === 'number' && data.exitCode !== 0)) return 'failed';
   if (['running', 'pending', 'inprogress', 'streaming', 'executing'].includes(status)) return 'running';
@@ -164,7 +167,10 @@ function classify(part: ChatPart): ToolView {
     || (text(data.server) !== undefined && text(data.tool) !== undefined);
   if (mcpCall) {
     const tool = text(data.tool) ?? (/^mcp__[^_]+__(.+)$/.exec(part?.toolName ?? '')?.[1]) ?? leaf;
-    return { kind: 'mcp', status, title: server ? `${server}: ${tool}` : tool, server, tool, args: arg('arguments', 'input', 'rawInput', 'args'), result: data.result };
+    const activity = browserToolActivityFromPart(part);
+    const redacted = activity !== undefined || data.resultRedacted === true;
+    return { kind: 'mcp', status, title: server ? `${server}: ${tool}` : tool, server, tool,
+      args: redacted ? undefined : arg('arguments', 'input', 'rawInput', 'args'), result: redacted ? undefined : data.result, browserActivity: activity };
   }
 
   // Edit and write.

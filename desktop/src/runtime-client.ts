@@ -13,6 +13,11 @@ import {
   isRuntimeEvent,
   protocolIncompatibleReason,
   validateResult,
+  isBrowserPrivateFrame,
+  validateBrowserDesktopRequest,
+  validateBrowserDesktopResult,
+  type BrowserPrivateFrame,
+  type BrowserDesktopMethod,
   type Method,
   type OutputChunk,
   type RequestParams,
@@ -30,6 +35,9 @@ const MAX_OUTPUT_CREDIT = 8 * 1024 * 1024;
 const SEND_TRACE_ENV = 'THREADTERM_V3_SEND_TRACE';
 const MAX_CORRELATION_ID_LENGTH = 128;
 const MAX_PENDING_SEND_TRACE_RECORDS = 256;
+const BROWSER_REQUEST_TIMEOUT_MS = 10_000;
+const MAX_BROWSER_PENDING_REQUESTS = 64;
+const MAX_BROWSER_REGISTRATION_REQUESTS = 48;
 
 type SendTraceMethod = 'chat.send' | 'chat.draft.save';
 interface SendTraceContext {
@@ -147,6 +155,9 @@ interface AuthChallenge { kind: 'challenge'; nonce: string; protocol: number; co
 interface AuthRequest { kind: 'auth'; clientId: string; protocol: number; contract: number; nonce: string; hmac: string }
 interface Authenticated { kind: 'authenticated'; principal: string; epoch: string; hmac: string; contract?: number }
 interface PendingRequest { method: Method|'qa.chat.projection.fail'; resolve: (value: unknown) => void; reject: (reason: Error) => void; timer: NodeJS.Timeout }
+interface BrowserControlSession { control: LengthPrefixedSocket; pipe: string; token: string; epoch: string }
+interface BrowserConnectionAttempt { session: BrowserControlSession; connection?: LengthPrefixedSocket; promise: Promise<LengthPrefixedSocket> }
+interface PendingBrowserRequest { method: BrowserDesktopMethod; resolve: (value: unknown) => void; reject: (reason: Error) => void; timer: NodeJS.Timeout }
 interface OutputSubscription { id: string; sessionId: string; cursor: number; onChunk: (chunk: OutputChunk) => void | Promise<void> }
 interface OutputGroup { sessionId: string; cursor: number; fanout: OutputFanout; delivery: Promise<void> }
 
@@ -261,6 +272,14 @@ export class RuntimeClient {
   constructor(private readonly options: { autoLaunch?: boolean } = {}) {}
   private control?: LengthPrefixedSocket;
   private output?: LengthPrefixedSocket;
+  private browser?: LengthPrefixedSocket;
+  private browserCapabilityEpoch?: string;
+  private browserSession?: BrowserControlSession;
+  private browserSessionRevision = 0;
+  private browserConnecting?: BrowserConnectionAttempt;
+  private readonly browserPending = new Map<string, PendingBrowserRequest>();
+  private readonly browserFrameListeners = new Set<(frame: BrowserPrivateFrame) => void>();
+  private readonly browserDisconnectListeners = new Set<(error: Error) => void>();
   private readonly clientId = randomUUID();
   private readonly pending = new Map<string, PendingRequest>();
   private readonly eventListeners = new Set<(event: RuntimeEvent) => void>();
@@ -315,6 +334,161 @@ export class RuntimeClient {
   }
 
   onEvent(listener: (event: RuntimeEvent) => void): () => void { this.eventListeners.add(listener); return () => this.eventListeners.delete(listener); }
+
+  /** Main-only capability transport; deliberately absent from renderer IPC. */
+  browserRequest(method: BrowserDesktopMethod, params: Record<string, unknown>): Promise<unknown> {
+    try {
+      this.assertOpen();
+      validateBrowserDesktopRequest(method, params);
+      const limit = method === 'browser.desktop.reply' ? MAX_BROWSER_PENDING_REQUESTS : MAX_BROWSER_REGISTRATION_REQUESTS;
+      if (this.browserPending.size >= limit) throw new RuntimeUnavailableError('Browser request capacity is exhausted');
+    } catch (error) { return Promise.reject(asError(error)); }
+    const id = randomUUID();
+    const capabilityEpoch = params.runtimeEpoch;
+    return new Promise((resolvePromise, reject) => {
+      const payload = Buffer.from(JSON.stringify({ v: PROTOCOL_VERSION, id, method, params }), 'utf8');
+      const pending: PendingBrowserRequest = {
+        method, resolve: resolvePromise, reject,
+        timer: setTimeout(() => {
+          if (this.browserPending.get(id) !== pending) return;
+          this.invalidateBrowser(new RuntimeUnavailableError('Browser request timed out'));
+        }, BROWSER_REQUEST_TIMEOUT_MS),
+      };
+      this.browserPending.set(id, pending);
+      void (async () => {
+        const connection = await this.ensureBrowserConnected(method === 'browser.attach' || method === 'browser.registerTab');
+        this.assertOpen();
+        if (this.browser !== connection || this.browserPending.get(id) !== pending) return;
+        if (method !== 'browser.attach' && !this.browserCapabilityEpoch) throw new RuntimeUnavailableError('Browser attachment is unavailable');
+        if (method === 'browser.desktop.reply' && capabilityEpoch !== this.browserCapabilityEpoch) {
+          throw new RuntimeUnavailableError('Browser capability epoch changed');
+        }
+        connection.write(payload);
+      })().catch(error => {
+        if (this.browserPending.get(id) !== pending) return;
+        clearTimeout(pending.timer);
+        this.browserPending.delete(id);
+        reject(asError(error));
+      });
+    });
+  }
+
+  onBrowserFrame(listener: (frame: BrowserPrivateFrame) => void): () => void { this.browserFrameListeners.add(listener); return () => this.browserFrameListeners.delete(listener); }
+  onBrowserDisconnect(listener: (error: Error) => void): () => void { this.browserDisconnectListeners.add(listener); return () => this.browserDisconnectListeners.delete(listener); }
+
+  private async ensureBrowserConnected(allowConnect: boolean): Promise<LengthPrefixedSocket> {
+    this.assertOpen();
+    const session = this.browserSession ?? (allowConnect ? await this.refreshBrowserSession() : undefined);
+    this.assertOpen();
+    if (!this.browserPending.size) throw new RuntimeUnavailableError('Browser request is no longer pending');
+    if (!session || this.control !== session.control) throw new RuntimeUnavailableError('Browser control session is unavailable');
+    if (this.browser) return this.browser;
+    if (!allowConnect) throw new RuntimeUnavailableError('Browser attachment connection is unavailable');
+    if (this.browserConnecting) return this.browserConnecting.promise;
+    const attempt: BrowserConnectionAttempt = { session, promise: undefined! };
+    this.browserConnecting = attempt;
+    attempt.promise = (async () => {
+      const connection = await LengthPrefixedSocket.connect(session.pipe);
+      attempt.connection = connection;
+      try {
+        this.assertBrowserSession(session, attempt);
+        await authenticate(connection, session.token, this.clientId, (authenticated, proofFrame) => {
+          this.assertBrowserSession(session, attempt);
+          if (authenticated.epoch !== session.epoch) throw new RuntimeUnavailableError('Browser runtime epoch changed');
+          // Install synchronously with proof verification, before another frame
+          // in the same socket chunk can be consumed.
+          this.browser = connection;
+          this.browserCapabilityEpoch = undefined;
+          connection.onFrame(frame => {
+            if (frame !== proofFrame && this.browser === connection) this.handleBrowserFrame(frame, connection, session);
+          });
+          connection.onFailure(error => { if (this.browser === connection) this.invalidateBrowser(error); });
+        });
+        this.assertBrowserSession(session, attempt);
+        if (this.browser !== connection) throw new RuntimeUnavailableError('Browser connection closed during authentication');
+        return connection;
+      } catch (error) {
+        if (this.browserConnecting === attempt || this.browser === connection) this.invalidateBrowser(asError(error));
+        connection.close();
+        throw error;
+      }
+    })().finally(() => { if (this.browserConnecting === attempt) this.browserConnecting = undefined; });
+    return attempt.promise;
+  }
+
+  private async refreshBrowserSession(): Promise<BrowserControlSession> {
+    const control = this.control;
+    const epoch = this.runtimeEpoch;
+    const revision = this.browserSessionRevision;
+    if (!control || !this.output || !epoch) throw new RuntimeUnavailableError('Browser control session is unavailable');
+    // A cancelled shutdown discarded the previous credential cache. Only a
+    // fresh explicit attachment may read it again; resume itself stays idle.
+    const pipes = await runtimePipes();
+    this.assertOpen();
+    if (this.control !== control || this.runtimeEpoch !== epoch || this.browserSessionRevision !== revision) {
+      throw new RuntimeUnavailableError('Browser control session was replaced');
+    }
+    const token = readCredential();
+    if (!token) throw new RuntimeUnavailableError('Browser control credential is unavailable');
+    return this.browserSession ??= { control, pipe: pipes.browser, token, epoch };
+  }
+
+  private assertBrowserSession(session: BrowserControlSession, attempt: BrowserConnectionAttempt): void {
+    this.assertOpen();
+    if (this.browserSession !== session || this.control !== session.control || this.browserConnecting !== attempt) {
+      throw new RuntimeUnavailableError('Browser control session was replaced');
+    }
+  }
+
+  private handleBrowserFrame(frame: Buffer, connection: LengthPrefixedSocket, session: BrowserControlSession): void {
+    try {
+      if (this.browser !== connection || this.browserSession !== session || this.control !== session.control) return;
+      const value: unknown = JSON.parse(frame.toString('utf8'));
+      if (isBrowserPrivateFrame(value)) {
+        if (!this.browserCapabilityEpoch) throw new RuntimeUnavailableError('Browser attachment has not been established');
+        if (value.params.runtimeEpoch !== this.browserCapabilityEpoch) throw new RuntimeUnavailableError('Browser capability epoch changed');
+        for (const listener of this.browserFrameListeners) listener(value);
+        return;
+      }
+      if (!isControlResponse(value) || Object.keys(value).some(key => !['v', 'id', 'result', 'error'].includes(key))) {
+        throw new Error('Runtime sent an invalid browser response');
+      }
+      const pending = this.browserPending.get(value.id);
+      if (!pending) return;
+      if (!value.error) {
+        validateBrowserDesktopResult(pending.method, value.result);
+        if (pending.method === 'browser.attach' || pending.method === 'browser.registerTab') {
+          if (!isRecord(value.result) || typeof value.result.runtimeEpoch !== 'string'
+            || pending.method === 'browser.registerTab' && !this.browserCapabilityEpoch
+            || this.browserCapabilityEpoch !== undefined && value.result.runtimeEpoch !== this.browserCapabilityEpoch) {
+            throw new RuntimeUnavailableError('Browser capability epoch changed');
+          }
+          // Browser capability epochs are fresh per service, independently of
+          // the authenticated control epoch retained by the runtime database.
+          this.browserCapabilityEpoch = value.result.runtimeEpoch;
+        }
+      }
+      clearTimeout(pending.timer);
+      this.browserPending.delete(value.id);
+      if (value.error) pending.reject(new RuntimeRequestError(value.error));
+      else pending.resolve(value.result);
+    } catch (error) { this.invalidateBrowser(asError(error)); }
+  }
+
+  private invalidateBrowser(error: Error, invalidateSession = false): void {
+    const connection = this.browser;
+    const attempt = this.browserConnecting;
+    const active = Boolean(connection || attempt || this.browserPending.size);
+    this.browser = undefined;
+    this.browserCapabilityEpoch = undefined;
+    this.browserConnecting = undefined;
+    if (invalidateSession) { this.browserSession = undefined; this.browserSessionRevision++; }
+    connection?.close();
+    if (attempt?.connection !== connection) attempt?.connection?.close();
+    for (const pending of this.browserPending.values()) { clearTimeout(pending.timer); pending.reject(error); }
+    this.browserPending.clear();
+    if (active) for (const listener of this.browserDisconnectListeners) listener(error);
+  }
 
   /** Test-only: the Electron IPC handler also requires the non-packaged QA flag. */
   dropControlForQa(): boolean {
@@ -444,6 +618,7 @@ export class RuntimeClient {
 
   dispose(): void {
     this.expectedDisconnect = true;
+    this.invalidateBrowser(new RuntimeUnavailableError('Desktop is closing'), true);
     if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
     this.control?.close();
     this.output?.close();
@@ -455,6 +630,7 @@ export class RuntimeClient {
 
   setSuspended(suspended: boolean): void {
     this.suspended = suspended;
+    if (suspended) this.invalidateBrowser(new RuntimeUnavailableError('Desktop shutdown is in progress'), true);
     if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
     this.reconnectTimer = undefined;
     if (!suspended && !this.expectedDisconnect) {
@@ -528,6 +704,8 @@ export class RuntimeClient {
       catch (error) { output.close(); throw error; }
       const previousEpoch = this.runtimeEpoch;
       this.runtimeEpoch = session.epoch;
+      this.invalidateBrowser(new RuntimeUnavailableError('Runtime control session was replaced'), true);
+      this.browserSession = { control, pipe: pipes.browser, token, epoch: session.epoch };
       if (this.sawDisconnect) {
         this.sawDisconnect = false;
         this.emitSynthetic('runtime.transport', {
@@ -577,6 +755,13 @@ export class RuntimeClient {
   private handleControlFrame(frame: Buffer): void {
     let value: unknown;
     try { value = JSON.parse(frame.toString('utf8')) as unknown; } catch { this.handleDisconnect(new Error('Runtime sent invalid JSON')); return; }
+    // Browser-prefixed traffic must never reach the renderer event fanout,
+    // including unknown/malformed future private notifications.
+    if (isRecord(value) && ((typeof value.method === 'string' && value.method.startsWith('browser.'))
+      || (typeof value.event === 'string' && value.event.startsWith('browser.')))) {
+      this.handleDisconnect(new Error('Runtime sent browser traffic on the control pipe'));
+      return;
+    }
     if (isRuntimeEvent(value)) { for (const listener of this.eventListeners) listener(value); return; }
     if (!isControlResponse(value)) { this.handleDisconnect(new Error('Runtime sent an invalid control response')); return; }
     const pending = this.pending.get(value.id);
@@ -663,6 +848,7 @@ export class RuntimeClient {
     const output = this.output;
     this.control = undefined;
     this.output = undefined;
+    this.invalidateBrowser(error, true);
     control?.close();
     output?.close();
     this.disconnecting = false;
@@ -692,11 +878,11 @@ export class RuntimeClient {
 
 let sidHash: Promise<string> | undefined;
 
-async function runtimePipes(): Promise<{ control: string; output: string }> {
+async function runtimePipes(): Promise<{ control: string; output: string; browser: string }> {
   const configured = env.THREADTERM_V3_PIPE;
   if (configured && !configured.startsWith('\\\\.\\pipe\\')) throw new RuntimeUnavailableError('THREADTERM_V3_PIPE must be a Windows named-pipe path');
   const base = configured || `\\\\.\\pipe\\threadterm-v3-${await currentUserSidHash()}`;
-  return { control: `${base}-control`, output: `${base}-output` };
+  return { control: `${base}-control`, output: `${base}-output`, browser: `${base}-browser` };
 }
 
 function currentUserSidHash(): Promise<string> {
@@ -742,7 +928,7 @@ async function connectUntilReady(pipe: string, timeout: number): Promise<LengthP
   }
   throw lastError ?? new RuntimeUnavailableError('Runtime pipe was not ready');
 }
-async function authenticate(connection: LengthPrefixedSocket, token: string, clientId: string): Promise<{ epoch: string }> {
+async function authenticate(connection: LengthPrefixedSocket, token: string, clientId: string, onAuthenticated?: (session: { epoch: string }, proofFrame: Buffer) => void): Promise<{ epoch: string }> {
   return new Promise((resolvePromise, reject) => {
     let nonce = '';
     const timeout = setTimeout(() => { cleanup(); reject(new RuntimeUnavailableError('Runtime authentication timed out')); }, CONNECT_TIMEOUT_MS);
@@ -765,6 +951,7 @@ async function authenticate(connection: LengthPrefixedSocket, token: string, cli
         const replyReason = protocolIncompatibleReason({ protocol: PROTOCOL_VERSION, contract: value.contract }, 'desktop');
         if (replyReason) throw new ProtocolIncompatibleError(replyReason);
         cleanup();
+        onAuthenticated?.({ epoch: value.epoch }, frame);
         resolvePromise({ epoch: value.epoch });
       } catch (error) { cleanup(); reject(asError(error)); }
     });
