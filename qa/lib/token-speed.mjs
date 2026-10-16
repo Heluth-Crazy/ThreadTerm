@@ -67,39 +67,77 @@ export function transcriptFollowFailure(label, samples) {
   return summary.failureCount ? `product: transcript stopped following during the turn at ${label}: ${JSON.stringify(summary.worstSample)}` : null;
 }
 
+// Real submitted user text supplies overflow even for the short first Codex turn.
+// No fixture output/timing/counts or default-run prompt is changed.
+export function followStressPrompt(prompt, stress = false) {
+  return stress ? `${prompt}\n\nQA follow stress context (fixture only):\n${Array.from({ length: 48 }, (_, index) => `Follow stress context line ${index + 1}.`).join('\n')}` : prompt;
+}
+
+export function hasAppliedStressEvent(stress) {
+  return Boolean(stress?.events?.some(event => Number.isFinite(event.appliedDisplacement) && event.appliedDisplacement > 0));
+}
+
 // Self-contained page function: arm on actual submit, sample after rendering,
 // and stop all QA observers/timers/frames at the completed-footer boundary.
-export function observeTurnInPage(node, { id, label, footerCount }) {
+export function observeTurnInPage(node, { id, label, footerCount, stress: stressConfig = null }) {
   window.__tokenSpeedProbe?.stop('replaced');
-  const probe = { id, label, samples: [], followSamples: [], absent: false, active: false, finished: false, startedAt: null, endedAt: null };
-  let timer, frame, secondFrame, ending = false;
+  const stress = stressConfig && { repeats: Math.min(16, Math.max(1, Number(stressConfig.repeats) || 1)), offsetPx: Math.max(1, Number(stressConfig.offsetPx) || 173), loadMs: Math.min(100, Math.max(0, Number(stressConfig.loadMs) || 0)), layoutGrowthPx: Math.max(0, Number(stressConfig.layoutGrowthPx) || 0) };
+  const probe = { id, label, samples: [], followSamples: [], stress: stress && { ...stress, events: [], attempts: [], layoutEvents: [] }, absent: false, active: false, finished: false, startedAt: null, endedAt: null };
+  let timer, frame, secondFrame, measurementObserver, ending = false, stressRuns = 0, pendingStress, layoutMarker;
   const reasons = new Set();
-  const measure = source => {
+  const readPosition = (source, phase) => {
     const log = node.querySelector('.v3-chat-log'), control = node.querySelector('.chat-back-to-bottom');
     const rect = control?.getBoundingClientRect(), style = control ? getComputedStyle(control) : null;
-    probe.followSamples.push({ at: Date.now(), source, scrollTop: log.scrollTop, scrollHeight: log.scrollHeight, clientHeight: log.clientHeight,
+    return { at: Date.now(), source, phase, scrollTop: log.scrollTop, scrollHeight: log.scrollHeight, clientHeight: log.clientHeight,
       remainingPx: log.scrollHeight - log.clientHeight - log.scrollTop,
       jump: { present: Boolean(control), visible: Boolean(rect && rect.width > 0 && rect.height > 0 && style.display !== 'none' && style.visibility === 'visible'),
-        rect: rect ? { x: rect.x, y: rect.y, width: rect.width, height: rect.height } : null } });
+        rect: rect ? { x: rect.x, y: rect.y, width: rect.width, height: rect.height } : null } };
   };
-  probe.stop = reason => {
+  const measure = (source, beforeResizeObserver) => {
+    const sample = readPosition(source, beforeResizeObserver ? 'resize-observer' : 'stop');
+    if (beforeResizeObserver) sample.beforeResizeObserver = beforeResizeObserver;
+    probe.followSamples.push(sample);
+  };
+  probe.stop = (reason, beforeResizeObserver) => {
     if (probe.finished) return;
-    if (probe.active) measure(reason);
+    if (probe.active) { measure(reason, beforeResizeObserver); if (stress) settleStress(); }
     probe.active = false; probe.finished = true; probe.endedAt = Date.now(); probe.stopReason = reason;
     clearInterval(timer); cancelAnimationFrame(frame); cancelAnimationFrame(secondFrame);
+    measurementObserver?.disconnect(); measurementObserver = undefined;
+    layoutMarker?.remove(); layoutMarker = undefined;
     probe.observer.disconnect(); node.removeEventListener('submit', start, true);
   };
   const queue = source => {
     if (!probe.active) return;
     reasons.add(source);
-    if (frame || secondFrame) return;
+    if (frame || secondFrame || measurementObserver) return;
     frame = requestAnimationFrame(() => {
       frame = null;
       secondFrame = requestAnimationFrame(() => {
         secondFrame = null;
         const source = [...reasons].join(','); reasons.clear();
-        if (ending) probe.stop('turn-end');
-        else if (probe.active) measure(source);
+        if (stress && !ending) stressLayout();
+        const before = readPosition(source, 'animation-frame');
+        // rAF precedes this frame's layout/ResizeObserver delivery, even after
+        // two frames. A fresh observer's initial notification is the barrier:
+        // existing product observers run first in creation order. Never scroll
+        // here or retry a failed post-layout sample. Retain both phases as proof.
+        measurementObserver = new ResizeObserver(() => {
+          measurementObserver.disconnect(); measurementObserver = undefined;
+          if (ending) probe.stop('turn-end', before);
+          else if (probe.active) {
+            measure(source, before);
+            if (layoutMarker) {
+              const event = probe.stress.layoutEvents.at(-1);
+              event.afterResizeObserver = stressState();
+              console.log(`TOKEN SPEED FOLLOW LAYOUT ${JSON.stringify({ label, ...event })}`);
+              layoutMarker.remove(); layoutMarker = undefined;
+            }
+            if (stress) { settleStress(); stressScroll(source); }
+            if (reasons.size && !frame && !secondFrame) queue('during-layout');
+          }
+        });
+        measurementObserver.observe(node.querySelector('.v3-chat-log'));
       });
     });
   };
@@ -109,6 +147,69 @@ export function observeTurnInPage(node, { id, label, footerCount }) {
     node.removeEventListener('submit', start, true);
     timer = setInterval(() => queue('interval-250ms'), 250);
     queue('send');
+  };
+  // Stress runs wait for settled layout and real overflow, then prime the
+  // product's last scroll observation before delivering an older top at the
+  // same dimensions. Never inject during a MutationObserver/layout race.
+  const stressState = () => {
+    const log = node.querySelector('.v3-chat-log'), control = node.querySelector('.chat-back-to-bottom');
+    if (!log) return null;
+    const rect = control?.getBoundingClientRect(), style = control ? getComputedStyle(control) : null;
+    const jumpVisible = Boolean(rect && rect.width > 0 && rect.height > 0 && style.display !== 'none' && style.visibility === 'visible');
+    const overflowAnchor = log.style.overflowAnchor;
+    return { scrollTop: log.scrollTop, scrollHeight: log.scrollHeight, clientHeight: log.clientHeight, clientWidth: log.clientWidth,
+      remainingPx: log.scrollHeight - log.clientHeight - log.scrollTop, overflowAnchor, jumpVisible, following: overflowAnchor === 'none' && !jumpVisible };
+  };
+  const diagnostic = value => console.log(`TOKEN SPEED FOLLOW STRESS ${JSON.stringify({ label, ...value })}`);
+  // Reproduce the 49 px growth after a completed follow scroll but before RO.
+  // This empty QA-only child is removed in the same rendering update.
+  const stressLayout = () => {
+    if (!stress.layoutGrowthPx || stressRuns < stress.repeats || probe.stress.layoutEvents.length || !node.querySelector('[data-testid="turn-speed-live"]')) return;
+    const before = stressState();
+    if (!before?.following || before.remainingPx > 2) return;
+    const log = node.querySelector('.v3-chat-log');
+    layoutMarker = document.createElement('div');
+    layoutMarker.style.height = `${stress.layoutGrowthPx}px`;
+    layoutMarker.setAttribute('aria-hidden', 'true');
+    log.lastElementChild.append(layoutMarker);
+    const afterGrowth = stressState();
+    probe.stress.layoutEvents.push({ at: Date.now(), before, afterGrowth, appliedGrowthPx: afterGrowth.scrollHeight - before.scrollHeight });
+  };
+  const settleStress = () => {
+    if (!pendingStress) return;
+    pendingStress.afterSettle = stressState();
+    diagnostic({ phase: 'settled', ...pendingStress });
+    pendingStress = undefined;
+  };
+  const stressScroll = source => {
+    if (!probe.active || stressRuns >= stress.repeats) return;
+    const before = stressState(), attempt = { at: Date.now(), source, before, requestedDisplacement: stress.offsetPx, appliedDisplacement: 0 };
+    const skip = reason => { attempt.status = 'skipped'; attempt.reason = reason; probe.stress.attempts.push(attempt); diagnostic(attempt); };
+    if (!before) return skip('missing-scroll-container');
+    if (!node.querySelector('[data-testid="turn-speed-live"]')) return skip('no-live-indicator');
+    if (before.scrollHeight - before.clientHeight < stress.offsetPx || before.scrollTop < stress.offsetPx) return skip('insufficient-scroll-range');
+    if (before.remainingPx > 2 || before.jumpVisible || before.overflowAnchor === 'auto') return skip('not-following');
+    const log = node.querySelector('.v3-chat-log');
+    // At the bottom this event only synchronizes the product's prior geometry.
+    // The next event is guaranteed to report an upward top at those dimensions.
+    log.dispatchEvent(new Event('scroll'));
+    attempt.primed = stressState();
+    attempt.requestedScrollTop = before.scrollTop - stress.offsetPx;
+    log.scrollTo({ top: attempt.requestedScrollTop, behavior: 'instant' });
+    attempt.appliedScrollTop = log.scrollTop;
+    attempt.appliedDisplacement = before.scrollTop - log.scrollTop;
+    attempt.afterWrite = stressState();
+    if (attempt.appliedDisplacement < stress.offsetPx - 1) return skip('clamped-scroll');
+    log.dispatchEvent(new Event('scroll'));
+    attempt.afterDispatch = stressState();
+    const until = Date.now() + stress.loadMs;
+    while (Date.now() < until) {}
+    attempt.status = 'injected'; attempt.loadMs = stress.loadMs;
+    probe.stress.attempts.push(attempt); probe.stress.events.push(attempt);
+    pendingStress = attempt; stressRuns += 1;
+    diagnostic({ phase: 'dispatch', ...attempt });
+    // Retain the normal oracle even when the displayed speed never changes.
+    queue('stress-settle');
   };
   const sample = () => {
     const element = node.querySelector('[data-testid="turn-speed-live"]');

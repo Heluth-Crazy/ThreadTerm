@@ -6,13 +6,14 @@ const FOLLOW_THRESHOLD = 24;
 type ScrollPosition = { scrollTop: number; scrollHeight: number; clientHeight: number; clientWidth: number };
 const scrollPosition = (log: HTMLDivElement): ScrollPosition => ({ scrollTop: log.scrollTop, scrollHeight: log.scrollHeight, clientHeight: log.clientHeight, clientWidth: log.clientWidth });
 
-/** Layout scroll events can precede ResizeObserver; only an upward scroll at
- * unchanged dimensions can revoke follow without an explicit input pause. */
-export function nextViewportFollow(follow: boolean, inspecting: boolean, previous: ScrollPosition | undefined, current: ScrollPosition): boolean {
+/** Scroll position alone cannot identify user intent: delayed layout/scroll
+ * events can report an older top at unchanged dimensions. Only an active
+ * scrollbar gesture may revoke follow here; other inputs pause synchronously. */
+export function nextViewportFollow(follow: boolean, inspecting: boolean, previous: ScrollPosition | undefined, current: ScrollPosition, scrollbarDragging = false): boolean {
+  if (scrollbarDragging && previous && current.scrollTop > previous.scrollTop) inspecting = false;
   if (inspecting) return false;
-  if (current.scrollHeight - current.scrollTop - current.clientHeight < FOLLOW_THRESHOLD) return true;
-  const layoutChanged = !previous || current.scrollHeight !== previous.scrollHeight || current.clientHeight !== previous.clientHeight || current.clientWidth !== previous.clientWidth;
-  return follow && (layoutChanged || current.scrollTop >= previous.scrollTop);
+  if (scrollbarDragging && previous && current.scrollTop < previous.scrollTop) return false;
+  return follow || current.scrollHeight - current.scrollTop - current.clientHeight < FOLLOW_THRESHOLD;
 }
 
 /** User inspection must stop follow before a disclosure changes layout. */
@@ -20,6 +21,8 @@ export function useChatViewport(sessionId: string, snapshotReady: boolean, logRe
   const followRef = useRef(true);
   const inspectingRef = useRef(false);
   const previousScrollRef = useRef<ScrollPosition | undefined>(undefined);
+  const scrollbarDragRef = useRef(false);
+  const endScrollbarDragRef = useRef<(() => void) | undefined>(undefined);
   const touchYRef = useRef<number | undefined>(undefined);
   const restoredRef = useRef<{ sessionId: string; pending: boolean } | undefined>(undefined);
   const [paused, setPaused] = useState(false);
@@ -36,6 +39,8 @@ export function useChatViewport(sessionId: string, snapshotReady: boolean, logRe
     setPaused(!follow);
     if (logRef.current) logRef.current.style.overflowAnchor = follow ? 'none' : 'auto';
   }, [logRef]);
+
+  useLayoutEffect(() => () => endScrollbarDragRef.current?.(), [sessionId]);
 
   useLayoutEffect(() => {
     const log = logRef.current;
@@ -108,7 +113,9 @@ export function useChatViewport(sessionId: string, snapshotReady: boolean, logRe
   const onScroll = () => {
     const log = logRef.current;
     if (!log) return;
-    const follow = nextViewportFollow(followRef.current, inspectingRef.current, previousScrollRef.current, scrollPosition(log));
+    const follow = nextViewportFollow(followRef.current, inspectingRef.current, previousScrollRef.current, scrollPosition(log), scrollbarDragRef.current);
+    if (follow) inspectingRef.current = false;
+    else if (followRef.current) inspectingRef.current = true;
     setFollowing(follow);
     // Correct layout-driven movement even when its scroll event beats the observer.
     if (follow) log.scrollTop = log.scrollHeight;
@@ -118,6 +125,8 @@ export function useChatViewport(sessionId: string, snapshotReady: boolean, logRe
 
   const pauseForScrollUp = () => {
     if ((logRef.current?.scrollTop ?? 0) <= 0) return;
+    // Keep the pause through queued bottom scrolls before this input applies.
+    inspectingRef.current = true;
     setFollowing(false);
     remember();
   };
@@ -147,21 +156,53 @@ export function useChatViewport(sessionId: string, snapshotReady: boolean, logRe
     inspect: () => { inspectingRef.current = true; setFollowing(false); remember(); },
     onWheel: (event: WheelEvent<HTMLDivElement>) => {
       if (event.ctrlKey) return;
-      inspectingRef.current = false;
+      if (event.deltaY > 0) inspectingRef.current = false;
       // Pause before scrolling so a concurrent resize/output callback cannot win.
       if (event.deltaY < 0) pauseForScrollUp();
     },
     onTouchStart: (event: TouchEvent<HTMLDivElement>) => {
-      inspectingRef.current = false;
       touchYRef.current = event.touches[0]?.clientY;
     },
     onTouchMove: (event: TouchEvent<HTMLDivElement>) => {
       const y = event.touches[0]?.clientY;
-      if (y !== undefined && touchYRef.current !== undefined && y > touchYRef.current) pauseForScrollUp();
+      if (y !== undefined && touchYRef.current !== undefined) {
+        if (y > touchYRef.current) pauseForScrollUp();
+        else if (y < touchYRef.current) inspectingRef.current = false;
+      }
       touchYRef.current = y;
     },
     onPointerDown: (event: MouseEvent<HTMLDivElement>) => {
-      if (event.target === logRef.current) inspectingRef.current = false;
+      endScrollbarDragRef.current?.();
+      const log = logRef.current;
+      if (!log || event.button !== 0 || event.target !== log) return;
+      const rect = log.getBoundingClientRect();
+      // Only the native vertical scrollbar gutter, never transcript padding or
+      // text selection. clientLeft also accounts for a left-hand scrollbar.
+      const x = event.clientX - rect.left;
+      if (x >= log.clientLeft && x < log.clientLeft + log.clientWidth) return;
+      inspectingRef.current = false;
+      scrollbarDragRef.current = true;
+      previousScrollRef.current = scrollPosition(log);
+      const cancel = () => {
+        scrollbarDragRef.current = false;
+        endScrollbarDragRef.current = undefined;
+        window.removeEventListener('mouseup', end, true);
+        window.removeEventListener('blur', end);
+        window.removeEventListener('mousemove', move, true);
+        window.removeEventListener('mousedown', cancel, true);
+      };
+      const end = () => {
+        // Mouseup can beat the scrollbar's queued scroll event under load.
+        onScroll();
+        cancel();
+      };
+      // Native scrollbar releases can be consumed by the browser chrome.
+      const move = (event: globalThis.MouseEvent) => { if (event.buttons === 0) end(); };
+      endScrollbarDragRef.current = cancel;
+      window.addEventListener('mouseup', end, true);
+      window.addEventListener('blur', end);
+      window.addEventListener('mousemove', move, true);
+      window.addEventListener('mousedown', cancel, true);
     },
   };
 }

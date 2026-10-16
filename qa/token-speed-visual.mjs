@@ -1,5 +1,5 @@
 // Desktop-1 production-app QA. Fake native protocols only; no real agent CLI.
-// Run after job F lands: node qa/token-speed-visual.mjs
+// Run after job F lands: node qa/token-speed-visual.mjs [--stress-follow]
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import { cpSync, existsSync } from 'node:fs';
@@ -11,7 +11,7 @@ import { build as viteBuild } from 'vite';
 import { electron } from './lib/desktop1.mjs';
 import { sendChatPrompt } from './lib/chat-send.mjs';
 import { assertNoControlViolations, checkControlConsistency } from './lib/visual-consistency.mjs';
-import { collectFooterPresentationInPage, ensureTranscriptLatest, estimateOutputTokens, excludesToolTime, footerSeparatorViolations, isolatedProviderEnvironment, observeTurnInPage, tokensPerSecond, transcriptFollowsLatest, transcriptFollowFailure, transcriptFollowSummary, waitForProviderChat, withinRelative } from './lib/token-speed.mjs';
+import { collectFooterPresentationInPage, ensureTranscriptLatest, estimateOutputTokens, excludesToolTime, footerSeparatorViolations, followStressPrompt, hasAppliedStressEvent, isolatedProviderEnvironment, observeTurnInPage, tokensPerSecond, transcriptFollowsLatest, transcriptFollowFailure, transcriptFollowSummary, waitForProviderChat, withinRelative } from './lib/token-speed.mjs';
 import { TOKEN_SPEED_ACP_SCENARIO as acp } from './fixtures/token-speed-echo-acp/agent.mjs';
 import codexFixture from './fixtures/fake-codex-token-speed.cjs';
 
@@ -19,10 +19,13 @@ const { TOKEN_SPEED_CODEX_SCENARIO: codex } = codexFixture;
 const root = resolve(import.meta.dirname, '..');
 const out = join(root, 'qa/results/token-speed');
 const runtime = join(root, 'runtime/target-qa/debug/threadterm-v3-runtime.exe');
-const scratch = await mkdtemp(join(tmpdir(), 'tt-token-speed-'));
+const followStress = process.argv.includes('--stress-follow') ? Object.freeze({ repeats: 3, offsetPx: 173, loadMs: 32, layoutGrowthPx: 49 }) : null;
+const scratchParent = followStress ? resolve('D:/project/ThreadTerm/tt-qa-temp') : tmpdir();
+if (followStress) await mkdir(scratchParent, { recursive: true });
+const scratch = await mkdtemp(join(scratchParent, 'tt-token-speed-'));
 const appDir = join(scratch, 'app'), bin = join(scratch, 'bin'), work = join(scratch, 'work'), plugins = join(scratch, 'plugins');
 const codexLog = join(scratch, 'codex.jsonl');
-const report = { passed: false, checks: [], turns: [], screenshots: [], paneWidths: [], resizeFollow: [], turnFollow: [], scrollPositions: [], footerSeparators: [], visualConsistency: [], sendDiagnostics: [], errors: [], idleCheck: 'DOM fallback: the live push channel belongs to job F, so no channel name is assumed.' };
+const report = { passed: false, checks: [], turns: [], screenshots: [], paneWidths: [], resizeFollow: [], turnFollow: [], scrollPositions: [], footerSeparators: [], visualConsistency: [], sendDiagnostics: [], errors: [], followStress, idleCheck: 'DOM fallback: the live push channel belongs to job F, so no channel name is assumed.' };
 const custom = { background: '#0b1016', surface: '#182430', text: '#f2f6fb', muted: '#93a3b5', accent: '#ff7a45', border: '#26323f' };
 let app, page, project;
 const delay = ms => new Promise(done => setTimeout(done, ms));
@@ -155,7 +158,7 @@ async function consistency(indicator, label, footer = false) {
 // Only QA observes the active Chat subtree. No F-specific live channel or state
 // is assumed. Retain timestamps to compare the Codex live value to native events.
 async function observeLive(scope, label, footerCount) {
-  await scope.evaluate(observeTurnInPage, { id: randomUUID(), label, footerCount });
+  await scope.evaluate(observeTurnInPage, { id: randomUUID(), label, footerCount, stress: followStress });
 }
 
 async function collectTurnFollow(stop = false) {
@@ -163,7 +166,7 @@ async function collectTurnFollow(stop = false) {
     const probe = window.__tokenSpeedProbe;
     if (!probe) return null;
     if (stop) probe.stop('failure-cleanup');
-    return { id: probe.id, label: probe.label, startedAt: probe.startedAt, endedAt: probe.endedAt, finished: probe.finished, stopReason: probe.stopReason, samples: probe.followSamples };
+    return { id: probe.id, label: probe.label, startedAt: probe.startedAt, endedAt: probe.endedAt, finished: probe.finished, stopReason: probe.stopReason, stress: probe.stress, samples: probe.followSamples };
   }, stop);
   if (!probe) return null;
   Object.assign(probe, transcriptFollowSummary(probe.samples));
@@ -213,7 +216,7 @@ async function sendTurn(session, prompt, label = prompt) {
   const baseline = new Set((await request('chat.snapshot', { sessionId: session.id })).items.map(item => item.id));
   const footerCount = await scope.getByTestId('turn-speed').count();
   await observeLive(scope, label, footerCount);
-  await sendChatPrompt({ composer: scope.locator('.chat-compose-shell textarea'), sendButton: scope.locator('.chat-compose-send[type=submit]'), text: prompt,
+  await sendChatPrompt({ composer: scope.locator('.chat-compose-shell textarea'), sendButton: scope.locator('.chat-compose-send[type=submit]'), text: followStressPrompt(prompt, Boolean(followStress)),
     readSnapshot: () => request('chat.snapshot', { sessionId: session.id }), readConnection: () => request('chat.connection', { sessionId: session.id }),
     onDiagnostic: diagnostic => report.sendDiagnostics.push({ sessionId: session.id, ...diagnostic }) });
   return { scope, baseline, footerCount };
@@ -226,8 +229,12 @@ async function finishTurn(session, started) {
   await until(() => page.evaluate(() => window.__tokenSpeedProbe.finished), 'active-turn follow sampler stops at completion');
   const follow = await collectTurnFollow();
   assert.ok(follow.startedAt !== null && follow.sampleCount > 0, 'follow sampling covers the actual submit through turn completion');
+  if (followStress) {
+    assert.ok(hasAppliedStressEvent(follow.stress), `${follow.label}: follow stress injected a positive stale scroll`);
+  }
   const followFailure = transcriptFollowFailure(follow.label, follow.samples);
   if (followFailure) throw new Error(followFailure);
+  if (followStress) assert.ok(follow.stress.layoutEvents.some(event => event.appliedGrowthPx === 49 && event.afterGrowth.remainingPx >= 49), `${follow.label}: follow stress injected 49 px growth before resize delivery`);
   const snapshot = await request('chat.snapshot', { sessionId: session.id });
   const item = snapshot.items.filter(item => !baseline.has(item.id) && item.turnUsage?.generationMs !== undefined).at(-1);
   assert.ok(item, 'new turn persists generationMs in chat.snapshot');
@@ -358,6 +365,7 @@ try {
   app = await electron.launch({ args: ['--disable-gpu', '--in-process-gpu', '--no-sandbox', appDir], cwd: bin, env, timeout: 60_000 });
   page = await app.firstWindow({ timeout: 45_000 }); page.setDefaultTimeout(15_000);
   page.on('pageerror', error => report.errors.push(error.message));
+  if (followStress) page.on('console', message => { const value = message.text(); if (/^TOKEN SPEED FOLLOW (STRESS|LAYOUT) /.test(value)) console.log(value); });
   await page.waitForFunction(() => Boolean(window.threadterm)); await page.locator('.app-shell').waitFor();
   await page.locator('#boot-splash').waitFor({ state: 'detached', timeout: 30_000 });
   await settings('light', 'en');
@@ -399,7 +407,7 @@ try {
   try { report.codexFixtureLog = (await readFile(codexLog, 'utf8')).trim().split(/\r?\n/).filter(Boolean).map(line => JSON.parse(line)); }
   catch (error) { report.codexFixtureLogError = error.message; }
   await mkdir(out, { recursive: true }); await writeFile(join(out, 'report.json'), JSON.stringify(report, null, 2));
-  assert.equal(dirname(resolve(scratch)), resolve(tmpdir()), 'cleanup is confined to the owned Temp directory');
+  assert.equal(dirname(resolve(scratch)), resolve(scratchParent), 'cleanup is confined to the owned scratch directory');
   assert.ok(basename(scratch).startsWith('tt-token-speed-'), 'cleanup targets this QA run only');
   await rm(scratch, { recursive: true, force: true, maxRetries: 10, retryDelay: 250 }).catch(() => {});
   console.log(report.passed ? 'TOKEN SPEED QA PASSED' : `TOKEN SPEED QA FAILED\n${report.errors.join('\n')}`);
