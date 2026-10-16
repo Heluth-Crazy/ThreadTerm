@@ -17,6 +17,42 @@ const stateFile = resolve(process.env.TT_QA_OPENCODE_STATE);
 const state = existsSync(stateFile) ? JSON.parse(readFileSync(stateFile, 'utf8')) : { sessions: {}, questions: {} };
 state.questions ??= {};
 const save = () => writeFileSync(stateFile, JSON.stringify(state));
+const request = (method, path, directory, body) => {
+  if (process.env.TT_QA_OPENCODE_REQUESTS) appendFileSync(process.env.TT_QA_OPENCODE_REQUESTS, JSON.stringify({ method, path, directory, ...(body === undefined ? {} : { body }) }) + '\n');
+};
+const model = (providerID, id, name, variants) => ({ id, name, providerID, status: 'active', ...(variants ? { variants } : {}) });
+const catalogues = {
+  provider: {
+    all: [
+      { id: 'openai', name: 'OpenAI', models: { 'gpt-5.2': model('openai', 'gpt-5.2', 'GPT 5.2', { fast: {}, precise: {} }) } },
+      { id: 'slash/provider', name: 'Slash Provider', models: { 'family/model/with/slash': model('slash/provider', 'family/model/with/slash', 'Slash Model') } },
+      { id: 'offline', name: 'Offline', models: { unavailable: model('offline', 'unavailable', 'Unavailable') } },
+    ],
+    default: {},
+    connected: ['openai', 'slash/provider'],
+  },
+  agent: [
+    { name: 'build', mode: 'primary', description: 'Build changes' },
+    { name: 'plan', mode: 'primary', description: 'Plan changes' },
+    { name: 'custom', mode: 'all', description: 'Custom primary agent' },
+    { name: 'hidden', mode: 'primary', hidden: true, description: 'Hidden agent' },
+    { name: 'subagent', mode: 'subagent', description: 'Subagent only' },
+  ],
+};
+function configuredCatalogue() {
+  const overrides = state.catalogueOverrides ?? {};
+  const provider = structuredClone(catalogues.provider);
+  for (const removal of overrides.removeModels ?? []) {
+    const entry = provider.all.find(candidate => candidate.id === removal.providerID);
+    if (entry) delete entry.models[removal.modelID];
+  }
+  if (Array.isArray(overrides.disconnectedProviders)) provider.connected = provider.connected.filter(id => !overrides.disconnectedProviders.includes(id));
+  return provider;
+}
+function configuredAgents() {
+  const removed = new Set(state.catalogueOverrides?.removeAgents ?? []);
+  return catalogues.agent.filter(agent => !removed.has(agent.name));
+}
 const streams = new Set();
 const stalledStreams = new Map();
 let seq = Object.keys(state.sessions).length;
@@ -45,9 +81,11 @@ const server = http.createServer((req, res) => {
   const url = new URL(req.url, 'http://x');
   const dir = url.searchParams.get('directory') ?? '';
   const path = url.pathname;
-  if (process.env.TT_QA_OPENCODE_REQUESTS) appendFileSync(process.env.TT_QA_OPENCODE_REQUESTS, JSON.stringify({ method: req.method, path, directory: dir }) + '\n');
+  if (!/^\/session\/[^/]+\/prompt_async$/.test(path)) request(req.method, path, dir);
   const json = (value, code = 200) => { res.writeHead(code, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(value)); };
   if (path === '/global/health') return json({ healthy: true, version: '1.18.31-qa-mock' });
+  if (path === '/provider' && req.method === 'GET') return json(configuredCatalogue());
+  if (path === '/agent' && req.method === 'GET') return json(configuredAgents());
   if (path === '/global/event') {
     if (state.stallEventHeaders) return; // accepted TCP, deliberately no SSE headers
     res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', Connection: 'keep-alive' });
@@ -108,6 +146,16 @@ const server = http.createServer((req, res) => {
       state.failStatus = Boolean(JSON.parse(body).enabled);
       save();
       json({ enabled: state.failStatus });
+    });
+    return;
+  }
+  if (path === '/qa/stall-event-headers' && req.method === 'POST') {
+    let body = '';
+    req.on('data', chunk => body += chunk);
+    req.on('end', () => {
+      state.stallEventHeaders = Boolean(JSON.parse(body).enabled);
+      save();
+      json({ enabled: state.stallEventHeaders });
     });
     return;
   }
@@ -191,7 +239,9 @@ const server = http.createServer((req, res) => {
       let body = '';
       req.on('data', c => body += c);
       req.on('end', () => {
-        const text = JSON.parse(body).parts?.[0]?.text ?? '';
+        const prompt = JSON.parse(body);
+        request(req.method, path, dir, prompt);
+        const text = prompt.parts?.[0]?.text ?? '';
         record.busy = true; save();
         if (text === 'fixture-early-permission') {
           // Native event precedes the prompt_async HTTP acknowledgement.
@@ -248,6 +298,18 @@ const server = http.createServer((req, res) => {
           record.busy = false; save();
           return json({ error: 'fixture rejects prompt before execution' }, 422);
         }
+        if (text === 'fixture-typed-error') {
+          record.busy = false; save();
+          json({});
+          setTimeout(() => emit(dir, 'session.error', { sessionID: id, error: { name: 'ProviderAuthError', data: { providerID: 'openai', message: 'Fixture authentication expired' } } }), 20);
+          return;
+        }
+        if (text === 'fixture-retry') {
+          json({});
+          setTimeout(() => emit(dir, 'session.status', { sessionID: id, status: { type: 'retry', attempt: 2, message: 'Fixture provider is retrying', next: 1234567890 } }), 15);
+          setTimeout(() => { record.busy = false; save(); emit(dir, 'session.idle', { sessionID: id }); }, 600);
+          return;
+        }
         json({});
         setTimeout(() => {
           const messageID = `msg_${++seq}`;
@@ -303,7 +365,7 @@ const server = http.createServer((req, res) => {
     if (sub === '/abort' && req.method === 'POST') {
       record.busy = false; save();
       setTimeout(() => emit(dir, 'session.idle', { sessionID: id }), 30);
-      return json({});
+      return json(true);
     }
     const permissionMatch = sub.match(/^\/permissions\/([^/]+)$/);
     if (permissionMatch && req.method === 'POST') {

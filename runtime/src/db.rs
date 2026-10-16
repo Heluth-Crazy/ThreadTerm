@@ -59,6 +59,9 @@ impl Database {
              INSERT OR IGNORE INTO settings(singleton,revision,value) VALUES (1,0,'{}');"
         )?;
         connection.execute_batch("CREATE TABLE IF NOT EXISTS workspaces (id TEXT PRIMARY KEY, name TEXT NOT NULL, project_id TEXT REFERENCES projects(id) ON DELETE SET NULL, worktree_path TEXT, revision INTEGER NOT NULL, layout TEXT NOT NULL, updated_at TEXT NOT NULL);")?;
+        // Additive migration: prompt overrides are provider-neutral and separate
+        // from Pi's legacy boolean table, whose readers keep their semantics.
+        connection.execute_batch("CREATE TABLE IF NOT EXISTS chat_option_selections (session_id TEXT PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE, provider TEXT NOT NULL, data TEXT NOT NULL);")?;
         // Agent delegation: one row per delegated Chat session. Deleting either
         // session drops the link; the other session stays a normal session.
         connection.execute_batch(
@@ -689,6 +692,31 @@ impl Database {
         )
         .optional()
         .map_err(Into::into)
+    }
+    pub(crate) fn chat_option_selections(&self, session_id: &str, provider: &str) -> Result<Value> {
+        self.transaction(|tx| {
+            let raw: Option<String> = tx.query_row(
+                "SELECT data FROM chat_option_selections WHERE session_id=? AND provider=?",
+                params![session_id, provider], |row| row.get(0),
+            ).optional()?;
+            raw.map(|raw| serde_json::from_str(&raw).map_err(Into::into)).unwrap_or_else(|| Ok(json!([])))
+        })
+    }
+    pub(crate) fn set_chat_option_selections(&self, session_id: &str, provider: &str, selections: &Value) -> Result<()> {
+        let Some(rows) = selections.as_array().filter(|rows| rows.len() <= 32) else { return Err(anyhow!("invalid_chat_options")) };
+        let mut ids = HashSet::new();
+        for row in rows {
+            let id = row.get("id").and_then(Value::as_str).filter(|id| !id.is_empty()).ok_or_else(|| anyhow!("invalid_chat_options"))?;
+            if !ids.insert(id) || row.get("value").and_then(Value::as_str).is_none() { return Err(anyhow!("invalid_chat_options")); }
+        }
+        self.transaction(|tx| {
+            let changed = tx.execute(
+                "INSERT INTO chat_option_selections(session_id,provider,data) SELECT ?,?,? WHERE EXISTS (SELECT 1 FROM sessions WHERE id=? AND provider=? AND mode='chat') ON CONFLICT(session_id) DO UPDATE SET provider=excluded.provider,data=excluded.data",
+                params![session_id, provider, serde_json::to_string(selections)?, session_id, provider],
+            )?;
+            if changed != 1 { return Err(anyhow!("chat_session_not_found")); }
+            Ok(())
+        })
     }
     pub fn set_pi_auto_retry(&self, session_id: &str, enabled: bool) -> Result<()> {
         self.transaction(|tx| {
@@ -3782,6 +3810,28 @@ mod tests {
             Ok(())
         }).unwrap();
         assert_eq!(db.pi_auto_retry(&session_id).unwrap(), None);
+    }
+
+    #[test]
+    fn provider_neutral_chat_options_reopen_validate_and_cascade_without_changing_pi() {
+        let dir = tempfile::tempdir().unwrap(); let path = dir.path().join("chat-options.sqlite");
+        let selections = json!([{"id":"next-model","value":"{\"providerID\":\"one/two\",\"modelID\":\"a/b\"}"},{"id":"variant","value":"high"}]);
+        let id;
+        {
+            let db = Database::open(&path).unwrap();
+            let session = db.create_session(CreateSession {project_id:None,title:None,provider:"opencode",mode:"chat",native_id:None,operation_id:"neutral-options"}).unwrap();
+            id = session.id;
+            assert_eq!(db.chat_option_selections(&id,"opencode").unwrap(),json!([]));
+            db.set_chat_option_selections(&id,"opencode",&selections).unwrap();
+            assert!(db.set_chat_option_selections(&id,"pi",&selections).is_err());
+            assert!(db.set_chat_option_selections(&id,"opencode",&json!([{"id":"a","value":"x"},{"id":"a","value":"y"}])).is_err());
+            assert_eq!(db.chat_option_selections(&id,"opencode").unwrap(),selections);
+            assert_eq!(db.pi_auto_retry(&id).unwrap(),None);
+        }
+        let db = Database::open(&path).unwrap();
+        assert_eq!(db.chat_option_selections(&id,"opencode").unwrap(),selections);
+        db.transaction(|tx| {tx.execute("DELETE FROM sessions WHERE id=?",[&id])?; Ok(())}).unwrap();
+        assert_eq!(db.chat_option_selections(&id,"opencode").unwrap(),json!([]));
     }
 
     #[test]

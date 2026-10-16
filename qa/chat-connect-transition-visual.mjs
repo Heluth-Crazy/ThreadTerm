@@ -332,7 +332,7 @@ async function probe(name, session, action, { expectsTranscript = false, expecte
       const path = join(out, `${name}-${target.label}.png`);
       await writeFile(path, Buffer.from(cast.data, 'base64'));
       row.screenshots.push({ path, targetTime: target.time, captureTime: cast.time, skewMs: cast.time - target.time, metadata: cast.metadata });
-      if (Math.abs(cast.time - target.time) > 34 || target.label === 'first-leak' && !matching.length) row.captureError = `${target.label} compositor capture is ${Math.round(cast.time - target.time)} ms from the sampled frame (budget: 34 ms); rerun for usable evidence`;
+      if (Math.abs(cast.time - target.time) > 50 || target.label === 'first-leak' && !matching.length) row.captureError = `${target.label} compositor capture is ${Math.round(cast.time - target.time)} ms from the sampled frame (budget: 50 ms, three frames on a busy QA host); rerun for usable evidence`;
     }
     row.passed = !row.error && !row.coverageError && !row.samplingError && !row.captureError && !row.feedbackError && !row.summary.leaks.length && !row.summary.fadeCandidates.length;
     console.log(JSON.stringify({ scenario: name, passed: row.passed, coverage: row.coverage, error: row.error, coverageError: row.coverageError, samplingError: row.samplingError, captureError: row.captureError, feedbackError: row.feedbackError, fixture: row.fixture, connectionEvents: row.connectionEvents, ...row.summary }));

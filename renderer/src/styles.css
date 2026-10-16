@@ -656,6 +656,9 @@ code.chat-status-value { font-family:var(--mono); font-size:11px; }
    The ring retains its full accessible label and popover token breakdown. */
 @container (max-width:480px) {
   .chat-compose-left { flex:none; }
+  /* A lost lease adds a recovery action; keep fixed status chips clear of the model. */
+  .chat-compose-bar:has(.chat-compose-reclaim) { flex-wrap:wrap; }
+  .chat-compose-right:has(.chat-compose-reclaim) { flex-wrap:wrap; flex-shrink:0; max-width:100%; }
   /* VC-MORE-420: stack the More settings rows so the right-hand choice chips
      wrap inside the popover, cap the popover to the composer column and give
      it enough height that no chip sits below the fold. */

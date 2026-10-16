@@ -37,7 +37,61 @@ const lease = async () => (leaseEpoch = (await rpc('session.claim', { sessionId:
 const leased = async (method, params) => { for (let attempt = 0; ; attempt++) { try { const result = await rpc(method, { ...params, leaseEpoch: await lease(), operationId: randomUUID() }); report.leaseRetries = [...(report.leaseRetries ?? []), [method, attempt]]; return result; } catch (error) { if (attempt >= 5 || !/stale_lease/.test(String(error))) throw error; await delay(300); } } };
 const chat = () => page.locator(`[data-testid="session-chat-${session.id}"]`);
 async function until(check, label, timeout = 45_000) { const deadline = Date.now() + timeout; while (Date.now() < deadline) { if (await check()) return; await delay(100); } throw new Error(`Timed out: ${label}`); }
-async function setPane(target, label) { let width = Math.max(720, target + 520); await page.setViewportSize({ width, height: 900 }); let pane = await chat().evaluate(node => Math.round(node.getBoundingClientRect().width)); width = Math.max(720, width + target - pane); await page.setViewportSize({ width, height: 900 }); pane = await chat().evaluate(node => Math.round(node.getBoundingClientRect().width)); assert.ok(Math.abs(pane - target) <= 12, `${label}: pane ${pane}px is not about ${target}px`); const fit = await chat().evaluate(node => ({ clientWidth: node.clientWidth, scrollWidth: node.scrollWidth })); assert.ok(fit.scrollWidth <= fit.clientWidth + 1, `${label}: horizontal overflow`); report.paneWidths.push({ label, pane, ...fit }); }
+async function setPane(target, label) {
+  // A confirmation mask blocks real divider input. Restore it after resizing.
+  const dialog = page.locator('.chat-repair-dialog[role="dialog"]');
+  const confirming = await dialog.isVisible();
+  if (confirming) { await page.keyboard.press('Escape'); await dialog.waitFor({ state: 'hidden' }); }
+  const actions = () => page.getByRole('button', { name: /^(Workspace actions|工作区操作)$/ });
+  const panes = page.locator('[data-pane-id]');
+  // Reuse chat-visual-consistency's desktop-width Split right + pointer drag.
+  // Resizing the whole window reaches Electron's minimum width before 420px.
+  await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].setContentSize(1440, 900));
+  await page.waitForFunction(() => window.innerWidth === 1440);
+  await page.evaluate(() => new Promise(done => requestAnimationFrame(() => requestAnimationFrame(done))));
+  if (target === 420) {
+    assert.equal(await panes.count(), 1, 'narrow cell starts with the single Chat pane');
+    await chat().locator('textarea').click();
+    await actions().click();
+    await page.getByRole('button', { name: /^(Split right|左右拆分)$/ }).click();
+    await page.keyboard.press('Escape');
+    await page.locator('.workspace-action-menu').waitFor({ state: 'hidden' });
+    await until(async () => (await panes.count()) === 2, 'real two-pane workspace');
+    const divider = page.locator('[data-split-id] > .pane-divider');
+    await until(() => divider.evaluate(node => node.parentElement.classList.contains('horizontal')), 'horizontal split at desktop width');
+    const point = await divider.evaluate(node => {
+      const split = node.parentElement, box = split.getBoundingClientRect(), rect = node.getBoundingClientRect();
+      const gap = parseFloat(getComputedStyle(split).columnGap) || 0;
+      return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2, endX: box.left + 400 + gap + rect.width / 2 };
+    });
+    assert.equal(await divider.evaluate((node, point) => node.contains(document.elementFromPoint(point.x, point.y)), point), true, 'divider is the real pointer target');
+    await page.mouse.move(point.x, point.y); await page.mouse.down();
+    await page.mouse.move(point.endX, point.y, { steps: 8 }); await page.mouse.up();
+    await until(() => chat().evaluate(node => { const width = node.getBoundingClientRect().width; return width >= 380 && width <= 420; }), 'Chat resized to 380–420 px');
+  } else {
+    const empty = panes.filter({ has: page.locator('.pane-empty') });
+    if (await empty.count()) {
+      await empty.locator('.pane-empty > strong').click();
+      await actions().click();
+      await page.getByRole('button', { name: /^(Close pane|关闭窗格)$/ }).click();
+      await page.keyboard.press('Escape');
+      await page.locator('.workspace-action-menu').waitFor({ state: 'hidden' });
+      await until(async () => (await panes.count()) === 1, 'restore single-pane wide layout');
+    }
+    const current = await chat().evaluate(node => node.getBoundingClientRect().width);
+    await app.evaluate(({ BrowserWindow }, width) => BrowserWindow.getAllWindows()[0].setContentSize(width, 900), Math.round(1440 + target - current));
+    await until(() => chat().evaluate((node, width) => Math.abs(node.getBoundingClientRect().width - width) <= 12, target), `wide Chat resized to about ${target}px`);
+  }
+  const fit = await chat().evaluate(node => ({ pane: node.getBoundingClientRect().width, paneWidth: node.closest('[data-pane-id]').getBoundingClientRect().width, viewportWidth: window.innerWidth, clientWidth: node.clientWidth, scrollWidth: node.scrollWidth }));
+  if (target === 420) {
+    assert.ok(fit.pane >= 380 && fit.pane <= 420, `${label}: Chat ${fit.pane}px is not 380–420px`);
+    assert.ok(fit.paneWidth >= 380 && fit.paneWidth <= 420, `${label}: containing pane ${fit.paneWidth}px is not 380–420px`);
+    assert.equal(fit.viewportWidth, 1440, 'narrow Chat keeps the full desktop window');
+  } else assert.ok(Math.abs(fit.pane - target) <= 12, `${label}: pane ${fit.pane}px is not about ${target}px`);
+  assert.ok(fit.scrollWidth <= fit.clientWidth + 1, `${label}: horizontal overflow`);
+  report.paneWidths.push({ label, requestedWidth: target, ...fit });
+  if (confirming) { await repairAction(); await dialog.waitFor(); }
+}
 async function shot(name, language, theme) { for (const [width, size] of [[1000, 'wide'], [420, 'narrow']]) { await setPane(width, `${name}-${size}`); const path = join(out, `${name}-${language}-${theme}-${size}.png`); await page.screenshot({ path, animations: 'disabled' }); report.screenshots.push(path); } }
 async function settings(language, theme) { const snapshot = await rpc('runtime.snapshot'); await rpc('settings.update', { patch: { language, theme, notifications: { native: false, attention: false, completed: false, sound: false } }, expectedRevision: snapshot.settings.revision, operationId: randomUUID() }); }
 async function repairAction() { const action = page.getByRole('button', { name: /Repair from native history|从原生历史修复/ }); await action.first().click(); }
