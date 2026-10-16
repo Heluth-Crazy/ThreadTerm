@@ -11,19 +11,20 @@ import {
   paneCount,
   paneIdsIn,
 } from "../workspaceLayout";
-import { openWindow, operationId, request } from "../bridge";
+import { browserCommand, openExternal, openWindow, operationId, request } from "../bridge";
 import { TerminalSurface } from "./TerminalSurface";
 import { ChatView } from "./ChatView";
 import { FileWorkspace } from "./FileWorkspace";
 import { GitHistoryView } from "./GitHistoryView";
 import { ReviewDiffView } from "./ReviewDiffView";
 import { WebPreview } from "./WebPreview";
+import { sanitizeBrowserTitle } from '../browserTypes';
 import { AgentIcon, Icon } from "./PrototypeIcon";
 import { ImportedHistoryView } from "./ImportedHistoryView";
 import { CatalogPopover } from './CatalogActions';
 import { WorkspaceTabBar } from './WorkspaceTabBar';
 import { SessionSurfaceContext, SurfaceActions } from './SessionSurfaceContext';
-import { contentTitle, focusedWorkspaceTab, isFileTab, tabCloseTargets, workspaceTabs, type WorkspaceTabTarget } from '../workspaceTabs';
+import { contentTitle, focusedWorkspaceTab, isFileTab, isWebTabUrl, tabCloseTargets, workspaceTabs, type WorkspaceTabTarget } from '../workspaceTabs';
 import { paneGeometry, paneRectStyle, PANE_GAP, PANE_DIVIDER_SIZE } from '../paneGeometry';
 import { fileSelectionKey, visibleSessionLayout, workspaceNavigationLayout, workspaceNavigationTarget, withSessionCompanions, removeClosedViews } from '../sessionFileViews';
 import "./workspace-parity.css";
@@ -90,6 +91,7 @@ export function PaneWorkspace({ layout, sessions, onChange, theme, terminalCompa
   const [selectedPaneId, setSelectedPaneId] = useState<string|undefined>(focusTarget?.paneId);
   const [paneHost,setPaneHost]=useState<HTMLDivElement|null>(null),[stackHorizontal,setStackHorizontal]=useState(false);
   const [fullscreenPaneId, setFullscreenPaneId] = useState<string>();
+  const knownWebTabs=useRef<Set<string>|undefined>(undefined);
   const [resumedSessions, setResumedSessions] = useState<Map<string,Session>>(() => new Map());
   const viewSessions = resumedSessions.size ? [...sessions.map(session => presentedSession(session, resumedSessions.get(session.id))), ...Array.from(resumedSessions.values()).filter(session => session.forkedFrom && !sessions.some(current => current.id === session.id))] : sessions;
   useEffect(() => {
@@ -137,6 +139,7 @@ export function PaneWorkspace({ layout, sessions, onChange, theme, terminalCompa
   useEffect(()=>{if(activeSession)activeCallback.current?.(activeSession);},[activeSession,activeSessionKnown]);
   useEffect(()=>{if(focusTarget){setSelectedPaneId(focusTarget.paneId);setFullscreenPaneId(current=>current&&current!==focusTarget.paneId?undefined:current);}},[focusTarget]);
   const commit=(next:PaneLayout)=>{latest.current=next;onChange(next);};
+  useEffect(()=>{const current=new Set(workspaceTabs(layout).filter(item=>item.tab.kind==='web').map(item=>item.tab.id));if(knownWebTabs.current)for(const id of knownWebTabs.current)if(!current.has(id))void browserCommand({type:'close',tabId:id}).catch(()=>undefined);knownWebTabs.current=current;},[layout]);
   const openFork=(paneId:string,child:Session)=>{
     if(!mounted.current)return;
     const next=openForkInPane(latest.current,paneId,child.id);
@@ -222,6 +225,7 @@ export function PaneWorkspace({ layout, sessions, onChange, theme, terminalCompa
         layout={layout}
         selected={Boolean(visible)&&focusPaneId === node.id}
         fullscreen={fullscreenPaneId === node.id}
+        browserVisible={!fullscreenPaneId||fullscreenPaneId===node.id}
         onFocus={() => {activation.current++;onInteraction?.();setSelectedPaneId(node.id);}}
         onToggleFullscreen={() => setFullscreenPaneId(current => current === node.id ? undefined : node.id)}
         onSplit={(paneId) => {onInteraction?.();setSelectedPaneId(paneId);}}
@@ -339,6 +343,7 @@ function Pane({
   layout,
   selected,
   fullscreen,
+  browserVisible,
   onFocus,
   onToggleFullscreen,
   onSplit,
@@ -362,6 +367,7 @@ function Pane({
   layout: PaneLayout;
   selected: boolean;
   fullscreen: boolean;
+  browserVisible:boolean;
   onFocus: () => void;
   onToggleFullscreen: () => void;
   onSplit: (paneId: string) => void;
@@ -396,6 +402,7 @@ function Pane({
   if(tab)visited.current.add(tab.id);
   for(const id of visited.current)if(!node.tabs.some(item=>item.id===id))visited.current.delete(id);
   const [issue, setIssue] = useState<string>();
+  const [browserTitles,setBrowserTitles]=useState<Map<string,string>>(()=>new Map());
   const [fileDropTarget, setFileDropTarget] = useState<string>();
   const session =
     tab?.kind === "session"
@@ -403,6 +410,26 @@ function Pane({
       : undefined;
   const paneLimit = paneCount(layout) >= 4;
   const lastPane = paneCount(layout) === 1;
+  const openWeb=(url:string)=>{void browserCommand({type:'preferences'}).then(preferences=>{
+    if(preferences&&'linkTarget' in preferences&&preferences.linkTarget==='system')return openExternal(url);
+    return workbench?.openWeb?.(url);
+  }).catch(error=>setIssue(error instanceof Error?error.message:String(error)));};
+  const persistWebNavigation=(item:Extract<ContentRef,{kind:'web'}>,observation:{navigation:'pending'|'load_observed'|'failed';url?:string;title?:string;documentGeneration?:number})=>{
+    if(observation.navigation==='load_observed'){
+      const title=sanitizeBrowserTitle(observation.title??'');
+      setBrowserTitles(current=>current.get(item.id)===title?current:new Map(current).set(item.id,title));
+      if(observation.url&&isWebTabUrl(observation.url)&&(observation.url!==item.url||title!==(item.title??''))){
+        const replace=(current:PaneLayout):PaneLayout=>current.kind==='pane'?{...current,tabs:current.tabs.map(tab=>tab.id===item.id&&tab.kind==='web'?{...tab,url:observation.url!,title}:tab)}:{...current,first:replace(current.first),second:replace(current.second)};
+        onChange(replace(layout));
+      }
+    }
+    onWebNavigation?.(item.id,observation);
+  };
+  const addBrowserPopup=(opener:Extract<ContentRef,{kind:'web'}>,popup:{openerId:string;tabId:string;url:string})=>{
+    if(popup.openerId!==opener.id)return;
+    const insert=(current:PaneLayout):PaneLayout=>current.kind==='pane'?(current.id!==node.id||current.tabs.some(tab=>tab.id===popup.tabId)?current:{...current,tabs:[...current.tabs.slice(0,current.tabs.findIndex(tab=>tab.id===opener.id)+1),{id:popup.tabId,kind:'web',url:popup.url},...current.tabs.slice(current.tabs.findIndex(tab=>tab.id===opener.id)+1)]}):{...current,first:insert(current.first),second:insert(current.second)};
+    onChange(activate(insert(layout),node.id,popup.tabId));
+  };
   const split = (direction: "horizontal" | "vertical") => {
     const paneId = crypto.randomUUID();
     onChange(splitPane(layout, node.id, direction, paneId));
@@ -419,7 +446,7 @@ function Pane({
   const content = node.tabs.filter(item=>visited.current.has(item.id)).map(item=>{
     const active=Boolean(visibleNode)&&item.id===tab?.id;
     const itemSession=item.kind==='session'?sessions.find(candidate=>candidate.id===item.sessionId):undefined;
-    return <SessionSurfaceContext.Provider key={item.id} value={{primaryHost,menuHost,focused:selected&&active,openFile:itemSession&&onFileReference?reference=>onFileReference(itemSession.id,reference):undefined,...sessionDiffActions(itemSession,projectPath,onOpenPath),openWeb:workbench?.openWeb,openFork:onFork}}>
+    return <SessionSurfaceContext.Provider key={item.id} value={{primaryHost,menuHost,focused:selected&&active,openFile:itemSession&&onFileReference?reference=>onFileReference(itemSession.id,reference):undefined,...sessionDiffActions(itemSession,projectPath,onOpenPath),openWeb:workbench?.openWeb?openWeb:undefined,openFork:onFork}}>
     <div className={`pane-tab-surface${fileDropTarget===item.id?" file-drop-target":""}`} data-content-id={item.id} {...(item.kind==='web'?{id:`browser-panel-${node.id}-${item.id}`,role:'tabpanel','aria-labelledby':`browser-tab-${node.id}-${item.id}`}:{})} hidden={!active} inert={!active}
      {...(itemSession&&!itemSession.readOnly&&workbench?.sendToAgent&&["starting","running","idle","waiting"].includes(itemSession.status)?{
       // An Explorer file dropped here inserts the same reference as "Send to agent", into this session.
@@ -447,7 +474,7 @@ function Pane({
       onOpenFile={workbench?.openFile?path=>workbench.openFile?.({projectId:item.projectId,worktreePath:item.worktreePath,path}):undefined}
       comments={workbench?.comments}/>
   ) : item.kind === "web" ? (
-    <WebPreview url={item.url} zh={zh} commentScope={workbench?.commentScope} commentsHost={workbench?.comments} commentProvenance={previewProvenance?.get(item.id)} onNavigation={observation=>onWebNavigation?.(item.id,observation)}/>
+    <WebPreview tabId={item.id} url={item.url} visible={active&&browserVisible} zh={zh} commentScope={workbench?.commentScope} commentsHost={workbench?.comments} commentProvenance={previewProvenance?.get(item.id)} onNavigation={observation=>persistWebNavigation(item,observation)} onPopup={popup=>addBrowserPopup(item,popup)}/>
   ) : isFileTab(item) ? (
     <FileWorkspace
       projectId={item.projectId}
@@ -480,7 +507,7 @@ function Pane({
     : contentTitle(item, zh).label;
   const browserTabs=node.tabs.filter((item):item is Extract<ContentRef,{kind:'web'}>=>item.kind==='web');
   const browserLabel=(item:Extract<ContentRef,{kind:'web'}>)=>{
-   const runtime=previewLabels?.get(item.id), title=runtime?.observedTitle??runtime?.title;
+   const runtime=previewLabels?.get(item.id), title=browserTitles.get(item.id)??item.title??runtime?.observedTitle??runtime?.title;
    if(title)return title;
    try{const parsed=new URL(item.url);return `${parsed.host}${parsed.pathname==='/'?'':parsed.pathname}${parsed.search}`;}catch{return item.url;}
   };
@@ -499,7 +526,7 @@ function Pane({
    showContextMenu({x:event.clientX,y:event.clientY,restoreFocus:event.currentTarget,items:(['current','others','all'] as const).map(mode=>({id:`browser-tab-close-${mode}`,label:zh?({current:'关闭当前页面',others:'关闭其他页面',all:'关闭所有页面'}[mode]):({current:'Close page',others:'Close other pages',all:'Close all pages'}[mode]),disabled:mode==='others'&&browserTabs.length<2,onSelect:()=>onCloseTabs(target,mode)}))});
   };
   return (
-    <SessionSurfaceContext.Provider value={{primaryHost,menuHost,focused:selected,openFile:session&&onFileReference?reference=>onFileReference(session.id,reference):undefined,...sessionDiffActions(session,projectPath,onOpenPath),openWeb:workbench?.openWeb}}>
+    <SessionSurfaceContext.Provider value={{primaryHost,menuHost,focused:selected,openFile:session&&onFileReference?reference=>onFileReference(session.id,reference):undefined,...sessionDiffActions(session,projectPath,onOpenPath),openWeb:workbench?.openWeb?openWeb:undefined}}>
     <section data-pane-id={node.id} hidden={!visibleNode} inert={!visibleNode} style={style} className={`workspace-pane ws-pane ${fullscreen ? "fullscreen" : ""}${selected ? " selected" : ""}`} onPointerDown={event=>{if(event.currentTarget.contains(event.target as Node))onFocus();}}>
        {!lastPane&&session&&tab&&<div className="pane-identity"><AgentIcon provider={session.provider}/><span>{tabLabel(tab)}</span></div>}
        {browserTabs.length>0&&<div className="browser-page-tabs" role="tablist" aria-label={zh?'浏览器页面':'Browser pages'}>{browserTabs.map(item=>{const label=browserLabel(item),title=browserTitle(item),active=item.id===tab?.id,provider=previewLabels?.get(item.id)?.sessionId?sessions.find(candidate=>candidate.id===previewLabels.get(item.id)?.sessionId)?.provider:undefined;return <div className={`browser-page-tab${active?' active':''}`} key={item.id} onContextMenu={event=>browserMenu(item,event)}><button type="button" id={`browser-tab-${node.id}-${item.id}`} role="tab" aria-selected={active} aria-controls={`browser-panel-${node.id}-${item.id}`} tabIndex={active?0:-1} title={title} aria-label={title} onKeyDown={browserKeys} onClick={()=>onActivateTab({paneId:node.id,tabId:item.id})}><span>{label}</span>{provider&&<small>{provider}</small>}</button><button type="button" className="browser-page-tab-close" aria-label={zh?`关闭页面 ${label}`:`Close page ${label}`} title={zh?'关闭页面':'Close page'} onPointerDown={event=>event.stopPropagation()} onClick={event=>{event.stopPropagation();onCloseTab({paneId:node.id,tabId:item.id});}}><Icon name="close"/></button></div>;})}</div>}

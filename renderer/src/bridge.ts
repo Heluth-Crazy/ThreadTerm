@@ -1,3 +1,4 @@
+import type { BrowserBridge, BrowserCommand, BrowserEvent, BrowserPreferences, BrowserState } from './browserTypes';
 import type { PagePick, PageRect, PageTargetRef, ChatItem, Method, NativeHistoryItem, OutputChunk, ProviderId, RequestParams, RequestResult, RuntimeEvent, Snapshot } from "@threadterm/protocol";
 export type { ChatItem, NativeHistoryItem, ProviderId, Snapshot } from "@threadterm/protocol";
 
@@ -32,3 +33,13 @@ export const markPageTarget = (request: { frameName: string; target?: PageTarget
 export const readPageShot = (shotId: string) => facade().readPageShot(shotId);
 export const deletePageShots = (shotIds: string[]) => facade().deletePageShots(shotIds);
 export const onPageContextMenu = (listener: (value: { frameName: string; x: number; y: number; pick?: PagePick; staticFrame?: boolean; selectionText: string }) => void) => facade().onPageContextMenu(listener);
+
+/** Additive desktop capability; older/browser-only facades do not own native pages. */
+const browserFacade = () => facade() as typeof window.threadterm & Partial<BrowserBridge>;
+export function browserCommand(command: Extract<BrowserCommand,{type:'preferences'}>): Promise<BrowserPreferences>;
+export function browserCommand(command: BrowserCommand): Promise<BrowserState|BrowserPreferences|void>;
+export function browserCommand(command: BrowserCommand): Promise<BrowserState|BrowserPreferences|void> {
+ return browserFacade().browserCommand?.(command) ?? Promise.reject(new Error('The built-in browser requires the desktop application.'));
+}
+export const onBrowserEvent = (listener:(event:BrowserEvent)=>void) => browserFacade().onBrowserEvent?.(listener) ?? (()=>{});
+export type { BrowserCommand, BrowserEvent, BrowserPreferences, BrowserState } from './browserTypes';

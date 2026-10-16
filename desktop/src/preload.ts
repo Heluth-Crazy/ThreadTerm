@@ -1,5 +1,6 @@
 import { contextBridge, ipcRenderer } from 'electron';
 import { terminalPtyFromArguments } from './terminalEnvironment.js';
+import type { BrowserBridge, BrowserEvent } from '../../renderer/src/browserTypes.js';
 import {
   isRecord,
   isRuntimeEvent,
@@ -12,7 +13,13 @@ import {
   type AttachedFile,
 } from '@threadterm/protocol';
 
-const bridge: ThreadTermBridge = {
+const bridge: ThreadTermBridge & BrowserBridge = {
+  browserCommand: command => ipcRenderer.invoke('threadterm:browser-command', command),
+  onBrowserEvent: listener => {
+    const handler = (_event: Electron.IpcRendererEvent, value: unknown) => { if (isBrowserEvent(value)) listener(value); };
+    ipcRenderer.on('threadterm:browser-event', handler);
+    return () => ipcRenderer.removeListener('threadterm:browser-event', handler);
+  },
   platform: process.platform,
   exportChatMarkdown: payload => ipcRenderer.invoke('threadterm:export-chat-markdown', payload) as Promise<string | null>,
   windowsPty: terminalPtyFromArguments(process.platform, process.argv),
@@ -111,4 +118,17 @@ function isPagePick(value: unknown): value is PagePick {
   if (!isRecord(value) || typeof value.url !== 'string' || typeof value.title !== 'string' || !isRecord(value.viewport) || !isRecord(value.target)) return false;
   const viewport = value.viewport, target = value.target;
   return Number.isFinite(viewport.width) && Number.isFinite(viewport.height) && (target.type === 'area' || target.type === 'element');
+}
+
+function isBrowserEvent(value: unknown): value is BrowserEvent {
+  if (!isRecord(value)) return false;
+  if (value.type === 'popup') return typeof value.openerId === 'string' && typeof value.tabId === 'string' && typeof value.url === 'string' && value.url.length <= 16384;
+  if (value.type === 'shortcut') return (value.phase===undefined||value.phase==='keydown'||value.phase==='keyup') && typeof value.tabId === 'string' && typeof value.key === 'string' && typeof value.code === 'string' && ['control', 'meta', 'shift', 'alt'].every(key => typeof value[key] === 'boolean');
+  if (value.type !== 'state' || !isRecord(value.state)) return false;
+  const state = value.state;
+  return typeof state.tabId === 'string' && typeof state.url === 'string' && typeof state.title === 'string'
+    && typeof state.loading === 'boolean' && typeof state.canGoBack === 'boolean' && typeof state.canGoForward === 'boolean'
+    && typeof state.zoom === 'number' && Number.isFinite(state.zoom) && Number.isSafeInteger(state.documentGeneration)
+    && ['pending', 'load_observed', 'failed'].includes(String(state.navigation))
+    && (state.snapshot === undefined || typeof state.snapshot === 'string' && state.snapshot.startsWith('data:image/png;base64,'));
 }

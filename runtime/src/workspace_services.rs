@@ -883,7 +883,16 @@ pub fn validate_layout(layout: &Value) -> Result<()> {
                         // An independent tab: owned views are reached only through a file header.
                         Some("web")
                             if tab.get("url").and_then(Value::as_str).is_some_and(valid_web_url)
-                                && tab.get("ownerSessionId").is_none() => {}
+                                && tab.get("ownerSessionId").is_none() =>
+                        {
+                            if tab.get("title").is_some_and(|title| {
+                                !title.as_str().is_some_and(|title| {
+                                    title.len() <= 512 && !title.chars().any(char::is_control)
+                                })
+                            }) {
+                                return Err(anyhow!("invalid_workspace_layout"));
+                            }
+                        }
                         Some("history")
                             if tab
                                 .get("projectId")
@@ -2003,6 +2012,33 @@ mod tests {
         assert!(validate_layout(&layout(json!({"id":"w","kind":"web"}))).is_err());
         // Owned views are reached only through a file header, which a web page does not have.
         assert!(validate_layout(&layout(json!({"id":"w","kind":"web","url":"http://localhost:3000","ownerSessionId":"session-a"}))).is_err());
+    }
+    #[test]
+    fn web_tab_titles_use_a_bounded_utf8_control_free_contract() {
+        let layout = |title: Value| json!({"kind":"pane","id":"p","tabs":[{"id":"w","kind":"web","url":"https://example.test/","title":title}],"activeTabId":"w"});
+        for title in [String::new(), "a".repeat(512), "\u{1f600}".repeat(128)] {
+            assert!(validate_layout(&layout(json!(title))).is_ok());
+        }
+        for title in [Value::Null, json!(4), json!("a".repeat(513)), json!("\u{1f600}".repeat(129)), json!("a\nb"), json!("a\u{85}b"), json!("a\u{7f}b")] {
+            assert!(validate_layout(&layout(title)).is_err());
+        }
+    }
+    #[test]
+    fn web_tab_title_and_url_survive_database_reopen() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("web-title.sqlite");
+        let layout = json!({"kind":"pane","id":"p","tabs":[{"id":"w","kind":"web","url":"https://example.test/last-page","title":"Last page title"}],"activeTabId":"w"});
+        let saved_id = {
+            let db = Database::open(&path).unwrap();
+            initialize(&db).unwrap();
+            let saved = dispatch(&db,"workspace.save",&json!({"name":"browser","layout":layout,"expectedRevision":0,"operationId":"web-title-save"})).unwrap().unwrap();
+            assert_eq!(saved["layout"], layout);
+            saved["id"].as_str().unwrap().to_owned()
+        };
+        let db = Database::open(&path).unwrap();
+        initialize(&db).unwrap();
+        let saved = db.snapshot().unwrap().workspaces.into_iter().find(|item|item["id"]==saved_id).unwrap();
+        assert_eq!(saved["layout"],layout);
     }
     #[test]
     fn session_file_owners_are_optional_validated_and_persisted() {

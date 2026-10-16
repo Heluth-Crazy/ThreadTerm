@@ -310,11 +310,23 @@ button.wb-change-row { width:100%; border:0; background:transparent; color:var(-
 .wb-review-comments li { display:flex; align-items:center; gap:8px; min-width:0; }
 .wb-review-comments li .wb-review-comment-where { flex:0 1 auto; max-width:45%; }
 .wb-review-comments li .body { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-/* Web page tab (WebPreview): the review tab's file bar above the existing preview frame. */
+/* Web page tab (WebPreview): native BrowserView placeholder and compact browser chrome. */
 .wb-web-preview { display:flex; flex:1; flex-direction:column; min-height:0; overflow:hidden; background:var(--surface); }
 .wb-web-preview > .file-bar { background:var(--surface); }
-.wb-web-preview > .file-bar > .ico { flex:none; color:var(--muted); }
-.wb-web-preview > .tt-preview-frame { flex:1; height:auto; }
+.wb-browser-toolbar { flex-wrap:wrap; gap:4px; row-gap:4px; min-height:38px; }
+.wb-browser-forward .ico { transform:rotate(180deg); }
+.wb-browser-address { display:flex; flex:1 1 180px; min-width:80px; }
+.wb-browser-address input, .wb-browser-find input { width:100%; min-width:0; height:26px; padding:3px 8px; border:1px solid var(--border); border-radius:var(--radius); background:var(--raised); color:var(--text); font:inherit; font-size:12px; }
+.wb-browser-loading { flex:none; width:12px; height:12px; border:2px solid var(--border); border-top-color:var(--primary); border-radius:50%; animation:wb-browser-spin .7s linear infinite; }
+.tt-browser-view { position:relative; flex:1; min-height:0; overflow:hidden; background:var(--surface); }
+.tt-browser-view > img { display:block; width:100%; height:100%; object-fit:contain; }
+.wb-browser-find { display:flex; align-items:center; gap:4px; padding:4px 8px; border-bottom:1px solid var(--border); background:var(--raised); }
+.wb-browser-find input { flex:1; }
+.wb-browser-find > span { flex:none; min-width:38px; color:var(--muted); font:11px var(--mono); text-align:center; font-variant-numeric:tabular-nums; }
+.wb-browser-zoom { min-width:44px; }
+.wb-browser-toolbar > .wb-page-comment-hint { flex-basis:100%; }
+@media (prefers-reduced-motion:reduce) { .wb-browser-loading { animation:none; } }
+@keyframes wb-browser-spin { to { transform:rotate(360deg); } }
 .wb-web-preview-note { margin:0; padding:4px 12px; border-top:1px solid var(--border); color:var(--faint); font-size:11px; }
 .wb-page-comment-hint { margin-left:2px; color:var(--muted); font-size:11px; white-space:nowrap; }
 .wb-page-comment-form { flex:none; }

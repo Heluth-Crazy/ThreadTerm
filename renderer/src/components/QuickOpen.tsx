@@ -6,6 +6,7 @@ import { workbenchError } from '../workbench/errors';
 import { scopeParams, type WorkbenchScope } from '../workbench/types';
 import './command-palette.css';
 import { useModalFocus } from '../useModalFocus';
+import { useBrowserOcclusion } from '../browserOcclusion';
 
 const cache = new Map<string,{at:number;paths:string[];truncated:boolean}>();
 const CACHE_MS = 30_000;
@@ -25,6 +26,7 @@ export function QuickOpen({scope, zh, onOpen, onClose, mode='open'}:{scope:Workb
  const input = useRef<HTMLInputElement>(null), list = useRef<HTMLDivElement>(null);
  const panel = useRef<HTMLElement>(null);
  useModalFocus(panel, onClose);
+ useBrowserOcclusion();
  const text = (en:string, cn:string) => zh ? cn : en;
  useEffect(() => {
   input.current?.focus();

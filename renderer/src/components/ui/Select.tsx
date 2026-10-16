@@ -14,6 +14,7 @@ import {
 } from "react";
 import { createPortal } from "react-dom";
 import { Icon } from "../PrototypeIcon";
+import { useBrowserOcclusion } from "../../browserOcclusion";
 
 export type SelectChangeEvent = { target: { value: string } };
 
@@ -113,6 +114,7 @@ export function Select({
   const currentValue = controlledValue === undefined ? uncontrolledValue : String(controlledValue);
   const selectedIndex = options.findIndex((option) => option.value === currentValue);
   const selected = selectedIndex >= 0 ? options[selectedIndex] : undefined;
+  useBrowserOcclusion(open);
 
   const updatePosition = useCallback(() => {
     const element = trigger.current;

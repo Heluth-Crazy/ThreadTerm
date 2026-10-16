@@ -1,12 +1,14 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { ChatItem } from '@threadterm/protocol';
 import { messageDestinations, messageWindow } from '../chatMessageNavigation';
+import { useBrowserOcclusion } from '../browserOcclusion';
 import './chat-message-navigation.css';
 
 type Props = { items: readonly ChatItem[]; copy: (en: string, zh: string) => string; onNavigate: (id: string) => void; stats?: ReadonlyMap<string, { additions: number; deletions: number }> };
 export function ChatMessageNavigation({ items, copy, onNavigate, stats }: Props) {
   const messages = useMemo(() => messageDestinations(items, stats), [items, stats]);
   const [open, setOpen] = useState(false), [top, setTop] = useState(0);
+  useBrowserOcclusion(open);
   const [placement, setPlacement] = useState<{ left: number; width: number }>();
   const root = useRef<HTMLDivElement>(null), trigger = useRef<HTMLButtonElement>(null), list = useRef<HTMLDivElement>(null);
   useEffect(() => {

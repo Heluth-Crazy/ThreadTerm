@@ -13,6 +13,7 @@ import { ignoreBrokenStdio, isBrokenPipeError } from './stdioGuards.js';
 import { resolveWindowChrome } from './windowChrome.js';
 import { terminalWindowArguments } from './terminalEnvironment.js';
 import { registerPageComments } from './pageComments.js';
+import { registerBrowser } from './browser/index.js';
 import { nativeMarkdownExportFiles, saveChatMarkdown, writeChatMarkdownAtomic } from './chatMarkdownExport.js';
 import { applicationIconPng, trayIconPng } from '../assets/icon-data.js';
 import { quitConfirmationOptions, quitConfirmationPreapproved } from './quitConfirmation.js';
@@ -49,6 +50,7 @@ app.setName('ThreadTerm');
 if (process.platform === 'win32') app.setAppUserModelId(app.isPackaged ? 'com.threadterm.v3' : process.execPath);
 // Test-only isolated Electron profile. Production launchers never set this.
 if (process.env.THREADTERM_V3_USER_DATA) app.setPath('userData', process.env.THREADTERM_V3_USER_DATA);
+if (!app.isPackaged && process.env.THREADTERM_V3_USER_DATA && process.env.THREADTERM_V3_BROWSER_QA_DOWNLOADS) app.setPath('downloads', process.env.THREADTERM_V3_BROWSER_QA_DOWNLOADS);
 app.on('window-all-closed', () => undefined);
 app.on('before-quit', (event) => { if (!allowQuit) { event.preventDefault(); void requestQuit(); } });
 app.on('will-quit', () => { adminRuntime.dispose(); for (const client of windowRuntimes.values()) client.dispose(); });
@@ -268,6 +270,11 @@ async function notifyNative(kind: NotificationKind, copy: (locale: NotificationL
 }
 
 function registerIpc(): void {
+  registerBrowser(event => {
+    assertTrustedRenderer(event);
+    const owner = BrowserWindow.fromWebContents(event.sender);
+    if (!owner || owner.webContents !== event.sender || event.senderFrame !== event.sender.mainFrame) throw new Error('Browser commands require the application main frame');
+  });
   registerPageComments(assertTrustedRenderer);
   ipcMain.handle('threadterm:export-chat-markdown', (event, payload: unknown) => saveChatMarkdown(event, payload, {
     assertTrusted: assertTrustedRenderer,

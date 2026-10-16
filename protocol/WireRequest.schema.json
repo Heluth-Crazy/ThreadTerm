@@ -1067,6 +1067,9 @@
             "url": {
               "type": "string"
             },
+            "title": {
+              "type": "string"
+            },
             "ownerSessionId": {
               "not": {}
             },

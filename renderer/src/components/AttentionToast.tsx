@@ -1,5 +1,7 @@
 import type { ProviderCapability, Session } from "@threadterm/protocol";
 import { attentionNotice, type Attention } from "../attentionState";
+import { useRef } from 'react';
+import { usePassiveBrowserOcclusion } from '../browserOcclusion';
 
 export function AttentionToast({
   attention,
@@ -16,10 +18,12 @@ export function AttentionToast({
   onOpen: () => void;
   onClose: () => void;
 }) {
+  const surface = useRef<HTMLElement>(null);
+  usePassiveBrowserOcclusion(surface);
   const zh = locale === "zh-CN";
   const notice = attentionNotice(attention, locale, session, capabilities);
   return (
-    <aside className="attention-toast" role="status" aria-live="polite">
+    <aside ref={surface} className="attention-toast" role="status" aria-live="polite">
       <div>
         <strong>{notice.heading}</strong>
         <p>{notice.detail}</p>
