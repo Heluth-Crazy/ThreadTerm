@@ -231,6 +231,8 @@ impl ProviderAdapter for OpenCodeAdapter {
         // failed event channel fails the connect instead of leaving a blind
         // "ready" worker behind.
         let sse_target = server.attach_events(&native_id)?;
+        let ui = sse_target.ui.lock().map(|ui| ui.wire()).unwrap_or_else(|_| json!({"options":[],"commands":[]}));
+        emit_scoped(&self.events, "opencode", session_id, Some(&native_id), None, "chat.ui", ui, Some(worker_token));
         emit_scoped(
             &self.events,
             "opencode",
@@ -502,11 +504,10 @@ impl OpenCodeServer {
             ));
         }
 
-        let model_limits = self
-            .request(reqwest::Method::GET, "/provider", None)
-            .and_then(|response| self.json(response))
-            .map(|providers| opencode_provider_context_limits(&providers))
-            .unwrap_or_default();
+        let catalogue = self.request(reqwest::Method::GET, "/provider", None).and_then(|response| self.json(response));
+        let agents = self.request(reqwest::Method::GET, "/agent", None).and_then(|response| self.json(response));
+        let model_limits = catalogue.as_ref().map(opencode_provider_context_limits).unwrap_or_default();
+        let ui = OpenCodeOptions::from_catalogues(catalogue, agents);
         let liveness = Arc::new(AtomicBool::new(true));
         let target = Arc::new(EventTarget {
             threadterm_session: self.threadterm_session.clone(),
@@ -529,6 +530,9 @@ impl OpenCodeServer {
             username: self.username.clone(),
             password: self.password.clone(),
             model_limits,
+            ui: Mutex::new(ui),
+            abort_pending: Mutex::new(None),
+            retry_visible: AtomicBool::new(false),
         });
         let context = SseContext {
             reader: BufReader::new(response),
@@ -536,6 +540,9 @@ impl OpenCodeServer {
             stopped: Arc::clone(&self.stopped),
             liveness: Arc::clone(&liveness),
         };
+        if kind == "retry" {
+            target.retry_status(status_map.get(native_id), Some(NATIVE_BUSY_TURN));
+        }
         spawn_sse(context)?;
         Ok(target)
     }
@@ -602,6 +609,147 @@ impl Drop for OpenCodeServer {
     }
 }
 
+// These are prompt overrides, never an observation of the model currently running.
+// Keep the pair structured: both provider and model identifiers can contain '/'.
+#[derive(Clone)]
+struct OpenCodeModel {
+    value: String,
+    model: Value,
+    name: String,
+    group: String,
+    variants: Vec<String>,
+}
+#[derive(Clone, Default)]
+struct OpenCodeOptions {
+    models: Vec<OpenCodeModel>,
+    agents: Vec<Value>,
+    model: String,
+    agent: String,
+    variant: String,
+    error: Option<ProviderError>,
+    selection_error: Option<ProviderError>,
+}
+impl OpenCodeOptions {
+    fn from_catalogues(providers: Result<Value, ProviderError>, agents: Result<Value, ProviderError>) -> Self {
+        let mut ui = Self::default();
+        match providers {
+            Ok(providers) => {
+                if let (Some(all), Some(connected)) = (providers.get("all").and_then(Value::as_array), providers.get("connected").and_then(Value::as_array)) {
+                    for provider in all {
+                        let Some(id) = provider.get("id").and_then(Value::as_str).filter(|id| !id.is_empty()) else { continue };
+                        if !connected.iter().any(|value| value.as_str() == Some(id)) { continue; }
+                        let group = provider.get("name").and_then(Value::as_str).unwrap_or(id);
+                        let Some(models) = provider.get("models").and_then(Value::as_object) else { continue };
+                        for (key, model) in models {
+                            let model_id = model.get("id").and_then(Value::as_str).unwrap_or(key);
+                            if model_id.is_empty() || model.get("disabled").and_then(Value::as_bool) == Some(true) || model.get("status").and_then(Value::as_str) == Some("unavailable") { continue; }
+                            let name = model.get("name").and_then(Value::as_str).unwrap_or(model_id);
+                            let variants = model.get("variants").and_then(Value::as_object).map(|variants| variants.iter()
+                                .filter(|(_, value)| value.get("disabled").and_then(Value::as_bool) != Some(true))
+                                .map(|(key, _)| key.clone()).collect()).unwrap_or_default();
+                            ui.models.push(OpenCodeModel {
+                                value: format!("{{\"providerID\":{},\"modelID\":{}}}", json!(id), json!(model_id)),
+                                model: json!({"providerID":id,"modelID":model_id}),
+                                name: format!("{group} \u{00b7} {name}"), group: group.to_owned(), variants,
+                            });
+                        }
+                    }
+                } else {
+                    ui.error = Some(ProviderError::new("provider_protocol", "OpenCode returned an invalid provider catalogue"));
+                }
+            }
+            Err(error) => ui.error = Some(error),
+        }
+        match agents {
+            Ok(agents) => if let Some(agents) = agents.as_array() {
+                for agent in agents {
+                    if agent.get("hidden").and_then(Value::as_bool) == Some(true)
+                        || !matches!(agent.get("mode").and_then(Value::as_str), Some("primary" | "all")) { continue; }
+                    let Some(name) = agent.get("name").and_then(Value::as_str).filter(|name| !name.is_empty()) else { continue };
+                    let mut choice = json!({"value":name,"name":name});
+                    if let Some(description) = agent.get("description").and_then(Value::as_str) { choice["description"] = json!(description); }
+                    ui.agents.push(choice);
+                }
+            } else { ui.error = Some(ProviderError::new("provider_protocol", "OpenCode returned an invalid agent catalogue")); },
+            Err(error) => ui.error = Some(error),
+        }
+        ui
+    }
+    fn selected_model(&self) -> Option<&OpenCodeModel> { self.models.iter().find(|model| model.value == self.model) }
+    fn select(&mut self, id: &str, value: &str) -> Result<(), ProviderError> {
+        let valid = match id {
+            "next-model" => value.is_empty() || self.models.iter().any(|model| model.value == value),
+            "agent" => value.is_empty() || self.agents.iter().any(|agent| agent["value"].as_str() == Some(value)),
+            "variant" => self.selected_model().is_some_and(|model| !model.variants.is_empty() && (value.is_empty() || model.variants.iter().any(|variant| variant == value))),
+            _ => return Err(ProviderError::new("option_unknown", format!("OpenCode has no option {id}"))),
+        };
+        if !valid {
+            let label = if id == "next-model" { "model" } else { id };
+            let error = ProviderError::new("chat_option_invalid", format!("OpenCode no longer offers the selected {label}. It was not applied; the available next-turn selections are shown below."));
+            self.selection_error = Some(error.clone());
+            return Err(error);
+        }
+        self.selection_error = None;
+        match id {
+            "next-model" => { if self.model != value { self.variant.clear(); } self.model = value.to_owned(); }
+            "agent" => self.agent = value.to_owned(),
+            "variant" => self.variant = value.to_owned(),
+            _ => unreachable!(),
+        }
+        Ok(())
+    }
+    fn prompt(&self, text: &str) -> Value {
+        let mut body = json!({"parts":[{"type":"text","text":text}]});
+        if let Some(model) = self.selected_model() { body["model"] = model.model.clone(); }
+        if !self.agent.is_empty() { body["agent"] = json!(self.agent); }
+        if !self.variant.is_empty() { body["variant"] = json!(self.variant); }
+        body
+    }
+    fn wire(&self) -> Value {
+        let description = "Selected for the next turn. OpenCode reports the model actually used in the reply footer.";
+        let default = || json!({"value":"","name":"OpenCode default","group":"OpenCode"});
+        let mut options = Vec::new();
+        if !self.models.is_empty() {
+            let mut choices = vec![default()];
+            choices.extend(self.models.iter().map(|model| json!({"value":model.value,"name":model.name,"group":model.group})));
+            options.push(json!({"id":"next-model","name":"Model","category":"model","value":self.model,"description":description,"choices":choices}));
+        }
+        if !self.agents.is_empty() {
+            let mut choices = vec![default()]; choices.extend(self.agents.clone());
+            options.push(json!({"id":"agent","name":"Agent","category":"other","value":self.agent,"description":"Selected for the next turn.","choices":choices}));
+        }
+        if let Some(model) = self.selected_model().filter(|model| !model.variants.is_empty()) {
+            let mut choices = vec![default()]; choices.extend(model.variants.iter().map(|variant| json!({"value":variant,"name":variant})));
+            // The catalogue exposes arbitrary provider options, not a reasoning-level contract.
+            options.push(json!({"id":"variant","name":"Variant","category":"other","value":self.variant,"description":"Selected for the next turn.","choices":choices}));
+        }
+        let error = self.error.as_ref().or(self.selection_error.as_ref());
+        let mut state = json!({"options":options,"commands":[],"loadState":if error.is_some() { "error" } else if options.is_empty() { "empty" } else { "ready" }});
+        if let Some(error) = error { state["error"] = json!(error); }
+        state
+    }
+}
+
+fn opencode_error(error: &Value) -> Value {
+    let name = error.get("name").and_then(Value::as_str).unwrap_or("UnknownError");
+    let detail = error.pointer("/data/message").or_else(|| error.get("message")).and_then(Value::as_str).filter(|message| !message.trim().is_empty());
+    let (category, fallback) = match name {
+        "ProviderAuthError" => ("authentication", "OpenCode could not authenticate with the model provider. Check that provider's credentials."),
+        "ContextOverflowError" => ("context_overflow", "The conversation exceeds this model's context limit."),
+        "MessageOutputLengthError" => ("output_limit", "The model reached its response length limit."),
+        "MessageAbortedError" => ("interrupted", "The OpenCode response was interrupted."),
+        "ContentFilterError" => ("content_filter", "The model provider blocked this request with its content filter."),
+        "StructuredOutputError" => ("structured_output", "OpenCode could not produce the requested structured response."),
+        "APIError" => ("api", "The model provider rejected the OpenCode request."),
+        _ => ("provider", "OpenCode could not complete the request."),
+    };
+    let message = detail.map(|detail| format!("{fallback} {detail}")).unwrap_or_else(|| fallback.to_owned());
+    let mut data = json!({"message":message,"category":category,"reason":name});
+    if let Some(status) = error.pointer("/data/statusCode").and_then(Value::as_u64) { data["httpStatus"] = json!(status); }
+    if let Some(retryable) = error.pointer("/data/isRetryable").and_then(Value::as_bool) { data["retryable"] = json!(retryable); }
+    data
+}
+
 struct OpenCodeChat {
     server: OpenCodeServer,
     session_id: String,
@@ -652,6 +800,7 @@ impl ChatSession for OpenCodeChat {
     }
     fn send(&mut self, text: &str, operation_id: &str) -> Result<Value, ProviderError> {
         validate_native_id(operation_id)?;
+        let prompt = self.sse_target.ui.lock().map_err(|_| ProviderError::new("provider_internal", "OpenCode options lock poisoned"))?.prompt(text);
         {
             let _commit = self.server.event_gate.lock().map_err(|_| {
                 ProviderError::new("provider_internal", "OpenCode event gate poisoned")
@@ -697,31 +846,36 @@ impl ChatSession for OpenCodeChat {
         let sent = self.server.request(
             reqwest::Method::POST,
             &format!("/session/{}/prompt_async", self.native_id),
-            Some(json!({"parts":[{"type":"text","text":text}]})),
+            Some(prompt),
         );
         self.sse_target.finish_prompt(operation_id, sent.map(|_| ()))?;
         Ok(json!({"turnId":operation_id}))
     }
+    fn ui_state(&self) -> Value {
+        self.sse_target.ui.lock().map(|ui| ui.wire()).unwrap_or_else(|_| json!({"options":[],"commands":[],"loadState":"error"}))
+    }
+    fn set_option(&mut self, option_id: &str, value: &str) -> Result<Value, ProviderError> {
+        let (state, result) = {
+            let mut ui = self.sse_target.ui.lock().map_err(|_| ProviderError::new("provider_internal", "OpenCode options lock poisoned"))?;
+            let result = ui.select(option_id, value);
+            (ui.wire(), result)
+        };
+        emit_scoped(&self.events, "opencode", &self.session_id, Some(&self.native_id), None, "chat.ui", state.clone(), Some(&self.worker_token));
+        result?;
+        Ok(state)
+    }
     fn cancel(&mut self, turn_id: &str) -> Result<(), ProviderError> {
-        let matches = self
-            .server
-            .active_turn
-            .lock()
-            .map_err(|_| ProviderError::new("provider_internal", "OpenCode turn lock poisoned"))?
-            .as_deref()
-            == Some(turn_id);
-        if !matches {
-            return Err(ProviderError::new(
-                "turn_not_active",
-                "the requested OpenCode turn is not active",
-            ));
+        {
+            let _commit = self.server.event_gate.lock().map_err(|_| ProviderError::new("provider_internal", "OpenCode event gate poisoned"))?;
+            if self.server.active_turn.lock().map_err(|_| ProviderError::new("provider_internal", "OpenCode turn lock poisoned"))?.as_deref() != Some(turn_id) {
+                return Err(ProviderError::new("turn_not_active", "the requested OpenCode turn is not active"));
+            }
+            *self.sse_target.abort_pending.lock().map_err(|_| ProviderError::new("provider_internal", "OpenCode abort lock poisoned"))? = Some(OpenCodeAbort { turn: turn_id.to_owned(), confirmed: false, idle_observed: false });
         }
-        self.server.request(
-            reqwest::Method::POST,
-            &format!("/session/{}/abort", self.native_id),
-            None,
-        )?;
-        Ok(())
+        let result = self.server.request(reqwest::Method::POST, &format!("/session/{}/abort", self.native_id), None)
+            .and_then(|response| self.server.json(response))
+            .and_then(|value| if value == json!(true) { Ok(()) } else { Err(ProviderError::new("abort_result_unknown", "OpenCode did not confirm that the turn was stopped")) });
+        self.sse_target.finish_abort(turn_id, result)
     }
     fn approve(
         &mut self,
@@ -1780,6 +1934,8 @@ fn opencode_question_resolved(
 
 /// The state an SSE event may touch: everything except the transport reader.
 /// Split out so the projection path is testable without a live socket.
+struct OpenCodeAbort { turn: String, confirmed: bool, idle_observed: bool }
+
 struct EventTarget {
     threadterm_session: String,
     native_id: String,
@@ -1801,9 +1957,72 @@ struct EventTarget {
     username: String,
     password: String,
     model_limits: HashMap<String, u64>,
+    ui: Mutex<OpenCodeOptions>,
+    abort_pending: Mutex<Option<OpenCodeAbort>>,
+    retry_visible: AtomicBool,
 }
 
 impl EventTarget {
+    // After attachment, called under event_gate. Replace one stable retry item.
+    fn retry_status(&self, status: Option<&Value>, turn: Option<&str>) {
+        let parts = if let Some(status) = status.filter(|status| status.get("type").and_then(Value::as_str) == Some("retry")) {
+            let Some(attempt) = status.get("attempt").and_then(Value::as_u64) else { return };
+            let Some(message) = status.get("message").and_then(Value::as_str) else { return };
+            let Some(next) = status.get("next").and_then(Value::as_u64) else { return };
+            self.retry_visible.store(true, Ordering::SeqCst);
+            json!([{"type":"status","text":format!("OpenCode is retrying (attempt {attempt}): {message}"),
+                "data":{"kind":"providerRetry","state":"retrying","attempt":attempt,"message":message,"next":next}}])
+        } else {
+            if !self.retry_visible.swap(false, Ordering::SeqCst) { return; }
+            json!([])
+        };
+        emit_scoped(&self.events, "opencode", &self.threadterm_session, Some(&self.native_id), turn,
+            "chat.item", json!({"item":{"id":format!("{}:retry",self.native_id)},"parts":parts}), Some(&self.worker_token));
+    }
+    fn complete_turn(&self, status: &str, raw: Value) {
+        let turn = self.active.lock().ok().and_then(|mut active| active.take());
+        self.retry_status(None, turn.as_deref());
+        if let Some(turn) = turn {
+            emit_scoped(&self.events, "opencode", &self.threadterm_session, Some(&self.native_id), Some(&turn),
+                "chat.turn.completed", json!({"status":status,"raw":raw}), Some(&self.worker_token));
+        }
+    }
+    fn native_idle(&self, status: &str, raw: Value) {
+        let mut pending = match self.abort_pending.lock() { Ok(pending) => pending, Err(_) => return };
+        let status = if let Some(abort) = pending.as_mut() {
+            abort.idle_observed = true;
+            if !abort.confirmed { return; }
+            *pending = None;
+            "interrupted"
+        } else { status };
+        drop(pending);
+        self.complete_turn(status, raw);
+    }
+    fn finish_abort(&self, turn_id: &str, result: Result<(), ProviderError>) -> Result<(), ProviderError> {
+        let commit = self.event_gate.lock().map_err(|_| ProviderError::new("provider_internal", "OpenCode event gate poisoned"))?;
+        if let Err(error) = result {
+            if let Ok(mut pending) = self.abort_pending.lock() { *pending = None; }
+            expire_stream_locked(self, "abort_result_unknown", &error.message, &commit);
+            return Err(error);
+        }
+        if !self.liveness.load(Ordering::SeqCst) || self.stopped.load(Ordering::SeqCst) {
+            return Err(ProviderError::new("abort_result_unknown", "OpenCode Stop result is unknown after event-stream loss"));
+        }
+        let active = self.active.lock().ok().is_some_and(|active| active.as_deref() == Some(turn_id));
+        let mut pending = self.abort_pending.lock().map_err(|_| ProviderError::new("provider_internal", "OpenCode abort lock poisoned"))?;
+        if !active { *pending = None; return Ok(()); }
+        if let Some(abort) = pending.as_mut().filter(|abort| abort.turn == turn_id) {
+            abort.confirmed = true;
+            // Preserve the active slot until native idle: an idle buffered after
+            // the HTTP reply must not complete the user's following turn.
+            if abort.idle_observed {
+                *pending = None;
+                drop(pending);
+                self.complete_turn("interrupted", json!({"abortConfirmed":true}));
+            }
+        }
+        Ok(())
+    }
     /// HTTP and native events settle under the same gate; an early native
     /// permission/idle/error must never be followed by a late turn-start.
     fn finish_prompt(
@@ -2035,6 +2254,7 @@ fn expire_stream_locked(
     {
         return;
     }
+    target.retry_status(None, target.active.lock().ok().as_deref().and_then(|active| active.as_deref()));
     let pending = target
         .permissions
         .lock()
@@ -2442,44 +2662,31 @@ fn emit_opencode_event(target: &EventTarget, raw: Value) {
                 turn.as_deref(),
             );
         }
-        "session.idle" => {
-            let completed = target.active.lock().ok().and_then(|mut value| value.take());
-            if completed.is_none() {
-                emit_scoped(
-                    &target.events,
-                    "opencode",
-                    &target.threadterm_session,
-                    native_id,
-                    None,
-                    "provider.event",
-                    json!({"raw":raw}),
-                    Some(&target.worker_token),
-                );
-                return;
+        "session.status" => {
+            let status = properties.get("status").unwrap_or(&Value::Null);
+            match status.get("type").and_then(Value::as_str) {
+                Some("retry") if turn.is_some() => target.retry_status(Some(status), turn.as_deref()),
+                Some("busy") => target.retry_status(None, turn.as_deref()),
+                Some("idle") => target.retry_status(None, turn.as_deref()),
+                _ => {}
             }
-            emit_scoped(
-                &target.events,
-                "opencode",
-                &target.threadterm_session,
-                native_id,
-                completed.as_deref(),
-                "chat.turn.completed",
-                json!({"raw":raw}),
-                Some(&target.worker_token),
-            );
+        }
+        "session.idle" => {
+            target.native_idle("completed", raw);
         }
         "session.error" => {
-            let failed = target.active.lock().ok().and_then(|mut value| value.take());
-            emit_scoped(
-                &target.events,
-                "opencode",
-                &target.threadterm_session,
-                native_id,
-                failed.as_deref(),
-                "chat.error",
-                json!({"raw":raw}),
-                Some(&target.worker_token),
-            );
+            let error = properties.get("error").unwrap_or(properties);
+            let mut data = opencode_error(error);
+            if data["category"] == "interrupted" {
+                if target.abort_pending.lock().ok().is_some_and(|pending| pending.is_some()) { return; }
+                target.complete_turn("interrupted", raw);
+            } else {
+                let failed = target.active.lock().ok().and_then(|mut value| value.take());
+                target.retry_status(None, failed.as_deref());
+                data["raw"] = raw;
+                emit_scoped(&target.events, "opencode", &target.threadterm_session, native_id, failed.as_deref(),
+                    "chat.error", data, Some(&target.worker_token));
+            }
         }
         // OpenCode 1.18 publishes the session todo list (`todowrite`) as
         // `todo.updated {sessionID, todos:[{content, status, priority}]}`, the
@@ -2651,9 +2858,221 @@ fn opencode_transcript(raw: &Value) -> Vec<Value> {
 
 #[cfg(test)]
 mod tests {
+    fn options_fixture() -> OpenCodeOptions {
+        OpenCodeOptions::from_catalogues(Ok(json!({"all":[
+            {"id":"provider/one","name":"First","models":{
+                "family/model":{"id":"family/model","name":"Slash model","variants":{"quick":{},"precise":{},"hidden":{"disabled":true}}},
+                "plain":{"id":"plain","name":"Plain"},"unavailable":{"id":"unavailable","status":"unavailable"}}},
+            {"id":"second","name":"Second","models":{"two":{"id":"two","name":"Two"}}},
+            {"id":"offline","models":{"not-offered":{"id":"not-offered"}}}],"connected":["provider/one","second"]})),
+            Ok(json!([{"name":"build","mode":"primary"},{"name":"plan","mode":"primary"},
+                {"name":"custom","mode":"all"},{"name":"hidden","mode":"primary","hidden":true},
+                {"name":"explore","mode":"subagent"},{"name":"missing-mode"}])) )
+    }
+    #[test]
+    fn catalogue_options_preserve_structured_ids_and_filter_unavailable_choices() {
+        let ui = options_fixture();
+        assert_eq!(ui.models.len(), 3);
+        assert_eq!(ui.agents.iter().map(|agent| agent["value"].as_str().unwrap()).collect::<Vec<_>>(), vec!["build","plan","custom"]);
+        let wire = ui.wire();
+        assert_eq!(wire["options"][0]["category"], "model");
+        assert_eq!(wire["options"][1]["name"], "Agent");
+        assert_eq!(wire["options"].as_array().unwrap().len(), 2);
+        let slash = ui.models.iter().find(|model| model.model["modelID"] == "family/model").unwrap();
+        assert_eq!(slash.name, "First · Slash model");
+        assert_eq!(serde_json::from_str::<Value>(&slash.value).unwrap(), json!({"providerID":"provider/one","modelID":"family/model"}));
+        assert_eq!(slash.variants, vec!["precise","quick"]);
+        assert_eq!(ui.prompt("hello"), json!({"parts":[{"type":"text","text":"hello"}]}), "no invented default override");
+    }
+    #[test]
+    fn options_validate_locally_and_change_only_subsequent_prompt_overrides() {
+        let mut ui = options_fixture();
+        let before = ui.prompt("first");
+        assert!(ui.select("next-model", "provider/one/family/model").is_err());
+        assert_eq!(ui.wire()["error"]["code"], "chat_option_invalid");
+        assert!(ui.wire()["error"]["message"].as_str().unwrap().contains("not applied"));
+        assert!(ui.select("agent", "explore").is_err());
+        assert!(ui.select("variant", "precise").is_err());
+        assert!(ui.select("unknown", "x").is_err());
+        let value = ui.models.iter().find(|model| model.model["modelID"] == "family/model").unwrap().value.clone();
+        ui.select("next-model", &value).unwrap();
+        assert!(ui.wire().get("error").is_none(), "a valid user choice clears the stale selection notice");
+        ui.select("agent", "plan").unwrap();
+        ui.select("variant", "precise").unwrap();
+        assert_eq!(before, json!({"parts":[{"type":"text","text":"first"}]}));
+        assert_eq!(ui.prompt("next"), json!({"parts":[{"type":"text","text":"next"}],"model":{"providerID":"provider/one","modelID":"family/model"},"agent":"plan","variant":"precise"}));
+        assert_eq!(ui.wire()["options"][2]["name"], "Variant");
+        let plain = ui.models.iter().find(|model| model.model["modelID"] == "plain").unwrap().value.clone();
+        ui.select("next-model", &plain).unwrap();
+        assert!(ui.prompt("plain").get("variant").is_none());
+        assert_eq!(ui.wire()["options"].as_array().unwrap().len(), 2);
+        assert!(ui.select("variant", "precise").is_err());
+        ui.select("next-model", "").unwrap(); ui.select("agent", "").unwrap();
+        assert_eq!(ui.prompt("default"), json!({"parts":[{"type":"text","text":"default"}]}));
+    }
+    #[test]
+    fn catalogue_failure_is_visible_without_breaking_the_other_controls() {
+        let ui = OpenCodeOptions::from_catalogues(Err(ProviderError::new("provider_error", "catalogue unavailable")), Ok(json!([{"name":"build","mode":"primary"}])));
+        assert_eq!(ui.wire()["loadState"], "error");
+        assert_eq!(ui.wire()["error"]["message"], "catalogue unavailable");
+        assert_eq!(ui.wire()["options"][0]["id"], "agent");
+    }
+    #[test]
+    fn typed_errors_are_readable_and_categorized_without_raw_response_bodies() {
+        for (name, category) in [("ProviderAuthError","authentication"),("ContextOverflowError","context_overflow"),
+            ("APIError","api"),("MessageAbortedError","interrupted"),("MessageOutputLengthError","output_limit"),
+            ("StructuredOutputError","structured_output"),("ContentFilterError","content_filter"),("UnknownError","provider")] {
+            let data = opencode_error(&json!({"name":name,"data":{"message":"Native explanation","responseBody":"secret body","statusCode":429,"isRetryable":true}}));
+            assert_eq!(data["category"], category);
+            assert!(data["message"].as_str().unwrap().contains("Native explanation"));
+            assert!(!data.to_string().contains("secret body"));
+            assert_eq!(data["httpStatus"], 429); assert_eq!(data["retryable"], true);
+        }
+        assert!(opencode_error(&json!({"name":"MessageOutputLengthError","data":{}}))["message"].as_str().unwrap().contains("length limit"));
+    }
+    #[test]
+    fn native_retry_updates_in_place_and_clears_without_replaying() {
+        let (events, mut rx) = crate::provider_events::tap_channel(16);
+        let active = Arc::new(Mutex::new(Some("turn-1".into())));
+        let target = event_target(&events, Arc::clone(&active));
+        for attempt in [1, 2] {
+            emit_opencode_event(&target, frame("session.status", json!({"sessionID":"native-1","status":{"type":"retry","attempt":attempt,"message":"Rate limited","next":12345}})));
+        }
+        emit_opencode_event(&target, frame("session.status", json!({"sessionID":"native-1","status":{"type":"busy"}})));
+        let emitted = std::iter::from_fn(|| rx.try_recv().ok()).collect::<Vec<_>>();
+        assert_eq!(emitted.len(), 3);
+        assert!(emitted.iter().all(|event| event.kind == "chat.item" && event.data["item"]["id"] == "native-1:retry"));
+        assert_eq!(emitted[1].data["parts"][0]["data"]["attempt"], 2);
+        assert_eq!(emitted[1].data["parts"][0]["type"], "status");
+        assert_eq!(emitted[1].data["parts"][0]["data"]["message"], "Rate limited");
+        assert_eq!(emitted[1].data["parts"][0]["data"]["next"], 12345);
+        assert_eq!(emitted[2].data["parts"], json!([]));
+        assert_eq!(active.lock().unwrap().as_deref(), Some("turn-1"));
+    }
+    #[test]
+    fn confirmed_abort_classifies_early_idle_as_interrupted_once() {
+        let (events, mut rx) = crate::provider_events::tap_channel(16);
+        let target = event_target(&events, Arc::new(Mutex::new(Some("turn-1".into()))));
+        *target.abort_pending.lock().unwrap() = Some(OpenCodeAbort { turn: "turn-1".into(), confirmed: false, idle_observed: false });
+        emit_opencode_event(&target, frame("session.idle", json!({"sessionID":"native-1"})));
+        assert!(rx.try_recv().is_err());
+        target.finish_abort("turn-1", Ok(())).unwrap();
+        emit_opencode_event(&target, frame("session.idle", json!({"sessionID":"native-1"})));
+        let emitted = std::iter::from_fn(|| rx.try_recv().ok()).collect::<Vec<_>>();
+        assert_eq!(emitted.len(), 1); assert_eq!(emitted[0].kind, "chat.turn.completed");
+        assert_eq!(emitted[0].data["status"], "interrupted");
+        assert!(target.active.lock().unwrap().is_none());
+    }
+    #[test]
+    fn uncertain_abort_keeps_unknown_outcome_and_never_claims_completion() {
+        let (events, mut rx) = crate::provider_events::tap_channel(16);
+        let target = event_target(&events, Arc::new(Mutex::new(Some("turn-1".into()))));
+        *target.abort_pending.lock().unwrap() = Some(OpenCodeAbort { turn: "turn-1".into(), confirmed: false, idle_observed: false });
+        emit_opencode_event(&target, frame("session.status", json!({"sessionID":"native-1","status":{"type":"idle"}})));
+        assert!(target.finish_abort("turn-1", Err(ProviderError::new("provider_disconnected", "lost abort response"))).is_err());
+        let emitted = std::iter::from_fn(|| rx.try_recv().ok()).collect::<Vec<_>>();
+        assert!(!emitted.iter().any(|event| event.kind == "chat.turn.completed"));
+        assert!(emitted.iter().any(|event| event.kind == "chat.error" && event.data["reason"] == "abort_result_unknown"));
+        assert!(!target.liveness.load(Ordering::SeqCst));
+    }
+    #[test]
+    fn confirmed_abort_reserves_the_slot_until_native_idle() {
+        let (events, mut rx) = crate::provider_events::tap_channel(16);
+        let target = event_target(&events, Arc::new(Mutex::new(Some("turn-1".into()))));
+        *target.abort_pending.lock().unwrap() = Some(OpenCodeAbort { turn: "turn-1".into(), confirmed: false, idle_observed: false });
+        target.finish_abort("turn-1", Ok(())).unwrap();
+        assert_eq!(target.active.lock().unwrap().as_deref(), Some("turn-1"));
+        assert!(rx.try_recv().is_err(), "HTTP abort alone cannot reopen the send slot");
+        emit_opencode_event(&target, frame("session.idle", json!({"sessionID":"native-1"})));
+        assert_eq!(rx.try_recv().unwrap().data["status"], "interrupted");
+        assert!(target.active.lock().unwrap().is_none());
+    }
+    #[test]
+    fn status_idle_clears_retry_but_does_not_duplicate_the_native_idle_boundary() {
+        let (events, mut rx) = crate::provider_events::tap_channel(16);
+        let target = event_target(&events, Arc::new(Mutex::new(Some("turn-1".into()))));
+        emit_opencode_event(&target, frame("session.status", json!({"sessionID":"native-1","status":{"type":"idle"}})));
+        assert_eq!(target.active.lock().unwrap().as_deref(), Some("turn-1"));
+        assert!(rx.try_recv().is_err());
+        emit_opencode_event(&target, frame("session.idle", json!({"sessionID":"native-1"})));
+        assert_eq!(rx.try_recv().unwrap().data["status"], "completed");
+        assert!(rx.try_recv().is_err());
+    }
+    #[test]
+    fn next_turn_selection_never_invents_the_effective_footer_model() {
+        let db = projection_db();
+        let mut ui = options_fixture();
+        let selected = ui.models[0].value.clone();
+        ui.select("next-model", &selected).unwrap();
+        db.record_provider_event("chat-s", None, "chat.ui", &ui.wire()).unwrap();
+        db.record_provider_event("chat-s", Some("turn-1"), "chat.turn.started", &json!({})).unwrap();
+        assert!(db.chat_items("chat-s").unwrap().iter().all(|item| item.turn_model.is_none()));
+        let (events, mut rx) = crate::provider_events::tap_channel(16);
+        let target = event_target(&events, Arc::new(Mutex::new(Some("turn-1".into()))));
+        emit_opencode_event(&target, frame("message.updated", json!({"info":{"sessionID":"native-1","id":"assistant-1","role":"assistant",
+            "providerID":"actual","modelID":"reported/model","tokens":{"input":1,"output":2}}})));
+        drain(&db, &mut rx, "chat-s");
+        assert!(db.chat_items("chat-s").unwrap().iter().any(|item| item.turn_model.as_deref() == Some("actual/reported/model")));
+    }
+    #[test]
+    fn error_projection_and_authoritative_aborted_outcome_are_distinct() {
+        let db = projection_db();
+        let (events, mut rx) = crate::provider_events::tap_channel(16);
+        let target = event_target(&events, Arc::new(Mutex::new(Some("turn-1".into()))));
+        emit_opencode_event(&target, frame("session.error", json!({"sessionID":"native-1","error":{"name":"ContextOverflowError","data":{"message":"Too many tokens"}}})));
+        drain(&db, &mut rx, "chat-s");
+        let items = db.chat_items("chat-s").unwrap();
+        let part = items.iter().flat_map(|item| &item.parts).find(|part| part["type"] == "error").unwrap();
+        assert!(part["text"].as_str().unwrap().contains("Too many tokens"));
+        assert_eq!(part["data"]["category"], "context_overflow");
+        *target.active.lock().unwrap() = Some("turn-2".into());
+        emit_opencode_event(&target, frame("session.error", json!({"sessionID":"native-1","error":{"name":"MessageAbortedError","data":{"message":"Cancelled"}}})));
+        let event = rx.try_recv().unwrap();
+        assert_eq!(event.kind, "chat.turn.completed"); assert_eq!(event.data["status"], "interrupted");
+    }
     use super::*;
     use crate::db::Database;
     use std::io::{Read, Write};
+
+    #[test]
+    fn sse_header_timeout_settles_failed_without_runtime_retry() {
+        use super::super::ProviderRuntime;
+        // Exercise the registry handoff with the adapter's timeout outcome.
+        // No provider adapter/process is registered or launched by this test.
+        for resumed in [false, true] {
+            let providers = super::super::Providers::for_test(vec![]);
+            let mut events = providers.take_projection_events().unwrap();
+            let mut slot = super::super::ChatSlot::new();
+            slot.generation = 1;
+            slot.phase = "connecting";
+            slot.connecting = true;
+            slot.native_id = Some("native-1".into());
+            slot.worker_token = Some("attempt-1".into());
+            providers.chats.lock().unwrap().insert("chat-s".into(), slot);
+            let failed = providers.finish_chat_open_attempt("chat-s", super::super::ChatOpenAttempt {
+                generation: 1, worker_token: "attempt-1".into(), resumed,
+                opened: Err(ProviderError::new("provider_disconnected", "OpenCode event stream headers were not received: timed out waiting on channel")),
+            }, |_| panic!("failed handshake must never be accepted")).unwrap_err();
+            assert_eq!(failed.code, if resumed { "native_resume_failed" } else { "provider_disconnected" });
+            let state = providers.chat_connection("chat-s");
+            assert_eq!(state["phase"], "failed");
+            assert_eq!(state["nativeId"], "native-1");
+            assert_eq!(state["error"]["retryable"], true);
+            assert!(state["error"]["message"].as_str().unwrap().contains("headers were not received"));
+            let slot = providers.chats.lock().unwrap();
+            assert!(!slot["chat-s"].connecting);
+            assert!(slot["chat-s"].worker.is_none());
+            assert!(slot["chat-s"].worker_token.is_none());
+            drop(slot);
+            let event = events.try_recv().unwrap();
+            assert_eq!(event.kind, "chat.connection");
+            assert_eq!(event.data["phase"], "failed");
+            // Repeated observations do not re-arm startup or change generation.
+            assert_eq!(providers.chat_connection("chat-s"), state);
+            assert_eq!(providers.chat_connection("chat-s"), state);
+            assert!(events.try_recv().is_err());
+        }
+    }
 
     struct TestChildCleanup(Arc<Mutex<Child>>);
 
@@ -2835,6 +3254,9 @@ mod tests {
             username: String::new(),
             password: String::new(),
             model_limits: HashMap::new(),
+            ui: Mutex::new(OpenCodeOptions::default()),
+            abort_pending: Mutex::new(None),
+            retry_visible: AtomicBool::new(false),
         }
     }
 

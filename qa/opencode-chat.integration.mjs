@@ -5,13 +5,15 @@ import { spawn, spawnSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { copyFile, mkdtemp, mkdir, readFile, writeFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
-import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { connectSubagentPeer as connectPeer } from './lib/subagent-peer.mjs';
 
 const pause = ms => new Promise(done => setTimeout(done, ms));
 const unique = () => randomUUID();
-const root = await mkdtemp(join(tmpdir(), 'threadterm-opencode-chat-'));
+const scratchRoot = resolve(process.env.THREADTERM_QA_SCRATCH ?? 'D:/project/ThreadTerm/tt-qa-temp');
+await mkdir(scratchRoot, { recursive: true });
+process.env.TMP = scratchRoot; process.env.TEMP = scratchRoot;
+const root = await mkdtemp(join(scratchRoot, 'threadterm-opencode-chat-'));
 const bin = join(root, 'bin');
 const data = join(root, 'data');
 const cwd = join(root, 'workspace');
@@ -60,6 +62,8 @@ const items = () => peer.request('chat.read', { sessionId });
 const parts = async () => (await items()).flatMap(item => item.parts);
 const requests = async () => (await readFile(requestsFile, 'utf8')).trim().split(/\r?\n/).filter(Boolean).map(JSON.parse);
 const session = async () => (await peer.request('runtime.snapshot')).sessions.find(row => row.id === sessionId);
+const option = (ui, id) => ui.options.find(row => row.id === id);
+const setOption = (optionId, value) => peer.request('chat.option.set', { sessionId, leaseEpoch, optionId, value, operationId: unique() });
 const native = async (path, body) => {
   const port = Number(await readFile(portFile, 'utf8'));
   const response = await fetch(`http://127.0.0.1:${port}${path}`, body === undefined ? undefined : {
@@ -106,9 +110,29 @@ try {
   const nativeId = (await session()).nativeId;
   assert.ok(nativeId, 'native identity bound');
   const send = text => peer.request('chat.send', { sessionId, text, leaseEpoch, operationId: unique() });
+  let ui = await peer.request('chat.options', { sessionId });
+  assert.equal(option(ui, 'next-model')?.category, 'model', 'connected model catalogue is published as a model option');
+  assert.equal(option(ui, 'agent')?.category, 'other', 'connected primary-agent catalogue is published');
+  assert.equal(option(ui, 'variant'), undefined, 'variant is hidden until a model that offers it is selected');
+  assert.equal(option(ui, 'next-model').choices.some(row => row.value === '{"providerID":"slash/provider","modelID":"family/model/with/slash"}'), true, 'slash-containing provider and model IDs stay opaque');
+  assert.equal(option(ui, 'next-model').choices.some(row => /Unavailable/.test(row.name)), false, 'disconnected-provider model is unavailable');
+  assert.deepEqual(option(ui, 'agent').choices.map(row => row.value), ['', 'build', 'plan', 'custom'], 'hidden and subagent agents are excluded');
+  const requestsBeforeOptions = (await requests()).length;
+  await assert.rejects(setOption('next-model', '{"providerID":"unknown","modelID":"missing"}'), /no longer offers|does not offer|invalid/i, 'unknown model is rejected locally');
+  await assert.rejects(setOption('agent', 'hidden'), /no longer offers|does not offer|invalid/i, 'hidden agent is rejected locally');
+  assert.equal((await requests()).length, requestsBeforeOptions, 'local option validation makes no native request');
+  const requestsBeforeSelection = (await requests()).length;
+  ui = await setOption('next-model', '{"providerID":"openai","modelID":"gpt-5.2"}');
+  assert.equal(option(ui, 'variant')?.category, 'other', 'variants appear only for the selected model');
+  await setOption('agent', 'plan');
+  await setOption('variant', 'precise');
+  assert.equal((await requests()).length, requestsBeforeSelection, 'successful option selection makes no native request');
   await send('fixture-two-parts');
+  const selectedPrompt = (await requests()).findLast(row => row.path.endsWith('/prompt_async'));
+  assert.deepEqual(selectedPrompt.body, { parts: [{ type: 'text', text: 'fixture-two-parts' }], model: { providerID: 'openai', modelID: 'gpt-5.2' }, agent: 'plan', variant: 'precise' }, 'only the selected next-turn options are posted in the prompt body');
   await waitFor(parts, rows => rows.some(row => row.text === 'FIRST-PART') && rows.some(row => row.text === 'SECOND-PART'), 'two distinct native messages persisted');
   await waitFor(session, row => row.status === 'idle', 'first turn ended');
+  assert.equal((await items()).find(row => row.parts.some(part => part.text === 'FIRST-PART'))?.turnModel, undefined, 'next-turn model selection never invents an effective footer model');
   await send('fixture-delta');
   await waitFor(parts, rows => rows.some(row => row.text === 'Hello world'), 'deltas accumulated');
   await waitFor(session, row => row.status === 'idle', 'delta turn ended');
@@ -166,6 +190,10 @@ try {
   const reconnect = await peer.request('chat.connect', { sessionId, leaseEpoch, operationId: unique() });
   assert.equal(reconnect.phase, 'ready');
   assert.equal((await session()).nativeId, nativeId, 'reconnect retains native identity');
+  ui = await peer.request('chat.options', { sessionId });
+  assert.equal(option(ui, 'next-model').value, '{"providerID":"openai","modelID":"gpt-5.2"}', 'reconnect restores the selected next-turn model');
+  assert.equal(option(ui, 'agent').value, 'plan', 'reconnect restores the selected agent');
+  assert.equal(option(ui, 'variant').value, 'precise', 'reconnect restores the selected variant');
   await waitFor(parts, rows => rows.some(row => row.text === 'AB'), 'buffered delta uses authoritative seeded message');
   assert.equal((await parts()).some(row => row.text === 'ABB'), false, 'buffered delta is not appended twice');
   const promptCount = (await requests()).filter(row => row.path.endsWith('/prompt_async')).length;
@@ -179,6 +207,21 @@ try {
   await send('after-reconnect');
   await waitFor(parts, rows => rows.some(row => row.text === 'echo:after-reconnect'), 'original native session accepts later turn');
   await waitFor(session, row => row.status === 'idle', 'post-reconnect turn ended');
+  const staleState = JSON.parse(await readFile(stateFile, 'utf8'));
+  staleState.catalogueOverrides = { removeModels: [{ providerID: 'openai', modelID: 'gpt-5.2' }], removeAgents: ['plan'] };
+  await writeFile(stateFile, JSON.stringify(staleState));
+  await native('/qa/drop-events');
+  await waitFor(() => peer.request('chat.connection', { sessionId }), state => state.phase !== 'ready', 'catalogue-change stream disconnect');
+  assert.equal((await peer.request('chat.connect', { sessionId, leaseEpoch, operationId: unique() })).phase, 'ready', 'reconnect reads changed catalogue');
+  ui = await peer.request('chat.options', { sessionId });
+  assert.equal(option(ui, 'next-model').value, '', 'stale persisted model is dropped');
+  assert.equal(option(ui, 'agent').value, '', 'stale persisted agent is dropped');
+  assert.equal(option(ui, 'variant'), undefined, 'stale variant is dropped with its model');
+  assert.equal(ui.loadState, 'error', 'stale selections leave a visible options notice');
+  assert.match(ui.error?.message ?? '', /unavailable|not applied/i, 'stale options notice is readable');
+  await send('fixture-stale-selection');
+  assert.deepEqual((await requests()).findLast(row => row.path.endsWith('/prompt_async')).body, { parts: [{ type: 'text', text: 'fixture-stale-selection' }] }, 'dropped selections never reach a prompt');
+  await waitFor(session, row => row.status === 'idle', 'stale-selection prompt settled');
 
   // A healthy native server emits heartbeat SSE data every 10 seconds even
   // when no model output exists. Quiet Chat content alone must not disconnect.
@@ -229,6 +272,27 @@ try {
   assert.equal((await parts()).some(row => row.text === 'HACK'), false, 'invalid snapshot is not projected');
   const lastReconnect = await peer.request('chat.connect', { sessionId, leaseEpoch, operationId: unique() });
   assert.equal(lastReconnect.phase, 'ready');
+  await send('fixture-retry');
+  let retryId;
+  await waitFor(items, rows => {
+    retryId = rows.find(row => row.parts[0]?.data?.kind === 'providerRetry' && /Fixture provider is retrying/.test(row.parts[0].text))?.id;
+    return Boolean(retryId);
+  }, 'native retry is a readable in-place status');
+  await waitFor(session, row => row.status === 'idle', 'retry fixture resolves');
+  await waitFor(items, rows => rows.find(row => row.id === retryId)?.parts.length === 0, 'resolved retry status is cleared');
+  const stopped = await peer.request('chat.send', { sessionId, text: 'fixture-stuck', leaseEpoch, operationId: unique() });
+  await waitFor(session, row => row.status === 'running', 'stop fixture is running before cancellation');
+  const requestsBeforeRunningSelection = (await requests()).length;
+  await setOption('next-model', '{"providerID":"slash/provider","modelID":"family/model/with/slash"}');
+  await setOption('agent', 'build');
+  assert.equal((await requests()).length, requestsBeforeRunningSelection, 'option changes during a running turn remain local');
+  await peer.request('chat.cancel', { sessionId, turnId: stopped.turnId, leaseEpoch, operationId: unique() });
+  await waitFor(items, rows => rows.some(row => row.turnId === stopped.turnId && row.turnStatus === 'interrupted'), 'confirmed abort is interrupted even when native idle follows');
+  await waitFor(session, row => row.status === 'idle', 'confirmed abort returns the session to idle');
+  await send('fixture-typed-error');
+  assert.deepEqual((await requests()).findLast(row => row.path.endsWith('/prompt_async')).body, { parts: [{ type: 'text', text: 'fixture-typed-error' }], model: { providerID: 'slash/provider', modelID: 'family/model/with/slash' }, agent: 'build' }, 'option changes during a running turn apply only to the following prompt');
+  await waitFor(parts, rows => rows.some(row => row.type === 'error' && /Fixture authentication expired/.test(row.text) && row.data?.category === 'authentication'), 'typed OpenCode errors have a readable categorized message');
+  await waitFor(session, row => row.status === 'error', 'typed native error ends the turn');
   await assert.rejects(send('fixture-http-reject'), /422|fixture rejects prompt/i, 'definite native HTTP rejection is visible');
   await waitFor(session, row => row.status === 'error', 'definite prompt rejection cannot leave a running turn');
   await waitFor(parts, rows => rows.some(row => row.type === 'error' && /fixture rejects prompt/i.test(row.text)), 'definite prompt rejection persists an error part');
@@ -241,7 +305,7 @@ try {
   await waitFor(() => peer.request('chat.connection', { sessionId: uncertain.id }), state => state.phase !== 'ready', 'uncertain native prompt retires its worker');
   await waitFor(() => peer.request('chat.read', { sessionId: uncertain.id }), rows => rows.some(row => row.id === `${uncertain.id}:approval:per_early_fail` && row.parts[0]?.status === 'expired'), 'uncertain prompt expires the already emitted approval');
   assert.equal((await requests()).filter(row => row.path.endsWith('/prompt_async')).length, beforeUncertainPrompt + 1, 'uncertain native prompt is never automatically replayed');
-  console.log(JSON.stringify({ passed: true, checks: ['message identity', 'delta assembly', 'approval identity', 'foreign event', 'SSE EOF', 'same-native busy reconnect', 'seeded delta race', 'healthy idle heartbeat', 'established SSE comments', 'partial SSE frame', 'early native result before HTTP acknowledgement', 'definite HTTP rejection', 'uncertain 5xx after native approval', 'invalid snapshot fencing'], root }));
+  console.log(JSON.stringify({ passed: true, checks: ['catalogue-backed options', 'next-turn prompt body', 'message identity', 'delta assembly', 'approval identity', 'foreign event', 'SSE EOF', 'same-native busy reconnect', 'seeded delta race', 'healthy idle heartbeat', 'established SSE comments', 'partial SSE frame', 'early native result before HTTP acknowledgement', 'readable typed error', 'retry status clearing', 'confirmed Stop interrupted outcome', 'definite HTTP rejection', 'uncertain 5xx after native approval', 'invalid snapshot fencing'], root }));
 } catch (error) {
   let snapshot, transcript;
   try { snapshot = await peer?.request('runtime.snapshot'); transcript = sessionId ? await items() : undefined; } catch {}

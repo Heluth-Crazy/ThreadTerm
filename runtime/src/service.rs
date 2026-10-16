@@ -114,7 +114,7 @@ fn ensure_chat_session_open(db: &Database, providers: &Providers, session_id: &s
         session.native_id.as_deref(),
     )
     .map_err(anyhow::Error::from)?;
-    if let Err(error) = restore_pi_auto_retry(db, providers, session_id, &session.provider) {
+    if let Err(error) = restore_chat_options(db, providers, session_id, &session.provider) {
         let _ = providers.chat_stop(session_id);
         return Err(error);
     }
@@ -128,7 +128,7 @@ fn ensure_chat_session_open(db: &Database, providers: &Providers, session_id: &s
         Ok(false) => return Err(anyhow::anyhow!("chat_connect_superseded")),
         Err(error) => return Err(error),
     }
-    if let Err(error) = crate::chat_fork::apply_pending_options(db, providers, session_id) {
+    if let Err(error) = apply_pending_chat_options(db, providers, session_id, &session.provider) {
         let _ = providers.chat_stop(session_id);
         return Err(error);
     }
@@ -185,6 +185,58 @@ fn restore_pi_auto_retry(
     Ok(())
 }
 
+fn selected_chat_options(state: &Value) -> Value {
+    json!(state.get("options").and_then(Value::as_array).into_iter().flatten()
+        .filter_map(|option| Some(json!({"id":option.get("id")?.as_str()?,"value":option.get("value")?.as_str()?})))
+        .collect::<Vec<_>>())
+}
+
+fn restore_chat_options(db: &Database, providers: &Providers, session_id: &str, provider: &str) -> Result<()> {
+    restore_pi_auto_retry(db, providers, session_id, provider)?;
+    if provider != "opencode" { return Ok(()); }
+    let saved = db.chat_option_selections(session_id, provider)?;
+    if saved.as_array().is_none_or(Vec::is_empty) { return Ok(()); }
+    let state = providers.chat_options(session_id)?;
+    if state.get("loadState").and_then(Value::as_str) == Some("error") {
+        return Err(anyhow::anyhow!(state.pointer("/error/message").and_then(Value::as_str).unwrap_or("OpenCode options could not be validated. Reconnect to retry." ).to_owned()));
+    }
+    let mut invalid = None;
+    // A model change re-scopes variants. Pending fork options are applied only
+    // after this restore, so the fork's explicit choices always win.
+    for id in ["next-model", "agent", "variant"] {
+        let Some(value) = saved.as_array().into_iter().flatten().find(|row| row.get("id").and_then(Value::as_str) == Some(id))
+            .and_then(|row| row.get("value")).and_then(Value::as_str) else { continue };
+        match providers.chat_set_option(session_id, id, value) {
+            Ok(_) => {}
+            Err(error) if matches!(error.code.as_str(), "chat_option_invalid" | "option_unknown") => invalid = Some((id, value)),
+            Err(error) => return Err(error.into()),
+        }
+    }
+    // Valid later choices clear a previous selection error. Publish the final
+    // unavailable choice last so both chat.options and scoped chat.ui retain
+    // the adapter's readable notice without adding another renderer contract.
+    if let Some((id, value)) = invalid {
+        match providers.chat_set_option(session_id, id, value) {
+            Err(error) if !matches!(error.code.as_str(), "chat_option_invalid" | "option_unknown") => return Err(error.into()),
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
+fn apply_pending_chat_options(db: &Database, providers: &Providers, session_id: &str, provider: &str) -> Result<()> {
+    crate::chat_fork::apply_pending_options(db, providers, session_id)?;
+    if provider == "opencode" {
+        if !providers.chat_is_open(session_id) { return Err(anyhow::anyhow!("OpenCode disconnected while restoring options")); }
+        let state = providers.chat_options(session_id)?;
+        // A missing catalogue is not proof that saved choices became invalid.
+        if state.get("loadState").and_then(Value::as_str) != Some("error") || state.pointer("/error/code").and_then(Value::as_str) == Some("chat_option_invalid") {
+            db.set_chat_option_selections(session_id, provider, &selected_chat_options(&state))?;
+        }
+    }
+    Ok(())
+}
+
 fn set_chat_option(
     db: &Database,
     providers: &Providers,
@@ -203,6 +255,9 @@ fn set_chat_option(
             _ => return Err(anyhow::anyhow!("chat_option_invalid")),
         };
         db.set_pi_auto_retry(session_id, enabled)?;
+    }
+    if provider == "opencode" {
+        db.set_chat_option_selections(session_id, provider, &selected_chat_options(&result))?;
     }
     Ok(result)
 }
@@ -2304,7 +2359,7 @@ impl RuntimeService {
                         return Err(error.into());
                     }
                 };
-            if let Err(error) = restore_pi_auto_retry(db, providers, session_id, &p.provider) {
+            if let Err(error) = restore_chat_options(db, providers, session_id, &p.provider) {
                 let _ = providers.chat_stop(session_id);
                 db.set_session_status(session_id, "error", None)?;
                 return Err(error);
@@ -2319,6 +2374,13 @@ impl RuntimeService {
                 let _ = providers.chat_stop(session_id);
                 db.set_session_status(session_id, "error", None)?;
                 return Err(error);
+            }
+            if p.provider == "opencode" {
+                if let Err(error) = apply_pending_chat_options(db, providers, session_id, &p.provider) {
+                    let _ = providers.chat_stop(session_id);
+                    db.set_session_status(session_id, "error", None)?;
+                    return Err(error);
+                }
             }
             db.set_session_status(session_id, "idle", None)?;
         }
@@ -3219,6 +3281,165 @@ mod plugin_tests;
 mod tests {
     use super::*;
     use crate::providers::{ChatSession, ProviderAdapter, ProviderCapability, ProviderError, TerminalCommand};
+
+    const OC_MODEL_A: &str = "{\"providerID\":\"provider/one\",\"modelID\":\"model/a\"}";
+    const OC_MODEL_B: &str = "{\"providerID\":\"provider/one\",\"modelID\":\"model/b\"}";
+    struct OpenCodeOptionFixture {
+        removed: Arc<AtomicBool>,
+        removed_variant: Arc<AtomicBool>,
+        calls: Arc<Mutex<Vec<String>>>,
+        catalogue_error: bool,
+    }
+    impl ProviderAdapter for OpenCodeOptionFixture {
+        fn id(&self) -> &'static str { "opencode" }
+        fn capability(&self) -> ProviderCapability {
+            ProviderCapability {
+                source:"builtin",plugin_id:None,icon:None,sign_in:None,homepage:None,
+                id:"opencode".into(),name:"OpenCode fixture".into(),installed:true,version:None,
+                terminal:false,chat:true,history:false,resume:true,terminal_resume_capture:"none",reason:None,auth:"unknown".into(),
+            }
+        }
+        fn terminal_command(&self, _: Option<&str>, _: Option<&str>) -> Result<TerminalCommand, ProviderError> { Err(ProviderError::new("unsupported", "fixture")) }
+        fn history_list(&self, _: Option<&str>, _: u32, _: Option<&str>) -> Result<Value, ProviderError> { Ok(json!({})) }
+        fn history_read(&self, _: &str) -> Result<Value, ProviderError> { Ok(json!([])) }
+        fn open_chat(&self, session: &str, _: &str, native: Option<&str>) -> Result<Box<dyn ChatSession>, ProviderError> {
+            Ok(Box::new(OpenCodeOptionChatFixture {
+                native:native.map(str::to_owned).unwrap_or_else(|| format!("oc-{session}")),
+                removed:Arc::clone(&self.removed),removed_variant:Arc::clone(&self.removed_variant),calls:Arc::clone(&self.calls),
+                catalogue_error:self.catalogue_error,
+                model:String::new(),agent:String::new(),variant:String::new(),error:None,
+            }))
+        }
+    }
+    struct OpenCodeOptionChatFixture {
+        native: String, removed: Arc<AtomicBool>, removed_variant: Arc<AtomicBool>, calls: Arc<Mutex<Vec<String>>>,
+        model: String, agent: String, variant: String, error: Option<String>,
+        catalogue_error: bool,
+    }
+    impl ChatSession for OpenCodeOptionChatFixture {
+        fn native_id(&self) -> Option<String> { Some(self.native.clone()) }
+        fn send(&mut self, _: &str, _: &str) -> Result<Value, ProviderError> { Ok(json!({})) }
+        fn cancel(&mut self, _: &str) -> Result<(), ProviderError> { Ok(()) }
+        fn approve(&mut self, _: &str, _: &str, _: &str, _: &str) -> Result<(), ProviderError> { Ok(()) }
+        fn stop(&mut self) -> Result<(), ProviderError> { Ok(()) }
+        fn ui_state(&self) -> Value {
+            if self.catalogue_error { return json!({"options":[],"commands":[],"loadState":"error","error":{"code":"provider_disconnected","message":"Catalogue unavailable"}}); }
+            let removed = self.removed.load(Ordering::SeqCst);
+            let models = if removed { vec![""] } else { vec!["", OC_MODEL_A, OC_MODEL_B] };
+            let agents = if removed { vec!["", "build"] } else { vec!["", "build", "plan"] };
+            let choices = |values: Vec<&str>| values.into_iter().map(|value| json!({"value":value,"name":value})).collect::<Vec<_>>();
+            let mut options = vec![json!({"id":"next-model","name":"Model","value":self.model,"choices":choices(models)}),json!({"id":"agent","name":"Agent","value":self.agent,"choices":choices(agents)})];
+            if !self.model.is_empty() {
+                let variants = if self.removed_variant.load(Ordering::SeqCst) { vec!["", "low"] } else { vec!["", "low", "high"] };
+                options.push(json!({"id":"variant","name":"Variant","value":self.variant,"choices":choices(variants)}));
+            }
+            let mut state = json!({"options":options,"commands":[],"loadState":if self.error.is_some() {"error"} else {"ready"}});
+            if let Some(message) = &self.error { state["error"] = json!({"code":"chat_option_invalid","message":message}); }
+            state
+        }
+        fn set_option(&mut self, id: &str, value: &str) -> Result<Value, ProviderError> {
+            let valid = self.ui_state()["options"].as_array().unwrap().iter().find(|option| option["id"] == id)
+                .is_some_and(|option| option["choices"].as_array().unwrap().iter().any(|choice| choice["value"] == value));
+            if !valid {
+                self.error = Some(format!("Unavailable saved {id} choice was not applied"));
+                return Err(ProviderError::new("chat_option_invalid", self.error.clone().unwrap()));
+            }
+            self.error = None;
+            self.calls.lock().unwrap().push(format!("{id}={value}"));
+            match id {
+                "next-model" => { if self.model != value { self.variant.clear(); } self.model = value.to_owned(); }
+                "agent" => self.agent = value.to_owned(),
+                "variant" => self.variant = value.to_owned(),
+                _ => unreachable!(),
+            }
+            Ok(self.ui_state())
+        }
+    }
+    fn oc_option_service(root: &std::path::Path, db: Arc<Database>, removed: &Arc<AtomicBool>, removed_variant: &Arc<AtomicBool>, calls: &Arc<Mutex<Vec<String>>>) -> RuntimeService {
+        let mut service = test_service(root, db);
+        service.providers = Arc::new(Providers::for_test(vec![Arc::new(OpenCodeOptionFixture { removed:Arc::clone(removed),removed_variant:Arc::clone(removed_variant),calls:Arc::clone(calls),catalogue_error:false })]));
+        service
+    }
+    fn oc_option_session(db: &Database, root: &std::path::Path) -> crate::domain::Session {
+        crate::session_configs::initialize(db).unwrap();
+        let session = db.create_session(CreateSession {project_id:None,title:None,provider:"opencode",mode:"chat",native_id:None,operation_id:"oc-prefs"}).unwrap();
+        db.bind_session(&session.id, Some(root.to_str().unwrap()), None).unwrap();
+        db.set_session_status(&session.id,"idle",None).unwrap();
+        session
+    }
+    fn oc_option_value(state: &Value, id: &str) -> Option<String> {
+        state["options"].as_array()?.iter().find(|row| row["id"] == id)?.get("value")?.as_str().map(str::to_owned)
+    }
+    #[test]
+    fn opencode_options_restore_after_reconnect_and_new_runtime_instance() {
+        let root = tempfile::tempdir().unwrap(); let path = root.path().join("runtime.sqlite");
+        let db = Arc::new(Database::open(&path).unwrap()); let session = oc_option_session(&db,root.path());
+        let removed = Arc::new(AtomicBool::new(false)); let variants = Arc::new(AtomicBool::new(false)); let calls = Arc::new(Mutex::new(Vec::new()));
+        let runtime = oc_option_service(root.path(),Arc::clone(&db),&removed,&variants,&calls);
+        runtime.connect_chat(&session.id).unwrap();
+        for (id,value) in [("next-model",OC_MODEL_A),("agent","plan"),("variant","high")] { set_chat_option(&db,&runtime.providers,&session.id,"opencode",id,value).unwrap(); }
+        let saved = db.chat_option_selections(&session.id,"opencode").unwrap();
+        runtime.providers.chat_stop(&session.id).unwrap(); calls.lock().unwrap().clear(); runtime.connect_chat(&session.id).unwrap();
+        assert_eq!(selected_chat_options(&runtime.providers.chat_options(&session.id).unwrap()),saved);
+        assert_eq!(calls.lock().unwrap()[0],format!("next-model={OC_MODEL_A}"));
+        assert_eq!(calls.lock().unwrap()[2],"variant=high");
+        runtime.providers.chat_stop(&session.id).unwrap(); drop(runtime); drop(db);
+        let reopened = Arc::new(Database::open(&path).unwrap());
+        let restarted = oc_option_service(root.path(),Arc::clone(&reopened),&removed,&variants,&calls);
+        restarted.connect_chat(&session.id).unwrap();
+        assert_eq!(selected_chat_options(&restarted.providers.chat_options(&session.id).unwrap()),saved);
+    }
+    #[test]
+    fn opencode_options_drop_stale_model_agent_and_variant_with_notice() {
+        let root = tempfile::tempdir().unwrap(); let db = Arc::new(Database::open(&root.path().join("runtime.sqlite")).unwrap());
+        let session = oc_option_session(&db,root.path()); let removed = Arc::new(AtomicBool::new(false)); let variants = Arc::new(AtomicBool::new(false)); let calls = Arc::new(Mutex::new(Vec::new()));
+        let runtime = oc_option_service(root.path(),Arc::clone(&db),&removed,&variants,&calls);
+        runtime.connect_chat(&session.id).unwrap();
+        for (id,value) in [("next-model",OC_MODEL_A),("agent","plan"),("variant","high")] { set_chat_option(&db,&runtime.providers,&session.id,"opencode",id,value).unwrap(); }
+        runtime.providers.chat_stop(&session.id).unwrap(); variants.store(true,Ordering::SeqCst); runtime.connect_chat(&session.id).unwrap();
+        let state = runtime.providers.chat_options(&session.id).unwrap();
+        assert_eq!(oc_option_value(&state,"next-model").as_deref(),Some(OC_MODEL_A));
+        assert_eq!(oc_option_value(&state,"variant").as_deref(),Some(""));
+        assert_eq!(state["error"]["code"],"chat_option_invalid");
+        runtime.providers.chat_stop(&session.id).unwrap(); removed.store(true,Ordering::SeqCst); calls.lock().unwrap().clear(); runtime.connect_chat(&session.id).unwrap();
+        let state = runtime.providers.chat_options(&session.id).unwrap();
+        assert_eq!(oc_option_value(&state,"next-model").as_deref(),Some("")); assert_eq!(oc_option_value(&state,"agent").as_deref(),Some(""));
+        assert!(oc_option_value(&state,"variant").is_none()); assert_eq!(state["error"]["code"],"chat_option_invalid");
+        assert!(calls.lock().unwrap().iter().all(|call| !call.contains(OC_MODEL_A) && !call.ends_with("plan") && !call.ends_with("high")));
+        assert!(!db.chat_option_selections(&session.id,"opencode").unwrap().to_string().contains("model/a"));
+    }
+    #[test]
+    fn opencode_pending_fork_options_override_restored_preferences_and_persist() {
+        let root = tempfile::tempdir().unwrap(); let db = Arc::new(Database::open(&root.path().join("runtime.sqlite")).unwrap());
+        let session = oc_option_session(&db,root.path()); let removed = Arc::new(AtomicBool::new(false)); let variants = Arc::new(AtomicBool::new(false)); let calls = Arc::new(Mutex::new(Vec::new()));
+        let runtime = oc_option_service(root.path(),Arc::clone(&db),&removed,&variants,&calls);
+        db.set_chat_option_selections(&session.id,"opencode",&json!([{"id":"next-model","value":OC_MODEL_B},{"id":"agent","value":"plan"},{"id":"variant","value":"low"}])).unwrap();
+        db.transaction(|tx| { tx.execute("INSERT INTO session_fork_options(session_id,data) VALUES (?,?)",rusqlite::params![session.id,json!([{"id":"next-model","value":OC_MODEL_A},{"id":"variant","value":"high"}]).to_string()])?; Ok(()) }).unwrap();
+        runtime.connect_chat(&session.id).unwrap();
+        let state = runtime.providers.chat_options(&session.id).unwrap();
+        assert_eq!(oc_option_value(&state,"next-model").as_deref(),Some(OC_MODEL_A)); assert_eq!(oc_option_value(&state,"variant").as_deref(),Some("high"));
+        assert_eq!(db.pending_fork_options(&session.id).unwrap(),json!([]));
+        assert_eq!(db.chat_option_selections(&session.id,"opencode").unwrap(),selected_chat_options(&state));
+        runtime.providers.chat_stop(&session.id).unwrap(); runtime.connect_chat(&session.id).unwrap();
+        assert_eq!(oc_option_value(&runtime.providers.chat_options(&session.id).unwrap(),"next-model").as_deref(),Some(OC_MODEL_A));
+    }
+    #[test]
+    fn opencode_catalogue_failure_preserves_preferences_and_failed_selections_do_not_save() {
+        let root = tempfile::tempdir().unwrap(); let db = Arc::new(Database::open(&root.path().join("runtime.sqlite")).unwrap());
+        let session = oc_option_session(&db,root.path()); let removed = Arc::new(AtomicBool::new(false)); let variants = Arc::new(AtomicBool::new(false)); let calls = Arc::new(Mutex::new(Vec::new()));
+        let saved = json!([{"id":"next-model","value":OC_MODEL_A},{"id":"agent","value":"plan"},{"id":"variant","value":"high"}]);
+        db.set_chat_option_selections(&session.id,"opencode",&saved).unwrap();
+        let failed = Providers::for_test(vec![Arc::new(OpenCodeOptionFixture {removed:Arc::clone(&removed),removed_variant:Arc::clone(&variants),calls:Arc::clone(&calls),catalogue_error:true})]);
+        assert!(ensure_chat_session_open(&db,&failed,&session.id).unwrap_err().to_string().contains("Catalogue unavailable"));
+        assert!(!failed.chat_is_open(&session.id)); assert!(calls.lock().unwrap().is_empty());
+        assert_eq!(db.chat_option_selections(&session.id,"opencode").unwrap(),saved);
+        let runtime = oc_option_service(root.path(),Arc::clone(&db),&removed,&variants,&calls);
+        runtime.connect_chat(&session.id).unwrap();
+        assert!(set_chat_option(&db,&runtime.providers,&session.id,"opencode","next-model","missing").is_err());
+        assert_eq!(db.chat_option_selections(&session.id,"opencode").unwrap(),saved);
+        set_chat_option(&db,&runtime.providers,&session.id,"opencode","agent","build").unwrap();
+        assert!(runtime.providers.chat_options(&session.id).unwrap().get("error").is_none());
+    }
 
     struct PiOptionAdapter {
         values: Arc<Mutex<Vec<String>>>,

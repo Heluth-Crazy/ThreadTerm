@@ -16,7 +16,7 @@ import { DelegationPanel } from "./DelegationPanel";
 import { delegationTool, delegationToolLabel } from "../delegation";
 import { UsageCard } from './UsageCard';
 import { usageCardsForItems } from '../usageCard';
-import { connectionFeedbackPhase, connectionStatusText, emptyLink, overlayKind, providerLabel, reduceChatLink } from "../chatConnection";
+import { connectionFeedbackPhase, connectionStatusText, emptyLink, overlayKind, providerLabel, reduceChatLink, type ChatConnectAttempt } from "../chatConnection";
 import { activeTurnId, chatCanControl, formatChatDuration, itemShowsStreaming, matchSlashCommands, partBody, partLabel, shouldRenderPart, slashQuery } from "../chatPresentation";
 import { groupCodexTranscript, type CodexTurn } from "../codexTranscript";
 import { completedTurnPresentation, groupToolActivity, toolEntriesForItems, type ToolActivityEntry } from "../toolActivity";
@@ -82,6 +82,8 @@ import { CHAT_REPAIR_REQUEST, setChatRepairAvailability, type ChatRepairAvailabi
 import { discoveredRepair, discoveryMatches, type RepairDiscovery } from '../chatRepairDiscovery';
 import { SurfaceDialog } from './SurfaceDialog';
 import { useChatViewport } from '../useChatViewport';
+import { providerRetryPresentation } from '../providerRetry';
+import { ProviderRetryStatus } from './ProviderRetryStatus';
 import './chat-viewport.css';
 
 type RepairNotice = { kind: 'rebuilt'; total: number } | { kind: 'unchanged' | 'superseded' | 'failed' };
@@ -381,7 +383,7 @@ const asUserError = (caught: unknown, fallback: string) => {
 };
 // Option classification and labels moved to ../composerOptions (C2).
 type DraftWriter = ReturnType<typeof createDraftWriter>;
-type ControlToken = { epoch: number; release: () => void; valid: boolean };
+type ControlToken = { epoch: number; check: () => Promise<void>; release: () => void; valid: boolean };
 type ChatLifecycle = { sessionId: string; writer?: DraftWriter; control?: ControlToken; flushOnExit?: Promise<void> };
 type FirstResponseWait = { token: string; sessionUpdatedAt: string; turnId?: string };
 
@@ -413,6 +415,8 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession, 
   const [mentionPreview, setMentionPreview] = useState<string>();
   const recoveryKey = `threadterm.compose.${session.id}`;
   const canControl = chatCanControl(session);
+  // Native-history repair needs a lease even when chat writes are read-only.
+  const canTakeControl = canControl || (session.readOnly && session.mode === 'chat' && session.status !== 'exited');
   const ended = isEnded(session);
   const [items, setItems] = useState<ChatItem[]>([]); const [text, setText] = useState(""); const [busy, setBusy] = useState(false); const [error, setError] = useState<string>(); const [controlIssue, setControlIssue] = useState<string>(); const [controllable, setControllable] = useState(false);
   const turnChangesCache = useMemo(() => createTurnChangesCache<import('@threadterm/protocol').ReviewFile[]>(), [session.id]);
@@ -465,7 +469,7 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession, 
   const contextUsage = useChatContextUsage(session.id);
   const capabilities = useAgentCapabilities();
   const [connectSlow, setConnectSlow] = useState(false);
-  const connectInFlight = useRef(false);
+  const connectInFlight = useRef<ChatConnectAttempt | undefined>(undefined);
   const transportGeneration = useRef(0);
   const historyGeneration = useRef(0);
   const optionsGeneration = useRef<number | undefined>(undefined);
@@ -709,7 +713,7 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession, 
         }
       }
       if (event.event === 'chat.connection' && data.sessionId === session.id) {
-        setLink(current => reduceChatLink(current, { type: 'event', snapshot: { ...current.connection, ...(event.data as object), runtimeEpoch: event.epoch, sessionId: session.id }, epoch: event.epoch }));
+        setLink(current => reduceChatLink(current, { type: 'event', snapshot: { ...current.connection, error: undefined, ...(event.data as object), runtimeEpoch: event.epoch, sessionId: session.id }, epoch: event.epoch }));
         refreshRepair();
       }
       if (event.event === 'chat.ui' && data.sessionId === session.id) {
@@ -815,7 +819,7 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession, 
     const sessionLifecycle = lifecycle.current;
     lease.current = undefined; leaseSessionId.current = undefined; setControllable(false); setControlIssue(undefined);
     async function take() {
-      if (disposed || taking || !canControl) return;
+      if (disposed || taking || !canTakeControl || control?.valid) return;
       taking = true;
       try {
         const claim = await acquireControl(session.id, () => {
@@ -834,15 +838,25 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession, 
         });
         const target = lifecycle.current;
         if (disposed || target?.sessionId !== session.id) { claim.release(); return; }
-        control = {epoch: claim.epoch, release: claim.release, valid: true};
+        control = {epoch: claim.epoch, check: claim.check, release: claim.release, valid: true};
         target.control = control;
         lease.current = claim.epoch; leaseSessionId.current = session.id; setControllable(true); setControlIssue(undefined); autoTries = 0;
       } catch {
         if (!disposed) setControlIssue(copy('Could not take chat control. Retry from this view.', '无法取得聊天控制权，请在此视图重试。'));
       } finally { taking = false; }
     }
-    reclaimRef.current = () => { autoTries = 0; taking = false; void take(); };
-    if (canControl || (session.readOnly && session.mode === 'chat' && session.status !== 'exited')) void take();
+    reclaimRef.current = () => {
+      autoTries = 0;
+      if (!control?.valid) { void take(); return; }
+      // Retry/transport resync validate the owned lease without taking another
+      // pool reference. A failed check follows the existing onLost recovery.
+      const current = control;
+      setControllable(false);
+      void current.check().then(() => {
+        if (!disposed && control === current && current.valid) setControllable(true);
+      }).catch(() => undefined);
+    };
+    if (canTakeControl) void take();
     return () => {
       disposed = true;
       lease.current = undefined; leaseSessionId.current = undefined;
@@ -851,7 +865,7 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession, 
       if (sessionLifecycle?.flushOnExit) void sessionLifecycle.flushOnExit.finally(release);
       else release();
     };
-  }, [canControl, session.id, session.mode, session.readOnly, session.status]);
+  }, [canTakeControl, canControl, session.id, session.mode, session.readOnly]);
   const connected = connection.phase === "ready" && link.transport === "up";
   const discoveryCurrent = discoveryMatches(repairDiscovery, session.id, historyGeneration.current);
   const discoveryClear = discoveryCurrent && repairDiscovery?.phase === 'clear';
@@ -881,22 +895,32 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession, 
     return () => { disposed = true; };
   }, [canControl, ended, session.id]);
   useEffect(() => {
-    connectInFlight.current = false;
-  }, [session.id]);
+    connectInFlight.current = undefined;
+    return () => { connectInFlight.current = undefined; };
+  }, [session.id, link.transportGeneration]);
   useEffect(() => {
     const epoch = leaseSessionId.current === session.id ? lease.current : undefined;
     const shouldConnect = connection.phase === "connecting" || connection.phase === "disconnected";
+    if (connectInFlight.current && connection.connectionGeneration > connectInFlight.current.connectionGeneration) connectInFlight.current = undefined;
     if (!discoveryClear || !canControl || ended || !controllable || epoch === undefined || connected || !shouldConnect || link.transport !== "up" || connectInFlight.current) return;
-    let disposed = false;
-    connectInFlight.current = true;
     const generation = transportGeneration.current;
+    const attempt: ChatConnectAttempt = {
+      sessionId: session.id, runtimeEpoch: connection.runtimeEpoch, transportGeneration: generation,
+      connectionGeneration: Math.max(connection.connectionGeneration + (connection.phase === "connecting" && connection.connectionGeneration > 0 ? 0 : 1), (link.failedAttempt?.connectionGeneration ?? -1) + 1),
+    };
+    connectInFlight.current = attempt;
+    // Phase/options updates do not cancel this request. Only a newer explicit
+    // attempt, mounted session or transport generation can supersede its result.
     void request("chat.connect", { sessionId: session.id, leaseEpoch: epoch, operationId: operationId() }).then(snapshot => {
-      if (!disposed) setLink(current => reduceChatLink(current, { type: "snapshot", snapshot, transportGeneration: generation }));
+      if (connectInFlight.current !== attempt || generation !== transportGeneration.current) return;
+      connectInFlight.current = undefined;
+      setLink(current => reduceChatLink(current, { type: "snapshot", snapshot, transportGeneration: generation, attempt }));
     }).catch(caught => {
-      if (!disposed) setLink(current => reduceChatLink(current, { type: "connect-failed", message: asUserError(caught, copy("Could not connect.", "无法连接。")) }));
-    }).finally(() => { connectInFlight.current = false; });
-    return () => { disposed = true; };
-  }, [discoveryClear, canControl, ended, controllable, connected, connection.phase, link.transport, session.id, zh]);
+      if (connectInFlight.current !== attempt || generation !== transportGeneration.current) return;
+      connectInFlight.current = undefined;
+      setLink(current => reduceChatLink(current, { type: "connect-failed", attempt, message: asUserError(caught, copy("Could not connect.", "无法连接。")) }));
+    });
+  }, [discoveryClear, canControl, ended, controllable, connected, connection.phase, connection.connectionGeneration, connection.runtimeEpoch, link.transport, link.transportGeneration, session.id, zh]);
   useEffect(() => {
     if (!connected) return;
     let disposed = false;
@@ -934,8 +958,8 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession, 
     return () => window.clearTimeout(timer);
   }, [overlay, connection.phase, session.id]);
   function retryConnection() {
-    connectInFlight.current = false;
-    setLink(current => reduceChatLink(current, { type: "reset", sessionId: session.id, phase: "connecting" }));
+    connectInFlight.current = undefined;
+    setLink(current => reduceChatLink(current, { type: "reset", sessionId: session.id, phase: "disconnected" }));
     reclaimRef.current();
   }
   function continueWithoutReload() {
@@ -1592,14 +1616,7 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession, 
           return <p className="chat-subagent-nested" key={`subagent-${index}`}>{info ? subagentTitle(info, copy) : copy('Subagent', '子代理')}</p>;
         }
         if (part.type === "thinking") return <ThinkingPart key={`thinking-${index}`} part={part} streaming={live && part.status === "streaming"} copy={copy} openFile={openFile} />;
-        if (part.type === "status" && asRecord(part.data).kind === "providerRetry") {
-          const retry = asRecord(part.data), state = asString(retry.state, "retrying");
-          const count = typeof retry.attempt === "number" && typeof retry.maxRetries === "number" ? ` (${retry.attempt}/${retry.maxRetries})` : "";
-          return <div key={`retry-${index}`} className="chat-network-notice" role="status" aria-live="polite">
-            <strong>{state === "retrying" ? copy("Connection interrupted · retrying", "连接遇到问题，正在重试") + count : state === "failed" ? copy("Could not reach Grok", "未能连接 Grok") : state === "stopped" ? copy("Connection retry stopped", "已停止连接重试") : copy("Connection retry finished", "连接重试已结束")}</strong>
-            <p>{state === "retrying" ? copy("Grok is retrying the request. You can stop this turn using the Stop button below.", "Grok 正在重新尝试请求，可使用下方停止按钮结束本轮。") : state === "failed" ? copy("Check your network and the Grok proxy in Settings → Tools, then start a new session to apply proxy changes.", "请检查网络及“设置 → 工具”中的 Grok 代理；修改代理后，新建会话使其生效。") : copy("Your conversation has been kept.", "会话内容已保留。")}</p>
-          </div>;
-        }
+        if (part.type === 'status' && providerRetryPresentation(part.data)) return <ProviderRetryStatus key={`retry-${index}`} data={part.data} copy={copy} />;
         if (part.type === "status") return <CodexStatusCard key={`status-${index}`} part={part} copy={copy} />;
         if (part.type === "text" && asRecord(part.data).kind === "plan") return <PlanUsageCard key={`usage-${index}`} part={part} zh={zh} copy={copy} />;
         if (part.type === "text" && (session.provider === "kimi" || session.provider === "grok") && item.role !== "user" && typeof part.text === "string") {
@@ -1785,7 +1802,7 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession, 
         </Fragment>}
         trailing={<Fragment>
           {controlIssue && <span className="dim">{controlIssue}</span>}
-          {canControl && !writable && <button type="button" className="chip chip-btn chat-compose-reclaim" onClick={() => reclaimRef.current()} disabled={busy}>{copy('Reclaim control', '重新取得控制')}</button>}
+          {canControl && !controllable && <button type="button" className="chip chip-btn chat-compose-reclaim" onClick={() => reclaimRef.current()} disabled={busy}>{copy('Reclaim control', '重新取得控制')}</button>}
           {liveTurn && <button type="button" className="icon-btn icon-btn-sm icon-btn-round is-secondary chat-compose-send is-stop" disabled={!writable || busy} onClick={() => void cancel(liveTurn)} aria-label={copy('Stop', '停止')} title={copy('Stop', '停止')}><span className="chat-stop-square" /></button>}
           <SteerSend kind={steerKind} openSignal={liveFeedbackSignal} busy={busy} disabled={(!text.trim() && !images.length && !context.items.length) || queue?.sessionId !== session.id || imageReading || busy || !writable || !draftLoaded || draftFailed || recovery !== undefined} copy={copy} onInsert={() => void insertIntoTurn()} onNote={() => void addNote()} noteDisabled={!text.trim() || images.length > 0} noteDisabledReason={!text.trim() ? copy('Type a note first.', '请先输入备注。') : images.length ? copy('Images cannot be sent as a note.', '图片不能作为备注发送。') : undefined} />
         </Fragment>}

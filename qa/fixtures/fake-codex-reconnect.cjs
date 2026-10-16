@@ -14,8 +14,8 @@ const record = (direction, method, params) => appendFileSync(log, `${JSON.string
 const send = value => { record('out', value.method ?? 'response', value.params ?? value); process.stdout.write(`${JSON.stringify(value)}\n`); };
 const result = (id, value) => send({ id, result: value });
 const event = (method, params) => send({ method, params });
-const thread = () => ({ id: nativeId, cwd, model, reasoningEffort: 'medium', status: { type: 'idle' } });
-const response = () => ({ thread: thread(), threadSettings: { model, approvalPolicy: 'on-request' } });
+const thread = (id = nativeId) => ({ id, cwd, model, reasoningEffort: 'medium', status: { type: 'idle' } });
+const response = (id = nativeId) => ({ thread: { ...thread(id), turns: [] }, threadSettings: { model, approvalPolicy: 'on-request' } });
 
 function gap(nativeTurn) {
   const command = `${nativeTurn}-tool`;
@@ -40,8 +40,11 @@ createInterface({ input: process.stdin, crlfDelay: Infinity }).on('line', line =
   if (method === 'initialize') return result(id, { capabilities: {} });
   if (method === 'account/read') return result(id, { account: { type: 'chatgpt' }, requiresOpenaiAuth: false });
   if (method === 'account/rateLimits/read') return result(id, {});
-  if (method === 'thread/start' || method === 'thread/resume') return result(id, response());
-  if (method === 'thread/read') return result(id, { thread: thread() });
+  if (method === 'thread/start') return result(id, response());
+  // New-chat verification is performed through a second app-server process.
+  if (method === 'thread/resume') return result(id, response(params.threadId ?? nativeId));
+  if (method === 'thread/read') return result(id, { thread: { ...thread(params.threadId ?? nativeId), turns: [] } });
+  if (method === 'thread/inject_items') return result(id, {});
   if (method === 'model/list') return result(id, { data: [
     { id: 'qa-reconnect-a', displayName: 'QA reconnect A', supportedReasoningEfforts: [{ reasoningEffort: 'medium' }] },
     { id: 'qa-reconnect-b', displayName: 'QA reconnect B', supportedReasoningEfforts: [{ reasoningEffort: 'medium' }] },
