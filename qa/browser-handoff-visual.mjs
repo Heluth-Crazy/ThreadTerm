@@ -134,7 +134,8 @@ async function inspectToolbarPresses(composer){
  await browser({type:'back',tabId:id});await waitUrl(`${baseUrl}/toolbar-history-a`);await browser({type:'zoom',tabId:id,factor:.9});
  await until(()=>toolbar.getByRole('button',{name:'Back',exact:true}).isEnabled(),'Back enabled');await until(()=>toolbar.getByRole('button',{name:'Forward',exact:true}).isEnabled(),'Forward enabled');await until(()=>toolbar.getByRole('button',{name:'90%',exact:true}).count(),'reset zoom visible');
  await until(()=>toolbar.getByRole('button',{name:'Screenshot to Chat',exact:true}).isEnabled(),'capture enabled after toolbar navigation');
- const buttons=await toolbar.getByRole('button').all();
+ // B3 sharing has intentionally disabled selected controls and its own native UI fixture.
+ const buttons=await toolbar.locator('button:not(.wb-browser-share button)').all();
  for(const button of buttons){
   const label=await button.evaluate(element=>element.getAttribute('aria-label')??element.textContent.trim());const action={label};report.toolbarPresses.push(action);
   assert.equal(await button.isEnabled(),true,`${label}: toolbar probe must not skip disabled controls`);
@@ -153,7 +154,7 @@ async function inspectToolbarPresses(composer){
   assertBrowserButtonClick(action.events,label);
  }
  await browser({type:'zoom',tabId:id,factor:initial.zoom});await browser({type:'navigate',tabId:id,url:initial.url});await waitUrl(initial.url);
- check('Every toolbar button, including navigation, reset zoom and console, preserves its pressed subtree through pane activation and receives trusted pointerdown/mousedown/pointerup/mouseup/click');
+ check('Every B2 navigation/page toolbar button, including reset zoom and console, preserves its pressed subtree through pane activation and receives trusted pointerdown/mousedown/pointerup/mouseup/click');
 }
 async function dragBrowserDivider(endX,label){
  const divider=page.locator('[data-split-id] > .pane-divider').first();await divider.waitFor();

@@ -9,6 +9,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { aggregateTrace, assertCheckpointTargets, checkpointTargetReport, parseTrace, summarizeRuns } from './lib/send-latency-breakdown.mjs';
 import { removeScratch } from './lib/qa-cleanup.mjs';
+import { PROTOCOL_CONTRACT } from '../protocol/index.ts';
 
 const option = name => { const index = process.argv.indexOf(name); return index < 0 ? undefined : process.argv[index + 1]; };
 if (process.argv.includes('--help')) {
@@ -134,7 +135,7 @@ async function main() {
       app = await electron.launch({ args: ['--disable-gpu', '--in-process-gpu', '--no-sandbox', appDir], cwd: bin, env, timeout: 60000 });
       page = await app.firstWindow({ timeout: 30000 }); page.setDefaultTimeout(45000);
       await page.waitForFunction(() => Boolean(window.threadterm));
-      assert.equal((await rpc('runtime.health')).contract, 13, 'Must be the real runtime bridge');
+      assert.equal((await rpc('runtime.health')).contract, PROTOCOL_CONTRACT, 'Must be the real runtime bridge');
       const initial = await rpc('runtime.snapshot');
       await rpc('settings.update', { patch: { language: 'en', notifications: { native: false, attention: false, completed: false, sound: false } },
         expectedRevision: initial.settings.revision, operationId: randomUUID() });
@@ -269,7 +270,7 @@ async function main() {
       'desktop pre-write med ms': fmt(value.metrics.desktopBeforeWriteMs?.median),
       'desktop round-trip med ms': fmt(value.metrics.desktopRoundTripMs?.median),
       'desktop total med ms': fmt(value.metrics.desktopTotalMs?.median) })));
-    if (report.checkpointAssertion) console.table(report.checkpointAssertion.checks.map(value => ({ group: value.group,
+    if (Array.isArray(report.checkpointAssertion?.checks)) console.table(report.checkpointAssertion.checks.map(value => ({ group: value.group,
       'warm-up excluded': value.excludedWarmup, 'repeated n': value.samples.n,
       'ready checkpoints': `${value.checkpoints.ready}/${value.checkpoints.ready + value.checkpoints.invalid}`,
       'checkpoint turn-ID mismatches': value.checkpoints.turnIdMismatches,

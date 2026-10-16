@@ -1824,6 +1824,16 @@ pub struct ImportHistorySession<'a> {
 /// unrelated imported sessions cannot accidentally share a presentation turn.
 pub(crate) fn scoped_history_item(session_id: &str, source: &ChatItem) -> ChatItem {
     let mut item = source.clone();
+    for part in &mut item.parts {
+        let Some(data) = part.get_mut("data").and_then(Value::as_object_mut) else { continue };
+        if data.get("server").and_then(Value::as_str) != Some("threadterm")
+            || data.get("resultRedacted").and_then(Value::as_bool) != Some(true)
+            || !data.get("tool").and_then(Value::as_str).is_some_and(|tool| crate::browser_tools::TOOL_NAMES.contains(&tool))
+        { continue; }
+        if let Some(activity) = data.get_mut("browserActivity").and_then(Value::as_object_mut) {
+            activity.insert("callerSessionId".to_owned(), json!(session_id));
+        }
+    }
     item.id = format!("{session_id}:history:{}", source.id);
     item.turn_id = source
         .turn_id
@@ -2478,6 +2488,21 @@ fn merge(base: &mut Value, patch: &Value) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn imported_browser_receipts_bind_the_target_chat_without_changing_other_tools() {
+        let mut source = history_item("browser-read", "");
+        source.parts = vec![
+            json!({"type":"tool","data":{"type":"mcpToolCall","server":"threadterm","tool":"browser_snapshot","resultRedacted":true,"browserActivity":{"tool":"browser_snapshot","outcome":"completed","provenanceUnavailable":true,"callerSessionId":"foreign-chat"}}}),
+            json!({"type":"tool","data":{"server":"other","tool":"read","browserActivity":{"callerSessionId":"ordinary-value"}}}),
+        ];
+        let normalized = normalize_history_transcript("target-chat", &[source.clone()]).unwrap();
+        assert_eq!(normalized[0].parts[0].pointer("/data/browserActivity/callerSessionId"), Some(&json!("target-chat")));
+        assert_eq!(normalized[0].parts[1], source.parts[1]);
+        assert_eq!(source.parts[0].pointer("/data/browserActivity/callerSessionId"), Some(&json!("foreign-chat")));
+        let repaired = scoped_history_item("repair-chat", &source);
+        assert_eq!(repaired.parts[0].pointer("/data/browserActivity/callerSessionId"), Some(&json!("repair-chat")));
+    }
 
     #[test]
     fn subagent_rows_are_revisioned_isolated_ordered_and_cascade_on_session_delete() {

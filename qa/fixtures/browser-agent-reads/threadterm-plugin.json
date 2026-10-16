@@ -1,0 +1,12 @@
+{
+  "schemaVersion": 1,
+  "id": "browser-agent-reads-qa",
+  "name": "Browser agent reads ACP (QA)",
+  "version": "1.0.0",
+  "publisher": "ThreadTerm QA",
+  "description": "Isolated public ACP and composed MCP browser-read conformance fixture.",
+  "contributes": {
+    "agents": [{ "id": "browser-agent-read-echo", "name": "Browser Agent Read Echo", "command": "node", "args": ["{pluginDir}/agent.mjs"], "versionArgs": ["--version"], "chat": { "protocol": "acp", "args": ["--acp"] } }],
+    "browserBindings": [{ "id": "browser-agent-read-preview", "bindingVersion": 1, "providerId": "browser-agent-read-echo", "requires": { "threadterm.preview": 1 }, "transport": "mcp-stdio", "tools": ["preview_present", "preview_status"], "workflow": "threadterm.preview.after-server-ready.v1" }]
+  }
+}

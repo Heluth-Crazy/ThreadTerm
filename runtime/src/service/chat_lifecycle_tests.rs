@@ -277,6 +277,8 @@ impl Fixture {
         let output = Arc::new(OutputStore::default());
         let service = Arc::new(RuntimeService {
             previews: Arc::new(crate::preview::Previews::new(Arc::clone(&db)).unwrap()),
+            browser_tools: RuntimeService::browser_test_tools(&db),
+            shutdown_changed: tokio::sync::Notify::new(),
             config: RuntimeConfig {
                 data_dir: root.path().to_owned(),
                 database_path: root.path().join("runtime.sqlite"),

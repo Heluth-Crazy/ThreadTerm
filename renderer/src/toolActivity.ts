@@ -1,4 +1,5 @@
 import type { ChatItem, ChatPart } from '@threadterm/protocol';
+import { hasRedactedBrowserResult } from './browserToolActivity';
 import { delegationTool } from './delegation';
 import { isSubagentPart, subagentItemsOf } from './subagentActivity';
 import { toolInputs, toolStatus, toolView } from './toolView';
@@ -164,6 +165,7 @@ const EMPTY_JSON = /^[[\]{}(),;\s]+$/;
 
 /** A compact real result line only; tool inputs are never serialized as output. */
 export function toolOutputPreview(part: ChatPart): string | undefined {
+  if (hasRedactedBrowserResult(part)) return undefined;
   const data = record(part.data), state = record(data.state);
   const candidates = [
     record(data.result).content,

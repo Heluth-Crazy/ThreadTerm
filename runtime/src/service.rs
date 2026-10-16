@@ -40,6 +40,7 @@ pub struct RuntimeService {
     deferred_launch: Arc<Mutex<DeferredLaunchGate>>,
     shutdown_requested: AtomicBool,
     shutdown_pending: AtomicBool,
+    shutdown_changed: tokio::sync::Notify,
     relocation_gate: RwLock<()>,
     retry_gate: Mutex<()>,
     settings_apply_gate: Mutex<()>,
@@ -48,6 +49,7 @@ pub struct RuntimeService {
     delegations: Arc<crate::delegation::Delegations>,
     chat_queues: Arc<crate::chat_queue::ChatQueues>,
     pub(crate) previews: Arc<crate::preview::Previews>,
+    pub(crate) browser_tools: Arc<crate::browser_tools::BrowserTools>,
 }
 
 /// Opens a session's provider Chat. Shared by `chat.connect` (after the
@@ -946,11 +948,20 @@ impl RuntimeService {
         let chat_tools = crate::chat_tools::shared(&config.database_path, Arc::clone(&db))
             .expect("initialize app-hosted chat tools");
         let previews = Arc::new(crate::preview::Previews::new(Arc::clone(&db)).expect("initialize preview operations"));
+        let browser_providers = Arc::downgrade(&providers);
+        let browser_tools = Arc::new(crate::browser_tools::BrowserTools::new(
+            Arc::clone(&db), uuid::Uuid::new_v4().to_string(),
+            Arc::new(move |session, generation, allow_reserved| {
+                browser_providers.upgrade().is_some_and(|registry| {
+                    registry.browser_generation_is_current(session, generation, allow_reserved)
+                })
+            }),
+        ));
         providers.set_tool_server_resolver(crate::preview::tool_server_resolver(
             Arc::clone(&db),
             Arc::clone(&delegations),
             Arc::clone(&chat_tools),
-            Arc::clone(&previews),
+            crate::preview::BrowserCapabilities { previews: Arc::clone(&previews), tools: Arc::clone(&browser_tools) },
             Arc::downgrade(&providers),
             config.clone(),
             crate::delegation::default_mcp_executable(),
@@ -1039,6 +1050,7 @@ impl RuntimeService {
             providers,
             shutdown_requested: AtomicBool::new(false),
             shutdown_pending: AtomicBool::new(false),
+            shutdown_changed: tokio::sync::Notify::new(),
             relocation_gate: RwLock::new(()),
             retry_gate: Mutex::new(()),
             settings_apply_gate: Mutex::new(()),
@@ -1047,7 +1059,14 @@ impl RuntimeService {
             delegations,
             chat_queues,
             previews,
+            browser_tools,
         }
+    }
+    #[cfg(test)]
+    fn browser_test_tools(db: &Arc<Database>) -> Arc<crate::browser_tools::BrowserTools> {
+        Arc::new(crate::browser_tools::BrowserTools::new(
+            Arc::clone(db), uuid::Uuid::new_v4().to_string(), Arc::new(|_, _, _| false),
+        ))
     }
     pub fn start_retry_scheduler(self: &Arc<Self>) {
         let service = Arc::downgrade(self);
@@ -1117,7 +1136,30 @@ impl RuntimeService {
     pub fn acknowledge_shutdown(&self) {
         if self.shutdown_pending.load(Ordering::Acquire) {
             self.shutdown_requested.store(true, Ordering::Release);
+            self.shutdown_changed.notify_waiters();
         }
+    }
+    /// The private browser listener has no idle polling timer.
+    pub(crate) async fn wait_for_shutdown(&self) {
+        loop {
+            let notified = self.shutdown_changed.notified();
+            tokio::pin!(notified);
+            notified.as_mut().enable();
+            if self.shutdown_requested() { return; }
+            notified.await;
+        }
+    }
+    pub(crate) async fn browser_tool_call(&self, principal: &str, request: RpcRequest) -> std::result::Result<Value, RpcError> {
+        if request.v != 1 { return Err(error("unsupported_version", "only protocol version 1 is supported")); }
+        if self.shutdown_pending.load(Ordering::Acquire) { return Err(error("runtime_stopping", "Runtime is shutting down")); }
+        {
+            let _gate = self.relocation_gate.read().map_err(|_| error("runtime_error", "relocation lock poisoned"))?;
+            if crate::settings_services::relocation_blocks(&self.config, &request.method)
+                .map_err(|_| error("browser_unavailable", "Browser scope is unavailable"))? {
+                return Err(error("relocation_pending", "data relocation is awaiting activation or cancellation"));
+            }
+        }
+        self.browser_tools.tool_call_for(principal, request.params).await.map_err(browser_rpc_error)
     }
     /// Ephemeral Chat-only pushes. The transport subscribes per connection;
     /// payloads use the protocol chat.turnSpeed event and never enter SQLite.
@@ -1132,6 +1174,10 @@ impl RuntimeService {
         principal: &str,
         request: RpcRequest,
     ) -> std::result::Result<Value, RpcError> {
+        if request.method == "browser.tool.cancel" {
+            if request.v != 1 { return Err(error("unsupported_version", "only protocol version 1 is supported")); }
+            return self.browser_tools.cancel(request.params).map_err(browser_rpc_error);
+        }
         // `ask_user` waits for a later `chat.answer`, so release the global
         // relocation fence after its short admission and publication step.
         if request.method == "chat.tool.ask" {
@@ -1487,6 +1533,7 @@ impl RuntimeService {
                         .ok_or_else(|| anyhow::anyhow!("session_not_found"))?;
                     crate::chat_tools::shared(&self.config.database_path, Arc::clone(&self.db))?
                         .revoke_session(&p.session_id)?;
+                    self.browser_tools.revoke_session(&p.session_id);
                     if session.read_only {
                         self.record_null(&p.operation_id, "session.stop")?;
                         return Ok(Value::Null);
@@ -1817,6 +1864,7 @@ impl RuntimeService {
                     self.leases
                         .require(&self.db, &p.session_id, principal, p.lease_epoch)?;
                     self.chat_queues.pause_dispatch(&self.db, &p.session_id, "stopped")?;
+                    self.browser_tools.cancel_session_pending(&p.session_id, &p.turn_id)?;
                     let chat_tools = crate::chat_tools::shared(&self.config.database_path, Arc::clone(&self.db))?;
                     chat_tools.cancel_turn(&p.session_id, &p.turn_id)?;
                     chat_tools.clear_waiting_feedback(&p.session_id, Some(&p.turn_id))?;
@@ -2804,6 +2852,16 @@ fn error(code: &str, message: &str) -> RpcError {
         code: code.into(),
         message: message.into(),
         details: None,
+    }
+}
+pub(crate) fn browser_rpc_error(failure: anyhow::Error) -> RpcError {
+    let message = failure.to_string();
+    let code = message.split(':').next().unwrap_or("");
+    if code.starts_with("browser_") && code.len() <= 64
+        && code.bytes().all(|byte| byte.is_ascii_lowercase() || byte == b'_') {
+        error(code, code)
+    } else {
+        error("browser_request_failed", "Browser request could not be completed")
     }
 }
 fn file_reference_rpc_error(failure: anyhow::Error) -> RpcError {

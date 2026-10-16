@@ -1,6 +1,7 @@
 import { contextBridge, ipcRenderer } from 'electron';
 import { terminalPtyFromArguments } from './terminalEnvironment.js';
 import type { BrowserBridge, BrowserEvent } from '../../renderer/src/browserTypes.js';
+import { isBrowserSharingState } from '../../renderer/src/browserTypes.js';
 import type { BrowserHandoffBridge, BrowserHandoffEvent } from './browser/handoffTypes.js';
 import {
   isRecord,
@@ -137,6 +138,7 @@ function isBrowserEvent(value: unknown): value is BrowserEvent {
     && typeof state.loading === 'boolean' && typeof state.canGoBack === 'boolean' && typeof state.canGoForward === 'boolean'
     && typeof state.zoom === 'number' && Number.isFinite(state.zoom) && Number.isSafeInteger(state.documentGeneration)
     && ['pending', 'load_observed', 'failed'].includes(String(state.navigation))
+    && (state.sharing === undefined || isBrowserSharingState(state.sharing))
     && (state.snapshot === undefined || typeof state.snapshot === 'string' && state.snapshot.startsWith('data:image/png;base64,'));
 }
 function isBrowserHandoffEvent(value: unknown): value is BrowserHandoffEvent {

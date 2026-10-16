@@ -41,7 +41,7 @@ test('preview cancellation releases its bounded paint wait',async()=>{
 
 test('WebPreview gates creation and snapshot readiness, and ignores an obsolete show reply',async()=>{
  const states=[],refs=[],effects=[],frames=[],commands=[];let stateIndex=0,refIndex=0,listener,placeholder,finishShow;
- const react={useState:initial=>{const index=stateIndex++;if(!(index in states))states[index]=typeof initial==='function'?initial():initial;return [states[index],value=>{states[index]=typeof value==='function'?value(states[index]):value;}];},useRef:initial=>refs[refIndex++]??(refs[refIndex-1]={current:initial}),useEffect:callback=>effects.push(callback)};
+ const react={useId:()=>':browser-preview-fixture:',useState:initial=>{const index=stateIndex++;if(!(index in states))states[index]=typeof initial==='function'?initial():initial;return [states[index],value=>{states[index]=typeof value==='function'?value(states[index]):value;}];},useRef:initial=>refs[refIndex++]??(refs[refIndex-1]={current:initial}),useEffect:callback=>effects.push(callback)};
  const bridge={browserCommand:command=>{commands.push(command);return command.type==='show'?new Promise(resolve=>{finishShow=resolve;}):Promise.resolve();},onBrowserEvent:callback=>{listener=callback;return()=>{};}};
  const require=name=>{
   if(name==='react')return react;
@@ -56,7 +56,7 @@ test('WebPreview gates creation and snapshot readiness, and ignores an obsolete 
  const compiled=ts.transpileModule(readFileSync('renderer/src/components/WebPreview.tsx','utf8'),{compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.CommonJS,jsx:ts.JsxEmit.ReactJSX}}).outputText;
  vm.runInNewContext(compiled,{require,module,exports:module.exports,requestAnimationFrame:callback=>frames.push(callback),ResizeObserver:class{observe(){}},addEventListener(){}});
  const render=(visible=true)=>{stateIndex=0;refIndex=0;effects.length=0;const tree=module.exports.WebPreview({tabId:'tab-a',url:'https://example.test/',visible,zh:false});placeholder=tree.props.children.flat().find(child=>child?.props?.className==='tt-browser-view').props;return placeholder['data-native-ready'];};
- assert.equal(render(),undefined);effects[1]();
+ assert.equal(render(),undefined);effects.find(effect=>String(effect).includes('onBrowserEvent'))();
  const state={tabId:'tab-a',url:'https://example.test/',title:'',loading:true,canGoBack:false,canGoForward:false,zoom:1,navigation:'pending',documentGeneration:0};
  listener({type:'state',state:{...state,tabId:'other-tab'}});assert.equal(render(),undefined,'another tab cannot establish readiness');
  listener({type:'state',state});assert.equal(render(),'true','pending navigation is enough after native creation');
@@ -66,7 +66,7 @@ test('WebPreview gates creation and snapshot readiness, and ignores an obsolete 
  image.props.onLoad();assert.equal(commands.length,0,'image load schedules a paint before acknowledgement');
  frames.shift()();assert.equal(commands.length,0,'the loaded replacement gets a full paint opportunity');
  frames.shift()();assert.equal(commands.length,1);assert.equal(commands[0].type,'snapshotReady');assert.equal(commands[0].generation,7);assert.equal(commands[0].tabId,'tab-a');
- placeholder.ref.current={getBoundingClientRect:()=>({x:100,y:100,width:400,height:300})};effects[2]();
+ placeholder.ref.current={getBoundingClientRect:()=>({x:100,y:100,width:400,height:300})};effects.find(effect=>String(effect).includes('ResizeObserver'))();
  listener({type:'state',state:{...state,snapshot:'data:image/png;base64,bmV3',snapshotGeneration:8}});render();
  finishShow(state);await Promise.resolve();await Promise.resolve();render();
  assert.equal(placeholder.children.props.src,'data:image/png;base64,bmV3','a delayed show reply cannot erase the published snapshot');

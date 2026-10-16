@@ -142,6 +142,16 @@ export function SessionWorkspace({session,data,theme,onBack,onSelect,onProject,o
   saving.current=persisted.catch(error=>{fail(error);});
   return persisted;
  };
+ const prepareBrowserShare=async(tabId:string)=>{
+  if(!project||!path)throw new Error('Save this tab in a project workspace before sharing.');
+  const contains=()=>workspaceTabs(latestLayout.current).some(item=>item.tab.kind==='web'&&item.tab.id===tabId);
+  if(!contains())throw new Error('The browser tab is no longer in this workspace.');
+  await saving.current;
+  if(!saved.current.id||persistedLayout.current!==latestLayout.current)await save(latestLayout.current);
+  await saving.current;
+  if(!live.current||!contains()||!saved.current.id||persistedLayout.current!==latestLayout.current)throw new Error('The current browser workspace could not be saved.');
+  return {id:saved.current.id,revision:saved.current.revision};
+ };
  /** Bring back file tabs dropped on open that still have unsaved edits (drafts), in their old places when the
   * layout is still the one shown on open, otherwise beside the routed session. Persist the result. */
  const restoreUnsaved=async(source:PaneLayout,stripped:PaneLayout)=>{
@@ -491,6 +501,7 @@ export function SessionWorkspace({session,data,theme,onBack,onSelect,onProject,o
       terminalCompatibility={data.settings.terminalCompatibility} providers={data.providers}
       delegationEnabled={data.settings['chatTools.delegation'] !== false} sessionInfoEnabled={data.settings['chatTools.sessionInfo'] !== false}
       onChange={save} onSessionChanged={onChanged} onOpenSession={onSelect} ownerSessionId={previewSessionId}
+      prepareBrowserShare={prepareBrowserShare}
       onPickSession={(paneId)=>{setPicker({mode:'fill',paneId});setQuery('');}}
       toolbarHost={toolbarHost}
       onEmpty={()=>{void saving.current.then(()=>{if(live.current&&persistedLayout.current===latestLayout.current&&!workspaceTabs(visibleSessionLayout(latestLayout.current,previewSessionId)).length)onBack();});}}

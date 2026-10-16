@@ -732,15 +732,21 @@ fn mcp_handoff_capable(providers: &Providers, provider: &str) -> bool {
         })
 }
 
+pub(crate) struct BrowserCapabilities {
+    pub previews: Arc<Previews>,
+    pub tools: Arc<crate::browser_tools::BrowserTools>,
+}
+
 pub(crate) fn tool_server_resolver(
     db: Arc<Database>,
     delegations: Arc<crate::delegation::Delegations>,
     chat_tools: Arc<crate::chat_tools::ChatTools>,
-    previews: Arc<Previews>,
+    browser: BrowserCapabilities,
     providers: Weak<Providers>,
     config: RuntimeConfig,
     mcp: Option<PathBuf>,
 ) -> ToolServerResolver {
+    let BrowserCapabilities { previews, tools: browser_tools } = browser;
     let delegation = crate::delegation::tool_server_resolver(
         Arc::clone(&db),
         delegations,
@@ -753,7 +759,9 @@ pub(crate) fn tool_server_resolver(
         // process environment turn a delegated, read-only, or unsupported
         // session into a generated-UI instruction recipient.
         if let Some(server) = spec.as_mut() {
-            server.env.retain(|(key, _)| key != "THREADTERM_GENERATED_UI");
+            server.env.retain(|(key, _)| !matches!(key.as_str(), "THREADTERM_GENERATED_UI" | "THREADTERM_BROWSER_SESSION_ID" | "THREADTERM_BROWSER_TOKEN"));
+            server.env.push(("THREADTERM_BROWSER_SESSION_ID".into(), String::new()));
+            server.env.push(("THREADTERM_BROWSER_TOKEN".into(), String::new()));
         }
         let Some(registry) = providers.upgrade() else {
             return spec;
@@ -801,6 +809,26 @@ pub(crate) fn tool_server_resolver(
         let preview_eligible = db.session_by_id(session).ok().flatten().is_some_and(|s| s.delegation.is_none());
         if !preview_eligible {
             return spec;
+        }
+        // Read tools need explicit per-tab sharing, independently from the
+        // selected presentation binding and from Ask/delegation settings.
+        if provider != "opencode" && supported && mcp_handoff_capable(&registry, provider) {
+            if let (Some(command), Some(generation)) = (mcp.as_ref(), registry.preview_worker_token(session)) {
+                if let Ok(token) = browser_tools.issue(session, &generation) {
+                    let server = spec.get_or_insert_with(|| ChatToolServer {
+                        name: "threadterm".into(), command: command.to_string_lossy().into_owned(), args: vec![],
+                        env: vec![
+                            ("THREADTERM_SESSION_ID".into(), String::new()), ("THREADTERM_SESSION_TOKEN".into(), String::new()),
+                            ("THREADTERM_V3_DATA".into(), config.data_dir.to_string_lossy().into_owned()),
+                            ("THREADTERM_V3_PIPE".into(), config.pipe_base.clone()),
+                        ],
+                    });
+                    server.env.retain(|(key, _)| !matches!(key.as_str(), "THREADTERM_MCP_PROFILE" | "THREADTERM_BROWSER_SESSION_ID" | "THREADTERM_BROWSER_TOKEN"));
+                    server.env.push(("THREADTERM_MCP_PROFILE".into(), "chat-tools".into()));
+                    server.env.push(("THREADTERM_BROWSER_SESSION_ID".into(), session.into()));
+                    server.env.push(("THREADTERM_BROWSER_TOKEN".into(), token));
+                }
+            }
         }
         let generated_ui = db.snapshot().ok().is_some_and(|snapshot| generated_ui_enabled(&snapshot.settings.value));
         if generated_ui && mcp_handoff_capable(&registry, provider) {
@@ -992,7 +1020,10 @@ mod tests {
             Arc::clone(&db),
             Arc::new(crate::delegation::Delegations::default()),
             chat_tools,
-            Arc::new(Previews::new(Arc::clone(&db)).unwrap()),
+            BrowserCapabilities {
+                previews: Arc::new(Previews::new(Arc::clone(&db)).unwrap()),
+                tools: Arc::new(crate::browser_tools::BrowserTools::new(Arc::clone(&db), "test-browser".into(), Arc::new(|_, _, _| false))),
+            },
             Arc::downgrade(&providers),
             config,
             Some(root.path().join("threadterm-v3-mcp")),
@@ -1027,7 +1058,10 @@ mod tests {
             Arc::clone(&db),
             Arc::new(crate::delegation::Delegations::default()),
             chat_tools,
-            Arc::new(Previews::new(Arc::clone(&db)).unwrap()),
+            BrowserCapabilities {
+                previews: Arc::new(Previews::new(Arc::clone(&db)).unwrap()),
+                tools: Arc::new(crate::browser_tools::BrowserTools::new(Arc::clone(&db), "test-browser".into(), Arc::new(|_, _, _| false))),
+            },
             Arc::downgrade(&providers),
             config,
             Some(root.path().join("threadterm-v3-mcp")),

@@ -6,6 +6,7 @@
 
 mod acp;
 mod approval;
+pub(crate) mod browser_activity;
 mod claude;
 mod codex;
 #[cfg(test)]
@@ -50,7 +51,7 @@ pub type ProjectTrustResolver =
     Arc<dyn Fn(&str, &str) -> Result<Option<String>, ProviderError> + Send + Sync>;
 
 #[derive(Clone, Copy, Default)]
-pub(crate) struct ChatToolPolicy {pub delegation:bool,pub preview:bool,pub ask:bool,pub session_info:bool,pub feedback:bool}
+pub(crate) struct ChatToolPolicy {pub delegation:bool,pub preview:bool,pub browser:bool,pub ask:bool,pub session_info:bool,pub feedback:bool}
 pub(crate) fn chat_tool_policy(tools:Option<&ChatToolServer>)->ChatToolPolicy {
     let Some(server)=tools.filter(|s|s.name=="threadterm") else{return ChatToolPolicy::default()};
     let env=|key:&str|server.env.iter().find(|(name,_)|name==key).map(|(_,value)|value.as_str());
@@ -58,6 +59,7 @@ pub(crate) fn chat_tool_policy(tools:Option<&ChatToolServer>)->ChatToolPolicy {
     ChatToolPolicy {
         delegation: !composed || env("THREADTERM_SESSION_TOKEN").is_some_and(|s|!s.is_empty()),
         preview: composed && env("THREADTERM_PREVIEW_TOKEN").is_some_and(|s|!s.is_empty()),
+        browser: composed && env("THREADTERM_BROWSER_TOKEN").is_some_and(|s|!s.is_empty()),
         ask: composed && env("THREADTERM_CHAT_TOKEN").is_some_and(|s|!s.is_empty()) && env("THREADTERM_CHAT_TOOL_ASK") == Some("1"),
         session_info: composed && env("THREADTERM_CHAT_TOKEN").is_some_and(|s|!s.is_empty()) && env("THREADTERM_CHAT_TOOL_SESSION_INFO") == Some("1"),
         feedback: composed && env("THREADTERM_CHAT_TOKEN").is_some_and(|s|!s.is_empty()) && env("THREADTERM_CHAT_TOOL_FEEDBACK") == Some("1"),
@@ -69,7 +71,7 @@ pub(crate) fn acp_scoped_permission_option(params:&Value,policy:&ChatToolPolicy)
         && !title
             .strip_prefix("mcp__threadterm__")
             .or_else(|| title.strip_prefix("threadterm__"))
-            .is_some_and(|tool| crate::preview::TOOL_NAMES.contains(&tool))
+            .is_some_and(|tool| crate::preview::TOOL_NAMES.contains(&tool) || crate::browser_tools::TOOL_NAMES.contains(&tool))
     {
         return None;
     }
@@ -78,7 +80,8 @@ pub(crate) fn acp_scoped_permission_option(params:&Value,policy:&ChatToolPolicy)
         || tool=="ask_user" && policy.ask
         || tool=="session_info" && policy.session_info
         || tool=="feedback_check" && policy.feedback
-        || crate::preview::TOOL_NAMES.contains(&tool) && policy.preview;
+        || crate::preview::TOOL_NAMES.contains(&tool) && policy.preview
+        || crate::browser_tools::TOOL_NAMES.contains(&tool) && policy.browser;
     if !allowed||matches!(call.get("kind").and_then(Value::as_str),Some("read"|"edit"|"delete"|"move"|"execute"|"fetch")){return None}
     params.get("options")?.as_array()?.iter().find(|o|o.get("kind").and_then(Value::as_str)==Some("allow_once"))?.get("optionId")?.as_str().map(str::to_owned)
 }
@@ -1578,6 +1581,27 @@ impl Providers {
         let slot=chats.get(session_id)?;
         if !slot.connecting&&slot.worker.is_none(){return None}
         slot.pending_worker_token.clone().or_else(|| slot.worker_token.clone())
+    }
+    /// Browser calls may be admitted by the reserved startup generation, but
+    /// data is released only to an installed current worker. A pending
+    /// replacement immediately invalidates its predecessor's browser token.
+    pub(crate) fn browser_generation_is_current(
+        &self,
+        session_id: &str,
+        generation: &str,
+        allow_reserved: bool,
+    ) -> bool {
+        let Ok(chats) = self.chats.lock() else { return false; };
+        let Some(slot) = chats.get(session_id) else { return false; };
+        Self::browser_generation_matches(slot, generation, allow_reserved)
+    }
+    fn browser_generation_matches(slot: &ChatSlot, generation: &str, allow_reserved: bool) -> bool {
+        if !slot.connecting && slot.worker.is_none() { return false; }
+        match slot.pending_worker_token.as_deref() {
+            Some(pending) => allow_reserved && slot.connecting && pending == generation,
+            None => (allow_reserved || slot.worker.is_some())
+                && slot.worker_token.as_deref() == Some(generation),
+        }
     }
     /// Holds the chat registry fence while the caller verifies that an MCP
     /// grant still belongs to the current worker. The callback may use the
@@ -3453,5 +3477,34 @@ mod delegation_tool_tests {
         assert_eq!(acp_scoped_permission_option(&request("mcp__threadterm__preview_present", "other"), &ChatToolPolicy::default()), None);
         assert_eq!(acp_scoped_permission_option(&request("mcp__threadterm__preview_present_extra", "other"), &policy), None);
         assert_eq!(acp_scoped_permission_option(&request("mcp__threadterm__preview_present", "execute"), &policy), None);
+    }
+}
+
+#[cfg(test)]
+mod browser_generation_tests {
+    use super::{ChatSlot, Providers};
+
+    #[test]
+    fn replacement_reservation_rejects_predecessor_and_defers_data_release() {
+        let mut slot = ChatSlot::new();
+        slot.connecting = true;
+        slot.worker_token = Some("predecessor".into());
+        slot.pending_worker_token = Some("replacement".into());
+        assert!(!Providers::browser_generation_matches(&slot, "predecessor", true));
+        assert!(!Providers::browser_generation_matches(&slot, "predecessor", false));
+        assert!(Providers::browser_generation_matches(&slot, "replacement", true));
+        assert!(!Providers::browser_generation_matches(&slot, "replacement", false));
+        slot.connecting = false;
+        assert!(!Providers::browser_generation_matches(&slot, "replacement", true));
+    }
+
+    #[test]
+    fn a_retained_token_without_an_installed_worker_cannot_release_browser_data() {
+        let mut slot = ChatSlot::new();
+        slot.worker_token = Some("retained".into());
+        slot.connecting = true;
+        assert!(!Providers::browser_generation_matches(&slot, "retained", false));
+        slot.connecting = false;
+        assert!(!Providers::browser_generation_matches(&slot, "retained", true));
     }
 }

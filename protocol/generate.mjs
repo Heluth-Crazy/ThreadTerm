@@ -1,10 +1,15 @@
 import { createGenerator } from 'ts-json-schema-generator';
 import Ajv from 'ajv';
 import standaloneCode from 'ajv/dist/standalone/index.js';
-import { writeFileSync } from 'node:fs';
+import { readFileSync, writeFileSync } from 'node:fs';
+import { transformSync } from 'esbuild';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 const root=dirname(fileURLToPath(import.meta.url));
+// Node's direct type-stripping path also consumes the protocol package. Keep
+// its explicit .js export available without requiring a renderer build.
+writeFileSync(join(root,'browser.js'),'// Generated from browser.ts by protocol/generate.mjs. Do not edit.\n'
+ +transformSync(readFileSync(join(root,'browser.ts'),'utf8'),{loader:'ts',format:'esm',target:'es2022'}).code);
 const ajv=new Ajv({strict:false,allErrors:true,code:{source:true,esm:true},allowUnionTypes:true,discriminator:true});
 for(const name of ['WireRequest','WireSuccess']) {
  const schema=createGenerator({path:join(root,'index.ts'),type:name,skipTypeCheck:false,topRef:false,expose:'export',additionalProperties:false}).createSchema(name);

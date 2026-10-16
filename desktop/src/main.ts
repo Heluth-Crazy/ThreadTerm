@@ -274,6 +274,9 @@ function registerIpc(): void {
     assertTrustedRenderer(event);
     const owner = BrowserWindow.fromWebContents(event.sender);
     if (!owner || owner.webContents !== event.sender || event.senderFrame !== event.sender.mainFrame) throw new Error('Browser commands require the application main frame');
+  },event=>{
+    const runtime=runtimeFor(event);
+    return {browserRequest:(method,params)=>runtime.browserRequest(method,params),onBrowserFrame:listener=>runtime.onBrowserFrame(listener),onBrowserDisconnect:listener=>runtime.onBrowserDisconnect(listener),onEvent:listener=>runtime.onEvent(listener),snapshot:()=>runtime.request('runtime.snapshot',{})};
   });
   registerPageComments(assertTrustedRenderer);
   ipcMain.handle('threadterm:export-chat-markdown', (event, payload: unknown) => saveChatMarkdown(event, payload, {

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useId, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import type { PageRect } from '@threadterm/protocol';
 import { addPageShotToDraft } from '../pageShotDraft';
@@ -14,17 +14,20 @@ import { PendingComments, useReviewComments } from './FileComments';
 import { showContextMenu } from './ContextMenu';
 import { webContextMenuItems } from '../webContextMenuItems';
 import { updateBrowserOverlayBounds, usePassiveBrowserOcclusion, watchBrowserOverlays } from '../browserOcclusion';
+import type { BrowserShareWorkspace } from '../browserTypes';
 import '../workbench/workbench.css';
 
 type NavigationObservation={navigation:'pending'|'load_observed'|'failed';url?:string;title?:string;documentGeneration?:number};
-type Props={tabId:string;url:string;visible:boolean;zh:boolean;commentScope?:CommentScope;commentsHost?:FileCommentsHost;commentProvenance?:PageCommentProvenance;onNavigation?:(observation:NavigationObservation)=>void;onPopup?:(popup:{openerId:string;tabId:string;url:string})=>void};
+type Props={tabId:string;url:string;visible:boolean;zh:boolean;commentScope?:CommentScope;commentsHost?:FileCommentsHost;commentProvenance?:PageCommentProvenance;prepareBrowserShare?:(tabId:string)=>Promise<BrowserShareWorkspace>;onNavigation?:(observation:NavigationObservation)=>void;onPopup?:(popup:{openerId:string;tabId:string;url:string})=>void};
 /** A native browser page. FilePreview retains the sandboxed iframe used for saved HTML and development addresses. */
-export function WebPreview({tabId,url,visible,zh,commentScope,commentsHost,commentProvenance,onNavigation,onPopup}:Props) {
+export function WebPreview({tabId,url,visible,zh,commentScope,commentsHost,commentProvenance,prepareBrowserShare,onNavigation,onPopup}:Props) {
  const placeholder=useRef<HTMLDivElement>(null);
  const surface=useRef<HTMLElement>(null);
  const notice=useRef<HTMLParagraphElement>(null);
  const [issue, setIssue] = useState<string>();
  const [handoffIssue,setHandoffIssue]=useState<string>();
+ const [sharingIssue,setSharingIssue]=useState<string>(),[shareBusy,setShareBusy]=useState(false);
+ const sharingSequence=useRef(0),sharingDescription=useId();
  const [handoff,setHandoff]=useState<{kind:'markup';capture:BrowserCaptureResult;provenance?:PageCommentProvenance}|{kind:'screenshot';capture:BrowserCaptureResult;provenance?:PageCommentProvenance}|{kind:'console';console:BrowserConsoleResult;provenance?:PageCommentProvenance}>();
  const handoffRef=useRef(handoff);handoffRef.current=handoff;
  const handoffBusy=useRef(false);
@@ -38,6 +41,8 @@ export function WebPreview({tabId,url,visible,zh,commentScope,commentsHost,comme
  const observed=useRef('');
  const preview=usePageCommentPreview(url,commentScope,commentsHost,zh,commentProvenance,{element:placeholder,focus:()=>void browserCommand({type:'focus',tabId}).catch(()=>undefined)});
  const comments=useReviewComments(commentScope);
+ const sharing=state.sharing;
+ const canShare=Boolean(prepareBrowserShare&&sharing&&sharing.viewGeneration>0&&!state.loading&&!state.unloaded&&state.navigation==='load_observed');
  const copy = (en:string, cn:string) => zh ? cn : en;
  const cancelHandoff=()=>{captureSequence.current++;const current=handoffRef.current;if(current&&current.kind!=='console')void deletePageShots([current.capture.shot.id]).catch(error=>setIssue(String(error)));setHandoff(undefined);};
  const screenshot=async()=>{if(capturing||!commentsHost)return;const sequence=++captureSequence.current;setCapturing(true);setHandoffIssue(undefined);const provenance=commentProvenance?{...commentProvenance}:undefined;try{const result=await browserHandoff({type:'capture',tabId,documentGeneration:state.documentGeneration});if(!('shot' in result))throw new Error('Could not capture the page.');if(!live.current||captureSequence.current!==sequence){void deletePageShots([result.shot.id]).catch(()=>undefined);return;}const rect=placeholder.current?.getBoundingClientRect();if(!rect||rect.width<=0||rect.height<=0){void deletePageShots([result.shot.id]).catch(()=>undefined);throw new Error('Browser page is not visible.');}setMarkupBounds({x:rect.x,y:rect.y,width:rect.width,height:rect.height});setHandoff({kind:'markup',capture:result,provenance});}catch(error){if(live.current)setHandoffIssue(String(error));}finally{if(live.current)setCapturing(false);}};
@@ -47,6 +52,19 @@ export function WebPreview({tabId,url,visible,zh,commentScope,commentsHost,comme
   // Show/bounds replies can predate a capture event; the emitted state owns visibility.
   if(value.type!=='show'&&value.type!=='bounds'&&value.type!=='hide'&&value.type!=='focus'&&result&&'tabId' in result&&result.tabId===tabId)acceptState(result);
  }).catch(error=>setIssue(String(error)));
+ const setShareLevel=async(level:'off'|'read')=>{
+  const sequence=++sharingSequence.current;setShareBusy(true);setSharingIssue(undefined);
+  const expected={documentGeneration:state.documentGeneration,navigationEpoch:sharing?.navigationEpoch??0,viewGeneration:sharing?.viewGeneration??0,grantEpoch:sharing?.grantEpoch??0};
+  try{
+   if(level==='read'&&!prepareBrowserShare)throw new Error('Save this tab in a project workspace before sharing.');
+   const workspace=level==='read'?await prepareBrowserShare!(tabId):undefined;
+   if(!live.current||sequence!==sharingSequence.current)return;
+   const result=await browserCommand(level==='off'?{type:'share',tabId,level}:{type:'share',tabId,level,workspace:workspace!,expected});
+   if(live.current&&sequence===sharingSequence.current&&result&&'tabId' in result)acceptState(result);
+  }catch(error){if(live.current&&sequence===sharingSequence.current)setSharingIssue(String(error));}
+  finally{if(live.current&&sequence===sharingSequence.current)setShareBusy(false);}
+ };
+ useEffect(()=>()=>{sharingSequence.current++;void browserCommand({type:'share',tabId,level:'off'}).catch(()=>undefined);},[tabId,commentScope?.projectId,commentScope?.root]);
  useEffect(()=>{setAddress(url);},[url]);
  const handleBrowserKey=(event:KeyboardEvent)=>{
   if((event.ctrlKey||event.metaKey)&&!event.shiftKey&&event.key.toLowerCase()==='f'){event.preventDefault();setFindOpen(true);command({type:'find',tabId,text:''});requestAnimationFrame(()=>findInput.current?.focus());}
@@ -90,6 +108,10 @@ export function WebPreview({tabId,url,visible,zh,commentScope,commentsHost,comme
    <label className="wb-browser-address"><span className="sr-only">{copy('Address','地址')}</span><input ref={addressInput} value={address} aria-label={copy('Address','地址')} onChange={event=>setAddress(event.target.value)} onKeyDown={event=>{if(event.key==='Enter'){event.preventDefault();command({type:'navigate',tabId,url:address});}}}/></label>
    {state.loading&&<span className="wb-browser-loading" role="status" aria-label={copy('Loading','正在加载')}/>}
    <div className="wb-browser-actions" role="group" aria-label="Page actions">
+   <div className="wb-browser-share" role="group" aria-label={copy('Agent access','智能体访问')} aria-describedby={sharingDescription} aria-busy={shareBusy||Boolean(sharing&&sharing.status!=='idle')}>
+    <span>{copy('Agents','智能体')}</span><button type="button" className="btn btn-sm btn-ghost" aria-label={copy('Agent access Off','关闭智能体访问')} aria-pressed={sharing?.level!=='read'} disabled={sharing?.level!=='read'&&!shareBusy&&(!sharing||sharing.status==='idle')} onClick={()=>void setShareLevel('off')}>Off</button><button type="button" className="btn btn-sm btn-ghost" aria-label={copy('Agent access Read','允许智能体读取')} aria-pressed={sharing?.level==='read'} disabled={!canShare||shareBusy||sharing?.status!=='idle'||sharing.level==='read'} onClick={()=>void setShareLevel('read')}>Read</button>
+    {sharing?.reading&&<span role="status" className="wb-browser-reading">{copy('Reading…','正在读取…')}</span>}
+   </div>
    <PageCommentControls preview={preview} zh={zh}/>
    <button type="button" className="icon-btn icon-btn-sm" aria-label="Screenshot to Chat" title="Screenshot to Chat" aria-busy={capturing} disabled={!commentsHost||capturing||Boolean(handoff)||state.loading||state.navigation!=='load_observed'||state.unloaded} onClick={()=>void screenshot()}><Icon name="export"/></button>
    <button type="button" className="btn btn-sm btn-ghost wb-console-count" aria-label="Page console" title={`${consoleCounts.errors} errors, ${consoleCounts.warnings} warnings`} aria-expanded={consoleOpen} disabled={!commentsHost} onClick={()=>setConsoleOpen(!consoleOpen)}>{consoleCounts.errors}/{consoleCounts.warnings}</button>
@@ -98,10 +120,12 @@ export function WebPreview({tabId,url,visible,zh,commentScope,commentsHost,comme
    <button type="button" className="icon-btn icon-btn-sm wb-browser-open" title={copy('Open in browser', '在浏览器中打开')} aria-label={copy('Open in browser', '在浏览器中打开')} onClick={() => void openExternal(state.url||url).catch(error => setIssue(String(error)))}><Icon name="popout"/></button>
    </div>
   </div>
+  <p id={sharingDescription} className={`wb-browser-sharing-status${sharing?.level==='read'||shareBusy||sharing?.status==='stopping'||sharing?.reason?'':' sr-only'}`} role="status">{sharing?.level==='read'?<>{copy('Shared with agents in this worktree','已与此工作树中的智能体共享')} · <span>{sharing.origin}</span></>:shareBusy||sharing?.status==='sharing'?copy('Updating agent access…','正在更新智能体访问…'):sharing?.status==='stopping'?copy('Stopping sharing…','正在停止共享…'):sharing?.reason??copy('Off. Read shares this tab with agents in this worktree. Sharing stops when the page moves to another site.','已关闭。Read 将此标签页共享给此工作树中的智能体。页面转到其他网站时将停止共享。')}</p>
   {consoleOpen&&<div className="wb-browser-console-actions"><span className="dim">{consoleCounts.errors} errors · {consoleCounts.warnings} warnings</span><button type="button" className="btn btn-sm" disabled={Boolean(handoff)} onClick={()=>void consoleToChat()}>Send console errors to Chat</button></div>}
   {findOpen&&<div className="wb-browser-find"><input ref={findInput} value={find} aria-label={copy('Find in page','在页面中查找')} onChange={event=>{const value=event.target.value;setFind(value);command({type:'find',tabId,text:value});}} onKeyDown={event=>{if(event.key==='Enter')command({type:'find',tabId,text:find,forward:!event.shiftKey,findNext:true});}}/><span>{state.find?`${state.find.activeMatchOrdinal}/${state.find.matches}`:'0/0'}</span><button type="button" className="icon-btn icon-btn-sm" aria-label={copy('Previous match','上一个匹配')} onClick={()=>command({type:'find',tabId,text:find,forward:false,findNext:true})}><WbIcon name="chev-up"/></button><button type="button" className="icon-btn icon-btn-sm" aria-label={copy('Next match','下一个匹配')} onClick={()=>command({type:'find',tabId,text:find,forward:true,findNext:true})}><Icon name="chevD"/></button><button type="button" className="icon-btn icon-btn-sm" aria-label={copy('Close find','关闭查找')} onClick={()=>{setFindOpen(false);command({type:'stopFind',tabId});}}><Icon name="close"/></button></div>}
   {issue && <p className="wb-issue" role="alert">{issue}</p>}
   {handoffIssue&&<p className="wb-issue" role="alert" data-browser-handoff-error>{handoffIssue}</p>}
+  {sharingIssue&&<p className="wb-issue" role="alert" data-browser-sharing-error>{sharingIssue}</p>}
   {preview.issue && <p className="wb-issue" role="alert">{preview.issue}</p>}
   <div ref={placeholder} className="tt-browser-view" data-native-ready={visible&&!state.unloaded?'true':undefined} tabIndex={-1} aria-label={copy('Web preview','网页预览')} onPointerDown={()=>command({type:'focus',tabId})}>{state.snapshot&&<img key={state.snapshotGeneration} src={state.snapshot} alt="" onLoad={()=>{const generation=state.snapshotGeneration;if(generation!==undefined)requestAnimationFrame(()=>requestAnimationFrame(()=>command({type:'snapshotReady',tabId,generation})));}}/>}</div>
   {handoff?.kind==='markup'&&markupBounds&&createPortal(<ScreenshotMarkup visible={visible} bounds={markupBounds} capture={handoff.capture} tabId={tabId} onCancel={cancelHandoff} onDone={packet=>setHandoff({kind:'screenshot',capture:{...handoff.capture,...packet},provenance:handoff.provenance})}/>,document.body)}

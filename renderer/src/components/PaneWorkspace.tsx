@@ -19,6 +19,7 @@ import { GitHistoryView } from "./GitHistoryView";
 import { ReviewDiffView } from "./ReviewDiffView";
 import { WebPreview } from "./WebPreview";
 import { sanitizeBrowserTitle } from '../browserTypes';
+import type { BrowserShareWorkspace } from '../browserTypes';
 import { AgentIcon, Icon } from "./PrototypeIcon";
 import { ImportedHistoryView } from "./ImportedHistoryView";
 import { CatalogPopover } from './CatalogActions';
@@ -62,6 +63,7 @@ type Props = {
   /** Project root for a session without its own worktree; scopes the Chat Open-diff action. */
   projectPath?:string;
   onWebClosed?:(tabId:string)=>void;
+  prepareBrowserShare?:(tabId:string)=>Promise<BrowserShareWorkspace>;
   onWebNavigation?:(tabId:string,observation:{navigation:'pending'|'load_observed'|'failed';url?:string;title?:string;documentGeneration?:number})=>void;
   previewProvenance?:ReadonlyMap<string,PageCommentProvenance>;
   previewLabels?:ReadonlyMap<string,Pick<PreviewAssociation,'title'|'observedTitle'|'sessionId'>>;
@@ -86,7 +88,7 @@ export type PaneWorkbench = {
   /** Documents for the active session, limited to this session's project/worktree root. */
   sessionDocuments?:{projectId:string;rootPath:string;projectRoot?:string} & NonNullable<WorkbenchActions['sessionDocuments']>;
 };
-export function PaneWorkspace({ layout, sessions, onChange, theme, terminalCompatibility, providers = [], onSessionChanged, onOpenSession, ownerSessionId, onPickSession,toolbarHost,onEmpty,onActiveSession,onInteraction,onFileReference,focusTarget,fileReveal,onOpenPath,projectPath,onWebClosed,onWebNavigation,previewProvenance,previewLabels,delegationEnabled,sessionInfoEnabled,workbench }: Props) {
+export function PaneWorkspace({ layout, sessions, onChange, theme, terminalCompatibility, providers = [], onSessionChanged, onOpenSession, ownerSessionId, onPickSession,toolbarHost,onEmpty,onActiveSession,onInteraction,onFileReference,focusTarget,fileReveal,onOpenPath,projectPath,onWebClosed,onWebNavigation,prepareBrowserShare,previewProvenance,previewLabels,delegationEnabled,sessionInfoEnabled,workbench }: Props) {
   const zh=useTranslation().locale==='zh-CN';
   const [selectedPaneId, setSelectedPaneId] = useState<string|undefined>(focusTarget?.paneId);
   const [paneHost,setPaneHost]=useState<HTMLDivElement|null>(null),[stackHorizontal,setStackHorizontal]=useState(false);
@@ -241,7 +243,7 @@ export function PaneWorkspace({ layout, sessions, onChange, theme, terminalCompa
         onCloseTab={target=>void closeTabs(target,'current')}
         onCloseTabs={(target,mode)=>void closeTabs(target,mode,false,'web')}
         onResumed={(session) => { setResumedSessions(current => new Map(current).set(session.id,session)); onSessionChanged?.(); }}
-        primaryHost={primaryHost} menuHost={menuHost} onFileReference={onFileReference} fileReveal={fileReveal} onOpenPath={onOpenPath} projectPath={projectPath} onWebNavigation={onWebNavigation} previewProvenance={previewProvenance} previewLabels={previewLabels} delegationEnabled={delegationEnabled} sessionInfoEnabled={sessionInfoEnabled} workbench={workbench}
+        primaryHost={primaryHost} menuHost={menuHost} onFileReference={onFileReference} fileReveal={fileReveal} onOpenPath={onOpenPath} projectPath={projectPath} onWebNavigation={onWebNavigation} prepareBrowserShare={prepareBrowserShare} previewProvenance={previewProvenance} previewLabels={previewLabels} delegationEnabled={delegationEnabled} sessionInfoEnabled={sessionInfoEnabled} workbench={workbench}
       />
     );});
   const companionFiles=workspaceTabs(visibleLayout).filter(item=>item.tab.kind!=='session'&&item.tab.ownerSessionId===ownerSessionId&&Boolean(ownerSessionId));
@@ -355,7 +357,7 @@ function Pane({
   providers,
   onResumed,
   closing,onActivateTab,onCloseFile,onCloseTab,onCloseTabs,
-  primaryHost,menuHost,onFileReference,fileReveal,onOpenPath,projectPath,onWebNavigation,previewProvenance,previewLabels,delegationEnabled,sessionInfoEnabled,workbench,
+  primaryHost,menuHost,onFileReference,fileReveal,onOpenPath,projectPath,onWebNavigation,prepareBrowserShare,previewProvenance,previewLabels,delegationEnabled,sessionInfoEnabled,workbench,
 }: {
   node: Extract<PaneLayout, { kind: "pane" }>;
   visibleNode?: Extract<PaneLayout, { kind: "pane" }>;
@@ -388,6 +390,7 @@ function Pane({
   fileReveal?:{tabId:string;line:number;column?:number;key:string};
   onOpenPath?:(file:{projectId:string;worktreePath?:string;path:string;kind:'file'|'diff'|'preview';assetKind?:'text'|'image';ownerSessionId?:string})=>void;
   projectPath?:string;
+  prepareBrowserShare?:(tabId:string)=>Promise<BrowserShareWorkspace>;
   onWebNavigation?:(tabId:string,observation:{navigation:'pending'|'load_observed'|'failed';url?:string;title?:string;documentGeneration?:number})=>void;
   previewProvenance?:ReadonlyMap<string,PageCommentProvenance>;
   previewLabels?:ReadonlyMap<string,Pick<PreviewAssociation,'title'|'observedTitle'|'sessionId'>>;
@@ -474,7 +477,7 @@ function Pane({
       onOpenFile={workbench?.openFile?path=>workbench.openFile?.({projectId:item.projectId,worktreePath:item.worktreePath,path}):undefined}
       comments={workbench?.comments}/>
   ) : item.kind === "web" ? (
-    <WebPreview tabId={item.id} url={item.url} visible={active&&browserVisible} zh={zh} commentScope={workbench?.commentScope} commentsHost={workbench?.comments} commentProvenance={previewProvenance?.get(item.id)} onNavigation={observation=>persistWebNavigation(item,observation)} onPopup={popup=>addBrowserPopup(item,popup)}/>
+    <WebPreview prepareBrowserShare={prepareBrowserShare} tabId={item.id} url={item.url} visible={active&&browserVisible} zh={zh} commentScope={workbench?.commentScope} commentsHost={workbench?.comments} commentProvenance={previewProvenance?.get(item.id)} onNavigation={observation=>persistWebNavigation(item,observation)} onPopup={popup=>addBrowserPopup(item,popup)}/>
   ) : isFileTab(item) ? (
     <FileWorkspace
       projectId={item.projectId}
