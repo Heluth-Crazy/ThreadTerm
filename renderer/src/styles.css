@@ -462,7 +462,7 @@ html[data-theme="dark"] { color-scheme:dark; }
 .v3-session-chat form > div .dim { margin-right:auto; font-size:11px; overflow-wrap:anywhere; }
 .v3-session-chat textarea:disabled { opacity:0.7; }
 .chat-view.v3-session-chat { position:relative; display:flex; flex-direction:column; min-height:0; flex:1; height:100%; overflow:hidden; }
-.chat-view.v3-session-chat.is-connecting > :not(.chat-connect-mask) { visibility:hidden; pointer-events:none; }
+.chat-view.v3-session-chat.is-connecting > :not(.chat-connect-mask), .chat-view.v3-session-chat.is-connecting > :not(.chat-connect-mask) * { visibility:hidden; pointer-events:none; }
 .chat-connect-mask { position:absolute !important; inset:0 !important; z-index:20 !important; display:grid; place-items:center; background:color-mix(in srgb, var(--surface, Canvas) 92%, transparent); color:var(--text, CanvasText); animation:chat-mask-in .18s ease .12s backwards; pointer-events:auto; }
 .chat-connect-center { display:grid; justify-items:center; gap:14px; max-width:min(360px, calc(100% - 32px)); text-align:center; color:var(--text); }
 /* The wave is clipped to the brand itself; never draw a surrounding ring. */
@@ -629,10 +629,6 @@ html[data-theme="dark"] { color-scheme:dark; }
 .chat-compose-right { position:relative; }
 .chat-compose-status { display:inline-flex; align-items:center; gap:6px; flex:none; }
 .chat-status-anchor { position:static; flex:none; }
-/* The connection overlay keeps the rest of the composer hidden, while status
-   controls remain available above it in every provider phase. */
-.chat-view.v3-session-chat.is-connecting > .chat-compose-shell { z-index:21; }
-.chat-view.v3-session-chat.is-connecting .chat-status-anchor { visibility:visible; pointer-events:auto; }
 .chat-status-chip { flex:none; }
 .chat-context-ring-svg { display:block; flex:none; }
 .chat-context-ring-track { stroke:var(--border); }
