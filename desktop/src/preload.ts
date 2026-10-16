@@ -1,6 +1,7 @@
 import { contextBridge, ipcRenderer } from 'electron';
 import { terminalPtyFromArguments } from './terminalEnvironment.js';
 import type { BrowserBridge, BrowserEvent } from '../../renderer/src/browserTypes.js';
+import type { BrowserHandoffBridge, BrowserHandoffEvent } from './browser/handoffTypes.js';
 import {
   isRecord,
   isRuntimeEvent,
@@ -13,12 +14,18 @@ import {
   type AttachedFile,
 } from '@threadterm/protocol';
 
-const bridge: ThreadTermBridge & BrowserBridge = {
+const bridge: ThreadTermBridge & BrowserBridge & BrowserHandoffBridge = {
   browserCommand: command => ipcRenderer.invoke('threadterm:browser-command', command),
   onBrowserEvent: listener => {
     const handler = (_event: Electron.IpcRendererEvent, value: unknown) => { if (isBrowserEvent(value)) listener(value); };
     ipcRenderer.on('threadterm:browser-event', handler);
     return () => ipcRenderer.removeListener('threadterm:browser-event', handler);
+  },
+  browserHandoff: command => ipcRenderer.invoke('threadterm:browser-handoff', command),
+  onBrowserHandoffEvent: listener => {
+    const handler = (_event: Electron.IpcRendererEvent, value: unknown) => { if (isBrowserHandoffEvent(value)) listener(value); };
+    ipcRenderer.on('threadterm:browser-handoff-event', handler);
+    return () => ipcRenderer.removeListener('threadterm:browser-handoff-event', handler);
   },
   platform: process.platform,
   exportChatMarkdown: payload => ipcRenderer.invoke('threadterm:export-chat-markdown', payload) as Promise<string | null>,
@@ -131,4 +138,11 @@ function isBrowserEvent(value: unknown): value is BrowserEvent {
     && typeof state.zoom === 'number' && Number.isFinite(state.zoom) && Number.isSafeInteger(state.documentGeneration)
     && ['pending', 'load_observed', 'failed'].includes(String(state.navigation))
     && (state.snapshot === undefined || typeof state.snapshot === 'string' && state.snapshot.startsWith('data:image/png;base64,'));
+}
+function isBrowserHandoffEvent(value: unknown): value is BrowserHandoffEvent {
+  if (!isRecord(value)) return false;
+  if(value.type==='preferences')return typeof value.devServerOffers==='boolean';
+  const errors=value.errors,warnings=value.warnings;
+  return value.type==='console' && typeof value.tabId==='string' && Number.isSafeInteger(value.documentGeneration)
+    && typeof errors==='number' && Number.isSafeInteger(errors) && errors>=0 && typeof warnings==='number' && Number.isSafeInteger(warnings) && warnings>=0;
 }

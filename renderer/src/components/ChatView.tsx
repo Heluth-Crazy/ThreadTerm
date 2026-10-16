@@ -85,6 +85,8 @@ import { useChatViewport } from '../useChatViewport';
 import { providerRetryPresentation } from '../providerRetry';
 import { ProviderRetryStatus } from './ProviderRetryStatus';
 import './chat-viewport.css';
+import { PageShotDrafts } from './PageComments';
+import { usePageShotDraft } from '../pageShotDraft';
 
 type RepairNotice = { kind: 'rebuilt'; total: number } | { kind: 'unchanged' | 'superseded' | 'failed' };
 
@@ -1055,9 +1057,10 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession, 
     try {
       if (next.length) localStorage.setItem(imageDraftKey, JSON.stringify(validateChatImages(next)));
       else localStorage.removeItem(imageDraftKey);
-      setImages(next);
+      imagesRef.current=next; setImages(next); return true;
     } catch {
       setError(copy('Image draft could not be saved. Remove an image or free device storage and paste again.', '无法保存图片草稿。请移除图片或释放设备存储空间后重新粘贴。'));
+      return false;
     }
   }
   // F3: attach files picked in the native dialog. Images use the composer's image
@@ -1235,6 +1238,7 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession, 
       setError(copy('Image draft could not be saved. Screenshots are available by their file paths.', '无法保存图片草稿。截图可通过文件路径读取。')); return 0;
     }
   };
+  const pageShots=usePageShotDraft({sessionId:session.id,images,contextItems:context.items,visible:()=>composerEditable(composerStateRef.current)&&Boolean(composeRef.current?.getClientRects().length),attachImages:incoming=>attachImagesRef.current(incoming),updateImages,attachContext:item=>contextRef.current.attach(item),removeContext:id=>contextRef.current.remove(id),onIssue:setError});
   async function pasteImages(event: ClipboardEvent<HTMLTextAreaElement>) {
     const files = Array.from(event.clipboardData.files).filter(file => file.type.startsWith('image/'));
     if (!files.length || !ui.inputCapabilities?.images) return;
@@ -1770,8 +1774,9 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession, 
       </div>}
       {mention && <ChatMentions groups={mentionGroups} index={mentionIndex} zh={zh} onHover={setMentionIndex} onPick={applyMention} />}
       <label className="sr-only" htmlFor={`chat-message-${session.id}`}>{copy('Message', '消息')}</label>
-      {!!images.length && !submissionPreview && <div className="chat-image-draft" aria-label={copy('Image attachments', '图片附件')}>{images.map((image, index) => <figure key={index}><img src={image} alt={`${copy('Pasted image', '已粘贴图片')} ${index + 1}`} /><button type="button" className="icon-btn chat-image-remove" disabled={busy || imageReading || !writable} aria-label={`${copy('Remove image', '移除图片')} ${index + 1}`} onClick={() => updateImages(images.filter((_, imageIndex) => imageIndex !== index))}>×</button></figure>)}<span className="chat-image-draft-note">{copy('Images saved on this device', '图片已保存在此设备')}</span></div>}
-      {!submissionPreview && <ContextTray items={context.items} text={text} zh={zh} onRemove={context.remove} disabled={busy || imageReading || !writable} mentions={activeMentions} workspaceRoot={session.worktreePath} />}
+      {!!images.length && !submissionPreview && <div className="chat-image-draft" aria-label={copy('Image attachments', '图片附件')}>{images.map((image, index) => pageShots.records.some(record=>record.imageIndex===index)?null:<figure key={index}><img src={image} alt={`${copy('Pasted image', '已粘贴图片')} ${index + 1}`} /><button type="button" className="icon-btn chat-image-remove" disabled={busy || imageReading || !writable} aria-label={`${copy('Remove image', '移除图片')} ${index + 1}`} onClick={() => updateImages(images.filter((_, imageIndex) => imageIndex !== index))}>×</button></figure>)}<span className="chat-image-draft-note">{copy('Images saved on this device', '图片已保存在此设备')}</span></div>}
+      {!submissionPreview && <PageShotDrafts draft={pageShots} disabled={busy||imageReading||!writable}/>}
+      {!submissionPreview && <ContextTray items={context.items.filter(item=>!pageShots.records.some(record=>item.id===`browser-shot:${record.shot.id}`))} text={text} zh={zh} onRemove={context.remove} disabled={busy || imageReading || !writable} mentions={activeMentions} workspaceRoot={session.worktreePath} />}
       {!!activeMentions.length && <p id={mentionDescriptionId} className="sr-only">{mentionDescription(activeMentions, zh)}</p>}
       <div className="chat-compose-input">
         {!submissionPreview && <ComposerMentionHighlights text={text} resolved={resolvedMentions} catalogue={mentionCatalogue} areaRef={composeRef} />}

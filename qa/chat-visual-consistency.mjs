@@ -173,6 +173,8 @@ async function checkRequiredSurfacesMatrix() {
   assert.equal(Object.keys(supplementaryEnv).filter(key => key.toLowerCase() === 'path').length, 1, 'supplementary fixture PATH is isolated');
   supplementaryApp = await electron.launch({ args: ['--disable-gpu', '--in-process-gpu', '--no-sandbox', join(fixtureDir, 'main.cjs')], cwd: root, env: supplementaryEnv, timeout: 60_000 });
   const supplementaryPage = await supplementaryApp.firstWindow({ timeout: 30_000 });
+  // Show on the isolated QA desktop without activation so animation-frame checks can progress.
+  await supplementaryApp.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].showInactive());
   supplementaryPage.setDefaultTimeout(20_000);
   supplementaryPage.on('pageerror', error => report.errors.push(`required surfaces page: ${error.message}`));
   await supplementaryPage.waitForFunction(() => typeof window.qaRequiredSurfaces?.mount === 'function');

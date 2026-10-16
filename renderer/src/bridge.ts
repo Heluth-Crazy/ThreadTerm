@@ -1,4 +1,5 @@
 import type { BrowserBridge, BrowserCommand, BrowserEvent, BrowserPreferences, BrowserState } from './browserTypes';
+import type { BrowserHandoffBridge, BrowserHandoffCommand, BrowserHandoffEvent, BrowserHandoffResult } from '../../desktop/src/browser/handoffTypes';
 import type { PagePick, PageRect, PageTargetRef, ChatItem, Method, NativeHistoryItem, OutputChunk, ProviderId, RequestParams, RequestResult, RuntimeEvent, Snapshot } from "@threadterm/protocol";
 export type { ChatItem, NativeHistoryItem, ProviderId, Snapshot } from "@threadterm/protocol";
 
@@ -42,4 +43,8 @@ export function browserCommand(command: BrowserCommand): Promise<BrowserState|Br
  return browserFacade().browserCommand?.(command) ?? Promise.reject(new Error('The built-in browser requires the desktop application.'));
 }
 export const onBrowserEvent = (listener:(event:BrowserEvent)=>void) => browserFacade().onBrowserEvent?.(listener) ?? (()=>{});
+const browserHandoffFacade = () => facade() as typeof window.threadterm & Partial<BrowserHandoffBridge>;
+export const browserHandoff = (command:BrowserHandoffCommand):Promise<BrowserHandoffResult> => browserHandoffFacade().browserHandoff?.(command) ?? Promise.reject(new Error('The built-in browser requires the desktop application.'));
+export const onBrowserHandoffEvent = (listener:(event:BrowserHandoffEvent)=>void) => browserHandoffFacade().onBrowserHandoffEvent?.(listener) ?? (()=>{});
+export type { BrowserHandoffCommand, BrowserHandoffEvent, BrowserHandoffResult } from '../../desktop/src/browser/handoffTypes';
 export type { BrowserCommand, BrowserEvent, BrowserPreferences, BrowserState } from './browserTypes';

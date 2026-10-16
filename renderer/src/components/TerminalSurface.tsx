@@ -3,7 +3,7 @@ import { Terminal } from "@xterm/xterm";
 import { WebLinksAddon } from '@xterm/addon-web-links';
 import "@xterm/xterm/css/xterm.css";
 import { useContext, useEffect, useLayoutEffect, useRef, useState } from "react";
-import { openExternal, operationId, outputSubscription, request, subscribeEvents } from "../bridge";
+import { browserHandoff, onBrowserHandoffEvent, openExternal, operationId, outputSubscription, request, subscribeEvents } from "../bridge";
 import { acquireControl } from '../controlLease';
 import { createTerminalControl, type TerminalControlState } from '../terminalControl';
 import { registerTerminalInputTarget } from '../terminalInputTargets';
@@ -29,6 +29,7 @@ import {
 } from "./terminalCompletionHint";
 import { TerminalContextAction } from './TerminalContextAction';
 import { useTerminalContextMenu } from './TerminalContextMenu';
+import { claimDevServerOffer, createDevServerLineDetector, type DevServerOffer } from '../../../desktop/src/browser/devServer';
 
 type Props = { sessionId: string; provider: ProviderId; theme: "light" | "dark"; terminalCompatibility: unknown; session?: Session; onConfigure?: () => void; onCloseView?: () => void; onChanged?: () => void; onOpenSession?: (id: string) => void; resumeCapture?: "preassigned" | "none" };
 // A failed screen recovery is shown once, in the overlay: a plain-language reason for the
@@ -39,6 +40,7 @@ const isLive = (session?: Session) => Boolean(session && !session.readOnly && ["
 // Bound each read, not the history prefix needed by the terminal parser.
 const REPLAY_PAGE_BYTES = 1024 * 1024;
 const REPLAY_STALL_MS = 15_000;
+const offeredDevServers = new Set<string>();
 const hasVisibleTerminalFrame = (terminal: Terminal) => {
   const buffer = terminal.buffer.active;
   return Array.from({ length: terminal.rows }, (_, row) => buffer.getLine(buffer.baseY + row)?.translateToString(true).trim() ?? "").some(Boolean);
@@ -123,6 +125,26 @@ export function TerminalSurface({ sessionId, provider, theme, terminalCompatibil
   const [resuming, setResuming] = useState(false);
   const [launch, setLaunch] = useState<TerminalLaunchState | undefined>();
   const [launchReadIssue, setLaunchReadIssue] = useState<string>();
+  const [devServerOffers, setDevServerOffers] = useState(true);
+  const [devServerOffer, setDevServerOffer] = useState<DevServerOffer>();
+  const devServerOffersRef = useRef(true);
+  const devServerDetectorRef = useRef<ReturnType<typeof createDevServerLineDetector> | undefined>(undefined);
+  const devServerDecoderRef = useRef(new TextDecoder());
+  useEffect(() => {
+    let live = true, preferenceGeneration = 0;
+    const apply = (value: unknown) => {
+      if (!live) return;
+      const enabled = !value || typeof value !== 'object' || (value as { devServerOffers?: unknown }).devServerOffers !== false;
+      devServerOffersRef.current = enabled;
+      setDevServerOffers(enabled);
+      if (!enabled) { setDevServerOffer(undefined); devServerDetectorRef.current?.reset(); devServerDecoderRef.current = new TextDecoder(); }
+    };
+    const initial = ++preferenceGeneration;
+    void browserHandoff({ type:'preferences' }).then(value => { if (initial === preferenceGeneration) apply(value); }).catch(() => { if (initial === preferenceGeneration) apply(undefined); });
+    const unsubscribe = onBrowserHandoffEvent(event => { if ((event as { type:string }).type === 'preferences') { preferenceGeneration += 1; apply(event); } });
+    return () => { live = false; unsubscribe(); };
+  }, []);
+  useEffect(() => { setDevServerOffer(undefined); devServerDetectorRef.current?.reset(); devServerDecoderRef.current = new TextDecoder(); }, [sessionId]);
   const [launchAttempt, setLaunchAttempt] = useState(0);
   const [startupFrameSeen, setStartupFrameSeen] = useState(false);
   const [showTerminal, setShowTerminal] = useState(false);
@@ -217,6 +239,10 @@ export function TerminalSurface({ sessionId, provider, theme, terminalCompatibil
     // xterm's Windows heuristics must match the console host the runtime really uses (terminalHost.ts).
     void conptyHost().then(host => { if (!disposed) terminal.options.windowsPty = windowsPtyFor(window.threadterm.windowsPty, host); });
     const nativeCursor = nativeCursorVisibility();
+    const devServerDetector = createDevServerLineDetector(offer => {
+      if (claimDevServerOffer(offeredDevServers, sessionId, offer, devServerOffersRef.current)) setDevServerOffer(offer);
+    });
+    devServerDetectorRef.current = devServerDetector;
     nativeCursorRef.current = nativeCursor;
     const fit = new FitAddon(); terminal.loadAddon(fit); terminal.open(element);
     // Shift+Enter as a newline for AI CLIs (xterm would send Enter); through onData, so lease and
@@ -408,6 +434,7 @@ export function TerminalSurface({ sessionId, provider, theme, terminalCompatibil
                 if (replayComplete && !canControlRef.current) terminal.write("\x1b[?25l", () => { if (!disposed) terminal.refresh(0, terminal.rows - 1); });
                 if (reading) setUnread(value => value + 1);
                 if (chunk.cursor + chunk.data.byteLength >= replayEnd) finishReplay();
+                if (replayComplete && chunk.cursor >= replayEnd && devServerOffersRef.current) devServerDetector.push(devServerDecoderRef.current.decode(chunk.data, { stream:true }));
                 settle();
               });
             });
@@ -446,7 +473,7 @@ export function TerminalSurface({ sessionId, provider, theme, terminalCompatibil
         failReplay(message.includes("terminal_history_gap") ? "gap" : "error", message);
       }
     })();
-    return () => { disposed = true; control.dispose(); unsubscribeControl(); window.removeEventListener('focus', wakeControl); document.removeEventListener('visibilitychange', wakeControl); if (retryControlRef.current === retryControl) retryControlRef.current = undefined; resumeFrameProbeRef.current?.dispose(); resumeFrameProbeRef.current = undefined; window.clearInterval(replayTimer); for (const settle of pendingWrites) settle(); unregisterInput(); observer.disconnect(); resizeScheduler.dispose(); dataDisposable.dispose(); scrollDisposable.dispose(); selectionDisposable.dispose(); fileLinkDisposable.dispose(); fileLinkHitArea?.dispose(); fileLinkInteraction.dispose(); unsubscribeOutput?.(); terminal.dispose(); if (terminalRef.current === terminal) terminalRef.current = undefined; if (nativeCursorRef.current === nativeCursor) nativeCursorRef.current = undefined; if (controlRef.current === setControl) controlRef.current = undefined; };
+    return () => { disposed = true; control.dispose(); unsubscribeControl(); window.removeEventListener('focus', wakeControl); document.removeEventListener('visibilitychange', wakeControl); if (retryControlRef.current === retryControl) retryControlRef.current = undefined; resumeFrameProbeRef.current?.dispose(); resumeFrameProbeRef.current = undefined; window.clearInterval(replayTimer); for (const settle of pendingWrites) settle(); unregisterInput(); observer.disconnect(); resizeScheduler.dispose(); dataDisposable.dispose(); scrollDisposable.dispose(); selectionDisposable.dispose(); fileLinkDisposable.dispose(); fileLinkHitArea?.dispose(); fileLinkInteraction.dispose(); unsubscribeOutput?.(); terminal.dispose(); if (devServerDetectorRef.current === devServerDetector) devServerDetectorRef.current = undefined; if (terminalRef.current === terminal) terminalRef.current = undefined; if (nativeCursorRef.current === nativeCursor) nativeCursorRef.current = undefined; if (controlRef.current === setControl) controlRef.current = undefined; };
   }, [provider, sessionId, replayAttempt]);
   useEffect(() => {
     const setControl = controlRef.current;
@@ -637,6 +664,7 @@ export function TerminalSurface({ sessionId, provider, theme, terminalCompatibil
     {unread > 0 && <button className="terminal-new-output" onClick={() => {terminalRef.current?.scrollToBottom();setUnread(0);}}>{zh ? `${unread} 批新输出 · 回到底部` : `${unread} new ${unread === 1 ? 'update' : 'updates'} · Back to bottom`}</button>}
     {completionHints && completionHint && <p className="terminal-completion-hint" role="status">{zh ? "可能已准备好输入" : "Possibly ready for input"}</p>}
     {selectedLink && <div className="terminal-link-actions"><span title={selectedLink}>{selectedLink}</span>{surface?.openWeb && isWebTabUrl(selectedLink) && <button className="btn btn-sm" onClick={() => { surface.openWeb?.(selectedLink); setSelectedLink(undefined); }}>{zh ? '在预览中打开' : 'Open in preview'}</button>}<button className="btn btn-sm" onClick={() => void openExternal(selectedLink).catch(error => setIssue(String(error)))}>{zh ? '在浏览器中打开' : 'Open in browser'}</button><button className="btn btn-sm" onClick={() => void navigator.clipboard.writeText(selectedLink).catch(error => setIssue(String(error)))}>{zh ? '复制链接' : 'Copy link'}</button><button className="icon-btn icon-btn-sm" aria-label={zh ? '关闭链接操作' : 'Close link actions'} onClick={() => setSelectedLink(undefined)}><Icon name="close" /></button></div>}
+    {devServerOffers && devServerOffer && <div className="terminal-control-note" role="status"><span>{zh ? `本地开发服务器已就绪：${devServerOffer.host}:${devServerOffer.port}` : `Local development server available: ${devServerOffer.host}:${devServerOffer.port}`}</span><button type="button" className="btn" disabled={!surface?.openWeb} onClick={() => { if(surface?.openWeb){surface.openWeb(devServerOffer.url);setDevServerOffer(undefined);} }}>{zh ? '在浏览器标签页中打开' : 'Open in browser tab'}</button><button type="button" className="btn" onClick={() => setDevServerOffer(undefined)}>{zh ? '忽略' : 'Dismiss'}</button></div>}
     {issue && !replayFailed && <div className="surface-error" role="alert">{issue}</div>}
     {canControl && !replayFailed && controlState.phase !== 'ready' && controlState.phase !== 'disabled' && <div className="terminal-control-note" role="status">
       <span>{controlState.phase === 'recovering' ? (zh ? '正在恢复终端输入…' : 'Restoring terminal input…')
