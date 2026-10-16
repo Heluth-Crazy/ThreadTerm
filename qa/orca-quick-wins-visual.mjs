@@ -18,6 +18,7 @@ import { fileURLToPath } from 'node:url';
 import { _electron as electron } from '@playwright/test';
 import { build as esbuild } from 'esbuild';
 import { build as viteBuild } from 'vite';
+import { attachedNativeBrowserPages, dismissBrowserNotifications } from './lib/native-browser.mjs';
 
 const root = resolve(fileURLToPath(new URL('..', import.meta.url)));
 const runtime = join(root, 'runtime/target-qa/debug/threadterm-v3-runtime.exe');
@@ -164,6 +165,61 @@ try {
   check('palette: sessions show provider · state · project with a state dot; the ended one is last');
   await page.keyboard.press('Escape');
 
+  // File references have used context chips since before the native browser (SessionWorkspace.sendToAgent).
+  // Exercise the same handlers before any web tab exists, then again beside an attached native page.
+  const chatScope = page.locator(`[data-testid="session-chat-${chat.id}"]`);
+  const fileChip = chatScope.getByTestId('context-tray').getByRole('button', { name: 'File: README.md', exact: true });
+  const removeFileChip = chatScope.getByRole('button', { name: 'Remove context: README.md', exact: true });
+  const readme = page.locator('.wb-tree-row[data-path="README.md"]');
+  const assertExplorerDrop = async (label, screenshot) => {
+    await tab('Cart agent').click();
+    await composer.waitFor();
+    const draft = 'Keep this unsent draft.';
+    await composer.fill(draft);
+    await openView('Files');
+    await readme.waitFor();
+    assert.equal(await readme.getAttribute('draggable'), 'true');
+    assert.equal(await fileChip.count(), 0, `${label}: no leftover attachment before the drop`);
+    // Synthetic dispatch reaches the actual React handlers without depending on native pointer routing.
+    await page.evaluate(chatId => {
+      const transfer = new DataTransfer();
+      window.__qaTransfer = transfer;
+      document.querySelector('.wb-tree-row[data-path="README.md"]').dispatchEvent(new DragEvent('dragstart', { dataTransfer: transfer, bubbles: true, cancelable: true }));
+      const payload = JSON.parse(transfer.getData('application/x-threadterm-file'));
+      if (payload.path !== 'README.md') throw new Error('Explorer dragstart did not supply README.md');
+      const target = document.querySelector(`[data-testid="session-chat-${chatId}"]`).closest('.pane-tab-surface');
+      target.dispatchEvent(new DragEvent('dragover', { dataTransfer: transfer, bubbles: true, cancelable: true }));
+    }, chat.id);
+    const surface = page.locator('.pane-tab-surface.file-drop-target');
+    await surface.waitFor();
+    assert.equal(await surface.getAttribute('data-drop-label'), 'Drop to insert the file reference (not sent)');
+    await shot(screenshot);
+    await page.evaluate(chatId => {
+      const source = document.querySelector('.wb-tree-row[data-path="README.md"]');
+      const target = document.querySelector(`[data-testid="session-chat-${chatId}"]`).closest('.pane-tab-surface');
+      target.dispatchEvent(new DragEvent('drop', { dataTransfer: window.__qaTransfer, bubbles: true, cancelable: true }));
+      source.dispatchEvent(new DragEvent('dragend', { dataTransfer: window.__qaTransfer, bubbles: true, cancelable: true }));
+      delete window.__qaTransfer;
+    }, chat.id);
+    await fileChip.waitFor();
+    assert.equal(await fileChip.count(), 1, `${label}: exactly one file context chip`);
+    assert.equal((await fileChip.innerText()).trim(), 'README.md');
+    assert.equal(await composer.inputValue(), draft, `${label}: attaching a file preserves the textarea`);
+    assert.equal(await page.locator('.pane-tab-surface.file-drop-target').count(), 0, 'the highlight goes away after the drop');
+    assert.equal((await request('chat.read', { sessionId: chat.id })).filter(item => item.role === 'user').length, 0, 'nothing was sent to the agent');
+    await shot(screenshot.replace('drop-target', 'drop-result'));
+    await removeFileChip.click();
+    await fileChip.waitFor({ state: 'detached' });
+    assert.equal(await composer.inputValue(), draft, 'removing the attachment also preserves the draft');
+    await composer.fill('');
+    check(`${label}: Explorer drop attaches one README.md context chip, preserves the draft, clears the highlight and sends nothing`);
+  };
+  assert.equal(await page.locator('.browser-page-tabs [role="tab"]').count(), 0, 'baseline has no web tab');
+  assert.equal((await attachedNativeBrowserPages(app, page)).length, 0, 'baseline has no attached native browser view');
+  const filesWereOpen = await rail('Files').getAttribute('aria-pressed') === 'true';
+  await assertExplorerDrop('without a browser tab', 'en-1b-drop-target-no-browser.png');
+  if (!filesWereOpen) await rail('Files').click();
+
   // ---------- 2. terminal link → Open in preview ----------
   await tab('Dev server').click();
   const clickUrl = async () => { const box = await until(() => page.evaluate(target => {
@@ -199,60 +255,50 @@ try {
   await linkBar.getByRole('button', { name: 'Open in preview', exact: true }).click();
   const preview = page.locator('.wb-web-preview').first();
   await preview.waitFor();
-  const host = new URL(url).host;
-  await until(async () => (await page.locator('.workspace-tab .workspace-tab-select').allInnerTexts()).some(text => text.includes(host)), 'the web tab is not in the tab bar');
-  const frame = page.frameLocator('.wb-web-preview iframe').first();
-  await frame.locator('h1').waitFor();
-  assert.equal(await frame.locator('h1').innerText(), 'Shop app · dev server');
-  assert.equal(await preview.locator('iframe').getAttribute('sandbox'), 'allow-scripts allow-forms');
+  const title = 'QA page';
+  // Browser pages live in the pane's strip, never the upper workspace strip (pane-layout.md).
+  const browserTab = page.locator('.browser-page-tabs').getByRole('tab', { name: url, exact: true });
+  const nativePage = () => until(async () => { await dismissBrowserNotifications(page); const native = (await attachedNativeBrowserPages(app, page)).find(contents => contents.url === url); return native && await native.boundingBox('h1') ? native : undefined; }, 'attached native dev-server page');
+  const native = await nativePage();
+  const loaded = await app.evaluate(async ({ webContents }, id) => { const contents = webContents.fromId(id); return { heading: await contents.executeJavaScript('document.querySelector("h1").textContent'), title: contents.getTitle(), preferences: contents.getLastWebPreferences() }; }, native.id);
+  assert.equal(loaded.heading, 'Shop app · dev server');
+  assert.equal(loaded.title, title);
+  assert.equal(loaded.preferences.sandbox, true);
+  assert.equal(loaded.preferences.contextIsolation, true);
+  assert.equal(loaded.preferences.nodeIntegration, false);
+  assert.equal(loaded.preferences.webSecurity, true);
+  assert.ok(!loaded.preferences.preload, 'native page has no app preload');
+  await until(async () => await browserTab.innerText() === title && await browserTab.getAttribute('aria-selected') === 'true', 'the browser pane does not show the selected page title');
+  await native.screenshot({ path: join(out, 'en-3-native-page.png') }); report.shots.push('en-3-native-page.png');
   await shot('en-3-web-tab.png');
-  check(`terminal link bar offers Open in preview; the page opens as an independent "${host}" tab, sandboxed like the existing preview`);
+  check(`terminal link bar offers Open in preview; the page opens as an independent "${title}" tab in an isolated native view`);
   // The same address again activates the existing tab instead of adding one.
   await tab('Dev server').click();
   await clickUrl();
   await linkBar.getByRole('button', { name: 'Open in preview', exact: true }).click();
-  await delay(500);
-  assert.equal((await page.locator('.workspace-tab .workspace-tab-select').allInnerTexts()).filter(text => text.includes(host)).length, 1, 'one tab per address');
+  await nativePage();
+  assert.equal(await browserTab.count(), 1, 'one browser page tab per address');
+  assert.equal(await page.locator('.workspace-tab .workspace-tab-select').getByText(title, { exact: true }).count(), 0, 'browser pages are not duplicated in the upper workspace strip');
   check('opening the same address again reuses its tab');
   const saved = (await request('runtime.snapshot')).workspaces.find(item => JSON.stringify(item.layout).includes('"kind":"web"'));
   assert.ok(saved, 'the layout with a web tab was saved (protocol + runtime accepted it)');
   check('a layout with a web tab passes the desktop and runtime validation (workspace.save)');
 
   // ---------- 3. drag an Explorer file into the Chat ----------
-  await tab('Cart agent').click();
-  await composer.waitFor();
-  await composer.fill('');
-  await openView('Files');
-  const readme = page.locator('.wb-tree-row[data-path="README.md"]');
-  await readme.waitFor();
-  assert.equal(await readme.getAttribute('draggable'), 'true');
-  // Synthetic drag through the real handlers (dragstart fills the payload; dragover highlights; drop inserts).
-  await page.evaluate(([chatId]) => {
-    const transfer = new DataTransfer();
-    window.__qaTransfer = transfer;
-    document.querySelector('.wb-tree-row[data-path="README.md"]').dispatchEvent(new DragEvent('dragstart', { dataTransfer: transfer, bubbles: true, cancelable: true }));
-    const target = document.querySelector(`[data-testid="session-chat-${chatId}"]`).closest('.pane-tab-surface');
-    target.dispatchEvent(new DragEvent('dragover', { dataTransfer: transfer, bubbles: true, cancelable: true }));
-  }, [chat.id]);
-  const surface = page.locator('.pane-tab-surface.file-drop-target');
-  await surface.waitFor();
-  assert.equal(await surface.getAttribute('data-drop-label'), 'Drop to insert the file reference (not sent)');
-  await shot('en-4-drop-target.png');
-  await page.evaluate(([chatId]) => {
-    const target = document.querySelector(`[data-testid="session-chat-${chatId}"]`).closest('.pane-tab-surface');
-    target.dispatchEvent(new DragEvent('drop', { dataTransfer: window.__qaTransfer, bubbles: true, cancelable: true }));
-  }, [chat.id]);
-  await until(async () => (await composer.inputValue()).includes('README.md'), 'the dropped reference did not reach the composer');
-  assert.equal((await composer.inputValue()).trim(), 'README.md');
-  assert.equal(await page.locator('.pane-tab-surface.file-drop-target').count(), 0, 'the highlight goes away after the drop');
-  check('dragging README.md from the Explorer onto the Chat inserts "README.md" into the message box (not sent)');
+  await nativePage();
+  await assertExplorerDrop('beside the attached native browser page', 'en-4-drop-target.png');
   // A native drag through Chromium, best effort (Playwright drives HTML5 drag-and-drop in Chromium).
-  await composer.fill('');
   try {
     await readme.dragTo(page.locator(`[data-testid="session-chat-${chat.id}"] .chat-scroll`).first(), { timeout: 8000 });
-    await until(async () => (await composer.inputValue()).includes('README.md'), 'native drop', 5000);
-    check('a native mouse drag (Playwright dragTo) inserts the same reference');
+    await until(() => fileChip.isVisible(), 'native drop context chip', 5000);
+    check('a native mouse drag (Playwright dragTo) attaches the same file context chip beside the browser');
   } catch (error) { note(`native drag not confirmed by Playwright here: ${error.message.split('\n')[0]}`); }
+  assert.equal(await composer.inputValue(), '', 'a native drag does not insert file context into the textarea');
+  if (await fileChip.count()) {
+    assert.equal(await fileChip.count(), 1, 'native drag attaches exactly one file chip');
+    await removeFileChip.click();
+    await fileChip.waitFor({ state: 'detached' });
+  }
   await composer.fill('');
   assert.equal((await request('chat.read', { sessionId: chat.id })).filter(item => item.role === 'user').length, 0, 'nothing was sent to the agent');
 
@@ -282,7 +328,7 @@ try {
   await line('a', 'let sum = 0').click();
   await line('a', 'return sum;').click({ modifiers: ['Shift'] });
   await commentButton.click();
-  assert.match(await form.locator('.wb-review-comment-where').innerText(), /^src\/cart\.ts \(before your change, lines 2-4\)$/);
+  assert.match(await form.locator('.wb-review-comment-where').innerText(), /^src\/cart\.ts \(at the checkpoint, lines 2-4\)$/);
   await form.locator('textarea').fill('Why was the explicit loop removed?');
   await form.locator('textarea').press('Control+Enter');
   const strip = diff.locator('.wb-review-comments');
@@ -300,14 +346,14 @@ try {
   await page.locator('.wb-review-diff .wb-review-comments').waitFor();
   check('pending comments survive a window reload');
   await page.locator('.wb-review-diff .wb-review-comments').getByRole('button', { name: 'Add to message', exact: true }).click();
-  await until(async () => (await composer.inputValue()).includes('Review comments on your changes:'), 'the comments did not reach the composer');
+  await until(async () => (await composer.inputValue()).includes('Review comments:'), 'the comments did not reach the composer');
   const inserted = (await composer.inputValue()).trim();
   note(`inserted:\n${inserted}`);
   assert.equal(inserted, [
-    'Review comments on your changes:',
+    'Review comments:',
     '- src/cart.ts:2 — Keep the loop: the profiler showed reduce is slower here.',
     '  > return items.reduce((sum, item) => sum + item, 0);',
-    '- src/cart.ts (before your change, lines 2-4) — Why was the explicit loop removed?',
+    '- src/cart.ts (at the checkpoint, lines 2-4) — Why was the explicit loop removed?',
     '  > let sum = 0; …',
   ].join('\n'));
   assert.equal(await page.locator('.wb-review-diff .wb-review-comments').count(), 0, 'inserted comments leave the strip');
@@ -331,9 +377,9 @@ try {
   await shot('en-8-chat-link-menu.png');
   await menu.getByRole('menuitem', { name: 'Open in preview', exact: true }).click();
   await page.locator('.wb-web-preview').first().waitFor();
-  await page.frameLocator('.wb-web-preview iframe').first().locator('h1').waitFor();
+  await nativePage();
   assert.equal(await page.evaluate(() => location.href), before, 'the app window did not navigate');
-  await until(async () => (await page.locator('.workspace-tab .workspace-tab-select').allInnerTexts()).some(text => text.includes(host)), 'the web tab is not in the tab bar');
+  await until(async () => await browserTab.innerText() === title && await browserTab.getAttribute('aria-selected') === 'true', 'the browser pane does not show the selected page title');
   // The bare URL behaves the same; Escape closes the menu without acting.
   await tab('Cart agent').click();
   await chatLink.last().click();

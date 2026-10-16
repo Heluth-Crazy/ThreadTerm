@@ -2,6 +2,7 @@ import { useLayoutEffect, useRef, useState, type ReactNode } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { clampContextMenu, menuText, nextMenuIndex } from '../contextMenuActions';
 import './context-menu.css';
+import { useBrowserOcclusion } from '../browserOcclusion';
 
 export type ContextMenuItem = {
   id?: string;
@@ -63,6 +64,7 @@ export function ContextMenu({ x, y, items, onClose }: ContextMenuRequest & { onC
   const panel = useRef<HTMLDivElement>(null);
   const [position, setPosition] = useState({ left: 8, top: 8 });
   const text = (en: string, zh: string) => menuText(document.documentElement.lang, en, zh);
+  useBrowserOcclusion();
   useLayoutEffect(() => {
     const element = panel.current!;
     const rect = element.getBoundingClientRect();

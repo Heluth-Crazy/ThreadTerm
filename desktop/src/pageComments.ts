@@ -8,6 +8,13 @@ import { pagePickerSource } from './pagePickerScript.js';
 
 type PendingPick = { frame: WebFrameMain; cancel: () => void; cancelled: boolean };
 const pendingPicks = new Map<string, PendingPick>();
+/** Native browser pages are deliberately registered by the browser owner, keyed to the trusted app renderer.
+ * FilePreview continues to use the iframe lookup below. */
+type NativePage = { contents: WebContents; bounds: () => PageRect | undefined };
+const nativePages = new Map<string, NativePage>();
+const nativeKey = (sender: WebContents, frameName: string) => `${sender.id}:${frameName}`;
+export function nativePageRegistered(sender: WebContents, frameName: string, contents: WebContents, bounds: () => PageRect | undefined): void { nativePages.set(nativeKey(sender, frameName), { contents, bounds }); }
+export function nativePageClosed(sender: WebContents, frameName: string): void { const key=nativeKey(sender,frameName),native=nativePages.get(key);pendingPicks.get(key)?.cancel();nativePages.delete(key);if(native&&!native.contents.isDestroyed())void native.contents.executeJavaScriptInIsolatedWorld(999,[{code:pagePickerSource('cancel')}],false).catch(()=>undefined); }
 
 function findFrame(sender: WebContents, name: unknown): WebFrameMain | undefined {
   if (!validPageFrameName(name)) throw new Error('Invalid preview frame name');
@@ -125,6 +132,8 @@ async function pickPageTarget(event: IpcMainInvokeEvent, value: unknown): Promis
   const request = value as Record<string, unknown>;
   const frameRect = pageRect(request.frameRect);
   const sender = event.sender;
+  const native = typeof request.frameName === 'string' ? nativePages.get(nativeKey(sender, request.frameName)) : undefined;
+  if(native){const pick=await pickNativePage(native,sender,String(request.frameName));if(!sender.isDestroyed()&&BrowserWindow.fromWebContents(sender)?.isFocused())sender.focus();return pick;}
   const frame = findFrame(sender, request.frameName);
   const key = `${sender.id}:${request.frameName}`;
   pendingPicks.get(key)?.cancel();
@@ -180,6 +189,48 @@ async function pickPageTarget(event: IpcMainInvokeEvent, value: unknown): Promis
   }
 }
 
+async function pickNativePage(native: NativePage, sender: WebContents, frameName: string): Promise<PagePick | null> {
+  const contents = native.contents;
+  if (contents.isDestroyed()) return null;
+  const key = nativeKey(sender, frameName);
+  const old = pendingPicks.get(key); old?.cancel();
+  let done!: (value: null) => void;
+  const cancelled = new Promise<null>(resolve => { done = resolve; });
+  const pending: PendingPick = { frame: contents.mainFrame, cancelled: false, cancel: () => { if (!pending.cancelled) { pending.cancelled = true; done(null); } } };
+  pendingPicks.set(key, pending);
+  const navigating=(details:Electron.Event<Electron.WebContentsDidStartNavigationEventParams>)=>{if(details.isMainFrame&&!details.isSameDocument)pending.cancel();},destroyed=()=>pending.cancel();contents.on('did-start-navigation',navigating);contents.once('destroyed',destroyed);
+  try {
+    const raw = await Promise.race([contents.executeJavaScriptInIsolatedWorld(999, [{ code: pagePickerSource('pick') }], false), cancelled]);
+    if (pending.cancelled || contents.isDestroyed()) return null;
+    const pick = sanitizePagePick(raw); if (!pick) return null;
+    const capture = captureNativePageShot(contents, pick).then(async shot => {
+      if (pending.cancelled && shot) { await deletePageShots([shot.id]); return undefined; }
+      return shot;
+    });
+    const shot = await Promise.race([capture, cancelled]);
+    return pending.cancelled ? null : { ...pick, ...(shot ? { shot } : {}) };
+  } finally {
+    contents.removeListener('did-start-navigation', navigating); contents.removeListener('destroyed', destroyed);
+    if (pendingPicks.get(key) === pending) pendingPicks.delete(key);
+  }
+}
+
+export async function captureNativePageShot(contents: WebContents, pick: PagePick): Promise<PageShot | undefined> {
+  if (contents.isDestroyed()) return undefined;
+  let image = await contents.capturePage(undefined,{stayHidden:true,stayAwake:false}); if (image.isEmpty()) return undefined;
+  const size=image.getSize(), target=pick.target.rect;
+  if (target && target.width > 0 && target.height > 0) {
+    const scaleX=size.width/Math.max(1,pick.viewport.width),scaleY=size.height/Math.max(1,pick.viewport.height),x=Math.max(0,Math.min(size.width-1,Math.floor(target.x*scaleX))),y=Math.max(0,Math.min(size.height-1,Math.floor(target.y*scaleY))),width=Math.max(1,Math.min(size.width-x,Math.ceil(target.width*scaleX))),height=Math.max(1,Math.min(size.height-y,Math.ceil(target.height*scaleY)));
+    image=image.crop({x,y,width,height});
+  }
+  const resized=pageImageSize(image.getSize().width,image.getSize().height,1600); image=image.resize({ ...resized, quality:'best' });
+  let bytes=image.toPNG(), extension:'png'|'jpg'='png'; if(bytes.length>600*1024){extension='jpg';bytes=image.toJPEG(85);}
+  while(bytes.length>MAX_PAGE_SHOT_BYTES){const s=image.getSize();if(s.width===1&&s.height===1)return undefined;image=image.resize({width:Math.max(1,Math.floor(s.width*.8)),height:Math.max(1,Math.floor(s.height*.8)),quality:'best'});extension='jpg';bytes=image.toJPEG(85);}
+  const directory=await shotDirectory(true),id=randomUUID(),path=pageShotPath(directory,id,extension);await writeFile(path,bytes,{flag:'wx'});
+  const shotSize=image.getSize(),thumbnail=image.resize({ ...pageImageSize(shotSize.width,shotSize.height,240), quality:'good'}).toJPEG(70);
+  return {id,path,width:shotSize.width,height:shotSize.height,thumbnail:`data:image/jpeg;base64,${thumbnail.toString('base64')}`};
+}
+
 async function previewFrameInfo(sender: WebContents, name: string): Promise<{ rect: PageRect; staticFrame: boolean } | undefined> {
   const source = `(()=>{const f=[...document.querySelectorAll('iframe')].find(v=>v.name===${JSON.stringify(name)});if(!f)return null;const r=f.getBoundingClientRect();return {rect:{x:r.x,y:r.y,width:r.width,height:r.height},staticFrame:f.src.startsWith('about:srcdoc')||f.hasAttribute('srcdoc')};})()`;
   try { const value = await sender.mainFrame.executeJavaScript(source, false) as { rect?: unknown; staticFrame?: unknown }; return typeof value?.staticFrame === 'boolean' ? { rect: pageRect(value.rect), staticFrame: value.staticFrame } : undefined; } catch { return undefined; }
@@ -228,6 +279,8 @@ export function registerPageComments(assertTrustedRenderer: (event: IpcMainInvok
     assertTrustedRenderer(event);
     const frame = findFrame(event.sender, name);
     pendingPicks.get(`${event.sender.id}:${name}`)?.cancel();
+    const native = typeof name === 'string' ? nativePages.get(nativeKey(event.sender, name)) : undefined;
+    if (native && !native.contents.isDestroyed()) await native.contents.executeJavaScriptInIsolatedWorld(999, [{ code: pagePickerSource('cancel') }], false).catch(() => undefined);
     if (frame) await frame.executeJavaScript(pagePickerSource('cancel'), false).catch(() => undefined);
   });
   ipcMain.handle('threadterm:mark-page-target', async (event, value: unknown) => {
@@ -237,6 +290,8 @@ export function registerPageComments(assertTrustedRenderer: (event: IpcMainInvok
     const frame = findFrame(event.sender, request.frameName);
     const target = sanitizePageTargetRef(request.target);
     if (request.flash !== undefined && typeof request.flash !== 'boolean') throw new Error('Invalid page flash flag');
+    const native = typeof request.frameName === 'string' ? nativePages.get(nativeKey(event.sender, request.frameName)) : undefined;
+    if (native && !native.contents.isDestroyed()) return native.contents.executeJavaScriptInIsolatedWorld(999, [{ code: pagePickerSource('mark', target, request.flash as boolean | undefined) }], false).then((result: unknown) => result === true, () => false);
     if (!frame) return false;
     return frame.executeJavaScript(pagePickerSource('mark', target, request.flash as boolean | undefined), false).then((result: unknown) => result === true, () => false);
   });

@@ -769,7 +769,7 @@ export function validateLayout(value:unknown):asserts value is PaneLayout {
      if(tab.toCheckpointId!==undefined&&(typeof tab.toCheckpointId!=='string'||!tab.toCheckpointId)) throw new Error('Invalid review tab');
     }
     // A web page is an independent tab (no session owner): owned views are reached only through a file header.
-    else if(tab.kind==='web') { if(!isWebPreviewUrl(tab.url)||tab.ownerSessionId!==undefined) throw new Error('Invalid web tab'); }
+    else if(tab.kind==='web') { if(!isWebPreviewUrl(tab.url)||tab.ownerSessionId!==undefined) throw new Error('Invalid web tab'); if(tab.title!==undefined&&(typeof tab.title!=='string'||new TextEncoder().encode(tab.title).length>512||/[\u0000-\u001f\u007f-\u009f]/.test(tab.title))) throw new Error('Invalid web tab title'); }
     else throw new Error('Invalid tab kind');
    }
    if(node.activeTabId!==null&&!tabs.has(String(node.activeTabId))) throw new Error('Invalid active tab');
@@ -833,7 +833,7 @@ export interface AgentReview { id:string; sessionId:string; reviewerSessionId:st
  state:'starting'|'running'|'completed'|'failed'; files:number; truncated:string[]; instructions:'repository'|'built-in';
  createdAt:string; updatedAt:string; error?:string; findings?:AgentReviewFinding[]; unparsed?:boolean }
 export interface Worktree { id:string; projectId:string; path:string; branch:string|null; head:string; isMain:boolean; locked:boolean; missing:boolean; upstream?:string; lastCommit?:CommitSummary }
-export type ContentRef = {id:string;kind:'session';sessionId:string}|{id:string;kind:'file'|'diff'|'preview';projectId:string;worktreePath?:string;path:string;assetKind?:'text'|'image';ownerSessionId?:string;staged?:boolean}|{id:string;kind:'history';projectId:string;worktreePath?:string;path?:string;ownerSessionId?:undefined;assetKind?:undefined}|{id:string;kind:'review';projectId:string;worktreePath?:string;path:string;sessionId:string;checkpointId:string;toCheckpointId?:string;ownerSessionId?:undefined;assetKind?:undefined}|{id:string;kind:'web';url:string;ownerSessionId?:undefined;projectId?:undefined;worktreePath?:undefined;path?:undefined;assetKind?:undefined};
+export type ContentRef = {id:string;kind:'session';sessionId:string}|{id:string;kind:'file'|'diff'|'preview';projectId:string;worktreePath?:string;path:string;assetKind?:'text'|'image';ownerSessionId?:string;staged?:boolean}|{id:string;kind:'history';projectId:string;worktreePath?:string;path?:string;ownerSessionId?:undefined;assetKind?:undefined}|{id:string;kind:'review';projectId:string;worktreePath?:string;path:string;sessionId:string;checkpointId:string;toCheckpointId?:string;ownerSessionId?:undefined;assetKind?:undefined}|{id:string;kind:'web';url:string;/** Sanitized page title, at most 512 UTF-8 bytes. */title?:string;ownerSessionId?:undefined;projectId?:undefined;worktreePath?:undefined;path?:undefined;assetKind?:undefined};
 export type PaneLayout = {kind:'pane';id:string;tabs:ContentRef[];activeTabId:string|null}|{kind:'split';id:string;direction:'horizontal'|'vertical';ratio:number;first:PaneLayout;second:PaneLayout};
 export interface WorkspaceSave { id?:string;name:string;projectId?:string;worktreePath?:string;layout:PaneLayout;expectedRevision:number;operationId:string }
 
