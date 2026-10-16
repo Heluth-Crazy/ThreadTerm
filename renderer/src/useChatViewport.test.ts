@@ -36,10 +36,10 @@ test('following survives composer resize, streamed output and live indicator mou
   }
 });
 
-test('a user scroll upwards at stable dimensions pauses follow', () => {
+test('a delayed upward scroll at stable dimensions preserves follow without input', () => {
   const bottom = position(1_482);
   const scrolled = position(1_200);
-  assert.equal(nextViewportFollow(true, false, bottom, scrolled), false);
+  assert.equal(nextViewportFollow(true, false, bottom, scrolled), true);
 });
 
 test('upward input pauses before a simultaneous resize or streamed update', () => {
@@ -65,4 +65,56 @@ test('scrolling back to the bottom resumes follow within the existing threshold'
 test('inspection stays paused even when layout or a scroll reaches the bottom', () => {
   assert.equal(nextViewportFollow(false, true, position(1_200), position(1_482)), false);
   assert.equal(nextViewportFollow(false, true, position(1_200), position(1_500, 2_400)), false);
+});
+
+test('a coalesced stale scroll after the layout correction cannot revoke follow', () => {
+  const before = position(767, 1_328, 561);
+  const grown = position(767, 1_501, 561);
+  const corrected = { ...grown, scrollTop: 940 };
+  let follow = nextViewportFollow(true, false, before, grown);
+  assert.equal(follow, true, 'layout scroll before ResizeObserver');
+  follow = nextViewportFollow(follow, false, grown, corrected);
+  assert.equal(follow, true, 'programmatic correction');
+  for (const stale of [grown, corrected, grown, grown]) {
+    follow = nextViewportFollow(follow, false, corrected, stale);
+    assert.equal(follow, true, 'late scroll/live-change at identical dimensions');
+  }
+});
+
+test('scroll and scrollend observations before a programmatic write applies keep follow', () => {
+  const requested = position(1_482);
+  const stale = position(1_310);
+  for (const previous of [undefined, requested, stale]) {
+    assert.equal(nextViewportFollow(true, false, previous, stale), true);
+  }
+});
+
+test('explicit upward input stays paused through a queued old bottom observation', () => {
+  const bottom = position(1_482);
+  // Upward wheel/key/touch latches inspection before the default scroll occurs.
+  assert.equal(nextViewportFollow(false, true, bottom, bottom), false);
+  assert.equal(nextViewportFollow(false, true, bottom, position(1_310)), false);
+  assert.equal(nextViewportFollow(false, true, bottom, position(1_482, 2_300)), false);
+  // A downward input clears inspection; reaching bottom can resume follow.
+  assert.equal(nextViewportFollow(false, false, position(1_310), bottom), true);
+});
+
+test('only an active native scrollbar gesture can turn an upward observation into a pause', () => {
+  const bottom = position(1_482);
+  const up = position(1_310);
+  assert.equal(nextViewportFollow(true, false, bottom, up, false), true);
+  assert.equal(nextViewportFollow(true, false, bottom, up, true), false);
+  assert.equal(nextViewportFollow(true, false, bottom, position(1_481), true), false, 'small upward drag also pauses');
+  assert.equal(nextViewportFollow(true, false, bottom, bottom, true), true, 'stationary click keeps follow');
+  assert.equal(nextViewportFollow(true, false, up, bottom, true), true, 'downward drag keeps follow');
+  assert.equal(nextViewportFollow(true, false, bottom, up, false), true, 'released gesture cannot classify future scrolls');
+});
+
+
+test('reversing a scrollbar drag down to the bottom resumes after its upward pause', () => {
+  const bottom = position(1_482), up = position(1_310);
+  assert.equal(nextViewportFollow(true, false, bottom, up, true), false);
+  assert.equal(nextViewportFollow(false, true, up, up, true), false, 'queued stationary event keeps pause');
+  assert.equal(nextViewportFollow(false, true, up, position(1_350), true), false, 'downward drag still above bottom');
+  assert.equal(nextViewportFollow(false, true, position(1_350), bottom, true), true);
 });

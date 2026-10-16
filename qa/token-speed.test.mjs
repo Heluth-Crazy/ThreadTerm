@@ -2,9 +2,14 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { readFileSync } from 'node:fs';
 import { runInNewContext } from 'node:vm';
-import { collectFooterPresentationInPage, ensureTranscriptLatest, estimateOutputTokens, excludesToolTime, footerSeparatorViolations, isolatedProviderEnvironment, observeTurnInPage, tokensPerSecond, transcriptAtBottom, transcriptFollowsLatest, transcriptFollowFailure, transcriptFollowSummary, waitForProviderChat, withinRelative } from './lib/token-speed.mjs';
+import { createRequire } from 'node:module';
+import { collectFooterPresentationInPage, ensureTranscriptLatest, estimateOutputTokens, excludesToolTime, footerSeparatorViolations, followStressPrompt, hasAppliedStressEvent, isolatedProviderEnvironment, observeTurnInPage, tokensPerSecond, transcriptAtBottom, transcriptFollowsLatest, transcriptFollowFailure, transcriptFollowSummary, waitForProviderChat, withinRelative } from './lib/token-speed.mjs';
 import scenario from './fixtures/token-speed-echo-acp/scenario.json' with { type: 'json' };
 import codexFixture from './fixtures/fake-codex-token-speed.cjs';
+
+// Keep the compiler external when the standard QA runner bundles this test as ESM.
+const require = createRequire(import.meta.url);
+const ts = require('typescript');
 
 test('token estimator: ASCII runs, whitespace and per-run rounding', () => {
   for (const [text, expected] of [['', 0], [' \n\t', 0], ['abcd', 1], ['abcde', 2], ['a b c d', 4], ['hello world', 4]]) {
@@ -245,34 +250,65 @@ test('turn follow summary preserves transient failures and reports the worst sam
 
 // Fake DOM, frames and timer clock exercise the exact serialized page probe;
 // no Electron, provider, real timer or child process is started.
-function turnProbeHarness() {
-  const state = { log: { scrollTop: 600, scrollHeight: 1000, clientHeight: 400 }, live: null, footerCount: 0, jump: false };
+function turnProbeHarness({ stress = null, onScroll, clampScrollTo, installProduct } = {}) {
+  const log = { scrollHeight: 1000, clientHeight: 400, clientWidth: 400, style: { overflowAnchor: 'none' } };
+  let scrollTop = 600;
+  Object.defineProperty(log, 'scrollTop', { get: () => scrollTop, set: value => { scrollTop = Math.min(Math.max(0, Number(value) || 0), Math.max(0, log.scrollHeight - log.clientHeight)); } });
+  log.scrollTo = ({ top }) => { log.scrollTop = clampScrollTo === undefined ? top : Math.max(top, clampScrollTo); };
+  const state = { log, live: null, footerCount: 0, jump: false, scrollEvents: 0, diagnostics: [] };
   const frames = new Map(), timers = new Map(), listeners = new Map(), window = {};
+  const resizeObservers = new Set();
+  class ResizeObserver {
+    constructor(callback) { this.callback = callback; this.pending = false; }
+    observe() { this.pending = true; resizeObservers.add(this); }
+    disconnect() { resizeObservers.delete(this); }
+  }
+  const content = { append: marker => {
+    const height = Number.parseFloat(marker.style.height);
+    log.scrollHeight += height;
+    marker.remove = () => { log.scrollHeight -= height; log.scrollTop = log.scrollTop; marker.remove = () => {}; };
+  } };
+  log.lastElementChild = content;
+  const product = installProduct?.({ log, content, ResizeObserver, window });
   let serial = 0, observer, observing = false, clock = 0;
+  state.log.dispatchEvent = event => { if (event.type === 'scroll') { state.scrollEvents += 1; onScroll?.(state); } };
   const node = {
     querySelector: selector => selector === '.v3-chat-log' ? state.log : selector === '.chat-back-to-bottom' ? state.jump ? { getBoundingClientRect: () => ({ x: 380, y: 700, width: 32, height: 32 }) } : null : state.live,
     querySelectorAll: () => Array.from({ length: state.footerCount }, () => ({})),
     addEventListener: (name, listener) => listeners.set(name, listener),
     removeEventListener: name => listeners.delete(name),
   };
-  runInNewContext(`(${observeTurnInPage.toString()})(node, { id: 'probe', label: 'dark-en-420', footerCount: 0 })`, {
+  runInNewContext(`(${observeTurnInPage.toString()})(node, { id: 'probe', label: 'dark-en-420', footerCount: 0, stress })`, {
     window, node, Date: { now: () => clock }, getComputedStyle: () => ({ display: 'block', visibility: 'visible' }),
+    document: { createElement: () => ({ style: {}, setAttribute() {}, remove() {} }) }, ResizeObserver,
     MutationObserver: class {
       constructor(callback) { observer = callback; }
       observe() { observing = true; }
       disconnect() { observing = false; }
     },
     requestAnimationFrame: callback => { const id = ++serial; frames.set(id, callback); return id; }, cancelAnimationFrame: id => frames.delete(id),
-    setInterval: (callback, ms) => { assert.equal(ms, 250); const id = ++serial; timers.set(id, callback); return id; }, clearInterval: id => timers.delete(id),
+    setInterval: (callback, ms) => { assert.equal(ms, 250); const id = ++serial; timers.set(id, callback); return id; }, clearInterval: id => timers.delete(id), Event: class { constructor(type) { this.type = type; } }, stress, console: { log: value => state.diagnostics.push(value) },
   });
+  const frame = (beforeCallbacks, beforeResize) => {
+    if (!frames.size) return;
+    clock += 16;
+    beforeCallbacks?.();
+    for (const [id, callback] of [...frames]) { frames.delete(id); callback(); }
+    beforeResize?.();
+    // Rendering update: rAF first, then existing product RO, then the fresh QA
+    // observer's initial delivery. No extra frame/task or product scroll event.
+    for (const observer of [...resizeObservers]) {
+      const size = `${log.scrollHeight}:${log.clientHeight}:${log.clientWidth}`;
+      if (observer.pending || observer.size !== size) { observer.pending = false; observer.size = size; observer.callback(); }
+    }
+  };
   const flush = () => {
     let count = 0;
     while (frames.size) {
-      assert.ok(++count < 10, 'bounded frame settling'); clock += 16;
-      for (const [id, callback] of [...frames]) { frames.delete(id); callback(); }
+      assert.ok(++count < 20, 'bounded frame settling'); frame();
     }
   };
-  return { state, window, frames, timers, listeners, flush,
+  return { state, window, frames, timers, listeners, flush, frame, resizeObservers, product,
     get observing() { return observing; },
     submit: () => listeners.get('submit')?.(),
     mutate: () => { if (observing) observer(); },
@@ -282,7 +318,7 @@ function turnProbeHarness() {
 
 test('turn follow probe arms on submit, samples on live changes and 250 ms ticks, and stops at turn end', () => {
   const fixture = turnProbeHarness(), probe = fixture.window.__tokenSpeedProbe;
-  assert.equal(fixture.timers.size, 0); assert.equal(probe.followSamples.length, 0);
+  assert.equal(fixture.timers.size, 0); assert.equal(probe.followSamples.length, 0); assert.equal(probe.stress, null);
   fixture.submit(); fixture.flush();
   assert.equal(fixture.timers.size, 1); assert.equal(probe.followSamples[0].source, 'send');
   fixture.state.live = { dataset: { tokensPerSecond: '50', estimated: 'true' }, textContent: '≈ 50 tok/s' };
@@ -310,6 +346,162 @@ test('turn follow probe retains a streaming follow loss after recovery and abort
   fixture.tick(); assert.ok(fixture.frames.size > 0);
   probe.stop('failure-cleanup');
   assert.equal(probe.finished, true); assert.equal(fixture.timers.size, 0); assert.equal(fixture.frames.size, 0); assert.equal(fixture.observing, false);
+});
+
+test('turn follow stress skips a short initial transcript, then injects after settled overflow', () => {
+  const fixture = turnProbeHarness({ stress: { repeats: 1, offsetPx: 173, loadMs: 0 } }), probe = fixture.window.__tokenSpeedProbe;
+  fixture.submit(); fixture.flush();
+  assert.equal(probe.stress.attempts.at(-1).reason, 'no-live-indicator');
+  fixture.state.live = { dataset: { tokensPerSecond: '50', estimated: 'true' }, textContent: '≈ 50 tok/s' };
+  fixture.state.log.scrollHeight = 560; fixture.state.log.scrollTop = 160;
+  fixture.mutate();
+  fixture.flush();
+  assert.equal(probe.stress.attempts.at(-1).reason, 'insufficient-scroll-range');
+  fixture.state.log.scrollHeight = 1000; fixture.state.log.scrollTop = 600;
+  fixture.tick(); fixture.flush();
+  assert.equal(fixture.state.log.scrollTop, 427); assert.equal(fixture.state.scrollEvents, 2);
+  const event = JSON.parse(JSON.stringify(probe.stress.events[0]));
+  assert.equal(event.status, 'injected'); assert.equal(event.before.scrollTop, 600); assert.equal(event.primed.scrollTop, 600);
+  assert.equal(event.requestedScrollTop, 427); assert.equal(event.appliedScrollTop, 427); assert.equal(event.appliedDisplacement, 173);
+  assert.equal(event.afterSettle.scrollTop, 427); assert.equal(event.afterSettle.remainingPx, 173);
+  assert.equal(hasAppliedStressEvent(probe.stress), true);
+  assert.ok(fixture.state.diagnostics.some(value => value.startsWith('TOKEN SPEED FOLLOW STRESS ')));
+  assert.equal(probe.followSamples.at(-1).source, 'stress-settle');
+  assert.equal(probe.followSamples.at(-1).remainingPx, 173, 'the unchanged oracle samples after injection');
+});
+
+test('turn follow stress records clamped diagnostics without counting them', () => {
+  const fixture = turnProbeHarness({ stress: { repeats: 1, offsetPx: 173, loadMs: 0 }, clampScrollTo: 500 }), probe = fixture.window.__tokenSpeedProbe;
+  fixture.state.log.scrollHeight = 1000; fixture.state.log.scrollTop = 600; fixture.submit(); fixture.flush();
+  fixture.state.live = { dataset: { tokensPerSecond: '50', estimated: 'true' }, textContent: '≈ 50 tok/s' };
+  fixture.mutate(); fixture.flush();
+  assert.equal(fixture.state.scrollEvents, 1); assert.equal(probe.stress.attempts.at(-1).reason, 'clamped-scroll'); assert.equal(probe.stress.attempts.at(-1).appliedDisplacement, 100); assert.deepEqual(JSON.parse(JSON.stringify(probe.stress.events)), []);
+  assert.equal(hasAppliedStressEvent(probe.stress), false);
+  assert.equal(hasAppliedStressEvent({ events: [{ appliedDisplacement: 0 }, { appliedDisplacement: -1 }] }), false);
+  assert.equal(hasAppliedStressEvent({ events: [{ appliedDisplacement: 0.5 }] }), true);
+});
+
+test('turn follow stress settles pending diagnostics and cancels queued frames on cleanup', () => {
+  const fixture = turnProbeHarness({ stress: { repeats: 1, offsetPx: 173, loadMs: 0 } }), probe = fixture.window.__tokenSpeedProbe;
+  fixture.submit(); fixture.flush(); fixture.state.live = { dataset: { tokensPerSecond: '50', estimated: 'true' }, textContent: '≈ 50 tok/s' };
+  fixture.mutate(); fixture.frame(); fixture.frame();
+  assert.equal(probe.stress.events.length, 1); assert.ok(fixture.frames.size > 0, 'stress settle is queued');
+  probe.stop('failure-cleanup');
+  assert.ok(probe.stress.events[0].afterSettle); assert.equal(fixture.frames.size, 0); assert.equal(fixture.timers.size, 0); assert.equal(fixture.observing, false);
+});
+
+test('stress prompt leaves normal fixture text unchanged and adds deterministic overflow only when enabled', () => {
+  const prompt = 'Token speed estimate';
+  assert.equal(followStressPrompt(prompt, false), prompt);
+  const stressed = followStressPrompt(prompt, true);
+  assert.ok(stressed.startsWith(`${prompt}\n\nQA follow stress context`));
+  assert.equal((stressed.match(/Follow stress context line/g) ?? []).length, 48);
+});
+
+function loadViewport(path, react = {}, globals = {}) {
+  const output = ts.transpileModule(readFileSync(path, 'utf8'), { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 } }).outputText;
+  const module = { exports: {} };
+  runInNewContext(output, { module, exports: module.exports, require: name => name === 'react' ? react : (() => { throw new Error(`Unexpected module ${name}`); })(), ...globals });
+  return module.exports;
+}
+
+function installViewportProduct({ log, content, ResizeObserver, window }) {
+  const cleanups = [];
+  const react = { useCallback: callback => callback, useRef: current => ({ current }), useState: value => [value, () => {}],
+    useLayoutEffect: callback => { const cleanup = callback(); if (cleanup) cleanups.push(cleanup); } };
+  const { useChatViewport } = loadViewport(new URL('../renderer/src/useChatViewport.ts', import.meta.url), react, { ResizeObserver, window });
+  const viewport = useChatViewport('frame-order-regression', true, { current: log }, { current: content });
+  return { viewport, stop: () => cleanups.forEach(cleanup => cleanup()) };
+}
+
+test('49 px late growth is pre-RO; the actual product hook corrects before the QA observation', () => {
+  const fixture = turnProbeHarness({ installProduct: installViewportProduct }), probe = fixture.window.__tokenSpeedProbe;
+  fixture.submit(); fixture.flush();
+  fixture.state.log.scrollHeight = 1509; fixture.state.log.clientHeight = 585; fixture.state.log.scrollTop = 924;
+  fixture.state.live = { dataset: { tokensPerSecond: '50', estimated: 'true' }, textContent: '≈ 50 tok/s' };
+  fixture.mutate(); fixture.frame();
+  fixture.frame(() => { fixture.state.log.scrollHeight = 1558; });
+  const sample = probe.followSamples.at(-1);
+  assert.equal(sample.beforeResizeObserver.scrollTop, 924); assert.equal(sample.beforeResizeObserver.remainingPx, 49);
+  assert.equal(sample.phase, 'resize-observer'); assert.equal(sample.scrollTop, 973); assert.equal(sample.remainingPx, 0);
+  assert.equal(fixture.product.viewport.followRef.current, true);
+  assert.equal(transcriptFollowFailure(probe.label, probe.followSamples), null);
+  probe.stop('test-cleanup'); fixture.product.stop(); assert.equal(fixture.resizeObservers.size, 0);
+});
+
+test('a missing product resize correction still fails at 49 px with follow enabled and no jump button', () => {
+  const fixture = turnProbeHarness(), probe = fixture.window.__tokenSpeedProbe;
+  fixture.submit(); fixture.flush();
+  fixture.state.log.scrollHeight = 1509; fixture.state.log.clientHeight = 585; fixture.state.log.scrollTop = 924;
+  fixture.tick(); fixture.frame(); fixture.frame(() => { fixture.state.log.scrollHeight = 1558; });
+  assert.equal(probe.followSamples.at(-1).remainingPx, 49);
+  assert.equal(probe.followSamples.at(-1).jump.visible, false);
+  fixture.state.log.scrollTop = 973; fixture.tick(); fixture.flush();
+  assert.equal(transcriptFollowSummary(probe.followSamples).failureCount, 1, 'later recovery cannot erase a post-layout failure');
+  assert.match(transcriptFollowFailure(probe.label, probe.followSamples), /"remainingPx":49/);
+  probe.stop('test-cleanup'); assert.equal(fixture.resizeObservers.size, 0);
+});
+
+test('stress injects 49 px in rAF and records the actual hook correction in that rendering update', () => {
+  const fixture = turnProbeHarness({ stress: { repeats: 1, offsetPx: 173, loadMs: 0, layoutGrowthPx: 49 }, installProduct: installViewportProduct }), probe = fixture.window.__tokenSpeedProbe;
+  fixture.state.log.dispatchEvent = () => fixture.product.viewport.onScroll();
+  fixture.submit(); fixture.flush();
+  fixture.state.live = { dataset: { tokensPerSecond: '50', estimated: 'true' }, textContent: '≈ 50 tok/s' };
+  fixture.mutate(); fixture.flush();
+  assert.equal(probe.stress.layoutEvents.length, 1);
+  const event = probe.stress.layoutEvents[0];
+  assert.equal(event.appliedGrowthPx, 49); assert.equal(event.afterGrowth.remainingPx, 49);
+  assert.equal(event.afterResizeObserver.remainingPx, 0); assert.equal(event.afterResizeObserver.following, true);
+  assert.ok(probe.followSamples.some(sample => sample.beforeResizeObserver?.remainingPx === 49 && sample.remainingPx === 0));
+  assert.equal(transcriptFollowFailure(probe.label, probe.followSamples), null);
+  assert.equal(fixture.state.log.scrollHeight, 1000, 'QA marker removed');
+  probe.stop('test-cleanup'); fixture.product.stop(); assert.equal(fixture.resizeObservers.size, 0);
+});
+
+test('cleanup before initial QA ResizeObserver delivery disconnects it without leaving work', () => {
+  const fixture = turnProbeHarness(), probe = fixture.window.__tokenSpeedProbe;
+  fixture.submit(); fixture.frame();
+  fixture.frame(undefined, () => {
+    assert.equal(fixture.resizeObservers.size, 1); probe.stop('abort-before-layout');
+  });
+  assert.equal(fixture.resizeObservers.size, 0); assert.equal(fixture.frames.size, 0); assert.equal(fixture.timers.size, 0);
+  const count = probe.followSamples.length; fixture.tick(); fixture.flush(); assert.equal(probe.followSamples.length, count);
+});
+
+function followScrollHandler(nextViewportFollow) {
+  let follow = true, inspecting = false, previous;
+  return state => {
+    const current = { scrollTop: state.log.scrollTop, scrollHeight: state.log.scrollHeight, clientHeight: state.log.clientHeight, clientWidth: state.log.clientWidth };
+    const next = nextViewportFollow(follow, inspecting, previous, current);
+    if (next) inspecting = false; else if (follow) inspecting = true;
+    follow = next; state.log.style.overflowAnchor = follow ? 'none' : 'auto'; state.jump = !follow;
+    if (follow) state.log.scrollTop = state.log.scrollHeight;
+    previous = { scrollTop: state.log.scrollTop, scrollHeight: state.log.scrollHeight, clientHeight: state.log.clientHeight, clientWidth: state.log.clientWidth };
+  };
+}
+
+test('the serialized stress probe reproduces the legacy follow loss and current helper recovery', () => {
+  const baseline = (follow, inspecting, previous, current) => {
+    if (inspecting) return false;
+    if (current.scrollHeight - current.scrollTop - current.clientHeight < 24) return true;
+    const layoutChanged = !previous || current.scrollHeight !== previous.scrollHeight || current.clientHeight !== previous.clientHeight || current.clientWidth !== previous.clientWidth;
+    return follow && (layoutChanged || current.scrollTop >= previous.scrollTop);
+  };
+  const patched = loadViewport(new URL('../renderer/src/useChatViewport.ts', import.meta.url)).nextViewportFollow;
+  const run = next => {
+    const fixture = turnProbeHarness({ stress: { repeats: 3, offsetPx: 173, loadMs: 0 }, onScroll: followScrollHandler(next) }), probe = fixture.window.__tokenSpeedProbe;
+    fixture.submit(); fixture.flush();
+    fixture.state.live = { dataset: { tokensPerSecond: '50', estimated: 'true' }, textContent: '≈ 50 tok/s' };
+    fixture.mutate(); fixture.flush();
+    return { fixture, probe };
+  };
+  const legacy = run(baseline), current = run(patched);
+  assert.equal(legacy.probe.stress.events.length, 1); assert.equal(legacy.probe.stress.events[0].appliedDisplacement, 173);
+  assert.equal(legacy.probe.stress.events[0].afterSettle.following, false); assert.equal(legacy.probe.stress.events[0].afterSettle.jumpVisible, true);
+  assert.match(transcriptFollowFailure(legacy.probe.label, legacy.probe.followSamples), /^product: transcript stopped following/);
+  assert.equal(current.probe.stress.events.length, 3); assert.deepEqual(Array.from(current.probe.stress.events, event => event.appliedDisplacement), [173, 173, 173]);
+  assert.ok(current.probe.stress.events.every(event => event.afterSettle.following && !event.afterSettle.jumpVisible));
+  assert.equal(transcriptFollowFailure(current.probe.label, current.probe.followSamples), null);
 });
 
 test('footer separators accept a single visible segment and separators between visible segments', () => {
