@@ -16,7 +16,7 @@ import { DelegationPanel } from "./DelegationPanel";
 import { delegationTool, delegationToolLabel } from "../delegation";
 import { UsageCard } from './UsageCard';
 import { usageCardsForItems } from '../usageCard';
-import { connectionStatusText, emptyLink, overlayKind, providerLabel, reduceChatLink } from "../chatConnection";
+import { connectionFeedbackPhase, connectionStatusText, emptyLink, overlayKind, providerLabel, reduceChatLink } from "../chatConnection";
 import { activeTurnId, chatCanControl, formatChatDuration, itemShowsStreaming, matchSlashCommands, partBody, partLabel, shouldRenderPart, slashQuery } from "../chatPresentation";
 import { groupCodexTranscript, type CodexTurn } from "../codexTranscript";
 import { completedTurnPresentation, groupToolActivity, toolEntriesForItems, type ToolActivityEntry } from "../toolActivity";
@@ -1772,7 +1772,7 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession, 
         status={<Fragment>
           <ChatContextRing usage={contextUsage} copy={copy} />
           <ChatConnectionChip
-            phase={connection.phase}
+            phase={connectionFeedbackPhase(connection.phase, overlay)}
             transportDown={link.transport !== "up"}
             providerName={providerLabel(session.provider, capabilities)}
             providerVersion={capabilities.find(capability => capability.id === session.provider)?.version}

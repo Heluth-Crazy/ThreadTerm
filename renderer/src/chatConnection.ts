@@ -37,6 +37,12 @@ export function isLiveConnection(phase: ChatConnectionPhase): boolean {
   return phase === "ready";
 }
 
+/** A reconnect overlay means a disconnected provider is pending, not idle.
+ * Keep the authoritative phase unchanged for connection and write guards. */
+export function connectionFeedbackPhase(phase: ChatConnectionPhase, overlay: ChatOverlayKind): ChatConnectionPhase {
+  return phase === "disconnected" && overlay !== "none" ? "connecting" : phase;
+}
+
 export function overlayKind(input: {
   ended: boolean;
   canControl: boolean;

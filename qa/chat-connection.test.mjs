@@ -1,9 +1,17 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { applyConnectionEvent, emptyLink, overlayKind, reduceChatLink, connectionStatusText, mergeConnectionSnapshot, mergeConnectionEvent } from "../renderer/src/chatConnection.ts";
+import { applyConnectionEvent, connectionFeedbackPhase, emptyLink, overlayKind, reduceChatLink, connectionStatusText, mergeConnectionSnapshot, mergeConnectionEvent } from "../renderer/src/chatConnection.ts";
 import { approvalButtonsEnabled, approvalData, scopeLabel } from "../renderer/src/chatApproval.ts";
 
 const copy = (en, zh) => zh;
+
+test("pending reconnect feedback stays busy in full and banner views without hiding failures", () => {
+  for (const overlay of ["full", "banner"]) {
+    assert.equal(connectionFeedbackPhase("disconnected", overlay), "connecting");
+    for (const phase of ["ready", "connecting", "failed", "unavailable"]) assert.equal(connectionFeedbackPhase(phase, overlay), phase);
+  }
+  assert.equal(connectionFeedbackPhase("disconnected", "none"), "disconnected");
+});
 
 test("reconnect stays non-writable until the authoritative snapshot, including same-DB restart", () => {
   let state = emptyLink("s");
