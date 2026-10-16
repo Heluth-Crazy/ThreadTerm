@@ -113,6 +113,24 @@ async function buildApp() {
   await writeFile(join(appDir, 'package.json'), JSON.stringify({ name: 'chat-visual-consistency-qa', version: '0.1.0', main: 'main.cjs' }));
 }
 
+/** Focus a transcript control as keyboard navigation would, before revealing its card. */
+async function revealSurface(instance) {
+  await instance.evaluate(node => {
+    if (!node.closest('.v3-chat-log')) return;
+    const control = [...node.querySelectorAll('button:not(:disabled), input:not(:disabled), textarea:not(:disabled), summary, a[href], [tabindex]')]
+      .find(element => element.getClientRects().length && !element.closest('[inert]'));
+    const target = control ?? node;
+    const tabIndex = target.getAttribute('tabindex');
+    if (!control) target.tabIndex = -1;
+    target.focus();
+    if (!control) {
+      if (tabIndex === null) target.removeAttribute('tabindex');
+      else target.setAttribute('tabindex', tabIndex);
+    }
+  });
+  await instance.scrollIntoViewIfNeeded();
+}
+
 /** Runs the helper on one surface after scrolling it into view. */
 async function checkSurface(selector, label) {
   const instances = page.locator(selector);
@@ -124,7 +142,7 @@ async function checkSurface(selector, label) {
     const probe = `vc-surface-${label.replace(/[^a-z0-9]+/gi, '-').toLowerCase()}-${index}`;
     try {
       await instance.evaluate((node, value) => node.setAttribute('data-vc-surface', value), probe);
-      await instance.scrollIntoViewIfNeeded().catch(() => undefined);
+      await revealSurface(instance);
       await page.evaluate(() => new Promise(done => requestAnimationFrame(() => requestAnimationFrame(done)))).catch(() => undefined);
       const result = await checkControlConsistency(page, `[data-vc-surface="${probe}"]`, consistencyOptions);
       assert.ok(result.checked > 0, `${label} #${index + 1}: the helper collected visible controls`);
@@ -184,7 +202,7 @@ async function checkRequiredSurfacesMatrix() {
         const probe = `vc-required-${theme}-${locale}-${width}-${label.replace(/[^a-z0-9]+/gi, '-').toLowerCase()}-${index}`;
         try {
           await instance.evaluate((node, value) => node.setAttribute('data-vc-surface', value), probe);
-          await instance.scrollIntoViewIfNeeded();
+          await revealSurface(instance);
           const bounds = await instance.boundingBox();
           assert.ok(bounds && bounds.width > 0 && bounds.height > 0, `${label} ${theme}/${locale}/${width} #${index + 1}: the required surface is visible`);
           const result = await checkControlConsistency(supplementaryPage, `[data-vc-surface="${probe}"]`, consistencyOptions);
