@@ -1,17 +1,18 @@
 //! Agent change review: working-tree checkpoints kept as Git objects in a private
 //! object store next to the V3 database.
 //!
-//! A snapshot copies the repository index into a temporary file, stages the
-//! working-tree differences into that copy with `GIT_OBJECT_DIRECTORY` pointing at
-//! the private store (repository objects are only alternates), and records the
-//! resulting tree. The user's refs, index, working tree and object database are
-//! never written. Review is "changed since checkpoint", not authorship.
+//! A snapshot maintains a private index per worktree, stages the working-tree
+//! differences into it with `GIT_OBJECT_DIRECTORY` pointing at the private store
+//! (repository objects are only alternates), and records the resulting tree. The
+//! user's refs, index, working tree and object database are never written. Review
+//! is "changed since checkpoint", not authorship.
 use crate::{
     db::Database,
     file_ops::{contained_parent_for, recycle},
     git_actions::complete,
     git_read::{
-        plain_path, repo_paths_until, repo_prefix, run_git, text_of, validate_relative, MAX_TEXT_BYTES,
+        git_text_until, plain_path, repo_paths_until, repo_prefix, run_git, text_of,
+        validate_relative, MAX_TEXT_BYTES,
     },
     workspace_services::{fingerprint, root_for, scoped_path},
 };
@@ -24,8 +25,9 @@ use std::{
     collections::HashMap,
     ffi::{OsStr, OsString},
     fs,
+    io::{Read, Write},
     path::{Path, PathBuf},
-    sync::{Arc, Mutex, OnceLock},
+    sync::{Arc, Mutex, MutexGuard, OnceLock, TryLockError, Weak},
     time::{Duration, Instant},
 };
 
@@ -34,6 +36,7 @@ const MAX_SKIPPED: usize = 200;
 const TURN_BUDGET: Duration = Duration::from_secs(10);
 const REVIEW_BUDGET: Duration = Duration::from_secs(60);
 const MAX_LABEL_CHARS: usize = 160;
+const MAX_REVIEW_CACHES: usize = 256;
 
 const SCHEMA: &str = "CREATE TABLE IF NOT EXISTS review_checkpoints (id TEXT PRIMARY KEY, session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE, kind TEXT NOT NULL, turn_id TEXT, label TEXT, operation_id TEXT UNIQUE, store TEXT, tree TEXT, status TEXT NOT NULL, error TEXT, skipped TEXT NOT NULL DEFAULT '[]', created_at TEXT NOT NULL); CREATE INDEX IF NOT EXISTS review_checkpoints_session ON review_checkpoints(session_id, created_at);";
 
@@ -46,52 +49,611 @@ struct Snapshot {
     skipped: Vec<String>,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum FileStamp {
+    Missing,
+    Directory,
+    File([u8; 32]),
+    Volatile,
+}
+
+fn check_deadline(deadline: Instant) -> Result<()> {
+    if Instant::now() >= deadline {
+        Err(anyhow!("git_timeout"))
+    } else {
+        Ok(())
+    }
+}
+
+fn file_stamp(path: &Path, deadline: Instant) -> Result<FileStamp> {
+    if Instant::now() >= deadline {
+        return Ok(FileStamp::Volatile);
+    }
+    match fs::metadata(path) {
+        Ok(metadata) if metadata.is_dir() => Ok(FileStamp::Directory),
+        Ok(metadata) if metadata.is_file() => {
+            let mut file = fs::File::open(path)?;
+            let mut digest = Sha256::new();
+            let mut buffer = [0_u8; 64 * 1024];
+            loop {
+                if Instant::now() >= deadline {
+                    return Ok(FileStamp::Volatile);
+                }
+                let read = file.read(&mut buffer)?;
+                if read == 0 {
+                    break;
+                }
+                digest.update(&buffer[..read]);
+            }
+            if Instant::now() >= deadline {
+                return Ok(FileStamp::Volatile);
+            }
+            Ok(FileStamp::File(digest.finalize().into()))
+        }
+        Ok(_) => Ok(FileStamp::Missing),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(FileStamp::Missing),
+        Err(error) => Err(error.into()),
+    }
+}
+
+fn marker_deadline(deadline: Instant) -> Instant {
+    let now = Instant::now();
+    let capped = now + Duration::from_millis(500);
+    let reserved = deadline.checked_sub(Duration::from_secs(2)).unwrap_or(now);
+    capped.min(reserved)
+}
+
+fn stamps_reusable(stamps: &[(PathBuf, FileStamp)]) -> bool {
+    !stamps
+        .iter()
+        .any(|(_, stamp)| matches!(stamp, FileStamp::Volatile))
+}
+
+fn stamp_paths(paths: &[PathBuf], deadline: Instant) -> Result<Vec<(PathBuf, FileStamp)>> {
+    paths
+        .iter()
+        .map(|path| Ok((path.clone(), file_stamp(path, deadline)?)))
+        .collect()
+}
+
+#[derive(Clone)]
+struct RepoDiscovery {
+    top: PathBuf,
+    prefix: String,
+    index: PathBuf,
+    common: PathBuf,
+    alternates: Vec<PathBuf>,
+    ignore_files: Vec<PathBuf>,
+    markers: Vec<(PathBuf, FileStamp)>,
+}
+
+fn path_cache_key(path: &Path) -> String {
+    let value = path.to_string_lossy();
+    #[cfg(windows)]
+    return value.to_lowercase();
+    #[cfg(not(windows))]
+    value.into_owned()
+}
+
+fn global_config_candidates() -> Vec<PathBuf> {
+    let mut paths = Vec::new();
+    for name in ["GIT_CONFIG_GLOBAL", "GIT_CONFIG_SYSTEM"] {
+        if let Some(value) = std::env::var_os(name).filter(|value| !value.is_empty()) {
+            paths.push(PathBuf::from(value));
+        }
+    }
+    for name in ["USERPROFILE", "HOME"] {
+        if let Some(value) = std::env::var_os(name).filter(|value| !value.is_empty()) {
+            let home = PathBuf::from(value);
+            paths.push(home.join(".gitconfig"));
+            paths.push(home.join(".config").join("git").join("config"));
+        }
+    }
+    if let Some(value) = std::env::var_os("XDG_CONFIG_HOME").filter(|value| !value.is_empty()) {
+        paths.push(PathBuf::from(value).join("git").join("config"));
+    }
+    if let Some(value) = std::env::var_os("APPDATA").filter(|value| !value.is_empty()) {
+        paths.push(PathBuf::from(value).join("Git").join("config"));
+    }
+    paths.sort();
+    paths.dedup();
+    paths
+}
+
+fn default_global_ignore_from(
+    xdg_config: Option<&OsStr>,
+    home: Option<&OsStr>,
+    user_profile: Option<&OsStr>,
+) -> Option<PathBuf> {
+    if let Some(value) = xdg_config.filter(|value| !value.is_empty()) {
+        return Some(PathBuf::from(value).join("git").join("ignore"));
+    }
+    home.or(user_profile)
+        .filter(|value| !value.is_empty())
+        .map(|value| PathBuf::from(value).join(".config").join("git").join("ignore"))
+}
+
+fn default_global_ignore() -> Option<PathBuf> {
+    default_global_ignore_from(
+        std::env::var_os("XDG_CONFIG_HOME").as_deref(),
+        std::env::var_os("HOME").as_deref(),
+        std::env::var_os("USERPROFILE").as_deref(),
+    )
+}
+
+fn discovery_marker_paths(root: &Path, top: &Path, index: &Path, common: &Path) -> Vec<PathBuf> {
+    let mut paths = Vec::new();
+    let mut current = Some(root);
+    while let Some(directory) = current {
+        paths.push(directory.join(".git"));
+        if directory == top {
+            break;
+        }
+        current = directory.parent();
+    }
+    paths.push(common.join("objects").join("info").join("alternates"));
+    paths.push(common.join("config"));
+    paths.push(common.join("config.worktree"));
+    if let Some(directory) = index.parent() {
+        paths.push(directory.join("HEAD"));
+        paths.push(directory.join("config.worktree"));
+    }
+    paths.extend(global_config_candidates());
+    paths.sort();
+    paths.dedup();
+    paths
+}
+
+fn config_origin_paths(root: &Path, deadline: Instant) -> Result<(Vec<PathBuf>, bool)> {
+    let output = git_text_until(
+        root,
+        &[
+            "config",
+            "--includes",
+            "--show-origin",
+            "--name-only",
+            "--null",
+            "--list",
+        ],
+        deadline,
+    )?;
+    let mut fields = output.split('\0');
+    let mut paths = Vec::new();
+    let mut has_includes = false;
+    while let (Some(origin), Some(name)) = (fields.next(), fields.next()) {
+        has_includes |= name.starts_with("include.")
+            || (name.starts_with("includeif.") && name.ends_with(".path"));
+        let Some(path) = origin.strip_prefix("file:") else {
+            continue;
+        };
+        let path = PathBuf::from(path);
+        paths.push(if path.is_absolute() {
+            path
+        } else {
+            root.join(path)
+        });
+    }
+    Ok((paths, has_includes))
+}
+
+fn include_target_paths(root: &Path, deadline: Instant) -> Vec<PathBuf> {
+    let Ok(output) = git_text_until(
+        root,
+        &[
+            "config",
+            "--includes",
+            "--show-origin",
+            "--null",
+            "--path",
+            "--get-regexp",
+            "^include.*\\.path$",
+        ],
+        deadline,
+    ) else {
+        return Vec::new();
+    };
+    let mut fields = output.split('\0');
+    let mut paths = Vec::new();
+    while let (Some(origin), Some(entry)) = (fields.next(), fields.next()) {
+        let Some((_name, value)) = entry.split_once('\n') else {
+            continue;
+        };
+        let value = PathBuf::from(value);
+        if value.is_absolute() {
+            paths.push(value);
+            continue;
+        }
+        let base = origin
+            .strip_prefix("file:")
+            .map(PathBuf::from)
+            .and_then(|path| path.parent().map(Path::to_path_buf))
+            .unwrap_or_else(|| root.to_path_buf());
+        paths.push(base.join(value));
+    }
+    paths
+}
+
+fn cached_discovery(root: &Path, deadline: Instant) -> Result<RepoDiscovery> {
+    type Cache = HashMap<String, RepoDiscovery>;
+    static CACHE: OnceLock<Mutex<Cache>> = OnceLock::new();
+    check_deadline(deadline)?;
+    let stamp_deadline = marker_deadline(deadline);
+    let canonical_root = plain_path(&root.canonicalize()?);
+    let key = path_cache_key(&canonical_root);
+    let cached = CACHE
+        .get_or_init(Mutex::default)
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .get(&key)
+        .cloned();
+    if let Some(cached) = cached {
+        let paths: Vec<PathBuf> = cached.markers.iter().map(|(path, _)| path.clone()).collect();
+        let markers = stamp_paths(&paths, stamp_deadline)?;
+        if stamps_reusable(&markers) && markers == cached.markers {
+            return Ok(cached);
+        }
+    }
+
+    let (prefix, repo) = repo_paths_until(&canonical_root, deadline)?;
+    let top = plain_path(&repo.top.canonicalize()?);
+    let common = plain_path(&repo.common.canonicalize()?);
+    let index = plain_path(&repo.index);
+    let repo_objects = common.join("objects");
+    let mut alternates = vec![repo_objects.clone()];
+    if let Ok(list) = fs::read_to_string(repo_objects.join("info").join("alternates")) {
+        for line in list
+            .lines()
+            .map(str::trim)
+            .filter(|line| !line.is_empty() && !line.starts_with('#'))
+        {
+            let path = Path::new(line);
+            alternates.push(plain_path(&if path.is_absolute() {
+                path.to_path_buf()
+            } else {
+                repo_objects.join(path)
+            }));
+        }
+    }
+    let mut marker_paths = discovery_marker_paths(&canonical_root, &top, &index, &common);
+    let (config_origins, has_includes) = config_origin_paths(&canonical_root, deadline)?;
+    marker_paths.extend(config_origins);
+    if has_includes {
+        marker_paths.extend(include_target_paths(&canonical_root, deadline));
+    }
+    let configured_excludes = git_text_until(
+        &canonical_root,
+        &[
+            "config",
+            "--path",
+            "--default",
+            "",
+            "--get",
+            "core.excludesFile",
+        ],
+        deadline,
+    )
+    .ok()
+    .map(|value| PathBuf::from(value.trim_end_matches(['\r', '\n'])))
+    .filter(|path| !path.as_os_str().is_empty())
+    .map(|path| if path.is_absolute() { path } else { top.join(path) });
+    let global_ignore = configured_excludes.or_else(default_global_ignore);
+    if let Some(path) = global_ignore.as_ref() {
+        marker_paths.push(path.clone());
+    }
+    marker_paths.sort();
+    marker_paths.dedup();
+    let markers = stamp_paths(&marker_paths, stamp_deadline)?;
+    let reusable_markers = stamps_reusable(&markers);
+    let mut ignore_files = vec![common.join("info").join("exclude")];
+    if let Some(path) = global_ignore {
+        ignore_files.push(path);
+    }
+    let discovery = RepoDiscovery {
+        top,
+        prefix,
+        index,
+        common,
+        alternates,
+        ignore_files,
+        markers,
+    };
+    let mut cache = CACHE
+        .get_or_init(Mutex::default)
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if reusable_markers {
+        if cache.len() >= MAX_REVIEW_CACHES {
+            cache.clear();
+        }
+        cache.insert(key, discovery.clone());
+    } else {
+        cache.remove(&key);
+    }
+    Ok(discovery)
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum SourceFingerprint {
+    Missing,
+    Present([u8; 32]),
+}
+
+struct SourceIndex {
+    fingerprint: SourceFingerprint,
+    bytes: Option<Vec<u8>>,
+}
+
+impl SourceIndex {
+    fn read(path: &Path, deadline: Instant) -> Result<Self> {
+        check_deadline(deadline)?;
+        match fs::File::open(path) {
+            Ok(mut file) => {
+                let mut bytes = Vec::new();
+                let mut digest = Sha256::new();
+                let mut buffer = [0_u8; 64 * 1024];
+                loop {
+                    check_deadline(deadline)?;
+                    let read = file.read(&mut buffer)?;
+                    if read == 0 {
+                        break;
+                    }
+                    digest.update(&buffer[..read]);
+                    bytes.extend_from_slice(&buffer[..read]);
+                }
+                check_deadline(deadline)?;
+                Ok(Self {
+                    fingerprint: SourceFingerprint::Present(digest.finalize().into()),
+                    bytes: Some(bytes),
+                })
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(Self {
+                fingerprint: SourceFingerprint::Missing,
+                bytes: None,
+            }),
+            Err(error) => Err(error.into()),
+        }
+    }
+}
+
+#[derive(Default)]
+struct SnapshotState {
+    source: Option<SourceFingerprint>,
+    external_ignores: Vec<(PathBuf, FileStamp)>,
+    worktree_ignore_paths: Vec<PathBuf>,
+    worktree_ignores: Vec<(PathBuf, FileStamp)>,
+    tree: Option<String>,
+}
+
+fn object_writer_lock(path: &Path) -> Arc<Mutex<()>> {
+    type Locks = HashMap<String, Weak<Mutex<()>>>;
+    static LOCKS: OnceLock<Mutex<Locks>> = OnceLock::new();
+    let mut locks = LOCKS
+        .get_or_init(Mutex::default)
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    locks.retain(|_, lock| lock.strong_count() > 0);
+    let key = path_cache_key(path);
+    if let Some(lock) = locks.get(&key).and_then(Weak::upgrade) {
+        return lock;
+    }
+    let lock = Arc::new(Mutex::new(()));
+    locks.insert(key, Arc::downgrade(&lock));
+    lock
+}
+
+fn snapshot_state(path: &Path) -> Arc<Mutex<SnapshotState>> {
+    type States = HashMap<String, Arc<Mutex<SnapshotState>>>;
+    static STATES: OnceLock<Mutex<States>> = OnceLock::new();
+    let mut states = STATES
+        .get_or_init(Mutex::default)
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if states.len() >= MAX_REVIEW_CACHES {
+        states.retain(|_, state| Arc::strong_count(state) > 1);
+    }
+    states.entry(path_cache_key(path)).or_default().clone()
+}
+
+fn lock_until<T>(lock: &Mutex<T>, deadline: Instant) -> Result<MutexGuard<'_, T>> {
+    loop {
+        match lock.try_lock() {
+            Ok(guard) => return Ok(guard),
+            Err(TryLockError::Poisoned(poisoned)) => return Ok(poisoned.into_inner()),
+            Err(TryLockError::WouldBlock) if Instant::now() < deadline => {
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            Err(TryLockError::WouldBlock) => return Err(anyhow!("git_timeout")),
+        }
+    }
+}
+
+fn sibling_path(path: &Path, suffix: &str) -> PathBuf {
+    let mut value = path.as_os_str().to_owned();
+    value.push(suffix);
+    PathBuf::from(value)
+}
+
+struct SharedIndex {
+    path: PathBuf,
+    hash_len: usize,
+}
+
+fn index_extensions(bytes: &[u8], hash_len: usize) -> Option<Vec<(&[u8], &[u8])>> {
+    if bytes.get(..4)? != b"DIRC" {
+        return None;
+    }
+    let version = u32::from_be_bytes(bytes.get(4..8)?.try_into().ok()?);
+    if !(2..=4).contains(&version) {
+        return None;
+    }
+    let entries = u32::from_be_bytes(bytes.get(8..12)?.try_into().ok()?) as usize;
+    let trailer = bytes.len().checked_sub(hash_len)?;
+    let mut cursor = 12_usize;
+    for _ in 0..entries {
+        let start = cursor;
+        cursor = cursor.checked_add(40 + hash_len)?;
+        let flags = u16::from_be_bytes(bytes.get(cursor..cursor + 2)?.try_into().ok()?);
+        cursor += 2;
+        if flags & 0x4000 != 0 {
+            cursor = cursor.checked_add(2)?;
+        }
+        if version == 4 {
+            loop {
+                let byte = *bytes.get(cursor)?;
+                cursor += 1;
+                if byte & 0x80 == 0 {
+                    break;
+                }
+            }
+            cursor += bytes.get(cursor..trailer)?.iter().position(|byte| *byte == 0)? + 1;
+        } else {
+            let encoded_len = (flags & 0x0fff) as usize;
+            if encoded_len < 0x0fff {
+                cursor = cursor.checked_add(encoded_len)?;
+                if *bytes.get(cursor)? != 0 {
+                    return None;
+                }
+                cursor += 1;
+            } else {
+                cursor += bytes.get(cursor..trailer)?.iter().position(|byte| *byte == 0)? + 1;
+            }
+            let consumed = cursor.checked_sub(start)?;
+            cursor = cursor.checked_add((8 - consumed % 8) % 8)?;
+        }
+        if cursor > trailer {
+            return None;
+        }
+    }
+    let mut extensions = Vec::new();
+    while cursor < trailer {
+        let signature = bytes.get(cursor..cursor + 4)?;
+        let size = u32::from_be_bytes(bytes.get(cursor + 4..cursor + 8)?.try_into().ok()?)
+            as usize;
+        cursor += 8;
+        let payload = bytes.get(cursor..cursor.checked_add(size)?)?;
+        cursor += size;
+        extensions.push((signature, payload));
+    }
+    (cursor == trailer).then_some(extensions)
+}
+
+fn linked_shared_index(source_index: &Path, bytes: &[u8]) -> Result<Option<SharedIndex>> {
+    let directory = source_index
+        .parent()
+        .ok_or_else(|| anyhow!("review_unavailable"))?;
+    let mut parsed = false;
+    let mut unresolved_link = false;
+    for hash_len in [20_usize, 32] {
+        let Some(extensions) = index_extensions(bytes, hash_len) else {
+            continue;
+        };
+        parsed = true;
+        for (signature, payload) in extensions {
+            if signature != b"link" {
+                continue;
+            }
+            let Some(oid) = payload.get(..hash_len) else {
+                unresolved_link = true;
+                continue;
+            };
+            let path = directory.join(format!("sharedindex.{}", hex::encode(oid)));
+            if path.is_file() {
+                return Ok(Some(SharedIndex { path, hash_len }));
+            }
+            unresolved_link = true;
+        }
+    }
+    if unresolved_link || !parsed {
+        Err(anyhow!("split_index_unavailable"))
+    } else {
+        Ok(None)
+    }
+}
+
+fn copy_file_until(source: &Path, target: &Path, deadline: Instant) -> Result<()> {
+    check_deadline(deadline)?;
+    let mut input = fs::File::open(source)?;
+    let temporary = sibling_path(target, &format!(".copy-{}", uuid::Uuid::new_v4()));
+    let mut output = fs::File::create(&temporary)?;
+    let mut buffer = [0_u8; 64 * 1024];
+    let result = (|| -> Result<()> {
+        loop {
+            check_deadline(deadline)?;
+            let read = input.read(&mut buffer)?;
+            if read == 0 {
+                break;
+            }
+            output.write_all(&buffer[..read])?;
+        }
+        output.flush()?;
+        check_deadline(deadline)?;
+        drop(output);
+        let _ = fs::remove_file(target);
+        fs::rename(&temporary, target)?;
+        check_deadline(deadline)
+    })();
+    if result.is_err() {
+        let _ = fs::remove_file(&temporary);
+    }
+    result
+}
+
+fn needs_update(x: &str, y: &str) -> bool {
+    x == "?" || y != " " || x == "U" || y == "U"
+}
+
+fn changed_gitignore(status: &[u8]) -> bool {
+    String::from_utf8_lossy(status)
+        .split('\0')
+        .filter(|record| record.len() > 3)
+        .any(|record| {
+            needs_update(&record[..1], &record[1..2])
+                && record[3..].rsplit('/').next() == Some(".gitignore")
+        })
+}
+
 /// Object-store context for one repository.
 struct Store {
     top: PathBuf,
     prefix: String,
-    index: PathBuf,
+    source_index: PathBuf,
+    private_index: PathBuf,
+    private_git_dir: PathBuf,
     objects: PathBuf,
     alternates: Vec<PathBuf>,
+    ignore_files: Vec<PathBuf>,
+    writer_lock: Arc<Mutex<()>>,
+    state: Arc<Mutex<SnapshotState>>,
 }
 
 impl Store {
     fn open(db: &Database, root: &Path, deadline: Instant) -> Result<Self> {
-        let (prefix, repo) = repo_paths_until(root, deadline)?;
-        // Paths handed to Git must not carry the Windows verbatim prefix.
-        let common = plain_path(&repo.common.canonicalize()?);
-        let key = hex::encode(Sha256::digest(
-            common.to_string_lossy().to_lowercase().as_bytes(),
-        ));
+        let repo = cached_discovery(root, deadline)?;
+        let common_key = hex::encode(Sha256::digest(path_cache_key(&repo.common).as_bytes()));
+        let worktree_key = hex::encode(Sha256::digest(path_cache_key(&repo.top).as_bytes()));
         let base = db
             .path()
             .parent()
             .ok_or_else(|| anyhow!("review_unavailable"))?;
-        let objects = plain_path(&base.join("review-objects").join(key));
+        let objects = plain_path(&base.join("review-objects").join(&common_key));
+        let indexes = plain_path(&base.join("review-indexes").join(&common_key));
         fs::create_dir_all(&objects)?;
-        let repo_objects = common.join("objects");
-        let mut alternates = vec![repo_objects.clone()];
-        // Keep objects the repository borrows from its own alternates readable.
-        if let Ok(list) = fs::read_to_string(repo_objects.join("info").join("alternates")) {
-            for line in list
-                .lines()
-                .map(str::trim)
-                .filter(|line| !line.is_empty() && !line.starts_with('#'))
-            {
-                let path = Path::new(line);
-                alternates.push(plain_path(&if path.is_absolute() {
-                    path.to_path_buf()
-                } else {
-                    repo_objects.join(path)
-                }));
-            }
-        }
+        fs::create_dir_all(&indexes)?;
+        let private_index = indexes.join(worktree_key);
+        let private_git_dir = plain_path(&base.join("review-git").join(hex::encode(
+            Sha256::digest(path_cache_key(&private_index).as_bytes()),
+        )));
         Ok(Self {
             top: repo.top,
-            prefix,
-            index: repo.index,
+            prefix: repo.prefix,
+            source_index: repo.index,
+            writer_lock: object_writer_lock(&objects),
+            state: snapshot_state(&private_index),
+            private_index,
+            private_git_dir,
             objects,
-            alternates,
+            alternates: repo.alternates,
+            ignore_files: repo.ignore_files,
         })
     }
 
@@ -138,23 +700,109 @@ impl Store {
             .checked_duration_since(Instant::now())
             .filter(|remaining| !remaining.is_zero())
             .ok_or_else(|| anyhow!("git_timeout"))?;
+        let configured;
+        let args = if env.iter().any(|(key, _)| *key == "GIT_INDEX_FILE") {
+            configured = ["-c", "core.splitIndex=false"]
+                .into_iter()
+                .chain(args.iter().copied())
+                .collect::<Vec<_>>();
+            configured.as_slice()
+        } else {
+            args
+        };
         run_git(&self.top, args, &borrowed, stdin, remaining)
     }
 
-    fn snapshot(&self, deadline: Instant) -> Result<Snapshot> {
-        let index = self.objects.join(format!("index-{}", uuid::Uuid::new_v4()));
-        struct Cleanup(PathBuf);
-        impl Drop for Cleanup {
-            fn drop(&mut self) {
-                let _ = fs::remove_file(&self.0);
+    fn reset_private_index(
+        &self,
+        source: &SourceIndex,
+        state: &mut SnapshotState,
+        deadline: Instant,
+    ) -> Result<()> {
+        let lock = sibling_path(&self.private_index, ".lock");
+        let _ = fs::remove_file(&lock);
+        let _ = fs::remove_file(&self.private_index);
+        if let Some(bytes) = source.bytes.as_ref() {
+            let temporary = sibling_path(
+                &self.private_index,
+                &format!(".reset-{}", uuid::Uuid::new_v4()),
+            );
+            fs::write(&temporary, bytes)?;
+            if let Err(error) = fs::rename(&temporary, &self.private_index) {
+                let _ = fs::remove_file(&temporary);
+                return Err(error.into());
+            }
+            if let Some(shared) = linked_shared_index(&self.source_index, bytes)? {
+                self.flatten_private_split_index(&shared, deadline)?;
             }
         }
-        let _cleanup = Cleanup(index.clone());
-        if self.index.exists() {
-            fs::copy(&self.index, &index)?;
+        state.source = Some(source.fingerprint.clone());
+        state.tree = None;
+        Ok(())
+    }
+
+    fn flatten_private_split_index(&self, shared: &SharedIndex, deadline: Instant) -> Result<()> {
+        check_deadline(deadline)?;
+        fs::create_dir_all(self.private_git_dir.join("objects"))?;
+        fs::create_dir_all(self.private_git_dir.join("refs"))?;
+        let source_head = self
+            .source_index
+            .parent()
+            .ok_or_else(|| anyhow!("review_unavailable"))?
+            .join("HEAD");
+        let private_head = self.private_git_dir.join("HEAD");
+        match fs::metadata(&source_head) {
+            Ok(_) => copy_file_until(&source_head, &private_head, deadline)?,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                check_deadline(deadline)?;
+                fs::write(&private_head, b"ref: refs/heads/main\n")?;
+            }
+            Err(error) => return Err(error.into()),
         }
-        let env = self.env(Some(&index), &[])?;
-        let status = self.run(
+        let shared_name = shared
+            .path
+            .file_name()
+            .ok_or_else(|| anyhow!("review_unavailable"))?;
+        copy_file_until(
+            &shared.path,
+            &self.private_git_dir.join(shared_name),
+            deadline,
+        )?;
+        check_deadline(deadline)?;
+        let config = if shared.hash_len == 32 {
+            b"[core]\n\trepositoryFormatVersion = 1\n\tbare = false\n[extensions]\n\tobjectFormat = sha256\n".as_slice()
+        } else {
+            b"[core]\n\trepositoryFormatVersion = 0\n\tbare = false\n".as_slice()
+        };
+        fs::write(self.private_git_dir.join("config"), config)?;
+        check_deadline(deadline)?;
+        let mut env = self.env(Some(&self.private_index), &[])?;
+        env.push(("GIT_DIR", self.private_git_dir.as_os_str().to_owned()));
+        env.push(("GIT_WORK_TREE", self.top.as_os_str().to_owned()));
+        self.run(&["update-index", "--no-split-index"], &env, None, deadline)?;
+        Ok(())
+    }
+
+    fn invalidate_private_index(&self, state: &mut SnapshotState) {
+        let _ = fs::remove_file(sibling_path(&self.private_index, ".lock"));
+        let _ = fs::remove_file(&self.private_index);
+        *state = SnapshotState::default();
+    }
+
+    fn remember_gitignore_candidates(&self, state: &mut SnapshotState, path: &str) {
+        let full = self.top.join(path);
+        let mut directory = full.parent();
+        while let Some(candidate) = directory.filter(|candidate| candidate.starts_with(&self.top)) {
+            state.worktree_ignore_paths.push(candidate.join(".gitignore"));
+            if candidate == self.top {
+                break;
+            }
+            directory = candidate.parent();
+        }
+    }
+
+    fn status(&self, env: &[(&'static str, OsString)], deadline: Instant) -> Result<Vec<u8>> {
+        self.run(
             &[
                 "status",
                 "--porcelain=v1",
@@ -163,19 +811,57 @@ impl Store {
                 "--no-renames",
                 "--ignore-submodules=all",
             ],
-            &env,
+            env,
             None,
             deadline,
-        )?;
+        )
+    }
+
+    fn snapshot_locked(&self, state: &mut SnapshotState, deadline: Instant) -> Result<Snapshot> {
+        let source = SourceIndex::read(&self.source_index, deadline)?;
+        let stamp_deadline = marker_deadline(deadline);
+        let external_ignores = stamp_paths(&self.ignore_files, stamp_deadline)?;
+        if state.worktree_ignore_paths.is_empty() {
+            state.worktree_ignore_paths.push(self.top.join(".gitignore"));
+        }
+        state.worktree_ignore_paths.sort();
+        state.worktree_ignore_paths.dedup();
+        let worktree_ignores = stamp_paths(&state.worktree_ignore_paths, stamp_deadline)?;
+        let reset = state
+            .source
+            .as_ref()
+            .is_none_or(|cached| cached != &source.fingerprint)
+            || !stamps_reusable(&external_ignores)
+            || !stamps_reusable(&worktree_ignores)
+            || state.external_ignores != external_ignores
+            || state.worktree_ignores != worktree_ignores
+            || !self.private_index.exists();
+        if reset {
+            self.reset_private_index(&source, state, deadline)?;
+        }
+        state.external_ignores = external_ignores;
+        state.worktree_ignores = worktree_ignores;
+        let env = self.env(Some(&self.private_index), &[])?;
+        let mut status = self.status(&env, deadline)?;
+        if !reset && changed_gitignore(&status) {
+            // The reused index may contain paths that the new ignore rules now
+            // exclude. Resetting to the user's index lets Git apply those rules
+            // before untracked paths are staged again.
+            self.reset_private_index(&source, state, deadline)?;
+            status = self.status(&env, deadline)?;
+        }
         let text = String::from_utf8_lossy(&status);
         let mut update = Vec::new();
         let mut skipped = Vec::new();
-        for record in text.split('\0').filter(|record| record.len() > 3) {
-            let (x, y) = (&record[..1], &record[1..2]);
-            let path = &record[3..];
-            if !(x == "?" || y != " " || x == "U" || y == "U") {
+        for (x, y, path) in text
+            .split('\0')
+            .filter(|record| record.len() > 3)
+            .map(|record| (&record[..1], &record[1..2], &record[3..]))
+        {
+            if !needs_update(x, y) {
                 continue;
             }
+            self.remember_gitignore_candidates(state, path);
             let full = self.top.join(path);
             match fs::symlink_metadata(&full) {
                 Ok(meta) if meta.is_dir() => continue,
@@ -200,13 +886,39 @@ impl Store {
                 deadline,
             )?;
         }
-        let tree = String::from_utf8(self.run(&["write-tree"], &env, None, deadline)?)?
-            .trim()
-            .to_owned();
+        let tree = if update.is_empty() {
+            match state.tree.as_ref() {
+                Some(tree) => tree.clone(),
+                None => String::from_utf8(self.run(&["write-tree"], &env, None, deadline)?)?
+                    .trim()
+                    .to_owned(),
+            }
+        } else {
+            String::from_utf8(self.run(&["write-tree"], &env, None, deadline)?)?
+                .trim()
+                .to_owned()
+        };
         if tree.is_empty() {
             return Err(anyhow!("snapshot_failed"));
         }
+        state.worktree_ignore_paths.sort();
+        state.worktree_ignore_paths.dedup();
+        state.worktree_ignores = stamp_paths(
+            &state.worktree_ignore_paths,
+            marker_deadline(deadline),
+        )?;
+        state.tree = Some(tree.clone());
         Ok(Snapshot { tree, skipped })
+    }
+
+    fn snapshot(&self, deadline: Instant) -> Result<Snapshot> {
+        let _writer = lock_until(&self.writer_lock, deadline)?;
+        let mut state = lock_until(&self.state, deadline)?;
+        let result = self.snapshot_locked(&mut state, deadline);
+        if result.is_err() {
+            self.invalidate_private_index(&mut state);
+        }
+        result
     }
 
     fn blob(
@@ -498,7 +1210,7 @@ pub fn attach_turn(db: &Database, checkpoint_id: &str, turn_id: Option<&str>) {
     let Some(turn_id) = turn_id else { return };
     let _ = db.transaction(|tx| {
         tx.execute(
-            "UPDATE review_checkpoints SET turn_id=? WHERE id=? AND turn_id IS NULL",
+            "UPDATE review_checkpoints SET turn_id=? WHERE id=?",
             params![turn_id, checkpoint_id],
         )?;
         Ok(())
@@ -511,8 +1223,8 @@ pub fn attach_turn(db: &Database, checkpoint_id: &str, turn_id: Option<&str>) {
 pub fn attach_turn_to_latest(db: &Database, session_id: &str, turn_id: &str) {
     let _ = db.transaction(|tx| {
         tx.execute(
-            "UPDATE review_checkpoints SET turn_id=? WHERE id=(SELECT id FROM review_checkpoints WHERE session_id=? AND turn_id IS NULL AND kind='turn' AND COALESCE(operation_id,'') NOT LIKE 'turn-complete:%' ORDER BY created_at DESC, rowid DESC LIMIT 1) AND turn_id IS NULL",
-            params![turn_id, session_id],
+            "UPDATE review_checkpoints SET turn_id=? WHERE NOT EXISTS(SELECT 1 FROM review_checkpoints WHERE session_id=? AND turn_id=? AND kind='turn' AND COALESCE(operation_id,'') NOT LIKE 'turn-complete:%') AND id=(SELECT id FROM review_checkpoints WHERE session_id=? AND turn_id IS NULL AND kind='turn' AND COALESCE(operation_id,'') NOT LIKE 'turn-complete:%' ORDER BY created_at DESC, rowid DESC LIMIT 1) AND turn_id IS NULL",
+            params![turn_id, session_id, turn_id, session_id],
         )?;
         Ok(())
     });
@@ -1007,6 +1719,681 @@ mod tests {
 
     fn call(db: &Database, method: &str, params: Value) -> Result<Value> {
         dispatch(db, method, &params).map(Option::unwrap)
+    }
+
+    fn ready_tree_for(db: &Database, checkpoint: &str) -> String {
+        let row = checkpoint_row(db, "s1", checkpoint).unwrap();
+        assert_eq!(row.status, "ready");
+        row.tree.unwrap()
+    }
+
+    #[test]
+    fn persistent_index_reuses_the_tree_and_captures_changed_untracked_and_deleted_files() {
+        let (_temp, db, repo, _session) = setup();
+        let deadline = || Instant::now() + TURN_BUDGET;
+        let store = Store::open(&db, &repo, deadline()).unwrap();
+        let first = store.snapshot(deadline()).unwrap();
+        let private_before = fs::read(&store.private_index).unwrap();
+        let second = store.snapshot(deadline()).unwrap();
+        assert_eq!(second.tree, first.tree);
+        assert_eq!(fs::read(&store.private_index).unwrap(), private_before);
+
+        fs::write(repo.join("a.txt"), "two\n").unwrap();
+        fs::write(repo.join("new.txt"), "new\n").unwrap();
+        fs::remove_file(repo.join("gone.txt")).unwrap();
+        let changed = store.snapshot(deadline()).unwrap();
+        assert_eq!(
+            store
+                .blob(&changed.tree, "a.txt", &[], deadline())
+                .unwrap()
+                .unwrap(),
+            b"two\n"
+        );
+        assert_eq!(
+            store
+                .blob(&changed.tree, "new.txt", &[], deadline())
+                .unwrap()
+                .unwrap(),
+            b"new\n"
+        );
+        assert!(store
+            .blob(&changed.tree, "gone.txt", &[], deadline())
+            .unwrap()
+            .is_none());
+        fs::remove_file(repo.join("new.txt")).unwrap();
+        let deleted = store.snapshot(deadline()).unwrap();
+        assert!(store
+            .blob(&deleted.tree, "new.txt", &[], deadline())
+            .unwrap()
+            .is_none());
+    }
+
+    #[test]
+    fn persistent_index_rehashes_a_racily_clean_file() {
+        use std::fs::FileTimes;
+
+        let (_temp, db, repo, _session) = setup();
+        let deadline = || Instant::now() + TURN_BUDGET;
+        let store = Store::open(&db, &repo, deadline()).unwrap();
+        store.snapshot(deadline()).unwrap();
+        let env = store.env(Some(&store.private_index), &[]).unwrap();
+        store
+            .run(&["update-index", "--refresh"], &env, None, deadline())
+            .unwrap();
+        let stamp = fs::metadata(repo.join("a.txt")).unwrap().modified().unwrap();
+        fs::File::options()
+            .write(true)
+            .open(&store.private_index)
+            .unwrap()
+            .set_times(FileTimes::new().set_modified(stamp))
+            .unwrap();
+        fs::write(repo.join("a.txt"), "two\n").unwrap();
+        fs::File::options()
+            .write(true)
+            .open(repo.join("a.txt"))
+            .unwrap()
+            .set_times(FileTimes::new().set_modified(stamp))
+            .unwrap();
+
+        let snapshot = store.snapshot(deadline()).unwrap();
+        assert_eq!(
+            store
+                .blob(&snapshot.tree, "a.txt", &[], deadline())
+                .unwrap()
+                .unwrap(),
+            b"two\n"
+        );
+    }
+
+    #[test]
+    fn changed_ignore_rules_remove_private_only_paths() {
+        let (_temp, db, repo, _session) = setup();
+        let deadline = || Instant::now() + TURN_BUDGET;
+        let global_ignore = repo.join("relative-ignore");
+        git(
+            &repo,
+            &[
+                "config",
+                "core.excludesFile",
+                "relative-ignore",
+            ],
+        )
+        .unwrap();
+        let store = Store::open(&db, &repo, deadline()).unwrap();
+        fs::create_dir(repo.join("generated")).unwrap();
+        fs::write(repo.join("generated").join("output.txt"), "generated\n").unwrap();
+        let included = store.snapshot(deadline()).unwrap();
+        assert!(store
+            .blob(&included.tree, "generated/output.txt", &[], deadline())
+            .unwrap()
+            .is_some());
+
+        fs::write(repo.join(".gitignore"), "ignored/\ngenerated/\n").unwrap();
+        let ignored = store.snapshot(deadline()).unwrap();
+        assert!(store
+            .blob(&ignored.tree, "generated/output.txt", &[], deadline())
+            .unwrap()
+            .is_none());
+
+        fs::write(repo.join("external.txt"), "external\n").unwrap();
+        let included = store.snapshot(deadline()).unwrap();
+        assert!(store
+            .blob(&included.tree, "external.txt", &[], deadline())
+            .unwrap()
+            .is_some());
+        let (_, paths) = repo_paths_until(&repo, deadline()).unwrap();
+        let info = paths.common.join("info");
+        fs::create_dir_all(&info).unwrap();
+        fs::write(info.join("exclude"), "external.txt\n").unwrap();
+        let ignored = store.snapshot(deadline()).unwrap();
+        assert!(store
+            .blob(&ignored.tree, "external.txt", &[], deadline())
+            .unwrap()
+            .is_none());
+
+        fs::write(repo.join("global.txt"), "global\n").unwrap();
+        let included = store.snapshot(deadline()).unwrap();
+        assert!(store
+            .blob(&included.tree, "global.txt", &[], deadline())
+            .unwrap()
+            .is_some());
+        fs::write(global_ignore, "global.txt\n").unwrap();
+        let ignored = store.snapshot(deadline()).unwrap();
+        assert!(store
+            .blob(&ignored.tree, "global.txt", &[], deadline())
+            .unwrap()
+            .is_none());
+
+        fs::create_dir(repo.join("self-ignored")).unwrap();
+        fs::write(repo.join("self-ignored").join("prior.txt"), "prior\n").unwrap();
+        let included = store.snapshot(deadline()).unwrap();
+        assert!(store
+            .blob(&included.tree, "self-ignored/prior.txt", &[], deadline())
+            .unwrap()
+            .is_some());
+        fs::write(repo.join("self-ignored").join(".gitignore"), "*\n").unwrap();
+        let ignored = store.snapshot(deadline()).unwrap();
+        assert!(store
+            .blob(&ignored.tree, "self-ignored/prior.txt", &[], deadline())
+            .unwrap()
+            .is_none());
+    }
+
+    #[test]
+    fn default_global_ignore_uses_xdg_then_home_without_mutating_process_environment() {
+        assert_eq!(
+            default_global_ignore_from(
+                Some(OsStr::new("/xdg")),
+                Some(OsStr::new("/home")),
+                None,
+            ),
+            Some(PathBuf::from("/xdg").join("git").join("ignore"))
+        );
+        assert_eq!(
+            default_global_ignore_from(None, Some(OsStr::new("/home")), None),
+            Some(PathBuf::from("/home").join(".config").join("git").join("ignore"))
+        );
+    }
+
+    #[test]
+    fn newly_created_include_file_invalidates_cached_ignore_discovery() {
+        let (_temp, db, repo, _session) = setup();
+        let include = repo.parent().unwrap().join("missing-include.config");
+        let excludes = repo.parent().unwrap().join("included-ignore");
+        git(
+            &repo,
+            &["config", "include.path", include.to_str().unwrap()],
+        )
+        .unwrap();
+        fs::write(repo.join("included.txt"), "included\n").unwrap();
+        let deadline = || Instant::now() + TURN_BUDGET;
+        let store = Store::open(&db, &repo, deadline()).unwrap();
+        let first = store.snapshot(deadline()).unwrap();
+        assert!(store
+            .blob(&first.tree, "included.txt", &[], deadline())
+            .unwrap()
+            .is_some());
+
+        fs::write(
+            &include,
+            format!(
+                "[core]\n\texcludesFile = \"{}\"\n",
+                excludes.to_string_lossy().replace('\\', "/")
+            ),
+        )
+        .unwrap();
+        fs::write(&excludes, "included.txt\n").unwrap();
+        let refreshed = Store::open(&db, &repo, deadline()).unwrap();
+        let second = refreshed.snapshot(deadline()).unwrap();
+        assert!(refreshed
+            .blob(&second.tree, "included.txt", &[], deadline())
+            .unwrap()
+            .is_none());
+    }
+
+    #[test]
+    fn branch_conditional_include_invalidates_discovery_at_the_same_tree() {
+        let (_temp, db, repo, _session) = setup();
+        let include = repo.parent().unwrap().join("feature.config");
+        let excludes = repo.parent().unwrap().join("feature-ignore");
+        fs::write(
+            &include,
+            format!(
+                "[core]\n\texcludesFile = \"{}\"\n",
+                excludes.to_string_lossy().replace('\\', "/")
+            ),
+        )
+        .unwrap();
+        fs::write(&excludes, "branch-only.txt\n").unwrap();
+        git(
+            &repo,
+            &[
+                "config",
+                "includeIf.onbranch:feature.path",
+                include.to_str().unwrap(),
+            ],
+        )
+        .unwrap();
+        git(&repo, &["branch", "feature"]).unwrap();
+        fs::write(repo.join("branch-only.txt"), "branch\n").unwrap();
+        let deadline = || Instant::now() + TURN_BUDGET;
+        let store = Store::open(&db, &repo, deadline()).unwrap();
+        let first = store.snapshot(deadline()).unwrap();
+        assert!(store
+            .blob(&first.tree, "branch-only.txt", &[], deadline())
+            .unwrap()
+            .is_some());
+
+        git(&repo, &["switch", "-q", "feature"]).unwrap();
+        let refreshed = Store::open(&db, &repo, deadline()).unwrap();
+        let second = refreshed.snapshot(deadline()).unwrap();
+        assert!(refreshed
+            .blob(&second.tree, "branch-only.txt", &[], deadline())
+            .unwrap()
+            .is_none());
+    }
+
+    #[test]
+    fn public_index_change_resets_the_private_index_without_writing_the_public_one() {
+        let (_temp, db, repo, _session) = setup();
+        let deadline = || Instant::now() + TURN_BUDGET;
+        let store = Store::open(&db, &repo, deadline()).unwrap();
+        store.snapshot(deadline()).unwrap();
+        fs::create_dir(repo.join("ignored")).unwrap();
+        fs::write(repo.join("ignored").join("tracked.txt"), "tracked\n").unwrap();
+        git(&repo, &["add", "-f", "ignored/tracked.txt"]).unwrap();
+        let public_index = fs::read(repo.join(".git").join("index")).unwrap();
+        let snapshot = store.snapshot(deadline()).unwrap();
+        assert!(store
+            .blob(&snapshot.tree, "ignored/tracked.txt", &[], deadline())
+            .unwrap()
+            .is_some());
+        assert_eq!(fs::read(repo.join(".git").join("index")).unwrap(), public_index);
+    }
+
+    #[test]
+    fn split_index_is_flattened_privately_without_touching_public_index_files() {
+        let (_temp, db, repo, session) = setup();
+        git(&repo, &["config", "core.splitIndex", "true"]).unwrap();
+        fs::write(repo.join("a.txt"), "staged\n").unwrap();
+        git(&repo, &["add", "a.txt"]).unwrap();
+        git(&repo, &["update-index", "--split-index"]).unwrap();
+        fs::write(repo.join("a.txt"), "worktree one\n").unwrap();
+        fs::write(repo.join("untracked.txt"), "untracked\n").unwrap();
+
+        let git_dir = repo.join(".git");
+        let public_index = git_dir.join("index");
+        let sentinel = std::time::SystemTime::UNIX_EPOCH + Duration::from_secs(1_600_000_000);
+        let set_sentinel = |path: &Path| {
+            fs::OpenOptions::new()
+                .write(true)
+                .open(path)
+                .unwrap()
+                .set_times(fs::FileTimes::new().set_modified(sentinel))
+                .unwrap();
+        };
+        set_sentinel(&public_index);
+        let shared_paths = || {
+            let mut paths: Vec<PathBuf> = fs::read_dir(&git_dir)
+                .unwrap()
+                .map(Result::unwrap)
+                .map(|entry| entry.path())
+                .filter(|path| {
+                    path.file_name()
+                        .and_then(OsStr::to_str)
+                        .is_some_and(|name| name.starts_with("sharedindex."))
+                })
+                .collect();
+            paths.sort();
+            paths
+        };
+        let shared = shared_paths();
+        assert!(!shared.is_empty());
+        for path in &shared {
+            set_sentinel(path);
+        }
+        let public_before = (
+            fs::read(&public_index).unwrap(),
+            fs::metadata(&public_index).unwrap().modified().unwrap(),
+        );
+        let shared_before: Vec<_> = shared
+            .iter()
+            .map(|path| {
+                (
+                    path.file_name().unwrap().to_owned(),
+                    fs::read(path).unwrap(),
+                    fs::metadata(path).unwrap().modified().unwrap(),
+                )
+            })
+            .collect();
+
+        let first = capture_before_turn(&db, &session, "split-first", "split").unwrap();
+        let first_tree = ready_tree_for(&db, &first);
+        let deadline = Instant::now() + TURN_BUDGET;
+        let store = Store::open(&db, &repo, deadline).unwrap();
+        assert_eq!(
+            store
+                .blob(&first_tree, "a.txt", &[], deadline)
+                .unwrap()
+                .unwrap(),
+            b"worktree one\n"
+        );
+        assert_eq!(
+            store
+                .blob(&first_tree, "untracked.txt", &[], deadline)
+                .unwrap()
+                .unwrap(),
+            b"untracked\n"
+        );
+
+        fs::write(repo.join("a.txt"), "worktree two\n").unwrap();
+        let second = capture_before_turn(&db, &session, "split-second", "split").unwrap();
+        let second_tree = ready_tree_for(&db, &second);
+        assert_eq!(
+            store
+                .blob(
+                    &second_tree,
+                    "a.txt",
+                    &[],
+                    Instant::now() + TURN_BUDGET,
+                )
+                .unwrap()
+                .unwrap(),
+            b"worktree two\n"
+        );
+
+        assert_eq!(fs::read(&public_index).unwrap(), public_before.0);
+        assert_eq!(
+            fs::metadata(&public_index).unwrap().modified().unwrap(),
+            public_before.1
+        );
+        let shared_after: Vec<_> = shared_paths()
+            .iter()
+            .map(|path| {
+                (
+                    path.file_name().unwrap().to_owned(),
+                    fs::read(path).unwrap(),
+                    fs::metadata(path).unwrap().modified().unwrap(),
+                )
+            })
+            .collect();
+        assert_eq!(shared_after, shared_before);
+    }
+
+    #[test]
+    fn sha256_split_index_uses_a_matching_private_repository_format() {
+        let temp = tempfile::tempdir().unwrap();
+        let repo = temp.path().join("sha256");
+        fs::create_dir(&repo).unwrap();
+        if git(
+            &repo,
+            &["init", "-q", "-b", "main", "--object-format=sha256"],
+        )
+        .is_err()
+        {
+            return;
+        }
+        git(&repo, &["config", "core.splitIndex", "true"]).unwrap();
+        fs::write(repo.join("sha.txt"), "sha256 worktree\n").unwrap();
+        git(&repo, &["add", "sha.txt"]).unwrap();
+        git(&repo, &["update-index", "--split-index"]).unwrap();
+        let data = temp.path().join("data");
+        fs::create_dir(&data).unwrap();
+        let db = Database::open(&data.join("db.sqlite")).unwrap();
+        let deadline = Instant::now() + TURN_BUDGET;
+        let store = Store::open(&db, &repo, deadline).unwrap();
+        let snapshot = store.snapshot(deadline).unwrap();
+        assert_eq!(
+            store
+                .blob(
+                    &snapshot.tree,
+                    "sha.txt",
+                    &[],
+                    Instant::now() + TURN_BUDGET,
+                )
+                .unwrap()
+                .unwrap(),
+            b"sha256 worktree\n"
+        );
+    }
+
+    #[test]
+    fn linked_worktree_split_index_is_never_freshened_publicly() {
+        let (temp, db, repo, _session) = setup();
+        let linked = temp.path().join("linked worktree");
+        git(
+            &repo,
+            &[
+                "worktree",
+                "add",
+                "-q",
+                "-b",
+                "linked",
+                linked.to_str().unwrap(),
+            ],
+        )
+        .unwrap();
+        git(&linked, &["config", "core.splitIndex", "true"]).unwrap();
+        fs::write(linked.join("a.txt"), "linked staged\n").unwrap();
+        git(&linked, &["add", "a.txt"]).unwrap();
+        git(&linked, &["update-index", "--split-index"]).unwrap();
+        fs::write(linked.join("a.txt"), "linked worktree\n").unwrap();
+        let (_, paths) = repo_paths_until(&linked, Instant::now() + TURN_BUDGET).unwrap();
+        let git_dir = paths.index.parent().unwrap();
+        let mut shared: Vec<PathBuf> = fs::read_dir(git_dir)
+            .unwrap()
+            .map(Result::unwrap)
+            .map(|entry| entry.path())
+            .filter(|path| {
+                path.file_name()
+                    .and_then(OsStr::to_str)
+                    .is_some_and(|name| name.starts_with("sharedindex."))
+            })
+            .collect();
+        shared.sort();
+        assert!(!shared.is_empty());
+        let sentinel = std::time::SystemTime::UNIX_EPOCH + Duration::from_secs(1_600_000_000);
+        for path in std::iter::once(&paths.index).chain(shared.iter()) {
+            fs::OpenOptions::new()
+                .write(true)
+                .open(path)
+                .unwrap()
+                .set_times(fs::FileTimes::new().set_modified(sentinel))
+                .unwrap();
+        }
+        let public_index = fs::read(&paths.index).unwrap();
+        let shared_before: Vec<_> = shared
+            .iter()
+            .map(|path| (path.clone(), fs::read(path).unwrap()))
+            .collect();
+        let deadline = Instant::now() + TURN_BUDGET;
+        let store = Store::open(&db, &linked, deadline).unwrap();
+        let first = store.snapshot(deadline).unwrap();
+        assert_eq!(
+            store
+                .blob(
+                    &first.tree,
+                    "a.txt",
+                    &[],
+                    Instant::now() + TURN_BUDGET,
+                )
+                .unwrap()
+                .unwrap(),
+            b"linked worktree\n"
+        );
+        store.snapshot(Instant::now() + TURN_BUDGET).unwrap();
+        assert_eq!(fs::read(&paths.index).unwrap(), public_index);
+        assert_eq!(
+            fs::metadata(&paths.index).unwrap().modified().unwrap(),
+            sentinel
+        );
+        let shared_after: Vec<_> = shared
+            .iter()
+            .map(|path| {
+                assert_eq!(fs::metadata(path).unwrap().modified().unwrap(), sentinel);
+                (path.clone(), fs::read(path).unwrap())
+            })
+            .collect();
+        assert_eq!(shared_after, shared_before);
+    }
+
+    #[test]
+    fn missing_private_index_in_an_unborn_repository_never_reuses_a_stale_tree() {
+        let temp = tempfile::tempdir().unwrap();
+        let repo = temp.path().join("unborn");
+        fs::create_dir(&repo).unwrap();
+        git(&repo, &["init", "-q", "-b", "main"]).unwrap();
+        let data = temp.path().join("data");
+        fs::create_dir(&data).unwrap();
+        let db = Database::open(&data.join("db.sqlite")).unwrap();
+        let deadline = || Instant::now() + TURN_BUDGET;
+        let store = Store::open(&db, &repo, deadline()).unwrap();
+        fs::write(repo.join("only.txt"), "only\n").unwrap();
+        let first = store.snapshot(deadline()).unwrap();
+        assert!(store
+            .blob(&first.tree, "only.txt", &[], deadline())
+            .unwrap()
+            .is_some());
+        fs::remove_file(&store.private_index).unwrap();
+        fs::remove_file(repo.join("only.txt")).unwrap();
+        let second = store.snapshot(deadline()).unwrap();
+        assert_ne!(second.tree, first.tree);
+        assert!(store
+            .blob(&second.tree, "only.txt", &[], deadline())
+            .unwrap()
+            .is_none());
+    }
+
+    #[test]
+    fn concurrent_checkpoints_share_the_private_object_writer_without_failures() {
+        let (_temp, db, repo, session) = setup();
+        let second_session = db
+            .transaction(|tx| {
+                tx.execute(
+                    "INSERT INTO sessions(id,project_id,title,provider,mode,status,created_at,updated_at) SELECT 's-concurrent',project_id,'t2','codex','chat','idle','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z' FROM sessions WHERE id=?",
+                    [&session],
+                )?;
+                Ok("s-concurrent".to_owned())
+            })
+            .unwrap();
+        for index in 0..128 {
+            fs::write(repo.join(format!("same-{index}.txt")), b"same object\n").unwrap();
+        }
+        let db = Arc::new(db);
+        let gate = Arc::new(std::sync::Barrier::new(3));
+        let mut workers = Vec::new();
+        let sessions = [session, second_session];
+        for (index, session) in sessions.clone().into_iter().enumerate() {
+            let db = Arc::clone(&db);
+            let gate = Arc::clone(&gate);
+            workers.push(std::thread::spawn(move || {
+                gate.wait();
+                capture_before_turn(&db, &session, &format!("concurrent-{index}"), "same")
+                    .unwrap()
+            }));
+        }
+        gate.wait();
+        let checkpoints: Vec<String> = workers
+            .into_iter()
+            .map(|worker| worker.join().unwrap())
+            .collect();
+        let trees: Vec<String> = checkpoints
+            .iter()
+            .zip(sessions.iter())
+            .map(|(checkpoint, session)| {
+                let row = checkpoint_row(&db, session, checkpoint).unwrap();
+                assert_eq!(row.status, "ready");
+                row.tree.unwrap()
+            })
+            .collect();
+        assert_eq!(trees[0], trees[1]);
+    }
+
+    #[test]
+    fn corrupt_private_index_records_failure_and_the_next_capture_recovers_cold() {
+        let (_temp, db, repo, session) = setup();
+        let deadline = Instant::now() + TURN_BUDGET;
+        let store = Store::open(&db, &repo, deadline).unwrap();
+        store.snapshot(deadline).unwrap();
+        fs::write(&store.private_index, b"not an index").unwrap();
+
+        let failed = capture(&db, &session, "turn", Some("corrupt"), Some("x"), TURN_BUDGET)
+            .unwrap();
+        let row = checkpoint_row(&db, &session, &failed).unwrap();
+        assert_eq!(row.status, "failed");
+        assert!(row.tree.is_none());
+        assert!(!store.private_index.exists());
+
+        let recovered = capture_before_turn(&db, &session, "after-corrupt", "x").unwrap();
+        ready_tree_for(&db, &recovered);
+    }
+
+    #[test]
+    fn shared_object_writer_wait_obeys_the_checkpoint_deadline() {
+        let (_temp, db, repo, _session) = setup();
+        let store = Store::open(&db, &repo, Instant::now() + TURN_BUDGET).unwrap();
+        let _held = store.writer_lock.lock().unwrap();
+        let started = Instant::now();
+        let error = match store.snapshot(Instant::now() + Duration::from_millis(25)) {
+            Ok(_) => panic!("the held writer lock must consume the deadline"),
+            Err(error) => error,
+        };
+        assert_eq!(
+            error.to_string(),
+            "git_timeout"
+        );
+        assert!(started.elapsed() < Duration::from_secs(1));
+    }
+
+    #[test]
+    fn explicit_turn_attachment_corrects_a_speculative_mismatch_and_delayed_events_do_not_steal() {
+        let (_temp, db, _repo, session) = setup();
+        let first = capture_before_turn(&db, &session, "attach-1", "first").unwrap();
+        attach_turn(&db, &first, Some("turn-1"));
+        let second = capture_before_turn(&db, &session, "attach-2", "second").unwrap();
+
+        attach_turn_to_latest(&db, &session, "turn-1");
+        assert!(checkpoint_row(&db, &session, &second).unwrap().tree.is_some());
+        let untagged: Option<String> = db
+            .transaction(|tx| {
+                Ok(tx.query_row(
+                    "SELECT turn_id FROM review_checkpoints WHERE id=?",
+                    [&second],
+                    |row| row.get(0),
+                )?)
+            })
+            .unwrap();
+        assert_eq!(untagged, None);
+
+        db.transaction(|tx| {
+            tx.execute(
+                "UPDATE review_checkpoints SET turn_id='turn-1' WHERE id=?",
+                [&second],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+        attach_turn(&db, &second, Some("turn-2"));
+        assert_eq!(
+            checkpoint_json(&db, &second).unwrap()["turnId"],
+            "turn-2"
+        );
+    }
+
+    #[test]
+    #[ignore = "opt-in synthetic checkpoint timing probe"]
+    fn checkpoint_performance_probe() {
+        let (_temp, db, repo, _session) = setup();
+        let tracked = repo.join("tracked");
+        fs::create_dir(&tracked).unwrap();
+        for index in 0..3000 {
+            fs::write(tracked.join(format!("file-{index}.txt")), format!("tracked {index}\n"))
+                .unwrap();
+        }
+        git(&repo, &["add", "tracked"]).unwrap();
+        git(&repo, &["commit", "-qm", "fixture"]).unwrap();
+        let build = repo.join("untracked-build");
+        fs::create_dir(&build).unwrap();
+        for index in 0..5000 {
+            fs::write(build.join(format!("object-{index}.o")), b"same object\n").unwrap();
+        }
+        for index in 0..8 {
+            fs::File::create(build.join(format!("large-{index}.bin")))
+                .unwrap()
+                .set_len(8 * 1024 * 1024)
+                .unwrap();
+        }
+        let store = Store::open(&db, &repo, Instant::now() + TURN_BUDGET).unwrap();
+        let started = Instant::now();
+        store.snapshot(Instant::now() + TURN_BUDGET).unwrap();
+        let first = started.elapsed();
+        let mut repeated = Vec::new();
+        for _ in 0..3 {
+            let started = Instant::now();
+            store.snapshot(Instant::now() + TURN_BUDGET).unwrap();
+            repeated.push(started.elapsed());
+        }
+        eprintln!("checkpoint performance: first={first:?}, repeated={repeated:?}");
     }
 
     #[test]

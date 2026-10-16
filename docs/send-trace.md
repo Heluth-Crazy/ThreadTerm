@@ -12,6 +12,20 @@ The desktop writer is asynchronous and bounded to 256 pending records. When the 
 
 `review.checkpoint.end` with outcome `recorded` means a checkpoint row was persisted; it does not prove the baseline is ready. Read the checkpoint's canonical status before claiming successful capture. Older trace builds used the misleading label `captured` for this same persistence result.
 
+Pre-turn capture remains synchronous and completes before provider handoff. It now reuses a private index per worktree under the runtime data directory, retaining Git's stat and tree caches. Unchanged captures can reuse the prior tree after checking the working tree; they need not emit another `update-index` or `write-tree` step. Split indexes are flattened privately before use, and private-index commands disable split-index creation so Git cannot refresh the public shared index. The real repository index, config and hooks are not written. Captures sharing a private object store serialize their writes, including background post-turn captures. Public-index, ignore/config and repository-discovery changes invalidate the relevant cache, and a failed capture invalidates its private index. The existing 10-second pre-turn deadline and failed-checkpoint records remain in effect.
+
+Run the full renderer/runtime breakdown on virtual Desktop 1 with local fake providers only:
+
+```powershell
+node qa/send-latency-breakdown.mjs --runtime runtime/target-qa/debug/threadterm-v3-runtime.exe --sends 5 --assert --keep
+node qa/send-latency-breakdown.mjs --runtime runtime/target-qa/debug/threadterm-v3-runtime.exe --sends 5 --provider-delay 1500 --assert --keep
+node qa/send-latency-breakdown.mjs --runtime runtime/target-qa/debug/threadterm-v3-runtime.exe --sends 5 --ignore-build --assert --keep
+```
+
+The breakdown records transcript and button Sending durations separately, plus correlated send/draft stages and canonical checkpoint status. Every baseline must be ready and attached to the submitted turn, including warm-up. Timing assertions exclude the first send per provider/project and require repeated checkpoint medians at most 150 ms for the small repository and 600 ms for the large repository; nearest-rank p90 may exceed those targets by at most 75 ms (`--assert-tolerance` changes that tolerance). JSON is saved under `qa/results/send-latency-breakdown/`. These are acceptance targets, not a claim that a particular machine has met them.
+
+OpenCode still awaits the `prompt_async` HTTP response. The blocking HTTP client exposes response headers rather than a request-written receipt; acknowledging a background thread would lose the worker-lock ordering with Stop and later sends. A delayed OpenCode reply should therefore increase the handoff and Sending durations, while delayed native Codex/ACP replies should not. Definite rejection remains a turn error; uncertain results expire the stream and are never replayed.
+
 Run the offline Windows acceptance QA against a freshly built runtime twice:
 
 ```powershell
