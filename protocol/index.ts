@@ -1,8 +1,13 @@
 import { validateWireRequest, validateWireSuccess } from './generated-validators.js';
+import { isBrowserEvalArguments } from './browser.js';
 export * from './browser.js';
+export interface BrowserEvalApprovalRead {
+ approvalId:string; operationId:string; code:string; codeHash:string; codeByteLength:number;
+ tabId:string; origin:string; expiresAtUnixMs:number; settingsGeneration:string; status:'pending';
+}
 export const PROTOCOL_VERSION = 1 as const;
-/** Semantic contract includes native-history repair, snapshot integrity, Chat fork, and feedback notes. Framing/HMAC still use PROTOCOL_VERSION. */
-export const PROTOCOL_CONTRACT = 14 as const;
+/** Semantic contract includes browser control and private per-snippet eval approvals. Framing/HMAC still use PROTOCOL_VERSION. */
+export const PROTOCOL_CONTRACT = 15 as const;
 export const MAX_FRAME_BYTES = 8 * 1024 * 1024;
 /** Composer image attachments: at most this many images, whose data-URL strings sum to at most MAX_CHAT_IMAGE_BYTES.
  * Shared by the renderer composer and the desktop attach path so the picker never inlines more than the composer accepts. */
@@ -429,6 +434,8 @@ export interface RequestMap {
  'chat.steer': [{sessionId:string;turnId:string;text:string;images?:string[];operationId:string;leaseEpoch:number;queueItemId?:string},{disposition:'delivered'|'queued'|'note'}];
  'chat.cancel': [{sessionId:string;turnId:string;leaseEpoch:number},null];
  'chat.approve': [{sessionId:string;turnId:string;approvalId:string;choiceId:string;leaseEpoch:number;operationId:string},null];
+ 'browser.approval.read': [{sessionId:string;turnId:string;approvalId:string;leaseEpoch:number},BrowserEvalApprovalRead];
+ 'browser.approval.resolve': [{sessionId:string;turnId:string;approvalId:string;leaseEpoch:number;operationId:string;codeHash:string;choice:'approve_once'|'deny'},{status:'approved'|'denied'}];
  'chat.answer': [{sessionId:string;turnId:string;approvalId:string;leaseEpoch:number;operationId:string;response:ChatAnswerResponse},null];
  'chat.projectTrust.set': [{sessionId:string;decision:'trusted'|'declined'|'none';leaseEpoch:number;operationId:string},ChatUiState];
  'chat.options': [{sessionId:string},ChatUiState];
@@ -545,10 +552,12 @@ export interface ThreadTermBridge {
  exportDiagnostics():Promise<string|null>;
  scheduleElectronCacheCleanup(schedule:boolean):Promise<{scheduled:boolean;available:boolean;result?:string}>;
 }
-export const METHODS = ['git.commit.selected','preview.attach','preview.detach','preview.snapshot','preview.prepare','preview.ack','preview.observe','preview.close','chat.repair','filesystem.resolve','session.launch.read','catalog.visibility.list','catalog.visibility.update','session.resume','session.organize','git.merge','git.merge.abort','project.catalog.list','project.update','worktree.branches','worktree.relocate','session.rerun','git.fetch','git.pull','git.push','session.config.read','session.config.save','session.retry.read','session.retry.update','chat.draft.read','chat.draft.save','device.status','device.enable','device.disable','device.pairing.create','device.pairing.cancel','device.list','device.rename','device.renew','device.revoke','git.stage','git.unstage','git.commit','filesystem.image','chat.snapshot','terminal.read','session.lookup','session.present','chat.read','chat.subagent.read','data.status','data.backup','data.relocation.status','data.relocation.prepare','data.relocation.cancel','settings.export','settings.import.preview','settings.import.apply','preset.list','preset.save','preset.delete','usage.query','runtime.health','terminal.host','runtime.shutdown','runtime.snapshot','project.add','project.remove','session.create','history.import','session.stop','session.update','session.attention.acknowledge','session.claim','session.renew','session.release','terminal.input','terminal.resize','settings.update','provider.list','provider.refresh','plugin.list','plugin.setEnabled','plugin.selectBrowserBinding','plugin.reload','chat.queue.read','chat.queue.add','chat.queue.update','chat.queue.remove','chat.queue.move','chat.queue.pause','chat.queue.resume','chat.queue.send','quickLaunch.list','quickLaunch.save','quickLaunch.delete','quickLaunch.run','quickLaunch.setup.read','quickLaunch.setup.save','quickLaunch.setup.run','quickLaunch.setup.status','history.list','history.read','chat.send','chat.cancel','chat.approve','chat.answer','chat.options','chat.option.set','chat.connection','chat.context.read','chat.connect','filesystem.list','filesystem.read','filesystem.write','draft.list','draft.put','draft.delete','git.status','git.diff','worktree.list','worktree.create','worktree.remove','workspace.save','workspace.delete','inbox.read','git.index.write','git.discard','git.checkout','git.branch.delete','git.branches','git.log','git.commit.show','git.commit.diff','git.blame','filesystem.create','filesystem.rename','filesystem.delete','filesystem.files','filesystem.search','review.list','review.changes','review.diff','review.revert','review.checkpoint','agentReview.start','agentReview.list','agentReview.mark','session.documents.list','session.documents.pin','session.documents.unpin','chat.projectTrust.set','chat.feedback.add','chat.feedback.read','chat.feedback.dismiss','chat.fork','chat.backgroundTasks.list','chat.backgroundTask.stop','chat.steer'] as const satisfies readonly Method[];
+export const METHODS = ['browser.approval.read','browser.approval.resolve','git.commit.selected','preview.attach','preview.detach','preview.snapshot','preview.prepare','preview.ack','preview.observe','preview.close','chat.repair','filesystem.resolve','session.launch.read','catalog.visibility.list','catalog.visibility.update','session.resume','session.organize','git.merge','git.merge.abort','project.catalog.list','project.update','worktree.branches','worktree.relocate','session.rerun','git.fetch','git.pull','git.push','session.config.read','session.config.save','session.retry.read','session.retry.update','chat.draft.read','chat.draft.save','device.status','device.enable','device.disable','device.pairing.create','device.pairing.cancel','device.list','device.rename','device.renew','device.revoke','git.stage','git.unstage','git.commit','filesystem.image','chat.snapshot','terminal.read','session.lookup','session.present','chat.read','chat.subagent.read','data.status','data.backup','data.relocation.status','data.relocation.prepare','data.relocation.cancel','settings.export','settings.import.preview','settings.import.apply','preset.list','preset.save','preset.delete','usage.query','runtime.health','terminal.host','runtime.shutdown','runtime.snapshot','project.add','project.remove','session.create','history.import','session.stop','session.update','session.attention.acknowledge','session.claim','session.renew','session.release','terminal.input','terminal.resize','settings.update','provider.list','provider.refresh','plugin.list','plugin.setEnabled','plugin.selectBrowserBinding','plugin.reload','chat.queue.read','chat.queue.add','chat.queue.update','chat.queue.remove','chat.queue.move','chat.queue.pause','chat.queue.resume','chat.queue.send','quickLaunch.list','quickLaunch.save','quickLaunch.delete','quickLaunch.run','quickLaunch.setup.read','quickLaunch.setup.save','quickLaunch.setup.run','quickLaunch.setup.status','history.list','history.read','chat.send','chat.cancel','chat.approve','chat.answer','chat.options','chat.option.set','chat.connection','chat.context.read','chat.connect','filesystem.list','filesystem.read','filesystem.write','draft.list','draft.put','draft.delete','git.status','git.diff','worktree.list','worktree.create','worktree.remove','workspace.save','workspace.delete','inbox.read','git.index.write','git.discard','git.checkout','git.branch.delete','git.branches','git.log','git.commit.show','git.commit.diff','git.blame','filesystem.create','filesystem.rename','filesystem.delete','filesystem.files','filesystem.search','review.list','review.changes','review.diff','review.revert','review.checkpoint','agentReview.start','agentReview.list','agentReview.mark','session.documents.list','session.documents.pin','session.documents.unpin','chat.projectTrust.set','chat.feedback.add','chat.feedback.read','chat.feedback.dismiss','chat.fork','chat.backgroundTasks.list','chat.backgroundTask.stop','chat.steer'] as const satisfies readonly Method[];
 // Kept additive while this long-standing literal remains source-compatible.
 // The RPC has a RequestMap entry above and must also pass the runtime registry.
 const stringFields: Partial<Record<Method,readonly string[]>> = {
+ 'browser.approval.read':['sessionId','turnId','approvalId'],
+ 'browser.approval.resolve':['sessionId','turnId','approvalId','operationId','codeHash'],
  'git.commit.selected':['projectId','message','operationId','expectedIndexFingerprint'],
  'plugin.selectBrowserBinding':['pluginId','bindingId','operationId'],
  'preview.attach':['sessionId','viewId'],'preview.detach':['sessionId','attachmentId'],'preview.snapshot':['sessionId','attachmentId'],
@@ -639,6 +648,13 @@ export function validateRequest(method:unknown,params:unknown):asserts method is
  }
  if(m==='session.stop'&&params.force!==undefined&&typeof params.force!=='boolean') throw new Error('Invalid force');
  if('leaseEpoch' in params && (!Number.isSafeInteger(params.leaseEpoch)||Number(params.leaseEpoch)<1)) throw new Error('Invalid leaseEpoch');
+ if(m==='browser.approval.read'||m==='browser.approval.resolve') {
+  if(!Number.isSafeInteger(params.leaseEpoch)||Number(params.leaseEpoch)<1)throw new Error('Invalid browser approval lease');
+  for(const key of ['sessionId','turnId','approvalId',...(m==='browser.approval.resolve'?['operationId']:[])]) {
+   if(typeof params[key]!=='string'||!params[key]||new TextEncoder().encode(params[key]).byteLength>256||/[\u0000-\u001f\u007f-\u009f]/.test(params[key] as string))throw new Error('Invalid browser approval identity');
+  }
+  if(m==='browser.approval.resolve'&&(!['approve_once','deny'].includes(String(params.choice))||typeof params.codeHash!=='string'||!/^[a-f0-9]{64}$/.test(params.codeHash)))throw new Error('Invalid browser approval decision');
+ }
  if(['session.renew','session.release','terminal.input','terminal.resize','chat.fork','chat.send','chat.queue.add','chat.queue.update','chat.queue.remove','chat.queue.move','chat.queue.pause','chat.queue.resume','chat.queue.send','chat.cancel','chat.approve','chat.answer','chat.projectTrust.set','chat.repair','chat.backgroundTask.stop','chat.option.set','chat.connect','chat.steer','chat.feedback.dismiss'].includes(m)&&!('leaseEpoch' in params)) throw new Error('Missing leaseEpoch');
  if(m==='chat.projectTrust.set'&&!['trusted','declined','none'].includes(String(params.decision))) throw new Error('Invalid Pi project trust decision');
  if(m==='terminal.resize') for(const key of ['cols','rows']) if(!Number.isInteger(params[key])||Number(params[key])<1||Number(params[key])>1000) throw new Error(`Invalid ${key}`);
@@ -732,6 +748,18 @@ export function validateRequest(method:unknown,params:unknown):asserts method is
  if(params.limit!==undefined&&(!Number.isInteger(params.limit)||Number(params.limit)<1||Number(params.limit)>maxLimit)) throw new Error('Invalid page limit');
 }
 export function validateResult<M extends Method>(method:M,result:unknown):asserts result is RequestResult<M> {
+ if(method==='browser.approval.read') {
+  const value=result as BrowserEvalApprovalRead;
+  if(!isRecord(result)||!isBrowserEvalArguments({tabId:value.tabId,code:value.code})
+   ||value.codeByteLength!==new TextEncoder().encode(value.code).byteLength
+   ||typeof value.codeHash!=='string'||!/^[a-f0-9]{64}$/.test(value.codeHash)
+   ||!Number.isSafeInteger(value.expiresAtUnixMs)||value.expiresAtUnixMs<1)throw new Error('Invalid browser approval result');
+  for(const field of ['approvalId','operationId','settingsGeneration'] as const) {
+   if(typeof value[field]!=='string'||!value[field]||new TextEncoder().encode(value[field]).byteLength>256||/[\u0000-\u001f\u007f-\u009f]/.test(value[field]))throw new Error('Invalid browser approval result');
+  }
+  try {const url=new URL(value.origin);if(!['http:','https:'].includes(url.protocol)||url.origin!==value.origin||new TextEncoder().encode(value.origin).byteLength>4096)throw new Error();}
+  catch {throw new Error('Invalid browser approval origin');}
+ }
  if(!validateWireSuccess({v:1,id:'boundary',method,result})) throw new Error(`Invalid runtime result for ${method}`);
  if(method==='chat.repair'&&isRecord(result)) {
   if(!result.sessionId) throw new Error('Invalid repair sessionId');

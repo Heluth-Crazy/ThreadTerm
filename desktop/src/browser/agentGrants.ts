@@ -1,4 +1,4 @@
-import { BrowserAgentError, browserAgentOrigin, type BrowserAgentDocument, type BrowserAgentExpectedShare, type BrowserAgentGrantState, type BrowserAgentReadFence, type BrowserAgentRegistration, type BrowserAgentShare } from './agentTypes.js';
+import { BrowserAgentError, browserAgentOrigin, type BrowserAgentControlFence, type BrowserAgentDocument, type BrowserAgentExpectedShare, type BrowserAgentGrantState, type BrowserAgentReadFence, type BrowserAgentRegistration, type BrowserAgentShare } from './agentTypes.js';
 
 type RecordState = { registration: BrowserAgentRegistration; level: BrowserAgentShare; grantEpoch: number; refGeneration: number; origin?: string; reason?: string };
 
@@ -29,13 +29,13 @@ export class BrowserAgentGrants {
 
   setShare(sourceTabId: string, level: BrowserAgentShare, expected: BrowserAgentExpectedShare, document: BrowserAgentDocument): BrowserAgentGrantState {
     const record = this.require(sourceTabId);
-    if (level !== 'off' && level !== 'read') throw new BrowserAgentError('browser_invalid_arguments', 'Unsupported browser sharing level.');
+    if (level !== 'off' && level !== 'read' && level !== 'control') throw new BrowserAgentError('browser_invalid_arguments', 'Unsupported browser sharing level.');
     if (level === 'off') this.revoke(record, 'Browser sharing turned off.');
     else {
       if (record.grantEpoch !== expected.grantEpoch || document.sourceTabId !== sourceTabId || document.viewGeneration !== expected.viewGeneration || record.registration.viewGeneration !== expected.viewGeneration || document.documentGeneration !== expected.documentGeneration || document.navigationEpoch !== expected.navigationEpoch) throw new BrowserAgentError('browser_stale_ref', 'The browser page changed before sharing was updated.');
       const origin = browserAgentOrigin(document.url);
       if (!document.available || !document.loaded || !origin || origin === document.appOrigin) throw new BrowserAgentError('browser_unavailable', 'Only a loaded supported browser page can be shared.');
-      record.level = 'read'; record.origin = origin; record.reason = undefined; record.grantEpoch = ++this.epoch; record.refGeneration++;
+      record.level = level; record.origin = origin; record.reason = undefined; record.grantEpoch = ++this.epoch; record.refGeneration++;
       this.publish(record);
     }
     return this.copy(record);
@@ -46,7 +46,7 @@ export class BrowserAgentGrants {
     const record = this.records.get(sourceTabId);
     if (!record) return;
     record.refGeneration++;
-    if (record.level === 'read' && browserAgentOrigin(url) !== record.origin) this.revoke(record, 'Sharing stopped — the page moved to another site.');
+    if (record.level !== 'off' && browserAgentOrigin(url) !== record.origin) this.revoke(record, 'Sharing stopped — the page moved to another site.');
     else this.publish(record);
   }
 
@@ -67,16 +67,37 @@ export class BrowserAgentGrants {
 
   captureRead(sourceTabId: string, document: BrowserAgentDocument): BrowserAgentReadFence {
     const record = this.require(sourceTabId);
-    if (record.level !== 'read' || !record.origin) throw new BrowserAgentError('browser_grant_required', 'Share this tab with Read access before using browser tools.');
+    if (record.level === 'off' || !record.origin) throw new BrowserAgentError('browser_grant_required', 'Share this tab with Read access before using browser tools.');
     this.assertDocument(record, document);
     return Object.freeze({ ...this.copy(record), level: 'read', origin: record.origin, documentGeneration: document.documentGeneration, navigationEpoch: document.navigationEpoch, url: document.url });
   }
 
   assertRead(fence: BrowserAgentReadFence, document: BrowserAgentDocument): void {
     const record = this.require(fence.registration.sourceTabId);
-    if (!sameRegistration(record.registration, fence.registration) || record.level !== 'read' || record.grantEpoch !== fence.grantEpoch || record.refGeneration !== fence.refGeneration || record.origin !== fence.origin) throw new BrowserAgentError('browser_grant_required', 'Browser sharing changed during this read.');
+    if (!sameRegistration(record.registration, fence.registration) || record.level === 'off' || record.grantEpoch !== fence.grantEpoch || record.refGeneration !== fence.refGeneration || record.origin !== fence.origin) throw new BrowserAgentError('browser_grant_required', 'Browser sharing changed during this read.');
     this.assertDocument(record, document);
     if (document.documentGeneration !== fence.documentGeneration || document.navigationEpoch !== fence.navigationEpoch || document.url !== fence.url) throw new BrowserAgentError('browser_stale_ref', 'The browser page changed during this read.');
+  }
+
+  /** A downgrade removes mutation authority immediately, including while a page is loading. */
+  downgradeToRead(sourceTabId: string): void {
+    const record = this.require(sourceTabId);
+    if (record.level !== 'control') return;
+    record.level = 'read'; record.grantEpoch = ++this.epoch; record.refGeneration++; this.publish(record);
+  }
+
+  captureControl(sourceTabId: string, document: BrowserAgentDocument): BrowserAgentControlFence {
+    const record = this.require(sourceTabId);
+    if (record.level !== 'control' || !record.origin) throw new BrowserAgentError('browser_grant_required', 'Control access is required for this browser operation.');
+    this.assertDocument(record, document);
+    return Object.freeze({ ...this.copy(record), level: 'control', origin: record.origin, documentGeneration: document.documentGeneration, navigationEpoch: document.navigationEpoch, url: document.url });
+  }
+
+  assertControl(fence: BrowserAgentControlFence, document: BrowserAgentDocument): void {
+    const record = this.require(fence.registration.sourceTabId);
+    if (record.level !== 'control' || !sameRegistration(record.registration, fence.registration) || record.grantEpoch !== fence.grantEpoch || record.refGeneration !== fence.refGeneration || record.origin !== fence.origin) throw new BrowserAgentError('browser_grant_required', 'Browser control changed during this operation.');
+    this.assertDocument(record, document);
+    if (document.documentGeneration !== fence.documentGeneration || document.navigationEpoch !== fence.navigationEpoch || document.url !== fence.url) throw new BrowserAgentError('browser_stale_ref', 'The browser page changed during this operation.');
   }
 
   private assertDocument(record: RecordState, document: BrowserAgentDocument): void {

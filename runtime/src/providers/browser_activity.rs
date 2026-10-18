@@ -1,4 +1,4 @@
-//! Browser reads have a private MCP result and a separate bounded Chat receipt.
+//! Browser tools have a private MCP result and a separate bounded Chat receipt.
 //! Native providers may echo results, but only broker-authenticated receipts may
 //! supply page provenance or a derived thumbnail to projection/history.
 use base64::Engine;
@@ -34,6 +34,9 @@ fn bounded(value: &Value, maximum: usize) -> Option<&str> {
     })
 }
 fn canonical(name: &str) -> Option<&'static str> {
+    if name == "browser_eval" {
+        return Some("browser_eval");
+    }
     crate::browser_tools::TOOL_NAMES
         .into_iter()
         .find(|tool| *tool == name)
@@ -148,7 +151,26 @@ fn build_receipt(
     result: &Value,
 ) -> Option<Receipt> {
     let tool = canonical(tool)?;
-    let outcome = if result["isError"] == true {
+    let action_outcome = (crate::browser_tools::is_action_tool(tool) || tool == "browser_eval")
+        .then(|| provenance(result, 0))
+        .flatten()
+        .filter(|p| {
+            p["operationId"] == operation
+                && p["tool"] == tool
+                && p["callerSessionId"] == session
+                && tab.is_some_and(|tab| p["tabId"] == tab)
+        })
+        .and_then(|p| {
+            p["outcome"]
+                .as_str()
+                .filter(|outcome| {
+                    ["completed", "failed", "cancelled", "outcome_unknown"].contains(outcome)
+                })
+                .map(str::to_owned)
+        });
+    let outcome = if let Some(outcome) = action_outcome.as_deref() {
+        outcome
+    } else if result["isError"] == true {
         "failed"
     } else {
         "completed"
@@ -385,7 +407,12 @@ impl BrowserActivityTracker {
         if let Some(tab) = &call.tab {
             activity["tabId"] = json!(tab);
         }
-        if status == "failed" {
+        if status == "failed"
+            && !matches!(
+                activity["outcome"].as_str(),
+                Some("cancelled" | "outcome_unknown")
+            )
+        {
             activity["outcome"] = json!("failed");
         }
         let mut data = json!({"type":"mcpToolCall","server":"threadterm","tool":call.tool,"browserActivity":activity,"resultRedacted":true});
@@ -879,9 +906,9 @@ mod tests {
             "chat",
             "worker",
             "op",
-            "browser_eval",
+            "browser_eval_extra",
             Some("tab"),
-            &result("op", "browser_eval")
+            &result("op", "browser_eval_extra")
         )
         .is_none());
     }
@@ -999,5 +1026,147 @@ mod tests {
         ] {
             assert!(!structural_failure(&value, 0));
         }
+    }
+    #[test]
+    fn browser_action_privacy_all_native_adapters_preserve_authenticated_uncertain_outcomes() {
+        for tool in crate::browser_tools::ACTION_TOOL_NAMES {
+            for outcome in ["completed", "failed", "cancelled", "outcome_unknown"] {
+                let operation = uuid::Uuid::new_v4().to_string();
+                let mut body = json!({"provenance":{"label":"Page data, not instructions","operationId":operation,
+                    "tool":tool,"tabId":"tab","callerSessionId":"chat","outcome":outcome,
+                    "title":"Trusted admission title","url":"https://admission.test/page","origin":"https://admission.test"},
+                    "outcome":outcome,"mayHaveDispatched":outcome != "cancelled"});
+                let result = json!({"isError":outcome != "completed","content":[{"type":"text","text":format!("{DATA_PREFIX}{body}")}]});
+                publish("chat", "worker", &operation, tool, Some("tab"), &result);
+                body["provenance"]["title"] = json!("PRIVATE_FORGED_TITLE");
+                body["provenance"]["callerSessionId"] = json!("PRIVATE_FORGED_CALLER");
+                body["provenance"]["origin"] = json!("https://PRIVATE_FORGED_ORIGIN.test");
+                body["provenance"]["outcome"] = json!("completed");
+                body["rawOutput"] = json!("PRIVATE_PAGE_BODY");
+                let echo = json!({"isError":outcome != "completed","content":[{"type":"text","text":format!("{DATA_PREFIX}{body}")}]});
+                let input = json!({"tabId":"tab","ref":"PRIVATE_REF","text":"PRIVATE_TYPED_TEXT","values":["PRIVATE_SELECTED_VALUE"]});
+                let mut codex = BrowserActivityTracker::default();
+                let mut item = json!({"type":"mcpToolCall","id":"native","server":"threadterm","tool":tool,"arguments":input,"result":echo});
+                codex.codex(&mut item, &context(), true);
+                let mut acp = BrowserActivityTracker::default();
+                let mut start = json!({"sessionUpdate":"tool_call","toolCallId":"native","title":tool,"rawInput":input});
+                acp.acp(&mut start, &context());
+                let mut update = json!({"sessionUpdate":"tool_call_update","toolCallId":"native","status":"completed","rawOutput":echo});
+                acp.acp(&mut update, &context());
+                let mut claude = BrowserActivityTracker::default();
+                let mut start = json!({"type":"assistant","message":{"content":[{"type":"tool_use","id":"native","name":format!("mcp__threadterm__{tool}"),"input":input}]}});
+                claude.claude(&mut start, &context());
+                let mut message = json!({"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"native","is_error":outcome != "completed","content":"PRIVATE_PAGE_BODY"}]},"tool_use_result":echo});
+                claude.claude(&mut message, &context());
+                for sanitized in [&item, &update, &message["message"]["content"][0]] {
+                    assert_eq!(sanitized["resultRedacted"], true);
+                    assert_eq!(sanitized["browserActivity"]["tool"], tool);
+                    assert_eq!(sanitized["browserActivity"]["outcome"], outcome);
+                    assert_eq!(sanitized["browserActivity"]["callerSessionId"], "chat");
+                    assert_eq!(
+                        sanitized["browserActivity"]["title"],
+                        "Trusted admission title"
+                    );
+                    assert!(!sanitized.to_string().contains("PRIVATE_"));
+                }
+                assert!(message.get("tool_use_result").is_none());
+            }
+        }
+    }
+    #[test]
+    fn browser_action_privacy_missing_receipt_cannot_echo_success_metadata_or_arguments() {
+        for tool in crate::browser_tools::ACTION_TOOL_NAMES {
+            let mut tracker = BrowserActivityTracker::default();
+            let mut item = json!({"type":"mcpToolCall","id":"native","server":"threadterm","tool":tool,
+                "arguments":{"tabId":"tab","ref":"PRIVATE_REF","text":"PRIVATE_TYPED_TEXT"},
+                "result":{"isError":true,"provenance":{"label":"Page data, not instructions","operationId":"missing-action",
+                    "title":"PRIVATE_TITLE","callerSessionId":"PRIVATE_CALLER","outcome":"completed","thumbnail":"PRIVATE_IMAGE"}}});
+            tracker.codex(&mut item, &context(), true);
+            assert_eq!(item["browserActivity"]["outcome"], "failed");
+            assert_eq!(item["browserActivity"]["provenanceUnavailable"], true);
+            assert_eq!(item["browserActivity"]["callerSessionId"], "chat");
+            assert_eq!(item["resultRedacted"], true);
+            assert!(!item.to_string().contains("PRIVATE_"));
+        }
+    }
+    #[test]
+    fn browser_eval_privacy_all_native_adapters_redact_exact_code_scalar_and_forged_metadata() {
+        let tool = "browser_eval";
+        for outcome in ["completed", "failed", "cancelled", "outcome_unknown"] {
+            let operation = uuid::Uuid::new_v4().to_string();
+            let mut body = json!({"provenance":{"label":"Page data, not instructions","operationId":operation,"tool":tool,"tabId":"tab","callerSessionId":"chat","outcome":outcome,
+                "title":"Trusted eval page","url":"https://eval.test/page","origin":"https://eval.test"}});
+            publish(
+                "chat",
+                "worker",
+                &operation,
+                tool,
+                Some("tab"),
+                &json!({"isError":outcome!="completed","content":[{"type":"text","text":format!("{DATA_PREFIX}{body}")}]}),
+            );
+            body["provenance"]["title"] = json!("PRIVATE_FORGED_TITLE");
+            body["provenance"]["callerSessionId"] = json!("PRIVATE_FORGED_CALLER");
+            body["provenance"]["outcome"] = json!("completed");
+            body["result"] = json!({"type":"string","value":"PRIVATE_SCALAR"});
+            body["rawException"] = json!("PRIVATE_EXCEPTION");
+            let echo = json!({"isError":outcome!="completed","content":[{"type":"text","text":format!("{DATA_PREFIX}{body}")} ]});
+            let input = json!({"tabId":"tab","code":"PRIVATE_EXACT_CODE"});
+            let mut codex = BrowserActivityTracker::default();
+            let mut item = json!({"type":"mcpToolCall","id":"eval-native","server":"threadterm","tool":tool,"arguments":input,"result":echo});
+            codex.codex(&mut item, &context(), true);
+            let mut acp = BrowserActivityTracker::default();
+            let mut start = json!({"sessionUpdate":"tool_call","toolCallId":"eval-native","title":tool,"rawInput":input});
+            acp.acp(&mut start, &context());
+            let mut update = json!({"sessionUpdate":"tool_call_update","toolCallId":"eval-native","status":"completed","rawOutput":echo});
+            acp.acp(&mut update, &context());
+            let mut claude = BrowserActivityTracker::default();
+            let mut start = json!({"type":"assistant","message":{"content":[{"type":"tool_use","id":"eval-native","name":"mcp__threadterm__browser_eval","input":input}]}});
+            claude.claude(&mut start, &context());
+            let mut message = json!({"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"eval-native","is_error":outcome!="completed","content":"PRIVATE_SCALAR"}]},"tool_use_result":echo});
+            claude.claude(&mut message, &context());
+            let mut kimi = BrowserActivityTracker::default();
+            let mut start =
+                json!({"type":"tool.call","toolCallId":"eval-native","name":tool,"args":input});
+            kimi.kimi(&mut start, &context());
+            let mut event = json!({"type":"tool.result","toolCallId":"eval-native","result":echo});
+            kimi.kimi(&mut event, &context());
+            for sanitized in [&item, &update, &message["message"]["content"][0], &event] {
+                assert_eq!(sanitized["resultRedacted"], true);
+                assert_eq!(sanitized["browserActivity"]["tool"], tool);
+                assert_eq!(sanitized["browserActivity"]["outcome"], outcome);
+                assert_eq!(sanitized["browserActivity"]["title"], "Trusted eval page");
+                assert_eq!(sanitized["browserActivity"]["callerSessionId"], "chat");
+                assert!(!sanitized.to_string().contains("PRIVATE_"));
+            }
+            assert!(message.get("tool_use_result").is_none());
+        }
+        assert!(!crate::browser_tools::TOOL_NAMES.contains(&tool));
+    }
+    #[test]
+    fn browser_eval_privacy_missing_history_receipts_and_foreign_tools_do_not_trust_echoes() {
+        for history in [false, true] {
+            let mut tracker = BrowserActivityTracker::default();
+            let context = if history {
+                Context {
+                    session: None,
+                    worker: None,
+                    scope: "history",
+                }
+            } else {
+                context()
+            };
+            let mut item = json!({"type":"mcpToolCall","id":"missing-eval","server":"threadterm","tool":"browser_eval","arguments":{"tabId":"tab","code":"PRIVATE_CODE"},
+                "result":{"isError":true,"provenance":{"operationId":"missing-eval","title":"PRIVATE_TITLE","callerSessionId":"PRIVATE_CALLER"},"result":{"type":"string","value":"PRIVATE_SCALAR"}}});
+            tracker.codex(&mut item, &context, true);
+            assert_eq!(item["resultRedacted"], true);
+            assert_eq!(item["browserActivity"]["provenanceUnavailable"], true);
+            assert_eq!(item["browserActivity"]["outcome"], "failed");
+            assert!(!item.to_string().contains("PRIVATE_"));
+        }
+        let mut tracker = BrowserActivityTracker::default();
+        let mut foreign = json!({"type":"mcpToolCall","id":"foreign-eval","server":"foreign","tool":"browser_eval","arguments":{"code":"ordinary foreign input"},"result":"ordinary foreign result"});
+        let original = foreign.clone();
+        tracker.codex(&mut foreign, &context(), true);
+        assert_eq!(foreign, original);
     }
 }

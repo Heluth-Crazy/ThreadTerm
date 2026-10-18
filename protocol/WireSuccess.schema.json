@@ -3453,6 +3453,74 @@
     "RequestResult<\"chat.approve\">": {
       "type": "null"
     },
+    "RequestResult<\"browser.approval.read\">": {
+      "$ref": "#/definitions/BrowserEvalApprovalRead"
+    },
+    "BrowserEvalApprovalRead": {
+      "type": "object",
+      "properties": {
+        "approvalId": {
+          "type": "string"
+        },
+        "operationId": {
+          "type": "string"
+        },
+        "code": {
+          "type": "string"
+        },
+        "codeHash": {
+          "type": "string"
+        },
+        "codeByteLength": {
+          "type": "number"
+        },
+        "tabId": {
+          "type": "string"
+        },
+        "origin": {
+          "type": "string"
+        },
+        "expiresAtUnixMs": {
+          "type": "number"
+        },
+        "settingsGeneration": {
+          "type": "string"
+        },
+        "status": {
+          "type": "string",
+          "const": "pending"
+        }
+      },
+      "required": [
+        "approvalId",
+        "operationId",
+        "code",
+        "codeHash",
+        "codeByteLength",
+        "tabId",
+        "origin",
+        "expiresAtUnixMs",
+        "settingsGeneration",
+        "status"
+      ],
+      "additionalProperties": false
+    },
+    "RequestResult<\"browser.approval.resolve\">": {
+      "type": "object",
+      "properties": {
+        "status": {
+          "type": "string",
+          "enum": [
+            "approved",
+            "denied"
+          ]
+        }
+      },
+      "required": [
+        "status"
+      ],
+      "additionalProperties": false
+    },
     "RequestResult<\"chat.answer\">": {
       "type": "null"
     },
@@ -7969,6 +8037,58 @@
         },
         "result": {
           "$ref": "#/definitions/RequestResult%3C%22chat.approve%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "result"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "browser.approval.read"
+        },
+        "result": {
+          "$ref": "#/definitions/RequestResult%3C%22browser.approval.read%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "result"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "browser.approval.resolve"
+        },
+        "result": {
+          "$ref": "#/definitions/RequestResult%3C%22browser.approval.resolve%22%3E"
         }
       },
       "required": [

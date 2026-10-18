@@ -453,6 +453,16 @@ pub(crate) fn approve_chat_request(
     operation_id: &str,
 ) -> Result<Value> {
     db.require_interactive(session_id)?;
+    // Runtime eval approvals are never forwarded to providers or delegation.
+    if db.chat_items(session_id)?.iter().any(|item| item.parts.iter().any(|part| {
+        part["type"] == "approval" && part["approvalId"] == approval_id
+            && part.pointer("/data/runtimeOwned").and_then(Value::as_bool) == Some(true)
+            && part.pointer("/data/requestType").and_then(Value::as_str) == Some("threadterm.browser_eval")
+    })) {
+        return Err(crate::providers::ProviderError::new(
+            "browser_approval_required", "Use the browser approval controls for this request"
+        ).into());
+    }
     if let Some(result) = db.operation(operation_id)? {
         return Ok(result);
     }
@@ -1286,6 +1296,12 @@ impl RuntimeService {
             .map_err(file_reference_rpc_error);
         }
         let outcome = (|| -> Result<Value> {
+            if request.method == "browser.approval.read" {
+                return self.browser_tools.approval_read(principal, &request.params);
+            }
+            if request.method == "browser.approval.resolve" {
+                return self.browser_tools.approval_resolve(principal, &request.params);
+            }
             if request.method.starts_with("chat.tool.") {
                 return crate::chat_tools::shared(&self.config.database_path, Arc::clone(&self.db))?
                     .dispatch(&self.providers, &request.method, &request.params);
@@ -1977,7 +1993,17 @@ impl RuntimeService {
                 _ => Err(anyhow::anyhow!("unknown_method")),
             }
         })();
+        // Every settings writer uses Database's connection guard. Invalidate
+        // after that guard (and plugin/provider locks) has been released, even
+        // if a later writer step failed after committing its revision.
+        if matches!(request.method.as_str(), "settings.update" | "settings.import.apply"
+            | "plugin.setEnabled" | "plugin.selectBrowserBinding" | "plugin.reload") {
+            self.browser_tools.invalidate_eval_settings().map_err(browser_rpc_error)?;
+        }
         outcome.map_err(|e| {
+            if matches!(request.method.as_str(), "browser.approval.read" | "browser.approval.resolve") {
+                return browser_rpc_error(e);
+            }
             if let Some(error) = e.downcast_ref::<crate::providers::ProviderError>() {
                 RpcError {
                     code: error.code.clone(),
@@ -4815,5 +4841,39 @@ mod chat_image_tests {
             "A".repeat(MAX_CHAT_IMAGE_ENCODED_BYTES + 1)
         );
         assert!(validate_chat_images(&[oversized]).is_err());
+    }
+}
+
+#[cfg(test)]
+mod browser_eval_service_tests {
+    use super::*;
+
+    #[test]
+    fn generic_approval_rejects_runtime_eval_before_provider_or_cached_operation() {
+        let root = tempfile::tempdir().unwrap();
+        let db = Database::open(&root.path().join("eval-service.sqlite")).unwrap();
+        db.transaction(|tx| {
+            tx.execute("INSERT INTO sessions(id,title,provider,mode,status,created_at,updated_at) VALUES('s','Fixture','codex','chat','running','t','t')", [])?;
+            Ok(())
+        }).unwrap();
+        crate::chat_projection::record(&db, "s", Some("turn"), "chat.approval", &json!({
+            "approvalId":"eval", "part":{"type":"approval","approvalId":"eval","status":"pending",
+            "data":{"runtimeOwned":true,"requestType":"threadterm.browser_eval"}}
+        })).unwrap();
+        // No adapters are installed: forwarding would fail differently.
+        let providers = Providers::for_test(vec![]);
+        for operation in ["fresh", "already-completed"] {
+            if operation == "already-completed" {
+                db.complete_null_operation(operation, "chat.approve").unwrap();
+            }
+            for turn in ["turn", "stale-turn"] {
+                let error = approve_chat_request(&db, &providers, "s", turn, "eval", "approve_once", operation).unwrap_err();
+                assert_eq!(error.downcast_ref::<crate::providers::ProviderError>().unwrap().code, "browser_approval_required");
+            }
+        }
+        assert!(db.operation("fresh").unwrap().is_none());
+        assert!(!providers.chat_is_open("s"));
+        let item = db.chat_items("s").unwrap().remove(0);
+        assert_eq!(item.parts[0]["status"], "pending");
     }
 }

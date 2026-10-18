@@ -8,7 +8,7 @@ export const BROWSER_AGENT_THUMBNAIL_EDGE = 240;
 export const BROWSER_AGENT_RESULT_BYTES = 900 * 1024;
 export const BROWSER_AGENT_REF_LIMIT = 4096;
 
-export type BrowserAgentShare = 'off' | 'read';
+export type BrowserAgentShare = 'off' | 'read' | 'control';
 export type BrowserAgentErrorCode = 'browser_invalid_arguments' | 'browser_grant_required' | 'browser_tab_not_found' | 'browser_unavailable' | 'browser_stale_ref' | 'browser_read_failed' | 'browser_deadline' | 'browser_cancelled' | 'browser_busy';
 
 export class BrowserAgentError extends Error {
@@ -52,6 +52,7 @@ export interface BrowserAgentReadFence extends BrowserAgentGrantState {
   readonly navigationEpoch: number;
   readonly url: string;
 }
+export type BrowserAgentControlFence = Omit<BrowserAgentReadFence, 'level'> & { readonly level: 'control' };
 
 export type BrowserAgentExpectedShare = Pick<BrowserAgentReadFence, 'grantEpoch' | 'documentGeneration' | 'navigationEpoch'> & { readonly viewGeneration: number };
 export type BrowserAgentConsoleLevel = 'error' | 'warning' | 'info' | 'debug' | 'log';

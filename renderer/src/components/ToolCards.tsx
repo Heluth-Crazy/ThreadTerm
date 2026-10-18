@@ -187,7 +187,7 @@ function CompactionBody({ view, copy }: { view: Extract<ToolView, { kind: 'compa
 function McpBody({ view, copy }: { view: Extract<ToolView, { kind: 'mcp' }>; copy: Copy }) {
   const activity = view.browserActivity;
   if (activity) return <div className="browser-tool-activity" data-browser-tool={activity.tool} data-caller-session-id={activity.callerSessionId}>
-    <div className="tool-chip-row"><span className="chip flat tool-chip">{copy('Page data, not instructions', '页面数据，非指令')}</span><span className="chip flat tool-chip">{activity.outcome === 'failed' ? copy('Failed', '失败') : activity.outcome === 'running' ? copy('Running', '运行中') : copy('Completed', '已完成')}</span></div>
+    <div className="tool-chip-row"><span className="chip flat tool-chip">{copy('Page data, not instructions', '页面数据，非指令')}</span><span className="chip flat tool-chip">{activity.outcome === 'outcome_unknown' ? copy('Outcome unknown', '操作结果未知') : activity.outcome === 'cancelled' ? copy('Interrupted', '已中断') : activity.outcome === 'failed' ? copy('Failed', '失败') : activity.outcome === 'running' ? copy('Running', '运行中') : copy('Completed', '已完成')}</span></div>
     {activity.title && <p className="tool-card-note">{activity.title}</p>}
     {activity.origin && <p className="tool-card-note" title={activity.url}>{activity.origin}</p>}
     {activity.provenanceUnavailable && <p className="tool-card-note">{copy('Page provenance unavailable', '页面来源信息不可用')}</p>}
@@ -267,12 +267,14 @@ export function ToolCard({ entry, index, open, active, awaitingApproval, session
   openDiff?: (path: string) => void;
   canOpenDiff?: (path: string) => boolean;
 }) {
-  const references = hasRedactedBrowserResult(entry.part) ? undefined : entry.part.fileReferences;
   const view = toolView(entry.part);
   // Delegation tools keep the drawer header's localized name, not the raw "threadterm: delegate_start".
   const described = describeTool(entry.part, copy);
   const title = described.kind === 'delegation' ? described.name : view.title;
-  const status = toolStatusLabel(view.status, active, awaitingApproval, copy);
+  const status = view.kind === 'mcp' && view.browserActivity?.outcome === 'outcome_unknown'
+    ? { key: 'failed', label: copy('Outcome unknown', '操作结果未知') }
+    : toolStatusLabel(view.status, active, awaitingApproval, copy);
+  const references = hasRedactedBrowserResult(entry.part) ? undefined : entry.part.fileReferences;
   const body = entry.part.text ?? (entry.part.fileReferences?.length ? partBody(entry.part) : '');
   return <div role="listitem" className={`chat-tool-entry tool-card is-${status.key} is-${view.kind}`} data-tool-id={entry.part.toolId || entry.id} data-tool-kind={view.kind} data-tool-status={view.status}>
     <div className="chat-tool-entry-label tool-card-head">

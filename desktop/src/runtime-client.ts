@@ -340,7 +340,7 @@ export class RuntimeClient {
     try {
       this.assertOpen();
       validateBrowserDesktopRequest(method, params);
-      const limit = method === 'browser.desktop.reply' ? MAX_BROWSER_PENDING_REQUESTS : MAX_BROWSER_REGISTRATION_REQUESTS;
+      const limit = method.startsWith('browser.desktop.') ? MAX_BROWSER_PENDING_REQUESTS : MAX_BROWSER_REGISTRATION_REQUESTS;
       if (this.browserPending.size >= limit) throw new RuntimeUnavailableError('Browser request capacity is exhausted');
     } catch (error) { return Promise.reject(asError(error)); }
     const id = randomUUID();
@@ -360,7 +360,7 @@ export class RuntimeClient {
         this.assertOpen();
         if (this.browser !== connection || this.browserPending.get(id) !== pending) return;
         if (method !== 'browser.attach' && !this.browserCapabilityEpoch) throw new RuntimeUnavailableError('Browser attachment is unavailable');
-        if (method === 'browser.desktop.reply' && capabilityEpoch !== this.browserCapabilityEpoch) {
+        if (method.startsWith('browser.desktop.') && capabilityEpoch !== this.browserCapabilityEpoch) {
           throw new RuntimeUnavailableError('Browser capability epoch changed');
         }
         connection.write(payload);

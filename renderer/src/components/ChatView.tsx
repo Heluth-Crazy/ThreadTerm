@@ -10,6 +10,8 @@ import { createDraftWriter } from '../chatDraft';
 import { useTranslation } from '../i18n';
 import { Icon, useAgentCapabilities } from "./PrototypeIcon";
 import { ChatApprovalCard } from "./ChatApprovalCard";
+import { isBrowserEvalApproval } from '../browserEvalApproval';
+import { hasRedactedBrowserResult } from '../browserToolActivity';
 import { ChatConnectOverlay } from "./ChatConnectOverlay";
 import { PiProjectTrust } from './PiProjectTrust';
 import { DelegationPanel } from "./DelegationPanel";
@@ -1256,6 +1258,7 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession, 
     } finally { imageReadingRef.current = false; setImageReading(false); }
   }
   async function approval(turnId:string,approvalId:string,choiceId:string){
+    if(items.some(item=>item.turnId===turnId&&item.parts.some(part=>part.approvalId===approvalId&&isBrowserEvalApproval(part))))return;
     const epoch=leaseSessionId.current===session.id?lease.current:undefined;
     if(!writable||epoch===undefined)return;
     const key=`${approvalId}:${choiceId}`;
@@ -1630,13 +1633,14 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession, 
         // A question can paint before chat.send settles. The composer busy flag
         // must not disable that card, or Dismiss enables under the pointer.
         if (part.type === "approval") return <div className={`chat-part approval v3-tool-card ${part.status ?? ""}`} key={`${part.type}-${index}`}>
-          <ChatApprovalCard part={part} writable={writable} submitting={approvalBusy?.startsWith(`${part.approvalId ?? ""}:`) ? approvalBusy.slice((part.approvalId ?? "").length + 1) : undefined} onChoose={choiceId => { if (item.turnId && part.approvalId) void approval(item.turnId, part.approvalId, choiceId); }} onAnswer={response => { if (item.turnId && part.approvalId) void answer(item.turnId, part.approvalId, response); }} onPlanResponse={response => { if (item.turnId && part.approvalId) void answer(item.turnId, part.approvalId, response); }} copy={copy} />
+          <ChatApprovalCard part={part} writable={writable} browserEvalContext={{sessionId:session.id,turnId:item.turnId??'',leaseEpoch:leaseSessionId.current===session.id?lease.current??0:0,generation:`${connection.runtimeEpoch??''}:${connection.connectionGeneration}:${link.transportGeneration}`,writable:!nested&&item.turnOrigin!=='history'&&writable,live:!nested&&item.turnOrigin!=='history'&&item.turnId!==undefined&&item.turnId===liveTurn}} submitting={approvalBusy?.startsWith(`${part.approvalId ?? ""}:`) ? approvalBusy.slice((part.approvalId ?? "").length + 1) : undefined} onChoose={choiceId => { if (item.turnId && part.approvalId) void approval(item.turnId, part.approvalId, choiceId); }} onAnswer={response => { if (item.turnId && part.approvalId) void answer(item.turnId, part.approvalId, response); }} onPlanResponse={response => { if (item.turnId && part.approvalId) void answer(item.turnId, part.approvalId, response); }} copy={copy} />
         </div>;
         const label = partLabel(part, copy);
+        const redactedBrowser=hasRedactedBrowserResult(part);
         const localizedText = asRecord(asRecord(part.data).localizedText);
-        const body = asString(localizedText[zh ? "zh-CN" : "en"], partBody(part));
+        const body = redactedBrowser?partBody(part):asString(localizedText[zh ? "zh-CN" : "en"], partBody(part));
         const partImages = asRecord(part.data).images;
-        const messageImages = Array.isArray(partImages) ? partImages.filter(isChatImage) : [];
+        const messageImages = !redactedBrowser&&Array.isArray(partImages) ? partImages.filter(isChatImage) : [];
         const foldedTool = part.type === "tool";
         const codexMarkdown = item.role !== "user" && part.type === "text";
         return <div className={`chat-part ${part.type}${part.type === 'tool' ? ` v3-tool-card ${part.status ?? ''}` : ''}`} key={`${part.type}-${index}`}>
@@ -1647,7 +1651,7 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession, 
               ? <ChatMarkdown sanitizedHtml={renderCodexMarkdown(body, zh)} references={part.fileReferences} openFile={openFile} copy={copy} onInsert={writable ? text => insertChatText(session.id, text) : undefined} />
               : item.role === 'user' ? <><ContextMessage text={body} zh={zh}>{(value, badges) => <div className="v3-message-text"><MessageMentionText text={value} badges={badges} openFile={openFile} zh={zh} /></div>}</ContextMessage>{asRecord(part.data).steered === true && <span className="chip is-plain chat-inserted-tag" data-testid="inserted-tag">{copy('Inserted', '已插入')}</span>}</> : <div className="v3-message-text"><FileLinkedText text={body} openFile={openFile} /></div>
               : null}
-            {!codexMarkdown && <FileReferenceChips references={part.fileReferences} visibleText={body} openFile={openFile} />}
+            {!codexMarkdown && <FileReferenceChips references={redactedBrowser?undefined:part.fileReferences} visibleText={body} openFile={openFile} />}
           </>}
           {part.status && !foldedTool && part.type !== 'text' && part.status !== 'complete' && part.status !== 'streaming' && <small>{part.status}</small>}
         </div>;

@@ -207,6 +207,10 @@ export function describeTool(part: ChatPart, copy: Copy): { kind: ToolKind; name
     const names = {
       browser_list_tabs: copy('List tabs', '列出标签页'), browser_snapshot: copy('Read page', '读取页面'),
       browser_screenshot: copy('Take screenshot', '截取页面'), browser_console_messages: copy('Read console', '读取控制台'),
+      browser_navigate: copy('Open page', '打开页面'), browser_click: copy('Click element', '点击元素'),
+      browser_type: copy('Fill content', '填写内容'), browser_hover: copy('Hover element', '悬停元素'),
+      browser_press_key: copy('Press key', '按键'), browser_select_option: copy('Select option', '选择选项'),
+      browser_eval: copy('Run page code','运行页面代码'),
     };
     return { kind: 'browser', name: browser.displayTool ? names[browser.displayTool] : copy('Browser tool', '浏览器工具'),
       action: copy('Browsing', '正在操作浏览器'), detail: browserToolActivityFromPart(part)?.origin };

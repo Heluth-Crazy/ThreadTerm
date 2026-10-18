@@ -39,7 +39,7 @@ export function SettingsDialog({ data, onClose, onSaved, onSessionCreated, super
     <div className="settings-layout"><nav role="tablist">{(Object.keys(names) as Tab[]).map(item => <button key={item} role="tab" className={tab === item ? "active" : ""} aria-selected={tab === item} onClick={() => setTab(item)}>{names[item]}</button>)}</nav><div className="settings-scroll">
       <section className={`settings-group ${tab === "appearance" ? "active" : ""}`}><SettingsAppearance settings={data.settings} zh={zh} update={update} /></section>
       <section className={`settings-group ${tab === "controls" ? "active" : ""}`}><SettingsControls settings={data.settings} zh={zh} update={update} counts={supervisionCounts} /><SettingsQuickMessages settings={data.settings} zh={zh} update={update} /></section>
-      {tab === "browser" && <section className="settings-group active"><SettingsBrowser zh={zh} /></section>}
+      {tab === "browser" && <section className="settings-group active"><SettingsBrowser zh={zh} settings={data.settings} update={update} /></section>}
       <section className={`settings-group ${tab === "data" ? "active" : ""}`}><SettingsData settings={data.settings} zh={zh} onSaved={onSaved} /></section>
       <section className={`settings-group ${tab === "mobile" ? "active" : ""}`}><DeviceSettings language={zh ? "zh-CN" : "en"} /></section>
       <section className={`settings-group ${tab === "tools" ? "active" : ""}`}><SettingsChatTools settings={data.settings} zh={zh} update={update} /><ProviderNetworkSettings settings={data.settings} zh={zh} update={update} /><SettingsTools data={data} onSaved={onSaved} /></section>

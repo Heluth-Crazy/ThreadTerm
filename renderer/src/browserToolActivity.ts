@@ -1,9 +1,11 @@
-type BrowserReadTool = 'browser_list_tabs' | 'browser_snapshot' | 'browser_screenshot' | 'browser_console_messages';
+import { isBrowserActionTool, isBrowserReadTool, type BrowserTool } from '@threadterm/protocol';
+import { isBrowserEvalApproval } from './browserEvalApproval';
+export type PrivateBrowserTool=BrowserTool|'browser_eval';
 
-/** Bounded browser receipts contain provenance, never the private read body. */
+/** Bounded browser receipts contain provenance, never private execution data. */
 export interface BrowserToolActivity {
   tool: string;
-  outcome: 'running' | 'completed' | 'failed';
+  outcome: 'running' | 'completed' | 'failed' | 'cancelled' | 'outcome_unknown';
   tabId?: string;
   title?: string;
   url?: string;
@@ -13,18 +15,18 @@ export interface BrowserToolActivity {
   provenanceUnavailable?: boolean;
 }
 
-const tools = new Set(['browser_list_tabs', 'browser_snapshot', 'browser_screenshot', 'browser_console_messages']);
 const encoder = new TextEncoder();
 const bounded = (value: unknown, bytes: number): string | undefined =>
   typeof value === 'string' && encoder.encode(value).length <= bytes && !/[\u0000-\u001f\u007f-\u009f]/.test(value) ? value : undefined;
 
-type ToolPart = { data?: unknown; toolName?: string };
+type ToolPart = { type?:string;data?: unknown; toolName?: string };
 
-const managedTool = (value: unknown): BrowserReadTool | undefined =>
-  typeof value === 'string' && tools.has(value) ? value as BrowserReadTool : undefined;
+const managedTool = (value: unknown): PrivateBrowserTool | undefined =>
+  isBrowserReadTool(value) || isBrowserActionTool(value) || value==='browser_eval' ? value : undefined;
 
 /** Conflicting identities suppress receipt attribution while retaining redaction. */
-export function browserToolIdentity(part: ToolPart): { displayTool?: BrowserReadTool; receiptTool?: BrowserReadTool; redact: boolean } {
+export function browserToolIdentity(part: ToolPart): { displayTool?: PrivateBrowserTool; receiptTool?: PrivateBrowserTool; redact: boolean } {
+  if(isBrowserEvalApproval(part))return {displayTool:'browser_eval',redact:true};
   const data = part?.data && typeof part.data === 'object' && !Array.isArray(part.data) ? part.data as Record<string, unknown> : {};
   const native = /^mcp__(.+?)__(.+)$/.exec(part?.toolName ?? '');
   const nativeTool = native?.[1] === 'threadterm' ? managedTool(native[2]) : undefined;
@@ -35,7 +37,7 @@ export function browserToolIdentity(part: ToolPart): { displayTool?: BrowserRead
   return { displayTool, receiptTool: consistent ? displayTool : undefined, redact: Boolean(nativeTool || dataTool) };
 }
 
-export function browserToolNameFromPart(part: ToolPart): BrowserReadTool | undefined {
+export function browserToolNameFromPart(part: ToolPart): PrivateBrowserTool | undefined {
   return browserToolIdentity(part).receiptTool;
 }
 
@@ -54,9 +56,9 @@ export function hasRedactedBrowserResult(part: ToolPart): boolean {
 }
 
 export function browserToolActivity(value: unknown, tool: string): BrowserToolActivity | undefined {
-  if (!value || typeof value !== 'object' || Array.isArray(value) || !tools.has(tool)) return undefined;
+  if (!value || typeof value !== 'object' || Array.isArray(value) || !managedTool(tool)) return undefined;
   const data = value as Record<string, unknown>;
-  if (data.tool !== tool || typeof data.outcome !== 'string' || !['running', 'completed', 'failed'].includes(data.outcome)) return undefined;
+  if (data.tool !== tool || typeof data.outcome !== 'string' || !['running', 'completed', 'failed', 'cancelled', 'outcome_unknown'].includes(data.outcome)) return undefined;
   const thumbnail = bounded(data.thumbnail, 22 * 1024);
   return {
     tool, outcome: data.outcome as BrowserToolActivity['outcome'],

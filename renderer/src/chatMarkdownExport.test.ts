@@ -59,16 +59,16 @@ test('export images cover non-text attachments and reject active or remote file 
   assert.doesNotMatch(bundle.markdown, /file:|ftp:|blob:|smb:|custom:|server|\.svg|bad\npath/);
 });
 
-
-test('managed browser exports omit raw images and paths even with contradictory identities or missing receipts', () => {
+test('all managed browser exports omit raw images and paths despite conflicting identities or missing receipts', () => {
   const png = 'data:image/png;base64,cHJpdmF0ZQ==';
-  for (const tool of ['browser_list_tabs', 'browser_snapshot', 'browser_screenshot', 'browser_console_messages'])
+  for (const tool of ['browser_list_tabs', 'browser_snapshot', 'browser_screenshot', 'browser_console_messages',
+    'browser_navigate', 'browser_click', 'browser_type', 'browser_hover', 'browser_press_key', 'browser_select_option'])
     for (const inverse of [false, true]) for (const resultRedacted of [undefined, false]) {
       const input: ChatItem[] = [{ id: 'private', role: 'assistant', createdAt: '', parts: [{
         type: 'tool', toolName: `mcp__${inverse ? 'foreign' : 'threadterm'}__${tool}`, status: 'completed',
         text: 'PRIVATE echo', fileReferences: [{ path: 'D:/PRIVATE.png' }], data: {
           server: inverse ? 'threadterm' : 'PRIVATE SERVER', tool: inverse ? tool : 'PRIVATE TOOL', resultRedacted,
-          images: [png, 'D:/PRIVATE.png'], result: 'PRIVATE', input: { text: 'PRIVATE' },
+          images: [png, 'D:/PRIVATE.png'], result: 'PRIVATE', input: { text: 'PRIVATE', code: 'PRIVATE', values: ['PRIVATE'] },
         },
       }] }];
       const original = JSON.stringify(input);

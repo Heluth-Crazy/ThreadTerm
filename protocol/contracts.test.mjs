@@ -1,5 +1,20 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+test('runtime eval approval uses a separate leased, exact-hash decision contract',()=>{
+ const read={sessionId:'session',turnId:'turn',approvalId:'approval',leaseEpoch:1};
+ validateRequest('browser.approval.read',read);
+ const resolve={...read,operationId:'decision',codeHash:'a'.repeat(64),choice:'approve_once'};
+ validateRequest('browser.approval.resolve',resolve);
+ validateRequest('browser.approval.resolve',{...resolve,choice:'deny'});
+ for(const patch of [{leaseEpoch:0},{leaseEpoch:undefined},{turnId:''},{sessionId:'s\nforged'},{approvalId:'😀'.repeat(65)},{code:'PRIVATE_CODE'}])assert.throws(()=>validateRequest('browser.approval.read',{...read,...patch}));
+ for(const patch of [{codeHash:'A'.repeat(64)},{codeHash:'a'.repeat(63)},{choice:'allow_always'},{operationId:''},{code:'PRIVATE_CODE'}])assert.throws(()=>validateRequest('browser.approval.resolve',{...resolve,...patch}));
+ const result={approvalId:'approval',operationId:'browser-operation',code:' 1+1\n',codeHash:'a'.repeat(64),codeByteLength:5,tabId:'tab',origin:'https://example.invalid',expiresAtUnixMs:Date.now()+300_000,settingsGeneration:'epoch:1',status:'pending'};
+ validateResult('browser.approval.read',result);
+ for(const patch of [{codeByteLength:3},{code:'\uD800'},{codeHash:'A'.repeat(64)},{status:'resolved'},{origin:'https://user:secret@example.invalid/'},{exception:'PRIVATE_EXCEPTION'}])assert.throws(()=>validateResult('browser.approval.read',{...result,...patch}));
+ validateResult('browser.approval.resolve',{status:'approved'});
+ validateResult('browser.approval.resolve',{status:'denied'});
+ assert.throws(()=>validateResult('browser.approval.resolve',{status:'approved',code:'PRIVATE_CODE'}));
+});
 test('fork requires a lease and stable operation identity and carries additive native anchors and origin',()=>{
  const params={sessionId:'source',operationId:'fork-op',leaseEpoch:1};
  validateRequest('chat.fork',params);
@@ -392,10 +407,10 @@ test('handshake rejects old and mismatched Chat approval contracts without imply
  assert.match(protocolIncompatibleReason({kind:'challenge',nonce:'n',protocol:PROTOCOL_VERSION}),/older and was left running/);
  assert.match(protocolIncompatibleReason({kind:'auth',clientId:'c',protocol:PROTOCOL_VERSION,nonce:'n',hmac:'00'},'runtime'),/Running jobs were not stopped/);
  assert.match(protocolIncompatibleReason({kind:'challenge',nonce:'n',protocol:PROTOCOL_VERSION,contract:1}),new RegExp('contract '+PROTOCOL_CONTRACT));
- assert.match(protocolIncompatibleReason({kind:'challenge',nonce:'n',protocol:PROTOCOL_VERSION,contract:12}),/contract 14/);
+ assert.match(protocolIncompatibleReason({kind:'challenge',nonce:'n',protocol:PROTOCOL_VERSION,contract:12}),/contract 15/);
  assert.match(protocolIncompatibleReason({kind:'challenge',nonce:'n',protocol:PROTOCOL_VERSION,contract:12}),/left running/);
- assert.match(protocolIncompatibleReason({kind:'auth',clientId:'c',protocol:PROTOCOL_VERSION,nonce:'n',hmac:'00',contract:12},'runtime'),/contract 14/);
- assert.match(protocolIncompatibleReason({kind:'challenge',nonce:'n',protocol:PROTOCOL_VERSION,contract:13}),/contract 14/);
+ assert.match(protocolIncompatibleReason({kind:'auth',clientId:'c',protocol:PROTOCOL_VERSION,nonce:'n',hmac:'00',contract:12},'runtime'),/contract 15/);
+ assert.match(protocolIncompatibleReason({kind:'challenge',nonce:'n',protocol:PROTOCOL_VERSION,contract:13}),/contract 15/);
  assert.match(protocolIncompatibleReason({kind:'auth',clientId:'c',protocol:PROTOCOL_VERSION,nonce:'n',hmac:'00',contract:12},'runtime'),/were not stopped/);
  assert.match(protocolIncompatibleReason({kind:'challenge',nonce:'n',protocol:99,contract:PROTOCOL_CONTRACT}),/wire protocol/);
  validateResult('runtime.health',{version:'0.1.0',epoch:'e',contract:PROTOCOL_CONTRACT});
@@ -502,7 +517,7 @@ test('session documents pin relative paths inside the worktree and list exact ro
  assert.throws(()=>validateRequest('session.documents.pin',{sessionId:'s',path:'docs/plan.md'}),/Invalid operationId|protocol schema/);
  validateResult('session.documents.list',[{path:'docs/plan.md',title:'Checkout plan',pinnedAt:'t'},{path:'notes.txt',pinnedAt:'t',missing:true}]);
  assert.throws(()=>validateResult('session.documents.pin',[{path:'docs/plan.md',pinnedAt:'t',size:3}]));
- assert.equal(PROTOCOL_CONTRACT,14);
+ assert.equal(PROTOCOL_CONTRACT,15);
 });
 
 test('preview presentation is attachment-scoped and requires a persisted tab acknowledgement',()=>{

@@ -53,6 +53,22 @@ const within = async (ms, promise, label) => {
   finally { clearTimeout(timer); }
 };
 
+test('unproven managed eval is denied before native approval publication without changing model arguments',async()=>{
+ for(const browserTools of [false,true]){
+  const {session,events}=harness();session.threadTermBrowserTools=browserTools;
+  const input={tabId:'public-tab',code:'PRIVATE CODE',result:'PRIVATE'},before=structuredClone(input);
+  const result=await session.requestPermission('mcp__threadterm__browser_eval',input,{suggestions:[{type:'addRules',rules:['PRIVATE']}]});
+  assert.deepEqual(result,{behavior:'deny',message:'browser_eval_unavailable'});assert.deepEqual(input,before);
+  assert.equal(session.pending.size,0);assert.equal(events.some(value=>value.ev==='session.request'),false);assert.equal(JSON.stringify(events).includes('PRIVATE'),false);
+  for(const name of ['mcp__foreign__browser_eval','mcp__threadterm__browser_eval_extra','mcp__threadterm__browser_eval ']){
+   const pending=session.requestPermission(name,{code:'ordinary foreign code'}),request=events.findLast(value=>value.ev==='session.request');
+   assert.equal(request.toolName,name);assert.deepEqual(request.input,{code:'ordinary foreign code'});
+   session.decide(request.requestId,'deny');assert.equal((await pending).behavior,'deny');
+  }
+  await session.stop();
+ }
+});
+
 test('a pre-cancelled permission request resolves deny immediately without publishing a card', async () => {
   const { session, events } = harness();
   const controller = new AbortController();
@@ -431,19 +447,26 @@ test('a preview-only ThreadTerm server auto-approves only the two preview tools'
   await session.stop();
 });
 
-test('browser reads auto-approve only the exact four managed tools', async () => {
+test('browser reads and actions auto-approve only their exact managed tools without publishing private arguments', async () => {
   const { session, events } = harness();
   await session.start({
     cwd: 'C:/', sessionId: null,
     mcpServers: { threadterm: { type: 'stdio', command: 'threadterm-v3-mcp', args: [], env: { THREADTERM_MCP_PROFILE: 'chat-tools', THREADTERM_BROWSER_TOKEN: 'browser-only' } } },
   });
   try {
-    for (const name of ['browser_list_tabs', 'browser_snapshot', 'browser_screenshot', 'browser_console_messages']) {
-      const input = name === 'browser_list_tabs' ? {} : { tabId: 'opaque-tab' };
+    for (const name of ['browser_list_tabs', 'browser_snapshot', 'browser_screenshot', 'browser_console_messages',
+      'browser_navigate', 'browser_click', 'browser_type', 'browser_hover', 'browser_press_key', 'browser_select_option']) {
+      const input = name === 'browser_list_tabs' ? {} : { tabId: 'opaque-tab', ref: 'ref-a', text: 'PRIVATE', values: ['PRIVATE'] };
+      const before = structuredClone(input);
       assert.deepEqual(await session.requestPermission(`mcp__threadterm__${name}`, input), { behavior: 'allow', updatedInput: input });
+      assert.deepEqual(input, before, 'permission policy must not alter the SDK/model arguments');
     }
     assert.equal(events.filter(value => value.ev === 'session.request').length, 0);
-    for (const name of ['mcp__threadterm__browser_eval', 'mcp__threadterm__browser_click', 'mcp__threadterm__browser_snapshot_extra', 'mcp__foreign__browser_snapshot', 'mcp__threadterm__preview_present', 'mcp__threadterm__delegate_start', 'mcp__threadterm__ask_user', 'Bash', 'exec_command']) {
+    assert.equal(JSON.stringify(events).includes('PRIVATE'), false);
+    for (const name of ['mcp__threadterm__browser_click_extra', 'mcp__threadterm__browser_type ',
+      'mcp__threadterm__browser_snapshot_extra', 'mcp__foreign__browser_snapshot',
+      ...['browser_navigate', 'browser_click', 'browser_type', 'browser_hover', 'browser_press_key', 'browser_select_option'].map(tool => `mcp__foreign__${tool}`),
+      'mcp__threadterm__preview_present', 'mcp__threadterm__delegate_start', 'mcp__threadterm__ask_user', 'Bash', 'exec_command']) {
       const pending = session.requestPermission(name, {});
       const request = events.findLast(value => value.ev === 'session.request');
       assert.equal(request?.toolName, name, `${name} keeps its native permission request`);
@@ -451,9 +474,10 @@ test('browser reads auto-approve only the exact four managed tools', async () =>
       assert.equal((await within(200, pending, `${name} settles`)).behavior, 'deny');
     }
   } finally { await session.stop(); }
+  assert.equal((await session.requestPermission('mcp__threadterm__browser_type', { text: 'PRIVATE' })).behavior, 'deny');
 });
 
-test('browser read policy needs its own token and managed host profile', async () => {
+test('browser read and action policy needs its own token and managed host profile', async () => {
   const managed = { type: 'stdio', command: 'threadterm-v3-mcp', args: [], env: { THREADTERM_MCP_PROFILE: 'chat-tools', THREADTERM_BROWSER_TOKEN: 'browser-only' } };
   const disabled = [
     undefined,
@@ -461,18 +485,23 @@ test('browser read policy needs its own token and managed host profile', async (
     { threadterm: { ...managed, name: 'foreign' } },
     { threadterm: { ...managed, env: { THREADTERM_BROWSER_TOKEN: 'browser-only' } } },
     { threadterm: { ...managed, env: { ...managed.env, THREADTERM_MCP_PROFILE: 'preview' } } },
+    { threadterm: { ...managed, env: { ...managed.env, THREADTERM_MCP_PROFILE: 'read-only' } } },
+    { threadterm: { ...managed, env: { ...managed.env, THREADTERM_MCP_PROFILE: 'reviewer' } } },
     { threadterm: { ...managed, env: { ...managed.env, THREADTERM_BROWSER_TOKEN: '' } } },
+    { threadterm: { ...managed, env: { ...managed.env, THREADTERM_BROWSER_TOKEN: 1 } } },
     { threadterm: { ...managed, env: { THREADTERM_MCP_PROFILE: 'chat-tools', THREADTERM_PREVIEW_TOKEN: 'preview-only', THREADTERM_SESSION_TOKEN: 'delegation-only', THREADTERM_CHAT_TOKEN: 'chat-only', THREADTERM_CHAT_TOOL_ASK: '1' } } },
   ];
   for (const mcpServers of disabled) {
     const { session, events } = harness();
     await session.start({ cwd: 'C:/', sessionId: null, mcpServers });
     try {
-      const pending = session.requestPermission('mcp__threadterm__browser_snapshot', { tabId: 'opaque-tab' });
-      const request = events.find(value => value.ev === 'session.request');
-      assert.ok(request, 'missing browser authority preserves a native permission request');
-      session.decide(request.requestId, 'deny');
-      assert.equal((await within(200, pending, 'unavailable browser tool settles')).behavior, 'deny');
+      for (const tool of ['browser_snapshot', 'browser_navigate', 'browser_click', 'browser_type', 'browser_hover', 'browser_press_key', 'browser_select_option']) {
+        const pending = session.requestPermission(`mcp__threadterm__${tool}`, { tabId: 'opaque-tab' });
+        const request = events.findLast(value => value.ev === 'session.request');
+        assert.equal(request?.toolName, `mcp__threadterm__${tool}`, 'missing browser authority preserves a native permission request');
+        session.decide(request.requestId, 'deny');
+        assert.equal((await within(200, pending, 'unavailable browser tool settles')).behavior, 'deny');
+      }
     } finally { await session.stop(); }
   }
 });

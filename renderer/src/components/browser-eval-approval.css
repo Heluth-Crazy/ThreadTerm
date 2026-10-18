@@ -1,0 +1,6 @@
+.browser-eval-approval { min-width:0; }
+.browser-eval-source, .browser-eval-hash { color:var(--muted); overflow-wrap:anywhere; }
+.browser-eval-source p { margin:4px 0; }
+.browser-eval-code { min-width:0; max-height:320px; overflow:auto; white-space:pre; padding:8px; color:var(--text); background:var(--surface); border:1px solid var(--border); border-radius:var(--radius); tab-size:4; }
+.browser-eval-code:focus-visible { outline:2px solid var(--primary); outline-offset:2px; }
+.browser-eval-approval .chat-approval-actions { flex-wrap:wrap; }

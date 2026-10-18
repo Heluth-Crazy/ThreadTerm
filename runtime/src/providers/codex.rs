@@ -6928,7 +6928,7 @@ process.on('exit', () => clearTimeout(timeout));
         for tool in crate::browser_tools::TOOL_NAMES {
             assert!(overrides.contains(&format!("tools.{tool}.approval_mode='auto'")));
         }
-        for tool in ["browser_eval", "browser_click", "browser_snapshot_extra", "preview_present", "delegate_start", "ask_user", "shell", "exec_command"] {
+        for tool in ["browser_eval", "browser_click_extra", "browser_snapshot_extra", "preview_present", "delegate_start", "ask_user", "shell", "exec_command"] {
             assert!(!overrides.contains(&format!("tools.{tool}.approval_mode='auto'")));
         }
         let foreign = ChatToolServer { name: "foreign".into(), ..managed.clone() };

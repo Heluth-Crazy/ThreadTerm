@@ -3,6 +3,7 @@ import test from 'node:test';
 import { readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import vm from 'node:vm';
+import * as browserAgentUi from '../renderer/src/browserAgentUi.ts';
 
 const ts=createRequire(import.meta.url)('typescript');
 const capture={shot:{id:'00000000-0000-4000-8000-000000000000',path:'C:/shots/page.png',width:40,height:30,thumbnail:'data:image/jpeg;base64,AA=='},dataUrl:'data:image/png;base64,c25hcA==',url:'https://example.test/',documentGeneration:3,width:40,height:30};
@@ -27,6 +28,7 @@ function fixture(extra={}){
   if(name==='react/jsx-runtime')return {jsx:(type,props)=>({type,props}),jsxs:(type,props)=>({type,props})};
   if(name==='react-dom')return {createPortal:(child,target)=>{const portal={type:'portal',child,target};portals.push(portal);return portal;}};
   if(name==='../bridge')return bridge;
+  if(name==='../browserAgentUi')return browserAgentUi;
   if(name==='../browserOcclusion')return {usePassiveBrowserOcclusion(){},watchBrowserOverlays:()=>()=>{},updateBrowserOverlayBounds(){}};
   if(name==='./PageComments')return {PageCommentControls:Symbol('PageCommentControls'),PageCommentForm:Symbol('PageCommentForm'),PageHandoffDestination:Symbol('PageHandoffDestination'),ScreenshotMarkup,usePageCommentPreview:()=>({frameName:'tt-preview-native',provenance:{previewId:'preview-a'},enabled:true,cancel(){},acceptPick(){}})};
   if(name==='./FileComments')return {PendingComments:Symbol('PendingComments'),useReviewComments:()=>[]};
@@ -116,14 +118,16 @@ test('reload and stop still change glyphs when loading changes',()=>{
  tree=f.render();assert.equal(glyph('Stop'),stop);f.browserListener({type:'state',state:loadedState});tree=f.render();assert.equal(glyph('Reload'),reload);
 });
 
-test('Read waits for the normal workspace save and sends the captured document fence only',async()=>{
+test('Read waits for saved scope and discards intent when the document changes during save',async()=>{
+ for(const changed of [false,true]){
  let finishSave;const f=fixture({prepareBrowserShare:()=>new Promise(resolve=>{finishSave=resolve;})});f.render();f.effects.find(effect=>String(effect).includes('onBrowserEvent'))();
  const sharing={level:'off',status:'idle',grantEpoch:7,viewGeneration:4,navigationEpoch:8,reading:false};
  f.browserListener({type:'state',state:{...loadedState,sharing}});let tree=f.render();f.find(tree,node=>node.props?.['aria-label']==='Agent access Read').props.onClick();
  assert.equal(f.commands.length,0,'a toolbar click cannot share an unsaved layout');
- f.browserListener({type:'state',state:{...loadedState,documentGeneration:4,sharing:{...sharing,navigationEpoch:9}}});tree=f.render();
+ if(changed){f.browserListener({type:'state',state:{...loadedState,documentGeneration:4,sharing:{...sharing,navigationEpoch:9}}});tree=f.render();}
  finishSave({id:'saved-workspace',revision:12});await new Promise(done=>setImmediate(done));
- assert.equal(JSON.stringify(f.commands),JSON.stringify([{type:'share',tabId:'tab-a',level:'read',workspace:{id:'saved-workspace',revision:12},expected:{documentGeneration:3,navigationEpoch:8,viewGeneration:4,grantEpoch:7}}]),'main receives the original fence and can reject a page that changed during save');
+ assert.equal(JSON.stringify(f.commands),JSON.stringify(changed?[]:[{type:'share',tabId:'tab-a',level:'read',workspace:{id:'saved-workspace',revision:12},expected:{documentGeneration:3,navigationEpoch:8,viewGeneration:4,grantEpoch:7}}]),changed?'a changed document cancels the intent before native grant admission':'an unchanged document sends exactly its captured fence after save');
+ }
 });
 
 test('Off cancels a delayed Read save without sending a later grant request',async()=>{

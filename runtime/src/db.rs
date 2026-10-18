@@ -1828,7 +1828,7 @@ pub(crate) fn scoped_history_item(session_id: &str, source: &ChatItem) -> ChatIt
         let Some(data) = part.get_mut("data").and_then(Value::as_object_mut) else { continue };
         if data.get("server").and_then(Value::as_str) != Some("threadterm")
             || data.get("resultRedacted").and_then(Value::as_bool) != Some(true)
-            || !data.get("tool").and_then(Value::as_str).is_some_and(|tool| crate::browser_tools::TOOL_NAMES.contains(&tool))
+            || !data.get("tool").and_then(Value::as_str).is_some_and(|tool| crate::browser_tools::TOOL_NAMES.contains(&tool) || tool == "browser_eval")
         { continue; }
         if let Some(activity) = data.get_mut("browserActivity").and_then(Value::as_object_mut) {
             activity.insert("callerSessionId".to_owned(), json!(session_id));
@@ -4164,5 +4164,376 @@ mod tests {
                 "identity {evidence}"
             );
         }
+    }
+}
+
+
+/// Canonical eval authority read while the broker holds its transition lock.
+/// Callers must use the supplied transaction and never reenter Database here.
+pub(crate) struct BrowserEvalContext {
+    pub project_id: Option<String>,
+    pub worktree_path: Option<String>,
+    pub settings_revision: i64,
+    pub enabled: bool,
+}
+
+pub(crate) fn browser_eval_context_tx(
+    tx: &Transaction<'_>,
+    session_id: &str,
+    turn_id: &str,
+    lease: Option<(&str, i64)>,
+) -> Result<BrowserEvalContext> {
+    type EvalSessionRow = (
+        Option<String>,
+        Option<String>,
+        String,
+        bool,
+        String,
+        String,
+        bool,
+    );
+    let row: Option<EvalSessionRow> = tx
+        .query_row(
+            "SELECT s.project_id,s.worktree_path,s.mode,s.read_only,s.provider,s.status,
+         EXISTS(SELECT 1 FROM delegations d WHERE d.child_session_id=s.id)
+         FROM sessions s WHERE s.id=?",
+            [session_id],
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                    row.get(5)?,
+                    row.get(6)?,
+                ))
+            },
+        )
+        .optional()?;
+    let (project_id, worktree_path, mode, read_only, provider, status, child) =
+        row.ok_or_else(|| anyhow!("browser_unauthorized"))?;
+    if mode != "chat" || read_only || child || matches!(provider.as_str(), "opencode" | "pi") {
+        return Err(anyhow!("browser_unauthorized"));
+    }
+    let review_schema: bool = tx.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='agent_reviews')",
+        [],
+        |row| row.get(0),
+    )?;
+    if review_schema
+        && tx.query_row(
+            "SELECT EXISTS(SELECT 1 FROM agent_reviews WHERE reviewer_session_id=?)",
+            [session_id],
+            |row| row.get::<_, bool>(0),
+        )?
+    {
+        return Err(anyhow!("browser_unauthorized"));
+    }
+    let active: bool = tx.query_row(
+        "SELECT EXISTS(SELECT 1 FROM session_activity WHERE session_id=? AND turn_id=? AND state IN ('running','awaiting_approval'))",
+        params![session_id, turn_id], |row| row.get(0),
+    )?;
+    if turn_id.is_empty()
+        || !active
+        || matches!(status.as_str(), "exited" | "interrupted" | "error")
+    {
+        return Err(anyhow!("browser_turn_inactive"));
+    }
+    if let Some((principal, epoch)) = lease {
+        let owner: Option<(String, i64, String)> = tx
+            .query_row(
+                "SELECT client_id,epoch,expires_at FROM leases WHERE session_id=?",
+                [session_id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .optional()?;
+        let (holder, current, expires) = owner.ok_or_else(|| anyhow!("lease_missing"))?;
+        if epoch < 1
+            || holder != principal
+            || current != epoch
+            || chrono::DateTime::parse_from_rfc3339(&expires)?.with_timezone(&Utc) <= Utc::now()
+        {
+            return Err(anyhow!("stale_lease"));
+        }
+    }
+    let (settings_revision, raw): (i64, String) = tx.query_row(
+        "SELECT revision,value FROM settings WHERE singleton=1",
+        [],
+        |row| Ok((row.get(0)?, row.get(1)?)),
+    )?;
+    let settings: Value = serde_json::from_str(&raw)?;
+    Ok(BrowserEvalContext {
+        project_id,
+        worktree_path,
+        settings_revision,
+        enabled: settings.get("browserEvalEnabled").and_then(Value::as_bool) == Some(true),
+    })
+}
+
+#[cfg(test)]
+mod browser_eval_context_tests {
+    use super::*;
+
+    #[test]
+    fn eval_history_receipt_rebinds_only_redacted_managed_metadata() {
+        let source: ChatItem = serde_json::from_value(json!({
+            "id":"native-item", "role":"assistant", "turnId":"native-turn", "createdAt":"now",
+            "parts":[
+                {"type":"tool","data":{"server":"threadterm","tool":"browser_eval","resultRedacted":true,"browserActivity":{"callerSessionId":"old","outcome":"failed"}}},
+                {"type":"tool","data":{"server":"foreign","tool":"browser_eval","resultRedacted":true,"browserActivity":{"callerSessionId":"foreign"}}},
+                {"type":"tool","data":{"server":"threadterm","tool":"browser_eval","browserActivity":{"callerSessionId":"unredacted"}}}
+            ]
+        })).unwrap();
+        let target = scoped_history_item("target", &source);
+        assert_eq!(target.parts[0]["data"]["browserActivity"]["callerSessionId"], "target");
+        assert_eq!(target.parts[1], source.parts[1]);
+        assert_eq!(target.parts[2], source.parts[2]);
+        assert_eq!(source.parts[0]["data"]["browserActivity"]["callerSessionId"], "old");
+        assert_eq!(target.turn_id.as_deref(), Some("target:history:native-turn"));
+        assert_eq!(target.turn_origin, Some(ChatTurnOrigin::History));
+        assert!(!crate::browser_tools::TOOL_NAMES.contains(&"browser_eval"));
+    }
+
+    fn fixture() -> (tempfile::TempDir, Database) {
+        let root = tempfile::tempdir().unwrap();
+        let db = Database::open(&root.path().join("eval.sqlite")).unwrap();
+        crate::agent_review::initialize(&db).unwrap();
+        db.transaction(|tx| {
+            tx.execute("INSERT INTO projects(id,name,path,created_at) VALUES('project','Project',?,'t')",[root.path().to_string_lossy().to_string()])?;
+            for session in ["s","parent"] {
+                tx.execute("INSERT INTO sessions(id,project_id,title,provider,mode,status,created_at,updated_at) VALUES(?,'project',?,'codex','chat','running','t','t')",params![session,session])?;
+            }
+            tx.execute("INSERT INTO session_activity(session_id,state,revision,turn_id) VALUES('s','running',1,'turn')",[])?;
+            Ok(())
+        }).unwrap();
+        (root, db)
+    }
+    fn summary(id: &str) -> Value {
+        json!({"approvalId":id,"part":{"type":"approval","approvalId":id,"status":"pending","data":{
+            "runtimeOwned":true,"requestType":"threadterm.browser_eval","approvalId":id,
+            "operationId":format!("operation-{id}"),"callerSessionId":"s","tabId":"tab",
+            "origin":"https://example.test","codeHash":"a".repeat(64),"codeByteLength":12,
+            "expiresAtUnixMs":1_900_000_000_000u64,"settingsGeneration":"epoch:1",
+            "choices":[{"id":"approve_once","label":"Approve once"},{"id":"deny","label":"Deny"}]
+        }}})
+    }
+
+    #[test]
+    fn canonical_eval_context_fences_lease_turn_and_settings_revision() {
+        let (_root, db) = fixture();
+        let initial = db
+            .transaction(|tx| browser_eval_context_tx(tx, "s", "turn", None))
+            .unwrap();
+        assert!(!initial.enabled);
+        assert_eq!(initial.settings_revision, 0);
+        assert_eq!(initial.project_id.as_deref(), Some("project"));
+        db.put_lease(
+            "s",
+            "desktop",
+            7,
+            &(Utc::now() + chrono::Duration::seconds(30)).to_rfc3339(),
+        )
+        .unwrap();
+        assert!(db
+            .transaction(|tx| browser_eval_context_tx(tx, "s", "turn", Some(("desktop", 7))))
+            .is_ok());
+        for lease in [("foreign", 7), ("desktop", 6)] {
+            assert!(db
+                .transaction(|tx| browser_eval_context_tx(tx, "s", "turn", Some(lease)))
+                .is_err());
+        }
+        db.put_lease(
+            "s",
+            "desktop",
+            7,
+            &(Utc::now() - chrono::Duration::seconds(1)).to_rfc3339(),
+        )
+        .unwrap();
+        assert!(db
+            .transaction(|tx| browser_eval_context_tx(tx, "s", "turn", Some(("desktop", 7))))
+            .is_err());
+        db.update_settings(&json!({"browserEvalEnabled":true}), 0, "enable")
+            .unwrap();
+        let enabled = db
+            .transaction(|tx| browser_eval_context_tx(tx, "s", "turn", None))
+            .unwrap();
+        assert!(enabled.enabled);
+        assert_eq!(enabled.settings_revision, 1);
+        db.update_settings(&json!({"browserEvalEnabled":false}), 1, "disable")
+            .unwrap();
+        let disabled = db
+            .transaction(|tx| browser_eval_context_tx(tx, "s", "turn", None))
+            .unwrap();
+        assert!(!disabled.enabled);
+        assert_eq!(disabled.settings_revision, 2);
+        assert!(db
+            .transaction(|tx| browser_eval_context_tx(tx, "s", "old-turn", None))
+            .is_err());
+        db.transaction(|tx| {
+            tx.execute("UPDATE sessions SET read_only=1 WHERE id='s'", [])?;
+            Ok(())
+        })
+        .unwrap();
+        assert!(db
+            .transaction(|tx| browser_eval_context_tx(tx, "s", "turn", None))
+            .is_err());
+    }
+
+    #[test]
+    fn eval_context_rejects_reviewer_child_and_unsupported_provider() {
+        for variant in ["reviewer", "child", "opencode", "pi", "terminal", "exited"] {
+            let (root, db) = fixture();
+            db.transaction(|tx| {
+                match variant {
+                    "reviewer" => {tx.execute("INSERT INTO agent_reviews(id,session_id,reviewer_session_id,agent,scope_json,root,state,files,truncated_json,instructions,created_at,updated_at) VALUES('review','parent','s','codex','{}',?,'running',0,'[]','Review','t','t')",[root.path().to_string_lossy().to_string()])?;},
+                    "child" => {tx.execute("INSERT INTO delegations(id,parent_session_id,child_session_id,agent,workspace,workspace_path,prompt,operation_id,state,created_at,updated_at) VALUES('delegate','parent','s','codex','existing',?,'Task','delegate-op','running','t','t')",[root.path().to_string_lossy().to_string()])?;},
+                    "terminal" => {tx.execute("UPDATE sessions SET mode='terminal' WHERE id='s'",[])?;},
+                    "exited" => {tx.execute("UPDATE sessions SET status='exited' WHERE id='s'",[])?;},
+                    provider => {tx.execute("UPDATE sessions SET provider=? WHERE id='s'",[provider])?;},
+                }
+                Ok(())
+            }).unwrap();
+            assert!(
+                db.transaction(|tx| browser_eval_context_tx(tx, "s", "turn", None))
+                    .is_err(),
+                "{variant}"
+            );
+        }
+    }
+
+    #[test]
+    fn eval_projection_preserves_siblings_decisions_and_expired_history_without_private_payloads() {
+        let (_root, db) = fixture();
+        db.update_settings(&json!({"browserEvalEnabled":true}), 0, "enable")
+            .unwrap();
+        for id in ["a", "b"] {
+            assert!(db
+                .transaction(|tx| crate::chat_projection::publish_browser_eval_tx(
+                    tx,
+                    "s",
+                    "turn",
+                    &summary(id)
+                ))
+                .unwrap());
+        }
+        assert_eq!(
+            db.session_by_id("s")
+                .unwrap()
+                .unwrap()
+                .activity
+                .unwrap()
+                .state,
+            "awaiting_approval"
+        );
+        db.transaction(|tx| {
+            crate::chat_projection::resolve_browser_eval_tx(tx, "s", "turn", "a", "approved")
+        })
+        .unwrap();
+        assert_eq!(
+            db.session_by_id("s")
+                .unwrap()
+                .unwrap()
+                .activity
+                .unwrap()
+                .state,
+            "awaiting_approval"
+        );
+        db.transaction(|tx| {
+            crate::chat_projection::resolve_browser_eval_tx(tx, "s", "turn", "a", "denied")
+        })
+        .unwrap();
+        let a = db
+            .chat_items("s")
+            .unwrap()
+            .into_iter()
+            .find(|item| item.id == "s:approval:a")
+            .unwrap();
+        assert_eq!(a.parts[0]["data"]["outcome"], "approved");
+        db.transaction(|tx| {
+            crate::chat_projection::resolve_browser_eval_tx(tx, "s", "turn", "b", "denied")
+        })
+        .unwrap();
+        assert_eq!(
+            db.session_by_id("s")
+                .unwrap()
+                .unwrap()
+                .activity
+                .unwrap()
+                .state,
+            "running"
+        );
+        for key in ["code", "result", "exception"] {
+            let mut private = summary("private");
+            private["part"]["data"][key] = json!("PRIVATE_PAYLOAD");
+            assert!(db
+                .transaction(|tx| crate::chat_projection::publish_browser_eval_tx(
+                    tx, "s", "turn", &private
+                ))
+                .is_err());
+        }
+        assert!(!db
+            .transaction(|tx| crate::chat_projection::publish_browser_eval_tx(
+                tx,
+                "s",
+                "old-turn",
+                &summary("stale")
+            ))
+            .unwrap());
+        assert!(db
+            .transaction(|tx| crate::chat_projection::publish_browser_eval_tx(
+                tx,
+                "s",
+                "turn",
+                &summary("expired")
+            ))
+            .unwrap());
+        assert!(db.transaction(|tx| crate::chat_projection::publish_browser_eval_tx(
+            tx, "s", "turn", &summary("cancelled")
+        )).unwrap());
+        db.transaction(|tx| {
+            tx.execute(
+                "UPDATE session_activity SET state='idle',turn_id='next' WHERE session_id='s'",
+                [],
+            )?;
+            tx.execute("UPDATE sessions SET status='idle' WHERE id='s'", [])?;
+            Ok(())
+        })
+        .unwrap();
+        db.transaction(|tx| {
+            crate::chat_projection::resolve_browser_eval_tx(tx, "s", "turn", "expired", "expired")
+        })
+        .unwrap();
+        db.transaction(|tx| {
+            crate::chat_projection::resolve_browser_eval_tx(tx, "s", "turn", "cancelled", "cancelled")
+        }).unwrap();
+        assert_eq!(db.session_by_id("s").unwrap().unwrap().status, "idle");
+        let cancelled = db.chat_items("s").unwrap().into_iter()
+            .find(|item| item.id == "s:approval:cancelled").unwrap();
+        assert_eq!(cancelled.parts[0]["status"], "expired");
+        assert_eq!(cancelled.parts[0]["data"]["outcome"], "cancelled");
+        let activity = db.session_by_id("s").unwrap().unwrap().activity.unwrap();
+        assert_eq!(activity.state, "idle");
+        assert_eq!(activity.turn_id.as_deref(), Some("next"));
+        let expired = db
+            .chat_items("s")
+            .unwrap()
+            .into_iter()
+            .find(|item| item.id == "s:approval:expired")
+            .unwrap();
+        assert_eq!(expired.parts[0]["status"], "expired");
+        let history = serde_json::to_string(&db.chat_items("s").unwrap()).unwrap();
+        assert!(!history.contains("PRIVATE_PAYLOAD"));
+        let outbox = db
+            .transaction(|tx| {
+                let mut query = tx.prepare("SELECT data FROM outbox")?;
+                let rows = query
+                    .query_map([], |row| row.get::<_, String>(0))?
+                    .collect::<rusqlite::Result<Vec<_>>>()?
+                    .join("\n");
+                Ok(rows)
+            })
+            .unwrap();
+        assert!(!outbox.contains("PRIVATE_PAYLOAD"));
     }
 }

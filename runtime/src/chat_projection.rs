@@ -1224,6 +1224,159 @@ fn expire_pending_parts_matching(
     Ok(())
 }
 
+/// Publish only bounded eval approval metadata through the existing projection.
+/// The broker owns exact code bytes; they never enter this transaction payload.
+pub(crate) fn publish_browser_eval_tx(
+    tx: &rusqlite::Transaction<'_>,
+    session_id: &str,
+    turn_id: &str,
+    summary: &Value,
+) -> Result<bool> {
+    let invalid = || anyhow::anyhow!("browser_invalid_arguments");
+    let exact = |value: &Value, keys: &[&str]| {
+        value.as_object().is_some_and(|map| {
+            map.len() == keys.len() && keys.iter().all(|key| map.contains_key(*key))
+        })
+    };
+    let bounded = |value: &Value, max: usize| {
+        value.as_str().is_some_and(|text| {
+            !text.is_empty() && text.len() <= max && !text.chars().any(char::is_control)
+        })
+    };
+    let part = &summary["part"];
+    let data = &part["data"];
+    if !exact(summary, &["approvalId", "part"])
+        || !exact(part, &["type", "approvalId", "status", "data"])
+        || part["type"] != "approval"
+        || part["status"] != "pending"
+        || !exact(
+            data,
+            &[
+                "runtimeOwned",
+                "requestType",
+                "approvalId",
+                "operationId",
+                "callerSessionId",
+                "tabId",
+                "origin",
+                "codeHash",
+                "codeByteLength",
+                "expiresAtUnixMs",
+                "settingsGeneration",
+                "choices",
+            ],
+        )
+        || data["runtimeOwned"] != true
+        || data["requestType"] != "threadterm.browser_eval"
+        || !bounded(&data["approvalId"], 256)
+        || summary["approvalId"] != data["approvalId"]
+        || part["approvalId"] != data["approvalId"]
+        || data["callerSessionId"] != session_id
+        || !bounded(&data["callerSessionId"], 256)
+        || !bounded(&data["operationId"], 512)
+        || !bounded(&data["tabId"], 256)
+        || !bounded(&data["origin"], 4096)
+        || !bounded(&data["settingsGeneration"], 256)
+        || !data["codeHash"].as_str().is_some_and(|hash| {
+            hash.len() == 64
+                && hash
+                    .bytes()
+                    .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+        })
+        || !data["codeByteLength"]
+            .as_u64()
+            .is_some_and(|bytes| (1..=16384).contains(&bytes))
+        || data["expiresAtUnixMs"]
+            .as_u64()
+            .is_none_or(|time| time > 9_007_199_254_740_991)
+        || data["choices"]
+            != json!([{"id":"approve_once","label":"Approve once"},{"id":"deny","label":"Deny"}])
+    {
+        return Err(invalid());
+    }
+    let origin =
+        reqwest::Url::parse(data["origin"].as_str().ok_or_else(invalid)?).map_err(|_| invalid())?;
+    if !matches!(origin.scheme(), "http" | "https")
+        || origin.origin().ascii_serialization() != data["origin"].as_str().unwrap_or("")
+    {
+        return Err(invalid());
+    }
+    match crate::db::browser_eval_context_tx(tx, session_id, turn_id, None) {
+        Ok(context) if !context.enabled => return Err(anyhow::anyhow!("browser_eval_disabled")),
+        Ok(_) => {}
+        Err(error) if error.to_string() == "browser_turn_inactive" => return Ok(false),
+        Err(error) => return Err(error),
+    }
+    let safe = json!({"approvalId":data["approvalId"],"part":{
+        "type":"approval","approvalId":data["approvalId"],"status":"pending","data":{
+            "runtimeOwned":true,"requestType":"threadterm.browser_eval","approvalId":data["approvalId"],
+            "operationId":data["operationId"],"callerSessionId":session_id,"tabId":data["tabId"],
+            "origin":data["origin"],"codeHash":data["codeHash"],"codeByteLength":data["codeByteLength"],
+            "expiresAtUnixMs":data["expiresAtUnixMs"],"settingsGeneration":data["settingsGeneration"],
+            "choices":[{"id":"approve_once","label":"Approve once"},{"id":"deny","label":"Deny"}]
+        }
+    }});
+    record_tx(tx, session_id, Some(turn_id), "chat.approval", &safe)?;
+    Ok(true)
+}
+
+/// A late cleanup cannot rewrite a settled decision or another approval kind.
+pub(crate) fn resolve_browser_eval_tx(
+    tx: &rusqlite::Transaction<'_>,
+    session_id: &str,
+    turn_id: &str,
+    approval_id: &str,
+    status: &str,
+) -> Result<()> {
+    if !matches!(status, "approved" | "denied" | "expired" | "cancelled") {
+        return Err(anyhow::anyhow!("browser_invalid_arguments"));
+    }
+    let row: Option<(Option<String>, String)> = tx
+        .query_row(
+            "SELECT turn_id,data FROM chat_items WHERE id=? AND session_id=?",
+            params![format!("{session_id}:approval:{approval_id}"), session_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()?;
+    let Some((saved_turn, raw)) = row else {
+        return Ok(());
+    };
+    if saved_turn.as_deref() != Some(turn_id) {
+        return Ok(());
+    }
+    let item: ChatItem = serde_json::from_str(&raw)?;
+    if !item.parts.iter().any(|part| {
+        part["type"] == "approval"
+            && part["approvalId"] == approval_id
+            && part.pointer("/data/runtimeOwned").and_then(Value::as_bool) == Some(true)
+            && part.pointer("/data/requestType").and_then(Value::as_str)
+                == Some("threadterm.browser_eval")
+            && matches!(part["status"].as_str(), Some("pending" | "submitting"))
+    }) {
+        return Ok(());
+    }
+    let current_turn: bool = tx.query_row(
+        "SELECT EXISTS(SELECT 1 FROM session_activity a JOIN sessions s ON s.id=a.session_id WHERE a.session_id=? AND a.turn_id=? AND a.state IN ('running','awaiting_approval') AND s.status NOT IN ('exited','interrupted','error'))",
+        params![session_id, turn_id],
+        |row| row.get(0),
+    )?;
+    // Expiry and cleanup must never resume an ended or replacement turn.
+    let projection_status = if matches!(status, "expired" | "cancelled") || !current_turn {
+        "expired"
+    } else {
+        "resolved"
+    };
+    record_tx(
+        tx,
+        session_id,
+        Some(turn_id),
+        "chat.approval.resolved",
+        &json!({
+            "approvalId":approval_id,"status":projection_status,"outcome":status
+        }),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
