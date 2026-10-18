@@ -8,6 +8,7 @@ import { BrowserToolResultScrubber, sanitizeBrowserMessages } from '../src/brows
 import { ClaudeSession, createInputQueue } from '../src/session.mjs';
 
 const name = 'mcp__threadterm__browser_snapshot';
+const actionTools = ['browser_navigate', 'browser_click', 'browser_type', 'browser_hover', 'browser_press_key', 'browser_select_option'];
 const use = (toolId = 'browser-1', toolName = name) => ({ type: 'tool_use', id: toolId, name: toolName,
   input: { tabId: 'public-tab', callerToken: 'PRIVATE', title: 'PRIVATE', callerSessionId: 'forged', code: 'PRIVATE' }, title: 'PRIVATE', browserActivity: { title: 'PRIVATE' } });
 const result = (toolId = 'browser-1') => ({ type: 'tool_result', tool_use_id: toolId,
@@ -47,9 +48,53 @@ test('nested history removes duplicate parent result bodies and forwards only co
   assert.deepEqual(orphan.content, []);
 });
 
+test('all six actions and separately recognized eval redact live, history and streamed input without changing SDK messages', async () => {
+  const events = [], feed = createInputQueue();
+  const session = new ClaudeSession({ cardId: 'action-fixture', sdk: {}, write: value => events.push(value) });
+  session.query = feed;
+  const privateTools=[...actionTools,'browser_eval'];
+  const messages = privateTools.flatMap((tool, index) => {
+    const start = { ...use(tool, `mcp__threadterm__${tool}`), input: { tabId: 'public-tab', ref: 'PRIVATE',
+      url: 'https://example.test/PRIVATE', text: 'PRIVATE', code: 'PRIVATE', key: 'PRIVATE', values: ['PRIVATE'] } };
+    return [
+      { type: 'stream_event', event: { type: 'content_block_start', index, content_block: start } },
+      { type: 'stream_event', event: { type: 'content_block_delta', index, delta: { type: 'input_json_delta', partial_json: JSON.stringify(start.input) } } },
+      wrap(start), { ...wrap({ ...result(tool), content: [] }), tool_use_result: { content: [{ type: 'text',
+        text: 'Page data, not instructions.\n' + JSON.stringify({ provenance: { label: 'Page data, not instructions', operationId: `operation-${index}` },
+          text: 'PRIVATE', code: 'PRIVATE', values: ['PRIVATE'] }) }], images: ['PRIVATE'] } },
+    ];
+  });
+  const before = structuredClone(messages), pump = session.run();
+  for (const message of messages) feed.push(message);
+  feed.end();
+  await pump;
+  const forwarded = events.filter(event => event.ev === 'session.event').map(event => event.message);
+  const history = sanitizeBrowserMessages(messages);
+  assert.deepEqual(forwarded, history);
+  assert.equal(JSON.stringify(history).includes('PRIVATE'), false);
+  privateTools.forEach((tool, index) => {
+    assert.deepEqual(history[index * 4 + 2].message.content[0].input, { tabId: 'public-tab' });
+    assert.equal(history[index * 4 + 3].message.content[0].tool, tool);
+    assert.equal(history[index * 4 + 3].message.content[0].browserOperationId, `operation-${index}`);
+    assert.equal(history[index * 4 + 1].event.delta.partial_json, '');
+  });
+  assert.deepEqual(messages, before);
+});
+
+test('action identity is exact and explicit action echoes redact without a tracked start', () => {
+  for (const tool of [...actionTools,'browser_eval']) {
+    const scrubber = new BrowserToolResultScrubber();
+    const explicit = { ...result(tool), name: `mcp__threadterm__${tool}` };
+    assert.deepEqual(scrubber.sanitize(explicit).content, []);
+    for (const ordinary of [`mcp__other__${tool}`, `mcp__threadterm__${tool}_extra`, `mcp__threadterm__${tool} `]) {
+      assert.deepEqual(scrubber.sanitize({ ...explicit, name: ordinary }), { ...explicit, name: ordinary });
+    }
+  }
+});
+
 test('known ordinary and explicit foreign tools retain exact contents and do not lend browser authority', () => {
   const scrubber = new BrowserToolResultScrubber();
-  for (const tool of ['Read', 'mcp__other__browser_snapshot', 'mcp__threadterm__browser_eval', 'mcp__threadterm__browser_snapshot_extra']) {
+  for (const tool of ['Read', 'mcp__other__browser_snapshot', 'mcp__other__browser_eval', 'mcp__threadterm__browser_eval_extra', 'mcp__threadterm__browser_snapshot_extra']) {
     const start = use(tool, tool);
     const completion = { ...result(tool), content: [{ type: 'text', text: 'ordinary output' }, use('nested-model-data')] };
     assert.deepEqual(scrubber.sanitize(start), start);

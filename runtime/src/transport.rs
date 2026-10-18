@@ -133,10 +133,10 @@ async fn serve_browser(
                 let request: BrowserRequest = serde_json::from_slice(&frame)?;
                 if request.v != PROTOCOL_VERSION || request.id.is_empty() || request.id.len() > 256
                     || !request.params.is_object() || !matches!(request.method.as_str(),
-                        "browser.attach" | "browser.registerTab" | "browser.unregisterTab" | "browser.detach" | "browser.desktop.reply") {
+                        "browser.attach" | "browser.registerTab" | "browser.unregisterTab" | "browser.detach" | "browser.desktop.dispatch" | "browser.desktop.reply" | "browser.desktop.evalPrepared" | "browser.desktop.evalInvalidated") {
                     bail!("invalid private browser request");
                 }
-                let pool = if request.method == "browser.desktop.reply" { &acknowledgements } else { &administration };
+                let pool = if matches!(request.method.as_str(), "browser.desktop.reply" | "browser.desktop.dispatch" | "browser.desktop.evalPrepared" | "browser.desktop.evalInvalidated") { &acknowledgements } else { &administration };
                 let permit = match Arc::clone(pool).try_acquire_owned() {
                     Ok(permit) => permit,
                     Err(_) => {

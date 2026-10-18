@@ -70,9 +70,9 @@ test('a feedback event supersedes an in-flight read snapshot', () => {
   assert.equal(readIsCurrent(next, revision), true);
 });
 
-
-test('managed browser identities cannot route private results into feedback notes', () => {
-  for (const tool of ['browser_list_tabs', 'browser_snapshot', 'browser_screenshot', 'browser_console_messages']) {
+test('all managed browser identities reject private feedback-note dispatch', () => {
+  for (const tool of ['browser_list_tabs', 'browser_snapshot', 'browser_screenshot', 'browser_console_messages',
+    'browser_navigate', 'browser_click', 'browser_type', 'browser_hover', 'browser_press_key', 'browser_select_option']) {
     const part: ChatPart = { type: 'tool', toolName: `mcp__threadterm__${tool}`, data: {
       server: 'threadterm', tool: 'feedback_check', result: { notes: [{ ...note('private'), text: 'PRIVATE' }] },
     } };

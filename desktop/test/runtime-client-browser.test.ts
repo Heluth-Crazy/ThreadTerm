@@ -30,6 +30,7 @@ const execute: BrowserPrivateFrame = {
   method: 'browser.execute',
   params: { ...attachment, operationId: 'operation', invocationId: 'invocation', callerSessionId: 'session', workerGeneration: 'worker', deadlineUnixMs: Date.now() + 10_000, tool: 'browser_list_tabs', arguments: {}, targets: [] },
 };
+const evalFence = { ...attachment, operationId: 'eval-operation', workerGeneration: 'worker', preparedId: 'prepared', tabId: 'opaque-tab', codeHash: 'a'.repeat(64), settingsGeneration: 'epoch:1', origin: 'https://example.invalid', documentGeneration: 1, navigationEpoch: 1, grantEpoch: 1 };
 
 function frame(value: unknown): Buffer {
   const payload = Buffer.from(JSON.stringify(value), 'utf8');
@@ -107,7 +108,7 @@ async function fixture(options: { browserAuthEpoch?: string; pauseBrowserAuth?: 
         requests.push({ lane, request });
         if (lane !== 'browser' || holdBrowserReplies) return;
         const currentAttachment = { ...attachment, runtimeEpoch: capabilityEpoch };
-        const result = request.method === 'browser.attach' ? currentAttachment : request.method === 'browser.desktop.reply' ? { accepted: true } : request.method === 'browser.detach' ? { detached: true } : request.method === 'browser.unregisterTab' ? { unregistered: true } : { ...currentAttachment, sourceTabId: request.params.sourceTabId, tabId: 'public-tab' };
+        const result = request.method === 'browser.attach' ? currentAttachment : request.method === 'browser.desktop.reply' || request.method === 'browser.desktop.dispatch' ? { accepted: true } : request.method === 'browser.detach' ? { detached: true } : request.method === 'browser.unregisterTab' ? { unregistered: true } : { ...currentAttachment, sourceTabId: request.params.sourceTabId, tabId: 'public-tab' };
         const response = frame({ v: 1, id: request.id, result });
         socket.write(request.method === 'browser.attach' && options.notificationWithAttachment ? Buffer.concat([response, frame(options.notificationWithAttachment)]) : response);
       });
@@ -507,4 +508,85 @@ test('browser registration saturation reserves private desktop reply capacity an
     await rejected;
     assert.equal(f.internal.browserPending.size, 0);
   } finally { await f.close(); await Promise.all(registrations); }
+});
+
+test('pre-input dispatch uses reserved acknowledgement capacity under registration saturation', async () => {
+  const f = await fixture();
+  const registrations: Promise<unknown>[] = [];
+  try {
+    await f.internal.connectAndAuthenticate();
+    await f.client.browserRequest('browser.attach', attachParams);
+    f.holdReplies(true);
+    for (let index = 0; index < 48; index++) registrations.push(f.client.browserRequest('browser.registerTab', { attachmentId: 'attachment', attachmentGeneration: 1, sourceTabId: `tab-${index}`, workspaceRevision: 1 }).catch(error => error));
+    const dispatch = f.client.browserRequest('browser.desktop.dispatch', { ...attachment, operationId: 'action', workerGeneration: 'worker' });
+    const rejected = assert.rejects(dispatch, /closing/);
+    await waitUntil(() => f.requests.some(value => value.request.method === 'browser.desktop.dispatch'));
+    assert.equal(f.internal.browserPending.size, 49);
+    await assert.rejects(f.client.browserRequest('browser.registerTab', { attachmentId: 'attachment', attachmentGeneration: 1, sourceTabId: 'excess', workspaceRevision: 1 }), /capacity/);
+    f.client.dispose();
+    await rejected;
+    assert.equal(f.internal.browserPending.size, 0);
+  } finally { await f.close(); await Promise.all(registrations); }
+});
+
+test('pre-input dispatch rejects an old capability epoch without writing its request', async () => {
+  const f = await fixture();
+  const dispatch = { ...attachment, operationId: 'action', workerGeneration: 'worker' };
+  try {
+    await f.internal.connectAndAuthenticate();
+    await f.client.browserRequest('browser.attach', attachParams);
+    await assert.rejects(f.client.browserRequest('browser.desktop.dispatch', { ...dispatch, runtimeEpoch: 'retired' }), /capability epoch changed/);
+    assert.equal(f.requests.some(value => value.request.method === 'browser.desktop.dispatch'), false);
+    assert.deepEqual(await f.client.browserRequest('browser.desktop.dispatch', dispatch), { accepted: true });
+    assert.equal(f.requests.filter(value => value.request.method === 'browser.desktop.dispatch').length, 1);
+  } finally { await f.close(); }
+});
+
+for (const [method, params] of [
+  ['browser.desktop.evalPrepared', evalFence],
+  ['browser.desktop.evalInvalidated', { ...attachment, operationId: 'eval-operation', workerGeneration: 'worker', preparedId: 'prepared', reason: 'browser_cancelled' }],
+] as const) {
+  test(`${method} reserves acknowledgement capacity and rejects retired epochs`, async () => {
+    const f = await fixture();
+    const registrations: Promise<unknown>[] = [];
+    try {
+      await f.internal.connectAndAuthenticate();
+      await f.client.browserRequest('browser.attach', attachParams);
+      await assert.rejects(f.client.browserRequest(method, { ...params, runtimeEpoch: 'retired' }), /capability epoch changed/);
+      assert.equal(f.requests.some(value => value.request.method === method), false);
+      f.holdReplies(true);
+      for (let index = 0; index < 48; index++) registrations.push(f.client.browserRequest('browser.registerTab', { attachmentId: 'attachment', attachmentGeneration: 1, sourceTabId: `tab-${index}`, workspaceRevision: 1 }).catch(error => error));
+      const acknowledgement = f.client.browserRequest(method, params);
+      const rejected = assert.rejects(acknowledgement, /closing/);
+      await waitUntil(() => f.requests.some(value => value.request.method === method));
+      assert.equal(f.internal.browserPending.size, 49);
+      f.client.dispose();
+      await rejected;
+      assert.equal(f.internal.browserPending.size, 0);
+    } finally { await f.close(); await Promise.all(registrations); }
+  });
+}
+
+test('eval notifications remain private and malformed code never reaches either fanout', async () => {
+  const f = await fixture();
+  const privateFrames: BrowserPrivateFrame[] = [];
+  const publicFrames: unknown[] = [];
+  const losses: Error[] = [];
+  f.client.onBrowserFrame(value => privateFrames.push(value));
+  f.client.onEvent(value => publicFrames.push(value));
+  f.client.onBrowserDisconnect(value => losses.push(value));
+  try {
+    await f.internal.connectAndAuthenticate();
+    await f.client.browserRequest('browser.attach', attachParams);
+    const prepare = { method: 'browser.eval.prepare', params: { ...attachment, operationId: 'eval-operation', workerGeneration: 'worker', invocationId: 'invocation', callerSessionId: 'session', turnId: 'turn', tabId: 'opaque-tab', codeHash: evalFence.codeHash, codeByteLength: 3, settingsGeneration: 'epoch:1', deadlineUnixMs: Date.now() + 10_000, target: { ...attachment, tabId: 'opaque-tab', sourceTabId: 'native-tab' } } };
+    f.browserSocket.write(frame(prepare));
+    await waitUntil(() => privateFrames.length === 1);
+    assert.deepEqual(privateFrames[0], prepare);
+    assert.deepEqual(publicFrames, []);
+    f.browserSocket.write(frame({ ...prepare, params: { ...prepare.params, code: 'PRIVATE_CODE' } }));
+    await waitUntil(() => losses.length === 1);
+    assert.equal(privateFrames.length, 1);
+    assert.deepEqual(publicFrames, []);
+    assert.ok(f.internal.control, 'malformed private traffic invalidates only its private connection');
+  } finally { await f.close(); }
 });

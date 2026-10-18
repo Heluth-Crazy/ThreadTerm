@@ -1,9 +1,11 @@
 const PREFIX = 'mcp__threadterm__';
-const TOOLS = new Set(['browser_list_tabs', 'browser_snapshot', 'browser_screenshot', 'browser_console_messages']);
+const TOOLS = new Set(['browser_list_tabs', 'browser_snapshot', 'browser_screenshot', 'browser_console_messages',
+  'browser_navigate', 'browser_click', 'browser_type', 'browser_hover', 'browser_press_key', 'browser_select_option']);
+const EVAL_TOOL='browser_eval';
 const LIMIT = 4096;
 const record = value => value !== null && typeof value === 'object' && !Array.isArray(value);
 const id = (value, limit = 512) => typeof value === 'string' && value.length > 0 && value.length <= limit && !/[\u0000-\u001f\u007f-\u009f]/.test(value) ? value : undefined;
-const browserTool = name => typeof name === 'string' && name.startsWith(PREFIX) && TOOLS.has(name.slice(PREFIX.length)) ? name.slice(PREFIX.length) : undefined;
+const browserTool = name => typeof name === 'string' && name.startsWith(PREFIX) && (TOOLS.has(name.slice(PREFIX.length))||name.slice(PREFIX.length)===EVAL_TOOL) ? name.slice(PREFIX.length) : undefined;
 const clone = value => Array.isArray(value) ? value.map(clone) : record(value) ? Object.fromEntries(Object.entries(value).map(([key, entry]) => [key, clone(entry)])) : value;
 
 function remember(map, key, value) {

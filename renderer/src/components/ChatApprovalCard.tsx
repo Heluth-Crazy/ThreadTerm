@@ -10,6 +10,8 @@ import { approvalButtonsEnabled, approvalData, choiceLabel, scopeLabel } from ".
 import { ChatQuestionCard } from "./ChatQuestionCard";
 import type { ChatInteractionForm, QuestionResponse } from "../chatQuestion";
 import './subagent-card.css';
+import { isBrowserEvalApproval,type BrowserEvalContext } from '../browserEvalApproval';
+import { BrowserEvalApprovalCard } from './BrowserEvalApprovalCard';
 
 export function ChatApprovalCard({
   part,
@@ -18,6 +20,7 @@ export function ChatApprovalCard({
   onChoose,
   onAnswer,
   onPlanResponse,
+  browserEvalContext,
   copy,
 }: {
   part: ChatPart;
@@ -26,9 +29,11 @@ export function ChatApprovalCard({
   onChoose: (choiceId: string) => void;
   onAnswer?: (response: QuestionResponse) => void;
   onPlanResponse?: (response: ChatAnswerResponse) => void;
+  browserEvalContext?: BrowserEvalContext;
   copy: (en: string, zh: string) => string;
 }) {
   const [showAll, setShowAll] = useState(false);
+  if(isBrowserEvalApproval(part))return <BrowserEvalApprovalCard part={part} context={browserEvalContext} copy={copy}/>;
   const data = approvalData(part);
   const preview = approvalPreview(part);
   const previewBudget = preview?.kind === 'edit' ? approvalPreviewBudget(preview.files, showAll) : undefined;

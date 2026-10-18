@@ -2286,6 +2286,70 @@
       ],
       "additionalProperties": false
     },
+    "RequestParams<\"browser.approval.read\">": {
+      "type": "object",
+      "properties": {
+        "sessionId": {
+          "type": "string"
+        },
+        "turnId": {
+          "type": "string"
+        },
+        "approvalId": {
+          "type": "string"
+        },
+        "leaseEpoch": {
+          "type": "number"
+        }
+      },
+      "required": [
+        "sessionId",
+        "turnId",
+        "approvalId",
+        "leaseEpoch"
+      ],
+      "additionalProperties": false
+    },
+    "RequestParams<\"browser.approval.resolve\">": {
+      "type": "object",
+      "properties": {
+        "sessionId": {
+          "type": "string"
+        },
+        "turnId": {
+          "type": "string"
+        },
+        "approvalId": {
+          "type": "string"
+        },
+        "leaseEpoch": {
+          "type": "number"
+        },
+        "operationId": {
+          "type": "string"
+        },
+        "codeHash": {
+          "type": "string"
+        },
+        "choice": {
+          "type": "string",
+          "enum": [
+            "approve_once",
+            "deny"
+          ]
+        }
+      },
+      "required": [
+        "sessionId",
+        "turnId",
+        "approvalId",
+        "leaseEpoch",
+        "operationId",
+        "codeHash",
+        "choice"
+      ],
+      "additionalProperties": false
+    },
     "RequestParams<\"chat.answer\">": {
       "type": "object",
       "properties": {
@@ -6369,6 +6433,58 @@
         },
         "params": {
           "$ref": "#/definitions/RequestParams%3C%22chat.approve%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "params"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "browser.approval.read"
+        },
+        "params": {
+          "$ref": "#/definitions/RequestParams%3C%22browser.approval.read%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "params"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "browser.approval.resolve"
+        },
+        "params": {
+          "$ref": "#/definitions/RequestParams%3C%22browser.approval.resolve%22%3E"
         }
       },
       "required": [

@@ -44,6 +44,8 @@ const RUNTIME_SETTINGS: &[&str] = &[
     "floatMode",
     "supervision",
     "providerNetwork",
+    // Local execution opt-in; portable settings must never enable it.
+    "browserEvalEnabled",
     "quickMessages",
     "chatTools.ask",
     "chatTools.sessionInfo",
@@ -773,6 +775,7 @@ fn valid_setting(key: &str, value: &Value) -> Result<()> {
         }
         "customThemes" if valid_custom_themes(value) => Ok(()),
         "lightweightMode" if value.is_boolean() => Ok(()),
+        "browserEvalEnabled" if value.is_boolean() => Ok(()),
         "desktopCompanion"
             if value.as_object().is_some_and(|companion| {
                 companion.len() == 1 && companion.get("enabled").is_some_and(Value::is_boolean)
@@ -790,8 +793,14 @@ fn valid_setting(key: &str, value: &Value) -> Result<()> {
         {
             Ok(())
         }
-        "chatTools.ask" | "chatTools.sessionInfo" | "chatTools.feedback" | "chatTools.delegation"
-            if value.is_boolean() => Ok(()),
+        "chatTools.ask"
+        | "chatTools.sessionInfo"
+        | "chatTools.feedback"
+        | "chatTools.delegation"
+            if value.is_boolean() =>
+        {
+            Ok(())
+        }
         "quickMessages" if valid_quick_messages(value) => Ok(()),
         "providerNetwork"
             if value
@@ -803,10 +812,7 @@ fn valid_setting(key: &str, value: &Value) -> Result<()> {
         }
         "chatTools"
             if value.as_object().is_some_and(|tools| {
-                tools.len() == 1
-                    && tools
-                        .get("generatedUi")
-                        .is_some_and(Value::is_boolean)
+                tools.len() == 1 && tools.get("generatedUi").is_some_and(Value::is_boolean)
             }) =>
         {
             Ok(())
@@ -896,6 +902,67 @@ fn emit(tx: &Transaction<'_>, kind: &str) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn browser_eval_setting_is_boolean_local_and_preserved_by_portable_import() {
+        for enabled in [false, true] {
+            assert!(valid_runtime_patch(&json!({"browserEvalEnabled":enabled})).is_ok());
+        }
+        for invalid in [
+            json!(null),
+            json!("true"),
+            json!(1),
+            json!({"enabled":true}),
+            json!([]),
+        ] {
+            assert!(valid_runtime_patch(&json!({"browserEvalEnabled":invalid})).is_err());
+        }
+        let root = tempfile::tempdir().unwrap();
+        let db = Database::open(&root.path().join("db.sqlite3")).unwrap();
+        assert!(settings(&db)
+            .unwrap()
+            .value
+            .get("browserEvalEnabled")
+            .is_none());
+        let incoming_opt_in = json!({"marker":SETTINGS_MARKER,"version":SETTINGS_VERSION,
+            "settings":{"theme":"light","browserEvalEnabled":true}})
+        .to_string();
+        let imported_default = settings_apply(
+            &db,
+            object(&json!({"operationId":"cannot-import-opt-in",
+            "expectedRevision":0,"bundle":incoming_opt_in,"selected":["theme"]}))
+            .unwrap(),
+        )
+        .unwrap();
+        assert!(imported_default.get("browserEvalEnabled").is_none());
+        db.update_settings(&json!({"browserEvalEnabled":true}), 1, "eval-local-opt-in")
+            .unwrap();
+        assert!(settings_export(&db).unwrap()["settings"]
+            .get("browserEvalEnabled")
+            .is_none());
+        let bundle = json!({"marker":SETTINGS_MARKER,"version":SETTINGS_VERSION,
+            "settings":{"theme":"dark","browserEvalEnabled":false}})
+        .to_string();
+        assert!(settings_apply(
+            &db,
+            object(&json!({"operationId":"eval-import-rejected",
+            "expectedRevision":2,"bundle":bundle,"selected":["browserEvalEnabled"]}))
+            .unwrap()
+        )
+        .is_err());
+        let imported = settings_apply(
+            &db,
+            object(&json!({"operationId":"theme-import",
+            "expectedRevision":2,"bundle":bundle,"selected":["theme"]}))
+            .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(imported["browserEvalEnabled"], true);
+        assert_eq!(imported["theme"], "dark");
+        assert!(settings_export(&db).unwrap()["settings"]
+            .get("browserEvalEnabled")
+            .is_none());
+    }
     #[test]
     fn cache_cleanup_settings_are_validated_and_not_portable() {
         for record in [
@@ -994,7 +1061,12 @@ mod tests {
         let patch = json!({"chatTools.ask":false,"chatTools.sessionInfo":true,"chatTools.feedback":false,"chatTools.delegation":true});
         assert!(valid_runtime_patch(&patch).is_ok());
         assert!(valid_runtime_patch(&json!({"chatTools.ask":"false"})).is_err());
-        for key in ["chatTools.ask", "chatTools.sessionInfo", "chatTools.feedback", "chatTools.delegation"] {
+        for key in [
+            "chatTools.ask",
+            "chatTools.sessionInfo",
+            "chatTools.feedback",
+            "chatTools.delegation",
+        ] {
             assert!(ALLOWED_SETTINGS.contains(&key));
         }
         let root = tempfile::tempdir().unwrap();
@@ -1039,8 +1111,14 @@ mod tests {
             .map(|index| json!({"id":format!("m{index}"),"title":"T","text":"body"}))
             .collect::<Vec<_>>();
         assert!(valid_runtime_patch(&json!({"quickMessages":overflow})).is_err());
-        assert!(valid_runtime_patch(&json!({"quickMessages":[{"id":"a","title":"A","text":"x".repeat(4000)}]})).is_ok());
-        assert!(valid_runtime_patch(&json!({"quickMessages":[{"id":"a","title":"A","text":"x".repeat(4001)}]})).is_err());
+        assert!(valid_runtime_patch(
+            &json!({"quickMessages":[{"id":"a","title":"A","text":"x".repeat(4000)}]})
+        )
+        .is_ok());
+        assert!(valid_runtime_patch(
+            &json!({"quickMessages":[{"id":"a","title":"A","text":"x".repeat(4001)}]})
+        )
+        .is_err());
     }
 
     #[test]

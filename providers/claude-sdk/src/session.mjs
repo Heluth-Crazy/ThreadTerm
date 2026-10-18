@@ -51,7 +51,9 @@ const AUTO_MODE = { value: 'auto', name: 'Auto' };
 // ThreadTerm's delegation tools as the SDK names them (runtime `delegation::TOOL_NAMES`).
 export const THREADTERM_DELEGATION_TOOLS = new Set(['delegate_start', 'delegate_status', 'delegate_wait', 'delegate_respond', 'delegate_result', 'delegate_cancel'].map(name => `mcp__threadterm__${name}`));
 export const THREADTERM_PREVIEW_TOOLS = new Set(['preview_present', 'preview_status'].map(name => `mcp__threadterm__${name}`));
-export const THREADTERM_BROWSER_TOOLS = new Set(['browser_list_tabs', 'browser_snapshot', 'browser_screenshot', 'browser_console_messages'].map(name => `mcp__threadterm__${name}`));
+export const THREADTERM_BROWSER_READ_TOOLS = new Set(['browser_list_tabs', 'browser_snapshot', 'browser_screenshot', 'browser_console_messages'].map(name => `mcp__threadterm__${name}`));
+export const THREADTERM_BROWSER_ACTION_TOOLS = new Set(['browser_navigate', 'browser_click', 'browser_type', 'browser_hover', 'browser_press_key', 'browser_select_option'].map(name => `mcp__threadterm__${name}`));
+export const THREADTERM_BROWSER_TOOLS = new Set([...THREADTERM_BROWSER_READ_TOOLS, ...THREADTERM_BROWSER_ACTION_TOOLS]);
 export const THREADTERM_CHAT_TOOLS = new Set(['ask_user', 'session_info', 'feedback_check'].map(name => `mcp__threadterm__${name}`));
 const EFFORT_NAMES = { low: 'Low', medium: 'Medium', high: 'High', xhigh: 'Extra high', max: 'Max' };
 
@@ -384,6 +386,8 @@ export class ClaudeSession {
 
   requestPermission(toolName, input, { signal, suggestions, toolUseID, agentID } = {}) {
     if (this.closed || this.ended) return Promise.resolve({ behavior: 'deny', message: 'Session closed' });
+    // No proven eval capability is installed. Generic native approval cannot grant it.
+    if (toolName === 'mcp__threadterm__browser_eval') return Promise.resolve({ behavior: 'deny', message: 'browser_eval_unavailable' });
     if (toolName === 'ExitPlanMode' && [...this.pending.values()].some(entry => entry.plan)) return Promise.resolve({ behavior: 'deny', message: 'A plan approval is already pending.' });
     if ((this.threadTermDelegationTools && THREADTERM_DELEGATION_TOOLS.has(toolName))
       || (this.threadTermPreviewTools && THREADTERM_PREVIEW_TOOLS.has(toolName))

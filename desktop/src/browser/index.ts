@@ -3,7 +3,7 @@ import { basename, extname, join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { mkdir, realpath, rename, unlink, writeFile } from 'node:fs/promises';
-import { isBrowserShareCommand, sanitizeBrowserTitle } from '../../../renderer/src/browserTypes.js';
+import { isBrowserShareCommand, isBrowserStopAgentOperationCommand, sanitizeBrowserTitle } from '../../../renderer/src/browserTypes.js';
 import type { BrowserBounds, BrowserCommand, BrowserEvent, BrowserPreferences, BrowserState } from '../../../renderer/src/browserTypes.js';
 import { allowedTopLevelUrl, defaultBrowserPreferences, expiredHidden, lruVictims, normalizeBrowserUrl } from './policy.js';
 import { captureNativePageShot, deletePageShots, nativePageClosed, nativePageRegistered } from '../pageComments.js';
@@ -142,8 +142,9 @@ function tabFor(event:IpcMainInvokeEvent,id:unknown):Tab { if(typeof id!=='strin
 function agentControllerFor(event:IpcMainInvokeEvent):BrowserAgentController {
   const owner=event.sender,existing=agentControllers.get(owner);if(existing)return existing;
   if(!runtimeForBrowser)throw new Error('Browser sharing is unavailable.');
+  const destructionObserved=new WeakSet<WebContents>();
   const controller=new BrowserAgentController(runtimeForBrowser(event),{
-    getTab(id){const tab=tabs.get(id),contents=tab?.view?.webContents;if(!tab||tab.owner!==owner||owner.isDestroyed()||!contents||contents.isDestroyed())return undefined;return {title:tab.title,contents,canCaptureScreenshot:!tab.window.isDestroyed()&&tab.window.isVisible()&&!tab.window.isMinimized(),document:{sourceTabId:id,viewGeneration:tab.viewGeneration,documentGeneration:tab.documentGeneration,navigationEpoch:tab.navigationEpoch,url:tab.url,available:true,loaded:!tab.loading&&tab.navigation==='load_observed'&&tab.consoleStatus==='committed'&&tab.consoleUrl===contents.getURL()&&tab.url===contents.getURL(),appOrigin:pageOrigin(owner.getURL())}};},
+    getTab(id){const tab=tabs.get(id),contents=tab?.view?.webContents;if(!tab||tab.owner!==owner||owner.isDestroyed()||!contents||contents.isDestroyed())return undefined;if(!destructionObserved.has(contents)){destructionObserved.add(contents);contents.once('destroyed',()=>controller.nativeDestroyed(contents));}return {title:tab.title,contents,canCaptureScreenshot:!tab.window.isDestroyed()&&tab.window.isVisible()&&!tab.window.isMinimized(),document:{sourceTabId:id,viewGeneration:tab.viewGeneration,documentGeneration:tab.documentGeneration,navigationEpoch:tab.navigationEpoch,url:tab.url,available:true,loaded:!tab.loading&&tab.navigation==='load_observed'&&tab.consoleStatus==='committed'&&tab.consoleUrl===contents.getURL()&&tab.url===contents.getURL(),appOrigin:pageOrigin(owner.getURL())}};},
     changed(id){const tab=tabs.get(id);if(tab?.owner===owner)emit(tab);},
   });agentControllers.set(owner,controller);return controller;
 }
@@ -195,6 +196,10 @@ export function registerBrowser(assertTrustedRenderer:(event:IpcMainInvokeEvent)
     if(command.type==='occlusion'){if(typeof command.active!=='boolean')throw new Error('Invalid occlusion command');ownerOccluded.set(event.sender,command.active);const captures:Promise<void>[]=[];for(const tab of tabs.values())if(tab.owner===event.sender){const wasOccluded=tab.leases;tab.leases=command.active?1:0;if(tab.leases){if(!wasOccluded)captures.push(occlude(tab));}else{tab.occlusionGeneration++;if(tab.visible){tab.snapshot=undefined;attach(tab);emit(tab);}}}await Promise.all(captures);return;}
     if(command.type==='show'){ if(!validBounds(command.bounds)||typeof command.url!=='string'||!validFrameName(command.frameName)||typeof command.tabId!=='string'||!command.tabId||command.tabId.length>128) throw new Error('Invalid browser view'); let tab=tabs.get(command.tabId); if(tab&&tab.owner!==event.sender) throw new Error('Unknown browser tab'); if(!tab){const normalized=normalizeBrowserUrl(command.url);if(!normalized.url) throw new Error(normalized.issue);const window=BrowserWindow.fromWebContents(event.sender);if(!window)throw new Error('Browser window is unavailable');tab={id:command.tabId,owner:event.sender,window,url:normalized.url,title:'',frameName:command.frameName,visible:false,shownAt:Date.now(),loading:false,documentGeneration:0,navigationEpoch:0,viewGeneration:0,navigation:'pending',zoom:1,downloads:new Map(),leases:0,gestureUntil:0,occlusionGeneration:0,contextSequence:0,console:createConsoleRing(),consoleCounts:{errors:0,warnings:0},consoleStatus:'pending',handoffs:new Map()};if(!allowedFor(tab,normalized.url))throw new Error('Blocked app address.');tabs.set(tab.id,tab);} if(tab.frameName!==command.frameName){nativePageClosed(tab.owner,tab.frameName);tab.frameName=command.frameName;if(tab.view)nativePageRegistered(tab.owner,tab.frameName,tab.view.webContents,()=>tab!.bounds);} show(tab,command.bounds); return state(tab); }
     const tab=tabFor(event,(command as {tabId?:unknown}).tabId);
+    if(command.type==='stopAgentOperation'){
+      if(!isBrowserStopAgentOperationCommand(command))throw new Error('Invalid browser operation stop command');
+      agentControllers.get(tab.owner)?.stopAgentOperation(tab.id,command.operationId);return state(tab);
+    }
     if(command.type==='share'){
       if(!isBrowserShareCommand(command))throw new Error('Invalid browser sharing command');
       const existing=agentControllers.get(tab.owner);

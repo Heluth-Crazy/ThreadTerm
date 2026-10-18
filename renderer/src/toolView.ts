@@ -54,8 +54,10 @@ export function toolInputs(data: Record<string, unknown>): Record<string, unknow
 export function toolStatus(part: ChatPart): ToolStatus {
   const data = record(part?.data), state = record(data.state);
   const status = (part?.status || text(state.status) || text(data.status) || '').toLowerCase().replace(/[\s_-]/g, '');
-  if (['cancelled', 'canceled', 'interrupted', 'aborted'].includes(status)) return 'cancelled';
   const activity = browserToolActivityFromPart(part);
+  if (activity?.outcome === 'outcome_unknown') return 'failed';
+  if (activity?.outcome === 'cancelled') return 'cancelled';
+  if (['cancelled', 'canceled', 'interrupted', 'aborted'].includes(status)) return 'cancelled';
   if (['failed', 'error', 'declined', 'rejected'].includes(status)
     || activity?.outcome === 'failed'
     || data.isError === true || data.is_error === true
