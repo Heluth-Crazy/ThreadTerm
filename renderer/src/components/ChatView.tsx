@@ -45,7 +45,7 @@ import { quoteSelection } from '../chatSelection';
 import { askSelectionChat } from '../askSelectionChat';
 import { focusRequestedChatInput, insertChatText, registerChatInputTarget } from '../terminalInputTargets';
 import { parseMarkdownFileReference } from '../fileReferences';
-import { SessionSurfaceContext } from './SessionSurfaceContext';
+import { SessionSurfaceContext, SurfaceActions } from './SessionSurfaceContext';
 import { ChatForkButton, ChatForkMenu, ChatForkStatus, useChatFork } from './ChatForkControls';
 import { decodeCopiedConversationDraft, decodeForkDraftV2, encodeForkDraftV2, copiedConversationPayload } from '../chatForkDraft';
 import { composerTextAfterFork, isCompletedForkReply } from '../chatFork';
@@ -84,6 +84,7 @@ import { CHAT_REPAIR_REQUEST, setChatRepairAvailability, type ChatRepairAvailabi
 import { discoveredRepair, discoveryMatches, type RepairDiscovery } from '../chatRepairDiscovery';
 import { SurfaceDialog } from './SurfaceDialog';
 import { useChatViewport } from '../useChatViewport';
+import { useChatFlowSync } from '../chatFlowSync';
 import { providerRetryPresentation } from '../providerRetry';
 import { ProviderRetryStatus } from './ProviderRetryStatus';
 import './chat-viewport.css';
@@ -505,6 +506,7 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession, 
   const logRef = useRef<HTMLDivElement>(null);
   const logContentRef = useRef<HTMLDivElement>(null);
   const viewport = useChatViewport(session.id, viewportSessionId === session.id, logRef, logContentRef);
+  const flowSync = useChatFlowSync(session.id, logRef, logContentRef, items, viewport);
   async function refreshBackgroundTasks() {
     const revision = uiUpdates.current, generation = transportGeneration.current, owner = lifecycle.current;
     const snapshot = await request('chat.backgroundTasks.list', { sessionId: session.id });
@@ -1704,6 +1706,7 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession, 
     ];
   }
   return <FileReferenceScopeProvider sourceSessionId={session.id} canonicalRoot={session.worktreePath}><section className={`chat-view v3-session-chat${overlay === "full" ? " is-connecting" : ""}`} data-provider={session.provider} data-testid={`session-chat-${session.id}`} aria-label={copy('Structured chat', '图形聊天')}>
+    {surface?.openTaskMap && <SurfaceActions slot="primary"><button type="button" className="icon-btn" aria-label={copy('Task map', '任务图')} title={copy('Task map', '任务图')} onClick={() => surface.openTaskMap?.(session.id, flowSync.topItemId())}><Icon name="flow"/></button></SurfaceActions>}
     <ChatForkMenu disabledReason={forkActions.disabledReason} busy={forkActions.busy} onFork={id => void forkActions.fork(id)} zh={zh}/>
     <ChatForkStatus session={session} zh={zh} onOpenSession={onOpenSession}/>
     {ended && <p className="chat-history-note" role="note">{copy('Session ended · history is read-only.', '会话已结束 · 历史记录只读。')}</p>}
@@ -1735,7 +1738,7 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession, 
       event.preventDefault();
       const url = anchor.getAttribute('href') ?? '';
       if (isWebTabUrl(url)) { setLinkIssue(undefined); setLinkMenu({ anchor, url }); }
-    }} onScroll={viewport.onScroll}><ChatPlanPanel items={items} copy={copy} liveTurnId={activeTurnId(items, session.status)} historyReady={historyLoaded} navigation={items.filter(item => item.role === 'user').length >= 3 ? <ChatMessageNavigation items={items} copy={copy} onNavigate={viewport.navigateToMessage} /> : undefined} /><div ref={logContentRef}>{items.length ? turnGroups.map((group, groupIndex) => <section className="codex-turn chat-turn" key={group.id}>
+    }} onScroll={viewport.onScroll}><ChatPlanPanel items={items} copy={copy} liveTurnId={activeTurnId(items, session.status)} historyReady={historyLoaded} navigation={items.filter(item => item.role === 'user').length >= 3 ? <ChatMessageNavigation items={items} copy={copy} onNavigate={viewport.navigateToMessage} /> : undefined} /><div ref={logContentRef}>{items.length ? turnGroups.map((group, groupIndex) => <section className="codex-turn chat-turn" key={group.id} data-chat-turn={group.id}>
       {renderTurn(group, groupIndex)}
     </section>) : firstResponseWait ? null : <div className="empty v3-empty"><strong>{copy('No messages yet.', '暂无消息。')}</strong><p>{copy('Send a message to start working with this provider.', '发送消息，开始与此提供方协作。')}</p></div>}
       {submissionPreview && !items.some(item => item.role === 'user' && item.turnId === submissionPreview.token) && <article className={`v3-chat-message user is-native is-${session.provider} chat-pending-submission`} aria-label={copy('Message being sent', '正在发送的消息')}>
@@ -1822,3 +1825,5 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession, 
     {mentionPreview !== undefined && <SurfaceDialog title={copy('Context preview', '上下文预览')} variant="plain" size="wide" className="context-preview-dialog" onClose={() => setMentionPreview(undefined)}><pre className="context-preview" data-testid="context-preview">{mentionPreview}</pre></SurfaceDialog>}
   </section></FileReferenceScopeProvider>;
 }
+// The Task map inspector reuses this sanitizing renderer (codexMarkdownCache.test.ts evaluates the function source, so it stays a plain declaration).
+export { renderCodexMarkdown };

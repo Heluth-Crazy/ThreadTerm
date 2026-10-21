@@ -7,6 +7,7 @@ import { useTranslation } from '../i18n';
 import { addSessionTab } from '../presentation';
 import { displayPath, sameCanonicalScope } from '../projectScope';
 import { activate, addPane, addTabToPane, closePane, placeWebTabBesideSession, reconcileSessionLayout, selectWebTabBesideSession, sessionIdsIn, sessionOnlyLayout } from '../workspaceLayout';
+import { taskMapRoot } from '../taskMapRoot';
 import { isFileTab, isWebTabUrl, removeWorkspaceTabs, workspaceTabs, type FileTab } from '../workspaceTabs';
 import { canSplitPaneArea, fileViewPlacement, visibleSessionLayout } from '../sessionFileViews';
 import { PaneWorkspace, type PaneWorkbench } from './PaneWorkspace';
@@ -88,6 +89,7 @@ export function SessionWorkspace({session,data,theme,onBack,onSelect,onProject,o
   return stripped;
  });
  const [previewSessionId,setPreviewSessionId]=useState(session.id);
+ const [taskMapFocus,setTaskMapFocus]=useState<{tabId:string;sessionId:string;itemId?:string;key:string}>();
  const latestLayout=useRef(layout);latestLayout.current=layout;
  const previewViewIds=useRef(new Map<string,string>());
  const previewAttachments=useRef(new Map<string,string>());
@@ -334,6 +336,11 @@ export function SessionWorkspace({session,data,theme,onBack,onSelect,onProject,o
   setFocusTarget({paneId:target.paneId,tabId:target.tab.id,key:crypto.randomUUID()});
   return target.tab.id;
  };
+ const openTaskMap=(sessionId:string,itemId?:string)=>{
+  const root=taskMapRoot(sessionId,data.sessions);
+  const tabId=openWorkbenchTab({id:crypto.randomUUID(),kind:'map',sessionId:root},candidate=>candidate.kind==='map'&&candidate.sessionId===root);
+  if(tabId&&(root!==sessionId||itemId!==undefined))setTaskMapFocus({tabId,sessionId,itemId,key:crypto.randomUUID()});
+ };
  const openHistory=(target:{projectId:string;worktreePath?:string;path?:string;commit?:string})=>{
   const tabId=openWorkbenchTab({id:crypto.randomUUID(),kind:'history',projectId:target.projectId,...(target.worktreePath?{worktreePath:target.worktreePath}:{}),...(target.path?{path:target.path}:{})},
    candidate=>candidate.kind==='history'&&candidate.projectId===target.projectId&&sameCanonicalScope(candidate.worktreePath??project?.path,target.worktreePath??project?.path)&&(candidate.path??'')===(target.path??''));
@@ -416,7 +423,7 @@ export function SessionWorkspace({session,data,theme,onBack,onSelect,onProject,o
   renamed:(from,to)=>{
    invalidateQuickOpen(workbenchScope);
    // Open tabs follow the rename; their editors reopen the new path (dirty editors were refused earlier).
-   const rename=(node:PaneLayout):PaneLayout=>node.kind==='split'?{...node,first:rename(node.first),second:rename(node.second)}:{...node,tabs:node.tabs.map(tab=>tab.kind!=='session'&&tab.kind!=='history'&&tab.projectId===project.id&&sameCanonicalScope(tab.worktreePath??project.path,path)&&coveredBy(tab.path,from)?{...tab,path:to+tab.path.slice(from.length)}:tab)};
+   const rename=(node:PaneLayout):PaneLayout=>node.kind==='split'?{...node,first:rename(node.first),second:rename(node.second)}:{...node,tabs:node.tabs.map(tab=>tab.kind!=='session'&&tab.kind!=='history'&&tab.kind!=='web'&&tab.kind!=='map'&&tab.projectId===project.id&&sameCanonicalScope(tab.worktreePath??project.path,path)&&coveredBy(tab.path,from)?{...tab,path:to+tab.path.slice(from.length)}:tab)};
    save(rename(latestLayout.current));
   },
   deleted:file=>{
@@ -426,6 +433,18 @@ export function SessionWorkspace({session,data,theme,onBack,onSelect,onProject,o
   },
  }:undefined;
  const paneWorkbench:PaneWorkbench={
+  openTaskMap,taskMapFocus,
+  openSessionReview:target=>{
+   const source=data.sessions.find(candidate=>candidate.id===target.sessionId),sourceProject=data.projects.find(candidate=>candidate.id===source?.projectId);
+   if(!source||!sourceProject)return;
+   openWorkbenchTab({id:crypto.randomUUID(),kind:'review',projectId:sourceProject.id,worktreePath:source.worktreePath??sourceProject.path,...target},
+    candidate=>candidate.kind==='review'&&candidate.sessionId===target.sessionId&&candidate.checkpointId===target.checkpointId&&(candidate.toCheckpointId??'')===(target.toCheckpointId??'')&&candidate.path===target.path);
+  },
+  openSessionFile:target=>{
+   const source=data.sessions.find(candidate=>candidate.id===target.sessionId),sourceProject=data.projects.find(candidate=>candidate.id===source?.projectId);
+   if(!source||!sourceProject)return;
+   void openScopedFile({projectId:sourceProject.id,worktreePath:source.worktreePath??sourceProject.path,path:target.path,kind:previewKind(target.path)}).catch(fail);
+  },
   sessionDocuments:canPin&&project&&documentsRoot?{...documents,projectId:project.id,rootPath:documentsRoot,projectRoot:project.path}:undefined,
   sendToAgent,openHistory,comments:commentsHost,commentScope:project&&path?{projectId:project.id,root:path}:undefined,
   // Like review/history tabs: an independent tab placed beside the sessions, one per address.
@@ -513,7 +532,7 @@ export function SessionWorkspace({session,data,theme,onBack,onSelect,onProject,o
     </div>
    </div>{inspector&&<aside className="inspector" aria-label={zh?'会话详情面板':'Session details'}><div className="ins-head">{zh?'会话详情':'Session details'}</div><div className="ins-scroll">
     {pendingCommands.length>0&&<div className="ins-block pcol-ctx-sec"><h3>{zh?'待审阅命令':'Commands to review'}</h3><p className="note">{zh?'点击命令填入目标终端；不会自动按回车或替换已有输入。':'Insert a command into the target terminal, then review it before pressing Enter.'}</p><label>{zh?'目标会话':'Target session'}<Select value={commandTarget} onChange={event=>setCommandTarget(event.target.value)}>{data.sessions.filter(candidate=>candidate.mode==='terminal'&&working(candidate)&&(sessionIdsIn(layout).includes(candidate.id)||candidate.id===session.id)).map(candidate=><option key={candidate.id} value={candidate.id}>{candidate.title}</option>)}</Select></label>{pendingCommands.map((command,index)=><button type="button" className="cmd-opt" key={index} title={zh?'填入终端（不执行）':'Insert into terminal without executing'} onClick={()=>fillCommand(command)}>{command}</button>)}{commandNotice&&<p className="note" role="status">{commandNotice}</p>}<button className="btn btn-sm btn-danger" onClick={onClearCommands}>{zh?'清空待审阅命令':'Clear command list'}</button></div>}
-    <div className="ins-block"><h3>{zh?'会话信息':'Session information'}</h3><span className={`chip st-${state}`}>{stateLabel}</span><p>{session.title}</p><p className="mono dim-s">{displayPath(path)}</p><button className="btn" onClick={()=>setConfigOpen(true)}>{zh?'配置':'Configure'}</button></div>
+    <div className="ins-block"><h3>{zh?'会话信息':'Session information'}</h3><span className={`chip st-${state}`}>{stateLabel}</span><p>{session.title}</p><p className="mono dim-s">{displayPath(path)}</p><button className="btn" onClick={()=>setConfigOpen(true)}>{zh?'配置':'Configure'}</button>{session.mode==='chat'&&<button type="button" className="btn" onClick={()=>openTaskMap(session.id)}>{zh?'任务图':'Task map'}</button>}</div>
     {canPin&&project&&<SessionDocuments key={documentsSession.id} sessionId={documentsSession.id} zh={zh} state={documents} onPick={()=>setPinPicker(true)} openFile={file=>void openScopedFile({projectId:project.id,worktreePath:path,path:file,kind:'file'}).catch(fail)}/>}
     <div className="ins-block"><h3>{zh?'重点关注':'Following'}</h3><button className="btn" onClick={follow} aria-pressed={session.followed}><Icon name="star"/>{zh?(session.followed?'已关注 · 点击取消':'关注此会话'):(session.followed?'Following · Unfollow':'Follow session')}</button></div>
     <div className="ins-block runtime-session-actions"><SessionActions session={session}/></div><div className="ins-block session-fullscreen-row"><button className="btn" title={zh?'隐藏工作区界面，按 Esc 退出':'Hide workspace chrome; press Esc to leave'} onClick={()=>setFullscreen(value=>!value)}>{session.mode==='chat'?(zh?'全屏':'Fullscreen'):(zh?'全屏终端':'Fullscreen terminal')}</button></div>

@@ -16,7 +16,7 @@ export function selectPresetLayout(layout:PaneLayout,selected:Set<string>,scopes
   }
   const chosen=scopes.filter(scope=>selected.has(scope.sessionId));
   // A web page belongs to no session or folder: it restores with any selection.
-  const keep=(tab:ContentRef)=>tab.kind==="session"?selected.has(tab.sessionId):tab.kind==="web"?chosen.length>0:chosen.some(scope=>scope.projectId===tab.projectId&&sameCanonicalScope(scope.cwd,tab.worktreePath??scope.projectRoot));
+  const keep=(tab:ContentRef)=>tab.kind==="session"||tab.kind==="map"?selected.has(tab.sessionId):tab.kind==="web"?chosen.length>0:chosen.some(scope=>scope.projectId===tab.projectId&&sameCanonicalScope(scope.cwd,tab.worktreePath??scope.projectRoot));
   const tabs=layout.tabs.filter(keep);
   if(!tabs.length)return null;
   return {...layout,tabs,activeTabId:tabs.some(tab=>tab.id===layout.activeTabId)?layout.activeTabId:tabs[0].id};
@@ -42,7 +42,7 @@ export async function restorePreset(preset:Preset,selected:Set<string>):Promise<
     scopes.push({sessionId:id,projectId:session.projectId,cwd});
   }
   // File refs without worktreePath mean the registered project root.
-  const rootScoped=(node:PaneLayout):PaneLayout=>node.kind==="split"?{...node,first:rootScoped(node.first),second:rootScoped(node.second)}:{...node,tabs:node.tabs.map(tab=>tab.kind==="session"||tab.kind==="web"||tab.worktreePath?tab:{...tab,worktreePath:data.projects.find(project=>project.id===tab.projectId)?.path})};
+  const rootScoped=(node:PaneLayout):PaneLayout=>node.kind==="split"?{...node,first:rootScoped(node.first),second:rootScoped(node.second)}:{...node,tabs:node.tabs.map(tab=>tab.kind==="session"||tab.kind==="web"||tab.kind==="map"||tab.worktreePath?tab:{...tab,worktreePath:data.projects.find(project=>project.id===tab.projectId)?.path})};
   const layout=selectPresetLayout(rootScoped(preset.layout),new Set(ids),scopes);
   if(!layout)throw new Error("The selected preset has no available views.");
   return {sessionId:ids[0],layout};

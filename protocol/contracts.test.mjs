@@ -220,6 +220,23 @@ test('file preview owners are additive and validated without changing file scope
  for(const ownerSessionId of ['',null,2,'a\nb','x'.repeat(257)])assert.throws(()=>validateRequest('workspace.save',{...params,layout:{...layout,tabs:[{...file,ownerSessionId}]}}));
 });
 
+test('task map tabs require a bounded session identity and no owner',()=>{
+ const map={id:'map',kind:'map',sessionId:'root'};
+ const layout=tab=>({kind:'pane',id:'pane',tabs:[tab],activeTabId:'map'});
+ const params=tab=>({name:'Task map',layout:layout(tab),expectedRevision:0,operationId:'map'});
+ for(const sessionId of ['root','x'.repeat(256),'😀'.repeat(128)]){
+  const tab={...map,sessionId};
+  validateLayout(layout(tab));
+  validateRequest('workspace.save',params(tab));
+  validateRequest('preset.save',{name:'Task map',sessions:[],layout:layout(tab),commands:[],expectedRevision:0,operationId:'map-preset'});
+  validateResult('workspace.save',{id:'workspace',name:'Task map',revision:1,layout:layout(tab)});
+ }
+ for(const tab of [{id:'map',kind:'map'},...['',null,42,'x'.repeat(257),'😀'.repeat(129)].map(sessionId=>({...map,sessionId})),...['session-a',null,42].map(ownerSessionId=>({...map,ownerSessionId}))]){
+  assert.throws(()=>validateLayout(layout(tab)));
+  assert.throws(()=>validateRequest('workspace.save',params(tab)));
+ }
+});
+
 test('web preview tabs show only http(s) pages and belong to no session',()=>{
  const web={id:'web',kind:'web',url:'http://localhost:5173/'};
  const layout={kind:'pane',id:'pane',tabs:[web],activeTabId:'web'};

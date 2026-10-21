@@ -56,7 +56,7 @@ export function WorkspaceTabBar({layout,sessions,active,busy,onActivate,onClose,
   <div className={`workspace-tabs${fade}`} ref={strip} role="tablist" aria-label={zh?'已打开的内容':'Open contents'} onWheel={event=>{const element=event.currentTarget;if(event.deltaY&&!event.deltaX&&element.scrollWidth>element.clientWidth)element.scrollLeft+=event.deltaY;}} onContextMenu={onTabContext}>
    {tabs.map(({paneId,tab},index)=>{
     const session=tab.kind==='session'?sessions.find(item=>item.id===tab.sessionId):undefined;
-    const title=tab.kind==='session'?(session?.title??tab.sessionId):contentTitle(tab,zh).title;
+    const title=tab.kind==='session'?(session?.title??tab.sessionId):tab.kind==='map'?`${zh?'任务图':'Task map'} · ${sessions.find(item=>item.id===tab.sessionId)?.title??tab.sessionId}`:contentTitle(tab,zh).title;
     const label=tab.kind==='session'?title:contentTitle(tab,zh).label;
     const selected=active?.paneId===paneId&&active.tabId===tab.id;
     const target={paneId,tabId:tab.id};
@@ -74,7 +74,7 @@ export function WorkspaceTabBar({layout,sessions,active,busy,onActivate,onClose,
         if(from>=0&&to>=0)onReorder(paneId,from,to);
        }catch{/* Ignore foreign drag data. */}
       }}>
-      {session?<AgentIcon provider={session.provider}/>:<Icon name={tab.kind==='web'?'popout':'file'}/>}<span>{label}</span>
+      {session?<AgentIcon provider={session.provider}/>:<Icon name={tab.kind==='map'?'flow':tab.kind==='web'?'popout':'file'}/>}<span>{label}</span>
      </button>
      <button type="button" className="workspace-tab-close" disabled={busy} title={zh?'关闭标签':'Close tab'} aria-label={`${zh?'关闭标签':'Close tab'} ${title}`} onClick={()=>onClose(target,'current')}><Icon name="close"/></button>
     </div>;

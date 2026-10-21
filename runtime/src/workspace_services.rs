@@ -893,6 +893,10 @@ pub fn validate_layout(layout: &Value) -> Result<()> {
                                 return Err(anyhow!("invalid_workspace_layout"));
                             }
                         }
+                        Some("map")
+                            if tab.get("sessionId").and_then(Value::as_str).is_some_and(|id| {
+                                !id.is_empty() && id.encode_utf16().count() <= 256
+                            }) && tab.get("ownerSessionId").is_none() => {}
                         Some("history")
                             if tab
                                 .get("projectId")
@@ -1998,6 +2002,23 @@ mod tests {
         assert!(validate_layout(&duplicate_ids).is_err());
         let invalid_tab = json!({"kind":"pane","id":"p","tabs":[{"id":"file","kind":"file","projectId":"p","path":""}],"activeTabId":"file"});
         assert!(validate_layout(&invalid_tab).is_err());
+        let map_layout = |tab: Value| json!({"kind":"pane","id":"p","tabs":[tab],"activeTabId":"map"});
+        for session_id in ["s".to_owned(), "x".repeat(256), "😀".repeat(128)] {
+            assert!(validate_layout(&map_layout(json!({"id":"map","kind":"map","sessionId":session_id}))).is_ok());
+        }
+        for tab in [
+            json!({"id":"map","kind":"map"}),
+            json!({"id":"map","kind":"map","sessionId":""}),
+            json!({"id":"map","kind":"map","sessionId":42}),
+            json!({"id":"map","kind":"map","sessionId":null}),
+            json!({"id":"map","kind":"map","sessionId":"x".repeat(257)}),
+            json!({"id":"map","kind":"map","sessionId":"😀".repeat(129)}),
+            json!({"id":"map","kind":"map","sessionId":"s","ownerSessionId":"s"}),
+            json!({"id":"map","kind":"map","sessionId":"s","ownerSessionId":null}),
+            json!({"id":"map","kind":"unknown","sessionId":"s"}),
+        ] {
+            assert!(validate_layout(&map_layout(tab.clone())).is_err(), "{tab}");
+        }
     }
     #[test]
     fn web_tabs_accept_only_http_pages_without_an_owner() {
