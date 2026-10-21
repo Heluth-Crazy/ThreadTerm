@@ -7,7 +7,7 @@ export interface TaskMapFixture {
   documents: SessionDocument[];
 }
 
-export type TaskMapFixtureName = 'delegation' | 'single' | 'empty' | 'long' | 'running' | 'nested';
+export type TaskMapFixtureName = 'delegation' | 'single' | 'empty' | 'long' | 'running' | 'nested' | 'parallel';
 
 const at = (seconds: number): string => new Date(Date.UTC(2026, 9, 21, 12) + seconds * 1_000).toISOString();
 const titles: Record<string, string> = {
@@ -110,6 +110,7 @@ function delegation(): TaskMapFixture {
 
 /** Fresh deterministic provider-shaped data for unit tests and the visual harness. */
 export function taskMapFixture(name: TaskMapFixtureName): TaskMapFixture {
+  if (name === 'parallel') return parallel();
   if (name === 'nested') return nested();
   if (name === 'delegation') return delegation();
   if (name === 'running') {
@@ -177,4 +178,56 @@ function nested(): TaskMapFixture {
   nativeFirst.data = { ...nativeFirst.data as object, key: 'native-first', startedAt: at(121), endedAt: at(122) };
   fixture.items.get('root')!.splice(fixture.items.get('root')!.length - 1, 0, item('native-first-item', 121, 'turn-3', 'assistant', [nativeFirst]));
   return fixture;
+}
+
+/** Two concurrent siblings, then a later branch that can reuse their column. */
+function parallel(): TaskMapFixture {
+  const root = session('root', 'codex'), claude = session('claude', 'claude', 5, root.id);
+  const kimi = session('kimi', 'kimi', 6, root.id), grok = session('grok', 'grok', 65, root.id);
+  const subagent = native('completed', 4);
+  subagent.data = { ...subagent.data as object, startedAt: at(68), endedAt: at(82) };
+  return { rootSessionId: root.id, sessions: [root, claude, kimi, grok],
+    documents: [{ path: 'docs/parallel-plan.md', title: 'Parallel validation plan', pinnedAt: at(45) }], items: new Map([
+      [root.id, [
+        item('root-prompt-1', 0, 'turn-1', 'user', [text('Investigate validation in parallel and review the changes.')]),
+        item('root-explore', 2, 'turn-1', 'assistant', [read('renderer/src/validation.ts'), read('protocol/index.ts')]),
+        item('root-delegate-claude', 5, 'turn-1', 'assistant', [start(claude, 'codex')]),
+        item('root-delegate-kimi', 6, 'turn-1', 'assistant', [start(kimi, 'codex')]),
+        item('root-command', 14, 'turn-1', 'assistant', [command('node --check validation.mjs')]),
+        item('root-results', 40, 'turn-1', 'assistant', [wait(claude), wait(kimi, false)]),
+        item('root-answer-1', 50, 'turn-1', 'assistant', [text('Both investigations are complete.', 'final_answer')],
+          { turnStatus: 'completed', elapsedMs: 50_000, turnReview: { from: 'parallel-root-before', to: 'parallel-root-after', fileCount: 2 } }),
+        item('root-prompt-2', 60, 'turn-2', 'user', [text('Check the providers and run the native review.')]),
+        item('root-delegate-grok', 65, 'turn-2', 'assistant', [start(grok, 'codex')]),
+        item('root-native', 68, 'turn-2', 'assistant', [subagent]),
+        item('root-result-grok', 88, 'turn-2', 'assistant', [wait(grok)]),
+        item('root-answer-2', 95, 'turn-2', 'assistant', [text('Provider checks and native review passed.', 'final_answer')],
+          { turnStatus: 'completed', elapsedMs: 35_000 }),
+        item('root-prompt-3', 120, 'turn-3', 'user', [text('Summarize the final validation checks.')]),
+        item('root-final-explore', 122, 'turn-3', 'assistant', [read('docs/parallel-plan.md')]),
+        item('root-answer-3', 130, 'turn-3', 'assistant', [text('All validation checks are documented.', 'final_answer')],
+          { turnStatus: 'completed', elapsedMs: 10_000 }),
+      ]],
+      [claude.id, [
+        item('claude-prompt', 5, 'claude-turn', 'user', [text('Inspect validation callers.')]),
+        item('claude-read', 7, 'claude-turn', 'assistant', [read('runtime/src/workspace_services.rs')]),
+        item('claude-command', 18, 'claude-turn', 'assistant', [command('node --check callers.mjs')]),
+        item('claude-read-more', 25, 'claude-turn', 'assistant', [read('protocol/index.ts')]),
+        item('claude-answer', 35, 'claude-turn', 'assistant', [text('Validation callers are covered.')],
+          { turnStatus: 'completed', elapsedMs: 30_000 }),
+      ]],
+      [kimi.id, [
+        item('kimi-prompt', 6, 'kimi-turn', 'user', [text('Edit the protocol contract and document the plan.')]),
+        item('kimi-edit', 9, 'kimi-turn', 'assistant', [edit('protocol/contracts.test.mjs'), edit('docs/parallel-plan.md')]),
+        item('kimi-command', 20, 'kimi-turn', 'assistant', [command('node --check contracts.test.mjs')]),
+        item('kimi-answer', 33, 'kimi-turn', 'assistant', [text('Protocol contracts and the plan are updated.')],
+          { turnStatus: 'completed', elapsedMs: 27_000, turnReview: { from: 'parallel-kimi-before', to: 'parallel-kimi-after', fileCount: 2 } }),
+      ]],
+      [grok.id, [
+        item('grok-prompt', 65, 'grok-turn', 'user', [text('Check provider error paths.')]),
+        item('grok-command', 70, 'grok-turn', 'assistant', [command('node --check provider.mjs')]),
+        item('grok-answer', 85, 'grok-turn', 'assistant', [text('Provider errors are covered.')],
+          { turnStatus: 'completed', elapsedMs: 20_000 }),
+      ]],
+    ]) };
 }

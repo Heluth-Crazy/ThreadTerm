@@ -21,6 +21,15 @@ const time = (value: string | undefined): number | undefined => {
 };
 const firstLine = (value: string, limit: number): string => value.trim().split(/\r?\n/, 1)[0]!.slice(0, limit);
 const textOf = (item: ChatItem): string => item.parts.filter(part => part.type === 'text' && typeof part.text === 'string').map(part => part.text).join('\n');
+// A delegate's first message can quote the user's words above the delegating agent's prompt (runtime
+// `delegation::first_message`); the task it was given is that prompt.
+const delegateTask = (text: string): string => {
+  if (!text.startsWith("## User's words")) return text;
+  const at = text.indexOf('\n## From the delegating agent');
+  if (at < 0) return text;
+  const prompt = text.slice(text.indexOf('\n', at + 1) + 1), end = prompt.indexOf('\n---\n');
+  return end < 0 ? prompt : prompt.slice(0, end);
+};
 const windowsPath = (path: string): boolean => path.includes('\\') || /^(?:[a-z]:\/|\/\/)/i.test(path);
 const pathKey = (path: string): string => {
   const normalized = path.replace(/\\/g, '/').replace(/^\.\//, '');
@@ -293,7 +302,7 @@ export function buildTaskMap(input: TaskMapInput): TaskMapGraph {
               if (existing) { existing.parts.push(ref); if (prior === existing) previous = existing; continue; }
               const parentProvider = depth && session.delegation ? byId.get(session.delegation.parentSessionId)?.provider : undefined;
               const label = depth && firstPrompt ? copy(`Task from ${parentProvider ? agentName(parentProvider) : 'agent'}`, `来自 ${parentProvider ? agentName(parentProvider) : '代理'} 的任务`) : firstLine(textOf(item), 60);
-              const node = add(item, partIndex, 'prompt', absolutePhase, label, 'done'); node.detail = depth && firstPrompt ? firstLine(textOf(item), 80) : undefined;
+              const node = add(item, partIndex, 'prompt', absolutePhase, label, 'done'); node.detail = depth && firstPrompt ? firstLine(delegateTask(textOf(item)), 80) : undefined;
               messages.set(item.id, node);
               firstPrompt = false;
             } else if (item === final && (!hasPhase || part.phase !== 'commentary')) {

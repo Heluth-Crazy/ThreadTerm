@@ -1,9 +1,10 @@
 // Performance check for the Task map (task 10-21-task-map, acceptance A4), on a production React build like the app:
-//   1. the long fixture (200 turns, ~3,000 tool calls; all 200 turns shown) paints its first row < 300 ms after the root
+//   1. the long fixture (200 turns, ~3,000 tool calls; all 200 turns shown) paints its first box < 300 ms after the root
 //      snapshot arrives;
 //   2. while 60 live `chat.item` events stream in (32 ms apart, like Codex), no main-thread task exceeds 120 ms and
-//      the new rows appear;
-//   3. expanding all turns and scrolling in 40 animation frames has no task > 50 ms;
+//      the new boxes appear;
+//   3. expanding all turns and scrolling the topology in 40 animation frames has no task > 50 ms and never mounts
+//      more than 400 boxes;
 //   4. with Sync on, a Chat publishing a new on-screen range every frame (sweeping all 200 turns) causes no task > 50 ms;
 //   5. a hidden map does no request and no DOM work for the same events.
 // Hidden Electron window; no runtime, no agent CLIs. Usage: node qa/task-map-perf.mjs
@@ -37,7 +38,7 @@ window.threadterm = {
     if (method === 'chat.snapshot') {
       const items = structuredClone(fixture.items.get(params.sessionId) ?? []);
       window.qa.delivered = performance.now();
-      const paint = () => requestAnimationFrame(() => document.querySelector('.task-map-row') ? (window.qa.firstRow = performance.now() - window.qa.delivered) : paint());
+      const paint = () => requestAnimationFrame(() => document.querySelector('.task-graph-box') ? (window.qa.firstRow = performance.now() - window.qa.delivered) : paint());
       paint();
       return { items, revision: 1, repair: { available: false } };
     }
@@ -69,7 +70,7 @@ window.qa.syncSweep = async frames => {
     publishChatView(handle, { sessionId: fixture.rootSessionId, items: shown.map(item => item.id), tools, turns: [], following: false });
     await new Promise(resolve => requestAnimationFrame(resolve));
   }
-  window.qa.inView = document.querySelectorAll('.task-map-row.is-in-view').length;
+  window.qa.inView = document.querySelectorAll('.task-graph-box.is-in-view').length;
   stop();
 };
 const host = document.getElementById('root');
@@ -95,35 +96,45 @@ try {
   const page = await app.firstWindow();
   await page.waitForFunction(() => Number.isFinite(window.qa?.firstRow), undefined, { timeout: 30_000 });
   report.metrics.firstRowMs = await page.evaluate(() => window.qa.firstRow);
-  report.metrics.initialRows = await page.locator('.task-map-row').count();
-  assert.ok(report.metrics.firstRowMs < 300, `first row after ${report.metrics.firstRowMs} ms (budget 300 ms)`);
+  report.metrics.initialBoxes = await page.locator('.task-graph-box').count();
+  assert.ok(report.metrics.firstRowMs < 300, `first box after ${report.metrics.firstRowMs} ms (budget 300 ms)`);
 
   await page.waitForTimeout(500);
-  const before = await page.evaluate(() => Number(document.querySelector('.task-map')?.getAttribute('data-node-count')));
+  const before = await page.evaluate(() => Number(document.querySelector('.task-map')?.getAttribute('data-box-count')));
   await page.evaluate(() => { window.qa.longTasks.length = 0; });
   await page.evaluate(() => window.qa.stream(60, 'live'));
-  await page.waitForFunction(count => Number(document.querySelector('.task-map')?.getAttribute('data-node-count')) > count, before, { timeout: 5_000 });
-  await page.locator('.task-map-row[data-node-id*="live-"]').first().waitFor();
+  await page.waitForFunction(count => Number(document.querySelector('.task-map')?.getAttribute('data-box-count')) > count, before, { timeout: 5_000 });
+  await page.locator('.task-graph-box[data-node-id*="live-"]').first().waitFor();
+  report.metrics.streamBoxes = Number(await page.locator('.task-map').getAttribute('data-box-count'));
+  assert.ok(report.metrics.streamBoxes > before, `streamed events added boxes (${before} → ${report.metrics.streamBoxes})`);
   report.metrics.streamLongTasksMs = await page.evaluate(() => [...window.qa.longTasks]);
   report.metrics.streamMaxTaskMs = Math.max(0, ...report.metrics.streamLongTasksMs);
   assert.ok(report.metrics.streamMaxTaskMs <= 120, `a main-thread task took ${report.metrics.streamMaxTaskMs} ms while streaming (budget 120 ms)`);
 
   await page.locator('.task-map-expand').click();
-  await page.waitForFunction(() => Number(document.querySelector('.task-map')?.getAttribute('data-row-count')) > 2_000);
+  await page.waitForFunction(() => Number(document.querySelector('.task-map')?.getAttribute('data-box-count')) > 2_000);
   await page.waitForTimeout(100);
-  report.metrics.expandedRows = Number(await page.locator('.task-map').getAttribute('data-row-count'));
-  report.metrics.renderedRows = await page.locator('.task-map-row').count();
-  assert.ok(report.metrics.renderedRows < 100, 'expanded long fixture renders only a viewport window');
-  await page.evaluate(async () => {
-    const list = document.querySelector('.task-map-list'); list.scrollTop = 0;
+  report.metrics.expandedBoxes = Number(await page.locator('.task-map').getAttribute('data-box-count'));
+  report.metrics.expandedEdges = Number(await page.locator('.task-map').getAttribute('data-edge-count'));
+  report.metrics.renderedBoxes = await page.locator('.task-graph-box').count();
+  assert.ok(report.metrics.renderedBoxes < 200, 'expanded long fixture renders only a viewport window');
+  report.metrics.scrollMaxBoxes = await page.evaluate(async () => {
+    const scroll = document.querySelector('.task-graph-scroll'); scroll.scrollTop = 0;
     await new Promise(resolve => requestAnimationFrame(resolve));
     window.qa.longTasks.length = 0;
+    let maxBoxes = 0, maxEdges = 0;
     for (let step = 0; step <= 40; step++) {
+      scroll.scrollTop = (scroll.scrollHeight - scroll.clientHeight) * step / 40;
       await new Promise(resolve => requestAnimationFrame(resolve));
-      list.scrollTop = (list.scrollHeight - list.clientHeight) * step / 40;
+      maxBoxes = Math.max(maxBoxes, document.querySelectorAll('.task-graph-box').length);
+      maxEdges = Math.max(maxEdges, document.querySelectorAll('path.task-graph-edge').length);
     }
     await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+    window.qa.scrollStats = { boxes: maxBoxes, edges: maxEdges };
+    return maxBoxes;
   });
+  report.metrics.scrollMaxEdges = await page.evaluate(() => window.qa.scrollStats.edges);
+  assert.ok(report.metrics.scrollMaxBoxes < 400, `at most ${report.metrics.scrollMaxBoxes} boxes were in the DOM while scrolling (budget 400)`);
   report.metrics.scrollLongTasksMs = await page.evaluate(() => [...window.qa.longTasks]);
   report.metrics.scrollMaxTaskMs = Math.max(0, ...report.metrics.scrollLongTasksMs);
   assert.ok(report.metrics.scrollMaxTaskMs <= 50, `scrolling took ${report.metrics.scrollMaxTaskMs} ms (budget 50 ms)`);
@@ -134,8 +145,8 @@ try {
   await page.evaluate(() => window.qa.syncSweep(120));
   report.metrics.syncLongTasksMs = await page.evaluate(() => [...window.qa.longTasks]);
   report.metrics.syncMaxTaskMs = Math.max(0, ...report.metrics.syncLongTasksMs);
-  report.metrics.syncMarkedRows = await page.evaluate(() => window.qa.inView);
-  assert.ok(report.metrics.syncMarkedRows > 0, 'the synced Chat range marks rows');
+  report.metrics.syncMarkedBoxes = await page.evaluate(() => window.qa.inView);
+  assert.ok(report.metrics.syncMarkedBoxes > 0, 'the synced Chat range marks boxes');
   assert.ok(report.metrics.syncMaxTaskMs <= 50, `a synced Chat sweep took ${report.metrics.syncMaxTaskMs} ms (budget 50 ms)`);
 
   await page.evaluate(() => window.qa.render(false));

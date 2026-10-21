@@ -1,6 +1,6 @@
 import type { ChatItem, Session, SessionDocument, SubagentInfo } from '@threadterm/protocol';
 
-/** Task map (task 10-21-task-map): a Chat task's lifecycle as lanes × turns, shown as a vertical flow. Design: .trellis/tasks/10-21-task-map/design.md */
+/** Task map (task 10-21-task-map): a Chat task's lifecycle as lanes × turns, drawn as a vertical topology. Design: .trellis/tasks/10-21-task-map/design.md §12 */
 
 export type TaskMapStatus = 'running' | 'waiting' | 'done' | 'failed' | 'cancelled';
 export type TaskMapLaneKind = 'agent' | 'delegate' | 'subagent' | 'outputs';
@@ -112,50 +112,140 @@ export interface TaskMapSessions {
   hiddenDelegates: number;
 }
 
-// Vertical flow (taskFlow.ts) — design §11. The graph above is flattened into rows: turns, then each agent's steps
-// with delegate/subagent work nested under the step that started it.
+// Vertical topology (taskGraph.ts) — design §12. Time runs down, agents are columns (reused once a lane ends), turns
+// are horizontal bands. Folding a turn or a delegate lane draws one summary box per lane instead of its nodes, so every
+// fork, return and output edge stays connected at any level of detail.
 
-export type TaskFlowRowKind = 'earlier' | 'turn' | 'step' | 'details';
+export interface TaskGraphExpansion {
+  /** Turns. `default`: the last turn and turns that run or wait are open. `all`/`none`: every turn open/folded.
+   *  Delegate lanes are open unless their key is in `closed`. */
+  mode: 'default' | 'all' | 'none';
+  /** `turn:<phase id>` and `lane:<lane id>` keys the user opened or closed explicitly; they override the mode. */
+  open: ReadonlySet<string>;
+  closed: ReadonlySet<string>;
+  /** Keys opened because a synced Chat shows them; `closed` wins over these. */
+  auto?: ReadonlySet<string>;
+}
 
-export interface TaskFlowRow {
-  /** Stable across rebuilds: `earlier`, `turn:<phase id>`, the node id (step rows), `details:<node id>`. */
-  key: string;
-  kind: TaskFlowRowKind;
-  /** Index into `TaskMapGraph.phases` (`earlier`: -1). */
-  phase: number;
-  /** 0 for turn rows and the root agent's steps; +1 per delegate/subagent nesting level. Details rows: their step's depth. */
-  depth: number;
-  /** `step` and `details` rows. */
+export interface TaskGraphMetrics {
+  /** Box width bounds; the layout uses the widest width that fits every column in `width` (design §12.3). */
+  minBoxWidth: number;
+  maxBoxWidth: number;
+  boxHeight: number;
+  /** Horizontal space between columns; vertical edge segments run here. */
+  columnGap: number;
+  /** Vertical space above every row; horizontal edge segments run here. */
+  rowGap: number;
+  /** Turn header at the top of every band. */
+  turnHeight: number;
+  /** Space after a band. */
+  bandGap: number;
+  /** The "Show N earlier turns" band. */
+  earlierHeight: number;
+  /** World padding on every side. */
+  padding: number;
+}
+
+export interface TaskGraphLayoutOptions {
+  /** Width available to the world (the scroll container's client width). */
+  width: number;
+  metrics?: TaskGraphMetrics;
+  /** `taskGraphAncestors(graph)` when the caller already has it (it does not depend on the expansion). */
+  ancestors?: Map<string, string[]>;
+}
+
+export type TaskGraphBoxKind = 'node' | 'summary';
+
+/** A drawn box: one graph node, or the nodes of one lane in one phase folded together. */
+export interface TaskGraphBox {
+  /** Node boxes: the node id. Summary boxes: `fold:<lane id>:<phase id>`. */
+  id: string;
+  kind: TaskGraphBoxKind;
+  /** Node boxes only. */
   nodeId?: string;
-  /** `turn` rows. */
-  phaseId?: string;
-  /** Turn rows, and delegate step rows whose delegate has steps of its own. */
-  expandable?: boolean;
-  expanded?: boolean;
-  /** Collapsed turn/delegate rows: what is folded inside (all depths). */
-  hidden?: { steps: number; delegates: number };
-  /** Delegate and subagent rows: when the branch ran, as fractions of its turn's time span (0 ≤ start ≤ end ≤ 1). */
-  bar?: { start: number; end: number };
-  /** Turn rows: the turn's duration. Delegate/subagent rows: the branch's duration. When known. */
+  /** The nodes the box stands for, in graph order (node boxes: `[nodeId]`). A folded delegate lane's summary also
+   *  holds its descendant lanes' nodes of that phase. */
+  members: string[];
+  laneId: string;
+  /** Index into `TaskMapGraph.phases`. */
+  phase: number;
+  /** Grid position. Rows count from 0 at the top of the world (bands do not reset them); column 0 is the root lane. */
+  row: number;
+  column: number;
+  /** World px. */
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  /** Node boxes: the node's status. Summary boxes: running > waiting > failed > cancelled > done over the members. */
+  status: TaskMapStatus;
+  /** The first box of a delegate or subagent lane in the layout (it names the lane's agent). */
+  head?: boolean;
+  /** Summary boxes: what is folded inside (members except prompts). */
+  folded?: { steps: number; delegates: number };
+  /** Delegate node boxes: the child lane's span. Subagent boxes: the subagent's elapsed time. Summary boxes: the
+   *  members' span. Only when known and > 0. */
   durationMs?: number;
 }
 
-export interface TaskFlowExpansion {
-  /** `default`: the last turn, turns that run or wait, and delegates that run, wait or failed are open. */
-  mode: 'default' | 'all' | 'none';
-  /** Row keys (turn and delegate rows) the user opened or closed explicitly; they override the mode. */
-  open: ReadonlySet<string>;
-  closed: ReadonlySet<string>;
-  /** Row keys opened because a synced Chat shows them; `closed` wins over these. */
-  auto?: ReadonlySet<string>;
-  /** Step row whose inline details are open (at most one). */
-  details?: string;
+export interface TaskGraphEdge {
+  /** `<kind>:<from box>→<to box>`. */
+  id: string;
+  /** Box ids. */
+  from: string;
+  to: string;
+  kind: TaskMapEdgeKind;
+  /** SVG path data in world px: an orthogonal polyline with rounded corners, from the source box border to the
+   *  target box border (the view adds the arrowhead). */
+  d: string;
+  /** Vertical extent of the path, for windowing. */
+  top: number;
+  bottom: number;
 }
 
-export interface TaskFlow {
-  rows: TaskFlowRow[];
-  /** Every node id (also nodes folded away) → keys of its enclosing rows, outermost first (turn, then delegate rows). */
+export interface TaskGraphBand {
+  /** `turn:<phase id>`. */
+  key: string;
+  phase: number;
+  open: boolean;
+  /** World y of the band's turn header, and of the band's end (before the band gap). */
+  top: number;
+  bottom: number;
+  /** Folded bands: what is folded inside, all lanes (nodes except prompts and outputs). */
+  folded?: { steps: number; delegates: number };
+}
+
+/** Which lane holds a column over a vertical range; a column is reused after its lane ends. */
+export interface TaskGraphLaneSpan {
+  laneId: string;
+  column: number;
+  /** Top of the lane's first box and bottom of its last box. */
+  top: number;
+  bottom: number;
+}
+
+export interface TaskGraphLayout {
+  /** Sorted by `y`, then `x`. */
+  boxes: TaskGraphBox[];
+  edges: TaskGraphEdge[];
+  /** In phase order. */
+  bands: TaskGraphBand[];
+  /** Sorted by `top`. */
+  lanes: TaskGraphLaneSpan[];
+  /** Present when `graph.hiddenPhases > 0`: the "Show N earlier turns" band at the top. */
+  earlier?: { top: number; bottom: number };
+  /** Every node id (also folded or skipped ones) → the id of the box that shows it. Root prompts that a turn header
+   *  stands for map to that band's key. */
+  boxOf: Map<string, string>;
+  /** Same as `taskGraphAncestors(graph)`. */
   ancestors: Map<string, string[]>;
+  /** Left x of each column. The outputs column, when any output exists, is the last one. */
+  columnX: number[];
+  outputsColumn?: number;
+  boxWidth: number;
+  /** World size in px (`width` ≥ the requested width). */
+  width: number;
+  height: number;
 }
 
 /** Where a node's content lives in a Chat. */
@@ -206,11 +296,3 @@ export interface TaskFlowSummary {
   durationMs?: number;
 }
 
-export interface TaskFlowMetrics {
-  turnHeight: number;
-  stepHeight: number;
-  earlierHeight: number;
-  /** Height used for a details row until it is measured. */
-  detailsEstimate: number;
-  indent: number;
-}
