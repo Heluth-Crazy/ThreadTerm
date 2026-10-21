@@ -254,11 +254,13 @@ async function present(session) {
   await until(() => chat(session.id).isVisible(), `session ${session.title} is shown in the workspace`);
   await until(async () => (await tabFor(session.title).getAttribute('aria-selected')) === 'true', `${session.title} workspace tab is active`);
 }
-const rows = () => map().locator('.task-map-row');
+const boxes = () => map().locator('.task-graph-box');
 function steps(kind, sessionId) {
   const prefix = sessionId ? (kind === 'files' ? `outputs:files:agent:${sessionId}:` : `agent:${sessionId}:`) : '';
-  return map().locator(`.task-map-row[data-row-kind="step"][data-node-kind="${kind}"]${prefix ? `[data-node-id^="${prefix}"]` : ''}`);
+  return map().locator(`.task-graph-box[data-box-kind="node"][data-node-kind="${kind}"]${prefix ? `[data-node-id^="${prefix}"]` : ''}`);
 }
+const edge = (kind, from, to) => map().locator(`path.task-graph-edge[data-edge-kind="${kind}"]${from ? `[data-from="${from}"]` : ''}${to ? `[data-to="${to}"]` : ''}`);
+const detailsPanel = () => map().locator('aside.task-graph-details');
 async function frames(count = 2) {
   await within(page.evaluate(n => new Promise(done => { const step = left => left ? requestAnimationFrame(() => step(left - 1)) : done(); step(n); }), count), 5_000, `${count} animation frames`);
 }
@@ -279,27 +281,24 @@ async function openMap() {
   } else await mapTabs().locator('.workspace-tab-select').click();
   await until(async () => Number(await map().getAttribute('data-node-count')) > 0, 'visible task map loads real persisted items');
   await expandAll();
-  await until(async () => await steps('reply', delegate.id).count() > 0, 'delegate snapshot loads its reply into the flow');
+  await until(async () => await steps('reply', delegate.id).count() > 0, 'delegate snapshot loads its reply into the topology');
   assert.equal(await mapTabs().count(), 1, 'exactly one task map tab for the parent task');
 }
 async function closeDetails() {
-  const details = map().locator('.task-map-details');
-  if (await details.count()) { await details.first().press('Escape').catch(() => {}); await frames(); }
-  if (await map().locator('.task-map-details').count()) {
-    const open = map().locator('.task-map-row.is-selected .task-map-row-details');
-    if (await open.count()) await open.click();
-  }
+  if (!(await detailsPanel().count())) return;
+  const close = detailsPanel().locator('.task-graph-details-close');
+  if (await close.count()) await close.click(); else await detailsPanel().press('Escape').catch(() => {});
+  await until(async () => await detailsPanel().count() === 0 || !(await detailsPanel().isVisible()), 'the details panel closes');
 }
+// Space toggles the details panel for the focused box, whatever the Sync state.
 async function openDetails(kind, sessionId) {
   await closeDetails();
-  const row = steps(kind, sessionId).first();
-  await row.scrollIntoViewIfNeeded();
-  await row.hover();
-  const id = await row.getAttribute('data-node-id');
-  await row.locator('.task-map-row-details').click();
-  const details = map().locator('.task-map-details');
+  const box = steps(kind, sessionId).first();
+  await box.scrollIntoViewIfNeeded();
+  const id = await box.getAttribute('data-box-id');
+  await box.focus(); await page.keyboard.press(' ');
+  const details = map().locator(`aside.task-graph-details[data-box-id="${id}"] .task-map-details`);
   await details.waitFor({ state: 'visible' });
-  await until(async () => (await map().locator('.task-map-row.is-selected').first().getAttribute('data-node-id')) === id, `${kind} row is selected`);
   return details;
 }
 async function assertSideBySide(description) {
@@ -312,37 +311,60 @@ async function assertSideBySide(description) {
   assert.ok(Math.min(rects.chat.bottom, rects.map.bottom) - Math.max(rects.chat.top, rects.map.top) > 100, `${description}: panes share the visible vertical area`);
   report.geometry.push({ label: description, ...rects });
 }
-async function checkRows() {
+async function checkTopology() {
   await expandAll();
-  const turns = await rows().evaluateAll(list => list.filter(row => row.dataset.rowKind === 'turn').map(row => row.textContent));
-  report.turnRows = turns;
-  assert.equal(turns.length, 1, 'one turn row after the first turn');
-  for (const kind of ['delegate', 'tools', 'reply']) assert.ok(await steps(kind, parent.id).count(), `root agent has a ${kind} row`);
-  assert.equal(await steps('prompt', parent.id).count(), 0, 'the turn row stands for the root prompt (no separate prompt row)');
-  const delegateRow = steps('delegate', parent.id).first();
-  assert.equal(await delegateRow.getAttribute('data-depth'), '0', 'the delegate row belongs to the root agent');
-  assert.ok((await delegateRow.innerText()).includes('QA map delegate') || (await delegateRow.getAttribute('title') ?? '').includes('QA map delegate'), 'the delegate row names the delegate');
-  assert.ok(await delegateRow.evaluate(row => row.classList.contains('is-open')), 'Expand all opens the delegate row');
+  const bands = await map().locator('.task-graph-band').evaluateAll(list => list.map(band => ({ key: band.dataset.bandKey, open: band.dataset.open, text: band.querySelector('.task-graph-turn')?.textContent })));
+  report.bands = bands;
+  assert.equal(bands.length, 1, 'one turn band after the first turn');
+  assert.equal(bands[0].open, 'true', 'the only (last) turn is open');
+  for (const kind of ['delegate', 'tools', 'reply']) assert.ok(await steps(kind, parent.id).count(), `root agent has a ${kind} box`);
+  assert.equal(await steps('prompt', parent.id).count(), 0, 'the turn header stands for the root prompt (no separate prompt box)');
+  const delegateBox = steps('delegate', parent.id).first();
+  assert.equal(await delegateBox.getAttribute('data-column'), '0', 'the delegate box sits in the root agent column');
+  assert.ok((await delegateBox.innerText()).includes('QA map delegate') || (await delegateBox.getAttribute('title') ?? '').includes('QA map delegate'), 'the delegate box names the delegate');
+  const childLane = `agent:${delegate.id}`;
+  const head = map().locator(`.task-graph-box.is-head[data-lane-id="${childLane}"]`);
+  assert.equal(await head.count(), 1, 'the delegate lane starts with one head box');
+  const headColumn = Number(await head.getAttribute('data-column'));
+  assert.ok(headColumn >= 1, 'the delegate lane has its own column right of the root');
+  const delegateId = await delegateBox.getAttribute('data-box-id'), headId = await head.getAttribute('data-box-id');
+  assert.equal(await edge('delegate', delegateId, headId).count(), 1, 'a delegate (fork) edge connects the delegate box to the delegate lane head');
   const childReply = steps('reply', delegate.id).first();
-  assert.equal(await childReply.getAttribute('data-depth'), '1', 'the delegate reply is nested one level under its start row');
-  const order = await rows().evaluateAll(list => list.map(row => row.dataset.nodeId ?? row.dataset.rowKey));
-  const start = order.indexOf(await delegateRow.getAttribute('data-node-id')), nested = order.indexOf(await childReply.getAttribute('data-node-id'));
-  assert.ok(start >= 0 && nested > start, 'delegate steps follow the step that started the delegate');
+  assert.equal(Number(await childReply.getAttribute('data-column')), headColumn, 'the delegate reply stays in the delegate column');
+  const top = async locator => (await locator.boundingBox()).y;
+  assert.ok(await top(head) > await top(delegateBox), 'the delegate lane starts below the step that started it');
+  assert.ok(await edge('flow', undefined, await childReply.getAttribute('data-box-id')).count() >= 1, 'the delegate reply is connected inside its lane');
+  const returns = await edge('return').evaluateAll(list => list.map(path => ({ from: path.dataset.from, to: path.dataset.to })));
+  report.returnEdges = returns;
+  if (!returns.some(entry => entry.from.startsWith(`${childLane}:`) || entry.from.startsWith(`fold:${childLane}:`)))
+    report.findings.push({ check: 'return edge', message: 'no return edge from the delegate lane: the parent did not call delegate_wait/delegate_result naming the child', items: summary(parentItems) });
   const hasReview = parentItems.some(item => item.turnReview);
   report.rootHasTurnReview = hasReview;
-  if (hasReview) assert.ok(await steps('files', parent.id).count(), 'the turn shows its root files-changed row');
-  else report.findings.push({ check: 'files/review', message: 'Kimi produced no root turnReview. Diff navigation cannot be required without checkpoints; recordedItems contains the raw chat.read items with long fields truncated.', items: summary(parentItems) });
-  await evidence('02-rows', 'turn row, root steps, nested delegate steps and files row');
+  if (hasReview) {
+    const files = steps('files', parent.id).first();
+    assert.ok(await files.count(), 'the turn shows its root files-changed box');
+    assert.equal(Number(await files.getAttribute('data-column')), Number(await map().getAttribute('data-columns')) - 1, 'outputs sit in the last (Outputs) column');
+    assert.equal(await edge('produce', undefined, await files.getAttribute('data-box-id')).count(), 1, 'a produce edge leads into the files box');
+  } else report.findings.push({ check: 'files/review', message: 'Kimi produced no root turnReview. Diff navigation cannot be required without checkpoints; recordedItems contains the raw chat.read items with long fields truncated.', items: summary(parentItems) });
+  const labels = await map().locator('.task-graph-lane-label').evaluateAll(list => list.map(label => ({ column: label.dataset.column, lane: label.dataset.laneId, text: label.textContent })));
+  report.laneLabels = labels;
+  assert.ok(labels.some(label => label.lane === childLane), 'the lane strip names the delegate column');
+  await evidence('02-topology', 'turn band, root steps, fork edge into the delegate column, outputs column');
 }
 async function checkDetails() {
   await expandAll(); await setSync(false);
-  const kinds = await map().locator('.task-map-row[data-row-kind="step"]').evaluateAll(list => [...new Set(list.map(row => row.dataset.nodeKind))]);
+  const kinds = await map().locator('.task-graph-box[data-box-kind="node"]').evaluateAll(list => [...new Set(list.map(box => box.dataset.nodeKind))]);
   report.detailKinds = kinds;
   for (const kind of kinds) {
     const details = await openDetails(kind, ['delegate'].includes(kind) ? parent.id : undefined);
     if (kind === 'delegate') await details.getByRole('button', { name: 'Open session', exact: true }).waitFor();
-    await evidence(`details-${kind}`, `${kind} row opens its inline details`);
+    await evidence(`details-${kind}`, `${kind} box opens the details panel`);
   }
+  // Sync off: a plain click opens the panel too.
+  await closeDetails();
+  await steps('reply', parent.id).first().click();
+  await detailsPanel().waitFor({ state: 'visible' });
+  report.detailsDocked = await detailsPanel().getAttribute('data-docked');
   if (await steps('files', parent.id).count()) {
     const notes = () => map().locator('.task-map-details div').filter({ has: page.locator('code', { hasText: /(^|[\\/])notes\.md$/ }) }).last();
     await openDetails('files', parent.id);
@@ -373,51 +395,54 @@ async function inLog(locator) {
   })).catch(() => false);
 }
 async function checkSync() {
-  await assertSideBySide('sync: Chat beside the flow');
+  await assertSideBySide('sync: Chat beside the map');
   await expandAll(); await setSync(true); await closeDetails();
-  // Flow -> Chat: a tools row opens the Chat's tools drawer at that call.
+  // Map -> Chat: a tools box opens the Chat's tools drawer at that call.
   // A file/command step (delegation follow-ups render as delegate cards, not drawer tool cards).
-  const toolsRow = steps('tools', parent.id).filter({ hasNotText: /delegate|委派/i }).first();
-  const toolNode = await toolsRow.getAttribute('data-node-id');
+  const toolsBox = steps('tools', parent.id).filter({ hasNotText: /delegate|委派/i }).first();
+  const toolNode = await toolsBox.getAttribute('data-node-id');
   const toolPart = (() => {
     const [, , itemId, partIndex] = toolNode.match(/^agent:([^:]+):(.+):(\d+)$/) ?? [];
     const item = parentItems.find(row => row.id === itemId); const part = item?.parts?.[Number(partIndex)];
     return part ? part.toolId || `${itemId}:part:${partIndex}` : undefined;
   })();
-  assert.ok(toolPart, `the tools row ${toolNode} maps to a recorded tool part`);
-  const listTop = await map().locator('.task-map-list').evaluate(list => list.scrollTop);
+  assert.ok(toolPart, `the tools box ${toolNode} maps to a recorded tool part`);
+  const scroller = map().locator('.task-graph-scroll');
+  const mapTop = await scroller.evaluate(node => node.scrollTop);
   const log = await chatLog();
   await log.evaluate(node => { node.scrollTop = 0; });
-  await toolsRow.click();
+  await toolsBox.click();
   const card = chat(parent.id).locator(`[data-tool-id="${toolPart}"]:not(details.codex-work [data-tool-id])`).first();
-  await until(() => inLog(card), 'clicking a tools row scrolls the Chat to that tool card');
+  await until(() => inLog(card), 'clicking a tools box scrolls the Chat to that tool card');
   assert.ok(await card.evaluate(node => Boolean(node.closest('details')?.open)), 'the Chat tools drawer containing the call is open');
-  assert.ok(await toolsRow.evaluate(row => row.classList.contains('is-selected')), 'the clicked row is selected');
+  assert.ok(await toolsBox.evaluate(node => node.classList.contains('is-selected')), 'the clicked box is selected');
+  assert.ok(await map().locator('path.task-graph-edge.is-related').count() >= 1, 'the selected box highlights its edges');
   await frames(4);
-  assert.equal(await map().locator('.task-map-list').evaluate(list => list.scrollTop), listTop, 'the reveal does not scroll the flow back (no loop)');
-  await until(async () => await map().locator(`.task-map-row.is-in-view[data-node-id="${toolNode}"]`).count() === 1, 'the revealed tools row is marked as on screen in the Chat');
-  await evidence('04-sync-row-to-chat', 'tools row → Chat tools drawer opens at that call; row marked in view');
-  // Chat -> flow: the bottom of the Chat marks the last reply.
+  assert.equal(await scroller.evaluate(node => node.scrollTop), mapTop, 'the reveal does not scroll the map back (no loop)');
+  assert.equal(await detailsPanel().count(), 0, 'a revealed box needs no details panel');
+  await until(async () => await map().locator(`.task-graph-box.is-in-view[data-node-id="${toolNode}"]`).count() === 1, 'the revealed tools box is marked as on screen in the Chat');
+  await evidence('04-sync-box-to-chat', 'tools box → Chat tools drawer opens at that call; box marked in view');
+  // Chat -> map: the bottom of the Chat marks the last reply.
   await log.evaluate(node => { node.scrollTop = node.scrollHeight; node.dispatchEvent(new Event('scroll')); });
   const lastReply = steps('reply', parent.id).last();
-  await until(() => lastReply.evaluate(row => row.classList.contains('is-in-view')), 'scrolling the Chat to the bottom marks the latest reply row');
-  await evidence('05-sync-chat-to-row', 'Chat at the bottom → latest reply row marked');
-  // Sync off: a click opens details and leaves the Chat alone.
+  await until(() => lastReply.evaluate(node => node.classList.contains('is-in-view')), 'scrolling the Chat to the bottom marks the latest reply box');
+  await evidence('05-sync-chat-to-box', 'Chat at the bottom → latest reply box marked');
+  // Sync off: a click opens the details panel and leaves the Chat alone.
   await setSync(false);
   const before = await log.evaluate(node => node.scrollTop);
-  await toolsRow.click();
-  await map().locator('.task-map-details').waitFor({ state: 'visible' });
+  await toolsBox.click();
+  await detailsPanel().locator('.task-map-details').waitFor({ state: 'visible' });
   assert.equal(await log.evaluate(node => node.scrollTop), before, 'with Sync off a click does not move the Chat');
-  assert.equal(await map().locator('.task-map-row.is-in-view').count(), 0, 'with Sync off no row is marked');
+  assert.equal(await map().locator('.task-graph-box.is-in-view').count(), 0, 'with Sync off no box is marked');
+  await evidence('06-sync-off', 'Sync off: details panel, Chat unchanged');
   await closeDetails(); await setSync(true);
-  await evidence('06-sync-off', 'Sync off: inline details, Chat unchanged');
 }
 async function checkNavigation() {
   const promptItem = parentItems.find(item => item.role === 'user' && textOf(item).includes('notes.md'));
   assert.ok(promptItem, 'parent prompt was recorded');
   await setSync(false);
-  const replyRow = steps('reply', parent.id).last();
-  const replyItem = (await replyRow.getAttribute('data-node-id')).match(/^agent:[^:]+:(.+):\d+$/)?.[1];
+  const replyBox = steps('reply', parent.id).last();
+  const replyItem = (await replyBox.getAttribute('data-node-id')).match(/^agent:[^:]+:(.+):\d+$/)?.[1];
   await chat(parent.id).locator('.v3-chat-log').evaluate(node => { node.scrollTop = 0; });
   const details = await openDetails('reply', parent.id);
   await details.getByRole('button', { name: 'Show in Chat', exact: true }).click();
@@ -430,12 +455,13 @@ async function checkNavigation() {
   await until(() => chat(delegate.id).isVisible(), 'Open session shows the delegate Chat');
   await until(async () => (await tabFor('QA map delegate').getAttribute('aria-selected')) === 'true', 'delegate workspace title QA map delegate is selected');
   await evidence('08-open-session', 'Open session shows the QA map delegate Chat');
-  // The delegate's own Task map button opens the same map focused on the delegate row.
+  // The delegate's own Task map button opens the same map focused on the delegate box.
   await page.locator('.workspace-primary-actions').getByRole('button', { name: 'Task map', exact: true }).click();
   await until(async () => (await mapTabs().locator('.workspace-tab-select').getAttribute('aria-selected')) === 'true', 'the delegate Chat opens the existing map tab');
   assert.equal(await mapTabs().count(), 1, 'the delegate reuses the parent task map tab');
-  await until(() => steps('delegate', parent.id).first().evaluate(row => row.classList.contains('is-selected') && row.classList.contains('is-open')), 'the map selects and opens the delegate row');
-  await evidence('09-focus-delegate', 'opening the map from the delegate selects its row');
+  await until(() => steps('delegate', parent.id).first().evaluate(node => node.classList.contains('is-selected')), 'the map selects the delegate box');
+  assert.ok(await map().locator(`.task-graph-box[data-lane-id="agent:${delegate.id}"][data-box-kind="node"]`).count() > 0, 'the delegate lane is unfolded');
+  await evidence('09-focus-delegate', 'opening the map from the delegate selects its box');
   await present(parent); await openMap(); await closeDetails();
   const detailsToggle = page.getByRole('button', { name: 'Session details', exact: true });
   if (await detailsToggle.getAttribute('aria-pressed') !== 'true') await detailsToggle.click();
@@ -461,13 +487,31 @@ async function checkLive() {
     latest = await request('chat.snapshot', { sessionId: parent.id }, Math.min(15_000, Math.max(1, deadline - Date.now())));
     const reply = latest.items.find(item => item.role === 'assistant' && textOf(item).trim().startsWith('SECOND-OK'));
     const completed = reply && latest.items.some(item => item.turnId === reply.turnId && item.turnStatus === 'completed');
-    const turn2 = map().locator('.task-map-row[data-row-kind="turn"]').filter({ hasText: /Turn 2/ });
-    return completed && await turn2.count() > 0 && await steps('reply', parent.id).evaluateAll(list => list.filter(row => row.dataset.phase === '1').length) > 0;
-  }, 'Turn 2 and its reply row appear live without reopening the map', Math.max(1, deadline - Date.now()));
+    const turn2 = map().locator('.task-graph-band').filter({ has: page.locator('.task-graph-turn', { hasText: /Turn 2/ }) });
+    return completed && await turn2.count() > 0 && await steps('reply', parent.id).evaluateAll(list => list.filter(box => box.dataset.phase === '1').length) > 0;
+  }, 'Turn 2 and its reply box appear live without reopening the map', Math.max(1, deadline - Date.now()));
+  // The previous turn folds into one box per lane and keeps its fork edge. Sync keeps a turn open while the Chat
+  // shows it (both short turns fit on screen), so fold it from its header: a manual fold wins over Sync.
+  const turn1 = map().locator('.task-graph-band[data-phase="0"]');
+  const foldedByHand = (await turn1.getAttribute('data-open')) !== 'false';
+  if (foldedByHand) {
+    await turn1.locator('.task-graph-turn-toggle').click();
+    await until(async () => (await turn1.getAttribute('data-open')) === 'false', 'turn 1 folds from its header');
+  }
+  assert.ok(await map().locator('.task-graph-box[data-box-kind="summary"][data-phase="0"]').count() >= 1, 'the folded first turn shows summary boxes');
+  assert.ok(await edge('delegate').evaluateAll(list => list.some(path => {
+    const from = document.querySelector(`.task-graph-box[data-box-id="${CSS.escape(path.dataset.from)}"][data-phase="0"]`);
+    const to = document.querySelector(`.task-graph-box[data-box-id="${CSS.escape(path.dataset.to)}"][data-phase="0"]`);
+    return from && to && Number(to.dataset.column) > Number(from.dataset.column);
+  })), 'the folded first turn keeps its fork edge into the delegate column');
   report.recordedItems.secondTurn = summary(latest.items.filter(item => item.turnId === latest.items.find(row => row.role === 'user' && textOf(row).trim() === secondPrompt)?.turnId));
   assertNoTurnErrors(latest.items, 'live second turn');
   await assertSideBySide('after live second turn');
-  await evidence('11-live-after', 'Turn 2 and its reply appear without reopening the map');
+  await evidence('11-live-after', 'Turn 2 and its reply appear without reopening the map; folded turn 1 keeps its fork edge');
+  if (foldedByHand) {
+    await turn1.locator('.task-graph-turn-toggle').click();
+    await until(async () => (await turn1.getAttribute('data-open')) === 'true', 'turn 1 opens again from its header');
+  }
 }
 async function fullscreenMap(fullscreen) {
   const pane = map().locator('xpath=ancestor::section[@data-pane-id][1]');
@@ -479,13 +523,18 @@ async function fullscreenMap(fullscreen) {
   await until(async () => (await pane.evaluate(node => node.classList.contains('fullscreen'))) === fullscreen, 'map pane fullscreen state settles');
 }
 async function checkChatHidden() {
-  // The Chat is not on screen (map pane fullscreen): with Sync on, a root row brings the Chat back at that step.
+  // The Chat is not on screen (map pane fullscreen): a box click opens the details panel instead of switching tabs;
+  // "Show in Chat" then brings the Chat back at that step.
   await fullscreenMap(true); await setSync(true); await closeDetails();
   const reply = steps('reply', parent.id).first();
   const replyItem = (await reply.getAttribute('data-node-id')).match(/^agent:[^:]+:(.+):\d+$/)?.[1];
   await reply.click();
-  await until(async () => await chat(parent.id).isVisible() && await inLog(chat(parent.id).locator(`[data-chat-item="${replyItem}"]`)), 'a root row click shows the Chat at that reply when the Chat was not on screen', 10_000);
-  await evidence('12-chat-hidden-click', 'Chat not on screen: clicking a root row shows the Chat at that step');
+  await detailsPanel().locator('.task-map-details').waitFor({ state: 'visible' });
+  assert.ok(await map().isVisible(), 'a box click keeps the map on screen when the Chat is hidden');
+  await evidence('12-chat-hidden-click', 'Chat not on screen: a box click opens the details panel');
+  await detailsPanel().getByRole('button', { name: 'Show in Chat', exact: true }).click();
+  await until(async () => await chat(parent.id).isVisible() && await inLog(chat(parent.id).locator(`[data-chat-item="${replyItem}"]`)), 'Show in Chat shows the hidden Chat at that reply', 10_000);
+  await evidence('12-chat-hidden-show', 'Show in Chat brings the Chat back at that step');
   if (await mapTabs().count()) await openMap();
   await fullscreenMap(false).catch(error => report.findings.push({ check: 'restore pane', message: error.message }));
 }
@@ -510,17 +559,38 @@ async function sizeMapPane() {
 async function mapGeometry(description) {
   const geometry = await map().evaluate(element => {
     const rect = node => { const r = node.getBoundingClientRect(); return { left: r.left, top: r.top, right: r.right, bottom: r.bottom, width: r.width, height: r.height }; };
-    const list = element.querySelector('.task-map-list');
-    const boxes = [...element.querySelectorAll('.task-map-row')].map(node => ({ key: node.dataset.rowKey, ...rect(node), scrollWidth: node.scrollWidth, clientWidth: node.clientWidth }));
+    const scroll = element.querySelector('.task-graph-scroll');
+    const boxes = [...element.querySelectorAll('.task-graph-box')].map(node => ({ key: node.dataset.boxId, ...rect(node) }));
+    const byId = new Map(boxes.map(box => [box.key, box]));
+    // Paths start/end on their boxes and never pass through another box.
+    const edges = [...element.querySelectorAll('path.task-graph-edge')].flatMap(path => {
+      const from = byId.get(path.dataset.from), to = byId.get(path.dataset.to);
+      if (!from || !to) return [];
+      const ctm = path.getScreenCTM(), length = path.getTotalLength(), points = [];
+      for (let at = 0; at <= length; at += 4) points.push(path.getPointAtLength(at));
+      points.push(path.getPointAtLength(length));
+      const screen = points.map(point => ({ x: ctm.a * point.x + ctm.c * point.y + ctm.e, y: ctm.b * point.x + ctm.d * point.y + ctm.f }));
+      const onBorder = (point, box) => point.x >= box.left - 1.5 && point.x <= box.right + 1.5 && point.y >= box.top - 1.5 && point.y <= box.bottom + 1.5
+        && (Math.abs(point.x - box.left) <= 1.5 || Math.abs(point.x - box.right) <= 1.5 || Math.abs(point.y - box.top) <= 1.5 || Math.abs(point.y - box.bottom) <= 1.5);
+      const through = boxes.filter(box => box !== from && box !== to && screen.some(point => point.x > box.left + 2 && point.x < box.right - 2 && point.y > box.top + 2 && point.y < box.bottom - 2)).map(box => box.key);
+      return [{ id: path.dataset.edgeId, start: onBorder(screen[0], from), end: onBorder(screen.at(-1), to), through }];
+    });
     const controls = [...element.querySelectorAll('.task-map-toolbar button, .task-map-toolbar .chip')].filter(node => node.getClientRects().length).map(node => ({ text: node.getAttribute('aria-label') || node.textContent, ...rect(node) }));
-    return { viewportWidth: innerWidth, map: rect(element), list: { ...rect(list), scrollWidth: list.scrollWidth, clientWidth: list.clientWidth }, boxes, controls };
+    return { viewportWidth: innerWidth, map: { ...rect(element), scrollWidth: element.scrollWidth, clientWidth: element.clientWidth }, scroll: { ...rect(scroll), scrollWidth: scroll.scrollWidth, clientWidth: scroll.clientWidth }, columns: Number(element.dataset.columns), boxes, edges, controls };
   });
   assert.equal(geometry.viewportWidth, 1440, `${description}: desktop viewport is 1440 px`);
-  assert.ok(geometry.boxes.length > 0, `${description}: measured flow rows`);
-  assert.ok(geometry.list.scrollWidth <= geometry.list.clientWidth + 1, `${description}: the list does not overflow horizontally`);
-  const sorted = [...geometry.boxes].sort((a, b) => a.top - b.top);
-  for (let index = 1; index < sorted.length; index++) assert.ok(sorted[index].top >= sorted[index - 1].bottom - 1 || sorted[index].key === sorted[index - 1].key, `${description}: ${sorted[index - 1].key} overlaps ${sorted[index].key}`);
-  for (const box of geometry.boxes) assert.ok(box.right <= geometry.list.right + 1, `${description}: row ${box.key} stays inside the list`);
+  assert.ok(geometry.boxes.length > 0, `${description}: measured boxes`);
+  assert.ok(geometry.map.scrollWidth <= geometry.map.clientWidth + 1, `${description}: the map tab does not overflow horizontally`);
+  // Three columns (root, delegate, outputs) fit a 700 px pane without horizontal scrolling.
+  if (geometry.columns <= 3) assert.ok(geometry.scroll.scrollWidth <= geometry.scroll.clientWidth + 1, `${description}: ${geometry.columns} columns fit without horizontal scrolling`);
+  for (let i = 0; i < geometry.boxes.length; i++) for (let j = i + 1; j < geometry.boxes.length; j++) {
+    const a = geometry.boxes[i], b = geometry.boxes[j];
+    assert.ok(Math.min(a.right, b.right) - Math.max(a.left, b.left) <= 1 || Math.min(a.bottom, b.bottom) - Math.max(a.top, b.top) <= 1, `${description}: ${a.key} overlaps ${b.key}`);
+  }
+  for (const entry of geometry.edges) {
+    assert.ok(entry.start && entry.end, `${description}: edge ${entry.id} starts and ends on its boxes`);
+    assert.deepEqual(entry.through, [], `${description}: edge ${entry.id} passes through boxes`);
+  }
   const heights = geometry.controls.map(control => control.height);
   assert.ok(heights.length >= 3, `${description}: toolbar controls were collected`);
   assert.ok(Math.max(...heights) - Math.min(...heights) <= 0.5, `${description}: toolbar controls share one height: ${JSON.stringify(geometry.controls)}`);
@@ -546,7 +616,7 @@ async function checkMatrix() {
         assert.ok(box.width >= 680 && box.width <= 720, `${cell}: map pane remains approximately 700 px (${box.width})`);
       }
       await mapGeometry(cell);
-      await evidence(`13-matrix-${cell}`, `${cell}: rows stacked, no horizontal overflow, consistent toolbar controls`);
+      await evidence(`13-matrix-${cell}`, `${cell}: boxes apart, edges clear of boxes, no tab overflow, consistent toolbar controls`);
     }
   }
 }
@@ -647,7 +717,7 @@ try {
     await present(parent); await openMap(); await assertSideBySide('initial wide companion placement');
     await evidence('01-open-map', 'Chat toolbar opens one Task map companion tab beside Chat');
   });
-  await timed('02 rows', checkRows);
+  await timed('02 topology', checkTopology);
   await timed('03 details and diff', checkDetails);
   await timed('04 sync with Chat', checkSync);
   await timed('05 navigation and entry points', checkNavigation);
@@ -656,7 +726,7 @@ try {
   await timed('08 visual matrix', checkMatrix);
   assert.deepEqual(report.errors, [], report.errors.join('\n'));
   await evidence('09-no-errors', 'no renderer page errors or console errors');
-  report.acceptance = { exercised: ['A1 real Kimi root + nested delegate steps + files row', 'A2 inline details of every row kind in this real turn; Show in Chat, Open session, Open file, Open diff when checkpoints exist', 'Sync: row click opens the Chat tools drawer at that call, Chat scroll marks rows, Sync off, Chat not on screen', 'A3 visible live second turn without reopening', 'A5 dark/light × en/zh-CN × wide/~700 map pane'], notCovered: ['native subagents and nested delegation (fixture harness covers them)', 'hidden-map request/render inactivity (fixture harness covers it)', 'custom theme (fixture harness covers it)'] };
+  report.acceptance = { exercised: ['A1 real Kimi root + delegate lane: fork edge, own column, lane strip, outputs column + produce edge', 'A2 details panel for every box kind in this real turn; Show in Chat, Open session, Open file, Open diff when checkpoints exist', 'Sync: box click opens the Chat tools drawer at that call, Chat scroll marks boxes, Sync off, Chat not on screen (panel, then Show in Chat)', 'A3 visible live second turn without reopening', 'A5 dark/light × en/zh-CN × wide/~700 map pane'], notCovered: ['native subagents and nested delegation (fixture harness covers them)', 'hidden-map request/render inactivity (fixture harness covers it)', 'custom theme (fixture harness covers it)'] };
 } catch (error) {
   report.errors.push(errorText(error));
   try {

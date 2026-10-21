@@ -137,6 +137,15 @@ test('delegates nest by first appearance with delegate and id-matched return edg
   assert.equal(byPart(graph, 'claude-delegate-grok')!.childSessionId, 'grok', 'Claude MCP result is parsed');
 });
 
+test('a delegate task preview skips the user words quoted above the delegating agent prompt', () => {
+  const input = fixtureInput(), claude = input.items.get('claude')!;
+  const plain = buildTaskMap(input).nodes.find(node => node.laneId === 'agent:claude')!.detail;
+  assert.ok(plain && !plain.startsWith('##'));
+  const handoff = "## User's words (attached by ThreadTerm from the delegating chat; verbatim, oldest first; later ones win)\n\n> Fix the validation\n\n## From the delegating agent\n\nInspect the validation callers\nand report back.\n\n---\nYou are a delegate.";
+  input.items = new Map(input.items).set('claude', [{ ...claude[0]!, parts: [{ type: 'text', text: handoff }] }, ...claude.slice(1)]);
+  assert.equal(buildTaskMap(input).nodes.find(node => node.laneId === 'agent:claude')!.detail, 'Inspect the validation callers');
+});
+
 test('delegate child matching rejects unrelated ids, falls back by creation order, and supports Grok native names', () => {
   const input = fixtureInput();
   const rootItems = input.items.get('root')!.map(entry => ({ ...entry, parts: [...entry.parts] }));
