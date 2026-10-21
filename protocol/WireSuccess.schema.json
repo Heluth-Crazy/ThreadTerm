@@ -1887,6 +1887,42 @@
             },
             "kind": {
               "type": "string",
+              "const": "map"
+            },
+            "sessionId": {
+              "type": "string"
+            },
+            "ownerSessionId": {
+              "not": {}
+            },
+            "projectId": {
+              "not": {}
+            },
+            "worktreePath": {
+              "not": {}
+            },
+            "path": {
+              "not": {}
+            },
+            "assetKind": {
+              "not": {}
+            }
+          },
+          "required": [
+            "id",
+            "kind",
+            "sessionId"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "kind": {
+              "type": "string",
               "const": "session"
             },
             "sessionId": {

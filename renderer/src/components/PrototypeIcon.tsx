@@ -3,6 +3,7 @@ import type { ProviderCapability } from '@threadterm/protocol';
 // Static SVG constants copied verbatim from the approved immutable reference.
 // Never pass user text into these markup maps.
 const icons: Record<string,string> = {
+  "flow": "<rect x=\"3\" y=\"3\" width=\"6\" height=\"6\" rx=\"1.5\"/><rect x=\"15\" y=\"3\" width=\"6\" height=\"6\" rx=\"1.5\"/><rect x=\"15\" y=\"15\" width=\"6\" height=\"6\" rx=\"1.5\"/><path d=\"M9 6h6M6 9v9h9\"/>",
   "home": "<path d=\"m3 10 9-7 9 7v10H3zM9 20v-6h6v6\"/>",
   "inbox": "<path d=\"M3 13h5l2 3h4l2-3h5\"/><path d=\"M5 6h14l2 7v5H3v-5z\"/>",
   "terminal": "<rect x=\"3\" y=\"4\" width=\"18\" height=\"16\" rx=\"2\"/><path d=\"m7 9 3 3-3 3M13 15h4\"/>",

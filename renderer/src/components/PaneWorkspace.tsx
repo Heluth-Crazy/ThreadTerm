@@ -1,4 +1,4 @@
-import { type CSSProperties, type DragEvent as ReactDragEvent, useEffect, useRef, useState } from "react";
+import { type CSSProperties, type DragEvent as ReactDragEvent, lazy, Suspense, useEffect, useRef, useState } from "react";
 import { createPortal } from 'react-dom';
 import type { ContentRef, FileReference, PaneLayout, PreviewAssociation, ProviderCapability, Session } from "@threadterm/protocol";
 import { confirmCloseEditors } from "../dirtyEditors";
@@ -41,6 +41,8 @@ import { isDocumentPinned, sessionDocumentError } from '../sessionDocuments';
 import { fileTabMenuItems } from '../contextMenuSurfaceItems';
 import { showContextMenu } from './ContextMenu';
 
+const TaskMapView = lazy(() => import('./TaskMapView'));
+
 type Props = {
   layout: PaneLayout;
   sessions: Session[];
@@ -74,6 +76,10 @@ type Props = {
 };
 /** Host callbacks for workbench content inside panes; absent → panes behave as before. */
 export type PaneWorkbench = {
+  openTaskMap?:(sessionId:string,itemId?:string)=>void;
+  taskMapFocus?:{tabId:string;sessionId:string;itemId?:string;key:string};
+  openSessionReview?:(target:{sessionId:string;checkpointId:string;toCheckpointId?:string;path:string})=>void;
+  openSessionFile?:(target:{sessionId:string;path:string})=>void;
   /** `sessionId` picks the receiving session (a file dropped on its pane); otherwise the workspace's current one. */
   sendToAgent?:(target:{projectId:string;worktreePath?:string;path:string;startLine?:number;endLine?:number;sessionId?:string})=>void;
   openHistory?:(target:{projectId:string;worktreePath?:string;path?:string;commit?:string})=>void;
@@ -449,7 +455,7 @@ function Pane({
   const content = node.tabs.filter(item=>visited.current.has(item.id)).map(item=>{
     const active=Boolean(visibleNode)&&item.id===tab?.id;
     const itemSession=item.kind==='session'?sessions.find(candidate=>candidate.id===item.sessionId):undefined;
-    return <SessionSurfaceContext.Provider key={item.id} value={{primaryHost,menuHost,focused:selected&&active,openFile:itemSession&&onFileReference?reference=>onFileReference(itemSession.id,reference):undefined,...sessionDiffActions(itemSession,projectPath,onOpenPath),openWeb:workbench?.openWeb?openWeb:undefined,openFork:onFork}}>
+    return <SessionSurfaceContext.Provider key={item.id} value={{primaryHost,menuHost,focused:selected&&active,openFile:itemSession&&onFileReference?reference=>onFileReference(itemSession.id,reference):undefined,...sessionDiffActions(itemSession,projectPath,onOpenPath),openWeb:workbench?.openWeb?openWeb:undefined,openFork:onFork,openTaskMap:itemSession?.mode==='chat'?workbench?.openTaskMap:undefined}}>
     <div className={`pane-tab-surface${fileDropTarget===item.id?" file-drop-target":""}`} data-content-id={item.id} {...(item.kind==='web'?{id:`browser-panel-${node.id}-${item.id}`,role:'tabpanel','aria-labelledby':`browser-tab-${node.id}-${item.id}`}:{})} hidden={!active} inert={!active}
      {...(itemSession&&!itemSession.readOnly&&workbench?.sendToAgent&&["starting","running","idle","waiting"].includes(itemSession.status)?{
       // An Explorer file dropped here inserts the same reference as "Send to agent", into this session.
@@ -466,6 +472,10 @@ function Pane({
     ) : (
       <ChatView session={itemSession} sessions={sessions} delegates={sessions.filter(candidate => candidate.delegation?.parentSessionId === itemSession.id)} delegatedBy={itemSession.delegation ? sessions.find(candidate => candidate.id === itemSession.delegation?.parentSessionId) : undefined} onOpenSession={onOpenSession} delegationEnabled={delegationEnabled} sessionInfoEnabled={sessionInfoEnabled} />
     )
+  ) : item.kind === "map" ? (
+    <Suspense fallback={<p className="note" role="status">{zh?'正在加载任务图…':'Loading task map…'}</p>}><TaskMapView sessionId={item.sessionId} sessions={sessions} visible={active&&browserVisible} zh={zh}
+      focus={workbench?.taskMapFocus?.tabId===item.id?workbench.taskMapFocus:undefined} onOpenSession={onOpenSession}
+      onOpenReview={workbench?.openSessionReview} onOpenFile={workbench?.openSessionFile} onClose={()=>onCloseTab({paneId:node.id,tabId:item.id})}/></Suspense>
   ) : item.kind === "history" ? (
     <GitHistoryView projectId={item.projectId} worktreePath={item.worktreePath} path={item.path} zh={zh}
       focusCommit={workbench?.historyFocus?.tabId===item.id?workbench.historyFocus.commit:undefined}
@@ -507,7 +517,7 @@ function Pane({
   });
   const tabLabel = (item: ContentRef) => item.kind === "session"
     ? sessions.find(candidate => candidate.id === item.sessionId)?.title ?? (zh?"终端":"Terminal")
-    : contentTitle(item, zh).label;
+    : item.kind==='map'?`${zh?'任务图':'Task map'} · ${sessions.find(candidate=>candidate.id===item.sessionId)?.title??item.sessionId}`:contentTitle(item, zh).label;
   const browserTabs=node.tabs.filter((item):item is Extract<ContentRef,{kind:'web'}>=>item.kind==='web');
   const browserLabel=(item:Extract<ContentRef,{kind:'web'}>)=>{
    const runtime=previewLabels?.get(item.id), title=browserTitles.get(item.id)??item.title??runtime?.observedTitle??runtime?.title;

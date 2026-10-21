@@ -16,6 +16,7 @@ export function webTabLabel(url:string):string {
  try { return new URL(url).host || url; } catch { return url; }
 }
 export function contentTitle(tab:Exclude<ContentRef,{kind:'session'}>,zh:boolean):{title:string;label:string} {
+ if(tab.kind==='map') return {title:zh?'任务图':'Task map',label:zh?'任务图':'Task map'};
  if(tab.kind==='history') return tab.path
   ? {title:`${zh?'文件历史':'File history'} · ${tab.path}`,label:`${baseName(tab.path)} · ${zh?'历史':'history'}`}
   : {title:zh?'Git 历史':'Git history',label:zh?'Git 历史':'Git history'};

@@ -15,6 +15,7 @@ export type SessionSurfacePresentation = {
  openWeb?:(url:string)=>void;
  /** Inserts a newly created fork in this surface's pane. */
  openFork?:(session:Session)=>void;
+ openTaskMap?:(sessionId:string,itemId?:string)=>void;
 };
 export const SessionSurfaceContext=createContext<SessionSurfacePresentation|undefined>(undefined);
 export function SurfaceActions({slot,children}:{slot:'primary'|'menu';children:ReactNode}) {
