@@ -5,6 +5,7 @@ import { confirmCloseEditors } from "../dirtyEditors";
 import { useTranslation } from "../i18n";
 import {
   splitPane,
+  addTabToPane,
   activate,
   reorderTab,
   resizeSplit,
@@ -19,6 +20,7 @@ import { GitHistoryView } from "./GitHistoryView";
 import { ReviewDiffView } from "./ReviewDiffView";
 import { WebPreview } from "./WebPreview";
 import { sanitizeBrowserTitle } from '../browserTypes';
+import { BROWSER_NEW_TAB_URL, updateBrowserTab } from '../browserNewTab';
 import type { BrowserShareWorkspace } from '../browserTypes';
 import { AgentIcon, Icon } from "./PrototypeIcon";
 import { ImportedHistoryView } from "./ImportedHistoryView";
@@ -405,6 +407,8 @@ function Pane({
   workbench?:PaneWorkbench;
 }) {
   const {locale}=useTranslation();const zh=locale==="zh-CN";
+  const browserLayout=useRef(layout);browserLayout.current=layout;
+  const changeBrowserLayout=(update:(current:PaneLayout)=>PaneLayout)=>{const before=browserLayout.current,next=update(before);if(next!==before){browserLayout.current=next;onChange(next);}};
   const tab =
     visibleNode?.tabs.find((item) => item.id === visibleNode.activeTabId) ?? visibleNode?.tabs[0];
   const visited=useRef(new Set<string>());
@@ -412,6 +416,17 @@ function Pane({
   for(const id of visited.current)if(!node.tabs.some(item=>item.id===id))visited.current.delete(id);
   const [issue, setIssue] = useState<string>();
   const [browserTitles,setBrowserTitles]=useState<Map<string,string>>(()=>new Map());
+  const [browserIcons,setBrowserIcons]=useState<Map<string,{favicon?:string;loading:boolean}>>(()=>new Map());
+  const [newBrowserTab,setNewBrowserTab]=useState<string>();
+  useEffect(()=>{setBrowserIcons(current=>{const ids=new Set(node.tabs.map(item=>item.id));return [...current.keys()].some(id=>!ids.has(id))?new Map([...current].filter(([id])=>ids.has(id))):current;});},[node.tabs]);
+  const browserStrip=useRef<HTMLDivElement>(null),hasBrowserTabs=node.tabs.some(item=>item.kind==='web');
+  const revealBrowserTab=(element?:Element|null)=>(element??browserStrip.current?.querySelector('.browser-page-tab.active'))?.scrollIntoView({inline:'nearest',block:'nearest',behavior:'instant'});
+  useEffect(()=>{if(visibleNode&&browserVisible)revealBrowserTab();},[tab?.id,node.tabs.length,Boolean(visibleNode),browserVisible]);
+  useEffect(()=>{
+    const strip=browserStrip.current;if(!strip)return;
+    const wheel=(event:WheelEvent)=>{if(event.ctrlKey||event.metaKey||!event.deltaY||Math.abs(event.deltaX)>Math.abs(event.deltaY)||strip.scrollWidth<=strip.clientWidth)return;event.preventDefault();strip.scrollLeft+=event.deltaY*(event.deltaMode===1?16:event.deltaMode===2?strip.clientWidth:1);};
+    strip.addEventListener('wheel',wheel,{passive:false});return()=>strip.removeEventListener('wheel',wheel);
+  },[hasBrowserTabs]);
   const [fileDropTarget, setFileDropTarget] = useState<string>();
   const session =
     tab?.kind === "session"
@@ -423,21 +438,25 @@ function Pane({
     if(preferences&&'linkTarget' in preferences&&preferences.linkTarget==='system')return openExternal(url);
     return workbench?.openWeb?.(url);
   }).catch(error=>setIssue(error instanceof Error?error.message:String(error)));};
-  const persistWebNavigation=(item:Extract<ContentRef,{kind:'web'}>,observation:{navigation:'pending'|'load_observed'|'failed';url?:string;title?:string;documentGeneration?:number})=>{
+  const persistWebNavigation=(item:Extract<ContentRef,{kind:'web'}>,observation:{navigation:'pending'|'load_observed'|'failed';url?:string;title?:string;documentGeneration?:number;favicon?:string;loading?:boolean})=>{
+    setBrowserIcons(current=>{const before=current.get(item.id),next={favicon:observation.favicon,loading:Boolean(observation.loading)};return before?.favicon===next.favicon&&before?.loading===next.loading?current:new Map(current).set(item.id,next);});
     if(observation.navigation==='load_observed'){
       const title=sanitizeBrowserTitle(observation.title??'');
       setBrowserTitles(current=>current.get(item.id)===title?current:new Map(current).set(item.id,title));
-      if(observation.url&&isWebTabUrl(observation.url)&&(observation.url!==item.url||title!==(item.title??''))){
-        const replace=(current:PaneLayout):PaneLayout=>current.kind==='pane'?{...current,tabs:current.tabs.map(tab=>tab.id===item.id&&tab.kind==='web'?{...tab,url:observation.url!,title}:tab)}:{...current,first:replace(current.first),second:replace(current.second)};
-        onChange(replace(layout));
-      }
+      if(observation.url&&isWebTabUrl(observation.url))changeBrowserLayout(current=>updateBrowserTab(current,item.id,observation.url!,title));
     }
     onWebNavigation?.(item.id,observation);
   };
   const addBrowserPopup=(opener:Extract<ContentRef,{kind:'web'}>,popup:{openerId:string;tabId:string;url:string})=>{
     if(popup.openerId!==opener.id)return;
     const insert=(current:PaneLayout):PaneLayout=>current.kind==='pane'?(current.id!==node.id||current.tabs.some(tab=>tab.id===popup.tabId)?current:{...current,tabs:[...current.tabs.slice(0,current.tabs.findIndex(tab=>tab.id===opener.id)+1),{id:popup.tabId,kind:'web',url:popup.url},...current.tabs.slice(current.tabs.findIndex(tab=>tab.id===opener.id)+1)]}):{...current,first:insert(current.first),second:insert(current.second)};
-    onChange(activate(insert(layout),node.id,popup.tabId));
+    changeBrowserLayout(current=>activate(insert(current),node.id,popup.tabId));
+  };
+  const addBrowserTab=()=>{
+    const id=crypto.randomUUID();
+    setNewBrowserTab(id);
+    changeBrowserLayout(current=>addTabToPane(current,node.id,{id,kind:'web',url:BROWSER_NEW_TAB_URL}));
+    onFocus();
   };
   const split = (direction: "horizontal" | "vertical") => {
     const paneId = crypto.randomUUID();
@@ -487,7 +506,7 @@ function Pane({
       onOpenFile={workbench?.openFile?path=>workbench.openFile?.({projectId:item.projectId,worktreePath:item.worktreePath,path}):undefined}
       comments={workbench?.comments}/>
   ) : item.kind === "web" ? (
-    <WebPreview prepareBrowserShare={prepareBrowserShare} tabId={item.id} url={item.url} visible={active&&browserVisible} zh={zh} commentScope={workbench?.commentScope} commentsHost={workbench?.comments} commentProvenance={previewProvenance?.get(item.id)} onNavigation={observation=>persistWebNavigation(item,observation)} onPopup={popup=>addBrowserPopup(item,popup)}/>
+    <WebPreview prepareBrowserShare={prepareBrowserShare} tabId={item.id} url={item.url} visible={active&&browserVisible} zh={zh} commentScope={workbench?.commentScope} commentsHost={workbench?.comments} commentProvenance={previewProvenance?.get(item.id)} onNavigation={observation=>persistWebNavigation(item,observation)} onPopup={popup=>addBrowserPopup(item,popup)} onNewTab={addBrowserTab} addressFocus={newBrowserTab===item.id?item.id:undefined}/>
   ) : isFileTab(item) ? (
     <FileWorkspace
       projectId={item.projectId}
@@ -520,11 +539,13 @@ function Pane({
     : item.kind==='map'?`${zh?'任务图':'Task map'} · ${sessions.find(candidate=>candidate.id===item.sessionId)?.title??item.sessionId}`:contentTitle(item, zh).label;
   const browserTabs=node.tabs.filter((item):item is Extract<ContentRef,{kind:'web'}>=>item.kind==='web');
   const browserLabel=(item:Extract<ContentRef,{kind:'web'}>)=>{
+   if(item.url===BROWSER_NEW_TAB_URL)return zh?'新标签页':'New tab';
    const runtime=previewLabels?.get(item.id), title=browserTitles.get(item.id)??item.title??runtime?.observedTitle??runtime?.title;
    if(title)return title;
    try{const parsed=new URL(item.url);return `${parsed.host}${parsed.pathname==='/'?'':parsed.pathname}${parsed.search}`;}catch{return item.url;}
   };
   const browserTitle=(item:Extract<ContentRef,{kind:'web'}>)=>{
+   if(item.url===BROWSER_NEW_TAB_URL)return zh?'新标签页':'New tab';
    const runtime=previewLabels?.get(item.id), owner=runtime?.sessionId?sessions.find(candidate=>candidate.id===runtime.sessionId):undefined;
    return `${item.url}${owner?` — ${owner.title} (${owner.provider})`:''}`;
   };
@@ -542,7 +563,7 @@ function Pane({
     <SessionSurfaceContext.Provider value={{primaryHost,menuHost,focused:selected,openFile:session&&onFileReference?reference=>onFileReference(session.id,reference):undefined,...sessionDiffActions(session,projectPath,onOpenPath),openWeb:workbench?.openWeb?openWeb:undefined}}>
     <section data-pane-id={node.id} hidden={!visibleNode} inert={!visibleNode} style={style} className={`workspace-pane ws-pane ${fullscreen ? "fullscreen" : ""}${selected ? " selected" : ""}`} onPointerDown={event=>{if(event.currentTarget.contains(event.target as Node))onFocus();}}>
        {!lastPane&&session&&tab&&<div className="pane-identity"><AgentIcon provider={session.provider}/><span>{tabLabel(tab)}</span></div>}
-       {browserTabs.length>0&&<div className="browser-page-tabs" role="tablist" aria-label={zh?'浏览器页面':'Browser pages'}>{browserTabs.map(item=>{const label=browserLabel(item),title=browserTitle(item),active=item.id===tab?.id,provider=previewLabels?.get(item.id)?.sessionId?sessions.find(candidate=>candidate.id===previewLabels.get(item.id)?.sessionId)?.provider:undefined;return <div className={`browser-page-tab${active?' active':''}`} key={item.id} onContextMenu={event=>browserMenu(item,event)}><button type="button" id={`browser-tab-${node.id}-${item.id}`} role="tab" aria-selected={active} aria-controls={`browser-panel-${node.id}-${item.id}`} tabIndex={active?0:-1} title={title} aria-label={title} onKeyDown={browserKeys} onClick={()=>onActivateTab({paneId:node.id,tabId:item.id})}><Icon name="globe"/><span>{label}</span>{provider&&<small>{provider}</small>}</button><button type="button" className="browser-page-tab-close" aria-label={zh?`关闭页面 ${label}`:`Close page ${label}`} title={zh?'关闭页面':'Close page'} onPointerDown={event=>event.stopPropagation()} onClick={event=>{event.stopPropagation();onCloseTab({paneId:node.id,tabId:item.id});}}><Icon name="close"/></button></div>;})}</div>}
+       {browserTabs.length>0&&<div className="browser-page-tabs" ref={browserStrip} onKeyDown={event=>{if((event.ctrlKey||event.metaKey)&&!event.shiftKey&&!event.altKey&&event.key.toLowerCase()==='t'){event.preventDefault();event.stopPropagation();addBrowserTab();}}} role="tablist" aria-label={zh?'浏览器页面':'Browser pages'}>{browserTabs.map(item=>{const label=browserLabel(item),title=browserTitle(item),active=item.id===tab?.id,provider=previewLabels?.get(item.id)?.sessionId?sessions.find(candidate=>candidate.id===previewLabels.get(item.id)?.sessionId)?.provider:undefined;return <div className={`browser-page-tab${active?' active':''}`} key={item.id} onContextMenu={event=>browserMenu(item,event)}><button type="button" id={`browser-tab-${node.id}-${item.id}`} role="tab" aria-selected={active} aria-controls={`browser-panel-${node.id}-${item.id}`} tabIndex={active?0:-1} title={title} aria-label={title} onKeyDown={browserKeys} onClick={event=>{onActivateTab({paneId:node.id,tabId:item.id});revealBrowserTab(event.currentTarget.closest('.browser-page-tab'));}}>{browserIcons.get(item.id)?.loading?<span className="browser-page-loading" aria-hidden="true"/>:browserIcons.get(item.id)?.favicon?<img className="browser-page-favicon" src={browserIcons.get(item.id)!.favicon} width={16} height={16} alt="" aria-hidden="true" onError={event=>{const failed=event.currentTarget.getAttribute('src');setBrowserIcons(current=>{const icon=current.get(item.id);return icon?.favicon===failed?new Map(current).set(item.id,{loading:icon.loading}):current;});}}/>:<Icon name="globe"/>}<span className="browser-page-tab-title">{label}</span>{provider&&<small>{provider}</small>}</button><button type="button" className="browser-page-tab-close" aria-label={zh?`关闭页面 ${label}`:`Close page ${label}`} title={zh?'关闭页面':'Close page'} onPointerDown={event=>event.stopPropagation()} onClick={event=>{event.stopPropagation();onCloseTab({paneId:node.id,tabId:item.id});}}><Icon name="close"/></button></div>;})}<span className="browser-page-new-tab-slot"><button type="button" className="browser-page-new-tab" aria-label={zh?'新标签页':'New tab'} title={zh?'新标签页':'New tab'} onClick={addBrowserTab}><Icon name="plus"/></button></span></div>}
       <SurfaceActions slot="menu">
         <button type="button" className="menu-item" onClick={onToggleFullscreen}><Icon name="panel"/>{fullscreen?(zh?'退出窗格全屏':'Restore pane'):(zh?'全屏窗格':'Fullscreen pane')}</button>
         <button type="button" className="menu-item" disabled={paneLimit} title={paneLimit?(zh?'最多 4 个窗格':'Up to 4 panes'):undefined} onClick={()=>split('horizontal')}><Icon name="split"/>{zh?'左右拆分':'Split right'}</button>

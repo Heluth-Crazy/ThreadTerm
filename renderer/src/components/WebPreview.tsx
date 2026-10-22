@@ -10,6 +10,8 @@ import { Icon } from './PrototypeIcon';
 import { WbIcon } from '../workbench/icons';
 import { browserAddressParts } from '../browserAddress';
 import { browserInnerRadius } from '../browserRadius';
+import { BROWSER_NEW_TAB_URL } from '../browserNewTab';
+import { normalizeBrowserUrl } from '../../../desktop/src/browser/policy';
 import { browserDevtoolsShortcut, clampDevtoolsHeight } from '../browserDevtools';
 import { PageCommentControls, PageCommentForm, PageHandoffDestination, ScreenshotMarkup, usePageCommentPreview } from './PageComments';
 import type { BrowserCaptureResult, BrowserConsoleResult } from '../../../desktop/src/browser/handoffTypes';
@@ -24,10 +26,12 @@ import { SurfaceDialog } from './SurfaceDialog';
 import '../workbench/workbench.css';
 import './browser-chrome.css';
 
-type NavigationObservation={navigation:'pending'|'load_observed'|'failed';url?:string;title?:string;documentGeneration?:number};
-type Props={tabId:string;url:string;visible:boolean;zh:boolean;commentScope?:CommentScope;commentsHost?:FileCommentsHost;commentProvenance?:PageCommentProvenance;prepareBrowserShare?:(tabId:string)=>Promise<BrowserShareWorkspace>;onNavigation?:(observation:NavigationObservation)=>void;onPopup?:(popup:{openerId:string;tabId:string;url:string})=>void};
+type NavigationObservation={navigation:'pending'|'load_observed'|'failed';url?:string;title?:string;documentGeneration?:number;favicon?:string;loading?:boolean};
+type Props={tabId:string;url:string;visible:boolean;zh:boolean;commentScope?:CommentScope;commentsHost?:FileCommentsHost;commentProvenance?:PageCommentProvenance;prepareBrowserShare?:(tabId:string)=>Promise<BrowserShareWorkspace>;onNavigation?:(observation:NavigationObservation)=>void;onPopup?:(popup:{openerId:string;tabId:string;url:string})=>void;onNewTab?:()=>void;addressFocus?:string};
 /** A native browser page. FilePreview retains the sandboxed iframe used for saved HTML and development addresses. */
-export function WebPreview({tabId,url,visible,zh,commentScope,commentsHost,commentProvenance,prepareBrowserShare,onNavigation,onPopup}:Props) {
+export function WebPreview({tabId,url,visible,zh,commentScope,commentsHost,commentProvenance,prepareBrowserShare,onNavigation,onPopup,onNewTab,addressFocus}:Props) {
+ const [newTabAddress,setNewTabAddress]=useState<string>();
+ const pageUrl=url===BROWSER_NEW_TAB_URL?(newTabAddress??url):url,blank=pageUrl===BROWSER_NEW_TAB_URL;
  const placeholder=useRef<HTMLDivElement>(null);
  const devtools=useRef<HTMLDivElement>(null);
  const boundsObserver=useRef<ResizeObserver|undefined>(undefined),sendBounds=useRef<(()=>void)|undefined>(undefined),devtoolsPresented=useRef<boolean|undefined>(undefined);
@@ -52,11 +56,11 @@ export function WebPreview({tabId,url,visible,zh,commentScope,commentsHost,comme
  const latest=useRef({tabId,state,scope,visible,prepareBrowserShare});latest.current={tabId,state,scope,visible,prepareBrowserShare};
  const shareFence=()=>browserShareFence(latest.current.tabId,latest.current.state,latest.current.scope,latest.current.visible);
  usePassiveBrowserOcclusion(notice,visible&&Boolean(state.notice));
- const [address,setAddress]=useState(url),[findOpen,setFindOpen]=useState(false),[find,setFind]=useState('');
+ const [address,setAddress]=useState(blank?'':url),[findOpen,setFindOpen]=useState(false),[find,setFind]=useState('');
  const [devtoolsHeight,setDevtoolsHeight]=useState(()=>{try{const height=Number(localStorage.getItem('threadterm.browser.devtoolsHeight'));return Number.isFinite(height)&&height>0?height:0;}catch{return 0;}});
  const [addressFocused,setAddressFocused]=useState(false),addressParts=browserAddressParts(address);
  const addressInput=useRef<HTMLInputElement>(null),findInput=useRef<HTMLInputElement>(null);
- const observed=useRef('');
+ const observed=useRef(''),focusedAddress=useRef<string|undefined>(undefined);
  const preview=usePageCommentPreview(url,commentScope,commentsHost,zh,commentProvenance,{element:placeholder,focus:()=>void browserCommand({type:'focus',tabId}).catch(()=>undefined)});
  const comments=useReviewComments(commentScope);
  const sharing=state.sharing;
@@ -89,12 +93,12 @@ export function WebPreview({tabId,url,visible,zh,commentScope,commentsHost,comme
   stateSequence.advance();
   const before=shareFence();latest.current={...latest.current,state:next};
   if(!sameBrowserShareFence(before,shareFence())){shareIntents.invalidate();pendingShare.current=undefined;setControlConfirmation(undefined);setShareBusy(false);setShareTarget(undefined);}
-  setState(next);setIssue(next.issue);const key=[next.navigation,next.url,next.title,next.documentGeneration].join('\0');if(key!==observed.current){observed.current=key;onNavigation?.({navigation:next.navigation,url:next.url,title:next.title||undefined,documentGeneration:next.documentGeneration});}
+  setState(next);setIssue(next.issue);const key=[next.navigation,next.url,next.title,next.documentGeneration,next.favicon,next.loading].join('\0');if(key!==observed.current){observed.current=key;onNavigation?.({navigation:next.navigation,url:next.url,title:next.title||undefined,documentGeneration:next.documentGeneration,favicon:next.favicon,loading:next.loading});}
  };
- const command=(value:Parameters<typeof browserCommand>[0])=>void browserCommand(value).then(result=>{
+ const command=(value:Parameters<typeof browserCommand>[0])=>{if(blank)return;void browserCommand(value).then(result=>{
   // Show/bounds replies can predate a capture event; the emitted state owns visibility.
   if(value.type!=='show'&&value.type!=='bounds'&&value.type!=='hide'&&value.type!=='focus'&&result&&'tabId' in result&&result.tabId===tabId)acceptState(result);
- }).catch(error=>setIssue(String(error)));
+ }).catch(error=>setIssue(String(error)));};
  const setShareLevel=async(level:BrowserSharingLevel,confirmed?:BrowserShareIntent)=>{
   const intent=confirmed??shareIntents.capture(shareFence());
   if(!live.current||!shareIntents.current(intent,shareFence())){setControlConfirmation(undefined);return;}
@@ -122,8 +126,18 @@ export function WebPreview({tabId,url,visible,zh,commentScope,commentsHost,comme
  };
  useEffect(()=>()=>{shareIntents.invalidate();pendingShare.current=undefined;void browserCommand({type:'share',tabId,level:'off'}).catch(()=>undefined);},[tabId,commentScope?.projectId,commentScope?.root,shareIntents]);
  useEffect(()=>{const intent=controlConfirmation?.intent??pendingShare.current;if(intent&&!shareIntents.current(intent,shareFence())){shareIntents.invalidate();pendingShare.current=undefined;setControlConfirmation(undefined);setShareBusy(false);setShareTarget(undefined);}},[scope,visible,state.documentGeneration,sharing?.navigationEpoch,sharing?.viewGeneration,sharing?.grantEpoch,sharing?.level,sharing?.controlAvailable,controlConfirmation,shareIntents]);
- useEffect(()=>{setAddress(url);},[url]);
+ useEffect(()=>{setAddress(url===BROWSER_NEW_TAB_URL?'':url);},[url]);
+ useEffect(()=>{if(visible&&addressFocus&&focusedAddress.current!==addressFocus){focusedAddress.current=addressFocus;addressInput.current?.focus();addressInput.current?.select();}},[visible,addressFocus]);
+ const navigateAddress=()=>{
+  if(!blank){command({type:'navigate',tabId,url:address});return;}
+  const normalized=normalizeBrowserUrl(address);
+  if(!normalized.url){setIssue(copy('Enter an http or https address; search is not available here.','请输入 http 或 https 地址；此处不支持搜索。'));return;}
+  if(normalized.url==='about:blank'||normalized.url===BROWSER_NEW_TAB_URL){setAddress('');setIssue(undefined);return;}
+  setIssue(undefined);setNewTabAddress(normalized.url);
+ };
  const handleBrowserKey=(event:KeyboardEvent)=>{
+  if((event.ctrlKey||event.metaKey)&&!event.shiftKey&&!event.altKey&&event.key.toLowerCase()==='t'&&onNewTab){event.preventDefault();event.stopPropagation();onNewTab();return;}
+  if(blank){if((event.ctrlKey||event.metaKey)&&!event.shiftKey&&event.key.toLowerCase()==='l'){event.preventDefault();addressInput.current?.focus();addressInput.current?.select();}return;}
   const devtoolsShortcut=browserDevtoolsShortcut({key:event.key,control:event.ctrlKey,meta:event.metaKey,shift:event.shiftKey,alt:event.altKey});
   if(devtoolsShortcut){event.preventDefault();event.stopPropagation();command({type:'devtools',tabId,action:devtoolsShortcut.action,panel:devtoolsShortcut.panel});}
   else if((event.ctrlKey||event.metaKey)&&!event.shiftKey&&event.key.toLowerCase()==='f'){event.preventDefault();setFindOpen(true);command({type:'find',tabId,text:''});requestAnimationFrame(()=>findInput.current?.focus());}
@@ -135,18 +149,18 @@ export function WebPreview({tabId,url,visible,zh,commentScope,commentsHost,comme
   if(event.type==='popup'&&event.openerId===tabId){onPopup?.(event);return;}
   if(event.type==='shortcut'&&event.tabId===tabId&&visible){const devtoolsShortcut=browserDevtoolsShortcut({key:event.key,control:event.control,meta:event.meta,shift:event.shift,alt:event.alt}),key=new KeyboardEvent(event.phase??'keydown',{key:event.key,code:event.code,ctrlKey:event.control,metaKey:event.meta,shiftKey:event.shift,altKey:event.alt,bubbles:true,cancelable:true});if(event.phase!=='keyup')handleBrowserKey(key);if(!devtoolsShortcut&&(key.key!=='Escape'||!key.defaultPrevented))window.dispatchEvent(key);}
   if(event.type==='state'&&event.state.tabId===tabId)acceptState(event.state);
- }),[tabId,visible,onNavigation,onPopup,state.zoom,findOpen]);
+ }),[tabId,visible,onNavigation,onPopup,onNewTab,state.zoom,findOpen,blank]);
  useEffect(()=>{
-  if(!visible)return;
+  if(!visible||blank)return;
   const element=placeholder.current;if(!element)return;
   const radius=()=>{const pane=element.closest('.workspace-pane');return browserInnerRadius(pane?getComputedStyle(pane):undefined);};
   const stopWatching=watchBrowserOverlays(element);
   const bounds=()=>{const currentDevtoolsOpen=Boolean(latest.current.state.devtools?.open);updateBrowserOverlayBounds();const rect=element.getBoundingClientRect(),devtoolsRect=currentDevtoolsOpen?devtools.current?.getBoundingClientRect():undefined;if(currentDevtoolsOpen){const paneHeight=devtoolsPaneHeight();if(paneHeight>0)setDevtoolsHeight(current=>{const next=clampDevtoolsHeight(current||paneHeight*.4,paneHeight);if(next!==current)try{localStorage.setItem('threadterm.browser.devtoolsHeight',String(next));}catch{}return next;});}if(handoffRef.current?.kind==='markup')setMarkupBounds(current=>current&&current.x===rect.x&&current.y===rect.y&&current.width===rect.width&&current.height===rect.height?current:{x:rect.x,y:rect.y,width:rect.width,height:rect.height});command({type:'bounds',tabId,radius:radius(),bounds:{x:Math.round(rect.x),y:Math.round(rect.y),width:Math.round(rect.width),height:Math.round(rect.height)},...(devtoolsRect&&{devtools:{x:Math.round(devtoolsRect.x),y:Math.round(devtoolsRect.y),width:Math.round(devtoolsRect.width),height:Math.round(devtoolsRect.height)}})});};
   sendBounds.current=bounds;
-  const currentDevtoolsOpen=Boolean(latest.current.state.devtools?.open),rect=element.getBoundingClientRect(),devtoolsRect=currentDevtoolsOpen?devtools.current?.getBoundingClientRect():undefined;command({type:'show',tabId,url,frameName:preview.frameName,radius:radius(),bounds:{x:Math.round(rect.x),y:Math.round(rect.y),width:Math.round(rect.width),height:Math.round(rect.height)},...(devtoolsRect&&{devtools:{x:Math.round(devtoolsRect.x),y:Math.round(devtoolsRect.y),width:Math.round(devtoolsRect.width),height:Math.round(devtoolsRect.height)}})});
+  const currentDevtoolsOpen=Boolean(latest.current.state.devtools?.open),rect=element.getBoundingClientRect(),devtoolsRect=currentDevtoolsOpen?devtools.current?.getBoundingClientRect():undefined;command({type:'show',tabId,url:pageUrl,frameName:preview.frameName,radius:radius(),bounds:{x:Math.round(rect.x),y:Math.round(rect.y),width:Math.round(rect.width),height:Math.round(rect.height)},...(devtoolsRect&&{devtools:{x:Math.round(devtoolsRect.x),y:Math.round(devtoolsRect.y),width:Math.round(devtoolsRect.width),height:Math.round(devtoolsRect.height)}})});
   const observer=new ResizeObserver(bounds);boundsObserver.current=observer;observer.observe(element);addEventListener('scroll',bounds,true);
   return()=>{if(boundsObserver.current===observer)boundsObserver.current=undefined;if(sendBounds.current===bounds)sendBounds.current=undefined;observer.disconnect();removeEventListener('scroll',bounds,true);command({type:'hide',tabId});stopWatching();};
- },[tabId,url,visible,preview.frameName]);
+ },[tabId,pageUrl,blank,visible,preview.frameName]);
  useEffect(()=>{
   if(!visible)return;
   const observer=boundsObserver.current,element=devtoolsOpen?devtools.current:null,previous=devtoolsPresented.current;devtoolsPresented.current=devtoolsOpen;
@@ -158,7 +172,7 @@ export function WebPreview({tabId,url,visible,zh,commentScope,commentsHost,comme
  useEffect(()=>{
   if(!visible)return;
   const key=(event:KeyboardEvent)=>{if(event.target instanceof Node&&surface.current?.contains(event.target))handleBrowserKey(event);};addEventListener('keydown',key);return()=>removeEventListener('keydown',key);
- },[visible,tabId,state.zoom,findOpen]);
+ },[visible,tabId,state.zoom,findOpen,blank,onNewTab]);
  useEffect(()=>onPageContextMenu(({frameName,x,y,pick})=>{
   if(frameName!==preview.frameName||!pick)return;
   showContextMenu({x,y,restoreFocus:placeholder.current,onDismiss:selected=>{if(selected?.testId!=='web-preview-comment-element'&&pick.shot)void deletePageShots([pick.shot.id]).catch(()=>undefined);},items:webContextMenuItems({pick,zh,enabled:preview.enabled,comment:()=>preview.acceptPick(pick),reload:()=>{preview.cancel(false);command({type:'reload',tabId});},copy:()=>navigator.clipboard.writeText(pick.target.type==='element' ? (pick.target.text ?? '') : ''),inspect:()=>command({type:'devtools',tabId,action:'inspect'})})});
@@ -166,15 +180,15 @@ export function WebPreview({tabId,url,visible,zh,commentScope,commentsHost,comme
  useEffect(()=>{live.current=true;return()=>{live.current=false;captureSequence.current++;const current=handoffRef.current;if(!handoffBusy.current&&current&&current.kind!=='console')void deletePageShots([current.capture.shot.id]).catch(()=>undefined);};},[tabId]);
  useEffect(()=>{const current=handoffRef.current;if(!handoffBusy.current&&current&&((current.kind==='console'?current.console.documentGeneration:current.capture.documentGeneration)!==state.documentGeneration))cancelHandoff();setConsoleCounts({errors:0,warnings:0});},[state.documentGeneration]);
  useEffect(()=>onBrowserHandoffEvent(event=>{if(event.type==='console'&&event.tabId===tabId)setConsoleCounts({errors:event.errors,warnings:event.warnings});}),[tabId]);
- useEffect(()=>{if(!visible)return;let active=true;void browserHandoff({type:'console',tabId,documentGeneration:state.documentGeneration}).then(result=>{if(active&&'entries' in result)setConsoleCounts({errors:result.errors,warnings:result.warnings});}).catch(()=>undefined);return()=>{active=false;};},[tabId,visible,state.documentGeneration]);
+ useEffect(()=>{if(!visible||blank)return;let active=true;void browserHandoff({type:'console',tabId,documentGeneration:state.documentGeneration}).then(result=>{if(active&&'entries' in result)setConsoleCounts({errors:result.errors,warnings:result.warnings});}).catch(()=>undefined);return()=>{active=false;};},[tabId,visible,blank,state.documentGeneration]);
  return <section ref={surface} className="wb-web-preview" data-preview-id={commentProvenance?.previewId} data-document-id={commentProvenance?.documentId} data-web-tab-id={tabId} data-document-generation={state.documentGeneration} data-handoff-state={capturing?'capturing':handoff?.kind??(handoffIssue?'error':'idle')}>
   <div className="file-bar wb-browser-toolbar">
    <div className="wb-browser-navigation" role="group" aria-label="Page navigation">
    <button type="button" className="icon-btn icon-btn-sm" disabled={!state.canGoBack} title={copy('Back','后退')} aria-label={copy('Back','后退')} onClick={()=>command({type:'back',tabId})}><WbIcon name="arrow-left"/></button>
    <button type="button" className="icon-btn icon-btn-sm wb-browser-forward" disabled={!state.canGoForward} title={copy('Forward','前进')} aria-label={copy('Forward','前进')} onClick={()=>command({type:'forward',tabId})}><WbIcon name="arrow-right"/></button>
-   <button type="button" className="icon-btn icon-btn-sm" title={state.loading?copy('Stop','停止'):copy('Reload','重新加载')} aria-label={state.loading?copy('Stop','停止'):copy('Reload','重新加载')} onClick={()=>command({type:state.loading?'stop':'reload',tabId})}>{state.loading?<WbIcon name="close"/>:<WbIcon name="refresh"/>}</button>
+   <button type="button" className="icon-btn icon-btn-sm" disabled={blank} title={state.loading?copy('Stop','停止'):copy('Reload','重新加载')} aria-label={state.loading?copy('Stop','停止'):copy('Reload','重新加载')} onClick={()=>command({type:state.loading?'stop':'reload',tabId})}>{state.loading?<WbIcon name="close"/>:<WbIcon name="refresh"/>}</button>
    </div>
-   <label className="wb-browser-address"><span className="sr-only">{copy('Address','地址')}</span><span className="wb-browser-page-glyph" aria-hidden={!state.loading||undefined}>{state.loading?<span className="wb-browser-loading" role="status" aria-label={copy('Loading','正在加载')}/>:<WbIcon name={addressParts.scheme==='https'?'tune':'info'} aria-hidden="true"/>}</span><input ref={addressInput} value={address} aria-label={copy('Address','地址')} data-url-overlay={!addressFocused||undefined} onFocus={event=>{setAddressFocused(true);event.currentTarget.select();}} onBlur={()=>setAddressFocused(false)} onChange={event=>setAddress(event.target.value)} onKeyDown={event=>{if(event.key==='Enter'){event.preventDefault();command({type:'navigate',tabId,url:address});}}}/>{!addressFocused&&<span className="wb-browser-url" aria-hidden="true"><span>{addressParts.host}</span><span className="wb-browser-url-rest">{addressParts.rest}</span></span>}{state.zoom!==1&&<button type="button" className="icon-btn icon-btn-sm wb-browser-zoom" title={copy(`Reset zoom (${Math.round(state.zoom*100)}%)`,`重置缩放（${Math.round(state.zoom*100)}%）`)} aria-label={`${Math.round(state.zoom*100)}%`} onClick={()=>command({type:'zoom',tabId,factor:1})}><WbIcon name={state.zoom>1?'zoom-in':'zoom-out'}/></button>}</label>
+   <label className="wb-browser-address"><span className="sr-only">{copy('Address','地址')}</span><span className="wb-browser-page-glyph" aria-hidden={!state.loading||undefined}>{state.loading?<span className="wb-browser-loading" role="status" aria-label={copy('Loading','正在加载')}/>:<WbIcon name={addressParts.scheme==='https'?'tune':'info'} aria-hidden="true"/>}</span><input ref={addressInput} value={address} aria-label={copy('Address','地址')} data-url-overlay={!addressFocused||undefined} onFocus={event=>{setAddressFocused(true);event.currentTarget.select();}} onBlur={()=>setAddressFocused(false)} onChange={event=>setAddress(event.target.value)} onKeyDown={event=>{if(event.key==='Enter'){event.preventDefault();navigateAddress();}}}/>{!addressFocused&&<span className="wb-browser-url" aria-hidden="true"><span>{addressParts.host}</span><span className="wb-browser-url-rest">{addressParts.rest}</span></span>}{state.zoom!==1&&<button type="button" className="icon-btn icon-btn-sm wb-browser-zoom" title={copy(`Reset zoom (${Math.round(state.zoom*100)}%)`,`重置缩放（${Math.round(state.zoom*100)}%）`)} aria-label={`${Math.round(state.zoom*100)}%`} onClick={()=>command({type:'zoom',tabId,factor:1})}><WbIcon name={state.zoom>1?'zoom-in':'zoom-out'}/></button>}</label>
    <div className="wb-browser-actions" role="group" aria-label="Page actions">
    <div className="wb-browser-share" role="group" aria-label={copy('Agent access','智能体访问')} aria-describedby={sharingDescription} aria-busy={shareBusy||Boolean(sharing&&sharing.status!=='idle')}>
     <span><WbIcon name="agent-access"/><span className="sr-only">{copy('Agents','智能体')}</span></span><button type="button" className="btn btn-sm btn-ghost" aria-label={copy('Agent access Off','关闭智能体访问')} aria-pressed={!sharing||sharing.level==='off'} disabled={(!sharing||sharing.level==='off')&&!shareBusy&&!controlConfirmation&&(!sharing||sharing.status==='idle')} onClick={()=>void setShareLevel('off')}>Off</button><button type="button" className="btn btn-sm btn-ghost" aria-label={copy('Agent access Read','允许智能体读取')} aria-pressed={sharing?.level==='read'} disabled={!canShare||(shareBusy&&shareTarget!=='control')||sharing?.status!=='idle'||sharing.level==='read'&&!controlConfirmation&&shareTarget!=='control'} onClick={()=>void setShareLevel('read')}>Read</button><button type="button" className="btn btn-sm btn-ghost" aria-label={copy('Agent access Control','允许智能体控制')} aria-pressed={sharing?.level==='control'} disabled={!canControl||shareBusy||sharing?.level==='control'} onClick={requestControl}>Control</button>
@@ -182,10 +196,10 @@ export function WebPreview({tabId,url,visible,zh,commentScope,commentsHost,comme
    {sharing?.reading&&<span role="status" className="wb-browser-reading">{copy('Reading…','正在读取…')}</span>}
    <PageCommentControls preview={preview} zh={zh} variant="icon" hint={false}/>
    <button type="button" className="icon-btn icon-btn-sm" aria-label={copy('Screenshot to Chat','截图到对话')} title={copy('Screenshot to Chat','截图到对话')} aria-busy={capturing} disabled={!commentsHost||capturing||Boolean(handoff)||state.loading||state.navigation!=='load_observed'||state.unloaded} onClick={()=>void screenshot()}><WbIcon name="screenshot"/></button>
-   <button type="button" className="icon-btn icon-btn-sm wb-console-count" aria-label={copy('Page console','页面控制台')} title={copy(`${consoleCounts.errors} errors, ${consoleCounts.warnings} warnings`,`${consoleCounts.errors} 个错误，${consoleCounts.warnings} 个警告`)} data-count={consoleCounts.errors>0?consoleCounts.errors:consoleCounts.warnings} data-severity={consoleCounts.errors>0?'error':'warning'} aria-expanded={consoleOpen} disabled={!commentsHost} onClick={()=>setConsoleOpen(!consoleOpen)}><Icon name="terminal"/></button>
-   <button type="button" className="icon-btn icon-btn-sm" title={copy('Find in page','在页面中查找')} aria-label={copy('Find in page','在页面中查找')} onClick={()=>{setFindOpen(true);command({type:'find',tabId,text:''});requestAnimationFrame(()=>findInput.current?.focus());}}><Icon name="search"/></button>
-   <button type="button" className="icon-btn icon-btn-sm wb-browser-devtools" title={copy('Developer tools (F12)','开发者工具（F12）')} aria-label={copy('Developer tools','开发者工具')} aria-pressed={devtoolsOpen} onClick={()=>command({type:'devtools',tabId,action:'toggle'})}><WbIcon name="devtools"/></button>
-   <button type="button" className="icon-btn icon-btn-sm wb-browser-open" title={copy('Open in browser', '在浏览器中打开')} aria-label={copy('Open in browser', '在浏览器中打开')} onClick={() => void openExternal(state.url||url).catch(error => setIssue(String(error)))}><Icon name="popout"/></button>
+   <button type="button" className="icon-btn icon-btn-sm wb-console-count" aria-label={copy('Page console','页面控制台')} title={copy(`${consoleCounts.errors} errors, ${consoleCounts.warnings} warnings`,`${consoleCounts.errors} 个错误，${consoleCounts.warnings} 个警告`)} data-count={consoleCounts.errors>0?consoleCounts.errors:consoleCounts.warnings} data-severity={consoleCounts.errors>0?'error':'warning'} aria-expanded={consoleOpen} disabled={blank||!commentsHost} onClick={()=>setConsoleOpen(!consoleOpen)}><Icon name="terminal"/></button>
+   <button type="button" className="icon-btn icon-btn-sm" disabled={blank} title={copy('Find in page','在页面中查找')} aria-label={copy('Find in page','在页面中查找')} onClick={()=>{setFindOpen(true);command({type:'find',tabId,text:''});requestAnimationFrame(()=>findInput.current?.focus());}}><Icon name="search"/></button>
+   <button type="button" className="icon-btn icon-btn-sm wb-browser-devtools" disabled={blank} title={copy('Developer tools (F12)','开发者工具（F12）')} aria-label={copy('Developer tools','开发者工具')} aria-pressed={devtoolsOpen} onClick={()=>command({type:'devtools',tabId,action:'toggle'})}><WbIcon name="devtools"/></button>
+   <button type="button" className="icon-btn icon-btn-sm wb-browser-open" disabled={blank} title={copy('Open in browser', '在浏览器中打开')} aria-label={copy('Open in browser', '在浏览器中打开')} onClick={() => void openExternal(state.url||url).catch(error => setIssue(String(error)))}><Icon name="popout"/></button>
    </div>
   </div>
   <p id={sharingDescription} className={`wb-browser-sharing-status${sharing&&sharing.level!=='off'||shareBusy||sharing?.status==='stopping'||sharing?.reason?' wb-browser-infobar':' sr-only'}`} data-level={sharing?.level} role="status">{(sharing&&sharing.level!=='off'||shareBusy||sharing?.status==='stopping'||sharing?.reason)&&<WbIcon name="agent-access"/>}{sharing&&sharing.level!=='off'?<>{sharing.level==='control'?copy('Agents can control this page in this worktree','此工作树中的智能体可以控制此页面'):copy('Shared with agents in this worktree','已与此工作树中的智能体共享')} · <span>{sharing.origin}</span></>:shareBusy||sharing?.status==='sharing'?copy('Updating agent access…','正在更新智能体访问…'):sharing?.status==='stopping'?copy('Stopping sharing…','正在停止共享…'):sharing?.reason??copy('Off. Read shares page data; Control also allows page actions. Sharing stops when the page moves to another site.','已关闭。Read 共享页面数据；Control 还允许页面操作。页面转到其他网站时将停止共享。')}</p>
@@ -202,7 +216,7 @@ export function WebPreview({tabId,url,visible,zh,commentScope,commentsHost,comme
   {handoffIssue&&<p className="wb-issue wb-browser-infobar" role="alert" data-browser-handoff-error>{handoffIssue}</p>}
   {sharingIssue&&<p className="wb-issue wb-browser-infobar" role="alert" data-browser-sharing-error>{sharingIssue}</p>}
   {preview.issue && <p className="wb-issue wb-browser-infobar" role="alert">{preview.issue}</p>}
-  <div ref={placeholder} className="tt-browser-view" data-native-ready={visible&&!state.unloaded?'true':undefined} tabIndex={-1} aria-label={copy('Web preview','网页预览')} onPointerDown={()=>command({type:'focus',tabId})}>{state.snapshot&&<img key={state.snapshotGeneration} src={state.snapshot} alt="" onLoad={()=>acknowledgeSnapshot('page',state.snapshotGeneration)}/>}</div>
+  <div ref={placeholder} className="tt-browser-view" style={blank?{background:'var(--surface)'}:undefined} data-native-ready={visible&&!state.unloaded?'true':undefined} tabIndex={-1} aria-label={copy('Web preview','网页预览')} onPointerDown={()=>command({type:'focus',tabId})}>{state.snapshot&&<img key={state.snapshotGeneration} src={state.snapshot} alt="" onLoad={()=>acknowledgeSnapshot('page',state.snapshotGeneration)}/>}</div>
   {devtoolsOpen&&<><div className="wb-browser-devtools-splitter" role="separator" aria-orientation="horizontal" aria-label={copy('Resize developer tools','调整开发者工具大小')} aria-valuenow={devtoolsHeight} tabIndex={0} onPointerDown={event=>{splitterDrag.current={y:event.clientY,height:devtoolsHeight};event.currentTarget.setPointerCapture(event.pointerId);}} onPointerMove={event=>{const drag=splitterDrag.current,paneHeight=devtoolsPaneHeight();if(drag&&paneHeight>0)commitDevtoolsHeight(drag.height+drag.y-event.clientY,paneHeight);}} onPointerUp={()=>{splitterDrag.current=undefined;}} onPointerCancel={()=>{splitterDrag.current=undefined;}} onLostPointerCapture={()=>{splitterDrag.current=undefined;}} onKeyDown={event=>{const delta=event.key==='ArrowUp'?16:event.key==='ArrowDown'?-16:event.key==='PageUp'?64:event.key==='PageDown'?-64:0;if(!delta)return;event.preventDefault();const paneHeight=devtoolsPaneHeight();if(paneHeight>0)commitDevtoolsHeight(devtoolsHeight+delta,paneHeight);}}/>
    <div ref={devtools} className="tt-browser-devtools" aria-label={copy('Developer tools','开发者工具')} style={{height:devtoolsHeight||'40%'}}>{state.devtools?.snapshot&&<img key={state.devtools.snapshotGeneration} src={state.devtools.snapshot} alt="" onLoad={()=>acknowledgeSnapshot('devtools',state.devtools?.snapshotGeneration)}/>}</div></>}
   {handoff?.kind==='markup'&&markupBounds&&createPortal(<ScreenshotMarkup visible={visible} bounds={markupBounds} capture={handoff.capture} tabId={tabId} onCancel={cancelHandoff} onDone={packet=>setHandoff({kind:'screenshot',capture:{...handoff.capture,...packet},provenance:handoff.provenance})}/>,document.body)}

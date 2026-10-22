@@ -7,6 +7,8 @@ import * as browserAgentUi from '../renderer/src/browserAgentUi.ts';
 import * as browserAddress from '../renderer/src/browserAddress.ts';
 import * as browserDevtools from '../renderer/src/browserDevtools.ts';
 import * as browserRadius from '../renderer/src/browserRadius.ts';
+import * as browserNewTab from '../renderer/src/browserNewTab.ts';
+import * as browserPolicy from '../desktop/src/browser/policy.ts';
 
 const ts=createRequire(import.meta.url)('typescript');
 const source=ts.createSourceFile('SessionWorkspace.tsx',readFileSync('renderer/src/components/SessionWorkspace.tsx','utf8'),ts.ScriptTarget.Latest,true,ts.ScriptKind.TSX);
@@ -55,6 +57,8 @@ test('WebPreview gates creation and snapshot readiness, and ignores an obsolete 
   if(name==='../browserAddress')return browserAddress;
   if(name==='../browserDevtools')return browserDevtools;
   if(name==='../browserRadius')return browserRadius;
+  if(name==='../browserNewTab')return browserNewTab;
+  if(name==='../../../desktop/src/browser/policy')return browserPolicy;
   if(name==='../browserOcclusion')return {usePassiveBrowserOcclusion(){},watchBrowserOverlays:()=>()=>{}};
   if(name==='./PageComments')return {usePageCommentPreview:()=>({frameName:'tt-preview-native',provenance:{previewId:'preview-a'}})};
   if(name==='./FileComments')return {useReviewComments:()=>[]};
