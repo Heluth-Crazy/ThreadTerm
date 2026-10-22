@@ -2019,7 +2019,7 @@ button.preset-card:hover:where(:not(:disabled)) { border-color: var(--faint); }
   text-align: left;
 }
 .ins-block .cmd-opt:hover:where(:not(:disabled)) { border-color: var(--mint); }
-.ins-block .btn { width: 100%; justify-content: center; margin-top: 8px; }
+.ins-block > .btn { width: 100%; justify-content: center; margin-top: 8px; }
 
 /* ---------- 浮层：对话框 / 命令面板 / 弹出菜单 / toast ---------- */
 .overlay {
