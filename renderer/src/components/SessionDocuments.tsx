@@ -46,7 +46,7 @@ export function SessionDocuments({sessionId, zh, state, onPick, openFile}:Props)
  const suggestions = suggestedDocuments(changes, state.documents);
  const error = issue || state.error || suggestionError;
  return <div className="ins-block session-documents" data-testid="session-documents">
-  <div className="session-documents-head"><h3>{text('Plans & docs', '计划与文档')} <span className="session-documents-count">{state.documents.length}</span></h3>
+  <div className="session-documents-head"><h3 title={text('Plans & docs', '计划与文档')}>{text('Plans & docs', '计划与文档')} <span className="session-documents-count">{state.documents.length}</span></h3>
    <button type="button" className="btn btn-sm" onClick={onPick} disabled={busy}>{text('Add file…', '添加文件…')}</button>
   </div>
   {error && <p className="session-documents-error" role="alert">{error}</p>}
