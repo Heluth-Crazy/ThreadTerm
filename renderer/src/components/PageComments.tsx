@@ -49,11 +49,11 @@ export function usePageCommentPreview(url:string, scope?:CommentScope, host?:Fil
  return {enabled,frameName,iframe,commentButton,picking,pick,pickScopeKey,scopeKey,issue,provenance:pickProvenance??snapshotProvenance(),begin,cancel,added,discard,acceptPick};
 }
 
-export function PageCommentControls({preview,zh}:{preview:ReturnType<typeof usePageCommentPreview>;zh:boolean}) {
+export function PageCommentControls({preview,zh,variant='text',hint=true}:{preview:ReturnType<typeof usePageCommentPreview>;zh:boolean;variant?:'text'|'icon';hint?:boolean}) {
  const copy=(en:string,cn:string)=>zh?cn:en;
  if(!preview.enabled)return null;
  if(preview.pick)return null;
- return <><button ref={preview.commentButton} type="button" className="btn btn-sm" aria-pressed={preview.picking} onClick={preview.picking?()=>preview.cancel():()=>void preview.begin()}>{preview.picking?copy('Cancel','取消'):copy('Comment','评论')}</button>{preview.picking&&<span className="wb-page-comment-hint" role="status">{copy('Click an element or drag an area · ↑ parent · Esc cancels','点击元素或拖动选择区域 · ↑ 选择父级 · Esc 取消')}</span>}</>;
+ return <><button ref={preview.commentButton} type="button" className={variant==='icon'?'icon-btn icon-btn-sm':'btn btn-sm'} aria-label={variant==='icon'?(preview.picking?copy('Cancel','取消'):copy('Comment','评论')):undefined} title={variant==='icon'?(preview.picking?copy('Cancel','取消'):copy('Comment','评论')):undefined} aria-pressed={preview.picking} onClick={preview.picking?()=>preview.cancel():()=>void preview.begin()}>{variant==='icon'?<WbIcon name="comment"/>:preview.picking?copy('Cancel','取消'):copy('Comment','评论')}</button>{hint&&preview.picking&&<span className="wb-page-comment-hint" role="status">{copy('Click an element or drag an area · ↑ parent · Esc cancels','点击元素或拖动选择区域 · ↑ 选择父级 · Esc 取消')}</span>}</>;
 }
 
 export function PageCommentForm({preview,scope,zh}:{preview:ReturnType<typeof usePageCommentPreview>;scope?:CommentScope;zh:boolean}) {

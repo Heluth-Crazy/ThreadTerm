@@ -310,28 +310,6 @@ button.wb-change-row { width:100%; border:0; background:transparent; color:var(-
 .wb-review-comments li { display:flex; align-items:center; gap:8px; min-width:0; }
 .wb-review-comments li .wb-review-comment-where { flex:0 1 auto; max-width:45%; }
 .wb-review-comments li .body { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-/* Web page tab (WebPreview): native BrowserView placeholder and compact browser chrome. */
-.wb-web-preview { display:flex; flex:1; flex-direction:column; min-height:0; overflow:hidden; background:var(--surface); container:browser-preview / inline-size; }
-.wb-web-preview > .file-bar { background:var(--surface); }
-.wb-web-preview > .wb-browser-toolbar { flex-wrap:wrap; gap:4px; row-gap:4px; min-height:38px; }
-.wb-browser-forward .ico { transform:rotate(180deg); }
-.wb-browser-navigation, .wb-browser-actions { display:flex; align-items:center; flex:0 0 auto; gap:4px; max-width:100%; }
-.wb-browser-actions { flex-wrap:wrap; }
-.wb-browser-address { display:flex; flex:1 1 80px; min-width:80px; }
-.wb-browser-address input, .wb-browser-find input { width:100%; min-width:0; height:26px; padding:3px 8px; border:1px solid var(--border); border-radius:var(--radius); background:var(--raised); color:var(--text); font:inherit; font-size:12px; }
-.wb-browser-loading { flex:none; width:12px; height:12px; border:2px solid var(--border); border-top-color:var(--primary); border-radius:50%; animation:wb-browser-spin .7s linear infinite; }
-.tt-browser-view { position:relative; flex:1; min-height:0; overflow:hidden; background:var(--surface); }
-.tt-browser-view > img { display:block; width:100%; height:100%; object-fit:contain; }
-.wb-browser-console-actions { display:flex; flex-wrap:wrap; align-items:center; gap:6px; padding:4px 8px; border-bottom:1px solid var(--border); }
-.wb-console-count { font-variant-numeric:tabular-nums; }
-.wb-browser-share { display:flex; align-items:center; gap:4px; min-width:0; color:var(--muted); font-size:12px; }
-.wb-browser-share > .btn[aria-pressed="true"] { color:var(--primary); background:var(--primary-tint); border-color:var(--primary); }
-@container browser-preview (max-width:620px) {
- .wb-browser-share > span:first-child { display:none; }
- .wb-browser-toolbar .btn.btn-sm { padding-inline:6px; }
-}
-.wb-browser-sharing-status { flex:none; margin:0; padding:4px 8px; border-bottom:1px solid var(--border); color:var(--muted); font-size:12px; overflow-wrap:anywhere; }
-.wb-browser-reading { color:var(--primary); white-space:nowrap; }
 .wb-screenshot-editor { position:fixed; z-index:60; display:flex; flex-direction:column; gap:8px; padding:8px; overflow:auto; background:var(--surface); color:var(--text); }
 .wb-markup-toolbar { display:flex; flex-wrap:wrap; align-items:center; gap:6px; flex:none; }
 .wb-markup-toolbar label { display:flex; align-items:center; gap:6px; min-width:0; color:var(--muted); font-size:12px; }
@@ -349,14 +327,6 @@ button.wb-change-row { width:100%; border:0; background:transparent; color:var(-
 .wb-page-shot-draft > .dim { min-width:0; flex:1; font-size:11px; }
 .wb-page-shot-draft > .btn img { width:24px; height:18px; object-fit:contain; }
 .wb-page-shot-full { display:block; width:100%; height:auto; max-height:65vh; object-fit:contain; }
-.wb-browser-find { display:flex; align-items:center; gap:4px; padding:4px 8px; border-bottom:1px solid var(--border); background:var(--raised); }
-.wb-browser-find input { flex:1; }
-.wb-browser-find > span { flex:none; min-width:38px; color:var(--muted); font:11px var(--mono); text-align:center; font-variant-numeric:tabular-nums; }
-.wb-browser-zoom { min-width:44px; }
-.wb-browser-actions > .wb-page-comment-hint { flex-basis:100%; white-space:normal; }
-@media (prefers-reduced-motion:reduce) { .wb-browser-loading { animation:none; } }
-@keyframes wb-browser-spin { to { transform:rotate(360deg); } }
-.wb-web-preview-note { margin:0; padding:4px 12px; border-top:1px solid var(--border); color:var(--faint); font-size:11px; }
 .wb-page-comment-hint { margin-left:2px; color:var(--muted); font-size:11px; white-space:nowrap; }
 .wb-page-comment-form { flex:none; }
 .wb-page-comment-target { display:flex; align-items:center; gap:8px; min-width:0; }
