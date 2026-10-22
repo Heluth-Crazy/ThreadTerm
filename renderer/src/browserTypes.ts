@@ -13,7 +13,7 @@ export interface BrowserSharingState { level:BrowserSharingLevel; status:'idle'|
 export interface BrowserShareWorkspace { id:string; revision:number }
 export type BrowserShareCommand = {type:'share';tabId:string;level:'off'} | {type:'share';tabId:string;level:'read'|'control';workspace:BrowserShareWorkspace;expected:{documentGeneration:number;navigationEpoch:number;viewGeneration:number;grantEpoch:number}};
 export type BrowserStopAgentOperationCommand = {type:'stopAgentOperation';tabId:string;operationId:string};
-export interface BrowserState { tabId:string; url:string; title:string; loading:boolean; canGoBack:boolean; canGoForward:boolean; zoom:number; documentGeneration:number; navigation:'pending'|'load_observed'|'failed'; issue?:string; snapshot?:string; snapshotGeneration?:number; unloaded?:boolean; find?:{activeMatchOrdinal:number;matches:number}; notice?:string; download?:{id:string;name:string}; sharing?:BrowserSharingState; devtools?:{open:boolean;snapshot?:string;snapshotGeneration?:number} }
+export interface BrowserState { tabId:string; url:string; title:string; loading:boolean; canGoBack:boolean; canGoForward:boolean; zoom:number; documentGeneration:number; navigation:'pending'|'load_observed'|'failed'; favicon?:string; issue?:string; snapshot?:string; snapshotGeneration?:number; unloaded?:boolean; find?:{activeMatchOrdinal:number;matches:number}; notice?:string; download?:{id:string;name:string}; sharing?:BrowserSharingState; devtools?:{open:boolean;snapshot?:string;snapshotGeneration?:number} }
 export type BrowserCommand =
  | BrowserShareCommand
  | BrowserStopAgentOperationCommand
