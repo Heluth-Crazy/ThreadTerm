@@ -34,11 +34,13 @@ function fixture(savedFiles=new Map()) {
     canGoBack:()=>false,canGoForward:()=>false,goBack(){},goForward(){},reload(){},stop(){},
     navigationHistory:{canGoBack:()=>false,canGoForward:()=>false,goBack(){},goForward(){}},
     close(){wc.closed=true;wc.emit('destroyed');},focus(){wc.focused=true;},setZoomFactor(){},getZoomFactor:()=>1,
+    setDevToolsWebContents(contents){wc.devToolsWebContents=contents;},openDevTools(){wc.emit('devtools-opened');},closeDevTools(){wc.emit('devtools-closed');},executeJavaScript:async()=>undefined,
     findInPage(text,options){const requestId=++findId;wc.lastFind={text,options,requestId};return requestId;},stopFindInPage(){},
    });
    wc.mainFrame={executeJavaScriptInIsolatedWorld:async()=>null};this.webContents=wc;
   }
   setBounds(value){this.bounds=value;}
+  setBorderRadius(value){this.radius=value;}
   setVisible(value){this.visible=value;}
  }
  const electron={app,BrowserWindow:{fromWebContents:wc=>windows.get(wc)},ipcMain:{handle:(channel,fn)=>handlers.set(channel,fn)},
@@ -76,6 +78,53 @@ function fixture(savedFiles=new Map()) {
  const show=(tabId='page-one',event=first.event)=>invoke({type:'show',tabId,url:'https://example.test/',frameName:`tt-preview-${tabId.padEnd(8,'a')}`,bounds:{x:20,y:80,width:400,height:600}},event);
  return {invoke,show,first,owner,views,profile,sent,timers,opened,advance(ms){now+=ms;for(const timer of [...timers])timer.fn();},setLoad(fn){loadPage=fn;},setCapture(fn){capture=fn;}};
 }
+
+test('native corners track the CSS radius and app zoom through bounds, restore and remount',async()=>{
+ const f=fixture(),bounds={x:20,y:80,width:400,height:600},show={type:'show',tabId:'page-one',url:'https://example.test/',frameName:'tt-preview-page-one',bounds};
+ f.first.wc.getZoomFactor=()=>1.25;
+ await f.invoke({...show,radius:7});const view=f.views[0];assert.equal(view.radius,9);
+ await f.invoke({type:'bounds',tabId:'page-one',bounds,radius:6.5});assert.equal(view.radius,8);
+ f.first.wc.getZoomFactor=()=>1.5;
+ await f.invoke({type:'bounds',tabId:'page-one',bounds,radius:6.5});assert.equal(view.radius,10);
+ await f.invoke({type:'occlusion',active:true});const snapshot=await f.invoke({type:'state',tabId:'page-one'});
+ await f.invoke({type:'snapshotReady',tabId:'page-one',generation:snapshot.snapshotGeneration});
+ await f.invoke({type:'bounds',tabId:'page-one',bounds,radius:7});assert.equal(view.radius,11);
+ await f.invoke({type:'occlusion',active:false});assert.equal(view.radius,11);
+ await f.invoke({type:'hide',tabId:'page-one'});await f.invoke(show);assert.equal(view.radius,11,'omitted radius retains the measured value');
+ await f.invoke({type:'bounds',tabId:'page-one',bounds,radius:0});assert.equal(view.radius,0);
+ await f.show('legacy');assert.equal(f.views[1].radius,0,'older callers remain square by default');
+});
+
+test('native corners reject invalid CSS radii before creating or changing a view',async()=>{
+ const f=fixture(),bounds={x:20,y:80,width:400,height:600};
+ for(const radius of [-1,32.1,NaN,Infinity,-Infinity,'7',null]){
+  await assert.rejects(f.invoke({type:'show',tabId:'page-one',url:'https://example.test/',frameName:'tt-preview-page-one',bounds,radius}),/Invalid browser view/);
+ }
+ assert.equal(f.views.length,0);
+ await f.show();const view=f.views[0];
+ for(const radius of [-1,32.1,NaN,Infinity,-Infinity,'7',null]){
+  await assert.rejects(f.invoke({type:'bounds',tabId:'page-one',bounds,radius}),/Invalid browser bounds/);
+  assert.equal(view.radius,0);
+ }
+ await f.invoke({type:'bounds',tabId:'page-one',bounds,radius:32});assert.equal(view.radius,32);
+});
+
+test('page and DevTools corners stay paired through resize, occlusion and tools reopen',async()=>{
+ const f=fixture(),bounds={x:20,y:80,width:400,height:400},devtools={x:20,y:486,width:400,height:194};
+ await f.show();await f.invoke({type:'devtools',tabId:'page-one',action:'open',panel:'console'});
+ await f.invoke({type:'bounds',tabId:'page-one',bounds,devtools,radius:7});
+ const [page,tools]=f.views;assert.equal(f.first.win.contentView.children.length,2);
+ assert.equal(page.radius,7);assert.equal(tools.radius,7);
+ f.first.wc.getZoomFactor=()=>1.25;
+ await f.invoke({type:'bounds',tabId:'page-one',bounds,devtools,radius:7});assert.equal(page.radius,9);assert.equal(tools.radius,9);
+ await f.invoke({type:'occlusion',active:true});const snapshot=await f.invoke({type:'state',tabId:'page-one'});
+ await f.invoke({type:'snapshotReady',tabId:'page-one',generation:snapshot.snapshotGeneration});assert.equal(f.first.win.contentView.children.length,0);
+ await f.invoke({type:'bounds',tabId:'page-one',bounds,devtools,radius:6});assert.equal(page.radius,8);assert.equal(tools.radius,8);
+ await f.invoke({type:'occlusion',active:false});assert.equal(f.first.win.contentView.children.length,2);
+ await f.invoke({type:'devtools',tabId:'page-one',action:'close'});assert.equal(f.first.win.contentView.children.length,1);
+ await f.invoke({type:'devtools',tabId:'page-one',action:'open'});assert.equal(f.views.length,2);assert.equal(tools.radius,8);
+ assert.equal(f.first.win.contentView.children.length,2);
+});
 
 test('native browser is lazy, isolated, and deny-by-default',async()=>{
  const f=fixture();assert.equal(f.views.length,0);await f.show();

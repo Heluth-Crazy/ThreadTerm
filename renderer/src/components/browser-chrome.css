@@ -78,13 +78,13 @@
 .wb-web-preview .wb-browser-find input:focus-visible { outline:2px solid var(--primary); outline-offset:1px; }
 .wb-web-preview .wb-browser-find > span { flex:none; min-width:38px; color:var(--browser-ink-muted); font-size:12px; text-align:center; font-variant-numeric:tabular-nums; }
 .wb-web-preview .wb-browser-find-divider { flex:none; width:1px; height:20px; margin:0 4px; background:var(--browser-separator); }
-.tt-browser-view { position:relative; flex:1; min-height:0; overflow:hidden; background:var(--surface); }
-.tt-browser-view > img { display:block; width:100%; height:100%; object-fit:contain; }
+.tt-browser-view { position:relative; flex:1; min-height:0; overflow:hidden; background:var(--browser-toolbar); }
+.tt-browser-view > img { display:block; width:100%; height:100%; object-fit:contain; border-radius:var(--pane-inner-radius, 0px); }
 .wb-web-preview .wb-browser-devtools-splitter { position:relative; flex:none; height:6px; cursor:row-resize; touch-action:none; background:var(--browser-toolbar); outline:none; }
 .wb-web-preview .wb-browser-devtools-splitter::before { content:""; position:absolute; right:0; bottom:2px; left:0; height:1px; background:var(--browser-separator); }
 .wb-web-preview .wb-browser-devtools-splitter:focus-visible { box-shadow:inset 0 0 0 2px var(--primary); }
 .wb-web-preview .tt-browser-devtools { flex:none; min-height:0; overflow:hidden; background:var(--browser-toolbar); }
-.wb-web-preview .tt-browser-devtools > img { display:block; width:100%; height:100%; object-fit:contain; }
+.wb-web-preview .tt-browser-devtools > img { display:block; width:100%; height:100%; object-fit:contain; border-radius:var(--pane-inner-radius, 0px); }
 @container browser-preview (width < 660px) {
  .wb-web-preview .wb-browser-share > span:first-child { display:none; }
  /* The DevTools button costs 32 px: keep the single toolbar row down to 550 px. */

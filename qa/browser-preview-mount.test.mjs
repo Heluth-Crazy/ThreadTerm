@@ -6,6 +6,7 @@ import vm from 'node:vm';
 import * as browserAgentUi from '../renderer/src/browserAgentUi.ts';
 import * as browserAddress from '../renderer/src/browserAddress.ts';
 import * as browserDevtools from '../renderer/src/browserDevtools.ts';
+import * as browserRadius from '../renderer/src/browserRadius.ts';
 
 const ts=createRequire(import.meta.url)('typescript');
 const source=ts.createSourceFile('SessionWorkspace.tsx',readFileSync('renderer/src/components/SessionWorkspace.tsx','utf8'),ts.ScriptTarget.Latest,true,ts.ScriptKind.TSX);
@@ -53,6 +54,7 @@ test('WebPreview gates creation and snapshot readiness, and ignores an obsolete 
   if(name==='../browserAgentUi')return browserAgentUi;
   if(name==='../browserAddress')return browserAddress;
   if(name==='../browserDevtools')return browserDevtools;
+  if(name==='../browserRadius')return browserRadius;
   if(name==='../browserOcclusion')return {usePassiveBrowserOcclusion(){},watchBrowserOverlays:()=>()=>{}};
   if(name==='./PageComments')return {usePageCommentPreview:()=>({frameName:'tt-preview-native',provenance:{previewId:'preview-a'}})};
   if(name==='./FileComments')return {useReviewComments:()=>[]};
@@ -72,7 +74,7 @@ test('WebPreview gates creation and snapshot readiness, and ignores an obsolete 
  image.props.onLoad();assert.equal(commands.length,0,'image load schedules a paint before acknowledgement');
  frames.shift()();assert.equal(commands.length,0,'the loaded replacement gets a full paint opportunity');
  frames.shift()();assert.equal(commands.length,1);assert.equal(commands[0].type,'snapshotReady');assert.equal(commands[0].generation,7);assert.equal(commands[0].tabId,'tab-a');
- placeholder.ref.current={getBoundingClientRect:()=>({x:100,y:100,width:400,height:300})};effects.find(effect=>String(effect).includes('ResizeObserver'))();
+ placeholder.ref.current={getBoundingClientRect:()=>({x:100,y:100,width:400,height:300}),closest:()=>null};effects.find(effect=>String(effect).includes('ResizeObserver'))();
  listener({type:'state',state:{...state,snapshot:'data:image/png;base64,bmV3',snapshotGeneration:8}});render();
  finishShow(state);await Promise.resolve();await Promise.resolve();render();
  assert.equal(placeholder.children.props.src,'data:image/png;base64,bmV3','a delayed show reply cannot erase the published snapshot');

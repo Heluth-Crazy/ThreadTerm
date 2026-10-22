@@ -41,6 +41,7 @@ function fixture(savedFiles=new Map()) {
    wc.mainFrame={executeJavaScriptInIsolatedWorld:async()=>null};this.webContents=wc;
   }
   setBounds(value){this.bounds=value;}
+  setBorderRadius(value){this.radius=value;}
   setVisible(value){this.visible=value;}
  }
  const electron={app,nativeImage:{createFromBuffer:bitmap},BrowserWindow:{fromWebContents:wc=>windows.get(wc)},ipcMain:{handle:(channel,fn)=>handlers.set(channel,fn)},

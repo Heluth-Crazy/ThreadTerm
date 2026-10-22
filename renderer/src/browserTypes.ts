@@ -17,8 +17,8 @@ export interface BrowserState { tabId:string; url:string; title:string; loading:
 export type BrowserCommand =
  | BrowserShareCommand
  | BrowserStopAgentOperationCommand
- | {type:'show';tabId:string;url:string;frameName:string;bounds:BrowserBounds;devtools?:BrowserBounds}
- | {type:'bounds';tabId:string;bounds:BrowserBounds;devtools?:BrowserBounds}
+ | {type:'show';tabId:string;url:string;frameName:string;bounds:BrowserBounds;devtools?:BrowserBounds;radius?:number}
+ | {type:'bounds';tabId:string;bounds:BrowserBounds;devtools?:BrowserBounds;radius?:number}
  | {type:'state'|'hide'|'close'|'back'|'forward'|'reload'|'stop'|'focus';tabId:string}
  | {type:'navigate';tabId:string;url:string}
  | {type:'find';tabId:string;text:string;forward?:boolean;findNext?:boolean}
