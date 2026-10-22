@@ -13,17 +13,18 @@ export interface BrowserSharingState { level:BrowserSharingLevel; status:'idle'|
 export interface BrowserShareWorkspace { id:string; revision:number }
 export type BrowserShareCommand = {type:'share';tabId:string;level:'off'} | {type:'share';tabId:string;level:'read'|'control';workspace:BrowserShareWorkspace;expected:{documentGeneration:number;navigationEpoch:number;viewGeneration:number;grantEpoch:number}};
 export type BrowserStopAgentOperationCommand = {type:'stopAgentOperation';tabId:string;operationId:string};
-export interface BrowserState { tabId:string; url:string; title:string; loading:boolean; canGoBack:boolean; canGoForward:boolean; zoom:number; documentGeneration:number; navigation:'pending'|'load_observed'|'failed'; issue?:string; snapshot?:string; snapshotGeneration?:number; unloaded?:boolean; find?:{activeMatchOrdinal:number;matches:number}; notice?:string; download?:{id:string;name:string}; sharing?:BrowserSharingState }
+export interface BrowserState { tabId:string; url:string; title:string; loading:boolean; canGoBack:boolean; canGoForward:boolean; zoom:number; documentGeneration:number; navigation:'pending'|'load_observed'|'failed'; issue?:string; snapshot?:string; snapshotGeneration?:number; unloaded?:boolean; find?:{activeMatchOrdinal:number;matches:number}; notice?:string; download?:{id:string;name:string}; sharing?:BrowserSharingState; devtools?:{open:boolean;snapshot?:string;snapshotGeneration?:number} }
 export type BrowserCommand =
  | BrowserShareCommand
  | BrowserStopAgentOperationCommand
- | {type:'show';tabId:string;url:string;frameName:string;bounds:BrowserBounds}
- | {type:'bounds';tabId:string;bounds:BrowserBounds}
+ | {type:'show';tabId:string;url:string;frameName:string;bounds:BrowserBounds;devtools?:BrowserBounds}
+ | {type:'bounds';tabId:string;bounds:BrowserBounds;devtools?:BrowserBounds}
  | {type:'state'|'hide'|'close'|'back'|'forward'|'reload'|'stop'|'focus';tabId:string}
  | {type:'navigate';tabId:string;url:string}
  | {type:'find';tabId:string;text:string;forward?:boolean;findNext?:boolean}
  | {type:'stopFind';tabId:string}
  | {type:'zoom';tabId:string;factor:number}
+ | {type:'devtools';tabId:string;action:'toggle'|'open'|'close'|'inspect';panel?:'console'|'network'|'elements'}
  | {type:'occlusion';active:boolean}
  | {type:'snapshotReady';tabId:string;generation:number}
  | {type:'preferences';patch?:Partial<BrowserPreferences>}

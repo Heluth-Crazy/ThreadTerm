@@ -5,6 +5,7 @@ import { createRequire } from 'node:module';
 import vm from 'node:vm';
 import * as browserAgentUi from '../renderer/src/browserAgentUi.ts';
 import * as browserAddress from '../renderer/src/browserAddress.ts';
+import * as browserDevtools from '../renderer/src/browserDevtools.ts';
 
 const ts=createRequire(import.meta.url)('typescript');
 const source=ts.createSourceFile('SessionWorkspace.tsx',readFileSync('renderer/src/components/SessionWorkspace.tsx','utf8'),ts.ScriptTarget.Latest,true,ts.ScriptKind.TSX);
@@ -51,6 +52,7 @@ test('WebPreview gates creation and snapshot readiness, and ignores an obsolete 
   if(name==='../bridge')return bridge;
   if(name==='../browserAgentUi')return browserAgentUi;
   if(name==='../browserAddress')return browserAddress;
+  if(name==='../browserDevtools')return browserDevtools;
   if(name==='../browserOcclusion')return {usePassiveBrowserOcclusion(){},watchBrowserOverlays:()=>()=>{}};
   if(name==='./PageComments')return {usePageCommentPreview:()=>({frameName:'tt-preview-native',provenance:{previewId:'preview-a'}})};
   if(name==='./FileComments')return {useReviewComments:()=>[]};

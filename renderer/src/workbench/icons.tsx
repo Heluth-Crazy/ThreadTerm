@@ -6,6 +6,7 @@ import { Icon } from '../components/PrototypeIcon';
 const glyphs: Record<string, string> = {
  'arrow-left': '<path d="M20 12H4m7-7-7 7 7 7"/>',
  'arrow-right': '<path d="M4 12h16m-7-7 7 7-7 7"/>',
+ devtools: '<path d="m8 7-5 5 5 5M16 7l5 5-5 5M14 4l-4 16"/>',
  tune: '<path d="M3 7h3m6 0h9M3 17h9m6 0h3"/><circle cx="9" cy="7" r="3"/><circle cx="15" cy="17" r="3"/>',
  'zoom-in': '<circle cx="10.5" cy="10.5" r="6.5"/><path d="m16 16 5 5M7.5 10.5h6m-3-3v6"/>',
  'zoom-out': '<circle cx="10.5" cy="10.5" r="6.5"/><path d="m16 16 5 5M7.5 10.5h6"/>',
