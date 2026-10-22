@@ -22,6 +22,7 @@ const icons: Record<string,string> = {
   "star": "<path d=\"m12 3 2.7 5.8 6.3.8-4.6 4.4 1.2 6.2-5.6-3-5.6 3 1.2-6.2L3 9.6l6.3-.8z\"/>",
   "bookmark": "<path d=\"M6 3h12v18l-6-4-6 4z\"/>",
   "file": "<path d=\"M6 3h8l4 4v14H6zM14 3v5h5\"/>",
+  "globe": "<circle cx=\"12\" cy=\"12\" r=\"9\"/><path d=\"M3 12h18M12 3a14 14 0 0 1 0 18M12 3a14 14 0 0 0 0 18\"/>",
   "folder": "<path d=\"M3 6V4h7l2 2h9v14H3z\"/>",
   "branch": "<circle cx=\"6\" cy=\"6\" r=\"2\"/><circle cx=\"18\" cy=\"18\" r=\"2\"/><circle cx=\"18\" cy=\"6\" r=\"2\"/><path d=\"M8 6h8M6 8v8a2 2 0 0 0 2 2h8\"/>",
   "more": "<circle cx=\"5\" cy=\"12\" r=\"1.6\"/><circle cx=\"12\" cy=\"12\" r=\"1.6\"/><circle cx=\"19\" cy=\"12\" r=\"1.6\"/>",
