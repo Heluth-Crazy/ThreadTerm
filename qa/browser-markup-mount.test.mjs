@@ -5,6 +5,7 @@ import { createRequire } from 'node:module';
 import vm from 'node:vm';
 import * as browserAgentUi from '../renderer/src/browserAgentUi.ts';
 import * as browserAddress from '../renderer/src/browserAddress.ts';
+import * as browserDevtools from '../renderer/src/browserDevtools.ts';
 
 const ts=createRequire(import.meta.url)('typescript');
 const capture={shot:{id:'00000000-0000-4000-8000-000000000000',path:'C:/shots/page.png',width:40,height:30,thumbnail:'data:image/jpeg;base64,AA=='},dataUrl:'data:image/png;base64,c25hcA==',url:'https://example.test/',documentGeneration:3,width:40,height:30};
@@ -31,6 +32,7 @@ function fixture(extra={}){
   if(name==='../bridge')return bridge;
   if(name==='../browserAgentUi')return browserAgentUi;
   if(name==='../browserAddress')return browserAddress;
+  if(name==='../browserDevtools')return browserDevtools;
   if(name==='../browserOcclusion')return {usePassiveBrowserOcclusion(){},watchBrowserOverlays:()=>()=>{},updateBrowserOverlayBounds(){}};
   if(name==='./PageComments')return {PageCommentControls:Symbol('PageCommentControls'),PageCommentForm:Symbol('PageCommentForm'),PageHandoffDestination:Symbol('PageHandoffDestination'),ScreenshotMarkup,usePageCommentPreview:()=>({frameName:'tt-preview-native',provenance:{previewId:'preview-a'},enabled:true,cancel(){},acceptPick(){}})};
   if(name==='./FileComments')return {PendingComments:Symbol('PendingComments'),useReviewComments:()=>[]};

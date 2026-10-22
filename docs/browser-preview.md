@@ -97,3 +97,11 @@ cargo build --manifest-path runtime/Cargo.toml -j 2 --bins
 npm run build
 node qa/browser-view-visual.mjs
 ```
+
+## Developer tools
+
+Open developer tools from the browser toolbar, with F12, or with Ctrl/Cmd+Shift+I. Ctrl/Cmd+Shift+J opens Console and Ctrl/Cmd+Shift+C opens Elements. The tools dock below the page; drag their divider to resize them.
+
+Closing DevTools hides the frontend and keeps it connected in the background until the page is unloaded or its tab closes. It continues to use memory, preserving panels, console and network history for reopening. The page and browser sharing stay active; breakpoints still pause the page and agent browser operations.
+
+ThreadTerm embeds Chromium's full DevTools front end, including Elements, Console, Sources, Network, Performance, Memory, Application, and Security. Network starts recording when DevTools are first opened and remains connected while they are hidden. Links clicked in DevTools open as adjacent page tabs.
