@@ -77,6 +77,7 @@ import { SessionCreateDialog } from "./components/SessionCreateDialog";
 import { AddProjectDialog } from "./components/AddProjectDialog";
 import { WorkbenchPage } from "./components/WorkbenchPage";
 import { AccountMenu, NotificationMenu } from "./components/ShellMenus";
+import { WbIcon } from "./workbench/icons";
 import { CommandPalette } from "./components/CommandPalette";
 import { useSupervision } from "./useSupervision";
 import { parseSupervision } from "./supervision";
@@ -409,7 +410,7 @@ export function App() {
             onNewSession={(projectId,path) => {const selected=data?.projects.find(item=>item.id===projectId);if(selected)setCreatorDefaults({projectId:selected.id,path:path??selected.path});setCreatorOpen(true);}}
           />
           </div>
-          <div className="side-foot"><button className="user-row" aria-expanded={shellMenu?.kind==="account"} onClick={event => setShellMenu(shellMenu?.kind==="account"?undefined:{kind:"account",anchor:event.currentTarget})}><span className="avatar">本</span><span className="grow">{locale === "zh-CN" ? "本地用户" : "Local user"}</span><Icon name="chevron" /></button></div>
+          <div className="side-foot"><button className="user-row" aria-label={locale === "zh-CN" ? "本地用户" : "Local user"} aria-expanded={shellMenu?.kind==="account"} onClick={event => setShellMenu(shellMenu?.kind==="account"?undefined:{kind:"account",anchor:event.currentTarget})}><span className="avatar"><WbIcon name="person" /></span><span className="user-copy"><span>{locale === "zh-CN" ? "本地用户" : "Local user"}</span><small>{locale === "zh-CN" ? "本地配置" : "Local profile"}</small></span><WbIcon name="chev-up" className="user-selector" /></button></div>
         </aside>
         <main className="content main">
           <div className="toolbar legacy-toolbar">
@@ -547,7 +548,7 @@ export function App() {
             />
           )}
         </main>
-        <footer className="statusbar"><span className="sb-note"><span className="runtime-dot" />{error ? t("runtimeUnavailable") : data ? t("runtimeConnected") : t("connecting")}</span><span className="top-spacer" /><span>{locale === "zh-CN" ? "本地运行" : "Local runtime"}</span></footer>
+        <footer className="statusbar" role="status"><span className="sb-note"><span className="runtime-dot" data-state={error ? "unavailable" : data ? "connected" : "connecting"} aria-hidden="true" />{error ? t("runtimeUnavailable") : data ? t("runtimeConnected") : t("connecting")}</span><span className="top-spacer" /><span>{locale === "zh-CN" ? "本地运行" : "Local runtime"}</span></footer>
         {data && companionEnabled && companionOpen && (
           <DesktopCompanion
             sessions={data.sessions}
