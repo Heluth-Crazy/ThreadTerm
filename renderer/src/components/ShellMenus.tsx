@@ -5,6 +5,7 @@ import type { Snapshot } from "@threadterm/protocol";
 import { operationId, request } from "../bridge";
 import { isActionableInboxItem } from "../inboxVisibility";
 import { Icon } from "./PrototypeIcon";
+import { WbIcon } from "../workbench/icons";
 import { useTranslation } from "../i18n";
 import "./shell-menus.css";
 
@@ -54,7 +55,7 @@ export function AccountMenu({ data, onClose, onSettings, onChanged, anchor }: Me
   };
   const label = typeof data.settings.localUserLabel === "string" && data.settings.localUserLabel.trim() ? data.settings.localUserLabel : copy("Local user", "本地用户");
   return createPortal(<aside {...layer} className="popover shell-menu account-menu shell-menu-above" style={position(anchor, true)} aria-label={copy("Local account", "本地账户")}>
-    <header className="account-row"><span className="avatar account-avatar">本</span><span><strong>{label}</strong><small>{copy("Local profile", "本地配置")}</small></span><button className="icon-btn" aria-label={copy("Close account menu", "关闭账户菜单")} onClick={onClose}><Icon name="close" /></button></header>
+    <header className="account-row"><span className="avatar account-avatar"><WbIcon name="person" /></span><span><strong>{label}</strong><small>{copy("Local profile", "本地配置")}</small></span><button className="icon-btn" aria-label={copy("Close account menu", "关闭账户菜单")} onClick={onClose}><Icon name="close" /></button></header>
     {issue && <p className="surface-error" role="alert">{issue}</p>}
     <div className="menu-label">{copy("Appearance", "外观")}</div><button className="menu-item" disabled={busy} onClick={() => void update({ theme: "light", themeSelection: "light" })}><Icon name="sun" />{copy("Light (warm)", "浅色（暖米）")}<span className="dim">{theme === "light" ? "✓" : ""}</span></button><button className="menu-item" disabled={busy} onClick={() => void update({ theme: "dark", themeSelection: "dark" })}><Icon name="moon" />{copy("Dark (charcoal)", "深色（炭黑）")}<span className="dim">{theme === "dark" ? "✓" : ""}</span></button><button className="menu-item" disabled={busy} onClick={() => void update({ theme: "system", themeSelection: "system" })}><Icon name="sun" />{copy("System", "跟随系统")}<span className="dim">{theme === "system" ? "✓" : ""}</span></button><div className="menu-sep" />
     <label className="shell-menu-field">{copy("Language", "语言")}<Select disabled={busy} value={language} onChange={event => void update({ language: event.target.value })}><option value="zh-CN">简体中文</option><option value="en">English</option></Select></label>

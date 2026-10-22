@@ -686,14 +686,14 @@ code, kbd, pre, .mono { font-family: var(--mono); }
   font-size: 12px;
 }
 .catalog-banner .ico { flex: 0 0 auto; }
-/* 底部用户行：头像圆点 + 本地用户，点击弹菜单 */
+/* Account footer follows the navigation inset and opens its menu above. */
 .user-row {
   display: flex;
   align-items: center;
   gap: 8px;
   width: 100%;
-  height: 36px;
-  padding: 0 8px;
+  min-height: 48px;
+  padding: 8px;
   border: 0;
   border-radius: var(--radius);
   background: transparent;
@@ -702,6 +702,12 @@ code, kbd, pre, .mono { font-family: var(--mono); }
   text-align: left;
 }
 .user-row:hover:where(:not(:disabled)) { background: var(--soft); }
+.user-row[aria-expanded="true"] { background: var(--soft); }
+.user-copy { display: grid; gap: 4px; flex: 1; min-width: 0; line-height: 16px; }
+.user-copy small { color: var(--muted); font-size: 12px; }
+.user-row .user-selector { width: 14px; height: 14px; color: var(--muted); flex: 0 0 auto; }
+.user-row .avatar, .account-row .avatar.account-avatar { width: 28px; height: 28px; background: var(--soft); color: var(--muted); }
+.avatar .ico { width: 16px; height: 16px; }
 .avatar {
   width: 20px; height: 20px;
   border-radius: 50%;
@@ -713,11 +719,16 @@ code, kbd, pre, .mono { font-family: var(--mono); }
   flex: 0 0 auto;
 }
 .side-foot {
-  border-top: 1px solid var(--border);
   padding: 8px;
   display: grid;
-  gap: 2px;
+  flex: 0 0 auto;
 }
+.app-shell > aside.sidebar { grid-row: 2 / -1; }
+.app-shell > footer.statusbar { grid-column: 2; padding: 0 16px; color: var(--muted); opacity: 1; }
+.statusbar .sb-note { gap: 8px; white-space: nowrap; }
+.statusbar .runtime-dot { flex: 0 0 auto; }
+.statusbar .runtime-dot[data-state="unavailable"] { background: var(--st-failed); }
+.statusbar .runtime-dot[data-state="connecting"] { background: var(--st-needs); }
 
 .main { grid-row: 1; overflow-y: auto; min-width: 0; min-height: 0; }
 .main.flush { overflow: hidden; display: flex; flex-direction: column; }

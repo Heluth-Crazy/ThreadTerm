@@ -4,6 +4,7 @@ import { Icon } from '../components/PrototypeIcon';
 // Workbench-only glyphs drawn on the same 24px grid, stroke and caps as the approved prototype
 // icons (`.ico`), which stay immutable in PrototypeIcon. Static markup only; never user text.
 const glyphs: Record<string, string> = {
+ person: '<circle cx="12" cy="8" r="3"/><path d="M5 21v-2a7 7 0 0 1 14 0v2"/>',
  'arrow-left': '<path d="M20 12H4m7-7-7 7 7 7"/>',
  'arrow-right': '<path d="M4 12h16m-7-7 7 7-7 7"/>',
  devtools: '<path d="m8 7-5 5 5 5M16 7l5 5-5 5M14 4l-4 16"/>',
