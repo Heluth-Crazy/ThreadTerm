@@ -62,7 +62,7 @@ try {
     let providerCache = [];
     const calls = []; const listeners = new Set(); let providerListFails = false; let eventSeq = 0;
     const emit = () => listeners.forEach(listener => listener({ v: 1, event: 'state.changed', epoch: 'provider-pending-fixture', seq: ++eventSeq, data: { kind: 'providers' } }));
-    const snapshot = () => ({ epoch: 'provider-pending-fixture', revision: 1, projects, sessions: [], inbox: [], providers: providerCache, settings, workspaces: [], presets: [] });
+    const snapshot = () => ({ epoch: 'provider-pending-fixture', revision: 1, projects, sessions: [], inbox: [], providers: providerCache, settings, workspaces: [] });
     window.__providerPendingQA = { calls, setProviders: next => { providerCache = next; emit(); }, setProviderListFails: value => { providerListFails = value; }, setPresentation: (language, theme) => { settings.language = language; settings.theme = theme; emit(); }, emitStateChanged: emit };
     window.threadterm = { platform: 'win32', request: async (method, params = {}) => {
       calls.push({ method, params });
@@ -72,7 +72,7 @@ try {
       if (method === 'project.catalog.list') return projects.map(project => ({ ...project, pinned: false, sortOrder: 0, git: { available: true, branch: 'main' } }));
       if (method === 'catalog.visibility.list' || method === 'draft.list') return [];
       if (method === 'settings.update') { Object.assign(settings, params.patch); settings.revision++; emit(); return structuredClone(settings); }
-      if (method === 'data.status') return { root: 'C:/qa', database: { path: 'C:/qa/test.db', sizeBytes: 0 }, counts: { projects: projects.length, sessions: 0, workspaces: 0, presets: 0, drafts: 0, usageRecords: 0 }, relocation: { state: 'idle' } };
+      if (method === 'data.status') return { root: 'C:/qa', database: { path: 'C:/qa/test.db', sizeBytes: 0 }, counts: { projects: projects.length, sessions: 0, workspaces: 0, drafts: 0, usageRecords: 0 }, relocation: { state: 'idle' } };
       if (method === 'data.relocation.status') return { state: 'idle' };
       if (method === 'device.list') return [];
       if (method === 'device.status') return { enabled: false };

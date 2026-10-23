@@ -20,10 +20,9 @@ test('web title is optional and validates UTF-8 bytes and controls at the saved-
  for(const url of ['about:blank','blob:https://example.test/id']){const value=layout('Title');value.tabs[0].url=url;assert.throws(()=>validateLayout(value),/web tab/i);}
 });
 
-test('generated workspace and preset request/result schemas carry the additive title',()=>{
+test('generated workspace request/result schemas carry the additive title',()=>{
  const value=layout('Saved title');
  validateRequest('workspace.save',{name:'Browser',layout:value,expectedRevision:0,operationId:'save-title'});
- validateRequest('preset.save',{name:'Browser',layout:value,sessions:[],commands:[],expectedRevision:0,operationId:'save-preset'});
  validateResult('workspace.save',{id:'workspace',name:'Browser',layout:value,revision:1});
  const roundtrip=JSON.parse(JSON.stringify(value));assert.equal(roundtrip.tabs[0].title,'Saved title');assert.equal(roundtrip.tabs[0].url,'https://example.test/last-page');
 });

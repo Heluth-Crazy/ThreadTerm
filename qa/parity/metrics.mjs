@@ -14,7 +14,6 @@ const selectorGroups = {
   workspaceHeader: [".ws-top"],
   workspaceTabs: [".ws-tabrow"],
   workspaceSessions: [".ws-strip"],
-  presets: [".preset-grid"],
 };
 
 export function metricScript() {

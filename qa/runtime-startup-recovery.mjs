@@ -55,7 +55,7 @@ function framed(socket) {
 
 function snapshot() {
   return {
-    epoch: 'startup-recovery-epoch', revision: 0, projects: [], sessions: [], workspaces: [], presets: [], inbox: [], providers: [],
+    epoch: 'startup-recovery-epoch', revision: 0, projects: [], sessions: [], workspaces: [], inbox: [], providers: [],
     settings: { revision: 0, theme: 'system', language: 'en', notifications: { native: false, attention: false, completed: false, sound: false } },
   };
 }

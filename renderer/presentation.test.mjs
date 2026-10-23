@@ -68,7 +68,6 @@ const snapshot = {
   ],
   settings: { revision: 1 },
   workspaces: [],
-  presets: [],
   inbox: [],
   providers: [],
 };

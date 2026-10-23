@@ -34,7 +34,7 @@ impl Database {
              CREATE TRIGGER IF NOT EXISTS sessions_delete_chat_integrity AFTER DELETE ON sessions BEGIN DELETE FROM metadata WHERE key='chat.integrity:'||OLD.id; END;
              CREATE UNIQUE INDEX IF NOT EXISTS active_native_owner ON sessions(provider, native_id) WHERE native_id IS NOT NULL AND status NOT IN ('exited','interrupted','error');
              CREATE TABLE IF NOT EXISTS settings (singleton INTEGER PRIMARY KEY CHECK(singleton=1), revision INTEGER NOT NULL, value TEXT NOT NULL);
-             CREATE TABLE IF NOT EXISTS presets (id TEXT PRIMARY KEY, name TEXT NOT NULL, revision INTEGER NOT NULL, sessions TEXT NOT NULL, layout TEXT NOT NULL, commands TEXT NOT NULL, updated_at TEXT NOT NULL);
+             DROP TABLE IF EXISTS presets;
              CREATE TABLE IF NOT EXISTS usage_records (id TEXT PRIMARY KEY, session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE, provider TEXT NOT NULL, recorded_at TEXT NOT NULL, input_tokens INTEGER, output_tokens INTEGER, estimated_cost REAL, currency TEXT, model TEXT);
              CREATE TABLE IF NOT EXISTS operations (id TEXT PRIMARY KEY, method TEXT NOT NULL, result TEXT NOT NULL, created_at TEXT NOT NULL);
              CREATE TABLE IF NOT EXISTS operation_requests (id TEXT PRIMARY KEY, method TEXT NOT NULL, params TEXT NOT NULL);
@@ -557,7 +557,6 @@ impl Database {
         let projects = collect_projects(&conn)?;
         let sessions = collect_sessions(&conn)?;
         let settings = settings(&conn)?;
-        let presets = collect_presets(&conn)?;
         let revision: i64 =
             conn.query_row("SELECT COALESCE(MAX(seq),0) FROM outbox", [], |r| r.get(0))?;
         let epoch: String =
@@ -571,7 +570,6 @@ impl Database {
             sessions,
             settings,
             workspaces: collect_workspaces(&conn)?,
-            presets,
             inbox: collect_inbox(&conn)?,
             providers: vec![],
         })
@@ -2196,34 +2194,6 @@ fn collect_inbox(conn: &Connection) -> Result<Vec<Value>> {
     })?;
     rows.collect::<rusqlite::Result<Vec<_>>>()
         .map_err(Into::into)
-}
-fn collect_presets(conn: &Connection) -> Result<Vec<Value>> {
-    let mut statement = conn.prepare(
-        "SELECT id,name,revision,sessions,layout,commands FROM presets ORDER BY updated_at DESC",
-    )?;
-    let rows = statement.query_map([], |row| {
-        Ok((
-            row.get::<_, String>(0)?,
-            row.get::<_, String>(1)?,
-            row.get::<_, i64>(2)?,
-            row.get::<_, String>(3)?,
-            row.get::<_, String>(4)?,
-            row.get::<_, String>(5)?,
-        ))
-    })?;
-    rows.collect::<rusqlite::Result<Vec<_>>>()?
-        .into_iter()
-        .map(|(id, name, revision, sessions, layout, commands)| {
-            Ok(json!({
-                "id": id,
-                "name": name,
-                "revision": revision,
-                "sessions": serde_json::from_str::<Value>(&sessions)?,
-                "layout": serde_json::from_str::<Value>(&layout)?,
-                "commands": serde_json::from_str::<Value>(&commands)?,
-            }))
-        })
-        .collect()
 }
 fn empty_chat_native_recovery_eligible_tx(
     tx: &Transaction<'_>,

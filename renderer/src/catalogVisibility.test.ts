@@ -4,7 +4,7 @@ import type {Snapshot} from '@threadterm/protocol';
 import {visibleCatalogSnapshot} from './catalogVisibility';
 import {hasDirtyEditorsInScope,registerDirtyEditor} from './dirtyEditors';
 const stamp='2026-09-10T00:00:00Z';
-const data:Snapshot={epoch:'fixture',revision:1,settings:{revision:1},projects:[{id:'p',name:'P',path:'C:/project',createdAt:stamp}],sessions:[{id:'s',projectId:'p',title:'S',mode:'terminal',provider:'shell',status:'exited',createdAt:stamp,updatedAt:stamp}],inbox:[{id:'i',sessionId:'s',kind:'waiting',title:'I',createdAt:stamp,read:false}],presets:[],workspaces:[],providers:[]};
+const data:Snapshot={epoch:'fixture',revision:1,settings:{revision:1},projects:[{id:'p',name:'P',path:'C:/project',createdAt:stamp}],sessions:[{id:'s',projectId:'p',title:'S',mode:'terminal',provider:'shell',status:'exited',createdAt:stamp,updatedAt:stamp}],inbox:[{id:'i',sessionId:'s',kind:'waiting',title:'I',createdAt:stamp,read:false}],workspaces:[],providers:[]};
 test('archive preserves history and marks descendants; removal hides scope and notifications',()=>{
   const archived=visibleCatalogSnapshot(data,[{kind:'project',id:'p',visibility:'archived',revision:1}]);
   assert.equal(archived.projects.length,1);assert.equal(archived.sessions.length,1);assert.equal(archived.sessions[0].archived,true);assert.equal(archived.inbox.length,1);

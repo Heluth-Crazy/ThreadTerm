@@ -1,7 +1,7 @@
 # Implementation order and quality gates
 1. Isolated worktree/reference manifest/contracts/task. Build real shell + independent runtime + real PTY and reconnect first.
 2. All five structured Chat adapters, capability/auth probes, native history and resume.
-3. Projects/worktrees, cards/history rail/inbox/follow/recent/presets/search.
+3. Projects/worktrees, cards/history rail/inbox/follow/recent/search.
 4. CodeMirror files/drafts/Git/preview and persistent pane workspaces/native floats.
 5. Settings/themes/i18n/shortcuts/data/devices/MCP/usage.
 6. Cross-layer fault/ownership/recovery/security and UI visual validation.

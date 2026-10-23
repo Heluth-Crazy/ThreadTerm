@@ -28,7 +28,7 @@ try {
     const freshCodex = { ...staleCodex, installed: true, chat: true, history: true, resume: true, auth: 'signed_in', version: 'fixture', reason: undefined };
     const project = { id: 'provider-status-project', name: 'Provider status QA', path: 'C:/qa/provider-status', createdAt: '2026-10-08T00:00:00.000Z' };
     const settings = { revision: 1, language: 'en', theme: 'light', notifications: { native: false, attention: false, completed: false, sound: false }, terminalCompatibility: { aiCompletionHints: false }, customThemes: {} };
-    let available = false; let providerCache = [staleCodex]; const snapshot = () => ({ epoch: 'provider-status-fixture', revision: 1, projects: [project], sessions: [], inbox: [], providers: providerCache, settings, workspaces: [], presets: [] });
+    let available = false; let providerCache = [staleCodex]; const snapshot = () => ({ epoch: 'provider-status-fixture', revision: 1, projects: [project], sessions: [], inbox: [], providers: providerCache, settings, workspaces: [] });
     const calls = []; window.__providerStatusQA = { calls, setAvailable: () => { available = true; } };
     const emit = () => listeners.forEach(listener => listener({ v: 1, event: 'state.changed', epoch: 'provider-status-fixture', seq: calls.length, data: { kind: 'provider' } }));
     const listeners = new Set();
@@ -42,7 +42,7 @@ try {
       if (method === 'catalog.visibility.list' || method === 'draft.list') return [];
       if (method === 'session.create') return { id: 'provider-status-created', projectId: project.id, worktreePath: project.path, provider: params.provider, mode: params.mode, title: params.title ?? '', status: 'starting', createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() };
       if (method === 'session.present' || method === 'session.claim' || method === 'session.release') return null;
-      if (method === 'data.status') return { root: 'C:/qa', database: { path: 'C:/qa/test.db', sizeBytes: 0 }, counts: { projects: 1, sessions: 0, workspaces: 0, presets: 0, drafts: 0, usageRecords: 0 }, relocation: { state: 'idle' } };
+      if (method === 'data.status') return { root: 'C:/qa', database: { path: 'C:/qa/test.db', sizeBytes: 0 }, counts: { projects: 1, sessions: 0, workspaces: 0, drafts: 0, usageRecords: 0 }, relocation: { state: 'idle' } };
       if (method === 'data.relocation.status') return { state: 'idle' };
       if (method === 'device.list') return [];
       if (method === 'device.status') return { enabled: false };
