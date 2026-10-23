@@ -151,7 +151,7 @@ export function SessionConfigDialog({
         aria-labelledby="session-config-title"
       >
         <div className="dialog-title">
-          <h2 id="session-config-title">{text.heading}</h2>
+          <span className="sheet-head-text"><h2 id="session-config-title">{text.heading}</h2><p title={session.title}>{session.title}</p></span>
           <button type="button" className="icon-btn" aria-label={t("close")} onClick={onClose}><Icon name="close" /></button>
         </div>
         {config ? (

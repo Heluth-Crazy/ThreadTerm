@@ -1,7 +1,9 @@
-.block-inspector { position: absolute; z-index: 20; inset: 16px 16px auto auto; width: min(540px, calc(100% - 32px)); max-height: calc(100% - 32px); overflow: auto; padding: 14px; border: 1px solid var(--border); border-radius: 10px; background: var(--raised); box-shadow: 0 14px 40px rgb(0 0 0 / 32%); }
-.block-inspector-heading { display: flex; gap: 12px; justify-content: space-between; align-items: start; }
-.block-inspector-heading h2 { margin: 0; font-size: 15px; }
-.block-inspector-heading p { margin: 4px 0 0; color: var(--muted); font-size: 12px; }
+.block-inspector { position: absolute; z-index: 20; inset: 16px 16px auto auto; width: min(540px, calc(100% - 32px)); max-height: calc(100% - 32px); overflow: auto; padding: 0 14px 14px; border: 1px solid var(--border); border-radius: var(--radius-card); background: var(--surface); box-shadow: var(--shadow-soft); }
+.block-inspector-heading { display: flex; gap: 12px; justify-content: space-between; align-items: center; margin:0 -14px; padding:14px 20px; border-bottom:1px solid var(--border); }
+.block-inspector-heading > div { min-width:0; }
+.block-inspector-heading > .icon-btn { flex:none; }
+.block-inspector-heading h2 { margin: 0; color:var(--text); font-size: 13px; font-weight:600; }
+.block-inspector-heading p { margin: 2px 0 0; color: var(--muted); font-size: 11px; }
 .block-inspector-text { max-height: 280px; overflow: auto; margin: 12px 0; padding: 10px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg); white-space: pre-wrap; overflow-wrap: anywhere; font: 12px/1.45 "Cascadia Code", Consolas, monospace; }
 .block-inspector-explain { display: grid; gap: 8px; }
 .block-inspector-explain label { display: grid; gap: 5px; font-size: 12px; }

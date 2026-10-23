@@ -4,6 +4,7 @@ import type { ProviderCapability, ProviderId, Session } from "@threadterm/protoc
 import { operationId, request } from "../bridge";
 import { acquireControl } from "../controlLease";
 import { useTranslation } from "../i18n";
+import { Icon } from "./PrototypeIcon";
 import { buildExplainPrompt, isExplainProvider, MAX_EXPLAIN_SELECTION } from "./explainSelection";
 import "./block-inspector.css";
 
@@ -80,7 +81,7 @@ export function BlockInspector({ sessionId, text, onClose }: Props) {
   };
 
   return <section className="block-inspector" role="dialog" aria-modal="true" aria-label={copy("Terminal selection inspector", "终端选区检查器")}>
-    <div className="block-inspector-heading"><div><h2>{copy("Terminal selection", "终端选区")}</h2><p>{lineCount} {copy("line(s), read only", "行，只读")}</p></div><button onClick={onClose} aria-label={copy("Close inspector", "关闭检查器")}>×</button></div>
+    <header className="block-inspector-heading"><div><h2>{copy("Terminal selection", "终端选区")}</h2><p>{lineCount} {copy("line(s), read only", "行，只读")}</p></div><button type="button" className="icon-btn" onClick={onClose} aria-label={copy("Close inspector", "关闭检查器")}><Icon name="close"/></button></header>
     <pre className="block-inspector-text" tabIndex={0}>{shownText || copy("No text was selected.", "未选择文本。")}</pre>
     <div className="block-inspector-explain">
       <label>{copy("Explain in new Chat", "在新聊天中解释")}<Select value={provider ?? ""} onChange={(event) => setProvider(event.target.value as ProviderId)} disabled={busy || !eligible.length}><option value="">{copy("Choose a provider", "选择提供方")}</option>{eligible.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</Select></label>
