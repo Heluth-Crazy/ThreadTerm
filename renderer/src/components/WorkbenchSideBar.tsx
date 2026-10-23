@@ -10,6 +10,7 @@ import { AgentChangesView } from './AgentChangesView';
 import { workbenchError } from '../workbench/errors';
 import { FILES_CHANGED_EVENT, scopeParams, type GitState, type WorkbenchActions, type WorkbenchScope } from '../workbench/types';
 import '../workbench/workbench.css';
+import './panel-headers.css';
 
 export type WorkbenchView = 'files'|'search'|'scm'|'changes';
 export type WorkbenchCommand = { view:WorkbenchView|'toggle'; key:string };

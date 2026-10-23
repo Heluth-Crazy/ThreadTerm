@@ -93,7 +93,7 @@
 }
 @container browser-preview (width < 550px) {
  .wb-web-preview > .file-bar.wb-browser-toolbar { flex-wrap:wrap; padding-block:4px; }
- .wb-web-preview .wb-browser-actions { flex-basis:100%; justify-content:flex-end; }
+ .wb-web-preview .wb-browser-actions { flex-basis:100%; flex-wrap:wrap; justify-content:flex-end; }
 }
 @media (prefers-reduced-motion:reduce) {
  .wb-web-preview :is(.wb-browser-toolbar, .wb-browser-find, .wb-browser-infobar, .wb-web-preview-note) :is(.btn, .icon-btn):hover:not(:disabled) { transition:none; }
