@@ -1,11 +1,12 @@
 import { useState } from 'react';
 import type { ChatPart, FileReference } from '@threadterm/protocol';
-import { diffView, editFileStats, moreFilesLabel, outputView, toolStatusLabel, type DiffView } from '../toolCards';
+import { commandDisplayCwd, compactToolArguments, diffView, editFileStats, mcpResultView, moreFilesLabel, outputView, toolCardHasBody, toolStatusLabel, type DiffView } from '../toolCards';
 import { partBody } from '../chatPresentation';
 import { isChatImage } from '../chatImages';
 import { toolView, type ToolView } from '../toolView';
 import { hasRedactedBrowserResult } from '../browserToolActivity';
 import { feedbackNotesFromPart } from '../feedbackNotes';
+import { extractFileReferences } from '../fileReferences';
 import { describeTool, type ToolActivityEntry } from '../toolActivity';
 import { FileLinkedText, FileReferenceChips } from './FileReferenceText';
 import { JsonTree } from './JsonTree';
@@ -18,9 +19,9 @@ type OpenFile = (reference: FileReference) => void;
 const EDIT_FILE_LIMIT = 3;
 
 const icons: Record<ToolView['kind'], string> = {
-  edit: 'file', command: 'terminal', read: 'file', search: 'search', web: 'popout',
-  todo: 'check', skill: 'spark', subagent: 'export', mcp: 'spark', image: 'file',
-  compaction: 'layers', generic: 'spark',
+  edit: 'file', command: 'terminal', read: 'file', search: 'search', web: 'globe',
+  todo: 'check', skill: 'spark', subagent: 'agents', mcp: 'plug', image: 'image',
+  compaction: 'layers', generic: 'wrench',
 };
 
 /** Maps a tool status key to the shared status-chip colours. */
@@ -98,39 +99,39 @@ function OutputBody({ text, copy }: { text: string; copy: Copy }) {
 }
 
 function CommandBody({ view, sessionCwd, copy }: { view: Extract<ToolView, { kind: 'command' }>; sessionCwd?: string; copy: Copy }) {
-  const cwd = view.cwd && view.cwd !== sessionCwd ? view.cwd : undefined;
+  const cwd = commandDisplayCwd(view.cwd, sessionCwd);
+  const hasChips = Boolean(view.shell || cwd || view.background || view.exitCode !== undefined && view.exitCode !== 0 || view.actions?.length);
   return <>
-    <div className="tool-command"><code>{view.command}</code></div>
-    <div className="tool-chip-row">
+    {hasChips && <div className="tool-chip-row">
+      {view.shell && <span className="chip flat tool-chip" title={view.command}>{view.shell}</span>}
       {cwd && <span className="chip flat tool-chip" title={cwd}>{copy('cwd', '目录')}: {cwd}</span>}
       {view.background && <span className="chip flat is-accent tool-chip">{copy('Background', '后台')}</span>}
       {view.exitCode !== undefined && view.exitCode !== 0 && <span className="chip flat is-danger tool-chip">{copy('exit', '退出码')} {view.exitCode}</span>}
       {view.actions?.map(action => <span className="chip flat tool-chip" key={action}>{action}</span>)}
-    </div>
+    </div>}
     {view.output && <OutputBody text={view.output} copy={copy} />}
   </>;
 }
 
-function ReadBody({ view, copy, openFile, references }: { view: Extract<ToolView, { kind: 'read' }>; copy: Copy; openFile?: OpenFile; references?: FileReference[] }) {
-  // Prefer the structured reference because it can carry the line/column; the
-  // generic reference chips are suppressed for read cards so the path shows once.
+function ReadTitle({ view, openFile, references }: { view: Extract<ToolView, { kind: 'read' }>; openFile?: OpenFile; references?: FileReference[] }) {
+  if (!view.path) return view.title;
   const reference = references?.find(value => value.path === view.path);
   const label = reference ? `${reference.path}${reference.line ? `:${reference.line}${reference.column ? `:${reference.column}` : ''}` : ''}` : view.path;
-  return <>
-    <div className="tool-path"><Icon name="file" />{reference && openFile
-      ? <button type="button" className="file-reference-link" onClick={() => openFile(reference)} title={reference.path}>{label}</button>
-      : <FileLinkedText text={view.path} openFile={openFile} />}</div>
-    <div className="tool-chip-row">
+  return reference && openFile
+    ? <button type="button" className="file-reference-link" onClick={() => openFile(reference)} title={reference.path}>{label}</button>
+    : <FileLinkedText text={label} openFile={openFile} />;
+}
+
+function ReadBody({ view, copy }: { view: Extract<ToolView, { kind: 'read' }>; copy: Copy }) {
+  return <div className="tool-chip-row">
       {view.offset !== undefined && <span className="chip flat tool-chip">{copy('offset', '起始')} {view.offset}</span>}
       {view.limit !== undefined && <span className="chip flat tool-chip">{copy('limit', '行数')} {view.limit}</span>}
       {view.pages !== undefined && <span className="chip flat tool-chip">{copy('pages', '页')} {view.pages}</span>}
-    </div>
-  </>;
+    </div>;
 }
 
 function SearchBody({ view, copy }: { view: Extract<ToolView, { kind: 'search' }>; copy: Copy }) {
   return <>
-    <div className="tool-search"><code>{view.query}</code></div>
     <div className="tool-chip-row">
       {view.path && <span className="chip flat tool-chip">{view.path}</span>}
       {view.glob && <span className="chip flat tool-chip">{view.glob}</span>}
@@ -144,9 +145,7 @@ function SearchBody({ view, copy }: { view: Extract<ToolView, { kind: 'search' }
 
 function WebBody({ view, copy }: { view: Extract<ToolView, { kind: 'web' }>; copy: Copy }) {
   const [open, setOpen] = useState(false);
-  const label = view.url ?? view.query ?? '';
   return <>
-    <div className="tool-path"><Icon name="popout" /><span className="tool-url" title={view.url}>{label}</span></div>
     {view.result && (open
       ? <OutputBody text={view.result} copy={copy} />
       : <button type="button" className="btn btn-sm tool-card-action" onClick={() => setOpen(true)}>{copy('Show result', '显示结果')}</button>)}
@@ -195,17 +194,31 @@ function McpBody({ view, copy }: { view: Extract<ToolView, { kind: 'mcp' }>; cop
     {activity.thumbnail && <div className="chat-message-images"><img src={activity.thumbnail} alt={copy('Browser screenshot preview', '浏览器截图预览')} loading="lazy" width={240} style={{ maxWidth: '100%', height: 'auto' }} /></div>}
   </div>;
   return <>
-    {view.server && <div className="tool-chip-row"><span className="chip flat tool-chip">{view.server}</span><span className="chip flat tool-chip">{view.tool}</span></div>}
-    {view.args !== undefined && <div className="tool-json-block"><span className="tool-json-label">{copy('Arguments', '参数')}</span><JsonTree value={view.args} copy={copy} /></div>}
-    {view.result !== undefined && <div className="tool-json-block"><span className="tool-json-label">{copy('Result', '结果')}</span><JsonTree value={view.result} copy={copy} /></div>}
+    {view.args !== undefined && <ArgumentsBody value={view.args} copy={copy} />}
+    {view.result !== undefined && <ResultBody value={view.result} copy={copy} />}
   </>;
 }
 
 function GenericBody({ view, copy }: { view: Extract<ToolView, { kind: 'generic' }>; copy: Copy }) {
   return <>
-    {view.args !== undefined && <div className="tool-json-block"><span className="tool-json-label">{copy('Arguments', '参数')}</span><JsonTree value={view.args} copy={copy} /></div>}
-    {view.result !== undefined && <div className="tool-json-block"><span className="tool-json-label">{copy('Result', '结果')}</span><JsonTree value={view.result} copy={copy} /></div>}
+    {view.args !== undefined && <ArgumentsBody value={view.args} copy={copy} />}
+    {view.result !== undefined && <ResultBody value={view.result} copy={copy} />}
   </>;
+}
+
+function ArgumentsBody({ value, copy }: { value: unknown; copy: Copy }) {
+  const lines = compactToolArguments(value);
+  if (lines?.length === 0) return null;
+  return <div className="tool-json-block"><span className="tool-json-label">{copy('Arguments', '参数')}</span>{lines
+    ? <div className="tool-argument-lines">{lines.map(([key, text]) => <div key={key}><span className="tool-argument-key">{key}: </span>{text}</div>)}</div>
+    : <JsonTree value={value} copy={copy} />}</div>;
+}
+
+function ResultBody({ value, copy }: { value: unknown; copy: Copy }) {
+  const result = mcpResultView(value);
+  return <div className="tool-json-block"><span className="tool-json-label">{result?.isError ? copy('Error', '错误') : copy('Result', '结果')}</span>{result?.text !== undefined
+    ? <OutputBody text={result.text} copy={copy} />
+    : <JsonTree value={result && result.structuredContent !== undefined ? result.structuredContent : value} copy={copy} />}</div>;
 }
 
 /** E2: a `feedback_check` result reads as a count with an optional note list. */
@@ -222,13 +235,13 @@ function FeedbackBody({ notes, copy }: { notes: NonNullable<ReturnType<typeof fe
   </>;
 }
 
-function CardBody({ part, view, copy, sessionCwd, openFile, openDiff, canOpenDiff, references }: { part: ChatPart; view: ToolView; copy: Copy; sessionCwd?: string; openFile?: OpenFile; openDiff?: (path: string) => void; canOpenDiff?: (path: string) => boolean; references?: FileReference[] }) {
+function CardBody({ part, view, copy, sessionCwd, openFile, openDiff, canOpenDiff }: { part: ChatPart; view: ToolView; copy: Copy; sessionCwd?: string; openFile?: OpenFile; openDiff?: (path: string) => void; canOpenDiff?: (path: string) => boolean }) {
   const feedback = feedbackNotesFromPart(part);
   if (feedback) return <FeedbackBody notes={feedback} copy={copy} />;
   switch (view.kind) {
     case 'edit': return <EditBody view={view} copy={copy} openFile={openFile} openDiff={openDiff} canOpenDiff={canOpenDiff} />;
     case 'command': return <CommandBody view={view} sessionCwd={sessionCwd} copy={copy} />;
-    case 'read': return <ReadBody view={view} copy={copy} openFile={openFile} references={references} />;
+    case 'read': return <ReadBody view={view} copy={copy} />;
     case 'search': return <SearchBody view={view} copy={copy} />;
     case 'web': return <WebBody view={view} copy={copy} />;
     case 'todo': return <TodoBody view={view} copy={copy} />;
@@ -270,7 +283,8 @@ export function ToolCard({ entry, index, open, active, awaitingApproval, session
   const view = toolView(entry.part);
   // Delegation tools keep the drawer header's localized name, not the raw "threadterm: delegate_start".
   const described = describeTool(entry.part, copy);
-  const title = described.kind === 'delegation' ? described.name : view.title;
+  const title = described.kind === 'delegation' ? described.name : view.kind === 'command' ? view.display : view.kind === 'read' ? view.path || view.title : view.kind === 'mcp' ? view.tool : view.title;
+  const suffix = view.kind === 'mcp' && described.kind !== 'delegation' ? view.server : undefined;
   const status = view.kind === 'mcp' && view.browserActivity?.outcome === 'outcome_unknown'
     ? { key: 'failed', label: copy('Outcome unknown', '操作结果未知') }
     : toolStatusLabel(view.status, active, awaitingApproval, copy);
@@ -279,14 +293,15 @@ export function ToolCard({ entry, index, open, active, awaitingApproval, session
   return <div role="listitem" className={`chat-tool-entry tool-card is-${status.key} is-${view.kind}`} data-tool-id={entry.part.toolId || entry.id} data-tool-kind={view.kind} data-tool-status={view.status}>
     <div className="chat-tool-entry-label tool-card-head">
       <span className="chat-tool-step">{index + 1}</span>
-      <Icon name={icons[view.kind]} />
-      <strong className="tool-card-title" title={title}>{title}</strong>
+      <Icon name={described.kind === 'delegation' ? 'agents' : icons[view.kind]} />
+      <strong className={`tool-card-title${view.kind === 'command' ? ' is-command' : ''}`} title={view.kind === 'command' ? view.command : [title, suffix].filter(Boolean).join(' · ')}>{view.kind === 'command' ? <code>{view.display}</code> : view.kind === 'read' ? <ReadTitle view={view} openFile={openFile} references={references} /> : title}{suffix && <span className="tool-card-title-suffix"> · {suffix}</span>}</strong>
       <span className={`chip tool-card-status ${statusChip[status.key] ?? 'flat'}`}>{status.label}</span>
     </div>
-    {open && <div className="tool-card-body">
-      <CardBody part={entry.part} view={view} copy={copy} sessionCwd={sessionCwd} openFile={openFile} openDiff={openDiff} canOpenDiff={canOpenDiff} references={references} />
+    {open && toolCardHasBody(view, sessionCwd) && <div className="tool-card-body">
+      <CardBody part={entry.part} view={view} copy={copy} sessionCwd={sessionCwd} openFile={openFile} openDiff={openDiff} canOpenDiff={canOpenDiff} />
     </div>}
     <CardImages part={entry.part} copy={copy} />
-    {view.kind !== 'read' && <FileReferenceChips references={references} visibleText={body} openFile={openFile} />}
+    {/* A search card's folder chip already names its path. */}
+    {view.kind !== 'read' && <FileReferenceChips references={references} visibleText={body} visibleReferences={view.kind === 'search' && view.path ? [...extractFileReferences(body), { path: view.path }] : undefined} openFile={openFile} />}
   </div>;
 }

@@ -1,5 +1,5 @@
 import type { ToolEditDiff, ToolEditFile, ToolStatus, ToolView } from './toolView';
-import { pathIsWithinCanonicalScope } from './projectScope';
+import { displayPath, pathIsWithinCanonicalScope } from './projectScope';
 
 /**
  * Pure presentation helpers for the typed tool cards (B2/B3). Everything that
@@ -147,6 +147,57 @@ export function outputView(text: string | undefined, expanded: boolean): OutputV
   if (total <= OUTPUT_MAX_LINES) return { lines, total, omitted: 0, expandable: false };
   if (expanded) return { lines: lines.slice(-OUTPUT_MAX_LINES), total, omitted: total - OUTPUT_MAX_LINES, expandable: false };
   return { lines: lines.slice(-OUTPUT_COLLAPSED_TAIL), total, omitted: total - OUTPUT_COLLAPSED_TAIL, expandable: true };
+}
+
+/** Only show a directory chip when it differs from the session's native path. */
+export function commandDisplayCwd(cwd: string | undefined, sessionCwd: string | undefined): string | undefined {
+  const normalize = (value: string | undefined): string => {
+    const path = displayPath(value).replace(/\//g, '\\').replace(/\\+$/, '');
+    return /^(?:[a-z]:|\\\\)/i.test(path) ? path.toLowerCase() : path;
+  };
+  return cwd && normalize(cwd) !== normalize(sessionCwd) ? cwd : undefined;
+}
+
+/** Targets live in the title; omit bodies with no remaining metadata or output. */
+export function toolCardHasBody(view: ToolView, sessionCwd?: string): boolean {
+  switch (view.kind) {
+    case 'command': return Boolean(view.shell || commandDisplayCwd(view.cwd, sessionCwd) || view.background
+      || view.exitCode !== undefined && view.exitCode !== 0 || view.actions?.length || view.output);
+    case 'read': return view.offset !== undefined || view.limit !== undefined || view.pages !== undefined;
+    case 'search': return Boolean(view.path || view.glob || view.matches !== undefined && view.files !== undefined
+      || view.flags?.caseInsensitive || view.flags?.multiline || view.omitted);
+    case 'web': return Boolean(view.result);
+    default: return true;
+  }
+}
+
+function parsedJson(value: unknown): unknown {
+  if (typeof value !== 'string') return value;
+  try { return JSON.parse(value); } catch { return value; }
+}
+
+/** Small argument objects read better as lines than as expandable tree nodes. */
+export function compactToolArguments(value: unknown): [string, string][] | undefined {
+  const parsed = parsedJson(value);
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return undefined;
+  const entries = Object.entries(parsed);
+  if (entries.length > 8 || entries.some(([, item]) => item !== null && !['string', 'number', 'boolean'].includes(typeof item))) return undefined;
+  return entries.map(([key, item]) => [key, typeof item === 'string' ? item : String(item)]);
+}
+
+/** Lift MCP text out of its transport envelope without mutating native output. */
+export function mcpResultView(value: unknown): { text?: string; structuredContent?: unknown; isError: boolean } | undefined {
+  const parsed = parsedJson(value);
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return undefined;
+  const result = parsed as Record<string, unknown>;
+  if (!Array.isArray(result.content)) return undefined;
+  const blocks = result.content.flatMap(block => {
+    if (!block || typeof block !== 'object' || block.type !== 'text' || typeof block.text !== 'string') return [];
+    let text = block.text;
+    try { text = JSON.stringify(JSON.parse(text), null, 2); } catch { /* Plain text stays plain. */ }
+    return [text];
+  });
+  return { ...(blocks.length ? { text: blocks.join('\n\n') } : {}), structuredContent: result.structuredContent, isError: result.isError === true };
 }
 
 function jsonKind(value: unknown): JsonValueKind {

@@ -119,10 +119,14 @@ export class ClaudeSession {
     this.nativeBackgroundTaskIds = new Set();
     this.retiredBackgroundIds = new Set();
     this.backgroundStops = new Map();
+    this.permissionRestoreValidated = false;
   }
 
-  async start({ cwd, sessionId, mcpServers }) {
+  async start({ cwd, sessionId, mcpServers, permissionMode, model }) {
     if (this.closed) throw new Error('session is closed');
+    if (permissionMode !== undefined && ![...MODE_CHOICES, AUTO_MODE].some(choice => choice.value === permissionMode)) {
+      throw new Error(`Claude permission mode restore failed: ${permissionMode} is not supported`);
+    }
     // Only credentials supplied by ThreadTerm's core-managed MCP server permit
     // automatic approval; a similarly named arbitrary MCP server cannot.
     const injected = mcpServers && typeof mcpServers === 'object' && !Array.isArray(mcpServers) ? mcpServers : null;
@@ -134,6 +138,18 @@ export class ClaudeSession {
     this.threadTermAskTool = threadterm?.name === undefined && typeof environment.THREADTERM_CHAT_TOKEN === 'string' && environment.THREADTERM_CHAT_TOKEN.length > 0 && environment.THREADTERM_CHAT_TOOL_ASK === '1';
     this.threadTermSessionInfoTool = threadterm?.name === undefined && typeof environment.THREADTERM_CHAT_TOKEN === 'string' && environment.THREADTERM_CHAT_TOKEN.length > 0 && environment.THREADTERM_CHAT_TOOL_SESSION_INFO === '1';
     this.threadTermFeedbackTool = threadterm?.name === undefined && typeof environment.THREADTERM_CHAT_TOKEN === 'string' && environment.THREADTERM_CHAT_TOKEN.length > 0 && environment.THREADTERM_CHAT_TOOL_FEEDBACK === '1';
+    // "Don't ask" and "Auto" settle an ask without consulting canUseTool, so
+    // "Don't ask" denied ThreadTerm's own tools. The exact names
+    // requestPermission allows in every mode are also pre-approved as rules
+    // (verified with SDK 0.3.266); browser_eval is never among them.
+    const allowedTools = [
+      ...(this.threadTermDelegationTools ? THREADTERM_DELEGATION_TOOLS : []),
+      ...(this.threadTermPreviewTools ? THREADTERM_PREVIEW_TOOLS : []),
+      ...(this.threadTermBrowserTools ? THREADTERM_BROWSER_TOOLS : []),
+      ...(this.threadTermAskTool ? ['mcp__threadterm__ask_user'] : []),
+      ...(this.threadTermSessionInfoTool ? ['mcp__threadterm__session_info'] : []),
+      ...(this.threadTermFeedbackTool ? ['mcp__threadterm__feedback_check'] : []),
+    ];
     const options = {
       cwd,
       settingSources: this.hostOptions.settingSources ?? ['user', 'project', 'local'],
@@ -141,7 +157,10 @@ export class ClaudeSession {
       forwardSubagentText: true,
       ...(this.hostOptions.pathToClaudeCodeExecutable ? { pathToClaudeCodeExecutable: this.hostOptions.pathToClaudeCodeExecutable } : {}),
       ...(sessionId ? { resume: sessionId } : {}),
+      ...(permissionMode ? { permissionMode } : {}),
+      ...(model ? { model } : {}),
       ...(injected ? { mcpServers: injected } : {}),
+      ...(allowedTools.length ? { allowedTools } : {}),
       canUseTool: (toolName, input, context) => this.requestPermission(toolName, input, context),
     };
     this.sessionId = sessionId ?? null;
@@ -169,7 +188,13 @@ export class ClaudeSession {
         models: Array.isArray(init?.models) ? init.models.filter(model => typeof model?.value === 'string') : [],
       };
       if (typeof init?.current_permission_mode === 'string') this.settings.mode = init.current_permission_mode;
+      if (permissionMode && init?.current_permission_mode !== permissionMode) {
+        throw new Error(`Claude permission mode restore failed: requested ${permissionMode}, but Claude reported ${init?.current_permission_mode ?? 'unavailable'}`);
+      }
       await this.refreshApplied({ model: true });
+      if (permissionMode === 'auto' && !this.uiState().options.find(option => option.id === 'mode')?.choices.some(choice => choice.value === 'auto')) {
+        throw new Error('Claude permission mode restore failed: Auto is unavailable for the selected model');
+      }
     } catch (error) {
       // Never leave a live CLI behind a failed handshake.
       try { this.query.close?.(); } catch {}
@@ -180,6 +205,7 @@ export class ClaudeSession {
       this.abortStart = null;
     }
     if (this.closed || this.ended) throw new Error('Claude SDK query ended during initialization');
+    this.permissionRestoreValidated = true;
     this.warmUp();
     return this.sessionId;
   }
@@ -521,7 +547,7 @@ export class ClaudeSession {
   noteMode(mode) {
     if (mode === this.settings.mode) return;
     this.settings.mode = mode;
-    this.publishUi();
+    this.publishUi({ permissionChangeConfirmed: this.permissionRestoreValidated });
   }
 
   modelValueFor(id) {
@@ -602,9 +628,13 @@ export class ClaudeSession {
     return { options, commands, backgroundTasks: [...this.backgroundTasks.values()] };
   }
 
-  publishUi() {
+  publishUi({ permissionChangeConfirmed = false } = {}) {
     const ui = this.uiState();
-    if (!this.closed) this.write(event(this.cardId, 'session.ui', { ui, sessionId: this.sessionId }));
+    if (!this.closed) this.write(event(this.cardId, 'session.ui', {
+      ui,
+      sessionId: this.sessionId,
+      ...(permissionChangeConfirmed ? { permissionChangeConfirmed: true } : {}),
+    }));
     return ui;
   }
 

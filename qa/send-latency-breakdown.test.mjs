@@ -30,6 +30,26 @@ test('aggregation correlates IDs, never subtracts clock domains, and retains mis
   assert.throws(() => aggregateTrace([...rows, row('desktop', 'desktop.request.begin', 1, { requestId: 'replay' })],
     { operationId: 'send-1' }), /Expected one request/);
 });
+test('runtime remainder counts the checkpoint only inside its enclosing record span', () => {
+  const rows = [row('runtime', 'transport.dispatch.begin', 0), row('runtime', 'transport.dispatch.end', 100000),
+    row('runtime', 'provider.worker_lock.end', 10000, { durationUs: 10000 }),
+    row('runtime', 'review.checkpoint.end', 40000, { durationUs: 30000 }),
+    row('runtime', 'persistence.record.end', 50000, { durationUs: 40000 }),
+    row('runtime', 'provider.handoff.end', 70000, { durationUs: 20000 }),
+    row('runtime', 'persistence.complete.end', 75000, { durationUs: 5000 })];
+  const { metrics } = aggregateTrace(rows, { operationId: 'send-1' });
+  assert.equal(metrics.checkpointMs, 30);
+  assert.equal(metrics.recordMs, 40);
+  assert.equal(metrics.runtimeOtherMs, 25);
+  const missingCheckpoint = aggregateTrace(rows.filter(value => value.stage !== 'review.checkpoint.end'),
+    { operationId: 'send-1', strictSend: true });
+  assert.equal(missingCheckpoint.metrics.checkpointMs, null);
+  assert.equal(missingCheckpoint.metrics.runtimeOtherMs, 25, 'record still covers the missing nested checkpoint');
+  assert.ok(missingCheckpoint.missing.includes('runtime:review.checkpoint.end'));
+  const missingRecord = aggregateTrace(rows.filter(value => value.stage !== 'persistence.record.end'),
+    { operationId: 'send-1' });
+  assert.equal(missingRecord.metrics.runtimeOtherMs, null, 'a nested checkpoint cannot replace the record span');
+});
 test('missing, malformed and reversed spans are unknown rather than zero', () => {
   const rows = parseTrace('bad\n' + JSON.stringify(row('desktop', 'desktop.request.begin', 1000)) + '\n'
     + JSON.stringify(row('desktop', 'desktop.request.end', 1)) + '\n{"kind":"somethingElse"}\n');

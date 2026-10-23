@@ -1,11 +1,39 @@
-import { useEffect, useState } from "react";
+import { useEffect, useId, useState } from "react";
 import type { Session } from "@threadterm/protocol";
 import { operationId, request } from "../bridge";
-import { attachedMessagesLabel, delegateOutcomePreview, delegationActive, delegationStateLabel } from "../delegation";
-import { AgentIcon } from "./PrototypeIcon";
+import { attachedMessagesLabel, delegateOutcomePreview, delegationActive, delegationStateLabel, delegationStateSummary, delegationStripVisible } from "../delegation";
+import { AgentIcon, Icon } from "./PrototypeIcon";
 import "./delegation-panel.css";
 
 type Copy = (en: string, zh: string) => string;
+
+const expandedBySession = new Map<string, boolean>();
+const hiddenBySession = new Map<string, string[]>();
+const hiddenStorageKey = "threadterm.delegationStrip.hidden.v1";
+let hiddenLoaded = false;
+
+function hiddenDelegates(sessionId: string): string[] | undefined {
+  if (!hiddenLoaded) {
+    hiddenLoaded = true;
+    try {
+      const stored: unknown = JSON.parse(localStorage.getItem(hiddenStorageKey) ?? "{}");
+      if (stored && typeof stored === "object" && !Array.isArray(stored)) {
+        const entries = Object.entries(stored).filter((entry): entry is [string, string[]] => Array.isArray(entry[1]) && entry[1].every(id => typeof id === "string"));
+        for (const [id, ids] of entries.slice(-200)) hiddenBySession.set(id, ids);
+      }
+    } catch { /* Keep in-memory preferences when storage is unavailable. */ }
+  }
+  return hiddenBySession.get(sessionId);
+}
+
+function hideDelegates(sessionId: string, delegates: readonly Session[]): void {
+  hiddenDelegates(sessionId);
+  hiddenBySession.delete(sessionId);
+  hiddenBySession.set(sessionId, delegates.map(delegate => delegate.id));
+  while (hiddenBySession.size > 200) hiddenBySession.delete(hiddenBySession.keys().next().value!);
+  try { localStorage.setItem(hiddenStorageKey, JSON.stringify(Object.fromEntries(hiddenBySession))); }
+  catch { /* Keep in-memory preferences when storage is unavailable. */ }
+}
 
 /**
  * Agent delegation in a Chat: a parent shows a card per agent it delegated to;
@@ -19,7 +47,14 @@ export function DelegationPanel({ session, delegates, delegatedBy, onOpenSession
   copy: Copy;
   zh: boolean;
 }) {
-  if (!session.delegation && delegates.length === 0) return null;
+  const cardsId = useId();
+  const [, refresh] = useState(0);
+  const active = delegates.some(delegate => delegate.delegation && delegationActive(delegate.delegation.state));
+  const visible = delegationStripVisible(hiddenDelegates(session.id), delegates);
+  const expanded = expandedBySession.get(session.id) ?? active;
+  const toggle = () => { expandedBySession.set(session.id, !expanded); refresh(value => value + 1); };
+  const hide = () => { hideDelegates(session.id, delegates); refresh(value => value + 1); };
+  if (!session.delegation && !visible) return null;
   return <div className="delegation-panel">
     {session.delegation && <p className="delegation-origin" role="note">
       {delegatedBy
@@ -28,9 +63,15 @@ export function DelegationPanel({ session, delegates, delegatedBy, onOpenSession
       <span className={`delegation-state st-${session.delegation.state}`}>{delegationStateLabel(session.delegation.state, zh)}</span>
       {session.delegation.branch && <span className="delegation-branch" title={session.delegation.branch}>{session.delegation.branch}</span>}
     </p>}
-    {delegates.length > 0 && <section className="delegation-cards" aria-label={copy("Delegated agents", "委派的代理")}>
-      <header>{copy(`Delegated agents (${delegates.length})`, `委派的代理（${delegates.length}）`)}</header>
-      {delegates.map(delegate => <DelegateCard key={delegate.id} delegate={delegate} onOpenSession={onOpenSession} copy={copy} zh={zh} />)}
+    {visible && <section className="delegation-strip" aria-label={copy("Delegated agents", "委派的代理")}>
+      <header className="delegation-header">
+        <button type="button" className="delegation-toggle" aria-expanded={expanded} aria-controls={cardsId} onClick={toggle}><Icon name="chevR" className="delegation-chevron" />{copy(`Delegated agents (${delegates.length})`, `委派的代理（${delegates.length}）`)}</button>
+        <div className="delegation-summary">{delegationStateSummary(delegates, copy).map(group => <span key={group.state} className={`delegation-state st-${group.state}`}>{group.label}</span>)}</div>
+        {!active && <button type="button" className="icon-btn icon-btn-sm delegation-hide" aria-label={copy("Hide delegated agents", "隐藏委派的代理")} title={copy("Hide delegated agents", "隐藏委派的代理")} onClick={hide}><Icon name="close" /></button>}
+      </header>
+      <div id={cardsId} className="delegation-cards" hidden={!expanded}>
+        {expanded && delegates.map(delegate => <DelegateCard key={delegate.id} delegate={delegate} onOpenSession={onOpenSession} copy={copy} zh={zh} />)}
+      </div>
     </section>}
   </div>;
 }

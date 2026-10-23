@@ -44,6 +44,11 @@ pub struct ChatToolServer {
     pub env: Vec<(String, String)>,
 }
 
+pub(crate) struct ChatStartupOptions<'a> {
+    pub project_trust: Option<&'a str>,
+    pub permissions: &'a Value,
+}
+
 /// Decides, per `(session_id, provider)`, whether a Chat gets a tool server.
 pub type ToolServerResolver = Arc<dyn Fn(&str, &str) -> Option<ChatToolServer> + Send + Sync>;
 /// Reads ThreadTerm's per-project Pi trust choice when a Chat worker opens.
@@ -491,6 +496,130 @@ pub(crate) trait ProviderAdapter: Send + Sync {
     ) -> Result<Box<dyn ChatSession>, ProviderError> {
         self.open_chat_with_tools(session_id, cwd, native_id, worker_token, tools)
     }
+
+    /// Restores provider-owned permissions before the worker can accept input.
+    /// Native adapters override this when their start/resume protocol supports it.
+    fn open_chat_with_startup_options(
+        &self,
+        session_id: &str,
+        cwd: &str,
+        native_id: Option<&str>,
+        worker_token: &str,
+        tools: Option<&ChatToolServer>,
+        startup: &ChatStartupOptions<'_>,
+    ) -> Result<Box<dyn ChatSession>, ProviderError> {
+        let options = startup.permissions;
+        let mut chat = self.open_chat_with_project_trust(session_id, cwd, native_id, worker_token, tools, startup.project_trust)?;
+        let restored = (|| {
+            for option in options.as_array().into_iter().flatten() {
+                let id = option.get("id").and_then(Value::as_str).ok_or_else(|| ProviderError::new("chat_permission_restore_failed", "Invalid saved permission option"))?;
+                let value = option.get("value").and_then(Value::as_str).ok_or_else(|| ProviderError::new("chat_permission_restore_failed", "Invalid saved permission value"))?;
+                let state = chat.ui_state();
+                let current = permission_option(&state, id);
+                if current.is_none() {
+                    return Err(permission_restore_error(option, None, "missing", None));
+                }
+                chat.set_option(id, value)
+                    .map_err(|error| {
+                        if is_structured_permission_restore_error(&error) {
+                            error
+                        } else {
+                            permission_restore_error(option, current, "rejected", current.and_then(permission_value))
+                        }
+                    })?;
+            }
+            verify_permission_options(&chat.ui_state(), options)
+        })();
+        if let Err(error) = restored {
+            let error = with_permission_options(error, chat.ui_state());
+            let _ = chat.stop(); return Err(error);
+        }
+        Ok(chat)
+    }
+}
+
+pub(super) fn permission_option<'a>(state: &'a Value, id: &str) -> Option<&'a Value> {
+    state.get("options").and_then(Value::as_array)?.iter()
+        .find(|row| row.get("id").and_then(Value::as_str) == Some(id))
+}
+
+pub(super) fn permission_value(option: &Value) -> Option<&str> {
+    option.get("value").and_then(Value::as_str)
+}
+
+fn permission_choice_label(option: &Value, value: &str) -> Option<String> {
+    option.get("choices").and_then(Value::as_array)?.iter()
+        .find(|choice| choice.get("value").and_then(Value::as_str) == Some(value))?
+        .get("name").and_then(Value::as_str).filter(|name| !name.is_empty()).map(str::to_owned)
+}
+
+/// Adds only catalogue-derived restore facts. Provider-native error text can
+/// contain implementation detail and is deliberately not copied into this UI contract.
+pub(super) fn permission_restore_error(
+    saved: &Value,
+    current: Option<&Value>,
+    reason: &str,
+    reported_value: Option<&str>,
+) -> ProviderError {
+    let id = saved.get("id").and_then(Value::as_str).unwrap_or_default();
+    let saved_value = saved.get("value").and_then(Value::as_str).unwrap_or("invalid");
+    let catalogue = current.unwrap_or(saved);
+    let mut detail = json!({
+        "optionId": id,
+        "savedValue": saved_value,
+        "reason": reason,
+    });
+    if let Some(name) = current.and_then(|option| option.get("name")).or_else(|| saved.get("name")).and_then(Value::as_str).filter(|name| !name.is_empty()) {
+        detail["optionName"] = json!(name);
+    }
+    if let Some(label) = permission_choice_label(catalogue, saved_value) {
+        detail["savedLabel"] = json!(label);
+    }
+    if let Some(value) = reported_value {
+        detail["reportedValue"] = json!(value);
+        if let Some(label) = permission_choice_label(catalogue, value) {
+            detail["reportedLabel"] = json!(label);
+        }
+    }
+    ProviderError::new(
+        "chat_permission_restore_failed",
+        "Saved permissions could not be restored. Choose permissions below, then retry.",
+    ).with_details(json!({"permissionRestore":detail}))
+}
+
+pub(super) fn is_structured_permission_restore_error(error: &ProviderError) -> bool {
+    error.code == "chat_permission_restore_failed"
+        && error
+            .details
+            .as_ref()
+            .and_then(|details| details.get("permissionRestore"))
+            .is_some()
+}
+
+pub(super) fn with_permission_options(mut error: ProviderError, options: Value) -> ProviderError {
+    let mut details = error.details.take().filter(Value::is_object).unwrap_or_else(|| json!({}));
+    details["permissionOptions"] = options;
+    error.details = Some(details);
+    error
+}
+
+pub(crate) fn verify_permission_options(state: &Value, options: &Value) -> Result<(), ProviderError> {
+    for option in options.as_array().into_iter().flatten() {
+        if option.get("startupDependency").and_then(Value::as_bool) == Some(true) { continue; }
+        let id = option.get("id").and_then(Value::as_str).unwrap_or_default();
+        let expected = option.get("value").and_then(Value::as_str);
+        let current = permission_option(state, id);
+        let actual = current.and_then(permission_value);
+        if expected.is_none() || actual != expected {
+            return Err(permission_restore_error(
+                option,
+                current,
+                if current.is_some() { "mismatch" } else { "missing" },
+                actual,
+            ));
+        }
+    }
+    Ok(())
 }
 
 pub(crate) trait ChatSession: Send {
@@ -801,6 +930,7 @@ struct ChatSlot {
     phase: &'static str,
     native_id: Option<String>,
     error: Option<Value>,
+    failed_options: Option<Value>,
     worker: Option<SharedChat>,
     connecting: bool,
     worker_token: Option<String>,
@@ -818,6 +948,7 @@ impl ChatSlot {
             phase: "disconnected",
             native_id: None,
             error: None,
+            failed_options: None,
             worker: None,
             connecting: false,
             worker_token: None,
@@ -1806,12 +1937,20 @@ impl Providers {
             _ => "provider",
         };
         let retryable = !matches!(category, "install" | "auth");
-        json!({
+        let mut value = json!({
             "code": error.code,
             "message": error.message,
             "retryable": retryable,
             "category": category
-        })
+        });
+        if let Some(permission_restore) = error
+            .details
+            .as_ref()
+            .and_then(|details| details.get("permissionRestore"))
+        {
+            value["permissionRestore"] = permission_restore.clone();
+        }
+        value
     }
 }
 
@@ -1877,6 +2016,7 @@ impl Providers {
                         slot.phase = "ready";
                         slot.native_id = native.clone();
                         slot.error = None;
+                        slot.failed_options = None;
                         slot.worker = Some(Arc::new(Mutex::new(worker)));
                         slot.revision = slot.revision.saturating_add(1);
                         Ok(json!({"nativeId": native, "status": "ready"}))
@@ -1913,12 +2053,14 @@ impl Providers {
                             | "cwd_required"
                             | "cwd_missing_choose_relocation"
                             | "chat_connect_superseded"
+                            | "chat_permission_restore_failed"
                     )
                 {
                     failed = ProviderError::new("native_resume_failed", failed.message.clone())
                         .with_details(json!({"cause": failed.code.clone()}));
                 }
                 slot.phase = "failed";
+                slot.failed_options = failed.details.as_ref().and_then(|details| details.get("permissionOptions")).cloned().or_else(|| slot.failed_options.clone());
                 slot.error = Some(Self::connection_error_value(&failed));
                 slot.worker = None;
                 slot.worker_token = None;
@@ -1956,62 +2098,14 @@ impl Providers {
     }
 }
 
-impl ProviderRuntime for Providers {
-    fn capabilities(&self) -> Vec<Value> {
-        let generation = self.capability_cache.lock().map(|cache| cache.generation).unwrap_or(0);
-        let values = self.capability_snapshot();
-        if !values.is_empty() { return values; }
-        // Admission/delegation callers still require confirmed capabilities.
-        // Wait for the shared job, rather than starting another probe.
-        self.confirmed_capabilities(generation)
-    }
-
-    fn terminal_command(
-        &self,
-        provider: &str,
-        resume_id: Option<&str>,
-        assign_id: Option<&str>,
-    ) -> Result<Value, ProviderError> {
-        if resume_id.is_some() && assign_id.is_some() {
-            return Err(ProviderError::new(
-                "provider_internal",
-                "resume and pre-assigned identities are mutually exclusive",
-            ));
-        }
-        serde_json::to_value(
-            self.adapter(provider)?
-                .terminal_command(resume_id, assign_id)?,
-        )
-        .map_err(|error| ProviderError::new("provider_internal", error.to_string()))
-    }
-
-    fn history_list(
-        &self,
-        provider: &str,
-        cursor: Option<&str>,
-        limit: u32,
-        cwd: Option<&str>,
-    ) -> Result<Value, ProviderError> {
-        self.adapter(provider)?
-            .history_list(cursor, limit.clamp(1, 100), cwd)
-    }
-
-    fn history_read(&self, provider: &str, native_id: &str) -> Result<Value, ProviderError> {
-        if native_id.trim().is_empty() {
-            return Err(ProviderError::new(
-                "invalid_native_id",
-                "native session id is required",
-            ));
-        }
-        self.adapter(provider)?.history_read(native_id)
-    }
-
-    fn chat_open_recovering(
+impl Providers {
+    pub(crate) fn chat_open_recovering_with_options(
         &self,
         session_id: &str,
         provider: &str,
         cwd: &str,
         native_id: Option<&str>,
+        options: &Value,
         recover_missing: &dyn Fn(Option<&str>) -> Result<bool, ProviderError>,
     ) -> Result<Value, ProviderError> {
         if session_id.trim().is_empty() || cwd.trim().is_empty() {
@@ -2091,7 +2185,7 @@ impl ProviderRuntime for Providers {
         // Resolved per open: reconnects rotate the session token.
         let tools = self.tool_server(session_id, provider);
         let opened = self.project_trust(session_id, provider).and_then(|trust| {
-            adapter.open_chat_with_project_trust(session_id, cwd, native_id, &worker_token, tools.as_ref(), trust.as_deref())
+            adapter.open_chat_with_startup_options(session_id, cwd, native_id, &worker_token, tools.as_ref(), &ChatStartupOptions { project_trust:trust.as_deref(), permissions:options })
         });
         if native_id.is_some()
             && opened
@@ -2147,13 +2241,13 @@ impl ProviderRuntime for Providers {
                     }
                     let recovery_tools = self.tool_server(session_id, provider);
                     let recovered = self.project_trust(session_id, provider).and_then(|trust| {
-                        adapter.open_chat_with_project_trust(
+                        adapter.open_chat_with_startup_options(
                             session_id,
                             cwd,
                             None,
                             &recovery_token,
                             recovery_tools.as_ref(),
-                            trust.as_deref(),
+                            &ChatStartupOptions { project_trust:trust.as_deref(), permissions:options },
                         )
                     });
                     return self.finish_chat_open_attempt(
@@ -2200,6 +2294,69 @@ impl ProviderRuntime for Providers {
             },
             |_| Ok(true),
         )
+    }
+
+}
+
+impl ProviderRuntime for Providers {
+    fn capabilities(&self) -> Vec<Value> {
+        let generation = self.capability_cache.lock().map(|cache| cache.generation).unwrap_or(0);
+        let values = self.capability_snapshot();
+        if !values.is_empty() { return values; }
+        // Admission/delegation callers still require confirmed capabilities.
+        // Wait for the shared job, rather than starting another probe.
+        self.confirmed_capabilities(generation)
+    }
+
+    fn terminal_command(
+        &self,
+        provider: &str,
+        resume_id: Option<&str>,
+        assign_id: Option<&str>,
+    ) -> Result<Value, ProviderError> {
+        if resume_id.is_some() && assign_id.is_some() {
+            return Err(ProviderError::new(
+                "provider_internal",
+                "resume and pre-assigned identities are mutually exclusive",
+            ));
+        }
+        serde_json::to_value(
+            self.adapter(provider)?
+                .terminal_command(resume_id, assign_id)?,
+        )
+        .map_err(|error| ProviderError::new("provider_internal", error.to_string()))
+    }
+
+    fn history_list(
+        &self,
+        provider: &str,
+        cursor: Option<&str>,
+        limit: u32,
+        cwd: Option<&str>,
+    ) -> Result<Value, ProviderError> {
+        self.adapter(provider)?
+            .history_list(cursor, limit.clamp(1, 100), cwd)
+    }
+
+    fn history_read(&self, provider: &str, native_id: &str) -> Result<Value, ProviderError> {
+        if native_id.trim().is_empty() {
+            return Err(ProviderError::new(
+                "invalid_native_id",
+                "native session id is required",
+            ));
+        }
+        self.adapter(provider)?.history_read(native_id)
+    }
+
+    fn chat_open_recovering(
+        &self,
+        session_id: &str,
+        provider: &str,
+        cwd: &str,
+        native_id: Option<&str>,
+        recover_missing: &dyn Fn(Option<&str>) -> Result<bool, ProviderError>,
+    ) -> Result<Value, ProviderError> {
+        self.chat_open_recovering_with_options(session_id, provider, cwd, native_id, &json!([]), recover_missing)
     }
 
     fn chat_open(
@@ -2291,6 +2448,15 @@ impl ProviderRuntime for Providers {
     }
 
     fn chat_options(&self, session_id: &str) -> Result<Value, ProviderError> {
+        let failed = self.chats.lock().ok().and_then(|chats| chats.get(session_id).and_then(|slot| {
+            if slot.phase != "failed" || slot.error.as_ref().and_then(|error| error.get("code")).and_then(Value::as_str) != Some("chat_permission_restore_failed") { return None; }
+            slot.failed_options.clone().map(|mut state| {
+                state["loadState"] = json!("error");
+                if let Some(error) = &slot.error { state["error"] = json!({"code":error["code"],"message":error["message"]}); }
+                normalize_chat_ui(state)
+            })
+        }));
+        if let Some(state) = failed { return Ok(state); }
         match self.chat(session_id, |chat| Ok(chat.ui_state())) {
             Ok(value) => Ok(normalize_chat_ui(value)),
             Err(error) if error.code == "chat_not_open" => Ok(json!({

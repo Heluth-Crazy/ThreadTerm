@@ -438,6 +438,7 @@ test('a preview-only ThreadTerm server auto-approves only the two preview tools'
     sessionId: null,
     mcpServers: { threadterm: { type: 'stdio', command: 'threadterm-v3-mcp', args: [], env: { THREADTERM_PREVIEW_TOKEN: 'scoped-preview' } } },
   });
+  assert.deepEqual(session.query.options.allowedTools, ['mcp__threadterm__preview_present', 'mcp__threadterm__preview_status']);
   assert.equal((await session.requestPermission('mcp__threadterm__preview_present', { url: 'http://127.0.0.1:3000' })).behavior, 'allow');
   const delegation = session.requestPermission('mcp__threadterm__delegate_start', {});
   const request = events.find(value => value.ev === 'session.request');
@@ -453,6 +454,8 @@ test('browser reads and actions auto-approve only their exact managed tools with
     cwd: 'C:/', sessionId: null,
     mcpServers: { threadterm: { type: 'stdio', command: 'threadterm-v3-mcp', args: [], env: { THREADTERM_MCP_PROFILE: 'chat-tools', THREADTERM_BROWSER_TOKEN: 'browser-only' } } },
   });
+  assert.deepEqual(session.query.options.allowedTools, ['browser_list_tabs', 'browser_snapshot', 'browser_screenshot', 'browser_console_messages',
+    'browser_navigate', 'browser_click', 'browser_type', 'browser_hover', 'browser_press_key', 'browser_select_option'].map(name => `mcp__threadterm__${name}`), 'pre-approved rules never include browser_eval');
   try {
     for (const name of ['browser_list_tabs', 'browser_snapshot', 'browser_screenshot', 'browser_console_messages',
       'browser_navigate', 'browser_click', 'browser_type', 'browser_hover', 'browser_press_key', 'browser_select_option']) {
@@ -494,6 +497,7 @@ test('browser read and action policy needs its own token and managed host profil
   for (const mcpServers of disabled) {
     const { session, events } = harness();
     await session.start({ cwd: 'C:/', sessionId: null, mcpServers });
+    assert.equal((session.query.options.allowedTools ?? []).some(name => name.includes('browser_')), false);
     try {
       for (const tool of ['browser_snapshot', 'browser_navigate', 'browser_click', 'browser_type', 'browser_hover', 'browser_press_key', 'browser_select_option']) {
         const pending = session.requestPermission(`mcp__threadterm__${tool}`, { tabId: 'opaque-tab' });

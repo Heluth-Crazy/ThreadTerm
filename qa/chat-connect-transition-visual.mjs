@@ -40,7 +40,7 @@ Object.assign(env, {
 assert.deepEqual(Object.keys(env).filter(key => key.toLowerCase() === 'path'), ['Path']);
 assert.deepEqual(env.Path.split(';'), [bin, dirname(process.execPath), join(process.env.SystemRoot ?? 'C:\\Windows', 'System32')]);
 const delay = ms => new Promise(done => setTimeout(done, ms));
-let app, page, cdp, project;
+let app, appProcess, page, cdp, project;
 const report = { passed: false, phase: 3, theme, narrow, baselineCss, runtime, scratch, scenarios: [], errors: [] };
 const rpc = (method, params = {}) => page.evaluate(([name, value]) => window.threadterm.request(name, value), [method, params]);
 const chat = session => page.getByTestId(`session-chat-${session.id}`);
@@ -347,8 +347,16 @@ try {
   const compiled = spawnSync('rustc', [join(bin, 'shim.rs'), '-o', join(bin, 'codex.exe')], { encoding: 'utf8', windowsHide: true });
   assert.equal(compiled.status, 0, compiled.stderr);
   app = await electron.launch({ args: [root], cwd: bin, env, timeout: 60_000 });
+  appProcess = app.process();
+  report.electronPid = appProcess.pid;
+  await app.evaluate(({ app: electronApp, BrowserWindow }) => {
+    globalThis.__transitionFocusEvents = [];
+    electronApp.on('browser-window-focus', (_event, window) => globalThis.__transitionFocusEvents.push({ at: Date.now(), id: window.id }));
+    if (BrowserWindow.getAllWindows().some(window => window.isFocused())) globalThis.__transitionFocusEvents.push({ initiallyFocused: true });
+  });
   page = await app.firstWindow({ timeout: 30_000 }); page.setDefaultTimeout(20_000);
   await page.waitForFunction(() => Boolean(window.threadterm));
+  await page.locator('#boot-splash').waitFor({ state: 'detached', timeout: 30_000 });
   if (baselineCss) await page.addStyleTag({ content: `
     /* QA-only reproduction of the old exception, including inert descendants. */
     .chat-view.v3-session-chat.is-connecting > .chat-compose-shell { z-index:21; }
@@ -459,7 +467,12 @@ try {
   if (page) await page.evaluate(() => { const state = window.__connectTransition; if (state) { state.done = true; cancelAnimationFrame(state.raf); state.unsubscribe?.(); } }).catch(() => {});
   if (cdp) await cdp.detach().catch(() => {});
   if (page) await rpc('runtime.shutdown', { operationId: randomUUID() }).catch(() => {});
-  if (app) { await app.evaluate(({ app: electronApp }) => electronApp.exit(0)).catch(() => {}); await app.close().catch(() => {}); }
+  if (app) {
+    report.focusEvents = await app.evaluate(() => globalThis.__transitionFocusEvents ?? []).catch(() => []);
+    await app.evaluate(({ app: electronApp }) => electronApp.exit(0)).catch(() => {}); await app.close().catch(() => {});
+    report.appClosed = appProcess.exitCode !== null || appProcess.signalCode !== null;
+    if (report.focusEvents.length || !report.appClosed) { report.passed = false; process.exitCode = 1; }
+  }
   await writeFile(join(out, 'report.json'), `${JSON.stringify(report, null, 2)}\n`);
   console.log(JSON.stringify({ passed: report.passed, report: join(out, 'report.json'), errors: report.errors }));
 }

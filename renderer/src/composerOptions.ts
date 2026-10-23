@@ -70,6 +70,9 @@ export function currentChoiceName(option: ChatSessionOption): string {
 
 /** A choice's display text: known provider values localize, everything else keeps the provider's own name. */
 export function choiceText(option: ChatSessionOption, choice: ChatSessionChoice, zh: boolean): string {
+  if (option.id === "threadterm-permission-recovery" && choice.value === "defaults") {
+    return zh ? "丢弃已保存的权限并使用提供方默认权限" : "Discard saved permissions and use provider defaults";
+  }
   if (optionCategory(option) === "model") return choice.name || choice.value;
   // Boolean options carry provider values (`true`/`false`) or legacy `on`/`off`;
   // always show the localized On/Off label, never the provider's English name.
@@ -80,6 +83,9 @@ export function choiceText(option: ChatSessionOption, choice: ChatSessionChoice,
 
 /** The current value as a short chip label. */
 export function chipValueText(option: ChatSessionOption, zh: boolean): string {
+  if (option.id === "threadterm-permission-recovery") {
+    return option.value === "defaults" ? (zh ? "使用默认权限" : "Use defaults") : (zh ? "重置权限…" : "Reset permissions…");
+  }
   const choice = option.choices.find(entry => entry.value === option.value) ?? { value: option.value, name: option.value };
   return choiceText(option, choice, zh);
 }

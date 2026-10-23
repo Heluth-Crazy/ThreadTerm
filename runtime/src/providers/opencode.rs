@@ -122,6 +122,24 @@ impl ProviderAdapter for OpenCodeAdapter {
         Ok(Some(id.to_owned()))
     }
 
+    fn fork_session(&self, cwd: &str, native_id: &str, anchor: Option<&crate::domain::NativeForkAnchor>, is_latest: bool) -> Result<Option<String>, ProviderError> {
+        validate_native_id(native_id)?;
+        let server = OpenCodeServer::start(cwd, "native-fork", self.events.clone(), "")?;
+        let messages = if anchor.is_some() {
+            server.json(server.request(reqwest::Method::GET, &format!("/session/{native_id}/message"), None)?)?
+        } else { json!([]) };
+        let Some(body) = opencode_fork_body(native_id, anchor, is_latest, &messages)? else { return Ok(None) };
+        let response = match server.request(reqwest::Method::POST, &format!("/session/{native_id}/fork"), Some(body)) {
+            Ok(response) => response,
+            Err(error) if error.details.as_ref().and_then(|details| details["httpStatus"].as_u64()).is_some_and(|status| matches!(status, 404 | 405 | 501)) => return Ok(None),
+            Err(error) => return Err(ProviderError::new("operation_outcome_unknown", format!("OpenCode fork was not confirmed; do not retry this operation: {}", error.message))),
+        };
+        let result = server.json(response).map_err(|error| ProviderError::new("operation_outcome_unknown", error.message))?;
+        let id = result.get("id").and_then(Value::as_str).filter(|id| *id != native_id)
+            .ok_or_else(|| ProviderError::new("operation_outcome_unknown", "OpenCode fork returned no distinct session identity"))?;
+        validate_native_id(id).map_err(|error| ProviderError::new("operation_outcome_unknown", error.message))?;
+        Ok(Some(id.to_owned()))
+    }
     fn history_list(
         &self,
         cursor: Option<&str>,
@@ -507,7 +525,15 @@ impl OpenCodeServer {
         let catalogue = self.request(reqwest::Method::GET, "/provider", None).and_then(|response| self.json(response));
         let agents = self.request(reqwest::Method::GET, "/agent", None).and_then(|response| self.json(response));
         let model_limits = catalogue.as_ref().map(opencode_provider_context_limits).unwrap_or_default();
-        let ui = OpenCodeOptions::from_catalogues(catalogue, agents);
+        let mut ui = OpenCodeOptions::from_catalogues(catalogue, agents);
+        // Optional discovery/recovery must not hold the base controls hostage.
+        emit_scoped(&self.events, "opencode", &self.threadterm_session, Some(native_id), None, "chat.ui", ui.wire(), Some(&self.worker_token));
+        let commands = self.request(reqwest::Method::GET, "/command", None).and_then(|response| self.json(response));
+        ui.load_commands(commands);
+        ui.effective_model = messages.as_array().into_iter().flatten().rev().find_map(|row| {
+            let info = row.get("info").unwrap_or(row);
+            Some(json!({"providerID":info.get("providerID")?.as_str()?,"modelID":info.get("modelID")?.as_str()?}))
+        });
         let liveness = Arc::new(AtomicBool::new(true));
         let target = Arc::new(EventTarget {
             threadterm_session: self.threadterm_session.clone(),
@@ -533,7 +559,11 @@ impl OpenCodeServer {
             ui: Mutex::new(ui),
             abort_pending: Mutex::new(None),
             retry_visible: AtomicBool::new(false),
+            compact_pending: Mutex::new(None),
         });
+        // The SSE response is already buffering. Hydrate before draining it so
+        // replied/updated events win over these read-only snapshots.
+        target.hydrate(&messages, |path| self.request(reqwest::Method::GET, path, None).and_then(|response| self.json(response)));
         let context = SseContext {
             reader: BufReader::new(response),
             target: Arc::clone(&target),
@@ -618,11 +648,14 @@ struct OpenCodeModel {
     name: String,
     group: String,
     variants: Vec<String>,
+    images: bool,
 }
 #[derive(Clone, Default)]
 struct OpenCodeOptions {
     models: Vec<OpenCodeModel>,
     agents: Vec<Value>,
+    commands: Vec<Value>,
+    effective_model: Option<Value>,
     model: String,
     agent: String,
     variant: String,
@@ -651,6 +684,7 @@ impl OpenCodeOptions {
                                 value: format!("{{\"providerID\":{},\"modelID\":{}}}", json!(id), json!(model_id)),
                                 model: json!({"providerID":id,"modelID":model_id}),
                                 name: format!("{group} \u{00b7} {name}"), group: group.to_owned(), variants,
+                                images: model.pointer("/capabilities/input/image").and_then(Value::as_bool) == Some(true),
                             });
                         }
                     }
@@ -674,6 +708,68 @@ impl OpenCodeOptions {
             Err(error) => ui.error = Some(error),
         }
         ui
+    }
+    fn load_commands(&mut self, commands: Result<Value, ProviderError>) {
+        self.commands.clear();
+        let commands = match commands.and_then(|value| value.as_array().cloned().ok_or_else(|| ProviderError::new("provider_protocol", "OpenCode returned an invalid command catalogue"))) {
+            Ok(commands) => commands,
+            Err(error) => {
+                // Aggregate options errors fail saved-selection restoration.
+                // A missing command feature must not invalidate model/agent data.
+                if !error.details.as_ref().and_then(|details| details["httpStatus"].as_u64()).is_some_and(|status| matches!(status, 404 | 405)) {
+                    eprintln!("[opencode-commands] catalogue unavailable ({})", error.code);
+                }
+                return;
+            }
+        };
+        let mut names = HashSet::new();
+        self.commands = commands.iter().filter_map(|command| {
+            let name = command.get("name")?.as_str()?;
+            if name.is_empty() || name.chars().any(char::is_whitespace) || name.starts_with('/') || matches!(name, "compact" | "summarize") || !names.insert(name) { return None; }
+            let mut entry = json!({"name":name});
+            if let Some(description) = command.get("description").and_then(Value::as_str) { entry["description"] = json!(description); }
+            Some(entry)
+        }).collect();
+    }
+    fn current_model(&self) -> Option<&Value> { self.selected_model().map(|model| &model.model).or(self.effective_model.as_ref()) }
+    fn accepts_images(&self) -> bool { self.selected_model().is_some_and(|model| model.images) }
+    fn validate_input(&self, text: &str, images: &[String]) -> Result<(), ProviderError> {
+        if let Some(("compact" | "summarize", arguments)) = opencode_slash(text) {
+            if !images.is_empty() || !arguments.is_empty() { return Err(ProviderError::new("command_arguments_invalid", "Compact conversation accepts no arguments or images")); }
+            if self.current_model().is_none() { return Err(ProviderError::new("chat_option_invalid", "Choose a model before compacting this conversation")); }
+        }
+        self.validate_image_capability(images)
+    }
+    fn validate_image_capability(&self, images: &[String]) -> Result<(), ProviderError> {
+        if !images.is_empty() && !self.accepts_images() {
+            return Err(ProviderError::new("images_unsupported", "The selected OpenCode model does not advertise image input. Choose an image-capable model first."));
+        }
+        Ok(())
+    }
+    fn dispatch(&self, text: &str, images: &[String]) -> Result<(&'static str, Value), ProviderError> {
+        self.validate_input(text, images)?;
+        let slash = opencode_slash(text);
+        if slash.is_some_and(|(name, _)| matches!(name, "compact" | "summarize")) {
+            if !images.is_empty() || slash.is_some_and(|(_, args)| !args.is_empty()) {
+                return Err(ProviderError::new("command_arguments_invalid", "Compact conversation accepts no arguments or images"));
+            }
+            let model = self.current_model().ok_or_else(|| ProviderError::new("chat_option_invalid", "Choose a model before compacting this conversation"))?;
+            return Ok(("summarize", model.clone()));
+        }
+        let parts = opencode_image_parts(images)?;
+        if let Some((name, arguments)) = slash.filter(|(name, _)| self.commands.iter().any(|command| command["name"] == *name)) {
+            let mut body = json!({"command":name,"arguments":arguments});
+            if let Some(model) = self.selected_model() {
+                body["model"] = json!(format!("{}/{}", model.model["providerID"].as_str().unwrap_or_default(), model.model["modelID"].as_str().unwrap_or_default()));
+            }
+            if !self.agent.is_empty() { body["agent"] = json!(self.agent); }
+            if !self.variant.is_empty() { body["variant"] = json!(self.variant); }
+            if !parts.is_empty() { body["parts"] = json!(parts); }
+            return Ok(("command", body));
+        }
+        let mut body = self.prompt(text);
+        body["parts"].as_array_mut().unwrap().extend(parts);
+        Ok(("prompt_async", body))
     }
     fn selected_model(&self) -> Option<&OpenCodeModel> { self.models.iter().find(|model| model.value == self.model) }
     fn select(&mut self, id: &str, value: &str) -> Result<(), ProviderError> {
@@ -724,12 +820,50 @@ impl OpenCodeOptions {
             options.push(json!({"id":"variant","name":"Variant","category":"other","value":self.variant,"description":"Selected for the next turn.","choices":choices}));
         }
         let error = self.error.as_ref().or(self.selection_error.as_ref());
-        let mut state = json!({"options":options,"commands":[],"loadState":if error.is_some() { "error" } else if options.is_empty() { "empty" } else { "ready" }});
+        let mut commands = self.commands.clone();
+        commands.push(json!({"name":"compact","description":"Compact conversation using the current model"}));
+        let mut state = json!({"options":options,"commands":commands,"inputCapabilities":{"images":self.accepts_images()},"loadState":if error.is_some() { "error" } else { "ready" }});
         if let Some(error) = error { state["error"] = json!(error); }
         state
     }
 }
 
+fn opencode_slash(text: &str) -> Option<(&str, &str)> {
+    let text = text.trim().strip_prefix('/')?;
+    let end = text.find(char::is_whitespace).unwrap_or(text.len());
+    Some((&text[..end], text[end..].trim()))
+}
+fn opencode_image_mime(image: &str) -> Result<&str, ProviderError> {
+    let (header, encoded) = image.split_once(";base64,").ok_or_else(|| ProviderError::new("invalid_image", "OpenCode requires base64 image data URLs"))?;
+    let mime = header.strip_prefix("data:").filter(|mime| matches!(*mime, "image/png" | "image/jpeg" | "image/webp" | "image/gif"))
+        .ok_or_else(|| ProviderError::new("invalid_image", "OpenCode requires a PNG, JPEG, WebP or GIF image data URL"))?;
+    if encoded.is_empty() || base64::engine::general_purpose::STANDARD.decode(encoded).is_err() {
+        return Err(ProviderError::new("invalid_image", "OpenCode image data is not valid base64"));
+    }
+    Ok(mime)
+}
+fn opencode_image_parts(images: &[String]) -> Result<Vec<Value>, ProviderError> {
+    images.iter().map(|image| Ok(json!({"type":"file","mime":opencode_image_mime(image)?,"url":image}))).collect()
+}
+// The root SDK declares only an optional messageID, without boundary semantics.
+// Assume an exclusive cutoff. Resolve the *following* native message so a
+// selected reply is included. Never use latest-only for an unresolved anchor.
+fn opencode_fork_body(native_id: &str, anchor: Option<&crate::domain::NativeForkAnchor>, is_latest: bool, messages: &Value) -> Result<Option<Value>, ProviderError> {
+    let Some(anchor) = anchor else { return Ok(is_latest.then(|| json!({}))) };
+    if anchor.native_id != native_id { return Ok(None); }
+    let Some(id) = anchor.message_id.as_deref() else { return Ok(None) };
+    validate_native_id(id)?;
+    let Some(messages) = messages.as_array() else { return Err(ProviderError::new("provider_protocol", "OpenCode fork history is not a message list")) };
+    let Some(index) = messages.iter().position(|row| row.pointer("/info/id").and_then(Value::as_str) == Some(id)) else { return Ok(None) };
+    match messages.get(index + 1) {
+        Some(row) => {
+            let Some(next) = row.pointer("/info/id").and_then(Value::as_str) else { return Ok(None) };
+            validate_native_id(next)?;
+            Ok(Some(json!({"messageID":next})))
+        }
+        None => Ok(Some(json!({}))),
+    }
+}
 fn opencode_error(error: &Value) -> Value {
     let name = error.get("name").and_then(Value::as_str).unwrap_or("UnknownError");
     let detail = error.pointer("/data/message").or_else(|| error.get("message")).and_then(Value::as_str).filter(|message| !message.trim().is_empty());
@@ -798,9 +932,21 @@ impl ChatSession for OpenCodeChat {
         }
         Ok(())
     }
-    fn send(&mut self, text: &str, operation_id: &str) -> Result<Value, ProviderError> {
+    fn validate_images(&self, images: &[String]) -> Result<(), ProviderError> {
+        self.sse_target.ui.lock().map_err(|_| ProviderError::new("provider_internal", "OpenCode options lock poisoned"))?.validate_image_capability(images)?;
+        for image in images { opencode_image_mime(image)?; }
+        Ok(())
+    }
+    fn validate_send_with_images(&self, text: &str, images: &[String]) -> Result<(), ProviderError> {
+        self.sse_target.ui.lock().map_err(|_| ProviderError::new("provider_internal", "OpenCode options lock poisoned"))?.validate_input(text, images)?;
+        // Validate once before durable recording, without cloning data URLs.
+        for image in images { opencode_image_mime(image)?; }
+        Ok(())
+    }
+    fn send(&mut self, text: &str, operation_id: &str) -> Result<Value, ProviderError> { self.send_with_images(text, &[], operation_id) }
+    fn send_with_images(&mut self, text: &str, images: &[String], operation_id: &str) -> Result<Value, ProviderError> {
         validate_native_id(operation_id)?;
-        let prompt = self.sse_target.ui.lock().map_err(|_| ProviderError::new("provider_internal", "OpenCode options lock poisoned"))?.prompt(text);
+        let (route, prompt) = self.sse_target.ui.lock().map_err(|_| ProviderError::new("provider_internal", "OpenCode options lock poisoned"))?.dispatch(text, images)?;
         {
             let _commit = self.server.event_gate.lock().map_err(|_| {
                 ProviderError::new("provider_internal", "OpenCode event gate poisoned")
@@ -821,6 +967,9 @@ impl ChatSession for OpenCodeChat {
                 ));
             }
             *active = Some(operation_id.to_owned());
+            if route == "summarize" {
+                *self.sse_target.compact_pending.lock().map_err(|_| ProviderError::new("provider_internal", "OpenCode compact lock poisoned"))? = Some(OpenCodeCompact { turn: operation_id.to_owned(), confirmed: false, idle_observed: false });
+            }
             self.sse_target
                 .native_turn_observed
                 .store(false, Ordering::SeqCst);
@@ -845,10 +994,17 @@ impl ChatSession for OpenCodeChat {
         // boundary until dispatch and per-request outcome fencing are explicit.
         let sent = self.server.request(
             reqwest::Method::POST,
-            &format!("/session/{}/prompt_async", self.native_id),
+            &format!("/session/{}/{route}", self.native_id),
             Some(prompt),
         );
-        self.sse_target.finish_prompt(operation_id, sent.map(|_| ()))?;
+        if route == "summarize" {
+            let result = sent.and_then(|response| self.server.json(response)).and_then(|value| {
+                if value == json!(true) { Ok(()) } else { Err(ProviderError::new("compact_not_confirmed", "OpenCode did not confirm conversation compaction").with_details(json!({"httpStatus":400}))) }
+            });
+            self.sse_target.finish_compact(operation_id, result)?;
+        } else {
+            self.sse_target.finish_prompt(operation_id, sent.map(|_| ()))?;
+        }
         Ok(json!({"turnId":operation_id}))
     }
     fn ui_state(&self) -> Value {
@@ -1107,10 +1263,11 @@ impl ChatSession for OpenCodeChat {
 struct OpenCodeAssembly {
     order: Vec<String>,
     messages: HashMap<String, MessageAssembly>,
+    created_at: HashMap<String, String>,
     seeded: HashSet<String>,
     authoritative_only: bool,
-    /// The user's own messages. Chat already shows the prompt it sent, so their
-    /// parts must never become an assistant item.
+    /// Native user and hidden summary messages. Chat already shows the prompt
+    /// and confirmed compact receipt, so their parts must not become replies.
     user_messages: HashSet<String>,
 }
 
@@ -1171,6 +1328,7 @@ impl OpenCodeAssembly {
         self.authoritative_only = true;
         self.order.clear();
         self.messages.clear();
+        self.created_at.clear();
         self.seeded.clear();
     }
 
@@ -1195,6 +1353,7 @@ impl OpenCodeAssembly {
             if self.authoritative_only {
                 continue;
             }
+            if let Some(created_at) = opencode_message_created_at(info) { self.remember_created_at(message_id, created_at); }
             self.seeded.insert(message_id.to_owned());
             let message = self
                 .messages
@@ -1227,6 +1386,15 @@ impl OpenCodeAssembly {
         false
     }
 
+    fn remember_created_at(&mut self, message_id: &str, created_at: String) {
+        if self.authoritative_only { return; }
+        if !self.created_at.contains_key(message_id) && self.created_at.len() >= MAX_ASSEMBLED_MESSAGES {
+            self.discard_local_cache();
+            return;
+        }
+        self.created_at.insert(message_id.to_owned(), created_at);
+    }
+
     fn apply_full_part(&mut self, message_id: &str, part_id: &str, part: Value) -> Vec<Value> {
         let message = self
             .messages
@@ -1250,6 +1418,10 @@ impl OpenCodeAssembly {
         message.append_text(part_id, delta);
         message.snapshot()
     }
+}
+
+fn opencode_message_created_at(info: &Value) -> Option<String> {
+    info.pointer("/time/created").and_then(Value::as_i64).and_then(|value| Utc.timestamp_millis_opt(value).single()).map(|value| value.to_rfc3339())
 }
 
 fn native_message_parts(
@@ -1520,7 +1692,7 @@ fn emit_opencode_child_event(target: &EventTarget, raw: Value) {
             ) {
                 if matches!(role, "user" | "assistant" | "tool") {
                     if let Ok(mut state) = target.subagents.lock() {
-                        state.roles.insert((child.into(), id.into()), role.into());
+                        state.roles.insert((child.into(), id.into()), if info.get("summary").and_then(Value::as_bool) == Some(true) { "user" } else { role }.into());
                     }
                 }
             }
@@ -1935,6 +2107,7 @@ fn opencode_question_resolved(
 /// The state an SSE event may touch: everything except the transport reader.
 /// Split out so the projection path is testable without a live socket.
 struct OpenCodeAbort { turn: String, confirmed: bool, idle_observed: bool }
+struct OpenCodeCompact { turn: String, confirmed: bool, idle_observed: bool }
 
 struct EventTarget {
     threadterm_session: String,
@@ -1960,9 +2133,126 @@ struct EventTarget {
     ui: Mutex<OpenCodeOptions>,
     abort_pending: Mutex<Option<OpenCodeAbort>>,
     retry_visible: AtomicBool,
+    compact_pending: Mutex<Option<OpenCodeCompact>>,
 }
 
 impl EventTarget {
+    fn hydrate(&self, messages: &Value, mut read: impl FnMut(&str) -> Result<Value, ProviderError>) {
+        let mut read = |path: &str| {
+            let result = read(path).and_then(|value| {
+                if value.is_array() { Ok(value) }
+                else { Err(ProviderError::new("provider_protocol", "OpenCode recovery response is not a list")) }
+            });
+            match result {
+                Ok(value) => value,
+                Err(error) => {
+                    if !error.details.as_ref().and_then(|details| details["httpStatus"].as_u64()).is_some_and(|status| matches!(status, 404 | 405)) {
+                        eprintln!("[opencode-recovery] {path} unavailable ({})", error.code);
+                    }
+                    // Unknown is not an authoritative empty snapshot. In
+                    // particular, do not clear an existing plan on read failure.
+                    Value::Null
+                }
+            }
+        };
+        let children = read(&format!("/session/{}/children", self.native_id));
+        let todos = read(&format!("/session/{}/todo", self.native_id));
+        let permissions = read("/permission");
+        let questions = read("/question");
+        self.hydrate_snapshots(messages, &children, &Value::Null, &json!([]), &json!([]));
+        let mut visited = HashSet::new();
+        loop {
+            let next = self.subagents.lock().ok().and_then(|state| state.children.keys().find(|id| !visited.contains(*id)).cloned());
+            let Some(child) = next else { break };
+            if visited.len() >= 128 {
+                eprintln!("[opencode-recovery] child-session safety bound reached");
+                break;
+            }
+            visited.insert(child.clone());
+            if child == self.native_id || validate_native_id(&child).is_err() { continue; }
+            let messages = read(&format!("/session/{child}/message?limit={MAX_ASSEMBLED_MESSAGES}"));
+            if messages.is_null() { continue; }
+            if let Err(error) = self.hydrate_child_messages(&child, &messages) {
+                eprintln!("[opencode-recovery] child messages unavailable ({})", error.code);
+            }
+        }
+        self.hydrate_snapshots(&json!([]), &children, &todos, &permissions, &questions);
+    }
+    fn hydrate_child_messages(&self, child: &str, messages: &Value) -> Result<(), ProviderError> {
+        if !self.subagents.lock().ok().is_some_and(|state| state.children.contains_key(child)) { return Ok(()); }
+        let rows = messages.as_array().ok_or_else(|| ProviderError::new("provider_protocol", "OpenCode child recovery messages are not a list"))?;
+        for row in rows {
+            let info = row.get("info").unwrap_or(row);
+            let id = info.get("id").and_then(Value::as_str).ok_or_else(|| ProviderError::new("provider_protocol", "OpenCode child message has no identity"))?;
+            // Validate the entire snapshot's ownership before projecting it.
+            native_message_parts(row, id, child)?;
+        }
+        for row in rows {
+            emit_opencode_event(self, json!({"type":"message.updated","properties":{"info":row.get("info").unwrap_or(row)}}));
+            for part in row.get("parts").and_then(Value::as_array).into_iter().flatten() {
+                emit_opencode_event(self, json!({"type":"message.part.updated","properties":{"part":part}}));
+            }
+        }
+        Ok(())
+    }
+    fn hydrate_snapshots(&self, messages: &Value, children: &Value, todos: &Value, permissions: &Value, questions: &Value) {
+        // These calls use the same gate, identity checks and normalizers as SSE.
+        // No native decision is posted by recovery.
+        for row in messages.as_array().into_iter().flatten() {
+            if row.pointer("/info/role").and_then(Value::as_str) != Some("assistant") { continue; }
+            for part in row.get("parts").and_then(Value::as_array).into_iter().flatten().filter(|part| opencode_task_part(part)) {
+                emit_opencode_event(self, json!({"type":"message.part.updated","properties":{"part":part}}));
+            }
+        }
+        for child in children.as_array().into_iter().flatten() {
+            let Some(id) = child.get("id").and_then(Value::as_str) else { continue };
+            if child.get("parentID").and_then(Value::as_str) != Some(self.native_id.as_str()) || validate_native_id(id).is_err() { continue; }
+            // Native fork branches also have parentID. A parent relationship
+            // alone is not task ownership and must never expose its requests.
+            if let Ok(mut state) = self.subagents.lock() {
+                if state.children.contains_key(id) { state.parents.insert(id.into(), self.native_id.clone()); }
+            }
+        }
+        let owned = |entry: &Value| entry.get("sessionID").and_then(Value::as_str).is_some_and(|session| session == self.native_id || self.subagents.lock().ok().is_some_and(|state| state.children.contains_key(session)));
+        if permissions.as_array().into_iter().flatten().chain(questions.as_array().into_iter().flatten()).any(owned) {
+            if let Ok(mut active) = self.active.lock() {
+                if active.is_none() {
+                    *active = Some(NATIVE_BUSY_TURN.to_owned());
+                    emit_scoped(&self.events, "opencode", &self.threadterm_session, Some(&self.native_id), Some(NATIVE_BUSY_TURN), "chat.turn.started", json!({"resumedNativeTurn":true}), Some(&self.worker_token));
+                }
+            }
+        }
+        for (kind, entries) in [("permission.asked", permissions), ("question.asked", questions)] {
+            for entry in entries.as_array().into_iter().flatten().filter(|entry| owned(entry)) {
+                emit_opencode_event(self, json!({"type":kind,"properties":entry}));
+            }
+        }
+        if todos.is_array() { emit_opencode_event(self, json!({"type":"todo.updated","properties":{"sessionID":self.native_id,"todos":todos}})); }
+    }
+    fn finish_compact(&self, operation_id: &str, result: Result<(), ProviderError>) -> Result<(), ProviderError> {
+        if let Err(error) = self.finish_prompt(operation_id, result) {
+            if let Ok(mut pending) = self.compact_pending.lock() { *pending = None; }
+            return Err(error);
+        }
+        let _commit = self.event_gate.lock().map_err(|_| ProviderError::new("provider_internal", "OpenCode event gate poisoned"))?;
+        let mut pending = self.compact_pending.lock().map_err(|_| ProviderError::new("provider_internal", "OpenCode compact lock poisoned"))?;
+        let Some(compact) = pending.as_mut().filter(|compact| compact.turn == operation_id) else { return Ok(()) };
+        compact.confirmed = true;
+        if compact.idle_observed {
+            *pending = None;
+            drop(pending);
+            self.complete_compact(operation_id);
+        }
+        Ok(())
+    }
+    // Called under event_gate only once both HTTP true and native idle agree.
+    fn complete_compact(&self, operation_id: &str) {
+        if self.active.lock().ok().is_some_and(|active| active.as_deref() == Some(operation_id)) {
+            emit_scoped(&self.events, "opencode", &self.threadterm_session, Some(&self.native_id), Some(operation_id), "chat.item",
+                json!({"item":{"id":format!("compact:{operation_id}")},"parts":[{"type":"text","text":"Conversation compacted by OpenCode.","data":{"kind":"commandResult","command":"compact"}}]}), Some(&self.worker_token));
+            self.complete_turn("completed", json!({"compacted":true}));
+        }
+    }
     // After attachment, called under event_gate. Replace one stable retry item.
     fn retry_status(&self, status: Option<&Value>, turn: Option<&str>) {
         let parts = if let Some(status) = status.filter(|status| status.get("type").and_then(Value::as_str) == Some("retry")) {
@@ -1981,6 +2271,11 @@ impl EventTarget {
     }
     fn complete_turn(&self, status: &str, raw: Value) {
         let turn = self.active.lock().ok().and_then(|mut active| active.take());
+        if let Some(turn) = turn.as_deref() {
+            if let Ok(mut compact) = self.compact_pending.lock() {
+                if compact.as_ref().is_some_and(|pending| pending.turn == turn) { *compact = None; }
+            }
+        }
         self.retry_status(None, turn.as_deref());
         if let Some(turn) = turn {
             emit_scoped(&self.events, "opencode", &self.threadterm_session, Some(&self.native_id), Some(&turn),
@@ -1994,7 +2289,20 @@ impl EventTarget {
             if !abort.confirmed { return; }
             *pending = None;
             "interrupted"
-        } else { status };
+        } else {
+            let mut compact = match self.compact_pending.lock() { Ok(compact) => compact, Err(_) => return };
+            if let Some(action) = compact.as_mut() {
+                action.idle_observed = true;
+                if !action.confirmed { return; }
+                let turn = action.turn.clone();
+                *compact = None;
+                drop(compact);
+                drop(pending);
+                self.complete_compact(&turn);
+                return;
+            }
+            status
+        };
         drop(pending);
         self.complete_turn(status, raw);
     }
@@ -2071,7 +2379,7 @@ impl EventTarget {
         &self,
         message_id: &str,
         local_update: impl FnOnce(&mut OpenCodeAssembly) -> Vec<Value>,
-    ) -> Result<Vec<Value>, ProviderError> {
+    ) -> Result<(Vec<Value>, Option<String>), ProviderError> {
         let native_required = self
             .assembly
             .lock()
@@ -2085,16 +2393,17 @@ impl EventTarget {
         if native_required {
             self.snapshot_parts(message_id)
         } else {
-            let (parts, overflow) = self
+            let (parts, created_at, overflow) = self
                 .assembly
                 .lock()
                 .map(|mut assembly| {
                     let parts = local_update(&mut assembly);
+                    let created_at = assembly.created_at.get(message_id).cloned();
                     let overflow = assembly.exceeds_payload_budget();
                     if overflow {
                         assembly.discard_local_cache();
                     }
-                    (parts, overflow)
+                    (parts, created_at, overflow)
                 })
                 .map_err(|_| {
                     ProviderError::new(
@@ -2105,12 +2414,12 @@ impl EventTarget {
             if overflow {
                 self.snapshot_parts(message_id)
             } else {
-                Ok(parts)
+                Ok((parts, created_at))
             }
         }
     }
 
-    fn snapshot_parts(&self, message_id: &str) -> Result<Vec<Value>, ProviderError> {
+    fn snapshot_parts(&self, message_id: &str) -> Result<(Vec<Value>, Option<String>), ProviderError> {
         validate_native_id(message_id)?;
         // OpenCode's 1.18.31 GET /session/{id}/message/{messageID} returns the
         // complete current message. Reading it for each event on a seeded
@@ -2144,10 +2453,11 @@ impl EventTarget {
                 format!("OpenCode message snapshot is invalid: {error}"),
             )
         })?;
-        Ok(native_message_parts(&row, message_id, &self.native_id)?
+        let created_at = opencode_message_created_at(row.get("info").unwrap_or(&row));
+        Ok((native_message_parts(&row, message_id, &self.native_id)?
             .into_iter()
             .map(|(_, part)| part)
-            .collect())
+            .collect(), created_at))
     }
 
     fn fail_snapshot(&self, error: ProviderError) {
@@ -2457,6 +2767,17 @@ fn emit_opencode_event(target: &EventTarget, raw: Value) {
         target.native_turn_observed.store(true, Ordering::SeqCst);
     }
 
+    // Native summarize writes a hidden summary message. Its confirmed receipt
+    // is the one visible result; do not also project the implementation reply.
+    if target.compact_pending.lock().ok().is_some_and(|pending| pending.is_some()) && event_type.starts_with("message.") {
+        if let Some(id) = properties.pointer("/info/id").or_else(|| properties.pointer("/part/messageID")).or_else(|| properties.get("messageID")).and_then(Value::as_str) {
+            if let Ok(mut assembly) = target.assembly.lock() {
+                if assembly.user_messages.len() >= MAX_ASSEMBLED_MESSAGES { assembly.user_messages.clear(); }
+                assembly.user_messages.insert(id.to_owned());
+            }
+        }
+        return;
+    }
     match event_type {
         "question.asked" => opencode_question_asked(target, properties, event_session, None, turn),
         "question.replied" | "question.rejected" => opencode_question_resolved(
@@ -2469,7 +2790,10 @@ fn emit_opencode_event(target: &EventTarget, raw: Value) {
         ),
         "message.updated" => {
             let info = properties.get("info").unwrap_or(properties);
-            if info.get("role").and_then(Value::as_str) == Some("user") {
+            if let (Some(message_id), Some(created_at)) = (info.get("id").and_then(Value::as_str), opencode_message_created_at(info)) {
+                if let Ok(mut assembly) = target.assembly.lock() { assembly.remember_created_at(message_id, created_at); }
+            }
+            if info.get("role").and_then(Value::as_str) == Some("user") || info.get("summary").and_then(Value::as_bool) == Some(true) {
                 if let Some(message_id) = info.get("id").and_then(Value::as_str) {
                     let shown = target.assembly.lock().ok().is_some_and(|mut assembly| {
                         if assembly.user_messages.len() >= MAX_ASSEMBLED_MESSAGES {
@@ -2494,7 +2818,10 @@ fn emit_opencode_event(target: &EventTarget, raw: Value) {
                     }
                 }
             }
-            if info.get("role").and_then(Value::as_str) == Some("assistant") {
+            if info.get("role").and_then(Value::as_str) == Some("assistant") && info.get("summary").and_then(Value::as_bool) != Some(true) {
+                if let (Some(provider), Some(model)) = (info.get("providerID").and_then(Value::as_str), info.get("modelID").and_then(Value::as_str)) {
+                    if let Ok(mut ui) = target.ui.lock() { ui.effective_model = Some(json!({"providerID":provider,"modelID":model})); }
+                }
                 if let Some(usage) = opencode_context_usage(info, &target.model_limits) {
                     // An assistant message's tokens are its latest step, like
                     // Codex's `last` usage; they also fill the turn footer.
@@ -2543,6 +2870,21 @@ fn emit_opencode_event(target: &EventTarget, raw: Value) {
                 Some(&target.worker_token),
             );
         }
+        "session.created" | "session.updated" => {
+            let info = properties.get("info").unwrap_or(properties);
+            if let Some(title) = info.get("title").and_then(Value::as_str).map(str::trim).filter(|title| !title.is_empty()) {
+                emit_scoped(
+                    &target.events,
+                    "opencode",
+                    &target.threadterm_session,
+                    native_id,
+                    None,
+                    "chat.title",
+                    json!({"title":title}),
+                    Some(&target.worker_token),
+                );
+            }
+        }
         "message.part.updated" => {
             let part = properties.get("part").cloned().unwrap_or(Value::Null);
             let (Some(part_id), Some(message_id)) = (
@@ -2569,7 +2911,7 @@ fn emit_opencode_event(target: &EventTarget, raw: Value) {
                 return;
             }
             drop(commit_guard);
-            let snapshot = match target.assembled_parts(message_id, |assembly| {
+            let (snapshot, created_at) = match target.assembled_parts(message_id, |assembly| {
                 assembly.apply_full_part(message_id, part_id, opencode_chat_part(&part))
             }) {
                 Ok(snapshot) => snapshot,
@@ -2584,6 +2926,8 @@ fn emit_opencode_event(target: &EventTarget, raw: Value) {
             if target.stopped.load(Ordering::SeqCst) || !target.liveness.load(Ordering::SeqCst) {
                 return;
             }
+            let mut data=json!({"item":{"id":message_id},"parts":snapshot,"forkAnchor":{"nativeId":target.native_id,"messageId":message_id},"raw":raw,"speedCallId":message_id});
+            if let Some(created_at)=created_at {data["item"]["createdAt"]=json!(created_at);}
             emit_scoped(
                 &target.events,
                 "opencode",
@@ -2591,7 +2935,7 @@ fn emit_opencode_event(target: &EventTarget, raw: Value) {
                 native_id,
                 turn.as_deref(),
                 "chat.item",
-                json!({"item":{"id":message_id},"parts":snapshot,"raw":raw,"speedCallId":message_id}),
+                data,
                 Some(&target.worker_token),
             );
         }
@@ -2617,7 +2961,7 @@ fn emit_opencode_event(target: &EventTarget, raw: Value) {
                 return;
             }
             drop(commit_guard);
-            let snapshot = match target.assembled_parts(message_id, |assembly| {
+            let (snapshot, created_at) = match target.assembled_parts(message_id, |assembly| {
                 assembly.apply_text_delta(message_id, part_id, delta)
             }) {
                 Ok(snapshot) => snapshot,
@@ -2632,6 +2976,8 @@ fn emit_opencode_event(target: &EventTarget, raw: Value) {
             if target.stopped.load(Ordering::SeqCst) || !target.liveness.load(Ordering::SeqCst) {
                 return;
             }
+            let mut data=json!({"item":{"id":message_id},"parts":snapshot,"forkAnchor":{"nativeId":target.native_id,"messageId":message_id},"raw":raw,"speedCallId":message_id});
+            if let Some(created_at)=created_at {data["item"]["createdAt"]=json!(created_at);}
             emit_scoped(
                 &target.events,
                 "opencode",
@@ -2639,7 +2985,7 @@ fn emit_opencode_event(target: &EventTarget, raw: Value) {
                 native_id,
                 turn.as_deref(),
                 "chat.item",
-                json!({"item":{"id":message_id},"parts":snapshot,"raw":raw,"speedCallId":message_id}),
+                data,
                 Some(&target.worker_token),
             );
         }
@@ -2691,7 +3037,7 @@ fn emit_opencode_event(target: &EventTarget, raw: Value) {
         // OpenCode 1.18 publishes the session todo list (`todowrite`) as
         // `todo.updated {sessionID, todos:[{content, status, priority}]}`, the
         // same entries as an ACP plan update; it feeds the turn's plan panel.
-        "todo.updated" if turn.is_some() => {
+        "todo.updated" => {
             let todos = properties.get("todos").and_then(Value::as_array).cloned().unwrap_or_default();
             let entries = todos.iter().map(|todo| (
                 todo.get("content").and_then(Value::as_str).unwrap_or_default().to_owned(),
@@ -2706,9 +3052,12 @@ fn emit_opencode_event(target: &EventTarget, raw: Value) {
                     native_id,
                     turn.as_deref(),
                     "chat.item",
-                    json!({"merge":true,"part":crate::chat_plan::plan_part(data, turn.as_deref())}),
+                    json!({"item":{"id":format!("{}:todos",target.native_id)},"part":crate::chat_plan::plan_part(data, turn.as_deref())}),
                     Some(&target.worker_token),
                 );
+            } else {
+                emit_scoped(&target.events, "opencode", &target.threadterm_session, native_id, turn.as_deref(), "chat.item",
+                    json!({"item":{"id":format!("{}:todos",target.native_id)},"parts":[]}), Some(&target.worker_token));
             }
         }
         _ => {
@@ -2840,24 +3189,321 @@ fn opencode_transcript(raw: &Value) -> Vec<Value> {
         .and_then(Value::as_array)
         .cloned()
         .unwrap_or_default();
-    messages.into_iter().enumerate().filter_map(|(index,entry)|{
-        let info=entry.get("info").unwrap_or(&entry);let role=info.get("role").and_then(Value::as_str)?;
-        if !matches!(role,"user"|"assistant"){return None;}let parts=entry.get("parts").and_then(Value::as_array).cloned().unwrap_or_default().into_iter().filter(opencode_visible_part).map(|part|{
-            if part.get("type").and_then(Value::as_str)==Some("text"){json!({"type":"text","text":part.get("text").and_then(Value::as_str).unwrap_or_default()})}
-            else {
-                let mut tool = json!({"type":"tool","toolName":part.get("type").and_then(Value::as_str).unwrap_or("tool"),"data":part});
-                insert_optional(&mut tool, "toolId", part.get("id").and_then(Value::as_str).map(|value| json!(value)));
-                insert_optional(&mut tool, "status", part.get("state").and_then(|value| value.get("status")).and_then(Value::as_str).map(|value| json!(value)));
-                crate::file_references::enrich_tool_part(&mut tool, None);
-                tool
+    messages.into_iter().enumerate().filter_map(|(index, entry)| {
+        let info = entry.get("info").unwrap_or(&entry);
+        let role = info.get("role").and_then(Value::as_str)?;
+        if !matches!(role, "user" | "assistant") || info.get("summary").and_then(Value::as_bool) == Some(true) { return None; }
+        let mut parts = entry.get("parts").and_then(Value::as_array).into_iter().flatten()
+            .filter(|part| opencode_visible_part(part) && !opencode_task_part(part)).map(opencode_chat_part).collect::<Vec<_>>();
+        if role == "user" {
+            let images = entry.get("parts").and_then(Value::as_array).into_iter().flatten().filter(|part| part.get("type").and_then(Value::as_str) == Some("file"))
+                .filter_map(|part| part.get("url").and_then(Value::as_str).filter(|url| url.starts_with("data:image/"))).map(str::to_owned).collect::<Vec<_>>();
+            if !images.is_empty() {
+                parts.retain(|part| !part.pointer("/data/url").and_then(Value::as_str).is_some_and(|url| images.iter().any(|image| image == url)));
+                if !parts.iter().any(|part| part["type"] == "text") { parts.insert(0, json!({"type":"text","text":""})); }
+                if let Some(text) = parts.iter_mut().find(|part| part["type"] == "text") { text["data"] = json!({"images":images}); }
             }
-        }).collect::<Vec<_>>();
-        Some(json!({"id":info.get("id").and_then(Value::as_str).map(ToOwned::to_owned).unwrap_or_else(||format!("opencode-{index}")),"role":role,"parts":parts,"createdAt":Utc::now().to_rfc3339()}))
+        }
+        crate::file_references::enrich_parts(&mut parts);
+        let id = info.get("id").and_then(Value::as_str).map(ToOwned::to_owned).unwrap_or_else(|| format!("opencode-{index}"));
+        let created = info.pointer("/time/created").and_then(Value::as_i64).and_then(|value| Utc.timestamp_millis_opt(value).single())
+            .map(|value| value.to_rfc3339()).unwrap_or_else(|| Utc::now().to_rfc3339());
+        let mut item = json!({"id":id,"role":role,"parts":parts,"createdAt":created,"turnOrigin":"history"});
+        let native = info.get("sessionID").or_else(|| raw.pointer("/info/id")).and_then(Value::as_str);
+        if role == "assistant" {
+            if let Some(native) = native { item["forkAnchor"] = json!({"nativeId":native,"messageId":id}); }
+            if info.pointer("/time/completed").is_some() || info.get("finish").is_some() { item["turnStatus"] = json!("completed"); }
+        }
+        Some(item)
     }).collect()
 }
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn oc2_native_catalogue_dispatches_only_exact_names_with_options_and_files() {
+        let mut ui = options_fixture();
+        ui.load_commands(Ok(json!([{"name":"review","description":"Review changes"},{"name":"review"},{"name":"compact"},{"name":"bad name"}])));
+        assert_eq!(ui.wire()["commands"], json!([{"name":"review","description":"Review changes"},{"name":"compact","description":"Compact conversation using the current model"}]));
+        let value = ui.models[0].value.clone();
+        ui.models[0].images = true;
+        ui.select("next-model", &value).unwrap();
+        ui.select("agent", "plan").unwrap();
+        ui.select("variant", "precise").unwrap();
+        let image = "data:image/png;base64,aGVsbG8=".to_owned();
+        let (route, body) = ui.dispatch(" /review  src/one.rs --check ", std::slice::from_ref(&image)).unwrap();
+        assert_eq!(route, "command");
+        assert_eq!(body, json!({"command":"review","arguments":"src/one.rs --check","agent":"plan","model":"provider/one/family/model","variant":"precise","parts":[{"type":"file","mime":"image/png","url":image}]}));
+        for text in ["/reviewer x", "/Review x", "/unknown x", "ordinary"] {
+            let (route, body) = ui.dispatch(text, &[]).unwrap();
+            assert_eq!(route, "prompt_async"); assert_eq!(body["parts"][0]["text"], text);
+        }
+        assert_eq!(ui.dispatch("/review", &[]).unwrap().1["arguments"], "");
+        ui.load_commands(Err(ProviderError::new("provider_error", "missing").with_details(json!({"httpStatus":404}))));
+        assert!(ui.error.is_none());
+    }
+    #[test]
+    fn oc2_optional_command_failure_preserves_selected_model_agent_and_variant() {
+        for failure in [
+            Err(ProviderError::new("provider_error", "missing").with_details(json!({"httpStatus":404}))),
+            Err(ProviderError::new("provider_error", "unsupported").with_details(json!({"httpStatus":405}))),
+            Err(ProviderError::new("provider_error", "failed").with_details(json!({"httpStatus":500}))),
+            Err(ProviderError::new("provider_disconnected", "timed out")),
+            Ok(json!({"invalid":"catalogue"})),
+        ] {
+            let mut ui = options_fixture();
+            let model = ui.models[0].value.clone();
+            ui.select("next-model", &model).unwrap(); ui.select("agent", "plan").unwrap(); ui.select("variant", "precise").unwrap();
+            let options = ui.wire()["options"].clone();
+            ui.load_commands(failure);
+            assert_eq!(ui.wire()["options"], options, "optional command discovery cannot hide or reset the base controls");
+            assert_eq!(ui.wire()["loadState"], "ready", "optional discovery must not trip the service's saved-option restoration error gate");
+            assert!(ui.wire().get("error").is_none());
+            assert_eq!(ui.wire()["commands"], json!([{"name":"compact","description":"Compact conversation using the current model"}]));
+            assert_eq!(ui.dispatch("/review src", &[]).unwrap().0, "prompt_async");
+        }
+    }
+    #[test]
+    fn oc2_recovery_endpoint_failures_are_independent_and_do_not_clear_options_or_plans() {
+        for failed in ["/session/native-1/children", "/session/native-1/todo", "/permission", "/question", "/session/child-1/message?limit=128"] {
+            for failure in 0..5 {
+                let (events, mut rx) = crate::provider_events::tap_channel(64);
+                let target = event_target(&events, Arc::new(Mutex::new(None)));
+                let mut ui = options_fixture();
+                let model = ui.models[0].value.clone();
+                ui.select("next-model", &model).unwrap(); ui.select("agent", "plan").unwrap(); ui.select("variant", "precise").unwrap();
+                let options = ui.wire()["options"].clone(); *target.ui.lock().unwrap() = ui;
+                let messages = json!([{"info":{"id":"reply-task","role":"assistant"},"parts":[{"id":"task-part","messageID":"reply-task","sessionID":"native-1","type":"tool","tool":"task","callID":"task-1","state":{"status":"running","input":{"description":"Inspect"},"metadata":{"sessionId":"child-1"}}}]}]);
+                let mut paths = Vec::new();
+                // Repeat recovery to exercise the same live deduplication even
+                // when one independent snapshot is unavailable or malformed.
+                for _ in 0..2 {
+                    target.hydrate(&messages, |path| {
+                        paths.push(path.to_owned());
+                        if path == failed {
+                            return match failure {
+                                0..=2 => Err(ProviderError::new("provider_error", "unavailable").with_details(json!({"httpStatus":([404,405,500][failure])}))),
+                                3 => Err(ProviderError::new("provider_disconnected", "timed out")),
+                                _ => Ok(json!({"invalid":"list"})),
+                            };
+                        }
+                        Ok(match path {
+                            "/permission" => json!([{"id":"per-1","sessionID":"native-1","permission":"read","patterns":["*"]}]),
+                            "/question" => json!([{"id":"q-1","sessionID":"native-1","questions":[{"header":"Choice","question":"Pick","options":[{"label":"Yes","description":"Proceed"}]}]}]),
+                            "/session/native-1/todo" => json!([{"content":"Inspect","status":"in_progress"}]),
+                            _ => json!([]),
+                        })
+                    });
+                }
+                for path in ["/session/native-1/children", "/session/native-1/todo", "/permission", "/question", "/session/child-1/message?limit=128"] {
+                    assert_eq!(paths.iter().filter(|value| value.as_str() == path).count(), 2, "each recovery feature still gets its own read");
+                }
+                let emitted = std::iter::from_fn(|| rx.try_recv().ok()).collect::<Vec<_>>();
+                assert_eq!(emitted.iter().filter(|event| event.kind == "chat.approval").count(), if matches!(failed, "/permission" | "/question") { 1 } else { 2 }, "available interactions hydrate once");
+                assert_eq!(emitted.iter().filter(|event| event.data["item"]["id"] == "native-1:todos").count(), if failed.ends_with("/todo") { 0 } else { 2 }, "a failed todo read never clears a prior plan");
+                assert_eq!(target.ui.lock().unwrap().wire()["options"], options);
+                assert!(target.liveness.load(Ordering::SeqCst), "optional recovery never disconnects the event stream");
+            }
+        }
+    }
+    #[test]
+    fn oc2_image_capability_is_selected_model_only_and_file_parts_are_validated() {
+        let mut ui = options_fixture();
+        assert!(!ui.accepts_images());
+        ui.models[0].images = true;
+        let value = ui.models[0].value.clone(); ui.select("next-model", &value).unwrap();
+        assert_eq!(ui.wire()["inputCapabilities"]["images"], true);
+        let parts = opencode_image_parts(&["data:image/webp;base64,aGVsbG8=".into()]).unwrap();
+        assert_eq!(parts[0]["mime"], "image/webp");
+        assert!(opencode_image_parts(&["file:///private/image.png".into()]).is_err());
+        assert!(opencode_image_parts(&["data:image/svg+xml;base64,aGVsbG8=".into()]).is_err());
+        assert!(opencode_image_parts(&["data:image/png;base64,???".into()]).is_err());
+        ui.select("next-model", "").unwrap(); assert!(!ui.accepts_images());
+        ui.effective_model = Some(ui.models[0].model.clone()); assert!(!ui.accepts_images(), "effective footer is not selection authority");
+    }
+    #[test]
+    fn oc2_compact_uses_current_model_and_rejects_arguments_before_dispatch() {
+        let mut ui = options_fixture();
+        assert_eq!(ui.dispatch("/compact", &[]).unwrap_err().code, "chat_option_invalid");
+        ui.effective_model = Some(json!({"providerID":"native","modelID":"answering"}));
+        assert_eq!(ui.dispatch("/compact", &[]).unwrap(), ("summarize", json!({"providerID":"native","modelID":"answering"})));
+        let value = ui.models[0].value.clone(); ui.select("next-model", &value).unwrap();
+        assert_eq!(ui.dispatch("/summarize", &[]).unwrap(), ("summarize", ui.models[0].model.clone()));
+        assert_eq!(ui.dispatch("/compact now", &[]).unwrap_err().code, "command_arguments_invalid");
+        assert_eq!(ui.dispatch("/compact", &["data:image/png;base64,aGVsbG8=".into()]).unwrap_err().code, "command_arguments_invalid");
+    }
+    #[test]
+    fn oc2_compact_confirmation_and_idle_in_either_order_emit_one_receipt_and_no_summary() {
+        for idle_first in [true, false] {
+            let (events, mut rx) = crate::provider_events::tap_channel(16);
+            let target = event_target(&events, Arc::new(Mutex::new(Some("compact-1".into()))));
+            *target.compact_pending.lock().unwrap() = Some(OpenCodeCompact { turn:"compact-1".into(),confirmed:false,idle_observed:false });
+            emit_opencode_event(&target, frame("message.part.updated", json!({"part":{"sessionID":"native-1","messageID":"summary","id":"p","type":"text","text":"Hidden summary"}})));
+            if idle_first { emit_opencode_event(&target, frame("session.idle", json!({"sessionID":"native-1"}))); }
+            target.finish_compact("compact-1", Ok(())).unwrap();
+            if !idle_first {
+                assert!(rx.try_recv().is_err(), "confirmation alone retains the slot until native idle");
+                emit_opencode_event(&target, frame("session.idle", json!({"sessionID":"native-1"})));
+            }
+            target.finish_compact("compact-1", Ok(())).unwrap();
+            emit_opencode_event(&target, frame("message.part.updated", json!({"part":{"sessionID":"native-1","messageID":"summary","id":"p","type":"text","text":"Late hidden summary"}})));
+            emit_opencode_event(&target, frame("session.idle", json!({"sessionID":"native-1"})));
+            let emitted = std::iter::from_fn(|| rx.try_recv().ok()).collect::<Vec<_>>();
+            assert_eq!(emitted.len(), 2); assert_eq!(emitted[0].kind, "chat.item");
+            assert_eq!(emitted[0].data["parts"][0]["text"], "Conversation compacted by OpenCode.");
+            assert_eq!(emitted[1].kind, "chat.turn.completed"); assert!(target.active.lock().unwrap().is_none());
+        }
+    }
+    #[test]
+    fn oc2_compact_rejection_unknown_and_stop_never_claim_success() {
+        for uncertain in [false, true] {
+            let (events, mut rx) = crate::provider_events::tap_channel(16);
+            let target = event_target(&events, Arc::new(Mutex::new(Some("compact-1".into()))));
+            *target.compact_pending.lock().unwrap() = Some(OpenCodeCompact { turn:"compact-1".into(),confirmed:false,idle_observed:false });
+            let error = if uncertain { ProviderError::new("provider_disconnected", "lost reply") } else { ProviderError::new("provider_error", "bad model").with_details(json!({"httpStatus":400})) };
+            assert!(target.finish_compact("compact-1", Err(error)).is_err());
+            let emitted = std::iter::from_fn(|| rx.try_recv().ok()).collect::<Vec<_>>();
+            assert!(emitted.iter().any(|event| event.kind == "chat.error"));
+            assert!(!emitted.iter().any(|event| event.kind == "chat.turn.completed" || event.kind == "chat.item"));
+            assert_eq!(target.liveness.load(Ordering::SeqCst), !uncertain);
+        }
+        let (events, mut rx) = crate::provider_events::tap_channel(16);
+        let target = event_target(&events, Arc::new(Mutex::new(Some("compact-1".into()))));
+        *target.compact_pending.lock().unwrap() = Some(OpenCodeCompact { turn:"compact-1".into(),confirmed:false,idle_observed:false });
+        *target.abort_pending.lock().unwrap() = Some(OpenCodeAbort { turn:"compact-1".into(),confirmed:false,idle_observed:false });
+        emit_opencode_event(&target, frame("session.idle", json!({"sessionID":"native-1"})));
+        target.finish_abort("compact-1", Ok(())).unwrap();
+        target.finish_compact("compact-1", Ok(())).unwrap();
+        let emitted = std::iter::from_fn(|| rx.try_recv().ok()).collect::<Vec<_>>();
+        assert_eq!(emitted.len(), 1); assert_eq!(emitted[0].data["status"], "interrupted");
+        assert!(target.compact_pending.lock().unwrap().is_none(), "Stop retires its compact suppression state");
+        *target.active.lock().unwrap() = Some("turn-2".into());
+        emit_opencode_event(&target, frame("message.part.updated", json!({"part":{"sessionID":"native-1","messageID":"next-reply","id":"p2","type":"text","text":"Next turn"}})));
+        emit_opencode_event(&target, frame("session.idle", json!({"sessionID":"native-1"})));
+        let next = std::iter::from_fn(|| rx.try_recv().ok()).collect::<Vec<_>>();
+        assert_eq!(next.len(), 2); assert_eq!(next[0].data["parts"][0]["text"], "Next turn");
+        assert_eq!(next[1].turn_id.as_deref(), Some("turn-2")); assert_eq!(next[1].kind, "chat.turn.completed");
+    }
+    #[test]
+    fn oc2_fork_latest_and_selected_reply_resolve_exclusive_native_boundary() {
+        use crate::domain::NativeForkAnchor;
+        let messages = json!([{"info":{"id":"user-1"}},{"info":{"id":"reply-1"}},{"info":{"id":"user-2"}},{"info":{"id":"reply-2"}}]);
+        let anchor = |id: &str| NativeForkAnchor { native_id:"native-1".into(),message_id:Some(id.into()),turn_id:None,entry_id:None };
+        assert_eq!(opencode_fork_body("native-1", None, true, &messages).unwrap(), Some(json!({})));
+        assert_eq!(opencode_fork_body("native-1", Some(&anchor("reply-1")), false, &messages).unwrap(), Some(json!({"messageID":"user-2"})));
+        assert_eq!(opencode_fork_body("native-1", Some(&anchor("reply-2")), true, &messages).unwrap(), Some(json!({})));
+        assert!(opencode_fork_body("native-1", Some(&anchor("missing")), true, &messages).unwrap().is_none());
+        assert!(opencode_fork_body("another", Some(&anchor("reply-1")), false, &messages).unwrap().is_none());
+        assert!(opencode_fork_body("native-1", None, false, &messages).unwrap().is_none());
+    }
+    #[test]
+    fn oc2_recovery_uses_live_identity_and_deduplicates_pending_cards_and_children() {
+        let (events, mut rx) = crate::provider_events::tap_channel(64);
+        let target = event_target(&events, Arc::new(Mutex::new(None)));
+        let children = json!([{"id":"child-1","parentID":"native-1","title":"Inspect"},{"id":"fork-1","parentID":"native-1"},{"id":"foreign","parentID":"other"}]);
+        let messages = json!([{"info":{"id":"reply-task","role":"assistant"},"parts":[{"id":"task-part","messageID":"reply-task","sessionID":"native-1","type":"tool","tool":"task","callID":"task-1","state":{"status":"running","input":{"description":"Inspect"},"metadata":{"sessionId":"child-1"}}}]}]);
+        let permissions = json!([{"id":"per-1","sessionID":"native-1","permission":"read","patterns":["*"]},{"id":"per-child","sessionID":"child-1","permission":"read"},{"id":"per-foreign","sessionID":"foreign","permission":"read"},{"id":"per-fork","sessionID":"fork-1","permission":"read"}]);
+        let questions = json!([{"id":"q-1","sessionID":"native-1","questions":[{"header":"Choice","question":"Pick","options":[{"label":"Yes","description":"Proceed"}]}]}]);
+        let todos = json!([{"content":"Inspect","status":"in_progress"}]);
+        for _ in 0..2 { target.hydrate_snapshots(&messages, &children, &todos, &permissions, &questions); }
+        let emitted = std::iter::from_fn(|| rx.try_recv().ok()).collect::<Vec<_>>();
+        assert_eq!(emitted.iter().filter(|event| event.kind == "chat.approval").count(), 3);
+        assert_eq!(emitted.iter().filter(|event| event.kind == "chat.subagent").map(|event| event.data["key"].as_str().unwrap()).collect::<HashSet<_>>(), HashSet::from(["task-1"]));
+        assert!(!target.permissions.lock().unwrap().contains_key("per-fork"), "a native fork is not a task child");
+        assert_eq!(emitted.iter().filter(|event| event.kind == "chat.turn.started").count(), 1);
+        assert!(target.permissions.lock().unwrap().get("per-foreign").is_none());
+        assert_eq!(target.permission_sessions.lock().unwrap().get("per-child").map(String::as_str), Some("child-1"));
+        let plans = emitted.iter().filter(|event| event.data["item"]["id"] == "native-1:todos").collect::<Vec<_>>();
+        assert_eq!(plans.len(), 2, "replaces the same plan, never appends a second card");
+        emit_opencode_event(&target, frame("question.replied", json!({"sessionID":"native-1","requestID":"q-1"})));
+        target.hydrate_snapshots(&json!([]), &children, &todos, &permissions, &questions);
+        assert!(!std::iter::from_fn(|| rx.try_recv().ok()).any(|event| event.kind == "chat.approval"), "settled questions never reopen from a late snapshot");
+    }
+    #[test]
+    fn oc2_nested_task_recovery_routes_grandchild_questions_but_not_fork_branches() {
+        let (events, mut rx) = crate::provider_events::tap_channel(64);
+        let target = event_target(&events, Arc::new(Mutex::new(None)));
+        let root_task = json!([{"info":{"role":"assistant"},"parts":[{"id":"p-root","callID":"root-task","messageID":"reply-root","sessionID":"native-1","type":"tool","tool":"task","state":{"status":"running","metadata":{"sessionId":"child-1"}}}]}]);
+        target.hydrate_snapshots(&root_task, &json!([]), &Value::Null, &json!([]), &json!([]));
+        let nested = json!([{"info":{"id":"child-reply","sessionID":"child-1","role":"assistant"},"parts":[{"id":"p-nested","callID":"nested-task","messageID":"child-reply","sessionID":"child-1","type":"tool","tool":"task","state":{"status":"running","metadata":{"sessionId":"grandchild-1"}}}]}]);
+        target.hydrate_child_messages("child-1", &nested).unwrap();
+        target.hydrate_child_messages("foreign-fork", &nested).unwrap();
+        let questions = json!([{"id":"q-grandchild","sessionID":"grandchild-1","questions":[]},{"id":"q-fork","sessionID":"foreign-fork","questions":[]}]);
+        target.hydrate_snapshots(&json!([]), &json!([]), &Value::Null, &json!([]), &questions);
+        let emitted = std::iter::from_fn(|| rx.try_recv().ok()).collect::<Vec<_>>();
+        let cards = emitted.iter().filter(|event| event.kind == "chat.subagent").collect::<Vec<_>>();
+        assert_eq!(cards.len(), 1); assert_eq!(cards[0].data["key"], "root-task");
+        let asks = emitted.iter().filter(|event| event.kind == "chat.approval").collect::<Vec<_>>();
+        assert_eq!(asks.len(), 1); assert_eq!(asks[0].data["approvalId"], "q-grandchild");
+        assert_eq!(asks[0].data["part"]["data"]["subagent"]["key"], "root-task");
+    }
+    struct Oc2ForkOutcomeFixture { calls: Arc<std::sync::atomic::AtomicUsize>, uncertain: bool }
+    impl ProviderAdapter for Oc2ForkOutcomeFixture {
+        fn id(&self) -> &str { "opencode" }
+        fn capability(&self) -> ProviderCapability {
+            ProviderCapability { source:"test",plugin_id:None,icon:None,sign_in:None,homepage:None,id:"opencode".into(),name:"OpenCode fixture".into(),installed:true,version:None,terminal:false,chat:true,history:true,resume:true,terminal_resume_capture:"none",reason:None,auth:"unknown".into() }
+        }
+        fn terminal_command(&self, _: Option<&str>, _: Option<&str>) -> Result<TerminalCommand, ProviderError> { Err(ProviderError::new("unsupported", "fixture")) }
+        fn history_list(&self, _: Option<&str>, _: u32, _: Option<&str>) -> Result<Value, ProviderError> { Ok(json!({"items":[]})) }
+        fn history_read(&self, _: &str) -> Result<Value, ProviderError> { Ok(json!([])) }
+        fn open_chat(&self, _: &str, _: &str, _: Option<&str>) -> Result<Box<dyn ChatSession>, ProviderError> { Err(ProviderError::new("unsupported", "fixture")) }
+        fn fork_session(&self, _: &str, _: &str, _: Option<&crate::domain::NativeForkAnchor>, _: bool) -> Result<Option<String>, ProviderError> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            if self.uncertain { Err(ProviderError::new("operation_outcome_unknown", "lost native fork reply")) } else { Ok(None) }
+        }
+    }
+    fn oc2_fork_fixture(uncertain: bool) -> (tempfile::TempDir, Database, crate::domain::Session, Arc<std::sync::atomic::AtomicUsize>, crate::providers::Providers) {
+        let root = tempfile::tempdir().unwrap();
+        let db = Database::open(&root.path().join("fork.sqlite")).unwrap();
+        crate::session_configs::initialize(&db).unwrap();
+        let source = db.create_session(crate::db::CreateSession { project_id:None,title:Some("Source"),provider:"opencode",mode:"chat",native_id:Some("source-native"),operation_id:"source" }).unwrap();
+        let cwd = root.path().display().to_string();
+        crate::session_configs::save_new(&db, &source.id, &crate::session_configs::LaunchSpec { provider:"opencode".into(),mode:"chat".into(),cwd:cwd.clone(),project_id:None,title:Some("Source".into()),executable:None,args:vec![] }, None).unwrap();
+        db.bind_session(&source.id, Some(&cwd), Some("source-native")).unwrap();
+        db.set_session_status(&source.id, "idle", None).unwrap();
+        let source = db.session_by_id(&source.id).unwrap().unwrap();
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let providers = crate::providers::Providers::for_test(vec![Arc::new(Oc2ForkOutcomeFixture { calls:Arc::clone(&calls),uncertain })]);
+        (root, db, source, calls, providers)
+    }
+    #[test]
+    fn oc2_unavailable_native_fork_falls_back_once_and_preserves_source() {
+        let (_root, db, source, calls, providers) = oc2_fork_fixture(false);
+        let request = || crate::chat_fork::ForkRequest { session_id:&source.id,item_id:None,operation_id:"fork-once" };
+        let first = crate::chat_fork::fork(&db, &providers, request()).unwrap();
+        let second = crate::chat_fork::fork(&db, &providers, request()).unwrap();
+        assert_eq!(first, second); assert_eq!(first["mode"], "copy");
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        assert_eq!(db.session_by_id(&source.id).unwrap().unwrap(), source);
+    }
+    #[test]
+    fn oc2_uncertain_native_fork_stops_without_copy_and_never_reposts() {
+        let (_root, db, source, calls, providers) = oc2_fork_fixture(true);
+        let request = || crate::chat_fork::ForkRequest { session_id:&source.id,item_id:None,operation_id:"fork-once" };
+        let error = crate::chat_fork::fork(&db, &providers, request()).unwrap_err();
+        assert!(error.to_string().contains("operation_outcome_unknown"));
+        assert!(crate::chat_fork::fork(&db, &providers, request()).is_err());
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        assert_eq!(db.snapshot().unwrap().sessions.len(), 1, "an uncertain native fork never creates a copy child");
+        assert_eq!(db.session_by_id(&source.id).unwrap().unwrap(), source);
+    }
+    #[test]
+    fn oc2_history_reuses_live_normalizer_and_keeps_native_time_and_anchor() {
+        let parts = json!([{"type":"reasoning","text":"Think"},{"type":"tool","id":"tool-1","tool":"read","state":{"status":"completed","input":{"filePath":"notes.txt"}}},{"type":"text","text":"Reply"},{"type":"step-finish"}]);
+        let raw = json!({"info":{"id":"native-1"},"messages":[{"info":{"id":"reply-1","role":"assistant","sessionID":"native-1","time":{"created":1000,"completed":2000}},"parts":parts}]});
+        let history = opencode_transcript(&raw);
+        assert_eq!(history[0]["parts"][0], opencode_chat_part(&parts[0]));
+        assert_eq!(history[0]["parts"][1]["toolName"], "read");
+        assert_eq!(history[0]["parts"].as_array().unwrap().len(), 3);
+        assert_eq!(history[0]["createdAt"], "1970-01-01T00:00:01+00:00");
+        assert_eq!(history[0]["forkAnchor"], json!({"nativeId":"native-1","messageId":"reply-1"}));
+        assert_eq!(history[0]["turnOrigin"], "history"); assert_eq!(history[0]["turnStatus"], "completed");
+        let hidden = json!({"messages":[{"info":{"id":"hidden","role":"assistant","summary":true},"parts":[{"type":"text","text":"Hidden native summary"}]}]});
+        assert!(opencode_transcript(&hidden).is_empty());
+        let image = "data:image/png;base64,AA==";
+        let user = opencode_transcript(&json!({"messages":[{"info":{"id":"user","role":"user"},"parts":[{"type":"text","text":"Inspect"},{"type":"file","mime":"image/png","url":image}]}]}));
+        assert_eq!(user[0]["parts"], json!([{"type":"text","text":"Inspect","data":{"images":[image]}}]), "imported user images use the same shared message shape as live sends");
+    }
     fn options_fixture() -> OpenCodeOptions {
         OpenCodeOptions::from_catalogues(Ok(json!({"all":[
             {"id":"provider/one","name":"First","models":{
@@ -3157,7 +3803,9 @@ mod tests {
             {"content":"Read README","status":"completed","priority":"high"},
             {"content":"Write notes.txt","status":"in_progress","priority":"medium"}]}));
         emit_opencode_event(&target, todos.clone());
-        assert!(std::iter::from_fn(|| rx.try_recv().ok()).all(|event| event.kind != "chat.item"), "no plan outside a turn");
+        let recovered = rx.try_recv().unwrap();
+        assert_eq!(recovered.data["item"]["id"], "native-1:todos", "idle recovery keeps a stable session plan");
+        assert!(recovered.turn_id.is_none());
         *active.lock().unwrap() = Some("turn-1".into());
         emit_opencode_event(&target, todos);
         let event = std::iter::from_fn(|| rx.try_recv().ok()).find(|event| event.kind == "chat.item").unwrap();
@@ -3208,6 +3856,44 @@ mod tests {
         .unwrap();
         db
     }
+    #[test]
+    fn native_session_title_is_projected_for_untitled_chats_only() {
+        let db = projection_db();
+        db.transaction(|tx| { tx.execute("UPDATE sessions SET title='opencode' WHERE id='chat-s'", [])?; Ok(()) }).unwrap();
+        let (events, mut rx) = crate::provider_events::tap_channel(8);
+        let target = event_target(&events, Arc::new(Mutex::new(None)));
+        emit_opencode_event(&target, frame("session.updated", json!({"info":{"id":"native-1","title":"Native title"}})));
+        drain(&db, &mut rx, "chat-s");
+        assert_eq!(db.session_by_id("chat-s").unwrap().unwrap().title, "Native title");
+        emit_opencode_event(&target, frame("session.updated", json!({"info":{"id":"native-1","title":"Later native title"}})));
+        drain(&db, &mut rx, "chat-s");
+        assert_eq!(db.session_by_id("chat-s").unwrap().unwrap().title, "Native title");
+        db.transaction(|tx| { tx.execute("UPDATE sessions SET title='opencode' WHERE id='chat-s'", [])?; Ok(()) }).unwrap();
+        db.bind_operation("rename-default", "session.update", &json!({"sessionId":"chat-s","title":"opencode","operationId":"rename-default"})).unwrap();
+        emit_opencode_event(&target, frame("session.updated", json!({"info":{"id":"native-1","title":"Ignored native title"}})));
+        drain(&db, &mut rx, "chat-s");
+        assert_eq!(db.session_by_id("chat-s").unwrap().unwrap().title, "opencode");
+    }
+    #[test]
+    fn live_message_native_timestamp_reaches_chat_projection() {
+        let db = projection_db();
+        let (events, mut rx) = crate::provider_events::tap_channel(8);
+        let target = event_target(&events, Arc::new(Mutex::new(Some("turn-1".into()))));
+        emit_opencode_event(&target, frame("message.updated", json!({"info":{"id":"reply-1","sessionID":"native-1","role":"assistant","time":{"created":1000}}})));
+        emit_opencode_event(&target, frame("message.part.updated", json!({"part":{"id":"part-1","messageID":"reply-1","sessionID":"native-1","type":"text","text":"Answer"}})));
+        drain(&db, &mut rx, "chat-s");
+        let item = db.chat_items("chat-s").unwrap().into_iter().find(|item| item.id == "chat-s:assistant:reply-1").unwrap();
+        assert_eq!(item.created_at, "1970-01-01T00:00:01+00:00");
+    }
+    #[test]
+    fn native_timestamp_cache_switches_to_authoritative_snapshots_at_the_message_bound() {
+        let mut assembly = OpenCodeAssembly::default();
+        for index in 0..=MAX_ASSEMBLED_MESSAGES {
+            assembly.remember_created_at(&format!("message-{index}"), "1970-01-01T00:00:01+00:00".into());
+        }
+        assert!(assembly.authoritative_only);
+        assert!(assembly.created_at.is_empty());
+    }
 
     fn drain(db: &Database, rx: &mut broadcast::Receiver<ProviderEvent>, session: &str) {
         while let Ok(event) = rx.try_recv() {
@@ -3257,6 +3943,7 @@ mod tests {
             ui: Mutex::new(OpenCodeOptions::default()),
             abort_pending: Mutex::new(None),
             retry_visible: AtomicBool::new(false),
+            compact_pending: Mutex::new(None),
         }
     }
 

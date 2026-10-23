@@ -1,11 +1,53 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import type { ChatItem, Session } from '@threadterm/protocol';
-import { attachedMessagesLabel, delegateOutcomePreview, delegationActive, delegationTool, delegationToolLabel, delegationStateLabel, nestedDelegateIds, withDelegates } from './delegation';
+import type { ChatItem, Session, SessionDelegationState } from '@threadterm/protocol';
+import { attachedMessagesLabel, delegateOutcomePreview, delegationActive, delegationTool, delegationToolLabel, delegationStateLabel, delegationStateSummary, delegationStripVisible, nestedDelegateIds, withDelegates } from './delegation';
 
 const session = (id: string, createdAt: string, parent?: string, branch?: string): Session => ({
   id, title: id, provider: 'codex', mode: 'chat', status: 'running', createdAt, updatedAt: createdAt,
   ...(parent ? { delegation: { id: `d-${id}`, parentSessionId: parent, workspace: branch ? 'worktree' : 'shared', branch, state: 'running' } } : {}),
+});
+
+const delegate = (id: string, state: SessionDelegationState): Session => {
+  const item = session(id, '2026-10-20T10:00:00Z', 'parent');
+  return { ...item, delegation: { ...item.delegation!, state } };
+};
+
+test('strip summary orders attention first and combines starting and running in both languages', () => {
+  const states: SessionDelegationState[] = ['completed', 'cancelled', 'starting', 'failed', 'awaiting_parent', 'running', 'awaiting_user', 'completed', 'completed'];
+  const delegates = states.map((state, index) => delegate(String(index), state));
+  const en = (english: string) => english, zh = (_english: string, chinese: string) => chinese;
+  assert.deepEqual(delegationStateSummary(delegates, en), [
+    { state: 'awaiting_user', label: '1 needs you' },
+    { state: 'awaiting_parent', label: '1 waiting for parent' },
+    { state: 'running', label: '2 running' },
+    { state: 'failed', label: '1 failed' },
+    { state: 'cancelled', label: '1 cancelled' },
+    { state: 'completed', label: '3 completed' },
+  ]);
+  assert.deepEqual(delegationStateSummary(delegates, zh).map(group => group.label), [
+    '1 个待你处理', '1 个等待委派方', '2 个执行中', '1 个失败', '1 个已取消', '3 个已完成',
+  ]);
+  assert.equal(delegationStateSummary([delegate('a', 'awaiting_user'), delegate('b', 'awaiting_user')], en)[0].label, '2 need you');
+  assert.deepEqual(delegationStateSummary([], en), []);
+});
+
+test('a hidden finished set stays hidden, even when reordered or reduced', () => {
+  const finished = [delegate('a', 'completed'), delegate('b', 'failed'), delegate('c', 'cancelled')];
+  assert.equal(delegationStripVisible(['a', 'b', 'c'], finished), false);
+  assert.equal(delegationStripVisible(['a', 'b', 'c'], [...finished].reverse()), false);
+  assert.equal(delegationStripVisible(['a', 'b', 'c'], finished.slice(1)), false);
+  assert.equal(delegationStripVisible(undefined, []), false);
+  assert.equal(delegationStripVisible([], []), false);
+});
+
+test('a new delegate or renewed activity brings the strip back', () => {
+  const finished = delegate('a', 'completed');
+  assert.equal(delegationStripVisible(undefined, [finished]), true);
+  assert.equal(delegationStripVisible(['a'], [finished, delegate('new', 'completed')]), true);
+  for (const state of ['starting', 'running', 'awaiting_parent', 'awaiting_user'] as const) {
+    assert.equal(delegationStripVisible(['a'], [delegate('a', state)]), true, state);
+  }
 });
 
 test('delegates follow their parent in creation order, wherever their folder is listed', () => {

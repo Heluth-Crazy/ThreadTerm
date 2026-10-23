@@ -38,6 +38,39 @@ export function delegationStateLabel(state: SessionDelegationState, zh: boolean)
     : ({ starting: 'Starting', running: 'Running', awaiting_parent: 'Waiting for parent agent', awaiting_user: 'Needs you', completed: 'Completed', failed: 'Failed', cancelled: 'Cancelled' })[state];
 }
 
+/** Ordered, compact status groups for the parent Chat's delegation strip. */
+export function delegationStateSummary(delegates: readonly Session[], copy: (en: string, zh: string) => string): { state: SessionDelegationState; label: string }[] {
+  const counts = new Map<SessionDelegationState, number>();
+  for (const delegate of delegates) {
+    const state = delegate.delegation?.state;
+    if (state) {
+      const group = state === 'starting' ? 'running' : state;
+      counts.set(group, (counts.get(group) ?? 0) + 1);
+    }
+  }
+  const order: SessionDelegationState[] = ['awaiting_user', 'awaiting_parent', 'running', 'failed', 'cancelled', 'completed'];
+  return order.flatMap(state => {
+    const count = counts.get(state);
+    if (!count) return [];
+    const label = {
+      awaiting_user: copy(`${count} ${count === 1 ? 'needs' : 'need'} you`, `${count} 个待你处理`),
+      awaiting_parent: copy(`${count} waiting for parent`, `${count} 个等待委派方`),
+      running: copy(`${count} running`, `${count} 个执行中`),
+      failed: copy(`${count} failed`, `${count} 个失败`),
+      cancelled: copy(`${count} cancelled`, `${count} 个已取消`),
+      completed: copy(`${count} completed`, `${count} 个已完成`),
+      starting: '',
+    }[state];
+    return [{ state, label }];
+  });
+}
+
+/** A hidden finished set resurfaces for a new delegate or renewed activity. */
+export function delegationStripVisible(hiddenIds: readonly string[] | undefined, delegates: readonly Session[]): boolean {
+  const hidden = new Set(hiddenIds);
+  return delegates.some(delegate => !hidden.has(delegate.id) || (delegate.delegation && delegationActive(delegate.delegation.state)));
+}
+
 /**
  * A delegate card's note that ThreadTerm sent some of the user's own messages
  * from this chat, word for word, to the delegate (its first message shows them).

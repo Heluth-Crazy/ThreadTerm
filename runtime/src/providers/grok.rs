@@ -8,7 +8,7 @@ use super::{
         dispatch_acp_message, context_usage_from_update, flush_acp_messages, encode_approval_id, history_page, insert_optional, validate_native_id, version_probe,
         ChatTextSegments, CommandSpec, EnvelopeStyle, JsonLineProcess, JsonLineResponder,
     },
-    acp_mcp_servers, approve_scoped_threadterm_tool, chat_tool_policy, emit_bound as emit,
+    acp_mcp_servers, approve_scoped_threadterm_tool, chat_tool_policy, emit_bound as emit, verify_permission_options,
     ChatBackgroundTask, ChatSession, ChatToolPolicy, ChatToolServer, ProviderAdapter,
     ProviderCapability, ProviderError, ScopedProviderEvents,
     TerminalCommand,
@@ -73,10 +73,13 @@ impl GrokAdapter {
         project_events: bool,
         tool_policy: ChatToolPolicy,
     ) -> Result<(JsonLineProcess, Value), ProviderError> {
-        // `--no-leader` is an `grok agent` flag, not `grok agent stdio`.
-        // Putting it after `stdio` makes the process exit immediately with
-        // "unexpected argument" and Chat surfaces "grok-acp closed its output stream".
-        let spec = CommandSpec::provider("grok", &["agent", "--no-leader", "stdio"])?;
+        // `--allow` is a root Grok flag and must precede `agent`; `--no-leader`
+        // is an `agent` flag and must precede `stdio`.
+        let executable = CommandSpec::provider("grok", &[])?.program;
+        let spec = CommandSpec::from_path(
+            std::path::PathBuf::from(executable),
+            grok_spawn_args(&tool_policy),
+        )?;
         let owned_session = session_id.to_owned();
         let responder = Arc::new(Mutex::new(None));
         let ready_message: Arc<dyn Fn(Value) + Send + Sync> = {
@@ -359,6 +362,12 @@ impl ProviderAdapter for GrokAdapter {
                     json!({"sessionId":id,"cwd":cwd,"mcpServers":mcp_servers}),
                 )?
             } else if has_capability(&initialized, "resume") {
+                if tools.is_some() {
+                    return Err(ProviderError::new(
+                        "resume_tools_unsupported",
+                        "Grok only advertised session/resume, whose MCP re-attachment schema is unknown. Use a session/load-capable Grok version before resuming a managed-tool chat.",
+                    ));
+                }
                 process.request("session/resume", json!({"sessionId":id,"cwd":cwd}))?
             } else {
                 return Err(ProviderError::new(
@@ -406,6 +415,43 @@ impl ProviderAdapter for GrokAdapter {
             turn_started: Arc::new(Mutex::new(None)),
             usage_reply: None,
         }))
+    }
+
+    fn open_chat_with_startup_options(
+        &self, session_id: &str, cwd: &str, native_id: Option<&str>, worker_token: &str,
+        tools: Option<&ChatToolServer>, startup: &super::ChatStartupOptions<'_>,
+    ) -> Result<Box<dyn ChatSession>, ProviderError> {
+        let options = startup.permissions;
+        let mut chat = self.open_chat_with_tools(session_id, cwd, native_id, worker_token, tools)?;
+        let restored = (|| {
+            for option in options.as_array().into_iter().flatten() {
+                let id = option.get("id").and_then(Value::as_str).ok_or_else(|| ProviderError::new("chat_permission_restore_failed", "Invalid saved Grok permission option"))?;
+                let value = option.get("value").and_then(Value::as_str).ok_or_else(|| ProviderError::new("chat_permission_restore_failed", "Invalid saved Grok permission value"))?;
+                let state = chat.ui_state();
+                let current = super::permission_option(&state, id);
+                if current.is_none() {
+                    return Err(super::permission_restore_error(option, None, "missing", None));
+                }
+                chat.set_option(id, value).map_err(|error| {
+                    if super::is_structured_permission_restore_error(&error) {
+                        error
+                    } else {
+                        super::permission_restore_error(
+                            option,
+                            current,
+                            "rejected",
+                            current.and_then(super::permission_value),
+                        )
+                    }
+                })?;
+            }
+            verify_permission_options(&chat.ui_state(), options)
+        })();
+        if let Err(error) = restored {
+            let _ = chat.stop();
+            return Err(super::with_permission_options(error, chat.ui_state()));
+        }
+        Ok(chat)
     }
 }
 
@@ -1716,20 +1762,17 @@ impl ChatSession for GrokChat {
 
     fn set_option(&mut self, option_id: &str, value: &str) -> Result<Value, ProviderError> {
         if option_id == "mode" {
-            self.process.request(
+            if !GROK_PERMISSION_MODES.iter().any(|(mode, _)| *mode == value) {
+                return Err(ProviderError::new("provider_protocol", format!("Grok no longer advertises permission mode {value}")));
+            }
+            let result = self.process.request(
                 "session/set_mode",
                 json!({"sessionId":self.native_id,"modeId":value}),
             )?;
             if let Ok(mut state) = self.ui.lock() {
-                ensure_permission_mode(&mut state);
-                if let Some(option) = state
-                    .options
-                    .iter_mut()
-                    .find(|option| option.get("id").and_then(Value::as_str) == Some("mode"))
-                {
-                    option["value"] = json!(value);
-                }
+                apply_grok_mode_result(&mut state, &result, value);
             }
+            wait_for_grok_mode(&self.ui, value)?;
             emit_chat_ui(
                 &self.events,
                 &self.session_id,
@@ -2367,7 +2410,15 @@ fn emit_grok_message(
                     option["value"] = json!(mode);
                 }
             }
-            emit_chat_ui(events, session_id, native_id.as_deref(), ui);
+            // A startup/resume notification reflects native state before the
+            // saved restoration is applied. It must update the chip but never
+            // replace the saved selection. A live turn is the only native
+            // transition this adapter persists through the event fence.
+            if active_turn.lock().ok().is_some_and(|active| active.is_some()) {
+                emit_permission_mode_confirmed(events, session_id, native_id.as_deref(), ui);
+            } else {
+                emit_chat_ui(events, session_id, native_id.as_deref(), ui);
+            }
         }
         return;
     }
@@ -2669,6 +2720,86 @@ fn emit_chat_ui(
             wire
         })
         .unwrap_or_else(|| json!({"sessionId":session_id,"options":[],"commands":[]}));
+    emit(events, "grok", session_id, native_id, None, "chat.ui", data);
+}
+
+fn wait_for_grok_mode(ui: &Mutex<GrokUiState>, value: &str) -> Result<(), ProviderError> {
+    for _ in 0..6 {
+        if ui.lock().ok().is_some_and(|state| state.options.iter().find(|option| option.get("id").and_then(Value::as_str) == Some("mode"))
+            .and_then(|option| option.get("value").and_then(Value::as_str)) == Some(value)) {
+            return Ok(());
+        }
+        std::thread::sleep(Duration::from_millis(25));
+    }
+    Err(ProviderError::new("provider_protocol", format!("Grok did not confirm permission mode {value}")))
+}
+
+/// Grok applies exact `--allow MCPTool(...)` rules before its `dontAsk`/auto
+/// decision. Grant only ThreadTerm tools the per-open server actually exposes;
+/// every value is a fixed local name, never agent-provided text or a wildcard.
+fn grok_spawn_args(policy: &ChatToolPolicy) -> Vec<String> {
+    let mut tools = Vec::new();
+    if policy.delegation {
+        tools.extend(crate::delegation::TOOL_NAMES);
+    }
+    if policy.ask { tools.push("ask_user"); }
+    if policy.session_info { tools.push("session_info"); }
+    if policy.feedback { tools.push("feedback_check"); }
+    if policy.preview { tools.extend(crate::preview::TOOL_NAMES); }
+    if policy.browser { tools.extend(crate::browser_tools::TOOL_NAMES); }
+
+    let mut args = Vec::with_capacity(tools.len() * 2 + 3);
+    for tool in tools {
+        args.push("--allow".to_owned());
+        args.push(format!("MCPTool(threadterm__{tool})"));
+    }
+    args.extend(["agent".to_owned(), "--no-leader".to_owned(), "stdio".to_owned()]);
+    args
+}
+
+/// Grok Build ACP 1.0.52 acknowledges `session/set_mode` with `{}` and does
+/// not emit `current_mode_update` afterwards. A successful JSON-RPC result is
+/// therefore the native acknowledgement for that exact endpoint. Rich results
+/// remain authoritative: an explicit different value is left in the UI and
+/// fails the canonical check above.
+fn apply_grok_mode_result(state: &mut GrokUiState, result: &Value, requested: &str) {
+    merge_grok_ui(state, result);
+    ensure_permission_mode(state);
+    let confirmed = result
+        .get("currentModeId")
+        .or_else(|| result.get("modeId"))
+        .or_else(|| result.get("mode"))
+        .and_then(Value::as_str);
+    let effective = confirmed.or_else(|| {
+        result
+            .as_object()
+            .filter(|result| result.is_empty())
+            .map(|_| requested)
+    });
+    if let Some(effective) = effective {
+        if let Some(option) = state
+            .options
+            .iter_mut()
+            .find(|option| option.get("id").and_then(Value::as_str) == Some("mode"))
+        {
+            option["value"] = json!(effective);
+        }
+    }
+}
+
+/// Native mode changes such as an accepted plan are user-approved transitions.
+/// Mark only this live notification, never open/resume restoration, so service
+/// persistence cannot replace a saved mode with a transient resume default.
+fn emit_permission_mode_confirmed(
+    events: &ScopedProviderEvents,
+    session_id: &str,
+    native_id: Option<&str>,
+    ui: &Mutex<GrokUiState>,
+) {
+    let mut data = ui.lock().ok().map(|state| state.wire())
+        .unwrap_or_else(|| json!({"options":[],"commands":[]}));
+    data["sessionId"] = json!(session_id);
+    data["permissionChangeConfirmed"] = json!(true);
     emit(events, "grok", session_id, native_id, None, "chat.ui", data);
 }
 
@@ -3562,6 +3693,29 @@ mod tests {
     const GROK_PROBE_PARENT: &str = "01a116d7-5d4a-7051-a77a-012ab1f9e5bd";
     const GROK_PROBE_CHILD: &str = "01a116d7-a2bc-7cd2-9b24-6460dc1f32df";
     const GROK_PROBE_SPAWN: &str = "call-3656ca5d-0fff-4f26-918c-7d2207728185-0";
+
+    #[test]
+    fn grok_preapproval_args_are_exact_and_precede_agent() {
+        let all = ChatToolPolicy {
+            delegation: true, preview: true, browser: true,
+            ask: true, session_info: true, feedback: true,
+        };
+        let args = grok_spawn_args(&all);
+        let agent = args.iter().position(|arg| arg == "agent").unwrap();
+        assert_eq!(&args[agent..], &["agent".to_owned(), "--no-leader".to_owned(), "stdio".to_owned()]);
+        assert!(args[..agent].chunks_exact(2).all(|pair| pair[0] == "--allow" && pair[1].starts_with("MCPTool(threadterm__") && pair[1].ends_with(')')));
+        let rules = args[..agent].chunks_exact(2).map(|pair| pair[1].as_str()).collect::<Vec<_>>();
+        assert_eq!(rules.len(), 6 + 1 + 1 + 1 + crate::preview::TOOL_NAMES.len() + crate::browser_tools::TOOL_NAMES.len());
+        assert!(crate::delegation::TOOL_NAMES.iter().all(|tool| rules.contains(&format!("MCPTool(threadterm__{tool})").as_str())));
+        assert!(!rules.iter().any(|rule| rule.contains("browser_eval") || rule.contains('*')));
+
+        let scoped = grok_spawn_args(&ChatToolPolicy { session_info: true, ..ChatToolPolicy::default() });
+        assert_eq!(scoped, vec![
+            "--allow".to_owned(), "MCPTool(threadterm__session_info)".to_owned(),
+            "agent".to_owned(), "--no-leader".to_owned(), "stdio".to_owned(),
+        ]);
+        assert_eq!(grok_spawn_args(&ChatToolPolicy::default()), vec!["agent".to_owned(), "--no-leader".to_owned(), "stdio".to_owned()]);
+    }
 
     fn grok_probe_frames() -> Vec<Value> {
         include_str!("../../tests/fixtures/grok-subagent-frames.jsonl")
@@ -4515,8 +4669,67 @@ mod tests {
         );
         let event = receiver.try_recv().unwrap();
         assert_eq!(event.kind, "chat.ui");
+        assert_eq!(event.data["permissionChangeConfirmed"], true);
         let mode = event.data["options"].as_array().unwrap().iter().find(|option| option["id"] == "mode").unwrap();
         assert_eq!(mode["value"], "default");
+    }
+
+    #[test]
+    fn startup_mode_update_never_marks_a_permission_change_confirmed() {
+        let (sender, mut receiver) = crate::provider_events::tap_channel(8);
+        let events = ScopedProviderEvents::new(sender, "worker");
+        let ui = Mutex::new(GrokUiState::default());
+        emit_grok_message(
+            &events,
+            "session",
+            &Mutex::new(Some("native".to_owned())),
+            &Mutex::new(None),
+            &Mutex::new(HashMap::new()),
+            &ui,
+            &Mutex::new(None),
+            json!({"method":"session/update","params":{"sessionId":"native","update":{"sessionUpdate":"current_mode_update","currentModeId":"default"}}}),
+        );
+        let event = receiver.try_recv().unwrap();
+        assert_eq!(event.kind, "chat.ui");
+        assert_eq!(event.data.get("permissionChangeConfirmed"), None);
+    }
+
+    #[test]
+    fn grok_startup_restore_errors_keep_structured_permission_metadata() {
+        let current = json!({"options":[{
+            "id":"mode","name":"Permission mode","category":"mode","value":"default",
+            "choices":[{"value":"default","name":"Default"},{"value":"plan","name":"Plan"}]
+        }]});
+        let saved = json!({"id":"mode","value":"plan"});
+        let missing = crate::providers::permission_restore_error(&saved, None, "missing", None);
+        assert_eq!(missing.details.as_ref().and_then(|details| details.pointer("/permissionRestore/reason")), Some(&json!("missing")));
+
+        let option = crate::providers::permission_option(&current, "mode");
+        let rejected = crate::providers::permission_restore_error(&saved, option, "rejected", option.and_then(crate::providers::permission_value));
+        assert_eq!(rejected.details.as_ref().and_then(|details| details.pointer("/permissionRestore/reason")), Some(&json!("rejected")));
+        assert_eq!(rejected.details.as_ref().and_then(|details| details.pointer("/permissionRestore/reportedValue")), Some(&json!("default")));
+
+        let mismatch = super::verify_permission_options(&current, &json!([saved])).unwrap_err();
+        let retained = crate::providers::with_permission_options(mismatch, current.clone());
+        assert_eq!(retained.details.as_ref().and_then(|details| details.pointer("/permissionRestore/reason")), Some(&json!("mismatch")));
+        assert_eq!(retained.details.as_ref().and_then(|details| details.pointer("/permissionRestore/savedLabel")), Some(&json!("Plan")));
+        assert_eq!(retained.details.as_ref().and_then(|details| details.pointer("/permissionRestore/reportedLabel")), Some(&json!("Default")));
+        assert_eq!(retained.details.as_ref().and_then(|details| details.pointer("/permissionOptions/options/0/id")), Some(&json!("mode")));
+    }
+
+    #[test]
+    fn grok_empty_set_mode_result_is_an_ack_but_explicit_state_wins() {
+        let mut state = GrokUiState::default();
+        ensure_permission_mode(&mut state);
+        // Captured from Grok Build ACP 1.0.52: the successful response is
+        // `{}` and no `current_mode_update` follows for at least 2.5 seconds.
+        apply_grok_mode_result(&mut state, &json!({}), "bypassPermissions");
+        let mode = state.options.iter().find(|option| option["id"] == "mode").unwrap();
+        assert_eq!(mode["value"], "bypassPermissions");
+
+        apply_grok_mode_result(&mut state, &json!({"currentModeId":"default"}), "bypassPermissions");
+        let mode = state.options.iter().find(|option| option["id"] == "mode").unwrap();
+        assert_eq!(mode["value"], "default", "an explicit native result must not be replaced by the request");
     }
 
     #[test]

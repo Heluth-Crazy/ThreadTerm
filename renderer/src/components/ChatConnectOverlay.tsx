@@ -1,5 +1,6 @@
-import type { ChatConnectionError, ChatConnectionPhase, ProviderId } from "@threadterm/protocol";
-import { connectionStatusText } from "../chatConnection";
+import type { ChatConnectionError, ChatConnectionPhase, ChatSessionOption, ProviderId } from "@threadterm/protocol";
+import { connectionStatusText, providerLabel } from "../chatConnection";
+import { permissionRestoreDetail } from "../permissionRecovery";
 import { AgentIcon, useAgentCapabilities } from "./PrototypeIcon";
 import { AgentLoadingMark } from "./AgentLoadingMark";
 
@@ -12,6 +13,7 @@ export function ChatConnectOverlay({
   onRetry,
   copy,
   transportDown = false,
+  options = [],
 }: {
   provider: ProviderId | string;
   phase: ChatConnectionPhase;
@@ -21,16 +23,22 @@ export function ChatConnectOverlay({
   onRetry?: () => void;
   copy: (en: string, zh: string) => string;
   transportDown?: boolean;
+  options?: readonly ChatSessionOption[];
 }) {
   const capabilities = useAgentCapabilities();
   const failed = phase === "failed" && !transportDown;
   const status = transportDown ? connectionStatusText(provider, phase, copy, true, capabilities) : (error?.message || connectionStatusText(provider, phase, copy, false, capabilities));
   const retryable = failed ? error?.retryable !== false && Boolean(onRetry) : false;
+  const permissionRecovery = failed && error?.code === "chat_permission_restore_failed";
+  const detail = permissionRecovery ? permissionRestoreDetail(error, options, providerLabel(provider, capabilities), copy) : undefined;
   if (variant === "banner") {
     return (
-      <div className={`chat-reconnect-banner${failed ? " is-failed" : ""}`} role="status" aria-live="polite">
+      <div className={`chat-reconnect-banner${failed ? " is-failed" : ""}${permissionRecovery ? " is-permission-recovery" : ""}`} role="status" aria-live="polite">
         <AgentIcon provider={provider} size={18} />
-        <span>{status}</span>
+        <span className={permissionRecovery ? "chat-permission-copy" : undefined}>
+          <span>{permissionRecovery ? copy("Saved permissions could not be restored. Choose permissions below, then retry.", "无法恢复已保存的权限。请在下方选择权限，然后重试连接。") : status}</span>
+          {detail && <span className="chat-permission-detail">{detail}</span>}
+        </span>
         {retryable && <button type="button" className="btn" onClick={onRetry}>{copy("Retry connection", "重试连接")}</button>}
       </div>
     );

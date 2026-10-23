@@ -45,7 +45,7 @@ async function handle(request) {
       // start() resolves after the SDK control handshake; the reply therefore
       // means the provider is genuinely ready, not merely spawned.
       try {
-        const sessionId = await session.start({ cwd: request.cwd, sessionId: request.sessionId, mcpServers: request.mcpServers });
+        const sessionId = await session.start({ cwd: request.cwd, sessionId: request.sessionId, mcpServers: request.mcpServers, permissionMode: request.permissionMode, model: request.model });
         return { sessionId, ui: session.uiState() };
       }
       catch (error) {

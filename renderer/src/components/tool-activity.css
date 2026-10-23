@@ -2,22 +2,23 @@
 .v3-chat-message.chat-tool-activity-card { overflow:visible; }
 .chat-tool-activity > summary { display:flex; flex-direction:column; align-items:stretch; gap:4px; max-width:100%; cursor:pointer; list-style:none; font-size:13px; line-height:1.5; padding:3px 0; }
 .chat-tool-activity > summary::-webkit-details-marker { display:none; }
-/* One deliberate narrow layout (V1-1): the headline ellipsizes on line 1 and
-   keeps the failure/Collapse/chevron controls pinned right, never wrapped; the
-   turn summary ellipsizes on its own line 2. */
+/* The headline ellipsizes on line 1 and keeps the controls pinned right. */
 .chat-tool-head { display:flex; align-items:center; flex-wrap:nowrap; gap:7px; min-width:0; max-width:100%; }
-.chat-tool-head > .ico { width:15px; height:15px; color:var(--muted); flex:none; }
+.chat-tool-head > .ico, .chat-tool-spinner { width:15px; height:15px; color:var(--muted); flex:none; }
+.chat-tool-spinner { box-sizing:border-box; width:13px; height:13px; margin-right:2px; border:2px solid currentColor; border-right-color:transparent; border-radius:50%; animation:chat-tool-spin .9s linear infinite; }
+@keyframes chat-tool-spin { to { transform:rotate(360deg); } }
+@media (prefers-reduced-motion:reduce) { .chat-tool-spinner { animation:none; } }
 .chat-tool-current-action { flex:1 1 auto; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .chat-tool-current-action.is-running { color:var(--text); }
 .chat-tool-active-count, .chat-tool-failed-count { flex:none; font-size:11px; color:var(--muted); }
-.chat-tool-count { display:block; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:11px; color:var(--muted); }
-.chat-tool-failed-count, .chat-tool-failures, .chat-tool-entry.is-failed .chat-tool-entry-status, .chat-tool-entry.is-cancelled .chat-tool-entry-status { color:var(--danger,var(--text)); }
+.chat-tool-failed-count, .chat-tool-entry.is-failed .chat-tool-entry-status, .chat-tool-entry.is-cancelled .chat-tool-entry-status { color:var(--danger,var(--text)); }
 .chat-tool-activity > summary:focus-visible { outline:2px solid var(--primary); outline-offset:3px; border-radius:4px; }
 .chat-tool-activity[open] > summary .chat-tool-chevron { transform:rotate(90deg); }
 .chat-tool-activity[open] > summary { position:sticky; top:0; z-index:2; padding:7px 8px; background:var(--surface); border:1px solid var(--border); border-radius:8px; }
 .chat-tool-collapse-label { flex:none; font-size:12px; color:var(--muted); }
 .chat-tool-output-preview { display:flex; align-items:baseline; gap:8px; min-width:0; max-width:100%; color:var(--muted); font:12px/1.5 var(--mono,ui-monospace,SFMono-Regular,Consolas,monospace); }
 .chat-tool-output-preview > span:last-child { min-width:0; overflow:hidden; white-space:nowrap; text-overflow:ellipsis; }
+.chat-tool-output-preview, .chat-tool-failures { margin-left:22px; }
 .chat-tool-output-label { flex:none; font-family:inherit; opacity:.85; }
 .chat-tool-collapse { margin:8px 0 0 20px; }
 .chat-tool-collapse > .ico { transform:rotate(180deg); }
@@ -31,13 +32,16 @@
 .chat-tool-entry-status { margin-left:auto; flex:none; color:var(--muted); font-size:11px; }
 .chat-tool-entry-detail { margin-top:5px; color:var(--muted); font-size:12px; overflow-wrap:anywhere; }
 .chat-tool-entry pre { max-width:100%; margin:7px 0 0; padding:8px 10px; overflow:auto; color:var(--muted); font:11px/1.45 var(--mono,ui-monospace,SFMono-Regular,Consolas,monospace); white-space:pre-wrap; overflow-wrap:anywhere; }
-.chat-tool-failures { margin-top:6px; font-size:12px; overflow-wrap:anywhere; }
-.chat-tool-failures p { margin:3px 0; }
+.chat-tool-failures { display:flex; gap:0; min-width:0; margin-top:2px; color:var(--muted); font-size:12px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.chat-tool-failure-reason { min-width:0; overflow:hidden; text-overflow:ellipsis; }
 
 /* Typed tool cards (B2) */
 .tool-card { display:block; }
 .tool-card-head { gap:8px; }
 .tool-card-title { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.tool-card-title.is-command { display:-webkit-box; -webkit-box-orient:vertical; -webkit-line-clamp:3; line-clamp:3; white-space:pre-wrap; overflow-wrap:anywhere; }
+.tool-card-title.is-command code { font:12px/1.5 var(--mono,ui-monospace,SFMono-Regular,Consolas,monospace); }
+.tool-card-title .file-reference-link { max-width:100%; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; vertical-align:bottom; }
 .tool-card-status { margin-left:auto; flex:none; }
 .tool-card.is-failed .tool-card-title, .tool-card.is-cancelled .tool-card-title { color:var(--muted); }
 .tool-card-body { margin:7px 0 0; min-width:0; }
@@ -49,6 +53,9 @@
 .tool-path > .ico, .tool-edit-file-head > .ico { flex:none; width:14px; height:14px; color:var(--muted); }
 .tool-path > *, .tool-edit-path { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; direction:rtl; text-align:left; }
 .tool-command code, .tool-search code { display:block; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:var(--text); }
+.tool-card-title-suffix { color:var(--muted); font-weight:400; }
+.tool-argument-lines { display:grid; gap:2px; margin-top:7px; font:11px/1.45 var(--mono,ui-monospace,SFMono-Regular,Consolas,monospace); overflow-wrap:anywhere; }
+.tool-argument-key { color:var(--muted); }
 .tool-url { overflow-wrap:anywhere; }
 .tool-output { max-width:100%; margin:7px 0 0; padding:8px 10px; overflow:auto; color:var(--muted); font:11px/1.45 var(--mono,ui-monospace,SFMono-Regular,Consolas,monospace); white-space:pre-wrap; overflow-wrap:anywhere; }
 .tool-edit-file { min-width:0; margin-top:9px; }

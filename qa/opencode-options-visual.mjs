@@ -150,6 +150,17 @@ try {
   async function capture(state, theme, locale, width) {
     const name = `${state}-${theme}-${locale}-${width}.png`;
     step(`capture: ${name}`);
+    // Capture the transient banner before control/layout checks consume its
+    // bounded header-wait window. Populated chips are verified in idle cells.
+    if (state === 'reconnecting-populated') {
+      const observed = await observeConnection();
+      assert.equal(observed.phase, 'connecting', `${name} connecting before screenshot: ${JSON.stringify(observed)}`);
+      assert.equal(observed.overlay, 'banner', `${name} preserves the existing transcript beneath a banner`);
+      assert.equal(observed.failed, false, `${name} has not already timed out`);
+      report.observations.push({ name, ...observed });
+      await page.screenshot({ path: join(out, name), animations: 'disabled' }); report.screenshots.push(name);
+      assert.equal((await observeConnection()).phase, 'connecting', `${name} stays connecting through screenshot completion`);
+    }
     if (state === 'running-populated') {
       const session = (await request('runtime.snapshot')).sessions.find(row => row.id === chat.id);
       assert.equal(session?.status, 'waiting', `${name} retains the native permission-waiting turn`);
@@ -167,15 +178,9 @@ try {
       assert.ok(metrics.chatWidth >= 380 && metrics.chatWidth <= 420, `${name} Chat itself is 380–420 px (${metrics.chatWidth}px)`);
       assert.ok(metrics.paneWidth >= 380 && metrics.paneWidth <= 420, `${name} containing pane is 380–420 px (${metrics.paneWidth}px)`);
     }
-    if (state === 'reconnecting-populated') {
-      const observed = await observeConnection();
-      assert.equal(observed.phase, 'connecting', `${name} connecting before screenshot: ${JSON.stringify(observed)}`);
-      assert.equal(observed.overlay, 'banner', `${name} preserves the existing transcript beneath a banner`);
-      assert.equal(observed.failed, false, `${name} has not already timed out`);
-      report.observations.push({ name, ...observed });
+    if (state !== 'reconnecting-populated') {
+      await page.screenshot({ path: join(out, name), animations: 'disabled' }); report.screenshots.push(name);
     }
-    await page.screenshot({ path: join(out, name), animations: 'disabled' }); report.screenshots.push(name);
-    if (state === 'reconnecting-populated') assert.equal((await observeConnection()).phase, 'connecting', `${name} stays connecting through screenshot completion`);
   }
   async function matrix(state) { for (const theme of ['light', 'dark', 'custom']) for (const locale of ['en', 'zh-CN']) for (const width of [1440, 400]) { report.cell = { state, theme, locale, width }; step(`${state}: ${theme}/${locale}/${width}`); await appearance(theme, locale, width); await capture(state, theme, locale, width); } }
   async function applyPopulatedSelections() {
@@ -197,6 +202,12 @@ try {
       await scope.getByRole('menu', { name: 'Variant', exact: true }).getByRole('menuitemradio').nth(option(ui, 'variant').choices.findIndex(choice => choice.value === 'precise')).click();
       await until(async () => option(await request('chat.options', { sessionId: chat.id }), 'variant').value === 'precise', 'variant selection');
     }
+    // Runtime confirmation can precede the renderer's chat.ui commit. Wait for
+    // the visible chips before asserting or capturing the populated composer.
+    await until(async () => {
+      const text = await scope.locator('.chat-compose-bar').innerText();
+      return [/GPT 5\.2/i, /Plan/i, /Precise/i].every(label => label.test(text));
+    }, 'rendered populated composer');
   }
   await matrix('idle-default');
   // Choose a variant-capable model before capturing populated chips. The menus
@@ -267,8 +278,8 @@ try {
     step(`explicit reconnect: ${theme}/${locale}/${width}`);
     await scope.locator('.chat-connection-chip').click();
     await scope.getByRole('button', { name: /^(Reconnect|重新连接)$/ }).click();
-    await until(async () => { const observed = await observeConnection(); return observed.phase === 'connecting' && observed.overlay === 'banner' && !observed.failed; }, 'explicit reconnect state', 4_000);
     await page.keyboard.press('Escape');
+    await until(async () => { const observed = await observeConnection(); return observed.phase === 'connecting' && observed.overlay === 'banner' && !observed.failed; }, 'explicit reconnect state', 4_000);
     await capture('reconnecting-populated', theme, locale, width);
     await until(async () => (await observeConnection()).failed, 'bounded stalled reconnect failure', 12_000);
     await setStalledHeaders(false);

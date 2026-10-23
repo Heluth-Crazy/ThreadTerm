@@ -151,6 +151,12 @@ ACP agents can also expose optional runtime UI and approval support:
 - For compatibility with older ACP agents, if `session/set_config_option` returns JSON-RPC error `-32601` for the `model` option only, ThreadTerm calls `session/set_model` with `sessionId` and `modelId`. Do not rely on that fallback for other setting ids or errors.
 - To update slash-command UI, send a `session/update` whose `sessionUpdate` is `available_commands_update` and whose `availableCommands` entries provide `name` (with or without a leading `/`) and an optional `description`.
 
+### Permission-mode settings
+
+An ACP agent may expose its own permission mode through a `configOption`. ThreadTerm treats only provider-recognized mode options as permission state: it sends `session/set_config_option`, accepts the returned configuration as authoritative, and can restore an accepted setting when reopening the chat. It does not infer permission meaning from a model, agent, or arbitrary setting, and it does not copy a parent agent's mode to a delegate. An agent should reject unsupported values explicitly; on a rejected or mismatched restore, ThreadTerm fails the connection as `chat_permission_restore_failed` instead of silently selecting a weaker mode. The picker remains available so the user can select a replacement.
+
+When an ACP agent requests approval for a ThreadTerm-managed tool, ThreadTerm may select its one-time choice only for the exact enabled managed tool identity. It never creates a permanent rule on an agent's behalf. Provider-native permission systems can deny a call before ThreadTerm receives an ACP permission request; plugin authors should document such behavior with their mode choices.
+
 ## Echo walkthrough
 
 [`examples/plugins/echo-acp`](../examples/plugins/echo-acp) is a dependency-free Node example. It provides a terminal REPL, ACP Chat, list/load history, terminal `--resume`, and a `login` command that explains no sign-in is needed. ACP history is stored outside the plugin directory, under a path derived from the installed plugin location in the OS temporary directory. Set `THREADTERM_ECHO_STORE_DIR` to an isolated directory when testing it.

@@ -24,7 +24,7 @@ interface ToolViewBase { status: ToolStatus; title: string }
 
 export type ToolView =
   | (ToolViewBase & { kind: 'edit'; files: ToolEditFile[]; truncated?: boolean })
-  | (ToolViewBase & { kind: 'command'; command: string; cwd?: string; output?: string; exitCode?: number; background?: boolean; actions?: ToolCommandAction[] })
+  | (ToolViewBase & { kind: 'command'; command: string; display: string; shell?: string; cwd?: string; output?: string; exitCode?: number; background?: boolean; actions?: ToolCommandAction[] })
   | (ToolViewBase & { kind: 'read'; path: string; offset?: number; limit?: number; pages?: number })
   | (ToolViewBase & { kind: 'search'; query: string; path?: string; glob?: string; flags?: ToolSearchFlags; matches?: number; files?: number; omitted?: boolean })
   | (ToolViewBase & { kind: 'web'; url?: string; query?: string; result?: string })
@@ -41,6 +41,74 @@ const array = (value: unknown): unknown[] => Array.isArray(value) ? value : [];
 const text = (value: unknown): string | undefined => typeof value === 'string' && value.trim() ? value.trim() : undefined;
 const number = (value: unknown): number | undefined => typeof value === 'number' && Number.isFinite(value) ? value : undefined;
 const compact = (value: string | undefined): string | undefined => value?.replace(/\s+/g, ' ').slice(0, 160);
+
+/** The provider serializes command argv using shlex-compatible quoting. */
+function shellTokens(value: string): string[] | undefined {
+  const tokens: string[] = [];
+  let token = '', started = false, quote: 'single' | 'double' | undefined;
+  for (let index = 0; index < value.length; index += 1) {
+    const char = value[index]!;
+    if (quote === 'single') {
+      if (char === "'") quote = undefined;
+      else token += char;
+      continue;
+    }
+    if (quote === 'double') {
+      if (char === '"') { quote = undefined; continue; }
+      if (char === '\\') {
+        const next = value[index + 1];
+        if (next === undefined) return undefined;
+        if ('\\"$`'.includes(next)) { token += next; index += 1; continue; }
+      }
+      token += char;
+      continue;
+    }
+    if (/\s/.test(char)) {
+      if (started) { tokens.push(token); token = ''; started = false; }
+      continue;
+    }
+    started = true;
+    if (char === "'") { quote = 'single'; continue; }
+    if (char === '"') { quote = 'double'; continue; }
+    // Only shell-special characters are escaped, so an unquoted Windows path keeps its backslashes.
+    if (char === '\\' && /[\s'"\\$`]/.test(value[index + 1] ?? '')) {
+      token += value[index + 1]; index += 1;
+      continue;
+    }
+    token += char;
+  }
+  if (quote) return undefined;
+  if (started) tokens.push(token);
+  return tokens;
+}
+
+const shellBasename = (value: string): string => value.split(/[\\/]/).at(-1)!.toLowerCase().replace(/\.exe$/, '');
+
+function commandDisplay(command: string, fallback?: string): { display: string; shell?: string } {
+  const tokens = shellTokens(command);
+  if (tokens === undefined) return { display: fallback ?? command };
+  if (!tokens.length) return { display: command };
+  const shell = shellBasename(tokens[0]!);
+  if (shell === 'pwsh' || shell === 'powershell') {
+    const flagIndex = tokens.findIndex(token => /^-encodedcommand/i.test(token) || (token.length > 1 && token.startsWith('-') && '-command'.startsWith(token.toLowerCase())));
+    if (flagIndex >= 0 && !/^-encodedcommand/i.test(tokens[flagIndex]!)) return { display: tokens.slice(flagIndex + 1).join(' '), shell };
+    return { display: command, shell };
+  }
+  if (shell === 'bash' || shell === 'sh' || shell === 'zsh') {
+    const flagIndex = tokens.findIndex(token => /^-[il]*c[il]*$/i.test(token));
+    if (flagIndex >= 0 && tokens[flagIndex + 1] !== undefined) return { display: tokens[flagIndex + 1]!, shell };
+    return { display: command, shell };
+  }
+  if (shell === 'cmd') {
+    const flagIndex = tokens.findIndex(token => /^\/c$/i.test(token));
+    if (flagIndex >= 0) {
+      const display = tokens.slice(flagIndex + 1).join(' ');
+      return { display: /^"[\s\S]*"$/.test(display) ? display.slice(1, -1) : display, shell };
+    }
+    return { display: command, shell };
+  }
+  return { display: command };
+}
 
 /** Every native place a provider puts tool arguments, most specific first. */
 export function toolInputs(data: Record<string, unknown>): Record<string, unknown>[] {
@@ -217,11 +285,13 @@ function classify(part: ChatPart): ToolView {
       ?? text(record(commandActions[0]).command)
       ?? (typeof data.rawInput === 'string' ? text(data.rawInput) : undefined)
       ?? leaf;
+    const actionCommand = commandActions.length === 1 ? text(commandActions[0].command) : undefined;
+    const displayed = commandDisplay(command, actionCommand);
     const actions = commandActions.map(action => text(action.type) === 'listFiles' ? 'list' : text(action.type))
       .filter((value): value is ToolCommandAction => value === 'read' || value === 'search' || value === 'list');
     const exitCode = number(data.exitCode) ?? number(record(record(data.state).metadata).exit);
     const background = arg('run_in_background') === true || data.processId !== undefined || /background/.test(nameLc);
-    return { kind: 'command', status, title: `Run ${compact(command)}`, command, cwd: text(data.cwd), output: commandOutput(data), exitCode,
+    return { kind: 'command', status, title: `Run ${compact(displayed.display)}`, command, display: displayed.display, ...(displayed.shell ? { shell: displayed.shell } : {}), cwd: text(data.cwd), output: commandOutput(data), exitCode,
       ...(background ? { background: true } : {}), ...(actions.length ? { actions: [...new Set(actions)] } : {}) };
   }
 
@@ -235,7 +305,7 @@ function classify(part: ChatPart): ToolView {
     if (arg('-i') === true || arg('ignoreCase') === true || arg('caseInsensitive') === true) flags.caseInsensitive = true;
     if (arg('multiline') === true) flags.multiline = true;
     const output = commandOutput(data) ?? '';
-    const counts = /(\d+)\s+matches? in (\d+) files?/i.exec(output);
+    const counts = /(\d+)\s+match(?:es)? in (\d+) files?/i.exec(output);
     return { kind: 'search', status, title: `Grep "${compact(query)}"`, query, path: argText('path'), glob: argText('glob'),
       ...(Object.keys(flags).length ? { flags } : {}),
       ...(counts ? { matches: Number(counts[1]), files: Number(counts[2]) } : {}),

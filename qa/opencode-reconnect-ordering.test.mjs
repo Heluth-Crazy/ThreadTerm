@@ -10,7 +10,7 @@ const view = readFileSync(new URL('../renderer/src/components/ChatView.tsx', imp
 const reducer = stripTypeScriptTypes(readFileSync(new URL('../renderer/src/chatConnection.ts', import.meta.url), 'utf8'))
   .replace(/^import .*;\r?\n/gm, '').replaceAll('export ', '');
 const start = view.indexOf('  useEffect(() => {\n    connectInFlight.current = undefined;');
-const end = view.indexOf('\n  useEffect(() => {\n    if (!connected)', start);
+const end = view.indexOf('\n  useEffect(() => {\n    if (!connected', start);
 assert.ok(start >= 0 && end > start, 'find the production attempt-lifetime and connect effects');
 const effects = stripTypeScriptTypes(view.slice(start, end));
 const retryStart = view.indexOf('  function retryConnection() {');

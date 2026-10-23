@@ -126,8 +126,16 @@ impl CodexAdapter {
         &self,
         process: &JsonLineProcess,
         cwd: &str,
+        permissions: &CodexStartupPermissions,
     ) -> Result<Value, ProviderError> {
-        let response = process.request("thread/start", json!({"cwd":cwd,"threadSource":"user"}))?;
+        let mut params = json!({"cwd":cwd,"threadSource":"user"});
+        if let Some(mode) = permissions.mode.as_deref() {
+            params["approvalPolicy"] = json!(mode);
+        }
+        if let Some(sandbox) = permissions.sandbox.as_deref() {
+            params["sandbox"] = json!(sandbox);
+        }
+        let response = process.request("thread/start", params)?;
         let thread = response.get("thread").unwrap_or(&response);
         let native_id = thread.get("id").and_then(Value::as_str).ok_or_else(|| {
             ProviderError::new("provider_protocol", "Codex returned no thread id")
@@ -150,6 +158,46 @@ impl CodexAdapter {
         validate_resume_thread(codex_history_thread(&stored, native_id)?)?;
         Ok(response)
     }
+}
+
+#[derive(Debug, Default)]
+struct CodexStartupPermissions {
+    mode: Option<String>,
+    sandbox: Option<String>,
+}
+
+fn codex_startup_permissions(options: &Value) -> Result<CodexStartupPermissions, ProviderError> {
+    let Some(options) = options.as_array() else {
+        return Err(ProviderError::new("chat_permission_restore_failed", "Saved Codex permissions must be an array"));
+    };
+    let mut permissions = CodexStartupPermissions::default();
+    for option in options {
+        let id = option.get("id").and_then(Value::as_str).ok_or_else(|| {
+            ProviderError::new("chat_permission_restore_failed", "Saved Codex permission has no option id")
+        })?;
+        let value = option.get("value").and_then(Value::as_str).ok_or_else(|| {
+            ProviderError::new("chat_permission_restore_failed", format!("Saved Codex permission {id} has no value"))
+        })?;
+        let destination = match id {
+            "mode" if matches!(value, "on-request" | "never") => &mut permissions.mode,
+            "sandbox" if matches!(value, "read-only" | "workspace-write" | "danger-full-access") => &mut permissions.sandbox,
+            "mode" | "sandbox" => return Err(ProviderError::new(
+                "chat_permission_restore_failed",
+                format!("Saved Codex permission {id}={value} is no longer supported. Select another mode and retry."),
+            )),
+            _ => return Err(ProviderError::new(
+                "chat_permission_restore_failed",
+                format!("Saved Codex permission option {id} is not supported. Select another mode and retry."),
+            )),
+        };
+        if destination.replace(value.to_owned()).is_some() {
+            return Err(ProviderError::new(
+                "chat_permission_restore_failed",
+                format!("Saved Codex permission {id} was specified more than once"),
+            ));
+        }
+    }
+    Ok(permissions)
 }
 
 /// `-c mcp_servers.<name>.*` overrides for a session's tool server. Values
@@ -185,8 +233,12 @@ fn codex_tool_server_overrides(tools: Option<&ChatToolServer>) -> Vec<String> {
     // Per-tool policy applies only to the core-managed host and only to exact
     // names enabled in this process's immutable environment. Shell tools and
     // arbitrary same-prefix names remain subject to Codex's normal approval.
+    // `approve` pre-approves: `auto` is Codex's default, which asks before an
+    // un-annotated tool outside full access, and approval policy `never` turns
+    // that ask into "MCP tool call requires approval, but approval policy is
+    // never" (verified against Codex 0.161.0).
     for tool in codex_auto_approved_threadterm_tools(tools) {
-        overrides.extend(["-c".into(),format!("{prefix}.tools.{tool}.approval_mode='auto'")]);
+        overrides.extend(["-c".into(),format!("{prefix}.tools.{tool}.approval_mode='approve'")]);
     }
     overrides
 }
@@ -197,6 +249,12 @@ fn codex_auto_approved_threadterm_tools(tools: &ChatToolServer) -> Vec<&'static 
     }
     let env = |key: &str| tools.env.iter().find(|(name, _)| name == key).map(|(_, value)| value.as_str());
     let mut result = Vec::new();
+    // The host serves delegation tools only to a token-bearing caller.
+    if matches!(env("THREADTERM_MCP_PROFILE"), Some("delegation" | "chat-tools"))
+        && env("THREADTERM_SESSION_TOKEN").is_some_and(|value| !value.is_empty())
+    {
+        result.extend(crate::delegation::TOOL_NAMES);
+    }
     if env("THREADTERM_PREVIEW_TOKEN").is_some_and(|value| !value.is_empty()) {
         result.extend(crate::preview::TOOL_NAMES);
     }
@@ -300,7 +358,7 @@ impl ProviderAdapter for CodexAdapter {
 
     fn prepare_terminal(&self, cwd: &str) -> Result<Option<String>, ProviderError> {
         let process = self.temporary_process()?;
-        let response = self.start_persistent_thread(&process, cwd)?;
+        let response = self.start_persistent_thread(&process, cwd, &CodexStartupPermissions::default())?;
         let thread = response
             .get("thread")
             .cloned()
@@ -402,6 +460,27 @@ impl ProviderAdapter for CodexAdapter {
         worker_token: &str,
         tools: Option<&ChatToolServer>,
     ) -> Result<Box<dyn ChatSession>, ProviderError> {
+        self.open_chat_with_startup_options(
+            session_id,
+            cwd,
+            native_id,
+            worker_token,
+            tools,
+            &super::ChatStartupOptions {project_trust:None, permissions:&json!([])},
+        )
+    }
+
+    fn open_chat_with_startup_options(
+        &self,
+        session_id: &str,
+        cwd: &str,
+        native_id: Option<&str>,
+        worker_token: &str,
+        tools: Option<&ChatToolServer>,
+        startup: &super::ChatStartupOptions<'_>,
+    ) -> Result<Box<dyn ChatSession>, ProviderError> {
+        let options = startup.permissions;
+        let permissions = codex_startup_permissions(options)?;
         let native = Arc::new(Mutex::new(None));
         let approvals = Arc::new(Mutex::new(HashMap::new()));
         let active_turn = new_codex_turn_state();
@@ -430,9 +509,16 @@ impl ProviderAdapter for CodexAdapter {
                 json!({"threadId":native_id,"includeTurns":false}),
             ).map_err(|error| codex_missing_thread_error(native_id, error))?;
             validate_resume_thread(existing.get("thread").unwrap_or(&existing))?;
-            process.request("thread/resume", json!({"threadId":native_id,"cwd":cwd}))?
+            let mut params = json!({"threadId":native_id,"cwd":cwd});
+            if let Some(mode) = permissions.mode.as_deref() {
+                params["approvalPolicy"] = json!(mode);
+            }
+            if let Some(sandbox) = permissions.sandbox.as_deref() {
+                params["sandbox"] = json!(sandbox);
+            }
+            process.request("thread/resume", params)?
         } else {
-            self.start_persistent_thread(&process, cwd)?
+            self.start_persistent_thread(&process, cwd, &permissions)?
         };
         let thread = thread_response
             .get("thread")
@@ -470,6 +556,8 @@ impl ProviderAdapter for CodexAdapter {
             loaded.background_revision = state.background_revision;
             *state = loaded;
         }
+        let state = ui.lock().ok().map(|state| state.wire()).unwrap_or_default();
+        super::verify_permission_options(&state, options)?;
         emit_chat_ui(
             &self.events,
             session_id,
@@ -2029,6 +2117,14 @@ fn codex_fork_params(source_thread_id: &str, last_turn_id: Option<&str>) -> Valu
 
 fn adopt_codex_settings(state: &mut CodexUiState, settings: &Value) {
     merge_json_values(&mut state.status.thread_settings, settings);
+    // Start/resume uses reasoningEffort; live settings use effort. Keep only
+    // the latest value so an older alias cannot mask a confirmed native change.
+    if let Some(effort) = settings.get("effort").or_else(|| settings.get("reasoningEffort")) {
+        if let Some(merged) = state.status.thread_settings.as_object_mut() {
+            merged.insert("effort".into(), effort.clone());
+            merged.remove("reasoningEffort");
+        }
+    }
     state.options = codex_options_from_catalog(&state.catalog, &state.status.thread_settings);
     state.settings_generation = state.settings_generation.wrapping_add(1);
 }
@@ -6294,6 +6390,36 @@ process.on('exit', () => clearTimeout(timeout));
     }
 
     #[test]
+    fn native_effort_updates_replace_the_start_response_alias() {
+        let mut ui = CodexUiState {
+            catalog: json!({"data":[{
+                "id":"test-model",
+                "supportedReasoningEfforts":[
+                    {"reasoningEffort":"medium"},
+                    {"reasoningEffort":"high"}
+                ]
+            }]}),
+            ..CodexUiState::default()
+        };
+        adopt_codex_settings(&mut ui, &json!({"model":"test-model","reasoningEffort":"medium"}));
+        assert_eq!(option_value(Some(&ui), "thinking").as_deref(), Some("medium"));
+
+        adopt_codex_settings(&mut ui, &json!({"effort":"high"}));
+        assert_eq!(option_value(Some(&ui), "thinking").as_deref(), Some("high"));
+        assert!(codex_settings_confirmed(&ui.status.thread_settings, &json!({"effort":"high"})));
+
+        adopt_codex_settings(&mut ui, &json!({"serviceTier":"default"}));
+        assert_eq!(option_value(Some(&ui), "thinking").as_deref(), Some("high"));
+
+        adopt_codex_settings(&mut ui, &json!({"reasoningEffort":"medium"}));
+        assert_eq!(option_value(Some(&ui), "thinking").as_deref(), Some("medium"));
+        assert!(!codex_settings_confirmed(&ui.status.thread_settings, &json!({"effort":"high"})));
+
+        adopt_codex_settings(&mut ui, &json!({"effort":null}));
+        assert_eq!(option_value(Some(&ui), "thinking"), None);
+    }
+
+    #[test]
     fn options_come_from_catalog_and_thread() {
         let process_input = json!({
             "data":[
@@ -6906,11 +7032,39 @@ process.on('exit', () => clearTimeout(timeout));
         ] };
         assert_eq!(codex_auto_approved_threadterm_tools(&tools), ["ask_user", "feedback_check"]);
         let overrides = codex_tool_server_overrides(Some(&tools)).join("\n");
-        assert!(overrides.contains("tools.ask_user.approval_mode='auto'"));
-        assert!(overrides.contains("tools.feedback_check.approval_mode='auto'"));
-        assert!(!overrides.contains("tools.session_info.approval_mode='auto'"));
+        assert!(overrides.contains("tools.ask_user.approval_mode='approve'"));
+        assert!(overrides.contains("tools.feedback_check.approval_mode='approve'"));
+        assert!(!overrides.contains("tools.session_info.approval_mode='approve'"));
         assert!(!overrides.contains("ask_user_extra"));
         let foreign = ChatToolServer { name: "other".into(), ..tools.clone() };
+        assert!(codex_auto_approved_threadterm_tools(&foreign).is_empty());
+    }
+
+    #[test]
+    fn codex_preapproves_delegation_tools_only_for_a_token_bearing_parent() {
+        let parent = |profile: &str, token: &str| ChatToolServer {
+            name: "threadterm".into(), command: "mcp".into(), args: vec![],
+            env: vec![
+                ("THREADTERM_MCP_PROFILE".into(), profile.into()),
+                ("THREADTERM_SESSION_ID".into(), "parent".into()),
+                ("THREADTERM_SESSION_TOKEN".into(), token.into()),
+            ],
+        };
+        for profile in ["delegation", "chat-tools"] {
+            assert_eq!(codex_auto_approved_threadterm_tools(&parent(profile, "secret")), crate::delegation::TOOL_NAMES);
+            let overrides = codex_tool_server_overrides(Some(&parent(profile, "secret"))).join("\n");
+            for tool in crate::delegation::TOOL_NAMES {
+                assert!(overrides.contains(&format!("mcp_servers.threadterm.tools.{tool}.approval_mode='approve'")));
+            }
+            assert!(!overrides.contains("approval_mode='auto'"));
+            assert!(codex_auto_approved_threadterm_tools(&parent(profile, "")).is_empty());
+        }
+        // A delegate (no session token) and foreign or terminal hosts get nothing.
+        assert!(codex_auto_approved_threadterm_tools(&parent("preview", "secret")).is_empty());
+        let mut terminal = parent("delegation", "secret");
+        terminal.env.retain(|(key, _)| key != "THREADTERM_MCP_PROFILE");
+        assert!(codex_auto_approved_threadterm_tools(&terminal).is_empty());
+        let foreign = ChatToolServer { name: "other".into(), ..parent("delegation", "secret") };
         assert!(codex_auto_approved_threadterm_tools(&foreign).is_empty());
     }
 
@@ -6926,10 +7080,10 @@ process.on('exit', () => clearTimeout(timeout));
         assert_eq!(codex_auto_approved_threadterm_tools(&managed), crate::browser_tools::TOOL_NAMES);
         let overrides = codex_tool_server_overrides(Some(&managed)).join("\n");
         for tool in crate::browser_tools::TOOL_NAMES {
-            assert!(overrides.contains(&format!("tools.{tool}.approval_mode='auto'")));
+            assert!(overrides.contains(&format!("tools.{tool}.approval_mode='approve'")));
         }
         for tool in ["browser_eval", "browser_click_extra", "browser_snapshot_extra", "preview_present", "delegate_start", "ask_user", "shell", "exec_command"] {
-            assert!(!overrides.contains(&format!("tools.{tool}.approval_mode='auto'")));
+            assert!(!overrides.contains(&format!("tools.{tool}.approval_mode='approve'")));
         }
         let foreign = ChatToolServer { name: "foreign".into(), ..managed.clone() };
         assert!(codex_auto_approved_threadterm_tools(&foreign).is_empty());
@@ -7072,5 +7226,66 @@ createInterface({{ input: process.stdin, crlfDelay: Infinity }}).on('line', line
         );
         assert_eq!(lines[1]["params"]["expectedTurnId"], "native-turn");
         assert_eq!(lines[1]["params"]["input"], json!([{"type":"text","text":"reject-me"}]));
+    }
+    #[test]
+    fn codex_startup_permissions_accept_only_mode_and_sandbox() {
+        let permissions = codex_startup_permissions(&json!([
+            {"id":"mode","value":"never"},
+            {"id":"sandbox","value":"danger-full-access"}
+        ])).unwrap();
+        assert_eq!(permissions.mode.as_deref(), Some("never"));
+        assert_eq!(permissions.sandbox.as_deref(), Some("danger-full-access"));
+        for options in [
+            json!([{"id":"mode","value":"approve"}]),
+            json!([{"id":"sandbox","value":"unrestricted"}]),
+            json!([{"id":"model","value":"gpt-6-luna"}]),
+            json!([{"id":"mode","value":"never"},{"id":"mode","value":"on-request"}]),
+        ] {
+            assert_eq!(codex_startup_permissions(&options).unwrap_err().code, "chat_permission_restore_failed");
+        }
+    }
+
+    #[test]
+    fn startup_permissions_are_sent_in_the_resume_frame() {
+        let Some(node) = crate::providers::common::find_executable("node") else {
+            eprintln!("node is unavailable; skipping Codex startup-frame fixture");
+            return;
+        };
+        let scratch = tempfile::tempdir().unwrap();
+        let requests = scratch.path().join("resume-requests.jsonl");
+        let script = scratch.path().join("fake-codex-resume.mjs");
+        std::fs::write(&script, format!(r#"import {{ appendFileSync }} from 'node:fs';
+import {{ createInterface }} from 'node:readline';
+for (const key of Object.keys(process.env)) if (key.toLowerCase() === 'path') delete process.env[key];
+const log = {log};
+const thread = {{ id: 'thread-resume', model: 'qa-model', status: {{ type: 'idle' }} }};
+const response = params => ({{ thread, threadSettings: {{ model: 'qa-model' }}, approvalPolicy: params.approvalPolicy ?? 'never', sandboxPolicy: {{ type: params.sandbox === 'danger-full-access' ? 'dangerFullAccess' : 'readOnly' }} }});
+const write = value => process.stdout.write(JSON.stringify(value) + '\n');
+createInterface({{ input: process.stdin, crlfDelay: Infinity }}).on('line', line => {{
+  const request = JSON.parse(line); const params = request.params ?? {{}};
+  appendFileSync(log, JSON.stringify({{ method: request.method, params }}) + '\n');
+  if (request.method === 'initialize') return write({{ id: request.id, result: {{ capabilities: {{}} }} }});
+  if (request.method === 'thread/read') return write({{ id: request.id, result: {{ thread }} }});
+  if (request.method === 'thread/resume') return write({{ id: request.id, result: response(params) }});
+  if (request.method === 'model/list') return write({{ id: request.id, result: {{ data: [{{ id: 'qa-model', supportedReasoningEfforts: [] }}] }} }});
+  if (request.method === 'skills/list' || request.method === 'account/rateLimits/read') return write({{ id: request.id, result: {{ data: [] }} }});
+  if (request.method === 'account/read') return write({{ id: request.id, result: {{ account: {{ type: 'chatgpt' }} }} }});
+  write({{ id: request.id, result: {{}} }});
+}});
+"#, log = serde_json::to_string(&requests.to_string_lossy()).unwrap())).unwrap();
+        let spec = CommandSpec::from_path(node, vec![script.to_string_lossy().into_owned()]).unwrap();
+        let (events, _) = crate::provider_events::tap_channel(8);
+        let adapter = CodexAdapter::with_test_app_server_spec(events, spec);
+        let cwd = scratch.path().to_string_lossy().into_owned();
+        let mut chat = adapter.open_chat_with_startup_options(
+            "card-resume", &cwd, Some("thread-resume"), "worker-resume", None,
+            &super::super::ChatStartupOptions {project_trust:None, permissions:&json!([{"id":"mode","value":"never"},{"id":"sandbox","value":"danger-full-access"}])},
+        ).unwrap();
+        chat.stop().unwrap();
+        let calls = std::fs::read_to_string(requests).unwrap().lines()
+            .map(|line| serde_json::from_str::<Value>(line).unwrap()).collect::<Vec<_>>();
+        assert!(calls.iter().any(|call| call["method"] == "thread/resume" && call["params"] == json!({
+            "threadId":"thread-resume", "cwd":cwd, "approvalPolicy":"never", "sandbox":"danger-full-access"
+        })));
     }
 }

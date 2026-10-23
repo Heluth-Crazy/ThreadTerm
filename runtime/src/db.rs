@@ -1869,18 +1869,17 @@ fn add_generic_fork_anchors(items: &mut [ChatItem], native_id: Option<&str>) {
 
 /// Validate provider data before an import transaction writes anything, then
 /// give every stored row a strictly increasing timestamp in native array order.
-/// Providers may reuse timestamps or return a clock that moves backward; read
-/// paths order by `(created_at, id)`, so retaining those values is not safe.
+/// Retain native instants where possible, clamping duplicate/backward values.
+/// UTC with fixed precision also keeps `(created_at, id)` order chronological.
 fn normalize_history_transcript(session_id: &str, sources: &[ChatItem]) -> Result<Vec<ChatItem>> {
     if serde_json::to_vec(sources)?.len() > crate::chat_repair::MAX_HISTORY_BYTES {
         return Err(anyhow!("invalid_history_transcript: history exceeds 8 MiB"));
     }
     let mut ids = HashSet::with_capacity(sources.len());
-    let base = Utc::now();
+    let mut previous: Option<chrono::DateTime<Utc>> = None;
     let items: Vec<ChatItem> = sources
         .iter()
-        .enumerate()
-        .map(|(index, source)| {
+        .map(|source| {
             if source.id.is_empty() || source.id == "unknown" || !ids.insert(source.id.as_str()) {
                 return Err(anyhow!("invalid_history_transcript: missing, fallback or duplicate item id"));
             }
@@ -1894,7 +1893,16 @@ fn normalize_history_transcript(session_id: &str, sources: &[ChatItem]) -> Resul
                 crate::chat_repair::validate_part(part)?;
             }
             let mut item = scoped_history_item(session_id, source);
-            item.created_at = (base + chrono::Duration::nanoseconds(index as i64)).to_rfc3339();
+            let native = chrono::DateTime::parse_from_rfc3339(&source.created_at)
+                .ok().map(|value| value.with_timezone(&Utc));
+            let timestamp = match previous {
+                Some(tail) if native.is_none_or(|value| value <= tail) => tail
+                    .checked_add_signed(chrono::Duration::nanoseconds(1))
+                    .ok_or_else(|| anyhow!("invalid_history_transcript: timestamp overflow"))?,
+                _ => native.unwrap_or_else(Utc::now),
+            };
+            item.created_at = timestamp.to_rfc3339_opts(chrono::SecondsFormat::Nanos, false);
+            previous = Some(timestamp);
             Ok(item)
         })
         .collect::<Result<_>>()?;
@@ -2903,6 +2911,103 @@ mod tests {
         assert!(db.native_owner("codex", "near-limit").unwrap().is_none());
         assert!(db.operation("near-limit-operation").unwrap().is_none());
     }
+    #[test]
+    fn imports_persist_native_instants_clamp_order_and_keep_next_live_item_after_tail() {
+        for read_only in [true, false] {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("db.sqlite");
+            let db = Database::open(&path).unwrap();
+            crate::session_configs::initialize(&db).unwrap();
+            let times = ["2090-01-01T02:00:00+02:00", "2090-01-01T00:00:00.000Z",
+                "2089-12-31T23:59:59Z", "invalid", "2090-01-01T00:00:01.5Z",
+                "2090-01-01T00:00:02Z"];
+            let native: Vec<_> = times.iter().enumerate().map(|(index, time)| {
+                let mut item = history_item(&format!("item-{}", times.len() - index), "saved");
+                item.created_at = (*time).into();
+                item
+            }).collect();
+            let session = if read_only {
+                db.import_history_session(ImportHistorySession {
+                    project_id: None, title: None, provider: "opencode", mode: "chat",
+                    cwd: dir.path().to_str().unwrap(), native_id: "timestamp-thread",
+                    operation_id: "timestamp-import", transcript: &native,
+                }).unwrap().0
+            } else {
+                let session = db.create_session(CreateSession {
+                    project_id: None, title: None, provider: "opencode", mode: "chat",
+                    native_id: Some("timestamp-thread"), operation_id: "timestamp-create",
+                }).unwrap();
+                db.import_chat_history(&session.id, &native).unwrap();
+                session
+            };
+            let expected = ["2090-01-01T00:00:00.000000000+00:00", "2090-01-01T00:00:00.000000001+00:00",
+                "2090-01-01T00:00:00.000000002+00:00", "2090-01-01T00:00:00.000000003+00:00",
+                "2090-01-01T00:00:01.500000000+00:00", "2090-01-01T00:00:02.000000000+00:00"];
+            drop(db);
+            let db = Database::open(&path).unwrap();
+            let stored = db.chat_items(&session.id).unwrap();
+            assert_eq!(stored.iter().map(|item| item.created_at.as_str()).collect::<Vec<_>>(), expected);
+            for (stored, source) in stored.iter().zip(&native) {
+                assert_eq!(stored.id, format!("{}:history:{}", session.id, source.id));
+                assert_eq!(stored.turn_origin, Some(ChatTurnOrigin::History));
+            }
+            db.record_provider_event(&session.id, Some("live"), "message.user", &json!({"text":"next"})).unwrap();
+            let stored = db.chat_items(&session.id).unwrap();
+            assert_eq!(stored.len(), native.len() + 1);
+            assert_eq!(stored.last().unwrap().role, "user");
+            assert!(stored.last().unwrap().created_at.as_str() > *expected.last().unwrap());
+            assert!(chrono::DateTime::parse_from_rfc3339(&stored.last().unwrap().created_at).unwrap()
+                > chrono::DateTime::parse_from_rfc3339(expected.last().unwrap()).unwrap());
+        }
+    }
+
+    #[test]
+    fn unchanged_rebuild_preserves_imported_native_timestamps_and_next_live_order() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("db.sqlite");
+        let db = Database::open(&path).unwrap();
+        crate::session_configs::initialize(&db).unwrap();
+        let mut native = vec![history_item("z-first", "first"), history_item("a-second", "second")];
+        native[0].created_at = "2090-01-01T00:00:00Z".into();
+        native[1].created_at = "2090-01-01T00:00:00Z".into();
+        let (session, _) = db.import_history_session(ImportHistorySession {
+            project_id: None, title: None, provider: "opencode", mode: "chat",
+            cwd: dir.path().to_str().unwrap(), native_id: "rebuild-timestamp-thread",
+            operation_id: "rebuild-timestamp-import", transcript: &native,
+        }).unwrap();
+        // Repair's unchanged comparison includes anchors, so use the same confirmed anchors.
+        for item in &mut native {
+            item.fork_anchor = Some(crate::domain::NativeForkAnchor {
+                native_id: "rebuild-timestamp-thread".into(), turn_id: None, message_id: None, entry_id: None,
+            });
+        }
+        let before = db.chat_items(&session.id).unwrap();
+        db.mark_chat_degraded(Some(&session.id), "test rebuild").unwrap();
+        db.transaction(|tx| {
+            tx.execute("INSERT INTO leases(session_id,client_id,epoch,expires_at) VALUES (?,?,?,?)",
+                params![session.id, "timestamp-test", 7, (Utc::now() + chrono::Duration::hours(1)).to_rfc3339()])?;
+            Ok(())
+        }).unwrap();
+        db.bind_operation("timestamp-rebuild", "chat.repair", &json!({"sessionId":session.id})).unwrap();
+        let worker = crate::chat_repair::RepairWorkerState::default();
+        let capture = db.transaction(|tx| crate::chat_repair::capture(tx, &session.id, &worker, true)).unwrap();
+        let plan = crate::chat_repair::prepare(&capture, &native).unwrap();
+        let result = db.transaction(|tx| crate::chat_repair::commit(tx, &capture, &plan, &worker, true,
+            crate::chat_repair::RepairCommitContext { principal: "timestamp-test", lease_epoch: 7,
+                operation_id: "timestamp-rebuild" })).unwrap();
+        assert_eq!(result.updated, 0);
+        assert_eq!(result.added, 0);
+        assert_eq!(result.removed, 0);
+        drop(db);
+        let db = Database::open(&path).unwrap();
+        let rebuilt = db.chat_items(&session.id).unwrap();
+        assert_eq!(serde_json::to_value(&rebuilt).unwrap(), serde_json::to_value(&before).unwrap());
+        db.record_provider_event(&session.id, Some("live"), "message.user", &json!({"text":"next"})).unwrap();
+        let stored = db.chat_items(&session.id).unwrap();
+        assert_eq!(stored.last().unwrap().role, "user");
+        assert!(stored.last().unwrap().created_at > rebuilt.last().unwrap().created_at);
+    }
+
     #[test]
     fn read_only_import_is_archivable_not_lost_on_startup_and_restored_after_failed_resume() {
         let dir = tempfile::tempdir().unwrap();

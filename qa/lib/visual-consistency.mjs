@@ -14,8 +14,11 @@
 // added by this task. The unit test runs it against
 // `git diff 846c272 -- '*.css'`.
 
-/** Default chip/control selector. Keep in sync with the shared .chip spec. */
-export const CONTROL_SELECTOR = 'button, [role="button"], .chip';
+/**
+ * Default chip/control selector. Keep in sync with the shared .chip spec. Inline file links
+ * (`.file-reference-link`) are text, not controls, so they never join a control row.
+ */
+export const CONTROL_SELECTOR = 'button:not(.file-reference-link), [role="button"], .chip';
 
 /** Pixel tolerance for "the same" height / centre. */
 export const HEIGHT_TOLERANCE = 0.5;
@@ -156,7 +159,7 @@ export function analyzeControls(controls, options = {}) {
 export function collectControlsInPage({ containerSelector, controlSelector, checkStates = false, checkDisabledRows = false }) {
   const root = containerSelector ? document.querySelector(containerSelector) : document.body;
   if (!root) return { error: `container not found: ${containerSelector}` };
-  const all = [...root.querySelectorAll(controlSelector || 'button, [role="button"], .chip')];
+  const all = [...root.querySelectorAll(controlSelector || 'button:not(.file-reference-link), [role="button"], .chip')];
   const parentIds = new WeakMap();
   let nextParentId = 0;
   const nameOf = element => {
