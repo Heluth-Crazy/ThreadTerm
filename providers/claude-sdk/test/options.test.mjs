@@ -62,7 +62,7 @@ async function started(options = {}) {
   const events = [];
   const sdk = controllableSdk(options);
   const session = new ClaudeSession({ cardId: 'card-1', sdk, write: value => events.push(value) });
-  await session.start({ cwd: 'C:/', sessionId: null });
+  await session.start({ cwd: 'C:/', sessionId: null, permissionMode: options.permissionMode, model: options.model });
   return { session, events, sdk, feed: sdk.state.feed };
 }
 
@@ -98,6 +98,46 @@ test('start publishes model, thinking and permission-mode options without a mode
   assert.ok(!modes.includes('bypassPermissions'), 'Bypass is never offered in Chat');
   assert.equal(sdk.state.options.allowDangerouslySkipPermissions, undefined);
   assert.ok(!sdk.state.calls.some(([name, detail]) => name === 'getContextUsage' && detail === 'summary'), 'getSettings answers when present');
+});
+
+test('a saved permission mode is passed at query start and confirmed by the handshake', async () => {
+  const { session, sdk } = await started({ permissionMode: 'dontAsk', init: { current_permission_mode: 'dontAsk' } });
+  assert.equal(sdk.state.options.permissionMode, 'dontAsk');
+  assert.equal(option(session.uiState(), 'mode').value, 'dontAsk');
+  assert.equal(sdk.state.calls.some(([name]) => name === 'setPermissionMode'), false, 'restore never queues a post-connect mode change behind warm-up');
+  await session.stop();
+});
+
+test('auto permission starts with its captured model before the handshake', async () => {
+  const { session, sdk } = await started({ permissionMode: 'auto', model: 'sonnet', init: { current_permission_mode: 'auto' } });
+  assert.equal(sdk.state.options.permissionMode, 'auto');
+  assert.equal(sdk.state.options.model, 'sonnet');
+  assert.equal(option(session.uiState(), 'mode').value, 'auto');
+  await session.stop();
+});
+
+test('a saved permission mode fails closed when Claude reports a different mode', async () => {
+  const sdk = controllableSdk({ init: { current_permission_mode: 'default' } });
+  const session = new ClaudeSession({ cardId: 'card-restore-mismatch', sdk, write() {} });
+  await assert.rejects(
+    session.start({ cwd: 'C:/', sessionId: 'resume-id', permissionMode: 'dontAsk' }),
+    /requested dontAsk, but Claude reported default/,
+  );
+  assert.equal(sdk.state.options.permissionMode, 'dontAsk');
+  assert.equal(sdk.state.calls.some(([name]) => name === 'setPermissionMode'), false);
+  assert.equal(sdk.state.closed, true, 'a mismatch closes the query before it can accept input');
+});
+
+test('restoration requires an explicit native mode and model support for Auto', async () => {
+  for (const [settings, mode, message] of [
+    [{ init: { current_permission_mode: undefined } }, 'default', /reported unavailable/],
+    [{ init: { current_permission_mode: 'auto' }, applied: { model: 'claude-haiku-4-5-20251001' } }, 'auto', /Auto is unavailable/],
+  ]) {
+    const sdk = controllableSdk(settings);
+    const session = new ClaudeSession({ cardId: 'restore-unverified', sdk, write() {} });
+    await assert.rejects(session.start({ cwd: 'C:/', permissionMode: mode }), message);
+    assert.equal(sdk.state.closed, true);
+  }
 });
 
 test('the command menu hides commands that cannot work from Chat', async () => {
@@ -140,6 +180,7 @@ test('setOption switches model, effort and mode through SDK control requests and
   assert.equal(option(ui, 'mode').value, 'plan');
   assert.equal(events.filter(value => value.ev === 'session.ui').length, 4);
   assert.deepEqual(events.at(-1).ui, ui);
+  assert.equal(events.at(-1).permissionChangeConfirmed, undefined, 'the synchronous picker response is persisted by the host, not an asynchronous UI marker');
 });
 
 test('an option change made during the connection warm-up waits for it before its own control request', async () => {
@@ -178,6 +219,7 @@ test('allow_always returns the SDK suggestions and follows a setMode suggestion'
   assert.deepEqual(await pending, { behavior: 'allow', updatedPermissions: suggestions });
   assert.equal(option(session.uiState(), 'mode').value, 'acceptEdits');
   assert.equal(events.at(-1).ev, 'session.ui');
+  assert.equal(events.at(-1).permissionChangeConfirmed, true, 'an SDK-confirmed setMode transition is eligible for persistence');
 });
 
 test('allow_always without suggestions is refused and leaves the card answerable', async () => {
@@ -297,6 +339,8 @@ test('ThreadTerm delegation tools reach the SDK and only their exact names are a
   const session = new ClaudeSession({ cardId: 'card-tools', sdk, write() {} });
   await session.start({ cwd: 'C:/', sessionId: null, mcpServers: servers });
   assert.deepEqual(sdk.state.options.mcpServers, servers);
+  // "Don't ask" never consults canUseTool; the same exact names are pre-approved rules.
+  assert.deepEqual(sdk.state.options.allowedTools, ['delegate_start', 'delegate_status', 'delegate_wait', 'delegate_respond', 'delegate_result', 'delegate_cancel'].map(name => `mcp__threadterm__${name}`));
   assert.deepEqual(
     await resolvesWithin(session.requestPermission('mcp__threadterm__delegate_start', { agent: 'codex' }), 250),
     { behavior: 'allow', updatedInput: { agent: 'codex' } },
@@ -309,6 +353,7 @@ test('ThreadTerm delegation tools reach the SDK and only their exact names are a
   const plain = new ClaudeSession({ cardId: 'card-plain', sdk: plainSdk, write() {} });
   await plain.start({ cwd: 'C:/', sessionId: null });
   assert.equal('mcpServers' in plainSdk.state.options, false);
+  assert.equal('allowedTools' in plainSdk.state.options, false, 'nothing is pre-approved without the managed server');
   assert.equal(await settledWithin(plain.requestPermission('mcp__threadterm__delegate_start', {}, {}), 50), 'pending', 'without injection the user decides');
   await plain.stop();
 });
@@ -317,6 +362,7 @@ test('ThreadTerm app tools are approved only when their per-open switch is enabl
   const sdk = controllableSdk();
   const session = new ClaudeSession({ cardId: 'card-chat-tools', sdk, write() {} });
   await session.start({ cwd: 'C:/', sessionId: null, mcpServers: { threadterm: { type: 'stdio', command: 'threadterm-v3-mcp', args: [], env: { THREADTERM_CHAT_TOKEN: 'chat-token', THREADTERM_CHAT_TOOL_ASK: '1', THREADTERM_CHAT_TOOL_SESSION_INFO: '0', THREADTERM_CHAT_TOOL_FEEDBACK: '1' } } } });
+  assert.deepEqual(sdk.state.options.allowedTools, ['mcp__threadterm__ask_user', 'mcp__threadterm__feedback_check']);
   assert.equal((await session.requestPermission('mcp__threadterm__ask_user', {})).behavior, 'allow');
   assert.equal((await session.requestPermission('mcp__threadterm__feedback_check', {})).behavior, 'allow');
   const disabled = session.requestPermission('mcp__threadterm__session_info', {});

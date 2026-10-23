@@ -26,6 +26,16 @@ const option = (partial: Partial<ChatSessionOption> & Pick<ChatSessionOption, 'i
   ...partial,
 });
 
+test('permission recovery exposes readable bilingual reset choices and staged state', () => {
+  const reset = option({ id: 'threadterm-permission-recovery', category: 'mode', value: 'unavailable' });
+  assert.equal(chipValueText(reset, false), 'Reset permissions…');
+  assert.equal(chipValueText(reset, true), '重置权限…');
+  assert.equal(chipValueText({ ...reset, value: 'defaults' }, false), 'Use defaults');
+  assert.equal(chipValueText({ ...reset, value: 'defaults' }, true), '使用默认权限');
+  assert.equal(choiceText(reset, { value: 'defaults', name: '' }, false), 'Discard saved permissions and use provider defaults');
+  assert.equal(choiceText(reset, { value: 'defaults', name: '' }, true), '丢弃已保存的权限并使用提供方默认权限');
+});
+
 test('optionCategory prefers the runtime metadata and falls back to the legacy regex', () => {
   assert.equal(optionCategory(option({ id: 'model', value: 'm', category: 'other' })), 'other');
   assert.equal(optionCategory(option({ id: 'model', value: 'm' })), 'model');

@@ -321,12 +321,15 @@ fn record_tx(
   let turn_key=turn.unwrap_or("current");
   let raw_item=data.get("item").or_else(||data.pointer("/raw/params/item"));
   let native_item=raw_item.and_then(|i|i.get("id")).and_then(Value::as_str).or_else(||data.pointer("/raw/params/itemId").and_then(Value::as_str));
+  let native_created_at=raw_item.and_then(|item|item.get("createdAt")).and_then(Value::as_str)
+   .filter(|value|chrono::DateTime::parse_from_rfc3339(value).is_ok()).map(str::to_owned)
+   .filter(|value|latest.as_deref().and_then(|latest|chrono::DateTime::parse_from_rfc3339(latest).ok()).is_none_or(|latest|chrono::DateTime::parse_from_rfc3339(value).is_ok_and(|candidate|candidate>latest)));
   let approval_id=data.get("approvalId").and_then(Value::as_str).or_else(||data.pointer("/part/approvalId").and_then(Value::as_str));
   let category=if kind=="message.user"{"user"}else if kind.starts_with("chat.approval"){"approval"}else{"assistant"};
   let key=if category=="approval"{approval_id.unwrap_or(turn_key)}else{native_item.unwrap_or(turn_key)};
   let id=format!("{session_id}:{category}:{key}");
   let previous:Option<String>=tx.query_row("SELECT data FROM chat_items WHERE id=?",[&id],|r|r.get(0)).optional()?;
-  let mut item=previous.and_then(|s|serde_json::from_str::<ChatItem>(&s).ok()).unwrap_or(ChatItem{id:id.clone(),role:if category=="user"{"user"}else{"assistant"}.into(),parts:Vec::new(),created_at:now.clone(),turn_id:turn.map(str::to_owned),elapsed_ms:None,turn_status:None,turn_origin:None,fork_anchor:None,turn_model:None,turn_usage:None,turn_review:None});
+  let mut item=previous.and_then(|s|serde_json::from_str::<ChatItem>(&s).ok()).unwrap_or(ChatItem{id:id.clone(),role:if category=="user"{"user"}else{"assistant"}.into(),parts:Vec::new(),created_at:native_created_at.unwrap_or_else(||now.clone()),turn_id:turn.map(str::to_owned),elapsed_ms:None,turn_status:None,turn_origin:None,fork_anchor:None,turn_model:None,turn_usage:None,turn_review:None});
   let mut changed=false;
   let mut resolved_pending_approval=false;
   // Agent delegation: while the parent agent is inside a turn, a delegated
@@ -394,7 +397,7 @@ fn record_tx(
      let mut payload=data.get("part").and_then(|part|part.get("data")).cloned().unwrap_or_else(||data.clone());
      if let Some(link)=&delegation {
       // Requests ThreadTerm cannot answer by choice always stay with the user.
-      routed_to_parent=quiet&&payload.get("submittable").and_then(Value::as_bool)!=Some(false)&&!matches!(payload.get("interaction").and_then(Value::as_str),Some("question"|"plan"));
+      routed_to_parent=quiet&&payload.get("submittable").and_then(Value::as_bool)!=Some(false)&&!matches!(payload.get("interaction").and_then(Value::as_str),Some("question"|"plan"))&&payload.get("choices").and_then(Value::as_array).is_some_and(|choices|choices.iter().any(|choice|choice.get("scope").and_then(Value::as_str)!=Some("persistent")));
       if let Some(object)=payload.as_object_mut() {object.insert("delegation".into(),json!({"parentSessionId":link.parent_session_id,"route":if routed_to_parent{"parent"}else{"user"}}));}
      }
      item.parts=vec![json!({"type":"approval","approvalId":approval,"status":"pending","data":payload})];changed=true;
@@ -472,6 +475,9 @@ fn record_tx(
     let mut payload=normalize_chat_ui(data.clone());
     payload["sessionId"]=json!(session_id);
     tx.execute("INSERT INTO outbox(event,data,created_at) VALUES ('chat.ui',?,?)",params![serde_json::to_string(&payload)?,now])?;
+   }
+   "chat.title"=>{
+    project_native_title(tx,session_id,data,&now)?;
    }
    "chat.context"=>{
     if let Some(usage)=data.get("usage").filter(|usage|usage.is_object()){
@@ -559,6 +565,24 @@ fn record_tx(
   }
   if status.is_some()||usage.is_some() {tx.execute("INSERT INTO outbox(event,data,created_at) VALUES ('state.changed',?,?)",params![serde_json::to_string(&json!({"sessionId":session_id,"kind":kind}))?,now])?;}
   Ok(())
+}
+
+/// Native providers may name a conversation after it starts.  An explicit
+/// session title request is durable provenance even if the user picked the
+/// provider's default spelling again, so never infer ownership from equality.
+fn project_native_title(tx: &rusqlite::Transaction<'_>, session_id: &str, data: &Value, now: &str) -> Result<bool> {
+ let Some(title)=data.get("title").and_then(Value::as_str).map(str::trim).filter(|title|!title.is_empty()) else {return Ok(false)};
+ let current:Option<(String,String)>=tx.query_row("SELECT title,provider FROM sessions WHERE id=?",[session_id],|row|Ok((row.get(0)?,row.get(1)?))).optional()?;
+ if current.as_ref().is_none_or(|(current,provider)|current!=provider) {return Ok(false)}
+ let user_owned:bool=tx.query_row(
+  "SELECT EXISTS(SELECT 1 FROM operation_requests WHERE (method='session.update' AND json_extract(params,'$.sessionId')=? AND json_type(params,'$.title')='text') OR (method IN ('session.create','history.import') AND json_type(params,'$.title')='text' AND id IN (SELECT id FROM operations WHERE json_extract(result,'$.id')=?)))",
+ params![session_id,session_id],|row|row.get(0))?;
+ if user_owned {return Ok(false)}
+ if tx.execute("UPDATE sessions SET title=?,updated_at=? WHERE id=?",params![title,now,session_id])?==1 {
+  tx.execute("INSERT INTO outbox(event,data,created_at) VALUES ('state.changed',?,?)",params![serde_json::to_string(&json!({"sessionId":session_id,"kind":"session.title"}))?,now])?;
+  return Ok(true)
+ }
+ Ok(false)
 }
 
 fn completed_turn_status(data: &Value) -> crate::domain::NativeTurnStatus {
@@ -1763,6 +1787,21 @@ mod tests {
         db
     }
     #[test]
+    fn native_title_updates_only_sessions_without_explicit_title_provenance() {
+        let db = db();
+        record(&db, "s", None, "chat.title", &json!({"title":"Ignored native title"})).unwrap();
+        assert_eq!(db.session_by_id("s").unwrap().unwrap().title, "test", "legacy named chats remain user-owned without an operation request");
+        db.transaction(|tx| { tx.execute("UPDATE sessions SET title='codex' WHERE id='s'", [])?; Ok(()) }).unwrap();
+        record(&db, "s", None, "chat.title", &json!({"title":"Native title"})).unwrap();
+        assert_eq!(db.session_by_id("s").unwrap().unwrap().title, "Native title");
+        record(&db, "s", None, "chat.title", &json!({"title":"Later native title"})).unwrap();
+        assert_eq!(db.session_by_id("s").unwrap().unwrap().title, "Native title", "a native title only replaces the untouched default once");
+        db.transaction(|tx| { tx.execute("UPDATE sessions SET title='codex' WHERE id='s'", [])?; Ok(()) }).unwrap();
+        db.bind_operation("rename-default", "session.update", &json!({"sessionId":"s","title":"codex","operationId":"rename-default"})).unwrap();
+        record(&db, "s", None, "chat.title", &json!({"title":"New native title"})).unwrap();
+        assert_eq!(db.session_by_id("s").unwrap().unwrap().title, "codex", "a manual rename back to the default spelling remains user-owned");
+    }
+    #[test]
     fn speed_projection_persists_final_usage_and_keeps_native_exact_counts() {
         let db=db();
         let _speeds=crate::turn_speed::shared(db.path());
@@ -2773,6 +2812,32 @@ mod tests {
         expire_pending_approvals(&db, "s").unwrap();
         let expired = db.chat_items("s").unwrap().pop().unwrap();
         assert_eq!(expired.parts[0]["status"], "expired");
+    }
+    #[test]
+    fn delegate_permissions_without_a_temporary_choice_route_to_the_user() {
+        for (choices, expected_route, expected_state) in [
+            (json!([{"choiceId":"always","scope":"persistent","kind":"allow"}]), "user", "awaiting_user"),
+            (json!([]), "user", "awaiting_user"),
+            (json!([{"choiceId":"always","scope":"persistent","kind":"allow"},{"choiceId":"once","scope":"once","kind":"allow"}]), "parent", "awaiting_parent"),
+        ] {
+            let db = db();
+            let child = db.create_session(crate::db::CreateSession { project_id:None,title:None,provider:"kimi",mode:"chat",native_id:None,operation_id:"delegate-permission" }).unwrap();
+            db.set_session_status("s", "idle", None).unwrap();
+            record(&db, "s", Some("parent-turn"), "message.user", &json!({"text":"fixture"})).unwrap();
+            record(&db, "s", Some("parent-turn"), "chat.turn.started", &json!({})).unwrap();
+            crate::delegation::insert(&db, &crate::delegation::NewDelegation {
+                id:"delegation",parent_session_id:"s",child_session_id:&child.id,agent:"kimi",workspace:"shared",workspace_path:"fixture",branch:None,prompt:"fixture",user_messages:0,operation_id:"delegate-permission",
+            }).unwrap();
+            record(&db, &child.id, Some("child-turn"), "message.user", &json!({"text":"fixture"})).unwrap();
+            record(&db, &child.id, Some("child-turn"), "chat.approval", &json!({"approvalId":"permission","part":{"type":"approval","approvalId":"permission","status":"pending","data":{"choices":choices,"submittable":true}}})).unwrap();
+            let part = db.chat_items(&child.id).unwrap().into_iter().flat_map(|item| item.parts).find(|part| part["type"] == "approval").unwrap();
+            assert_eq!(part["data"]["delegation"]["route"], expected_route);
+            assert_eq!(part["data"]["choices"], choices, "persistent choices stay available to the user");
+            let state = db.transaction(|tx| Ok(tx.query_row("SELECT state FROM delegations WHERE id='delegation'", [], |row| row.get::<_,String>(0))?)).unwrap();
+            assert_eq!(state, expected_state);
+            let inbox = db.transaction(|tx| Ok(tx.query_row("SELECT COUNT(*) FROM inbox WHERE session_id=? AND resolved=0", [&child.id], |row| row.get::<_,i64>(0))?)).unwrap();
+            assert_eq!(inbox > 0, expected_route == "user");
+        }
     }
     #[test]
     fn submitted_approval_is_resolved_not_tool_executed() {

@@ -118,11 +118,10 @@ try {
     assert.equal(await drawer.locator('.chat-tool-entry').count(), 9, `${provider}: ordinary calls retain chronological entries`);
     assert.deepEqual(await drawer.locator('.chat-tool-entry').evaluateAll(nodes => nodes.map(node => node.getAttribute('data-tool-id'))), ['command-codex','browser-mcp','command-claude','browser-acp','file-read','search','delegate','failed-command','cancelled-browser'], `${provider}: entries retain call order rather than category sort`);
     const summary = drawer.locator('> summary');
-    assert.match(await summary.locator('.chat-tool-current-action').textContent() ?? '', /Tool activity|npm run unavailable/i, `${provider}: idle summary uses current/recent action`);
-    assert.match(await summary.locator('.chat-tool-count').textContent() ?? '', /Explored 1 file.*Searched 1.*Ran 3 commands.*Used 4 tools/, `${provider}: idle summary describes the turn's tool work`);
+    assert.match(await summary.locator('.chat-tool-current-action').textContent() ?? '', /Explored 1 file.*Searched 1.*Ran 3 commands.*Used 4 tools/, `${provider}: idle summary describes the turn's tool work`);
     assert.equal(await summary.locator('.chat-tool-active-count').count(), 0, `${provider}: completed turn never claims an active tool`);
     assert.equal(await drawer.evaluate(node => Boolean(node.closest('.codex-work'))), false, `${provider}: completed tool activity stays outside elapsed commentary fold`);
-    assert.equal(await page.locator('.chat-tool-failures').count(), 1, `${provider}: failures have a visible row outside details body`);
+    assert.equal(await summary.locator('.chat-tool-failures').count(), 1, `${provider}: failures have one visible summary line`);
     assert.equal(await page.locator('.chat-part.approval').count(), 2, `${provider}: approval and question remain independent`);
     const question = page.locator('.chat-question-wrapper');
     const final = page.getByText('The inspection is complete.', { exact: true });
@@ -173,7 +172,7 @@ try {
   assert.equal(await live.evaluate(node => node.open), true, 'an output/status update preserves an expanded drawer');
   await page.evaluate(() => window.qaRender('claude','idle'));
   await page.waitForFunction(() => !document.querySelector('.chat-tool-active-count'));
-  assert.match(await live.locator('.chat-tool-current-action').textContent() ?? '', /Tool activity/i, 'idle session suppresses stale running labels');
+  assert.match(await live.locator('.chat-tool-current-action').textContent() ?? '', /^Searched 1 · Ran 1 command · Used 1 tool$/, 'idle session shows the finished summary instead of stale running labels');
   assert.equal(await live.evaluate(node => node.open), true, 'idle transition preserves expanded disclosure state');
   await page.evaluate(() => window.qaUpdate({id:'live-complete',role:'assistant',turnId:'turn-live',createdAt:'later',parts:[],elapsedMs:4000}));
   // F1 moves the elapsed time out of .chat-duration into the completed-turn footer.

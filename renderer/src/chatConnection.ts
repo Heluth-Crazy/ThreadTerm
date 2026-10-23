@@ -22,7 +22,7 @@ export type ChatLinkAction =
   | { type: "reset"; sessionId: string; phase: ChatConnectionPhase }
   | { type: "snapshot"; snapshot: ChatConnectionState; transportGeneration?: number; resync?: boolean; attempt?: ChatConnectAttempt }
   | { type: "event"; snapshot: ChatConnectionState; epoch: string }
-  | { type: "connect-failed"; message: string; attempt?: ChatConnectAttempt }
+  | { type: "connect-failed"; message: string; code?: string; attempt?: ChatConnectAttempt }
   | { type: "transport-down" }
   | { type: "transport-up"; epoch: string; snapshot?: ChatConnectionState };
 
@@ -43,6 +43,11 @@ export function emptyLink(sessionId: string, phase: ChatConnectionPhase = "disco
 
 export function isLiveConnection(phase: ChatConnectionPhase): boolean {
   return phase === "ready";
+}
+
+export function canRecoverPermissions(state: ChatLinkState): boolean {
+  return state.transport === "up" && state.connection.phase === "failed"
+    && state.connection.error?.code === "chat_permission_restore_failed";
 }
 
 /** A reconnect overlay means a disconnected provider is pending, not idle.
@@ -130,7 +135,9 @@ export function reduceChatLink(state: ChatLinkState, action: ChatLinkAction): Ch
         connection: {
           ...state.connection,
           phase: "failed",
-          error: { code: "connect_failed", message: action.message, retryable: true, category: "runtime" },
+          error: state.connection.phase === "failed" && state.connection.connectionGeneration === attempt.connectionGeneration && state.connection.error
+            ? state.connection.error
+            : { code: action.code ?? "connect_failed", message: action.message, retryable: true, category: "runtime" },
         },
         failedAttempt: attempt,
       };

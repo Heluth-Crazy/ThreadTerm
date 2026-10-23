@@ -46,7 +46,8 @@ export function aggregateTrace(allRows, { operationId, requestId, strictSend = f
     completeMs: elapsed('runtime', 'persistence.complete.end'),
   };
   // Handoff includes adapter code and native acceptance, NOT necessarily model time.
-  const covered = ['checkpointMs', 'workerLockMs', 'recordMs', 'handoffMs', 'completeMs'].map(key => metrics[key]);
+  // Checkpoint capture runs inside persistence.record; subtract that enclosing span only.
+  const covered = ['workerLockMs', 'recordMs', 'handoffMs', 'completeMs'].map(key => metrics[key]);
   metrics.runtimeOtherMs = Number.isFinite(metrics.runtimeDispatchMs) && covered.every(Number.isFinite)
     ? Math.max(0, metrics.runtimeDispatchMs - covered.reduce((a, b) => a + b, 0)) : null;
   const git = rows.filter(row => row.source === 'runtime' && row.stage === 'review.git.exit')

@@ -1,0 +1,112 @@
+// OC2 isolated runtime integration: the only provider executable is the mock.
+import assert from 'node:assert/strict';
+import { spawn, spawnSync } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
+import { copyFile, mkdtemp, mkdir, readFile, writeFile } from 'node:fs/promises';
+import { existsSync } from 'node:fs';
+import { dirname, join, resolve } from 'node:path';
+import { connectSubagentPeer as connectPeer } from './lib/subagent-peer.mjs';
+import { bindOc2Mock } from './oc2-opencode-harness.mjs';
+
+const pause = ms => new Promise(done => setTimeout(done, ms));
+const unique = () => randomUUID();
+const root = await mkdtemp('D:/project/ThreadTerm/tt-qa-temp/oc2-opencode-');
+const bin = join(root, 'bin'), data = join(root, 'data'), cwd = join(root, 'workspace');
+const stateFile = join(root, 'state.json'), portFile = join(root, 'port.txt'), requestsFile = join(root, 'requests.jsonl');
+const pipe = `\\\\.\\pipe\\threadterm-oc2-${unique()}`;
+await Promise.all([mkdir(bin), mkdir(cwd)]);
+await writeFile(stateFile, JSON.stringify({sessions:{},questions:{},catalogueOverrides:{connectedProviders:['vision']}}));
+await writeFile(join(bin, 'shim.rs'), 'fn main(){let status=std::process::Command::new(std::env::var("TT_QA_NODE").unwrap()).arg(std::env::var("TT_QA_SCRIPT").unwrap()).args(std::env::args().skip(1)).status().unwrap();std::process::exit(status.code().unwrap_or(1));}');
+const compiled = spawnSync('rustc', [join(bin, 'shim.rs'), '-o', join(bin, 'opencode.exe')], { encoding: 'utf8', windowsHide: true });
+assert.equal(compiled.status, 0, compiled.error?.message || compiled.stderr);
+const runtime = process.env.THREADTERM_QA_RUNTIME_EXE || resolve('runtime/target/debug/threadterm-v3-runtime.exe');
+assert.ok(existsSync(runtime), `runtime binary missing: ${runtime}`);
+await copyFile(runtime, join(root, 'runtime.exe'));
+const environment = { ...Object.fromEntries(Object.entries(process.env).filter(([key]) => key.toLowerCase() !== 'path')), Path: [bin, dirname(process.execPath), join(process.env.SystemRoot || 'C:\\Windows', 'System32')].join(';'), THREADTERM_V3_DATA: data, THREADTERM_V3_PIPE: pipe, TT_QA_NODE: process.execPath, TT_QA_SCRIPT: resolve('qa/fixtures/mock-opencode.mjs'), TT_QA_OPENCODE_STATE: stateFile, TT_QA_OPENCODE_PORT_FILE: portFile, TT_QA_OPENCODE_REQUESTS: requestsFile };
+assert.deepEqual(Object.keys(environment).filter(key => key.toLowerCase() === 'path'), ['Path']);
+const daemon = spawn(join(root, 'runtime.exe'), [], { env: environment, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
+let diagnostic = '', peer, sessionId, leaseEpoch, native;
+daemon.stdout.on('data', bytes => { diagnostic += bytes; }); daemon.stderr.on('data', bytes => { diagnostic += bytes; });
+const waitFor = async (read, accept, label) => { for (let i = 0; i < 200; i += 1) { const value = await read(); if (accept(value)) return value; await pause(50); } throw new Error(`Timed out: ${label}`); };
+const requests = async () => { try { return (await readFile(requestsFile, 'utf8')).trim().split(/\r?\n/).filter(Boolean).map(JSON.parse); } catch { return []; } };
+try {
+  let clientId;
+  for (let attempt = 0; attempt < 200; attempt += 1) {
+    try { peer = await connectPeer(`${pipe}-control`); clientId = await peer.auth((await readFile(join(data, 'runtime.credential'), 'utf8')).trim()); break; }
+    catch { peer?.close(); peer = undefined; if (daemon.exitCode !== null) throw new Error(diagnostic); await pause(50); }
+  }
+  assert.ok(peer, 'isolated runtime authenticated');
+  const created = await peer.request('session.create', { cwd, title: 'OC2 OpenCode', provider: 'opencode', mode: 'chat', operationId: unique() });
+  sessionId = created.id; leaseEpoch = (await peer.request('session.claim', { sessionId, clientId })).leaseEpoch;
+  assert.equal((await peer.request('chat.connect', { sessionId, leaseEpoch, operationId: unique() })).phase, 'ready');
+  native = await bindOc2Mock(portFile, cwd);
+  const read = () => peer.request('chat.read', { sessionId });
+  const send = (text, images) => peer.request('chat.send', { sessionId, text, ...(images ? { images } : {}), leaseEpoch, operationId: unique() });
+  const set = (optionId, value) => peer.request('chat.option.set', { sessionId, optionId, value, leaseEpoch, operationId: unique() });
+  const ui = await peer.request('chat.options', { sessionId });
+  assert.deepEqual(ui.commands.map(command => command.name).sort(), ['compact', 'review'], 'root command catalogue becomes slash UI commands');
+  assert.equal((await requests()).filter(row => row.method === 'GET' && row.path === '/command').length, 1, 'catalogue is fetched once at connect');
+  const beforeReject = await read();
+  await assert.rejects(send('', ['data:image/png;base64,AA==']), /image|model|support/i, 'non-vision image rejects before persistence');
+  assert.deepEqual(await read(), beforeReject, 'rejected image creates no transcript item');
+  await set('next-model', '{"providerID":"openai","modelID":"gpt-5.2"}'); await set('agent', 'build'); await set('variant', 'precise');
+  await send('/review src');
+  await waitFor(read, rows => rows.some(row => row.parts.some(part => part.text === 'command:review src')), 'native command completion');
+  assert.deepEqual((await requests()).findLast(row => row.path.endsWith('/command')).body, { command: 'review', arguments: 'src', model: 'openai/gpt-5.2', agent: 'build', variant: 'precise' });
+  await set('next-model', '{"providerID":"vision","modelID":"vision-1"}');
+  await send('inspect image', ['data:image/png;base64,AA==']);
+  await waitFor(read, rows => rows.some(row => row.parts.some(part => part.text === 'echo:inspect image')), 'vision prompt completion');
+  assert.equal((await requests()).findLast(row => row.path.endsWith('/prompt_async')).body.parts[1].type, 'file', 'vision image becomes a native file part');
+  const beforeCompact = await read();
+  await send('/compact');
+  await waitFor(read, rows => rows.some(row => row.parts.some(part => part.text === 'Conversation compacted by OpenCode.')), 'confirmed compact receipt');
+  await waitFor(() => peer.request('runtime.snapshot'), snapshot => snapshot.sessions.find(row => row.id === sessionId)?.status === 'idle', 'compact native idle');
+  assert.equal((await read()).some(row => row.parts.some(part => part.text === 'HIDDEN-NATIVE-SUMMARY')), false, 'native summary is never projected');
+  assert.deepEqual((await requests()).findLast(row => row.path.endsWith('/summarize')).body, { providerID: 'vision', modelID: 'vision-1' });
+  assert.ok((await read()).length > beforeCompact.length, 'compact receipt is a visible transcript result');
+  assert.equal((await requests()).filter(row => row.method === 'GET' && row.path === '/command').length, 1, 'send never refetches commands');
+  const waiting = await send('fixture-permission');
+  await waitFor(() => peer.request('runtime.snapshot'), snapshot => snapshot.sessions.find(row => row.id === sessionId)?.status === 'waiting', 'busy compact fixture');
+  const busyRows = await read(), compactPosts = (await requests()).filter(row => row.method === 'POST' && row.path.endsWith('/summarize')).length;
+  await assert.rejects(send('/compact'), /active|progress|busy/i);
+  assert.deepEqual(await read(), busyRows, 'busy compact rejects before persistence');
+  assert.equal((await requests()).filter(row => row.method === 'POST' && row.path.endsWith('/summarize')).length, compactPosts);
+  await peer.request('chat.cancel', { sessionId, turnId: waiting.turnId, leaseEpoch, operationId: unique() });
+  await waitFor(() => peer.request('runtime.snapshot'), snapshot => snapshot.sessions.find(row => row.id === sessionId)?.status === 'idle', 'busy fixture stopped');
+  const sourceNativeId = (await peer.request('runtime.snapshot')).sessions.find(row => row.id === sessionId).nativeId;
+  const sourceBeforeFork = JSON.parse(await readFile(stateFile, 'utf8')).sessions[`${cwd}|${sourceNativeId}`].messages;
+  const forkOperation = unique();
+  const latestFork = await peer.request('chat.fork', { sessionId, leaseEpoch, operationId: forkOperation });
+  assert.equal(latestFork.mode, 'native', 'OpenCode latest fork uses the native root route');
+  assert.deepEqual((await peer.request('chat.fork', { sessionId, leaseEpoch, operationId: forkOperation })), latestFork, 'duplicate fork operation is idempotent');
+  assert.deepEqual((await requests()).filter(row => row.path.endsWith('/fork')).map(row => row.body), [{}], 'duplicate fork never repeats a native mutation');
+  assert.deepEqual(JSON.parse(await readFile(stateFile, 'utf8')).sessions[`${cwd}|${sourceNativeId}`].messages, sourceBeforeFork, 'native fork leaves the source native session unchanged');
+  const selected = (await read()).find(row => row.forkAnchor?.messageId && row.parts.some(part => part.text === 'echo:inspect image'));
+  assert.ok(selected, 'a completed native reply carries the exact fork anchor');
+  await peer.request('chat.fork', { sessionId, itemId: selected.id, leaseEpoch, operationId: unique() });
+  assert.ok((await requests()).findLast(row => row.path.endsWith('/fork')).body.messageID, 'selected reply fork sends an exclusive boundary message id');
+  // The shared fork contract must propagate uncertain outcomes before this can pass.
+  const uncertainOperation = unique(), sessionsBeforeUnknown = (await peer.request('runtime.snapshot')).sessions.length;
+  await native('/qa/fork-outcome', { dropResponse: true });
+  const forksBeforeUnknown = (await requests()).filter(row => row.method === 'POST' && row.path.endsWith('/fork')).length;
+  await assert.rejects(peer.request('chat.fork', { sessionId, leaseEpoch, operationId: uncertainOperation }), /operation_outcome_unknown/);
+  await assert.rejects(peer.request('chat.fork', { sessionId, leaseEpoch, operationId: uncertainOperation }), /operation_outcome_unknown/);
+  assert.equal((await peer.request('runtime.snapshot')).sessions.length, sessionsBeforeUnknown, 'unknown native outcome never creates a copy child');
+  assert.equal((await requests()).filter(row => row.method === 'POST' && row.path.endsWith('/fork')).length, forksBeforeUnknown + 1, 'an uncertain native action is never repeated');
+  await native('/qa/fork-outcome', { dropResponse: false });
+  const persisted = JSON.parse(await readFile(stateFile, 'utf8')), nativeMessages = persisted.sessions[`${cwd}|${sourceNativeId}`].messages;
+  nativeMessages.push({ info: { id: 'msg_task_recovery', sessionID: sourceNativeId, role: 'assistant' }, parts: [{ id: 'part_task_recovery', messageID: 'msg_task_recovery', sessionID: sourceNativeId, type: 'tool', tool: 'task', callID: 'task_recovery', state: { status: 'running', input: { description: 'Recovered inspection' }, metadata: { sessionId: 'ses_child_recovery' } } }] });
+  await native('/qa/recovery', { permissions: [{ id: 'per_recovery', sessionID: sourceNativeId, permission: 'bash', patterns: ['dir'], metadata: {} }, { id: 'per_fork_excluded', sessionID: latestFork.session.nativeId, permission: 'bash', patterns: ['dir'] }], questions: [{ id: 'q_recovery', sessionID: sourceNativeId, questions: [{ question: 'Continue?', options: [] }] }], sessions: [{ id: 'ses_child_recovery', create: true, parentID: sourceNativeId, busy: true, messages: [] }, { id: sourceNativeId, messages: nativeMessages, todo: [{ content: 'Hydrated todo', status: 'pending', priority: 'high' }], children: [{ id: 'ses_child_recovery', parentID: sourceNativeId, directory: cwd }, { id: latestFork.session.nativeId, parentID: sourceNativeId, directory: cwd }] }] });
+  await native('/qa/drop-events', {});
+  await waitFor(() => peer.request('chat.connection', { sessionId }), state => state.phase !== 'ready', 'event-stream loss retires the first worker');
+  assert.equal((await peer.request('chat.connect', { sessionId, leaseEpoch, operationId: unique() })).phase, 'ready');
+  native = await bindOc2Mock(portFile, cwd);
+  await waitFor(read, rows => rows.filter(row => row.parts[0]?.approvalId === 'per_recovery').length === 1 && rows.filter(row => row.parts[0]?.approvalId === 'q_recovery').length === 1, 'reconnect hydrates one permission and one question card');
+  const recovered = await read();
+  assert.equal(recovered.filter(row => row.parts.some(part => part.type === 'plan' && part.data.entries.some(entry => entry.content === 'Hydrated todo'))).length, 1);
+  assert.equal(recovered.filter(row => row.parts.some(part => part.type === 'subagent' && part.data.key === 'task_recovery')).length, 1);
+  assert.equal(recovered.some(row => row.parts.some(part => part.approvalId === 'per_fork_excluded')), false);
+  assert.equal((await requests()).filter(row => row.method === 'POST' && /\/(permissions|question|todo|children)(?:\/|$)/.test(row.path)).length, 0, 'recovery never re-POSTs a permission, question, todo, or child action');
+  console.log(JSON.stringify({ passed: true, checks: ['PATH isolation', 'native commands', 'pre-persistence image rejection', 'vision file part', 'compact receipt and suppressed native summary', 'native latest/selected fork, idempotency, and source immutability', 'reconnect question/permission hydration without duplicate cards or posts'] }));
+} catch (error) { console.error(JSON.stringify({ passed: false, diagnostic, error: error instanceof Error ? error.stack : String(error) })); throw error; }
+finally { if (peer) { try { await peer.request('runtime.shutdown', { operationId: unique() }); } catch {} peer.close(); } if (daemon.exitCode === null) await Promise.race([new Promise(done => daemon.once('exit', done)), pause(3000)]); if (daemon.exitCode === null) daemon.kill(); }

@@ -3943,6 +3943,44 @@
             "control",
             "provider"
           ]
+        },
+        "permissionRestore": {
+          "type": "object",
+          "properties": {
+            "optionId": {
+              "type": "string"
+            },
+            "savedValue": {
+              "type": "string"
+            },
+            "reportedValue": {
+              "type": "string"
+            },
+            "reason": {
+              "type": "string",
+              "enum": [
+                "missing",
+                "mismatch",
+                "rejected"
+              ]
+            },
+            "optionName": {
+              "type": "string"
+            },
+            "savedLabel": {
+              "type": "string"
+            },
+            "reportedLabel": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "optionId",
+            "savedValue",
+            "reason"
+          ],
+          "additionalProperties": false,
+          "description": "Present only when a saved provider permission could not be restored."
         }
       },
       "required": [

@@ -28,7 +28,9 @@ for (const provider of providers) {
 const corpus = wanted.map(id => {
   const part = all.get(id);
   assert.ok(part, `corpus fixture ${id} is present`);
-  return part;
+  // Flat arguments render as compact lines (10-20-delegation-tool-ux); nest the generic card's input so the
+  // JSON disclosure checks below still have a tree to drive.
+  return id === 'claude-generic' ? { ...part, data: { ...part.data, input: { ...part.data.input, options: { depth: 2, tags: ['a', 'b'] } } } } : part;
 });
 
 const entry = `
@@ -113,15 +115,15 @@ try {
   assert.equal(await page.locator('.chat-tool-entry').count(), corpus.length, 'every corpus part renders one entry shell');
   assert.equal(await page.locator('.tool-card-body').count(), 0, 'a collapsed drawer renders no card bodies');
   assert.deepEqual(await page.locator('.chat-tool-entry').evaluateAll(nodes => nodes.map(node => node.getAttribute('data-tool-kind'))), ['edit', 'command', 'command', 'read', 'search', 'web', 'todo', 'skill', 'mcp', 'image', 'compaction', 'generic']);
-  assert.match(await page.locator('.chat-tool-count').textContent(), /Explored .* · Ran .* · Edited .* · .*/, 'the idle summary describes the turn');
+  assert.match(await page.locator('.chat-tool-current-action').textContent(), /Explored .* · Ran .* · Edited .* · .*/, 'the idle summary describes the turn');
   report.checks.push('collapsed drawer keeps every entry shell, no card bodies, kind order and the idle summary');
 
   // Expanded: typed bodies render, never as nested drawers.
   await drawerOpen(true);
-  assert.equal(await page.locator('.tool-card-body').count(), corpus.length, 'every expanded entry renders a card body');
+  assert.equal(await page.locator('.tool-card-body').count(), corpus.length - 1, 'expanded entries render bodies except the resultless web card whose target is in its title');
   assert.equal(await page.locator('.chat-tool-entry details details').count(), 0, 'cards never nest per-tool drawers');
   assert.ok(await page.locator('.tool-diff-rows').count() >= 1, 'the edit card renders a diff');
-  assert.ok(await page.locator('.tool-json-tree').count() >= 1, 'the MCP/generic cards render a JSON tree');
+  assert.ok(await page.locator('.tool-json-tree, .tool-argument-lines').count() >= 1, 'the MCP/generic cards render their arguments (compact lines when flat, else a JSON tree)');
   assert.ok(await page.locator('.tool-todos .tool-todo').count() >= 1, 'the todo card renders its checklist');
   assert.match(await page.locator('.tool-card-status').first().textContent(), /Completed|已?完成/, 'status chips are labelled');
   report.checks.push('expanded cards render diff, JSON tree, checklist and status chips without nested drawers');

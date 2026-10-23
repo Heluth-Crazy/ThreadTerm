@@ -218,6 +218,8 @@ export interface ChatConnectionError {
  message:string;
  retryable:boolean;
  category?:'auth'|'install'|'version'|'cwd'|'runtime'|'control'|'provider';
+ /** Present only when a saved provider permission could not be restored. */
+ permissionRestore?:{optionId:string;savedValue:string;reportedValue?:string;reason:'missing'|'mismatch'|'rejected';optionName?:string;savedLabel?:string;reportedLabel?:string};
 }
 /** Latest context-window usage for one Chat session, pushed by `chat.context` and read by `chat.context.read`. */
 export interface ChatContextUsage {

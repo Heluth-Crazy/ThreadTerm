@@ -9,6 +9,9 @@ use crate::{
     RUNTIME_VERSION,
 };
 mod project_trust;
+mod permission_modes;
+#[cfg(test)]
+mod permission_modes_tests;
 #[cfg(test)]
 mod project_trust_tests;
 use anyhow::Result;
@@ -59,6 +62,8 @@ pub(crate) fn connect_chat_session(
     providers: &Providers,
     session_id: &str,
 ) -> Result<()> {
+    let admission = crate::chat_fork::session_admission(db, session_id)?;
+    let _admission = admission.lock().map_err(|_| anyhow::anyhow!("provider_internal"))?;
     let session = db
         .session_by_id(session_id)?
         .ok_or_else(|| anyhow::anyhow!("session_not_found"))?;
@@ -146,11 +151,14 @@ fn open_chat_with_empty_native_recovery(
     cwd: &str,
     expected_native_id: Option<&str>,
 ) -> Result<Value, crate::providers::ProviderError> {
-    providers.chat_open_recovering(
+    let options = permission_modes::startup_options(db, session_id, provider)
+        .map_err(|error| crate::providers::ProviderError::new("chat_permission_restore_failed", error.to_string()))?;
+    providers.chat_open_recovering_with_options(
         session_id,
         provider,
         cwd,
         expected_native_id,
+        &options,
         &|replacement| {
             let Some(expected_native_id) = expected_native_id else {
                 return Ok(false);
@@ -195,6 +203,7 @@ fn selected_chat_options(state: &Value) -> Value {
 
 fn restore_chat_options(db: &Database, providers: &Providers, session_id: &str, provider: &str) -> Result<()> {
     restore_pi_auto_retry(db, providers, session_id, provider)?;
+    permission_modes::verify(db, providers, session_id, provider)?;
     if provider != "opencode" { return Ok(()); }
     let saved = db.chat_option_selections(session_id, provider)?;
     if saved.as_array().is_none_or(Vec::is_empty) { return Ok(()); }
@@ -227,7 +236,11 @@ fn restore_chat_options(db: &Database, providers: &Providers, session_id: &str, 
 }
 
 fn apply_pending_chat_options(db: &Database, providers: &Providers, session_id: &str, provider: &str) -> Result<()> {
-    crate::chat_fork::apply_pending_options(db, providers, session_id)?;
+    if matches!(provider, "opencode" | "pi") {
+        crate::chat_fork::apply_pending_options(db, providers, session_id)?;
+    } else {
+        permission_modes::apply_pending(db, providers, session_id, provider)?;
+    }
     if provider == "opencode" {
         if !providers.chat_is_open(session_id) { return Err(anyhow::anyhow!("OpenCode disconnected while restoring options")); }
         let state = providers.chat_options(session_id)?;
@@ -247,6 +260,16 @@ fn set_chat_option(
     option_id: &str,
     value: &str,
 ) -> Result<Value> {
+    let admission = crate::chat_fork::session_admission(db, session_id)?;
+    let _admission = admission.lock().map_err(|_| anyhow::anyhow!("provider_internal"))?;
+    if !providers.chat_is_open(session_id)
+        && providers.chat_connection(session_id).pointer("/error/code").and_then(Value::as_str) == Some("chat_permission_restore_failed") {
+        db.require_interactive(session_id)?;
+        return permission_modes::stage_recovery(db, providers, session_id, provider, option_id, value);
+    }
+    let previous = providers.chat_options(session_id)?;
+    let permission_change = permission_modes::is_permission_option(provider, &json!({"id":option_id}))
+        || previous["options"].as_array().into_iter().flatten().any(|row| row["id"] == option_id && permission_modes::is_permission_option(provider, row));
     let result = providers
         .chat_set_option(session_id, option_id, value)
         .map_err(anyhow::Error::from)?;
@@ -260,6 +283,15 @@ fn set_chat_option(
     }
     if provider == "opencode" {
         db.set_chat_option_selections(session_id, provider, &selected_chat_options(&result))?;
+    }
+    if permission_change {
+        if let Err(error) = crate::providers::verify_permission_options(&result, &json!([{"id":option_id,"value":value}])) {
+            let _ = providers.chat_stop(session_id);
+            return Err(error.into());
+        }
+        permission_modes::remember(db, session_id, provider, &result)?;
+    } else if provider == "claude" && option_id == "model" && result["options"].as_array().into_iter().flatten().any(|row| row["id"] == "mode" && row["value"] == "auto") {
+        permission_modes::remember(db, session_id, provider, &result)?;
     }
     Ok(result)
 }
@@ -307,9 +339,10 @@ pub(crate) fn send_chat_message(
     if let Some(result) = db.operation(operation_id)? {
         return Ok(result);
     }
-    // Review checkpoint before the provider can edit files; a
-    // failed or unavailable snapshot never blocks the send.
-    let checkpoint = crate::review::capture_before_turn(db, session_id, operation_id, text);
+    let previous_permissions = text.trim_start().starts_with('/').then(|| providers.chat_options(session_id).ok()).flatten();
+    // The existing worker-locked admission runs before any checkpoint work.
+    // Keep the same snapshot/deadline and capture it only for an admitted send.
+    let mut checkpoint = None;
     let result = providers
         .chat_send_recording(session_id, text, images, operation_id, || {
             use crate::providers::ProviderError;
@@ -322,6 +355,7 @@ pub(crate) fn send_chat_message(
                     "operation_outcome_unknown",
                 ));
             }
+            checkpoint = crate::review::capture_before_turn(db, session_id, operation_id, text);
             db.record_provider_event(
                 session_id,
                 Some(operation_id),
@@ -346,6 +380,9 @@ pub(crate) fn send_chat_message(
         .outcome(if completion.is_ok() { "ok" } else { "error" })
         .duration_us(completion_timer.elapsed_us()));
     completion?;
+    if let Err(error) = permission_modes::remember_command(db, providers, session_id, text, previous_permissions.as_ref()) {
+        return Err(crate::providers::ProviderError::new("chat_persistence", format!("Permission change was confirmed but could not be saved: {error}")).into());
+    }
     Ok(result)
 }
 
@@ -452,6 +489,8 @@ pub(crate) fn approve_chat_request(
     choice_id: &str,
     operation_id: &str,
 ) -> Result<Value> {
+    let admission = crate::chat_fork::session_admission(db, session_id)?;
+    let _admission = admission.lock().map_err(|_| anyhow::anyhow!("provider_internal"))?;
     db.require_interactive(session_id)?;
     // Runtime eval approvals are never forwarded to providers or delegation.
     if db.chat_items(session_id)?.iter().any(|item| item.parts.iter().any(|part| {
@@ -475,6 +514,9 @@ pub(crate) fn approve_chat_request(
     providers
         .chat_approve(session_id, turn_id, approval_id, choice_id, operation_id)
         .map_err(anyhow::Error::from)?;
+    if let Some(session) = db.session_by_id(session_id)? {
+        permission_modes::remember(db, session_id, &session.provider, &providers.chat_options(session_id)?)?;
+    }
     db.complete_null_operation(operation_id, "chat.approve")?;
     Ok(Value::Null)
 }
@@ -666,7 +708,14 @@ fn qa_projection_failed(session_id: &str) -> bool {
 }
 
 fn project_provider_event(db: &Arc<Database>, providers: &Providers, event: &ProviderEvent) -> bool {
+    let confirmed_permission = event.kind == "chat.ui" && event.data.get("permissionChangeConfirmed").and_then(Value::as_bool) == Some(true);
+    let admission = if confirmed_permission { crate::chat_fork::session_admission(db, &event.session_id).ok() } else { None };
+    let _admission = admission.as_ref().and_then(|gate| gate.lock().ok());
+    if confirmed_permission && _admission.is_none() { return false; }
+    let confirmed_state = if confirmed_permission && providers.chat_is_open(&event.session_id) { providers.chat_options(&event.session_id).ok() } else { None };
+    let stale_permission = confirmed_permission && confirmed_state.as_ref().is_none_or(|state| !permission_modes::matches_current(&event.provider, &event.data, state));
     let accepted = providers.with_current_event(event, || {
+        if stale_permission { return true; }
         let injected_failure = event.provider != "runtime" && qa_fail_projection(&event.session_id);
         if injected_failure {
             let _ = db.mark_chat_degraded(Some(&event.session_id), "QA: Chat update could not be persisted; transcript may be incomplete");
@@ -708,7 +757,7 @@ fn project_provider_event(db: &Arc<Database>, providers: &Providers, event: &Pro
             &event.session_id,
             event.turn_id.as_deref(),
             &event.kind,
-            &event.data,
+            confirmed_state.as_ref().unwrap_or(&event.data),
         ) {
             eprintln!("chat projection failed for {}: {error}", event.session_id);
             let reason = format!(
@@ -724,6 +773,13 @@ fn project_provider_event(db: &Arc<Database>, providers: &Providers, event: &Pro
             }
             let _ = crate::chat_queue::pause(db, &event.session_id, "failed");
             return false;
+        }
+        if confirmed_permission {
+            if let Err(error) = permission_modes::remember(db, &event.session_id, &event.provider, confirmed_state.as_ref().unwrap_or(&event.data)) {
+                eprintln!("confirmed permission choice could not be saved for {}: {error}", event.session_id);
+                let _ = db.mark_chat_degraded(Some(&event.session_id), "Permission choice could not be saved. Select the mode again before reconnecting.");
+                return false;
+            }
         }
         true
     });
@@ -1921,9 +1977,7 @@ impl RuntimeService {
                 "chat.projectTrust.set" => self.set_pi_project_trust(principal, &request.params),
                 "chat.options" => {
                     let p: ChatRead = parse(&request.params)?;
-                    self.providers
-                        .chat_options(&p.session_id)
-                        .map_err(anyhow::Error::from)
+                    permission_modes::options(&self.db, &self.providers, &p.session_id)
                 }
                 "chat.backgroundTasks.list" => {
                     let p: ChatRead = parse(&request.params)?;
@@ -1983,9 +2037,6 @@ impl RuntimeService {
                     let p: ChatOptionSet = parse(&request.params)?;
                     self.leases
                         .require(&self.db, &p.session_id, principal, p.lease_epoch)?;
-                    if !self.providers.chat_is_open(&p.session_id) {
-                        return Err(anyhow::anyhow!("chat_not_open"));
-                    }
                     let session = self.db.session_by_id(&p.session_id)?
                         .ok_or_else(|| anyhow::anyhow!("session_not_found"))?;
                     set_chat_option(&self.db, &self.providers, &p.session_id, &session.provider, &p.option_id, &p.value)
@@ -2357,6 +2408,8 @@ impl RuntimeService {
         p: &SessionCreate,
         cwd: &str,
     ) -> Result<Value> {
+        let admission = crate::chat_fork::session_admission(db, session_id)?;
+        let _admission = admission.lock().map_err(|_| anyhow::anyhow!("provider_internal"))?;
         if p.mode == "terminal" {
             let agent_provider = !matches!(p.provider.as_str(), "shell" | "custom");
             // Obtain the exact identity before launching the terminal. Some
@@ -2449,12 +2502,10 @@ impl RuntimeService {
                 db.set_session_status(session_id, "error", None)?;
                 return Err(error);
             }
-            if p.provider == "opencode" {
-                if let Err(error) = apply_pending_chat_options(db, providers, session_id, &p.provider) {
-                    let _ = providers.chat_stop(session_id);
-                    db.set_session_status(session_id, "error", None)?;
-                    return Err(error);
-                }
+            if let Err(error) = apply_pending_chat_options(db, providers, session_id, &p.provider) {
+                let _ = providers.chat_stop(session_id);
+                db.set_session_status(session_id, "error", None)?;
+                return Err(error);
             }
             db.set_session_status(session_id, "idle", None)?;
         }
@@ -3683,6 +3734,162 @@ mod tests {
         assert!(!providers.chat_is_open(&session.id), "failed restore must stop the newly opened worker");
     }
 
+    struct CodexPermissionAdapter {
+        calls: Arc<Mutex<Vec<String>>>,
+        fail_set: Arc<AtomicBool>,
+    }
+
+    impl ProviderAdapter for CodexPermissionAdapter {
+        fn id(&self) -> &'static str { "codex" }
+        fn capability(&self) -> ProviderCapability {
+            ProviderCapability {
+                source: "builtin", plugin_id: None, icon: None, sign_in: None, homepage: None,
+                id: "codex".into(), name: "Codex fixture".into(), installed: true, version: None,
+                terminal: false, chat: true, history: false, resume: true,
+                terminal_resume_capture: "none", reason: None, auth: "unknown".into(),
+            }
+        }
+        fn terminal_command(&self, _: Option<&str>, _: Option<&str>) -> Result<TerminalCommand, ProviderError> {
+            Err(ProviderError::new("unsupported", "Codex fixture has no terminal"))
+        }
+        fn history_list(&self, _: Option<&str>, _: u32, _: Option<&str>) -> Result<Value, ProviderError> { Ok(json!({})) }
+        fn history_read(&self, _: &str) -> Result<Value, ProviderError> { Ok(json!([])) }
+        fn open_chat(&self, _: &str, _: &str, _: Option<&str>) -> Result<Box<dyn ChatSession>, ProviderError> {
+            // Like native `thread/resume`: the approval policy survives, the sandbox does not.
+            Ok(Box::new(CodexPermissionChat {
+                mode: "never".into(),
+                sandbox: "workspace-write".into(),
+                calls: Arc::clone(&self.calls),
+                fail_set: Arc::clone(&self.fail_set),
+            }))
+        }
+    }
+
+    struct CodexPermissionChat {
+        mode: String,
+        sandbox: String,
+        calls: Arc<Mutex<Vec<String>>>,
+        fail_set: Arc<AtomicBool>,
+    }
+
+    impl ChatSession for CodexPermissionChat {
+        fn native_id(&self) -> Option<String> { Some("codex-native".into()) }
+        fn ui_state(&self) -> Value {
+            json!({"options":[
+                {"id":"model","value":"fixture-model"},
+                {"id":"mode","value":self.mode},
+                {"id":"sandbox","value":self.sandbox},
+            ]})
+        }
+        fn send(&mut self, text: &str, operation_id: &str) -> Result<Value, ProviderError> {
+            if let Some(value) = text.strip_prefix("/sandbox ") { self.sandbox = value.trim().into(); }
+            Ok(json!({"turnId":operation_id}))
+        }
+        fn cancel(&mut self, _: &str) -> Result<(), ProviderError> { Ok(()) }
+        fn approve(&mut self, _: &str, _: &str, _: &str, _: &str) -> Result<(), ProviderError> { Ok(()) }
+        fn stop(&mut self) -> Result<(), ProviderError> { Ok(()) }
+        fn set_option(&mut self, option_id: &str, value: &str) -> Result<Value, ProviderError> {
+            if self.fail_set.load(Ordering::SeqCst) {
+                return Err(ProviderError::new("provider_settings_unconfirmed", "fixture did not confirm"));
+            }
+            if value == "retired" {
+                return Err(ProviderError::new("option_unknown", "fixture no longer offers this value"));
+            }
+            self.calls.lock().unwrap().push(format!("{option_id}={value}"));
+            match option_id {
+                "mode" => self.mode = value.into(),
+                "sandbox" => self.sandbox = value.into(),
+                _ => {}
+            }
+            Ok(self.ui_state())
+        }
+    }
+
+    fn codex_permission_fixture(root: &std::path::Path) -> (Arc<Database>, Providers, crate::domain::Session, Arc<Mutex<Vec<String>>>, Arc<AtomicBool>) {
+        let db = Arc::new(Database::open(&root.join("runtime.sqlite")).unwrap());
+        crate::session_configs::initialize(&db).unwrap();
+        let session = db.create_session(CreateSession {
+            project_id: None,
+            title: None,
+            provider: "codex",
+            mode: "chat",
+            native_id: None,
+            operation_id: "codex-permissions",
+        }).unwrap();
+        db.bind_session(&session.id, Some(root.to_str().unwrap()), None).unwrap();
+        db.set_session_status(&session.id, "idle", None).unwrap();
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let fail_set = Arc::new(AtomicBool::new(false));
+        let providers = Providers::for_test(vec![Arc::new(CodexPermissionAdapter { calls: Arc::clone(&calls), fail_set: Arc::clone(&fail_set) })]);
+        (db, providers, session, calls, fail_set)
+    }
+
+    fn codex_sandbox(providers: &Providers, session_id: &str) -> String {
+        let state = providers.chat_options(session_id).unwrap();
+        state["options"].as_array().unwrap().iter()
+            .find(|option| option["id"] == "sandbox").unwrap()["value"].as_str().unwrap().to_owned()
+    }
+
+    #[test]
+    fn codex_full_access_survives_reconnect_and_runtime_restart() {
+        let root = tempfile::tempdir().unwrap();
+        let (db, providers, session, calls, _) = codex_permission_fixture(root.path());
+        connect_chat_session(&db, &providers, &session.id).unwrap();
+        assert!(calls.lock().unwrap().is_empty(), "nothing is restored before the user chooses");
+
+        set_chat_option(&db, &providers, &session.id, "codex", "model", "other-model").unwrap();
+        assert_eq!(db.chat_option_selections(&session.id, "codex").unwrap(), json!([]), "only permission options are remembered");
+        set_chat_option(&db, &providers, &session.id, "codex", "sandbox", "danger-full-access").unwrap();
+        assert_eq!(
+            db.chat_option_selections(&session.id, "codex").unwrap(),
+            json!([{"id":"mode","value":"never"},{"id":"sandbox","value":"danger-full-access"}]),
+        );
+
+        providers.chat_stop(&session.id).unwrap();
+        connect_chat_session(&db, &providers, &session.id).unwrap();
+        assert_eq!(codex_sandbox(&providers, &session.id), "danger-full-access");
+        providers.chat_stop(&session.id).unwrap();
+        drop(db);
+
+        let reopened = Arc::new(Database::open(&root.path().join("runtime.sqlite")).unwrap());
+        let restarted = Providers::for_test(vec![Arc::new(CodexPermissionAdapter { calls: Arc::clone(&calls), fail_set: Arc::new(AtomicBool::new(false)) })]);
+        connect_chat_session(&reopened, &restarted, &session.id).unwrap();
+        assert_eq!(codex_sandbox(&restarted, &session.id), "danger-full-access");
+        assert_eq!(
+            calls.lock().unwrap().iter().filter(|call| call.as_str() == "sandbox=danger-full-access").count(),
+            3,
+            "set once by the user, then re-applied on each reopen",
+        );
+    }
+
+    #[test]
+    fn codex_sandbox_slash_command_is_remembered_and_restore_failures_are_explicit() {
+        let root = tempfile::tempdir().unwrap();
+        let (db, providers, session, calls, fail_set) = codex_permission_fixture(root.path());
+        connect_chat_session(&db, &providers, &session.id).unwrap();
+        send_chat_message(&db, &providers, &session.id, "/sandbox status", &[], "status").unwrap();
+        assert_eq!(db.chat_option_selections(&session.id, "codex").unwrap(), json!([]), "a status query saves nothing");
+        send_chat_message(&db, &providers, &session.id, "/sandbox read-only", &[], "slash").unwrap();
+        assert_eq!(
+            db.chat_option_selections(&session.id, "codex").unwrap(),
+            json!([{"id":"mode","value":"never"},{"id":"sandbox","value":"read-only"}]),
+        );
+        providers.chat_stop(&session.id).unwrap();
+        connect_chat_session(&db, &providers, &session.id).unwrap();
+        assert_eq!(codex_sandbox(&providers, &session.id), "read-only", "a stricter choice must not widen on reconnect");
+        providers.chat_stop(&session.id).unwrap();
+
+        fail_set.store(true, Ordering::SeqCst);
+        assert!(ensure_chat_session_open(&db, &providers, &session.id).is_err());
+        assert!(!providers.chat_is_open(&session.id), "a failed restore stops the worker instead of running wider");
+        fail_set.store(false, Ordering::SeqCst);
+
+        db.set_chat_option_selections(&session.id, "codex", &json!([{"id":"sandbox","value":"retired"}])).unwrap();
+        assert!(connect_chat_session(&db, &providers, &session.id).is_err());
+        assert!(!providers.chat_is_open(&session.id), "an unknown permission value must not fall back to the native default");
+        assert!(!calls.lock().unwrap().iter().any(|call| call == "sandbox=retired"));
+    }
+
     #[test]
     fn pi_new_replacement_allows_following_context_and_fences_stale_or_foreign_identity() {
         let root = tempfile::tempdir().unwrap();
@@ -4875,5 +5082,104 @@ mod browser_eval_service_tests {
         assert!(!providers.chat_is_open("s"));
         let item = db.chat_items("s").unwrap().remove(0);
         assert_eq!(item.parts[0]["status"], "pending");
+    }
+}
+
+#[cfg(test)]
+mod oc2_checkpoint_tests {
+    use super::*;
+    use crate::providers::{ChatSession, ProviderAdapter, ProviderCapability, ProviderError, TerminalCommand};
+    use std::sync::atomic::AtomicUsize;
+
+    struct CheckpointAdapter { db: Arc<Database>, root: std::path::PathBuf, handoffs: Arc<AtomicUsize> }
+    struct CheckpointChat { db: Arc<Database>, root: std::path::PathBuf, session: String, handoffs: Arc<AtomicUsize> }
+    fn checkpoints(db: &Database) -> i64 {
+        db.transaction(|tx| Ok(tx.query_row("SELECT COUNT(*) FROM review_checkpoints", [], |row| row.get(0))?)).unwrap()
+    }
+    impl ProviderAdapter for CheckpointAdapter {
+        fn id(&self) -> &str { "opencode" }
+        fn capability(&self) -> ProviderCapability {
+            ProviderCapability { source:"test",plugin_id:None,icon:None,sign_in:None,homepage:None,id:"opencode".into(),name:"Checkpoint fixture".into(),installed:true,version:None,terminal:false,chat:true,history:false,resume:true,terminal_resume_capture:"none",reason:None,auth:"unknown".into() }
+        }
+        fn terminal_command(&self, _: Option<&str>, _: Option<&str>) -> Result<TerminalCommand, ProviderError> { Err(ProviderError::new("unsupported", "fixture")) }
+        fn history_list(&self, _: Option<&str>, _: u32, _: Option<&str>) -> Result<Value, ProviderError> { Ok(json!({"items":[]})) }
+        fn history_read(&self, _: &str) -> Result<Value, ProviderError> { Ok(json!([])) }
+        fn open_chat(&self, session: &str, _: &str, _: Option<&str>) -> Result<Box<dyn ChatSession>, ProviderError> {
+            Ok(Box::new(CheckpointChat { db:Arc::clone(&self.db),root:self.root.clone(),session:session.into(),handoffs:Arc::clone(&self.handoffs) }))
+        }
+    }
+    impl ChatSession for CheckpointChat {
+        fn native_id(&self) -> Option<String> { Some("checkpoint-native".into()) }
+        fn validate_send(&self, text: &str) -> Result<(), ProviderError> {
+            assert_eq!(checkpoints(&self.db), 0, "admission must precede the review snapshot");
+            if text == "/busy" { return Err(ProviderError::new("turn_in_progress", "fixture busy")); }
+            if text == "/invalid" { return Err(ProviderError::new("command_arguments_invalid", "fixture rejected command")); }
+            Ok(())
+        }
+        fn validate_send_with_images(&self, _: &str, images: &[String]) -> Result<(), ProviderError> {
+            assert_eq!(checkpoints(&self.db), 0, "image capability checks must precede snapshots too");
+            if images.is_empty() { Ok(()) } else { Err(ProviderError::new("images_unsupported", "fixture text-only model")) }
+        }
+        fn send(&mut self, _: &str, operation: &str) -> Result<Value, ProviderError> {
+            assert_eq!(checkpoints(&self.db), 1, "checkpoint must exist before provider handoff");
+            assert_eq!(self.db.chat_items(&self.session).unwrap().len(), 1);
+            assert_eq!(std::fs::read_to_string(self.root.join("file.txt")).unwrap(), "before handoff");
+            std::fs::write(self.root.join("file.txt"), "provider changed file").unwrap();
+            self.handoffs.fetch_add(1, Ordering::SeqCst);
+            Ok(json!({"turnId":operation}))
+        }
+        fn cancel(&mut self, _: &str) -> Result<(), ProviderError> { Ok(()) }
+        fn approve(&mut self, _: &str, _: &str, _: &str, _: &str) -> Result<(), ProviderError> { Ok(()) }
+        fn stop(&mut self) -> Result<(), ProviderError> { Ok(()) }
+    }
+    fn fixture() -> (tempfile::TempDir, Arc<Database>, Providers, String, Arc<AtomicUsize>) {
+        let temp = tempfile::tempdir_in("D:/project/ThreadTerm/tt-qa-temp").unwrap();
+        let root = temp.path().join("repo");
+        // Minimal empty Git repository; no git init/add/commit or public index writes.
+        std::fs::create_dir_all(root.join(".git/objects")).unwrap();
+        std::fs::create_dir_all(root.join(".git/refs/heads")).unwrap();
+        std::fs::write(root.join(".git/HEAD"), "ref: refs/heads/main\n").unwrap();
+        std::fs::write(root.join(".git/config"), "[core]\nrepositoryformatversion = 0\nbare = false\n").unwrap();
+        std::fs::write(root.join("file.txt"), "before handoff").unwrap();
+        let db = Arc::new(Database::open(&temp.path().join("runtime.sqlite")).unwrap());
+        crate::workspace_services::initialize(&db).unwrap();
+        crate::review::initialize(&db).unwrap();
+        let project = db.add_project(root.to_str().unwrap(), Some("Fixture"), "project").unwrap();
+        let session = db.create_session(crate::db::CreateSession { project_id:Some(&project.id),title:None,provider:"opencode",mode:"chat",native_id:None,operation_id:"create" }).unwrap();
+        db.bind_session(&session.id, Some(root.to_str().unwrap()), None).unwrap();
+        db.set_session_status(&session.id, "idle", None).unwrap();
+        let handoffs = Arc::new(AtomicUsize::new(0));
+        let providers = Providers::for_test(vec![Arc::new(CheckpointAdapter { db:Arc::clone(&db),root:root.clone(),handoffs:Arc::clone(&handoffs) })]);
+        providers.chat_open(&session.id, "opencode", root.to_str().unwrap(), None).unwrap();
+        (temp, db, providers, session.id, handoffs)
+    }
+    #[test]
+    fn rejected_sends_leave_no_checkpoint_transcript_or_operation_claim() {
+        for (text, images, expected) in [
+            ("/busy", vec![], "turn_in_progress"),
+            ("/invalid", vec![], "command_arguments_invalid"),
+            ("inspect", vec!["data:image/png;base64,AA==".to_owned()], "images_unsupported"),
+        ] {
+            let (_temp, db, providers, session, handoffs) = fixture();
+            let error = send_chat_message(&db, &providers, &session, text, &images, "rejected").unwrap_err();
+            assert_eq!(error.downcast_ref::<ProviderError>().unwrap().code, expected);
+            assert_eq!(checkpoints(&db), 0);
+            assert!(db.chat_items(&session).unwrap().is_empty());
+            assert!(db.operation("rejected").unwrap().is_none());
+            assert!(db.claim_external_operation("rejected").unwrap(), "rejection did not reserve a native action");
+            assert_eq!(handoffs.load(Ordering::SeqCst), 0);
+        }
+    }
+    #[test]
+    fn admitted_send_snapshots_once_before_handoff_and_replay_adds_no_work() {
+        let (_temp, db, providers, session, handoffs) = fixture();
+        let first = send_chat_message(&db, &providers, &session, "inspect", &[], "accepted").unwrap();
+        assert_eq!(send_chat_message(&db, &providers, &session, "inspect", &[], "accepted").unwrap(), first);
+        assert_eq!(checkpoints(&db), 1);
+        assert_eq!(handoffs.load(Ordering::SeqCst), 1);
+        db.transaction(|tx| {
+            let (status, turn): (String, String) = tx.query_row("SELECT status,turn_id FROM review_checkpoints WHERE operation_id='accepted'", [], |row| Ok((row.get(0)?, row.get(1)?)))?;
+            assert_eq!(status, "ready"); assert_eq!(turn, "accepted"); Ok(())
+        }).unwrap();
     }
 }

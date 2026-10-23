@@ -63,7 +63,8 @@ try {
       await page.locator('.codex-work > summary').focus();
       await page.keyboard.press('Enter');
       assert.equal(await page.locator('.codex-work-body').isVisible(), true);
-      assert.match(await page.locator('.chat-tool-current-action').textContent() ?? '', /Tool activity|工具执行/i);
+      // A one-tool group names the tool itself (10-20-delegation-tool-ux), not "Tool activity · Last: …".
+      assert.match(await page.locator('.chat-tool-current-action').textContent() ?? '', /^(?:Command|命令) · Get-Content AGENTS\.md$/);
       await page.screenshot({path:join(out,`${theme}-${width}-expanded.png`)});
       await page.keyboard.press('Space');
       assert.equal(await page.locator('.codex-work-body').isVisible(), false);

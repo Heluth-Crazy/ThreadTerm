@@ -18,7 +18,7 @@ import { DelegationPanel } from "./DelegationPanel";
 import { delegationTool, delegationToolLabel } from "../delegation";
 import { UsageCard } from './UsageCard';
 import { usageCardsForItems } from '../usageCard';
-import { connectionFeedbackPhase, connectionStatusText, emptyLink, overlayKind, providerLabel, reduceChatLink, type ChatConnectAttempt } from "../chatConnection";
+import { canRecoverPermissions, connectionFeedbackPhase, connectionStatusText, emptyLink, overlayKind, providerLabel, reduceChatLink, type ChatConnectAttempt } from "../chatConnection";
 import { activeTurnId, chatCanControl, formatChatDuration, itemShowsStreaming, matchSlashCommands, partBody, partLabel, shouldRenderPart, slashQuery } from "../chatPresentation";
 import { groupCodexTranscript, type CodexTurn } from "../codexTranscript";
 import { completedTurnPresentation, groupToolActivity, toolEntriesForItems, type ToolActivityEntry } from "../toolActivity";
@@ -878,6 +878,8 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession, 
   const connectionHeld = discoveryCurrent && repairDiscovery?.phase === 'held';
   const discoveryFailed = discoveryCurrent && repairDiscovery?.phase === 'failed';
   const writable = canControl && controllable && connected && discoveryClear && leaseSessionId.current === session.id && lease.current !== undefined;
+  const permissionRecovery = canRecoverPermissions(link);
+  const permissionOptionsWritable = permissionRecovery && canControl && controllable && discoveryClear && leaseSessionId.current === session.id && lease.current !== undefined;
   useEffect(() => { if (writable && draftLoaded && !busy && surface?.focused !== false) focusRequestedChatInput(session.id); }, [writable, draftLoaded, busy, session.id, surface?.focused]);
   const repairWritable = controllable && leaseSessionId.current === session.id && lease.current !== undefined;
   const repairHasLiveTurn = !ended && Boolean(activeTurnId(items, session.status));
@@ -924,22 +926,23 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession, 
     }).catch(caught => {
       if (connectInFlight.current !== attempt || generation !== transportGeneration.current) return;
       connectInFlight.current = undefined;
-      setLink(current => reduceChatLink(current, { type: "connect-failed", attempt, message: asUserError(caught, copy("Could not connect.", "无法连接。")) }));
+      const code = caught && typeof caught === "object" && "code" in caught && typeof caught.code === "string" ? caught.code : undefined;
+      setLink(current => reduceChatLink(current, { type: "connect-failed", attempt, code, message: asUserError(caught, copy("Could not connect.", "无法连接。")) }));
     });
   }, [discoveryClear, canControl, ended, controllable, connected, connection.phase, connection.connectionGeneration, connection.runtimeEpoch, link.transport, link.transportGeneration, session.id, zh]);
   useEffect(() => {
-    if (!connected) return;
+    if (!connected && !permissionRecovery) return;
     let disposed = false;
     const generation = transportGeneration.current;
-    if (optionsGeneration.current === generation) return;
-    optionsGeneration.current = generation;
+    if (!permissionRecovery && optionsGeneration.current === generation) return;
+    optionsGeneration.current = permissionRecovery ? undefined : generation;
     const uiRevision = uiUpdates.current;
     void request("chat.options", { sessionId: session.id }).then(next => { if (!disposed && generation === transportGeneration.current && uiUpdates.current === uiRevision) setUi(chatUiFromEvent(next)); }).catch(caught => {
       if (!disposed && generation === transportGeneration.current && uiUpdates.current === uiRevision) setUi(current => ({ ...current, loadState: "error", error: { code: "options_failed", message: asUserError(caught, copy("Options could not be loaded.", "无法读取选项。")) } }));
     });
     return () => { disposed = true; };
-  }, [connected, session.id, zh]);
-  const overlay = connectionHeld || discoveryFailed ? 'none' : overlayKind({
+  }, [connected, permissionRecovery, session.id, zh]);
+  const overlay = connectionHeld || discoveryFailed ? 'none' : permissionRecovery ? 'banner' : overlayKind({
     ended,
     canControl,
     phase: connection.phase,
@@ -1453,7 +1456,8 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession, 
   }, [zh, liveTurn, slash, ui.commands]);
   async function setOption(optionId: string, value: string) {
     const epoch = leaseSessionId.current === session.id ? lease.current : undefined;
-    if (!writable || epoch === undefined) return;
+    if ((!writable && !permissionOptionsWritable) || epoch === undefined) return;
+    if (!writable && !ui.options.some(option => option.id === optionId && option.category === 'mode')) return;
     try {
       setUi(await request("chat.option.set", { sessionId: session.id, optionId, value, leaseEpoch: epoch, operationId: operationId() }));
     } catch (caught) { setError(asUserError(caught, copy("Option was not updated.", "未能更新选项。"))); }
@@ -1705,7 +1709,7 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession, 
       group.items.some(item => item.role !== 'user' && item.role !== 'system') && <TurnFooter key={`${group.id}-footer`} items={group.items} elapsedMs={group.elapsedMs} session={session} zh={zh} copy={copy} cache={turnChangesCache} openFile={openFile} />,
     ];
   }
-  return <FileReferenceScopeProvider sourceSessionId={session.id} canonicalRoot={session.worktreePath}><section className={`chat-view v3-session-chat${overlay === "full" ? " is-connecting" : ""}`} data-provider={session.provider} data-testid={`session-chat-${session.id}`} aria-label={copy('Structured chat', '图形聊天')}>
+  return <FileReferenceScopeProvider sourceSessionId={session.id} canonicalRoot={session.worktreePath}><section className={`chat-view v3-session-chat${overlay === "full" ? " is-connecting" : ""}${permissionRecovery ? " is-permission-recovery" : ""}`} data-provider={session.provider} data-testid={`session-chat-${session.id}`} aria-label={copy('Structured chat', '图形聊天')}>
     {surface?.openTaskMap && <SurfaceActions slot="primary"><button type="button" className="icon-btn" aria-label={copy('Task map', '任务图')} title={copy('Task map', '任务图')} onClick={() => surface.openTaskMap?.(session.id, flowSync.topItemId())}><Icon name="flow"/></button></SurfaceActions>}
     <ChatForkMenu disabledReason={forkActions.disabledReason} busy={forkActions.busy} onFork={id => void forkActions.fork(id)} zh={zh}/>
     <ChatForkStatus session={session} zh={zh} onOpenSession={onOpenSession}/>
@@ -1717,9 +1721,9 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession, 
       {connectionHeld && canControl && !ended && <button type="button" className="btn" disabled={repairBusy} onClick={continueWithoutReload}>{copy('Continue chat without reloading', '不重新加载，继续聊天')}</button>}
     </section>}
     {repairFollowup && <p className="chat-repair-notice" role="status">{copy('History repaired. Queued prompts stay paused until ThreadTerm restarts.', '历史已修复。排队的提示词将保持暂停，直到 ThreadTerm 重启。')}</p>}
-    {overlay === "banner" && <ChatConnectOverlay provider={session.provider} phase={connection.phase} slow={false} error={connection.error} variant="banner" onRetry={retryConnection} copy={copy} transportDown={link.transport !== "up"} />}
+    {overlay === "banner" && <ChatConnectOverlay provider={session.provider} phase={connection.phase} slow={false} error={connection.error} variant="banner" onRetry={retryConnection} copy={copy} transportDown={link.transport !== "up"} options={ui.options} />}
     <PiProjectTrust trust={ui.piTrust} disabled={!writable || trustBusy || Boolean(liveTurn) || !session.projectId} disabledReason={!session.projectId ? copy('Add this session to a project before changing project trust.', '请先将此会话加入项目，再更改项目信任。') : undefined} onDecide={setPiProjectTrust} copy={copy} />
-    {ui.loadState === "error" && ui.error && <p className="surface-error" role="alert">{ui.error.message} <button type="button" className="btn" disabled={!writable} onClick={() => void request("chat.options", { sessionId: session.id }).then(setUi).catch(caught => setUi(current => ({ ...current, loadState: "error", error: { code: "options_failed", message: asUserError(caught, copy("Options could not be loaded.", "无法读取选项。")) } })))}>{copy("Retry options", "重试读取选项")}</button></p>}
+    {!permissionRecovery && ui.loadState === "error" && ui.error && <p className="surface-error" role="alert">{ui.error.message} <button type="button" className="btn" disabled={!writable} onClick={() => void request("chat.options", { sessionId: session.id }).then(setUi).catch(caught => setUi(current => ({ ...current, loadState: "error", error: { code: "options_failed", message: asUserError(caught, copy("Options could not be loaded.", "无法读取选项。")) } })))}>{copy("Retry options", "重试读取选项")}</button></p>}
     {historyFailed && <section className="chat-repair-banner" role="alert"><div><strong>{copy('Saved history could not be checked.', '无法检查已保存的历史。')}</strong><p>{copy('Retry loading saved history before continuing this chat.', '请重试加载已保存的历史，再继续聊天。')}</p>{historyIssue && <small>{historyIssue}</small>}</div><button className="btn" disabled={repairBusy} onClick={() => discoverHistoryRef.current()}>{copy('Retry loading history', '重试加载历史')}</button></section>}
     {linkIssue && <p className="surface-error" role="alert">{linkIssue}</p>}
     <BackgroundTasksStrip key={session.id} tasks={ui.backgroundTasks ?? []} copy={copy} zh={zh} writable={writable && !ended} onExpand={refreshBackgroundTasks} onStop={stopBackgroundTask} canOutput={task => backgroundHasOutput(task, items)} onOutput={task => { if (logRef.current) revealBackgroundOutput(logRef.current, task, viewport.pauseForNavigation); }} />
@@ -1790,11 +1794,11 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession, 
       <textarea id={`chat-message-${session.id}`} ref={composeRef} value={submissionPreview ? '' : text} onChange={event => { setCaret(event.target.selectionStart ?? event.target.value.length); setMentionDismissed(undefined); changeText(event.target.value); setSlashIndex(0); setMentionIndex(0); }} onCompositionStart={() => { composingRef.current = true; }} onCompositionEnd={event => { composingRef.current = false; changeText(event.currentTarget.value); }} onSelect={event => setCaret(event.currentTarget.selectionStart ?? caret)} onClick={event => setCaret(event.currentTarget.selectionStart ?? caret)} onKeyUp={event => setCaret(event.currentTarget.selectionStart ?? caret)} onPaste={pasteImages} onContextMenu={composerEditableNow ? openComposerContextMenu : undefined} onKeyDown={onComposeKey} aria-describedby={activeMentions.length ? mentionDescriptionId : undefined} placeholder={copy('Message, or type / for commands', '发送消息，或输入 / 命令')} rows={1} disabled={!composerEditableNow} />
       </div>
       <ComposerOptions
-        options={ui.options}
+        options={permissionRecovery ? ui.options.filter(option => option.category === 'mode') : ui.options}
         loadState={ui.loadState}
         zh={zh}
         copy={copy}
-        disabled={ended || !writable}
+        disabled={ended || (!writable && !permissionOptionsWritable)}
         busy={busy}
         onSetOption={setOption}
         leading={<ComposerPlusMenu quickMessages={quickMessages} disabled={busy || ended || !writable} liveFeedbackEnabled={steerKind === 'split-note' && Boolean(text.trim()) && !images.length} onAttachFiles={attachPickedFiles} onPickQuickMessage={insertQuickMessageAtCaret} onSlashCommands={() => insertSnippetAtCaret("/")} onLiveFeedback={() => { setLiveFeedbackSignal(value => value + 1); composeRef.current?.focus(); }} copy={copy} />}

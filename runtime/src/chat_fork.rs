@@ -1,7 +1,7 @@
 use crate::{
     db::{CreateSession, Database, ImportHistorySession},
     domain::{ChatItem, NativeForkAnchor, NativeTurnStatus, Session},
-    providers::{ProviderRuntime, Providers},
+    providers::{ProviderError, ProviderRuntime, Providers},
 };
 use anyhow::{anyhow, Result};
 use chrono::Utc;
@@ -161,11 +161,23 @@ fn fork_inner(db: &Database, providers: &Providers, request: ForkRequest<'_>) ->
         let forked = if let Some((native_id, _)) = native_intent.as_ref() {
             Some(native_id.clone())
         } else {
-            let result = providers
+            let result = match providers
                 .fork_session(&source.provider, cwd, native_id, selected_anchor, is_latest)
-                .ok()
-                .flatten()
-                .filter(|value| !value.is_empty() && value != native_id);
+            {
+                Ok(result) => result,
+                // A native fork is non-idempotent. Only errors that prove no
+                // native fork is available may use the copy fallback; a lost
+                // reply, timeout, transport failure, 5xx, or malformed
+                // result could have created a child already.
+                Err(error) if native_fork_error_allows_copy_fallback(&error) => None,
+                Err(_) => return Err(anyhow!("operation_outcome_unknown")),
+            };
+            if result
+                .as_deref()
+                .is_some_and(|value| value.trim().is_empty() || value == native_id)
+            {
+                return Err(anyhow!("operation_outcome_unknown"));
+            }
             if let Some(forked_native_id) = result.as_deref() {
                 // This is the first durable write after the provider-owned
                 // fork. A process kill between the native response and this
@@ -180,40 +192,43 @@ fn fork_inner(db: &Database, providers: &Providers, request: ForkRequest<'_>) ->
             result
         };
         if let Some(forked_native_id) = forked {
-            if let Ok(history) = providers.history_read(&source.provider, &forked_native_id) {
-                if let Ok(transcript) = serde_json::from_value::<Vec<ChatItem>>(history) {
-                    let import_operation = derived(request.operation_id, "native-import");
-                    if let Ok((child, created)) = db.import_history_session(ImportHistorySession {
-                        project_id: source.project_id.as_deref(),
-                        title: Some(&title),
-                        provider: &source.provider,
-                        mode: "chat",
-                        cwd,
-                        native_id: &forked_native_id,
-                        operation_id: &import_operation,
-                        transcript: &transcript,
-                    }) {
-                        if created && child.id != source.id {
-                            db.save_chat_fork_child_intent(request.operation_id, &child.id)
-                                .map_err(|_| anyhow!("operation_outcome_unknown"))?;
-                            let resume_operation = derived(request.operation_id, "native-resume");
-                            let workspace = source.worktree_path.as_deref().unwrap_or(cwd);
-                            db.reserve_resume(&child.id, workspace, cwd, &resume_operation)
-                                .map_err(|_| anyhow!("operation_outcome_unknown"))?;
-                            finish_child(db, &source, &child, &title, &options)
-                                .map_err(|_| anyhow!("operation_outcome_unknown"))?;
-                            return db.complete_chat_fork(
-                                &child.id,
-                                &source.id,
-                                request.item_id,
-                                &source.title,
-                                "native",
-                                request.operation_id,
-                            );
-                        }
-                    }
-                }
+            let history = providers
+                .history_read(&source.provider, &forked_native_id)
+                .map_err(|_| anyhow!("operation_outcome_unknown"))?;
+            let transcript = serde_json::from_value::<Vec<ChatItem>>(history)
+                .map_err(|_| anyhow!("operation_outcome_unknown"))?;
+            let import_operation = derived(request.operation_id, "native-import");
+            let (child, created) = db
+                .import_history_session(ImportHistorySession {
+                    project_id: source.project_id.as_deref(),
+                    title: Some(&title),
+                    provider: &source.provider,
+                    mode: "chat",
+                    cwd,
+                    native_id: &forked_native_id,
+                    operation_id: &import_operation,
+                    transcript: &transcript,
+                })
+                .map_err(|_| anyhow!("operation_outcome_unknown"))?;
+            if !created || child.id == source.id {
+                return Err(anyhow!("operation_outcome_unknown"));
             }
+            db.save_chat_fork_child_intent(request.operation_id, &child.id)
+                .map_err(|_| anyhow!("operation_outcome_unknown"))?;
+            let resume_operation = derived(request.operation_id, "native-resume");
+            let workspace = source.worktree_path.as_deref().unwrap_or(cwd);
+            db.reserve_resume(&child.id, workspace, cwd, &resume_operation)
+                .map_err(|_| anyhow!("operation_outcome_unknown"))?;
+            finish_child(db, &source, &child, &title, &options)
+                .map_err(|_| anyhow!("operation_outcome_unknown"))?;
+            return db.complete_chat_fork(
+                &child.id,
+                &source.id,
+                request.item_id,
+                &source.title,
+                "native",
+                request.operation_id,
+            );
         }
     }
 
@@ -402,7 +417,13 @@ fn capture_options(db: &Database, providers: &Providers, session_id: &str) -> Va
                     .as_str()
                     .map(str::to_owned)
                     .unwrap_or_else(|| value.to_string());
-                (!id.is_empty()).then(|| json!({"id":id,"value":value}))
+                (!id.is_empty()).then(|| {
+                    let mut selection = json!({"id":id,"value":value});
+                    if option.get("category").and_then(Value::as_str) == Some("mode") {
+                        selection["category"] = json!("mode");
+                    }
+                    selection
+                })
             })
             .collect(),
     )
@@ -478,6 +499,21 @@ fn derived(operation_id: &str, suffix: &str) -> String {
     format!("{operation_id}:fork:{suffix}")
 }
 
+/// A provider must return `Ok(None)` whenever it can normally determine that
+/// native fork is unavailable. These codes are retained for legacy adapters
+/// that reject before issuing a native request. Every other error is
+/// conservative: the provider may already have created a child.
+fn native_fork_error_allows_copy_fallback(error: &ProviderError) -> bool {
+    matches!(
+        error.code.as_str(),
+        "unsupported"
+            | "native_fork_unsupported"
+            | "invalid_fork_anchor"
+            | "invalid_fork_request"
+            | "invalid_native_id"
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -491,6 +527,30 @@ mod tests {
 
     struct ForkAdapter {
         calls: Arc<AtomicUsize>,
+        result: Result<Option<String>, ProviderError>,
+        history: Result<Value, ProviderError>,
+    }
+
+    impl ForkAdapter {
+        fn native(calls: Arc<AtomicUsize>) -> Self {
+            Self {
+                calls,
+                result: Ok(Some("forked-native".into())),
+                history: Ok(fork_history()),
+            }
+        }
+
+        fn outcome(calls: Arc<AtomicUsize>, result: Result<Option<String>, ProviderError>) -> Self {
+            Self { calls, result, history: Ok(fork_history()) }
+        }
+
+        fn with_history(
+            calls: Arc<AtomicUsize>,
+            result: Result<Option<String>, ProviderError>,
+            history: Result<Value, ProviderError>,
+        ) -> Self {
+            Self { calls, result, history }
+        }
     }
 
     struct AdmissionAdapter {
@@ -528,9 +588,7 @@ mod tests {
             "fork-fixture"
         }
         fn capability(&self) -> ProviderCapability {
-            ForkAdapter {
-                calls: Arc::new(AtomicUsize::new(0)),
-            }
+            ForkAdapter::native(Arc::new(AtomicUsize::new(0)))
             .capability()
         }
         fn terminal_command(
@@ -603,12 +661,8 @@ mod tests {
         ) -> Result<Value, ProviderError> {
             Ok(json!({"items":[]}))
         }
-        fn history_read(&self, native_id: &str) -> Result<Value, ProviderError> {
-            Ok(json!([{
-                "id":"forked-answer","role":"assistant","parts":[{"type":"text","text":"forked"}],
-                "createdAt":"2026-01-01T00:00:00Z","turnStatus":"completed",
-                "forkAnchor":{"nativeId":native_id,"turnId":"forked-turn"}
-            }]))
+        fn history_read(&self, _: &str) -> Result<Value, ProviderError> {
+            self.history.clone()
         }
         fn fork_session(
             &self,
@@ -624,7 +678,7 @@ mod tests {
             );
             assert!(is_latest);
             self.calls.fetch_add(1, Ordering::SeqCst);
-            Ok(Some("forked-native".into()))
+            self.result.clone()
         }
         fn open_chat(
             &self,
@@ -964,9 +1018,7 @@ mod tests {
         let db = Database::open(&root.path().join("fork-native.sqlite")).unwrap();
         let (source, item_id) = source(&db, root.path(), Some("source-native"));
         let calls = Arc::new(AtomicUsize::new(0));
-        let providers = Providers::for_test(vec![Arc::new(ForkAdapter {
-            calls: Arc::clone(&calls),
-        })]);
+        let providers = Providers::for_test(vec![Arc::new(ForkAdapter::native(Arc::clone(&calls)))]);
         let request = || ForkRequest {
             session_id: &source.id,
             item_id: Some(&item_id),
@@ -985,6 +1037,149 @@ mod tests {
         assert!(!child.read_only);
         assert_ne!(child.id, source.id);
         assert_eq!(db.snapshot().unwrap().sessions.len(), 2);
+    }
+
+    fn fork_history() -> Value {
+        json!([{
+            "id":"forked-answer","role":"assistant","parts":[{"type":"text","text":"forked"}],
+            "createdAt":"2026-01-01T00:00:00Z","turnStatus":"completed",
+            "forkAnchor":{"nativeId":"forked-native","turnId":"forked-turn"}
+        }])
+    }
+
+    fn fork_tempdir() -> tempfile::TempDir {
+        tempfile::tempdir_in(r"D:\project\ThreadTerm\tt-qa-temp").unwrap()
+    }
+
+    #[test]
+    fn uncertain_native_fork_never_copies_or_reposts() {
+        let cases = [
+            ProviderError::new("operation_outcome_unknown", "lost native fork reply"),
+            ProviderError::new("provider_disconnected", "native connection closed"),
+            ProviderError::new("provider_timeout", "native fork timed out"),
+            ProviderError::new("provider_error", "native server failed")
+                .with_details(json!({"httpStatus":500})),
+            ProviderError::new("provider_protocol", "native fork response was malformed"),
+        ];
+        for (index, error) in cases.into_iter().enumerate() {
+            let root = fork_tempdir();
+            let db = Database::open(&root.path().join("fork-unknown.sqlite")).unwrap();
+            let (source, item_id) = source(&db, root.path(), Some("source-native"));
+            let calls = Arc::new(AtomicUsize::new(0));
+            let providers = Providers::for_test(vec![Arc::new(ForkAdapter::outcome(
+                Arc::clone(&calls),
+                Err(error),
+            ))]);
+            let operation_id = format!("fork-unknown-{index}");
+            let request = || ForkRequest {
+                session_id: &source.id,
+                item_id: Some(&item_id),
+                operation_id: &operation_id,
+            };
+            assert_eq!(fork(&db, &providers, request()).unwrap_err().to_string(), "operation_outcome_unknown");
+            assert_eq!(fork(&db, &providers, request()).unwrap_err().to_string(), "operation_outcome_unknown");
+            assert_eq!(calls.load(Ordering::SeqCst), 1, "case {index} must not repost");
+            assert_eq!(db.snapshot().unwrap().sessions.len(), 1, "case {index} must not copy");
+            assert_eq!(db.session_by_id(&source.id).unwrap().unwrap(), source);
+        }
+    }
+
+    #[test]
+    fn unusable_native_fork_identity_never_copies_or_reposts() {
+        for (index, native_id) in ["", "source-native"].into_iter().enumerate() {
+            let root = fork_tempdir();
+            let db = Database::open(&root.path().join("fork-unusable-id.sqlite")).unwrap();
+            let (source, item_id) = source(&db, root.path(), Some("source-native"));
+            let calls = Arc::new(AtomicUsize::new(0));
+            let providers = Providers::for_test(vec![Arc::new(ForkAdapter::outcome(
+                Arc::clone(&calls),
+                Ok(Some(native_id.into())),
+            ))]);
+            let operation_id = format!("fork-unusable-id-{index}");
+            let request = || ForkRequest {
+                session_id: &source.id,
+                item_id: Some(&item_id),
+                operation_id: &operation_id,
+            };
+            assert_eq!(fork(&db, &providers, request()).unwrap_err().to_string(), "operation_outcome_unknown");
+            assert_eq!(fork(&db, &providers, request()).unwrap_err().to_string(), "operation_outcome_unknown");
+            assert_eq!(calls.load(Ordering::SeqCst), 1, "case {index} must not repost");
+            assert_eq!(db.snapshot().unwrap().sessions.len(), 1, "case {index} must not copy");
+            assert_eq!(db.session_by_id(&source.id).unwrap().unwrap(), source);
+        }
+    }
+
+    #[test]
+    fn unusable_native_fork_history_never_copies_or_reposts() {
+        let root = fork_tempdir();
+        let db = Database::open(&root.path().join("fork-unusable-history.sqlite")).unwrap();
+        let (source, item_id) = source(&db, root.path(), Some("source-native"));
+        let calls = Arc::new(AtomicUsize::new(0));
+        let providers = Providers::for_test(vec![Arc::new(ForkAdapter::with_history(
+            Arc::clone(&calls),
+            Ok(Some("forked-native".into())),
+            Err(ProviderError::new("provider_disconnected", "fork child history is unavailable")),
+        ))]);
+        let request = || ForkRequest {
+            session_id: &source.id,
+            item_id: Some(&item_id),
+            operation_id: "fork-unusable-history",
+        };
+        assert_eq!(fork(&db, &providers, request()).unwrap_err().to_string(), "operation_outcome_unknown");
+        assert_eq!(fork(&db, &providers, request()).unwrap_err().to_string(), "operation_outcome_unknown");
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        assert_eq!(db.snapshot().unwrap().sessions.len(), 1);
+        assert_eq!(db.session_by_id(&source.id).unwrap().unwrap(), source);
+    }
+
+    #[test]
+    fn failed_native_fork_import_never_copies_or_reposts() {
+        let root = fork_tempdir();
+        let db = Database::open(&root.path().join("fork-import-failure.sqlite")).unwrap();
+        let (source, item_id) = source(&db, root.path(), Some("source-native"));
+        let mut oversized_history = fork_history();
+        oversized_history[0]["parts"][0]["text"] =
+            json!("x".repeat(crate::chat_repair::MAX_HISTORY_BYTES));
+        let calls = Arc::new(AtomicUsize::new(0));
+        let providers = Providers::for_test(vec![Arc::new(ForkAdapter::with_history(
+            Arc::clone(&calls),
+            Ok(Some("forked-native".into())),
+            Ok(oversized_history),
+        ))]);
+        let request = || ForkRequest {
+            session_id: &source.id,
+            item_id: Some(&item_id),
+            operation_id: "fork-import-failure",
+        };
+        assert_eq!(fork(&db, &providers, request()).unwrap_err().to_string(), "operation_outcome_unknown");
+        assert_eq!(fork(&db, &providers, request()).unwrap_err().to_string(), "operation_outcome_unknown");
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        assert_eq!(db.snapshot().unwrap().sessions.len(), 1, "failed native import must not copy");
+        assert_eq!(db.session_by_id(&source.id).unwrap().unwrap(), source);
+    }
+
+    #[test]
+    fn definitively_unsupported_native_fork_copies_once_and_preserves_source() {
+        let root = fork_tempdir();
+        let db = Database::open(&root.path().join("fork-unsupported.sqlite")).unwrap();
+        let (source, item_id) = source(&db, root.path(), Some("source-native"));
+        let calls = Arc::new(AtomicUsize::new(0));
+        let providers = Providers::for_test(vec![Arc::new(ForkAdapter::outcome(
+            Arc::clone(&calls),
+            Err(ProviderError::new("unsupported", "native fork is unavailable")),
+        ))]);
+        let request = || ForkRequest {
+            session_id: &source.id,
+            item_id: Some(&item_id),
+            operation_id: "fork-unsupported",
+        };
+        let first = fork(&db, &providers, request()).unwrap();
+        let second = fork(&db, &providers, request()).unwrap();
+        assert_eq!(first, second);
+        assert_eq!(first["mode"], "copy");
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        assert_eq!(db.snapshot().unwrap().sessions.len(), 2);
+        assert_eq!(db.session_by_id(&source.id).unwrap().unwrap(), source);
     }
 
     #[test]
@@ -1044,9 +1239,7 @@ mod tests {
             .unwrap();
         assert!(imported.read_only);
         let calls = Arc::new(AtomicUsize::new(0));
-        let providers = Providers::for_test(vec![Arc::new(ForkAdapter {
-            calls: Arc::clone(&calls),
-        })]);
+        let providers = Providers::for_test(vec![Arc::new(ForkAdapter::native(Arc::clone(&calls)))]);
         let result = fork(
             &db,
             &providers,
@@ -1076,9 +1269,7 @@ mod tests {
         db.save_chat_fork_native_intent("fork-known-native", &source.id, "forked-native")
             .unwrap();
         let calls = Arc::new(AtomicUsize::new(0));
-        let providers = Providers::for_test(vec![Arc::new(ForkAdapter {
-            calls: Arc::clone(&calls),
-        })]);
+        let providers = Providers::for_test(vec![Arc::new(ForkAdapter::native(Arc::clone(&calls)))]);
         let result = fork(
             &db,
             &providers,

@@ -190,7 +190,10 @@ impl ClaudeAdapter {
         native_id: Option<&str>,
         worker_token: Option<&str>,
         tools: Option<&ChatToolServer>,
+        permissions: &ClaudeStartupPermissions,
     ) -> Result<Box<dyn ChatSession>, ProviderError> {
+        let permission_mode = permissions.mode.as_deref();
+        let startup_model = permissions.model.as_deref();
         // Credentials are not pre-checked here: the sidecar rejects a signed-out
         // handshake with the exact reason, whatever auth source Claude Code uses.
         if let Some(id) = native_id {
@@ -220,7 +223,19 @@ impl ClaudeAdapter {
             );
             start["mcpServers"] = Value::Object(servers);
         }
-        let result = process.sidecar_request("session.start", start)?;
+        if let Some(mode) = permission_mode {
+            start["permissionMode"] = json!(mode);
+        }
+        if let Some(model) = startup_model {
+            start["model"] = json!(model);
+        }
+        let result = process.sidecar_request("session.start", start).map_err(|error| {
+            if permission_mode.is_some() {
+                ProviderError::new("chat_permission_restore_failed", error.message)
+            } else {
+                error
+            }
+        })?;
         if let Some(state) = result.get("ui") {
             ui.replace(state);
         }
@@ -480,7 +495,7 @@ impl ProviderAdapter for ClaudeAdapter {
         cwd: &str,
         native_id: Option<&str>,
     ) -> Result<Box<dyn ChatSession>, ProviderError> {
-        self.open_chat_worker(session_id, cwd, native_id, None, None)
+        self.open_chat_worker(session_id, cwd, native_id, None, None, &ClaudeStartupPermissions::default())
     }
 
     fn scopes_chat_events(&self) -> bool {
@@ -494,7 +509,7 @@ impl ProviderAdapter for ClaudeAdapter {
         native_id: Option<&str>,
         worker_token: &str,
     ) -> Result<Box<dyn ChatSession>, ProviderError> {
-        self.open_chat_worker(session_id, cwd, native_id, Some(worker_token), None)
+        self.open_chat_worker(session_id, cwd, native_id, Some(worker_token), None, &ClaudeStartupPermissions::default())
     }
 
     fn open_chat_with_tools(
@@ -505,8 +520,67 @@ impl ProviderAdapter for ClaudeAdapter {
         worker_token: &str,
         tools: Option<&ChatToolServer>,
     ) -> Result<Box<dyn ChatSession>, ProviderError> {
-        self.open_chat_worker(session_id, cwd, native_id, Some(worker_token), tools)
+        self.open_chat_worker(session_id, cwd, native_id, Some(worker_token), tools, &ClaudeStartupPermissions::default())
     }
+
+    fn open_chat_with_startup_options(
+        &self,
+        session_id: &str,
+        cwd: &str,
+        native_id: Option<&str>,
+        worker_token: &str,
+        tools: Option<&ChatToolServer>,
+        startup: &super::ChatStartupOptions<'_>,
+    ) -> Result<Box<dyn ChatSession>, ProviderError> {
+        let options = startup.permissions;
+        let startup = claude_startup_permissions(options)?;
+        let mut chat = self.open_chat_worker(session_id, cwd, native_id, Some(worker_token), tools, &startup)?;
+        let mode = json!(startup.mode.map(|value| json!({"id":"mode","value":value})).into_iter().collect::<Vec<_>>());
+        if let Err(error) = super::verify_permission_options(&chat.ui_state(), &mode) {
+            let _ = chat.stop();
+            return Err(error);
+        }
+        Ok(chat)
+    }
+}
+
+#[derive(Debug, Default)]
+struct ClaudeStartupPermissions { mode: Option<String>, model: Option<String> }
+
+fn claude_startup_permissions(options: &Value) -> Result<ClaudeStartupPermissions, ProviderError> {
+    let Some(options) = options.as_array() else {
+        return Err(ProviderError::new("chat_permission_restore_failed", "Saved Claude permissions must be an array"));
+    };
+    let mut mode = None;
+    let mut model = None;
+    for option in options {
+        let id = option.get("id").and_then(Value::as_str).ok_or_else(|| {
+            ProviderError::new("chat_permission_restore_failed", "Saved Claude permission has no option id")
+        })?;
+        let value = option.get("value").and_then(Value::as_str).ok_or_else(|| {
+            ProviderError::new("chat_permission_restore_failed", format!("Saved Claude permission {id} has no value"))
+        })?;
+        if id == "model" {
+            if model.replace(value.to_owned()).is_some() { return Err(ProviderError::new("chat_permission_restore_failed", "Saved Claude startup model was specified more than once")); }
+            continue;
+        }
+        if id != "mode" || !matches!(value, "default" | "acceptEdits" | "plan" | "dontAsk" | "auto") {
+            return Err(ProviderError::new(
+                "chat_permission_restore_failed",
+                format!("Saved Claude permission {id}={value} is no longer supported. Select another mode and retry."),
+            ));
+        }
+        if mode.replace(value.to_owned()).is_some() {
+            return Err(ProviderError::new(
+                "chat_permission_restore_failed",
+                "Saved Claude permission mode was specified more than once",
+            ));
+        }
+    }
+    if model.is_some() && mode.as_deref() != Some("auto") {
+        return Err(ProviderError::new("chat_permission_restore_failed", "Saved Claude startup model is only valid with auto permission mode"));
+    }
+    Ok(ClaudeStartupPermissions { mode, model })
 }
 
 struct ClaudeChat {
@@ -1533,6 +1607,9 @@ fn emit_claude_message(
             ui.replace(state);
             let mut data = ui.wire();
             data["sessionId"] = json!(session_id);
+            if raw.get("permissionChangeConfirmed").and_then(Value::as_bool) == Some(true) {
+                data["permissionChangeConfirmed"] = json!(true);
+            }
             emit_scoped(
                 events,
                 "claude",
@@ -2204,6 +2281,18 @@ fn claude_history_turn_status(stop_reason: Option<&str>) -> Option<&'static str>
 mod tests {
     use super::*;
     use std::time::Duration;
+
+    #[test]
+    fn claude_startup_permission_mode_accepts_only_restorable_modes() {
+        assert_eq!(
+            claude_startup_permissions(&json!([{"id":"mode","value":"dontAsk"}])).unwrap().mode,
+            Some("dontAsk".into())
+        );
+        let error = claude_startup_permissions(&json!([{"id":"mode","value":"bypassPermissions"}])).unwrap_err();
+        assert_eq!(error.code, "chat_permission_restore_failed");
+        let error = claude_startup_permissions(&json!([{"id":"model","value":"haiku"}])).unwrap_err();
+        assert_eq!(error.code, "chat_permission_restore_failed");
+    }
 
     #[test]
     fn chat_ui_event_matches_claude_ui_state() {
@@ -3386,7 +3475,7 @@ createInterface({{ input: process.stdin, crlfDelay: Infinity }}).on('line', line
     setTimeout(() => {{
       if ('{mode}' === 'fail') return write({{ id: req.id, error: {{ message: 'handshake rejected: not authenticated' }} }});
       if ('{mode}' === 'die-before') write({{ ev: 'session.status', cardId: req.cardId, phase: 'closed', sessionId: 'native-fixture' }});
-      write({{ id: req.id, ok: {{ sessionId: req.sessionId ?? null, ui: ui('default') }} }});
+      write({{ id: req.id, ok: {{ sessionId: req.sessionId ?? null, ui: ui('{mode}' === 'permission-mode' ? req.permissionMode : 'default') }} }});
       if ('{mode}' === 'options') write({{ ev: 'session.request', cardId: req.cardId, requestId: 'card-options-question-1', operationId: 'turn', sessionId: req.sessionId ?? null, toolName: 'AskUserQuestion', question: {{ questions: [{{ header: 'Colour', question: 'Which colour?', options: [{{ label: 'Blue' }}] }}] }} }});
       if ('{mode}' === 'plan' || '{mode}' === 'plan-partial') write({{ ev: 'session.request', cardId: req.cardId, requestId: 'card-plan-exit-1', operationId: 'turn-plan', sessionId: req.sessionId ?? null, toolName: 'ExitPlanMode', input: {{ plan: '# Proposed plan\\n1. Build it' }} }});
       if ('{mode}' === 'die') setTimeout(() => write({{ ev: 'session.status', cardId: req.cardId, phase: 'closed', sessionId: 'native-fixture' }}), 250);
@@ -3510,6 +3599,23 @@ createInterface({{ input: process.stdin, crlfDelay: Infinity }}).on('line', line
             "open_chat returned before the sidecar handshake completed"
         );
         assert!(chat.is_alive());
+        chat.stop().unwrap();
+
+        // A saved permission must reach the sidecar's initial session.start
+        // frame; the fake echoes only that frame into its effective UI.
+        let permission_host = fake_host(dir.path(), "permission-mode", 0);
+        environment.set("THREADTERM_CLAUDE_SDK_HOST", &permission_host);
+        let mut chat = adapter
+            .open_chat_with_startup_options(
+                "card-permission-mode",
+                &cwd,
+                Some("native-fixture"),
+                "worker-permission",
+                None,
+                &super::super::ChatStartupOptions {project_trust:None, permissions:&json!([{"id":"mode","value":"plan"}])},
+            )
+            .unwrap();
+        assert_eq!(chat.ui_state()["options"][0]["value"], "plan");
         chat.stop().unwrap();
 
         // A rejected handshake fails open_chat with the real error.

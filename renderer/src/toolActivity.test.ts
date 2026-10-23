@@ -4,7 +4,7 @@ import { resolve } from 'node:path';
 import test from 'node:test';
 import type { ChatItem, ChatPart } from '@threadterm/protocol';
 import { groupCodexTranscript } from './codexTranscript';
-import { activeToolEntries, completedTurnPresentation, describeTool, groupToolActivity, hiddenQuestionTool, orderCompletedTurnItems, toolActivityPreview, toolActivityWaitingLabel, toolEntriesForItems, toolOutputPreview, toolStatus, withoutToolParts } from './toolActivity';
+import { activeToolEntries, completedTurnPresentation, describeTool, groupToolActivity, hiddenQuestionTool, orderCompletedTurnItems, toolActivityPreview, toolActivityWaitingLabel, toolEntriesForItems, toolFailureSummary, toolOutputPreview, toolStatus, withoutToolParts } from './toolActivity';
 
 const en = (english: string, _zh: string) => english;
 const zh = (_english: string, chinese: string) => chinese;
@@ -190,7 +190,20 @@ test('all provider input shapes describe commands and browser operations without
   assert.equal(describeTool(tool('x', 'mcp__threadterm__delegate_wait'), en).kind, 'delegation');
   assert.equal(describeTool(tool('x', 'mcpToolCall', 'complete', { server: 'custom', tool: 'get_status' }), en).kind, 'mcp');
   assert.equal(describeTool(tool('x', 'mcp__custom__get_execution_history'), en).kind, 'mcp');
-  assert.deepEqual(describeTool(tool('x', 'fileChange', 'running', { changes: [{ path: 'a.ts' }, { path: 'b.ts' }] }), en), { kind: 'file', name: 'Files', action: 'Applying changes', detail: 'a.ts (+1)' });
+  assert.equal(describeTool(tool('x', 'commandExecution', 'running', {
+    command: "pwsh.exe -NoProfile -Command 'Get-ChildItem -Force'", commandActions: [{ command: 'Get-ChildItem -Force' }],
+  }), en).detail, 'Get-ChildItem -Force');
+  assert.deepEqual(describeTool(tool('x', 'fileChange', 'running', { changes: [{ path: 'a.ts' }, { path: 'b.ts' }] }), en), { kind: 'file', name: 'Apply patch', action: 'Applying changes', detail: 'a.ts (+1)' });
+  const files: [string, unknown, string, string][] = [
+    ['Read', { input: { path: 'a.ts' } }, 'Read file', '读取文件'],
+    ['Edit', { input: { path: 'a.ts', old_string: 'a', new_string: 'b' } }, 'Edit file', '编辑文件'],
+    ['Write', { input: { path: 'a.ts', content: 'a' } }, 'Write file', '写入文件'],
+    ['fileChange', { changes: [{ path: 'a.ts' }] }, 'Apply patch', '应用补丁'],
+  ];
+  for (const [name, data, english, chinese] of files) {
+    assert.equal(describeTool(tool('x', name, 'complete', data), en).name, english);
+    assert.equal(describeTool(tool('x', name, 'complete', data), zh).name, chinese);
+  }
 });
 
 test('Pi args describe live and settled tool calls without treating results as inputs', () => {
@@ -216,8 +229,10 @@ test('tool output previews use only provider result fields and normalize the las
   assert.equal(toolOutputPreview(tool('malformed', 'bash', 'complete', { result: { content: [{ type: 'image' }, null, { text: 42 }] } })), undefined);
   // Live Kimi ExitPlanMode: the empty argument object arrives as content.
   assert.equal(toolOutputPreview(tool('kimi-args', 'ExitPlanMode', 'running', { content: [{ type: 'content', content: { type: 'text', text: '{}' } }] })), undefined);
-  // A pretty-printed JSON result previews its last real line, not the closing brace.
-  assert.equal(toolOutputPreview(tool('json', 'delegate_result', 'complete', { result: { content: [{ type: 'text', text: '{\n  "finalAnswer": "DONE-A"\n}' }] } })), '"finalAnswer": "DONE-A"');
+  assert.equal(toolOutputPreview(tool('json', 'delegate_result', 'complete', { result: { content: [{ type: 'text', text: '{\n  "finalAnswer": "DONE-A"\n}' }] } })), undefined);
+  assert.equal(toolOutputPreview(tool('mcp-json', 'mcpToolCall', 'complete', { result: { content: [{ type: 'text', text: '{\n  "availableAgents": [\n    "pi"\n  ]\n}' }] } })), undefined);
+  assert.equal(toolOutputPreview(tool('json-array', 'delegate_result', 'complete', { output: '["one", "two"]' })), undefined);
+  assert.equal(toolOutputPreview(tool('json-line', 'delegate_result', 'complete', { output: 'done\n"workspacePath": "D:\\\\project"' })), 'done');
   const long = 'x'.repeat(250);
   assert.equal(toolOutputPreview(tool('long', 'bash', 'complete', { output: long })), `${'x'.repeat(239)}…`);
 });
@@ -230,7 +245,42 @@ test('tool activity previews prefer the latest running result then fall back to 
   assert.deepEqual(toolActivityPreview(entries, true), { entryId: entries[0]!.id, text: 'finished output' });
   const withLiveOutput = [...entries.slice(0, 1), { ...entries[1]!, part: tool('running', 'bash', 'running', { partialResult: { content: [{ type: 'text', text: 'live output' }] } }) }];
   assert.deepEqual(toolActivityPreview(withLiveOutput, true), { entryId: withLiveOutput[1]!.id, text: 'live output' });
-  assert.deepEqual(toolActivityPreview(entries, false), { entryId: entries[0]!.id, text: 'finished output' });
+  assert.equal(toolActivityPreview(entries, false), undefined);
+});
+
+test('failure summary combines failures and interruptions without repeating raw commands', () => {
+  const shared = toolEntriesForItems([row('shared', [
+    tool('one', 'Bash', 'failed', { output: 'sandbox denied' }),
+    tool('two', 'Bash', 'failed', { output: 'sandbox denied' }),
+    tool('three', 'Bash', 'interrupted', { output: 'sandbox denied' }),
+  ])]);
+  assert.deepEqual(toolFailureSummary(shared, en), {
+    label: '2 failed · 1 interrupted', reason: 'sandbox denied',
+    title: 'Failed: Command · Bash — sandbox denied\nFailed: Command · Bash — sandbox denied\nFailed: Command · Bash — sandbox denied',
+  });
+  const distinct = toolEntriesForItems([row('distinct', [
+    tool('one', 'Read', 'failed', { input: { path: 'a.ts' }, output: 'missing' }),
+    tool('two', 'Write', 'failed', { input: { path: 'b.ts', content: 'x' }, output: 'readonly' }),
+  ])]);
+  assert.equal(toolFailureSummary(distinct, en)!.reason, 'Read file · a.ts (+1 more)');
+  assert.deepEqual(toolFailureSummary(shared, zh), {
+    label: '2 项失败 · 1 项中断', reason: 'sandbox denied',
+    title: '失败: 命令 · Bash — sandbox denied\n失败: 命令 · Bash — sandbox denied\n失败: 命令 · Bash — sandbox denied',
+  });
+  const failedOnly = toolEntriesForItems([row('failed-only', [
+    tool('one', 'Bash', 'failed'), tool('two', 'Bash', 'failed'), tool('three', 'Bash', 'failed'),
+  ])]);
+  assert.equal(toolFailureSummary(failedOnly, en)!.label, '3 failed');
+  const interruptedOnly = toolEntriesForItems([row('interrupted-only', [tool('one', 'Bash', 'interrupted')])]);
+  assert.equal(toolFailureSummary(interruptedOnly, en)!.label, '1 interrupted');
+  const missingOutput = toolEntriesForItems([row('missing-output', [
+    tool('one', 'Read', 'failed', { input: { path: 'a.ts' } }),
+    tool('two', 'Write', 'failed', { input: { path: 'b.ts', content: 'x' }, output: 'readonly' }),
+  ])]);
+  assert.equal(toolFailureSummary(missingOutput, en)!.reason, 'Read file · a.ts (+1 more)');
+  assert.equal(toolFailureSummary(missingOutput, zh)!.reason, '读取文件 · a.ts（另有 1 项）');
+  assert.equal(toolFailureSummary(toolEntriesForItems([row('complete', [tool('done', 'Bash', 'complete')])]), en), undefined);
+  assert.equal(toolFailureSummary([], en), undefined);
 });
 
 test('a retracted parent tool snapshot no longer contributes to the drawer', () => {
@@ -291,4 +341,12 @@ test('pending question drawers name the answer action in both locales', () => {
   assert.equal(toolActivityWaitingLabel(false, true, en), 'Waiting for approval');
   assert.equal(toolActivityWaitingLabel(true, true, en), 'Waiting for your answer');
   assert.equal(toolActivityWaitingLabel(true, true, zh), '等待你的回答');
+});
+
+test('live previews skip JSON fragments but keep bracketed progress lines', () => {
+  const output = (text: string) => toolOutputPreview({ type: 'tool', toolId: 'p', toolName: 'Bash', status: 'running', data: { output: text } });
+  assert.equal(output('[1/4] Resolving packages...'), '[1/4] Resolving packages...');
+  assert.equal(output('[vite] ready in 300 ms'), '[vite] ready in 300 ms');
+  assert.equal(output('building\n  "workspacePath": "D:\\repo"'), 'building');
+  assert.equal(output('done\n["a", "b"'), 'done');
 });

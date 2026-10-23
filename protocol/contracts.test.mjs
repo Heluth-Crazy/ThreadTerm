@@ -438,9 +438,14 @@ test('chat connection and options results distinguish unknown from empty success
  });
  validateResult('chat.connection',{
   sessionId:'s',runtimeEpoch:'e',connectionGeneration:2,revision:3,phase:'failed',nativeId:'n',
-  error:{code:'native_resume_failed',message:'resume failed',retryable:true,category:'provider'},
+  error:{code:'chat_permission_restore_failed',message:'restore failed',retryable:true,category:'provider',permissionRestore:{optionId:'sandbox',savedValue:'danger-full-access',reportedValue:'workspace-write',reason:'mismatch',optionName:'Sandbox',savedLabel:'Full access',reportedLabel:'Workspace write'}},
   optionsLoadState:'error',optionsError:{code:'chat_not_open',message:'not open'}
  });
+ assert.throws(()=>validateResult('chat.connection',{
+  sessionId:'s',runtimeEpoch:'e',connectionGeneration:2,revision:3,phase:'failed',
+  error:{code:'chat_permission_restore_failed',message:'restore failed',retryable:true,permissionRestore:{optionId:'sandbox',savedValue:'danger-full-access',reason:'other'}},
+  optionsLoadState:'error'
+ }));
  assert.throws(()=>validateResult('chat.connection',{
   sessionId:'s',runtimeEpoch:'e',connectionGeneration:1,revision:1,phase:'ready'
  }));

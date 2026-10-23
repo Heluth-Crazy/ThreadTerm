@@ -14,17 +14,43 @@ if (argv[0] === 'auth') { console.log('[]'); process.exit(0); }
 const port = Number(argv[argv.indexOf('--port') + 1]);
 if (!process.env.TT_QA_OPENCODE_STATE) throw new Error('TT_QA_OPENCODE_STATE is required');
 const stateFile = resolve(process.env.TT_QA_OPENCODE_STATE);
+const requestsFile = process.env.TT_QA_OPENCODE_REQUESTS;
+const portFile = process.env.TT_QA_OPENCODE_PORT_FILE;
 const state = existsSync(stateFile) ? JSON.parse(readFileSync(stateFile, 'utf8')) : { sessions: {}, questions: {} };
 state.questions ??= {};
-const save = () => writeFileSync(stateFile, JSON.stringify(state));
-const request = (method, path, directory, body) => {
-  if (process.env.TT_QA_OPENCODE_REQUESTS) appendFileSync(process.env.TT_QA_OPENCODE_REQUESTS, JSON.stringify({ method, path, directory, ...(body === undefined ? {} : { body }) }) + '\n');
+if (argv[0] === 'export') {
+  const entry = Object.entries(state.sessions).find(([, value]) => value.id === argv[1]);
+  if (!entry) { console.error('mock session not found'); process.exit(1); }
+  const [key, record] = entry;
+  console.log(JSON.stringify({ info: { id: record.id, directory: key.slice(0, key.lastIndexOf('|')), ...(record.parentID ? { parentID: record.parentID } : {}) }, messages: record.messages }));
+  process.exit(0);
+}
+const save = () => {
+  // Native fork can use a second isolated mock server. Preserve its durable
+  // branches when the original server next saves its own source-session state.
+  if (existsSync(stateFile)) {
+    const persisted = JSON.parse(readFileSync(stateFile, 'utf8'));
+    seq = Math.max(seq, persisted.sequence ?? 0);
+    for (const [key, record] of Object.entries(persisted.sessions ?? {})) {
+      if (!state.sessions[key]) state.sessions[key] = record;
+      else if (record.children?.length) {
+        const children = new Map(record.children.map(child => [child.id, child]));
+        for (const child of state.sessions[key].children ?? []) children.set(child.id, child);
+        state.sessions[key].children = [...children.values()];
+      }
+    }
+  }
+  state.sequence = seq; writeFileSync(stateFile, JSON.stringify(state));
 };
-const model = (providerID, id, name, variants) => ({ id, name, providerID, status: 'active', ...(variants ? { variants } : {}) });
+const request = (method, path, directory, body) => {
+  if (requestsFile) appendFileSync(requestsFile, JSON.stringify({ method, path, directory, ...(body === undefined ? {} : { body }) }) + '\n');
+};
+const model = (providerID, id, name, variants, image = false) => ({ id, name, providerID, status: 'active', ...(variants ? { variants } : {}), capabilities: { attachment: image, input: { text: true, audio: false, image, video: false, pdf: false } } });
 const catalogues = {
   provider: {
     all: [
       { id: 'openai', name: 'OpenAI', models: { 'gpt-5.2': model('openai', 'gpt-5.2', 'GPT 5.2', { fast: {}, precise: {} }) } },
+      { id: 'vision', name: 'Vision', models: { 'vision-1': model('vision', 'vision-1', 'Vision 1', undefined, true) } },
       { id: 'slash/provider', name: 'Slash Provider', models: { 'family/model/with/slash': model('slash/provider', 'family/model/with/slash', 'Slash Model') } },
       { id: 'offline', name: 'Offline', models: { unavailable: model('offline', 'unavailable', 'Unavailable') } },
     ],
@@ -39,6 +65,10 @@ const catalogues = {
     { name: 'subagent', mode: 'subagent', description: 'Subagent only' },
   ],
 };
+const commands = [
+  { name: 'review', description: 'Review the current changes', template: 'Review the current changes', hints: ['files'] },
+  { name: 'compact', description: 'Compact conversation', template: 'Compact this conversation', hints: [] },
+];
 function configuredCatalogue() {
   const overrides = state.catalogueOverrides ?? {};
   const provider = structuredClone(catalogues.provider);
@@ -47,6 +77,7 @@ function configuredCatalogue() {
     if (entry) delete entry.models[removal.modelID];
   }
   if (Array.isArray(overrides.disconnectedProviders)) provider.connected = provider.connected.filter(id => !overrides.disconnectedProviders.includes(id));
+  for (const id of overrides.connectedProviders ?? []) if (!provider.connected.includes(id)) provider.connected.push(id);
   return provider;
 }
 function configuredAgents() {
@@ -55,7 +86,7 @@ function configuredAgents() {
 }
 const streams = new Set();
 const stalledStreams = new Map();
-let seq = Object.keys(state.sessions).length;
+let seq = state.sequence ?? Object.keys(state.sessions).length;
 
 function emit(directory, type, properties) {
   if (type === 'message.part.updated' && properties.part?.messageID) {
@@ -76,16 +107,34 @@ function emit(directory, type, properties) {
   for (const res of streams) if (!stalledStreams.has(res)) res.write(frame);
 }
 function sessionOf(dir, id) { return state.sessions[`${dir}|${id}`]; }
+function readJson(req, done) {
+  let body = '';
+  req.on('data', chunk => body += chunk);
+  req.on('end', () => done(body ? JSON.parse(body) : {}));
+}
+function completeNativeTurn(directory, record, text) {
+  record.busy = true;
+  save();
+  setTimeout(() => {
+    if (text) emit(directory, 'message.part.updated', { sessionID: record.id, part: { id: `prt_${++seq}`, messageID: `msg_${++seq}`, sessionID: record.id, type: 'text', text, time: { start: 1 } } });
+    record.busy = false;
+    save();
+    emit(directory, 'session.idle', { sessionID: record.id });
+  }, 30);
+}
 
-const server = http.createServer((req, res) => {
+export const server = http.createServer((req, res) => {
   const url = new URL(req.url, 'http://x');
   const dir = url.searchParams.get('directory') ?? '';
   const path = url.pathname;
-  if (!/^\/session\/[^/]+\/prompt_async$/.test(path)) request(req.method, path, dir);
+  if (!/^\/session\/[^/]+\/(prompt_async|command|summarize|fork)$/.test(path)) request(req.method, path, dir);
   const json = (value, code = 200) => { res.writeHead(code, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(value)); };
   if (path === '/global/health') return json({ healthy: true, version: '1.18.31-qa-mock' });
   if (path === '/provider' && req.method === 'GET') return json(configuredCatalogue());
   if (path === '/agent' && req.method === 'GET') return json(configuredAgents());
+  if (path === '/command' && req.method === 'GET') return json(commands);
+  if (path === '/permission' && req.method === 'GET') return json(state.pendingPermissions ?? []);
+  if (path === '/question' && req.method === 'GET') return json(state.pendingQuestions ?? []);
   if (path === '/global/event') {
     if (state.stallEventHeaders) return; // accepted TCP, deliberately no SSE headers
     res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', Connection: 'keep-alive' });
@@ -169,6 +218,26 @@ const server = http.createServer((req, res) => {
     });
     return;
   }
+  if (path === '/qa/recovery' && req.method === 'POST') {
+    return readJson(req, recovery => {
+      state.pendingPermissions = recovery.permissions ?? [];
+      state.pendingQuestions = recovery.questions ?? [];
+      for (const session of recovery.sessions ?? []) {
+        if (!sessionOf(dir, session.id) && session.create === true) state.sessions[`${dir}|${session.id}`] = { id: session.id, messages: [], busy: false, parentID: session.parentID };
+        const record = sessionOf(dir, session.id);
+        if (record) {
+          if (typeof session.busy === 'boolean') record.busy = session.busy;
+          record.todo = session.todo ?? [];
+          record.children = session.children ?? [];
+          if (session.messages) record.messages = session.messages;
+        }
+      }
+      save();
+      json({ seeded: true });
+    });
+  }
+  if (path === '/qa/catalogue' && req.method === 'POST') return readJson(req, body => { state.catalogueOverrides = { ...(state.catalogueOverrides ?? {}), ...body }; save(); json(configuredCatalogue()); });
+  if (path === '/qa/fork-outcome' && req.method === 'POST') return readJson(req, body => { state.forkDropResponse = Boolean(body.dropResponse); save(); json({ dropResponse: state.forkDropResponse }); });
   const questionMatch = path.match(/^\/question\/([^/]+)\/(reply|reject)$/);
   if (questionMatch && req.method === 'POST') {
     let body = '';
@@ -227,6 +296,53 @@ const server = http.createServer((req, res) => {
       }
       const limit = Number(url.searchParams.get('limit') || 0);
       return json(limit > 0 ? record.messages.slice(-limit) : record.messages);
+    }
+    if (sub === '/todo' && req.method === 'GET') return json(record.todo ?? []);
+    if (sub === '/children' && req.method === 'GET') return json(record.children ?? []);
+    if (sub === '/command' && req.method === 'POST') {
+      return readJson(req, body => {
+        if (!commands.some(command => command.name === body.command)) return json({ error: 'unknown command' }, 404);
+        request(req.method, path, dir, body);
+        completeNativeTurn(dir, record, `command:${body.command}${body.arguments ? ` ${body.arguments}` : ''}`);
+        json({ info: { id: `msg_command_${++seq}`, sessionID: id, role: 'assistant' }, parts: [] });
+      });
+    }
+    if (sub === '/summarize' && req.method === 'POST') {
+      return readJson(req, body => {
+        request(req.method, path, dir, body);
+        if (record.busy) return json({ error: 'session busy' }, 409);
+        record.busy = true;
+        save();
+        setTimeout(() => {
+          // A real server can append a hidden native summary. The adapter must
+          // suppress this implementation detail and show only its receipt.
+          const messageID = `msg_summary_${++seq}`, info = { id: messageID, sessionID: id, role: 'assistant', summary: true };
+          record.messages.push({ info, parts: [] });
+          emit(dir, 'message.updated', { info });
+          emit(dir, 'message.part.updated', { sessionID: id, part: { id: `prt_summary_${++seq}`, messageID, sessionID: id, type: 'text', text: 'HIDDEN-NATIVE-SUMMARY', time: { start: 1 } } });
+          record.busy = false;
+          save();
+          emit(dir, 'session.idle', { sessionID: id });
+        }, 30);
+        json(true);
+      });
+    }
+    if (sub === '/fork' && req.method === 'POST') {
+      return readJson(req, body => {
+        request(req.method, path, dir, body);
+        const childID = `ses_fork_${++seq}`;
+        // OpenCode declares an optional boundary, but not whether it is
+        // inclusive. The adapter passes the first excluded message here.
+        const boundary = body.messageID ? record.messages.findIndex(message => message.info.id === body.messageID) : -1;
+        const messages = boundary >= 0 ? structuredClone(record.messages.slice(0, boundary)) : structuredClone(record.messages);
+        for (const message of messages) { message.info.sessionID = childID; for (const part of message.parts) part.sessionID = childID; }
+        const child = { id: childID, messages, busy: false, parentID: id };
+        state.sessions[`${dir}|${childID}`] = child;
+        record.children = [...(record.children ?? []), { id: childID, parentID: id, directory: dir }];
+        save();
+        if (state.forkDropResponse) return json({ error: 'fork response lost after creation' }, 503);
+        json({ id: childID, parentID: id, directory: dir });
+      });
     }
     const messageMatch = sub.match(/^\/message\/([^/]+)$/);
     if (messageMatch && req.method === 'GET') {
@@ -407,6 +523,6 @@ const server = http.createServer((req, res) => {
   json({ error: 'unhandled ' + path }, 404);
 });
 server.listen(port, '127.0.0.1', () => {
-  if (process.env.TT_QA_OPENCODE_PORT_FILE) writeFileSync(process.env.TT_QA_OPENCODE_PORT_FILE, String(port));
+  if (portFile) writeFileSync(portFile, String(server.address().port));
   console.log(`mock opencode listening on ${port}`);
 });

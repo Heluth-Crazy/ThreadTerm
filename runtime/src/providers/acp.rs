@@ -9,7 +9,7 @@ use super::{
         command_output, context_usage_from_update, dispatch_acp_message, flush_acp_messages, encode_approval_id, history_page, insert_optional, validate_native_id,
         version_probe, ChatTextSegments, CommandSpec, EnvelopeStyle, JsonLineProcess, JsonLineResponder,
     },
-    emit_bound as emit, ChatSession, ChatToolPolicy, ChatToolServer, ProviderAdapter, ProviderCapability,
+    emit_bound as emit, verify_permission_options, ChatSession, ChatToolPolicy, ChatToolServer, ProviderAdapter, ProviderCapability,
     NativeSessionRef, ProviderError, ScopedProviderEvents, TerminalCommand,
 };
 use crate::plugins::{AgentDescriptor, TerminalConfig};
@@ -461,7 +461,14 @@ impl ProviderAdapter for AcpAdapter {
                     json!({"sessionId":id,"cwd":cwd,"mcpServers":mcp_servers}),
                 )
             } else if has_capability(&initialized, "resume") {
-                process.request("session/resume", json!({"sessionId":id,"cwd":cwd}))
+                if tools.is_some() {
+                    Err(ProviderError::new(
+                        "resume_tools_unsupported",
+                        "This ACP agent only advertises session/resume, whose MCP re-attachment schema is unknown. Reconnect without managed tools or use an agent that supports session/load.",
+                    ))
+                } else {
+                    process.request("session/resume", json!({"sessionId":id,"cwd":cwd}))
+                }
             } else {
                 Err(ProviderError::new(
                     "resume_unsupported",
@@ -518,6 +525,52 @@ impl ProviderAdapter for AcpAdapter {
             ui,
         }))
     }
+
+    fn open_chat_with_startup_options(
+        &self, session_id: &str, cwd: &str, native_id: Option<&str>, worker_token: &str,
+        tools: Option<&ChatToolServer>, startup: &super::ChatStartupOptions<'_>,
+    ) -> Result<Box<dyn ChatSession>, ProviderError> {
+        let options = startup.permissions;
+        let mut chat = self.open_chat_with_tools(session_id, cwd, native_id, worker_token, tools)?;
+        let restored = (|| {
+            for option in options.as_array().into_iter().flatten() {
+                let id = option.get("id").and_then(Value::as_str).ok_or_else(|| ProviderError::new("chat_permission_restore_failed", "Invalid saved ACP permission option"))?;
+                let value = option.get("value").and_then(Value::as_str).ok_or_else(|| ProviderError::new("chat_permission_restore_failed", "Invalid saved ACP permission value"))?;
+                let state = chat.ui_state();
+                let current = super::permission_option(&state, id);
+                if current.is_none() {
+                    return Err(super::permission_restore_error(option, None, "missing", None));
+                }
+                chat.set_option(id, value).map_err(|error| {
+                    if super::is_structured_permission_restore_error(&error) {
+                        error
+                    } else if error.details.as_ref().and_then(|details| details.get("permissionUnconfirmed")).and_then(Value::as_bool) == Some(true) {
+                        let state = chat.ui_state();
+                        let reported = super::permission_option(&state, id);
+                        super::permission_restore_error(
+                            option,
+                            reported,
+                            if reported.is_some() { "mismatch" } else { "missing" },
+                            reported.and_then(super::permission_value),
+                        )
+                    } else {
+                        super::permission_restore_error(
+                            option,
+                            current,
+                            "rejected",
+                            current.and_then(super::permission_value),
+                        )
+                    }
+                })?;
+            }
+            verify_permission_options(&chat.ui_state(), options)
+        })();
+        if let Err(error) = restored {
+            let _ = chat.stop();
+            return Err(super::with_permission_options(error, chat.ui_state()));
+        }
+        Ok(chat)
+    }
 }
 
 fn acp_probe_failure_reason(name: &str, probe_error: Option<String>) -> String {
@@ -545,6 +598,8 @@ struct AcpUiState {
     options: Vec<Value>,
     commands: Vec<Value>,
     config_generation: u64,
+    legacy_mode: bool,
+    modern_mode: bool,
     last_emitted: Option<String>,
     usage_reply: Option<PendingUsageReply>,
     /// E2: this open was granted the Feedback tool, and ACP agents never steer
@@ -875,7 +930,11 @@ impl AcpChat {
     }
 
     fn mode_command(&mut self, mode: &str, operation_id: &str) -> Result<Value, ProviderError> {
-        match self.set_option("mode", mode) {
+        let result = self.set_option("mode", mode).and_then(|state| {
+            verify_permission_options(&state, &json!([{"id":"mode","value":mode}]))?;
+            Ok(state)
+        });
+        match result {
             Ok(_) => self.reply_command(operation_id, &format!("Mode: {mode}")),
             Err(error) => self.reply_command(
                 operation_id,
@@ -1200,7 +1259,13 @@ impl ChatSession for AcpChat {
                     .is_some()
             });
             if moved {
-                emit_chat_ui(&self.events, &self.provider, &self.session_id, Some(&self.native_id), &self.ui);
+                emit_permission_mode_confirmed(
+                    &self.events,
+                    &self.provider,
+                    &self.session_id,
+                    Some(&self.native_id),
+                    &self.ui,
+                );
             }
         }
         let Some(feedback) = feedback else { return Ok(None); };
@@ -1292,6 +1357,25 @@ impl ChatSession for AcpChat {
     }
 
     fn set_option(&mut self, option_id: &str, value: &str) -> Result<Value, ProviderError> {
+        let permission_option = self.ui.lock().ok().is_some_and(|state| {
+            state.options.iter().find(|option| option.get("id").and_then(Value::as_str) == Some(option_id))
+                .is_some_and(|option| option_id == "mode" || option.get("category").and_then(Value::as_str) == Some("mode"))
+        });
+        let valid_choice = self.ui.lock().ok().is_some_and(|state| {
+            state.options.iter().find(|option| option.get("id").and_then(Value::as_str) == Some(option_id))
+                .and_then(|option| option.get("choices").and_then(Value::as_array))
+                .is_some_and(|choices| choices.iter().any(|choice| choice.get("value").and_then(Value::as_str) == Some(value)))
+        });
+        if permission_option && !valid_choice {
+            return Err(ProviderError::new("provider_protocol", format!("ACP no longer advertises permission mode {option_id}={value}")));
+        }
+        if option_id == "mode" && self.ui.lock().map(|state| state.legacy_mode).unwrap_or(false) {
+            let result = self.process.request("session/set_mode", json!({"sessionId":self.native_id,"modeId":value}))?;
+            if let Ok(mut state) = self.ui.lock() { merge_acp_ui(&mut state, &result); }
+            wait_for_acp_option(&self.ui, option_id, value)?;
+            emit_chat_ui(&self.events, &self.provider, &self.session_id, Some(&self.native_id), &self.ui);
+            return Ok(self.ui_state());
+        }
         let config_generation = self
             .ui
             .lock()
@@ -1304,6 +1388,28 @@ impl ChatSession for AcpChat {
         let result = match result {
             Ok(value) => value,
             Err(error) => {
+                // Kimi 2.0.2 can retain plan internally across `session/load`
+                // while advertising default. Re-applying plan then returns this
+                // exact idempotency error. It is an acknowledgement only for
+                // Kimi's native mode option and the requested mode; every other
+                // native error remains a failed/uncertain restoration.
+                if option_id == "mode" && self.provider == "kimi"
+                    && kimi_mode_already_active(&error, value)
+                {
+                    if let Ok(mut state) = self.ui.lock() {
+                        if let Some(option) = state.options.iter_mut().find(|option| option.get("id").and_then(Value::as_str) == Some("mode")) {
+                            option["value"] = json!(value);
+                        }
+                    }
+                    emit_chat_ui(
+                        &self.events,
+                        &self.provider,
+                        &self.session_id,
+                        Some(&self.native_id),
+                        &self.ui,
+                    );
+                    return Ok(self.ui_state());
+                }
                 // The legacy session/set_model interface exists only for agents
                 // that genuinely do not implement session/set_config_option,
                 // and only a model change may use it. Argument rejections,
@@ -1368,7 +1474,7 @@ impl ChatSession for AcpChat {
                             .and_then(Value::as_str)
                     })
                     == Some(option_id);
-            if !confirmed {
+            if !confirmed && !permission_option {
                 if let Some(option) = state
                     .options
                     .iter_mut()
@@ -1377,6 +1483,9 @@ impl ChatSession for AcpChat {
                     option["value"] = json!(value);
                 }
             }
+        }
+        if permission_option {
+            wait_for_acp_option(&self.ui, option_id, value)?;
         }
         emit_chat_ui(
             &self.events,
@@ -1685,6 +1794,8 @@ fn emit_acp_message(
         || kind.contains("config")
         || kind.contains("Config")
         || kind.contains("Command")
+        || kind.contains("mode")
+        || kind.contains("Mode")
     {
         if let Ok(mut state) = ui.lock() {
             merge_acp_ui(&mut state, update);
@@ -2535,19 +2646,66 @@ fn emit_chat_ui(
     );
 }
 
+fn wait_for_acp_option(ui: &Mutex<AcpUiState>, option_id: &str, value: &str) -> Result<(), ProviderError> {
+    for _ in 0..6 {
+        if ui.lock().ok().is_some_and(|state| state.options.iter().find(|option| option.get("id").and_then(Value::as_str) == Some(option_id))
+            .and_then(|option| option.get("value").and_then(Value::as_str)) == Some(value)) {
+            return Ok(());
+        }
+        std::thread::sleep(Duration::from_millis(25));
+    }
+    // The setter completed; distinguish missing confirmation from an RPC rejection.
+    Err(ProviderError::new("provider_protocol", format!("ACP did not confirm permission mode {option_id}={value}"))
+        .with_details(json!({"permissionUnconfirmed":true})))
+}
+
+fn kimi_mode_already_active(error: &ProviderError, requested: &str) -> bool {
+    let details = error.details.as_ref();
+    details.and_then(|details| details.get("code")).and_then(Value::as_i64) == Some(-32603)
+        && details
+            .and_then(|details| details.pointer("/data/details"))
+            .and_then(Value::as_str)
+            .is_some_and(|detail| detail.eq_ignore_ascii_case(&format!("Already in {requested} mode")))
+}
+
+/// A plan approval is a user-approved native transition from Kimi's plan
+/// mode. Mark only that live transition, never startup restoration.
+fn emit_permission_mode_confirmed(
+    events: &ScopedProviderEvents,
+    provider: &str,
+    session_id: &str,
+    native_id: Option<&str>,
+    ui: &Mutex<AcpUiState>,
+) {
+    let mut data = ui
+        .lock()
+        .ok()
+        .map(|state| state.wire(provider))
+        .unwrap_or_else(|| json!({"options":[],"commands":[]}));
+    data["permissionChangeConfirmed"] = json!(true);
+    emit(events, provider, session_id, native_id, None, "chat.ui", data);
+}
+
 fn merge_acp_ui(state: &mut AcpUiState, value: &Value) {
+    let mut modern_mode = false;
     if let Some(options) = value
         .get("configOptions")
         .or_else(|| value.get("availableConfigOptions"))
         .and_then(Value::as_array)
     {
         let parsed: Vec<Value> = options.iter().filter_map(parse_acp_option).collect();
+        modern_mode = parsed.iter().any(|option| {
+            option.get("id").and_then(Value::as_str) == Some("mode")
+                && option.get("category").and_then(Value::as_str) == Some("mode")
+        });
         if !parsed.is_empty() {
             state.options = parsed;
         }
     }
     if let Some(option) = value.get("configOption").or_else(|| value.get("option")) {
         if let Some(parsed) = parse_acp_option(option) {
+            modern_mode |= parsed.get("id").and_then(Value::as_str) == Some("mode")
+                && parsed.get("category").and_then(Value::as_str) == Some("mode");
             let id = parsed
                 .get("id")
                 .and_then(Value::as_str)
@@ -2562,6 +2720,38 @@ fn merge_acp_ui(state: &mut AcpUiState, value: &Value) {
             } else {
                 state.options.push(parsed);
             }
+        }
+    }
+    if modern_mode {
+        // Kimi advertises its modern category-mode config option together with
+        // a compatibility `modes` catalogue. The config option owns mutation.
+        state.legacy_mode = false;
+        state.modern_mode = true;
+    }
+    let supplied_modern_mode = modern_mode;
+    let modern_mode = modern_mode || state.modern_mode;
+    let raw_modes = value.get("modes");
+    let available_modes = raw_modes.and_then(|modes| modes.get("availableModes"))
+        .or_else(|| value.get("availableModes"))
+        .or_else(|| raw_modes.filter(|modes| modes.is_array()))
+        .and_then(Value::as_array);
+    if let Some(available_modes) = available_modes.filter(|_| !modern_mode) {
+        let choices = available_modes.iter().filter_map(|mode| {
+            let id = mode.get("modeId").or_else(|| mode.get("id")).or_else(|| mode.get("value")).and_then(Value::as_str)?;
+            let name = mode.get("name").or_else(|| mode.get("label")).and_then(Value::as_str).unwrap_or(id);
+            Some(json!({"value":id,"name":name}))
+        }).collect::<Vec<_>>();
+        if !choices.is_empty() {
+            let current = value.get("currentModeId").or_else(|| value.get("modeId")).or_else(|| value.get("currentMode"))
+                .or_else(|| raw_modes.and_then(|modes| modes.get("currentModeId"))).and_then(Value::as_str)
+                .unwrap_or_else(|| choices[0]["value"].as_str().unwrap_or_default());
+            let mode = json!({"id":"mode","name":"Mode","value":current,"choices":choices,"category":"mode"});
+            if let Some(existing) = state.options.iter_mut().find(|item| item.get("id").and_then(Value::as_str) == Some("mode")) { *existing = mode; } else { state.options.push(mode); }
+            state.legacy_mode = true;
+        }
+    } else if state.legacy_mode || (state.modern_mode && !supplied_modern_mode) {
+        if let Some(current) = value.get("currentModeId").or_else(|| value.get("modeId")).or_else(|| value.get("currentMode")).and_then(Value::as_str) {
+            if let Some(mode) = state.options.iter_mut().find(|item| item.get("id").and_then(Value::as_str) == Some("mode")) { mode["value"] = json!(current); }
         }
     }
     if let Some(commands) = value
@@ -2618,6 +2808,9 @@ fn parse_acp_option(value: &Value) -> Option<Value> {
     Some({
         let boolean = acp_option_is_boolean(value, &choices);
         let mut option = json!({"id":id,"name":name,"value":current,"choices":choices});
+        if value.get("category").and_then(Value::as_str).is_some_and(|category| category.eq_ignore_ascii_case("mode")) {
+            option["category"] = json!("mode");
+        }
         if boolean {
             option["kind"] = json!("boolean");
         }
@@ -2981,6 +3174,7 @@ mod tests {
         // Kimi leaves plan mode silently; the chip follows.
         let ui = std::iter::from_fn(|| receiver.try_recv().ok()).find(|event| event.kind == "chat.ui").expect("mode chip update");
         assert!(ui.data["options"].as_array().unwrap().iter().any(|option| option["id"] == "mode" && option["value"] == "default"));
+        assert_eq!(ui.data["permissionChangeConfirmed"], true);
 
         card!("second");
         // Revise carries no feedback natively: the planning turn is stopped and
@@ -4427,6 +4621,104 @@ mod tests {
         assert_eq!(state.options[0]["id"], "model");
         assert_eq!(state.options[0]["value"], "kimi-for-coding");
         assert_eq!(state.commands[0]["name"], "compact");
+    }
+
+    #[test]
+    fn preserves_generic_acp_mode_category_and_legacy_modes() {
+        let mut state = AcpUiState::default();
+        merge_acp_ui(&mut state, &json!({
+            "configOptions":[{"configId":"permission","category":"mode","currentValue":"ask","options":[{"value":"ask"},{"value":"auto"}]}],
+            "modes":{"availableModes":[{"id":"plan","name":"Plan"},{"id":"default","name":"Default"}],"currentModeId":"plan"}
+        }));
+        let permission = state.options.iter().find(|option| option["id"] == "permission").unwrap();
+        assert_eq!(permission["category"], "mode");
+        let mode = state.options.iter().find(|option| option["id"] == "mode").unwrap();
+        assert_eq!(mode["category"], "mode");
+        assert_eq!(mode["value"], "plan");
+        assert!(state.legacy_mode);
+    }
+
+    #[test]
+    fn modern_acp_mode_keeps_config_route_and_accepts_mode_notifications() {
+        let mut state = AcpUiState::default();
+        merge_acp_ui(&mut state, &json!({
+            "configOptions":[{"id":"mode","category":"mode","currentValue":"plan","options":[{"value":"plan"},{"value":"auto"}]}],
+            "modes":{"currentModeId":"default","availableModes":[{"id":"default"},{"id":"plan"}]}
+        }));
+        assert!(!state.legacy_mode, "the modern setter owns combined catalogues");
+        assert_eq!(state.options[0]["value"], "plan");
+        merge_acp_ui(&mut state, &json!({"sessionUpdate":"current_mode_update","currentModeId":"auto"}));
+        assert_eq!(state.options[0]["value"], "auto", "native notifications remain authoritative with the modern setter");
+        assert!(!state.legacy_mode);
+    }
+
+    #[test]
+    fn kimi_already_active_exception_is_exact() {
+        let exact = ProviderError::new("provider_error", "Internal error").with_details(json!({
+            "code": -32603,
+            "data": {"details": "Already in plan mode"}
+        }));
+        assert!(kimi_mode_already_active(&exact, "plan"));
+
+        let generic = ProviderError::new("provider_error", "Internal error").with_details(json!({"code": -32603}));
+        assert!(!kimi_mode_already_active(&generic, "plan"));
+        assert!(!kimi_mode_already_active(&exact, "auto"));
+        let wrong_code = ProviderError::new("provider_error", "Internal error").with_details(json!({
+            "code": -32602,
+            "data": {"details": "Already in plan mode"}
+        }));
+        assert!(!kimi_mode_already_active(&wrong_code, "plan"));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn startup_mode_restore_uses_config_option_and_rejects_a_mismatch() {
+        let Some(node) = crate::providers::common::find_executable("node") else { return; };
+        for scenario in ["success", "mismatch", "kimi-already-plan"] {
+            let dir = tempfile::tempdir().unwrap();
+            let script = dir.path().join("acp-startup.mjs");
+            let log = dir.path().join("calls.jsonl");
+            let source = serde_json::to_string(&log.to_string_lossy()).unwrap();
+            std::fs::write(&script, format!(r#"import {{createInterface}} from 'node:readline'; import {{appendFileSync}} from 'node:fs';
+for (const key of Object.keys(process.env)) if(key.toUpperCase()==='PATH') delete process.env[key];
+const log={source}, scenario='{scenario}';
+const options=mode=>[{{configId:'mode',category:'mode',currentValue:mode,options:[{{value:'default'}},{{value:'auto'}},{{value:'plan'}}]}}];
+const combined=mode=>({{sessionId:'native',configOptions:options(mode),modes:{{currentModeId:mode,availableModes:[{{id:'default',name:'Default'}},{{id:'auto',name:'Auto'}},{{id:'plan',name:'Plan'}}]}}}});
+createInterface({{input:process.stdin}}).on('line', line=>{{
+ const r=JSON.parse(line); appendFileSync(log,JSON.stringify(r)+'\n'); if(!r.id)return;
+ const ok=x=>process.stdout.write(JSON.stringify({{jsonrpc:'2.0',id:r.id,result:x}})+'\n');
+ const fail=(code,message,data)=>process.stdout.write(JSON.stringify({{jsonrpc:'2.0',id:r.id,error:{{code,message,data}}}})+'\n');
+ if(r.method==='initialize')return ok({{agentCapabilities:{{sessionCapabilities:{{resume:{{}}}}}}}});
+ if(r.method==='session/resume')return ok(combined('default'));
+ if(r.method==='session/set_config_option'){{
+   if(scenario==='kimi-already-plan')return fail(-32603,'Internal error',{{details:'Already in plan mode'}});
+   return ok({{configOptions:options(scenario==='mismatch'?'default':r.params.value)}});
+ }}
+ ok({{}});
+}});"#)).unwrap();
+            let descriptor = AgentDescriptor { id:"kimi".into(), name:"Fake ACP".into(), plugin_id:None, icon:None, homepage:None, command:node.to_string_lossy().into_owned(), args:vec![script.to_string_lossy().into_owned()], version_args:vec![], terminal:None, chat_args:None, sign_in_args:None, plugin_dir:None };
+            let adapter = AcpAdapter::from_descriptor(descriptor, crate::provider_events::tap_channel(8).0);
+            let requested = if scenario == "kimi-already-plan" { "plan" } else { "auto" };
+            let result = adapter.open_chat_with_startup_options("s", "C:/", Some("native"), "worker", None, &super::super::ChatStartupOptions {project_trust:None, permissions:&json!([{"id":"mode","value":requested}])});
+            if scenario == "mismatch" {
+                match result {
+                    Err(error) => {
+                        assert_eq!(error.code, "chat_permission_restore_failed");
+                        assert_eq!(error.details.as_ref().and_then(|details| details.pointer("/permissionRestore/reason")).and_then(Value::as_str), Some("mismatch"));
+                        assert_eq!(error.details.as_ref().and_then(|details| details.pointer("/permissionRestore/optionId")).and_then(Value::as_str), Some("mode"));
+                        assert_eq!(error.details.as_ref().and_then(|details| details.pointer("/permissionRestore/savedValue")).and_then(Value::as_str), Some("auto"));
+                        assert_eq!(error.details.as_ref().and_then(|details| details.pointer("/permissionRestore/reportedValue")).and_then(Value::as_str), Some("default"));
+                    }
+                    Ok(_) => panic!("mismatched mode must fail"),
+                }
+            } else {
+                let chat = result.unwrap_or_else(|error| panic!("{}", error.message));
+                assert_eq!(chat.ui_state()["options"].as_array().unwrap().iter().find(|option| option["id"] == "mode").unwrap()["value"], requested);
+            }
+            let calls = std::fs::read_to_string(log).unwrap().lines().map(|line| serde_json::from_str::<Value>(line).unwrap()).collect::<Vec<_>>();
+            assert!(calls.iter().any(|call| call["method"] == "session/resume" && call["params"] == json!({"sessionId":"native","cwd":"C:/"})));
+            assert!(calls.iter().any(|call| call["method"] == "session/set_config_option" && call["params"]["configId"] == "mode" && call["params"]["value"] == requested));
+        }
     }
 
     #[test]

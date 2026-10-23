@@ -3,6 +3,9 @@
 // driving the user's normal agent CLIs. One scenario per run — the QA machine is small:
 //   node qa/delegation-live.mjs claude-codex   Claude delegates a file edit to Codex (shared folder)
 //   node qa/delegation-live.mjs codex-kimi     Codex delegates a reply to Kimi
+//   node qa/delegation-live.mjs codex-steer    Codex, asked in plain words to dispatch Kimi, delegates through ThreadTerm only (no other delegation plugin)
+//   node qa/delegation-live.mjs codex-never    Codex on never-ask + workspace-write delegates to Codex; full access survives a restart
+//   node qa/delegation-live.mjs claude-dontask Claude (Haiku) on "Don't ask" calls delegate_status
 //   node qa/delegation-live.mjs fanout         Claude runs a Codex and a Kimi delegate at once
 //   node qa/delegation-live.mjs relay          Claude answers a Kimi delegate's shell approval (worktree)
 //   node qa/delegation-live.mjs codex-claude   Codex answers a Claude delegate's file-write approval
@@ -28,7 +31,7 @@ import assert from 'node:assert/strict';
 import { connectPeer } from './pipe-client.mjs';
 import { removeAgentHistory } from './agent-history.mjs';
 
-const SCENARIOS = ['claude-codex', 'codex-kimi', 'fanout', 'relay', 'codex-claude', 'handoff', 'eval'];
+const SCENARIOS = ['claude-codex', 'codex-kimi', 'codex-steer', 'codex-never', 'claude-dontask', 'fanout', 'relay', 'codex-claude', 'handoff', 'eval'];
 const scenario = process.argv[2];
 if (!SCENARIOS.includes(scenario)) throw Error(`usage: node qa/delegation-live.mjs <${SCENARIOS.join('|')}>`);
 const evalArgs = process.argv.slice(3).filter(arg => !arg.startsWith('--'));
@@ -49,6 +52,7 @@ const scratch = await mkdtemp(join(tmpdir(), 'tt-deleg-live-'));
 const slug = basename(scratch).toLowerCase();
 const workspace = join(scratch, `${basename(scratch)}-ws`);
 const checks = [];
+console.log(`PROBE ${JSON.stringify({ scenario, slug, scratch })}`);
 const note = text => { checks.push(text); console.log(`PASS ${text}`); };
 const startedAt = Date.now();
 const log = text => console.log(`  … [${Math.round((Date.now() - startedAt) / 1000)}s] ${text}`);
@@ -194,6 +198,79 @@ async function scenarioCodexKimi(peer, projectId) {
   assert.equal(child.delegation.state, 'completed', `delegate finished: ${child.delegation.state}`);
   assert.match(replyOf(turn), /KIMI-DELEGATE-OK/);
   note(`Codex → Kimi: delegate completed; Codex relayed: ${replyOf(turn).replace(/\s+/g, ' ').slice(0, 120)}`);
+}
+
+// 2026-10-20 report (task 10-20-delegation-tool-ux): asked in plain words to "dispatch" another agent, a Codex
+// parent also called a third-party delegation plugin (Codex Agent Mesh `list_agents`), whose daemon flashed a
+// console window. No preamble here: the parent must pick ThreadTerm's tools from their descriptions alone.
+async function scenarioCodexSteer(peer, projectId) {
+  const parent = await parentChat(peer, projectId, 'codex', 'QA delegation parent (Codex, plain request)');
+  await peer.request('chat.option.set', { sessionId: parent.id, optionId: 'model', value: 'gpt-6.1-sol', leaseEpoch: lease.epoch, operationId: randomUUID() });
+  const turn = await run(peer, parent, 'Dispatch Kimi to work out 17 × 23 and tell me what it answers.');
+  const calls = turn.items.flatMap(item => item.parts.filter(part => part.type === 'tool')
+    .map(part => `${part.data?.server ? `${part.data.server}.` : ''}${part.data?.tool ?? part.toolName ?? '?'}`));
+  note(`Codex parent tool calls: ${calls.join(', ') || 'none'}`);
+  assert.deepEqual(calls.filter(call => /mesh|list_agents|submit_task/i.test(call)), [], 'no other delegation system is called');
+  const [child, ...extra] = delegatesOf(turn.snapshot, parent.id);
+  assert.ok(child && !extra.length, 'exactly one ThreadTerm delegate');
+  assert.equal(child.provider, 'kimi');
+  assert.equal(child.delegation.state, 'completed', `delegate finished: ${child.delegation.state}`);
+  assert.match(replyOf(turn), /391/);
+  note(`Codex → Kimi through ThreadTerm only; relayed: ${replyOf(turn).replace(/\s+/g, ' ').slice(0, 120)}`);
+}
+
+// 2026-10-20 report: a Codex parent on "Never ask" failed delegate_status with "MCP tool call requires
+// approval, but approval policy is never" — its "Full access" had fallen back to workspace-write on resume.
+async function scenarioCodexNever(peer, projectId) {
+  const parent = await parentChat(peer, projectId, 'codex', 'QA delegation parent (Codex, never ask)');
+  const setOption = (optionId, value) => peer.request('chat.option.set', { sessionId: parent.id, optionId, value, leaseEpoch: lease.epoch, operationId: randomUUID() });
+  const optionOf = async (client, id) => (await client.request('chat.options', { sessionId: parent.id })).options.find(option => option.id === id)?.value;
+  await setOption('model', 'gpt-6-luna');
+  await setOption('mode', 'never');
+  await setOption('sandbox', 'workspace-write');
+  assert.equal(await optionOf(peer, 'mode'), 'never');
+  assert.equal(await optionOf(peer, 'sandbox'), 'workspace-write');
+  const turn = await run(peer, parent, `${TOOLS_PREAMBLE}
+1) Call delegate_status once.
+2) Call delegate_start with agent "codex", title "QA never-ask delegate" and prompt "Reply with exactly NEVER-DELEGATE-OK and nothing else. Do not use any tools."
+3) Call delegate_wait repeatedly until the delegate is completed, failed or cancelled.
+4) Call delegate_result and reply with exactly the delegate's finalAnswer. If any ThreadTerm tool call fails, reply with its exact error text instead.`);
+  noDelegationToolApprovals(turn);
+  assert.doesNotMatch(JSON.stringify(turn.items), /requires approval, but approval policy is never/, 'never-ask does not block ThreadTerm tools');
+  const [child, ...extra] = delegatesOf(turn.snapshot, parent.id);
+  assert.ok(child && !extra.length, 'exactly one delegate');
+  assert.equal(child.delegation.state, 'completed', `delegate finished: ${child.delegation.state}`);
+  assert.match(replyOf(turn), /NEVER-DELEGATE-OK/);
+  note(`Codex on never + workspace-write ran delegate_status/start/wait/result unblocked; relayed: ${replyOf(turn).replace(/\s+/g, ' ').slice(0, 120)}`);
+
+  await setOption('sandbox', 'danger-full-access');
+  await stopDaemon();
+  const restarted = await start();
+  lease.epoch = (await restarted.request('session.claim', { sessionId: parent.id, clientId: 'qa-delegation-live' })).leaseEpoch;
+  lease.renewed = Date.now();
+  const state = await restarted.request('chat.connect', { sessionId: parent.id, leaseEpoch: lease.epoch, operationId: randomUUID() });
+  assert.equal(state.phase, 'ready', 'parent reconnected after a runtime restart');
+  assert.equal(await optionOf(restarted, 'sandbox'), 'danger-full-access', 'full access survives the restart');
+  assert.equal(await optionOf(restarted, 'mode'), 'never');
+  note('Codex never + full access survived a runtime restart and native resume');
+}
+
+// Claude's "Don't ask" denies anything not pre-approved without consulting canUseTool.
+async function scenarioClaudeDontAsk(peer, projectId) {
+  const parent = await parentChat(peer, projectId, 'claude', 'QA delegation parent (Claude, dont ask)');
+  const setOption = (optionId, value) => peer.request('chat.option.set', { sessionId: parent.id, optionId, value, leaseEpoch: lease.epoch, operationId: randomUUID() });
+  const options = async () => (await peer.request('chat.options', { sessionId: parent.id })).options;
+  const haiku = (await options()).find(option => option.id === 'model')?.choices?.find(choice => /haiku/i.test(`${choice.value} ${choice.name}`));
+  assert.ok(haiku, 'a Haiku model keeps this check cheap');
+  await setOption('model', haiku.value);
+  await setOption('mode', 'dontAsk');
+  assert.equal((await options()).find(option => option.id === 'mode')?.value, 'dontAsk');
+  const turn = await run(peer, parent, `${TOOLS_PREAMBLE}
+Call delegate_status once. Then reply with exactly STATUS-OK followed by the number of delegates it listed. If the call fails or is denied, reply with its exact error text instead.`, 5);
+  noDelegationToolApprovals(turn);
+  assert.doesNotMatch(JSON.stringify(turn.items), /don't ask mode|has been denied/i, "Don't ask does not deny ThreadTerm tools");
+  assert.match(replyOf(turn), /STATUS-OK/);
+  note(`Claude on Don't ask called delegate_status unblocked; replied: ${replyOf(turn).replace(/\s+/g, ' ').slice(0, 120)}`);
 }
 
 async function scenarioFanout(peer, projectId) {
@@ -578,7 +655,7 @@ try {
     const project = await peer.request('project.add', { path: workspace, operationId: randomUUID() });
     const providers = await peer.request('provider.list');
     log(`providers: ${providers.filter(p => p.chat).map(p => `${p.id}(${p.auth ?? '?'})`).join(', ')}`);
-    await ({ 'claude-codex': scenarioClaudeCodex, 'codex-kimi': scenarioCodexKimi, fanout: scenarioFanout, relay: scenarioRelay, 'codex-claude': scenarioCodexClaude, handoff: scenarioHandoff, eval: scenarioEval })[scenario](peer, project.id);
+    await ({ 'claude-codex': scenarioClaudeCodex, 'codex-kimi': scenarioCodexKimi, 'codex-steer': scenarioCodexSteer, 'codex-never': scenarioCodexNever, 'claude-dontask': scenarioClaudeDontAsk, fanout: scenarioFanout, relay: scenarioRelay, 'codex-claude': scenarioCodexClaude, handoff: scenarioHandoff, eval: scenarioEval })[scenario](peer, project.id);
     console.log(JSON.stringify({ scenario, passed: true, checks }, null, 2));
   }
 } catch (error) {

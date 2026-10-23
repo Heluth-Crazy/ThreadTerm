@@ -73,6 +73,70 @@ test('codex command actions classify reads, searches and listings without losing
   assert.equal(find?.kind, 'search');
 });
 
+test('command display unwraps real Codex shell wrappers while retaining the raw command', () => {
+  const cases = [
+    {
+      command: '"C:\\\\Program Files\\\\PowerShell\\\\7\\\\pwsh.exe" -NoProfile -Command \'Get-Content -Raw .agents/skills/gitnexus-exploring/SKILL.md; Get-Command pi -ErrorAction SilentlyContinue | Select-Object Source\'',
+      display: 'Get-Content -Raw .agents/skills/gitnexus-exploring/SKILL.md; Get-Command pi -ErrorAction SilentlyContinue | Select-Object Source', shell: 'pwsh',
+    },
+    {
+      command: '"C:\\\\Program Files\\\\PowerShell\\\\7\\\\pwsh.exe" -NoProfile -Command \'Get-ChildItem -Force C:/Users/27968/.pi -ErrorAction SilentlyContinue | Select-Object Name,Mode\'',
+      display: 'Get-ChildItem -Force C:/Users/27968/.pi -ErrorAction SilentlyContinue | Select-Object Name,Mode', shell: 'pwsh',
+    },
+    {
+      command: '"C:\\\\Program Files\\\\PowerShell\\\\7\\\\pwsh.exe" -NoProfile -Command "Get-ChildItem -Force C:\\\\Users\\\\27968\\\\.pi -ErrorAction SilentlyContinue | Select-Object Name,Mode"',
+      display: 'Get-ChildItem -Force C:\\Users\\27968\\.pi -ErrorAction SilentlyContinue | Select-Object Name,Mode', shell: 'pwsh',
+    },
+  ];
+  for (const { command, display, shell } of cases) {
+    const view = toolView({ type: 'tool', toolName: 'commandExecution', data: { type: 'commandExecution', command } } as ChatPart);
+    assert.equal(view.kind, 'command');
+    if (view.kind === 'command') { assert.equal(view.command, command); assert.equal(view.display, display); assert.equal(view.shell, shell); assert.equal(view.title, `Run ${display}`); }
+  }
+});
+
+test('command display recognizes bash and cmd wrappers without unwrapping encoded or plain commands', () => {
+  const cases = [
+    { command: "bash -lc 'npm test -- --runInBand'", display: 'npm test -- --runInBand', shell: 'bash' },
+    { command: 'cmd /d /s /c "echo hello world"', display: 'echo hello world', shell: 'cmd' },
+    { command: 'pwsh -EncodedCommand SGVsbG8=', display: 'pwsh -EncodedCommand SGVsbG8=', shell: 'pwsh' },
+    { command: 'npm test', display: 'npm test', shell: undefined },
+    { command: '"C:\\\\Program Files\\\\Example\\\\runner.exe" --flag', display: '"C:\\\\Program Files\\\\Example\\\\runner.exe" --flag', shell: undefined },
+  ];
+  for (const { command, display, shell } of cases) {
+    const view = toolView({ type: 'tool', toolName: 'commandExecution', data: { type: 'commandExecution', command } } as ChatPart);
+    assert.equal(view.kind, 'command');
+    if (view.kind === 'command') { assert.equal(view.command, command); assert.equal(view.display, display); assert.equal(view.shell, shell); }
+  }
+});
+
+test('an unbalanced shell wrapper falls back to its one action command', () => {
+  const command = 'pwsh -Command "unterminated';
+  const view = toolView({ type: 'tool', toolName: 'commandExecution', data: { type: 'commandExecution', command, commandActions: [{ command: 'git status --short' }] } } as ChatPart);
+  assert.equal(view.kind, 'command');
+  if (view.kind === 'command') { assert.equal(view.command, command); assert.equal(view.display, 'git status --short'); assert.equal(view.shell, undefined); }
+});
+
+test('command display preserves POSIX quoting details and only falls back after tokenization fails', () => {
+  const prefix = toolView({ type: 'tool', toolName: 'commandExecution', data: { type: 'commandExecution', command: 'powershell -CoM "Get-ChildItem"' } } as ChatPart);
+  assert.equal(prefix.kind, 'command');
+  if (prefix.kind === 'command') { assert.equal(prefix.display, 'Get-ChildItem'); assert.equal(prefix.shell, 'powershell'); }
+
+  const quoting = toolView({ type: 'tool', toolName: 'commandExecution', data: { type: 'commandExecution', command: 'pwsh -Command "Write-Output \\x \\\"quote\\\" \\$HOME \\`tick"' } } as ChatPart);
+  assert.equal(quoting.kind, 'command');
+  if (quoting.kind === 'command') assert.equal(quoting.display, 'Write-Output \\x "quote" $HOME `tick');
+
+  const raw = '"C:\\\\Program Files\\\\Example\\\\runner.exe" --flag';
+  const nonShell = toolView({ type: 'tool', toolName: 'commandExecution', data: { type: 'commandExecution', command: raw, commandActions: [{ command: 'should not replace the command' }] } } as ChatPart);
+  assert.equal(nonShell.kind, 'command');
+  if (nonShell.kind === 'command') assert.equal(nonShell.display, raw);
+
+  const unbalanced = 'pwsh -Command "unterminated';
+  const noAction = toolView({ type: 'tool', toolName: 'commandExecution', data: { type: 'commandExecution', command: unbalanced } } as ChatPart);
+  assert.equal(noAction.kind, 'command');
+  if (noAction.kind === 'command') { assert.equal(noAction.display, unbalanced); assert.equal(noAction.shell, undefined); }
+});
+
 test('malformed or unknown tool data is total and never throws', () => {
   const values: unknown[] = [undefined, null, '', 'not-an-object', 42, [], { type: 'tool', data: 'raw string' }, { type: 'tool', data: [] }, { type: 'tool', data: null },
     { type: 'tool', data: { input: 'not json' } }, { type: 'tool', data: { args: null } }, { type: 'tool', data: { command: ['not', 'a', 'string'] } },
@@ -125,4 +189,10 @@ test('2,000 mixed parts classify well inside the 50 ms budget', () => {
   for (const part of parts) toolView(part);
   const elapsed = performance.now() - started;
   assert.ok(elapsed < 50, `classifying 2,000 parts took ${elapsed.toFixed(1)} ms`);
+});
+
+test('an unquoted Windows path inside a shell wrapper keeps its backslashes', () => {
+  const view = toolView({ type: 'tool', toolName: 'Bash', data: { input: { command: 'powershell.exe -Command Get-ChildItem C:\Users\me\.pi' } } } as ChatPart);
+  assert.equal(view.kind, 'command');
+  if (view.kind === 'command') { assert.equal(view.display, 'Get-ChildItem C:\Users\me\.pi'); assert.equal(view.shell, 'powershell'); }
 });

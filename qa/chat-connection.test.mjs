@@ -1,9 +1,22 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { applyConnectionEvent, connectionFeedbackPhase, emptyLink, overlayKind, reduceChatLink, connectionStatusText, mergeConnectionSnapshot, mergeConnectionEvent } from "../renderer/src/chatConnection.ts";
+import { applyConnectionEvent, canRecoverPermissions, connectionFeedbackPhase, emptyLink, overlayKind, reduceChatLink, connectionStatusText, mergeConnectionSnapshot, mergeConnectionEvent } from "../renderer/src/chatConnection.ts";
 import { approvalButtonsEnabled, approvalData, scopeLabel } from "../renderer/src/chatApproval.ts";
 
 const copy = (en, zh) => zh;
+
+test("permission restore failures allow option recovery while message writes remain blocked", () => {
+  const state = emptyLink("s", "failed");
+  state.connection.error = { code: "chat_permission_restore_failed", message: "Select another mode", retryable: true };
+  assert.equal(canRecoverPermissions(state), true);
+  assert.equal(state.connection.phase === "ready", false);
+  assert.equal(canRecoverPermissions({ ...state, transport: "syncing" }), false);
+  assert.equal(canRecoverPermissions({ ...state, transport: "down" }), false);
+  assert.equal(canRecoverPermissions({ ...state, connection: { ...state.connection, error: { ...state.connection.error, code: "auth_required" } } }), false);
+  const failed = reduceChatLink(state, { type: "connect-failed", message: "RPC rejected" });
+  assert.equal(failed.connection.error.code, "chat_permission_restore_failed", "late RPC rejection preserves the structured provider failure");
+  assert.equal(canRecoverPermissions(failed), true);
+});
 
 test("pending reconnect feedback stays busy in full and banner views without hiding failures", () => {
   for (const overlay of ["full", "banner"]) {

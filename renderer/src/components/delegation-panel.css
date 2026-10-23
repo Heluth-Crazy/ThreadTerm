@@ -8,9 +8,20 @@
 .delegation-state.st-awaiting_user { background:color-mix(in srgb,var(--st-needs) 16%,transparent); color:var(--text); }
 .delegation-state.st-failed { background:color-mix(in srgb,var(--st-failed) 14%,transparent); color:var(--text); }
 .delegation-branch { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:var(--faint); font-family:var(--mono, ui-monospace, monospace); font-size:11px; }
-.delegation-cards { display:grid; gap:6px; }
-.delegation-cards > header { color:var(--muted); font-weight:600; }
-.delegate-card { display:grid; gap:3px; padding:6px 8px; border:1px solid var(--border); border-radius:var(--radius); background:var(--surface); }
+.delegation-strip { display:grid; gap:6px; min-width:0; }
+.delegation-header { display:grid; grid-template-columns:auto minmax(0,1fr) auto; align-items:start; column-gap:8px; min-width:0; }
+/* A plain disclosure like the tool drawer's summary, not a filled button. */
+.delegation-toggle { flex:none; display:inline-flex; align-items:center; gap:4px; height:26px; padding:0; border:0; background:none; color:var(--muted); font:inherit; font-weight:600; cursor:pointer; }
+.delegation-toggle:hover { color:var(--text); }
+.delegation-toggle:focus-visible { outline:2px solid var(--primary); outline-offset:3px; border-radius:var(--radius); }
+.delegation-chevron { flex:none; width:12px; height:12px; }
+.delegation-toggle[aria-expanded="true"] .delegation-chevron { transform:rotate(90deg); }
+/* Chips wrap inside the middle column, so Hide stays at the right of the first line. */
+.delegation-summary { display:flex; align-items:center; align-content:center; flex-wrap:wrap; gap:4px; min-width:0; min-height:26px; }
+.delegation-hide { grid-column:3; }
+.delegation-cards { display:grid; gap:6px; min-width:0; max-height:min(40vh, 320px); overflow-y:auto; overflow-x:hidden; }
+.delegation-cards[hidden] { display:none; }
+.delegate-card { display:grid; gap:3px; min-width:0; padding:6px 8px; border:1px solid var(--border); border-radius:var(--radius); background:var(--surface); }
 .delegate-card-head { display:flex; align-items:center; gap:6px; min-width:0; }
 .delegate-card-title { flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-weight:500; }
 .delegate-stop { flex:none; }

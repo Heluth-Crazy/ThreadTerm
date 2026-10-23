@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import type { ChatPart } from '@threadterm/protocol';
-import { approvalPreviewBudget, APPROVAL_PREVIEW_FILE_LIMIT, APPROVAL_PREVIEW_ROW_LIMIT, cardBodyVisible, diffView, editFileStats, isOpenableDiffPath, jsonView, moreFilesLabel, outputView, toolStatusLabel, DIFF_COLLAPSE_LINES, OUTPUT_MAX_LINES, JSON_NODE_LIMIT } from './toolCards';
+import { approvalPreviewBudget, APPROVAL_PREVIEW_FILE_LIMIT, APPROVAL_PREVIEW_ROW_LIMIT, cardBodyVisible, commandDisplayCwd, compactToolArguments, diffView, editFileStats, isOpenableDiffPath, jsonView, mcpResultView, moreFilesLabel, outputView, toolCardHasBody, toolStatusLabel, DIFF_COLLAPSE_LINES, OUTPUT_MAX_LINES, JSON_NODE_LIMIT } from './toolCards';
 import { toolSummary, toolSummaryLabel, toolSummarySegments, toolSummaryText } from './toolActivity';
 import { toolView } from './toolView';
 
@@ -62,6 +62,61 @@ test('output caps at 400 lines and offers the tail while collapsed', () => {
   assert.equal(expanded.expandable, false);
 });
 
+test('command cwd chips compare native drive, UNC and slash forms', () => {
+  assert.equal(commandDisplayCwd('\\\\?\\D:\\Repo\\', 'd:/repo'), undefined);
+  assert.equal(commandDisplayCwd('D:/Repo/', '\\\\?\\d:\\repo'), undefined);
+  assert.equal(commandDisplayCwd('\\\\?\\UNC\\server\\share\\repo\\', '\\\\server\\share\\repo'), undefined);
+  assert.equal(commandDisplayCwd('//?/UNC/server/share/repo/', '\\\\server\\share\\repo'), undefined);
+  assert.equal(commandDisplayCwd('D:\\other', 'D:\\repo'), 'D:\\other');
+  assert.equal(commandDisplayCwd('D:\\repo', undefined), 'D:\\repo');
+  assert.equal(commandDisplayCwd(undefined, 'D:\\repo'), undefined);
+  assert.equal(commandDisplayCwd('/Repo', '/repo'), '/Repo', 'POSIX path case is significant');
+});
+
+test('small flat MCP arguments render as compact primitive lines', () => {
+  assert.deepEqual(compactToolArguments({ session: 'face82d9', count: 4, wait: false, branch: null }), [
+    ['session', 'face82d9'], ['count', '4'], ['wait', 'false'], ['branch', 'null'],
+  ]);
+  assert.deepEqual(compactToolArguments('{"session":"face82d9"}'), [['session', 'face82d9']]);
+  assert.deepEqual(compactToolArguments({}), []);
+  assert.equal(compactToolArguments({ ids: ['x'] }), undefined);
+  assert.equal(compactToolArguments({ args: { wait: true } }), undefined);
+  assert.equal(compactToolArguments(Array.from({ length: 2 }, (_, i) => i)), undefined);
+  assert.equal(compactToolArguments('plain text'), undefined);
+  assert.equal(compactToolArguments(null), undefined);
+  assert.ok(compactToolArguments(Object.fromEntries(Array.from({ length: 8 }, (_, i) => [`k${i}`, i]))));
+  assert.equal(compactToolArguments(Object.fromEntries(Array.from({ length: 9 }, (_, i) => [`k${i}`, i]))), undefined);
+});
+
+test('MCP result envelopes reveal text blocks and format JSON text', () => {
+  const value = { content: [{ type: 'text', text: '{"id":"face82d9","status":"idle"}' }, { type: 'image', data: 'bytes' }, { type: 'text', text: '**Exploration**\nFound 21 symbols.' }], structuredContent: { id: 'duplicate' } };
+  const original = JSON.stringify(value);
+  const result = mcpResultView(value);
+  assert.equal(result?.text, '{\n  "id": "face82d9",\n  "status": "idle"\n}\n\n**Exploration**\nFound 21 symbols.');
+  assert.equal(result?.isError, false);
+  assert.deepEqual(mcpResultView(JSON.stringify(value)), result, 'JSON-string envelopes use the same presentation');
+  assert.equal(JSON.stringify(value), original, 'native output is unchanged');
+});
+
+test('MCP results preserve structured-only output, errors and ordinary results', () => {
+  assert.deepEqual(mcpResultView({ content: [], structuredContent: { count: 2 }, isError: true }), { structuredContent: { count: 2 }, isError: true });
+  assert.equal(mcpResultView({ content: [{ type: 'text', text: 'failure reason' }], isError: true })?.isError, true);
+  assert.equal(mcpResultView({ content: [{ type: 'text', text: '' }] })?.text, '');
+  assert.equal(mcpResultView({ content: [{ type: 'image', data: 'bytes' }] })?.text, undefined);
+  assert.equal(mcpResultView({ result: 4 }), undefined);
+  assert.equal(mcpResultView('ordinary result'), undefined);
+  assert.equal(mcpResultView('[1,2]'), undefined);
+  assert.equal(mcpResultView(null), undefined);
+});
+
+test('MCP text reuses the bounded output view', () => {
+  const text = Array.from({ length: OUTPUT_MAX_LINES + 20 }, (_, i) => `line ${i}`).join('\n');
+  const result = mcpResultView({ content: [{ type: 'text', text }] });
+  assert.equal(outputView(result?.text, false).expandable, true);
+  assert.equal(outputView(result?.text, false).lines.length, 40);
+  assert.equal(outputView(result?.text, true).lines.length, OUTPUT_MAX_LINES);
+});
+
 test('JSON trees start collapsed beyond depth 2 and cap at 500 nodes', () => {
   const value = { a: { b: { c: { d: 1 } } }, list: [1, 2, 3] };
   const base = jsonView(value);
@@ -84,6 +139,37 @@ test('JSON tree paths stay distinct for keys that contain a dot', () => {
 test('card bodies are only built for an open drawer', () => {
   assert.equal(cardBodyVisible(false), false);
   assert.equal(cardBodyVisible(true), true);
+});
+
+test('typed tool cards omit empty command, read, search, and web bodies', () => {
+  const command = (data: Record<string, unknown>) => toolView(part({ type: 'commandExecution', command: 'git status', ...data }, 'commandExecution'));
+  assert.equal(toolCardHasBody(command({})), false);
+  assert.equal(toolCardHasBody(command({ cwd: 'D:\\repo' }), 'd:/repo'), false, 'normalized equal cwd is hidden');
+  assert.equal(toolCardHasBody(command({ command: "pwsh -Command 'git status'" })), true);
+  assert.equal(toolCardHasBody(command({ cwd: 'D:\\other' }), 'D:\\repo'), true);
+  assert.equal(toolCardHasBody(command({ input: { run_in_background: true } })), true);
+  assert.equal(toolCardHasBody(command({ exitCode: 1 })), true);
+  assert.equal(toolCardHasBody(command({ exitCode: 0 })), false);
+  assert.equal(toolCardHasBody(command({ commandActions: [{ type: 'read' }] })), true);
+  assert.equal(toolCardHasBody(command({ output: 'clean' })), true);
+
+  const read = (data: unknown) => toolView(part(data, 'Read'));
+  assert.equal(toolCardHasBody(read({ input: { path: 'a.ts' } })), false);
+  assert.equal(toolCardHasBody(read({ input: { path: 'a.ts', offset: 0 } })), true);
+  assert.equal(toolCardHasBody(read({ input: { path: 'a.ts', limit: 0 } })), true);
+  assert.equal(toolCardHasBody(read({ input: { path: 'a.ts', pages: 0 } })), true);
+
+  const search = (data: unknown) => toolView(part(data, 'Grep'));
+  assert.equal(toolCardHasBody(search({ input: { pattern: 'todo' } })), false);
+  assert.equal(toolCardHasBody(search({ input: { pattern: 'todo', path: 'src' } })), true);
+  assert.equal(toolCardHasBody(search({ input: { pattern: 'todo', glob: '*.ts' } })), true);
+  assert.equal(toolCardHasBody(search({ input: { pattern: 'todo' }, output: '1 match in 1 file' })), true);
+  assert.equal(toolCardHasBody(search({ input: { pattern: 'todo', caseInsensitive: true } })), true);
+  assert.equal(toolCardHasBody(search({ input: { pattern: 'todo' }, output: 'results omitted' })), true);
+
+  const web = (data: unknown) => toolView(part(data, 'WebSearch'));
+  assert.equal(toolCardHasBody(web({ input: { query: 'docs' } })), false);
+  assert.equal(toolCardHasBody(web({ input: { query: 'docs' }, output: 'result' })), true);
 });
 
 test('Open diff is only offered for a path the diff surface can open', () => {
@@ -141,6 +227,44 @@ test('toolSummary counts by kind, distinct edited files and failures', () => {
   // those as their own red badge; the full sentence stays in the title.
   assert.equal(toolSummaryLabel(summary, copy), toolSummarySegments(summary, copy).join(' · '));
   assert.equal(toolSummaryLabel(summary, copy).includes('failed'), false);
+});
+
+test('toolSummary gives ThreadTerm delegations a first, separate segment', () => {
+  const starts = toolSummary([
+    entry({ server: 'threadterm', tool: 'delegate_start' }, 'mcpToolCall'),
+    entry({ server: 'threadterm', tool: 'delegate_start' }, 'mcpToolCall'),
+    entry({ server: 'threadterm', tool: 'delegate_wait' }, 'mcpToolCall'),
+    entry({ input: { todos: [] } }, 'TodoWrite'),
+  ]);
+  assert.deepEqual({ delegates: starts.delegates, followedDelegates: starts.followedDelegates, other: starts.other }, { delegates: 2, followedDelegates: 1, other: 1 });
+  assert.deepEqual(toolSummarySegments(starts, copy), ['Started 2 delegates', 'Used 1 tool']);
+  assert.equal(toolSummaryLabel(starts, copy), 'Started 2 delegates · Used 1 tool');
+  assert.deepEqual(toolSummarySegments(starts, (_en, chinese) => chinese), ['启动 2 个委派', '使用 1 项工具']);
+
+  const followed = toolSummary([entry({ server: 'threadterm', tool: 'delegate_result' }, 'mcpToolCall')]);
+  assert.equal(followed.other, 0);
+  assert.deepEqual(toolSummarySegments(followed, copy), ['Followed delegates']);
+  assert.deepEqual(toolSummarySegments(followed, (_en, chinese) => chinese), ['跟进委派']);
+
+  const outcomes = toolSummary([
+    entry({ server: 'threadterm', tool: 'delegate_start' }, 'mcpToolCall', 'failed'),
+    entry({ server: 'threadterm', tool: 'delegate_wait' }, 'mcpToolCall', 'cancelled'),
+    entry({ server: 'foreign', tool: 'delegate_start' }, 'mcpToolCall'),
+  ]);
+  assert.deepEqual({ delegates: outcomes.delegates, followedDelegates: outcomes.followedDelegates, other: outcomes.other, failed: outcomes.failed, interrupted: outcomes.interrupted },
+    { delegates: 1, followedDelegates: 1, other: 1, failed: 1, interrupted: 1 });
+  assert.equal(toolSummaryText(outcomes, copy), 'Started 1 delegate · Used 1 tool · 1 failed · 1 interrupted');
+  assert.equal(toolSummaryText(outcomes, (_en, chinese) => chinese), '启动 1 个委派 · 使用 1 项工具 · 1 项失败 · 1 项中断');
+
+  const capped = toolSummary([
+    entry({ server: 'threadterm', tool: 'delegate_start' }, 'mcpToolCall'),
+    entry({ input: { file_path: 'a.ts' } }, 'Read'),
+    entry({ input: { pattern: 'todo' } }, 'Grep'),
+    entry({ type: 'commandExecution', command: 'git status' }, 'commandExecution'),
+    entry({ type: 'fileChange', changes: [{ path: 'a.ts', kind: { type: 'update' } }] }, 'fileChange'),
+    entry({ input: { todos: [] } }, 'TodoWrite'),
+  ]);
+  assert.deepEqual(toolSummarySegments(capped, copy), ['Started 1 delegate', 'Explored 1 file', 'Searched 1', 'Ran 1 command', '+2 more']);
 });
 
 test('a command with no actions is only a command', () => {

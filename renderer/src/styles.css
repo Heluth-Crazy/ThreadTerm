@@ -481,6 +481,14 @@ html[data-theme="dark"] { color-scheme:dark; }
 .chat-connect-retry { margin-top:4px; }
 .chat-reconnect-banner { display:flex; align-items:center; gap:8px; margin:0 16px 8px; padding:8px 12px; border:1px solid var(--border); border-radius:var(--radius); background:var(--raised); color:var(--text); font-size:12px; }
 .chat-reconnect-banner.is-failed, .chat-connect-mask.is-failed .chat-connect-status { color:var(--danger); }
+.chat-reconnect-banner.is-permission-recovery > span { min-width:0; flex:1; line-height:1.5; }
+.chat-reconnect-banner.is-permission-recovery > :first-child, .chat-reconnect-banner.is-permission-recovery > button { flex:none; }
+.chat-permission-copy { display:grid; gap:3px; }
+.chat-permission-detail { color:var(--muted); font-size:11px; overflow-wrap:anywhere; }
+@container (max-width:480px) {
+  .chat-reconnect-banner.is-permission-recovery { display:grid; grid-template-columns:18px minmax(0, 1fr); }
+  .chat-reconnect-banner.is-permission-recovery > button { grid-column:2; justify-self:start; }
+}
 .chat-approval-card { display:grid; gap:8px; }
 .chat-question-wrapper { min-width:0; padding:14px 16px; border:1px solid var(--border); border-radius:10px; background:var(--surface); color:var(--text); }
 /* Kimi/Grok already own the approval shell; avoid a second nested border. */
@@ -609,6 +617,10 @@ html[data-theme="dark"] { color-scheme:dark; }
 .chat-menu-item[aria-checked="true"] .chat-menu-check { visibility:visible; }
 .chat-menu-text { display:grid; gap:1px; min-width:0; flex:1; white-space:normal; }
 .chat-menu-text > span { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.chat-view.is-permission-recovery .chat-menu-text > span { white-space:normal; overflow-wrap:anywhere; }
+.chat-view.is-permission-recovery .chat-more-row { grid-template-columns:minmax(0, 1fr); }
+.chat-view.is-permission-recovery .chat-more-choices { justify-content:flex-start; }
+.chat-view.is-permission-recovery .chat-more-choice { height:auto; max-width:100%; white-space:normal; text-align:left; }
 .chat-menu-choice-desc { display:block; color:var(--muted); font-size:11px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .chat-menu-badge { flex:none; padding:1px 6px; border-radius:999px; background:color-mix(in srgb, var(--primary) 11%, transparent); color:var(--primary); font-size:11px; font-weight:500; }
 .chat-menu-virtual { max-height:240px; overflow:auto; }

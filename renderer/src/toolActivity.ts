@@ -162,6 +162,21 @@ const OUTPUT_PREVIEW_LIMIT = 240;
 // A line of only brackets is not output: Kimi streams a call's empty arguments as "{}", and a JSON result
 // (delegate_result) ends with "}".
 const EMPTY_JSON = /^[[\]{}(),;\s]+$/;
+// JSON fragments only: progress lines such as "[1/4] Resolving packages…" stay previewable.
+const JSON_LINE = /^(?:\{|\[\s*(?:["{[]|$)|"[^"\n]+"\s*:)/;
+
+function previewLine(value: string): string | undefined {
+  const line = value.replace(/\s+/g, ' ').trim();
+  return line && !EMPTY_JSON.test(line) && !JSON_LINE.test(line) ? line : undefined;
+}
+
+function isJsonOutput(value: unknown): boolean {
+  if (typeof value !== 'string') return false;
+  try {
+    const parsed: unknown = JSON.parse(value);
+    return Array.isArray(parsed) || !!parsed && typeof parsed === 'object';
+  } catch { return false; }
+}
 
 /** A compact real result line only; tool inputs are never serialized as output. */
 export function toolOutputPreview(part: ChatPart): string | undefined {
@@ -177,10 +192,14 @@ export function toolOutputPreview(part: ChatPart): string | undefined {
     state.output,
   ];
   for (const candidate of candidates) {
+    if (isJsonOutput(candidate)) continue;
     const lines = outputText(candidate)
-      .flatMap(text => text.replace(ANSI, '').replace(CONTROL, '').replace(/\r/g, '\n').split('\n'))
-      .map(line => line.replace(/\s+/g, ' ').trim())
-      .filter(line => line && !EMPTY_JSON.test(line));
+      .flatMap(text => {
+        const output = text.replace(ANSI, '').replace(CONTROL, '').replace(/\r/g, '\n');
+        return isJsonOutput(output) ? [] : output.split('\n');
+      })
+      .map(previewLine)
+      .filter((line): line is string => !!line);
     const last = lines.at(-1);
     if (last) return last.length > OUTPUT_PREVIEW_LIMIT ? `${last.slice(0, OUTPUT_PREVIEW_LIMIT - 1)}…` : last;
   }
@@ -191,6 +210,7 @@ export function toolOutputPreview(part: ChatPart): string | undefined {
  * identifies the most recent completed-result fallback in the same drawer.
  */
 export function toolActivityPreview(entries: readonly ToolActivityEntry[], turnActive: boolean): { entryId: string; text: string } | undefined {
+  if (!turnActive) return undefined;
   const running = activeToolEntries(entries, turnActive);
   const current = running.at(-1);
   const currentText = current && toolOutputPreview(current.part);
@@ -244,7 +264,7 @@ export function describeTool(part: ChatPart, copy: Copy): { kind: ToolKind; name
     return { kind: 'browser', name: operation, action: copy('Browsing', '正在操作浏览器'), detail: target };
   }
   const view = toolView(part);
-  if (view.kind === 'command') return { kind: 'command', name: copy('Command', '命令'), action: copy('Running command', '正在执行命令'), detail: view.command };
+  if (view.kind === 'command') return { kind: 'command', name: copy('Command', '命令'), action: copy('Running command', '正在执行命令'), detail: view.display };
   if (view.kind === 'mcp') return { kind: 'mcp', name: leaf, action: copy('Calling MCP', '正在调用 MCP'), detail: view.server };
   if (view.kind === 'search' || view.kind === 'web') {
     const detail = (view.kind === 'search' ? view.query : (view.query ?? view.url)) || argument('query', 'pattern', 'url') || leaf;
@@ -260,7 +280,9 @@ export function describeTool(part: ChatPart, copy: Copy): { kind: ToolKind; name
       : view.path || argument('file_path', 'filePath', 'path', 'filename') || compact(string(data.title)) || leaf;
     const action = patch ? copy('Applying changes', '正在修改文件') : write ? copy('Writing file', '正在写入文件')
       : edit ? copy('Editing file', '正在编辑文件') : read ? copy('Reading file', '正在读取文件') : copy('Accessing files', '正在处理文件');
-    return { kind: 'file', name: copy('Files', '文件操作'), action, detail };
+    const name = patch ? copy('Apply patch', '应用补丁') : write ? copy('Write file', '写入文件') : edit ? copy('Edit file', '编辑文件')
+      : read ? copy('Read file', '读取文件') : copy('Files', '文件操作');
+    return { kind: 'file', name, action, detail };
   }
   return { kind: 'tool', name: leaf, action: copy('Running tool', '正在执行工具'), detail: compact(string(data.title)) };
 }
@@ -269,21 +291,52 @@ export function activeToolEntries(entries: readonly ToolActivityEntry[], turnAct
   return turnActive ? entries.filter(entry => toolStatus(entry.part) === 'running') : [];
 }
 
-export interface ToolSummary { explored: number; searched: number; ran: number; edited: number; other: number; failed: number; interrupted: number }
+export function toolFailureSummary(entries: readonly ToolActivityEntry[], copy: Copy): { label: string; reason: string; title: string } | undefined {
+  const failures = entries.filter(entry => {
+    const status = toolStatus(entry.part);
+    return status === 'failed' || status === 'cancelled';
+  });
+  if (!failures.length) return undefined;
+  const failed = failures.filter(entry => toolStatus(entry.part) === 'failed').length;
+  const interrupted = failures.length - failed;
+  const label = [
+    failed && copy(`${failed} failed`, `${failed} 项失败`),
+    interrupted && copy(`${interrupted} interrupted`, `${interrupted} 项中断`),
+  ].filter((value): value is string => !!value).join(' · ');
+  const outputs = failures.map(entry => toolOutputPreview(entry.part));
+  const shared = outputs[0];
+  const first = describeTool(failures[0]!.part, copy);
+  const firstDescription = [first.name, first.detail].filter(Boolean).join(' · ');
+  const reason = shared && outputs.every(output => output === shared) ? shared
+    : `${firstDescription}${failures.length > 1 ? copy(` (+${failures.length - 1} more)`, `（另有 ${failures.length - 1} 项）`) : ''}`;
+  const title = failures.map((entry, index) => {
+    const described = describeTool(entry.part, copy);
+    const description = [described.name, described.detail].filter(Boolean).join(' · ');
+    return `${copy('Failed', '失败')}: ${description} — ${outputs[index] ?? reason}`;
+  }).join('\n');
+  return { label, reason, title };
+}
+
+export interface ToolSummary { delegates: number; followedDelegates: number; explored: number; searched: number; ran: number; edited: number; other: number; failed: number; interrupted: number }
 
 /**
- * Describe a turn's tool work by view kind (B3). Counts are derived from
- * `toolView`, so Codex shell reads/searches count as explored/searched and an
- * edit's distinct file paths count once. Failed and interrupted calls stay a
- * separate signal and are also counted in their own kind.
+ * Describe a turn's tool work by view kind (B3). `delegationTool` keeps
+ * ThreadTerm delegation separate; `toolView` counts shell reads/searches and
+ * distinct edit paths. Failed and interrupted calls remain separate signals.
  */
 export function toolSummary(entries: readonly ToolActivityEntry[]): ToolSummary {
-  const summary: ToolSummary = { explored: 0, searched: 0, ran: 0, edited: 0, other: 0, failed: 0, interrupted: 0 };
+  const summary: ToolSummary = { delegates: 0, followedDelegates: 0, explored: 0, searched: 0, ran: 0, edited: 0, other: 0, failed: 0, interrupted: 0 };
   const files = new Set<string>();
   for (const entry of entries) {
     const view = toolView(entry.part);
     if (view.status === 'failed') summary.failed += 1;
     if (view.status === 'cancelled') summary.interrupted += 1;
+    const delegation = delegationTool(entry.part);
+    if (delegation) {
+      if (delegation === 'delegate_start') summary.delegates += 1;
+      else summary.followedDelegates += 1;
+      continue;
+    }
     switch (view.kind) {
       case 'read': summary.explored += 1; break;
       case 'search': summary.searched += 1; break;
@@ -309,6 +362,8 @@ const plural = (count: number, one: string, many: string): string => count === 1
 /** Localized summary segments, at most four, then "+N more". */
 export function toolSummarySegments(summary: ToolSummary, copy: Copy): string[] {
   const segments: string[] = [];
+  if (summary.delegates) segments.push(copy(`Started ${summary.delegates} ${plural(summary.delegates, 'delegate', 'delegates')}`, `启动 ${summary.delegates} 个委派`));
+  else if (summary.followedDelegates) segments.push(copy('Followed delegates', '跟进委派'));
   if (summary.explored) segments.push(copy(`Explored ${summary.explored} ${plural(summary.explored, 'file', 'files')}`, `查看 ${summary.explored} 个文件`));
   if (summary.searched) segments.push(copy(`Searched ${summary.searched}`, `搜索 ${summary.searched} 次`));
   if (summary.ran) segments.push(copy(`Ran ${summary.ran} ${plural(summary.ran, 'command', 'commands')}`, `运行 ${summary.ran} 条命令`));

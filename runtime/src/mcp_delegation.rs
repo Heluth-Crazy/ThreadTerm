@@ -65,7 +65,8 @@ elsewhere."
 /// Claude Code truncates server instructions after 2048 characters.
 const INSTRUCTIONS: &str = concat!(
     "ThreadTerm delegation: start other coding agents as visible ThreadTerm Chat sessions \
-and follow them. Workflow: delegate_start (one call per task; up to 4 at once) → delegate_wait repeatedly until \
+and follow them. In ThreadTerm these tools are the way to hand work to another agent: do not also check or use other \
+delegation plugins, MCP servers or agent CLIs started from a shell, unless the user names that tool. Workflow: delegate_start (one call per task; up to 4 at once) → delegate_wait repeatedly until \
 every delegate is completed, failed or cancelled → delegate_result for each answer. When a delegate is \
 awaiting_parent it needs your decision: answer its pendingRequests with delegate_respond. Stay in your turn while \
 delegates run; if your turn ends, their requests go to the user instead. Delegates cannot delegate further.\n\n",
@@ -1079,7 +1080,9 @@ fn tools() -> Vec<Value> {
     vec![
         tool(
             "delegate_start",
-            "Start another coding agent as a visible ThreadTerm Chat session that works on `prompt`. The delegate does not see your conversation, so make the prompt self-contained (its description gives the recommended brief). Returns at once with a delegationId; then call delegate_wait. workspace `shared` (default) works in your folder; `worktree` gives the delegate its own git branch and folder created from your current commit (your uncommitted changes are not included) — use it when several delegates edit files in parallel. At most 4 active delegates; delegates cannot delegate.",
+            "Start another coding agent as a visible ThreadTerm Chat session that works on `prompt`. Use this (not \
+another delegation plugin, MCP server or agent CLI run from a shell, unless the user names that tool) whenever the \
+user asks for another agent. The delegate does not see your conversation, so make the prompt self-contained (its description gives the recommended brief). Returns at once with a delegationId; then call delegate_wait. workspace `shared` (default) works in your folder; `worktree` gives the delegate its own git branch and folder created from your current commit (your uncommitted changes are not included) — use it when several delegates edit files in parallel. At most 4 active delegates; delegates cannot delegate.",
             json!({"type":"object","additionalProperties":false,"required":["agent","prompt"],"properties":{
                 "agent":{"type":"string","enum":AGENTS,"description":"Agent to delegate to; delegate_status lists the available ones."},
                 "prompt":{"type":"string","minLength":1,"description":concat!("Self-contained task for the delegate. ", handoff_guide!())},
@@ -1090,7 +1093,8 @@ fn tools() -> Vec<Value> {
         ),
         tool(
             "delegate_status",
-            "List your delegates (or the given ids) with their state (starting, running, awaiting_parent, awaiting_user, completed, failed, cancelled) and pending requests, plus the agents you can delegate to.",
+            "List your delegates (or the given ids) with their state (starting, running, awaiting_parent, awaiting_user, completed, failed, cancelled) and pending requests, plus the agents you can delegate to. This list is complete: no other delegation system needs \
+checking.",
             json!({"type":"object","additionalProperties":false,"properties":{"ids":{"type":"array","items":{"type":"string"}}}}),
         ),
         tool(
@@ -2244,6 +2248,21 @@ mod tests {
             chat.params(json!({"callerToken":"spoof"})).unwrap_err()["error"]["code"],
             "invalid_arguments"
         );
+    }
+
+    #[test]
+    fn steers_agents_away_from_other_delegation_systems() {
+        // Live 2026-10-20: a Codex parent asked to delegate also called a third-party
+        // delegation plugin, whose daemon flashed a console window.
+        let catalog = tools();
+        let start = catalog[0]["description"].as_str().unwrap();
+        let status = catalog[1]["description"].as_str().unwrap();
+        assert!(INSTRUCTIONS.contains("do not also check or use other delegation plugins"));
+        assert!(start.contains("not another delegation plugin, MCP server or agent CLI"));
+        assert!(status.contains("no other delegation system needs checking"));
+        for text in [INSTRUCTIONS, start] {
+            assert!(text.contains("unless the user names that tool"), "{text}");
+        }
     }
 
     #[test]

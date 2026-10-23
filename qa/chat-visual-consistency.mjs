@@ -357,16 +357,16 @@ try {
     const mermaid = scope.locator('.mermaid-extra');
     if (await mermaid.count()) await checkSurface('.mermaid-extra .markdown-extra-toolbar', `Mermaid toolbar ${theme}/${locale}/${width}`);
     else report.coverage.push({ label: `Mermaid toolbar ${theme}/${locale}/${width}`, skipped: 'ACP fixture final answer has a TypeScript block only; no Mermaid block' });
-    // V1-1: the tool header is one deliberate line. The headline ellipsizes and
-    // the failure/Collapse/chevron controls stay on line 1; the turn summary is
-    // its own line 2. No control is ever alone on a wrapped line.
+    // The tool header is one deliberate line. The headline ellipsizes and the
+    // active/Collapse/chevron controls stay on line 1; failures use their own
+    // compact summary line. No header control is ever alone on a wrapped line.
     const header = await scope.locator('.chat-tool-head').first().evaluate(node => {
       const boxes = {};
-      for (const name of ['.chat-tool-current-action', '.chat-tool-active-count', '.chat-tool-failed-count', '.chat-tool-collapse-label', '.chat-tool-chevron']) {
+      for (const name of ['.chat-tool-current-action', '.chat-tool-active-count', '.chat-tool-collapse-label', '.chat-tool-chevron']) {
         const element = node.querySelector(name);
         if (element) { const rect = element.getBoundingClientRect(); boxes[name] = { top: rect.top, center: rect.top + rect.height / 2 }; }
       }
-      const count = node.parentElement && node.parentElement.querySelector('.chat-tool-count');
+      const failures = node.parentElement && node.parentElement.querySelector('.chat-tool-failures');
       const headRect = node.getBoundingClientRect();
       const chevron = node.querySelector('.chat-tool-chevron');
       const chevronTransform = chevron ? getComputedStyle(chevron).transform : 'none';
@@ -375,14 +375,14 @@ try {
         const match = chevronTransform.match(/^matrix\(([^)]+)\)$/);
         if (match) { const [a, b] = match[1].split(',').map(value => Number(value.trim())); chevronRotation = Math.round(Math.atan2(b, a) * 180 / Math.PI); }
       }
-      return { boxes, countTop: count ? count.getBoundingClientRect().top : null, headBottom: headRect.bottom, clientWidth: node.clientWidth, scrollWidth: node.scrollWidth, flexWrap: getComputedStyle(node).flexWrap, chevronRotation };
+      return { boxes, failureTop: failures ? failures.getBoundingClientRect().top : null, headBottom: headRect.bottom, clientWidth: node.clientWidth, scrollWidth: node.scrollWidth, flexWrap: getComputedStyle(node).flexWrap, chevronRotation };
     });
     const headerCenters = Object.values(header.boxes).map(box => box.center);
-    assert.ok(headerCenters.length >= 3, `${theme}/${locale}/${width}: the header exposes the headline, failure count and chevron`);
+    assert.ok(headerCenters.length >= 3, `${theme}/${locale}/${width}: the header exposes the headline, Collapse label and chevron`);
     assert.ok(Math.max(...headerCenters) - Math.min(...headerCenters) <= 1.5, `${theme}/${locale}/${width}: the header controls share one line ${JSON.stringify(header.boxes)}`);
     assert.equal(header.flexWrap, 'nowrap', `${theme}/${locale}/${width}: the header never wraps`);
     assert.ok(header.scrollWidth <= header.clientWidth + 1, `${theme}/${locale}/${width}: the headline ellipsizes instead of overflowing (${header.scrollWidth} > ${header.clientWidth})`);
-    assert.ok(header.countTop === null || header.countTop >= header.headBottom - 1, `${theme}/${locale}/${width}: the turn summary sits on its own line below the header`);
+    assert.ok(header.failureTop === null || header.failureTop >= header.headBottom - 1, `${theme}/${locale}/${width}: the failure summary sits below the header`);
     assert.equal(((header.chevronRotation % 360) + 360) % 360, 90, `${theme}/${locale}/${width}: the expanded drawer chevron points down (rotation ${header.chevronRotation})`);
     // V1-5: the floating overlay keeps the shared .btn surface and a real shadow,
     // and the transcript reserve clears its height so it cannot cover the card.
