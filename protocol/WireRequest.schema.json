@@ -793,364 +793,6 @@
       ],
       "additionalProperties": false
     },
-    "RequestParams<\"preset.list\">": {
-      "type": "object",
-      "additionalProperties": false
-    },
-    "RequestParams<\"preset.save\">": {
-      "type": "object",
-      "properties": {
-        "id": {
-          "type": "string"
-        },
-        "name": {
-          "type": "string"
-        },
-        "sessions": {
-          "type": "array",
-          "items": {}
-        },
-        "layout": {
-          "$ref": "#/definitions/PaneLayout"
-        },
-        "commands": {
-          "type": "array",
-          "items": {
-            "type": "string"
-          }
-        },
-        "expectedRevision": {
-          "type": "number"
-        },
-        "operationId": {
-          "type": "string"
-        }
-      },
-      "required": [
-        "name",
-        "sessions",
-        "layout",
-        "commands",
-        "expectedRevision",
-        "operationId"
-      ],
-      "additionalProperties": false
-    },
-    "PaneLayout": {
-      "anyOf": [
-        {
-          "type": "object",
-          "properties": {
-            "kind": {
-              "type": "string",
-              "const": "pane"
-            },
-            "id": {
-              "type": "string"
-            },
-            "tabs": {
-              "type": "array",
-              "items": {
-                "$ref": "#/definitions/ContentRef"
-              }
-            },
-            "activeTabId": {
-              "type": [
-                "string",
-                "null"
-              ]
-            }
-          },
-          "required": [
-            "kind",
-            "id",
-            "tabs",
-            "activeTabId"
-          ],
-          "additionalProperties": false
-        },
-        {
-          "type": "object",
-          "properties": {
-            "kind": {
-              "type": "string",
-              "const": "split"
-            },
-            "id": {
-              "type": "string"
-            },
-            "direction": {
-              "type": "string",
-              "enum": [
-                "horizontal",
-                "vertical"
-              ]
-            },
-            "ratio": {
-              "type": "number"
-            },
-            "first": {
-              "$ref": "#/definitions/PaneLayout"
-            },
-            "second": {
-              "$ref": "#/definitions/PaneLayout"
-            }
-          },
-          "required": [
-            "kind",
-            "id",
-            "direction",
-            "ratio",
-            "first",
-            "second"
-          ],
-          "additionalProperties": false
-        }
-      ]
-    },
-    "ContentRef": {
-      "anyOf": [
-        {
-          "type": "object",
-          "properties": {
-            "id": {
-              "type": "string"
-            },
-            "kind": {
-              "type": "string",
-              "const": "map"
-            },
-            "sessionId": {
-              "type": "string"
-            },
-            "ownerSessionId": {
-              "not": {}
-            },
-            "projectId": {
-              "not": {}
-            },
-            "worktreePath": {
-              "not": {}
-            },
-            "path": {
-              "not": {}
-            },
-            "assetKind": {
-              "not": {}
-            }
-          },
-          "required": [
-            "id",
-            "kind",
-            "sessionId"
-          ],
-          "additionalProperties": false
-        },
-        {
-          "type": "object",
-          "properties": {
-            "id": {
-              "type": "string"
-            },
-            "kind": {
-              "type": "string",
-              "const": "session"
-            },
-            "sessionId": {
-              "type": "string"
-            }
-          },
-          "required": [
-            "id",
-            "kind",
-            "sessionId"
-          ],
-          "additionalProperties": false
-        },
-        {
-          "type": "object",
-          "properties": {
-            "id": {
-              "type": "string"
-            },
-            "kind": {
-              "type": "string",
-              "enum": [
-                "file",
-                "diff",
-                "preview"
-              ]
-            },
-            "projectId": {
-              "type": "string"
-            },
-            "worktreePath": {
-              "type": "string"
-            },
-            "path": {
-              "type": "string"
-            },
-            "assetKind": {
-              "type": "string",
-              "enum": [
-                "text",
-                "image"
-              ]
-            },
-            "ownerSessionId": {
-              "type": "string"
-            },
-            "staged": {
-              "type": "boolean"
-            }
-          },
-          "required": [
-            "id",
-            "kind",
-            "projectId",
-            "path"
-          ],
-          "additionalProperties": false
-        },
-        {
-          "type": "object",
-          "properties": {
-            "id": {
-              "type": "string"
-            },
-            "kind": {
-              "type": "string",
-              "const": "history"
-            },
-            "projectId": {
-              "type": "string"
-            },
-            "worktreePath": {
-              "type": "string"
-            },
-            "path": {
-              "type": "string"
-            },
-            "ownerSessionId": {
-              "not": {}
-            },
-            "assetKind": {
-              "not": {}
-            }
-          },
-          "required": [
-            "id",
-            "kind",
-            "projectId"
-          ],
-          "additionalProperties": false
-        },
-        {
-          "type": "object",
-          "properties": {
-            "id": {
-              "type": "string"
-            },
-            "kind": {
-              "type": "string",
-              "const": "review"
-            },
-            "projectId": {
-              "type": "string"
-            },
-            "worktreePath": {
-              "type": "string"
-            },
-            "path": {
-              "type": "string"
-            },
-            "sessionId": {
-              "type": "string"
-            },
-            "checkpointId": {
-              "type": "string"
-            },
-            "toCheckpointId": {
-              "type": "string"
-            },
-            "ownerSessionId": {
-              "not": {}
-            },
-            "assetKind": {
-              "not": {}
-            }
-          },
-          "required": [
-            "id",
-            "kind",
-            "projectId",
-            "path",
-            "sessionId",
-            "checkpointId"
-          ],
-          "additionalProperties": false
-        },
-        {
-          "type": "object",
-          "properties": {
-            "id": {
-              "type": "string"
-            },
-            "kind": {
-              "type": "string",
-              "const": "web"
-            },
-            "url": {
-              "type": "string"
-            },
-            "title": {
-              "type": "string"
-            },
-            "ownerSessionId": {
-              "not": {}
-            },
-            "projectId": {
-              "not": {}
-            },
-            "worktreePath": {
-              "not": {}
-            },
-            "path": {
-              "not": {}
-            },
-            "assetKind": {
-              "not": {}
-            }
-          },
-          "required": [
-            "id",
-            "kind",
-            "url"
-          ],
-          "additionalProperties": false
-        }
-      ]
-    },
-    "RequestParams<\"preset.delete\">": {
-      "type": "object",
-      "properties": {
-        "id": {
-          "type": "string"
-        },
-        "expectedRevision": {
-          "type": "number"
-        },
-        "operationId": {
-          "type": "string"
-        }
-      },
-      "required": [
-        "id",
-        "expectedRevision",
-        "operationId"
-      ],
-      "additionalProperties": false
-    },
     "RequestParams<\"usage.query\">": {
       "type": "object",
       "properties": {
@@ -3890,6 +3532,301 @@
       ],
       "additionalProperties": false
     },
+    "PaneLayout": {
+      "anyOf": [
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "pane"
+            },
+            "id": {
+              "type": "string"
+            },
+            "tabs": {
+              "type": "array",
+              "items": {
+                "$ref": "#/definitions/ContentRef"
+              }
+            },
+            "activeTabId": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "kind",
+            "id",
+            "tabs",
+            "activeTabId"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "split"
+            },
+            "id": {
+              "type": "string"
+            },
+            "direction": {
+              "type": "string",
+              "enum": [
+                "horizontal",
+                "vertical"
+              ]
+            },
+            "ratio": {
+              "type": "number"
+            },
+            "first": {
+              "$ref": "#/definitions/PaneLayout"
+            },
+            "second": {
+              "$ref": "#/definitions/PaneLayout"
+            }
+          },
+          "required": [
+            "kind",
+            "id",
+            "direction",
+            "ratio",
+            "first",
+            "second"
+          ],
+          "additionalProperties": false
+        }
+      ]
+    },
+    "ContentRef": {
+      "anyOf": [
+        {
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "kind": {
+              "type": "string",
+              "const": "map"
+            },
+            "sessionId": {
+              "type": "string"
+            },
+            "ownerSessionId": {
+              "not": {}
+            },
+            "projectId": {
+              "not": {}
+            },
+            "worktreePath": {
+              "not": {}
+            },
+            "path": {
+              "not": {}
+            },
+            "assetKind": {
+              "not": {}
+            }
+          },
+          "required": [
+            "id",
+            "kind",
+            "sessionId"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "kind": {
+              "type": "string",
+              "const": "session"
+            },
+            "sessionId": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "id",
+            "kind",
+            "sessionId"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "kind": {
+              "type": "string",
+              "enum": [
+                "file",
+                "diff",
+                "preview"
+              ]
+            },
+            "projectId": {
+              "type": "string"
+            },
+            "worktreePath": {
+              "type": "string"
+            },
+            "path": {
+              "type": "string"
+            },
+            "assetKind": {
+              "type": "string",
+              "enum": [
+                "text",
+                "image"
+              ]
+            },
+            "ownerSessionId": {
+              "type": "string"
+            },
+            "staged": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "id",
+            "kind",
+            "projectId",
+            "path"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "kind": {
+              "type": "string",
+              "const": "history"
+            },
+            "projectId": {
+              "type": "string"
+            },
+            "worktreePath": {
+              "type": "string"
+            },
+            "path": {
+              "type": "string"
+            },
+            "ownerSessionId": {
+              "not": {}
+            },
+            "assetKind": {
+              "not": {}
+            }
+          },
+          "required": [
+            "id",
+            "kind",
+            "projectId"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "kind": {
+              "type": "string",
+              "const": "review"
+            },
+            "projectId": {
+              "type": "string"
+            },
+            "worktreePath": {
+              "type": "string"
+            },
+            "path": {
+              "type": "string"
+            },
+            "sessionId": {
+              "type": "string"
+            },
+            "checkpointId": {
+              "type": "string"
+            },
+            "toCheckpointId": {
+              "type": "string"
+            },
+            "ownerSessionId": {
+              "not": {}
+            },
+            "assetKind": {
+              "not": {}
+            }
+          },
+          "required": [
+            "id",
+            "kind",
+            "projectId",
+            "path",
+            "sessionId",
+            "checkpointId"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "kind": {
+              "type": "string",
+              "const": "web"
+            },
+            "url": {
+              "type": "string"
+            },
+            "title": {
+              "type": "string"
+            },
+            "ownerSessionId": {
+              "not": {}
+            },
+            "projectId": {
+              "not": {}
+            },
+            "worktreePath": {
+              "not": {}
+            },
+            "path": {
+              "not": {}
+            },
+            "assetKind": {
+              "not": {}
+            }
+          },
+          "required": [
+            "id",
+            "kind",
+            "url"
+          ],
+          "additionalProperties": false
+        }
+      ]
+    },
     "RequestParams<\"workspace.delete\">": {
       "type": "object",
       "properties": {
@@ -5013,84 +4950,6 @@
         },
         "params": {
           "$ref": "#/definitions/RequestParams%3C%22settings.import.apply%22%3E"
-        }
-      },
-      "required": [
-        "v",
-        "id",
-        "method",
-        "params"
-      ],
-      "additionalProperties": false
-    },
-    {
-      "type": "object",
-      "properties": {
-        "v": {
-          "type": "number",
-          "const": 1
-        },
-        "id": {
-          "type": "string"
-        },
-        "method": {
-          "type": "string",
-          "const": "preset.list"
-        },
-        "params": {
-          "$ref": "#/definitions/RequestParams%3C%22preset.list%22%3E"
-        }
-      },
-      "required": [
-        "v",
-        "id",
-        "method",
-        "params"
-      ],
-      "additionalProperties": false
-    },
-    {
-      "type": "object",
-      "properties": {
-        "v": {
-          "type": "number",
-          "const": 1
-        },
-        "id": {
-          "type": "string"
-        },
-        "method": {
-          "type": "string",
-          "const": "preset.save"
-        },
-        "params": {
-          "$ref": "#/definitions/RequestParams%3C%22preset.save%22%3E"
-        }
-      },
-      "required": [
-        "v",
-        "id",
-        "method",
-        "params"
-      ],
-      "additionalProperties": false
-    },
-    {
-      "type": "object",
-      "properties": {
-        "v": {
-          "type": "number",
-          "const": 1
-        },
-        "id": {
-          "type": "string"
-        },
-        "method": {
-          "type": "string",
-          "const": "preset.delete"
-        },
-        "params": {
-          "$ref": "#/definitions/RequestParams%3C%22preset.delete%22%3E"
         }
       },
       "required": [

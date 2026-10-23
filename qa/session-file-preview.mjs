@@ -46,7 +46,7 @@ function Fixture(){
  const [sessionId,setSessionId]=useState('a'),[navigationKey,setNavigationKey]=useState(0),[tick,setTick]=useState(0);
  window.qa.navigate=id=>{if(id!==sessionId){setSessionId(id);setNavigationKey(key=>key+1);}}; window.qa.refresh=()=>setTick(value=>value+1);
  const layout=window.qa.saved??{kind:'pane',id:'pane',tabs:[{id:'session-a',kind:'session',sessionId:'a'},{id:'session-b',kind:'session',sessionId:'b'},{id:'independent-file',kind:'file',projectId:'project',worktreePath:'D:/fixture',path:'shared.ts'}],activeTabId:'session-a'};
- // Seed the fixture layout as an explicit layout (like a preset): opening a workspace from its saved layout now drops
+ // Seed the fixture layout explicitly: opening a workspace from its saved layout now drops
  // non-session tabs (2026-09-28), which workbench-live covers against the real runtime.
  const [seed]=useState(layout);
  const data={projects:[{id:'project',name:'Fixture',path:'D:/fixture'}],sessions:sessions.map(item=>({...item})),settings:{terminalCompatibility:{}},providers:[{id:'codex',terminalResumeCapture:'exit-hint'}],workspaces:[{id:'workspace',projectId:'project',worktreePath:'D:/fixture',layout,revision}]};

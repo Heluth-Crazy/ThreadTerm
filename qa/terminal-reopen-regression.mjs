@@ -89,7 +89,7 @@ const sessions = ['running','interrupted','interrupted','interrupted'].map((stat
 const startupSession = {id:'startup',title:'startup',provider:'codex',mode:'terminal',status:'starting',projectId:'p',worktreePath:'D:/repo',cols:120,rows:32,createdAt:'2026-09-22',updatedAt:'2026-09-22'};
 const kimiStarting = {...startupSession,id:'kimi-starting',provider:'kimi'};
 const quietEnded = {...startupSession,id:'quiet-ended',status:'interrupted',nativeId:'qa-original-native'};
-const data = {projects:[{id:'p',name:'Repo',path:'D:/repo'}],sessions,inbox:[],providers:[],settings:{},workspaces:[],presets:[],revision:1};
+const data = {projects:[{id:'p',name:'Repo',path:'D:/repo'}],sessions,inbox:[],providers:[],settings:{},workspaces:[],revision:1};
 function Fixture() {
   const [terminal, show] = useState(false), [variant, setVariant] = useState('normal'), [scope, setScope] = useState();
   window.showTerminal = show;

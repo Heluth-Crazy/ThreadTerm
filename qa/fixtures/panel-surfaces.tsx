@@ -43,7 +43,7 @@ const review = { exists: true, binary: false, fingerprint: 'qa-review-fingerprin
 const providers = [{ id: 'codex', name: 'Codex', installed: true, terminal: true, chat: true, history: true, resume: false, auth: 'authenticated' }];
 const nativeHistory = [{ provider: 'codex', nativeId: 'qa-native-header-audit', title: 'Native panel header audit', cwd: project.path, updatedAt: project.createdAt, resumable: false }];
 const historySnapshot = {
-  epoch: 'qa', revision: 1, projects: [project], sessions: [rootSession, terminalSession, ...delegates], settings: { revision: 1 }, workspaces: [], presets: [], inbox: [], providers,
+  epoch: 'qa', revision: 1, projects: [project], sessions: [rootSession, terminalSession, ...delegates], settings: { revision: 1 }, workspaces: [], inbox: [], providers,
 } as unknown as import('@threadterm/protocol').Snapshot;
 
 const clone = <T,>(value: T): T => structuredClone(value);

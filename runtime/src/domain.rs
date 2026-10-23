@@ -201,7 +201,6 @@ pub struct Snapshot {
     pub sessions: Vec<Session>,
     pub settings: Settings,
     pub workspaces: Vec<Value>,
-    pub presets: Vec<Value>,
     pub inbox: Vec<Value>,
     pub providers: Vec<Value>,
 }

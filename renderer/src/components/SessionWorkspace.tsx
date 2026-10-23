@@ -2,7 +2,7 @@ import { Select } from "./ui/Select";
 import { useEffect, useRef, useState } from 'react';
 import type { ContentRef, Draft, FileReference, GitStatus, PaneLayout, PreviewAssociation, PreviewPresentation, Session, Snapshot, Worktree } from '@threadterm/protocol';
 import { operationId, request, subscribeEvents } from '../bridge';
-import { attachChatImages, insertChatText, insertSessionText, insertTerminalText } from '../terminalInputTargets';
+import { attachChatImages, insertChatText, insertSessionText } from '../terminalInputTargets';
 import { useTranslation } from '../i18n';
 import { addSessionTab } from '../presentation';
 import { displayPath, sameCanonicalScope } from '../projectScope';
@@ -69,8 +69,8 @@ const waitForPreviewMount=(sessionId:string,previewId:string,documentId:string,t
 });
 const previewOperationKey=(value:Pick<PreviewPresentation,'sessionId'|'attachmentId'|'requestId'|'previewId'|'documentId'>)=>[value.sessionId,value.attachmentId,value.requestId,value.previewId,value.documentId].join('\0');
 
-type Props={session:Session;data:Snapshot;theme:'light'|'dark';onBack:()=>void;onSelect:(id:string)=>void;onProject:(id:string,path?:string)=>void;onChanged:()=>void;initialLayout?:PaneLayout;backgroundPresentation?:string;onBackgroundPresented:()=>void;pendingCommands?:string[];onClearCommands?:()=>void;navigationKey?:unknown;onActiveSession?:(id:string)=>void};
-export function SessionWorkspace({session,data,theme,onBack,onSelect,onProject,onChanged,initialLayout,backgroundPresentation,onBackgroundPresented,pendingCommands=[],onClearCommands,navigationKey,onActiveSession}:Props){
+type Props={session:Session;data:Snapshot;theme:'light'|'dark';onBack:()=>void;onSelect:(id:string)=>void;onProject:(id:string,path?:string)=>void;onChanged:()=>void;backgroundPresentation?:string;onBackgroundPresented:()=>void;navigationKey?:unknown;onActiveSession?:(id:string)=>void};
+export function SessionWorkspace({session,data,theme,onBack,onSelect,onProject,onChanged,backgroundPresentation,onBackgroundPresented,navigationKey,onActiveSession}:Props){
  const latestData=useRef(data);latestData.current=data;
  const providerName=(id:string)=>agentName(id,data.providers);
  const {locale}=useTranslation(),zh=locale==='zh-CN';
@@ -79,10 +79,9 @@ export function SessionWorkspace({session,data,theme,onBack,onSelect,onProject,o
  // A session opens with its sessions and independent browser pages. Restored file/Git/history/review tabs are not
  // shown again; file tabs with unsaved edits come back once draft.list answers (restoreUnsaved). Browser pages are
  // user content with runtime associations outside ContentRef, so pruning them would make navigation silently close
- // manual and agent previews. Preset layouts (initialLayout) are an explicit choice and stay as they are.
+ // manual and agent previews.
  const openedFrom=useRef<{source:PaneLayout;stripped:PaneLayout}|undefined>(undefined);
  const [layout,setLayout]=useState<PaneLayout>(()=>{
-  if(initialLayout)return initialLayout;
   if(!restored)return initialFor(session);
   const stripped=reconcileSessionLayout(sessionOnlyLayout(restored.layout,tab=>tab.kind==='web'),new Set(data.sessions.map(item=>item.id)),session.id);
   openedFrom.current={source:restored.layout,stripped};
@@ -108,12 +107,9 @@ export function SessionWorkspace({session,data,theme,onBack,onSelect,onProject,o
  useEffect(()=>{live.current=true;return()=>{live.current=false;fileOpenGeneration.current++;};},[]);
  const [trees,setTrees]=useState<Worktree[]>([]),[git,setGit]=useState<GitStatus>();
  const [workbenchCommand,setWorkbenchCommand]=useState<WorkbenchCommand>(),[quickOpen,setQuickOpen]=useState(false),[historyFocus,setHistoryFocus]=useState<{tabId:string;commit:string;key:string}>();
- const [inspector,setInspector]=useState(pendingCommands.length>0);
+ const [inspector,setInspector]=useState(false);
  const [pinPicker,setPinPicker]=useState(false);
  const [picker,setPicker]=useState<{mode:'switch'|'add'|'fill';paneId?:string}>(),[query,setQuery]=useState(''),[allProjects,setAllProjects]=useState(false);
- const [commandTarget,setCommandTarget]=useState(session.id),[commandNotice,setCommandNotice]=useState<string>();
- useEffect(()=>{if(pendingCommands.length)setInspector(true);},[pendingCommands]);
- const fillCommand=(command:string)=>{try{insertTerminalText(commandTarget,command);setCommandNotice(zh?'已填入终端，请检查后按回车执行。':'Inserted into the terminal. Review it before pressing Enter.');}catch(error){setIssue(zh?'请先打开目标会话的终端窗格并取得输入控制权。命令只能包含一行。':String(error));}};
  const [configOpen,setConfigOpen]=useState(false);
  const [navigationOpen,setNavigationOpen]=useState(false);
  const navigationToggle=useRef<HTMLButtonElement>(null);
@@ -260,8 +256,6 @@ export function SessionWorkspace({session,data,theme,onBack,onSelect,onProject,o
   };
   void acknowledge();
  }),[session.id]);
- const previousInitial=useRef(initialLayout);
- useEffect(()=>{if(initialLayout&&initialLayout!==previousInitial.current){fileOpenGeneration.current++;save(initialLayout);setPreviewSessionId(session.id);}previousInitial.current=initialLayout;},[initialLayout]);
  const lastNavigation=useRef(navigationKey);
  useEffect(()=>{
   if(lastNavigation.current===navigationKey)return;lastNavigation.current=navigationKey;
@@ -531,7 +525,6 @@ export function SessionWorkspace({session,data,theme,onBack,onSelect,onProject,o
      /></ContextHost.Provider><ContextSendDialogHost/>
     </div>
    </div>{inspector&&<aside className="inspector" aria-label={zh?'会话详情面板':'Session details'}><div className="ins-head"><span>{zh?'会话详情':'Session details'}</span><button type="button" className="icon-btn icon-btn-sm" aria-label={zh?'关闭会话详情':'Close session details'} onClick={()=>setInspector(false)}><Icon name="close"/></button></div><div className="ins-scroll">
-    {pendingCommands.length>0&&<div className="ins-block pcol-ctx-sec"><h3>{zh?'待审阅命令':'Commands to review'}</h3><p className="note">{zh?'点击命令填入目标终端；不会自动按回车或替换已有输入。':'Insert a command into the target terminal, then review it before pressing Enter.'}</p><label>{zh?'目标会话':'Target session'}<Select value={commandTarget} onChange={event=>setCommandTarget(event.target.value)}>{data.sessions.filter(candidate=>candidate.mode==='terminal'&&working(candidate)&&(sessionIdsIn(layout).includes(candidate.id)||candidate.id===session.id)).map(candidate=><option key={candidate.id} value={candidate.id}>{candidate.title}</option>)}</Select></label>{pendingCommands.map((command,index)=><button type="button" className="cmd-opt" key={index} title={zh?'填入终端（不执行）':'Insert into terminal without executing'} onClick={()=>fillCommand(command)}>{command}</button>)}{commandNotice&&<p className="note" role="status">{commandNotice}</p>}<button className="btn btn-sm btn-danger" onClick={onClearCommands}>{zh?'清空待审阅命令':'Clear command list'}</button></div>}
     <div className="ins-block"><h3>{zh?'会话信息':'Session information'}</h3><span className={`chip st-${state}`}>{stateLabel}</span><p>{session.title}</p><p className="mono dim-s">{displayPath(path)}</p><button className="btn" onClick={()=>setConfigOpen(true)}>{zh?'配置':'Configure'}</button>{session.mode==='chat'&&<button type="button" className="btn" onClick={()=>openTaskMap(session.id)}>{zh?'任务图':'Task map'}</button>}</div>
     {canPin&&project&&<SessionDocuments key={documentsSession.id} sessionId={documentsSession.id} zh={zh} state={documents} onPick={()=>setPinPicker(true)} openFile={file=>void openScopedFile({projectId:project.id,worktreePath:path,path:file,kind:'file'}).catch(fail)}/>}
     <div className="ins-block"><h3>{zh?'重点关注':'Following'}</h3><button className="btn" onClick={follow} aria-pressed={session.followed}><Icon name="star"/>{zh?(session.followed?'已关注 · 点击取消':'关注此会话'):(session.followed?'Following · Unfollow':'Follow session')}</button></div>

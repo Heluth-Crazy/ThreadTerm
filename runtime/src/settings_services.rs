@@ -1,9 +1,9 @@
-//! Settings, backup, preset, and usage operations. These remain in the
+//! Settings, backup, and usage operations. These remain in the
 //! runtime so the renderer never reads or writes the SQLite database directly.
 use crate::{config::RuntimeConfig, db::Database};
 use anyhow::{anyhow, Context, Result};
 use chrono::Utc;
-use rusqlite::{params, OptionalExtension, Transaction};
+use rusqlite::{params, Transaction};
 use serde_json::{json, Map, Value};
 use std::{
     collections::HashMap,
@@ -150,9 +150,6 @@ pub fn dispatch(
             | "settings.export"
             | "settings.import.preview"
             | "settings.import.apply"
-            | "preset.list"
-            | "preset.save"
-            | "preset.delete"
             | "usage.query"
     ) {
         return Ok(None);
@@ -166,9 +163,6 @@ pub fn dispatch(
         "settings.export" => settings_export(db)?,
         "settings.import.preview" => settings_preview(db, object(params)?)?,
         "settings.import.apply" => settings_apply(db, object(params)?)?,
-        "preset.list" => preset_list(db)?,
-        "preset.save" => preset_save(db, object(params)?)?,
-        "preset.delete" => preset_delete(db, object(params)?)?,
         "usage.query" => usage_query(db, object(params)?)?,
         _ => unreachable!(),
     };
@@ -197,7 +191,7 @@ fn data_status(config: &RuntimeConfig, db: &Database) -> Result<Value> {
     let database_size = fs::metadata(db.path()).map(|meta| meta.len()).unwrap_or(0);
     let counts = db.transaction(|tx| Ok(json!({
         "projects": count(tx, "projects")?, "sessions": count(tx, "sessions")?, "workspaces": count(tx, "workspaces")?,
-        "presets": count(tx, "presets")?, "drafts": count(tx, "drafts")?, "usageRecords": count(tx, "usage_records")?
+        "drafts": count(tx, "drafts")?, "usageRecords": count(tx, "usage_records")?
     })))?;
     Ok(
         json!({"root":config.data_dir,"database":{"path":db.path(),"sizeBytes":database_size},"counts":counts}),
@@ -479,68 +473,6 @@ fn settings_apply(db: &Database, values: &Map<String, Value>) -> Result<Value> {
         complete(tx, operation_id, "settings.import.apply", &result)?;
         emit(tx, "settings")?;
         Ok(result)
-    })
-}
-
-fn preset_list(db: &Database) -> Result<Value> {
-    db.transaction(|tx| {
-        let mut statement = tx.prepare("SELECT id,name,revision,sessions,layout,commands FROM presets ORDER BY updated_at DESC")?;
-        let rows = statement.query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, i64>(2)?, row.get::<_, String>(3)?, row.get::<_, String>(4)?, row.get::<_, String>(5)?)))?;
-        let records = rows.collect::<rusqlite::Result<Vec<_>>>()?.into_iter().map(|(id,name,revision,sessions,layout,commands)| Ok(json!({"id":id,"name":name,"revision":revision,"sessions":serde_json::from_str::<Value>(&sessions)?,"layout":serde_json::from_str::<Value>(&layout)?,"commands":serde_json::from_str::<Value>(&commands)?}))).collect::<Result<Vec<_>>>()?;
-        Ok(json!(records))
-    })
-}
-
-fn preset_save(db: &Database, values: &Map<String, Value>) -> Result<Value> {
-    let operation_id = string(values, "operationId")?;
-    if let Some(value) = db.operation(operation_id)? {
-        return Ok(value);
-    }
-    let name = string(values, "name")?;
-    let expected = integer(values, "expectedRevision")?;
-    let sessions = values
-        .get("sessions")
-        .and_then(Value::as_array)
-        .ok_or_else(|| anyhow!("invalid_request"))?;
-    let layout = values
-        .get("layout")
-        .ok_or_else(|| anyhow!("invalid_request"))?;
-    crate::workspace_services::validate_layout(layout)?;
-    let commands = values
-        .get("commands")
-        .and_then(Value::as_array)
-        .ok_or_else(|| anyhow!("invalid_request"))?;
-    if commands.iter().any(|command| command.as_str().is_none()) {
-        return Err(anyhow!("invalid_request"));
-    }
-    let id = values
-        .get("id")
-        .and_then(Value::as_str)
-        .filter(|id| !id.is_empty())
-        .map(str::to_owned)
-        .unwrap_or_else(|| Uuid::new_v4().to_string());
-    db.transaction(|tx| { let revision:Option<i64>=tx.query_row("SELECT revision FROM presets WHERE id=?",[&id],|row|row.get(0)).optional()?; if revision.unwrap_or(0)!=expected{return Err(anyhow!("revision_conflict"))}; let next=expected+1; let result=json!({"id":id,"name":name,"revision":next,"sessions":sessions,"layout":layout,"commands":commands}); tx.execute("INSERT INTO presets(id,name,revision,sessions,layout,commands,updated_at) VALUES(?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET name=excluded.name,revision=excluded.revision,sessions=excluded.sessions,layout=excluded.layout,commands=excluded.commands,updated_at=excluded.updated_at",params![id,name,next,serde_json::to_string(sessions)?,serde_json::to_string(layout)?,serde_json::to_string(commands)?,Utc::now().to_rfc3339()])?; complete(tx,operation_id,"preset.save",&result)?; emit(tx,"preset")?; Ok(result) })
-}
-
-fn preset_delete(db: &Database, values: &Map<String, Value>) -> Result<Value> {
-    let operation_id = string(values, "operationId")?;
-    if let Some(value) = db.operation(operation_id)? {
-        return Ok(value);
-    }
-    let id = string(values, "id")?;
-    let expected = integer(values, "expectedRevision")?;
-    db.transaction(|tx| {
-        let revision: i64 =
-            tx.query_row("SELECT revision FROM presets WHERE id=?", [id], |row| {
-                row.get(0)
-            })?;
-        if revision != expected {
-            return Err(anyhow!("revision_conflict"));
-        };
-        tx.execute("DELETE FROM presets WHERE id=?", [id])?;
-        complete(tx, operation_id, "preset.delete", &Value::Null)?;
-        emit(tx, "preset")?;
-        Ok(Value::Null)
     })
 }
 
@@ -983,8 +915,6 @@ mod tests {
         assert!(valid_runtime_patch(&json!({"floatMode":"random"})).is_err());
         assert!(!ALLOWED_SETTINGS.contains(&"floatMode"));
     }
-    use std::path::PathBuf;
-
     fn config(root: &Path) -> RuntimeConfig {
         RuntimeConfig {
             data_dir: root.to_owned(),
@@ -1144,7 +1074,7 @@ mod tests {
         let config = config(root.path());
         let db = Database::open(&config.database_path).unwrap();
         initialize(&db).unwrap();
-        let bundle = json!({"marker":SETTINGS_MARKER,"version":1,"exportedAt":"2026-01-01T00:00:00Z","settings":{"theme":"light","language":"en","terminalCompatibility":{"aiCompletionHints":true},"sessions":["must-not-import"]}}).to_string();
+        let bundle = json!({"marker":SETTINGS_MARKER,"version":1,"exportedAt":"2026-01-01T00:00:00Z","settings":{"theme":"light","language":"en","terminalCompatibility":{"aiCompletionHints":true},"presets":["must-not-import"],"sessions":["must-not-import"]}}).to_string();
         let preview = dispatch(
             &config,
             &db,
@@ -1159,7 +1089,62 @@ mod tests {
         assert_eq!(applied["theme"], "light");
         assert_eq!(applied["terminalCompatibility"]["aiCompletionHints"], true);
         assert!(applied.get("sessions").is_none());
+        assert!(applied.get("presets").is_none());
         assert!(dispatch(&config, &db, "settings.import.apply", &json!({"bundle":bundle,"selected":["theme"],"expectedRevision":0,"operationId":"stale"})).is_err());
+    }
+
+    #[test]
+    fn retired_preset_methods_are_rejected_as_unknown() {
+        use crate::{domain::RpcRequest, service::RuntimeService};
+        use std::sync::Arc;
+
+        let root = tempfile::tempdir().unwrap();
+        let config = config(root.path());
+        let db = Arc::new(Database::open(&config.database_path).unwrap());
+        assert!(dispatch(&config, &db, "preset.list", &json!({})).unwrap().is_none());
+        let service = RuntimeService::new(config, db);
+        let error = service
+            .dispatch(
+                "legacy-client",
+                RpcRequest {
+                    v: 1,
+                    id: "legacy-preset-list".into(),
+                    method: "preset.list".into(),
+                    params: json!({}),
+                },
+            )
+            .unwrap_err();
+        assert_eq!(error.code, "unknown_method");
+    }
+
+    #[test]
+    fn opening_a_legacy_preset_database_drops_its_rows_and_snapshot_field() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("db.sqlite");
+        let legacy = rusqlite::Connection::open(&path).unwrap();
+        legacy
+            .execute_batch(
+                "CREATE TABLE presets (id TEXT PRIMARY KEY, name TEXT NOT NULL, revision INTEGER NOT NULL, sessions TEXT NOT NULL, layout TEXT NOT NULL, commands TEXT NOT NULL, updated_at TEXT NOT NULL);
+                 INSERT INTO presets VALUES ('legacy','Daily',1,'[]','{}','[]','now');",
+            )
+            .unwrap();
+        drop(legacy);
+
+        let db = Database::open(&path).unwrap();
+        let presets_table: i64 = db
+            .transaction(|tx| {
+                Ok(tx.query_row(
+                    "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='presets'",
+                    [],
+                    |row| row.get(0),
+                )?)
+            })
+            .unwrap();
+        assert_eq!(presets_table, 0);
+        assert!(serde_json::to_value(db.snapshot().unwrap())
+            .unwrap()
+            .get("presets")
+            .is_none());
     }
 
     #[test]
@@ -1366,46 +1351,13 @@ mod tests {
         service_b.shutdown();
     }
 
+
     #[test]
-    fn presets_are_revision_fenced_and_backups_are_sqlite_snapshots() {
+    fn backups_are_sqlite_snapshots() {
         let root = tempfile::tempdir().unwrap();
         let config = config(root.path());
         let db = Database::open(&config.database_path).unwrap();
         initialize(&db).unwrap();
-        assert!(dispatch(
-            &config,
-            &db,
-            "preset.save",
-            &json!({"name":"Malformed","sessions":[],"layout":{},"commands":[],"expectedRevision":0,"operationId":"malformed-preset"})
-        )
-        .is_err());
-        assert_eq!(
-            dispatch(&config, &db, "preset.list", &json!({}))
-                .unwrap()
-                .unwrap()
-                .as_array()
-                .unwrap()
-                .len(),
-            0
-        );
-        let layout = json!({"kind":"pane","id":"main","tabs":[],"activeTabId":null});
-        let saved = dispatch(&config, &db, "preset.save", &json!({"name":"Daily","sessions":[],"layout":layout,"commands":[],"expectedRevision":0,"operationId":"preset"})).unwrap().unwrap();
-        assert_eq!(
-            dispatch(&config, &db, "preset.list", &json!({}))
-                .unwrap()
-                .unwrap()
-                .as_array()
-                .unwrap()
-                .len(),
-            1
-        );
-        assert!(dispatch(
-            &config,
-            &db,
-            "preset.delete",
-            &json!({"id":saved["id"],"expectedRevision":0,"operationId":"bad-delete"})
-        )
-        .is_err());
         let backup = root.path().join("backup.sqlite3");
         let result = dispatch(
             &config,

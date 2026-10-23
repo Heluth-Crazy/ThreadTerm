@@ -798,16 +798,6 @@
       "verificationEvidence": []
     },
     {
-      "id": "F-073",
-      "capability": "预设布局可跨工作树",
-      "scope": "required",
-      "status": "implemented",
-      "implementationEvidence": [
-        "renderer/src/components/PresetRestoreDialog.tsx"
-      ],
-      "verificationEvidence": []
-    },
-    {
       "id": "F-074",
       "capability": "主窗口选择器、置顶浮动终端和铺排/轮播",
       "scope": "required",
@@ -955,39 +945,6 @@
         "renderer/src/components/FileWorkspace.tsx",
         "renderer/src/components/GitMergeControls.tsx",
         "runtime/src/git_actions.rs"
-      ],
-      "verificationEvidence": []
-    },
-    {
-      "id": "F-088",
-      "capability": "保存工作预设、布局和待审阅命令",
-      "scope": "required",
-      "status": "implemented",
-      "implementationEvidence": [
-        "renderer/src/components/SettingsDialog.tsx",
-        "runtime/src/settings_services.rs"
-      ],
-      "verificationEvidence": []
-    },
-    {
-      "id": "F-089",
-      "capability": "预览预设、选择可用工作树/命令后恢复视图",
-      "scope": "required",
-      "status": "implemented",
-      "implementationEvidence": [
-        "renderer/src/components/PresetRestoreDialog.tsx",
-        "renderer/src/presetRestore.ts"
-      ],
-      "verificationEvidence": []
-    },
-    {
-      "id": "F-090",
-      "capability": "预设恢复不覆盖草稿或未发送输入",
-      "scope": "required",
-      "status": "implemented",
-      "implementationEvidence": [
-        "renderer/src/components/PresetRestoreDialog.tsx",
-        "renderer/src/presetRestore.ts"
       ],
       "verificationEvidence": []
     },

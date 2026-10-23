@@ -112,7 +112,7 @@ async function startFailOnceRuntime(data, pipe) {
   let closed = false;
   const servers = [];
   const snapshot = () => ({
-    epoch: 'desktop-quit-failure-epoch', revision: 0, projects: [], sessions: [], workspaces: [], presets: [], inbox: [], providers: [],
+    epoch: 'desktop-quit-failure-epoch', revision: 0, projects: [], sessions: [], workspaces: [], inbox: [], providers: [],
     settings: {revision: 0, theme: 'system', language: 'zh-CN', notifications: {native: false, attention: false, completed: false, sound: false}},
   });
   const close = async () => {

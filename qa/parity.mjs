@@ -26,7 +26,7 @@ let productionLanguagePinned=false;
 const referenceFrame=`html,body,.desktop{width:100%!important;height:100%!important;overflow:hidden!important}.desktop{padding:0!important;background:none!important}.app-window{width:100%!important;max-width:none!important;height:100%!important;max-height:none!important;margin:0!important;border:0!important;border-radius:0!important;box-shadow:none!important}.app-chrome{display:none!important}.app-stage{width:100%!important;max-width:none!important;height:100%!important}`;
 const productionFrame=`.titlebar.app-chrome{display:none!important}.app-shell{grid-template-rows:minmax(0,1fr) 24px!important}.app-shell>.sidebar,.app-shell>.content.main{grid-row:1!important}.app-shell>.statusbar{grid-row:2!important}`;
 async function referenceRoute(page,route,theme){
-  await page.evaluate(({route,theme})=>{const api=window.ThreadTermPrototype;api.setTheme(theme);api.navigate(route==='terminals'?'#/terminals':route==='inbox'?'#/inbox':route.startsWith('workspace')?'#/workspace/orbit-shell':route==='presets'?'#/presets':route==='workbench'?'#/workbench':'#/project/orbit');},{route,theme});
+  await page.evaluate(({route,theme})=>{const api=window.ThreadTermPrototype;api.setTheme(theme);api.navigate(route==='terminals'?'#/terminals':route==='inbox'?'#/inbox':route.startsWith('workspace')?'#/workspace/orbit-shell':route==='workbench'?'#/workbench':'#/project/orbit');},{route,theme});
   if(route.startsWith('settings')){await page.locator('.user-row[data-action="open-settings"]').click();await page.locator('[data-action="settings-open"]').click();await page.locator('.settings-panel').waitFor();await page.locator(`[data-action="settings-theme"][data-theme="${theme}"]`).click();if(route.includes('-'))await page.locator(`[data-action="settings-section"][data-section="${route.split('-')[1]}"]`).click();}
   if(route==='workspace-file'||route==='workspace-diff')await page.locator(`[data-action="ws-tab"][data-tab="${route.split('-')[1]}"]`).click();
   if(route==='creator')await page.locator('[data-action="open-create"]').first().click();
@@ -40,7 +40,6 @@ async function productionRoute(page,route){
   if(route==='inbox')await diagnosticClick(page,page.locator('.side-nav button').filter({hasText:/收件箱|待处理/}).first());
   if(route.startsWith('settings')){await page.locator('.user-row').click();await page.locator('.account-menu .menu-item').filter({hasText:'设置'}).click();await page.locator('.settings-panel').waitFor();if(route.includes('-')){const names={controls:'快捷键',data:'数据',mobile:'移动',tools:'工具'};await page.locator('.settings-layout nav button').filter({hasText:names[route.split('-')[1]]}).click();}}
   if(route.startsWith('workspace')){await page.locator('.sess-row').filter({hasText:'开发服务器'}).click();await page.locator('.session-screen').waitFor();if(route.includes('-'))await page.locator('.ws-tabrow .tab').nth(route.endsWith('file')?1:2).click();}
-  if(route==='presets')await page.locator('.side-nav button').filter({hasText:'工作预设'}).click();
   if(route==='creator')await page.locator('.nav-item.new').click();
   if(route==='usage')await page.locator('.ov-metric-more').click();
   if(route==='follow')await page.locator('[data-testid="home-followed"] .ov-head-btn').click();

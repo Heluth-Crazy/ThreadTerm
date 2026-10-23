@@ -33,7 +33,7 @@ Full-control devices may additionally call:
 - `session.stop`, `session.claim`, `session.renew`, and `session.release`.
 - `terminal.input` and `terminal.resize` after lease validation. The runtime derives the lease principal as `device:<paired-device-id>`.
 
-Both permissions deny runtime shutdown, device administration, settings, data operations, workspace and preset changes, files and drafts, Git and worktrees, provider Chat and history, backups, relocation, and MCP operations.
+Both permissions deny runtime shutdown, device administration, settings, data operations, workspace changes, files and drafts, Git and worktrees, provider Chat and history, backups, relocation, and MCP operations.
 
 Remote request execution takes the runtime relocation gate before the remote activity gate. This fixed lock order lets `device.disable` and `device.revoke` drain credential and terminal requests without deadlocking a queued relocation. Each accepted request is fenced by the listener generation that accepted it, so work queued before disable cannot resume after a later re-enable. Relocation requires remote access to be disabled.
 

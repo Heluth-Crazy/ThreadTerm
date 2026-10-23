@@ -20,7 +20,7 @@ try {
   await page.getByRole('button',{name:/Visual terminal/}).click();await page.locator('.terminal-host').waitFor();
   for(const width of [1280,1440,1920]) await capture('terminal-dark',width);
   await page.getByLabel(/Settings|设置/).click();
-  for(const width of [1280,1440]) for(const tab of ['general','shortcuts','presets','data','usage','devices']){await page.locator(`#settings-tab-${tab}`).click();await capture(`settings-${tab}-dark`,width);}
+  for(const width of [1280,1440]) for(const tab of ['general','shortcuts','data','usage','devices']){await page.locator(`#settings-tab-${tab}`).click();await capture(`settings-${tab}-dark`,width);}
   await page.getByRole('dialog').getByRole('button',{name:'Close',exact:true}).click(); await setTheme('light');
   await page.locator('nav').getByRole('button',{name:/All sessions|所有会话/}).click();
   for(const width of [1280,1440]) await capture('all-light',width);

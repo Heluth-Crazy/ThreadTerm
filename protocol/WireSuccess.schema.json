@@ -1429,9 +1429,6 @@
             "workspaces": {
               "type": "number"
             },
-            "presets": {
-              "type": "number"
-            },
             "drafts": {
               "type": "number"
             },
@@ -1443,7 +1440,6 @@
             "projects",
             "sessions",
             "workspaces",
-            "presets",
             "drafts",
             "usageRecords"
           ],
@@ -1763,13 +1759,305 @@
       ],
       "additionalProperties": {}
     },
-    "RequestResult<\"preset.list\">": {
-      "type": "array",
-      "items": {
-        "$ref": "#/definitions/Preset"
-      }
+    "RequestResult<\"usage.query\">": {
+      "$ref": "#/definitions/UsageResult"
     },
-    "Preset": {
+    "UsageResult": {
+      "type": "object",
+      "properties": {
+        "records": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/UsageRecord"
+          }
+        },
+        "sessions": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/SessionLifecycleMetric"
+          }
+        },
+        "summary": {
+          "type": "object",
+          "properties": {
+            "sessionCount": {
+              "type": "number"
+            },
+            "runningCount": {
+              "type": "number"
+            },
+            "endedCount": {
+              "type": "number"
+            },
+            "sessionLifetimeSeconds": {
+              "type": "number"
+            }
+          },
+          "required": [
+            "sessionCount",
+            "runningCount",
+            "endedCount",
+            "sessionLifetimeSeconds"
+          ],
+          "additionalProperties": false
+        },
+        "pricing": {
+          "type": "string",
+          "enum": [
+            "unknown",
+            "estimated"
+          ]
+        }
+      },
+      "required": [
+        "records",
+        "pricing"
+      ],
+      "additionalProperties": false
+    },
+    "UsageRecord": {
+      "type": "object",
+      "properties": {
+        "source": {
+          "$ref": "#/definitions/UsageSource"
+        },
+        "status": {
+          "$ref": "#/definitions/SessionStatus"
+        },
+        "sessionId": {
+          "type": "string"
+        },
+        "provider": {
+          "$ref": "#/definitions/ProviderId"
+        },
+        "recordedAt": {
+          "type": "string"
+        },
+        "inputTokens": {
+          "type": "number"
+        },
+        "outputTokens": {
+          "type": "number"
+        },
+        "estimatedCost": {
+          "type": "number"
+        },
+        "currency": {
+          "type": "string"
+        },
+        "model": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "sessionId",
+        "provider",
+        "recordedAt"
+      ],
+      "additionalProperties": false
+    },
+    "UsageSource": {
+      "type": "string",
+      "enum": [
+        "created",
+        "native-history",
+        "rerun"
+      ]
+    },
+    "SessionLifecycleMetric": {
+      "type": "object",
+      "properties": {
+        "sessionId": {
+          "type": "string"
+        },
+        "projectId": {
+          "type": "string"
+        },
+        "provider": {
+          "$ref": "#/definitions/ProviderId"
+        },
+        "mode": {
+          "$ref": "#/definitions/SessionMode"
+        },
+        "status": {
+          "$ref": "#/definitions/SessionStatus"
+        },
+        "source": {
+          "$ref": "#/definitions/UsageSource"
+        },
+        "sourceSessionId": {
+          "type": "string"
+        },
+        "startedAt": {
+          "type": "string"
+        },
+        "endedAt": {
+          "type": "string"
+        },
+        "sessionLifetimeSeconds": {
+          "type": "number"
+        },
+        "durationKind": {
+          "type": "string",
+          "const": "session_lifetime"
+        },
+        "history": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "status": {
+                "$ref": "#/definitions/SessionStatus"
+              },
+              "recordedAt": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "status",
+              "recordedAt"
+            ],
+            "additionalProperties": false
+          }
+        }
+      },
+      "required": [
+        "sessionId",
+        "provider",
+        "mode",
+        "status",
+        "startedAt",
+        "durationKind",
+        "history"
+      ],
+      "additionalProperties": false
+    },
+    "RequestResult<\"runtime.health\">": {
+      "type": "object",
+      "properties": {
+        "version": {
+          "type": "string"
+        },
+        "epoch": {
+          "type": "string"
+        },
+        "contract": {
+          "type": "number"
+        }
+      },
+      "required": [
+        "version",
+        "epoch",
+        "contract"
+      ],
+      "additionalProperties": false
+    },
+    "RequestResult<\"terminal.host\">": {
+      "type": "object",
+      "properties": {
+        "conptyHost": {
+          "type": "string",
+          "enum": [
+            "system",
+            "bundled"
+          ]
+        },
+        "bundledAvailable": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "conptyHost",
+        "bundledAvailable"
+      ],
+      "additionalProperties": false
+    },
+    "RequestResult<\"runtime.shutdown\">": {
+      "type": "null"
+    },
+    "RequestResult<\"runtime.snapshot\">": {
+      "$ref": "#/definitions/Snapshot"
+    },
+    "Snapshot": {
+      "type": "object",
+      "properties": {
+        "epoch": {
+          "type": "string"
+        },
+        "revision": {
+          "type": "number"
+        },
+        "projects": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/Project"
+          }
+        },
+        "sessions": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/Session"
+          }
+        },
+        "settings": {
+          "$ref": "#/definitions/Settings"
+        },
+        "workspaces": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/Workspace"
+          }
+        },
+        "inbox": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/InboxItem"
+          }
+        },
+        "providers": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/ProviderCapability"
+          }
+        }
+      },
+      "required": [
+        "epoch",
+        "revision",
+        "projects",
+        "sessions",
+        "settings",
+        "workspaces",
+        "inbox",
+        "providers"
+      ],
+      "additionalProperties": false
+    },
+    "Project": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "path": {
+          "type": "string"
+        },
+        "createdAt": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "name",
+        "path",
+        "createdAt"
+      ],
+      "additionalProperties": false
+    },
+    "Workspace": {
       "type": "object",
       "properties": {
         "id": {
@@ -1781,27 +2069,21 @@
         "revision": {
           "type": "number"
         },
-        "sessions": {
-          "type": "array",
-          "items": {}
-        },
         "layout": {
           "$ref": "#/definitions/PaneLayout"
         },
-        "commands": {
-          "type": "array",
-          "items": {
-            "type": "string"
-          }
+        "projectId": {
+          "type": "string"
+        },
+        "worktreePath": {
+          "type": "string"
         }
       },
       "required": [
         "id",
         "name",
         "revision",
-        "sessions",
-        "layout",
-        "commands"
+        "layout"
       ],
       "additionalProperties": false
     },
@@ -2099,347 +2381,6 @@
           "additionalProperties": false
         }
       ]
-    },
-    "RequestResult<\"preset.save\">": {
-      "$ref": "#/definitions/Preset"
-    },
-    "RequestResult<\"preset.delete\">": {
-      "type": "null"
-    },
-    "RequestResult<\"usage.query\">": {
-      "$ref": "#/definitions/UsageResult"
-    },
-    "UsageResult": {
-      "type": "object",
-      "properties": {
-        "records": {
-          "type": "array",
-          "items": {
-            "$ref": "#/definitions/UsageRecord"
-          }
-        },
-        "sessions": {
-          "type": "array",
-          "items": {
-            "$ref": "#/definitions/SessionLifecycleMetric"
-          }
-        },
-        "summary": {
-          "type": "object",
-          "properties": {
-            "sessionCount": {
-              "type": "number"
-            },
-            "runningCount": {
-              "type": "number"
-            },
-            "endedCount": {
-              "type": "number"
-            },
-            "sessionLifetimeSeconds": {
-              "type": "number"
-            }
-          },
-          "required": [
-            "sessionCount",
-            "runningCount",
-            "endedCount",
-            "sessionLifetimeSeconds"
-          ],
-          "additionalProperties": false
-        },
-        "pricing": {
-          "type": "string",
-          "enum": [
-            "unknown",
-            "estimated"
-          ]
-        }
-      },
-      "required": [
-        "records",
-        "pricing"
-      ],
-      "additionalProperties": false
-    },
-    "UsageRecord": {
-      "type": "object",
-      "properties": {
-        "source": {
-          "$ref": "#/definitions/UsageSource"
-        },
-        "status": {
-          "$ref": "#/definitions/SessionStatus"
-        },
-        "sessionId": {
-          "type": "string"
-        },
-        "provider": {
-          "$ref": "#/definitions/ProviderId"
-        },
-        "recordedAt": {
-          "type": "string"
-        },
-        "inputTokens": {
-          "type": "number"
-        },
-        "outputTokens": {
-          "type": "number"
-        },
-        "estimatedCost": {
-          "type": "number"
-        },
-        "currency": {
-          "type": "string"
-        },
-        "model": {
-          "type": "string"
-        }
-      },
-      "required": [
-        "sessionId",
-        "provider",
-        "recordedAt"
-      ],
-      "additionalProperties": false
-    },
-    "UsageSource": {
-      "type": "string",
-      "enum": [
-        "created",
-        "native-history",
-        "rerun"
-      ]
-    },
-    "SessionLifecycleMetric": {
-      "type": "object",
-      "properties": {
-        "sessionId": {
-          "type": "string"
-        },
-        "projectId": {
-          "type": "string"
-        },
-        "provider": {
-          "$ref": "#/definitions/ProviderId"
-        },
-        "mode": {
-          "$ref": "#/definitions/SessionMode"
-        },
-        "status": {
-          "$ref": "#/definitions/SessionStatus"
-        },
-        "source": {
-          "$ref": "#/definitions/UsageSource"
-        },
-        "sourceSessionId": {
-          "type": "string"
-        },
-        "startedAt": {
-          "type": "string"
-        },
-        "endedAt": {
-          "type": "string"
-        },
-        "sessionLifetimeSeconds": {
-          "type": "number"
-        },
-        "durationKind": {
-          "type": "string",
-          "const": "session_lifetime"
-        },
-        "history": {
-          "type": "array",
-          "items": {
-            "type": "object",
-            "properties": {
-              "status": {
-                "$ref": "#/definitions/SessionStatus"
-              },
-              "recordedAt": {
-                "type": "string"
-              }
-            },
-            "required": [
-              "status",
-              "recordedAt"
-            ],
-            "additionalProperties": false
-          }
-        }
-      },
-      "required": [
-        "sessionId",
-        "provider",
-        "mode",
-        "status",
-        "startedAt",
-        "durationKind",
-        "history"
-      ],
-      "additionalProperties": false
-    },
-    "RequestResult<\"runtime.health\">": {
-      "type": "object",
-      "properties": {
-        "version": {
-          "type": "string"
-        },
-        "epoch": {
-          "type": "string"
-        },
-        "contract": {
-          "type": "number"
-        }
-      },
-      "required": [
-        "version",
-        "epoch",
-        "contract"
-      ],
-      "additionalProperties": false
-    },
-    "RequestResult<\"terminal.host\">": {
-      "type": "object",
-      "properties": {
-        "conptyHost": {
-          "type": "string",
-          "enum": [
-            "system",
-            "bundled"
-          ]
-        },
-        "bundledAvailable": {
-          "type": "boolean"
-        }
-      },
-      "required": [
-        "conptyHost",
-        "bundledAvailable"
-      ],
-      "additionalProperties": false
-    },
-    "RequestResult<\"runtime.shutdown\">": {
-      "type": "null"
-    },
-    "RequestResult<\"runtime.snapshot\">": {
-      "$ref": "#/definitions/Snapshot"
-    },
-    "Snapshot": {
-      "type": "object",
-      "properties": {
-        "epoch": {
-          "type": "string"
-        },
-        "revision": {
-          "type": "number"
-        },
-        "projects": {
-          "type": "array",
-          "items": {
-            "$ref": "#/definitions/Project"
-          }
-        },
-        "sessions": {
-          "type": "array",
-          "items": {
-            "$ref": "#/definitions/Session"
-          }
-        },
-        "settings": {
-          "$ref": "#/definitions/Settings"
-        },
-        "workspaces": {
-          "type": "array",
-          "items": {
-            "$ref": "#/definitions/Workspace"
-          }
-        },
-        "presets": {
-          "type": "array",
-          "items": {
-            "$ref": "#/definitions/Preset"
-          }
-        },
-        "inbox": {
-          "type": "array",
-          "items": {
-            "$ref": "#/definitions/InboxItem"
-          }
-        },
-        "providers": {
-          "type": "array",
-          "items": {
-            "$ref": "#/definitions/ProviderCapability"
-          }
-        }
-      },
-      "required": [
-        "epoch",
-        "revision",
-        "projects",
-        "sessions",
-        "settings",
-        "workspaces",
-        "presets",
-        "inbox",
-        "providers"
-      ],
-      "additionalProperties": false
-    },
-    "Project": {
-      "type": "object",
-      "properties": {
-        "id": {
-          "type": "string"
-        },
-        "name": {
-          "type": "string"
-        },
-        "path": {
-          "type": "string"
-        },
-        "createdAt": {
-          "type": "string"
-        }
-      },
-      "required": [
-        "id",
-        "name",
-        "path",
-        "createdAt"
-      ],
-      "additionalProperties": false
-    },
-    "Workspace": {
-      "type": "object",
-      "properties": {
-        "id": {
-          "type": "string"
-        },
-        "name": {
-          "type": "string"
-        },
-        "revision": {
-          "type": "number"
-        },
-        "layout": {
-          "$ref": "#/definitions/PaneLayout"
-        },
-        "projectId": {
-          "type": "string"
-        },
-        "worktreePath": {
-          "type": "string"
-        }
-      },
-      "required": [
-        "id",
-        "name",
-        "revision",
-        "layout"
-      ],
-      "additionalProperties": false
     },
     "InboxItem": {
       "type": "object",
@@ -6617,84 +6558,6 @@
         },
         "result": {
           "$ref": "#/definitions/RequestResult%3C%22settings.import.apply%22%3E"
-        }
-      },
-      "required": [
-        "v",
-        "id",
-        "method",
-        "result"
-      ],
-      "additionalProperties": false
-    },
-    {
-      "type": "object",
-      "properties": {
-        "v": {
-          "type": "number",
-          "const": 1
-        },
-        "id": {
-          "type": "string"
-        },
-        "method": {
-          "type": "string",
-          "const": "preset.list"
-        },
-        "result": {
-          "$ref": "#/definitions/RequestResult%3C%22preset.list%22%3E"
-        }
-      },
-      "required": [
-        "v",
-        "id",
-        "method",
-        "result"
-      ],
-      "additionalProperties": false
-    },
-    {
-      "type": "object",
-      "properties": {
-        "v": {
-          "type": "number",
-          "const": 1
-        },
-        "id": {
-          "type": "string"
-        },
-        "method": {
-          "type": "string",
-          "const": "preset.save"
-        },
-        "result": {
-          "$ref": "#/definitions/RequestResult%3C%22preset.save%22%3E"
-        }
-      },
-      "required": [
-        "v",
-        "id",
-        "method",
-        "result"
-      ],
-      "additionalProperties": false
-    },
-    {
-      "type": "object",
-      "properties": {
-        "v": {
-          "type": "number",
-          "const": 1
-        },
-        "id": {
-          "type": "string"
-        },
-        "method": {
-          "type": "string",
-          "const": "preset.delete"
-        },
-        "result": {
-          "$ref": "#/definitions/RequestResult%3C%22preset.delete%22%3E"
         }
       },
       "required": [

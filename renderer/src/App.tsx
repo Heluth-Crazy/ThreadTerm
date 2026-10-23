@@ -26,7 +26,6 @@ import {
 } from "./bridge";
 import { FileWorkspace } from "./components/FileWorkspace";
 import { PaneWorkspace } from "./components/PaneWorkspace";
-import type { PaneLayout } from "@threadterm/protocol";
 import { SessionConfigDialog } from "./components/SessionConfigDialog";
 import { WorktreeScope } from "./components/WorktreeScope";
 import { SessionActions } from "./components/SessionActions";
@@ -45,8 +44,6 @@ import {
 } from "./presentation";
 import { applyThemeTokens, customTheme } from "./themes";
 import { rememberBootAppearance, settleBootSplash } from "./bootSplash";
-import { PresetRestoreDialog } from "./components/PresetRestoreDialog";
-import { sessionIds as presetSessionIds } from "./presetRestore";
 import { SettingsDialog } from "./components/SettingsDialog";
 import { AppSettingsProvider } from "./appSettings";
 import { I18nProvider, localeFromSettings, translate, useTranslation, type Locale } from "./i18n";
@@ -72,7 +69,6 @@ import { AllTerminalsPage } from "./components/AllTerminalsPage";
 import { InboxPage } from "./components/InboxPage";
 import { ImportedHistoryView } from "./components/ImportedHistoryView";
 import { SessionWorkspace } from "./components/SessionWorkspace";
-import { PresetsPage } from "./components/PresetsPage";
 import { SessionCreateDialog } from "./components/SessionCreateDialog";
 import { AddProjectDialog } from "./components/AddProjectDialog";
 import { WorkbenchPage } from "./components/WorkbenchPage";
@@ -92,7 +88,7 @@ const ChatView = lazy(async () => ({
 }));
 
 type Route = {
-  kind: "all" | "inbox" | "project" | "session" | "workspace" | "presets" | "workbench";
+  kind: "all" | "inbox" | "project" | "session" | "workspace" | "workbench";
   id?: string;
   scope?: SessionScope;
   worktreePath?: string;
@@ -139,13 +135,7 @@ export function App() {
     sessionId: string;
     workspacePath?: string;
   }>();
-  const [presetLayout, setPresetLayout] = useState<PaneLayout>();
   const [navigationEpoch,setNavigationEpoch]=useState(0);
-  const [presetCommands, setPresetCommands] = useState<string[]>([]);
-  const presetLayoutRef = useRef<PaneLayout | undefined>(undefined);
-  presetLayoutRef.current = presetLayout;
-  const [presetCandidate, setPresetCandidate] =
-    useState<Snapshot["presets"][number]>();
   const [attention, setAttention] = useState<Attention>();
   const supervision = parseSupervision(data?.settings.supervision);
   const supervisionState = useSupervision(data?.sessions ?? [], data?.settings.supervision);
@@ -261,9 +251,6 @@ export function App() {
     const retained = current.route.kind === 'session' && current.session && destination && current.data
       && sessionWorkspaceKey(current.session, current.data.projects) === sessionWorkspaceKey(destination, current.data.projects);
     if (!retained && !(await confirmCloseEditors())) return;
-    if (next.kind !== "session" || !next.id || !presetLayoutRef.current || !presetSessionIds(presetLayoutRef.current).includes(next.id)) {
-      setPresetLayout(undefined); setPresetCommands([]);
-    }
     setRoute(next);
     setNavigationEpoch(value=>value+1);
     if (next.kind === "session" && next.id)
@@ -392,7 +379,6 @@ export function App() {
             >
               <Icon name="terminal" />{locale==="zh-CN"?"所有终端":"All terminals"}
             </button>
-            <button className={`nav-item${route.kind === "presets" ? " active" : ""}`} onClick={() => void navigate({kind:"presets"})}><Icon name="layers" />{locale === "zh-CN" ? "工作预设" : "Work presets"}</button>
           </nav>
           <ProjectCatalog
             sessions={rawData?.sessions}
@@ -451,23 +437,6 @@ export function App() {
               <button onClick={() => setSettingsOpen(true)}>
                 {t("settings")}
               </button>
-              <Select
-                aria-label={t("presets")}
-                value=""
-                onChange={(event) => {
-                  const preset = data?.presets.find(
-                    (item) => item.id === event.target.value,
-                  );
-                  if (preset) setPresetCandidate(preset);
-                }}
-              >
-                <option value="">{t("presets")}</option>
-                {data?.presets.map((preset) => (
-                  <option key={preset.id} value={preset.id}>
-                    {preset.name}
-                  </option>
-                ))}
-              </Select>
             </div>
           </div>
           {error ? (
@@ -484,8 +453,8 @@ export function App() {
                 if(!target)return;
                 // Internal focus in this retained workspace must not create a
                 // navigation epoch (it would cancel a just-clicked file link).
-                // Cross-scope preset tabs do replace the workspace and need the
-                // same dirty-file guard as explicit navigation.
+                // Cross-scope tabs replace the workspace and need the same
+                // dirty-file guard as explicit navigation.
                 if(sessionWorkspaceKey(target,data.projects)!==sessionWorkspaceKey(session,data.projects))void navigate({kind:'session',id});
                 else setRoute({kind:'session',id});
               }}
@@ -495,9 +464,6 @@ export function App() {
               onChanged={() => void refresh()}
               backgroundPresentation={backgroundPresentation && sameWorkspace(session,backgroundPresentation.workspacePath) ? backgroundPresentation.sessionId : undefined}
               onBackgroundPresented={() => setBackgroundPresentation(undefined)}
-              initialLayout={presetLayout}
-              pendingCommands={presetCommands}
-              onClearCommands={() => setPresetCommands([])}
             />
           ) : sessionView === "opening" ? (
             <SessionOpening onBack={() => void navigate(sessionHome(session))} />
@@ -518,9 +484,7 @@ export function App() {
               }}
             />
           ) : route.kind === "workbench" ? (
-            <WorkbenchPage data={data} recentIds={recentIds} onProject={id=>void navigate({kind:"project",id})} onSession={id=>void navigate({kind:"session",id})} onCreate={defaults=>{setCreatorDefaults(defaults);setCreatorOpen(true);}} onAddProject={()=>setProjectCreatorOpen(true)} onPreset={setPresetCandidate} onAll={()=>void navigate({kind:"all"})} onInbox={()=>void navigate({kind:"inbox"})} onPresets={()=>void navigate({kind:"presets"})}/>
-          ) : route.kind === "presets" ? (
-            <PresetsPage data={data} onOpen={setPresetCandidate} onChanged={() => void refresh()} currentLayout={presetLayout}/>
+            <WorkbenchPage data={data} recentIds={recentIds} onProject={id=>void navigate({kind:"project",id})} onSession={id=>void navigate({kind:"session",id})} onCreate={defaults=>{setCreatorDefaults(defaults);setCreatorOpen(true);}} onAddProject={()=>setProjectCreatorOpen(true)} onAll={()=>void navigate({kind:"all"})} onInbox={()=>void navigate({kind:"inbox"})}/>
           ) : route.kind === "inbox" ? (
             <InboxPage
               data={scopedData??data}
@@ -572,7 +536,7 @@ export function App() {
           />
         )}
         {shellMenu&&data&&(shellMenu.kind==='account'?<AccountMenu data={data} anchor={shellMenu.anchor} onClose={()=>setShellMenu(undefined)} onChanged={()=>void refresh()} onSettings={()=>{setShellMenu(undefined);setSettingsOpen(true);}}/>:<NotificationMenu data={data} anchor={shellMenu.anchor} onClose={()=>setShellMenu(undefined)} onChanged={()=>void refresh()} onSession={id=>{setShellMenu(undefined);void navigate({kind:"session",id});}} onInbox={()=>{setShellMenu(undefined);void navigate({kind:"inbox"});}}/>)}
-        {paletteOpen && data && <CommandPalette data={data} workbench={route.kind === "session" || route.kind === "workspace"} onClose={()=>setPaletteOpen(false)} onSession={id=>void navigate({kind:"session",id})} onProject={id=>void navigate({kind:"project",id})} onCreate={()=>setCreatorOpen(true)} onAll={()=>void navigate({kind:"all"})} onInbox={()=>void navigate({kind:"inbox"})} onPresets={()=>void navigate({kind:"presets"})} onSettings={()=>setSettingsOpen(true)}/>}
+        {paletteOpen && data && <CommandPalette data={data} workbench={route.kind === "session" || route.kind === "workspace"} onClose={()=>setPaletteOpen(false)} onSession={id=>void navigate({kind:"session",id})} onProject={id=>void navigate({kind:"project",id})} onCreate={()=>setCreatorOpen(true)} onAll={()=>void navigate({kind:"all"})} onInbox={()=>void navigate({kind:"inbox"})} onSettings={()=>setSettingsOpen(true)}/>}
         {creatorOpen && data && (
           <SessionCreateDialog data={data}
             initialProjectId={creatorDefaults?.projectId} initialPath={creatorDefaults?.path} initialProvider={creatorDefaults?.provider} initialTitle={creatorDefaults?.title}
@@ -590,53 +554,10 @@ export function App() {
             }}
           />
         )}
-        {presetCandidate && (
-          <PresetRestoreDialog
-            preset={presetCandidate}
-            projects={data?.projects ?? []}
-            sessions={data?.sessions ?? []}
-            onClose={() => setPresetCandidate(undefined)}
-            onRestored={async (restored) => {
-                if (!await confirmCloseEditors()) return;
-                setPresetCandidate(undefined);
-                setPresetLayout(restored.layout);
-                setPresetCommands(restored.commands);
-                setRoute({ kind: "session", id: restored.sessionId });
-                setRecentIds(current => [restored.sessionId, ...current.filter(id => id !== restored.sessionId)].slice(0, 8));
-            }}
-          />
-        )}
         {settingsOpen && data && (
           <SettingsDialog
             data={data}
             supervisionCounts={supervisionState}
-            currentWorkspace={
-              session
-                ? (() => {
-                    const workspace = data.workspaces.find(
-                      (item) =>
-                        item.projectId === session.projectId &&
-                        item.worktreePath === session.worktreePath,
-                    );
-                    return workspace
-                      ? {
-                          layout: workspace.layout,
-                          sessions: data.sessions
-                            .filter(
-                              (item) =>
-                                item.projectId === session.projectId &&
-                                item.worktreePath === session.worktreePath,
-                            )
-                            .map((item) => ({
-                              id: `session-${item.id}`,
-                              kind: "session" as const,
-                              sessionId: item.id,
-                            })),
-                        }
-                      : undefined;
-                  })()
-                : undefined
-            }
             onClose={() => setSettingsOpen(false)}
             onSaved={refresh}
             onSessionCreated={async (sessionId) => {

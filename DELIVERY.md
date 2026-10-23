@@ -16,10 +16,9 @@ Built September 10, 2026. Source is in the separate `ThreadTerm-v3` worktree on 
 
 - TypeScript desktop and renderer checks; production renderer/desktop builds; release Rust binaries.
 - Rust: 95 tests passed; formatting and Clippy with warnings denied passed.
-- Current protocol: 6 tests; output fanout: 2; preset/catalog/input helpers: 6; control lease/draft writer: 3. Earlier provider, state/ordering and SDK evidence remains under `qa/`.
+- Current protocol: 6 tests; output fanout: 2; catalog/input helpers: 6; control lease/draft writer: 3. Earlier provider, state/ordering and SDK evidence remains under `qa/`.
 - Real named-pipe IPC, PTY, replay/recovery, lease ownership, scoped files/Git, drafts and data relocation were exercised by the scripts and reports under `qa/`.
 - Prototype comparison gallery: `qa/results/parity-review.html`, with 17 screens at 1280/1440/1920 in light/dark, 102 distinct screenshot pairs. Detailed action and visual evidence is in `PARITY-VERIFICATION.md`.
-- Ended/imported preset restoration never claims control or starts providers. Live Chat rapid-navigation draft flush and live-to-ended text retention pass actual rendered UI tests (`qa/results/preset-restore-ui-final/2026-09-10T16-16-03-087Z/report.json`).
 - Cache cleanup: restart clears only HTTP cache, retains cookie and SQLite draft, consumes a schedule once, and respects cancellation (`qa/results/cache-cleanup-smoke.json`).
 - Final installed package, completed 16:49 UTC: plain non-Git directory sessions appear in the sidebar; a real command typed into TerminalSurface produced an exact standalone output row. Bundled Claude host answered without external Node on PATH. NSIS uninstall removed the isolated test application while retaining external SQLite data (`qa/results/installed-smoke.json`).
 - Installation/upgrade/uninstallation preserved the existing preview process identities, V2 registration and V2 shortcut targets. The legacy installer guard returned exit 2 before executing an unsafe predecessor (`qa/results/installer-isolation/`).

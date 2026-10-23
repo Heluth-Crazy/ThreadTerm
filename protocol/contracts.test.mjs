@@ -228,7 +228,6 @@ test('task map tabs require a bounded session identity and no owner',()=>{
   const tab={...map,sessionId};
   validateLayout(layout(tab));
   validateRequest('workspace.save',params(tab));
-  validateRequest('preset.save',{name:'Task map',sessions:[],layout:layout(tab),commands:[],expectedRevision:0,operationId:'map-preset'});
   validateResult('workspace.save',{id:'workspace',name:'Task map',revision:1,layout:layout(tab)});
  }
  for(const tab of [{id:'map',kind:'map'},...['',null,42,'x'.repeat(257),'😀'.repeat(129)].map(sessionId=>({...map,sessionId})),...['session-a',null,42].map(ownerSessionId=>({...map,ownerSessionId}))]){
@@ -242,7 +241,6 @@ test('web preview tabs show only http(s) pages and belong to no session',()=>{
  const layout={kind:'pane',id:'pane',tabs:[web],activeTabId:'web'};
  const params={name:'Web',layout,expectedRevision:0,operationId:'web'};
  validateRequest('workspace.save',params);
- validateRequest('preset.save',{name:'Web',sessions:[],layout,commands:[],expectedRevision:0,operationId:'web-preset'});
  validateResult('workspace.save',{id:'workspace',name:'Web',revision:1,layout});
  validateRequest('workspace.save',{...params,layout:{...layout,tabs:[{id:'web',kind:'web',url:'https://[::1]:8443/app?x=1#top'}]}});
  for(const url of ['file:///C:/Windows/win.ini','javascript:alert(1)','localhost:3000','http://','http://local host/','http://x/\u0085',`http://localhost/${'a'.repeat(2048)}`,'',3,undefined])

@@ -771,7 +771,7 @@ pub(crate) fn root_for(
     Ok(PathBuf::from(path))
 }
 /// Validates the persisted workspace-pane tree used by both saved workspaces
-/// and preset layouts.
+/// and workspace layouts.
 pub fn validate_layout(layout: &Value) -> Result<()> {
     /// Same rule as the protocol's `isWebPreviewUrl`: absolute http(s) with a host, at most 2048 characters.
     fn valid_web_url(url: &str) -> bool {

@@ -1,7 +1,7 @@
 import { localeFromSettings } from "../i18n";
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import type { Preset, Snapshot } from "@threadterm/protocol";
+import type { Snapshot } from "@threadterm/protocol";
 import { operationId, request } from "../bridge";
 import { useModalFocus } from "../useModalFocus";
 import { Icon } from "./PrototypeIcon";
@@ -20,7 +20,7 @@ import "../../../reference/prototype/features/settings.css";
 import "./settings-parity.css";
 
 type Tab = "appearance" | "controls" | "browser" | "data" | "mobile" | "tools" | "plugins";
-type Props = { data: Snapshot; currentWorkspace?: Pick<Preset, "layout" | "sessions">; onClose: () => void; onSaved: () => Promise<void>; onSessionCreated?: (id: string) => void | Promise<void>; supervisionCounts: { checks: number; alertCount: number } };
+type Props = { data: Snapshot; onClose: () => void; onSaved: () => Promise<void>; onSessionCreated?: (id: string) => void | Promise<void>; supervisionCounts: { checks: number; alertCount: number } };
 export function SettingsDialog({ data, onClose, onSaved, onSessionCreated, supervisionCounts }: Props) {
   const [tab, setTab] = useState<Tab>("appearance");
   const panel = useRef<HTMLElement>(null), revision = useRef(data.settings.revision);
