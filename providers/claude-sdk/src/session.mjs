@@ -851,10 +851,18 @@ export class ClaudeSession {
     }
   }
 
-  async interrupt() {
+  // A Stop names the turn the user saw running. Compare it with the live turn
+  // before interrupting: a delayed Stop for an ended turn must never stop the
+  // turn that replaced it.
+  async interrupt(turnId) {
     if (!this.query) throw new Error('session not started');
-    this.interruptedOperation = this.activeOperationId;
+    if (!this.activeOperationId) return { status: 'idle' };
+    // An older runtime sends no turn id; its Stop keeps its former meaning.
+    if (turnId !== undefined && this.activeOperationId !== turnId) return { status: 'stale_turn', activeOperationId: this.activeOperationId };
+    const operationId = this.activeOperationId;
+    this.interruptedOperation = operationId;
     await this.query.interrupt();
+    return { status: 'interrupted', operationId };
   }
   async stop() {
     if (this.closed) return;

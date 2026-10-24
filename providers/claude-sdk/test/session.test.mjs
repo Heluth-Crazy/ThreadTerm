@@ -917,7 +917,7 @@ test('an interrupted or failed result leaves a steer for the carry it starts', a
       await session.start({ cwd: 'C:/' });
       session.send('one', 'op-a');
       session.steer('s1', 'steer-a', 'op-a');
-      if (label === 'interrupted') await session.interrupt();
+      if (label === 'interrupted') await session.interrupt('op-a');
       query.push({ type: 'result', user_message_uuids: [], is_error: isError });
       await delay(30);
       assert.equal(session.activeOperationId, null, `${label}: no eager carry`);
@@ -932,6 +932,42 @@ test('an interrupted or failed result leaves a steer for the carry it starts', a
       query.finish();
       await session.pump;
     }
+  }
+});
+
+test('a Stop for an ended turn never interrupts the turn that replaced it', async () => {
+  const { sdk, query } = controllableSdk();
+  const interrupts = [];
+  query.interrupt = async () => { interrupts.push(session.activeOperationId); };
+  const events = [];
+  const session = new ClaudeSession({ cardId: 'card-stale-stop', sdk, write: value => events.push(value), hostOptions: { warmUp: false } });
+  try {
+    await session.start({ cwd: tmpdir() });
+    session.send('one', 'op-a');
+    query.push({ type: 'result', user_message_uuids: [], is_error: false });
+    await delay(20);
+    assert.equal(session.activeOperationId, null);
+    session.send('two', 'op-b');
+    // Stop(A) arrives after B started.
+    assert.deepEqual(await session.interrupt('op-a'), { status: 'stale_turn', activeOperationId: 'op-b' });
+    assert.equal(interrupts.length, 0, 'a stale Stop never reaches the SDK');
+    assert.equal(session.activeOperationId, 'op-b', 'B keeps running');
+    assert.equal(session.interruptedOperation, null, 'B is not marked for interruption');
+    assert.equal(events.some(value => value.ev === 'session.status' && value.phase === 'idle' && value.operationId === 'op-b'), false, 'B is not reported ended');
+    query.push({ type: 'result', user_message_uuids: [], is_error: false });
+    await delay(20);
+    assert.equal(events.findLast(value => value.ev === 'session.status').status, 'completed', 'B completes as a normal answer');
+    // A Stop naming the live turn still stops it, and a repeat is a no-op.
+    session.send('three', 'op-c');
+    assert.deepEqual(await session.interrupt('op-c'), { status: 'interrupted', operationId: 'op-c' });
+    assert.equal(interrupts.length, 1);
+    query.push({ type: 'result', user_message_uuids: [], is_error: false });
+    await delay(20);
+    assert.deepEqual(await session.interrupt('op-c'), { status: 'idle' });
+    assert.equal(interrupts.length, 1, 'an already ended turn is not interrupted twice');
+  } finally {
+    query.finish();
+    await session.pump;
   }
 });
 

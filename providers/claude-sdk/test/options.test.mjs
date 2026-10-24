@@ -316,7 +316,7 @@ test('each turn reports how it ended: completed, interrupted by the user, or fai
   feed.push({ type: 'result', subtype: 'success', is_error: false, result: 'ok' });
   await delay(10);
   session.send('two', 'op-2');
-  await session.interrupt();
+  await session.interrupt('op-2');
   feed.push({ type: 'result', subtype: 'error_during_execution', is_error: true });
   await delay(10);
   session.send('three', 'op-3');

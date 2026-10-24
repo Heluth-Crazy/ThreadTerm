@@ -681,9 +681,21 @@ impl ChatSession for ClaudeChat {
             Err(error) => Err(error),
         }
     }
-    fn cancel(&mut self, _turn_id: &str) -> Result<(), ProviderError> {
-        self.process
-            .sidecar_request("session.interrupt", json!({"cardId":self.session_id}))?;
+    fn cancel(&mut self, turn_id: &str) -> Result<(), ProviderError> {
+        validate_native_id(turn_id)?;
+        let reply = self.process.sidecar_request(
+            "session.interrupt",
+            json!({"cardId":self.session_id,"turnId":turn_id}),
+        )?;
+        // The sidecar compares the turn id with the live turn before it
+        // interrupts, so a Stop that arrives after the next turn started is
+        // refused here instead of stopping that turn.
+        if reply.get("status").and_then(Value::as_str) == Some("stale_turn") {
+            return Err(ProviderError::new(
+                "turn_not_active",
+                "The requested Claude turn is no longer active. / 请求的 Claude 回合已不再运行。",
+            ));
+        }
         Ok(())
     }
     fn approve(
@@ -4269,5 +4281,56 @@ createInterface({{ input: process.stdin, crlfDelay: Infinity }}).on('line', line
             Some("9.9.9")
         );
         assert_eq!(claude_version_number("running 1 test"), None);
+    }
+
+    #[test]
+    fn cancel_carries_the_turn_and_refuses_a_stale_one() {
+        let Some(node) = crate::providers::common::find_executable("node") else {
+            eprintln!("node is unavailable; skipping the cancel fixture test");
+            return;
+        };
+        let dir = tempfile::tempdir().unwrap();
+        let script = dir.path().join("cancel-claude.cjs");
+        // A stand-in for the sidecar's turn gate: only the live turn may be
+        // interrupted, and a Stop without a turn id is rejected outright.
+        std::fs::write(
+            &script,
+            r#"
+let active = 'turn-b';
+const out = value => process.stdout.write(JSON.stringify(value) + '\n');
+require('node:readline').createInterface({ input: process.stdin }).on('line', line => {
+  const request = JSON.parse(line);
+  if (request.op !== 'session.interrupt') return out({ id: request.id, error: { message: `unexpected op: ${request.op}` } });
+  if (typeof request.turnId !== 'string' || !request.turnId) return out({ id: request.id, error: { message: 'turnId is required' } });
+  if (active === null) return out({ id: request.id, ok: { status: 'idle' } });
+  if (request.turnId !== active) return out({ id: request.id, ok: { status: 'stale_turn', activeOperationId: active } });
+  active = null;
+  return out({ id: request.id, ok: { status: 'interrupted', operationId: request.turnId } });
+});
+"#,
+        )
+        .unwrap();
+        let spec = CommandSpec::from_path(node, vec![script.to_string_lossy().into_owned()]).unwrap();
+        let on_message = Arc::new(|_raw: Value| {});
+        let process =
+            JsonLineProcess::spawn("fake-claude", &spec, None, &[], EnvelopeStyle::Sidecar, on_message)
+                .unwrap();
+        let (events, _receiver) = crate::provider_events::tap_channel(1);
+        let mut chat = ClaudeChat {
+            process,
+            session_id: "session".into(),
+            native_id: None,
+            liveness: WorkerLiveness::default(),
+            ui: ClaudeUi::default(),
+            events,
+            worker_token: None,
+        };
+        // The turn the user is looking at already ended: the newer turn keeps running.
+        assert_eq!(chat.cancel("turn-a").unwrap_err().code, "turn_not_active");
+        assert_eq!(chat.cancel("turn-a").unwrap_err().code, "turn_not_active");
+        // The live turn is the one the adapter names, so it is the one that stops.
+        chat.cancel("turn-b").unwrap();
+        // Nothing runs now; a repeated Stop is an idempotent no-op, not an error.
+        chat.cancel("turn-b").unwrap();
     }
 }
