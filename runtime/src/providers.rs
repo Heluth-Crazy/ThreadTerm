@@ -757,6 +757,13 @@ pub(crate) trait ChatSession: Send {
 
 type SharedChat = Arc<Mutex<Box<dyn ChatSession>>>;
 
+/// Worker liveness is read with the registry released (see the `chats` field
+/// for the lock order). Locking a worker while holding the registry lets a
+/// slow provider call freeze every Chat; see F02.
+fn worker_is_alive(worker: &SharedChat) -> bool {
+    worker.lock().ok().is_some_and(|chat| chat.is_alive())
+}
+
 pub(crate) struct PlanResponseRequest<'a> {
     pub session_id: &'a str,
     pub turn_id: &'a str,
@@ -967,13 +974,6 @@ impl ChatSlot {
         }
     }
 
-    fn worker_alive(&self) -> bool {
-        self.worker
-            .as_ref()
-            .and_then(|worker| worker.lock().ok().map(|chat| chat.is_alive()))
-            .unwrap_or(false)
-    }
-
     fn mark_disconnected(&mut self) -> Option<SharedChat> {
         let retired = self.worker.take();
         self.connecting = false;
@@ -1022,6 +1022,14 @@ struct ChatOpenAttempt {
 pub struct Providers {
     adapters: RwLock<HashMap<String, Arc<dyn ProviderAdapter>>>,
     plugins: RwLock<Option<crate::plugins::PluginRegistry>>,
+    /// One worker slot per Chat session.
+    ///
+    /// Lock order: this registry is never held while waiting for a worker, and
+    /// no worker lock is ever held while taking the registry. Take the registry
+    /// only to clone a handle or to read/rewrite slot bookkeeping, release it,
+    /// then call into the worker; when the registry is taken again, revalidate
+    /// identity (`Arc::ptr_eq`) before changing the slot. A worker `try_lock`
+    /// under this registry is the one bounded exception: it never waits.
     chats: Mutex<HashMap<String, ChatSlot>>,
     connect_wait: Condvar,
     capability_cache: Arc<Mutex<CapabilityCache>>,
@@ -1598,39 +1606,48 @@ impl Providers {
     }
 
     fn worker_handle(&self, session_id: &str) -> Result<SharedChat, ProviderError> {
+        // Clone the handle under the registry, then wait for the worker with the
+        // registry released (see the `chats` lock order).
+        let worker = {
+            let chats = self
+                .chats
+                .lock()
+                .map_err(|_| ProviderError::new("provider_internal", "provider chat lock poisoned"))?;
+            chats
+                .get(session_id)
+                .and_then(|slot| slot.worker.clone())
+                .ok_or_else(|| {
+                    ProviderError::new(
+                        "chat_not_open",
+                        format!("no provider Chat worker is open for session {session_id}"),
+                    )
+                })?
+        };
+        if worker_is_alive(&worker) {
+            return Ok(worker);
+        }
+        let mut guard = worker.try_lock().map_err(|_| ProviderError::new("chat_busy", "Chat retirement is still in progress"))?;
+        self.persist_retirement(guard.as_mut())?;
+        drop(guard);
+        // Retire only the worker this call saw; a replacement owns the slot now.
         let mut chats = self
             .chats
             .lock()
             .map_err(|_| ProviderError::new("provider_internal", "provider chat lock poisoned"))?;
-        let slot = chats.get_mut(session_id).ok_or_else(|| {
-            ProviderError::new(
-                "chat_not_open",
-                format!("no provider Chat worker is open for session {session_id}"),
-            )
-        })?;
-        let worker = slot.worker.clone().ok_or_else(|| {
-            ProviderError::new(
-                "chat_not_open",
-                format!("no provider Chat worker is open for session {session_id}"),
-            )
-        })?;
-        let alive = worker.lock().ok().is_some_and(|chat| chat.is_alive());
-        if !alive {
-            let mut guard = worker.try_lock().map_err(|_| ProviderError::new("chat_busy", "Chat retirement is still in progress"))?;
-            self.persist_retirement(guard.as_mut())?;
-            drop(guard);
-            let retired = slot.mark_disconnected();
-            self.connect_wait.notify_all();
-            let state = slot.wire(session_id, "unknown", None);
-            drop(chats);
-            self.emit_connection(session_id, state);
-            drop(retired);
-            return Err(ProviderError::new(
-                "provider_disconnected",
-                format!("provider Chat worker for session {session_id} is no longer alive"),
-            ));
+        if let Some(slot) = chats.get_mut(session_id) {
+            if slot.worker.as_ref().is_some_and(|current| Arc::ptr_eq(current, &worker)) {
+                let retired = slot.mark_disconnected();
+                let state = slot.wire(session_id, "unknown", None);
+                drop(chats);
+                self.connect_wait.notify_all();
+                self.emit_connection(session_id, state);
+                drop(retired);
+            }
         }
-        Ok(worker)
+        Err(ProviderError::new(
+            "provider_disconnected",
+            format!("provider Chat worker for session {session_id} is no longer alive"),
+        ))
     }
 
     fn chat<T>(
@@ -1638,8 +1655,8 @@ impl Providers {
         session_id: &str,
         call: impl FnOnce(&mut dyn ChatSession) -> Result<T, ProviderError>,
     ) -> Result<T, ProviderError> {
-        // Hold the registry lock only long enough to clone the per-session
-        // handle. A slow provider call must not block unrelated sessions.
+        // `worker_handle` returns with the registry released: a slow provider
+        // call only blocks its own Chat worker, never the registry.
         let chat = self.worker_handle(session_id)?;
         let lock_timer = crate::send_trace::Timer::start();
         crate::send_trace::emit(crate::send_trace::Event::new("provider.worker_lock.begin")
@@ -1883,6 +1900,30 @@ impl Providers {
     }
 
     pub(crate) fn note_session_closed_scoped(&self, session_id: &str, worker_token: Option<&str>) {
+        let worker = {
+            let chats = match self.chats.lock() {
+                Ok(chats) => chats,
+                Err(_) => return,
+            };
+            let Some(slot) = chats.get(session_id) else {
+                return;
+            };
+            if worker_token.is_some() && slot.worker_token.as_deref() != worker_token {
+                return;
+            }
+            let Some(worker) = slot.worker.clone() else { return; };
+            worker
+        };
+        // Liveness is read with the registry released (see the `chats` lock order).
+        if worker_is_alive(&worker) {
+            return;
+        }
+        let Ok(mut guard) = worker.try_lock() else { return; };
+        if let Err(error) = self.persist_retirement(guard.as_mut()) {
+            eprintln!("held transcript persistence failed for {session_id}: {error}");
+            return;
+        }
+        drop(guard);
         let mut chats = match self.chats.lock() {
             Ok(chats) => chats,
             Err(_) => return,
@@ -1890,18 +1931,12 @@ impl Providers {
         let Some(slot) = chats.get_mut(session_id) else {
             return;
         };
+        // A replacement worker or a fresh token owns the slot now.
+        if !slot.worker.as_ref().is_some_and(|current| Arc::ptr_eq(current, &worker)) {
+            return;
+        }
         if worker_token.is_some() && slot.worker_token.as_deref() != worker_token {
             return;
-        }
-        if slot.worker.is_none() || slot.worker_alive() {
-            return;
-        }
-        if let Some(worker) = slot.worker.as_ref() {
-            let Ok(mut guard) = worker.try_lock() else { return; };
-            if let Err(error) = self.persist_retirement(guard.as_mut()) {
-                eprintln!("held transcript persistence failed for {session_id}: {error}");
-                return;
-            }
         }
         let retired = slot.mark_disconnected();
         let state = slot.wire(session_id, "unknown", None);
@@ -2159,11 +2194,24 @@ impl Providers {
             .map_err(|_| ProviderError::new("provider_internal", "provider chat lock poisoned"))?;
         let mut waited = false;
         loop {
-            let slot = chats.get(session_id);
-            if slot.is_some_and(ChatSlot::worker_alive) {
-                let native = slot.and_then(|slot| slot.native_id.clone());
-                return Ok(json!({"nativeId": native, "status": "ready"}));
+            // Liveness is read with the registry released: a worker inside a
+            // provider call must not block the registry (see the `chats` order).
+            let (existing_worker, native) = chats
+                .get(session_id)
+                .map(|slot| (slot.worker.clone(), slot.native_id.clone()))
+                .unwrap_or_default();
+            if let Some(worker) = existing_worker {
+                drop(chats);
+                let alive = worker_is_alive(&worker);
+                chats = self
+                    .chats
+                    .lock()
+                    .map_err(|_| ProviderError::new("provider_internal", "provider chat lock poisoned"))?;
+                if alive {
+                    return Ok(json!({"nativeId": native, "status": "ready"}));
+                }
             }
+            let slot = chats.get(session_id);
             if slot.is_some_and(|slot| slot.connecting) {
                 waited = true;
                 chats = self.connect_wait.wait(chats).map_err(|_| {
@@ -2449,33 +2497,34 @@ impl ProviderRuntime for Providers {
     }
 
     fn chat_stop(&self, session_id: &str) -> Result<(), ProviderError> {
+        // Clone the handle under the registry; the worker wait below happens
+        // with the registry released (see the `chats` lock order).
+        let worker = {
+            let chats = self
+                .chats
+                .lock()
+                .map_err(|_| ProviderError::new("provider_internal", "provider chat lock poisoned"))?;
+            // Stopping a durable Chat session before its explicit `chat.connect`
+            // starts is a valid lifecycle transition. Treat an absent worker slot
+            // as already stopped so the database can move `starting` to `exited`.
+            let Some(slot) = chats.get(session_id) else {
+                return Ok(());
+            };
+            slot.worker.clone()
+        };
+        if let Some(worker) = &worker {
+            let mut guard = worker.lock().map_err(|_| ProviderError::new("provider_internal", "session worker lock poisoned"))?;
+            self.persist_retirement(guard.as_mut())?;
+        }
         let mut chats = self
             .chats
             .lock()
             .map_err(|_| ProviderError::new("provider_internal", "provider chat lock poisoned"))?;
-        // Stopping a durable Chat session before its explicit `chat.connect`
-        // starts is a valid lifecycle transition. Treat an absent worker slot
-        // as already stopped so the database can move `starting` to `exited`.
-        let Some(slot) = chats.get_mut(session_id) else {
-            return Ok(());
-        };
-        let worker = slot.worker.clone();
-        // Wait outside the registry, then confirm that this is still the same
-        // worker before committing held items and invalidating its token.
-        if let Some(worker) = worker {
-            drop(chats);
-            let mut guard = worker.lock().map_err(|_| ProviderError::new("provider_internal", "session worker lock poisoned"))?;
-            chats = self.chats.lock().map_err(|_| ProviderError::new("provider_internal", "provider chat lock poisoned"))?;
-            let Some(slot) = chats.get_mut(session_id) else { return Ok(()); };
-            if !slot.worker.as_ref().is_some_and(|current| Arc::ptr_eq(current, &worker)) { return Ok(()); }
-            self.persist_retirement(guard.as_mut())?;
-            slot.worker_token = None;
-            let _ = slot.mark_disconnected();
-            let state = slot.wire(session_id, "unknown", None);
-            drop(chats);
-            self.connect_wait.notify_all();
-            self.emit_connection(session_id, state);
-            return guard.stop();
+        let Some(slot) = chats.get_mut(session_id) else { return Ok(()); };
+        // Confirm that this is still the same worker before committing held
+        // items and invalidating its token; a replacement owns the slot otherwise.
+        if let Some(worker) = &worker {
+            if !slot.worker.as_ref().is_some_and(|current| Arc::ptr_eq(current, worker)) { return Ok(()); }
         }
         // An explicit stop invalidates even notifications queued by a worker
         // whose startup has not returned. Natural EOF keeps its token until
@@ -2486,7 +2535,11 @@ impl ProviderRuntime for Providers {
         drop(chats);
         self.connect_wait.notify_all();
         self.emit_connection(session_id, state);
-        Ok(())
+        let Some(worker) = worker else { return Ok(()) };
+        let mut guard = worker
+            .lock()
+            .map_err(|_| ProviderError::new("provider_internal", "session worker lock poisoned"))?;
+        guard.stop()
     }
 
     fn chat_options(&self, session_id: &str) -> Result<Value, ProviderError> {
@@ -2536,43 +2589,62 @@ impl ProviderRuntime for Providers {
     }
 
     fn chat_connection(&self, session_id: &str) -> Value {
-        let mut chats = match self.chats.lock() {
-            Ok(chats) => chats,
-            Err(_) => {
-                return json!({
-                    "sessionId":session_id,
-                    "connectionGeneration":0,
-                    "revision":0,
-                    "phase":"unavailable",
-                    "optionsLoadState":"unknown"
-                })
+        let (worker, state) = {
+            let mut chats = match self.chats.lock() {
+                Ok(chats) => chats,
+                Err(_) => {
+                    return json!({
+                        "sessionId":session_id,
+                        "connectionGeneration":0,
+                        "revision":0,
+                        "phase":"unavailable",
+                        "optionsLoadState":"unknown"
+                    })
+                }
+            };
+            match chats.get_mut(session_id) {
+                Some(slot) => (slot.worker.clone(), slot.wire(session_id, "unknown", None)),
+                None => {
+                    return json!({
+                        "sessionId":session_id,
+                        "connectionGeneration":0,
+                        "revision":0,
+                        "phase":"disconnected",
+                        "optionsLoadState":"unknown"
+                    })
+                }
             }
         };
-        if let Some(slot) = chats.get_mut(session_id) {
-            if slot.worker.is_some() && !slot.worker_alive() {
-                if let Some(worker) = slot.worker.as_ref() {
-                    let Ok(mut guard) = worker.try_lock() else { return slot.wire(session_id, "unknown", None); };
-                    if let Err(error) = self.persist_retirement(guard.as_mut()) {
-                        return slot.wire(session_id, "error", Some(json!({"code":error.code,"message":error.message})));
-                    }
-                }
-                let retired = slot.mark_disconnected();
-                let state = slot.wire(session_id, "unknown", None);
-                drop(chats);
-                self.connect_wait.notify_all();
-                self.emit_connection(session_id, state.clone());
-                drop(retired);
-                return state;
-            }
+        let Some(worker) = worker else { return state; };
+        // Liveness is read with the registry released (see the `chats` lock order).
+        if worker_is_alive(&worker) {
+            return state;
+        }
+        let Ok(mut guard) = worker.try_lock() else { return state; };
+        if let Err(error) = self.persist_retirement(guard.as_mut()) {
+            drop(guard);
+            let mut failed = state;
+            failed["optionsLoadState"] = json!("error");
+            failed["optionsError"] = json!({"code":error.code,"message":error.message});
+            return failed;
+        }
+        drop(guard);
+        let mut chats = match self.chats.lock() {
+            Ok(chats) => chats,
+            Err(_) => return state,
+        };
+        let Some(slot) = chats.get_mut(session_id) else { return state; };
+        // Retire only the worker this read saw; a replacement owns the slot now.
+        if !slot.worker.as_ref().is_some_and(|current| Arc::ptr_eq(current, &worker)) {
             return slot.wire(session_id, "unknown", None);
         }
-        json!({
-            "sessionId":session_id,
-            "connectionGeneration":0,
-            "revision":0,
-            "phase":"disconnected",
-            "optionsLoadState":"unknown"
-        })
+        let retired = slot.mark_disconnected();
+        let state = slot.wire(session_id, "unknown", None);
+        drop(chats);
+        self.connect_wait.notify_all();
+        self.emit_connection(session_id, state.clone());
+        drop(retired);
+        state
     }
 
     fn chat_set_option(
@@ -3024,6 +3096,212 @@ mod registry_cleanup_tests {
                 "{path}: provider cleanup held the shared registry"
             );
         }
+    }
+
+    type Gate = Arc<(Mutex<bool>, Condvar)>;
+    fn gate() -> Gate {
+        Arc::new((Mutex::new(false), Condvar::new()))
+    }
+    fn open(gate: &Gate) {
+        let (lock, wait) = &**gate;
+        *lock.lock().unwrap() = true;
+        wait.notify_all();
+    }
+    fn pass(gate: &Gate) {
+        let (lock, wait) = &**gate;
+        let mut passed = lock.lock().unwrap();
+        while !*passed {
+            passed = wait.wait(passed).unwrap();
+        }
+    }
+
+    /// Blocks inside `is_alive`, so the caller is provably inside the worker
+    /// lock while the test inspects the registry.
+    struct GatedAliveWorker {
+        entered: mpsc::Sender<()>,
+        release: Gate,
+    }
+    impl ChatSession for GatedAliveWorker {
+        fn native_id(&self) -> Option<String> {
+            None
+        }
+        fn is_alive(&self) -> bool {
+            let _ = self.entered.send(());
+            pass(&self.release);
+            true
+        }
+        fn send(&mut self, _: &str, _: &str) -> Result<Value, ProviderError> {
+            Ok(Value::Null)
+        }
+        fn cancel(&mut self, _: &str) -> Result<(), ProviderError> {
+            Ok(())
+        }
+        fn approve(&mut self, _: &str, _: &str, _: &str, _: &str) -> Result<(), ProviderError> {
+            Ok(())
+        }
+        fn stop(&mut self) -> Result<(), ProviderError> {
+            Ok(())
+        }
+    }
+
+    /// F02: a worker call must never be made while holding the registry, or a
+    /// slow provider freezes every Chat behind it.
+    #[test]
+    fn worker_liveness_is_checked_without_holding_the_registry() {
+        for path in ["send", "poll"] {
+            let providers = Arc::new(Providers::for_test(vec![]));
+            let (entered, entered_rx) = mpsc::channel();
+            let release = gate();
+            let mut slot = ChatSlot::new();
+            slot.phase = "ready";
+            slot.worker = Some(Arc::new(Mutex::new(Box::new(GatedAliveWorker {
+                entered,
+                release: Arc::clone(&release),
+            }))));
+            providers.chats.lock().unwrap().insert("s".into(), slot);
+            let caller = {
+                let providers = Arc::clone(&providers);
+                std::thread::spawn(move || match path {
+                    "send" => providers.worker_handle("s").is_ok(),
+                    _ => {
+                        providers.chat_connection("s");
+                        true
+                    }
+                })
+            };
+            entered_rx
+                .recv_timeout(Duration::from_secs(5))
+                .expect("the worker call never reached is_alive");
+            let registry_free = providers.chats.try_lock().is_ok();
+            open(&release);
+            assert!(caller.join().unwrap(), "{path}: the call must succeed");
+            assert!(
+                registry_free,
+                "{path}: the registry was held across a worker call"
+            );
+        }
+    }
+
+    /// Blocks inside `prepare_retirement`, so `chat_stop` holds the worker lock
+    /// while the test schedules a concurrent lookup and a second session.
+    struct GatedRetirementWorker {
+        holding: mpsc::Sender<()>,
+        release: Gate,
+    }
+    impl ChatSession for GatedRetirementWorker {
+        fn native_id(&self) -> Option<String> {
+            None
+        }
+        fn prepare_retirement(
+            &mut self,
+            _: &dyn Fn(&ProviderEvent) -> Result<(), ProviderError>,
+        ) -> Result<(), ProviderError> {
+            let _ = self.holding.send(());
+            pass(&self.release);
+            Ok(())
+        }
+        fn send(&mut self, _: &str, _: &str) -> Result<Value, ProviderError> {
+            Ok(Value::Null)
+        }
+        fn cancel(&mut self, _: &str) -> Result<(), ProviderError> {
+            Ok(())
+        }
+        fn approve(&mut self, _: &str, _: &str, _: &str, _: &str) -> Result<(), ProviderError> {
+            Ok(())
+        }
+        fn stop(&mut self) -> Result<(), ProviderError> {
+            Ok(())
+        }
+    }
+
+    /// F02: Stop(A) while another thread looks A up used to take the registry
+    /// under the worker lock and the worker lock under the registry (ABBA).
+    /// While the Stop is inside its worker, the registry must stay free and a
+    /// second Chat must keep projecting; every wait has a deadline so a broken
+    /// lock order fails instead of hanging the suite.
+    #[test]
+    fn stop_holds_only_its_worker_and_other_chats_keep_projecting() {
+        let providers = Arc::new(Providers::for_test(vec![]));
+        let (holding, holding_rx) = mpsc::channel();
+        let release = gate();
+        let mut slot = ChatSlot::new();
+        slot.phase = "ready";
+        slot.worker = Some(Arc::new(Mutex::new(Box::new(GatedRetirementWorker {
+            holding,
+            release: Arc::clone(&release),
+        }))));
+        let mut other = ChatSlot::new();
+        other.phase = "ready";
+        {
+            let mut chats = providers.chats.lock().unwrap();
+            chats.insert("stopping".into(), slot);
+            chats.insert("other".into(), other);
+        }
+
+        let (stop_done, stop_done_rx) = mpsc::channel();
+        {
+            let providers = Arc::clone(&providers);
+            std::thread::spawn(move || {
+                let result = providers.chat_stop("stopping");
+                let _ = stop_done.send(result.is_ok());
+            });
+        }
+        holding_rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("chat_stop never reached the worker");
+
+        // The Stop now holds its worker lock and nothing else.
+        let registry_free = providers.chats.try_lock().is_ok();
+        let lookup = {
+            let providers = Arc::clone(&providers);
+            let (lookup_done, lookup_rx) = mpsc::channel();
+            std::thread::spawn(move || {
+                let _ = lookup_done.send(providers.worker_handle("stopping").is_ok());
+            });
+            lookup_rx
+        };
+        let other_done = {
+            let providers = Arc::clone(&providers);
+            let (other_done, other_rx) = mpsc::channel();
+            std::thread::spawn(move || {
+                let event = ProviderEvent {
+                    provider: "fixture".into(),
+                    session_id: "other".into(),
+                    native_id: None,
+                    turn_id: None,
+                    kind: "chat.item".into(),
+                    data: json!({}),
+                    worker_token: None,
+                };
+                let projected = providers.with_current_event(&event, || "projected");
+                let phase = providers.chat_connection("other")["phase"].clone();
+                let _ = other_done.send((projected, phase));
+            });
+            other_rx
+        };
+        // A second Chat must answer while the Stop waits for its worker; with the
+        // old lock order the Stop held the registry here and this never returned.
+        let other_work = other_done.recv_timeout(Duration::from_secs(2));
+        open(&release);
+
+        let stopped = stop_done_rx.recv_timeout(Duration::from_secs(5));
+        assert!(registry_free, "the registry was held across the Stop's worker call");
+        match other_work {
+            Ok((projected, phase)) => {
+                assert_eq!(projected, Some("projected"));
+                assert_eq!(phase, json!("ready"));
+            }
+            Err(_) => panic!("a second Chat could not project during the Stop"),
+        }
+        assert!(
+            stopped.is_ok(),
+            "chat_stop deadlocked against a concurrent worker lookup"
+        );
+        assert!(stopped.unwrap(), "chat_stop must succeed");
+        assert!(
+            lookup.recv_timeout(Duration::from_secs(5)).is_ok(),
+            "a concurrent worker lookup never returned"
+        );
     }
 
     #[test]
