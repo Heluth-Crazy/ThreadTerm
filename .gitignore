@@ -17,6 +17,8 @@ target/
 /desktop-dist/
 /runtime/target-qa/
 /runtime/target-send-trace/
+/runtime/target-ua/
+/runtime/target-check/
 # Pinned Microsoft ConPTY pair, fetched and verified by `npm run prepare:conpty`
 /runtime/vendor/
 /providers/claude-sdk/dist/

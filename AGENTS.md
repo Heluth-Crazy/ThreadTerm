@@ -64,3 +64,8 @@ This project is indexed by GitNexus as **ThreadTerm** (11659 symbols, 33769 rela
 | Index, status, clean, wiki CLI commands | `.claude/skills/gitnexus-cli/SKILL.md` |
 
 <!-- gitnexus:end -->
+
+## Before committing
+
+Before committing: `npm run check:fast -- --working-tree`; before packaging or after runtime changes: `npm run check`.
+

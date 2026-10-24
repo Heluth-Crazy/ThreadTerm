@@ -25,6 +25,8 @@
     "build:runtime": "cargo build --manifest-path runtime/Cargo.toml --release --bins",
     "prepare:conpty": "node runtime/conpty/prepare.mjs --out runtime/vendor/conpty/x64 --arch x64",
     "prepare:conpty:dev": "node runtime/conpty/prepare.mjs --out runtime/target/debug/conpty --arch x64",
+    "check": "node scripts/check.mjs",
+    "check:fast": "node scripts/check.mjs --fast",
     "typecheck": "npm run typecheck:desktop && npm run typecheck:renderer",
     "typecheck:desktop": "tsc --noEmit -p tsconfig.desktop.json",
     "typecheck:renderer": "npm --workspace @threadterm/v3-renderer run typecheck",
@@ -33,7 +35,7 @@
     "test:html-preview": "esbuild desktop/src/htmlPreview.test.ts --bundle --platform=node --format=cjs --external:electron --outfile=desktop-dist/htmlPreview.test.cjs && esbuild desktop/src/htmlPreviewRoot.test.ts --bundle --platform=node --format=cjs --outfile=desktop-dist/htmlPreviewRoot.test.cjs && esbuild desktop/src/htmlPreviewIpc.test.ts --bundle --platform=node --format=cjs --external:electron --outfile=desktop-dist/htmlPreviewIpc.test.cjs && esbuild desktop/src/htmlPreviewComments.test.mts --bundle --platform=node --format=cjs --outfile=desktop-dist/htmlPreviewComments.test.cjs && node --test desktop-dist/htmlPreview.test.cjs desktop-dist/htmlPreviewRoot.test.cjs desktop-dist/htmlPreviewIpc.test.cjs desktop-dist/htmlPreviewComments.test.cjs",
     "test:chat-export": "esbuild desktop/src/chatMarkdownExport.test.ts --bundle --platform=node --format=cjs --outfile=desktop-dist/chatMarkdownExport.test.cjs && node --test desktop-dist/chatMarkdownExport.test.cjs",
     "test:attach-files": "esbuild desktop/src/attachFiles.test.ts --bundle --platform=node --format=cjs --external:electron --outfile=desktop-dist/attachFiles.test.cjs && node --test desktop-dist/attachFiles.test.cjs",
-    "dist:win": "npm run build && npm run build:runtime && npm run prepare:conpty && electron-builder --win nsis",
+    "dist:win": "node scripts/check.mjs --release && npm run build && npm run build:runtime && npm run prepare:conpty && electron-builder --win nsis",
     "start": "electron ."
   },
   "build": {

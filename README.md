@@ -31,14 +31,18 @@ npm run dev
 ## Build and check
 
 ```powershell
-npm run typecheck
+npm run check:fast   # protocol freshness, typechecks and every test except the Rust runtime
+npm run check        # the full gate: the same steps plus cargo test
 npm run build
 npm run build:runtime
-npm run test:protocol
-npm run test:desktop
 ```
 
-Create a Windows installer with `npm run dist:win`.
+Both gates verify the committed tree (HEAD) by default so uncommitted scratch files cannot change the verdict; add
+`-- --working-tree` to verify the edits you are about to commit. Before committing: `npm run check:fast -- --working-tree`;
+before packaging or after runtime changes: `npm run check`.
+
+Create a Windows installer with `npm run dist:win`. It runs the full gate first and stops on failure; the only escape
+hatch is `THREADTERM_SKIP_CHECK=1`, which prints a loud warning.
 
 See [ARCHITECTURE.md](ARCHITECTURE.md) and [REQUIREMENTS.md](REQUIREMENTS.md) for
 the application contracts. The historical V3 package names, executable names,
