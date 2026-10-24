@@ -410,6 +410,12 @@ html[data-theme="dark"] { color-scheme:dark; }
 .codex-markdown .md-code-copy { position:absolute; top:6px; right:6px; opacity:0; transition:opacity .12s ease; }
 .codex-markdown .md-code-block:hover .md-code-copy,
 .codex-markdown .md-code-copy:focus-visible { opacity:1; }
+/* Remote images (F17) are inert: the placeholder names the origin and asks before the request happens. */
+.md-remote-image { display:inline-flex; flex-wrap:wrap; align-items:center; gap:2px 8px; max-width:100%; margin:6px 0; padding:6px 8px; border:1px dashed var(--border); border-radius:8px; background:var(--soft); font-size:12px; line-height:1.45; vertical-align:top; }
+.md-remote-image-alt { min-width:0; color:var(--text); overflow-wrap:anywhere; }
+.md-remote-image-host { max-width:100%; padding:0 6px; border:1px solid var(--border); border-radius:999px; background:var(--surface); color:var(--muted); font:11px/1.6 var(--mono,ui-monospace,SFMono-Regular,Consolas,monospace); overflow-wrap:anywhere; }
+.md-remote-image .md-remote-image-load { margin-left:auto; }
+.md-remote-image-loaded { display:block; max-width:100%; height:auto; margin:6px 0; border:1px solid var(--border); border-radius:8px; }
 .codex-markdown ul, .codex-markdown ol { margin:0 0 12px; padding-left:1.4em; }
 .codex-markdown li + li { margin-top:4px; }
 .codex-markdown h1, .codex-markdown h2, .codex-markdown h3, .codex-markdown h4 { margin:18px 0 8px; line-height:1.35; font-weight:600; }

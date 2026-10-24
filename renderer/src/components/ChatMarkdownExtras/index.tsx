@@ -1,6 +1,8 @@
 import { createElement, lazy, Suspense, useCallback, type ReactNode } from 'react';
 import type { FileReference } from '@threadterm/protocol';
+import { inertRemoteImage } from '../../markdownPolicy';
 import { FileLinkedMarkdown } from '../FileReferenceText';
+import { RemoteImage } from '../RemoteImage';
 import './markdown-extras.css';
 
 export type BlockProps = { kind: 'mermaid' | 'json' | 'math' | 'threadterm-ui'; source: string; copy: (en: string, zh: string) => string; display?: boolean; onInsert?: (text: string) => void };
@@ -20,6 +22,9 @@ export function ChatMarkdown({ sanitizedHtml, references, openFile, copy, onInse
     const node = (value: Node, key: number): ReactNode => {
       if (value.nodeType === Node.TEXT_NODE) return value.textContent;
       if (!(value instanceof HTMLElement)) return null;
+      // An inert remote image (F17) is a real component: loading it must not rewrite DOM React owns.
+      const inertImage = value.matches('.md-remote-image') ? inertRemoteImage(value.getAttribute('data-remote-image'), value.querySelector('.md-remote-image-alt')?.textContent) : undefined;
+      if (inertImage) return <RemoteImage key={`${key}:${inertImage.source}`} image={inertImage} />;
       const code = value.matches('.md-code-block, pre') ? value.querySelector('pre > code, :scope > code') : null;
       const kind = code && (['mermaid', 'json', 'threadterm-ui'] as const).find(kind => code.classList.contains(`language-${kind}`));
       if (kind) return <MarkdownBlock key={key} kind={kind} source={code!.textContent ?? ''} copy={copy} onInsert={onInsert} />;

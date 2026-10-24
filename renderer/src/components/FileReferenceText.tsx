@@ -210,13 +210,14 @@ export function FileReferenceChips({ references, visibleText, visibleReferences,
 
 // The HTML has already passed DOMPurify. Only create textContent and inert
 // buttons here; never carry raw model HTML into an attribute or URL.
+// Remote-image placeholders carry author-chosen alt and host text, not prose to linkify.
 function markdownAutoReferences(sanitized:string):AutoReference[] {
  const root=document.createElement('div'); root.innerHTML=sanitized;
  const walker=document.createTreeWalker(root,NodeFilter.SHOW_TEXT);
  const candidates:AutoReference[]=[];
  while(walker.nextNode()){
   const node=walker.currentNode as Text;
-  if(node.parentElement?.closest('button, a'))continue;
+  if(node.parentElement?.closest('button, a, .md-remote-image'))continue;
   candidates.push(...extractFileReferences(node.textContent??''));
  }
  return candidates;
@@ -265,7 +266,7 @@ function decorateMarkdown(sanitized: string, interactive: boolean, accepted:Read
   const textNodes: Text[] = [];
   while (walker.nextNode()) textNodes.push(walker.currentNode as Text);
   for (const node of textNodes) {
-    if (node.parentElement?.closest('button, a')) continue;
+    if (node.parentElement?.closest('button, a, .md-remote-image')) continue;
     const text = node.textContent ?? '';
     const candidates = extractFileReferences(text).filter(candidate=>accepted.has(referenceKey(candidate)));
     if (!candidates.length) continue;
