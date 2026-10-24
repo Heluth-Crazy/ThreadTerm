@@ -6,6 +6,7 @@ import { operationId, request, subscribeEvents } from "../bridge";
 import type { Locale } from "../i18n";
 import { SurfaceDialog } from "./SurfaceDialog";
 import { SettingsSwitch } from "./SettingsControls";
+import { RemoteIdentityRecovery } from "./RemoteIdentityRecovery";
 
 type Props = { language: Locale };
 export function DeviceSettings({ language }: Props) {
@@ -14,6 +15,7 @@ export function DeviceSettings({ language }: Props) {
   const [permission, setPermission] = useState<DevicePermission>("readonly"), [offer, setOffer] = useState<PairingOffer>(), [qr, setQr] = useState("");
   const [now, setNow] = useState(Date.now()), [busy, setBusy] = useState(false), [issue, setIssue] = useState<string>(), [notice, setNotice] = useState<string>();
   const [renaming, setRenaming] = useState<PairedDevice>(), [name, setName] = useState("");
+  const [confirmingReset, setConfirmingReset] = useState(false);
   const generation = useRef(0), locked = useRef(false), alive = useRef(true);
   const refresh = useCallback(async () => {
     const token = ++generation.current;
@@ -49,8 +51,8 @@ export function DeviceSettings({ language }: Props) {
     const next = enabled ? await request("device.enable", { operationId: operationId() }) : await request("device.disable", { operationId: operationId() });
     setStatus(next);
     if (!next.enabled) { if (offer) await request("device.pairing.cancel", { pairingId: offer.id, operationId: operationId() }); setOffer(undefined); }
-    if (next.error) throw new Error(next.error);
-    if (enabled) await replacePairing();
+    if (next.error && !next.identityError) throw new Error(next.error);
+    if (enabled && next.enabled) await replacePairing();
     await refresh();
   });
   const expirePairing = () => run(async () => {
@@ -60,6 +62,13 @@ export function DeviceSettings({ language }: Props) {
     setNotice(text("此配对码已立即作废。", "This pairing code is now invalid."));
   });
   const copy = (value: string) => run(async () => { await navigator.clipboard.writeText(value); setNotice(text("已复制。", "Copied.")); });
+  const resetIdentity = () => run(async () => {
+    const next = await request("device.identity.reset", { operationId: operationId() });
+    setStatus(next); setOffer(undefined); setConfirmingReset(false);
+    if (next.error) throw new Error(next.error);
+    setNotice(text("远程身份已更换，所有设备都需要重新配对。", "Remote identity replaced. Every device must pair again."));
+    await refresh();
+  });
   return <section className="device-settings" aria-label={text("桌面移动连接", "Desktop mobile access")}>
     <h3>{text("桌面移动连接", "Desktop mobile access")}</h3>
     <SettingsSwitch checked={status?.enabled ?? false} disabled={busy || !status} onChange={setEnabled}>{text("启用移动访问", "Enable mobile access")}</SettingsSwitch>
@@ -73,13 +82,15 @@ export function DeviceSettings({ language }: Props) {
     </>}
     {status?.enabled && <div className="inline-actions"><button className="btn btn-sm btn-danger" disabled={busy} onClick={() => setEnabled(false)}>{text("断开所有设备", "Disconnect all devices")}</button><button className="btn btn-sm" disabled={busy} onClick={() => run(refresh)}>{text("刷新设备状态", "Refresh device status")}</button></div>}
     {status?.enabled && <details className="device-connection-details"><summary>{text("连接地址与证书", "Connection address & certificate")}</summary>{status.url && <p>{status.url}</p>}<p className="hint">{text("在设备上核对此证书指纹。", "Verify this certificate fingerprint on your device.")}</p><code>{status.tlsFingerprint}</code></details>}
-    {status?.error && <p className="surface-error" role="alert">{status.error}</p>}
+    {status?.error && !status.identityError && <p className="surface-error" role="alert">{status.error}</p>}
+    {status?.identityError && <RemoteIdentityRecovery error={status.error ?? status.identityError} busy={busy} text={text} onReset={() => setConfirmingReset(true)} />}
     <ul className="device-list">{devices.length ? devices.map(device => {
       const revoked = !!device.revokedAt, expired = Date.parse(device.expiresAt) <= now;
       return <li key={device.id}><span><b>{device.name}</b><small>{device.permission === "readonly" ? text("只读", "Read-only") : text("完全控制", "Full control")} · {revoked ? text("已撤销", "Revoked") : expired ? text("授权已过期", "Access expired") : text("授权有效", "Access active")} · {time(device.expiresAt, language)}{device.lastSeenAt && <><br />{text("上次访问", "Last seen")} {time(device.lastSeenAt, language)}</>}</small></span><button className="btn btn-sm" disabled={busy} onClick={() => { setRenaming(device); setName(device.name); setIssue(undefined); }}>{text("改名", "Rename")}</button><button className="btn btn-sm" disabled={busy || revoked} title={text("延长现有设备授权 24 小时", "Extend existing device access for 24 hours")} onClick={() => run(async () => { await request("device.renew", { deviceId: device.id, operationId: operationId() }); await refresh(); setNotice(text("设备授权已续期 24 小时。", "Device access extended for 24 hours.")); })}>{text("续期授权", "Renew access")}</button><button className="btn btn-sm btn-danger" disabled={busy || revoked} onClick={() => run(async () => { await request("device.revoke", { deviceId: device.id, operationId: operationId() }); await refresh(); setNotice(text("已撤销设备访问权限。", "Device access revoked.")); })}>{text("撤销", "Revoke")}</button></li>;
     }) : <li>{text("没有已配对设备", "No paired devices")}</li>}</ul>
     {notice && <p role="status">{notice}</p>}{issue && <p className="surface-error" role="alert">{issue}</p>}
     {renaming && <SurfaceDialog title={text("重命名设备", "Rename device")} icon="panel" size="sm" onClose={() => { if (!busy) setRenaming(undefined); }} footer={<><button className="btn" disabled={busy} onClick={() => setRenaming(undefined)}>{text("取消", "Cancel")}</button><button className="btn btn-primary" disabled={busy || !name.trim()} onClick={() => run(async () => { await request("device.rename", { deviceId: renaming.id, name: name.trim(), operationId: operationId() }); await refresh(); setRenaming(undefined); })}>{text("保存", "Save")}</button></>}><label className="device-name-input">{text("设备名称", "Device name")}<input autoFocus value={name} maxLength={80} onChange={event => setName(event.target.value)} /></label>{issue && <p className="surface-error" role="alert">{issue}</p>}</SurfaceDialog>}
+    {confirmingReset && <SurfaceDialog title={text("重置远程身份", "Reset remote identity")} icon="panel" size="sm" onClose={() => { if (!busy) setConfirmingReset(false); }} footer={<><button className="btn" disabled={busy} onClick={() => setConfirmingReset(false)}>{text("取消", "Cancel")}</button><button className="btn btn-danger" disabled={busy} onClick={resetIdentity}>{text("重置", "Reset")}</button></>}><p>{text("将生成新的证书和密钥。所有已配对设备会立即失效，需要重新配对。", "A new certificate and key will be generated. Every paired device is revoked and must pair again.")}</p>{issue && <p className="surface-error" role="alert">{issue}</p>}</SurfaceDialog>}
   </section>;
 }
 function errorText(error: unknown) { return error instanceof Error ? error.message : String(error); }

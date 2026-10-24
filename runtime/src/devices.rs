@@ -604,6 +604,37 @@ impl DeviceManager {
         })
     }
 
+    /// Revokes every paired device, expires its leases and consumes open
+    /// pairing offers. Replacing the remote TLS identity invalidates all
+    /// pinned certificates, so the reset action forces explicit re-pairing.
+    pub fn revoke_all(&self) -> Result<()> {
+        let mut replays = self
+            .pairing_replays
+            .lock()
+            .map_err(|_| anyhow::anyhow!("pairing replay lock poisoned"))?;
+        self.db.transaction(|tx| {
+            let revoked_at = timestamp(Utc::now());
+            let revoked = tx.execute(
+                "UPDATE paired_devices SET revoked_at=COALESCE(revoked_at,?) WHERE revoked_at IS NULL",
+                params![revoked_at],
+            )?;
+            tx.execute(
+                "UPDATE leases SET expires_at=? WHERE client_id LIKE 'device:%'",
+                params![revoked_at],
+            )?;
+            tx.execute(
+                "UPDATE device_pairings SET consumed_at=COALESCE(consumed_at,?) WHERE consumed_at IS NULL",
+                params![revoked_at],
+            )?;
+            if revoked > 0 {
+                emit_device_change(tx, "device.revoked")?;
+            }
+            Ok(())
+        })?;
+        replays.clear();
+        Ok(())
+    }
+
     pub fn operation_completed(&self, operation_id: &str) -> Result<bool> {
         if operation_id.is_empty() {
             bail!("invalid operationId")

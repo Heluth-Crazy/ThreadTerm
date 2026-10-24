@@ -3,10 +3,13 @@
 ThreadTerm's Rust runtime owns a disabled-by-default HTTPS listener for paired devices on the local network. The local named-pipe API is the only administration surface:
 
 - `device.status`, `device.enable`, and `device.disable` control and inspect the listener.
+- `device.identity.reset` replaces the TLS identity after an explicit user confirmation and revokes every paired device.
 - `device.pairing.create` creates a one-time five-minute pairing offer for either `readonly` or `fullcontrol` access.
 - `device.list` and `device.revoke` expose device metadata and immediately revoke a bearer token.
 
 The runtime persists the assigned TCP port so paired clients can reconnect after restart. A port collision disables only remote access and appears in `device.status.error`; it does not prevent the local runtime from starting. The listener uses a persistent self-signed certificate at `remote-access-cert.pem` and private key at `remote-access-key.pem` under the V3 data root. Data relocation copies both files with the SQLite database and reapplies a current-user-only ACL to the private key. Pairing payloads include the certificate's SHA-256 fingerprint so the client can pin the identity.
+
+Remote access is optional, so the runtime reads the enabled preference before it touches the identity and creates the pair only when remote access starts. A missing half pair, a corrupt PEM file or an unreadable key becomes a recoverable `device.status.error` (with the exact cause in `device.status.identityError`) instead of a startup failure: local transport, terminals, Chat and Settings keep working. Settings → Devices shows that error with **Reset remote identity**, which requires a second confirmation, revokes every paired device, expires their leases, discards open pairing offers and generates a new pair; already paired devices must pair again because their pinned certificate no longer matches. A new pair is written and restricted under temporary sibling names before either file is renamed into place, so an interrupted reset leaves the previous pair or an explicit identity error rather than a silently generated replacement.
 
 ## Credential rules
 
@@ -39,4 +42,4 @@ Remote request execution takes the runtime relocation gate before the remote act
 
 ## Validation
 
-Runtime unit tests cover expiry boundaries, five-attempt invalidation, atomic one-time use, digest-only storage, fixed token lifetime, revoke behavior, metadata redaction, and the allowlist matrix. The HTTPS integration test trusts only the generated test certificate, pairs read-only and full-control devices through the listener, proves read-only control denial, creates a real shell PTY, claims and renews its lease, sends input, reads captured output, releases the lease, revokes the device, and verifies the same token receives `401 Unauthorized`.
+Runtime unit tests cover expiry boundaries, five-attempt invalidation, atomic one-time use, digest-only storage, fixed token lifetime, revoke behavior, metadata redaction, and the allowlist matrix. Identity recovery tests plant a missing half pair, a corrupt PEM pair and an unreadable key, then prove that startup, health and a terminal session still work and that enabling reports the actionable error; the reset test proves that only an explicit reset replaces the identity, invalidates tokens and open offers, and lets a new device pair. The HTTPS integration test trusts only the generated test certificate, pairs read-only and full-control devices through the listener, proves read-only control denial, creates a real shell PTY, claims and renews its lease, sends input, reads captured output, releases the lease, revokes the device, and verifies the same token receives `401 Unauthorized`.

@@ -1689,6 +1689,9 @@
         },
         "error": {
           "type": "string"
+        },
+        "identityError": {
+          "type": "string"
         }
       },
       "required": [
@@ -1701,6 +1704,9 @@
       "$ref": "#/definitions/RemoteAccessStatus"
     },
     "RequestResult<\"device.disable\">": {
+      "$ref": "#/definitions/RemoteAccessStatus"
+    },
+    "RequestResult<\"device.identity.reset\">": {
       "$ref": "#/definitions/RemoteAccessStatus"
     },
     "RequestResult<\"device.pairing.create\">": {
@@ -8289,6 +8295,32 @@
         },
         "result": {
           "$ref": "#/definitions/RequestResult%3C%22device.disable%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "result"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "device.identity.reset"
+        },
+        "result": {
+          "$ref": "#/definitions/RequestResult%3C%22device.identity.reset%22%3E"
         }
       },
       "required": [

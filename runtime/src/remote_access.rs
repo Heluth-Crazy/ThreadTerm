@@ -64,6 +64,10 @@ pub struct RemoteAccessStatus {
     pub tls_fingerprint: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+    // Set only when remote access cannot run because the stored TLS identity
+    // is unusable; Devices settings offers an explicit reset for that case.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub identity_error: Option<String>,
 }
 
 struct CertificateMaterial {
@@ -81,13 +85,17 @@ struct ListenerState {
     task: Option<JoinHandle<()>>,
     running_generation: Option<u64>,
     error: Option<String>,
+    identity_error: Option<String>,
 }
 
 pub struct RemoteAccess {
     service: Weak<RuntimeService>,
     devices: DeviceManager,
     db: Arc<Database>,
-    certificate: CertificateMaterial,
+    data_dir: PathBuf,
+    // Loaded lazily: the TLS identity is optional and never created while
+    // remote access is disabled (F01).
+    identity: RwLock<Option<Arc<CertificateMaterial>>>,
     state: Mutex<ListenerState>,
     stopped: Condvar,
     // Remote DB activity takes a read lock. Disable takes the write lock, so a
@@ -101,14 +109,16 @@ impl RemoteAccess {
         db: Arc<Database>,
         config: RuntimeConfig,
     ) -> Result<Arc<Self>> {
-        let certificate = load_or_create_certificate(&config.data_dir)?;
+        // Read the preference before touching the identity: remote access is
+        // optional, so a damaged identity must never block local startup.
         let devices = DeviceManager::new(Arc::clone(&db))?;
         let preference = devices.remote_access_preference()?;
         let this = Arc::new(Self {
             service,
             devices,
             db,
-            certificate,
+            data_dir: config.data_dir,
+            identity: RwLock::new(None),
             state: Mutex::new(ListenerState {
                 port: preference.port,
                 error: preference.last_error.clone(),
@@ -118,6 +128,8 @@ impl RemoteAccess {
             access_gate: RwLock::new(()),
         });
         if preference.enabled {
+            // An unusable identity is recorded as a remote-access error and
+            // reported to Settings; it never aborts the runtime.
             this.start_listener()?;
         }
         Ok(this)
@@ -147,6 +159,13 @@ impl RemoteAccess {
                 }
                 serde_json::to_value(self.status()?)?
             }
+            "device.identity.reset" => {
+                let request: OperationOnly = parse(params)?;
+                if !self.devices.operation_completed(&request.operation_id)? {
+                    self.reset_identity(&request.operation_id)?;
+                }
+                serde_json::to_value(self.status()?)?
+            }
             "device.pairing.create" => {
                 let request: CreatePairing = parse(params)?;
                 let status = self.status()?;
@@ -158,7 +177,7 @@ impl RemoteAccess {
                     request.permission,
                     &request.operation_id,
                     server_url,
-                    &self.certificate.fingerprint,
+                    &status.tls_fingerprint,
                 )?)?
             }
             "device.pairing.cancel" => {
@@ -213,9 +232,42 @@ impl RemoteAccess {
             enabled: state.enabled,
             url: state.url.clone(),
             port: state.port,
-            tls_fingerprint: self.certificate.fingerprint.clone(),
+            tls_fingerprint: self.fingerprint(),
             error: state.error.clone(),
+            identity_error: state.identity_error.clone(),
         })
+    }
+
+    fn fingerprint(&self) -> String {
+        // Before the identity is loaded, report the stored certificate without
+        // creating or validating one.
+        if let Ok(identity) = self.identity.read() {
+            if let Some(identity) = identity.as_ref() {
+                return identity.fingerprint.clone();
+            }
+        }
+        existing_fingerprint(&self.data_dir).unwrap_or_default()
+    }
+
+    // Creates the identity only when remote access is actually starting. A
+    // failure is reported through the listener state, never propagated as a
+    // startup failure.
+    fn identity(&self) -> Result<Arc<CertificateMaterial>> {
+        if let Some(identity) = self
+            .identity
+            .read()
+            .map_err(|_| anyhow!("remote access identity lock poisoned"))?
+            .as_ref()
+        {
+            return Ok(Arc::clone(identity));
+        }
+        let identity = Arc::new(load_or_create_certificate(&self.data_dir)?);
+        *self
+            .identity
+            .write()
+            .map_err(|_| anyhow!("remote access identity lock poisoned"))? =
+            Some(Arc::clone(&identity));
+        Ok(identity)
     }
 
     pub fn is_enabled(&self) -> bool {
@@ -236,6 +288,42 @@ impl RemoteAccess {
         self.stop_listener(false)
     }
 
+    /// Stops remote access, replaces the TLS identity and revokes every paired
+    /// device. Only an explicit user action may do this: already paired
+    /// devices pinned the old certificate, so they must pair again.
+    fn reset_identity(self: &Arc<Self>, operation_id: &str) -> Result<()> {
+        self.stop_listener_inner(None)?;
+        {
+            // Same lock order as revoke: global relocation -> this gate.
+            let _barrier = self
+                .access_gate
+                .write()
+                .map_err(|_| anyhow!("remote access gate poisoned"))?;
+            self.devices.revoke_all()?;
+            create_certificate_pair(
+                &self.data_dir.join(REMOTE_CERTIFICATE_FILE),
+                &self.data_dir.join(REMOTE_PRIVATE_KEY_FILE),
+            )?;
+            let identity = Arc::new(load_certificate(&self.data_dir)?);
+            *self
+                .identity
+                .write()
+                .map_err(|_| anyhow!("remote access identity lock poisoned"))? =
+                Some(identity);
+            let mut state = self
+                .state
+                .lock()
+                .map_err(|_| anyhow!("remote access state lock poisoned"))?;
+            state.identity_error = None;
+            state.error = None;
+        }
+        if self.devices.remote_access_preference()?.enabled {
+            self.start_listener()?;
+        }
+        self.devices
+            .complete_marker(operation_id, "device.identity.reset")
+    }
+
     /// Stops network activity without changing the persisted user preference.
     pub fn shutdown(&self) {
         let _ = self.stop_listener_inner(None);
@@ -254,6 +342,19 @@ impl RemoteAccess {
             return Ok(());
         }
         let preference = self.devices.remote_access_preference()?;
+        let certificate = match self.identity() {
+            Ok(certificate) => certificate,
+            Err(error) => {
+                let reason = format!("{error:#}");
+                state.enabled = false;
+                state.port = preference.port;
+                state.url = None;
+                state.error = Some(format!("Remote access unavailable: {reason}"));
+                state.identity_error = Some(reason);
+                return Ok(());
+            }
+        };
+        state.identity_error = None;
         let requested_port = preference.port.unwrap_or(0);
         let std_listener = match StdTcpListener::bind((Ipv4Addr::UNSPECIFIED, requested_port)) {
             Ok(listener) => listener,
@@ -287,7 +388,7 @@ impl RemoteAccess {
         state.generation = state.generation.wrapping_add(1);
         let generation = state.generation;
         let weak = Arc::downgrade(self);
-        let acceptor = TlsAcceptor::from(Arc::clone(&self.certificate.config));
+        let acceptor = TlsAcceptor::from(Arc::clone(&certificate.config));
         let task = tokio::spawn(async move {
             let connections = Arc::new(Semaphore::new(MAX_CONNECTIONS));
             let mut tasks = JoinSet::new();
@@ -929,10 +1030,27 @@ fn json_response(status: StatusCode, value: Value) -> Response<Full<Bytes>> {
 fn load_or_create_certificate(data_dir: &Path) -> Result<CertificateMaterial> {
     let certificate_path = data_dir.join(REMOTE_CERTIFICATE_FILE);
     let key_path = data_dir.join(REMOTE_PRIVATE_KEY_FILE);
+    // Only a completely fresh store creates an identity. A half pair or an
+    // unreadable file is reported instead of silently re-keying the store,
+    // because paired devices pinned the existing certificate.
+    if !certificate_path.exists() && !key_path.exists() {
+        create_certificate_pair(&certificate_path, &key_path)?;
+    }
+    load_certificate(data_dir)
+}
+
+fn load_certificate(data_dir: &Path) -> Result<CertificateMaterial> {
+    let certificate_path = data_dir.join(REMOTE_CERTIFICATE_FILE);
+    let key_path = data_dir.join(REMOTE_PRIVATE_KEY_FILE);
     match (certificate_path.exists(), key_path.exists()) {
         (true, true) => {}
-        (false, false) => create_certificate_pair(&certificate_path, &key_path)?,
-        _ => bail!("remote TLS certificate/key pair is incomplete"),
+        (true, false) => bail!(
+            "remote TLS certificate/key pair is incomplete: {REMOTE_PRIVATE_KEY_FILE} is missing"
+        ),
+        (false, true) => bail!(
+            "remote TLS certificate/key pair is incomplete: {REMOTE_CERTIFICATE_FILE} is missing"
+        ),
+        (false, false) => bail!("remote TLS certificate/key pair is missing"),
     }
     #[cfg(windows)]
     crate::windows_security::restrict_file_to_current_user(&key_path)?;
@@ -944,7 +1062,8 @@ fn load_or_create_certificate(data_dir: &Path) -> Result<CertificateMaterial> {
     let key_pem = fs::read(&key_path).with_context(|| format!("reading {}", key_path.display()))?;
     let mut certificate_reader = BufReader::new(certificate_pem.as_slice());
     let certificates = rustls_pemfile::certs(&mut certificate_reader)
-        .collect::<std::result::Result<Vec<_>, _>>()?;
+        .collect::<std::result::Result<Vec<_>, _>>()
+        .with_context(|| format!("reading {}", certificate_path.display()))?;
     let fingerprint = fingerprint(
         certificates
             .first()
@@ -952,7 +1071,8 @@ fn load_or_create_certificate(data_dir: &Path) -> Result<CertificateMaterial> {
             .as_ref(),
     );
     let mut key_reader = BufReader::new(key_pem.as_slice());
-    let key = rustls_pemfile::private_key(&mut key_reader)?
+    let key = rustls_pemfile::private_key(&mut key_reader)
+        .with_context(|| format!("reading {}", key_path.display()))?
         .ok_or_else(|| anyhow!("remote TLS private key is empty"))?;
     let config = rustls::ServerConfig::builder()
         .with_no_client_auth()
@@ -964,25 +1084,47 @@ fn load_or_create_certificate(data_dir: &Path) -> Result<CertificateMaterial> {
     })
 }
 
+/// Fingerprint of the identity already on disk, without creating one.
+fn existing_fingerprint(data_dir: &Path) -> Result<String> {
+    let pem = fs::read(data_dir.join(REMOTE_CERTIFICATE_FILE))?;
+    let mut reader = BufReader::new(pem.as_slice());
+    let certificates = rustls_pemfile::certs(&mut reader)
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+    Ok(certificates
+        .first()
+        .map(|certificate| fingerprint(certificate.as_ref()))
+        .unwrap_or_default())
+}
+
+// Both files are written and restricted before either is installed, so an
+// interrupted reset leaves the previous pair or an explicit identity error,
+// never a silently generated replacement.
 fn create_certificate_pair(certificate_path: &Path, key_path: &Path) -> Result<()> {
-    let names = certificate_names();
-    let certified = generate_simple_self_signed(names)?;
+    let certified = generate_simple_self_signed(certificate_names())?;
     let certificate_pem = certified.cert.pem();
     let key_pem = certified.key_pair.serialize_pem();
     let certificate_temp = temporary_sibling(certificate_path);
     let key_temp = temporary_sibling(key_path);
-    write_new(&certificate_temp, certificate_pem.as_bytes())?;
-    write_new(&key_temp, key_pem.as_bytes())?;
-    #[cfg(windows)]
-    crate::windows_security::restrict_file_to_current_user(&key_temp)?;
-    #[cfg(unix)]
-    restrict_private_file(&key_temp)?;
-    fs::rename(&certificate_temp, certificate_path)?;
-    if let Err(error) = fs::rename(&key_temp, key_path) {
-        let _ = fs::remove_file(certificate_path);
-        return Err(error).context("installing remote TLS private key");
+    let install = || -> Result<()> {
+        write_new(&key_temp, key_pem.as_bytes())?;
+        #[cfg(windows)]
+        crate::windows_security::restrict_file_to_current_user(&key_temp)?;
+        #[cfg(unix)]
+        restrict_private_file(&key_temp)?;
+        write_new(&certificate_temp, certificate_pem.as_bytes())?;
+        // Key first: until the certificate lands, a crash leaves a mismatch
+        // that reports "could not load remote TLS identity" instead of a key
+        // that silently belongs to another certificate.
+        fs::rename(&key_temp, key_path).context("installing remote TLS private key")?;
+        fs::rename(&certificate_temp, certificate_path)
+            .context("installing remote TLS certificate")
+    };
+    let result = install();
+    if result.is_err() {
+        let _ = fs::remove_file(&key_temp);
+        let _ = fs::remove_file(&certificate_temp);
     }
-    Ok(())
+    result
 }
 
 fn write_new(path: &Path, value: &[u8]) -> Result<()> {
@@ -1146,6 +1288,7 @@ mod tests {
             "group.rename",
             "group.archive",
             "history.list",
+            "device.identity.reset",
             "device.list",
             "device.pairing.cancel",
             "device.rename",
@@ -1234,12 +1377,14 @@ mod tests {
     }
 
     fn test_remote(db: Arc<Database>, data_dir: &Path) -> Arc<RemoteAccess> {
-        let certificate = load_or_create_certificate(data_dir).unwrap();
         Arc::new(RemoteAccess {
             service: Weak::new(),
             devices: DeviceManager::new(Arc::clone(&db)).unwrap(),
             db,
-            certificate,
+            data_dir: data_dir.to_owned(),
+            identity: RwLock::new(Some(Arc::new(
+                load_or_create_certificate(data_dir).unwrap(),
+            ))),
             state: Mutex::new(ListenerState::default()),
             stopped: Condvar::new(),
             access_gate: RwLock::new(()),
@@ -1556,6 +1701,241 @@ mod tests {
             crate::RUNTIME_VERSION
         );
         service.shutdown();
+    }
+
+    // F01: an optional remote identity must never stop local work. Each case
+    // plants the damage before the runtime opens the store.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn remote_identity_failures_do_not_block_startup() {
+        for case in ["missing half pair", "corrupt pem", "unreadable key"] {
+            for enabled in [false, true] {
+                let directory = tempdir().unwrap();
+                plant_broken_identity(directory.path(), case);
+                let service = broken_identity_service(&directory, case, enabled);
+                let status = local(&service, "device.status", json!({}));
+                assert_eq!(status["enabled"], false, "{case} (enabled preference {enabled})");
+                if enabled {
+                    assert!(
+                        status["error"]
+                            .as_str()
+                            .unwrap()
+                            .contains("Remote access unavailable"),
+                        "{case}: {status}"
+                    );
+                    assert!(status["identityError"].is_string(), "{case}: {status}");
+                } else {
+                    // A disabled remote access never reads or reports the identity.
+                    assert!(status.get("error").is_none(), "{case}: {status}");
+                    let enabled_status = local(
+                        &service,
+                        "device.enable",
+                        json!({"operationId":format!("enable-{case}-{enabled}")}),
+                    );
+                    assert_eq!(enabled_status["enabled"], false, "{case}");
+                    assert!(
+                        enabled_status["error"]
+                            .as_str()
+                            .unwrap()
+                            .contains("Remote access unavailable"),
+                        "{case}: {enabled_status}"
+                    );
+                    assert!(
+                        enabled_status["identityError"].is_string(),
+                        "{case}: {enabled_status}"
+                    );
+                }
+                assert_local_work(&service, directory.path(), &format!("broken-{case}-{enabled}"));
+                service.shutdown();
+            }
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn identity_reset_requires_an_explicit_action_and_invalidates_pairings() {
+        let directory = tempdir().unwrap();
+        let service = broken_identity_service(&directory, "identity-reset", false);
+        // Remote disabled: nothing is created until it is enabled.
+        assert!(!directory.path().join(REMOTE_CERTIFICATE_FILE).exists());
+        assert!(!directory.path().join(REMOTE_PRIVATE_KEY_FILE).exists());
+        let enabled = local(
+            &service,
+            "device.enable",
+            json!({"operationId":"reset-enable"}),
+        );
+        assert_eq!(enabled["enabled"], true);
+        let original = enabled["tlsFingerprint"].as_str().unwrap().to_owned();
+        let devices = DeviceManager::new(Arc::clone(&service.db)).unwrap();
+        let offer = local(
+            &service,
+            "device.pairing.create",
+            json!({"permission":"fullcontrol","operationId":"reset-pair"}),
+        );
+        let paired = devices
+            .pair(
+                offer["id"].as_str().unwrap(),
+                offer["code"].as_str().unwrap(),
+                "Phone",
+            )
+            .unwrap();
+        assert!(devices.authenticate(&paired.token).is_ok());
+        // Reading the status must never replace the identity.
+        local(&service, "device.status", json!({}));
+        assert_eq!(
+            local(&service, "device.status", json!({}))["tlsFingerprint"],
+            original
+        );
+        let reset = local(
+            &service,
+            "device.identity.reset",
+            json!({"operationId":"reset-identity"}),
+        );
+        let replaced = reset["tlsFingerprint"].as_str().unwrap().to_owned();
+        assert_ne!(replaced, original);
+        assert_eq!(reset["enabled"], true);
+        assert!(reset.get("identityError").is_none());
+        assert!(reset.get("error").is_none());
+        // Paired devices pinned the old certificate and must pair again.
+        assert!(devices.authenticate(&paired.token).is_err());
+        let listed = local(&service, "device.list", json!({}));
+        assert_eq!(listed[0]["revokedAt"].is_string(), true);
+        // Replaying the operation returns the identity it already installed.
+        assert_eq!(
+            local(
+                &service,
+                "device.identity.reset",
+                json!({"operationId":"reset-identity"}),
+            )["tlsFingerprint"],
+            replaced
+        );
+        // The restarted listener serves the replacement identity: the previous
+        // token is rejected and a new device pairs over the new certificate.
+        let port = reset["port"].as_u64().unwrap() as u16;
+        let client = reqwest::Client::builder()
+            .add_root_certificate(
+                reqwest::Certificate::from_pem(
+                    &fs::read(directory.path().join(REMOTE_CERTIFICATE_FILE)).unwrap(),
+                )
+                .unwrap(),
+            )
+            .https_only(true)
+            .timeout(Duration::from_secs(10))
+            .build()
+            .unwrap();
+        let base = format!("https://localhost:{port}");
+        let (status, body) = rpc_over_https(
+            &client,
+            &base,
+            &paired.token,
+            "remote.sessions",
+            json!({}),
+        )
+        .await;
+        assert_eq!(status, 401, "{body}");
+        let offer = local(
+            &service,
+            "device.pairing.create",
+            json!({"permission":"readonly","operationId":"reset-pair-again"}),
+        );
+        assert_eq!(offer["tlsFingerprint"], replaced);
+        let repaired = pair_over_https(&client, &base, &offer, "Phone again").await;
+        let repaired_token = repaired["token"].as_str().unwrap();
+        let (status, body) = rpc_over_https(
+            &client,
+            &base,
+            repaired_token,
+            "remote.sessions",
+            json!({}),
+        )
+        .await;
+        assert_eq!(status, 200, "{body}");
+        // A reset while disabled is still explicit and never starts a listener.
+        local(
+            &service,
+            "device.disable",
+            json!({"operationId":"reset-disable"}),
+        );
+        let disabled_reset = local(
+            &service,
+            "device.identity.reset",
+            json!({"operationId":"reset-identity-disabled"}),
+        );
+        assert_eq!(disabled_reset["enabled"], false);
+        assert_ne!(disabled_reset["tlsFingerprint"], replaced);
+        assert!(devices.authenticate(repaired_token).is_err());
+        service.shutdown();
+    }
+
+    fn broken_identity_service(
+        directory: &tempfile::TempDir,
+        pipe: &str,
+        enabled: bool,
+    ) -> Arc<RuntimeService> {
+        let config = RuntimeConfig {
+            data_dir: directory.path().to_owned(),
+            database_path: directory.path().join("runtime.sqlite3"),
+            credential_path: directory.path().join("runtime.credential"),
+            pipe_base: format!(r"\\.\pipe\threadterm-v3-{pipe}"),
+        };
+        let db = Arc::new(Database::open(&config.database_path).unwrap());
+        crate::workspace_services::initialize(&db).unwrap();
+        crate::settings_services::initialize(&db).unwrap();
+        crate::session_configs::initialize(&db).unwrap();
+        crate::retry_scheduler::initialize(&db).unwrap();
+        DeviceManager::new(Arc::clone(&db))
+            .unwrap()
+            .set_remote_access_preference(enabled, None, None)
+            .unwrap();
+        let service = Arc::new(RuntimeService::new(config, db));
+        // Startup must succeed with a damaged identity.
+        service.initialize_remote().unwrap();
+        service
+    }
+
+    fn plant_broken_identity(data_dir: &Path, case: &str) {
+        let certificate = data_dir.join(REMOTE_CERTIFICATE_FILE);
+        let key = data_dir.join(REMOTE_PRIVATE_KEY_FILE);
+        match case {
+            "missing half pair" => {
+                let source = tempdir().unwrap();
+                load_or_create_certificate(source.path()).unwrap();
+                fs::copy(source.path().join(REMOTE_CERTIFICATE_FILE), &certificate).unwrap();
+            }
+            "corrupt pem" => {
+                fs::write(&certificate, b"-----BEGIN CERTIFICATE-----\ntruncated").unwrap();
+                fs::write(&key, b"-----BEGIN PRIVATE KEY-----\ntruncated").unwrap();
+            }
+            // A directory where the key belongs is unreadable as a key on
+            // every platform, without depending on Windows ACL helpers.
+            "unreadable key" => {
+                let source = tempdir().unwrap();
+                load_or_create_certificate(source.path()).unwrap();
+                fs::copy(source.path().join(REMOTE_CERTIFICATE_FILE), &certificate).unwrap();
+                fs::create_dir(&key).unwrap();
+            }
+            other => panic!("unknown identity case {other}"),
+        }
+    }
+
+    fn assert_local_work(service: &Arc<RuntimeService>, directory: &Path, operation: &str) {
+        assert_eq!(
+            local(service, "runtime.health", json!({}))["version"],
+            crate::RUNTIME_VERSION
+        );
+        let session = local(
+            service,
+            "session.create",
+            json!({"cwd":directory,"provider":"shell","mode":"terminal","operationId":operation}),
+        );
+        local(
+            service,
+            "terminal.read",
+            json!({"sessionId":session["id"],"cursor":0,"limit":1024}),
+        );
+        local(
+            service,
+            "session.stop",
+            json!({"sessionId":session["id"],"operationId":format!("{operation}-stop")}),
+        );
     }
 
     fn local(service: &RuntimeService, method: &str, params: Value) -> Value {
