@@ -27,7 +27,10 @@ use serde_json::{json, Value};
 use crate::provider_events::{self, ProjectionReceiver, Sender as ProviderEventSender};
 use std::{
     collections::HashMap,
-    sync::{Arc, Condvar, Mutex, RwLock},
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc, Condvar, Mutex, RwLock,
+    },
     time::Instant,
 };
 #[cfg(test)]
@@ -234,6 +237,16 @@ impl ProviderError {
 /// Shown when a steer is rejected because the turn is no longer active.
 /// The renderer matches this sentence when the IPC error drops `code`.
 pub(crate) const STEER_TURN_ENDED: &str = "The turn ended before the message was inserted";
+
+/// The one Stop refusal every adapter returns (see `ChatSession::cancel`).
+/// The renderer keeps its Stop error bar only for this case and matches the
+/// `turn_not_active` marker because the IPC hop drops `code`.
+pub(crate) const STOP_TURN_NOT_ACTIVE: &str =
+    "turn_not_active: that turn already ended; a newer turn is still running. / turn_not_active：该回合已结束，当前运行的是更新的回合。";
+
+pub(crate) fn stop_turn_not_active() -> ProviderError {
+    ProviderError::new("turn_not_active", STOP_TURN_NOT_ACTIVE)
+}
 
 impl std::fmt::Display for ProviderError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -702,6 +715,17 @@ pub(crate) trait ChatSession: Send {
             "This provider does not support steering into the current turn. / 此 Provider 不支持插入当前回合。",
         ))
     }
+    /// One cancellation contract for every adapter:
+    ///
+    /// * the live turn → interrupt it, then `Ok`;
+    /// * a turn that already ended → `Ok`, no effect (a Stop that lands after
+    ///   the result must never be an error or reach the next turn);
+    /// * any other turn while another one is live → `turn_not_active`
+    ///   ([`STOP_TURN_NOT_ACTIVE`]), no effect on the running turn.
+    ///
+    /// A stopped session (`is_alive() == false`, `provider_disconnected`) is
+    /// outside the contract: the adapter may refuse, because there is no turn
+    /// left to name.
     fn cancel(&mut self, turn_id: &str) -> Result<(), ProviderError>;
     fn approve(
         &mut self,
@@ -955,6 +979,11 @@ struct ChatSlot {
     /// missing-thread replacement is still fenced from event projection.
     pending_worker_token: Option<String>,
     requires_scoped_events: bool,
+    /// Raised by a Stop that has persisted its retirement, so a send that
+    /// cloned the handle earlier cannot start a native turn in the window
+    /// before `stop()` reaches the worker. Shared by `Arc` because it is set
+    /// under the worker lock, never under this registry.
+    stopping: Arc<AtomicBool>,
 }
 
 impl ChatSlot {
@@ -971,6 +1000,7 @@ impl ChatSlot {
             worker_token: None,
             pending_worker_token: None,
             requires_scoped_events: false,
+            stopping: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -1676,13 +1706,35 @@ impl Providers {
         call(chat.as_mut())
     }
 
+    /// A path that can feed a native turn. The Stop fence is read after the
+    /// worker lock is taken, so a send that waited behind a Stop cannot start
+    /// work that the Stop is already killing (F02).
+    fn chat_feed_turn<T>(
+        &self,
+        session_id: &str,
+        call: impl FnOnce(&mut dyn ChatSession) -> Result<T, ProviderError>,
+    ) -> Result<T, ProviderError> {
+        let stopping = self.chats.lock().ok().map(|chats| {
+            chats.get(session_id).map(|slot| Arc::clone(&slot.stopping))
+        }).flatten();
+        self.chat(session_id, |chat| {
+            if stopping.as_ref().is_some_and(|stopping| stopping.load(Ordering::Acquire)) {
+                return Err(ProviderError::new(
+                    "provider_disconnected",
+                    "The Chat was stopped before this action reached it. / 在动作送达前聊天已被停止。",
+                ));
+            }
+            call(chat)
+        })
+    }
+
     pub(crate) fn chat_plan_response_recording(
         &self,
         request: PlanResponseRequest<'_>,
         record: impl FnOnce(&str) -> Result<(), ProviderError>,
     ) -> Result<(Option<Value>, Option<Value>), ProviderError> {
         let PlanResponseRequest { session_id, turn_id, approval_id, response, operation_id, implementation_id } = request;
-        self.chat(session_id, |chat| {
+        self.chat_feed_turn(session_id, |chat| {
             let prompt = chat.plan_response(turn_id, approval_id, response, operation_id)?;
             let receipt = chat.plan_response_receipt();
             let Some(prompt) = prompt else { return Ok((None, receipt)); };
@@ -1827,7 +1879,7 @@ impl Providers {
         // Serialize validation, persistence and dispatch with other writes to
         // this worker. A rejected local command must not become the UI's most
         // recent turn or complete the active reply's streaming parts.
-        let result = self.chat(session_id, |chat| {
+        let result = self.chat_feed_turn(session_id, |chat| {
             chat.validate_send(text)?;
             chat.validate_send_with_images(text, images)?;
             let record_timer = crate::send_trace::Timer::start();
@@ -1875,7 +1927,7 @@ impl Providers {
                 "Chat message cannot be empty",
             ));
         }
-        let result = self.chat(session_id, |chat| {
+        let result = self.chat_feed_turn(session_id, |chat| {
             chat.validate_steer(text, images)?;
             chat.steer_turn_ready(turn_id)?;
             record()?;
@@ -2089,6 +2141,9 @@ impl Providers {
                         slot.error = None;
                         slot.failed_options = None;
                         slot.worker = Some(Arc::new(Mutex::new(worker)));
+                        // A fresh worker is not stopping: a reconnect clears the
+                        // fence the previous Stop raised.
+                        slot.stopping = Arc::new(AtomicBool::new(false));
                         slot.revision = slot.revision.saturating_add(1);
                         Ok(json!({"nativeId": native, "status": "ready"}))
                     }
@@ -2251,6 +2306,7 @@ impl Providers {
             slot.connecting = true;
             slot.phase = "connecting";
             slot.error = None;
+            slot.stopping = Arc::new(AtomicBool::new(false));
             slot.worker_token = Some(worker_token.clone());
             slot.pending_worker_token = None;
             slot.requires_scoped_events = adapter.scopes_chat_events();
@@ -2480,7 +2536,7 @@ impl ProviderRuntime for Providers {
         choice_id: &str,
         operation_id: &str,
     ) -> Result<(), ProviderError> {
-        self.chat(session_id, |chat| {
+        self.chat_feed_turn(session_id, |chat| {
             chat.approve(turn_id, approval_id, choice_id, operation_id)
         })
     }
@@ -2493,13 +2549,13 @@ impl ProviderRuntime for Providers {
         response: &Value,
         operation_id: &str,
     ) -> Result<(), ProviderError> {
-        self.chat(session_id, |chat| chat.answer(turn_id, approval_id, response, operation_id))
+        self.chat_feed_turn(session_id, |chat| chat.answer(turn_id, approval_id, response, operation_id))
     }
 
     fn chat_stop(&self, session_id: &str) -> Result<(), ProviderError> {
         // Clone the handle under the registry; the worker wait below happens
         // with the registry released (see the `chats` lock order).
-        let worker = {
+        let (worker, stopping) = {
             let chats = self
                 .chats
                 .lock()
@@ -2510,11 +2566,16 @@ impl ProviderRuntime for Providers {
             let Some(slot) = chats.get(session_id) else {
                 return Ok(());
             };
-            slot.worker.clone()
+            (slot.worker.clone(), Arc::clone(&slot.stopping))
         };
         if let Some(worker) = &worker {
             let mut guard = worker.lock().map_err(|_| ProviderError::new("provider_internal", "session worker lock poisoned"))?;
             self.persist_retirement(guard.as_mut())?;
+            // F02: this worker is retired from here on. Raise the fence inside
+            // the lock section that persisted the retirement, so a send that
+            // was blocked on this worker cannot start a turn that `stop()` is
+            // about to kill, and no registry lock is taken while waiting.
+            stopping.store(true, Ordering::Release);
         }
         let mut chats = self
             .chats
@@ -3302,6 +3363,105 @@ mod registry_cleanup_tests {
             lookup.recv_timeout(Duration::from_secs(5)).is_ok(),
             "a concurrent worker lookup never returned"
         );
+    }
+
+    /// Counts native sends; `prepare_retirement` blocks so the test can keep a
+    /// send waiting on the worker lock while the Stop is inside it.
+    struct SendFenceWorker {
+        holding: mpsc::Sender<()>,
+        release: Gate,
+        sent: Arc<std::sync::atomic::AtomicBool>,
+        retiring: bool,
+    }
+    impl ChatSession for SendFenceWorker {
+        fn native_id(&self) -> Option<String> {
+            None
+        }
+        fn prepare_retirement(
+            &mut self,
+            _: &dyn Fn(&ProviderEvent) -> Result<(), ProviderError>,
+        ) -> Result<(), ProviderError> {
+            if self.retiring {
+                return Ok(());
+            }
+            let _ = self.holding.send(());
+            pass(&self.release);
+            self.retiring = true;
+            Ok(())
+        }
+        fn send(&mut self, _: &str, _: &str) -> Result<Value, ProviderError> {
+            self.sent.store(true, Ordering::SeqCst);
+            Ok(json!({"turnId":"native-turn"}))
+        }
+        fn cancel(&mut self, _: &str) -> Result<(), ProviderError> {
+            Ok(())
+        }
+        fn approve(&mut self, _: &str, _: &str, _: &str, _: &str) -> Result<(), ProviderError> {
+            Ok(())
+        }
+        fn stop(&mut self) -> Result<(), ProviderError> {
+            Ok(())
+        }
+    }
+
+    /// F02 follow-up: `chat_stop` persists retirement under the worker lock,
+    /// releases it, then re-locks to `stop()`. A send that cloned the handle
+    /// before the Stop is waiting on that worker here; it must be refused by
+    /// the fence the Stop raised inside the same lock section, never reach the
+    /// provider, and never record its message.
+    #[test]
+    fn a_send_waiting_on_the_worker_during_stop_never_reaches_the_provider() {
+        let providers = Arc::new(Providers::for_test(vec![]));
+        let (holding, holding_rx) = mpsc::channel();
+        let release = gate();
+        let sent = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let mut slot = ChatSlot::new();
+        slot.phase = "ready";
+        slot.worker = Some(Arc::new(Mutex::new(Box::new(SendFenceWorker {
+            holding,
+            release: Arc::clone(&release),
+            sent: Arc::clone(&sent),
+            retiring: false,
+        }))));
+        providers.chats.lock().unwrap().insert("stopping".into(), slot);
+
+        let (stop_done, stop_done_rx) = mpsc::channel();
+        {
+            let providers = Arc::clone(&providers);
+            std::thread::spawn(move || {
+                let _ = stop_done.send(providers.chat_stop("stopping").is_ok());
+            });
+        }
+        holding_rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("chat_stop never reached the worker");
+
+        // The send cloned its handle before the Stop and now waits for the
+        // worker lock the Stop holds.
+        let (send_done, send_done_rx) = mpsc::channel();
+        {
+            let providers = Arc::clone(&providers);
+            std::thread::spawn(move || {
+                let recorded = Arc::new(std::sync::atomic::AtomicBool::new(false));
+                let result = providers.chat_send_recording("stopping", "late prompt", &[], "late", || {
+                    recorded.store(true, Ordering::SeqCst);
+                    Ok(())
+                });
+                let code = result.map(|_| String::new()).unwrap_or_else(|error| error.code);
+                let _ = send_done.send((code, recorded.load(Ordering::SeqCst)));
+            });
+        }
+        std::thread::sleep(Duration::from_millis(50));
+        open(&release);
+
+        assert!(
+            stop_done_rx.recv_timeout(Duration::from_secs(5)).expect("chat_stop never returned"),
+            "the Stop itself must still succeed"
+        );
+        let (code, recorded) = send_done_rx.recv_timeout(Duration::from_secs(5)).expect("the send never returned");
+        assert_eq!(code, "provider_disconnected", "the fenced send is refused");
+        assert!(!recorded, "a refused send records no message");
+        assert!(!sent.load(Ordering::SeqCst), "the provider never saw the send that raced the Stop");
     }
 
     #[test]

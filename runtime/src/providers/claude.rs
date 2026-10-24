@@ -691,10 +691,7 @@ impl ChatSession for ClaudeChat {
         // interrupts, so a Stop that arrives after the next turn started is
         // refused here instead of stopping that turn.
         if reply.get("status").and_then(Value::as_str) == Some("stale_turn") {
-            return Err(ProviderError::new(
-                "turn_not_active",
-                "The requested Claude turn is no longer active. / 请求的 Claude 回合已不再运行。",
-            ));
+            return Err(crate::providers::stop_turn_not_active());
         }
         Ok(())
     }
@@ -4326,11 +4323,11 @@ require('node:readline').createInterface({ input: process.stdin }).on('line', li
             worker_token: None,
         };
         // The turn the user is looking at already ended: the newer turn keeps running.
-        assert_eq!(chat.cancel("turn-a").unwrap_err().code, "turn_not_active");
-        assert_eq!(chat.cancel("turn-a").unwrap_err().code, "turn_not_active");
+        super::super::conformance::assert_stop_refuses_a_turn_that_is_not_live(chat.cancel("turn-a"));
+        super::super::conformance::assert_stop_refuses_a_turn_that_is_not_live(chat.cancel("turn-a"));
         // The live turn is the one the adapter names, so it is the one that stops.
         chat.cancel("turn-b").unwrap();
         // Nothing runs now; a repeated Stop is an idempotent no-op, not an error.
-        chat.cancel("turn-b").unwrap();
+        super::super::conformance::assert_stop_of_finished_turn_succeeds(chat.cancel("turn-b"));
     }
 }

@@ -1023,8 +1023,15 @@ impl ChatSession for OpenCodeChat {
     fn cancel(&mut self, turn_id: &str) -> Result<(), ProviderError> {
         {
             let _commit = self.server.event_gate.lock().map_err(|_| ProviderError::new("provider_internal", "OpenCode event gate poisoned"))?;
-            if self.server.active_turn.lock().map_err(|_| ProviderError::new("provider_internal", "OpenCode turn lock poisoned"))?.as_deref() != Some(turn_id) {
-                return Err(ProviderError::new("turn_not_active", "the requested OpenCode turn is not active"));
+            let active = self.server.active_turn.lock().map_err(|_| ProviderError::new("provider_internal", "OpenCode turn lock poisoned"))?.clone();
+            // The shared contract: a turn that already ended is an idempotent
+            // success, and another live turn is never aborted.
+            match active.as_deref() {
+                None => return Ok(()),
+                Some(active) if active != turn_id => {
+                    return Err(crate::providers::stop_turn_not_active())
+                }
+                Some(_) => {}
             }
             *self.sse_target.abort_pending.lock().map_err(|_| ProviderError::new("provider_internal", "OpenCode abort lock poisoned"))? = Some(OpenCodeAbort { turn: turn_id.to_owned(), confirmed: false, idle_observed: false });
         }
@@ -5379,5 +5386,93 @@ mod tests {
             Some("pending"),
             "the other card must stay pending"
         );
+    }
+
+    #[test]
+    fn an_ended_opencode_turn_succeeds_without_an_abort_and_a_newer_turn_is_never_aborted() {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let address = listener.local_addr().unwrap();
+        let (request_tx, request_rx) = mpsc::sync_channel(1);
+        thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            stream.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+            let mut request = Vec::new();
+            let mut chunk = [0u8; 1024];
+            while let Ok(count) = stream.read(&mut chunk) {
+                if count == 0 {
+                    break;
+                }
+                request.extend_from_slice(&chunk[..count]);
+                if request.windows(4).any(|window| window == b"\r\n\r\n") {
+                    break;
+                }
+            }
+            request_tx.send(String::from_utf8(request).unwrap()).unwrap();
+            stream
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 4\r\nConnection: close\r\n\r\ntrue")
+                .unwrap();
+        });
+        // An inert shell keeps is_alive() true; this test never starts or
+        // discovers a real OpenCode server.
+        #[cfg(windows)]
+        let spec = CommandSpec::from_path(
+            std::path::PathBuf::from(std::env::var_os("SystemRoot").unwrap())
+                .join("System32/WindowsPowerShell/v1.0/powershell.exe"),
+            vec!["-NoProfile".into(), "-Command".into(), "Start-Sleep -Seconds 30".into()],
+        )
+        .unwrap();
+        #[cfg(not(windows))]
+        let spec = CommandSpec::from_path(
+            std::path::PathBuf::from("/bin/sh"),
+            vec!["-c".into(), "sleep 30".into()],
+        )
+        .unwrap();
+        let (child, job) = spawn_managed_service(&spec, None, &[]).unwrap();
+        let child = Arc::new(Mutex::new(child));
+        let _child_cleanup = TestChildCleanup(Arc::clone(&child));
+        let (events, _rx) = crate::provider_events::tap_channel(16);
+        let active = Arc::new(Mutex::new(Some("turn-b".into())));
+        let target = Arc::new(event_target(&events, Arc::clone(&active)));
+        let mut chat = OpenCodeChat {
+            server: OpenCodeServer {
+                base_url: format!("http://{address}"),
+                cwd: String::new(),
+                username: String::new(),
+                password: String::new(),
+                client: Client::builder().timeout(Duration::from_secs(5)).build().unwrap(),
+                child,
+                stopped: Arc::clone(&target.stopped),
+                event_gate: Arc::clone(&target.event_gate),
+                active_turn: Arc::clone(&active),
+                permissions: Arc::clone(&target.permissions),
+                events: events.clone(),
+                threadterm_session: "chat-s".into(),
+                worker_token: "test-worker".into(),
+                _job: job,
+            },
+            session_id: "chat-s".into(),
+            native_id: "native-1".into(),
+            events,
+            sse_target: Arc::clone(&target),
+            worker_token: "test-worker".into(),
+        };
+        // A Stop for the turn the user was looking at must not abort turn-b,
+        // and an ended turn is a no-op that never reaches the server.
+        crate::providers::conformance::assert_stop_refuses_a_turn_that_is_not_live(chat.cancel("turn-a"));
+        assert_eq!(active.lock().unwrap().as_deref(), Some("turn-b"));
+        assert!(target.abort_pending.lock().unwrap().is_none());
+        *active.lock().unwrap() = None;
+        crate::providers::conformance::assert_stop_of_finished_turn_succeeds(chat.cancel("turn-b"));
+        assert!(request_rx.recv_timeout(Duration::from_millis(300)).is_err(),
+            "neither Stop sent an abort request");
+        // The live turn is aborted and the confirmed reply settles it.
+        *active.lock().unwrap() = Some("turn-b".into());
+        chat.cancel("turn-b").unwrap();
+        let request = request_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        assert!(request.starts_with("POST /session/native-1/abort?"), "{request}");
+        let pending = target.abort_pending.lock().unwrap();
+        let abort = pending.as_ref().expect("the abort stays fenced until native idle");
+        assert_eq!(abort.turn, "turn-b");
+        assert!(abort.confirmed, "the HTTP reply confirmed the abort");
     }
 }

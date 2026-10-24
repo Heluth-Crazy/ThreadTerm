@@ -458,7 +458,7 @@ fn stop_barrier_waits_for_an_inflight_send_before_marking_queue_paused() {
             pause_started_tx.send(()).unwrap();
             fixture
                 .queues
-                .pause_dispatch(&fixture.db, &fixture.session_id, "stopped")
+                .pause_dispatch_capturing(&fixture.db, &fixture.session_id, "stopped")
                 .unwrap();
             paused.store(true, Ordering::SeqCst);
         });
@@ -619,9 +619,10 @@ fn provider_loss_and_terminal_outcomes_pause_synchronously() {
 }
 
 #[test]
-fn chat_cancel_pauses_the_queue_before_a_provider_cancel_failure() {
+fn a_refused_stop_restores_the_user_pause_it_replaced() {
     // Constructing the service only registers adapters; this fixture never
-    // opens a provider worker or starts a real agent CLI.
+    // opens a provider worker or starts a real agent CLI, so the Stop below is
+    // refused (`chat_not_open`) exactly like a stale turn is refused.
     let root = tempfile::tempdir().unwrap();
     let db = Arc::new(Database::open(&root.path().join("runtime.sqlite")).unwrap());
     let service = RuntimeService::new(
@@ -646,6 +647,9 @@ fn chat_cancel_pauses_the_queue_before_a_provider_cancel_failure() {
     mutate(&db, "chat.queue.add", &json!({
         "sessionId":session.id,"text":"retain after Stop","images":[],"operationId":"cancel-test-add",
     })).unwrap();
+    mutate(&db, "chat.queue.pause", &json!({
+        "sessionId":session.id,"operationId":"cancel-test-pause",
+    })).unwrap();
     let epoch = service
         .dispatch(
             "desktop",
@@ -664,9 +668,11 @@ fn chat_cancel_pauses_the_queue_before_a_provider_cancel_failure() {
         params: json!({"sessionId":session.id,"turnId":"missing-worker","leaseEpoch":epoch}),
     }).unwrap_err();
     assert_eq!(error.code, "chat_not_open");
+    // The Stop paused dispatch for real, then the provider refused: the queue
+    // is back to the pause the user had set, not left in the Stop's pause.
     let queue = read(&db, &session.id).unwrap();
     assert_eq!(queue["paused"], true);
-    assert_eq!(queue["pauseReason"], "stopped");
+    assert_eq!(queue["pauseReason"], "user");
     assert_eq!(queue["items"][0]["text"], "retain after Stop");
 }
 

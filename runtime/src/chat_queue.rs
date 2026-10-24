@@ -166,6 +166,24 @@ pub(crate) fn pause(db: &Database, id: &str, reason: &str) -> Result<()> {
     })
 }
 
+/// The queue state before a Stop paused dispatch, so a refused Stop can undo
+/// exactly its own pause and nothing else.
+pub(crate) struct DispatchPause {
+    paused: bool,
+    reason: Option<String>,
+}
+
+fn read_pause_tx(tx: &Transaction<'_>, id: &str) -> Result<(bool, Option<String>)> {
+    Ok(tx
+        .query_row(
+            "SELECT paused,pause_reason FROM chat_queue_state WHERE session_id=?",
+            [id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .optional()?
+        .unwrap_or((false, None)))
+}
+
 pub(crate) fn pause_all(db: &Database, reason: &str) -> Result<()> {
     db.transaction(|tx| {
         let ids = tx
@@ -365,10 +383,44 @@ impl ChatQueues {
             .clone())
     }
 
-    pub(crate) fn pause_dispatch(&self, db: &Database, id: &str, reason: &str) -> Result<()> {
+    /// Fences dispatch and remembers the prior state, so the Stop that paused
+    /// can restore it when the provider refuses. One gate section, so no
+    /// dispatch can slip between the pause and the Stop.
+    pub(crate) fn pause_dispatch_capturing(
+        &self,
+        db: &Database,
+        id: &str,
+        reason: &str,
+    ) -> Result<DispatchPause> {
         let gate = self.gate(id)?;
         let _guard = gate.lock().map_err(|_| failure("queue_lock_poisoned"))?;
-        pause(db, id, reason)
+        db.transaction(|tx| {
+            require_chat(tx, id, false)?;
+            let (paused, prior) = read_pause_tx(tx, id)?;
+            pause_tx(tx, id, reason)?;
+            Ok(DispatchPause { paused, reason: prior })
+        })
+    }
+
+    /// Undoes the pause a refused Stop applied. A pause or resume the user made
+    /// after the Stop wins, and the restore itself emits a queue change.
+    pub(crate) fn restore_dispatch(
+        &self,
+        db: &Database,
+        id: &str,
+        prior: DispatchPause,
+    ) -> Result<()> {
+        let gate = self.gate(id)?;
+        let _guard = gate.lock().map_err(|_| failure("queue_lock_poisoned"))?;
+        db.transaction(|tx| {
+            require_chat(tx, id, false)?;
+            if read_pause_tx(tx, id)? != (true, Some("stopped".to_owned())) {
+                return Ok(());
+            }
+            tx.execute("INSERT INTO chat_queue_state(session_id,paused,pause_reason) VALUES (?,?,?) ON CONFLICT(session_id) DO UPDATE SET paused=excluded.paused,pause_reason=excluded.pause_reason",params![id,prior.paused,prior.reason])?;
+            changed(tx, id)?;
+            Ok(())
+        })
     }
 
     pub(crate) fn projection_failed(&self, db: &Database) {

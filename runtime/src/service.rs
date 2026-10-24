@@ -1949,14 +1949,7 @@ impl RuntimeService {
                     let p: ChatCancel = parse(&request.params)?;
                     self.leases
                         .require(&self.db, &p.session_id, principal, p.lease_epoch)?;
-                    self.chat_queues.pause_dispatch(&self.db, &p.session_id, "stopped")?;
-                    self.browser_tools.cancel_session_pending(&p.session_id, &p.turn_id)?;
-                    let chat_tools = crate::chat_tools::shared(&self.config.database_path, Arc::clone(&self.db))?;
-                    chat_tools.cancel_turn(&p.session_id, &p.turn_id)?;
-                    chat_tools.clear_waiting_feedback(&p.session_id, Some(&p.turn_id))?;
-                    self.providers
-                        .chat_cancel(&p.session_id, &p.turn_id)
-                        .map_err(anyhow::Error::from)?;
+                    self.stop_chat_turn(&p.session_id, &p.turn_id)?;
                     Ok(Value::Null)
                 }
                 "chat.approve" => {
@@ -2662,6 +2655,32 @@ impl RuntimeService {
     }
     fn connect_chat(&self, session_id: &str) -> Result<()> {
         connect_chat_session(&self.db, &self.providers, session_id)
+    }
+    /// One Stop: fence the queue, apply the turn-scoped effects, then let the
+    /// provider decide. A provider that refuses did not stop a turn, so the
+    /// session-wide pause is undone (turn-scoped cleanup for a turn that is
+    /// really over may stay); an unhealthy provider pauses the queue again
+    /// through dispatch and `state.changed` with the right reason.
+    fn stop_chat_turn(&self, session_id: &str, turn_id: &str) -> Result<()> {
+        let pause = self
+            .chat_queues
+            .pause_dispatch_capturing(&self.db, session_id, "stopped")?;
+        let stopped = (|| -> Result<()> {
+            self.browser_tools.cancel_session_pending(session_id, turn_id)?;
+            let chat_tools =
+                crate::chat_tools::shared(&self.config.database_path, Arc::clone(&self.db))?;
+            chat_tools.cancel_turn(session_id, turn_id)?;
+            chat_tools.clear_waiting_feedback(session_id, Some(turn_id))?;
+            self.providers
+                .chat_cancel(session_id, turn_id)
+                .map_err(anyhow::Error::from)
+        })();
+        if stopped.is_err() {
+            if let Err(error) = self.chat_queues.restore_dispatch(&self.db, session_id, pause) {
+                eprintln!("prompt queue was not restored after a refused Stop: {error}");
+            }
+        }
+        stopped
     }
     fn import_native_history(&self, params: &Value) -> Result<Value> {
         #[derive(Deserialize)]

@@ -813,7 +813,14 @@ impl ChatSession for CodexChat {
         if let Some(plan) = plan {
             self.resolve_plan(&plan, None, None, true);
         }
-        let native_turn_id = wait_for_codex_native_turn(&self.active_turn, turn_id)?;
+        let native_turn_id = match wait_for_codex_native_turn(&self.active_turn, turn_id) {
+            // One Stop contract for every adapter: another live turn is refused
+            // with the shared sentence, and an ended turn is an idempotent no-op.
+            Err(error) if error.code == "turn_not_active" => {
+                return Err(crate::providers::stop_turn_not_active())
+            }
+            other => other?,
+        };
         let Some(native_turn_id) = native_turn_id else {
             // Completion can win the race with a user cancellation. Treat an
             // already-finished turn as an idempotent cancellation success.
@@ -7226,6 +7233,49 @@ createInterface({{ input: process.stdin, crlfDelay: Infinity }}).on('line', line
         );
         assert_eq!(lines[1]["params"]["expectedTurnId"], "native-turn");
         assert_eq!(lines[1]["params"]["input"], json!([{"type":"text","text":"reject-me"}]));
+    }
+
+    #[test]
+    fn an_ended_codex_turn_is_an_idempotent_success_and_a_newer_turn_is_never_interrupted() {
+        let dir = tempfile::tempdir().unwrap();
+        let Some((process, log)) = crate::providers::conformance::stop_recording_process(
+            EnvelopeStyle::Codex,
+            "cancel-codex",
+            dir.path(),
+        ) else {
+            eprintln!("node is unavailable; skipping the cancel fixture test");
+            return;
+        };
+        let (sender, _received) = crate::provider_events::tap_channel(16);
+        let active = new_codex_turn_state();
+        active.0.lock().unwrap().replace(ActiveCodexTurn {
+            public_id: "turn-b".into(),
+            native_id: Some("native-b".into()),
+            assistant_item_id: None,
+            started_at: Instant::now(),
+        });
+        let mut chat = CodexChat {
+            process,
+            native_id: "thread".into(),
+            approvals: Arc::new(Mutex::new(HashMap::new())),
+            active_turn: Arc::clone(&active),
+            session_id: "codex-chat".into(),
+            cwd: String::new(),
+            events: sender,
+            ui: Arc::new(Mutex::new(CodexUiState::default())),
+            worker_token: "cancel-worker".into(),
+        };
+        // A Stop for the turn the user was looking at must not interrupt turn-b.
+        crate::providers::conformance::assert_stop_refuses_a_turn_that_is_not_live(chat.cancel("turn-a"));
+        assert_eq!(active.0.lock().unwrap().as_ref().map(|turn| turn.public_id.as_str()), Some("turn-b"));
+        assert!(crate::providers::conformance::recorded_frames(&log, &["turn/interrupt"]).is_empty(),
+            "a refused Stop writes no native interrupt");
+        chat.cancel("turn-b").unwrap();
+        let interrupts = crate::providers::conformance::recorded_frames(&log, &["turn/interrupt"]);
+        assert_eq!(interrupts[0]["params"]["turnId"], "native-b");
+        // The turn ends; a repeated Stop is a no-op instead of an error.
+        *active.0.lock().unwrap() = None;
+        crate::providers::conformance::assert_stop_of_finished_turn_succeeds(chat.cancel("turn-b"));
     }
     #[test]
     fn codex_startup_permissions_accept_only_mode_and_sandbox() {

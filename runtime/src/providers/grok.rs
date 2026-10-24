@@ -1550,17 +1550,19 @@ impl ChatSession for GrokChat {
                 return Ok(());
             }
         }
-        let matches = self
+        let active = self
             .active_turn
             .lock()
             .map_err(|_| ProviderError::new("provider_internal", "Grok turn lock poisoned"))?
-            .as_deref()
-            == Some(turn_id);
-        if !matches {
-            return Err(ProviderError::new(
-                "turn_not_active",
-                "the requested Grok turn is not active",
-            ));
+            .clone();
+        // The shared contract: a turn that already ended is an idempotent
+        // success, and another live turn is never touched.
+        match active.as_deref() {
+            None => return Ok(()),
+            Some(active) if active != turn_id => {
+                return Err(crate::providers::stop_turn_not_active())
+            }
+            Some(_) => {}
         }
         if let Ok(mut ui) = self.ui.lock() { ui.cancel_requested = true; }
         cancel_grok_questions(&self.process.responder(), &self.permissions, Some(turn_id));
@@ -5228,5 +5230,45 @@ mod tests {
             &json!({"agentCapabilities":{"sessionCapabilities":{"list":{}}}}),
             "list"
         ));
+    }
+
+    #[test]
+    fn an_ended_grok_turn_is_an_idempotent_success_and_a_newer_turn_is_never_cancelled() {
+        let dir = tempfile::tempdir().unwrap();
+        let Some((process, log)) = crate::providers::conformance::stop_recording_process(
+            crate::providers::common::EnvelopeStyle::JsonRpc2,
+            "cancel-grok",
+            dir.path(),
+        ) else {
+            eprintln!("node is unavailable; skipping the cancel fixture test");
+            return;
+        };
+        let (sender, _received) = crate::provider_events::tap_channel(16);
+        let events = ScopedProviderEvents::new(sender, "worker");
+        let active_turn = Arc::new(Mutex::new(Some("turn-b".to_owned())));
+        let mut chat = GrokChat {
+            process,
+            session_id: "s".into(),
+            native_id: GROK_PROBE_PARENT.into(),
+            events,
+            active_turn: Arc::clone(&active_turn),
+            permissions: Arc::new(Mutex::new(HashMap::new())),
+            ui: Arc::new(Mutex::new(GrokUiState::default())),
+            turn_started: Arc::new(Mutex::new(None)),
+            usage_reply: None,
+        };
+        // A Stop for the turn the user was looking at must not cancel turn-b.
+        crate::providers::conformance::assert_stop_refuses_a_turn_that_is_not_live(chat.cancel("turn-a"));
+        assert_eq!(active_turn.lock().unwrap().as_deref(), Some("turn-b"));
+        assert!(!chat.ui.lock().unwrap().cancel_requested);
+        assert!(crate::providers::conformance::recorded_frames(&log, &["session/cancel"]).is_empty(),
+            "a refused Stop writes no native cancel");
+        chat.cancel("turn-b").unwrap();
+        assert!(chat.ui.lock().unwrap().cancel_requested);
+        assert!(crate::providers::conformance::recorded_frames(&log, &["session/cancel"])
+            .iter().any(|frame| frame["method"] == "session/cancel"));
+        // The turn ends; a repeated Stop is a no-op instead of an error.
+        *active_turn.lock().unwrap() = None;
+        crate::providers::conformance::assert_stop_of_finished_turn_succeeds(chat.cancel("turn-b"));
     }
 }

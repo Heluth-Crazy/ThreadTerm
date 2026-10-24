@@ -62,6 +62,7 @@ import { ChatQueue as ChatQueuePanel } from './ChatQueue';
 import { ChatNotes as ChatNotesPanel } from './ChatNotes';
 import { SteerSend } from './SteerSend';
 import { steerControlKind, steerFailureMessage } from '../steerSend';
+import { stopFailureMessage } from '../stopTurn';
 import { ComposerPlusMenu } from './ComposerPlusMenu';
 import { partitionAttachedFiles } from '../chatAttachments';
 import { parseQuickMessages } from '../quickMessages';
@@ -1273,7 +1274,7 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession, 
       setApprovalBusy(current=>current===key?undefined:current);
     }
   }
-  async function cancel(turnId:string){const epoch=leaseSessionId.current===session.id?lease.current:undefined;if(!writable||epoch===undefined)return;const pending=firstResponseWaitRef.current;if(pending?.turnId===turnId)clearFirstResponseWait(pending.token);try{await request("chat.cancel",{sessionId:session.id,turnId,leaseEpoch:epoch})}catch(caught){setError(caught instanceof Error?caught.message:"Cancellation failed.")}}
+  async function cancel(turnId:string){const epoch=leaseSessionId.current===session.id?lease.current:undefined;if(!writable||epoch===undefined)return;const pending=firstResponseWaitRef.current;if(pending?.turnId===turnId)clearFirstResponseWait(pending.token);try{await request("chat.cancel",{sessionId:session.id,turnId,leaseEpoch:epoch})}catch(caught){const refusal=stopFailureMessage(caught,copy);if(refusal)setError(refusal)}}
   async function insertIntoTurn(queued?: { text: string; images?: string[]; id?: string }) {
     const epoch = leaseSessionId.current === session.id ? lease.current : undefined;
     const turnId = activeTurnId(itemsRef.current, session.status);

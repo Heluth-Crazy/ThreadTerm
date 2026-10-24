@@ -1031,11 +1031,14 @@ impl ChatSession for PiChat {
         }
     }
     fn cancel(&mut self, turn_id: &str) -> Result<(), ProviderError> {
-        if self.active_turn().as_deref() != Some(turn_id) {
-            return Err(ProviderError::new(
-                "turn_not_active",
-                "The requested Pi turn is not active",
-            ));
+        // The shared contract: a turn that already ended is an idempotent
+        // success, and another live turn is never touched.
+        match self.active_turn() {
+            None => return Ok(()),
+            Some(active) if active != turn_id => {
+                return Err(crate::providers::stop_turn_not_active())
+            }
+            Some(_) => {}
         }
         self.process.request("abort", json!({}))?;
         // `agent_settled` normally closes the turn; settle here when the
@@ -2996,6 +2999,51 @@ require('node:readline').createInterface({input:process.stdin}).on('line', line 
         let sequence = *chat.shared.context_sequence.lock().unwrap();
         pi_event(&chat.events, "pi", "session", &chat.shared, json!({"type":"agent_settled","aborted":true}));
         assert_eq!(*chat.shared.context_sequence.lock().unwrap(), sequence);
+    }
+
+    #[test]
+    fn an_ended_pi_turn_is_an_idempotent_success_and_a_newer_turn_is_never_aborted() {
+        let Some(_node) = crate::providers::common::find_executable("node") else {
+            eprintln!("node is unavailable; skipping the cancel fixture test");
+            return;
+        };
+        let root = tempdir().unwrap();
+        let script = root.path().join("cancel-pi.cjs");
+        fs::write(&script, r#"
+const out = value => process.stdout.write(JSON.stringify(value) + '\n');
+require('node:readline').createInterface({input:process.stdin}).on('line', line => {
+  const cmd = JSON.parse(line);
+  let data = {};
+  switch (cmd.type) {
+    case 'prompt': data = {disposition:'started'}; break;
+    case 'abort': break;
+    case 'get_session_stats': data = {tokens:{total:1}}; break;
+    default: throw new Error('Unexpected fake command: ' + cmd.type);
+  }
+  out({id:cmd.id,type:'response',command:cmd.type,success:true,data});
+});
+"#).unwrap();
+        let spec = CommandSpec::provider("node", &[script.to_str().unwrap()]).unwrap();
+        let (events, mut receiver) = scoped();
+        let shared = Arc::new(PiShared::default());
+        *shared.native_id.lock().unwrap() = Some("native".into());
+        let callback_events = events.clone();
+        let callback_shared = Arc::clone(&shared);
+        let on_message = Arc::new(move |raw| pi_event(&callback_events, "pi", "session", &callback_shared, raw));
+        let process = JsonLineProcess::spawn("fake-pi-cancel", &spec, Some(root.path().to_str().unwrap()), &[], EnvelopeStyle::Pi, on_message).unwrap();
+        *shared.requester.lock().unwrap() = Some(Arc::new(process.requester()));
+        let mut chat = PiChat { session_id: "session".into(), shared, events, process, retired: false };
+
+        *chat.shared.active_turn.lock().unwrap() = Some("turn-b".into());
+        // A Stop for the turn the user was looking at must not abort turn-b.
+        super::super::conformance::assert_stop_refuses_a_turn_that_is_not_live(chat.cancel("turn-a"));
+        assert_eq!(chat.active_turn().as_deref(), Some("turn-b"), "the newer turn keeps running");
+        // The live turn is interrupted, then a repeated Stop is a no-op.
+        chat.cancel("turn-b").unwrap();
+        assert!(std::iter::from_fn(|| receiver.try_recv().ok())
+            .any(|event| event.kind == "chat.turn.completed" && event.data["result"]["stopReason"] == "cancelled"));
+        assert_eq!(chat.active_turn(), None);
+        super::super::conformance::assert_stop_of_finished_turn_succeeds(chat.cancel("turn-b"));
     }
 
     #[test]

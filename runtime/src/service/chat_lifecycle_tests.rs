@@ -2516,4 +2516,57 @@ fn a_restart_retires_a_pending_widening_so_it_can_never_be_answered_later() {
     assert_eq!(fixture.opens.load(AtomicOrdering::SeqCst), 0);
 }
 
+#[test]
+fn a_refused_stop_keeps_the_queued_prompt_dispatchable_and_an_accepted_stop_fences_it() {
+    let fixture = Fixture::new(false, None);
+    let session = fixture.create("stop-queue");
+    let id = session["id"].as_str().unwrap().to_owned();
+    let lease = claim_lease(&fixture, &id);
+    rpc(
+        &fixture,
+        "chat.connect",
+        json!({"sessionId":id,"leaseEpoch":lease,"operationId":"stop-connect"}),
+    )
+    .unwrap();
+    crate::chat_queue::mutate(
+        &fixture.db,
+        "chat.queue.add",
+        &json!({"sessionId":id,"text":"next prompt","images":[],"operationId":"stop-add"}),
+    )
+    .unwrap();
+
+    // The turn the renderer named already ended: the provider refuses the Stop
+    // and nothing was interrupted, so the session-wide queue pause it applied
+    // must be undone (the prompt is still dispatchable).
+    fixture
+        .cancel_failures
+        .lock()
+        .unwrap()
+        .push(crate::providers::stop_turn_not_active());
+    let refused = rpc(
+        &fixture,
+        "chat.cancel",
+        json!({"sessionId":id,"turnId":"finished-turn","leaseEpoch":lease}),
+    )
+    .unwrap_err();
+    assert_eq!(refused.code, "turn_not_active");
+    let queue = crate::chat_queue::read(&fixture.db, &id).unwrap();
+    assert_eq!(queue["paused"], false, "a refused Stop must not pause the queue");
+    assert!(queue.get("pauseReason").is_none());
+    assert_eq!(queue["items"][0]["text"], "next prompt");
+
+    // A Stop the provider accepted keeps the queue paused: that pause is what
+    // stops a dispatch from racing the turn being interrupted.
+    rpc(
+        &fixture,
+        "chat.cancel",
+        json!({"sessionId":id,"turnId":"fixture-turn","leaseEpoch":lease}),
+    )
+    .unwrap();
+    let queue = crate::chat_queue::read(&fixture.db, &id).unwrap();
+    assert_eq!(queue["paused"], true);
+    assert_eq!(queue["pauseReason"], "stopped");
+    assert_eq!(queue["items"][0]["text"], "next prompt");
+}
+
 
