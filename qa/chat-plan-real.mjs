@@ -71,7 +71,11 @@ try {
   const project = await request('project.add', { path: workspace, name: 'Chat plan QA', operationId: randomUUID() });
   const chat = await request('session.create', { projectId: project.id, cwd: workspace, title: 'Chat plan QA', provider: 'codex', mode: 'chat', operationId: randomUUID() });
   await request('session.present', { sessionId: chat.id, placement: 'workspace', presentation: 'focused', operationId: randomUUID() });
-  await until(() => composer(chat.id).isEnabled(), 'chat composer ready');
+  try { await until(() => composer(chat.id).isEnabled(), 'chat composer ready'); }
+  catch (error) {
+    const link = await request('chat.connection', { sessionId: chat.id }).catch(() => undefined);
+    throw new Error(`${error.message}${link ? ` (${link.phase}${link.error ? `: ${link.error.code} ${link.error.message}` : ''})` : ''}`);
+  }
   await composer(chat.id).fill('Write a plan and start.');
   await page.locator(`[data-testid="session-chat-${chat.id}"] .chat-compose-send[type=submit]`).click();
   const scope = page.locator(`[data-testid="session-chat-${chat.id}"]`);
