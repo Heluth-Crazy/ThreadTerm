@@ -96,11 +96,6 @@ type Route = {
 };
 const active = (status: Session["status"]) =>
   ["starting", "running", "idle", "waiting"].includes(status);
-const formatDate = (value: string) =>
-  new Intl.DateTimeFormat(undefined, {
-    dateStyle: "medium",
-    timeStyle: "short",
-  }).format(new Date(value));
 
 export function App() {
   const floatingWindow = new URLSearchParams(window.location.search).get("floating") === "1";

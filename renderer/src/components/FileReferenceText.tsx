@@ -2,6 +2,7 @@ import { Fragment, createContext, useContext, useEffect, useMemo, useRef, useSta
 import type { FileReference, ResolvedFileReference } from '@threadterm/protocol';
 import { request, subscribeEvents } from '../bridge';
 import { extractFileReferences, parseFileReference, parseMarkdownFileReference } from '../fileReferences';
+import { useLocale } from '../i18n';
 
 type OpenFile = (reference: FileReference) => void;
 export type FileReferenceScope = { sourceSessionId?: string; canonicalRoot?: string };
@@ -188,6 +189,7 @@ export function FileLinkedText({ text, openFile, sourceSessionId, canonicalRoot 
 }
 
 export function FileReferenceChips({ references, visibleText, visibleReferences, openFile }: { references?: FileReference[]; visibleText?: string; visibleReferences?:readonly FileReference[]; openFile?: OpenFile }) {
+  const locale = useLocale();
   if (!openFile || !references?.length) return null;
   const unique: FileReference[] = [];
   const visible = visibleReferences ?? (visibleText ? extractFileReferences(visibleText) : []);
@@ -201,7 +203,7 @@ export function FileReferenceChips({ references, visibleText, visibleReferences,
     if (unique.length === 32) break;
   }
   if (!unique.length) return null;
-  return <div className="file-reference-chips" aria-label="File references">{unique.map((reference, index) =>
+  return <div className="file-reference-chips" aria-label={locale === 'zh-CN' ? '文件引用' : 'File references'}>{unique.map((reference, index) =>
     <button type="button" className="file-reference-link" key={`${reference.path}:${index}`} onClick={() => openFile(reference)} title={reference.path}>{reference.path}{reference.line ? `:${reference.line}${reference.column ? `:${reference.column}` : ''}` : ''}</button>
   )}</div>;
 }

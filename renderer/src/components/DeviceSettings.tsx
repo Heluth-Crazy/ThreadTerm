@@ -7,9 +7,10 @@ import type { Locale } from "../i18n";
 import { SurfaceDialog } from "./SurfaceDialog";
 import { SettingsSwitch } from "./SettingsControls";
 import { RemoteIdentityRecovery } from "./RemoteIdentityRecovery";
+import { useVisibleTicker } from "../visibleTicker";
 
-type Props = { language: Locale };
-export function DeviceSettings({ language }: Props) {
+type Props = { language: Locale; active?: boolean };
+export function DeviceSettings({ language, active = true }: Props) {
   const zh = language === "zh-CN", text = (cn: string, en: string) => zh ? cn : en;
   const [status, setStatus] = useState<RemoteAccessStatus>(), [devices, setDevices] = useState<PairedDevice[]>([]);
   const [permission, setPermission] = useState<DevicePermission>("readonly"), [offer, setOffer] = useState<PairingOffer>(), [qr, setQr] = useState("");
@@ -23,15 +24,21 @@ export function DeviceSettings({ language }: Props) {
     if (!alive.current || token !== generation.current) return;
     if (access.status === "fulfilled") setStatus(access.value);
     if (list.status === "fulfilled") setDevices(list.value);
+    setNow(Date.now());
     const failure = [access, list].find(result => result.status === "rejected");
     if (failure?.status === "rejected") setIssue(errorText(failure.reason));
   }, []);
+  // Load on open, then follow device events. An inactive tab keeps its state
+  // (a pairing code survives a tab switch) but starts no request or timer.
   useEffect(() => {
+    if (!active) return;
     alive.current = true; void refresh();
-    const unsubscribe = subscribeEvents(event => { if (event.event === "state.changed" && !locked.current) void refresh(); });
-    const timer = window.setInterval(() => { setNow(Date.now()); if (!locked.current) void refresh(); }, 3000);
-    return () => { alive.current = false; generation.current++; unsubscribe(); window.clearInterval(timer); };
-  }, [refresh]);
+    const unsubscribe = subscribeEvents(event => {
+      const kind = event.data && typeof event.data === "object" ? (event.data as { kind?: unknown }).kind : undefined;
+      if (event.event === "state.changed" && !locked.current && typeof kind === "string" && /^(device|remote)/i.test(kind)) void refresh();
+    });
+    return () => { alive.current = false; generation.current++; unsubscribe(); };
+  }, [active, refresh]);
   useEffect(() => {
     let current = true; setQr("");
     if (offer && Date.parse(offer.expiresAt) > Date.now()) void QRCode.toDataURL(offer.qrPayload, { width: 196, margin: 2, errorCorrectionLevel: "M", color: { dark: "#111111", light: "#ffffff" } }).then(value => { if (current) setQr(value); }).catch(error => { if (current) setIssue(errorText(error)); });
@@ -42,6 +49,9 @@ export function DeviceSettings({ language }: Props) {
     void action().catch(error => { if (alive.current) setIssue(errorText(error)); }).finally(() => { locked.current = false; if (alive.current) setBusy(false); });
   };
   const pairingActive = !!offer && Date.parse(offer.expiresAt) > now;
+  // A pairing code is the only thing here that changes by itself; the clock
+  // exists just while that code is visible and unexpired.
+  useVisibleTicker(() => setNow(Date.now()), active && pairingActive);
   const replacePairing = async (access = permission) => {
     if (offer) { await request("device.pairing.cancel", { pairingId: offer.id, operationId: operationId() }); setOffer(undefined); }
     const next = await request("device.pairing.create", { permission: access, operationId: operationId() });

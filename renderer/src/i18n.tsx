@@ -270,3 +270,5 @@ export function useTranslation(): I18nValue {
   if (!value) throw new Error("I18nProvider is required");
   return value;
 }
+/** Locale for leaf components that must also render in standalone fixtures. */
+export const useLocale = (): Locale => useContext(I18nContext)?.locale ?? "en";

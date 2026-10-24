@@ -34,3 +34,16 @@ test('Devices settings wire the error state to the persisted reset operation', (
   assert.match(source, /device\.identity\.reset[\s\S]*setConfirmingReset\(false\)/);
   assert.match(source, /setNotice\(text\("远程身份已更换，所有设备都需要重新配对。"/);
 });
+
+// F16: the Mobile tab loads when it opens and never polls; its only clock is the visible pairing countdown.
+test('Devices settings load on open, follow device events and never poll', () => {
+  const source = readFileSync(resolve('renderer/src/components/DeviceSettings.tsx'), 'utf8');
+  assert.doesNotMatch(source, /setInterval\(/);
+  assert.match(source, /useVisibleTicker\(\(\) => setNow\(Date\.now\(\)\), active && pairingActive\)/);
+  assert.match(source, /event\.event === "state\.changed"[\s\S]{0,160}\/\^\(device\|remote\)\/i\.test\(kind\)/);
+});
+
+test('the Settings dialog tells the Devices tab when it is active', () => {
+  const source = readFileSync(resolve('renderer/src/components/SettingsDialog.tsx'), 'utf8');
+  assert.match(source, /<DeviceSettings language=\{zh \? "zh-CN" : "en"\} active=\{tab === "mobile"\} \/>/);
+});

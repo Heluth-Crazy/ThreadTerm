@@ -41,7 +41,7 @@ export function SettingsDialog({ initialTab = "appearance", data, onClose, onSav
       <section className={`settings-group ${tab === "controls" ? "active" : ""}`}><SettingsControls settings={data.settings} zh={zh} update={update} counts={supervisionCounts} /><SettingsQuickMessages settings={data.settings} zh={zh} update={update} /></section>
       {tab === "browser" && <section className="settings-group active"><SettingsBrowser zh={zh} settings={data.settings} update={update} /></section>}
       <section className={`settings-group ${tab === "data" ? "active" : ""}`}><SettingsData settings={data.settings} zh={zh} onSaved={onSaved} /></section>
-      <section className={`settings-group ${tab === "mobile" ? "active" : ""}`}><DeviceSettings language={zh ? "zh-CN" : "en"} /></section>
+      <section className={`settings-group ${tab === "mobile" ? "active" : ""}`}><DeviceSettings language={zh ? "zh-CN" : "en"} active={tab === "mobile"} /></section>
       <section className={`settings-group ${tab === "tools" ? "active" : ""}`}><SettingsChatTools settings={data.settings} zh={zh} update={update} /><ProviderNetworkSettings settings={data.settings} zh={zh} update={update} /><SettingsTools data={data} onSaved={onSaved} /></section>
       {tab === "plugins" && <section className="settings-group active"><SettingsPlugins zh={zh} onSaved={onSaved} /></section>}
     </div></div>

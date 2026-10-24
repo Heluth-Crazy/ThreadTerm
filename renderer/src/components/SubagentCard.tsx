@@ -7,6 +7,7 @@ import { formatChatDuration } from '../chatPresentation';
 import { AgentLoadingMark } from './AgentLoadingMark';
 import { AgentIcon, Icon } from './PrototypeIcon';
 import { ToolActivity } from './ToolActivity';
+import { useVisibleTicker } from '../visibleTicker';
 import './subagent-card.css';
 
 export function SubagentCard({ sessionId, info, copy, zh, renderItem, openFile }: {
@@ -34,11 +35,9 @@ export function SubagentCard({ sessionId, info, copy, zh, renderItem, openFile }
   const pin = useRef(true);
   const status = subagentStatus(info);
   useEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
-  useEffect(() => {
-    if (status !== 'running') return;
-    const timer = window.setInterval(() => tick(value => value + 1), 1000);
-    return () => window.clearInterval(timer);
-  }, [status]);
+  // Elapsed time is only shown while the card is expanded; collapsed and
+  // finished cards keep no timer, and a hidden window stops it too.
+  useVisibleTicker(() => tick(value => value + 1), open && status === 'running');
 
   // Serialize reads and remember attempts, including errors. A render/timer never
   // retries a read; only opening an unread card, a source change, or a newer rev does.
