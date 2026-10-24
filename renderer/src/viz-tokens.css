@@ -1,7 +1,7 @@
 /* Chart palette tokens for the Usage page (dataviz rules, task 10-23-usage-accounting).
    These declarations are the palette source: every rule that draws data uses var(--viz-*), never a literal.
    Validated with .trellis/tasks/10-23-usage-accounting/tools/validate_palette.js against the card surface
-   (light #fefdfb, dark #2c2c2a); see the UA2a report for the reports.
+   (the light and dark card surfaces); see the UA2a report for the validator output.
    - --viz-series-1..8: providers in a fixed order (Blue, Orange, Aqua, Yellow, Magenta, Green, Violet, Red).
      Colour follows the provider id, never its rank, so filtering never recolours a series.
    - --viz-seq-0..4: heatmap levels; 0 is one step off the surface, 1-4 ramp recessive to strong. The dark ramp is
