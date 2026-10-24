@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { lazy, Suspense, useEffect, useState } from 'react';
 import { marked } from 'marked';
 import DOMPurify from 'dompurify';
 import { deletePageShots, onPageContextMenu, openExternal, request } from '../bridge';
@@ -9,6 +9,10 @@ import { PendingComments, useReviewComments } from './FileComments';
 import { showContextMenu } from './ContextMenu';
 import { renderedPreviewMenuItems } from '../fileSurfaceContextMenuItems';
 import { webContextMenuItems } from '../webContextMenuItems';
+import { htmlPreview } from '../htmlPreviewBridge';
+import './sandboxed-html-preview.css';
+
+const SandboxedHtmlPreview = lazy(() => import('./SandboxedHtmlPreview').then(module => ({ default: module.SandboxedHtmlPreview })));
 
 /** Short identity for a document's text (FNV-1a), used to key the frame that shows it. */
 function contentKey(text:string):string{let hash=2166136261;for(let index=0;index<text.length;index++)hash=Math.imul(hash^text.charCodeAt(index),16777619);return `${text.length}:${(hash>>>0).toString(36)}`;}
@@ -35,23 +39,22 @@ export function relativeAsset(documentPath:string,source:string):string|undefine
 }
 export function FilePreview({projectId,worktreePath,path,content,savedContent,image,embedded=false,commentScope,commentsHost,onShowSource,onSendToAgent}:{projectId:string;worktreePath?:string;path:string;content:string;savedContent:string;image?:{mime:string;data:string};embedded?:boolean;commentScope?:CommentScope;commentsHost?:FileCommentsHost;onShowSource?:()=>void;onSendToAgent?:()=>void}) {
   const [html,setHtml]=useState('');const [issue,setIssue]=useState<string>();const [loadedImage,setLoadedImage]=useState<{mime:string;data:string}>();
-  // A sandboxed srcdoc frame whose srcdoc changes while its first (empty) document is still loading stays blank in
-  // Chromium, and the content arrives right after the frame mounts: give every content its own frame instead.
-  const staticKey=useMemo(()=>contentKey(html),[html]);
   const [address,setAddress]=useState('');const [liveUrl,setLiveUrl]=useState<string>();
-  const [staticFrameName]=useState(()=>`tt-preview-static-${crypto.randomUUID()}`);const staticFrame=useRef<HTMLIFrameElement>(null);
+  const [staticReload,setStaticReload]=useState(0);
   const markdown=/\.mdx?$/i.test(path),staticHtml=/\.html?$/i.test(path);
   const imageFile=/\.(?:png|jpe?g|gif|webp)$/i.test(path);
   const zh=document.documentElement.lang==='zh-CN';
   const pagePreview=usePageCommentPreview(liveUrl??'',commentScope,commentsHost,zh);
+  const staticPreview=usePageCommentPreview(staticHtml?`${projectId}\0${worktreePath??''}\0${path}\0${contentKey(savedContent)}`:'',commentScope,commentsHost,zh);
   const comments=useReviewComments(commentScope);
   useEffect(()=>{setLoadedImage(undefined);},[projectId,worktreePath,path]);
   useEffect(()=>{
     pagePreview.cancel();
     let active=true;setIssue(undefined);setLiveUrl(undefined);
     void (async()=>{
+      if(!markdown){if(active)setHtml('');return;}
       const markdownContent=withoutYamlFrontMatter(content);
-      const raw=markdown?await marked.parse(markdownContent,{gfm:true}):savedContent;
+      const raw=await marked.parse(markdownContent,{gfm:true});
       const safe=DOMPurify.sanitize(raw,{FORBID_TAGS:['script','iframe','object','embed','form','input','button','link','meta','base','svg','math','audio','video','source','track',...(markdown?['style']:[])],FORBID_ATTR:markdown?['style','srcset','background','poster']:['srcset'],ADD_TAGS:markdown?[]:['style'],SANITIZE_NAMED_PROPS:true});
       const fragment=new DOMParser().parseFromString(safe,'text/html');
       await Promise.all([...fragment.querySelectorAll('img')].map(async image=>{
@@ -69,7 +72,7 @@ export function FilePreview({projectId,worktreePath,path,content,savedContent,im
       if(active)setHtml(fragment.body.innerHTML);
     })().catch(error=>{if(active)setIssue(error instanceof Error?error.message:String(error));});
     return()=>{active=false;};
-  },[projectId,worktreePath,path,markdown,content,savedContent]);
+  },[projectId,worktreePath,path,markdown,content]);
   useEffect(()=>{if(!imageFile||image)return;let active=true;void request('filesystem.image',{projectId,worktreePath,path}).then(asset=>{if(active)setLoadedImage(asset);}).catch(error=>{if(active)setIssue(error instanceof Error?error.message:String(error));});return()=>{active=false;};},[projectId,worktreePath,path,imageFile,image]);
   function previewAddress(){try{const url=new URL(address);if(!['http:','https:'].includes(url.protocol))throw Error();pagePreview.cancel();setLiveUrl(url.href);setIssue(undefined);}catch{setIssue(zh?'请输入 HTTP 或 HTTPS 地址。':'Use an HTTP or HTTPS address.');}}
   const openPreviewMenu=(event:React.MouseEvent<HTMLElement>)=>{
@@ -78,12 +81,15 @@ export function FilePreview({projectId,worktreePath,path,content,savedContent,im
     const selected=window.getSelection()?.toString()??'';
     showContextMenu({x:event.clientX,y:event.clientY,restoreFocus:target,items:renderedPreviewMenuItems({zh,hasSelection:Boolean(selected),send:onSendToAgent,source:onShowSource,copy:()=>selected?navigator.clipboard.writeText(selected):undefined,selectAll:()=>{const range=document.createRange();range.selectNodeContents(target);const selection=window.getSelection();selection?.removeAllRanges();selection?.addRange(range);}})});
   };
-  useEffect(()=>onPageContextMenu(({frameName,x,y,pick,staticFrame:staticEvent,selectionText})=>{
-    if(staticEvent&&frameName===staticFrameName&&staticFrame.current){showContextMenu({x,y,restoreFocus:staticFrame.current,items:renderedPreviewMenuItems({zh,hasSelection:Boolean(selectionText),send:onSendToAgent,source:onShowSource,copy:()=>navigator.clipboard.writeText(selectionText)})});return;}
-    if(frameName!==pagePreview.frameName||!pick)return;
+  useEffect(()=>onPageContextMenu(({frameName,x,y,pick,selectionText})=>{
+    const saved=frameName===staticPreview.frameName;
+    const current=saved?staticPreview:pagePreview;
+    if(!pick||(!saved&&frameName!==pagePreview.frameName))return;
     const commentId='file-preview-context-comment-element';
-    showContextMenu({x,y,restoreFocus:pagePreview.iframe.current,onDismiss:selected=>{if(selected?.testId!==commentId&&pick.shot)void deletePageShots([pick.shot.id]).catch(()=>undefined);},items:webContextMenuItems({pick,zh,enabled:pagePreview.enabled,comment:()=>pagePreview.acceptPick(pick),reload:()=>{pagePreview.cancel(false);if(pagePreview.iframe.current&&liveUrl)pagePreview.iframe.current.src=liveUrl;},copy:()=>navigator.clipboard.writeText(pick.target.type==='element'?pick.target.text??'':'')}).map(item=>({...item,testId:item.testId?.replace('web-preview','file-preview-context')}))});
-  }),[pagePreview.frameName,pagePreview.enabled,pagePreview.acceptPick,staticFrameName,liveUrl,zh,onSendToAgent,onShowSource]);
+    const savedItems=saved?renderedPreviewMenuItems({zh,hasSelection:Boolean(selectionText),send:onSendToAgent,source:onShowSource,copy:()=>navigator.clipboard.writeText(selectionText),selectAll:async()=>{try{await htmlPreview({type:'selectAll',frameName:staticPreview.frameName});}catch(error){setIssue(error instanceof Error?error.message:String(error));}}}):[];
+    const pageItems=webContextMenuItems({pick,zh,enabled:current.enabled,comment:()=>current.acceptPick(pick),reload:()=>{if(saved){setStaticReload(value=>value+1);return;}current.cancel(false);if(current.iframe.current&&liveUrl)current.iframe.current.src=liveUrl;},copy:()=>navigator.clipboard.writeText(pick.target.type==='element'?pick.target.text??'':'')}).map(item=>({...item,testId:item.testId?.replace('web-preview','file-preview-context')}));
+    showContextMenu({x,y,restoreFocus:current.iframe.current,onDismiss:selected=>{if(selected?.testId!==commentId&&pick.shot)void deletePageShots([pick.shot.id]).catch(()=>undefined);},items:[...savedItems,...(savedItems.length?[{label:'',separator:true}]:[]),...pageItems]});
+  }),[pagePreview,staticPreview,liveUrl,zh,onSendToAgent,onShowSource]);
   const isImage=Boolean(image)||imageFile;const asset=isImage?(image??loadedImage):undefined;
-  return <section className="file-preview">{asset?<div className="file-image-preview"><img alt={path.split(/[\\/]/).at(-1)??'Image'} src={`data:${asset.mime};base64,${asset.data}`}/></div>:markdown?<div className="markdown-preview tt-preview-markdown" data-testid="file-preview-rendered" tabIndex={0} onContextMenu={openPreviewMenu} onClick={event=>{const anchor=(event.target as Element).closest('a');if(!anchor)return;const href=anchor.getAttribute('href');if(href&&/^https?:\/\//i.test(href)){event.preventDefault();void openExternal(href).catch(error=>setIssue(String(error)));}}} dangerouslySetInnerHTML={{__html:html}}/>:staticHtml?<><p>{zh?'静态 HTML 显示已保存的文件。':'Static HTML displays the saved file.'}</p><iframe key={staticKey} ref={staticFrame} name={staticFrameName} className="tt-preview-frame" title={zh?'已保存的 HTML 预览':'Saved HTML preview'} sandbox="" srcDoc={`<!doctype html><html><head><meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src data:; style-src 'unsafe-inline'; form-action 'none'; base-uri 'none'"></head><body>${html}</body></html>`}/></>:<p className="tt-editor-state">{zh?'此文件不支持文档预览。':'Document preview is unavailable for this file type.'}</p>}{(!embedded||Boolean(commentScope&&commentsHost))&&!asset&&!isImage&&<div className="preview-address"><input aria-label={zh?'开发服务地址':'Development preview address'} placeholder="http://localhost:3000" value={address} onChange={event=>setAddress(event.target.value)}/><button type="button" onClick={previewAddress}>{zh?'预览地址':'Preview address'}</button>{liveUrl&&<PageCommentControls preview={pagePreview} zh={zh}/>}</div>}{liveUrl&&<iframe ref={pagePreview.iframe} name={pagePreview.frameName} className="tt-preview-frame" title={zh?'开发服务预览':'Development service preview'} sandbox="allow-scripts allow-forms" src={liveUrl} onLoad={()=>{if(pagePreview.pick||pagePreview.picking)pagePreview.cancel();}}/>}<PageCommentForm preview={pagePreview} scope={commentScope} zh={zh}/>{commentScope&&commentsHost&&<PendingComments scope={commentScope} host={commentsHost} comments={comments} zh={zh}/>} {issue&&<p role="alert">{issue}</p>}{pagePreview.issue&&<p className="wb-issue" role="alert">{pagePreview.issue}</p>}</section>;
+  return <section className="file-preview">{asset?<div className="file-image-preview"><img alt={path.split(/[\\/]/).at(-1)??'Image'} src={`data:${asset.mime};base64,${asset.data}`}/></div>:markdown?<div className="markdown-preview tt-preview-markdown" data-testid="file-preview-rendered" tabIndex={0} onContextMenu={openPreviewMenu} onClick={event=>{const anchor=(event.target as Element).closest('a');if(!anchor)return;const href=anchor.getAttribute('href');if(href&&/^https?:\/\//i.test(href)){event.preventDefault();void openExternal(href).catch(error=>setIssue(String(error)));}}} dangerouslySetInnerHTML={{__html:html}}/>:staticHtml?<Suspense fallback={<p className="tt-editor-state">{zh?'正在加载沙箱预览…':'Loading sandboxed preview…'}</p>}><SandboxedHtmlPreview key={`${projectId}\0${worktreePath??''}\0${path}`} projectId={projectId} worktreePath={worktreePath} path={path} savedContent={savedContent} reload={staticReload} onReload={()=>setStaticReload(value=>value+1)} preview={staticPreview} zh={zh} onIssue={setIssue}/></Suspense>:<p className="tt-editor-state">{zh?'此文件不支持文档预览。':'Document preview is unavailable for this file type.'}</p>}{(!embedded||Boolean(commentScope&&commentsHost))&&!asset&&!isImage&&<div className="preview-address"><div className="input-wrap preview-address-input"><input className="input" aria-label={zh?'开发服务地址':'Development preview address'} placeholder="http://localhost:3000" value={address} onChange={event=>setAddress(event.target.value)}/></div><button type="button" className="btn btn-sm" onClick={previewAddress}>{zh?'预览地址':'Preview address'}</button>{liveUrl&&<PageCommentControls preview={pagePreview} zh={zh}/>}</div>}{liveUrl&&<iframe ref={pagePreview.iframe} name={pagePreview.frameName} className="tt-preview-frame" title={zh?'开发服务预览':'Development service preview'} sandbox="allow-scripts allow-forms" src={liveUrl} onLoad={()=>{if(pagePreview.pick||pagePreview.picking)pagePreview.cancel();}}/>}<PageCommentForm preview={staticPreview} scope={commentScope} zh={zh}/><PageCommentForm preview={pagePreview} scope={commentScope} zh={zh}/>{commentScope&&commentsHost&&<PendingComments scope={commentScope} host={commentsHost} comments={comments} zh={zh}/>} {issue&&<p role="alert">{issue}</p>}{pagePreview.issue&&<p className="wb-issue" role="alert">{pagePreview.issue}</p>}{staticPreview.issue&&<p className="wb-issue" role="alert">{staticPreview.issue}</p>}</section>;
 }

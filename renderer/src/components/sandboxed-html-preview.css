@@ -1,0 +1,17 @@
+.sandboxed-html-preview { display:flex; flex:1; min-height:0; flex-direction:column; }
+.sandboxed-html-preview-toolbar { display:flex; flex:0 0 auto; flex-wrap:nowrap; align-items:center; min-width:0; height:38px; box-sizing:border-box; gap:6px; padding:5px 8px 5px 12px; overflow:hidden; border-bottom:1px solid var(--border); background:var(--surface); color:var(--muted); font-size:12px; }
+.sandboxed-html-preview-toolbar.is-compact { gap:3px; }
+.sandboxed-html-preview-status { display:flex; align-items:center; gap:5px; flex:1 1 auto; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.sandboxed-html-preview-status svg { display:none; width:14px; height:14px; flex:0 0 auto; fill:currentColor; }
+.sandboxed-html-preview-status > span { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.sandboxed-html-preview-status.is-compact { width:14px; min-width:14px; max-width:14px; flex:0 0 14px; justify-content:center; gap:0; }
+.sandboxed-html-preview-status.is-compact svg { display:block; width:12px; height:12px; }
+.sandboxed-html-preview-status.is-compact > span { position:absolute; width:1px; height:1px; overflow:hidden; clip-path:inset(50%); white-space:nowrap; }
+.sandboxed-html-preview-toolbar .btn { flex:0 0 auto; flex-shrink:0; white-space:nowrap; }
+.sandboxed-html-preview-toolbar .btn:focus-visible { outline:2px solid var(--primary); outline-offset:2px; }
+.sandboxed-html-preview-link { display:flex; align-items:center; flex:0 0 auto; gap:6px; padding:5px 8px 5px 12px; border-bottom:1px solid var(--border); background:var(--raised); color:var(--muted); font-size:12px; }
+.sandboxed-html-preview-link span { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.sandboxed-html-preview-link .btn { flex:0 0 auto; }
+.file-preview > .preview-address { align-items:center; box-sizing:border-box; height:38px; min-height:38px; flex:0 0 38px; padding:5px 8px 5px 12px; }
+.file-preview > .preview-address .preview-address-input { box-sizing:border-box; flex:1; min-width:0; height:26px; }
+.file-preview > .preview-address .btn.btn-sm { flex:0 0 auto; }

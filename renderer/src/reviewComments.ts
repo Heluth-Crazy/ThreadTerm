@@ -1,3 +1,4 @@
+import { isLocalHtmlPreviewUrl } from './htmlPreviewUrl';
 import { canonicalScopePath } from "./projectScope";
 import { formatAgentReference, referencePath } from "./workbench/agentReference";
 import type { PagePick, PageTargetRef } from "@threadterm/protocol";
@@ -69,7 +70,7 @@ function validPage(value: unknown, scope: CommentScope): value is PageComment {
   const item = value as Record<string, unknown>, finite = (number: unknown): number is number => typeof number === "number" && Number.isFinite(number), text = (value: unknown, limit: number): value is string => typeof value === "string" && value.length <= limit;
   const root = typeof item.root === "string" ? item.root : "", url = typeof item.url === "string" ? item.url : "", body = typeof item.body === "string" ? item.body : "";
   const viewport = item.viewport as Record<string, unknown> | undefined;
-  if (item.kind !== "page" || !text(item.id, 200) || !item.id || item.projectId !== scope.projectId || !root || canonicalScopePath(root) !== canonicalScopePath(scope.root) || !text(url, 2048) || !/^https?:\/\//i.test(url) || !text(item.title, 200) || !viewport || !finite(viewport.width) || !finite(viewport.height) || viewport.width <= 0 || viewport.height <= 0 || viewport.width > 10000 || viewport.height > 10000 || !item.target || typeof item.target !== "object" || !text(body, MAX_REVIEW_COMMENT_BODY) || !body.trim() || typeof item.createdAt !== "string" || !Number.isFinite(Date.parse(item.createdAt))) return false;
+  if (item.kind !== "page" || !text(item.id, 200) || !item.id || item.projectId !== scope.projectId || !root || canonicalScopePath(root) !== canonicalScopePath(scope.root) || !text(url, 2048) || (!/^https?:\/\//i.test(url) && !isLocalHtmlPreviewUrl(url)) || !text(item.title, 200) || !viewport || !finite(viewport.width) || !finite(viewport.height) || viewport.width <= 0 || viewport.height <= 0 || viewport.width > 10000 || viewport.height > 10000 || !item.target || typeof item.target !== "object" || !text(body, MAX_REVIEW_COMMENT_BODY) || !body.trim() || typeof item.createdAt !== "string" || !Number.isFinite(Date.parse(item.createdAt))) return false;
   const provenance = item.provenance as Record<string, unknown> | undefined;
   if (provenance && (!text(provenance.previewId, 200) || !provenance.previewId
     || (provenance.sessionId !== undefined && (!text(provenance.sessionId, 200) || !provenance.sessionId))

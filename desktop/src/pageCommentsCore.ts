@@ -1,3 +1,4 @@
+import { isLocalHtmlPreviewUrl } from '../../renderer/src/htmlPreviewUrl.js';
 import { resolve, dirname } from 'node:path';
 import type { PagePick, PageRect, PageSourceHint, PageTargetRef } from '@threadterm/protocol';
 
@@ -76,7 +77,7 @@ export function sanitizePagePick(value: unknown): PagePick | null {
   if (value === null) return null;
   const pick = record(value, ['url', 'title', 'viewport', 'target']);
   const url = string(pick.url, 2048, true);
-  if (!/^https?:\/\//i.test(url) || !['http:', 'https:'].includes(new URL(url).protocol)) throw new Error('Invalid page URL');
+  if (!isLocalHtmlPreviewUrl(url) && (!/^https?:\/\//i.test(url) || !['http:', 'https:'].includes(new URL(url).protocol))) throw new Error('Invalid page URL');
   const title = string(pick.title, 200);
   const size = record(pick.viewport, ['width', 'height']);
   const viewport = { width: number(size.width), height: number(size.height) };

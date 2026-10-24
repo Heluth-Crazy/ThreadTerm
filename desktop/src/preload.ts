@@ -106,8 +106,21 @@ const bridge: ThreadTermBridge & BrowserBridge & BrowserHandoffBridge & FilePath
   scheduleElectronCacheCleanup: (schedule) => ipcRenderer.invoke('threadterm:schedule-electron-cache-cleanup', schedule) as Promise<{ scheduled: boolean; available: boolean; result?: string }>,
 };
 
-contextBridge.exposeInMainWorld('threadterm', bridge);
-if (process.env.THREADTERM_V3_RELOCATION_QA === '1') {
+Object.assign(bridge, {
+  htmlPreview: (command: unknown) => ipcRenderer.invoke('threadterm:html-preview', command),
+  onHtmlPreviewLink: (listener: (value: { frameName: string; url: string; grantId: string }) => void) => {
+    const handler = (_event: Electron.IpcRendererEvent, value: unknown) => {
+      if (!isRecord(value) || typeof value.frameName !== 'string' || !/^tt-preview-[a-z0-9-]{8,64}$/.test(value.frameName)
+        || typeof value.url !== 'string' || value.url.length > 16384 || typeof value.grantId !== 'string' || !/^[a-f0-9]{32}$/.test(value.grantId)) return;
+      try { const url = new URL(value.url); if (url.protocol === 'http:' || url.protocol === 'https:') listener({ frameName: value.frameName, url: url.href, grantId: value.grantId }); } catch { /* Reject malformed page links. */ }
+    };
+    ipcRenderer.on('threadterm:html-preview-link', handler);
+    return () => ipcRenderer.removeListener('threadterm:html-preview-link', handler);
+  },
+});
+
+if (process.isMainFrame) contextBridge.exposeInMainWorld('threadterm', bridge);
+if (process.isMainFrame && process.env.THREADTERM_V3_RELOCATION_QA === '1') {
   contextBridge.exposeInMainWorld('threadtermQa', {
     dropControl: (): Promise<void> => ipcRenderer.invoke('threadterm:qa-drop-control') as Promise<void>,
     resumeControl: (): Promise<void> => ipcRenderer.invoke('threadterm:qa-resume-control') as Promise<void>,

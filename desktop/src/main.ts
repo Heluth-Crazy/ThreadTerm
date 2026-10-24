@@ -1,4 +1,4 @@
-import { app, BrowserWindow, Menu, Tray, dialog, ipcMain, nativeImage, shell, globalShortcut, Notification, screen, session, type IpcMainInvokeEvent } from 'electron';
+import { app, BrowserWindow, Menu, Tray, dialog, ipcMain, nativeImage, shell, globalShortcut, Notification, screen, session, protocol, type IpcMainInvokeEvent } from 'electron';
 import { randomUUID } from 'node:crypto';
 import { dirname, isAbsolute, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -19,6 +19,14 @@ import { applicationIconPng, trayIconPng } from '../assets/icon-data.js';
 import { quitConfirmationOptions, quitConfirmationPreapproved } from './quitConfirmation.js';
 import { deletedRevealScope, isWithinScope, revealTarget } from './revealFile.js';
 import { qaAttachPathsOverride, readAttachFiles } from './attachFiles.js';
+
+import { HtmlPreviewGrantManager, registerHtmlPreviewScheme, mergePreviewIsolationFeatures, installHtmlPreviewSession, attachHtmlPreviewWindow } from './htmlPreview.js';
+import { registerHtmlPreviewIpc } from './htmlPreviewIpc.js';
+
+registerHtmlPreviewScheme(protocol);
+app.commandLine.appendSwitch('enable-features', mergePreviewIsolationFeatures(app.commandLine.getSwitchValue('enable-features')));
+const htmlPreviewGrants = new HtmlPreviewGrantManager();
+let htmlPreviewPreloadReady = false;
 
 ignoreBrokenStdio();
 process.on('uncaughtException', (error) => {
@@ -56,6 +64,13 @@ app.on('before-quit', (event) => { if (!allowQuit) { event.preventDefault(); voi
 app.on('will-quit', () => { adminRuntime.dispose(); for (const client of windowRuntimes.values()) client.dispose(); });
 
 void app.whenReady().then(async () => {
+  installHtmlPreviewSession(session.defaultSession, htmlPreviewGrants, { appFrameAncestor: process.env.THREADTERM_V3_DEV_SERVER_URL ? new URL(process.env.THREADTERM_V3_DEV_SERVER_URL).origin : 'file:' });
+  try {
+    const preloadPath = join(__dirname, 'htmlPreviewSandboxPreload.cjs');
+    if (!statSync(preloadPath).isFile()) throw new Error('Missing HTML preview safety preload');
+    session.defaultSession.registerPreloadScript({ type: 'frame', filePath: preloadPath });
+    htmlPreviewPreloadReady = true;
+  } catch { /* Preview grants fail closed when the safety asset is unavailable. */ }
   registerIpc();
   // The window and its launch screen come up at once and cover the runtime start. A scheduled cache cleanup needs
   // the runtime's settings, so it runs alongside instead of keeping the window back until the runtime answers.
@@ -124,6 +139,7 @@ function createWindow(options: { sessionId?: string; workspaceId?: string; float
       contextIsolation: true,
       sandbox: true,
       nodeIntegration: false,
+      nodeIntegrationInSubFrames: true,
       webSecurity: true,
       additionalArguments: terminalWindowArguments(process.platform, release()),
     },
@@ -137,7 +153,7 @@ function createWindow(options: { sessionId?: string; workspaceId?: string; float
   window.on('maximize', emitWindowState);
   window.on('unmaximize', emitWindowState);
   window.once('ready-to-show', () => { if (options.background) window.showInactive(); else window.show(); });
-  window.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
+  attachHtmlPreviewWindow(window, htmlPreviewGrants, { forwardLink: (frameName, url, grantId) => window.webContents.send('threadterm:html-preview-link', { frameName, url, grantId }) });
   window.webContents.on('will-navigate', (event, target) => { if (!isTrustedRendererUrl(target)) event.preventDefault(); });
   if (options.floating) window.setAlwaysOnTop(true, 'floating');
   if (options.sessionId) lastSessionId = options.sessionId;
@@ -278,6 +294,7 @@ function registerIpc(): void {
     const runtime=runtimeFor(event);
     return {browserRequest:(method,params)=>runtime.browserRequest(method,params),onBrowserFrame:listener=>runtime.onBrowserFrame(listener),onBrowserDisconnect:listener=>runtime.onBrowserDisconnect(listener),onEvent:listener=>runtime.onEvent(listener),snapshot:()=>runtime.request('runtime.snapshot',{})};
   });
+  registerHtmlPreviewIpc(htmlPreviewGrants, assertTrustedRenderer, runtimeFor, () => htmlPreviewPreloadReady);
   registerPageComments(assertTrustedRenderer);
   ipcMain.handle('threadterm:export-chat-markdown', (event, payload: unknown) => saveChatMarkdown(event, payload, {
     assertTrusted: assertTrustedRenderer,
