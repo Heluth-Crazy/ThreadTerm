@@ -322,9 +322,7 @@ pub fn initialize(conn: &Connection) -> Result<()> {
          CREATE INDEX IF NOT EXISTS usage_activity_range ON usage_activity_daily(dimensions_mask,local_day,scope,provider,model,project_id);
          CREATE INDEX IF NOT EXISTS usage_activity_dimensions ON usage_activity_daily(dimensions_mask,provider,model,project_id,scope,local_day);
          CREATE INDEX IF NOT EXISTS usage_ledger_sessions_threadterm ON usage_ledger_sessions(threadterm_session_id);
-         CREATE INDEX IF NOT EXISTS usage_ledger_sessions_scope ON usage_ledger_sessions(scope,provider,last_occurred_at);
-         CREATE INDEX IF NOT EXISTS usage_sessions_native_lookup ON sessions(provider,native_id,updated_at);
-         CREATE INDEX IF NOT EXISTS usage_records_ledger_import ON usage_records(session_id,id);",
+         CREATE INDEX IF NOT EXISTS usage_ledger_sessions_scope ON usage_ledger_sessions(scope,provider,last_occurred_at);",
     )?;
     conn.execute(
         "INSERT OR IGNORE INTO usage_ledger_state(key,value)
@@ -376,7 +374,7 @@ pub fn rebuild_query_cache(conn: &Connection, cancelled: &AtomicBool) -> Result<
 pub fn configure_index_connection(conn: &Connection) -> Result<()> {
     conn.set_prepared_statement_cache_capacity(128);
     conn.execute_batch(
-        "PRAGMA cache_size=-131072; PRAGMA synchronous=NORMAL; PRAGMA wal_autocheckpoint=0;",
+        "PRAGMA main.cache_size=-131072; PRAGMA main.synchronous=NORMAL; PRAGMA main.wal_autocheckpoint=0;",
     )?;
     // Changing temp_store destroys existing TEMP objects, including repair fences.
     let temp_objects = conn.query_row("SELECT COUNT(*) FROM sqlite_temp_master", [], |r| {
@@ -409,7 +407,9 @@ fn checkpoint_index_connection_inner(conn: &Connection, force: bool) -> Result<(
         && super::write_priority::checkpoint_due(conn, force)?
     {
         super::write_priority::yield_to_interactive(conn);
-        if let Err(error) = conn.query_row("PRAGMA wal_checkpoint(PASSIVE)", [], |_| Ok(())) {
+        // The schema qualifier matters: an unqualified wal_checkpoint reaches
+        // every attached database, including the read-only ThreadTerm one.
+        if let Err(error) = conn.query_row("PRAGMA main.wal_checkpoint(PASSIVE)", [], |_| Ok(())) {
             match &error {
                 rusqlite::Error::SqliteFailure(detail, _)
                     if matches!(
@@ -4022,13 +4022,17 @@ mod tests {
 
     fn db() -> (tempfile::TempDir, Connection) {
         let dir = tempfile::tempdir().unwrap();
-        let conn = Connection::open(dir.path().join("ledger.sqlite")).unwrap();
-        conn.execute_batch(
-            "CREATE TABLE projects(id TEXT PRIMARY KEY,name TEXT NOT NULL,path TEXT NOT NULL UNIQUE,created_at TEXT NOT NULL);
-             CREATE TABLE sessions(id TEXT PRIMARY KEY,project_id TEXT,worktree_path TEXT,title TEXT,provider TEXT,mode TEXT,status TEXT,created_at TEXT,updated_at TEXT,native_id TEXT,exit_code INTEGER,followed INTEGER,read_only INTEGER);
-             CREATE TABLE usage_records(id TEXT PRIMARY KEY,session_id TEXT,provider TEXT,recorded_at TEXT,input_tokens INTEGER,output_tokens INTEGER,estimated_cost REAL,currency TEXT,model TEXT);",
-        ).unwrap();
-        initialize(&conn).unwrap();
+        let main = dir.path().join("main.sqlite");
+        let control = Connection::open(&main).unwrap();
+        control
+            .execute_batch(
+                "CREATE TABLE projects(id TEXT PRIMARY KEY,name TEXT NOT NULL,path TEXT NOT NULL UNIQUE,created_at TEXT NOT NULL);
+                 CREATE TABLE sessions(id TEXT PRIMARY KEY,project_id TEXT,worktree_path TEXT,title TEXT,provider TEXT,mode TEXT,status TEXT,created_at TEXT,updated_at TEXT,native_id TEXT,exit_code INTEGER,followed INTEGER,read_only INTEGER);
+                 CREATE TABLE usage_records(id TEXT PRIMARY KEY,session_id TEXT,provider TEXT,recorded_at TEXT,input_tokens INTEGER,output_tokens INTEGER,estimated_cost REAL,currency TEXT,model TEXT);",
+            )
+            .unwrap();
+        drop(control);
+        let conn = crate::usage_ledger::ledger_db::test_connection(&main).unwrap();
         (dir, conn)
     }
 
@@ -4078,7 +4082,7 @@ mod tests {
         let (_direct_dir, direct) = db();
         let (_merged_dir, merged) = db();
         for conn in [&direct, &merged] {
-            conn.execute(
+            crate::usage_ledger::ledger_db::fixture_main(conn).execute(
                 "INSERT INTO projects VALUES('project','Project','D:/workspace','0')",
                 [],
             )
@@ -4197,10 +4201,12 @@ mod tests {
     fn duplicate_native_ids_do_not_duplicate_rollups() {
         let (_dir, conn) = db();
         for (id, updated) in [("older", "1"), ("newer", "2")] {
-            conn.execute(
-                "INSERT INTO sessions VALUES(?,NULL,NULL,'title','fixture','chat','idle','0',?,'native',NULL,0,0)",
-                params![id, updated],
-            ).unwrap();
+            crate::usage_ledger::ledger_db::fixture_main(&conn)
+                .execute(
+                    "INSERT INTO sessions VALUES(?,NULL,NULL,'title','fixture','chat','idle','0',?,'native',NULL,0,0)",
+                    params![id, updated],
+                )
+                .unwrap();
         }
         upsert_fact(&conn, &fact("one", 1, 2)).unwrap();
         let value: (i64, i64, String) = conn
@@ -4247,7 +4253,7 @@ mod tests {
     #[test]
     fn copied_prefix_keeps_original_owner_and_merges_larger_snapshot() {
         let (_dir, conn) = db();
-        conn.execute(
+        crate::usage_ledger::ledger_db::fixture_main(&conn).execute(
             "INSERT INTO sessions VALUES('child-tt',NULL,NULL,'title','fixture','chat','idle','0','1','child',NULL,0,0)",
             [],
         )
@@ -4523,7 +4529,7 @@ mod tests {
     #[test]
     fn bounded_historical_intervals_match_full_repair_at_day_boundaries() {
         let (_dir, conn) = db();
-        conn.execute_batch(
+        crate::usage_ledger::ledger_db::fixture_main(&conn).execute_batch(
             "INSERT INTO projects VALUES
                 ('one','One','D:/workspace/one','0'),
                 ('two','Two','D:/workspace/two','0');",
@@ -4795,7 +4801,7 @@ mod tests {
     #[test]
     fn daily_activity_cube_unions_overlapping_sessions_for_each_projection() {
         let (_dir, conn) = db();
-        conn.execute(
+        crate::usage_ledger::ledger_db::fixture_main(&conn).execute(
             "INSERT INTO projects VALUES('project','Project','D:/workspace','0')",
             [],
         )
@@ -4929,7 +4935,7 @@ mod tests {
     #[test]
     fn binding_a_late_native_id_moves_and_suppresses_fallback_live_facts() {
         let (_dir, conn) = db();
-        conn.execute(
+        crate::usage_ledger::ledger_db::fixture_main(&conn).execute(
             "INSERT INTO sessions VALUES('tt',NULL,NULL,'title','fixture','chat','idle','0','1','real',NULL,0,0)",
             [],
         )
@@ -4992,10 +4998,10 @@ mod tests {
     #[test]
     fn legacy_import_is_deferred_and_cost_is_estimated() {
         let (_dir, conn) = db();
-        conn.execute(
+        crate::usage_ledger::ledger_db::fixture_main(&conn).execute(
             "INSERT INTO sessions VALUES('tt',NULL,NULL,'title','fixture','chat','idle','0','1',NULL,NULL,0,0)", [],
         ).unwrap();
-        conn.execute(
+        crate::usage_ledger::ledger_db::fixture_main(&conn).execute(
             "INSERT INTO usage_records VALUES('old','tt','fixture','2026-01-01T00:00:00Z',2,3,0.25,'USD','unknown')", [],
         ).unwrap();
         assert_eq!(
@@ -5028,3 +5034,6 @@ mod tests {
         );
     }
 }
+
+
+

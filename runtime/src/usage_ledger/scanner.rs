@@ -1329,8 +1329,7 @@ mod scanner_revision_tests {
         let path = dir.path().join("ledger.sqlite");
         let db = crate::db::Database::open(&path).unwrap();
         drop(db);
-        let conn = Connection::open(path).unwrap();
-        crate::usage_ledger::initialize_connection(&conn).unwrap();
+        let conn = crate::usage_ledger::ledger_db::test_connection(&path).unwrap();
         (dir, conn)
     }
 
@@ -1381,7 +1380,10 @@ mod scanner_revision_tests {
             row.get::<_, i64>(0)
         })
         .unwrap();
-        let other = Connection::open(dir.path().join("ledger.sqlite")).unwrap();
+        let other = Connection::open(crate::usage_ledger::ledger_db::path_for(
+            &dir.path().join("ledger.sqlite"),
+        ))
+        .unwrap();
         let blocker = Transaction::new_unchecked(&other, TransactionBehavior::Immediate).unwrap();
         let root = Root {
             provider: "claude".into(),

@@ -1,4 +1,4 @@
-use super::{facts::Fact, queries, store};
+use super::{facts::Fact, ledger_db, queries, store};
 use rusqlite::{params, Connection};
 use serde_json::{json, Value};
 use std::{path::Path, sync::atomic::AtomicBool};
@@ -8,29 +8,30 @@ fn scratch() -> (tempfile::TempDir, Connection) {
     let path = dir.path().join("usage-ledger-revision.sqlite");
     let database = crate::db::Database::open(&path).unwrap();
     drop(database);
-    let conn = Connection::open(path).unwrap();
-    super::initialize_connection(&conn).unwrap();
+    let conn = ledger_db::test_connection(&path).unwrap();
     (dir, conn)
 }
 
 fn project(conn: &Connection, id: &str, name: &str, path: &Path) {
-    conn.execute(
-        "INSERT INTO projects(id,name,path,created_at) VALUES(?,?,?,'2025-01-01T00:00:00Z')",
-        params![id, name, path.to_string_lossy()],
-    )
-    .unwrap();
+    ledger_db::fixture_main(conn)
+        .execute(
+            "INSERT INTO projects(id,name,path,created_at) VALUES(?,?,?,'2025-01-01T00:00:00Z')",
+            params![id, name, path.to_string_lossy()],
+        )
+        .unwrap();
 }
 
 fn threadterm_session(conn: &Connection, id: &str, provider: &str, native: &str) {
-    conn.execute(
-        "INSERT INTO sessions(
+    ledger_db::fixture_main(conn)
+        .execute(
+            "INSERT INTO sessions(
             id,project_id,worktree_path,title,provider,mode,status,
             created_at,updated_at,native_id,followed,read_only)
          VALUES(?,NULL,NULL,?,?,'chat','idle',
                 '2025-01-01T00:00:00Z','2026-12-31T00:00:00Z',?,0,0)",
-        params![id, format!("Fixture {id}"), provider, native],
-    )
-    .unwrap();
+            params![id, format!("Fixture {id}"), provider, native],
+        )
+        .unwrap();
 }
 
 fn fact(

@@ -321,16 +321,16 @@ mod tests {
     fn db() -> (tempfile::TempDir, Connection) {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("live-fallback.sqlite");
-        let _database = crate::db::Database::open(&path).unwrap();
-        let conn = Connection::open(path).unwrap();
-        store::initialize(&conn).unwrap();
-        initialize(&conn).unwrap();
-        conn.execute(
-            "INSERT INTO sessions(id,project_id,worktree_path,title,provider,mode,status,created_at,updated_at,native_id,followed,read_only)
+        let database = crate::db::Database::open(&path).unwrap();
+        drop(database);
+        let conn = crate::usage_ledger::ledger_db::test_connection(&path).unwrap();
+        crate::usage_ledger::ledger_db::fixture_main(&conn)
+            .execute(
+                "INSERT INTO sessions(id,project_id,worktree_path,title,provider,mode,status,created_at,updated_at,native_id,followed,read_only)
              VALUES('tt',NULL,NULL,'fixture','fixture','chat','idle','0','1','native',0,0)",
-            [],
-        )
-        .unwrap();
+                [],
+            )
+            .unwrap();
         (dir, conn)
     }
 
@@ -445,3 +445,4 @@ mod tests {
         );
     }
 }
+

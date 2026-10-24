@@ -8,9 +8,135 @@ fn scratch() -> (tempfile::TempDir, Connection) {
     let path = dir.path().join("ledger.sqlite");
     let db = crate::db::Database::open(&path).unwrap();
     drop(db);
-    let conn = Connection::open(path).unwrap();
-    initialize_connection(&conn).unwrap();
+    let conn = ledger_db::test_connection(&path).unwrap();
     (dir, conn)
+}
+
+#[test]
+fn ua1_tables_in_the_main_database_are_dropped_and_trigger_a_rescan() {
+    let dir = tempfile::tempdir().unwrap();
+    let main = dir.path().join("legacy.sqlite");
+    drop(crate::db::Database::open(&main).unwrap());
+    {
+        // The UA1 layout kept the rebuildable ledger next to Chat data.
+        let legacy = Connection::open(&main).unwrap();
+        legacy
+            .execute_batch(
+                "CREATE TABLE usage_facts(fact_key TEXT PRIMARY KEY);
+                 INSERT INTO usage_facts VALUES('stale');
+                 CREATE INDEX usage_sessions_native_lookup ON sessions(provider,native_id,updated_at);
+                 INSERT INTO sessions(id,title,provider,mode,status,created_at,updated_at,followed,read_only)
+                   VALUES('legacy','t','fixture','chat','exited','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z',0,0);
+                 INSERT INTO usage_records(id,session_id,provider,recorded_at)
+                   VALUES('legacy','legacy','fixture','2026-01-01T00:00:00Z')",
+            )
+            .unwrap();
+    }
+    let ledger_file = ledger_db::path_for(&main);
+    assert!(!ledger_file.exists());
+    let db = crate::db::Database::open(&main).unwrap();
+    // Opening the runtime creates the ledger file, drops the UA1 tables and
+    // requests a rescan.
+    assert!(ledger_file.exists());
+    drop(db);
+    let probe = Connection::open(&main).unwrap();
+    let has_ledger_tables: i64 = probe
+        .query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name LIKE 'usage\\_%' ESCAPE '\\' AND name<>'usage_records' AND name<>'usage_live_events'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(has_ledger_tables, 0);
+    assert_eq!(
+        probe
+            .query_row("SELECT COUNT(*) FROM usage_records", [], |row| row
+                .get::<_, i64>(0))
+            .unwrap(),
+        1
+    );
+    drop(probe);
+    let conn = ledger_db::open_worker(&main).unwrap();
+    assert_eq!(
+        conn.query_row("SELECT COUNT(*) FROM usage_facts", [], |row| row
+            .get::<_, i64>(0))
+            .unwrap(),
+        0
+    );
+    let marker: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM usage_ledger_state WHERE key='ledger-rescan-required'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(marker, 0, "rescan marker must be consumed");
+}
+
+#[test]
+fn deleting_the_ledger_file_rebuilds_native_and_live_facts() {
+    let dir = tempfile::tempdir().unwrap();
+    let main = dir.path().join("ledger.sqlite");
+    drop(crate::db::Database::open(&main).unwrap());
+    let ledger_file = ledger_db::path_for(&main);
+    let history = dir.path().join("synthetic-history");
+    fs::create_dir_all(&history).unwrap();
+    fs::write(history.join("session.jsonl"), claude_line("kept", 4)).unwrap();
+    {
+        let conn = ledger_db::test_connection(&main).unwrap();
+        let root = discovery::Root {
+            provider: "claude".into(),
+            path: history.clone(),
+            trees: vec![history.clone()],
+        };
+        scanner::scan(&root, &conn, &AtomicBool::new(false), &mut |_, _| {}).unwrap();
+        assert_eq!(
+            conn.query_row("SELECT COUNT(*) FROM usage_facts", [], |row| row
+                .get::<_, i64>(0))
+                .unwrap(),
+            1
+        );
+        // The durable live log stays in the main database.
+        let mut live = facts::Fact::new("fixture", "native", "live-key", "2026-01-01T00:00:00Z");
+        live.source = "live:tt:request".into();
+        live.threadterm_session_id = Some("tt".into());
+        live.buckets.input = Some(9);
+        ledger_db::fixture_main(&conn)
+            .execute(
+                "INSERT INTO usage_live_events(fact_key,threadterm_session_id,turn_id,created_at,fact)
+                 VALUES(?,?,?,?,?)",
+                rusqlite::params![
+                    live.key,
+                    live.threadterm_session_id,
+                    live.turn_id,
+                    "2026-01-01T00:00:00Z",
+                    serde_json::to_string(&live).unwrap()
+                ],
+            )
+            .unwrap();
+    }
+    fs::remove_file(&ledger_file).unwrap();
+    let conn = ledger_db::test_connection(&main).unwrap();
+    assert_eq!(
+        conn.query_row("SELECT COUNT(*) FROM usage_facts", [], |row| row
+            .get::<_, i64>(0))
+            .unwrap(),
+        0
+    );
+    live::import_log(&conn, &AtomicBool::new(false)).unwrap();
+    assert_eq!(
+        conn.query_row("SELECT COUNT(*) FROM usage_facts", [], |row| row
+            .get::<_, i64>(0))
+            .unwrap(),
+        1
+    );
+    assert_eq!(
+        conn.query_row("SELECT COUNT(*) FROM usage_sources", [], |row| row
+            .get::<_, i64>(0))
+            .unwrap(),
+        0,
+        "per-file cursors are gone, so a rescan starts"
+    );
 }
 
 fn claude_line(request: &str, input: i64) -> String {
@@ -210,7 +336,7 @@ fn content_free_machine_smoke() {
     let probe_stop = stop.clone();
     struct ScanProbe {
         stop: std::sync::Arc<AtomicBool>,
-        handle: Option<std::thread::JoinHandle<(i32, u128, u128)>>,
+        handle: Option<std::thread::JoinHandle<(i32, Vec<u128>, Vec<u128>)>>,
     }
     impl Drop for ScanProbe {
         fn drop(&mut self) {
@@ -222,21 +348,21 @@ fn content_free_machine_smoke() {
     }
     let handle = std::thread::spawn(move || {
         let mut samples = 0;
-        let mut read_max = 0_u128;
-        let mut write_max = 0_u128;
+        let mut reads = Vec::<u128>::new();
+        let mut writes = Vec::<u128>::new();
         while !probe_stop.load(std::sync::atomic::Ordering::Relaxed) {
             let t = Instant::now();
             service::dispatch(&probe_db, "usage.ledger.settings", &json!({}))
                 .unwrap()
                 .unwrap();
-            read_max = read_max.max(t.elapsed().as_micros());
+            reads.push(t.elapsed().as_micros());
             let t = Instant::now();
-            probe_db.transaction(|tx|{tx.execute("INSERT INTO usage_ledger_state(key,value) VALUES('smoke-interactive-write','1') ON CONFLICT(key) DO UPDATE SET value=excluded.value",[])?;Ok(())}).unwrap();
-            write_max = write_max.max(t.elapsed().as_micros());
+            probe_db.transaction(|tx|{tx.execute("INSERT INTO metadata(key,value) VALUES('usage-smoke-probe','1') ON CONFLICT(key) DO UPDATE SET value=excluded.value",[])?;Ok(())}).unwrap();
+            writes.push(t.elapsed().as_micros());
             samples += 1;
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
-        (samples, read_max, write_max)
+        (samples, reads, writes)
     });
     let mut probe = ScanProbe {
         stop: stop.clone(),
@@ -282,17 +408,30 @@ fn content_free_machine_smoke() {
         println!("PASS provider={} files_found={} files_read={} problems={} totals={} top_models={} scan_ms={} second_scan_ms={} second_bytes={}",provider,first.files_found,first.files_read,json!(first.problems),aggregate,json!(models),elapsed,start.elapsed().as_millis(),second.bytes_read);
     }
     stop.store(true, std::sync::atomic::Ordering::Relaxed);
-    let (samples, read_max, write_max) = probe.handle.take().unwrap().join().unwrap();
+    let (samples, reads, writes_samples) = probe.handle.take().unwrap().join().unwrap();
+    fn percentile(mut values: Vec<u128>, p: f64) -> u128 {
+        if values.is_empty() {
+            return 0;
+        }
+        values.sort_unstable();
+        values[((values.len() - 1) as f64 * p).round() as usize]
+    }
+    let read_max = reads.iter().copied().max().unwrap_or(0);
+    let write_max = writes_samples.iter().copied().max().unwrap_or(0);
+    let read_p99 = percentile(reads, 0.99);
+    let write_p99 = percentile(writes_samples, 0.99);
     println!(
-        "{} scan_responsiveness samples={} read_rpc_max_us={} interactive_write_max_us={}",
-        if read_max <= 150_000 && write_max <= 150_000 {
+        "{} scan_responsiveness samples={} read_rpc_max_us={} read_rpc_p99_us={} interactive_write_max_us={} interactive_write_p99_us={}",
+        if read_max <= 150_000 && write_max <= 150_000 && read_p99 <= 150_000 && write_p99 <= 150_000 {
             "PASS"
         } else {
             "FAIL"
         },
         samples,
         read_max,
-        write_max
+        read_p99,
+        write_max,
+        write_p99
     );
     let (writes, longest) = store::write_metrics();
     println!(
@@ -358,7 +497,8 @@ fn aggregate_rpc_contract_scope_children_and_reconciliation() {
         ("live-only", "nl"),
         ("missing", "nm"),
     ] {
-        conn.execute("INSERT INTO sessions(id,title,provider,mode,status,created_at,updated_at,native_id,followed,read_only) VALUES(?,?,'fixture','chat','exited','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z',?,0,0)",rusqlite::params![id,id,native]).unwrap();
+        let main = ledger_db::fixture_main(&conn);
+        main.execute("INSERT INTO sessions(id,title,provider,mode,status,created_at,updated_at,native_id,followed,read_only) VALUES(?,?,'fixture','chat','exited','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z',?,0,0)",rusqlite::params![id,id,native]).unwrap();
     }
     for native in ["np", "ng", "nd", "outside", "child", "nl"] {
         let mut fact = facts::Fact::new(
@@ -474,9 +614,9 @@ fn cache_write_snapshot_refinement_never_adds_the_old_unknown_total_twice() {
 #[test]
 fn a_new_live_turn_preserves_unrelated_legacy_turns() {
     let (_dir, conn) = scratch();
-    conn.execute("INSERT INTO sessions(id,title,provider,mode,status,created_at,updated_at,native_id,followed,read_only) VALUES('s','s','fixture','chat','exited','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z','n',0,0)",[]).unwrap();
+    ledger_db::fixture_main(&conn).execute("INSERT INTO sessions(id,title,provider,mode,status,created_at,updated_at,native_id,followed,read_only) VALUES('s','s','fixture','chat','exited','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z','n',0,0)",[]).unwrap();
     for (id, input) in [("s:old:usage", 10), ("s:current:usage", 20)] {
-        conn.execute("INSERT INTO usage_records(id,session_id,provider,recorded_at,input_tokens) VALUES(?,'s','fixture','2026-01-01T00:00:00Z',?)",rusqlite::params![id,input]).unwrap();
+        ledger_db::fixture_main(&conn).execute("INSERT INTO usage_records(id,session_id,provider,recorded_at,input_tokens) VALUES(?,'s','fixture','2026-01-01T00:00:00Z',?)",rusqlite::params![id,input]).unwrap();
     }
     store::import_legacy(&conn).unwrap();
     let mut fact = facts::Fact::new("fixture", "n", "new-call", "2026-01-01T00:00:01Z");
@@ -687,7 +827,7 @@ fn cancelled_scan_resumes_exactly_and_rebuild_preserves_live_rows() {
 #[test]
 fn late_binding_does_not_move_historically_known_native_requests() {
     let (_dir, conn) = scratch();
-    conn.execute("INSERT INTO sessions(id,title,provider,mode,status,created_at,updated_at,native_id,followed,read_only) VALUES('s','s','fixture','chat','exited','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z','new-native',0,0)",[]).unwrap();
+    ledger_db::fixture_main(&conn).execute("INSERT INTO sessions(id,title,provider,mode,status,created_at,updated_at,native_id,followed,read_only) VALUES('s','s','fixture','chat','exited','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z','new-native',0,0)",[]).unwrap();
     let mut early = facts::Fact::new("fixture", "s", "early", "2026-01-01T00:00:00Z");
     early.threadterm_session_id = Some("s".into());
     early.source = "live:fixture".into();

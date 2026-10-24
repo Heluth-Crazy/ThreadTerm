@@ -1,4 +1,4 @@
-use super::{discovery, queries, scanner, store};
+use super::{discovery, ledger_db, live, queries, scanner, store};
 use crate::db::Database;
 use anyhow::{anyhow, Result};
 use rusqlite::{params, Connection, OpenFlags};
@@ -66,8 +66,7 @@ pub fn dispatch(db: &Arc<Database>, method: &str, params: &Value) -> Result<Opti
             result
         }
         "usage.ledger.sources" => {
-            let conn = read_connection(db.path())?;
-            let mut value = scanner::sources(&conn)?;
+            let mut value = with_ledger_reader(db.path(), scanner::sources)?;
             let setting = settings(db)?;
             let history_enabled = setting["value"]["includeOutside"].as_bool().unwrap_or(true);
             if let Some(providers) = value["providers"].as_array_mut() {
@@ -151,18 +150,19 @@ pub fn dispatch(db: &Arc<Database>, method: &str, params: &Value) -> Result<Opti
                 // ThreadTerm live observations for the same provider remain visible.
                 filter["nativeProvidersDisabled"] = json!(disabled);
             }
-            let conn = read_connection(db.path())?;
             if query.get("weekStart").is_none() {
                 query["weekStart"] = setting["value"]["weekStart"].clone();
             }
             query["priceOverrides"] = setting["value"]["priceOverrides"].clone();
-            queries::query(&conn, method, &query)?
+            with_ledger_reader(db.path(), |conn| queries::query(conn, method, &query))?
         }
         _ => return Err(anyhow!("unknown_usage_method")),
     };
     Ok(Some(value))
 }
 
+/// ThreadTerm-owned rows (settings, operation bookkeeping, the live-usage log)
+/// are read from the main database.
 fn read_connection(path: &Path) -> Result<Connection> {
     let conn = Connection::open_with_flags(
         path,
@@ -170,6 +170,14 @@ fn read_connection(path: &Path) -> Result<Connection> {
     )?;
     conn.busy_timeout(std::time::Duration::from_millis(1000))?;
     Ok(conn)
+}
+
+/// Ledger data is read from the ledger file with a read-only attach of the main
+/// database for session, project and legacy-usage rows.
+fn with_ledger_reader<T>(path: &Path, read: impl FnOnce(&Connection) -> Result<T>) -> Result<T> {
+    let conn = ledger_db::reader(path)?;
+    let guard = conn.lock().map_err(|_| anyhow!("usage_ledger_lock"))?;
+    read(&guard)
 }
 
 fn string<'a>(params: &'a Value, key: &str) -> Result<&'a str> {
@@ -366,7 +374,12 @@ fn start(db: &Arc<Database>, params: &Value, rebuild: bool, scan_history: bool) 
         return Ok(result);
     }
     let scan_settings = settings(db)?;
-    db.transaction(|tx| store::request_reprice(tx, &scan_settings["value"]["priceOverrides"]))?;
+    {
+        // Pricing invalidation is ledger-local; it must not open a main-database
+        // write transaction on the runtime thread.
+        let price_db = ledger_db::open_worker(db.path())?;
+        store::request_reprice(&price_db, &scan_settings["value"]["priceOverrides"])?;
+    }
     let mut guard = jobs().lock().map_err(|_| anyhow!("usage_job_lock"))?;
     if let Some(job) = guard.get_mut(db.path()).filter(|j| j.running) {
         queue_reprice_after_cancelled_job(job, !scan_history);
@@ -391,9 +404,9 @@ fn start(db: &Arc<Database>, params: &Value, rebuild: bool, scan_history: bool) 
     let worker_id = id.clone();
     let spawned = std::thread::Builder::new().name("usage-history".into()).spawn(move || {
         let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| -> Result<()> {
-            let conn = Connection::open(worker_db.path())?;
-            conn.set_prepared_statement_cache_capacity(128);
-            conn.busy_timeout(std::time::Duration::from_millis(1000))?;
+            let conn = ledger_db::open_worker(worker_db.path())?;
+            // Rebuildable live-usage rows the Chat projection could not forward.
+            live::import_log(&conn, &cancel)?;
             if !store::rebuild_query_cache(&conn, &cancel)? {
                 return Ok(());
             }
@@ -413,6 +426,8 @@ fn start(db: &Arc<Database>, params: &Value, rebuild: bool, scan_history: bool) 
             }
             }
             if scan_history { store::refresh_attributions(&conn,&cancel)?; }
+            // Facts captured while the ledger was busy arrive from the log.
+            live::import_log(&conn, &cancel)?;
             store::rebuild_dirty_activity(&conn,&cancel)?;
             loop {
                 if cancel.load(Ordering::Relaxed){break;}
@@ -430,7 +445,7 @@ fn start(db: &Arc<Database>, params: &Value, rebuild: bool, scan_history: bool) 
         }));
         let (state,error) = match outcome {
             Ok(Ok(())) => (if cancel.load(Ordering::Relaxed) {"cancelled"} else {"completed"}, None),
-            Ok(Err(_)) => ("failed",Some("usage_scan_failed")),
+            Ok(Err(error)) => { let _ = error; ("failed",Some("usage_scan_failed")) },
             Err(_) => ("failed",Some("usage_scan_panicked")),
         };
         let pending_reprice = jobs().lock().ok().and_then(|mut guard| {
@@ -505,12 +520,16 @@ mod tests {
             );
             std::thread::sleep(std::time::Duration::from_millis(5));
         }
+        let ledger = ledger_db::reader(db.path()).unwrap();
+        let ledger = ledger.lock().unwrap();
+        assert_eq!(
+            ledger
+                .query_row("SELECT COUNT(*) FROM usage_scan_providers", [], |r| r
+                    .get::<_, i64>(0))
+                .unwrap(),
+            0
+        );
         db.transaction(|tx| {
-            assert_eq!(
-                tx.query_row("SELECT COUNT(*) FROM usage_scan_providers", [], |r| r
-                    .get::<_, i64>(0))?,
-                0
-            );
             let count: i64 = tx.query_row(
                 "SELECT COUNT(*) FROM outbox WHERE event='usage.ledger.progress'",
                 [],
@@ -566,3 +585,6 @@ mod tests {
         assert!(!job.pending_reprice);
     }
 }
+
+
+

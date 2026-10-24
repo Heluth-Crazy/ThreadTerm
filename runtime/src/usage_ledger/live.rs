@@ -5,12 +5,14 @@
 
 use super::{
     facts::{number, text, timestamp, Buckets, Fact},
-    store,
+    ledger_db, store,
 };
 use anyhow::Result;
 use rusqlite::{params, Connection, OptionalExtension};
 use serde_json::{json, Value};
+use std::sync::atomic::{AtomicBool, Ordering};
 
+/// Ledger-owned turn coordinates for the live footer.
 pub fn initialize(conn: &Connection) -> Result<()> {
     conn.execute_batch(
         "CREATE TABLE IF NOT EXISTS usage_live_turns (
@@ -20,6 +22,84 @@ pub fn initialize(conn: &Connection) -> Result<()> {
     )?;
     let _ = conn.execute("ALTER TABLE usage_live_turns ADD COLUMN model TEXT", []);
     Ok(())
+}
+
+/// Durable, append-only log of the live request facts the Chat projection sees.
+/// It stays in the main database (written inside the Chat transaction) so the
+/// rebuildable ledger copy can always be recreated.
+pub fn initialize_log(conn: &Connection) -> Result<()> {
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS usage_live_events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            fact_key TEXT NOT NULL,
+            threadterm_session_id TEXT,
+            turn_id TEXT,
+            created_at TEXT NOT NULL,
+            fact TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS usage_live_events_turn
+            ON usage_live_events(threadterm_session_id,turn_id);
+        CREATE INDEX IF NOT EXISTS usage_live_events_fact
+            ON usage_live_events(fact_key);",
+    )?;
+    // One small row per provider request; keep the log bounded without timers.
+    conn.execute(
+        "DELETE FROM usage_live_events WHERE id<=(
+            SELECT COALESCE(MAX(id),0)-200000 FROM usage_live_events)",
+        [],
+    )?;
+    Ok(())
+}
+
+const LOG_CURSOR_KEY: &str = "live-events-cursor";
+
+/// Copies log rows the live forwarder could not apply while the history worker
+/// held the ledger. Runs on the ledger worker only.
+pub fn import_log(conn: &Connection, cancelled: &AtomicBool) -> Result<()> {
+    let mut cursor = conn
+        .query_row(
+            "SELECT value FROM usage_ledger_state WHERE key=?",
+            [LOG_CURSOR_KEY],
+            |row| row.get::<_, String>(0),
+        )
+        .ok()
+        .and_then(|value| value.parse::<i64>().ok())
+        .unwrap_or(0);
+    loop {
+        if cancelled.load(Ordering::Relaxed) {
+            return Ok(());
+        }
+        let rows = {
+            let mut statement = conn.prepare_cached(
+                "SELECT id,fact FROM usage_live_events WHERE id>? ORDER BY id LIMIT 256",
+            )?;
+            let rows = statement
+                .query_map([cursor], |row| {
+                    Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
+                })?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            rows
+        };
+        if rows.is_empty() {
+            return Ok(());
+        }
+        let facts = rows
+            .iter()
+            .filter_map(|(_, raw)| serde_json::from_str::<Fact>(raw).ok())
+            .collect::<Vec<_>>();
+        if !facts.is_empty() {
+            store::upsert_facts(conn, &facts)?;
+        }
+        cursor = rows.last().map(|(id, _)| *id).unwrap_or(cursor);
+        conn.execute(
+            "INSERT INTO usage_ledger_state(key,value) VALUES(?,?)
+             ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+            params![LOG_CURSOR_KEY, cursor.to_string()],
+        )?;
+        if rows.len() < 256 {
+            return Ok(());
+        }
+    }
 }
 
 fn positive(value: Option<i64>) -> Option<i64> {
@@ -303,8 +383,11 @@ pub fn acp_payload(update: &Value, _turn: Option<&str>) -> Option<Value> {
 
 /// Records an explicitly identified live request. It never inspects text,
 /// tool data, context occupancy, or footer aggregates.
+///
+/// The durability boundary is the main database's append-only log; the ledger
+/// copy is a best-effort forward so a busy history worker never blocks Chat.
 pub fn record(
-    conn: &Connection,
+    main: &Connection,
     session_id: &str,
     turn: Option<&str>,
     kind: &str,
@@ -323,15 +406,39 @@ pub fn record(
     ) {
         return Ok(());
     }
+    let Some(path) = main.path() else {
+        return record_with(main, main, session_id, turn, kind, data, now);
+    };
+    let Ok(ledger) = ledger_db::live_connection(std::path::Path::new(path)) else {
+        return record_with(main, main, session_id, turn, kind, data, now);
+    };
+    let Ok(guard) = ledger.lock() else {
+        return Ok(());
+    };
+    // A failed forward is not fatal: the log row the next scan imports holds the
+    // same fact.
+    let _ = record_with(main, &guard, session_id, turn, kind, data, now);
+    Ok(())
+}
+
+fn record_with(
+    main: &Connection,
+    ledger: &Connection,
+    session_id: &str,
+    turn: Option<&str>,
+    kind: &str,
+    data: &Value,
+    now: &str,
+) -> Result<()> {
     if kind == "chat.turn.started" {
         if let Some(turn) = turn {
-            conn.execute("INSERT INTO usage_live_turns(threadterm_session_id,turn_id,started_at,model) VALUES(?,?,?,?) ON CONFLICT(threadterm_session_id,turn_id) DO UPDATE SET model=COALESCE(excluded.model,usage_live_turns.model)", params![session_id,turn,now,data.get("model").and_then(Value::as_str)])?;
+            ledger.execute("INSERT INTO usage_live_turns(threadterm_session_id,turn_id,started_at,model) VALUES(?,?,?,?) ON CONFLICT(threadterm_session_id,turn_id) DO UPDATE SET model=COALESCE(excluded.model,usage_live_turns.model)", params![session_id,turn,now,data.get("model").and_then(Value::as_str)])?;
         }
         return Ok(());
     }
     if matches!(kind, "chat.turn.completed" | "chat.error") {
         if let Some(turn) = turn {
-            let native: Option<String> = conn
+            let native: Option<String> = main
                 .query_row(
                     "SELECT native_id FROM sessions WHERE id=?",
                     [session_id],
@@ -340,13 +447,13 @@ pub fn record(
                 .optional()?
                 .flatten();
             if let Some(native) = native.filter(|id| id != session_id) {
-                store::bind_live_native(conn, session_id, &native)?;
+                store::bind_live_native(ledger, session_id, &native)?;
             }
-            store::finish_live_turn(conn, session_id, turn, now)?;
+            store::finish_live_turn(ledger, session_id, turn, now)?;
         }
         return Ok(());
     }
-    let (provider, native, cwd): (String, Option<String>, Option<String>) = conn.query_row(
+    let (provider, native, cwd): (String, Option<String>, Option<String>) = main.query_row(
         "SELECT provider,native_id,worktree_path FROM sessions WHERE id=?",
         [session_id],
         |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
@@ -362,73 +469,151 @@ pub fn record(
     let Some(payload) = payload else {
         return Ok(());
     };
-    if native != session_id {
-        store::bind_live_native(conn, session_id, &native)?;
-    }
     let started = turn.and_then(|turn| {
-        conn.query_row(
-            "SELECT started_at FROM usage_live_turns WHERE threadterm_session_id=? AND turn_id=?",
-            params![session_id, turn],
-            |row| row.get(0),
-        )
-        .optional()
-        .ok()
-        .flatten()
+        ledger
+            .query_row(
+                "SELECT started_at FROM usage_live_turns WHERE threadterm_session_id=? AND turn_id=?",
+                params![session_id, turn],
+                |row| row.get(0),
+            )
+            .optional()
+            .ok()
+            .flatten()
     });
-    if let Some(mut fact) =
+    let Some(mut fact) =
         request_fact(&provider, &native, session_id, turn, &payload, now, started)
-    {
-        if fact.model.is_none() {
-            fact.model = turn.and_then(|turn| conn.query_row("SELECT model FROM usage_live_turns WHERE threadterm_session_id=? AND turn_id=?",params![session_id,turn],|row|row.get(0)).optional().ok().flatten());
-        }
-        fact.cwd = cwd;
-        store::upsert_fact(conn, &fact)?;
+    else {
+        return Ok(());
+    };
+    if fact.model.is_none() {
+        fact.model = turn.and_then(|turn| ledger.query_row("SELECT model FROM usage_live_turns WHERE threadterm_session_id=? AND turn_id=?",params![session_id,turn],|row|row.get(0)).optional().ok().flatten());
+    }
+    fact.cwd = cwd;
+    if native != session_id {
+        store::bind_live_native(ledger, session_id, &native)?;
+    }
+    main.execute(
+        "INSERT INTO usage_live_events(fact_key,threadterm_session_id,turn_id,created_at,fact)
+         VALUES(?,?,?,?,?)",
+        params![
+            fact.key,
+            fact.threadterm_session_id,
+            fact.turn_id,
+            now,
+            serde_json::to_string(&fact)?
+        ],
+    )?;
+    if !std::ptr::eq(main, ledger) {
+        store::upsert_fact(ledger, &fact)?;
     }
     Ok(())
 }
 
 /// Per-turn live totals for the existing footer. Only provider-reported fields
 /// are emitted. Native-history facts and context occupancy are irrelevant here.
-pub fn turn_usage(conn: &Connection, session_id: &str, turn: &str) -> Result<Option<Value>> {
-    let provider: String = conn.query_row(
+/// The ledger copy and the durable main-database log are merged by fact key, so
+/// a fact the worker could not forward is still shown once and only once.
+pub fn turn_usage(main: &Connection, session_id: &str, turn: &str) -> Result<Option<Value>> {
+    let provider: String = main.query_row(
         "SELECT provider FROM sessions WHERE id=?",
         [session_id],
         |row| row.get(0),
     )?;
-    let row: (Option<i64>, Option<i64>, Option<i64>, Option<i64>, Option<i64>, Option<i64>, i64) = conn.query_row(
-        "SELECT SUM(input_tokens),SUM(cache_read_tokens),SUM(cache_write5m_tokens),SUM(cache_write1h_tokens),SUM(cache_write_unknown_tokens),SUM(output_tokens),COUNT(*) FROM usage_facts WHERE threadterm_session_id=? AND turn_id=? AND source LIKE 'live:%'",
-        params![session_id, turn],
-        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?, row.get(5)?, row.get(6)?)),
-    )?;
-    if row.6 == 0 {
+    let ledger = main
+        .path()
+        .and_then(|path| ledger_db::live_connection(std::path::Path::new(path)).ok());
+    let ledger_guard = ledger.as_ref().and_then(|conn| conn.lock().ok());
+    let ledger: &Connection = ledger_guard.as_deref().unwrap_or(main);
+    let mut facts: std::collections::BTreeMap<String, Buckets> = Default::default();
+    {
+        let mut statement = ledger.prepare_cached(
+            "SELECT fact_key,input_tokens,cache_read_tokens,cache_write5m_tokens,
+                    cache_write1h_tokens,cache_write_unknown_tokens,output_tokens,
+                    reasoning_tokens
+             FROM usage_facts
+             WHERE threadterm_session_id=? AND turn_id=? AND source LIKE 'live:%'",
+        )?;
+        let rows = statement.query_map(params![session_id, turn], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                Buckets {
+                    input: row.get(1)?,
+                    cache_read: row.get(2)?,
+                    cache_write5m: row.get(3)?,
+                    cache_write1h: row.get(4)?,
+                    cache_write_unknown: row.get(5)?,
+                    output: row.get(6)?,
+                    reasoning: row.get(7)?,
+                },
+            ))
+        })?;
+        for row in rows {
+            let (key, buckets) = row?;
+            facts.entry(key).or_default().merge_max(&buckets);
+        }
+    }
+    if let Ok(mut statement) = main.prepare(
+        "SELECT fact FROM usage_live_events WHERE threadterm_session_id=? AND turn_id=?",
+    ) {
+        if let Ok(rows) = statement
+            .query_map(params![session_id, turn], |row| row.get::<_, String>(0))
+        {
+            for raw in rows.flatten() {
+                if let Ok(fact) = serde_json::from_str::<Fact>(&raw) {
+                    facts
+                        .entry(fact.key)
+                        .or_default()
+                        .merge_max(&fact.buckets);
+                }
+            }
+        }
+    }
+    if facts.is_empty() {
         return Ok(None);
     }
-    let cache_write = [row.2, row.3, row.4].into_iter().flatten().sum::<i64>();
-    let cache_present = row.2.is_some() || row.3.is_some() || row.4.is_some();
+    fn sum(values: impl Iterator<Item = Option<i64>>) -> Option<i64> {
+        let mut total = None;
+        for value in values.flatten() {
+            total = Some(total.unwrap_or(0) + value);
+        }
+        total
+    }
+    let rows = facts.values();
+    let input = sum(rows.clone().map(|b| b.input));
+    let cache_read = sum(rows.clone().map(|b| b.cache_read));
+    let cache5m = sum(rows.clone().map(|b| b.cache_write5m));
+    let cache1h = sum(rows.clone().map(|b| b.cache_write1h));
+    let cache_unknown = sum(rows.clone().map(|b| b.cache_write_unknown));
+    let output = sum(rows.clone().map(|b| b.output));
+    let cache_write = [cache5m, cache1h, cache_unknown]
+        .into_iter()
+        .flatten()
+        .sum::<i64>();
+    let cache_present = cache5m.is_some() || cache1h.is_some() || cache_unknown.is_some();
     // Codex's legacy footer calls input inclusive; keep that presentation even
     // though the ledger stores its accounting buckets disjointly.
     let input = if provider == "codex" {
-        row.0.map(|value| value + row.1.unwrap_or(0) + cache_write)
+        input.map(|value| value + cache_read.unwrap_or(0) + cache_write)
     } else {
-        row.0
+        input
     };
     let mut out = serde_json::Map::new();
     if let Some(value) = input {
         out.insert("inputTokens".into(), json!(value));
     }
-    if let Some(value) = row.1 {
+    if let Some(value) = cache_read {
         out.insert("cacheReadTokens".into(), json!(value));
     }
     if cache_present {
         out.insert("cacheWriteTokens".into(), json!(cache_write));
     }
-    if let Some(value) = row.5 {
+    if let Some(value) = output {
         out.insert("outputTokens".into(), json!(value));
     }
     let total = if provider == "codex" {
-        input.unwrap_or(0) + row.5.unwrap_or(0)
+        input.unwrap_or(0) + output.unwrap_or(0)
     } else {
-        row.0.unwrap_or(0) + row.1.unwrap_or(0) + cache_write + row.5.unwrap_or(0)
+        input.unwrap_or(0) + cache_read.unwrap_or(0) + cache_write + output.unwrap_or(0)
     };
     out.insert("totalTokens".into(), json!(total));
     Ok(Some(Value::Object(out)))
@@ -464,20 +649,24 @@ pub fn project_event(
 mod tests {
     use super::*;
 
-    fn db() -> (tempfile::TempDir, Connection) {
+    /// Ledger connection plus the main-database connection the Chat projection
+    /// owns.
+    fn db() -> (tempfile::TempDir, Connection, Connection) {
         let root = tempfile::tempdir().unwrap();
-        let conn = Connection::open(root.path().join("live.sqlite")).unwrap();
-        conn.execute_batch("CREATE TABLE projects(id TEXT PRIMARY KEY,name TEXT,path TEXT); CREATE TABLE sessions(id TEXT PRIMARY KEY,project_id TEXT,worktree_path TEXT,title TEXT,provider TEXT,mode TEXT,status TEXT,created_at TEXT,updated_at TEXT,native_id TEXT,exit_code INTEGER,followed INTEGER,read_only INTEGER); CREATE TABLE usage_records(id TEXT PRIMARY KEY,session_id TEXT,provider TEXT,recorded_at TEXT,input_tokens INTEGER,output_tokens INTEGER,estimated_cost REAL,currency TEXT,model TEXT);").unwrap();
-        conn.execute("INSERT INTO sessions VALUES('s',NULL,'/repo','t','claude','chat','idle','n','n','native',NULL,0,0)",[]).unwrap();
-        store::initialize(&conn).unwrap();
-        initialize(&conn).unwrap();
-        (root, conn)
+        let path = root.path().join("live.sqlite");
+        let database = crate::db::Database::open(&path).unwrap();
+        drop(database);
+        let main = Connection::open(&path).unwrap();
+        main.execute("INSERT INTO sessions(id,project_id,worktree_path,title,provider,mode,status,created_at,updated_at,native_id,followed,read_only) VALUES('s',NULL,'/repo','t','claude','chat','idle','n','n','native',0,0)",[]).unwrap();
+        let conn = super::ledger_db::test_connection(&path).unwrap();
+        (root, main, conn)
     }
 
     #[test]
     fn records_multiple_calls_and_merges_a_repeated_snapshot() {
-        let (_root, conn) = db();
-        record(
+        let (_root, main, conn) = db();
+        record_with(
+            &main,
             &conn,
             "s",
             Some("t"),
@@ -487,7 +676,7 @@ mod tests {
         )
         .unwrap();
         for (id, output) in [("a", 2), ("b", 3), ("b", 4)] {
-            record(&conn,"s",Some("t"),"provider.event",&json!({"raw":{"speedCallId":id,"message":{"message":{"id":id,"usage":{"input_tokens":1,"output_tokens":output}}}}}),"2026-01-01T00:00:01Z").unwrap();
+            record_with(&main,&conn,"s",Some("t"),"provider.event",&json!({"raw":{"speedCallId":id,"message":{"message":{"id":id,"usage":{"input_tokens":1,"output_tokens":output}}}}}),"2026-01-01T00:00:01Z").unwrap();
         }
         let count: i64 = conn
             .query_row("SELECT COUNT(*) FROM usage_facts", [], |row| row.get(0))
@@ -502,8 +691,9 @@ mod tests {
 
     #[test]
     fn context_and_unidentified_acp_usage_are_not_billed() {
-        let (_root, conn) = db();
-        record(
+        let (_root, main, conn) = db();
+        record_with(
+            &main,
             &conn,
             "s",
             Some("t"),
@@ -539,10 +729,11 @@ mod tests {
 
     #[test]
     fn captures_claude_item_raw_and_uses_threadterm_identity_before_native_binding() {
-        let (_root, conn) = db();
-        conn.execute("UPDATE sessions SET native_id=NULL WHERE id='s'", [])
+        let (_root, main, conn) = db();
+        main.execute("UPDATE sessions SET native_id=NULL WHERE id='s'", [])
             .unwrap();
-        record(
+        record_with(
+            &main,
             &conn,
             "s",
             Some("t"),
@@ -551,7 +742,7 @@ mod tests {
             "2026-01-01T00:00:00Z",
         )
         .unwrap();
-        record(&conn,"s",Some("t"),"chat.item",&json!({"raw":{"speedCallId":"call","message":{"message":{"id":"call","usage":{"input_tokens":2,"output_tokens":3}}}}}),"2026-01-01T00:00:01Z").unwrap();
+        record_with(&main,&conn,"s",Some("t"),"chat.item",&json!({"raw":{"speedCallId":"call","message":{"message":{"id":"call","usage":{"input_tokens":2,"output_tokens":3}}}}}),"2026-01-01T00:00:01Z").unwrap();
         let native: String = conn
             .query_row("SELECT native_session_id FROM usage_facts", [], |row| {
                 row.get(0)

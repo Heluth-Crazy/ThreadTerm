@@ -1,6 +1,6 @@
 //! Explicit-only scale benchmark: `cargo test usage_ledger::benchmarks::two_million_facts -- --ignored --nocapture`.
 
-use super::{initialize_connection, queries, store};
+use super::{queries, store};
 use crate::db::Database;
 use chrono::{Duration, NaiveDate};
 use rusqlite::{params, Connection};
@@ -43,8 +43,7 @@ fn scratch() -> (tempfile::TempDir, Connection) {
         "benchmark DB must be under TEMP"
     );
     drop(Database::open(&path).unwrap());
-    let conn = Connection::open(path).unwrap();
-    initialize_connection(&conn).unwrap();
+    let conn = crate::usage_ledger::ledger_db::test_connection(&path).unwrap();
     store::initialize(&conn).unwrap();
     (dir, conn)
 }
@@ -58,9 +57,9 @@ fn day(index: usize) -> String {
 /// Fast raw seed only: production store materializes rollups, intervals, and
 /// session batches afterwards, so query timing never includes setup work.
 fn seed(conn: &mut Connection, root: &std::path::Path) -> i64 {
-    let tx = conn.transaction().unwrap();
+    let main = crate::usage_ledger::ledger_db::fixture_main(conn);
     for project in 0..4 {
-        tx.execute(
+        main.execute(
             "INSERT INTO projects(id,name,path,created_at) VALUES(?,?,?,?)",
             params![
                 format!("fixture-project-{project}"),
@@ -72,7 +71,8 @@ fn seed(conn: &mut Connection, root: &std::path::Path) -> i64 {
         )
         .unwrap();
     }
-    let mut sessions = tx.prepare("INSERT INTO sessions(id,project_id,worktree_path,title,provider,mode,status,created_at,updated_at,native_id,followed,read_only) VALUES(?,?,?,?,?,?,?,?,?,?,0,0)").unwrap();
+    let mut sessions = main.prepare("INSERT INTO sessions(id,project_id,worktree_path,title,provider,mode,status,created_at,updated_at,native_id,followed,read_only) VALUES(?,?,?,?,?,?,?,?,?,?,0,0)").unwrap();
+    let tx = conn.transaction().unwrap();
     for index in (0..SESSIONS).filter(|index| index % 2 == 0) {
         sessions
             .execute(params![
@@ -337,4 +337,72 @@ fn two_million_facts() {
         0,
         "UA1r2 queries must meet <=150ms cold process and <=50ms warm SQLite cache"
     );
+}
+
+/// Foreground stall: the main database is written from another connection (a
+/// Chat-like interactive write) while the history worker rebuilds every
+/// projection of the two-million-fact ledger. Run with
+/// `UA1_BENCH_DB=<absolute TEMP path>/main.sqlite UA1R_FORCE_QUERY_REBUILD=1`.
+#[test]
+#[ignore = "Explicit 2-million-fact foreground write-stall measurement"]
+fn two_million_facts_foreground_write_stall() {
+    let (dir, conn) = scratch();
+    assert!(
+        std::env::var_os("UA1R_FORCE_QUERY_REBUILD").is_some(),
+        "set UA1R_FORCE_QUERY_REBUILD=1 so the projection rebuild really runs"
+    );
+    let facts: i64 = conn
+        .query_row("SELECT COUNT(*) FROM usage_facts", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(facts, FACTS as i64, "seed the benchmark first");
+
+    let main = crate::usage_ledger::ledger_db::fixture_main(&conn);
+    main.busy_timeout(std::time::Duration::from_millis(5000))
+        .unwrap();
+    let stop = std::sync::Arc::new(AtomicBool::new(false));
+    let probe_stop = std::sync::Arc::clone(&stop);
+    let probe = std::thread::spawn(move || {
+        let mut writes = Vec::<u128>::new();
+        while !probe_stop.load(Ordering::Relaxed) {
+            let started = Instant::now();
+            main.execute(
+                "INSERT INTO metadata(key,value) VALUES('usage-stall-probe','1')
+                 ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                [],
+            )
+            .unwrap();
+            writes.push(started.elapsed().as_micros());
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        writes
+    });
+
+    store::reset_write_metrics();
+    let started = Instant::now();
+    // The forced projection rebuild (materialized rows, membership, session
+    // ranges and the query cache) is the full rebuild the foreground has to
+    // survive.
+    assert!(store::rebuild_query_cache(&conn, &AtomicBool::new(false)).unwrap());
+    let projection_ms = started.elapsed().as_millis();
+    let (transactions, longest) = store::write_metrics();
+
+    stop.store(true, Ordering::Relaxed);
+    let mut writes = probe.join().unwrap();
+    let samples = writes.len();
+    writes.sort_unstable();
+    let max = writes.last().copied().unwrap_or(0);
+    let p99 = writes[(writes.len().saturating_sub(1) as f64 * 0.99).round() as usize];
+    let median = writes[writes.len() / 2];
+    println!(
+        "{} foreground_write_stall projection_ms={} ledger_transactions={} ledger_longest_write_us={} samples={} max_us={} p99_us={} median_us={}",
+        if max <= 150_000 && p99 <= 150_000 { "PASS" } else { "FAIL" },
+        projection_ms,
+        transactions,
+        longest,
+        samples,
+        max,
+        p99,
+        median
+    );
+    drop(dir);
 }

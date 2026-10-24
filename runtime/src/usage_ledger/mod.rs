@@ -3,6 +3,7 @@ mod benchmarks;
 pub mod discovery;
 pub mod facts;
 mod incremental;
+pub mod ledger_db;
 pub mod live;
 pub mod live_fallback;
 mod materialized;
@@ -26,9 +27,11 @@ mod write_priority;
 pub use service::dispatch;
 pub use service::schedule_pricing;
 
+/// Additive schema hook for the main runtime database, called from
+/// `Database::open`. The bulk ledger now lives in its own file, so this only
+/// keeps the durable live-usage log and moves UA1's old tables out.
 pub fn initialize_connection(conn: &rusqlite::Connection) -> anyhow::Result<()> {
-    scanner::initialize(conn)?;
-    store::initialize(conn)?;
-    live::initialize(conn)?;
+    ledger_db::migrate_legacy_main_tables(conn)?;
+    live::initialize_log(conn)?;
     Ok(())
 }
