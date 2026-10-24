@@ -45,6 +45,13 @@ pub fn dispatch(db: &Database, method: &str, params_value: &Value) -> Result<Opt
     let project_id = required_string(params, "projectId")?;
     let worktree = params.get("worktreePath").and_then(Value::as_str);
     let root = db.transaction(|tx| root_for(tx, project_id, worktree))?;
+    // A completed receipt is replayed before any preflight that reads mutable state:
+    // a retry after a lost response is the same operation even when the index or
+    // working tree has changed since it succeeded.
+    if let Some(result) = db.operation(operation_id)? {
+        db.bind_operation(operation_id, method, params_value)?;
+        return Ok(Some(result));
+    }
     if method == "git.merge" {
         let branch = required_string(params, "branch")?;
         validate_merge_target(&root, branch)?;
@@ -112,9 +119,6 @@ pub fn dispatch(db: &Database, method: &str, params_value: &Value) -> Result<Opt
             return Err(anyhow!("nothing_staged"));
         }
         _ => {}
-    }
-    if let Some(result) = db.operation(operation_id)? {
-        return Ok(Some(result));
     }
     db.bind_operation(operation_id, method, params_value)?;
     if let Some(result) = db.operation(operation_id)? {
@@ -765,6 +769,34 @@ mod tests {
             "reworded"
         );
         assert_eq!(git(temp.path(), &["rev-parse", "HEAD^"]).unwrap(), parent);
+    }
+
+    #[test]
+    fn commit_receipt_replays_after_the_index_becomes_empty() {
+        let (temp, db, project) = setup();
+        fs::write(temp.path().join("a.txt"), "next").unwrap();
+        call(
+            &db,
+            "git.stage",
+            json!({"projectId":project,"paths":["a.txt"],"operationId":"r-stage"}),
+        )
+        .unwrap();
+        let request = json!({"projectId":project,"message":"lost response","operationId":"r-commit"});
+        let committed = call(&db, "git.commit", request.clone()).unwrap();
+        let head = git(temp.path(), &["rev-parse", "HEAD"]).unwrap();
+        assert_eq!(committed["commit"].as_str().unwrap(), head.trim());
+        let commits = git(temp.path(), &["rev-list", "--count", "HEAD"]).unwrap();
+        // The response was lost, so the client retries the same operation after the
+        // commit emptied the index; the receipt must win over the nothing_staged fence.
+        git(temp.path(), &["reset", "--quiet"]).unwrap();
+        assert!(git(temp.path(), &["diff", "--cached", "--quiet"]).is_ok());
+        let replayed = call(&db, "git.commit", request).unwrap();
+        assert_eq!(replayed, committed);
+        assert_eq!(git(temp.path(), &["rev-parse", "HEAD"]).unwrap(), head);
+        assert_eq!(
+            git(temp.path(), &["rev-list", "--count", "HEAD"]).unwrap(),
+            commits
+        );
     }
 
     #[test]

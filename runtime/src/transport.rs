@@ -321,7 +321,9 @@ impl LaneSender {
     }
 }
 
-#[cfg(windows)]
+// Pure classifier: the send-trace plumbing that consumes it is Windows-only, but
+// the test must compile everywhere (Linux `cargo test` failed with E0425).
+#[cfg(any(windows, test))]
 fn trace_method(method: &str) -> &'static str {
     const KNOWN: &[&str] = &[
         "agentReview.list", "agentReview.mark", "agentReview.start",
