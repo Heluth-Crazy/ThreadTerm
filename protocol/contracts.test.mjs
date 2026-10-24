@@ -235,6 +235,27 @@ test('task map tabs require a bounded session identity and no owner',()=>{
   assert.throws(()=>validateRequest('workspace.save',params(tab)));
  }
 });
+test('group tabs preserve a bounded independent room identity and title',()=>{
+ const room={id:'group',kind:'group',groupId:'room-a',title:'Group chat'};
+ const layout=tab=>({kind:'pane',id:'pane',tabs:[tab],activeTabId:'group'});
+ const params=tab=>({name:'Group chat',layout:layout(tab),expectedRevision:0,operationId:'group'});
+ validateLayout(layout(room));
+ validateRequest('workspace.save',params(room));
+ validateResult('workspace.save',{id:'workspace',name:'Group chat',revision:1,layout:layout(room)});
+ for(const tab of [{id:'group',kind:'group'},...['',null,42,'x'.repeat(257)].map(groupId=>({...room,groupId})),...['x'.repeat(513),'title\n'].map(title=>({...room,title})),...['session-a',null,42].map(ownerSessionId=>({...room,ownerSessionId}))]){
+  assert.throws(()=>validateLayout(layout(tab)));
+  assert.throws(()=>validateRequest('workspace.save',params(tab)));
+ }
+});
+
+test('legacy Roundtable tabs remain readable in saved workspace layouts only',()=>{
+ const room={id:'roundtable',kind:'roundtable',roundtableId:'legacy-room',title:'Old discussion'};
+ const layout={kind:'pane',id:'pane',tabs:[room],activeTabId:'roundtable'};
+ validateLayout(layout);
+ validateRequest('workspace.save',{name:'Legacy workspace',layout,expectedRevision:1,operationId:'legacy-layout'});
+ validateResult('workspace.save',{id:'workspace',name:'Legacy workspace',revision:2,layout});
+ for(const tab of [{id:'roundtable',kind:'roundtable'},...['',null,42,'x'.repeat(257)].map(roundtableId=>({...room,roundtableId})),...['x'.repeat(513),'title\n'].map(title=>({...room,title})),...['session-a',null,42].map(ownerSessionId=>({...room,ownerSessionId}))]) assert.throws(()=>validateLayout({...layout,tabs:[tab]}));
+});
 
 test('web preview tabs show only http(s) pages and belong to no session',()=>{
  const web={id:'web',kind:'web',url:'http://localhost:5173/'};
@@ -422,10 +443,10 @@ test('handshake rejects old and mismatched Chat approval contracts without imply
  assert.match(protocolIncompatibleReason({kind:'challenge',nonce:'n',protocol:PROTOCOL_VERSION}),/older and was left running/);
  assert.match(protocolIncompatibleReason({kind:'auth',clientId:'c',protocol:PROTOCOL_VERSION,nonce:'n',hmac:'00'},'runtime'),/Running jobs were not stopped/);
  assert.match(protocolIncompatibleReason({kind:'challenge',nonce:'n',protocol:PROTOCOL_VERSION,contract:1}),new RegExp('contract '+PROTOCOL_CONTRACT));
- assert.match(protocolIncompatibleReason({kind:'challenge',nonce:'n',protocol:PROTOCOL_VERSION,contract:12}),/contract 15/);
+ assert.match(protocolIncompatibleReason({kind:'challenge',nonce:'n',protocol:PROTOCOL_VERSION,contract:12}),/contract 17/);
  assert.match(protocolIncompatibleReason({kind:'challenge',nonce:'n',protocol:PROTOCOL_VERSION,contract:12}),/left running/);
- assert.match(protocolIncompatibleReason({kind:'auth',clientId:'c',protocol:PROTOCOL_VERSION,nonce:'n',hmac:'00',contract:12},'runtime'),/contract 15/);
- assert.match(protocolIncompatibleReason({kind:'challenge',nonce:'n',protocol:PROTOCOL_VERSION,contract:13}),/contract 15/);
+ assert.match(protocolIncompatibleReason({kind:'auth',clientId:'c',protocol:PROTOCOL_VERSION,nonce:'n',hmac:'00',contract:12},'runtime'),/contract 17/);
+ assert.match(protocolIncompatibleReason({kind:'challenge',nonce:'n',protocol:PROTOCOL_VERSION,contract:13}),/contract 17/);
  assert.match(protocolIncompatibleReason({kind:'auth',clientId:'c',protocol:PROTOCOL_VERSION,nonce:'n',hmac:'00',contract:12},'runtime'),/were not stopped/);
  assert.match(protocolIncompatibleReason({kind:'challenge',nonce:'n',protocol:99,contract:PROTOCOL_CONTRACT}),/wire protocol/);
  validateResult('runtime.health',{version:'0.1.0',epoch:'e',contract:PROTOCOL_CONTRACT});
@@ -509,6 +530,48 @@ test('agent reviews take a shape-checked agent and a checkpoint or uncommitted s
  assert.throws(()=>validateResult('agentReview.start',{...started,extra:1}));
 });
 
+test('groups validate messages, members, archive state, paging, and the member session link',()=>{
+ const member={sessionId:'s-a',provider:'codex',handle:'codex',model:'fixture-model',mode:'read_only',readOnly:'enforced',readOnlyNote:'Read-only',state:'idle',joinedAt:'t'};
+ const message={id:'message-1',author:'user',body:'Review @claude',recipients:['codex'],references:[{kind:'reply',messageId:'reply-1',handle:'claude',title:"@claude's reply",bytes:12}],deliveries:[{sessionId:'s-a',handle:'codex',state:'queued'}],createdAt:'t'};
+ const group={id:'g-1',revision:2,projectId:'p',worktreePath:'fixture-workspace',cwd:'fixture-workspace',title:'Group chat',members:[member,{...member,sessionId:'s-b',provider:'claude',handle:'claude',mode:'default',readOnly:undefined,readOnlyNote:undefined,state:'working'}],messages:[message],lastRecipients:['codex'],filesCheck:{state:'on'},hasMore:true,before:'message-0',createdAt:'t',updatedAt:'u'};
+ const create={projectId:'p',cwd:'fixture-workspace',title:'Group chat',members:[{provider:'codex',handle:'codex',model:'fixture-model',mode:'read_only'},{provider:'claude'}],fromSessionId:'source',operationId:'create-group'};
+ validateRequest('group.create',create); validateRequest('group.create',{...create,expectedRevision:0}); validateResult('group.create',group);
+ const outputs={files:['codex/page.html'],urls:[],changed:['codex/page.html'],changedDetails:[{path:'codex/page.html',status:'added',evidence:'folder'}],possiblyChanged:['shared/style.css'],changedIncomplete:true,possiblyChangedWith:['claude']};
+ validateResult('group.read',{...group,messages:[{...message,id:'reply-1',author:'member',sessionId:'s-a',handle:'codex',outputs}]});
+ validateResult('group.read',{...group,messages:[{...message,id:'reply-tool-only',author:'member',sessionId:'s-a',handle:'codex',outputs:{...outputs,changedDetails:[{path:'codex/tool-only.txt',status:'changed',evidence:'tool'}]}}]});
+ for(const patch of [
+  {changedDetails:[{path:'codex/page.html',status:'renamed',evidence:'folder'}]},
+  {changedDetails:[{path:'codex/page.html',status:'added',evidence:'guess'}]},
+  {possiblyChanged:'shared/style.css'},
+  {changedIncomplete:'yes'},
+  {possiblyChangedWith:[1]},
+ ]) assert.throws(()=>validateResult('group.read',{...group,messages:[{...message,id:'reply-1',author:'member',sessionId:'s-a',handle:'codex',outputs:{...outputs,...patch}}]}));
+ for(const expectedRevision of [-1,1,1.5]) assert.throws(()=>validateRequest('group.create',{...create,expectedRevision}),/Invalid group revision/);
+ for(const patch of [{members:[]},{members:Array.from({length:7},()=>({provider:'codex'}))},{members:[{provider:'Codex'}]},{members:[{provider:'codex',handle:'Bad_Handle'}]},{members:[{provider:'codex',model:' '}]}]) assert.throws(()=>validateRequest('group.create',{...create,...patch}),/Invalid group|protocol schema/);
+ validateRequest('group.list',{}); validateRequest('group.list',{projectId:'p'}); validateResult('group.list',[{id:'g-1',title:'Group chat',projectId:'p',worktreePath:'fixture-workspace',members:[{sessionId:'s-a',provider:'codex',handle:'codex',state:'idle'}],updatedAt:'u'}]); assert.throws(()=>validateRequest('group.list',{projectId:'p',extra:true}));
+ validateRequest('group.read',{id:'g-1',before:'message-0',limit:200}); validateResult('group.read',group); assert.throws(()=>validateRequest('group.read',{id:'g-1',limit:201}));
+ const send={id:'g-1',text:'Please review this.',to:['codex'],references:[{kind:'reply',messageId:'reply-1'}],expectedRevision:2,operationId:'send-group'};
+ validateRequest('group.send',send); validateResult('group.send',{...group,revision:3});
+ for(const patch of [{text:' '},{text:'x'.repeat(64*1024+1)},{to:[]},{to:['all','codex']},{to:['Bad']},{references:Array.from({length:9},()=>({kind:'file',path:'x'}))}]) assert.throws(()=>validateRequest('group.send',{...send,...patch}),/Invalid group|protocol schema/);
+ validateRequest('group.stop',{id:'g-1',messageId:'message-1',handle:'codex',expectedRevision:2,operationId:'stop-group'});
+ validateRequest('group.resend',{id:'g-1',messageId:'message-1',handle:'codex',operationId:'resend-group'});
+ validateRequest('group.member.add',{id:'g-1',provider:'claude',handle:'reviewer',mode:'default',operationId:'add-group'});
+ validateRequest('group.member.update',{id:'g-1',sessionId:'s-a',handle:'designer',operationId:'update-group'});
+ validateRequest('group.member.remove',{id:'g-1',sessionId:'s-a',operationId:'remove-group'});
+ validateRequest('group.rename',{id:'g-1',title:'Renamed',operationId:'rename-group'});
+ validateRequest('group.archive',{id:'g-1',operationId:'archive-group'}); validateRequest('group.archive',{id:'g-1',archived:false,operationId:'restore-group'});
+ for(const method of ['group.stop','group.resend','group.member.add','group.member.update','group.member.remove','group.rename','group.archive']) assert.throws(()=>validateRequest(method,{id:'g-1',operationId:'bad',expectedRevision:0,...(method==='group.stop'||method==='group.resend'?{messageId:'m',handle:'codex'}:method==='group.member.add'?{provider:'codex'}:method==='group.member.update'?{sessionId:'s',handle:'next'}:method==='group.member.remove'?{sessionId:'s'}:method==='group.rename'?{title:'x'}:{})}),/Invalid group revision/);
+ validateResult('session.create',{id:'s-a',title:'Group chat · @codex',provider:'codex',mode:'chat',status:'idle',createdAt:'t',updatedAt:'t',group:{id:'g-1',handle:'codex'}});
+});
+
+test('group mention parsing keeps text untouched and routes only known handles',async()=>{
+ const {parseGroupMentions}=await import('./index.ts');
+ assert.deepEqual(parseGroupMentions('@codex @claude make drafts',['codex','claude']),{to:['codex','claude'],referenceHandles:[],unknownHandles:[]});
+ assert.deepEqual(parseGroupMentions('@codex review @claude',['codex','claude']),{to:['codex'],referenceHandles:['claude'],unknownHandles:[]});
+ assert.deepEqual(parseGroupMentions('review @claude @unknown',['codex','claude'],['codex']),{to:['codex'],referenceHandles:['claude'],unknownHandles:['unknown']});
+ assert.deepEqual(parseGroupMentions('no mention',['codex']),{to:['all'],referenceHandles:[],unknownHandles:[]});
+});
+
 test('worktree setup saves an ordered unique list of up to 20 commands and runs from a bounded step',()=>{
  validateRequest('quickLaunch.setup.read',{projectId:'p'});
  validateRequest('quickLaunch.setup.save',{projectId:'p',commandIds:['install','build'],expectedRevision:0,operationId:'o'});
@@ -537,7 +600,7 @@ test('session documents pin relative paths inside the worktree and list exact ro
  assert.throws(()=>validateRequest('session.documents.pin',{sessionId:'s',path:'docs/plan.md'}),/Invalid operationId|protocol schema/);
  validateResult('session.documents.list',[{path:'docs/plan.md',title:'Checkout plan',pinnedAt:'t'},{path:'notes.txt',pinnedAt:'t',missing:true}]);
  assert.throws(()=>validateResult('session.documents.pin',[{path:'docs/plan.md',pinnedAt:'t',size:3}]));
- assert.equal(PROTOCOL_CONTRACT,15);
+ assert.equal(PROTOCOL_CONTRACT,17);
 });
 
 test('preview presentation is attachment-scoped and requires a persisted tab acknowledgement',()=>{
@@ -582,3 +645,11 @@ test('provider refresh is additive and carries the claimed generation',()=>{
  assert.throws(()=>validateRequest('provider.refresh',{callerToken:'secret'}));
 });
 
+test('group prerequisites preserve duplicate providers and explicit degradation',()=>{
+ validateRequest('group.prerequisites',{});
+ validateRequest('group.prerequisites',{cwd:'fixture-workspace',providers:['fixture','fixture']});
+ for(const params of [{providers:['Bad']},{providers:'fixture'},{cwd:''},{extra:true}]) assert.throws(()=>validateRequest('group.prerequisites',params));
+ const row={provider:'fixture',usable:false,reason:'not_installed',fix:{kind:'install',text:'Install Fixture CLI'},readOnly:'prompt',readOnlyNote:'Read-only by instruction'};
+ validateResult('group.prerequisites',{providers:[row,row],git:{found:false},folder:{repository:false,reason:'no_git'}});
+ assert.throws(()=>validateResult('group.prerequisites',{providers:[{...row,readOnly:'assumed'}],git:{found:true}}));
+});

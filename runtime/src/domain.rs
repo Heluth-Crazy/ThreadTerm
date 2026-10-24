@@ -41,6 +41,8 @@ pub struct Session {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub delegation: Option<SessionDelegation>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub group: Option<SessionGroup>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub run: Option<crate::quick_launch::SessionRun>,
     #[serde(flatten, default)]
     pub organization: SessionOrganization,
@@ -68,6 +70,14 @@ pub struct SessionDelegation {
     /// attached to the delegate's first message (sent only when some were).
     #[serde(default, skip_serializing_if = "is_zero")]
     pub user_messages: u32,
+}
+
+/// Present on a Chat session participating in a group chat.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionGroup {
+    pub id: String,
+    pub handle: String,
 }
 
 fn is_zero(value: &u32) -> bool {

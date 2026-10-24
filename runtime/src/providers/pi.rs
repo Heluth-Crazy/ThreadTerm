@@ -276,7 +276,7 @@ impl ProviderAdapter for PiAdapter {
         native_id: Option<&str>,
         worker_token: &str,
     ) -> Result<Box<dyn ChatSession>, ProviderError> {
-        self.open_chat_scoped_with_project_trust(session_id, cwd, native_id, worker_token, None)
+        self.open_chat_scoped_with_project_trust(session_id, cwd, native_id, worker_token, None, None, false)
     }
 
     fn open_chat_with_project_trust(
@@ -288,7 +288,30 @@ impl ProviderAdapter for PiAdapter {
         _tools: Option<&super::ChatToolServer>,
         decision: Option<&str>,
     ) -> Result<Box<dyn ChatSession>, ProviderError> {
-        self.open_chat_scoped_with_project_trust(session_id, cwd, native_id, worker_token, decision)
+        self.open_chat_scoped_with_project_trust(session_id, cwd, native_id, worker_token, decision, None, false)
+    }
+
+    fn open_chat_with_startup_options(
+        &self,
+        session_id: &str,
+        cwd: &str,
+        native_id: Option<&str>,
+        worker_token: &str,
+        tools: Option<&super::ChatToolServer>,
+        startup: &super::ChatStartupOptions<'_>,
+    ) -> Result<Box<dyn ChatSession>, ProviderError> {
+        let _ = tools;
+        let staged_read_only_tools = pi_staged_read_only_tools(startup);
+        let read_only_tools = startup.pi_read_only_tools.then_some(staged_read_only_tools).flatten();
+        if let Some(value) = read_only_tools {
+            if value != "read,grep,find,ls" {
+                return Err(ProviderError::new("chat_permission_restore_failed", "Invalid Pi Roundtable tool allowlist"));
+            }
+        }
+        self.open_chat_scoped_with_project_trust(
+            session_id, cwd, native_id, worker_token, startup.project_trust, read_only_tools,
+            staged_read_only_tools.is_some(),
+        )
     }
 }
 
@@ -300,6 +323,8 @@ impl PiAdapter {
         native_id: Option<&str>,
         worker_token: &str,
         decision: Option<&str>,
+        read_only_tools: Option<&str>,
+        roundtable_read_only_requested: bool,
     ) -> Result<Box<dyn ChatSession>, ProviderError> {
         let shared = Arc::new(PiShared::default());
         // Capture once: trust inspection and the child process must observe
@@ -329,6 +354,16 @@ impl PiAdapter {
                     decision,
                 ),
             });
+            if roundtable_read_only_requested {
+                ui.roundtable_tools = Some(json!({
+                    "enforced": read_only_tools.is_some(),
+                    "reason": if read_only_tools.is_some() {
+                        "Pi started with its verified read-only tool allowlist"
+                    } else {
+                        "Pi tool allowlist was not verified before startup"
+                    }
+                }));
+            }
         }
         let events = ScopedProviderEvents::new(self.events.clone(), worker_token);
         let callback_events = events.clone();
@@ -348,6 +383,7 @@ impl PiAdapter {
         if let Some(flag) = pi_project_trust::launch_flag(decision) {
             args.push(flag.to_owned());
         }
+        args.extend(pi_read_only_args(read_only_tools));
         if let Some(id) = native_id {
             validate_native_id(id)?;
             // Pi saves a session with its first message. A chat reopened before
@@ -401,6 +437,28 @@ impl PiAdapter {
         chat.refresh_ui();
         Ok(Box::new(chat))
     }
+}
+
+fn pi_read_only_args(read_only_tools: Option<&str>) -> Vec<String> {
+    let Some(tools) = read_only_tools else { return Vec::new(); };
+    vec![
+        "--no-mcp".to_owned(),
+        "--no-extensions".to_owned(),
+        "--tools".to_owned(),
+        tools.to_owned(),
+    ]
+}
+
+fn pi_staged_read_only_tools<'a>(
+    startup: &super::ChatStartupOptions<'a>,
+) -> Option<&'a str> {
+    startup
+        .permissions
+        .as_array()
+        .into_iter()
+        .flatten()
+        .find(|option| option["id"] == "roundtable-tools")
+        .and_then(|option| option["value"].as_str())
 }
 
 /// State shared with the stdout reader thread; it outlives every borrow of
@@ -495,6 +553,7 @@ struct PiUi {
     /// last value it set (Pi enables it by default).
     auto_retry: Option<bool>,
     trust: Option<Value>,
+    roundtable_tools: Option<Value>,
 }
 
 struct PiChat {
@@ -2115,6 +2174,9 @@ fn pi_ui_state(ui: &PiUi) -> Value {
     if let Some(trust) = &ui.trust {
         state["piTrust"] = trust.clone();
     }
+    if let Some(report) = &ui.roundtable_tools {
+        state["roundtableToolsReport"] = report.clone();
+    }
     state
 }
 
@@ -2645,6 +2707,39 @@ mod tests {
     ) {
         let (sender, receiver) = tap_channel(16);
         (ScopedProviderEvents::new(sender, "worker"), receiver)
+    }
+
+    #[test]
+    fn unverified_roundtable_marker_adds_no_pi_flags() {
+        let permissions = json!([{"id":"roundtable-tools","value":"read,grep,find,ls"}]);
+        let unsupported = super::super::ChatStartupOptions {
+            project_trust: None,
+            permissions: &permissions,
+            pi_read_only_tools: false,
+        };
+        assert_eq!(
+            pi_staged_read_only_tools(&unsupported),
+            Some("read,grep,find,ls")
+        );
+        let selected = unsupported
+            .pi_read_only_tools
+            .then(|| pi_staged_read_only_tools(&unsupported))
+            .flatten();
+        assert!(selected.is_none());
+        assert!(pi_read_only_args(None).is_empty());
+        let verified = super::super::ChatStartupOptions {
+            pi_read_only_tools: true,
+            ..unsupported
+        };
+        assert_eq!(
+            pi_read_only_args(
+                verified
+                    .pi_read_only_tools
+                    .then(|| pi_staged_read_only_tools(&verified))
+                    .flatten()
+            ),
+            vec!["--no-mcp", "--no-extensions", "--tools", "read,grep,find,ls"]
+        );
     }
 
     #[test]
@@ -3535,6 +3630,7 @@ require('node:readline').createInterface({input:process.stdin}).on('line', line 
             ],
             auto_retry: Some(false),
             trust: Some(json!({"effective":"skipped"})),
+            roundtable_tools: None,
         };
         let value = pi_ui_state(&ui);
         // Required ChatSessionOption fields, and no extraneous ones.

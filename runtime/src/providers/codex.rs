@@ -466,7 +466,7 @@ impl ProviderAdapter for CodexAdapter {
             native_id,
             worker_token,
             tools,
-            &super::ChatStartupOptions {project_trust:None, permissions:&json!([])},
+            &super::ChatStartupOptions {project_trust:None, permissions:&json!([]), pi_read_only_tools:false},
         )
     }
 
@@ -7279,7 +7279,7 @@ createInterface({{ input: process.stdin, crlfDelay: Infinity }}).on('line', line
         let cwd = scratch.path().to_string_lossy().into_owned();
         let mut chat = adapter.open_chat_with_startup_options(
             "card-resume", &cwd, Some("thread-resume"), "worker-resume", None,
-            &super::super::ChatStartupOptions {project_trust:None, permissions:&json!([{"id":"mode","value":"never"},{"id":"sandbox","value":"danger-full-access"}])},
+            &super::super::ChatStartupOptions {project_trust:None, permissions:&json!([{"id":"mode","value":"never"},{"id":"sandbox","value":"danger-full-access"}]), pi_read_only_tools:false},
         ).unwrap();
         chat.stop().unwrap();
         let calls = std::fs::read_to_string(requests).unwrap().lines()

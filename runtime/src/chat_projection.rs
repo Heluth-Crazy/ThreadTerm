@@ -386,7 +386,9 @@ fn record_tx(
      if matches!(kind,"userMessage") {
       // User turns are already persisted from chat.send as message.user.
      } else if matches!(kind,"agentMessage"|"assistant"|"message"|"plan") {
-      if !text.is_empty(){item.parts=vec![json!({"type":"text","text":text})];changed=true;}
+      if !text.is_empty(){item.parts=vec![json!({"type":"text","text":text})];
+       if let Some(phase)=raw.get("phase").and_then(Value::as_str).filter(|phase|matches!(*phase,"commentary"|"final_answer")){item.parts[0]["phase"]=json!(phase);}
+       changed=true;}
      } else if matches!(kind,"agentThought"|"reasoning"|"thinking") {
       if !text.is_empty(){item.parts=vec![json!({"type":"thinking","text":text,"status":"complete"})];changed=true;}
      } else {item.parts=vec![json!({"type":"tool","toolName":raw.get("name").and_then(Value::as_str).unwrap_or(kind),"toolId":native_item.unwrap_or(&id),"status":raw.get("status").and_then(Value::as_str).unwrap_or("running"),"data":raw})];file_references::enrich_parts(&mut item.parts);changed=true;}
@@ -551,6 +553,7 @@ fn record_tx(
    tx.execute("INSERT INTO outbox(event,data,created_at) VALUES ('session.activity',?,?)",params![serde_json::to_string(&json!({"sessionId":session_id,"activity":activity}))?,now])?;
   }
   if let Some(link)=&delegation {crate::delegation::project_child_event(tx,link,kind,data)?;}
+  crate::group_chat::project_event(tx,session_id,turn,kind,data)?;
   // A parent whose turn ends can no longer answer: its delegates' requests go to the user.
   if matches!(kind,"chat.turn.completed"|"chat.error") {escalate_parent_requests(tx,session_id,&now)?;}
   let usage=data.get("usage").or_else(||data.pointer("/raw/params/usage")).or_else(||data.pointer("/raw/params/tokenUsage/last"));
@@ -2567,6 +2570,22 @@ mod tests {
         assert_eq!(items.len(), 1);
         assert_eq!(items[0].parts[0]["type"], "text");
         assert_eq!(items[0].parts[0]["text"], "# Plan\n1. Build");
+    }
+
+    #[test]
+    fn native_codex_text_phase_is_preserved_without_classifying_unphased_text() {
+        let db = db();
+        for (id, phase) in [("progress",Some("commentary")),("answer",Some("final_answer")),("plain",None)] {
+            let mut raw = json!({"id":id,"type":"agentMessage","text":id});
+            if let Some(phase) = phase { raw["phase"] = json!(phase); }
+            record(&db,"s",Some("turn"),"chat.item",&json!({"raw":{"params":{"item":raw}}})).unwrap();
+        }
+        let items = db.chat_items("s").unwrap();
+        for (id, phase) in [("progress",Some("commentary")),("answer",Some("final_answer")),("plain",None)] {
+            let item = items.iter().find(|item| item.id == format!("s:assistant:{id}")).unwrap();
+            assert_eq!(item.parts[0]["phase"].as_str(), phase);
+            assert_eq!(item.parts[0]["text"], id);
+        }
     }
 
     #[test]

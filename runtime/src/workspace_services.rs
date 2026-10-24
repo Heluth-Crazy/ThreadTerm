@@ -92,7 +92,7 @@ pub fn dispatch(db: &Database, method: &str, params: &Value) -> Result<Option<Va
             "filesystem.list" => { let root = root(project_id.ok_or_else(|| anyhow!("invalid_request"))?)?; let relative=object.get("path").and_then(Value::as_str).ok_or_else(||anyhow!("invalid_path"))?; let dir=scoped_path(&root,relative,true)?; let mut entries=Vec::new(); for item in fs::read_dir(dir)? { let item=item?; let meta=item.file_type()?; let mut entry=serde_json::Map::new(); entry.insert("name".into(),json!(item.file_name().to_string_lossy())); entry.insert("path".into(),json!(if relative.is_empty(){item.file_name().to_string_lossy().to_string()}else{format!("{relative}/{}",item.file_name().to_string_lossy())})); entry.insert("kind".into(),json!(if meta.is_dir(){"directory"}else if meta.is_symlink(){"symlink"}else{"file"})); if let Ok(metadata)=item.metadata(){entry.insert("size".into(),json!(metadata.len()));} entries.push(Value::Object(entry)); } Ok(json!(entries)) }
             "filesystem.read" => { let root=root(project_id.ok_or_else(||anyhow!("invalid_request"))?)?; let path=object.get("path").and_then(Value::as_str).ok_or_else(||anyhow!("invalid_path"))?; let resolved=scoped_path(&root,path,true)?; let (fingerprint,content)=read_document(&root,path)?; let meta=fs::metadata(resolved)?; Ok(json!({"path":path,"content":content,"fingerprint":fingerprint,"readonly":meta.permissions().readonly(),"size":meta.len(),"modifiedAt":Utc::now().to_rfc3339()})) }
             "filesystem.image" => { let root=root(project_id.ok_or_else(||anyhow!("invalid_request"))?)?; let path=object.get("path").and_then(Value::as_str).ok_or_else(||anyhow!("invalid_path"))?; let (mime,data)=read_image(&root,path)?; Ok(json!({"mime":mime,"data":BASE64.encode(data)})) }
-            "filesystem.write" => { let root=root(project_id.ok_or_else(||anyhow!("invalid_request"))?)?; let path=object.get("path").and_then(Value::as_str).ok_or_else(||anyhow!("invalid_path"))?; let content=object.get("content").and_then(Value::as_str).ok_or_else(||anyhow!("invalid_content"))?; let expected=object.get("expectedFingerprint").and_then(Value::as_str).ok_or_else(||anyhow!("invalid_request"))?; let op=operation("operationId")?; if let Some(value)=idempotent(tx,op)? { return Ok(value); } let (fingerprint,content)=write_document(&root,path,content,expected)?; complete(tx,op,method,&json!({"path":path,"content":content,"fingerprint":fingerprint,"readonly":false,"size":content.len(),"modifiedAt":Utc::now().to_rfc3339()})) }
+            "filesystem.write" => { let root=root(project_id.ok_or_else(||anyhow!("invalid_request"))?)?; let path=object.get("path").and_then(Value::as_str).ok_or_else(||anyhow!("invalid_path"))?; let content=object.get("content").and_then(Value::as_str).ok_or_else(||anyhow!("invalid_content"))?; let expected=object.get("expectedFingerprint").and_then(Value::as_str).ok_or_else(||anyhow!("invalid_request"))?; let op=operation("operationId")?; if let Some(value)=idempotent(tx,op)? { return Ok(value); } let (fingerprint,content)=write_document(&root,path,content,expected)?; crate::group_chat::editor_saved(tx,&root.to_string_lossy(),path)?; complete(tx,op,method,&json!({"path":path,"content":content,"fingerprint":fingerprint,"readonly":false,"size":content.len(),"modifiedAt":Utc::now().to_rfc3339()})) }
             "draft.list" => { let id=project_id.ok_or_else(||anyhow!("invalid_request"))?; if worktree_path.is_some(){root_for(tx,id,worktree_path)?;} let scope=worktree_path.unwrap_or(""); let mut stmt=tx.prepare("SELECT id,project_id,worktree_path,path,content,base_fingerprint,revision,updated_at FROM drafts WHERE project_id=? AND worktree_path=? ORDER BY updated_at")?; let rows=stmt.query_map(params![id,scope],|r| Ok(json!({"id":r.get::<_,String>(0)?,"projectId":r.get::<_,String>(1)?,"worktreePath":r.get::<_,String>(2)?,"path":r.get::<_,String>(3)?,"content":r.get::<_,String>(4)?,"baseFingerprint":r.get::<_,String>(5)?,"revision":r.get::<_,i64>(6)?,"updatedAt":r.get::<_,String>(7)?})))?; Ok(json!(rows.collect::<rusqlite::Result<Vec<_>>>()?)) }
             "draft.put" => { let id=project_id.ok_or_else(||anyhow!("invalid_request"))?; if worktree_path.is_some(){root_for(tx,id,worktree_path)?;} let scope=worktree_path.unwrap_or(""); let path=object.get("path").and_then(Value::as_str).ok_or_else(||anyhow!("invalid_path"))?; let content=object.get("content").and_then(Value::as_str).ok_or_else(||anyhow!("invalid_content"))?; if content.len()>MAX_DOCUMENT_BYTES||content.as_bytes().contains(&0){return Err(anyhow!("invalid_content"))} let expected=object.get("expectedRevision").and_then(Value::as_i64).ok_or_else(||anyhow!("invalid_request"))?; let op=operation("operationId")?; if let Some(value)=idempotent(tx,op)? {return Ok(value)} let current:Option<(String,i64)>=tx.query_row("SELECT id,revision FROM drafts WHERE project_id=? AND worktree_path=? AND path=?",params![id,scope,path],|r|Ok((r.get(0)?,r.get(1)?))).optional()?; if current.as_ref().map(|x|x.1).unwrap_or(0)!=expected{return Err(anyhow!("revision_conflict"))} let draft_id=current.map(|x|x.0).unwrap_or_else(||uuid::Uuid::new_v4().to_string()); let revision=expected+1; let base=object.get("baseFingerprint").and_then(Value::as_str).ok_or_else(||anyhow!("invalid_request"))?; let now=Utc::now().to_rfc3339(); tx.execute("INSERT INTO drafts(id,project_id,worktree_path,path,content,base_fingerprint,revision,updated_at) VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(project_id,worktree_path,path) DO UPDATE SET content=excluded.content,base_fingerprint=excluded.base_fingerprint,revision=excluded.revision,updated_at=excluded.updated_at",params![draft_id,id,scope,path,content,base,revision,now])?; complete(tx,op,method,&json!({"id":draft_id,"projectId":id,"worktreePath":scope,"path":path,"content":content,"baseFingerprint":base,"revision":revision,"updatedAt":now})) }
             "draft.delete"|"workspace.delete" => { let id=object.get("id").and_then(Value::as_str).ok_or_else(||anyhow!("invalid_request"))?; let expected=object.get("expectedRevision").and_then(Value::as_i64).ok_or_else(||anyhow!("invalid_request"))?; let op=operation("operationId")?; if let Some(value)=idempotent(tx,op)?{return Ok(value)} let table=if method=="draft.delete"{"drafts"}else{"workspaces"}; let revision:i64=tx.query_row(&format!("SELECT revision FROM {table} WHERE id=?"),[id],|r|r.get(0))?; if revision!=expected{return Err(anyhow!("revision_conflict"))} tx.execute(&format!("DELETE FROM {table} WHERE id=?"),[id])?; complete(tx,op,method,&Value::Null) }
@@ -893,6 +893,12 @@ pub fn validate_layout(layout: &Value) -> Result<()> {
                                 return Err(anyhow!("invalid_workspace_layout"));
                             }
                         }
+                        Some("roundtable" | "group")
+                            if tab.get(if tab.get("kind").and_then(Value::as_str)==Some("group") {"groupId"}else{"roundtableId"}).and_then(Value::as_str).is_some_and(|id| {
+                                !id.is_empty() && id.encode_utf16().count() <= 256
+                            }) && tab.get("title").and_then(Value::as_str).is_some_and(|title| {
+                                title.len() <= 512 && !title.chars().any(char::is_control)
+                            }) && tab.get("ownerSessionId").is_none() => {}
                         Some("map")
                             if tab.get("sessionId").and_then(Value::as_str).is_some_and(|id| {
                                 !id.is_empty() && id.encode_utf16().count() <= 256
@@ -2018,6 +2024,23 @@ mod tests {
             json!({"id":"map","kind":"unknown","sessionId":"s"}),
         ] {
             assert!(validate_layout(&map_layout(tab.clone())).is_err(), "{tab}");
+        }
+    }
+    #[test]
+    fn roundtable_tabs_match_the_protocol_without_an_owner() {
+        let layout = |tab: Value| json!({"kind":"pane","id":"p","tabs":[tab],"activeTabId":"rt"});
+        for (id, title) in [("room".to_owned(), "Roundtable".to_owned()), ("😀".repeat(128), "圆桌".repeat(85)), ("x".repeat(256), "x".repeat(512))] {
+            assert!(validate_layout(&layout(json!({"id":"rt","kind":"roundtable","roundtableId":id,"title":title}))).is_ok());
+        }
+        for tab in [
+            json!({"id":"rt","kind":"roundtable","title":"Room"}),
+            json!({"id":"rt","kind":"roundtable","roundtableId":"","title":"Room"}),
+            json!({"id":"rt","kind":"roundtable","roundtableId":"x".repeat(257),"title":"Room"}),
+            json!({"id":"rt","kind":"roundtable","roundtableId":"room","title":"x".repeat(513)}),
+            json!({"id":"rt","kind":"roundtable","roundtableId":"room","title":"bad\nlabel"}),
+            json!({"id":"rt","kind":"roundtable","roundtableId":"room","title":"Room","ownerSessionId":null}),
+        ] {
+            assert!(validate_layout(&layout(tab.clone())).is_err(), "{tab}");
         }
     }
     #[test]

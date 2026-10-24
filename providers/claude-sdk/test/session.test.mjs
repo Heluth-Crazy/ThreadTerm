@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { tmpdir } from 'node:os';
 import { ClaudeSession } from '../src/session.mjs';
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -597,7 +598,7 @@ test('only one ExitPlanMode approval can remain pending', async () => {
   await session.planResponse(request.requestId, 'abandon');
   assert.equal((await first).behavior, 'deny');
 });
-function controllableSdk() {
+function controllableSdk(init = { commands: [], models: [], account: {} }) {
   let waiter;
   const pending = [];
   let ended = false;
@@ -627,12 +628,38 @@ function controllableSdk() {
         },
       };
     },
-    async initializationResult() { return { commands: [], models: [], account: {} }; },
+    async initializationResult() { return init; },
     async interrupt() {},
     close() { this.finish(); },
   };
   return { sdk: { query: () => query }, query };
 }
+
+test('a late Roundtable system init downgrade publishes the raw tool report', async () => {
+  for (const late of [
+    { tools: ['Read', 'Write'] },
+    { tools: 'malformed' },
+    { mcp_tools: [] },
+    { tools: ['Read', 'Glob', 'Grep'], mcp_tools: [{ unexpected: 'mcp__foreign__tool' }] },
+  ]) {
+    const { sdk, query } = controllableSdk({ commands: [], models: [], account: {}, tools: ['Read', 'Glob', 'Grep'], mcp_tools: [] });
+    const events = [];
+    const session = new ClaudeSession({ cardId: 'roundtable-late-tools', sdk, write: value => events.push(value), hostOptions: { warmUp: false } });
+    try {
+      await session.start({ cwd: tmpdir(), readOnlyTools: ['Read', 'Glob', 'Grep'] });
+      assert.equal(session.roundtableToolsReport.enforced, true);
+      query.push({ type: 'system', subtype: 'init', ...late });
+      const ui = await waitFor(
+        () => events.findLast(value => value.ev === 'session.ui' && value.ui?.roundtableToolsReport?.enforced === false),
+        'late native tool report publishes the Roundtable downgrade',
+      );
+      assert.equal(ui.ui.roundtableToolsReport.enforced, false);
+    } finally {
+      query.finish();
+      await session.pump;
+    }
+  }
+});
 
 test('steer while a turn is active delivers once and does not replace the turn', () => {
   const { session } = harness();

@@ -449,7 +449,7 @@ pub(crate) fn apply_pending_options(
     db.clear_pending_fork_options(session_id)
 }
 
-fn copied_conversation(items: &[ChatItem], copied_at: &str) -> Result<String> {
+pub(crate) fn copied_conversation(items: &[ChatItem], copied_at: &str) -> Result<String> {
     let blocks = items
         .iter()
         .filter_map(|item| {

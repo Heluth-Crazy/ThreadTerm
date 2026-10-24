@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { tmpdir } from 'node:os';
 import { ClaudeSession, createInputQueue, NOT_SIGNED_IN, signedOut } from '../src/session.mjs';
 
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
@@ -106,6 +107,32 @@ test('a saved permission mode is passed at query start and confirmed by the hand
   assert.equal(option(session.uiState(), 'mode').value, 'dontAsk');
   assert.equal(sdk.state.calls.some(([name]) => name === 'setPermissionMode'), false, 'restore never queues a post-connect mode change behind warm-up');
   await session.stop();
+});
+
+test('Roundtable passes only validated read-only builtins and reports the SDK tool echo', async () => {
+  const safeSdk = controllableSdk({ init: { tools: ['Read', 'Glob', 'Grep'], mcp_tools: [] } });
+  const safe = new ClaudeSession({ cardId: 'roundtable-read-only', sdk: safeSdk, write() {} });
+  await safe.start({ cwd: tmpdir(), readOnlyTools: ['Read', 'Glob', 'Grep'] });
+  assert.deepEqual(safeSdk.state.options.tools, ['Read', 'Glob', 'Grep']);
+  assert.deepEqual(safeSdk.state.options.allowedTools, ['Read', 'Glob', 'Grep']);
+  assert.equal(safeSdk.state.options.strictMcpConfig, true);
+  assert.deepEqual(safe.roundtableToolsReport, { requested: ['Read', 'Glob', 'Grep'], builtins: ['Read', 'Glob', 'Grep'], mcpTools: [], enforced: true });
+  await safe.stop();
+
+  const extra = new ClaudeSession({ cardId: 'roundtable-extra', sdk: controllableSdk({ init: { tools: ['Read', 'Write'] } }), write() {} });
+  await extra.start({ cwd: tmpdir(), readOnlyTools: ['Read', 'Glob', 'Grep'] });
+  assert.equal(extra.roundtableToolsReport.enforced, false);
+  assert.match(extra.roundtableToolsReport.reason, /outside/);
+  await extra.stop();
+
+  const malformed = new ClaudeSession({ cardId: 'roundtable-malformed', sdk: controllableSdk({ init: { tools: ['Read', { unexpected: 'Bash' }] } }), write() {} });
+  await malformed.start({ cwd: tmpdir(), readOnlyTools: ['Read', 'Glob', 'Grep'] });
+  assert.equal(malformed.roundtableToolsReport.enforced, false);
+  assert.match(malformed.roundtableToolsReport.reason, /malformed/);
+  await malformed.stop();
+
+  const invalid = new ClaudeSession({ cardId: 'roundtable-invalid', sdk: controllableSdk(), write() {} });
+  await assert.rejects(invalid.start({ cwd: tmpdir(), readOnlyTools: ['Read', 'Write'] }), /unsupported tool/);
 });
 
 test('auto permission starts with its captured model before the handshake', async () => {

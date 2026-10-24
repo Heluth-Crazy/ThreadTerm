@@ -1,0 +1,115 @@
+@import url('./panel-headers.css');
+.group-chat, .gc-member-form { --gc-muted:color-mix(in srgb,var(--muted) 80%,var(--text)); --gc-link:color-mix(in srgb,var(--primary) 60%,var(--text)); }
+.group-chat { display:flex; flex-direction:column; width:100%; height:100%; min-width:0; min-height:0; overflow:hidden; color:var(--text); background:var(--surface); font-size:13px; container:group-chat / inline-size; }
+.group-chat *, .group-chat *::before, .group-chat *::after { box-sizing:border-box; }
+.gc-header { display:flex; align-items:center; flex:none; height:38px; min-height:38px; gap:8px; padding:0 6px 0 14px; border-bottom:1px solid var(--border); background:var(--surface); }
+.gc-title { flex:1; min-width:0; justify-content:flex-start; border-color:transparent; background:transparent; }
+.gc-title:focus-visible, .gc-member-main:focus-visible { background:var(--soft); }
+.gc-title strong { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-weight:600; color:var(--text); }
+.gc-member-count { color:var(--gc-muted); font-size:12px; white-space:nowrap; }
+.gc-header > form { display:flex; flex:1; min-width:0; align-items:center; gap:6px; }
+.gc-header input { flex:1; min-width:0; }
+.gc-menu-anchor { position:relative; flex:none; }
+.gc-header-menu { top:calc(100% + 6px); right:0; max-height:none; }
+.gc-handoff-menu { top:calc(100% + 6px); left:auto; right:0; max-height:240px; }
+.gc-members { display:flex; flex:none; flex-wrap:wrap; gap:8px; padding:12px 24px; border-bottom:1px solid var(--border); }
+.gc-member { display:flex; flex:1 1 260px; max-width:300px; min-width:180px; gap:6px; align-items:center; height:36px; padding:4px; border:1px solid var(--border); border-radius:var(--radius-card); background:var(--surface); }
+.gc-member-main { flex:1; min-width:0; justify-content:flex-start; border-color:transparent; background:transparent; }
+.gc-member-main strong { color:var(--text); min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-weight:600; }
+.gc-member > .chip, .gc-member > time, .gc-member > .icon-btn { flex:none; }
+.gc-member > time { color:var(--gc-muted); font-size:11px; font-variant-numeric:tabular-nums; white-space:nowrap; }
+.gc-read-only > .ico { width:12px; height:12px; }
+/* Mirror .v3-chat-log: a single 920px reading column shared with the composer. */
+.gc-timeline { flex:1; min-height:0; min-width:0; padding:24px max(24px,calc((100% - 920px)/2)); overflow:auto; overflow-x:hidden; overflow-anchor:none; scrollbar-width:thin; overscroll-behavior:contain; }
+/* The scrollbar must not narrow cards relative to .chat-compose-shell. */
+.gc-timeline-item { width:min(920px,calc(100cqw - 48px)); min-width:0; margin-bottom:16px; }
+.gc-timeline-item:last-child { margin-bottom:0; }
+.gc-load-older { margin-bottom:16px; }
+.gc-empty { max-width:580px; margin:48px auto; padding:24px; text-align:center; color:var(--gc-muted); }
+.gc-empty > .ico { width:28px; height:28px; }
+.gc-empty h3 { font-size:13px; color:var(--text); line-height:1.6; }
+.gc-empty p { line-height:1.7; }
+.gc-message { min-width:0; }
+.gc-message.is-member { padding:14px 16px; border:1px solid var(--border); border-radius:var(--radius-card); background:var(--surface); }
+.gc-message.is-user { display:flex; flex-direction:column; align-items:flex-end; }
+/* Mirror .v3-chat-message.is-native.user: soft, borderless 18px bubble. */
+.gc-user-bubble { width:fit-content; max-width:78%; padding:10px 16px; border:0; border-radius:18px; background:var(--soft); }
+.gc-user-text { margin:0; white-space:pre-wrap; overflow-wrap:anywhere; line-height:1.6; }
+.gc-message > header { position:relative; display:flex; flex-wrap:wrap; align-items:center; gap:8px; margin-bottom:12px; min-width:0; font-size:12px; }
+.gc-message > header > strong { flex:none; min-width:max-content; font-weight:600; white-space:nowrap; }
+.gc-message time { color:var(--gc-muted); font-size:11px; font-variant-numeric:tabular-nums; }
+.gc-message > header > .chip, .gc-header-tail > time { flex:none; }
+.gc-message > header > time { flex:none; margin-left:auto; }
+.gc-header-tail { display:flex; flex:none; align-items:center; gap:8px; margin-left:auto; }
+.gc-message-meta { display:flex; flex-wrap:wrap; align-items:center; gap:6px; margin-top:6px; color:var(--gc-muted); font-size:11px; min-width:0; }
+.gc-message.is-user .gc-message-meta { position:relative; justify-content:flex-end; max-width:100%; }
+.gc-meta-items { display:flex; flex-wrap:wrap; justify-content:flex-end; align-items:center; gap:6px; min-width:0; }
+.gc-message-reference { max-width:100%; min-width:0; }
+.gc-message-reference > span { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.gc-reply-body { max-height:300px; overflow:hidden; min-width:0; overflow-wrap:anywhere; }
+.gc-reply-body.is-expanded { max-height:none; }
+/* Actions share the attribution/meta row; no separate footer band. */
+.gc-reply-actions { display:flex; flex:none; align-items:center; gap:4px; opacity:0; pointer-events:none; transition:opacity .12s ease; }
+.gc-message:not(.is-newest) > header .gc-reply-actions, .gc-message.is-user > .gc-message-meta > .gc-reply-actions { position:absolute; right:0; top:50%; transform:translateY(-50%); z-index:1; background:var(--surface); }
+.gc-message:not(.is-newest) > header .gc-reply-actions::before, .gc-message.is-user > .gc-message-meta > .gc-reply-actions::before { content:''; position:absolute; right:100%; top:0; bottom:0; width:24px; background:linear-gradient(to right,transparent,var(--surface)); pointer-events:none; }
+.gc-action-label { display:inline-flex; align-items:center; gap:6px; color:var(--text); }
+.gc-message:hover .gc-reply-actions, .gc-message:focus-within .gc-reply-actions, .gc-message.is-newest .gc-reply-actions { opacity:1; pointer-events:auto; }
+.gc-output-chips, .gc-suggestions { display:flex; align-items:center; flex-wrap:wrap; gap:6px; min-width:0; }
+.gc-outputs { margin-top:12px; min-width:0; }
+.gc-output-chips > button { max-width:100%; min-width:0; }
+.gc-output-chips > button > span { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.gc-output-chips > .gc-output-deleted { display:inline-flex; max-width:100%; min-width:0; }
+.gc-output-chips > .gc-output-deleted > span { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.gc-outputs details { margin-top:8px; font-size:12px; }
+.gc-outputs summary { cursor:pointer; }
+.gc-changed-incomplete { color:var(--muted); }
+.gc-changed-list, .gc-possibly-list { margin:4px 0 0; }
+.gc-outputs .wb-change-row { padding-left:0; }
+.gc-change-static { cursor:default; }
+.gc-output-deleted { min-width:0; overflow:hidden; color:var(--gc-muted); text-decoration:line-through; text-overflow:ellipsis; white-space:nowrap; }
+.gc-possibly-changed { color:var(--gc-muted); }
+.gc-possibly-list .wb-change-open { color:var(--gc-muted); }
+.gc-suggestions { margin-top:8px; }
+.gc-suggestions > button { max-width:100%; overflow:hidden; text-overflow:ellipsis; }
+.gc-live { display:flex; align-items:center; gap:8px; height:38px; min-width:0; padding:0; }
+.gc-live > .agent-icon, .gc-live > .chip { flex:none; }
+.gc-live > strong { flex:none; max-width:140px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:12px; font-weight:600; }
+.gc-live-activity { flex:1; min-width:0; color:var(--gc-muted); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:12px; }
+.gc-live > time { flex:none; color:var(--gc-muted); font-size:11px; font-variant-numeric:tabular-nums; }
+.gc-delivery-actions { display:flex; align-items:center; gap:4px; flex:none; }
+/* Mirror .chat-repair-notice: token-based bordered notice with icon and text. */
+.gc-notice { display:flex; align-items:center; flex:none; gap:8px; margin:8px 24px; padding:8px 12px; border:1px solid var(--border); border-radius:var(--radius); background:var(--raised); color:var(--text); font-size:12px; line-height:1.45; overflow-wrap:anywhere; }
+.gc-notice > .ico { flex:none; }
+.gc-notice > span { flex:1; min-width:0; }
+.gc-notice.is-system { margin:0; }
+.gc-error { border-color:color-mix(in srgb,var(--danger) 36%,var(--border)); background:color-mix(in srgb,var(--danger) 7%,var(--raised)); }
+.gc-muted { color:var(--gc-muted); font-size:12px; line-height:1.6; }
+.gc-loading { justify-content:center; align-items:center; gap:12px; }
+.gc-member-form { display:flex; flex-direction:column; gap:12px; }
+.gc-member-form > label { display:flex; flex-direction:column; gap:6px; font-size:12px; }
+.gc-member-form p { margin:0; }
+@media (hover:none) {
+ .gc-reply-actions { opacity:1; pointer-events:auto; }
+ .gc-message:not(.is-newest) > header .gc-reply-actions, .gc-message.is-user > .gc-message-meta > .gc-reply-actions { position:static; transform:none; }
+ .gc-reply-actions::before { display:none; }
+}
+@container group-chat (max-width:660px) {
+ .gc-member-count { display:none; }
+ .gc-members { padding:12px 24px; }
+ .gc-live { gap:6px; }
+ .gc-live > strong { max-width:86px; }
+}
+.gc-markdown { font-size:13px; line-height:1.65; overflow-wrap:anywhere; white-space:normal; }
+.gc-markdown > div > :first-child { margin-top:0; }
+.gc-markdown > div > :last-child { margin-bottom:0; }
+.gc-markdown p { margin:0 0 10px; }
+.gc-markdown ul, .gc-markdown ol { padding-left:20px; margin:8px 0; }
+.gc-markdown h1, .gc-markdown h2 { font-size:16px; font-weight:600; line-height:1.5; margin:18px 0 8px; }
+.gc-markdown h3, .gc-markdown h4, .gc-markdown h5, .gc-markdown h6 { font-size:13px; margin:14px 0 6px; }
+.gc-markdown pre { max-width:100%; margin:10px 0; padding:10px; overflow:auto; white-space:pre; border:1px solid var(--border); border-radius:var(--radius); background:var(--soft); }
+.gc-markdown code { font-family:var(--mono); font-size:12px; }
+.gc-markdown :not(pre) > code { padding:1px 4px; border-radius:3px; background:var(--soft); }
+.gc-markdown blockquote { margin:10px 0; padding-left:12px; border-left:3px solid var(--border); }
+.gc-markdown table { display:block; max-width:100%; overflow:auto; border-collapse:collapse; }
+.gc-markdown td, .gc-markdown th { padding:6px 8px; border:1px solid var(--border); }
+.gc-markdown a { color:var(--gc-link); text-decoration:underline; }

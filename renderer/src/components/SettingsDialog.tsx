@@ -20,9 +20,9 @@ import "../../../reference/prototype/features/settings.css";
 import "./settings-parity.css";
 
 type Tab = "appearance" | "controls" | "browser" | "data" | "mobile" | "tools" | "plugins";
-type Props = { data: Snapshot; onClose: () => void; onSaved: () => Promise<void>; onSessionCreated?: (id: string) => void | Promise<void>; supervisionCounts: { checks: number; alertCount: number } };
-export function SettingsDialog({ data, onClose, onSaved, onSessionCreated, supervisionCounts }: Props) {
-  const [tab, setTab] = useState<Tab>("appearance");
+type Props = { initialTab?: Tab; data: Snapshot; onClose: () => void; onSaved: () => Promise<void>; onSessionCreated?: (id: string) => void | Promise<void>; supervisionCounts: { checks: number; alertCount: number } };
+export function SettingsDialog({ initialTab = "appearance", data, onClose, onSaved, onSessionCreated, supervisionCounts }: Props) {
+  const [tab, setTab] = useState<Tab>(initialTab);
   const panel = useRef<HTMLElement>(null), revision = useRef(data.settings.revision);
   useModalFocus(panel, onClose);
   useBrowserOcclusion();

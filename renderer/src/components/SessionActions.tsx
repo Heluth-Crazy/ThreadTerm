@@ -4,6 +4,7 @@ import type { RequestParams, Session } from "@threadterm/protocol";
 import { operationId, request } from "../bridge";
 import { useTranslation } from "../i18n";
 import { Icon } from "./PrototypeIcon";
+import { startGroup } from "../groupNavigation";
 import "./session-actions.css";
 
 type OrganizationPatch = Pick<RequestParams<"session.organize">, "pinned" | "bookmarked" | "archived" | "intent">;
@@ -28,6 +29,7 @@ export function SessionActions({ session }: { session: Session }) {
       setIssue(error instanceof Error ? error.message : label("Session update failed.", "会话更新失败。"));
     } finally { setBusy(false); }
   };
+  const startGroupFromChat = () => startGroup({ sessionId: session.id });
   return <section className="session-actions session-organize-block">
     <h3>{label("Organize", "整理")}</h3>
     <div className="session-organize-toggles">
@@ -51,6 +53,7 @@ export function SessionActions({ session }: { session: Session }) {
         <option value="docs">{label("Documentation", "文档")}</option>
       </Select>
     </label>
+    {session.mode === "chat" && <button type="button" className="btn" data-testid="start-group-from-chat" disabled={busy} onClick={startGroupFromChat}>{label("Start a group from this chat", "从此聊天开始群聊")}</button>}
     {issue && <small role="alert">{issue}</small>}
   </section>;
 }

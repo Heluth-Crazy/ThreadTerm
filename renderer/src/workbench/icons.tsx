@@ -15,6 +15,7 @@ const glyphs: Record<string, string> = {
  comment: '<path d="M21 14a3 3 0 0 1-3 3H9l-6 4V6a3 3 0 0 1 3-3h12a3 3 0 0 1 3 3z"/><path d="M7 8h10M7 12h7"/>',
  // People for agent access; the prototype `agents` glyph is not part of every build of PrototypeIcon.
  'agent-access': '<circle cx="9" cy="8" r="3"/><circle cx="17" cy="10" r="2.5"/><path d="M3 20a6 6 0 0 1 12 0M14 16a5 5 0 0 1 7 4"/>',
+ users: '<circle cx="9" cy="8" r="3"/><circle cx="17" cy="10" r="2.5"/><path d="M3 20a6 6 0 0 1 12 0M14 16a5 5 0 0 1 7 4"/>',
  // The + sits outside the outline at the lower right: a + enclosed in a 16px outline antialiased into a grey blob.
  'file-plus': '<path d="M12 21H6V3h8l4 4v4"/><path d="M14 3v4h4"/><path d="M18 14v7M14.5 17.5h7"/>',
  'folder-plus': '<path d="M11 20H3V4h7l2 2h9v5"/><path d="M18 14v7M14.5 17.5h7"/>',

@@ -143,6 +143,7 @@ pub(crate) fn read(db: &Database, id: &str) -> Result<Value> {
 }
 
 fn changed(tx: &Transaction<'_>, id: &str) -> Result<()> {
+    crate::group_chat::queue_changed(tx, id)?;
     tx.execute(
         "INSERT INTO outbox(event,data,created_at) VALUES ('state.changed',?,?)",
         params![
@@ -316,6 +317,20 @@ fn idle_tx(tx: &Transaction<'_>, id: &str) -> Result<bool> {
     Ok(true)
 }
 
+pub(crate) fn idle(db:&Database,id:&str)->Result<bool>{db.transaction(|tx|idle_tx(tx,id))}
+
+/// Runtime-owned group deliveries use exactly the same durable queue and bounds.
+pub(crate) fn add_owned(tx:&Transaction<'_>,session:&str,item:&str,text:&str)->Result<()> {
+    require_chat(tx,session,true)?;if text.trim() != "/fork" { validate_message(text,&[])?; }
+    let (count,position):(i64,i64)=tx.query_row("SELECT COUNT(*),COALESCE(MAX(position),-1)+1 FROM chat_queue_items WHERE session_id=?",[session],|r|Ok((r.get(0)?,r.get(1)?)))?;
+    if count>=20{return Err(failure("queue_full"))}
+    tx.execute("INSERT INTO operation_requests(id,method,params) VALUES(?,'chat.queue.dispatch',?)",params![format!("queue:{item}"),json!({"sessionId":session,"itemId":item}).to_string()])?;
+    let now=Utc::now().to_rfc3339();
+    tx.execute("INSERT INTO chat_queue_items(id,session_id,position,text,images_json,revision,state,created_at,updated_at) VALUES(?,?,?,?,'[]',1,'queued',?,?)",params![item,session,position,text,now,now])?;
+    if serde_json::to_vec(&read_tx(tx,session)?)?.len()>MAX_QUEUE_WIRE_BYTES{return Err(failure("queue_full"))}
+    changed(tx,session)
+}
+
 pub(crate) struct ChatQueues {
     gates: Mutex<HashMap<String, Arc<Mutex<()>>>>,
     healthy: AtomicBool,
@@ -332,6 +347,10 @@ impl Default for ChatQueues {
 
 impl ChatQueues {
     /// Observation only: repair must preserve this restart-only dispatch fence.
+    pub(crate) fn group_control<T>(&self,db:&Database,session:&str,f:impl FnOnce(&Transaction<'_>)->Result<T>)->Result<T>{
+        let gate=self.gate(session)?;let _guard=gate.lock().map_err(|_|failure("queue_lock_poisoned"))?;db.transaction(f)
+    }
+
     pub(crate) fn ingress_failed(&self) -> bool {
         !self.healthy.load(Ordering::Acquire)
     }
@@ -474,6 +493,7 @@ impl ChatQueues {
             match sent {
                 Ok(_) => { tx.execute("DELETE FROM chat_queue_items WHERE id=?",[&item.id])?; }
                 Err(error) => {
+                    crate::group_chat::send_failed(tx, id, &item.id, &error.to_string())?;
                     let claimed: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM external_operations WHERE id=?)",[&operation],|r|r.get(0))?;
                     let error = if claimed || error.to_string().contains("operation_outcome_unknown") { format!("May have been sent — check the transcript: {error}") } else { error.to_string() };
                     let error: String = error.chars().take(500).collect();

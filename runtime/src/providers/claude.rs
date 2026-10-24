@@ -76,7 +76,13 @@ impl ClaudeUi {
             return;
         }
         if let Ok(mut state) = self.0.lock() {
-            *state = Some(ui.clone());
+            let mut next = ui.clone();
+            if next.get("roundtableToolsReport").is_none() {
+                if let Some(report) = state.as_ref().and_then(|current| current.get("roundtableToolsReport")) {
+                    next["roundtableToolsReport"] = report.clone();
+                }
+            }
+            *state = Some(next);
         }
     }
 
@@ -90,7 +96,11 @@ impl ClaudeUi {
                 .cloned()
                 .unwrap_or_else(|| json!([]))
         };
-        json!({"options":list("options"),"commands":list("commands"),"backgroundTasks":list("backgroundTasks"),"inputCapabilities":{"steer":"native"}})
+        let mut wire = json!({"options":list("options"),"commands":list("commands"),"backgroundTasks":list("backgroundTasks"),"inputCapabilities":{"steer":"native"}});
+        if let Some(report) = state.as_ref().and_then(|ui| ui.get("roundtableToolsReport")) {
+            wire["roundtableToolsReport"] = report.clone();
+        }
+        wire
     }
 }
 
@@ -194,6 +204,7 @@ impl ClaudeAdapter {
     ) -> Result<Box<dyn ChatSession>, ProviderError> {
         let permission_mode = permissions.mode.as_deref();
         let startup_model = permissions.model.as_deref();
+        let read_only_tools = permissions.read_only_tools.as_deref();
         // Credentials are not pre-checked here: the sidecar rejects a signed-out
         // handshake with the exact reason, whatever auth source Claude Code uses.
         if let Some(id) = native_id {
@@ -229,6 +240,9 @@ impl ClaudeAdapter {
         if let Some(model) = startup_model {
             start["model"] = json!(model);
         }
+        if let Some(tools) = read_only_tools {
+            start["readOnlyTools"] = json!(tools);
+        }
         let result = process.sidecar_request("session.start", start).map_err(|error| {
             if permission_mode.is_some() {
                 ProviderError::new("chat_permission_restore_failed", error.message)
@@ -237,7 +251,11 @@ impl ClaudeAdapter {
             }
         })?;
         if let Some(state) = result.get("ui") {
-            ui.replace(state);
+            let mut state = state.clone();
+            if let Some(report) = result.get("roundtableToolsReport") {
+                state["roundtableToolsReport"] = report.clone();
+            }
+            ui.replace(&state);
         }
         if liveness.ended() {
             return Err(ProviderError::new(
@@ -545,7 +563,7 @@ impl ProviderAdapter for ClaudeAdapter {
 }
 
 #[derive(Debug, Default)]
-struct ClaudeStartupPermissions { mode: Option<String>, model: Option<String> }
+struct ClaudeStartupPermissions { mode: Option<String>, model: Option<String>, read_only_tools: Option<Vec<String>> }
 
 fn claude_startup_permissions(options: &Value) -> Result<ClaudeStartupPermissions, ProviderError> {
     let Some(options) = options.as_array() else {
@@ -553,6 +571,7 @@ fn claude_startup_permissions(options: &Value) -> Result<ClaudeStartupPermission
     };
     let mut mode = None;
     let mut model = None;
+    let mut read_only_tools = None;
     for option in options {
         let id = option.get("id").and_then(Value::as_str).ok_or_else(|| {
             ProviderError::new("chat_permission_restore_failed", "Saved Claude permission has no option id")
@@ -562,6 +581,12 @@ fn claude_startup_permissions(options: &Value) -> Result<ClaudeStartupPermission
         })?;
         if id == "model" {
             if model.replace(value.to_owned()).is_some() { return Err(ProviderError::new("chat_permission_restore_failed", "Saved Claude startup model was specified more than once")); }
+            continue;
+        }
+        if id == "roundtable-tools" {
+            if value != "Read,Glob,Grep" || read_only_tools.replace(vec!["Read".to_owned(), "Glob".to_owned(), "Grep".to_owned()]).is_some() {
+                return Err(ProviderError::new("chat_permission_restore_failed", "Saved Claude Roundtable tool restriction is invalid"));
+            }
             continue;
         }
         if id != "mode" || !matches!(value, "default" | "acceptEdits" | "plan" | "dontAsk" | "auto") {
@@ -580,7 +605,7 @@ fn claude_startup_permissions(options: &Value) -> Result<ClaudeStartupPermission
     if model.is_some() && mode.as_deref() != Some("auto") {
         return Err(ProviderError::new("chat_permission_restore_failed", "Saved Claude startup model is only valid with auto permission mode"));
     }
-    Ok(ClaudeStartupPermissions { mode, model })
+    Ok(ClaudeStartupPermissions { mode, model, read_only_tools })
 }
 
 struct ClaudeChat {
@@ -2288,6 +2313,17 @@ mod tests {
             claude_startup_permissions(&json!([{"id":"mode","value":"dontAsk"}])).unwrap().mode,
             Some("dontAsk".into())
         );
+        assert_eq!(
+            claude_startup_permissions(&json!([
+                {"id":"mode","value":"dontAsk"},
+                {"id":"roundtable-tools","value":"Read,Glob,Grep"}
+            ]))
+            .unwrap()
+            .read_only_tools,
+            Some(vec!["Read".into(), "Glob".into(), "Grep".into()])
+        );
+        let error = claude_startup_permissions(&json!([{"id":"roundtable-tools","value":"Read,Write"}])).unwrap_err();
+        assert_eq!(error.code, "chat_permission_restore_failed");
         let error = claude_startup_permissions(&json!([{"id":"mode","value":"bypassPermissions"}])).unwrap_err();
         assert_eq!(error.code, "chat_permission_restore_failed");
         let error = claude_startup_permissions(&json!([{"id":"model","value":"haiku"}])).unwrap_err();
@@ -2411,12 +2447,12 @@ mod tests {
             entry_id: None,
         };
         assert_eq!(
-            claude_fork_params("D:/repo", "session-source", Some(&anchor)),
-            json!({"sessionId":"session-source","cwd":"D:/repo","messageId":"reply-uuid"})
+            claude_fork_params("workspace", "session-source", Some(&anchor)),
+            json!({"sessionId":"session-source","cwd":"workspace","messageId":"reply-uuid"})
         );
         assert_eq!(
-            claude_fork_params("D:/repo", "session-source", None),
-            json!({"sessionId":"session-source","cwd":"D:/repo"})
+            claude_fork_params("workspace", "session-source", None),
+            json!({"sessionId":"session-source","cwd":"workspace"})
         );
     }
 
@@ -3612,7 +3648,7 @@ createInterface({{ input: process.stdin, crlfDelay: Infinity }}).on('line', line
                 Some("native-fixture"),
                 "worker-permission",
                 None,
-                &super::super::ChatStartupOptions {project_trust:None, permissions:&json!([{"id":"mode","value":"plan"}])},
+                &super::super::ChatStartupOptions {project_trust:None, permissions:&json!([{"id":"mode","value":"plan"}]), pi_read_only_tools:false},
             )
             .unwrap();
         assert_eq!(chat.ui_state()["options"][0]["value"], "plan");
@@ -3990,7 +4026,7 @@ createInterface({{ input: process.stdin, crlfDelay: Infinity }}).on('line', line
             )
         );
         let session = approval_choice_ids(
-            json!({"suggestions":[{"type":"addDirectories","directories":["C:/x"],"destination":"session"}]}),
+            json!({"suggestions":[{"type":"addDirectories","directories":["workspace"],"destination":"session"}]}),
         );
         assert_eq!(session[1].1, "Allow for this session");
         let everywhere = approval_choice_ids(json!({"suggestions":[

@@ -44,6 +44,7 @@ import { fileTabMenuItems } from '../contextMenuSurfaceItems';
 import { showContextMenu } from './ContextMenu';
 
 const TaskMapView = lazy(() => import('./TaskMapView'));
+const GroupChatView = lazy(async () => ({ default: (await import('./GroupChatView')).GroupChatView }));
 
 type Props = {
   layout: PaneLayout;
@@ -82,6 +83,10 @@ export type PaneWorkbench = {
   taskMapFocus?:{tabId:string;sessionId:string;itemId?:string;key:string};
   openSessionReview?:(target:{sessionId:string;checkpointId:string;toCheckpointId?:string;path:string})=>void;
   openSessionFile?:(target:{sessionId:string;path:string})=>void;
+  /** Resolves a Group output in a member workspace, then opens it as an independent file tab. */
+  openGroupFile?:(target:{sessionId:string;path:string})=>void;
+  /** Persist a Group's renamed title in every matching Group or legacy Roundtable tab. */
+  updateGroupTitle?:(id:string,title:string)=>void;
   /** `sessionId` picks the receiving session (a file dropped on its pane); otherwise the workspace's current one. */
   sendToAgent?:(target:{projectId:string;worktreePath?:string;path:string;startLine?:number;endLine?:number;sessionId?:string})=>void;
   openHistory?:(target:{projectId:string;worktreePath?:string;path?:string;commit?:string})=>void;
@@ -495,6 +500,8 @@ function Pane({
     <Suspense fallback={<p className="note" role="status">{zh?'正在加载任务图…':'Loading task map…'}</p>}><TaskMapView sessionId={item.sessionId} sessions={sessions} visible={active&&browserVisible} zh={zh}
       focus={workbench?.taskMapFocus?.tabId===item.id?workbench.taskMapFocus:undefined} onOpenSession={onOpenSession}
       onOpenReview={workbench?.openSessionReview} onOpenFile={workbench?.openSessionFile} onClose={()=>onCloseTab({paneId:node.id,tabId:item.id})}/></Suspense>
+  ) : item.kind === "group" || item.kind === "roundtable" ? (
+    <Suspense fallback={<p className="note" role="status">{zh?'正在加载群聊…':'Loading group chat…'}</p>}><GroupChatView id={item.kind==='group'?item.groupId:item.roundtableId} providers={providers} sessions={sessions} visible={active&&browserVisible} onOpenSession={id=>onOpenSession?.(id)} onOpenFile={path=>{const groupId=item.kind==='group'?item.groupId:item.roundtableId;const sessionId=sessions.find(candidate=>candidate.group?.id===groupId)?.id;if(sessionId)workbench?.openGroupFile?.({sessionId,path});}} onOpenUrl={url=>workbench?.openWeb?.(url)} onChanged={onSessionChanged??(()=>undefined)} onTitleChanged={workbench?.updateGroupTitle}/></Suspense>
   ) : item.kind === "history" ? (
     <GitHistoryView projectId={item.projectId} worktreePath={item.worktreePath} path={item.path} zh={zh}
       focusCommit={workbench?.historyFocus?.tabId===item.id?workbench.historyFocus.commit:undefined}

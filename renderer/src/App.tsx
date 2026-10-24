@@ -79,6 +79,7 @@ import { useSupervision } from "./useSupervision";
 import { parseSupervision } from "./supervision";
 import { visibleCatalogSnapshot } from "./catalogVisibility";
 import { sessionWorkspaceKey } from "./sessionFileViews";
+import { acknowledgeGroupNavigation, observeGroupNavigation, type GroupNavigation } from "./groupNavigation";
 
 const TerminalSurface = lazy(async () => ({
   default: (await import("./components/TerminalSurface")).TerminalSurface,
@@ -120,8 +121,12 @@ export function App() {
   const [scopeProjectId, setScopeProjectId] = useState<string>();
   const [error, setError] = useState<string>();
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [settingsInitialTab, setSettingsInitialTab] = useState<"tools">();
   const [creatorOpen, setCreatorOpen] = useState(false);
   const [creatorDefaults, setCreatorDefaults] = useState<{projectId?:string;path?:string;provider?:ProviderId;title?:string}>();
+  const [groupCreate,setGroupCreate]=useState(false);
+  const [groupContext,setGroupContext]=useState<{sessionId:string}>();
+  const [groupToOpen,setGroupToOpen]=useState<{id:string;title:string;members:{sessionId:string}[]}>();
   const [shellMenu,setShellMenu]=useState<{kind:"notifications"|"account";anchor:HTMLElement}>();
   const [projectCreatorOpen, setProjectCreatorOpen] = useState(false);
   const [recentIds, setRecentIds] = useState<string[]>(() => { try { const value: unknown = JSON.parse(localStorage.getItem("threadterm.v3.recent-session-ids") ?? "[]"); return Array.isArray(value) ? value.filter((id): id is string => typeof id === "string").slice(0, 12) : []; } catch { return []; } });
@@ -262,6 +267,23 @@ export function App() {
     setData((current) => (current ? upsertSession(current, created) : current));
     void navigate({ kind: "session", id: created.id });
   }, [navigate]);
+  useEffect(()=>observeGroupNavigation((navigation:GroupNavigation)=>{
+    if(navigation.kind==='start'){
+      const source=navigation.context?.sessionId?navigationState.current.data?.sessions.find(session=>session.id===navigation.context?.sessionId):undefined;
+      const sourceProject=source?.projectId?navigationState.current.data?.projects.find(project=>project.id===source.projectId):undefined;
+      setCreatorDefaults(source?{projectId:source.projectId,path:source.worktreePath??sourceProject?.path}:undefined);
+      setGroupCreate(true);setGroupContext(navigation.context);setCreatorOpen(true);acknowledgeGroupNavigation(navigation);return;
+    }
+    const sessionId=navigation.group.members[0]?.sessionId;
+    if(!sessionId)return;
+    setCreatorOpen(false);setCreatorDefaults(undefined);setGroupCreate(false);setGroupContext(undefined);
+    void refresh().finally(async()=>{
+      const current=navigationState.current.route;
+      if(current.kind!=='session'||current.id!==sessionId)await navigate({kind:'session',id:sessionId});
+      setGroupToOpen(navigation.group);
+    });
+    acknowledgeGroupNavigation(navigation);
+  }),[navigate,refresh]);
   useEffect(
     () => subscribeEvents((event) => {
       const next = attentionFromEvent(event);
@@ -462,6 +484,8 @@ export function App() {
               onSelect={(id) => void navigate({kind:"session",id})}
               onProject={(id,worktreePath) => void navigate({kind:"project",id,worktreePath})}
               onChanged={() => void refresh()}
+              groupToOpen={groupToOpen}
+              onGroupOpened={id=>setGroupToOpen(current=>current?.id===id?undefined:current)}
               backgroundPresentation={backgroundPresentation && sameWorkspace(session,backgroundPresentation.workspacePath) ? backgroundPresentation.sessionId : undefined}
               onBackgroundPresented={() => setBackgroundPresentation(undefined)}
             />
@@ -536,12 +560,15 @@ export function App() {
           />
         )}
         {shellMenu&&data&&(shellMenu.kind==='account'?<AccountMenu data={data} anchor={shellMenu.anchor} onClose={()=>setShellMenu(undefined)} onChanged={()=>void refresh()} onSettings={()=>{setShellMenu(undefined);setSettingsOpen(true);}}/>:<NotificationMenu data={data} anchor={shellMenu.anchor} onClose={()=>setShellMenu(undefined)} onChanged={()=>void refresh()} onSession={id=>{setShellMenu(undefined);void navigate({kind:"session",id});}} onInbox={()=>{setShellMenu(undefined);void navigate({kind:"inbox"});}}/>)}
-        {paletteOpen && data && <CommandPalette data={data} workbench={route.kind === "session" || route.kind === "workspace"} onClose={()=>setPaletteOpen(false)} onSession={id=>void navigate({kind:"session",id})} onProject={id=>void navigate({kind:"project",id})} onCreate={()=>setCreatorOpen(true)} onAll={()=>void navigate({kind:"all"})} onInbox={()=>void navigate({kind:"inbox"})} onSettings={()=>setSettingsOpen(true)}/>}
+        {paletteOpen && data && <CommandPalette data={data} workbench={route.kind === "session" || route.kind === "workspace"} onClose={()=>setPaletteOpen(false)} onSession={id=>void navigate({kind:"session",id})} onProject={id=>void navigate({kind:"project",id})} onCreate={()=>{setGroupCreate(false);setGroupContext(undefined);setCreatorOpen(true);}} onCreateGroup={()=>{setGroupCreate(true);setGroupContext(undefined);setCreatorOpen(true);}} onAll={()=>void navigate({kind:"all"})} onInbox={()=>void navigate({kind:"inbox"})} onSettings={()=>setSettingsOpen(true)}/>}
         {creatorOpen && data && (
           <SessionCreateDialog data={data}
             initialProjectId={creatorDefaults?.projectId} initialPath={creatorDefaults?.path} initialProvider={creatorDefaults?.provider} initialTitle={creatorDefaults?.title}
-            onClose={() => {setCreatorOpen(false);setCreatorDefaults(undefined);}}
-            onCreated={(created) => {setCreatorOpen(false);setCreatorDefaults(undefined);openCreatedSession(created);void refresh();}}
+            defaultKind={groupCreate?'group':undefined} fromSessionId={groupContext?.sessionId}
+            onClose={() => {setCreatorOpen(false);setCreatorDefaults(undefined);setGroupCreate(false);setGroupContext(undefined);}}
+            onCreated={(created) => {setCreatorOpen(false);setCreatorDefaults(undefined);setGroupCreate(false);setGroupContext(undefined);openCreatedSession(created);void refresh();}}
+            onGroupCreated={()=>void refresh()}
+            onOpenSettings={()=>{setCreatorOpen(false);setSettingsInitialTab("tools");setSettingsOpen(true);}}
           />
         )}
         {projectCreatorOpen && (
@@ -558,7 +585,8 @@ export function App() {
           <SettingsDialog
             data={data}
             supervisionCounts={supervisionState}
-            onClose={() => setSettingsOpen(false)}
+            initialTab={settingsInitialTab}
+            onClose={() => {setSettingsOpen(false);setSettingsInitialTab(undefined);}}
             onSaved={refresh}
             onSessionCreated={async (sessionId) => {
               setSettingsOpen(false);

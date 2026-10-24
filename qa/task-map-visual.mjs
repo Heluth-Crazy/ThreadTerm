@@ -3,7 +3,7 @@
 //   node qa/task-map-visual.mjs [label]
 import assert from 'node:assert/strict';
 import { build } from 'esbuild';
-import { _electron as electron } from '@playwright/test';
+import { electron } from './lib/desktop1.mjs';
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { join, resolve, sep } from 'node:path';
 import { checkControlConsistency } from './lib/visual-consistency.mjs';

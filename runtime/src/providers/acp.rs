@@ -4699,7 +4699,7 @@ createInterface({{input:process.stdin}}).on('line', line=>{{
             let descriptor = AgentDescriptor { id:"kimi".into(), name:"Fake ACP".into(), plugin_id:None, icon:None, homepage:None, command:node.to_string_lossy().into_owned(), args:vec![script.to_string_lossy().into_owned()], version_args:vec![], terminal:None, chat_args:None, sign_in_args:None, plugin_dir:None };
             let adapter = AcpAdapter::from_descriptor(descriptor, crate::provider_events::tap_channel(8).0);
             let requested = if scenario == "kimi-already-plan" { "plan" } else { "auto" };
-            let result = adapter.open_chat_with_startup_options("s", "C:/", Some("native"), "worker", None, &super::super::ChatStartupOptions {project_trust:None, permissions:&json!([{"id":"mode","value":requested}])});
+            let result = adapter.open_chat_with_startup_options("s", "C:/", Some("native"), "worker", None, &super::super::ChatStartupOptions {project_trust:None, permissions:&json!([{"id":"mode","value":requested}]), pi_read_only_tools:false});
             if scenario == "mismatch" {
                 match result {
                     Err(error) => {

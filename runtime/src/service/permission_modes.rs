@@ -5,8 +5,10 @@ pub(super) fn is_permission_option(provider: &str, option: &Value) -> bool {
     let id = option.get("id").and_then(Value::as_str).unwrap_or_default();
     match provider {
         "codex" => matches!(id, "mode" | "sandbox"),
-        "claude" | "kimi" | "grok" => id == "mode",
-        "opencode" | "pi" => false,
+        "claude" => matches!(id, "mode" | "roundtable-tools"),
+        "kimi" | "grok" => id == "mode",
+        "opencode" => false,
+        "pi" => id == "roundtable-tools",
         _ => option.get("category").and_then(Value::as_str) == Some("mode"),
     }
 }
@@ -215,7 +217,14 @@ pub(super) fn verify(
     session_id: &str,
     provider: &str,
 ) -> Result<()> {
-    let options = startup_options(db, session_id, provider)?;
+    let mut options = startup_options(db, session_id, provider)?;
+    // Pi's Roundtable marker changes the process launch arguments; it is not a
+    // native live option that `get_state` can report back for verification.
+    if matches!(provider, "pi" | "claude") {
+        if let Some(rows) = options.as_array_mut() {
+            rows.retain(|row| row["id"] != "roundtable-tools");
+        }
+    }
     if options.as_array().is_some_and(|rows| !rows.is_empty()) {
         crate::providers::verify_permission_options(
             &providers.chat_options(session_id)?,

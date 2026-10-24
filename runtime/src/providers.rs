@@ -17,6 +17,7 @@ mod kimi_plan_usage;
 pub(crate) mod network;
 mod opencode;
 mod pi;
+pub(crate) mod probes;
 #[cfg(test)]
 mod retirement_tests;
 
@@ -47,6 +48,9 @@ pub struct ChatToolServer {
 pub(crate) struct ChatStartupOptions<'a> {
     pub project_trust: Option<&'a str>,
     pub permissions: &'a Value,
+    /// Set only after the provider-level Pi probe has confirmed every launch
+    /// flag. A staged marker alone never authorizes unknown CLI arguments.
+    pub pi_read_only_tools: bool,
 }
 
 /// Decides, per `(session_id, provider)`, whether a Chat gets a tool server.
@@ -159,6 +163,12 @@ pub(crate) const BUILTIN_AGENTS: &[BuiltinDescriptor] = &[
 
 pub(crate) fn builtin_name(id: &str) -> &str {
     BUILTIN_AGENTS.iter().find(|agent| agent.id == id).map(|agent| agent.name).unwrap_or(id)
+}
+
+/// Built-in adapters currently use their stable provider id as their CLI
+/// command. Prerequisite checks use this instead of duplicating provider names.
+pub(crate) fn builtin_cli_name(id: &str) -> Option<&'static str> {
+    BUILTIN_AGENTS.iter().find(|agent| agent.id == id).map(|agent| agent.id)
 }
 
 pub(crate) fn builtin_sign_in(id: &str) -> Option<ProviderSignIn> {
@@ -1016,6 +1026,7 @@ pub struct Providers {
     connect_wait: Condvar,
     capability_cache: Arc<Mutex<CapabilityCache>>,
     capability_wait: Arc<Condvar>,
+    provider_probe_cache: Mutex<probes::ProviderProbeCache>,
     events: ProviderEventSender,
     projection_events: Mutex<Option<ProjectionReceiver>>,
     network: network::NetworkSettings,
@@ -1407,6 +1418,7 @@ impl Providers {
             connect_wait: Condvar::new(),
             capability_cache: Arc::new(Mutex::new(CapabilityCache::default())),
             capability_wait: Arc::new(Condvar::new()),
+            provider_probe_cache: Mutex::new(probes::ProviderProbeCache::default()),
             events,
             projection_events: Mutex::new(Some(projection_events)),
             network,
@@ -1497,7 +1509,31 @@ impl Providers {
             cache.failed_at = None;
             cache.generation += 1;
         }
+        if let Ok(mut cache) = self.provider_probe_cache.lock() {
+            cache.clear();
+        }
         self.capability_wait.notify_all();
+    }
+
+    /// On-demand Pi flag detection for Roundtable and future compatibility
+    /// entry points. It is cached until provider refresh and never polls.
+    pub(crate) fn pi_read_only_probe(&self) -> probes::ReadOnlyProbe {
+        let version = self.capability_cache.lock().ok().and_then(|cache| {
+            cache.values.as_ref().and_then(|(_, values)| {
+                values.iter().find(|value| value["id"] == "pi")
+                    .and_then(|value| value["version"].as_str())
+                    .map(str::to_owned)
+            })
+        });
+        probes::pi_read_only_probe(&self.provider_probe_cache, version.as_deref())
+    }
+
+    /// Reads a provider-native Roundtable restriction report without passing it
+    /// through the normalized public chat-options schema.
+    pub(crate) fn roundtable_read_only_report(&self, session_id: &str) -> Result<Value, ProviderError> {
+        self.chat(session_id, |chat| {
+            Ok(chat.ui_state().get("roundtableToolsReport").cloned().unwrap_or(Value::Null))
+        })
     }
 
     fn supported_adapters(&self) -> Vec<Arc<dyn ProviderAdapter>> {
@@ -2184,8 +2220,14 @@ impl Providers {
 
         // Resolved per open: reconnects rotate the session token.
         let tools = self.tool_server(session_id, provider);
+        let pi_read_only_tools = provider == "pi"
+            && options.as_array().into_iter().flatten().any(|option| {
+                option.get("id").and_then(Value::as_str) == Some("roundtable-tools")
+                    && option.get("value").and_then(Value::as_str) == Some("read,grep,find,ls")
+            })
+            && self.pi_read_only_probe().supported;
         let opened = self.project_trust(session_id, provider).and_then(|trust| {
-            adapter.open_chat_with_startup_options(session_id, cwd, native_id, &worker_token, tools.as_ref(), &ChatStartupOptions { project_trust:trust.as_deref(), permissions:options })
+            adapter.open_chat_with_startup_options(session_id, cwd, native_id, &worker_token, tools.as_ref(), &ChatStartupOptions { project_trust:trust.as_deref(), permissions:options, pi_read_only_tools })
         });
         if native_id.is_some()
             && opened
@@ -2247,7 +2289,7 @@ impl Providers {
                             None,
                             &recovery_token,
                             recovery_tools.as_ref(),
-                            &ChatStartupOptions { project_trust:trust.as_deref(), permissions:options },
+                            &ChatStartupOptions { project_trust:trust.as_deref(), permissions:options, pi_read_only_tools },
                         )
                     });
                     return self.finish_chat_open_attempt(

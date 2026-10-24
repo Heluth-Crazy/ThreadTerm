@@ -1,0 +1,6 @@
+.project-catalog .group-row { padding-left:44px; }
+.project-catalog .group-row .bico { display:inline-flex; flex:0 0 36px; align-items:center; gap:4px; width:36px; min-width:36px; height:16px; }
+.project-catalog .group-row .ico { width:15px; height:15px; }
+.project-catalog .group-row .group-state { flex:0 0 auto; margin-left:auto; white-space:nowrap; }
+.project-catalog .group-members { margin-left:14px; border-left:1px solid var(--border); }
+.project-catalog .group-member .sess-row { padding-left:44px; }

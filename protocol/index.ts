@@ -7,7 +7,7 @@ export interface BrowserEvalApprovalRead {
 }
 export const PROTOCOL_VERSION = 1 as const;
 /** Semantic contract includes browser control and private per-snippet eval approvals. Framing/HMAC still use PROTOCOL_VERSION. */
-export const PROTOCOL_CONTRACT = 15 as const;
+export const PROTOCOL_CONTRACT = 17 as const;
 export const MAX_FRAME_BYTES = 8 * 1024 * 1024;
 /** Composer image attachments: at most this many images, whose data-URL strings sum to at most MAX_CHAT_IMAGE_BYTES.
  * Shared by the renderer composer and the desktop attach path so the picker never inlines more than the composer accepts. */
@@ -31,7 +31,9 @@ export type SessionDelegationState = 'starting'|'running'|'awaiting_parent'|'awa
 // Present on a Chat session that another agent started through ThreadTerm delegation.
 export interface SessionDelegation { id:string; parentSessionId:string; workspace:'shared'|'worktree'; branch?:string; state:SessionDelegationState; /** How many of the user's messages from the parent chat were attached to the delegate's first message; absent when none. */ userMessages?:number }
 export interface SessionForkOrigin { sessionId:string; itemId?:string; title?:string }
-export interface Session { id:string; projectId?:string; worktreePath?:string; title:string; provider:ProviderId; mode:SessionMode; status:SessionStatus; createdAt:string; updatedAt:string; nativeId?:string; exitCode?:number; cols?:number; rows?:number; followed?:boolean; readOnly?:boolean; activity?:SessionActivity; delegation?:SessionDelegation; archived?:boolean; pinned?:boolean; bookmarked?:boolean; intent?:'review'|'fix'|'research'|'test'|'docs'; sortOrder?:number; organizationRevision?:number; /** Present when this terminal is a Quick Launch run. */ run?:SessionRun; forkedFrom?:SessionForkOrigin }
+/** Present on a Chat session linked to a group. */
+export interface SessionGroup { /** Owning group id. */ id:string; /** This session's unique `@handle` within its group. */ handle:string }
+export interface Session { id:string; projectId?:string; worktreePath?:string; title:string; provider:ProviderId; mode:SessionMode; status:SessionStatus; createdAt:string; updatedAt:string; nativeId?:string; exitCode?:number; cols?:number; rows?:number; followed?:boolean; readOnly?:boolean; activity?:SessionActivity; delegation?:SessionDelegation; /** Group grouping metadata for member Chat sessions. */ group?:SessionGroup; archived?:boolean; pinned?:boolean; bookmarked?:boolean; intent?:'review'|'fix'|'research'|'test'|'docs'; sortOrder?:number; organizationRevision?:number; /** Present when this terminal is a Quick Launch run. */ run?:SessionRun; forkedFrom?:SessionForkOrigin }
 /** Quick Launch: per-project saved commands, each run as an ordinary managed terminal session in a chosen worktree.
  * One active run per command and worktree root (the runtime admits atomically and returns the existing run). */
 export type QuickLaunchShell = 'cmd'|'powershell'|'pwsh';
@@ -318,6 +320,131 @@ export interface DataRelocationPrepared { sourceRoot:string; targetRoot:string; 
 export interface RuntimeEvent<E extends string=string,D=unknown> { v:1; event:E; epoch:string; seq:number; data:D }
 export type ChatTurnSpeedEvent=RuntimeEvent<'chat.turnSpeed',ChatTurnSpeed>;
 export interface TerminalLaunchState { phase:'preparing'|'launching'|'running'|'failed'|'cancelled'; error?:{code:string;message:string} }
+/** Native prerequisites are checked on demand and shared with group creation admission. */
+export interface GroupPrerequisiteProvider {
+ /** Provider requested by the prospective member. */ provider:ProviderId;
+ /** Whether this machine can start the provider now. */ usable:boolean;
+ /** Machine-specific reason the provider is unavailable. */ reason?:string;
+ /** Actionable remediation when the provider is unavailable. */ fix?:{kind:'install'|'sign_in'|'update'|'enable_plugin'|'configure';text:string;homepage?:string;command?:string};
+ /** Read-only enforcement available for this provider. */ readOnly:'enforced'|'prompt';
+ /** Human-readable read-only mechanism explanation. */ readOnlyNote:string;
+}
+/** Portable creation prerequisites for a group folder and requested providers. */
+export interface GroupPrerequisites {
+ /** One result per requested provider, including repeats. */ providers:GroupPrerequisiteProvider[];
+ /** Git discovery status on this machine. */ git:{found:boolean;version?:string};
+ /** Folder repository status when a folder was supplied. */ folder?:{repository:boolean;reason?:string};
+}
+/** Availability of changed-file attribution for the group's folder. */
+export interface GroupFilesCheck { /** Whether attribution is enabled. */ state:'on'|'off'; /** Why it is disabled. */ reason?:'no_git'|'not_a_repository'|'error'; /** Safe diagnostic detail. */ detail?:string }
+/** Derived state shown for one member in a group. */
+export type GroupMemberState='idle'|'queued'|'working'|'needs_user'|'failed';
+/** One linked ordinary Chat session. Handles are unique lowercase `@` names in a group. */
+export interface GroupMember {
+ /** Linked Chat session id. */ sessionId:string;
+ /** Provider selected for this member. */ provider:ProviderId;
+ /** Unique group handle without the `@` prefix (`[a-z0-9-]{1,24}`). */ handle:string;
+ /** Requested model selection when the provider supports it. */ model?:string;
+ /** Whether the member uses saved permissions or the group read-only setup. */ mode:'default'|'read_only';
+ /** Native read-only enforcement, when this member uses it. */ readOnly?:'enforced'|'prompt';
+ /** Human-readable read-only setup explanation. */ readOnlyNote?:string;
+ /** Current delivery/session-derived state. */ state:GroupMemberState;
+ /** Latest delivery error retained for the member. */ error?:string;
+ /** UTC time the member joined the group. */ joinedAt:string;
+}
+/** Explicit context attached to one user message. */
+export interface GroupReference {
+ /** Source kind; reply/message content is copied, files and URLs are identifiers only. */ kind:'reply'|'message'|'file'|'url';
+ /** Referenced group message id for reply/message references. */ messageId?:string;
+ /** Referenced member handle for reply references. */ handle?:string;
+ /** Group-root-relative file path for file references. */ path?:string;
+ /** Absolute http(s) URL for URL references. */ url?:string;
+ /** User-visible reference label. */ title:string;
+ /** UTF-8 bytes delivered to recipients after bounding. */ bytes:number;
+ /** True when copied reply/message content was shortened. */ shortened?:boolean;
+}
+/** Lifecycle of one recipient's delivery of a user message. */
+export type GroupDeliveryState='queued'|'working'|'needs_user'|'replied'|'failed'|'stopped';
+/** One recipient delivery of a user-authored group message. */
+export interface GroupDelivery {
+ /** Recipient Chat session id. */ sessionId:string;
+ /** Recipient handle. */ handle:string;
+ /** Current delivery lifecycle state. */ state:GroupDeliveryState;
+ /** Group reply id created when the delivery completes. */ replyId?:string;
+ /** Failure or stop explanation. */ error?:string;
+ /** UTC time the provider turn started. */ startedAt?:string;
+ /** UTC time the turn completed, failed, or stopped. */ finishedAt?:string;
+}
+/** Outputs extracted from a completed member reply. */
+export interface GroupOutputs {
+  /** Root-relative paths named in the reply. */ files:string[];
+  /** http(s) URLs named in the reply. */ urls:string[];
+ /** Root-relative files attributed to the member during its delivery turn. */ changed:string[];
+ /** Per-file status and evidence for attributed changes; absent on older replies. `changed` is a tool report without a verified folder delta. */
+ changedDetails?:{path:string;status:'added'|'modified'|'deleted'|'changed';evidence:'tool'|'folder'}[];
+ /** Root-relative files changed while one or more concurrent members could have written them. */
+ possiblyChanged?:string[];
+ /** Whether a bounded folder comparison could have omitted changes. */
+ changedIncomplete?:boolean;
+ /** Handles that were concurrent possible writers of `possiblyChanged` paths. */
+ possiblyChangedWith?:string[];
+}
+/** A persisted user, member, or runtime timeline entry. */
+export interface GroupMessage {
+ /** Stable message id. */ id:string;
+ /** Whether the message came from the user, a member, or the runtime. */ author:'user'|'member'|'system';
+ /** Author Chat session for member messages. */ sessionId?:string;
+ /** Author handle for member messages. */ handle?:string;
+ /** Verbatim user text or bounded stored reply/system body. */ body:string;
+ /** Recipient handles for a user message. */ recipients?:string[];
+ /** Explicit references shown before the user sent the message. */ references?:GroupReference[];
+ /** One delivery per recipient on a user message. */ deliveries?:GroupDelivery[];
+ /** User message id answered by a member reply. */ replyTo?:string;
+ /** Extracted files, URLs, and changed paths on a member reply. */ outputs?:GroupOutputs;
+ /** User-controlled routing suggestions extracted from a member reply. */ suggestions?:{handle:string;text:string}[];
+ /** UTC creation time. */ createdAt:string;
+}
+/** Durable room state and the current chronological timeline page. */
+export interface Group {
+ /** Stable group id. */ id:string;
+ /** Optimistic-concurrency revision. */ revision:number;
+ /** Display title. */ title:string;
+ /** Optional registered project id. */ projectId?:string;
+ /** Optional registered worktree path. */ worktreePath?:string;
+ /** Canonical shared working directory. */ cwd:string;
+ /** Linked Chat members. */ members:GroupMember[];
+ /** Current chronological timeline page, not the whole unbounded timeline. */ messages:GroupMessage[];
+ /** Recipients used when the composer had no leading mention. */ lastRecipients:string[];
+ /** Folder-wide availability of changed-file attribution. */ filesCheck?:GroupFilesCheck;
+ /** True when older messages exist before this page. */ hasMore?:boolean;
+ /** Cursor to pass as `before` to load the preceding page. */ before?:string;
+ /** Whether this group is archived. */ archived?:boolean;
+ /** UTC creation time. */ createdAt:string;
+ /** UTC time of the last state mutation. */ updatedAt:string;
+}
+/** Compact group row for sidebars and project views. */
+export interface GroupSummary {
+ /** Stable group id. */ id:string;
+ /** Display title. */ title:string;
+ /** Optional registered project id. */ projectId?:string;
+ /** Optional registered worktree path. */ worktreePath?:string;
+ /** Member identities and cheap derived states. */ members:{sessionId:string;provider:ProviderId;handle:string;state:GroupMemberState}[];
+ /** UTC time of the last state mutation. */ updatedAt:string;
+}
+/** Result of parsing composer mentions without changing the user's text. */
+export interface GroupMentionParse { /** Explicit leading recipients, prior recipients, or `all`. */ to:string[]; /** Later known handles whose latest replies should be reference chips. */ referenceHandles:string[]; /** Handles not present in the group, without `@`. */ unknownHandles:string[] }
+/** Parses mentions for the group composer. Leading whitespace-separated known `@handles` or `@All` address recipients;
+ * later known handles reference their latest reply. With no leading mention it returns a copy of `previousRecipients`,
+ * or `['all']` for the first message. Unknown handles are reported for an add-member affordance and never routed. */
+export function parseGroupMentions(text:string,handles:readonly string[],previousRecipients:readonly string[]=[]):GroupMentionParse {
+ const known=new Set(handles.map(handle=>handle.toLowerCase())); const mentions=[...text.matchAll(/@([a-z0-9-]{1,24})\b/gi)];
+ const unknown=[...new Set(mentions.map(match=>match[1].toLowerCase()).filter(handle=>handle!=='all'&&!known.has(handle)))];
+ let end=0; const to:string[]=[];
+ for(const match of mentions) { if(match.index!==end&&text.slice(end,match.index!).trim()!=='') break; const handle=match[1].toLowerCase(); if(handle==='all') { to.splice(0,to.length,'all'); end=(match.index??0)+match[0].length; continue; } if(!known.has(handle)||to.includes('all')) break; if(!to.includes(handle)) to.push(handle); end=(match.index??0)+match[0].length; }
+ const leadingEnd=end; const references=[...new Set(mentions.filter(match=>(match.index??0)>=leadingEnd&&known.has(match[1].toLowerCase())).map(match=>match[1].toLowerCase()))];
+ return {to:to.length?to:(previousRecipients.length?[...previousRecipients]:['all']),referenceHandles:references,unknownHandles:unknown};
+}
+
 export interface RequestMap {
  'preview.attach': [{sessionId:string;viewId:string;workspaceId?:string},{attachmentId:string;associations:PreviewAssociation[]}];
  'preview.detach': [{sessionId:string;attachmentId:string},null];
@@ -488,6 +615,30 @@ export interface RequestMap {
  /** Newest first, at most 20. A finished reviewer's last reply is parsed once, and again only after it answers again. */
  'agentReview.list': [{sessionId:string},AgentReview[]];
  'agentReview.mark': [{reviewId:string;findingIds:string[];state:'open'|'added'|'dismissed';operationId:string},AgentReview];
+ /** Detects portable provider and folder prerequisites without starting a model turn. */
+ 'group.prerequisites': [{cwd?:string;providers?:ProviderId[]},GroupPrerequisites];
+ /** Creates one to six linked Chat members; the first descriptor binds `fromSessionId` when supplied. */
+ 'group.create': [{projectId?:string;cwd:string;title?:string;members:{provider:ProviderId;handle?:string;model?:string;mode?:'default'|'read_only'}[];fromSessionId?:string;expectedRevision?:number;operationId:string},Group];
+ /** Most recently updated groups, optionally scoped to a project. */
+ 'group.list': [{projectId?:string},GroupSummary[]];
+ /** Reads a chronological timeline page. `before` is the previous response's cursor; limit defaults to 100 and is at most 200. */
+ 'group.read': [{id:string;before?:string;limit?:number},Group];
+ /** Posts verbatim user text to explicit recipient handles with visible references. */
+ 'group.send': [{id:string;text:string;to:string[];references?:{kind:GroupReference['kind'];messageId?:string;path?:string;url?:string}[];expectedRevision?:number;operationId:string},Group];
+ /** Stops all deliveries for a message, or only the named recipient. */
+ 'group.stop': [{id:string;messageId:string;handle?:string;expectedRevision?:number;operationId:string},Group];
+ /** Requeues a failed, stopped, or restart-interrupted delivery. */
+ 'group.resend': [{id:string;messageId:string;handle:string;expectedRevision?:number;operationId:string},Group];
+ /** Adds one new provider-backed Chat member. */
+ 'group.member.add': [{id:string;provider:ProviderId;handle?:string;model?:string;mode?:'default'|'read_only';expectedRevision?:number;operationId:string},Group];
+ /** Renames a member and/or changes its read-only mode. */
+ 'group.member.update': [{id:string;sessionId:string;handle?:string;mode?:'default'|'read_only';expectedRevision?:number;operationId:string},Group];
+ /** Removes only the group link; the Chat session remains available. */
+ 'group.member.remove': [{id:string;sessionId:string;expectedRevision?:number;operationId:string},Group];
+ /** Renames the group. */
+ 'group.rename': [{id:string;title:string;expectedRevision?:number;operationId:string},Group];
+ /** Archives by default; pass `archived:false` to restore. */
+ 'group.archive': [{id:string;archived?:boolean;expectedRevision?:number;operationId:string},Group];
  /** In pin order. */
  'session.documents.list': [{sessionId:string},SessionDocument[]];
  /** Pins a file inside the session's worktree (≤ 2 MiB; at most 20 pins → `too_many_documents`; `not_a_file`,
@@ -550,7 +701,7 @@ export interface ThreadTermBridge {
  exportDiagnostics():Promise<string|null>;
  scheduleElectronCacheCleanup(schedule:boolean):Promise<{scheduled:boolean;available:boolean;result?:string}>;
 }
-export const METHODS = ['browser.approval.read','browser.approval.resolve','git.commit.selected','preview.attach','preview.detach','preview.snapshot','preview.prepare','preview.ack','preview.observe','preview.close','chat.repair','filesystem.resolve','session.launch.read','catalog.visibility.list','catalog.visibility.update','session.resume','session.organize','git.merge','git.merge.abort','project.catalog.list','project.update','worktree.branches','worktree.relocate','session.rerun','git.fetch','git.pull','git.push','session.config.read','session.config.save','session.retry.read','session.retry.update','chat.draft.read','chat.draft.save','device.status','device.enable','device.disable','device.pairing.create','device.pairing.cancel','device.list','device.rename','device.renew','device.revoke','git.stage','git.unstage','git.commit','filesystem.image','chat.snapshot','terminal.read','session.lookup','session.present','chat.read','chat.subagent.read','data.status','data.backup','data.relocation.status','data.relocation.prepare','data.relocation.cancel','settings.export','settings.import.preview','settings.import.apply','usage.query','runtime.health','terminal.host','runtime.shutdown','runtime.snapshot','project.add','project.remove','session.create','history.import','session.stop','session.update','session.attention.acknowledge','session.claim','session.renew','session.release','terminal.input','terminal.resize','settings.update','provider.list','provider.refresh','plugin.list','plugin.setEnabled','plugin.selectBrowserBinding','plugin.reload','chat.queue.read','chat.queue.add','chat.queue.update','chat.queue.remove','chat.queue.move','chat.queue.pause','chat.queue.resume','chat.queue.send','quickLaunch.list','quickLaunch.save','quickLaunch.delete','quickLaunch.run','quickLaunch.setup.read','quickLaunch.setup.save','quickLaunch.setup.run','quickLaunch.setup.status','history.list','history.read','chat.send','chat.cancel','chat.approve','chat.answer','chat.options','chat.option.set','chat.connection','chat.context.read','chat.connect','filesystem.list','filesystem.read','filesystem.write','draft.list','draft.put','draft.delete','git.status','git.diff','worktree.list','worktree.create','worktree.remove','workspace.save','workspace.delete','inbox.read','git.index.write','git.discard','git.checkout','git.branch.delete','git.branches','git.log','git.commit.show','git.commit.diff','git.blame','filesystem.create','filesystem.rename','filesystem.delete','filesystem.files','filesystem.search','review.list','review.changes','review.diff','review.revert','review.checkpoint','agentReview.start','agentReview.list','agentReview.mark','session.documents.list','session.documents.pin','session.documents.unpin','chat.projectTrust.set','chat.feedback.add','chat.feedback.read','chat.feedback.dismiss','chat.fork','chat.backgroundTasks.list','chat.backgroundTask.stop','chat.steer'] as const satisfies readonly Method[];
+export const METHODS = ['browser.approval.read','browser.approval.resolve','git.commit.selected','preview.attach','preview.detach','preview.snapshot','preview.prepare','preview.ack','preview.observe','preview.close','chat.repair','filesystem.resolve','session.launch.read','catalog.visibility.list','catalog.visibility.update','session.resume','session.organize','git.merge','git.merge.abort','project.catalog.list','project.update','worktree.branches','worktree.relocate','session.rerun','git.fetch','git.pull','git.push','session.config.read','session.config.save','session.retry.read','session.retry.update','chat.draft.read','chat.draft.save','device.status','device.enable','device.disable','device.pairing.create','device.pairing.cancel','device.list','device.rename','device.renew','device.revoke','git.stage','git.unstage','git.commit','filesystem.image','chat.snapshot','terminal.read','session.lookup','session.present','chat.read','chat.subagent.read','data.status','data.backup','data.relocation.status','data.relocation.prepare','data.relocation.cancel','settings.export','settings.import.preview','settings.import.apply','usage.query','runtime.health','terminal.host','runtime.shutdown','runtime.snapshot','project.add','project.remove','session.create','history.import','session.stop','session.update','session.attention.acknowledge','session.claim','session.renew','session.release','terminal.input','terminal.resize','settings.update','provider.list','provider.refresh','plugin.list','plugin.setEnabled','plugin.selectBrowserBinding','plugin.reload','chat.queue.read','chat.queue.add','chat.queue.update','chat.queue.remove','chat.queue.move','chat.queue.pause','chat.queue.resume','chat.queue.send','quickLaunch.list','quickLaunch.save','quickLaunch.delete','quickLaunch.run','quickLaunch.setup.read','quickLaunch.setup.save','quickLaunch.setup.run','quickLaunch.setup.status','history.list','history.read','chat.send','chat.cancel','chat.approve','chat.answer','chat.options','chat.option.set','chat.connection','chat.context.read','chat.connect','filesystem.list','filesystem.read','filesystem.write','draft.list','draft.put','draft.delete','git.status','git.diff','worktree.list','worktree.create','worktree.remove','workspace.save','workspace.delete','inbox.read','git.index.write','git.discard','git.checkout','git.branch.delete','git.branches','git.log','git.commit.show','git.commit.diff','git.blame','filesystem.create','filesystem.rename','filesystem.delete','filesystem.files','filesystem.search','review.list','review.changes','review.diff','review.revert','review.checkpoint','agentReview.start','agentReview.list','agentReview.mark','group.prerequisites','group.create','group.list','group.read','group.send','group.stop','group.resend','group.member.add','group.member.update','group.member.remove','group.rename','group.archive','session.documents.list','session.documents.pin','session.documents.unpin','chat.projectTrust.set','chat.feedback.add','chat.feedback.read','chat.feedback.dismiss','chat.fork','chat.backgroundTasks.list','chat.backgroundTask.stop','chat.steer'] as const satisfies readonly Method[];
 // Kept additive while this long-standing literal remains source-compatible.
 // The RPC has a RequestMap entry above and must also pass the runtime registry.
 const stringFields: Partial<Record<Method,readonly string[]>> = {
@@ -600,6 +751,7 @@ const stringFields: Partial<Record<Method,readonly string[]>> = {
  'filesystem.create':['projectId','path','kind','operationId'],'filesystem.rename':['projectId','path','newPath','operationId'],'filesystem.delete':['projectId','path','operationId'],'filesystem.files':['projectId'],'filesystem.search':['projectId','query'],
  'review.list':['sessionId'],'review.changes':['sessionId','from'],'review.diff':['sessionId','from','path'],'review.revert':['sessionId','checkpointId','operationId'],'review.checkpoint':['sessionId','kind','operationId'],
  'agentReview.start':['sessionId','agent','operationId'],'agentReview.list':['sessionId'],'agentReview.mark':['reviewId','state','operationId'],
+ 'group.create':['cwd','operationId'],'group.read':['id'],'group.send':['id','text','operationId'],'group.stop':['id','messageId','operationId'],'group.resend':['id','messageId','handle','operationId'],'group.member.add':['id','provider','operationId'],'group.member.update':['id','sessionId','operationId'],'group.member.remove':['id','sessionId','operationId'],'group.rename':['id','title','operationId'],'group.archive':['id','operationId'],
  'session.documents.list':['sessionId'],'session.documents.pin':['sessionId','path','operationId'],'session.documents.unpin':['sessionId','path','operationId'],
 };
 export function isRecord(value:unknown):value is Record<string,unknown> { return typeof value==='object' && value!==null && !Array.isArray(value); }
@@ -740,6 +892,32 @@ export function validateRequest(method:unknown,params:unknown):asserts method is
   if(!isRecord(scope)||(scope.kind==='checkpoints'?!id(scope.from)||(scope.to!==undefined&&!id(scope.to)):scope.kind!=='uncommitted')) throw new Error('Invalid review scope');
  }
  if(m==='agentReview.mark'&&(!Array.isArray(params.findingIds)||params.findingIds.length<1||params.findingIds.length>100||params.findingIds.some(id=>typeof id!=='string'||!id))) throw new Error('Invalid findings');
+ if(m==='group.prerequisites') {
+  if(params.cwd!==undefined&&(typeof params.cwd!=='string'||!params.cwd.trim()||params.cwd.length>32*1024)) throw new Error('Invalid group folder');
+  if(params.providers!==undefined&&(!Array.isArray(params.providers)||params.providers.length>64||params.providers.some(provider=>typeof provider!=='string'||!/^[a-z][a-z0-9-]{1,31}$/.test(provider)))) throw new Error('Invalid group providers');
+ }
+ const groupHandle=(value:unknown)=>typeof value==='string'&&/^[a-z0-9-]{1,24}$/.test(value);
+ const groupMember=(value:unknown)=>isRecord(value)&&typeof value.provider==='string'&&/^[a-z][a-z0-9-]{1,31}$/.test(value.provider)&&(value.handle===undefined||groupHandle(value.handle))&&(value.model===undefined||(typeof value.model==='string'&&value.model.trim().length>0&&[...value.model].length<=200))&&(value.mode===undefined||value.mode==='default'||value.mode==='read_only');
+ if(m==='group.create') {
+  if(typeof params.cwd!=='string'||!params.cwd.trim()||params.cwd.length>32*1024) throw new Error('Invalid group folder');
+  if(params.title!==undefined&&(typeof params.title!=='string'||!params.title.trim()||[...params.title].length>160)) throw new Error('Invalid group title');
+  if(!Array.isArray(params.members)||params.members.length<1||params.members.length>6||params.members.some(member=>!groupMember(member))) throw new Error('Invalid group members');
+  if(params.fromSessionId!==undefined&&(typeof params.fromSessionId!=='string'||!params.fromSessionId||params.fromSessionId.length>200)) throw new Error('Invalid group source session');
+ }
+ if(m==='group.read'&&params.before!==undefined&&(typeof params.before!=='string'||!params.before||params.before.length>256)) throw new Error('Invalid group page cursor');
+ if(m==='group.send') {
+  if(typeof params.text!=='string'||!params.text.trim()||new TextEncoder().encode(params.text).length>64*1024) throw new Error('Invalid group message');
+  if(!Array.isArray(params.to)||params.to.length<1||params.to.length>6||params.to.some(handle=>handle!=='all'&&!groupHandle(handle))||new Set(params.to).size!==params.to.length||(params.to.includes('all')&&params.to.length!==1)) throw new Error('Invalid group recipients');
+  if(params.references!==undefined&&(!Array.isArray(params.references)||params.references.length>8||params.references.some(reference=>!isRecord(reference)||!['reply','message','file','url'].includes(String(reference.kind))||(reference.messageId!==undefined&&(typeof reference.messageId!=='string'||!reference.messageId))||(reference.path!==undefined&&(typeof reference.path!=='string'||!reference.path))||(reference.url!==undefined&&!isWebPreviewUrl(reference.url))))) throw new Error('Invalid group references');
+ }
+ if(m==='group.stop'&&params.handle!==undefined&&!groupHandle(params.handle)) throw new Error('Invalid group handle');
+ if(m==='group.resend'&&!groupHandle(params.handle)) throw new Error('Invalid group handle');
+ if(m==='group.member.add'&&!groupMember({provider:params.provider,handle:params.handle,model:params.model,mode:params.mode})) throw new Error('Invalid group member');
+ if(m==='group.member.update'&&params.handle===undefined&&params.mode===undefined) throw new Error('Empty group member update');
+ if(m==='group.member.update'&&((params.handle!==undefined&&!groupHandle(params.handle))||(params.mode!==undefined&&params.mode!=='default'&&params.mode!=='read_only'))) throw new Error('Invalid group member update');
+ if(m==='group.archive'&&params.archived!==undefined&&typeof params.archived!=='boolean') throw new Error('Invalid group archive state');
+ if(m==='group.create'&&params.expectedRevision!==undefined&&params.expectedRevision!==0) throw new Error('Invalid group revision');
+ if(m.startsWith('group.')&&m!=='group.create'&&m!=='group.list'&&m!=='group.read'&&m!=='group.prerequisites'&&params.expectedRevision!==undefined&&(!Number.isSafeInteger(params.expectedRevision)||Number(params.expectedRevision)<1)) throw new Error('Invalid group revision');
  // Relative to the session's worktree root: no drive, no leading separator, no `..` segment.
  if((m==='session.documents.pin'||m==='session.documents.unpin')&&(!pathOk(params.path)||/^[\\/]|^[A-Za-z]:|(^|[\\/])\.\.([\\/]|$)/.test(String(params.path)))) throw new Error('Invalid path');
  const maxLimit=m==='terminal.read'?(params.tail===true?8192:1024*1024):200;
@@ -798,6 +976,7 @@ export function validateLayout(value:unknown):asserts value is PaneLayout {
     // A web page is an independent tab (no session owner): owned views are reached only through a file header.
     else if(tab.kind==='web') { if(!isWebPreviewUrl(tab.url)||tab.ownerSessionId!==undefined) throw new Error('Invalid web tab'); if(tab.title!==undefined&&(typeof tab.title!=='string'||new TextEncoder().encode(tab.title).length>512||/[\u0000-\u001f\u007f-\u009f]/.test(tab.title))) throw new Error('Invalid web tab title'); }
     else if(tab.kind==='map') { if(typeof tab.sessionId!=='string'||!tab.sessionId||tab.sessionId.length>256||tab.ownerSessionId!==undefined) throw new Error('Invalid map tab'); }
+    else if(tab.kind==='group'||tab.kind==='roundtable') { const id=tab.kind==='group'?tab.groupId:tab.roundtableId; if(typeof id!=='string'||!id||id.length>256||typeof tab.title!=='string'||new TextEncoder().encode(tab.title).length>512||/[\u0000-\u001f\u007f-\u009f]/.test(tab.title)||tab.ownerSessionId!==undefined) throw new Error(`Invalid ${tab.kind} tab`); }
     else throw new Error('Invalid tab kind');
    }
    if(node.activeTabId!==null&&!tabs.has(String(node.activeTabId))) throw new Error('Invalid active tab');
@@ -861,7 +1040,7 @@ export interface AgentReview { id:string; sessionId:string; reviewerSessionId:st
  state:'starting'|'running'|'completed'|'failed'; files:number; truncated:string[]; instructions:'repository'|'built-in';
  createdAt:string; updatedAt:string; error?:string; findings?:AgentReviewFinding[]; unparsed?:boolean }
 export interface Worktree { id:string; projectId:string; path:string; branch:string|null; head:string; isMain:boolean; locked:boolean; missing:boolean; upstream?:string; lastCommit?:CommitSummary }
-export type ContentRef = {id:string;kind:'map';sessionId:string;ownerSessionId?:undefined;projectId?:undefined;worktreePath?:undefined;path?:undefined;assetKind?:undefined}|{id:string;kind:'session';sessionId:string}|{id:string;kind:'file'|'diff'|'preview';projectId:string;worktreePath?:string;path:string;assetKind?:'text'|'image';ownerSessionId?:string;staged?:boolean}|{id:string;kind:'history';projectId:string;worktreePath?:string;path?:string;ownerSessionId?:undefined;assetKind?:undefined}|{id:string;kind:'review';projectId:string;worktreePath?:string;path:string;sessionId:string;checkpointId:string;toCheckpointId?:string;ownerSessionId?:undefined;assetKind?:undefined}|{id:string;kind:'web';url:string;/** Sanitized page title, at most 512 UTF-8 bytes. */title?:string;ownerSessionId?:undefined;projectId?:undefined;worktreePath?:undefined;path?:undefined;assetKind?:undefined};
+export type ContentRef = {id:string;kind:'map';sessionId:string;ownerSessionId?:undefined;projectId?:undefined;worktreePath?:undefined;path?:undefined;assetKind?:undefined}|{id:string;kind:'group';groupId:string;/** User-supplied room title, bounded before persistence. */title:string;ownerSessionId?:undefined;projectId?:undefined;worktreePath?:undefined;path?:undefined;assetKind?:undefined}|{id:string;/** Persisted v16 workspace-tab compatibility only; no Roundtable runtime API remains. */kind:'roundtable';roundtableId:string;/** User-supplied room title, bounded before persistence. */title:string;ownerSessionId?:undefined;projectId?:undefined;worktreePath?:undefined;path?:undefined;assetKind?:undefined}|{id:string;kind:'session';sessionId:string}|{id:string;kind:'file'|'diff'|'preview';projectId:string;worktreePath?:string;path:string;assetKind?:'text'|'image';ownerSessionId?:string;staged?:boolean}|{id:string;kind:'history';projectId:string;worktreePath?:string;path?:string;ownerSessionId?:undefined;assetKind?:undefined}|{id:string;kind:'review';projectId:string;worktreePath?:string;path:string;sessionId:string;checkpointId:string;toCheckpointId?:string;ownerSessionId?:undefined;assetKind?:undefined}|{id:string;kind:'web';url:string;/** Sanitized page title, at most 512 UTF-8 bytes. */title?:string;ownerSessionId?:undefined;projectId?:undefined;worktreePath?:undefined;path?:undefined};
 export type PaneLayout = {kind:'pane';id:string;tabs:ContentRef[];activeTabId:string|null}|{kind:'split';id:string;direction:'horizontal'|'vertical';ratio:number;first:PaneLayout;second:PaneLayout};
 export interface WorkspaceSave { id?:string;name:string;projectId?:string;worktreePath?:string;layout:PaneLayout;expectedRevision:number;operationId:string }
 

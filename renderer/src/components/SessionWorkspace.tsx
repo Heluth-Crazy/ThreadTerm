@@ -8,7 +8,7 @@ import { addSessionTab } from '../presentation';
 import { displayPath, sameCanonicalScope } from '../projectScope';
 import { activate, addPane, addTabToPane, closePane, placeWebTabBesideSession, reconcileSessionLayout, selectWebTabBesideSession, sessionIdsIn, sessionOnlyLayout } from '../workspaceLayout';
 import { taskMapRoot } from '../taskMapRoot';
-import { isFileTab, isWebTabUrl, removeWorkspaceTabs, workspaceTabs, type FileTab } from '../workspaceTabs';
+import { focusedWorkspaceTab, isFileTab, isWebTabUrl, removeWorkspaceTabs, workspaceTabs, type FileTab } from '../workspaceTabs';
 import { canSplitPaneArea, fileViewPlacement, visibleSessionLayout } from '../sessionFileViews';
 import { PaneWorkspace, type PaneWorkbench } from './PaneWorkspace';
 import { WorkbenchSideBar, type WorkbenchCommand, type WorkbenchView } from './WorkbenchSideBar';
@@ -32,6 +32,7 @@ import { attachChatContext } from '../terminalInputTargets';
 import type { ContextItem } from '../chatContext';
 import { ContextHost } from './ContextHost';
 import { ContextSendDialogHost } from './ContextSendAction';
+import { retitleGroupTabs } from '../groupNavigation';
 
 const working=(s:Session)=>!s.readOnly&&['starting','running','idle','waiting'].includes(s.status);
 const tabFor=(s:Session)=>({id:`session-${s.id}`,kind:'session' as const,sessionId:s.id});
@@ -69,8 +70,8 @@ const waitForPreviewMount=(sessionId:string,previewId:string,documentId:string,t
 });
 const previewOperationKey=(value:Pick<PreviewPresentation,'sessionId'|'attachmentId'|'requestId'|'previewId'|'documentId'>)=>[value.sessionId,value.attachmentId,value.requestId,value.previewId,value.documentId].join('\0');
 
-type Props={session:Session;data:Snapshot;theme:'light'|'dark';onBack:()=>void;onSelect:(id:string)=>void;onProject:(id:string,path?:string)=>void;onChanged:()=>void;backgroundPresentation?:string;onBackgroundPresented:()=>void;navigationKey?:unknown;onActiveSession?:(id:string)=>void};
-export function SessionWorkspace({session,data,theme,onBack,onSelect,onProject,onChanged,backgroundPresentation,onBackgroundPresented,navigationKey,onActiveSession}:Props){
+type Props={session:Session;data:Snapshot;theme:'light'|'dark';onBack:()=>void;onSelect:(id:string)=>void;onProject:(id:string,path?:string)=>void;onChanged:()=>void;backgroundPresentation?:string;onBackgroundPresented:()=>void;navigationKey?:unknown;onActiveSession?:(id:string)=>void;groupToOpen?:{id:string;title:string;members:{sessionId:string}[]};onGroupOpened?:(id:string)=>void};
+export function SessionWorkspace({session,data,theme,onBack,onSelect,onProject,onChanged,backgroundPresentation,onBackgroundPresented,navigationKey,onActiveSession,groupToOpen,onGroupOpened}:Props){
  const latestData=useRef(data);latestData.current=data;
  const providerName=(id:string)=>agentName(id,data.providers);
  const {locale}=useTranslation(),zh=locale==='zh-CN';
@@ -83,7 +84,7 @@ export function SessionWorkspace({session,data,theme,onBack,onSelect,onProject,o
  const openedFrom=useRef<{source:PaneLayout;stripped:PaneLayout}|undefined>(undefined);
  const [layout,setLayout]=useState<PaneLayout>(()=>{
   if(!restored)return initialFor(session);
-  const stripped=reconcileSessionLayout(sessionOnlyLayout(restored.layout,tab=>tab.kind==='web'),new Set(data.sessions.map(item=>item.id)),session.id);
+  const stripped=reconcileSessionLayout(sessionOnlyLayout(restored.layout,tab=>tab.kind==='web'||tab.kind==='group'||tab.kind==='roundtable'),new Set(data.sessions.map(item=>item.id)),session.id);
   openedFrom.current={source:restored.layout,stripped};
   return stripped;
  });
@@ -163,7 +164,7 @@ export function SessionWorkspace({session,data,theme,onBack,onSelect,onProject,o
   if(!live.current)return;
   const unsaved=unsavedTabIds(dropped.map(item=>item.tab),tab=>drafts.some(draft=>draft.projectId===tab.projectId&&draft.path===tab.path&&(draft.worktreePath||'')===(tab.worktreePath??'')));
   if(latestLayout.current===stripped){
-   const next=unsaved.size?reconcileSessionLayout(sessionOnlyLayout(source,tab=>tab.kind==='web'||kept.has(tab.id)||unsaved.has(tab.id)),new Set(data.sessions.map(item=>item.id)),session.id):stripped;
+   const next=unsaved.size?reconcileSessionLayout(sessionOnlyLayout(source,tab=>tab.kind==='web'||tab.kind==='group'||tab.kind==='roundtable'||kept.has(tab.id)||unsaved.has(tab.id)),new Set(data.sessions.map(item=>item.id)),session.id):stripped;
    save(next);
    return;
   }
@@ -296,13 +297,13 @@ export function SessionWorkspace({session,data,theme,onBack,onSelect,onProject,o
   if(next.line||next.column)setFileReveal({tabId:target.tab.id,line:next.line??1,column:next.column,key});
  };
  const openPaneFile=(file:Parameters<typeof openScopedFile>[0])=>void openScopedFile({...file,kind:file.kind==='file'&&(file.assetKind==='image'||/\.(md|png|jpe?g|gif|webp)$/i.test(file.path))?'preview':file.kind}).catch(fail);
- const openReference=async(sessionId:string,reference:FileReference)=>{
+ const openReference=async(sessionId:string,reference:FileReference,independent=false)=>{
   const generation=++fileOpenGeneration.current;setFileIssue(undefined);
   try{
    const resolved=await request('filesystem.resolve',{sessionId,...reference});
    if(!live.current||generation!==fileOpenGeneration.current)return;
    const sourcePaneId=workspaceTabs(latestLayout.current).find(item=>item.tab.kind==='session'&&item.tab.sessionId===sessionId)?.paneId;
-   await openScopedFile({...resolved,sourcePaneId,ownerSessionId:sessionId,assetKind:resolved.kind,kind:resolved.kind==='image'||/\.md$/i.test(resolved.path)?'preview':'file'},generation);
+   await openScopedFile({...resolved,sourcePaneId,...(independent?{}:{ownerSessionId:sessionId}),assetKind:resolved.kind,kind:resolved.kind==='image'||/\.md$/i.test(resolved.path)?'preview':'file'},generation);
   }catch(error){if(live.current&&generation===fileOpenGeneration.current){
    const reason=error instanceof Error?error.message:String(error);
    const known:Record<string,[string,string]>={file_reference_not_found:['文件不存在或已移动。','The file is missing or has moved.'],file_reference_not_file:['这是目录，不是可打开的文件。','This is a directory, not a file.'],file_reference_outside_scope:['文件不在此会话的工作目录范围内。','This file is outside the session workspace.'],file_reference_relative_requires_absolute:['Shell 的当前目录可能已改变，请使用完整路径。','The shell directory may have changed. Use an absolute path.'],file_too_large:['文件太大，暂时无法在应用内打开。','The file is too large to open here.'],image_too_large:['图片太大，暂时无法预览。','The image is too large to preview.']};
@@ -330,6 +331,20 @@ export function SessionWorkspace({session,data,theme,onBack,onSelect,onProject,o
   setFocusTarget({paneId:target.paneId,tabId:target.tab.id,key:crypto.randomUUID()});
   return target.tab.id;
  };
+ const openGroupTab=(group:NonNullable<Props['groupToOpen']>)=>{
+  const existing=workspaceTabs(latestLayout.current).find(item=>(item.tab.kind==='group'&&item.tab.groupId===group.id)||(item.tab.kind==='roundtable'&&item.tab.roundtableId===group.id));
+  if(existing){save(activate(latestLayout.current,existing.paneId,existing.tab.id));setFocusTarget({paneId:existing.paneId,tabId:existing.tab.id,key:crypto.randomUUID()});return;}
+  const paneId=workspaceTabs(latestLayout.current).find(item=>item.tab.kind==='session'&&item.tab.sessionId===session.id)?.paneId??focusedWorkspaceTab(latestLayout.current)?.paneId;
+  if(!paneId)return;
+  const tab:ContentRef={id:crypto.randomUUID(),kind:'group',groupId:group.id,title:group.title};
+  save(addTabToPane(latestLayout.current,paneId,tab));
+  setFocusTarget({paneId,tabId:tab.id,key:crypto.randomUUID()});
+ };
+ useEffect(()=>{
+  if(!groupToOpen||groupToOpen.members[0]?.sessionId!==session.id)return;
+  openGroupTab(groupToOpen);
+  onGroupOpened?.(groupToOpen.id);
+ },[groupToOpen,session.id]);
  const openTaskMap=(sessionId:string,itemId?:string)=>{
   const root=taskMapRoot(sessionId,data.sessions);
   const tabId=openWorkbenchTab({id:crypto.randomUUID(),kind:'map',sessionId:root},candidate=>candidate.kind==='map'&&candidate.sessionId===root);
@@ -361,9 +376,19 @@ export function SessionWorkspace({session,data,theme,onBack,onSelect,onProject,o
  // File comments (fileCommentsHost.ts): any working Chat session of this folder or open in this workspace can receive
  // them; the current session is the default. Unlike sendToAgent the text is multi-line and the outcome goes back to the
  // caller, which keeps its comments when nothing was inserted. Only a Chat message box takes several lines.
- const commentReceivers=[...treeSessions,...data.sessions.filter(candidate=>sessionIdsIn(layout).includes(candidate.id))]
+ const groupCommentMembers=data.sessions.filter(candidate=>candidate.group&&candidate.mode==='chat'&&sameCanonicalScope(candidate.worktreePath??data.projects.find(project=>project.id===candidate.projectId)?.path,path));
+ const commentReceivers=[...treeSessions,...groupCommentMembers,...data.sessions.filter(candidate=>sessionIdsIn(layout).includes(candidate.id))]
   .filter((candidate,index,list)=>candidate.mode==='chat'&&working(candidate)&&list.findIndex(other=>other.id===candidate.id)===index)
   .sort((left,right)=>Number(right.id===previewSessionId)-Number(left.id===previewSessionId));
+ const [groupTitles,setGroupTitles]=useState<Record<string,string>>({});
+ useEffect(()=>{
+  const projectIds=[...new Set(commentReceivers.map(candidate=>candidate.projectId).filter((id):id is string=>Boolean(id)))];
+  let cancelled=false;
+  void Promise.all(projectIds.map(projectId=>request('group.list',{projectId}).catch(()=>[]))).then(groups=>{
+   if(!cancelled)setGroupTitles(Object.fromEntries(groups.flat().map(group=>[group.id,group.title])));
+  });
+  return()=>{cancelled=true;};
+ },[data.sessions,session.projectId]);
  const insertIntoSession=(sessionId:string,text:string,images?:string[],context?:ContextItem)=>new Promise<void|number>((resolve,reject)=>{
   const receiver=data.sessions.find(candidate=>candidate.id===sessionId);
   if(!receiver||!working(receiver)||receiver.mode!=='chat'){reject(new Error(zh?'该会话已结束或不是聊天会话，无法接收审查意见。可以先复制。':'That session has ended or is not a Chat, so it cannot take the comments. Copy them instead.'));return;}
@@ -397,7 +422,7 @@ export function SessionWorkspace({session,data,theme,onBack,onSelect,onProject,o
  const projectRootOf=(projectId:string)=>data.projects.find(candidate=>candidate.id===projectId)?.path;
  const commentsHost:FileCommentsHost={
   projectRoot:projectRootOf,
-  receivers:commentReceivers.map(candidate=>({id:candidate.id,title:candidate.title,provider:candidate.provider,root:candidate.worktreePath??projectRootOf(candidate.projectId??'')??''})),
+  receivers:commentReceivers.map(candidate=>({id:candidate.id,title:candidate.group&&groupTitles[candidate.group.id]?`@${candidate.group.handle} · ${groupTitles[candidate.group.id]}`:candidate.title,provider:candidate.provider,root:candidate.worktreePath??projectRootOf(candidate.projectId??'')??''})),
   defaultReceiverId:commentReceivers.some(candidate=>candidate.id===previewSessionId)?previewSessionId:undefined,
   insert:insertIntoSession,notice:setCommentNotice,
   attachContext:async(sessionId,item)=>{await insertIntoSession(sessionId,'',undefined,item);},
@@ -417,12 +442,12 @@ export function SessionWorkspace({session,data,theme,onBack,onSelect,onProject,o
   renamed:(from,to)=>{
    invalidateQuickOpen(workbenchScope);
    // Open tabs follow the rename; their editors reopen the new path (dirty editors were refused earlier).
-   const rename=(node:PaneLayout):PaneLayout=>node.kind==='split'?{...node,first:rename(node.first),second:rename(node.second)}:{...node,tabs:node.tabs.map(tab=>tab.kind!=='session'&&tab.kind!=='history'&&tab.kind!=='web'&&tab.kind!=='map'&&tab.projectId===project.id&&sameCanonicalScope(tab.worktreePath??project.path,path)&&coveredBy(tab.path,from)?{...tab,path:to+tab.path.slice(from.length)}:tab)};
+   const rename=(node:PaneLayout):PaneLayout=>node.kind==='split'?{...node,first:rename(node.first),second:rename(node.second)}:{...node,tabs:node.tabs.map(tab=>tab.kind!=='session'&&tab.kind!=='history'&&tab.kind!=='web'&&tab.kind!=='map'&&tab.kind!=='group'&&tab.kind!=='roundtable'&&tab.projectId===project.id&&sameCanonicalScope(tab.worktreePath??project.path,path)&&coveredBy(tab.path,from)?{...tab,path:to+tab.path.slice(from.length)}:tab)};
    save(rename(latestLayout.current));
   },
   deleted:file=>{
    invalidateQuickOpen(workbenchScope);
-   const targets=workspaceTabs(latestLayout.current).filter(item=>item.tab.kind!=='session'&&item.tab.kind!=='history'&&item.tab.projectId===project.id&&sameCanonicalScope(item.tab.worktreePath??project.path,path)&&coveredBy(item.tab.path,file)).map(item=>({paneId:item.paneId,tabId:item.tab.id}));
+   const targets=workspaceTabs(latestLayout.current).filter(item=>item.tab.kind!=='session'&&item.tab.kind!=='history'&&item.tab.kind!=='group'&&item.tab.kind!=='roundtable'&&item.tab.projectId===project.id&&sameCanonicalScope(item.tab.worktreePath??project.path,path)&&coveredBy(item.tab.path,file)).map(item=>({paneId:item.paneId,tabId:item.tab.id}));
    if(targets.length)save(removeWorkspaceTabs(latestLayout.current,targets).layout);
   },
  }:undefined;
@@ -438,6 +463,11 @@ export function SessionWorkspace({session,data,theme,onBack,onSelect,onProject,o
    const source=data.sessions.find(candidate=>candidate.id===target.sessionId),sourceProject=data.projects.find(candidate=>candidate.id===source?.projectId);
    if(!source||!sourceProject)return;
    void openScopedFile({projectId:sourceProject.id,worktreePath:source.worktreePath??sourceProject.path,path:target.path,kind:previewKind(target.path)}).catch(fail);
+  },
+  openGroupFile:target=>void openReference(target.sessionId,{path:target.path},true),
+  updateGroupTitle:(id,title)=>{
+   const next=retitleGroupTabs(latestLayout.current,id,title);
+   if(next!==latestLayout.current)save(next);
   },
   sessionDocuments:canPin&&project&&documentsRoot?{...documents,projectId:project.id,rootPath:documentsRoot,projectRoot:project.path}:undefined,
   sendToAgent,openHistory,comments:commentsHost,commentScope:project&&path?{projectId:project.id,root:path}:undefined,

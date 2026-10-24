@@ -1244,6 +1244,34 @@ fn tagged_before_checkpoint(db: &Database, session_id: &str, turn_id: &str) -> O
     .flatten()
 }
 
+/// Reuses an already complete immutable Chat review pair; never captures a new
+/// tree or waits for the review worker when Group enrichment can use its fallback.
+pub(crate) fn completed_group_turn_changes(db: &Database, session_id: &str, turn_id: &str, cwd: &str) -> Option<Vec<Value>> {
+    let before = tagged_before_checkpoint(db, session_id, turn_id)?;
+    let operation = format!("turn-complete:{session_id}:{turn_id}");
+    let after: String = db.transaction(|tx| Ok(tx.query_row(
+        "SELECT id FROM review_checkpoints WHERE session_id=? AND operation_id=? AND status='ready'",
+        params![session_id, operation], |row| row.get(0))?)).ok()?;
+    for id in [&before, &after] {
+        let checkpoint = checkpoint_json(db,id).ok()?;
+        if checkpoint["status"] != "ready" || !checkpoint["skipped"].as_array()?.is_empty() {return None;}
+    }
+    let scope = session_scope(db,session_id).ok()??;
+    let root = scope.root.canonicalize().ok()?;
+    let folder = Path::new(cwd).canonicalize().ok()?;
+    let prefix = folder.strip_prefix(&root).ok()?;
+    let (from,mut extra) = ready_tree(&checkpoint_row(db,session_id,&before).ok()?).ok()?;
+    let (to,stores) = ready_tree(&checkpoint_row(db,session_id,&after).ok()?).ok()?;
+    extra.extend(stores);
+    let deadline = Instant::now()+Duration::from_secs(3);
+    let store = Store::open(db,&scope.root,deadline).ok()?;
+    Some(store.changes(&from,&to,&extra,deadline).ok()?.into_iter().filter_map(|file| {
+        let path = Path::new(file["path"].as_str()?).strip_prefix(prefix).ok()?;
+        if path.as_os_str().is_empty() {return None;}
+        Some(json!({"path":path.to_string_lossy().replace('\\',"/"), "status":match file["status"].as_str(){Some("A")=>"added",Some("D")=>"deleted",_=>"modified"},"evidence":"folder"}))
+    }).collect())
+}
+
 /// The fallback for a turn whose completion was projected before the send
 /// handler tagged its checkpoint: adopt the newest untagged pre-turn row and
 /// tag it now, so the pair is never lost and stays stable for replay.

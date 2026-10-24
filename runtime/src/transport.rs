@@ -236,7 +236,8 @@ fn request_lane(method: &str) -> Lane {
     if method.starts_with("preview.") { return Lane::Concurrent; }
     match method {
         "chat.tool.ask" | "chat.tool.sessionInfo" | "chat.tool.feedback" | "chat.feedback.read" => Lane::Concurrent,
-        "terminal.read"
+        "group.prerequisites"
+        | "terminal.read"
         | "project.catalog.list"
         | "session.launch.read"
         | "git.status"

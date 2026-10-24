@@ -306,7 +306,7 @@ pub(crate) fn send_chat_message(
     images: &[String],
     operation_id: &str,
 ) -> Result<Value> {
-    if text.trim() == "/fork" && images.is_empty() {
+    if text.trim() == "/fork" && images.is_empty() && !crate::group_chat::owns_delivery(db, session_id, operation_id)? {
         let fork_operation = operation_id.strip_prefix("queue:")
             .map(|_| format!("{operation_id}:fork"));
         let fork_operation_id = fork_operation.as_deref().unwrap_or(operation_id);
@@ -339,6 +339,9 @@ pub(crate) fn send_chat_message(
     if let Some(result) = db.operation(operation_id)? {
         return Ok(result);
     }
+    let group_text = crate::group_chat::before_send(db, providers, session_id, operation_id, text)?;
+    let text = group_text.as_deref().unwrap_or(text);
+    if text.len() > 1024 * 1024 { return Err(anyhow::anyhow!("invalid_message")); }
     let previous_permissions = text.trim_start().starts_with('/').then(|| providers.chat_options(session_id).ok()).flatten();
     // The existing worker-locked admission runs before any checkpoint work.
     // Keep the same snapshot/deadline and capture it only for an admitted send.
@@ -368,6 +371,7 @@ pub(crate) fn send_chat_message(
     if let Some(turn_id) = result.get("turnId").and_then(Value::as_str) {
         db.bind_chat_activity_turn(session_id, operation_id, turn_id)?;
     }
+    crate::group_chat::sent(db, session_id, operation_id, &result)?;
     if let Some(checkpoint) = &checkpoint {
         crate::review::attach_turn(db, checkpoint, result.get("turnId").and_then(Value::as_str));
     }
@@ -953,9 +957,11 @@ impl RuntimeService {
 
     pub fn new(config: RuntimeConfig, db: Arc<Database>) -> Self {
         crate::chat_queue::initialize(&db).expect("initialize durable prompt queues");
+        crate::group_chat::initialize(&db).expect("initialize group chats");
         let chat_queues = Arc::new(crate::chat_queue::ChatQueues::default());
         let output = Arc::new(OutputStore::default());
         let providers = Arc::new(Providers::with_plugins(&config.data_dir, &db.settings_value().unwrap_or_else(|_| json!({}))));
+        crate::group_chat::kick(&db, &providers, &chat_queues);
         let retirement_db = Arc::downgrade(&db);
         providers.set_retirement_projector(Arc::new(move |event| {
             let db = retirement_db.upgrade().ok_or_else(|| crate::providers::ProviderError::new("runtime_stopped", "Runtime stopped"))?;
@@ -1023,7 +1029,7 @@ impl RuntimeService {
                 })
             }),
         ));
-        providers.set_tool_server_resolver(crate::preview::tool_server_resolver(
+        providers.set_tool_server_resolver(crate::group_chat::tool_server_resolver(Arc::clone(&db), crate::preview::tool_server_resolver(
             Arc::clone(&db),
             Arc::clone(&delegations),
             Arc::clone(&chat_tools),
@@ -1031,7 +1037,7 @@ impl RuntimeService {
             Arc::downgrade(&providers),
             config.clone(),
             crate::delegation::default_mcp_executable(),
-        ));
+        )));
         let turn_speeds = crate::turn_speed::shared(db.path());
         let mut events = providers.take_projection_events().expect("new provider projection receiver");
         let event_db = Arc::clone(&db);
@@ -1071,6 +1077,7 @@ impl RuntimeService {
                     for event in batch {
                         if project_provider_event(&event_db, &event_providers, &event) {
                             event_queues.provider_event(&event_db, &event_providers, &event);
+                            crate::group_chat::provider_event(&event_db, &event_providers, &event_queues, &event);
                             let settled = match event.kind.as_str() {
                                 "chat.turn.completed" | "chat.error" => event.turn_id.as_deref().map(|turn| {
                                     event_chat_tools.cancel_turn(&event.session_id, turn)?;
@@ -1471,6 +1478,9 @@ impl RuntimeService {
             )? {
                 return Ok(result);
             }
+            if request.method.starts_with("group.") {
+                return crate::group_chat::dispatch(&self.db, &self.providers, &self.chat_queues, &request.method, &request.params, &|create| self.create_session(&parse(create)?, None));
+            }
             if request.method.starts_with("agentReview.") {
                 return crate::agent_review::dispatch(&self.db, &self.providers, &request.method, &request.params, &|create| self.create_session(&parse(create)?, None));
             }
@@ -1648,6 +1658,8 @@ impl RuntimeService {
                     // stopped delegate ends its delegation.
                     crate::chat_projection::escalate_parent_requests_now(&self.db, &p.session_id)?;
                     crate::delegation::cancel_stopped(&self.db, &p.session_id)?;
+                    crate::group_chat::session_stopped(&self.db, &p.session_id)?;
+                    crate::group_chat::kick(&self.db, &self.providers, &self.chat_queues);
                     self.record_null(&p.operation_id, "session.stop")?;
                     Ok(Value::Null)
                 }

@@ -3356,6 +3356,356 @@
       ],
       "additionalProperties": false
     },
+    "RequestParams<\"group.prerequisites\">": {
+      "type": "object",
+      "properties": {
+        "cwd": {
+          "type": "string"
+        },
+        "providers": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/ProviderId"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "RequestParams<\"group.create\">": {
+      "type": "object",
+      "properties": {
+        "projectId": {
+          "type": "string"
+        },
+        "cwd": {
+          "type": "string"
+        },
+        "title": {
+          "type": "string"
+        },
+        "members": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "provider": {
+                "$ref": "#/definitions/ProviderId"
+              },
+              "handle": {
+                "type": "string"
+              },
+              "model": {
+                "type": "string"
+              },
+              "mode": {
+                "type": "string",
+                "enum": [
+                  "default",
+                  "read_only"
+                ]
+              }
+            },
+            "required": [
+              "provider"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "fromSessionId": {
+          "type": "string"
+        },
+        "expectedRevision": {
+          "type": "number"
+        },
+        "operationId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "cwd",
+        "members",
+        "operationId"
+      ],
+      "additionalProperties": false
+    },
+    "RequestParams<\"group.list\">": {
+      "type": "object",
+      "properties": {
+        "projectId": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "RequestParams<\"group.read\">": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "before": {
+          "type": "string"
+        },
+        "limit": {
+          "type": "number"
+        }
+      },
+      "required": [
+        "id"
+      ],
+      "additionalProperties": false
+    },
+    "RequestParams<\"group.send\">": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "text": {
+          "type": "string"
+        },
+        "to": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "references": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "reply",
+                  "message",
+                  "file",
+                  "url"
+                ],
+                "description": "Source kind; reply/message content is copied, files and URLs are identifiers only."
+              },
+              "messageId": {
+                "type": "string"
+              },
+              "path": {
+                "type": "string"
+              },
+              "url": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "expectedRevision": {
+          "type": "number"
+        },
+        "operationId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "text",
+        "to",
+        "operationId"
+      ],
+      "additionalProperties": false
+    },
+    "RequestParams<\"group.stop\">": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "messageId": {
+          "type": "string"
+        },
+        "handle": {
+          "type": "string"
+        },
+        "expectedRevision": {
+          "type": "number"
+        },
+        "operationId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "messageId",
+        "operationId"
+      ],
+      "additionalProperties": false
+    },
+    "RequestParams<\"group.resend\">": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "messageId": {
+          "type": "string"
+        },
+        "handle": {
+          "type": "string"
+        },
+        "expectedRevision": {
+          "type": "number"
+        },
+        "operationId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "messageId",
+        "handle",
+        "operationId"
+      ],
+      "additionalProperties": false
+    },
+    "RequestParams<\"group.member.add\">": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "provider": {
+          "$ref": "#/definitions/ProviderId"
+        },
+        "handle": {
+          "type": "string"
+        },
+        "model": {
+          "type": "string"
+        },
+        "mode": {
+          "type": "string",
+          "enum": [
+            "default",
+            "read_only"
+          ]
+        },
+        "expectedRevision": {
+          "type": "number"
+        },
+        "operationId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "provider",
+        "operationId"
+      ],
+      "additionalProperties": false
+    },
+    "RequestParams<\"group.member.update\">": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "sessionId": {
+          "type": "string"
+        },
+        "handle": {
+          "type": "string"
+        },
+        "mode": {
+          "type": "string",
+          "enum": [
+            "default",
+            "read_only"
+          ]
+        },
+        "expectedRevision": {
+          "type": "number"
+        },
+        "operationId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "sessionId",
+        "operationId"
+      ],
+      "additionalProperties": false
+    },
+    "RequestParams<\"group.member.remove\">": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "sessionId": {
+          "type": "string"
+        },
+        "expectedRevision": {
+          "type": "number"
+        },
+        "operationId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "sessionId",
+        "operationId"
+      ],
+      "additionalProperties": false
+    },
+    "RequestParams<\"group.rename\">": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "title": {
+          "type": "string"
+        },
+        "expectedRevision": {
+          "type": "number"
+        },
+        "operationId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "title",
+        "operationId"
+      ],
+      "additionalProperties": false
+    },
+    "RequestParams<\"group.archive\">": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "archived": {
+          "type": "boolean"
+        },
+        "expectedRevision": {
+          "type": "number"
+        },
+        "operationId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "operationId"
+      ],
+      "additionalProperties": false
+    },
     "RequestParams<\"session.documents.list\">": {
       "type": "object",
       "properties": {
@@ -3650,6 +4000,86 @@
             },
             "kind": {
               "type": "string",
+              "const": "group"
+            },
+            "groupId": {
+              "type": "string"
+            },
+            "title": {
+              "type": "string"
+            },
+            "ownerSessionId": {
+              "not": {}
+            },
+            "projectId": {
+              "not": {}
+            },
+            "worktreePath": {
+              "not": {}
+            },
+            "path": {
+              "not": {}
+            },
+            "assetKind": {
+              "not": {}
+            }
+          },
+          "required": [
+            "id",
+            "kind",
+            "groupId",
+            "title"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "kind": {
+              "type": "string",
+              "const": "roundtable"
+            },
+            "roundtableId": {
+              "type": "string"
+            },
+            "title": {
+              "type": "string"
+            },
+            "ownerSessionId": {
+              "not": {}
+            },
+            "projectId": {
+              "not": {}
+            },
+            "worktreePath": {
+              "not": {}
+            },
+            "path": {
+              "not": {}
+            },
+            "assetKind": {
+              "not": {}
+            }
+          },
+          "required": [
+            "id",
+            "kind",
+            "roundtableId",
+            "title"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "kind": {
+              "type": "string",
               "const": "session"
             },
             "sessionId": {
@@ -3812,9 +4242,6 @@
               "not": {}
             },
             "path": {
-              "not": {}
-            },
-            "assetKind": {
               "not": {}
             }
           },
@@ -7680,6 +8107,318 @@
         },
         "params": {
           "$ref": "#/definitions/RequestParams%3C%22agentReview.mark%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "params"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "group.prerequisites"
+        },
+        "params": {
+          "$ref": "#/definitions/RequestParams%3C%22group.prerequisites%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "params"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "group.create"
+        },
+        "params": {
+          "$ref": "#/definitions/RequestParams%3C%22group.create%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "params"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "group.list"
+        },
+        "params": {
+          "$ref": "#/definitions/RequestParams%3C%22group.list%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "params"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "group.read"
+        },
+        "params": {
+          "$ref": "#/definitions/RequestParams%3C%22group.read%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "params"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "group.send"
+        },
+        "params": {
+          "$ref": "#/definitions/RequestParams%3C%22group.send%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "params"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "group.stop"
+        },
+        "params": {
+          "$ref": "#/definitions/RequestParams%3C%22group.stop%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "params"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "group.resend"
+        },
+        "params": {
+          "$ref": "#/definitions/RequestParams%3C%22group.resend%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "params"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "group.member.add"
+        },
+        "params": {
+          "$ref": "#/definitions/RequestParams%3C%22group.member.add%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "params"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "group.member.update"
+        },
+        "params": {
+          "$ref": "#/definitions/RequestParams%3C%22group.member.update%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "params"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "group.member.remove"
+        },
+        "params": {
+          "$ref": "#/definitions/RequestParams%3C%22group.member.remove%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "params"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "group.rename"
+        },
+        "params": {
+          "$ref": "#/definitions/RequestParams%3C%22group.rename%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "params"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "group.archive"
+        },
+        "params": {
+          "$ref": "#/definitions/RequestParams%3C%22group.archive%22%3E"
         }
       },
       "required": [

@@ -312,8 +312,12 @@ fn child_of(tx: &Transaction<'_>, delegation_id: &str) -> Result<String> {
 
 /// The delegate's answer: its assistant text, in transcript order.
 fn final_answer(tx: &Transaction<'_>, child_session_id: &str) -> Result<String> {
-    let mut statement = tx.prepare("SELECT data FROM chat_items WHERE session_id=? ORDER BY created_at,rowid")?;
-    let rows = statement.query_map([child_session_id], |row| row.get::<_, String>(0))?;
+    final_answer_for_turn(tx, child_session_id, None)
+}
+
+pub(crate) fn final_answer_for_turn(tx: &Transaction<'_>, child_session_id: &str, turn_id: Option<&str>) -> Result<String> {
+    let mut statement = tx.prepare("SELECT data FROM chat_items WHERE session_id=? AND (? IS NULL OR turn_id=?) ORDER BY created_at,rowid")?;
+    let rows = statement.query_map(params![child_session_id,turn_id,turn_id], |row| row.get::<_, String>(0))?;
     let mut texts = Vec::new();
     for row in rows {
         let Ok(item) = serde_json::from_str::<crate::domain::ChatItem>(&row?) else { continue };
@@ -329,7 +333,7 @@ fn final_answer(tx: &Transaction<'_>, child_session_id: &str) -> Result<String> 
         }
     }
     let mut answer = texts.join("\n\n");
-    if answer.chars().count() > MAX_RESULT_CHARS {
+    if turn_id.is_none() && answer.chars().count() > MAX_RESULT_CHARS {
         answer = answer.chars().take(MAX_RESULT_CHARS).collect::<String>() + "\n…(truncated)";
     }
     Ok(answer)

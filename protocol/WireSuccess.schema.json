@@ -518,6 +518,9 @@
         "delegation": {
           "$ref": "#/definitions/SessionDelegation"
         },
+        "group": {
+          "$ref": "#/definitions/SessionGroup"
+        },
         "archived": {
           "type": "boolean"
         },
@@ -659,6 +662,23 @@
         "failed",
         "cancelled"
       ]
+    },
+    "SessionGroup": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "handle": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "handle"
+      ],
+      "additionalProperties": false,
+      "description": "Present on a Chat session linked to a group."
     },
     "SessionRun": {
       "type": "object",
@@ -2205,6 +2225,86 @@
             },
             "kind": {
               "type": "string",
+              "const": "group"
+            },
+            "groupId": {
+              "type": "string"
+            },
+            "title": {
+              "type": "string"
+            },
+            "ownerSessionId": {
+              "not": {}
+            },
+            "projectId": {
+              "not": {}
+            },
+            "worktreePath": {
+              "not": {}
+            },
+            "path": {
+              "not": {}
+            },
+            "assetKind": {
+              "not": {}
+            }
+          },
+          "required": [
+            "id",
+            "kind",
+            "groupId",
+            "title"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "kind": {
+              "type": "string",
+              "const": "roundtable"
+            },
+            "roundtableId": {
+              "type": "string"
+            },
+            "title": {
+              "type": "string"
+            },
+            "ownerSessionId": {
+              "not": {}
+            },
+            "projectId": {
+              "not": {}
+            },
+            "worktreePath": {
+              "not": {}
+            },
+            "path": {
+              "not": {}
+            },
+            "assetKind": {
+              "not": {}
+            }
+          },
+          "required": [
+            "id",
+            "kind",
+            "roundtableId",
+            "title"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "kind": {
+              "type": "string",
               "const": "session"
             },
             "sessionId": {
@@ -2367,9 +2467,6 @@
               "not": {}
             },
             "path": {
-              "not": {}
-            },
-            "assetKind": {
               "not": {}
             }
           },
@@ -5368,6 +5465,690 @@
     },
     "RequestResult<\"agentReview.mark\">": {
       "$ref": "#/definitions/AgentReview"
+    },
+    "RequestResult<\"group.prerequisites\">": {
+      "$ref": "#/definitions/GroupPrerequisites"
+    },
+    "GroupPrerequisites": {
+      "type": "object",
+      "properties": {
+        "providers": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/GroupPrerequisiteProvider"
+          },
+          "description": "One result per requested provider, including repeats."
+        },
+        "git": {
+          "type": "object",
+          "properties": {
+            "found": {
+              "type": "boolean"
+            },
+            "version": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "found"
+          ],
+          "additionalProperties": false,
+          "description": "Git discovery status on this machine."
+        },
+        "folder": {
+          "type": "object",
+          "properties": {
+            "repository": {
+              "type": "boolean"
+            },
+            "reason": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "repository"
+          ],
+          "additionalProperties": false,
+          "description": "Folder repository status when a folder was supplied."
+        }
+      },
+      "required": [
+        "providers",
+        "git"
+      ],
+      "additionalProperties": false,
+      "description": "Portable creation prerequisites for a group folder and requested providers."
+    },
+    "GroupPrerequisiteProvider": {
+      "type": "object",
+      "properties": {
+        "provider": {
+          "$ref": "#/definitions/ProviderId",
+          "description": "Provider requested by the prospective member."
+        },
+        "usable": {
+          "type": "boolean",
+          "description": "Whether this machine can start the provider now."
+        },
+        "reason": {
+          "type": "string",
+          "description": "Machine-specific reason the provider is unavailable."
+        },
+        "fix": {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "enum": [
+                "install",
+                "sign_in",
+                "update",
+                "enable_plugin",
+                "configure"
+              ]
+            },
+            "text": {
+              "type": "string"
+            },
+            "homepage": {
+              "type": "string"
+            },
+            "command": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "text"
+          ],
+          "additionalProperties": false,
+          "description": "Actionable remediation when the provider is unavailable."
+        },
+        "readOnly": {
+          "type": "string",
+          "enum": [
+            "enforced",
+            "prompt"
+          ],
+          "description": "Read-only enforcement available for this provider."
+        },
+        "readOnlyNote": {
+          "type": "string",
+          "description": "Human-readable read-only mechanism explanation."
+        }
+      },
+      "required": [
+        "provider",
+        "usable",
+        "readOnly",
+        "readOnlyNote"
+      ],
+      "additionalProperties": false,
+      "description": "Native prerequisites are checked on demand and shared with group creation admission."
+    },
+    "RequestResult<\"group.create\">": {
+      "$ref": "#/definitions/Group"
+    },
+    "Group": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Stable group id."
+        },
+        "revision": {
+          "type": "number",
+          "description": "Optimistic-concurrency revision."
+        },
+        "title": {
+          "type": "string",
+          "description": "Display title."
+        },
+        "projectId": {
+          "type": "string",
+          "description": "Optional registered project id."
+        },
+        "worktreePath": {
+          "type": "string",
+          "description": "Optional registered worktree path."
+        },
+        "cwd": {
+          "type": "string",
+          "description": "Canonical shared working directory."
+        },
+        "members": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/GroupMember"
+          },
+          "description": "Linked Chat members."
+        },
+        "messages": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/GroupMessage"
+          },
+          "description": "Current chronological timeline page, not the whole unbounded timeline."
+        },
+        "lastRecipients": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Recipients used when the composer had no leading mention."
+        },
+        "filesCheck": {
+          "$ref": "#/definitions/GroupFilesCheck",
+          "description": "Folder-wide availability of changed-file attribution."
+        },
+        "hasMore": {
+          "type": "boolean",
+          "description": "True when older messages exist before this page."
+        },
+        "before": {
+          "type": "string",
+          "description": "Cursor to pass as `before` to load the preceding page."
+        },
+        "archived": {
+          "type": "boolean",
+          "description": "Whether this group is archived."
+        },
+        "createdAt": {
+          "type": "string",
+          "description": "UTC creation time."
+        },
+        "updatedAt": {
+          "type": "string",
+          "description": "UTC time of the last state mutation."
+        }
+      },
+      "required": [
+        "id",
+        "revision",
+        "title",
+        "cwd",
+        "members",
+        "messages",
+        "lastRecipients",
+        "createdAt",
+        "updatedAt"
+      ],
+      "additionalProperties": false,
+      "description": "Durable room state and the current chronological timeline page."
+    },
+    "GroupMember": {
+      "type": "object",
+      "properties": {
+        "sessionId": {
+          "type": "string",
+          "description": "Linked Chat session id."
+        },
+        "provider": {
+          "$ref": "#/definitions/ProviderId",
+          "description": "Provider selected for this member."
+        },
+        "handle": {
+          "type": "string",
+          "description": "Unique group handle without the `@` prefix (`[a-z0-9-]{1,24}`)."
+        },
+        "model": {
+          "type": "string",
+          "description": "Requested model selection when the provider supports it."
+        },
+        "mode": {
+          "type": "string",
+          "enum": [
+            "default",
+            "read_only"
+          ],
+          "description": "Whether the member uses saved permissions or the group read-only setup."
+        },
+        "readOnly": {
+          "type": "string",
+          "enum": [
+            "enforced",
+            "prompt"
+          ],
+          "description": "Native read-only enforcement, when this member uses it."
+        },
+        "readOnlyNote": {
+          "type": "string",
+          "description": "Human-readable read-only setup explanation."
+        },
+        "state": {
+          "$ref": "#/definitions/GroupMemberState",
+          "description": "Current delivery/session-derived state."
+        },
+        "error": {
+          "type": "string",
+          "description": "Latest delivery error retained for the member."
+        },
+        "joinedAt": {
+          "type": "string",
+          "description": "UTC time the member joined the group."
+        }
+      },
+      "required": [
+        "sessionId",
+        "provider",
+        "handle",
+        "mode",
+        "state",
+        "joinedAt"
+      ],
+      "additionalProperties": false,
+      "description": "One linked ordinary Chat session. Handles are unique lowercase `@` names in a group."
+    },
+    "GroupMemberState": {
+      "type": "string",
+      "enum": [
+        "idle",
+        "queued",
+        "working",
+        "needs_user",
+        "failed"
+      ],
+      "description": "Derived state shown for one member in a group."
+    },
+    "GroupMessage": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Stable message id."
+        },
+        "author": {
+          "type": "string",
+          "enum": [
+            "user",
+            "member",
+            "system"
+          ],
+          "description": "Whether the message came from the user, a member, or the runtime."
+        },
+        "sessionId": {
+          "type": "string",
+          "description": "Author Chat session for member messages."
+        },
+        "handle": {
+          "type": "string",
+          "description": "Author handle for member messages."
+        },
+        "body": {
+          "type": "string",
+          "description": "Verbatim user text or bounded stored reply/system body."
+        },
+        "recipients": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Recipient handles for a user message."
+        },
+        "references": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/GroupReference"
+          },
+          "description": "Explicit references shown before the user sent the message."
+        },
+        "deliveries": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/GroupDelivery"
+          },
+          "description": "One delivery per recipient on a user message."
+        },
+        "replyTo": {
+          "type": "string",
+          "description": "User message id answered by a member reply."
+        },
+        "outputs": {
+          "$ref": "#/definitions/GroupOutputs",
+          "description": "Extracted files, URLs, and changed paths on a member reply."
+        },
+        "suggestions": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "handle": {
+                "type": "string"
+              },
+              "text": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "handle",
+              "text"
+            ],
+            "additionalProperties": false
+          },
+          "description": "User-controlled routing suggestions extracted from a member reply."
+        },
+        "createdAt": {
+          "type": "string",
+          "description": "UTC creation time."
+        }
+      },
+      "required": [
+        "id",
+        "author",
+        "body",
+        "createdAt"
+      ],
+      "additionalProperties": false,
+      "description": "A persisted user, member, or runtime timeline entry."
+    },
+    "GroupReference": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "type": "string",
+          "enum": [
+            "reply",
+            "message",
+            "file",
+            "url"
+          ],
+          "description": "Source kind; reply/message content is copied, files and URLs are identifiers only."
+        },
+        "messageId": {
+          "type": "string",
+          "description": "Referenced group message id for reply/message references."
+        },
+        "handle": {
+          "type": "string",
+          "description": "Referenced member handle for reply references."
+        },
+        "path": {
+          "type": "string",
+          "description": "Group-root-relative file path for file references."
+        },
+        "url": {
+          "type": "string",
+          "description": "Absolute http(s) URL for URL references."
+        },
+        "title": {
+          "type": "string",
+          "description": "User-visible reference label."
+        },
+        "bytes": {
+          "type": "number",
+          "description": "UTF-8 bytes delivered to recipients after bounding."
+        },
+        "shortened": {
+          "type": "boolean",
+          "description": "True when copied reply/message content was shortened."
+        }
+      },
+      "required": [
+        "kind",
+        "title",
+        "bytes"
+      ],
+      "additionalProperties": false,
+      "description": "Explicit context attached to one user message."
+    },
+    "GroupDelivery": {
+      "type": "object",
+      "properties": {
+        "sessionId": {
+          "type": "string",
+          "description": "Recipient Chat session id."
+        },
+        "handle": {
+          "type": "string",
+          "description": "Recipient handle."
+        },
+        "state": {
+          "$ref": "#/definitions/GroupDeliveryState",
+          "description": "Current delivery lifecycle state."
+        },
+        "replyId": {
+          "type": "string",
+          "description": "Group reply id created when the delivery completes."
+        },
+        "error": {
+          "type": "string",
+          "description": "Failure or stop explanation."
+        },
+        "startedAt": {
+          "type": "string",
+          "description": "UTC time the provider turn started."
+        },
+        "finishedAt": {
+          "type": "string",
+          "description": "UTC time the turn completed, failed, or stopped."
+        }
+      },
+      "required": [
+        "sessionId",
+        "handle",
+        "state"
+      ],
+      "additionalProperties": false,
+      "description": "One recipient delivery of a user-authored group message."
+    },
+    "GroupDeliveryState": {
+      "type": "string",
+      "enum": [
+        "queued",
+        "working",
+        "needs_user",
+        "replied",
+        "failed",
+        "stopped"
+      ],
+      "description": "Lifecycle of one recipient's delivery of a user message."
+    },
+    "GroupOutputs": {
+      "type": "object",
+      "properties": {
+        "files": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Root-relative paths named in the reply."
+        },
+        "urls": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "http(s) URLs named in the reply."
+        },
+        "changed": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Root-relative files attributed to the member during its delivery turn."
+        },
+        "changedDetails": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "path": {
+                "type": "string"
+              },
+              "status": {
+                "type": "string",
+                "enum": [
+                  "added",
+                  "modified",
+                  "deleted",
+                  "changed"
+                ]
+              },
+              "evidence": {
+                "type": "string",
+                "enum": [
+                  "tool",
+                  "folder"
+                ]
+              }
+            },
+            "required": [
+              "path",
+              "status",
+              "evidence"
+            ],
+            "additionalProperties": false
+          },
+          "description": "Per-file status and evidence for attributed changes; absent on older replies. `changed` is a tool report without a verified folder delta."
+        },
+        "possiblyChanged": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Root-relative files changed while one or more concurrent members could have written them."
+        },
+        "changedIncomplete": {
+          "type": "boolean",
+          "description": "Whether a bounded folder comparison could have omitted changes."
+        },
+        "possiblyChangedWith": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Handles that were concurrent possible writers of `possiblyChanged` paths."
+        }
+      },
+      "required": [
+        "files",
+        "urls",
+        "changed"
+      ],
+      "additionalProperties": false,
+      "description": "Outputs extracted from a completed member reply."
+    },
+    "GroupFilesCheck": {
+      "type": "object",
+      "properties": {
+        "state": {
+          "type": "string",
+          "enum": [
+            "on",
+            "off"
+          ]
+        },
+        "reason": {
+          "type": "string",
+          "enum": [
+            "no_git",
+            "not_a_repository",
+            "error"
+          ]
+        },
+        "detail": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "state"
+      ],
+      "additionalProperties": false,
+      "description": "Availability of changed-file attribution for the group's folder."
+    },
+    "RequestResult<\"group.list\">": {
+      "type": "array",
+      "items": {
+        "$ref": "#/definitions/GroupSummary"
+      }
+    },
+    "GroupSummary": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Stable group id."
+        },
+        "title": {
+          "type": "string",
+          "description": "Display title."
+        },
+        "projectId": {
+          "type": "string",
+          "description": "Optional registered project id."
+        },
+        "worktreePath": {
+          "type": "string",
+          "description": "Optional registered worktree path."
+        },
+        "members": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "sessionId": {
+                "type": "string"
+              },
+              "provider": {
+                "$ref": "#/definitions/ProviderId"
+              },
+              "handle": {
+                "type": "string"
+              },
+              "state": {
+                "$ref": "#/definitions/GroupMemberState"
+              }
+            },
+            "required": [
+              "sessionId",
+              "provider",
+              "handle",
+              "state"
+            ],
+            "additionalProperties": false
+          },
+          "description": "Member identities and cheap derived states."
+        },
+        "updatedAt": {
+          "type": "string",
+          "description": "UTC time of the last state mutation."
+        }
+      },
+      "required": [
+        "id",
+        "title",
+        "members",
+        "updatedAt"
+      ],
+      "additionalProperties": false,
+      "description": "Compact group row for sidebars and project views."
+    },
+    "RequestResult<\"group.read\">": {
+      "$ref": "#/definitions/Group"
+    },
+    "RequestResult<\"group.send\">": {
+      "$ref": "#/definitions/Group"
+    },
+    "RequestResult<\"group.stop\">": {
+      "$ref": "#/definitions/Group"
+    },
+    "RequestResult<\"group.resend\">": {
+      "$ref": "#/definitions/Group"
+    },
+    "RequestResult<\"group.member.add\">": {
+      "$ref": "#/definitions/Group"
+    },
+    "RequestResult<\"group.member.update\">": {
+      "$ref": "#/definitions/Group"
+    },
+    "RequestResult<\"group.member.remove\">": {
+      "$ref": "#/definitions/Group"
+    },
+    "RequestResult<\"group.rename\">": {
+      "$ref": "#/definitions/Group"
+    },
+    "RequestResult<\"group.archive\">": {
+      "$ref": "#/definitions/Group"
     },
     "RequestResult<\"session.documents.list\">": {
       "type": "array",
@@ -9326,6 +10107,318 @@
         },
         "result": {
           "$ref": "#/definitions/RequestResult%3C%22agentReview.mark%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "result"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "group.prerequisites"
+        },
+        "result": {
+          "$ref": "#/definitions/RequestResult%3C%22group.prerequisites%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "result"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "group.create"
+        },
+        "result": {
+          "$ref": "#/definitions/RequestResult%3C%22group.create%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "result"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "group.list"
+        },
+        "result": {
+          "$ref": "#/definitions/RequestResult%3C%22group.list%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "result"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "group.read"
+        },
+        "result": {
+          "$ref": "#/definitions/RequestResult%3C%22group.read%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "result"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "group.send"
+        },
+        "result": {
+          "$ref": "#/definitions/RequestResult%3C%22group.send%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "result"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "group.stop"
+        },
+        "result": {
+          "$ref": "#/definitions/RequestResult%3C%22group.stop%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "result"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "group.resend"
+        },
+        "result": {
+          "$ref": "#/definitions/RequestResult%3C%22group.resend%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "result"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "group.member.add"
+        },
+        "result": {
+          "$ref": "#/definitions/RequestResult%3C%22group.member.add%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "result"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "group.member.update"
+        },
+        "result": {
+          "$ref": "#/definitions/RequestResult%3C%22group.member.update%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "result"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "group.member.remove"
+        },
+        "result": {
+          "$ref": "#/definitions/RequestResult%3C%22group.member.remove%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "result"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "group.rename"
+        },
+        "result": {
+          "$ref": "#/definitions/RequestResult%3C%22group.rename%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "result"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "group.archive"
+        },
+        "result": {
+          "$ref": "#/definitions/RequestResult%3C%22group.archive%22%3E"
         }
       },
       "required": [

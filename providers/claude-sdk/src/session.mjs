@@ -57,6 +57,62 @@ export const THREADTERM_BROWSER_TOOLS = new Set([...THREADTERM_BROWSER_READ_TOOL
 export const THREADTERM_CHAT_TOOLS = new Set(['ask_user', 'session_info', 'feedback_check'].map(name => `mcp__threadterm__${name}`));
 const EFFORT_NAMES = { low: 'Low', medium: 'Medium', high: 'High', xhigh: 'Extra high', max: 'Max' };
 
+const ROUNDTABLE_READ_ONLY_TOOLS = new Set(['Read', 'Glob', 'Grep']);
+
+function roundtableReadOnlyTools(value) {
+  if (value === undefined) return null;
+  if (!Array.isArray(value) || !value.length) throw new Error('Claude Roundtable tools must be a non-empty array');
+  const tools = [...new Set(value)];
+  if (tools.some(tool => typeof tool !== 'string' || !ROUNDTABLE_READ_ONLY_TOOLS.has(tool))) {
+    throw new Error('Claude Roundtable tools contain an unsupported tool');
+  }
+  return tools;
+}
+
+function reportedToolNames(value, present) {
+  if (!present) return undefined;
+  if (!Array.isArray(value)) return null;
+  const names = [];
+  for (const item of value) {
+    const name = typeof item === 'string' ? item : item?.name ?? item?.tool_name ?? item?.toolName;
+    if (typeof name !== 'string' || !name) return null;
+    names.push(name);
+  }
+  return [...new Set(names)];
+}
+
+function reportedToolField(init, names) {
+  for (const name of names) {
+    if (Object.prototype.hasOwnProperty.call(init ?? {}, name)) return reportedToolNames(init[name], true);
+  }
+  return undefined;
+}
+
+function hasReportedToolField(init) {
+  return ['tools', 'builtin_tools', 'builtinTools', 'mcp_tools', 'mcpTools']
+    .some(name => Object.prototype.hasOwnProperty.call(init ?? {}, name));
+}
+
+function roundtableToolsReport(init, requested) {
+  if (!requested) return undefined;
+  const builtins = reportedToolField(init, ['tools', 'builtin_tools', 'builtinTools']);
+  const reportedMcp = reportedToolField(init, ['mcp_tools', 'mcpTools']);
+  const mcpTools = [...new Set([
+    ...(reportedMcp ?? []),
+    ...(builtins ?? []).filter(name => name.startsWith('mcp__')),
+  ])];
+  const builtinTools = (builtins ?? []).filter(name => !name.startsWith('mcp__'));
+  const malformed = builtins === null || reportedMcp === null;
+  const enforced = !malformed && Array.isArray(builtins) && !mcpTools.length && builtinTools.every(name => requested.includes(name));
+  return {
+    requested,
+    ...(builtins === null ? {} : { builtins: builtinTools }),
+    ...(reportedMcp === null ? {} : { mcpTools }),
+    enforced,
+    ...(enforced ? {} : { reason: malformed ? 'Claude reported malformed startup tool data' : builtins === undefined ? 'Claude did not report its startup tools' : 'Claude reported tools outside the read-only allowlist' }),
+  };
+}
+
 // Commands the CLI advertises that cannot work from Chat: /clear replaces the native
 // session id, the usage-credit and login commands open the user's browser, the rest
 // are terminal-bound or internal handoffs. Each turn's terminal_slash_commands adds more.
@@ -122,7 +178,7 @@ export class ClaudeSession {
     this.permissionRestoreValidated = false;
   }
 
-  async start({ cwd, sessionId, mcpServers, permissionMode, model }) {
+  async start({ cwd, sessionId, mcpServers, permissionMode, model, readOnlyTools }) {
     if (this.closed) throw new Error('session is closed');
     if (permissionMode !== undefined && ![...MODE_CHOICES, AUTO_MODE].some(choice => choice.value === permissionMode)) {
       throw new Error(`Claude permission mode restore failed: ${permissionMode} is not supported`);
@@ -142,7 +198,10 @@ export class ClaudeSession {
     // "Don't ask" denied ThreadTerm's own tools. The exact names
     // requestPermission allows in every mode are also pre-approved as rules
     // (verified with SDK 0.3.266); browser_eval is never among them.
+    const roundtableTools = roundtableReadOnlyTools(readOnlyTools);
+    this.roundtableRequestedTools = roundtableTools;
     const allowedTools = [
+      ...(roundtableTools ?? []),
       ...(this.threadTermDelegationTools ? THREADTERM_DELEGATION_TOOLS : []),
       ...(this.threadTermPreviewTools ? THREADTERM_PREVIEW_TOOLS : []),
       ...(this.threadTermBrowserTools ? THREADTERM_BROWSER_TOOLS : []),
@@ -160,7 +219,8 @@ export class ClaudeSession {
       ...(permissionMode ? { permissionMode } : {}),
       ...(model ? { model } : {}),
       ...(injected ? { mcpServers: injected } : {}),
-      ...(allowedTools.length ? { allowedTools } : {}),
+      ...(roundtableTools ? { tools: roundtableTools, strictMcpConfig: true } : {}),
+      ...(allowedTools.length ? { allowedTools: [...new Set(allowedTools)] } : {}),
       canUseTool: (toolName, input, context) => this.requestPermission(toolName, input, context),
     };
     this.sessionId = sessionId ?? null;
@@ -183,6 +243,7 @@ export class ClaudeSession {
         this.pump.then(() => { throw this.endError ?? new Error('Claude SDK query ended during initialization'); }),
       ]);
       if (signedOut(init?.account)) throw new Error(NOT_SIGNED_IN);
+      this.roundtableToolsReport = roundtableToolsReport(init, roundtableTools);
       this.catalog = {
         commands: Array.isArray(init?.commands) ? init.commands : [],
         models: Array.isArray(init?.models) ? init.models.filter(model => typeof model?.value === 'string') : [],
@@ -529,6 +590,13 @@ export class ClaudeSession {
 
   adoptTurnInit(message) {
     let changed = false;
+    if (this.roundtableRequestedTools && hasReportedToolField(message)) {
+      const report = roundtableToolsReport(message, this.roundtableRequestedTools);
+      if (JSON.stringify(report) !== JSON.stringify(this.roundtableToolsReport)) {
+        this.roundtableToolsReport = report;
+        changed = true;
+      }
+    }
     for (const name of Array.isArray(message.terminal_slash_commands) ? message.terminal_slash_commands : []) {
       if (typeof name === 'string' && !this.terminalCommands.has(name)) { this.terminalCommands.add(name); changed = true; }
     }
@@ -630,6 +698,7 @@ export class ClaudeSession {
 
   publishUi({ permissionChangeConfirmed = false } = {}) {
     const ui = this.uiState();
+    if (this.roundtableToolsReport) ui.roundtableToolsReport = this.roundtableToolsReport;
     if (!this.closed) this.write(event(this.cardId, 'session.ui', {
       ui,
       sessionId: this.sessionId,

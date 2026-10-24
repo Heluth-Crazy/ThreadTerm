@@ -1,4 +1,4 @@
-import { contextBridge, ipcRenderer } from 'electron';
+import { contextBridge, ipcRenderer, webUtils } from 'electron';
 import { terminalPtyFromArguments } from './terminalEnvironment.js';
 import type { BrowserBridge, BrowserEvent } from '../../renderer/src/browserTypes.js';
 import { isBrowserSharingState } from '../../renderer/src/browserTypes.js';
@@ -15,7 +15,8 @@ import {
   type AttachedFile,
 } from '@threadterm/protocol';
 
-const bridge: ThreadTermBridge & BrowserBridge & BrowserHandoffBridge = {
+type FilePathBridge = { getPathForFile: (file: File) => string };
+const bridge: ThreadTermBridge & BrowserBridge & BrowserHandoffBridge & FilePathBridge = {
   browserCommand: command => ipcRenderer.invoke('threadterm:browser-command', command),
   onBrowserEvent: listener => {
     const handler = (_event: Electron.IpcRendererEvent, value: unknown) => { if (isBrowserEvent(value)) listener(value); };
@@ -76,6 +77,7 @@ const bridge: ThreadTermBridge & BrowserBridge & BrowserHandoffBridge = {
   },
   chooseDirectory: (): Promise<string | null> => ipcRenderer.invoke('threadterm:choose-directory') as Promise<string | null>,
   attachFiles: () => ipcRenderer.invoke('threadterm:attach-files') as Promise<AttachedFile[]>,
+  getPathForFile: file => webUtils.getPathForFile(file),
   chooseSavePath: (kind): Promise<string | null> => ipcRenderer.invoke('threadterm:choose-save-path', kind) as Promise<string | null>,
   exportFile: (kind) => ipcRenderer.invoke('threadterm:export-file', kind) as Promise<{ path: string } | null>,
   activateDataRelocation: (prepared) => ipcRenderer.invoke('threadterm:activate-data-relocation', prepared) as Promise<{ activated: boolean }>,
