@@ -2852,7 +2852,7 @@ mod tests {
             record(&db, "s", Some("parent-turn"), "message.user", &json!({"text":"fixture"})).unwrap();
             record(&db, "s", Some("parent-turn"), "chat.turn.started", &json!({})).unwrap();
             crate::delegation::insert(&db, &crate::delegation::NewDelegation {
-                id:"delegation",parent_session_id:"s",child_session_id:&child.id,agent:"kimi",workspace:"shared",workspace_path:"fixture",branch:None,prompt:"fixture",user_messages:0,operation_id:"delegate-permission",
+                id:"delegation",parent_session_id:"s",child_session_id:&child.id,agent:"kimi",workspace:"shared",workspace_path:"fixture",branch:None,prompt:"fixture",user_messages:0,authority:None,operation_id:"delegate-permission",
             }).unwrap();
             record(&db, &child.id, Some("child-turn"), "message.user", &json!({"text":"fixture"})).unwrap();
             record(&db, &child.id, Some("child-turn"), "chat.approval", &json!({"approvalId":"permission","part":{"type":"approval","approvalId":"permission","status":"pending","data":{"choices":choices,"submittable":true}}})).unwrap();

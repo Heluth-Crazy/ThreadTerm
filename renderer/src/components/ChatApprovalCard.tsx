@@ -11,6 +11,7 @@ import { ChatQuestionCard } from "./ChatQuestionCard";
 import type { ChatInteractionForm, QuestionResponse } from "../chatQuestion";
 import './subagent-card.css';
 import { isBrowserEvalApproval,type BrowserEvalContext } from '../browserEvalApproval';
+import { wideningRequestLabel, type DelegationAuthority } from '../delegation';
 import { BrowserEvalApprovalCard } from './BrowserEvalApprovalCard';
 
 export function ChatApprovalCard({
@@ -60,6 +61,12 @@ export function ChatApprovalCard({
   // (escalated, or the request arrived after the turn had ended).
   const delegation = (part.data as { delegation?: { route?: string } } | undefined)?.delegation;
   const subagent = (part.data as { subagent?: { label?: string } } | undefined)?.subagent;
+  // A delegation that needs the user's widening: the parent's own authority is
+  // the ceiling, so only the user can raise it (F07).
+  const widening = (part.data as { requestType?: string; authorityRequest?: { agent: string; parentAuthority?: DelegationAuthority; childAuthority?: DelegationAuthority } } | undefined);
+  const wideningText = widening?.requestType === "threadterm.delegation.authority" && widening.authorityRequest
+    ? wideningRequestLabel(widening.authorityRequest, copy)
+    : undefined;
   if (question?.interaction === "question" && question.form) return <div className={`chat-approval-card chat-question-wrapper ${part.status ?? "pending"}`}>
     <div className="chat-question-header">
       <svg className="chat-question-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" aria-hidden="true"><path d="M8 9a4 4 0 0 1 8 0c0 3-4 3-4 6"/><circle cx="12" cy="12" r="10"/><path d="M12 18h.01"/></svg>
@@ -72,7 +79,8 @@ export function ChatApprovalCard({
   return (
     <div className={`chat-approval-card ${part.status ?? "pending"}${delegation?.route === "parent" ? " is-delegated" : ""}`}>
       {subagent && <span className="chat-subagent-chip">{copy("Subagent", "子代理")} · {subagent.label || copy("Subagent", "子代理")}</span>}
-      <strong>{title}</strong>
+      <strong>{wideningText ? wideningText.title : title}</strong>
+      {wideningText && <p className="chat-approval-delegated">{wideningText.detail}</p>}
       {data.requestType && <small className="chat-approval-type">{data.requestType}</small>}
       {part.status === "pending" && delegation?.route === "parent" && <p className="chat-approval-delegated">{copy("The agent that delegated this session decides this request. You can still answer it yourself.", "此请求由委派这个会话的代理决定。你也可以直接处理。")}</p>}
       {part.status === "pending" && delegation?.route === "user" && !unsupported && <p className="chat-approval-delegated">{copy("The delegating agent is no longer in its turn, so this request is yours to decide.", "委派方已结束当前轮次，此请求需要你来决定。")}</p>}

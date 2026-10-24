@@ -2027,6 +2027,15 @@
         },
         "userMessages": {
           "type": "number"
+        },
+        "authority": {
+          "type": "string",
+          "enum": [
+            "read_only",
+            "ask_before_writes",
+            "writes_in_workspace",
+            "full_access"
+          ]
         }
       },
       "required": [

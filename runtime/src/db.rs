@@ -80,6 +80,21 @@ impl Database {
                 [],
             )?;
         }
+        // F07: the authority a delegate was fitted to, for the delegation card.
+        let has_authority = connection
+            .prepare("PRAGMA table_info(delegations)")?
+            .query_map([], |r| r.get::<_, String>(1))?
+            .collect::<rusqlite::Result<Vec<_>>>()?
+            .iter()
+            .any(|name| name == "authority");
+        if !has_authority {
+            connection.execute("ALTER TABLE delegations ADD COLUMN authority TEXT", [])?;
+        }
+        // F07: a delegation start that needs the user's explicit widening.
+        connection.execute_batch(
+            "CREATE TABLE IF NOT EXISTS delegation_authority_requests (id TEXT PRIMARY KEY, parent_session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE, agent TEXT NOT NULL, authority TEXT NOT NULL, parent_authority TEXT NOT NULL, approval_id TEXT NOT NULL UNIQUE, state TEXT NOT NULL, request TEXT NOT NULL, created_at TEXT NOT NULL);
+             CREATE INDEX IF NOT EXISTS delegation_authority_parent ON delegation_authority_requests(parent_session_id);",
+        )?;
         let has_read = connection
             .prepare("PRAGMA table_info(inbox)")?
             .query_map([], |r| r.get::<_, String>(1))?
@@ -2320,7 +2335,7 @@ fn session_organization(conn: &Connection, id: &str) -> Result<SessionOrganizati
 }
 fn session_delegation(conn: &Connection, id: &str) -> Result<Option<SessionDelegation>> {
     conn.query_row(
-        "SELECT id,parent_session_id,workspace,branch,state,user_messages FROM delegations WHERE child_session_id=?",
+        "SELECT id,parent_session_id,workspace,branch,state,user_messages,authority FROM delegations WHERE child_session_id=?",
         [id],
         |row| {
             Ok(SessionDelegation {
@@ -2330,6 +2345,7 @@ fn session_delegation(conn: &Connection, id: &str) -> Result<Option<SessionDeleg
                 branch: row.get(3)?,
                 state: row.get(4)?,
                 user_messages: row.get(5)?,
+                authority: row.get(6)?,
             })
         },
     )

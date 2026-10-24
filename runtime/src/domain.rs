@@ -71,6 +71,10 @@ pub struct SessionDelegation {
     /// attached to the delegate's first message (sent only when some were).
     #[serde(default, skip_serializing_if = "is_zero")]
     pub user_messages: u32,
+    /// The authority the delegate was fitted to under its parent (F07):
+    /// read_only | ask_before_writes | writes_in_workspace | full_access.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub authority: Option<String>,
 }
 
 /// Present on a Chat session participating in a group chat.

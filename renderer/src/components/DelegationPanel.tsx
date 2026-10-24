@@ -1,7 +1,7 @@
 import { useEffect, useId, useState } from "react";
 import type { Session } from "@threadterm/protocol";
 import { operationId, request } from "../bridge";
-import { attachedMessagesLabel, delegateOutcomePreview, delegationActive, delegationStateLabel, delegationStateSummary, delegationStripVisible } from "../delegation";
+import { attachedMessagesLabel, authorityLabel, delegateOutcomePreview, delegationActive, delegationStateLabel, delegationStateSummary, delegationStripVisible } from "../delegation";
 import { AgentIcon, Icon } from "./PrototypeIcon";
 import "./delegation-panel.css";
 
@@ -107,6 +107,7 @@ function DelegateCard({ delegate, onOpenSession, copy, zh }: { delegate: Session
       {active && <button type="button" className="btn btn-sm btn-danger delegate-stop" disabled={stopping} onClick={stop}>{stopping ? copy("Stopping…", "停止中…") : copy("Stop", "停止")}</button>}
     </div>
     {delegate.delegation!.branch && <small className="delegation-branch" title={delegate.delegation!.branch}>{delegate.delegation!.branch}</small>}
+    {delegate.delegation!.authority && <small className="delegate-card-authority" title={copy("The most this delegate may do; it can never exceed the delegating chat's own authority.", "该委派可用的最高权限；不会超出委派它的对话自身的权限。")}>{copy("Access", "权限")}: {authorityLabel(delegate.delegation!.authority, copy)}</small>}
     {attached && <small className="delegate-card-attached" title={attached.title}>{attached.label}</small>}
     {preview && <p className={`delegate-card-preview${failed ? " is-error" : ""}`}>{preview}</p>}
     {issue && <p className="surface-error" role="alert">{issue}</p>}

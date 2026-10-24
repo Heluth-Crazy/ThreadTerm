@@ -33,6 +33,9 @@ struct FixtureAdapter {
     cancels: Arc<AtomicUsize>,
     /// Cancel errors the fixture's chats return, in order (F09 refusal).
     cancel_failures: Arc<Mutex<Vec<ProviderError>>>,
+    /// The provider id this adapter answers to; delegation tests add a second,
+    /// restricted-mode-less agent (F07).
+    provider: &'static str,
 }
 
 impl ProviderAdapter for FixtureAdapter {
@@ -67,13 +70,13 @@ impl ProviderAdapter for FixtureAdapter {
     }
 
     fn id(&self) -> &'static str {
-        "grok"
+        self.provider
     }
 
     fn capability(&self) -> ProviderCapability {
         ProviderCapability {
             source: "builtin", plugin_id: None, icon: None, sign_in: None, homepage: None,
-            id: "grok".into(),
+            id: self.provider.into(),
             name: "Lifecycle fixture".into(),
             installed: true,
             version: Some("fixture".into()),
@@ -158,9 +161,13 @@ impl ProviderAdapter for FixtureAdapter {
             send_gate: self.send_gate.clone(),
             cancels: Arc::clone(&self.cancels),
             cancel_failures: Arc::clone(&self.cancel_failures),
+            options: Arc::new(Mutex::new(("default".to_owned(), "default".to_owned()))),
         }))
     }
 }
+
+/// The permission modes the fixture adapter offers (grok's set).
+const FIXTURE_MODES: [&str; 6] = ["default", "acceptEdits", "auto", "dontAsk", "plan", "bypassPermissions"];
 
 struct FixtureChat {
     native: String,
@@ -169,11 +176,45 @@ struct FixtureChat {
     send_gate: Option<(SyncSender<()>, Arc<Mutex<Receiver<()>>>)>,
     cancels: Arc<AtomicUsize>,
     cancel_failures: Arc<Mutex<Vec<ProviderError>>>,
+    /// Permission options this chat offers (F07 verifies the fitted child mode
+    /// against them, like a real adapter's catalogue).
+    options: Arc<Mutex<(String, String)>>,
 }
 
 impl ChatSession for FixtureChat {
     fn native_id(&self) -> Option<String> {
         Some(self.native.clone())
+    }
+
+    fn ui_state(&self) -> Value {
+        let (_, value) = self
+            .options
+            .lock()
+            .map(|options| options.clone())
+            .unwrap_or_default();
+        json!({
+            "options": [{
+                "id": "mode",
+                "name": "mode",
+                "category": "mode",
+                "value": value,
+                "choices": FIXTURE_MODES.iter().map(|mode| json!({"value": mode, "name": mode})).collect::<Vec<_>>(),
+            }],
+            "commands": []
+        })
+    }
+
+    fn set_option(&mut self, option_id: &str, value: &str) -> Result<Value, ProviderError> {
+        if option_id != "mode" || !FIXTURE_MODES.contains(&value) {
+            return Err(ProviderError::new("chat_option_invalid", "unknown fixture option"));
+        }
+        let mut options = self
+            .options
+            .lock()
+            .map_err(|_| ProviderError::new("fixture_failed", "option lock poisoned"))?;
+        *options = (option_id.to_owned(), value.to_owned());
+        drop(options);
+        Ok(self.ui_state())
     }
 
     fn is_alive(&self) -> bool {
@@ -256,29 +297,36 @@ impl Fixture {
             false,
             true,
             false,
+            false,
         )
     }
 
     fn with_failures(failures: Vec<ProviderError>) -> Self {
-        Self::build(false, failures, None, false, true, false)
+        Self::build(false, failures, None, false, true, false, false)
     }
 
     fn with_failures_and_liveness(
         failures: Vec<ProviderError>,
         initial_liveness: bool,
     ) -> Self {
-        Self::build(false, failures, None, false, initial_liveness, false)
+        Self::build(false, failures, None, false, initial_liveness, false, false)
     }
 
     /// Several concurrent chats (parent and delegates) with distinct native ids.
     fn for_delegation() -> Self {
-        Self::build(false, Vec::new(), None, true, true, false)
+        Self::build(false, Vec::new(), None, true, true, false, false)
     }
 
     /// `for_delegation` where the first send of a delegate blocks until the
     /// test releases it: the window between the start's check and its send.
     fn for_delegation_with_blocked_send() -> Self {
-        Self::build(false, Vec::new(), None, true, true, true)
+        Self::build(false, Vec::new(), None, true, true, true, false)
+    }
+
+    /// `for_delegation` plus a second Chat agent that has no permission modes
+    /// of its own (F07: a plugin/unknown child cannot be narrowed).
+    fn for_delegation_with_unrestricted_agent() -> Self {
+        Self::build(false, Vec::new(), None, true, true, false, true)
     }
 
     fn build(
@@ -288,6 +336,7 @@ impl Fixture {
         unique_native_ids: bool,
         initial_liveness: bool,
         blocked_send: bool,
+        unrestricted_agent: bool,
     ) -> Self {
         let root = tempfile::tempdir().unwrap();
         let db = Arc::new(Database::open(&root.path().join("runtime.sqlite")).unwrap());
@@ -323,7 +372,28 @@ impl Fixture {
                 .then(|| (send_started_tx, Arc::new(Mutex::new(send_release_rx)))),
             cancels: Arc::clone(&cancels),
             cancel_failures: Arc::clone(&cancel_failures),
+            provider: "grok",
         });
+        let mut adapters: Vec<Arc<dyn ProviderAdapter>> = vec![adapter];
+        if unrestricted_agent {
+            // A Chat agent whose provider has no permission mode at all: the
+            // runtime cannot narrow it (F07).
+            adapters.push(Arc::new(FixtureAdapter {
+                gate: None,
+                failures: Mutex::new(Vec::new()),
+                status_before_return: None,
+                opens: Arc::clone(&opens),
+                stops: Arc::clone(&stops),
+                alive: Arc::clone(&alive),
+                worker_tokens: Arc::clone(&worker_tokens),
+                initial_liveness,
+                unique_native_ids,
+                send_gate: None,
+                cancels: Arc::clone(&cancels),
+                cancel_failures: Arc::clone(&cancel_failures),
+                provider: "demo-plugin",
+            }));
+        }
         let output = Arc::new(OutputStore::default());
         let service = Arc::new(RuntimeService {
             previews: Arc::new(crate::preview::Previews::new(Arc::clone(&db)).unwrap()),
@@ -340,7 +410,7 @@ impl Fixture {
             pty: Arc::new(PtyManager::new(Arc::clone(&output))),
             deferred_launch: Arc::new(Mutex::new(DeferredLaunchGate::default())),
             output,
-            providers: Arc::new(Providers::for_test(vec![adapter])),
+            providers: Arc::new(Providers::for_test(adapters)),
             shutdown_requested: AtomicBool::new(false),
             shutdown_pending: AtomicBool::new(false),
             relocation_gate: RwLock::new(()),
@@ -1323,6 +1393,7 @@ fn provider_handoff_does_not_publish_an_already_dead_worker() {
         send_gate: None,
         cancels: Arc::new(AtomicUsize::new(0)),
         cancel_failures: Arc::new(Mutex::new(Vec::new())),
+        provider: "grok",
     };
     let providers = Providers::for_test(vec![Arc::new(adapter)]);
     assert_eq!(
@@ -2256,3 +2327,193 @@ fn only_top_level_chats_of_verified_parents_get_the_delegation_tool_server() {
     );
     assert!(missing(&parent, "grok").is_none(), "no MCP host binary, no server");
 }
+
+// ---- F07: the parent's authority is the delegate's ceiling -------------------
+
+fn start_agent(
+    fixture: &Fixture,
+    parent: &str,
+    token: &str,
+    agent: &str,
+    operation_id: &str,
+) -> Result<Value, RpcError> {
+    rpc(
+        fixture,
+        "delegation.start",
+        json!({"callerSessionId":parent,"callerToken":token,"agent":agent,"prompt":"Do the thing","operationId":operation_id}),
+    )
+}
+
+fn child_authority(fixture: &Fixture, child: &str) -> Option<String> {
+    fixture
+        .db
+        .session_by_id(child)
+        .unwrap()
+        .unwrap()
+        .delegation
+        .unwrap()
+        .authority
+}
+
+fn saved_mode(fixture: &Fixture, session: &str, provider: &str) -> Option<String> {
+    fixture
+        .db
+        .chat_option_selections(session, provider)
+        .unwrap()
+        .as_array()
+        .into_iter()
+        .flatten()
+        .find(|row| row["id"] == "mode")
+        .and_then(|row| row["value"].as_str().map(str::to_owned))
+}
+
+fn widening_cards(fixture: &Fixture, parent: &str) -> Vec<Value> {
+    fixture
+        .db
+        .chat_items(parent)
+        .unwrap()
+        .into_iter()
+        .flat_map(|item| item.parts)
+        .filter(|part| part["data"]["requestType"] == "threadterm.delegation.authority")
+        .collect()
+}
+
+fn widening_id(part: &Value) -> String {
+    part["approvalId"].as_str().unwrap().to_owned()
+}
+
+fn claim_lease(fixture: &Fixture, session: &str) -> i64 {
+    rpc(fixture, "session.claim", json!({"sessionId":session})).unwrap()["leaseEpoch"]
+        .as_i64()
+        .unwrap()
+}
+
+fn decide(
+    fixture: &Fixture,
+    session: &str,
+    lease: i64,
+    approval_id: &str,
+    choice_id: &str,
+    operation_id: &str,
+) -> Result<Value, RpcError> {
+    rpc(
+        fixture,
+        "chat.approve",
+        json!({"sessionId":session,"turnId":"","approvalId":approval_id,"choiceId":choice_id,"leaseEpoch":lease,"operationId":operation_id}),
+    )
+}
+
+#[test]
+fn a_delegate_is_fitted_to_the_strongest_child_mode_under_the_parents_ceiling() {
+    let fixture = Fixture::for_delegation();
+    let (parent, token) = delegation_parent(&fixture, "parent-create");
+    // A Chat that has not changed its modes asks before writes, and so does the
+    // delegate it starts - explicitly, not by the provider's own default.
+    let started = start_delegate(&fixture, &parent, &token, "start-default").unwrap();
+    assert_eq!(started["authority"], "ask_before_writes");
+    let child = started["sessionId"].as_str().unwrap().to_owned();
+    wait_for(|| delegation_state(&fixture, &child) == "running");
+    assert_eq!(child_authority(&fixture, &child).as_deref(), Some("ask_before_writes"));
+    assert_eq!(saved_mode(&fixture, &child, "grok").as_deref(), Some("default"));
+
+    // A read-only parent chat can only start a read-only delegate.
+    let (restricted, restricted_token) = delegation_parent(&fixture, "parent-create-2");
+    fixture
+        .db
+        .set_chat_option_selections(&restricted, "grok", &json!([{"id":"mode","value":"plan"}]))
+        .unwrap();
+    let started = start_agent(&fixture, &restricted, &restricted_token, "grok", "start-plan").unwrap();
+    assert_eq!(started["authority"], "read_only");
+    let child = started["sessionId"].as_str().unwrap().to_owned();
+    wait_for(|| delegation_state(&fixture, &child) == "running");
+    assert_eq!(child_authority(&fixture, &child).as_deref(), Some("read_only"));
+    assert_eq!(saved_mode(&fixture, &child, "grok").as_deref(), Some("plan"));
+}
+
+#[test]
+fn a_restrictive_parent_cannot_start_an_unrestricted_child_before_any_spawn() {
+    let fixture = Fixture::for_delegation_with_unrestricted_agent();
+    let (parent, token) = delegation_parent(&fixture, "parent-create");
+    fixture
+        .db
+        .set_chat_option_selections(&parent, "grok", &json!([{"id":"mode","value":"plan"}]))
+        .unwrap();
+    let sessions_before = fixture.db.snapshot().unwrap().sessions.len();
+    let refused = start_agent(&fixture, &parent, &token, "demo-plugin", "start-plugin").unwrap_err();
+    assert_eq!(refused.code, "delegation_authority_exceeded");
+    // Nothing was created, connected or sent: the child never spawned.
+    assert_eq!(fixture.db.snapshot().unwrap().sessions.len(), sessions_before);
+    assert!(fixture.db.snapshot().unwrap().sessions.iter().all(|session| session.delegation.is_none()));
+    assert_eq!(fixture.opens.load(AtomicOrdering::SeqCst), 0);
+    // The user is asked, with the exact gap and no permanent grant.
+    let cards = widening_cards(&fixture, &parent);
+    assert_eq!(cards.len(), 1);
+    assert_eq!(cards[0]["status"], "pending");
+    assert_eq!(cards[0]["data"]["authorityRequest"]["childAuthority"], "full_access");
+    assert_eq!(cards[0]["data"]["authorityRequest"]["parentAuthority"], "read_only");
+    let choices = cards[0]["data"]["choices"].as_array().unwrap();
+    assert_eq!(
+        choices.iter().map(|choice| choice["choiceId"].as_str().unwrap()).collect::<Vec<_>>(),
+        vec!["allow_once", "deny"]
+    );
+    assert!(choices.iter().all(|choice| choice["scope"] == "once"), "widening is never permanent");
+    // Retrying the same operation reports the pending decision; it asks once.
+    let retried = start_agent(&fixture, &parent, &token, "demo-plugin", "start-plugin").unwrap();
+    assert_eq!(retried["state"], "awaiting_user");
+    assert_eq!(widening_cards(&fixture, &parent).len(), 1);
+}
+
+#[test]
+fn widening_starts_the_delegate_only_after_the_user_allows_it_once() {
+    let fixture = Fixture::for_delegation_with_unrestricted_agent();
+    let (parent, token) = delegation_parent(&fixture, "parent-create");
+    fixture
+        .db
+        .set_chat_option_selections(&parent, "grok", &json!([{"id":"mode","value":"plan"}]))
+        .unwrap();
+    let lease = claim_lease(&fixture, &parent);
+    // Deny: nothing starts, the card reports the decision.
+    start_agent(&fixture, &parent, &token, "demo-plugin", "start-denied").unwrap_err();
+    let denied = widening_id(&widening_cards(&fixture, &parent).remove(0));
+    decide(&fixture, &parent, lease, &denied, "deny", "deny-op").unwrap();
+    assert_eq!(widening_cards(&fixture, &parent)[0]["status"], "resolved");
+    assert_eq!(widening_cards(&fixture, &parent)[0]["data"]["outcome"], "denied");
+    assert_eq!(fixture.opens.load(AtomicOrdering::SeqCst), 0);
+    // Allow once: the start the user approved is performed as asked.
+    start_agent(&fixture, &parent, &token, "demo-plugin", "start-allowed").unwrap_err();
+    let allowed = widening_id(&widening_cards(&fixture, &parent)[1]);
+    let decided = decide(&fixture, &parent, lease, &allowed, "allow_once", "allow-op").unwrap();
+    assert_eq!(decided["allowed"], true);
+    assert_eq!(widening_cards(&fixture, &parent)[1]["status"], "resolved");
+    let started = status_of(&fixture, &parent, &token);
+    let delegate = &started["delegates"][0];
+    assert_eq!(delegate["agent"], "demo-plugin");
+    assert_eq!(delegate["authority"], "full_access");
+    let child = delegate["sessionId"].as_str().unwrap().to_owned();
+    assert_eq!(child_authority(&fixture, &child).as_deref(), Some("full_access"));
+    wait_for(|| delegation_state(&fixture, &child) == "running");
+    // The decision was for one start only: the next start asks again.
+    start_agent(&fixture, &parent, &token, "demo-plugin", "start-again").unwrap_err();
+    assert_eq!(widening_cards(&fixture, &parent).len(), 3);
+    assert_eq!(widening_cards(&fixture, &parent)[2]["status"], "pending");
+}
+
+#[test]
+fn a_restart_retires_a_pending_widening_so_it_can_never_be_answered_later() {
+    let fixture = Fixture::for_delegation_with_unrestricted_agent();
+    let (parent, token) = delegation_parent(&fixture, "parent-create");
+    fixture
+        .db
+        .set_chat_option_selections(&parent, "grok", &json!([{"id":"mode","value":"plan"}]))
+        .unwrap();
+    let lease = claim_lease(&fixture, &parent);
+    start_agent(&fixture, &parent, &token, "demo-plugin", "start-lost").unwrap_err();
+    let approval = widening_id(&widening_cards(&fixture, &parent).remove(0));
+    crate::delegation::reconcile_interrupted(&fixture.db).unwrap();
+    assert_eq!(widening_cards(&fixture, &parent)[0]["status"], "expired");
+    let refused = decide(&fixture, &parent, lease, &approval, "allow_once", "late-op").unwrap_err();
+    assert_eq!(refused.code, "delegation_authority_expired");
+    assert_eq!(fixture.opens.load(AtomicOrdering::SeqCst), 0);
+}
+
+

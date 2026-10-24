@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import type { ChatItem, Session, SessionDelegationState } from '@threadterm/protocol';
-import { attachedMessagesLabel, delegateOutcomePreview, delegationActive, delegationTool, delegationToolLabel, delegationStateLabel, delegationStateSummary, delegationStripVisible, nestedDelegateIds, withDelegates } from './delegation';
+import { attachedMessagesLabel, authorityLabel, wideningRequestLabel, delegateOutcomePreview, delegationActive, delegationTool, delegationToolLabel, delegationStateLabel, delegationStateSummary, delegationStripVisible, nestedDelegateIds, withDelegates } from './delegation';
 
 const session = (id: string, createdAt: string, parent?: string, branch?: string): Session => ({
   id, title: id, provider: 'codex', mode: 'chat', status: 'running', createdAt, updatedAt: createdAt,
@@ -135,4 +135,23 @@ test("ThreadTerm's own delegation tools are recognised in every agent's tool-cal
   assert.equal(delegationTool({ toolName: 'Read' }), undefined);
   const copy = (en: string, zh: string) => `${en}|${zh}`;
   assert.equal(delegationToolLabel('delegate_result', copy), "Read a delegate's result|读取了委派结果");
+});
+
+test("a delegate's fitted authority and a widening request are labelled in both languages", () => {
+  const en = (english: string) => english, zh = (_english: string, chinese: string) => chinese;
+  assert.equal(authorityLabel('read_only', en), 'Read only');
+  assert.equal(authorityLabel('ask_before_writes', en), 'Asks before writes');
+  assert.equal(authorityLabel('writes_in_workspace', en), 'Writes in its own folder');
+  assert.equal(authorityLabel('full_access', en), 'Full access');
+  assert.equal(authorityLabel(undefined, en), 'Unknown access');
+  for (const value of ['read_only', 'ask_before_writes', 'writes_in_workspace', 'full_access', undefined] as const) {
+    assert.notEqual(authorityLabel(value, zh), authorityLabel(value, en), 'every authority label is translated');
+  }
+  const request = { agent: 'pi', parentAuthority: 'ask_before_writes', childAuthority: 'full_access' } as const;
+  const english = wideningRequestLabel(request, en), chinese = wideningRequestLabel(request, zh);
+  assert.match(english.title, /^@pi wants to start with Full access$/);
+  assert.match(english.detail, /This chat is limited to Asks before writes.*with Full access anyway/);
+  assert.match(english.detail, /Deny starts nothing/);
+  assert.notEqual(chinese.title, english.title);
+  assert.notEqual(chinese.detail, english.detail);
 });

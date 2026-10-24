@@ -1,7 +1,7 @@
 use crate::{
     config::RuntimeConfig,
     db::{CreateSession, Database},
-    domain::{RpcError, RpcRequest},
+    domain::{RpcError, RpcRequest, Session},
     leases::LeaseManager,
     output::OutputStore,
     providers::{NativeSessionRef, ProviderEvent, ProviderRuntime, Providers, TerminalCapture},
@@ -1963,6 +1963,11 @@ impl RuntimeService {
                     let p: ChatApprove = parse(&request.params)?;
                     self.leases
                         .require(&self.db, &p.session_id, principal, p.lease_epoch)?;
+                    // F07: the user's widening decision is the runtime's to
+                    // record, not the provider's.
+                    if let Some(result) = self.approve_delegation_authority(&p)? {
+                        return Ok(result);
+                    }
                     approve_chat_request(
                         &self.db,
                         &self.providers,
@@ -2101,14 +2106,114 @@ impl RuntimeService {
             .lock()
             .map_err(|_| anyhow::anyhow!("delegation gate poisoned"))?;
         crate::delegation::validate_start(&self.db, &self.providers, &parent, &p)?;
-        let parent_cwd = crate::delegation::session_cwd(&self.db, &parent)?;
+        // F07: the parent is a ceiling. A child that cannot be narrowed to fit
+        // needs the user's explicit widening, which is asked for here and
+        // answered in the parent chat - never by the delegating agent.
+        let fit = crate::delegation::authority_fit(&self.db, &self.providers, &parent, &p.agent)?;
+        if fit.widening.is_some() {
+            let approval_id = crate::delegation::request_widening(&self.db, &parent, &p.agent, &fit, params)?;
+            let awaiting = json!({
+                "delegationId": Value::Null,
+                "state": "awaiting_user",
+                "agent": p.agent,
+                "parentAuthority": fit.parent.as_str(),
+                "childAuthority": fit.child.as_str(),
+                "approvalId": approval_id,
+            });
+            // The same operation retried reports the pending decision instead
+            // of asking the user again.
+            self.db
+                .complete_operation(&p.operation_id, "delegation.start", &awaiting)?;
+            return Err(anyhow::anyhow!("delegation_authority_exceeded"));
+        }
+        self.begin_delegation(&p, &parent, &fit)
+    }
+
+    /// The user's answer to a widening card (F07). `Ok(None)` means the card is
+    /// not ours and the provider approval path handles it.
+    fn approve_delegation_authority(&self, p: &ChatApprove) -> Result<Option<Value>> {
+        if crate::delegation::widening_part(&self.db, &p.session_id, &p.approval_id)?.is_none() {
+            return Ok(None);
+        }
+        if let Some(result) = self.db.operation(&p.operation_id)? {
+            return Ok(Some(result));
+        }
+        if !matches!(p.choice_id.as_str(), "allow_once" | "deny") {
+            return Err(crate::providers::ProviderError::new(
+                "invalid_choice",
+                "Choose Allow once or Deny for this delegation",
+            )
+            .into());
+        }
+        let (request_id, stored) =
+            crate::delegation::pending_widening(&self.db, &p.session_id, &p.approval_id)?;
+        let allow = p.choice_id == "allow_once";
+        // Everything the start needs is checked before the decision is spent, so
+        // a refusal here leaves the user's pending card usable.
+        let mut stored: crate::delegation::StartRequest = serde_json::from_value(stored)?;
+        let parent = self
+            .db
+            .session_by_id(&stored.caller_session_id)?
+            .ok_or_else(|| anyhow::anyhow!("delegation_not_found"))?;
+        if allow {
+            // The user's decision is a new operation: the asking start is
+            // already recorded with its `awaiting_user` outcome.
+            stored.operation_id = format!("{}:granted", stored.operation_id);
+            crate::delegation::validate_start(&self.db, &self.providers, &parent, &stored)?;
+        }
+        if !crate::delegation::settle_widening(&self.db, &request_id, allow)? {
+            return Err(anyhow::anyhow!("delegation_authority_expired"));
+        }
+        self.resolve_widening_card(&p.session_id, &p.approval_id, allow)?;
+        if !allow {
+            let denied = json!({"accepted": true, "allowed": false});
+            self.db.complete_operation(&p.operation_id, "chat.approve", &denied)?;
+            return Ok(Some(denied));
+        }
+        let _gate = self
+            .delegations
+            .start_gate
+            .lock()
+            .map_err(|_| anyhow::anyhow!("delegation gate poisoned"))?;
+        crate::delegation::validate_start(&self.db, &self.providers, &parent, &stored)?;
+        let fit = crate::delegation::authority_fit(&self.db, &self.providers, &parent, &stored.agent)?;
+        let started = self.begin_delegation(&stored, &parent, &fit.widened())?;
+        let result = json!({"accepted": true, "allowed": true, "delegationId": started["delegationId"].clone()});
+        self.db.complete_operation(&p.operation_id, "chat.approve", &result)?;
+        Ok(Some(result))
+    }
+
+    fn resolve_widening_card(&self, session_id: &str, approval_id: &str, allow: bool) -> Result<()> {
+        let turn = self
+            .db
+            .chat_items(session_id)?
+            .into_iter()
+            .find(|item| item.parts.iter().any(|part| part["approvalId"] == approval_id))
+            .and_then(|item| item.turn_id);
+        crate::chat_projection::record(
+            &self.db,
+            session_id,
+            turn.as_deref(),
+            "chat.approval.resolved",
+            &json!({"approvalId": approval_id, "status": "resolved", "outcome": if allow { "allowed" } else { "denied" }}),
+        )
+    }
+
+    /// Creates and starts the delegate with the authority already decided.
+    fn begin_delegation(
+        &self,
+        p: &crate::delegation::StartRequest,
+        parent: &Session,
+        fit: &crate::delegation::AuthorityFit,
+    ) -> Result<Value> {
+        let parent_cwd = crate::delegation::session_cwd(&self.db, parent)?;
         let delegation_id = uuid::Uuid::new_v4().to_string();
         let short = &delegation_id[..8];
         let workspace = p.workspace.as_deref().unwrap_or("shared");
         let (cwd, branch) = if workspace == "worktree" {
             let (path, branch) = crate::delegation::create_worktree(
                 &self.db,
-                &parent,
+                parent,
                 &parent_cwd,
                 &p.agent,
                 short,
@@ -2149,6 +2254,9 @@ impl RuntimeService {
             .and_then(Value::as_str)
             .ok_or_else(|| anyhow::anyhow!("session_create_failed"))?
             .to_owned();
+        // The fitted authority is staged before the delegate's Chat opens, so
+        // its first prompt never runs under a broader mode (F07).
+        crate::delegation::stage_authority(&self.db, &child_id, fit.rows)?;
         let send_operation_id = format!("{}:send", p.operation_id);
         // The user's own words from the parent chat, copied by the runtime so
         // the delegating agent cannot paraphrase them (task 10-02-delegation-handoff).
@@ -2170,6 +2278,7 @@ impl RuntimeService {
                 branch: branch.as_deref(),
                 prompt: &p.prompt,
                 user_messages: words.len() as u32,
+                authority: Some(fit.child.as_str()),
                 operation_id: &send_operation_id,
             },
         )?;
@@ -2195,6 +2304,7 @@ impl RuntimeService {
             "sessionId": child_id,
             "agent": p.agent,
             "state": "starting",
+            "authority": fit.child.as_str(),
             "workspace": workspace,
             "workspacePath": cwd,
             "branch": branch,

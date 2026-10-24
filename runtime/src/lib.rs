@@ -17,6 +17,7 @@ pub(crate) mod chat_repair;
 pub mod conpty;
 pub mod db;
 pub mod delegation;
+mod delegation_authority;
 pub mod devices;
 pub mod domain;
 pub mod environment;

@@ -1,4 +1,4 @@
-import type { ChatItem, ChatPart, Session, SessionDelegationState } from '@threadterm/protocol';
+import type { ChatItem, ChatPart, Session, SessionDelegation, SessionDelegationState } from '@threadterm/protocol';
 
 const DELEGATION_TOOLS = ['delegate_start', 'delegate_status', 'delegate_wait', 'delegate_respond', 'delegate_result', 'delegate_cancel'] as const;
 export type DelegationTool = typeof DELEGATION_TOOLS[number];
@@ -73,6 +73,38 @@ export function delegationStateSummary(delegates: readonly Session[], copy: (en:
 export function delegationStripVisible(hiddenIds: readonly string[] | undefined, delegates: readonly Session[]): boolean {
   const hidden = new Set(hiddenIds);
   return delegates.some(delegate => !hidden.has(delegate.id) || (delegate.delegation && delegationActive(delegate.delegation.state)));
+}
+
+/** What a delegate may do under the parent's ceiling; never broader than it. */
+export type DelegationAuthority = NonNullable<SessionDelegation['authority']>;
+
+export function authorityLabel(authority: DelegationAuthority | undefined, copy: (en: string, zh: string) => string): string {
+  switch (authority) {
+    case 'read_only': return copy('Read only', '只读');
+    case 'ask_before_writes': return copy('Asks before writes', '写入前询问');
+    case 'writes_in_workspace': return copy('Writes in its own folder', '可在自己的文件夹写入');
+    case 'full_access': return copy('Full access', '完全访问');
+    default: return copy('Unknown access', '权限未知');
+  }
+}
+
+/**
+ * The user's widening decision, worded for the approval card: the delegating
+ * agent asks for more authority than its own chat has.
+ */
+export function wideningRequestLabel(
+  request: { agent: string; parentAuthority?: DelegationAuthority; childAuthority?: DelegationAuthority },
+  copy: (en: string, zh: string) => string,
+): { title: string; detail: string } {
+  const child = authorityLabel(request.childAuthority, copy);
+  const parent = authorityLabel(request.parentAuthority, copy);
+  return {
+    title: copy(`@${request.agent} wants to start with ${child}`, `@${request.agent} 申请以「${child}」权限启动`),
+    detail: copy(
+      `This chat is limited to ${parent}, so ThreadTerm keeps its delegates within that. Allow once to start this delegate with ${child} anyway; Deny starts nothing.`,
+      `本对话的权限为「${parent}」，ThreadTerm 默认让委派保持在其范围内。选择「允许一次」即让此委派以「${child}」权限启动；选择「拒绝」则不会启动。`,
+    ),
+  };
 }
 
 /**

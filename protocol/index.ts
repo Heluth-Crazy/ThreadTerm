@@ -33,7 +33,7 @@ export interface SessionActivity { state:'running'|'awaiting_approval'|'awaiting
 // before the delegated turn finished (startup reconciliation); its partial answer is kept.
 export type SessionDelegationState = 'starting'|'running'|'awaiting_parent'|'awaiting_user'|'cancelling'|'cancel_failed'|'completed'|'failed'|'cancelled'|'interrupted';
 // Present on a Chat session that another agent started through ThreadTerm delegation.
-export interface SessionDelegation { id:string; parentSessionId:string; workspace:'shared'|'worktree'; branch?:string; state:SessionDelegationState; /** How many of the user's messages from the parent chat were attached to the delegate's first message; absent when none. */ userMessages?:number }
+export interface SessionDelegation { id:string; parentSessionId:string; workspace:'shared'|'worktree'; branch?:string; state:SessionDelegationState; /** How many of the user's messages from the parent chat were attached to the delegate's first message; absent when none. */ userMessages?:number; /** The authority this delegate was fitted to under its parent (never broader than the parent's own); absent for links from before F07. */ authority?:'read_only'|'ask_before_writes'|'writes_in_workspace'|'full_access' }
 export interface SessionForkOrigin { sessionId:string; itemId?:string; title?:string }
 /** Present on a Chat session linked to a group. */
 export interface SessionGroup { /** Owning group id. */ id:string; /** This session's unique `@handle` within its group. */ handle:string }

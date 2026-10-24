@@ -78,8 +78,12 @@ const STOP_REQUESTED_STATES: [&str; 2] = ["cancelling", "cancel_failed"];
 /// The delegate's runtime died mid-turn (startup reconciliation).
 pub(crate) const INTERRUPTED_REASON: &str = "The runtime stopped before the delegated turn finished";
 /// Error messages that are also the RPC error code the MCP host reports.
-pub const ERROR_CODES: [&str; 17] = [
+pub const ERROR_CODES: [&str; 19] = [
     "delegation_unauthorized",
+    // F07: the child provider cannot be made to fit under the parent's ceiling.
+    "delegation_authority_exceeded",
+    // ... and the user's widening is gone (expired by a restart, or answered).
+    "delegation_authority_expired",
     "delegation_nested",
     "delegation_limit_reached",
     "delegation_not_found",
@@ -401,6 +405,8 @@ pub(crate) struct NewDelegation<'a> {
     pub prompt: &'a str,
     /// How many of the user's messages the first message carries.
     pub user_messages: u32,
+    /// The authority the child was fitted to (F07), for the delegation card.
+    pub authority: Option<&'a str>,
     pub operation_id: &'a str,
 }
 
@@ -408,8 +414,8 @@ pub(crate) fn insert(db: &Database, row: &NewDelegation<'_>) -> Result<()> {
     db.transaction(|tx| {
         let now = Utc::now().to_rfc3339();
         tx.execute(
-            "INSERT INTO delegations(id,parent_session_id,child_session_id,agent,workspace,workspace_path,branch,prompt,user_messages,operation_id,state,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,'starting',?,?)",
-            params![row.id, row.parent_session_id, row.child_session_id, row.agent, row.workspace, row.workspace_path, row.branch, row.prompt, row.user_messages, row.operation_id, now, now],
+            "INSERT INTO delegations(id,parent_session_id,child_session_id,agent,workspace,workspace_path,branch,prompt,user_messages,authority,operation_id,state,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,'starting',?,?)",
+            params![row.id, row.parent_session_id, row.child_session_id, row.agent, row.workspace, row.workspace_path, row.branch, row.prompt, row.user_messages, row.authority, row.operation_id, now, now],
         )?;
         tx.execute(
             "INSERT INTO outbox(event,data,created_at) VALUES ('state.changed',?,?)",
@@ -439,6 +445,7 @@ struct Row {
     branch: Option<String>,
     operation_id: String,
     turn_id: Option<String>,
+    authority: Option<String>,
     state: String,
     result: Option<String>,
     error: Option<String>,
@@ -449,7 +456,7 @@ struct Row {
 fn rows(db: &Database, parent_session_id: &str) -> Result<Vec<Row>> {
     db.transaction(|tx| {
         let mut statement = tx.prepare(
-            "SELECT id,child_session_id,agent,workspace,workspace_path,branch,operation_id,turn_id,state,result,error,created_at,updated_at FROM delegations WHERE parent_session_id=? ORDER BY created_at",
+            "SELECT id,child_session_id,agent,workspace,workspace_path,branch,operation_id,turn_id,authority,state,result,error,created_at,updated_at FROM delegations WHERE parent_session_id=? ORDER BY created_at",
         )?;
         let rows = statement.query_map([parent_session_id], |row| {
             Ok(Row {
@@ -461,11 +468,12 @@ fn rows(db: &Database, parent_session_id: &str) -> Result<Vec<Row>> {
                 branch: row.get(5)?,
                 operation_id: row.get(6)?,
                 turn_id: row.get(7)?,
-                state: row.get(8)?,
-                result: row.get(9)?,
-                error: row.get(10)?,
-                created_at: row.get(11)?,
-                updated_at: row.get(12)?,
+                authority: row.get(8)?,
+                state: row.get(9)?,
+                result: row.get(10)?,
+                error: row.get(11)?,
+                created_at: row.get(12)?,
+                updated_at: row.get(13)?,
             })
         })?;
         rows.collect::<rusqlite::Result<Vec<_>>>().map_err(Into::into)
@@ -526,6 +534,244 @@ pub(crate) fn validate_start(db: &Database, providers: &Providers, parent: &Sess
     }
     if active_count(db, &parent.id)? >= MAX_ACTIVE_DELEGATES {
         return Err(anyhow!("delegation_limit_reached"));
+    }
+    Ok(())
+}
+
+// ---- authority (F07) --------------------------------------------------------
+
+/// What a delegate may do, decided before it starts: the parent's ceiling and
+/// the strongest child mode that stays under it. When nothing fits, the child's
+/// own widest authority is the widening the user would have to approve.
+pub(crate) struct AuthorityFit {
+    pub parent: crate::delegation_authority::Authority,
+    pub child: crate::delegation_authority::Authority,
+    /// The native startup rows that produce `child` (`&[]` keeps the default).
+    pub rows: &'static [(&'static str, &'static str)],
+    /// `Some` when the child needs the user's explicit widening.
+    pub widening: Option<crate::delegation_authority::Authority>,
+}
+
+impl AuthorityFit {
+    /// The same fit with the user's widening granted.
+    pub(crate) fn widened(mut self) -> Self {
+        self.widening = None;
+        self
+    }
+}
+
+/// The parent is a ceiling: a child never gets broader authority than the chat
+/// that started it. The parent's saved modes come from the database, never from
+/// a provider call, so a start cannot wait on the parent's own worker.
+pub(crate) fn authority_fit(
+    db: &Database,
+    providers: &Providers,
+    parent: &Session,
+    agent: &str,
+) -> Result<AuthorityFit> {
+    let saved = db.chat_option_selections(&parent.id, &parent.provider)?;
+    let ceiling = crate::delegation_authority::parent_envelope(&parent.provider, &saved);
+    // Pi's read-only bound is its verified tool allowlist, not a mode.
+    let rungs = crate::delegation_authority::child_rungs(
+        agent,
+        agent == "pi" && providers.pi_read_only_probe().supported,
+    );
+    match crate::delegation_authority::fit(ceiling, &rungs) {
+        Some(rung) => Ok(AuthorityFit {
+            parent: ceiling,
+            child: rung.authority,
+            rows: rung.rows,
+            widening: None,
+        }),
+        None => {
+            let widest = crate::delegation_authority::widest(&rungs);
+            let rows = rungs
+                .iter()
+                .find(|rung| rung.authority == widest)
+                .map(|rung| rung.rows)
+                .unwrap_or(&[]);
+            Ok(AuthorityFit {
+                parent: ceiling,
+                child: widest,
+                rows,
+                widening: Some(widest),
+            })
+        }
+    }
+}
+
+/// Stages the fitted permission rows as the child's startup options, so the
+/// delegate is opened with them before its first prompt.
+pub(crate) fn stage_authority(
+    db: &Database,
+    session_id: &str,
+    rows: &[(&str, &str)],
+) -> Result<()> {
+    if rows.is_empty() {
+        return Ok(());
+    }
+    let mut options = db.pending_fork_options(session_id)?.as_array().cloned().unwrap_or_default();
+    for (id, value) in rows {
+        let selection = json!({"id":id,"value":value,"category":"mode"});
+        match options.iter_mut().find(|row| row["id"] == json!(id)) {
+            Some(existing) => *existing = selection,
+            None => options.push(selection),
+        }
+    }
+    // A provider that has no permission option of its own is left alone.
+    db.transaction(|tx| {
+        tx.execute(
+            "INSERT INTO session_fork_options(session_id,data) VALUES (?,?) ON CONFLICT(session_id) DO UPDATE SET data=excluded.data",
+            params![session_id, serde_json::to_string(&Value::Array(options))?],
+        )?;
+        Ok(())
+    })
+}
+
+const WIDENING_APPROVAL_PREFIX: &str = "delegation-authority-";
+
+/// Records a start that needs the user's widening and publishes the decision as
+/// an approval card in the parent chat. Nothing is created or spawned until the
+/// user answers it; a never-ask mode cannot answer for them.
+pub(crate) fn request_widening(
+    db: &Database,
+    parent: &Session,
+    agent: &str,
+    fit: &AuthorityFit,
+    params: &Value,
+) -> Result<String> {
+    let id = uuid::Uuid::new_v4().to_string();
+    let approval_id = format!("{WIDENING_APPROVAL_PREFIX}{id}");
+    let now = Utc::now().to_rfc3339();
+    let turn = db
+        .session_by_id(&parent.id)?
+        .and_then(|session| session.activity)
+        .and_then(|activity| activity.turn_id);
+    db.transaction(|tx| {
+        tx.execute(
+            "INSERT INTO delegation_authority_requests(id,parent_session_id,agent,authority,parent_authority,approval_id,state,request,created_at) VALUES (?,?,?,?,?,?,'pending',?,?)",
+            params![id, parent.id, agent, fit.child.as_str(), fit.parent.as_str(), approval_id, serde_json::to_string(params)?, now],
+        )?;
+        Ok(())
+    })?;
+    crate::chat_projection::record(
+        db,
+        &parent.id,
+        turn.as_deref(),
+        "chat.approval",
+        &json!({
+            "approvalId": approval_id,
+            "part": {"type":"approval","approvalId": approval_id,"status":"pending","data": {
+                "runtimeOwned": true,
+                "requestType": "threadterm.delegation.authority",
+                "interaction": "permission",
+                "submittable": true,
+                "approvalId": approval_id,
+                "title": format!("Start {agent} with {} access", fit.child.as_str()),
+                "authorityRequest": {
+                    "agent": agent,
+                    "sessionId": parent.id,
+                    "parentAuthority": fit.parent.as_str(),
+                    "childAuthority": fit.child.as_str(),
+                },
+                "choices": [
+                    {"choiceId":"allow_once","label":"Allow once","kind":"allow","scope":"once"},
+                    {"choiceId":"deny","label":"Deny","kind":"deny","scope":"once"}
+                ]
+            }}
+        }),
+    )?;
+    Ok(approval_id)
+}
+
+/// A pending widening this session's user has not answered yet, with the start
+/// it would perform. Anything else (answered, expired, another chat's card) is
+/// refused, so a restart or an old card can never widen authority.
+pub(crate) fn pending_widening(
+    db: &Database,
+    parent_session_id: &str,
+    approval_id: &str,
+) -> Result<(String, Value)> {
+    let found: Option<(String, String, String)> = db.transaction(|tx| {
+        tx.query_row(
+            "SELECT id,state,request FROM delegation_authority_requests WHERE approval_id=? AND parent_session_id=?",
+            params![approval_id, parent_session_id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .optional()
+        .map_err(Into::into)
+    })?;
+    match found {
+        Some((id, state, request)) if state == "pending" => {
+            Ok((id, serde_json::from_str(&request)?))
+        }
+        _ => Err(anyhow!("delegation_authority_expired")),
+    }
+}
+
+/// Settles one widening request exactly once.
+pub(crate) fn settle_widening(db: &Database, id: &str, approved: bool) -> Result<bool> {
+    db.transaction(|tx| {
+        let changed = tx.execute(
+            "UPDATE delegation_authority_requests SET state=? WHERE id=? AND state='pending'",
+            params![if approved { "allowed" } else { "denied" }, id],
+        )?;
+        Ok(changed == 1)
+    })
+}
+
+/// The approval card part that asks for a widening, if this is one of ours.
+pub(crate) fn widening_part(db: &Database, session_id: &str, approval_id: &str) -> Result<Option<Value>> {
+    Ok(db
+        .chat_items(session_id)?
+        .into_iter()
+        .flat_map(|item| item.parts)
+        .find(|part| {
+            part.get("type").and_then(Value::as_str) == Some("approval")
+                && part.get("approvalId").and_then(Value::as_str) == Some(approval_id)
+                && part.pointer("/data/requestType").and_then(Value::as_str)
+                    == Some("threadterm.delegation.authority")
+        }))
+}
+
+/// Retires widening cards left pending by a runtime that died: their start is
+/// gone, so the decision must not be carried into this run.
+pub(crate) fn expire_widening(db: &Database) -> Result<()> {
+    let expired: Vec<(String, String, Option<String>)> = db.transaction(|tx| {
+        let rows: Vec<(String, String, String)> = {
+            let mut statement = tx.prepare(
+                "SELECT id,parent_session_id,approval_id FROM delegation_authority_requests WHERE state='pending'",
+            )?;
+            let rows = statement.query_map([], |row| {
+                Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+            })?;
+            rows.collect::<rusqlite::Result<Vec<_>>>()?
+        };
+        tx.execute(
+            "UPDATE delegation_authority_requests SET state='expired' WHERE state='pending'",
+            [],
+        )?;
+        let mut expired = Vec::new();
+        for (_, parent, approval_id) in rows {
+            let turn: Option<Option<String>> = tx
+                .query_row(
+                    "SELECT turn_id FROM chat_items WHERE id=?",
+                    [format!("{parent}:approval:{approval_id}")],
+                    |row| row.get(0),
+                )
+                .optional()?;
+            expired.push((parent, approval_id, turn.flatten()));
+        }
+        Ok(expired)
+    })?;
+    for (parent, approval_id, turn) in expired {
+        let _ = crate::chat_projection::record(
+            db,
+            &parent,
+            turn.as_deref(),
+            "chat.approval.resolved",
+            &json!({"approvalId": approval_id, "status": "expired", "message": "The runtime restarted before this decision was made"}),
+        );
     }
     Ok(())
 }
@@ -718,7 +964,7 @@ pub fn cancel_stopped(db: &Database, session_id: &str) -> Result<()> {
 /// the delegate's partial answer and its worktree; the cap counts live states,
 /// so capacity is free again and nothing is resent.
 pub fn reconcile_interrupted(db: &Database) -> Result<usize> {
-    db.transaction(|tx| {
+    let reconciled = db.transaction(|tx| {
         let links: Vec<(String, String, Option<String>)> = {
             let mut statement = tx.prepare(&format!(
                 "SELECT id,child_session_id,turn_id FROM delegations WHERE state IN {ACTIVE_STATES}"
@@ -732,7 +978,11 @@ pub fn reconcile_interrupted(db: &Database) -> Result<usize> {
             set_state(tx, id, "interrupted", partial.as_deref(), Some(INTERRUPTED_REASON))?;
         }
         Ok(links.len())
-    })
+    })?;
+    // F07: a widening left pending by the dead runtime has no start left to
+    // grant; retire it so it cannot be answered into this run.
+    expire_widening(db)?;
+    Ok(reconciled)
 }
 
 // ---- status / respond / result / cancel --------------------------------------
@@ -818,6 +1068,7 @@ fn status(db: &Database, providers: &Providers, parent: &Session, ids: &[String]
                 "agent": row.agent,
                 "title": title,
                 "state": row.state,
+                "authority": row.authority,
                 "workspace": row.workspace,
                 "workspacePath": row.workspace_path,
                 "branch": row.branch,
@@ -908,6 +1159,7 @@ fn result(db: &Database, parent: &Session, id: &str) -> Result<Value> {
         "sessionId": row.child,
         "agent": row.agent,
         "state": row.state,
+        "authority": row.authority,
         "finalAnswer": row.result,
         "changedFiles": changed_files,
         "workspace": row.workspace,

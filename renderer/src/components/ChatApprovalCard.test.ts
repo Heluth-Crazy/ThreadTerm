@@ -32,3 +32,17 @@ test('expanded approval rendering applies one total file and row budget', () => 
   assert.ok((html.match(/class="tool-diff-line /g) ?? []).length <= 1200);
   assert.ok(budget.omittedFiles > 0 && budget.omittedRows > 0);
 });
+
+test('a delegation widening card names the gap and offers only once-scoped choices', () => {
+  const part: ChatPart = {type:'approval',approvalId:'delegation-authority-x',status:'pending',data:{
+    approvalId:'delegation-authority-x',runtimeOwned:true,requestType:'threadterm.delegation.authority',interaction:'permission',submittable:true,
+    title:'Start pi with full_access access',
+    authorityRequest:{agent:'pi',parentAuthority:'ask_before_writes',childAuthority:'full_access'},
+    choices:[{choiceId:'allow_once',label:'Allow once',kind:'allow',scope:'once'},{choiceId:'deny',label:'Deny',kind:'deny',scope:'once'}],
+  }};
+  const html = renderToStaticMarkup(createElement(ChatApprovalCard,{part,writable:true,onChoose:()=>{},copy}));
+  assert.match(html, /@pi wants to start with Full access/);
+  assert.match(html, /This chat is limited to Asks before writes/);
+    assert.match(html, /Allow once/);
+  assert.match(html, /Deny/);
+});
