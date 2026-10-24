@@ -22,6 +22,7 @@ import { qaAttachPathsOverride, readAttachFiles } from './attachFiles.js';
 
 import { HtmlPreviewGrantManager, registerHtmlPreviewScheme, mergePreviewIsolationFeatures, installHtmlPreviewSession, attachHtmlPreviewWindow } from './htmlPreview.js';
 import { registerHtmlPreviewIpc } from './htmlPreviewIpc.js';
+import { appCspForHtml, buildAppCsp } from './appCsp.js';
 
 registerHtmlPreviewScheme(protocol);
 app.commandLine.appendSwitch('enable-features', mergePreviewIsolationFeatures(app.commandLine.getSwitchValue('enable-features')));
@@ -64,6 +65,7 @@ app.on('before-quit', (event) => { if (!allowQuit) { event.preventDefault(); voi
 app.on('will-quit', () => { adminRuntime.dispose(); for (const client of windowRuntimes.values()) client.dispose(); });
 
 void app.whenReady().then(async () => {
+  installAppCspHeader(session.defaultSession);
   installHtmlPreviewSession(session.defaultSession, htmlPreviewGrants, { appFrameAncestor: process.env.THREADTERM_V3_DEV_SERVER_URL ? new URL(process.env.THREADTERM_V3_DEV_SERVER_URL).origin : 'file:' });
   try {
     const preloadPath = join(__dirname, 'htmlPreviewSandboxPreload.cjs');
@@ -111,6 +113,28 @@ function isTrustedRendererUrl(value: string): boolean {
     if (devUrl) return url.origin === new URL(devUrl).origin;
     return url.protocol === 'file:' && fileURLToPath(url) === join(__dirname, 'renderer', 'index.html');
   } catch { return false; }
+}
+/** A CSP header for the app document, alongside the meta tag the renderer build carries (desktop/src/appCsp.ts):
+ *  page code cannot drop a header, and it applies before the first byte of the body is parsed. The document's own
+ *  file supplies the script hashes, so the header and the built meta tag always agree. */
+function installAppCspHeader(appSession: Electron.Session): void {
+  const devUrl = process.env.THREADTERM_V3_DEV_SERVER_URL;
+  const urls = ['file:///*'];
+  if (devUrl) {
+    try { urls.push(`${new URL(devUrl).origin}/*`); } catch { return; }
+  }
+  let policy: string;
+  if (devUrl) policy = buildAppCsp([], { dev: true });
+  else {
+    try { policy = appCspForHtml(readFileSync(join(__dirname, 'renderer', 'index.html'), 'utf8')); }
+    catch { return; }
+  }
+  appSession.webRequest.onHeadersReceived({ urls }, (details, callback) => {
+    // A document is a mainFrame, or a subFrame when something embeds it; the header has to cover both, because
+    // frame-ancestors is what stops the app document being framed at all.
+    if (!['mainFrame', 'subFrame'].includes(details.resourceType) || !isTrustedRendererUrl(details.url)) { callback({}); return; }
+    callback({ responseHeaders: { ...details.responseHeaders, 'Content-Security-Policy': [policy] } });
+  });
 }
 function assertTrustedRenderer(event: IpcMainInvokeEvent): void {
   if (!event.senderFrame || !isTrustedRendererUrl(event.senderFrame.url)) throw new Error('Untrusted renderer IPC sender');

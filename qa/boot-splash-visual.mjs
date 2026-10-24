@@ -185,6 +185,9 @@ try {
   for (const query of ['floating=1', 'sessionId=qa-none']) {
     const url = new URL(page.url()); url.search = query;
     await page.goto(url.href, { waitUntil: 'commit' });
+    // The pre-paint script removes the screen while the document is still parsing; a meta-delivered CSP can move that
+    // one parser task later, so assert on the parsed document rather than on the commit instant.
+    await page.waitForFunction(() => document.readyState !== 'loading', null, { timeout: 20000 });
     const present = await page.evaluate(() => !!document.getElementById('boot-splash'));
     assert.equal(present, false, `no launch screen in a ?${query} window`);
   }

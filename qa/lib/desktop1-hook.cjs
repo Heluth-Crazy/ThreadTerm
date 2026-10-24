@@ -34,3 +34,23 @@ if (process.type === 'browser' && process.env.TT_QA_VDESK) {
   });
   app.focus = () => {};
 }
+
+// QA-only Content-Security-Policy audit (task 10-23 R3d): TT_QA_CSP_AUDIT=1 injects qa/lib/csp-audit-preload.cjs into
+// every frame and appends each violation as one JSON line to TT_QA_CSP_LOG. A harness run with the audit on proves the
+// app's own policy blocked nothing it needs; the preload is never part of the product.
+if (process.type === 'browser' && process.env.TT_QA_CSP_AUDIT === '1') {
+  const { app, ipcMain, session } = require('electron');
+  const { appendFileSync } = require('node:fs');
+  const { join } = require('node:path');
+  const log = process.env.TT_QA_CSP_LOG;
+  if (!log) console.error('[csp-audit] TT_QA_CSP_AUDIT=1 without TT_QA_CSP_LOG records nothing');
+  else {
+    appendFileSync(log, '');
+    ipcMain.on('tt-qa-csp-violation', (_event, payload) => {
+      try { appendFileSync(log, `${JSON.stringify({ at: Date.now(), ...payload })}\n`); } catch { /* the app under test must not fail because the audit log did */ }
+    });
+    app.whenReady().then(() => {
+      session.defaultSession.registerPreloadScript({ type: 'frame', filePath: join(__dirname, 'csp-audit-preload.cjs') });
+    });
+  }
+}
