@@ -1,0 +1,22 @@
+/* Chart palette tokens for the Usage page (dataviz rules, task 10-23-usage-accounting).
+   These declarations are the palette source: every rule that draws data uses var(--viz-*), never a literal.
+   Validated with .trellis/tasks/10-23-usage-accounting/tools/validate_palette.js against the card surface
+   (light #fefdfb, dark #2c2c2a); see the UA2a report for the reports.
+   - --viz-series-1..8: providers in a fixed order (Blue, Orange, Aqua, Yellow, Magenta, Green, Violet, Red).
+     Colour follows the provider id, never its rank, so filtering never recolours a series.
+   - --viz-seq-0..4: heatmap levels; 0 is one step off the surface, 1-4 ramp recessive to strong. The dark ramp is
+     not a flip of the light one: it was validated on the dark surface. */
+:root, [data-theme="light"] {
+  --viz-series-1:#2a78d6; --viz-series-2:#eb6834; --viz-series-3:#1baf7a; --viz-series-4:#eda100;
+  --viz-series-5:#e87ba4; --viz-series-6:#008300; --viz-series-7:#4a3aa7; --viz-series-8:#e34948;
+  --viz-seq-0:color-mix(in srgb, var(--text) 7%, var(--surface));
+  --viz-seq-1:#86b6ef; --viz-seq-2:#5598e7; --viz-seq-3:#2a78d6; --viz-seq-4:#104281;
+  --viz-surface:var(--surface);
+}
+[data-theme="dark"] {
+  --viz-series-1:#3987e5; --viz-series-2:#d95926; --viz-series-3:#199e70; --viz-series-4:#c98500;
+  --viz-series-5:#d55181; --viz-series-6:#008300; --viz-series-7:#9085e9; --viz-series-8:#e66767;
+  --viz-seq-0:color-mix(in srgb, var(--text) 7%, var(--surface));
+  --viz-seq-1:#1c5cab; --viz-seq-2:#2a78d6; --viz-seq-3:#5598e7; --viz-seq-4:#9ec5f4;
+  --viz-surface:var(--surface);
+}

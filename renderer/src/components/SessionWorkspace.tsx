@@ -37,6 +37,13 @@ import { retitleGroupTabs } from '../groupNavigation';
 const working=(s:Session)=>!s.readOnly&&['starting','running','idle','waiting'].includes(s.status);
 const tabFor=(s:Session)=>({id:`session-${s.id}`,kind:'session' as const,sessionId:s.id});
 const initialFor=(s:Session):PaneLayout=>({kind:'pane',id:`pane-${s.id}`,tabs:[tabFor(s)],activeTabId:tabFor(s).id});
+/** Re-scopes the single Usage tab to a project (or to every project) without adding a second one. */
+const withUsageProject=(node:PaneLayout,tabId:string,projectId:string|undefined):PaneLayout=>node.kind==='pane'
+ ?{...node,tabs:node.tabs.map((tab):ContentRef=>{
+   if(tab.id!==tabId||tab.kind!=='usage')return tab;
+   return projectId?{...tab,projectId}:{id:tab.id,kind:'usage'};
+  })}
+ :{...node,first:withUsageProject(node.first,tabId,projectId),second:withUsageProject(node.second,tabId,projectId)};
 /** One tab per file with unsaved edits: its file/preview tab, or its diff tab when that is the only view of it. */
 const unsavedTabIds=(tabs:readonly ContentRef[],unsaved:(tab:FileTab)=>boolean)=>{
  const chosen=new Map<string,FileTab>();
@@ -70,8 +77,8 @@ const waitForPreviewMount=(sessionId:string,previewId:string,documentId:string,t
 });
 const previewOperationKey=(value:Pick<PreviewPresentation,'sessionId'|'attachmentId'|'requestId'|'previewId'|'documentId'>)=>[value.sessionId,value.attachmentId,value.requestId,value.previewId,value.documentId].join('\0');
 
-type Props={session:Session;data:Snapshot;theme:'light'|'dark';onBack:()=>void;onSelect:(id:string)=>void;onProject:(id:string,path?:string)=>void;onChanged:()=>void;backgroundPresentation?:string;onBackgroundPresented:()=>void;navigationKey?:unknown;onActiveSession?:(id:string)=>void;groupToOpen?:{id:string;title:string;members:{sessionId:string}[]};onGroupOpened?:(id:string)=>void};
-export function SessionWorkspace({session,data,theme,onBack,onSelect,onProject,onChanged,backgroundPresentation,onBackgroundPresented,navigationKey,onActiveSession,groupToOpen,onGroupOpened}:Props){
+type Props={session:Session;data:Snapshot;theme:'light'|'dark';onBack:()=>void;onSelect:(id:string)=>void;onProject:(id:string,path?:string)=>void;onChanged:()=>void;backgroundPresentation?:string;onBackgroundPresented:()=>void;navigationKey?:unknown;onActiveSession?:(id:string)=>void;groupToOpen?:{id:string;title:string;members:{sessionId:string}[]};onGroupOpened?:(id:string)=>void;usageToOpen?:{key:string;projectId?:string};onUsageOpened?:(key:string)=>void};
+export function SessionWorkspace({session,data,theme,onBack,onSelect,onProject,onChanged,backgroundPresentation,onBackgroundPresented,navigationKey,onActiveSession,groupToOpen,onGroupOpened,usageToOpen,onUsageOpened}:Props){
  const latestData=useRef(data);latestData.current=data;
  const providerName=(id:string)=>agentName(id,data.providers);
  const {locale}=useTranslation(),zh=locale==='zh-CN';
@@ -345,6 +352,27 @@ export function SessionWorkspace({session,data,theme,onBack,onSelect,onProject,o
   openGroupTab(groupToOpen);
   onGroupOpened?.(groupToOpen.id);
  },[groupToOpen,session.id]);
+ // One Usage page per window: reuse the open tab, otherwise add it beside the session, and re-scope it on request.
+ const openUsageTab=(projectId?:string)=>{
+  const existing=workspaceTabs(latestLayout.current).find(item=>item.tab.kind==='usage');
+  if(existing){
+   const current=existing.tab.kind==='usage'?existing.tab.projectId:undefined;
+   const layout=current===projectId?latestLayout.current:withUsageProject(latestLayout.current,existing.tab.id,projectId);
+   save(activate(layout,existing.paneId,existing.tab.id));
+   setFocusTarget({paneId:existing.paneId,tabId:existing.tab.id,key:crypto.randomUUID()});
+   return;
+  }
+  const paneId=workspaceTabs(latestLayout.current).find(item=>item.tab.kind==='session'&&item.tab.sessionId===session.id)?.paneId??focusedWorkspaceTab(latestLayout.current)?.paneId;
+  if(!paneId)return;
+  const tab:ContentRef={id:crypto.randomUUID(),kind:'usage',...(projectId?{projectId}:{})};
+  save(addTabToPane(latestLayout.current,paneId,tab));
+  setFocusTarget({paneId,tabId:tab.id,key:crypto.randomUUID()});
+ };
+ useEffect(()=>{
+  if(!usageToOpen)return;
+  openUsageTab(usageToOpen.projectId);
+  onUsageOpened?.(usageToOpen.key);
+ },[usageToOpen]);
  const openTaskMap=(sessionId:string,itemId?:string)=>{
   const root=taskMapRoot(sessionId,data.sessions);
   const tabId=openWorkbenchTab({id:crypto.randomUUID(),kind:'map',sessionId:root},candidate=>candidate.kind==='map'&&candidate.sessionId===root);
@@ -442,12 +470,12 @@ export function SessionWorkspace({session,data,theme,onBack,onSelect,onProject,o
   renamed:(from,to)=>{
    invalidateQuickOpen(workbenchScope);
    // Open tabs follow the rename; their editors reopen the new path (dirty editors were refused earlier).
-   const rename=(node:PaneLayout):PaneLayout=>node.kind==='split'?{...node,first:rename(node.first),second:rename(node.second)}:{...node,tabs:node.tabs.map(tab=>tab.kind!=='session'&&tab.kind!=='history'&&tab.kind!=='web'&&tab.kind!=='map'&&tab.kind!=='group'&&tab.kind!=='roundtable'&&tab.projectId===project.id&&sameCanonicalScope(tab.worktreePath??project.path,path)&&coveredBy(tab.path,from)?{...tab,path:to+tab.path.slice(from.length)}:tab)};
+   const rename=(node:PaneLayout):PaneLayout=>node.kind==='split'?{...node,first:rename(node.first),second:rename(node.second)}:{...node,tabs:node.tabs.map(tab=>tab.kind!=='session'&&tab.kind!=='history'&&tab.kind!=='web'&&tab.kind!=='map'&&tab.kind!=='group'&&tab.kind!=='roundtable'&&tab.kind!=='usage'&&tab.projectId===project.id&&sameCanonicalScope(tab.worktreePath??project.path,path)&&coveredBy(tab.path,from)?{...tab,path:to+tab.path.slice(from.length)}:tab)};
    save(rename(latestLayout.current));
   },
   deleted:file=>{
    invalidateQuickOpen(workbenchScope);
-   const targets=workspaceTabs(latestLayout.current).filter(item=>item.tab.kind!=='session'&&item.tab.kind!=='history'&&item.tab.kind!=='group'&&item.tab.kind!=='roundtable'&&item.tab.projectId===project.id&&sameCanonicalScope(item.tab.worktreePath??project.path,path)&&coveredBy(item.tab.path,file)).map(item=>({paneId:item.paneId,tabId:item.tab.id}));
+   const targets=workspaceTabs(latestLayout.current).filter(item=>item.tab.kind!=='session'&&item.tab.kind!=='history'&&item.tab.kind!=='group'&&item.tab.kind!=='roundtable'&&item.tab.kind!=='usage'&&item.tab.projectId===project.id&&sameCanonicalScope(item.tab.worktreePath??project.path,path)&&coveredBy(item.tab.path,file)).map(item=>({paneId:item.paneId,tabId:item.tab.id}));
    if(targets.length)save(removeWorkspaceTabs(latestLayout.current,targets).layout);
   },
  }:undefined;
@@ -503,7 +531,7 @@ export function SessionWorkspace({session,data,theme,onBack,onSelect,onProject,o
  const previewLabels=new Map([...previewAssociations.current.entries()].map(([tabId,association])=>[tabId,{title:association.title,observedTitle:association.observedTitle,sessionId:association.sessionId}]));
  const workspaceSessions=treeSessions.filter(candidate=>sessionIdsIn(layout).includes(candidate.id)||candidate.id===session.id);
  const focusedTab=focusTarget?workspaceTabs(layout).find(item=>item.tab.id===focusTarget.tabId)?.tab:undefined;
- const activeFilePath=focusedTab&&focusedTab.kind!=='session'&&focusedTab.kind!=='history'&&!focusedTab.ownerSessionId?focusedTab.path:undefined;
+ const activeFilePath=focusedTab&&focusedTab.kind!=='session'&&focusedTab.kind!=='history'&&focusedTab.kind!=='usage'&&!focusedTab.ownerSessionId?focusedTab.path:undefined;
  // Workbench shortcuts never fire inside a terminal: Ctrl+P/B/L belong to shells and TUIs there.
  useEffect(()=>{
   const key=(event:KeyboardEvent)=>{
@@ -540,7 +568,7 @@ export function SessionWorkspace({session,data,theme,onBack,onSelect,onProject,o
    <div className={`ws-content${inspector?' with-drawer':''}`}>{workbenchScope&&workbenchActions&&<WorkbenchSideBar scope={workbenchScope} actions={workbenchActions} sessions={workspaceSessions} activeSessionId={previewSessionId} activePath={activeFilePath} command={workbenchCommand} switcherHost={switcherHost} zh={zh}/>}<div className="ws-pane" ref={paneArea}>
     <div className="workspace-content-host">
      <ContextHost.Provider value={commentsHost}><PaneWorkspace
-      layout={layout} sessions={data.sessions} theme={theme}
+      layout={layout} sessions={data.sessions} data={data} theme={theme}
       terminalCompatibility={data.settings.terminalCompatibility} providers={data.providers}
       delegationEnabled={data.settings['chatTools.delegation'] !== false} sessionInfoEnabled={data.settings['chatTools.sessionInfo'] !== false}
       onChange={save} onSessionChanged={onChanged} onOpenSession={onSelect} ownerSessionId={previewSessionId}

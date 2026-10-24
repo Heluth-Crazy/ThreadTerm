@@ -3896,6 +3896,29 @@
             "url"
           ],
           "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "kind": {
+              "type": "string",
+              "const": "usage"
+            },
+            "projectId": {
+              "type": "string"
+            },
+            "ownerSessionId": {
+              "not": {}
+            }
+          },
+          "required": [
+            "id",
+            "kind"
+          ],
+          "additionalProperties": false
         }
       ]
     },

@@ -63,7 +63,7 @@ import {
 import { isActionableInboxItem } from "./inboxVisibility";
 import { sessionsInProjectScope, unreadInboxInScope } from "./projectScope";
 import { AgentIconsProvider, AgentIcon, Icon } from "./components/PrototypeIcon";
-import { UsagePanel } from "./components/UsagePanel";
+import { UsagePage } from "./components/UsagePage";
 import { ProjectOverview } from "./components/ProjectOverview";
 import { AllTerminalsPage } from "./components/AllTerminalsPage";
 import { InboxPage } from "./components/InboxPage";
@@ -89,7 +89,7 @@ const ChatView = lazy(async () => ({
 }));
 
 type Route = {
-  kind: "all" | "inbox" | "project" | "session" | "workspace" | "workbench";
+  kind: "all" | "inbox" | "project" | "session" | "workspace" | "workbench" | "usage";
   id?: string;
   scope?: SessionScope;
   worktreePath?: string;
@@ -122,6 +122,7 @@ export function App() {
   const [groupCreate,setGroupCreate]=useState(false);
   const [groupContext,setGroupContext]=useState<{sessionId:string}>();
   const [groupToOpen,setGroupToOpen]=useState<{id:string;title:string;members:{sessionId:string}[]}>();
+  const [usageToOpen,setUsageToOpen]=useState<{key:string;projectId?:string}>();
   const [shellMenu,setShellMenu]=useState<{kind:"notifications"|"account";anchor:HTMLElement}>();
   const [projectCreatorOpen, setProjectCreatorOpen] = useState(false);
   const [recentIds, setRecentIds] = useState<string[]>(() => { try { const value: unknown = JSON.parse(localStorage.getItem("threadterm.v3.recent-session-ids") ?? "[]"); return Array.isArray(value) ? value.filter((id): id is string => typeof id === "string").slice(0, 12) : []; } catch { return []; } });
@@ -262,6 +263,18 @@ export function App() {
     setData((current) => (current ? upsertSession(current, created) : current));
     void navigate({ kind: "session", id: created.id });
   }, [navigate]);
+  /** One Usage page per window: open it as a workspace tab of the session the user is in (or last used).
+   * With no session at all it is shown as the main page, so the entry point is never dead. */
+  const openUsage = useCallback((projectId?: string) => {
+    const current = navigationState.current;
+    const sessions = current.data?.sessions ?? [];
+    const hostId = (current.route.kind === 'session' ? current.route.id : undefined)
+      ?? lastActiveSessionId(sessions, recentIds, current.route.kind === 'session' ? current.route.id : undefined)
+      ?? sessions[0]?.id;
+    if (!hostId) { void navigate({ kind: 'usage' }); return; }
+    setUsageToOpen({ key: crypto.randomUUID(), projectId });
+    if (current.route.kind !== 'session' || current.route.id !== hostId) void navigate({ kind: 'session', id: hostId });
+  }, [navigate, recentIds]);
   useEffect(()=>observeGroupNavigation((navigation:GroupNavigation)=>{
     if(navigation.kind==='start'){
       const source=navigation.context?.sessionId?navigationState.current.data?.sessions.find(session=>session.id===navigation.context?.sessionId):undefined;
@@ -481,6 +494,8 @@ export function App() {
               onChanged={() => void refresh()}
               groupToOpen={groupToOpen}
               onGroupOpened={id=>setGroupToOpen(current=>current?.id===id?undefined:current)}
+              usageToOpen={usageToOpen}
+              onUsageOpened={key=>setUsageToOpen(current=>current?.key===key?undefined:current)}
               backgroundPresentation={backgroundPresentation && sameWorkspace(session,backgroundPresentation.workspacePath) ? backgroundPresentation.sessionId : undefined}
               onBackgroundPresented={() => setBackgroundPresentation(undefined)}
             />
@@ -497,11 +512,14 @@ export function App() {
               onCreate={(projectId,path) => { setCreatorDefaults({projectId,path}); setCreatorOpen(true); }}
               onInbox={() => void navigate({kind:"inbox"})}
               onChanged={() => void refresh()}
+              onUsage={openUsage}
               onRemoved={() => {
                 void navigate({ kind: "all" });
                 void refresh();
               }}
             />
+          ) : route.kind === "usage" ? (
+            <UsagePage data={data} />
           ) : route.kind === "workbench" ? (
             <WorkbenchPage data={data} recentIds={recentIds} onProject={id=>void navigate({kind:"project",id})} onSession={id=>void navigate({kind:"session",id})} onCreate={defaults=>{setCreatorDefaults(defaults);setCreatorOpen(true);}} onAddProject={()=>setProjectCreatorOpen(true)} onAll={()=>void navigate({kind:"all"})} onInbox={()=>void navigate({kind:"inbox"})}/>
           ) : route.kind === "inbox" ? (
@@ -554,8 +572,8 @@ export function App() {
             onChanged={() => void refresh()}
           />
         )}
-        {shellMenu&&data&&(shellMenu.kind==='account'?<AccountMenu data={data} anchor={shellMenu.anchor} onClose={()=>setShellMenu(undefined)} onChanged={()=>void refresh()} onSettings={()=>{setShellMenu(undefined);setSettingsOpen(true);}}/>:<NotificationMenu data={data} anchor={shellMenu.anchor} onClose={()=>setShellMenu(undefined)} onChanged={()=>void refresh()} onSession={id=>{setShellMenu(undefined);void navigate({kind:"session",id});}} onInbox={()=>{setShellMenu(undefined);void navigate({kind:"inbox"});}}/>)}
-        {paletteOpen && data && <CommandPalette data={data} workbench={route.kind === "session" || route.kind === "workspace"} onClose={()=>setPaletteOpen(false)} onSession={id=>void navigate({kind:"session",id})} onProject={id=>void navigate({kind:"project",id})} onCreate={()=>{setGroupCreate(false);setGroupContext(undefined);setCreatorOpen(true);}} onCreateGroup={()=>{setGroupCreate(true);setGroupContext(undefined);setCreatorOpen(true);}} onAll={()=>void navigate({kind:"all"})} onInbox={()=>void navigate({kind:"inbox"})} onSettings={()=>setSettingsOpen(true)}/>}
+        {shellMenu&&data&&(shellMenu.kind==='account'?<AccountMenu data={data} anchor={shellMenu.anchor} onClose={()=>setShellMenu(undefined)} onChanged={()=>void refresh()} onSettings={()=>{setShellMenu(undefined);setSettingsOpen(true);}} onUsage={()=>{setShellMenu(undefined);openUsage();}}/>:<NotificationMenu data={data} anchor={shellMenu.anchor} onClose={()=>setShellMenu(undefined)} onChanged={()=>void refresh()} onSession={id=>{setShellMenu(undefined);void navigate({kind:"session",id});}} onInbox={()=>{setShellMenu(undefined);void navigate({kind:"inbox"});}}/>)}
+        {paletteOpen && data && <CommandPalette data={data} workbench={route.kind === "session" || route.kind === "workspace"} onClose={()=>setPaletteOpen(false)} onSession={id=>void navigate({kind:"session",id})} onProject={id=>void navigate({kind:"project",id})} onCreate={()=>{setGroupCreate(false);setGroupContext(undefined);setCreatorOpen(true);}} onCreateGroup={()=>{setGroupCreate(true);setGroupContext(undefined);setCreatorOpen(true);}} onAll={()=>void navigate({kind:"all"})} onInbox={()=>void navigate({kind:"inbox"})} onSettings={()=>setSettingsOpen(true)} onUsage={()=>{setPaletteOpen(false);openUsage();}}/>}
         {creatorOpen && data && (
           <SessionCreateDialog data={data}
             initialProjectId={creatorDefaults?.projectId} initialPath={creatorDefaults?.path} initialProvider={creatorDefaults?.provider} initialTitle={creatorDefaults?.title}

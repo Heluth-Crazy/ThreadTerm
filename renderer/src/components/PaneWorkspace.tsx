@@ -1,6 +1,6 @@
 import { type CSSProperties, type DragEvent as ReactDragEvent, lazy, Suspense, useEffect, useRef, useState } from "react";
 import { createPortal } from 'react-dom';
-import type { ContentRef, FileReference, PaneLayout, PreviewAssociation, ProviderCapability, Session } from "@threadterm/protocol";
+import type { ContentRef, FileReference, PaneLayout, PreviewAssociation, ProviderCapability, Session, Snapshot } from "@threadterm/protocol";
 import { confirmCloseEditors } from "../dirtyEditors";
 import { useTranslation } from "../i18n";
 import {
@@ -45,10 +45,13 @@ import { showContextMenu } from './ContextMenu';
 
 const TaskMapView = lazy(() => import('./TaskMapView'));
 const GroupChatView = lazy(async () => ({ default: (await import('./GroupChatView')).GroupChatView }));
+const UsagePage = lazy(async () => ({ default: (await import('./UsagePage')).UsagePage }));
 
 type Props = {
   layout: PaneLayout;
   sessions: Session[];
+  /** Only the Usage tab needs the snapshot (provider and project names); other panes read live RPCs. */
+  data?: Snapshot;
   theme: "light" | "dark";
   terminalCompatibility: unknown;
   providers?: ProviderCapability[];
@@ -101,7 +104,7 @@ export type PaneWorkbench = {
   /** Documents for the active session, limited to this session's project/worktree root. */
   sessionDocuments?:{projectId:string;rootPath:string;projectRoot?:string} & NonNullable<WorkbenchActions['sessionDocuments']>;
 };
-export function PaneWorkspace({ layout, sessions, onChange, theme, terminalCompatibility, providers = [], onSessionChanged, onOpenSession, ownerSessionId, onPickSession,toolbarHost,onEmpty,onActiveSession,onInteraction,onFileReference,focusTarget,fileReveal,onOpenPath,projectPath,onWebClosed,onWebNavigation,prepareBrowserShare,previewProvenance,previewLabels,delegationEnabled,sessionInfoEnabled,workbench }: Props) {
+export function PaneWorkspace({ layout, sessions, data, onChange, theme, terminalCompatibility, providers = [], onSessionChanged, onOpenSession, ownerSessionId, onPickSession,toolbarHost,onEmpty,onActiveSession,onInteraction,onFileReference,focusTarget,fileReveal,onOpenPath,projectPath,onWebClosed,onWebNavigation,prepareBrowserShare,previewProvenance,previewLabels,delegationEnabled,sessionInfoEnabled,workbench }: Props) {
   const zh=useTranslation().locale==='zh-CN';
   const [selectedPaneId, setSelectedPaneId] = useState<string|undefined>(focusTarget?.paneId);
   const [paneHost,setPaneHost]=useState<HTMLDivElement|null>(null),[stackHorizontal,setStackHorizontal]=useState(false);
@@ -234,6 +237,7 @@ export function PaneWorkspace({ layout, sessions, onChange, theme, terminalCompa
         visibleNode={visible?.node}
         style={fullscreenPaneId === node.id || !visible ? undefined : paneRectStyle(visible.rect)}
         sessions={viewSessions}
+        data={data}
         theme={theme}
         terminalCompatibility={terminalCompatibility}
         onChange={commit}
@@ -352,6 +356,7 @@ function Pane({
   visibleNode,
   style,
   sessions,
+  data,
   theme,
   terminalCompatibility,
   onChange,
@@ -376,6 +381,7 @@ function Pane({
   visibleNode?: Extract<PaneLayout, { kind: "pane" }>;
   style?: CSSProperties;
   sessions: Session[];
+  data?: Snapshot;
   theme: "light" | "dark";
   terminalCompatibility: unknown;
   onChange: (next: PaneLayout) => void;
@@ -500,6 +506,8 @@ function Pane({
     <Suspense fallback={<p className="note" role="status">{zh?'正在加载任务图…':'Loading task map…'}</p>}><TaskMapView sessionId={item.sessionId} sessions={sessions} visible={active&&browserVisible} zh={zh}
       focus={workbench?.taskMapFocus?.tabId===item.id?workbench.taskMapFocus:undefined} onOpenSession={onOpenSession}
       onOpenReview={workbench?.openSessionReview} onOpenFile={workbench?.openSessionFile} onClose={()=>onCloseTab({paneId:node.id,tabId:item.id})}/></Suspense>
+  ) : item.kind === "usage" ? (
+    <Suspense fallback={<p className="note" role="status">{zh?'正在加载用量…':'Loading usage…'}</p>}><UsagePage initialProjectId={item.projectId} data={data}/></Suspense>
   ) : item.kind === "group" || item.kind === "roundtable" ? (
     <Suspense fallback={<p className="note" role="status">{zh?'正在加载群聊…':'Loading group chat…'}</p>}><GroupChatView id={item.kind==='group'?item.groupId:item.roundtableId} providers={providers} sessions={sessions} visible={active&&browserVisible} onOpenSession={id=>onOpenSession?.(id)} onOpenFile={path=>{const groupId=item.kind==='group'?item.groupId:item.roundtableId;const sessionId=sessions.find(candidate=>candidate.group?.id===groupId)?.id;if(sessionId)workbench?.openGroupFile?.({sessionId,path});}} onOpenUrl={url=>workbench?.openWeb?.(url)} onChanged={onSessionChanged??(()=>undefined)} onTitleChanged={workbench?.updateGroupTitle}/></Suspense>
   ) : item.kind === "history" ? (

@@ -1237,6 +1237,13 @@ pub fn validate_layout(layout: &Value) -> Result<()> {
                             if tab.get("sessionId").and_then(Value::as_str).is_some_and(|id| {
                                 !id.is_empty() && id.encode_utf16().count() <= 256
                             }) && tab.get("ownerSessionId").is_none() => {}
+                        // One Usage page per window; an independent tab with no owner.
+                        Some("usage")
+                            if tab.get("projectId").is_none_or(|project| {
+                                project.as_str().is_some_and(|id| {
+                                    !id.is_empty() && id.encode_utf16().count() <= 256
+                                })
+                            }) && tab.get("ownerSessionId").is_none() => {}
                         Some("history")
                             if tab
                                 .get("projectId")
@@ -2373,6 +2380,29 @@ mod tests {
             json!({"id":"rt","kind":"roundtable","roundtableId":"room","title":"x".repeat(513)}),
             json!({"id":"rt","kind":"roundtable","roundtableId":"room","title":"bad\nlabel"}),
             json!({"id":"rt","kind":"roundtable","roundtableId":"room","title":"Room","ownerSessionId":null}),
+        ] {
+            assert!(validate_layout(&layout(tab.clone())).is_err(), "{tab}");
+        }
+    }
+    #[test]
+    fn usage_tabs_are_independent_and_carry_only_an_optional_bounded_project() {
+        let layout = |tab: Value| json!({"kind":"pane","id":"p","tabs":[tab],"activeTabId":"u"});
+        for tab in [
+            json!({"id":"u","kind":"usage"}),
+            json!({"id":"u","kind":"usage","projectId":"project-a"}),
+            json!({"id":"u","kind":"usage","projectId":"x".repeat(256)}),
+            json!({"id":"u","kind":"usage","projectId":"😀".repeat(128)}),
+        ] {
+            assert!(validate_layout(&layout(tab.clone())).is_ok(), "{tab}");
+        }
+        for tab in [
+            json!({"id":"u","kind":"usage","projectId":""}),
+            json!({"id":"u","kind":"usage","projectId":4}),
+            json!({"id":"u","kind":"usage","projectId":"x".repeat(257)}),
+            json!({"id":"u","kind":"usage","projectId":"😀".repeat(129)}),
+            json!({"id":"u","kind":"usage","projectId":null}),
+            json!({"id":"u","kind":"usage","ownerSessionId":"session-a"}),
+            json!({"id":"u","kind":"usage","ownerSessionId":null}),
         ] {
             assert!(validate_layout(&layout(tab.clone())).is_err(), "{tab}");
         }

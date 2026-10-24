@@ -235,6 +235,20 @@ test('task map tabs require a bounded session identity and no owner',()=>{
   assert.throws(()=>validateRequest('workspace.save',params(tab)));
  }
 });
+test('usage tabs are independent and carry only an optional bounded project',()=>{
+ const usage={id:'usage',kind:'usage'};
+ const layout=tab=>({kind:'pane',id:'pane',tabs:[tab],activeTabId:'usage'});
+ const params=tab=>({name:'Usage',layout:layout(tab),expectedRevision:0,operationId:'usage'});
+ for(const tab of [usage,{...usage,projectId:'project-a'},{...usage,projectId:'x'.repeat(256)}]){
+  validateLayout(layout(tab));
+  validateRequest('workspace.save',params(tab));
+  validateResult('workspace.save',{id:'workspace',name:'Usage',revision:1,layout:layout(tab)});
+ }
+ for(const tab of [...['',null,42,'x'.repeat(257)].map(projectId=>({...usage,projectId})),...['session-a',null].map(ownerSessionId=>({...usage,ownerSessionId}))]){
+  assert.throws(()=>validateLayout(layout(tab)));
+  assert.throws(()=>validateRequest('workspace.save',params(tab)));
+ }
+});
 test('group tabs preserve a bounded independent room identity and title',()=>{
  const room={id:'group',kind:'group',groupId:'room-a',title:'Group chat'};
  const layout=tab=>({kind:'pane',id:'pane',tabs:[tab],activeTabId:'group'});

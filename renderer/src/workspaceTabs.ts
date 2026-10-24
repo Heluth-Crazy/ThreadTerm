@@ -17,6 +17,8 @@ export function webTabLabel(url:string):string {
 }
 export function contentTitle(tab:Exclude<ContentRef,{kind:'session'}>,zh:boolean):{title:string;label:string} {
  if(tab.kind==='map') return {title:zh?'任务图':'Task map',label:zh?'任务图':'Task map'};
+ // One Usage page per window (its own tab kind so the runtime validates saved layouts).
+ if(tab.kind==='usage') return {title:zh?'用量':'Usage',label:zh?'用量':'Usage'};
  if(tab.kind==='group') return {title:`${zh?'群聊':'Group chat'} · ${tab.title}`,label:tab.title};
  if(tab.kind==='roundtable') return {title:`${zh?'群聊':'Group chat'} · ${tab.title}`,label:tab.title};
  if(tab.kind==='history') return tab.path
