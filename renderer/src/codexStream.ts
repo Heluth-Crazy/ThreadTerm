@@ -32,17 +32,45 @@ export function createCodexStreamQueue(
   deliver: Deliver,
   intervalMs = CODEX_STREAM_INTERVAL_MS,
 ): CodexStreamQueue {
+  // Only cumulative snapshots of a streaming item are paced here. Approvals,
+  // completions and tool cards are canonical state, so they are delivered
+  // immediately and never wait behind the animation budget.
   let pending: ChatItem[] = [];
   let timer: Timer | undefined;
   let disposed = false;
   const activeItemIds = new Set<string>();
   const lastDelivered = new Map<string, string>();
+  // Signature of the newest queued snapshot per item, so an older repeated
+  // frame cannot extend the queue.
+  const queuedSignatures = new Map<string, string>();
 
   const deliverNow = (item: ChatItem) => {
     const signature = snapshotSignature(item);
     if (lastDelivered.get(item.id) === signature) return;
     lastDelivered.set(item.id, signature);
     deliver(item);
+  };
+
+  const dropQueued = (item: ChatItem) => {
+    if (!pending.some((entry) => entry.id === item.id)) queuedSignatures.delete(item.id);
+  };
+
+  const deliverQueued = (item: ChatItem) => {
+    dropQueued(item);
+    deliverNow(item);
+    if (!isStreamingChatItem(item)) activeItemIds.delete(item.id);
+  };
+
+  // A burst of frames must never discard state. Collapse superseded snapshots
+  // of one item first (latest snapshot wins, first appearance order kept) and
+  // then deliver the oldest frames immediately instead of dropping them.
+  const relieve = () => {
+    if (pending.length <= MAX_PENDING_SNAPSHOTS) return;
+    const latest = new Map<string, ChatItem>();
+    for (const item of pending) latest.set(item.id, item);
+    pending = [...latest.values()];
+    for (const [id, item] of latest) queuedSignatures.set(id, snapshotSignature(item));
+    while (pending.length > MAX_PENDING_SNAPSHOTS) deliverQueued(pending.shift()!);
   };
 
   const schedule = () => {
@@ -54,30 +82,25 @@ export function createCodexStreamQueue(
     if (disposed) return;
     const next = pending.shift();
     if (!next) return;
-    deliverNow(next);
-    if (!isStreamingChatItem(next)) activeItemIds.delete(next.id);
+    deliverQueued(next);
     schedule();
   };
 
   return {
     push(item) {
       if (disposed) return;
-      const streaming = isStreamingChatItem(item);
-      const followsStream = activeItemIds.has(item.id);
-      const hasQueuedStream = pending.length > 0 || timer !== undefined;
-      if (!streaming && !followsStream && !hasQueuedStream) {
+      const signature = snapshotSignature(item);
+      if (lastDelivered.get(item.id) === signature || queuedSignatures.get(item.id) === signature) return;
+      // A snapshot for an item that is not animating is a canonical state
+      // change: paint it now, even while another item streams.
+      if (!isStreamingChatItem(item) && !activeItemIds.has(item.id)) {
         deliverNow(item);
         return;
       }
-      const previous = pending[pending.length - 1];
-      const signature = snapshotSignature(item);
-      if (lastDelivered.get(item.id) === signature || (previous?.id === item.id && snapshotSignature(previous) === signature)) return;
       activeItemIds.add(item.id);
+      queuedSignatures.set(item.id, signature);
       pending.push(item);
-      // An unbounded burst can otherwise make the final state take many
-      // seconds to arrive. The first frame is delivered immediately below;
-      // retain only a bounded tail when the provider sends a very large burst.
-      if (pending.length > MAX_PENDING_SNAPSHOTS) pending = pending.slice(-MAX_PENDING_SNAPSHOTS);
+      relieve();
       if (timer === undefined) {
         // Paint the first frame immediately, then keep a short cooldown so a
         // burst of IPC events cannot synchronously replace it again.
@@ -92,6 +115,7 @@ export function createCodexStreamQueue(
       pending = [];
       activeItemIds.clear();
       lastDelivered.clear();
+      queuedSignatures.clear();
     },
   };
 }
