@@ -1,5 +1,5 @@
 import { ClipboardEvent, FormEvent, Fragment, KeyboardEvent, type MouseEvent as ReactMouseEvent, useContext, useEffect, useId, useMemo, useRef, useState } from "react";
-import DOMPurify from "dompurify";
+import { sanitizeMarkdownHtml } from '../markdownPolicy';
 import { parseChatMarkdown } from '../chatMath';
 import { ChatMarkdown } from './ChatMarkdownExtras';
 import type { ChatAnswerResponse, ChatContextUsage, ChatPart, ChatQueue, ChatQueueItem, ChatSlashCommand, ChatUiState, FileReference, GitCommitInfo, Session } from "@threadterm/protocol";
@@ -123,11 +123,7 @@ function renderCodexMarkdown(text: string, zh: boolean): string {
     anchor.removeAttribute('href');
     anchor.setAttribute('data-threadterm-file-reference', JSON.stringify(reference));
   }
-  const sanitized = DOMPurify.sanitize(template.innerHTML, {
-    FORBID_TAGS: ["script", "iframe", "object", "embed", "form", "input", "button", "link", "meta", "base", "svg", "math", "audio", "video", "source", "track"],
-    FORBID_ATTR: ["style", "srcset", "background", "poster"],
-    SANITIZE_NAMED_PROPS: true,
-  });
+  const sanitized = sanitizeMarkdownHtml(template.innerHTML);
   // Copy controls are added after sanitizing: they are our own inert markup,
   // and the read-only pre content is never carried into an attribute.
   const holder = document.createElement('div');

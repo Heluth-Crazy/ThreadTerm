@@ -17,7 +17,7 @@ function harness() {
   const render = runInNewContext(`${code}\nrenderCodexMarkdown`, {
     parseChatMarkdown: (text: string) => { parses += 1; return `<p>${text}</p>`; },
     document: { createElement: () => ({ innerHTML: '', content: { querySelectorAll: () => [] }, querySelectorAll: () => [] }) },
-    DOMPurify: { sanitize: (html: string) => { sanitizes += 1; return html === '<p></p>' ? '' : `safe:${html}`; } },
+    sanitizeMarkdownHtml: (html: string) => { sanitizes += 1; return html === '<p></p>' ? '' : `safe:${html}`; },
     parseMarkdownFileReference: () => undefined,
   }) as (text: string) => string;
   return { render, parses: () => parses, sanitizes: () => sanitizes };

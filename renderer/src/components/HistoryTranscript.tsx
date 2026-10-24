@@ -1,5 +1,5 @@
 import { memo, useMemo, type ReactNode } from "react";
-import DOMPurify from "dompurify";
+import { sanitizeMarkdownHtml } from "../markdownPolicy";
 import { marked } from "marked";
 import type { ChatItem } from "@threadterm/protocol";
 import { partBody, partLabel } from "../chatPresentation";
@@ -15,11 +15,7 @@ const HistoryMessage = memo(function HistoryMessage({ item, zh, actions }: { ite
   const parts = useMemo(() => item.parts.filter(historyRenderablePart).map(part => {
     const body = partBody(part);
     const parsed = item.role === "assistant" && part.type === "text" ? marked.parse(body, { gfm: true, breaks: true, async: false }) : undefined;
-    const html = parsed === undefined ? undefined : DOMPurify.sanitize(parsed, {
-      FORBID_TAGS: ["script", "iframe", "object", "embed", "form", "input", "button", "link", "meta", "base", "svg", "math", "audio", "video", "source", "track"],
-      FORBID_ATTR: ["style", "srcset", "background", "poster", "data-threadterm-file-reference"],
-      SANITIZE_NAMED_PROPS: true,
-    });
+    const html = parsed === undefined ? undefined : sanitizeMarkdownHtml(parsed, { forbidFileReferences: true });
     return { part, body, html };
   }), [item]);
   if (!parts.length) return null;

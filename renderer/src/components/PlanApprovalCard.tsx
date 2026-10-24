@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react';
-import DOMPurify from 'dompurify';
+import { sanitizeMarkdownHtml } from '../markdownPolicy';
 import { marked } from 'marked';
 import type { ChatAnswerResponse, ChatPart } from '@threadterm/protocol';
 import { approvalData, planApprovalEnabled } from '../chatApproval';
@@ -17,7 +17,7 @@ export function PlanApprovalCard({ part, writable, submitting, onRespond, copy }
   const data = approvalData(part);
   const [editing, setEditing] = useState(false);
   const [feedback, setFeedback] = useState('');
-  const html = useMemo(() => DOMPurify.sanitize(marked.parse(data?.plan ?? '', { async: false }) as string), [data?.plan]);
+  const html = useMemo(() => sanitizeMarkdownHtml(marked.parse(data?.plan ?? '', { async: false }) as string), [data?.plan]);
   if (!data) return null;
   const pending = part.status === 'pending';
   const waitingForPrompt = data.waitingForPrompt === true;

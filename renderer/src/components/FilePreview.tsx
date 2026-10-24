@@ -1,6 +1,6 @@
 import { lazy, Suspense, useEffect, useState } from 'react';
 import { marked } from 'marked';
-import DOMPurify from 'dompurify';
+import { sanitizeMarkdownHtml } from '../markdownPolicy';
 import { deletePageShots, onPageContextMenu, openExternal, request } from '../bridge';
 import type { FileCommentsHost } from '../fileCommentsHost';
 import type { CommentScope } from '../reviewComments';
@@ -55,7 +55,7 @@ export function FilePreview({projectId,worktreePath,path,content,savedContent,im
       if(!markdown){if(active)setHtml('');return;}
       const markdownContent=withoutYamlFrontMatter(content);
       const raw=await marked.parse(markdownContent,{gfm:true});
-      const safe=DOMPurify.sanitize(raw,{FORBID_TAGS:['script','iframe','object','embed','form','input','button','link','meta','base','svg','math','audio','video','source','track',...(markdown?['style']:[])],FORBID_ATTR:markdown?['style','srcset','background','poster']:['srcset'],ADD_TAGS:markdown?[]:['style'],SANITIZE_NAMED_PROPS:true});
+      const safe=sanitizeMarkdownHtml(raw);
       const fragment=new DOMParser().parseFromString(safe,'text/html');
       await Promise.all([...fragment.querySelectorAll('img')].map(async image=>{
         const relative=relativeAsset(path,image.getAttribute('src')??'');
