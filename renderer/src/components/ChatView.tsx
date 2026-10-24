@@ -56,7 +56,7 @@ import "./chat-network-notice.css";
 import { isChatImage, readClipboardImage, selectChatImageAttachments, validateChatImages } from '../chatImages';
 import './chat-images.css';
 import { queueComposerMode } from '../chatQueue';
-import { slashPaletteEnter } from '../composeKeys';
+import { isComposingKey, slashPaletteEnter } from '../composeKeys';
 import { noteBodyFits } from '../feedbackNotes';
 import { ChatQueue as ChatQueuePanel } from './ChatQueue';
 import { ChatNotes as ChatNotesPanel } from './ChatNotes';
@@ -1559,7 +1559,7 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession, 
     nativeEdit(range.start, range.end, '');
   }
   function onComposeKey(event: KeyboardEvent<HTMLTextAreaElement>) {
-    const composing = event.nativeEvent.isComposing || event.keyCode === 229 || composingRef.current;
+    const composing = isComposingKey(event.nativeEvent) || composingRef.current;
     if (!composing && (event.key === 'ContextMenu' || (event.key === 'F10' && event.shiftKey))) {
       openComposerMenuFromKeyboard(event); event.preventDefault(); return;
     }
@@ -1578,10 +1578,11 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession, 
       if (action === "pick") { event.preventDefault(); const flat = flatMentionItems(mentionGroups); const pick = flat[mentionIndex] ?? flat[0]; if (pick) applyMention(pick); return; }
       if (action === "close") { event.preventDefault(); setMentionDismissed(mention.start); return; }
     }
-    if (slash !== undefined && slashCommands.length) {
+    // While a candidate window is open every key belongs to the IME, including the arrows and Escape.
+    if (slash !== undefined && slashCommands.length && !composing) {
       if (event.key === "ArrowDown") { event.preventDefault(); setSlashIndex(value => Math.min(value + 1, slashCommands.length - 1)); return; }
       if (event.key === "ArrowUp") { event.preventDefault(); setSlashIndex(value => Math.max(0, value - 1)); return; }
-      if (slashPaletteEnter({ key: event.key, shiftKey: event.shiftKey, isComposing: event.nativeEvent.isComposing })) { event.preventDefault(); applySlash(slashCommands[slashIndex] ?? slashCommands[0]!); return; }
+      if (slashPaletteEnter({ key: event.key, shiftKey: event.shiftKey, isComposing: composing })) { event.preventDefault(); applySlash(slashCommands[slashIndex] ?? slashCommands[0]!); return; }
       if (event.key === "Escape") { event.preventDefault(); changeText(""); return; }
     }
     if (event.key === "Enter" && !event.shiftKey && !composing) {

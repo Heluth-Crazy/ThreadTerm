@@ -30,14 +30,20 @@ try {
     `import { SurfaceDialog } from '${join(root, 'renderer/src/components/SurfaceDialog.tsx').replaceAll('\\', '/')}';`,
     `import { Select } from '${join(root, 'renderer/src/components/ui/Select.tsx').replaceAll('\\', '/')}';`,
     `import { I18nProvider } from '${join(root, 'renderer/src/i18n.tsx').replaceAll('\\', '/')}';`,
+    `import { CommandPalette } from '${join(root, 'renderer/src/components/CommandPalette.tsx').replaceAll('\\', '/')}';`,
     `import '${join(root, 'renderer/src/styles.css').replaceAll('\\', '/')}';`,
   ].join('\n');
   await writeFile(join(fixture, 'index.html'), '<!doctype html><html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"></head><body><div id="root"></div><script type="module" src="/entry.tsx"></script></body></html>');
   await writeFile(join(fixture, 'entry.tsx'), `${imports}
+    const paletteData={epoch:'1',revision:0,projects:[],sessions:[],workspaces:[],inbox:[],providers:[],settings:{}};
     function Fixture(){
       const [parent,setParent]=React.useState(false),[child,setChild]=React.useState(false),[value,setValue]=React.useState('codex');
-      window.__modalQA={openParent:()=>setParent(true), parentOpen:()=>parent, childOpen:()=>child};
+      const [palette,setPalette]=React.useState(false),[runs,setRuns]=React.useState([]);
+      const ran=name=>setRuns(list=>[...list,name]);
+      window.__modalQA={openParent:()=>setParent(true), parentOpen:()=>parent, childOpen:()=>child, openPalette:()=>setPalette(true), paletteOpen:()=>palette, paletteRuns:()=>runs.slice()};
       return <I18nProvider locale="en"><main><button onClick={()=>setParent(true)}>Open parent</button>
+        <button onClick={()=>setPalette(true)}>Open palette</button>
+        {palette&&<CommandPalette data={paletteData} onClose={()=>setPalette(false)} onSession={id=>ran('session:'+id)} onProject={id=>ran('project:'+id)} onCreate={()=>ran('new')} onCreateGroup={()=>ran('new-group')} onAll={()=>ran('all')} onInbox={()=>ran('inbox')} onSettings={()=>ran('settings')}/>}
         {parent&&<SurfaceDialog title="Parent dialog" onClose={()=>setParent(false)}>
           <button onClick={()=>setChild(true)}>Open child</button>
           <Select aria-label="Provider" value={value} onChange={event=>setValue(event.target.value)}><option value="codex">Codex</option><option value="claude">Claude</option></Select>
@@ -113,6 +119,58 @@ try {
   const tabOutcome = await page.evaluate(() => ({ tag: document.activeElement?.tagName, text: document.activeElement?.textContent?.trim(), label: document.activeElement?.getAttribute('aria-label') }));
   assert.equal(await parent3.getByRole('button', { name: 'Close Parent dialog' }).evaluate(node => document.activeElement === node), true, `Tab from the final visible summary wraps to the first modal control, skipping closed details content; active=${JSON.stringify(tabOutcome)}`);
   check(`focus trap follows visible native tab stops (closed Save prices rects=${visibility.saveRects}, checkVisibility=${visibility.saveVisible})`);
+  await page.keyboard.press('Escape');
+  await parent3.waitFor({ state: 'hidden' });
+
+  // The command palette is a modal too: it must trap Tab, restore focus and leave IME keys to the candidate window.
+  const paletteOpener = page.getByRole('button', { name: 'Open palette' });
+  const palette = page.getByRole('dialog', { name: 'Command palette' });
+  const paletteInput = palette.locator('.palette-input');
+  const runs = () => page.evaluate(() => window.__modalQA.paletteRuns());
+  const activeRow = () => page.evaluate(() => document.querySelector('.palette .cmd-row.active')?.textContent ?? '');
+  const dispatchKey = (key, options = {}) => page.evaluate(({ key, isComposing, keyCode }) => {
+    const target = document.activeElement;
+    const event = new KeyboardEvent('keydown', { key, bubbles: true, cancelable: true, isComposing });
+    if (keyCode !== undefined) Object.defineProperty(event, 'keyCode', { value: keyCode });
+    target.dispatchEvent(event);
+    return event.defaultPrevented;
+  }, { key, isComposing: options.isComposing === true, keyCode: options.keyCode });
+  await paletteOpener.click();
+  await palette.waitFor();
+  assert.equal(await paletteInput.evaluate(node => document.activeElement === node), true, 'palette moves focus into its input when it opens');
+  await page.screenshot({ path: join(out, 'palette-en.png') });
+  report.screenshots = ['palette-en.png'];
+  const settledRow = await activeRow();
+  const composing = {};
+  for (const key of ['Enter', 'Escape', 'ArrowDown', 'ArrowUp']) {
+    composing[key] = await dispatchKey(key, { isComposing: true });
+    assert.deepEqual(await runs(), [], `${key} while an IME candidate window is open runs no command`);
+    assert.equal(await palette.isVisible(), true, `${key} while composing leaves the palette open`);
+    assert.equal(await activeRow(), settledRow, `${key} while composing does not move the selection`);
+  }
+  composing.keyCode229 = await dispatchKey('Enter', { keyCode: 229 });
+  assert.deepEqual(await runs(), [], 'Enter with the IME key code runs no command');
+  assert.equal(await palette.isVisible(), true, 'Enter with the IME key code leaves the palette open');
+  assert.equal(composing.keyCode229, true, 'the IME key code Enter is swallowed instead of reaching the input');
+  report.composingKeystrokes = composing;
+  await page.keyboard.press('Shift+Tab');
+  assert.equal(await palette.locator('.cmd-row').last().evaluate(node => document.activeElement === node), true, 'Shift+Tab from the palette input wraps to the last command row');
+  await page.keyboard.press('Tab');
+  assert.equal(await paletteInput.evaluate(node => document.activeElement === node), true, 'Tab from the last command row wraps back to the input');
+  await page.keyboard.press('Enter');
+  await palette.waitFor({ state: 'hidden' });
+  assert.deepEqual(await runs(), ['new'], 'a settled Enter runs exactly the active command once');
+  assert.equal(await paletteOpener.evaluate(node => document.activeElement === node), true, 'palette dismissal restores focus to its opener');
+  check('palette traps Tab, restores focus, ignores composing Enter/Escape/arrows and keyCode 229, and runs one command on a settled Enter');
+
+  await paletteOpener.click();
+  await palette.waitFor();
+  await dispatchKey('Escape', { isComposing: true });
+  assert.equal(await palette.isVisible(), true, 'a composing Escape leaves the palette open');
+  await page.keyboard.press('Escape');
+  await palette.waitFor({ state: 'hidden' });
+  assert.equal(await paletteOpener.evaluate(node => document.activeElement === node), true, 'Escape closes the palette and restores focus to its opener');
+  check('palette closes on a settled Escape only, then returns focus');
   assert.deepEqual(report.errors, [], 'fixture has no page errors');
   report.passed = true;
 } catch (error) {

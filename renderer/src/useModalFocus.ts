@@ -11,6 +11,8 @@ export function useModalFocus(panel:RefObject<HTMLElement|null>,onClose:()=>void
   const key=(event:KeyboardEvent)=>{
    if(stack.at(-1)!==token)return;
    if(event.key==='Escape'){
+    // A candidate window owns Escape until the IME cancels or commits it.
+    if(event.isComposing||event.keyCode===229)return;
     // An expanded combobox owns the first Escape. Its target handler closes
     // the listbox; the next Escape can dismiss the surrounding dialog.
     const combobox=event.target instanceof Element?event.target.closest('[role="combobox"][aria-expanded="true"]'):null;
@@ -18,6 +20,8 @@ export function useModalFocus(panel:RefObject<HTMLElement|null>,onClose:()=>void
     event.preventDefault();event.stopPropagation();callback.current();return;
    }
    if(event.key!=='Tab')return;
+   // An IME owns Tab until it commits; moving focus would split the composition.
+   if(event.isComposing||event.keyCode===229){event.preventDefault();return;}
    const nodes=focusable(),first=nodes[0],last=nodes.at(-1);
    if(!first){event.preventDefault();panel.current?.focus();}
    else if(event.shiftKey&&(document.activeElement===first||!panel.current?.contains(document.activeElement))){event.preventDefault();last?.focus();}
