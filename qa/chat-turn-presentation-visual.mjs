@@ -93,6 +93,8 @@ try {
       for (const provider of ['kimi','codex']) await panel(provider).locator('.codex-work > summary').click();
       for (const provider of ['kimi','codex']) {
         const root=panel(provider);
+        // The folded process body mounts on expand, so wait for the mount instead of sampling visibility.
+        await root.locator('.codex-work-body').waitFor({state:'visible'});
         assert.equal(await root.locator('.codex-work-body').isVisible(), true, `${provider} process expands`);
         assert.equal(await root.locator('article').filter({hasText:provider === 'kimi' ? 'Kimi private thought' : 'Codex private thought'}).isVisible(), true, `${provider} expanded process is visible`);
         assert.equal(await root.locator('article').filter({hasText:'Final answer'}).isVisible(), true, `${provider} final reply remains visible while expanded`);
@@ -138,6 +140,7 @@ try {
   assert.equal(grokGeometry.approvalPaddingLeft, '12px', 'grok approval uses the shared ACP card padding');
   await page.screenshot({path:join(out,'grok-full-collapsed.png')});
   await grok.locator('.codex-work > summary').click();
+  await grok.locator('.codex-work-body').waitFor({state:'visible'});
   assert.equal(await grok.locator('article').filter({hasText:'Grok private thought'}).isVisible(), true, 'grok expanded process is visible');
   await page.screenshot({path:join(out,'grok-full-expanded.png')});
   await writeFile(join(out,'report.json'),JSON.stringify({passed:true,geometry,checks:['Kimi/Codex collapsed parity','approval and Kimi quota visible','streaming visible','expand preserves final','light/dark 1280/1440/1920'],scratch},null,2));

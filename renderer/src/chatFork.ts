@@ -1,11 +1,16 @@
 import type { ChatItem, PaneLayout } from '@threadterm/protocol';
+import type { ChatPresentationIndex } from './chatPresentation';
 
-export function isCompletedForkReply(item: ChatItem, items: readonly ChatItem[] = [item]): boolean {
+// `index` is the per-revision presentation pass from ChatView: fork completion is a
+// per-item turn lookup, so it must not rescan the transcript for every reply.
+export function isCompletedForkReply(item: ChatItem, items: readonly ChatItem[] = [item], index?: ChatPresentationIndex): boolean {
   if (item.role !== 'assistant'
     || !item.parts.some(part => part.type === 'text' && part.phase !== 'commentary' && (part.data as {kind?: unknown} | undefined)?.kind !== 'plan' && Boolean(part.text?.trim()))
     || item.parts.some(part => ['streaming','running','pending'].includes(part.status ?? ''))) return false;
   // A provider can publish a separate completion boundary for the same turn.
   // Absence alone never proves completion; an explicit non-success wins.
+  const outcome = item.turnId ? index?.outcomes.get(item.turnId) : undefined;
+  if (outcome) return !outcome.notCompleted && (outcome.completed || item.turnOrigin === 'history');
   const turn = item.turnId ? items.filter(candidate => candidate.turnId === item.turnId) : [item];
   if (turn.some(candidate => candidate.turnStatus && candidate.turnStatus !== 'completed')) return false;
   return turn.some(candidate => candidate.turnStatus === 'completed') || item.turnOrigin === 'history';

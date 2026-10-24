@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { activeTurnId, chatCanControl, formatChatDuration, itemShowsStreaming, matchSlashCommands, partBody, partLabel, shouldRenderPart, slashQuery } from "../renderer/src/chatPresentation.ts";
+import { activeTurnId, activeTurnIdFromIndex, chatCanControl, chatPresentationIndex, formatChatDuration, itemShowsStreaming, matchSlashCommands, partBody, partLabel, shouldRenderPart, slashQuery } from "../renderer/src/chatPresentation.ts";
+import { isCompletedForkReply } from "../renderer/src/chatFork.ts";
+import { legacyActiveTurnId, legacyItemShowsStreaming, randomTranscript, seededRandom } from "./lib/chat-presentation-legacy.mjs";
 
 const copy = (_en, zh) => zh;
 
@@ -112,4 +114,44 @@ test('historical incomplete turns never authorize Stop or block a resumed compos
   const historicalUser={...history,id:'historical-user',role:'user'};
   assert.equal(itemShowsStreaming(current,[current,historicalUser]),true,'a late historical user cannot suppress the live caret');
   assert.equal(itemShowsStreaming(current,[{...history,id:current.id},current]),true,'historical identity collision cannot shadow the live record');
+});
+
+// --- one-pass index (F11) ---------------------------------------------------------------------------------------
+// The reference helpers under qa/lib/ are verbatim copies of the pre-F11 scans, so this property test guards the
+// index against a presentation change and the benchmark can report the same "before" numbers.
+
+test('one-pass presentation index keeps the legacy whole-history answers', () => {
+  const random = seededRandom(0x5eed);
+  for (let round = 0; round < 150; round += 1) {
+    const items = randomTranscript(random, 1 + Math.floor(random() * 26));
+    const index = chatPresentationIndex(items);
+    assert.equal(activeTurnId(items), legacyActiveTurnId(items), `activeTurnId wrapper round ${round}`);
+    for (const status of [undefined, 'running', 'waiting', 'idle', 'interrupted', 'exited', 'error']) {
+      assert.equal(activeTurnIdFromIndex(index, status), legacyActiveTurnId(items, status), `activeTurnId index round ${round} status ${status}`);
+      assert.equal(activeTurnId(items, status), legacyActiveTurnId(items, status), `activeTurnId array round ${round} status ${status}`);
+    }
+    for (const item of items) {
+      const expected = legacyItemShowsStreaming(item, items);
+      assert.equal(itemShowsStreaming(item, items), expected, `itemShowsStreaming array round ${round} ${item.id}`);
+      assert.equal(itemShowsStreaming(item, index), expected, `itemShowsStreaming index round ${round} ${item.id}`);
+      assert.equal(isCompletedForkReply(item, items, index), isCompletedForkReply(item, items), `isCompletedForkReply round ${round} ${item.id}`);
+    }
+  }
+});
+
+test('per-item presentation lookups never rescan the transcript', () => {
+  // 800 records is a long active session; the legacy helper filtered the whole history for every item.
+  const items = randomTranscript(seededRandom(0xbe0c), 800);
+  let reads = 0;
+  const counted = new Proxy(items, { get(target, key, receiver) { if (typeof key === 'string' && /^\d+$/.test(key)) reads += 1; return Reflect.get(target, key, receiver); } });
+  const index = chatPresentationIndex(counted);
+  assert.equal(reads, items.length, 'the index pass reads each record exactly once');
+  // Any whole-history rescan on the lookup path would read a numeric index here and throw.
+  const guarded = new Proxy(items, { get(target, key, receiver) { if (typeof key === 'string' && /^\d+$/.test(key)) throw new Error(`lookup rescanned item ${key}`); return Reflect.get(target, key, receiver); } });
+  const guardedIndex = { ...index, items: guarded };
+  for (const item of items) {
+    assert.equal(itemShowsStreaming(item, guardedIndex), legacyItemShowsStreaming(item, items), item.id);
+    assert.equal(activeTurnIdFromIndex(guardedIndex, 'running'), legacyActiveTurnId(items, 'running'));
+    assert.equal(isCompletedForkReply(item, guarded, guardedIndex), isCompletedForkReply(item, items), `fork ${item.id}`);
+  }
 });

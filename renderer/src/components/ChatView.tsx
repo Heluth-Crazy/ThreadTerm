@@ -1,4 +1,4 @@
-import { ClipboardEvent, FormEvent, Fragment, KeyboardEvent, type MouseEvent as ReactMouseEvent, useContext, useEffect, useId, useMemo, useRef, useState } from "react";
+import { ClipboardEvent, FormEvent, Fragment, KeyboardEvent, type MouseEvent as ReactMouseEvent, type ReactNode, useContext, useEffect, useId, useMemo, useRef, useState } from "react";
 import { sanitizeMarkdownHtml } from '../markdownPolicy';
 import { parseChatMarkdown } from '../chatMath';
 import { ChatMarkdown } from './ChatMarkdownExtras';
@@ -19,7 +19,7 @@ import { delegationTool, delegationToolLabel } from "../delegation";
 import { UsageCard } from './UsageCard';
 import { usageCardsForItems } from '../usageCard';
 import { canRecoverPermissions, connectionFeedbackPhase, connectionStatusText, emptyLink, overlayKind, providerLabel, reduceChatLink, type ChatConnectAttempt } from "../chatConnection";
-import { activeTurnId, chatCanControl, formatChatDuration, itemShowsStreaming, matchSlashCommands, partBody, partLabel, shouldRenderPart, slashQuery } from "../chatPresentation";
+import { activeTurnId, activeTurnIdFromIndex, chatCanControl, chatPresentationIndex, formatChatDuration, itemShowsStreaming, matchSlashCommands, partBody, partLabel, shouldRenderPart, slashQuery } from "../chatPresentation";
 import { groupCodexTranscript, type CodexTurn } from "../codexTranscript";
 import { completedTurnPresentation, groupToolActivity, toolEntriesForItems, type ToolActivityEntry } from "../toolActivity";
 import { ToolActivity } from './ToolActivity';
@@ -391,6 +391,18 @@ type FirstResponseWait = { token: string; sessionUpdatedAt: string; turnId?: str
 
 function hasVisibleAssistantResponse(items: ChatItem[], turnId: string): boolean {
   return items.some(item => item.role === "assistant" && item.turnId === turnId && item.parts.some(shouldRenderPart));
+}
+
+/**
+ * Folded completed-turn growth. The disclosure header always renders; the body
+ * mounts on expand so a long session keeps no hidden activity cards in the DOM.
+ */
+function FoldedActivity({ summary, children }: { summary: ReactNode; children: () => ReactNode }) {
+  const [open, setOpen] = useState(false);
+  return <details className="codex-work" open={open} onToggle={event => setOpen(event.currentTarget.open)}>
+    <summary><span className="codex-work-label">{summary}</span></summary>
+    {open && <div className="codex-work-body">{children()}</div>}
+  </details>;
 }
 
 function isTerminalChatStatus(status: Session["status"]): boolean {
@@ -1366,7 +1378,8 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession, 
     catch(caught) { setError(asUserError(caught,copy('The trust decision or reconnection could not be completed. Review the connection before retrying.','信任决定或重新连接未完成，请检查连接后重试。'))); }
     finally { setTrustBusy(false); }
   }
-  const liveTurn = ended ? undefined : activeTurnId(items, session.status);
+  const presentation = useMemo(() => chatPresentationIndex(items), [items]);
+  const liveTurn = ended ? undefined : activeTurnIdFromIndex(presentation, session.status);
   const liveSpeed = liveTurnSpeed(liveTurn, liveTurnUsage);
   const turnGroups = useMemo(() => groupCodexTranscript(items, session.provider === "codex"), [items, session.provider]);
   const speedGroupIndex = liveSpeed ? liveSpeedGroupIndex(turnGroups, liveTurnUsage?.turnId) : -1;
@@ -1617,7 +1630,7 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession, 
       }
       const usage = nested ? undefined : usageCards.get(item.id);
       if (usage) return <article className={`v3-chat-message assistant is-native is-${session.provider} is-usage`} key={item.id}><UsageCard model={usage} zh={zh} /></article>;
-      const live = itemShowsStreaming(item, items);
+      const live = itemShowsStreaming(item, presentation);
       const replyText = item.role === 'assistant' && !nested && replyEligible && item.parts.some(isReplyTextPart) ? replyActions.get(item.id) ?? '' : '';
       const showReplyActions = !!replyText;
       return <article data-chat-item={item.id} className={`v3-chat-message ${item.role} is-native is-${session.provider}${showReplyActions ? ' has-reply-actions' : ''}`} key={item.id} onClick={copyCodeBlock}>
@@ -1660,13 +1673,13 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession, 
           {part.status && !foldedTool && part.type !== 'text' && part.status !== 'complete' && part.status !== 'streaming' && <small>{part.status}</small>}
         </div>;
       })}
-      {showReplyActions && <MessageActions markdown={replyText} copy={copy}>{isCompletedForkReply(item, items) && <ChatForkButton itemId={item.id} disabledReason={forkActions.disabledReason} busy={forkActions.busy} onFork={id => void forkActions.fork(id)} zh={zh}/>}</MessageActions>}
+      {showReplyActions && <MessageActions markdown={replyText} copy={copy}>{isCompletedForkReply(item, items, presentation) && <ChatForkButton itemId={item.id} disabledReason={forkActions.disabledReason} busy={forkActions.busy} onFork={id => void forkActions.fork(id)} zh={zh}/>}</MessageActions>}
     </article>;
   }
   function renderTurn(group: CodexTurn, groupIndex: number) {
     // Display activity follows runtime liveness even in a read-only observer;
     // it is independent of whether this window owns the control lease.
-    const displayTurn = activeTurnId(items, session.status);
+    const displayTurn = liveTurn;
     const active = group.items.some(item => item.turnId && item.turnId === displayTurn);
     const awaitingApproval = active && session.status === 'waiting' && group.items.some(item => item.parts.some(part => part.type === 'approval' && part.status === 'pending'));
     const awaitingQuestion = awaitingApproval && group.items.some(item => item.parts.some(part => part.type === 'approval' && part.status === 'pending' && asRecord(part.data).interaction === 'question'));
@@ -1697,10 +1710,9 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession, 
     return [
       outcome && (activity.length || group.elapsedMs != null) && !group.items.some(item => item.parts.some(part => part.type === 'error'))
         ? <p className="chat-duration" key={`${group.id}-status`}>{outcome}</p> : null,
-      !group.response.some(item => usageCards.has(item.id)) && (activity.length ? <details className="codex-work" key={`${group.id}-work`}>
-        <summary><span className="codex-work-label">{summary}<Icon name="chevR" /></span></summary>
-        <div className="codex-work-body">{activity.length ? activity.map(item => renderItem(item)) : <p className="dim">{copy('No additional activity recorded.', '没有记录额外的过程。')}</p>}</div>
-      </details> : null),
+      !group.response.some(item => usageCards.has(item.id)) && (activity.length ? <FoldedActivity key={`${group.id}-work`} summary={<>{summary}<Icon name="chevR" /></>}>
+        {() => activity.length ? activity.map(item => renderItem(item)) : <p className="dim">{copy('No additional activity recorded.', '没有记录额外的过程。')}</p>}
+      </FoldedActivity> : null),
       tools.length ? drawer(tools) : null,
       ...subagents.map(item => <Fragment key={`${item.id}-subagent`}>{renderItem(item)}</Fragment>),
       ...response.map(item => <Fragment key={item.parts.some(isSubagentPart) ? `${item.id}-subagent` : `${item.id}-response`}>{renderItem(item)}</Fragment>),
@@ -1740,7 +1752,7 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession, 
       event.preventDefault();
       const url = anchor.getAttribute('href') ?? '';
       if (isWebTabUrl(url)) { setLinkIssue(undefined); setLinkMenu({ anchor, url }); }
-    }} onScroll={viewport.onScroll}><ChatPlanPanel items={items} copy={copy} liveTurnId={activeTurnId(items, session.status)} historyReady={historyLoaded} navigation={items.filter(item => item.role === 'user').length >= 3 ? <ChatMessageNavigation items={items} copy={copy} onNavigate={viewport.navigateToMessage} /> : undefined} /><div ref={logContentRef}>{items.length ? turnGroups.map((group, groupIndex) => <section className="codex-turn chat-turn" key={group.id} data-chat-turn={group.id}>
+    }} onScroll={viewport.onScroll}><ChatPlanPanel items={items} copy={copy} liveTurnId={activeTurnIdFromIndex(presentation, session.status)} historyReady={historyLoaded} navigation={items.filter(item => item.role === 'user').length >= 3 ? <ChatMessageNavigation items={items} copy={copy} onNavigate={viewport.navigateToMessage} /> : undefined} /><div ref={logContentRef}>{items.length ? turnGroups.map((group, groupIndex) => <section className="codex-turn chat-turn" key={group.id} data-chat-turn={group.id}>
       {renderTurn(group, groupIndex)}
     </section>) : firstResponseWait ? null : <div className="empty v3-empty"><strong>{copy('No messages yet.', '暂无消息。')}</strong><p>{copy('Send a message to start working with this provider.', '发送消息，开始与此提供方协作。')}</p></div>}
       {submissionPreview && !items.some(item => item.role === 'user' && item.turnId === submissionPreview.token) && <article className={`v3-chat-message user is-native is-${session.provider} chat-pending-submission`} aria-label={copy('Message being sent', '正在发送的消息')}>
