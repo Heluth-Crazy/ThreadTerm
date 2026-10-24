@@ -132,7 +132,7 @@ export function AgentChangesView({sessions, activeSessionId, actions, zh, visibl
     expected[file.path] = current.exists ? current.fingerprint ?? null : null;
    }
    setConfirm({checkpoint, files, expected});
-  } catch(error) { setIssue(agentReviewError(error, zh)); }
+  } catch(error) { setIssue(workbenchError(error, zh)); }
   finally { setBusy(false); }
  };
  const session = sessions.find(candidate => candidate.id === sessionId);

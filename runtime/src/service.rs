@@ -2981,6 +2981,7 @@ fn map_error(message: &str) -> RpcError {
         value if value.starts_with("chat_repair_unavailable:") => "chat_repair_unavailable",
         value if value.starts_with("invalid_history_transcript:") => "invalid_history_transcript",
         value if value.starts_with("operation_conflict:") => "operation_conflict",
+        value if value.starts_with("checkpoint_unavailable:") => "checkpoint_unavailable",
         value if value.starts_with("native_session_exists:") => "native_session_exists",
         "lease_held" => "lease_held",
         "lease_missing" | "stale_lease" => "stale_lease",

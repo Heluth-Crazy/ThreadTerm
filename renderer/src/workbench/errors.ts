@@ -22,6 +22,7 @@ const known:Record<string,[string,string]> = {
  review_unavailable:['此会话没有可审查的 Git 工作区。','This session has no Git workspace to review.'],
  checkpoint_missing:['检查点不存在。','The checkpoint no longer exists.'],
  checkpoint_failed:['该检查点创建失败，无法对比。','This checkpoint failed to capture and cannot be compared.'],
+ checkpoint_unavailable:['检查点对象已丢失或存储不可用，未显示对比，也未更改任何文件。','The checkpoint objects are missing or their store is unavailable. No diff was shown and no files were changed.'],
  file_too_large:['文件太大（超过 1 MB）。','The file is too large (over 1 MB).'],
  binary_file:['二进制文件无法以文本显示。','Binary files cannot be shown as text.'],
  invalid_search_pattern:['搜索表达式无效。','Invalid search expression.'],

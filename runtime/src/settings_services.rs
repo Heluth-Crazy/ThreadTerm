@@ -3,15 +3,22 @@
 use crate::{config::RuntimeConfig, db::Database};
 use anyhow::{anyhow, Context, Result};
 use chrono::Utc;
-use rusqlite::{params, Transaction};
+use rusqlite::{params, OptionalExtension, Transaction};
 use serde_json::{json, Map, Value};
+use sha2::{Digest, Sha256};
 use std::{
     collections::HashMap,
     fs,
+    io::Read,
     path::{Path, PathBuf},
     sync::{Mutex, OnceLock},
 };
 use uuid::Uuid;
+
+/// Runtime-owned folders in the data root. Relocation copies every one of them;
+/// the review stores keep checkpoints readable after the source goes away.
+const RELOCATED_FOLDERS: &[&str] = &["review-objects", "review-indexes", "review-git", "plugins"];
+const RELOCATED_DATABASE: &str = "threadterm-v3.sqlite3";
 
 const SETTINGS_MARKER: &str = "threadterm-v3-settings";
 const SETTINGS_VERSION: i64 = 1;
@@ -239,6 +246,188 @@ fn relocation_status(config: &RuntimeConfig) -> Result<Value> {
     }
     Ok(status)
 }
+
+/// Recursive copy that refuses links and other non-regular entries instead of
+/// following them out of the data root.
+fn copy_folder_entries(source: &Path, target: &Path) -> Result<u64> {
+    let mut files = 0;
+    for entry in fs::read_dir(source)? {
+        let entry = entry?;
+        let kind = entry.file_type()?;
+        let destination = target.join(entry.file_name());
+        if kind.is_dir() {
+            fs::create_dir_all(&destination)?;
+            files += copy_folder_entries(&entry.path(), &destination)?;
+        } else if kind.is_file() {
+            fs::copy(entry.path(), &destination)?;
+            files += 1;
+        } else {
+            return Err(anyhow!("relocation_unsupported_entry"));
+        }
+    }
+    Ok(files)
+}
+
+fn copy_folder(source: &Path, target: &Path) -> Result<u64> {
+    if !source.is_dir() {
+        return Ok(0);
+    }
+    fs::create_dir_all(target)?;
+    copy_folder_entries(source, target)
+}
+
+/// Content digest over relative names, sizes and bytes. Verification reads both
+/// trees, so a truncated or racing copy fails before activation.
+fn folder_digest(root: &Path) -> Result<(u64, String)> {
+    fn walk(root: &Path, directory: &Path, files: &mut u64, digest: &mut Sha256) -> Result<()> {
+        let mut entries = fs::read_dir(directory)?.collect::<std::io::Result<Vec<_>>>()?;
+        entries.sort_by_key(|entry| entry.file_name());
+        for entry in entries {
+            let path = entry.path();
+            let kind = entry.file_type()?;
+            let relative = path.strip_prefix(root)?.to_string_lossy().replace('\\', "/");
+            if kind.is_dir() {
+                digest.update(b"d");
+                digest.update(relative.as_bytes());
+                walk(root, &path, files, digest)?;
+            } else if kind.is_file() {
+                let mut file = fs::File::open(&path)?;
+                let length = file.metadata()?.len();
+                digest.update(b"f");
+                digest.update(relative.as_bytes());
+                digest.update(length.to_le_bytes());
+                let mut buffer = [0_u8; 64 * 1024];
+                loop {
+                    let read = file.read(&mut buffer)?;
+                    if read == 0 {
+                        break;
+                    }
+                    digest.update(&buffer[..read]);
+                }
+                *files += 1;
+            } else {
+                return Err(anyhow!("relocation_unsupported_entry"));
+            }
+        }
+        Ok(())
+    }
+    let mut files = 0;
+    let mut digest = Sha256::new();
+    if root.is_dir() {
+        walk(root, root, &mut files, &mut digest)?;
+    }
+    Ok((files, hex::encode(digest.finalize())))
+}
+
+fn verify_folder_copy(source: &Path, target: &Path) -> Result<()> {
+    if folder_digest(source)? != folder_digest(target)? {
+        return Err(anyhow!("relocation_verification_failed"));
+    }
+    Ok(())
+}
+
+/// Windows path spellings may differ only by case (realpath vs. the root the
+/// app passed in), so the store root is matched without assuming one spelling.
+fn strip_store_root(store: &Path, root: &Path) -> Option<PathBuf> {
+    let stored: Vec<_> = store.components().collect();
+    let wanted: Vec<_> = root.components().collect();
+    if stored.len() < wanted.len() {
+        return None;
+    }
+    let matches = stored.iter().zip(&wanted).all(|(left, right)| {
+        left.as_os_str()
+            .to_string_lossy()
+            .eq_ignore_ascii_case(&right.as_os_str().to_string_lossy())
+    });
+    if !matches {
+        return None;
+    }
+    let mut relative = PathBuf::new();
+    for component in &stored[wanted.len()..] {
+        relative.push(component.as_os_str());
+    }
+    Some(relative)
+}
+
+/// Rewrites the checkpoint store paths recorded in the prepared database. Rows
+/// that already point outside the current object root are counted, not guessed.
+fn rewrite_review_store_paths(
+    database: &Path,
+    source_objects: &Path,
+    target_objects: &Path,
+) -> Result<(u64, u64)> {
+    let mut connection = rusqlite::Connection::open(database)?;
+    let present: Option<String> = connection
+        .query_row(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='review_checkpoints'",
+            [],
+            |row| row.get(0),
+        )
+        .optional()?;
+    if present.is_none() {
+        return Ok((0, 0));
+    }
+    let rows = {
+        let mut statement =
+            connection.prepare("SELECT id, store FROM review_checkpoints WHERE store IS NOT NULL")?;
+        let rows = statement.query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })?;
+        rows.collect::<std::result::Result<Vec<_>, _>>()?
+    };
+    let mut updates = Vec::new();
+    let mut unmapped = 0_u64;
+    for (id, store) in rows {
+        match strip_store_root(Path::new(&store), source_objects) {
+            Some(relative) => updates.push((
+                id,
+                target_objects.join(relative).to_string_lossy().into_owned(),
+            )),
+            None => unmapped += 1,
+        }
+    }
+    if !updates.is_empty() {
+        let transaction = connection.transaction()?;
+        {
+            let mut update = transaction.prepare("UPDATE review_checkpoints SET store=? WHERE id=?")?;
+            for (id, store) in &updates {
+                update.execute(params![store, id])?;
+            }
+        }
+        transaction.commit()?;
+    }
+    Ok((updates.len() as u64, unmapped))
+}
+
+/// Copies the runtime-owned folders, rewrites the prepared database's review
+/// store paths and verifies every copy before the target can be activated.
+fn relocate_runtime_folders(db: &Database, target: &Path) -> Result<Value> {
+    let base = db
+        .path()
+        .parent()
+        .ok_or_else(|| anyhow!("invalid_relocation_target"))?;
+    let mut folders = Vec::new();
+    let mut files = 0_u64;
+    for name in RELOCATED_FOLDERS {
+        let source = base.join(name);
+        if !source.is_dir() {
+            continue;
+        }
+        let destination = target.join(name);
+        files += copy_folder(&source, &destination)
+            .with_context(|| format!("copying {name}"))?;
+        verify_folder_copy(&source, &destination)
+            .with_context(|| format!("verifying {name}"))?;
+        folders.push(*name);
+    }
+    let (checkpoints, unmapped) = rewrite_review_store_paths(
+        &target.join(RELOCATED_DATABASE),
+        &crate::git_read::plain_path(&base.join("review-objects")),
+        &crate::git_read::plain_path(&target.join("review-objects")),
+    )
+    .context("rewriting review store paths")?;
+    Ok(json!({"folders":folders,"files":files,"checkpoints":checkpoints,"unmappedCheckpoints":unmapped}))
+}
 fn relocation_prepare(
     config: &RuntimeConfig,
     db: &Database,
@@ -318,7 +507,7 @@ fn relocation_prepare(
         );
     }
     let result = (|| -> Result<Value> {
-        let database = canonical.join("threadterm-v3.sqlite3");
+        let database = canonical.join(RELOCATED_DATABASE);
         db.backup_to(&database)?;
         fs::copy(
             &config.credential_path,
@@ -336,6 +525,7 @@ fn relocation_prepare(
         let private_key = config
             .data_dir
             .join(crate::remote_access::REMOTE_PRIVATE_KEY_FILE);
+        let mut includes = vec!["database", "credentials"];
         match (cert.exists(), private_key.exists()) {
             (false, false) => {}
             (true, true) => {
@@ -345,8 +535,17 @@ fn relocation_prepare(
                 fs::copy(&private_key, &target_key)?;
                 #[cfg(windows)]
                 crate::windows_security::restrict_file_to_current_user(&target_key)?;
+                includes.push("remoteIdentity");
             }
             _ => return Err(anyhow!("remote_access_identity_incomplete")),
+        }
+        let relocated = relocate_runtime_folders(db, &canonical)?;
+        includes.push("reviewCheckpoints");
+        if relocated["folders"]
+            .as_array()
+            .is_some_and(|folders| folders.iter().any(|folder| folder == "plugins"))
+        {
+            includes.push("plugins");
         }
         fs::write(
             canonical.join("relocation.ready.json"),
@@ -354,7 +553,7 @@ fn relocation_prepare(
                 &json!({"sourceRoot":config.data_dir,"targetRoot":canonical,"activationToken":token}),
             )?,
         )?;
-        Ok(json!({"sourceRoot":config.data_dir,"targetRoot":canonical,"activationToken":token}))
+        Ok(json!({"sourceRoot":config.data_dir,"targetRoot":canonical,"activationToken":token,"includes":includes}))
     })();
     match result {
         Ok(result) => {
@@ -362,7 +561,18 @@ fn relocation_prepare(
             Ok(result)
         }
         Err(error) => {
-            let _ = fs::remove_dir_all(&canonical);
+            // Keep the user's target folder for a retry, but discard every
+            // prepared file so activation can never see a partial copy.
+            if let Ok(entries) = fs::read_dir(&canonical) {
+                for entry in entries.flatten() {
+                    let path = entry.path();
+                    let _ = match entry.file_type() {
+                        Ok(kind) if kind.is_dir() => fs::remove_dir_all(&path),
+                        Ok(_) => fs::remove_file(&path),
+                        Err(error) => Err(error),
+                    };
+                }
+            }
             relocations()
                 .lock()
                 .map_err(|_| anyhow!("relocation_lock"))?
@@ -1416,6 +1626,166 @@ mod tests {
                 "{field} must be omitted instead of null"
             );
         }
+    }
+
+    fn review_fixture(root: &Path) -> (RuntimeConfig, Database, String, PathBuf) {
+        let repo = root.join("repo");
+        fs::create_dir(&repo).unwrap();
+        let git = crate::workspace_services::git;
+        git(&repo, &["init", "-q", "-b", "main"]).unwrap();
+        git(&repo, &["config", "user.email", "qa@example.test"]).unwrap();
+        git(&repo, &["config", "user.name", "QA"]).unwrap();
+        git(&repo, &["config", "core.autocrlf", "false"]).unwrap();
+        fs::write(repo.join("a.txt"), "one\n").unwrap();
+        git(&repo, &["add", "."]).unwrap();
+        git(&repo, &["commit", "-qm", "init"]).unwrap();
+        let data = root.join("data");
+        fs::create_dir(&data).unwrap();
+        let config = config(&data);
+        config.credential().unwrap();
+        let db = Database::open(&config.database_path).unwrap();
+        crate::workspace_services::initialize(&db).unwrap();
+        crate::review::initialize(&db).unwrap();
+        let project = db
+            .add_project(repo.to_str().unwrap(), Some("p"), "project-op")
+            .unwrap();
+        db.transaction(|tx| {
+            tx.execute(
+                "INSERT INTO sessions(id,project_id,title,provider,mode,status,created_at,updated_at) VALUES('s1',?,'t','codex','chat','exited','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z')",
+                [&project.id],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+        (config, db, "s1".to_owned(), repo)
+    }
+
+    #[test]
+    fn relocation_carries_review_checkpoints_and_rewrites_their_store_paths() {
+        let root = tempfile::tempdir().unwrap();
+        let (config, db, session, repo) = review_fixture(root.path());
+        fs::write(repo.join("a.txt"), "uncommitted baseline\n").unwrap();
+        let checkpoint =
+            crate::review::capture_before_turn(&db, &session, "send-relocate", "change").unwrap();
+        fs::write(repo.join("a.txt"), "later content\n").unwrap();
+        let before = crate::review::dispatch(
+            &db,
+            "review.diff",
+            &json!({"sessionId":session,"from":checkpoint,"path":"a.txt"}),
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(before["oldText"], "uncommitted baseline\n");
+        fs::create_dir_all(config.data_dir.join("plugins").join("example")).unwrap();
+        fs::write(
+            config.data_dir.join("plugins").join("example").join("plugin.json"),
+            b"{}",
+        )
+        .unwrap();
+
+        let target = root.path().join("target");
+        fs::create_dir(&target).unwrap();
+        let prepared = dispatch(
+            &config,
+            &db,
+            "data.relocation.prepare",
+            &json!({"targetPath":target,"operationId":"move-review"}),
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(
+            prepared["includes"],
+            json!(["database", "credentials", "reviewCheckpoints", "plugins"])
+        );
+        assert!(target.join("review-objects").is_dir());
+        assert!(target.join("plugins").join("example").join("plugin.json").is_file());
+
+        // The prepared copy must stand alone once the source store is unavailable.
+        fs::rename(
+            config.data_dir.join("review-objects"),
+            root.path().join("source-review-objects"),
+        )
+        .unwrap();
+        let moved = RuntimeConfig {
+            data_dir: target.clone(),
+            database_path: target.join("threadterm-v3.sqlite3"),
+            credential_path: target.join("runtime.credential"),
+            pipe_base: config.pipe_base.clone(),
+        };
+        let moved_db = Database::open(&moved.database_path).unwrap();
+        let after = crate::review::dispatch(
+            &moved_db,
+            "review.diff",
+            &json!({"sessionId":session,"from":checkpoint,"path":"a.txt"}),
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(after, before);
+        let fingerprint = after["fingerprint"].as_str().unwrap().to_owned();
+        let restored = crate::review::dispatch(
+            &moved_db,
+            "review.revert",
+            &json!({"sessionId":session,"checkpointId":checkpoint,"paths":["a.txt"],"expectedFingerprints":{"a.txt":fingerprint},"operationId":"restore-after-move"}),
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(restored["restored"], json!(["a.txt"]));
+        assert_eq!(fs::read_to_string(repo.join("a.txt")).unwrap(), "uncommitted baseline\n");
+        let stores = moved_db
+            .transaction(|tx| {
+                let mut statement = tx.prepare("SELECT store FROM review_checkpoints WHERE store IS NOT NULL")?;
+                let rows = statement.query_map([], |row| row.get::<_, String>(0))?;
+                Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
+            })
+            .unwrap();
+        assert!(!stores.is_empty());
+        let target_objects = crate::git_read::plain_path(&target.join("review-objects"));
+        assert!(stores
+            .iter()
+            .all(|store| strip_store_root(Path::new(store), &target_objects).is_some()));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_failed_store_copy_rolls_back_and_keeps_the_source() {
+        use std::os::windows::fs::OpenOptionsExt;
+
+        let root = tempfile::tempdir().unwrap();
+        let (config, db, session, repo) = review_fixture(root.path());
+        fs::write(repo.join("a.txt"), "uncommitted baseline\n").unwrap();
+        crate::review::capture_before_turn(&db, &session, "send-locked", "change").unwrap();
+        // Plugins are copied last: the review objects are already in the
+        // prepared target when this copy fails, so rollback must remove them.
+        let plugin = config.data_dir.join("plugins").join("example").join("plugin.json");
+        fs::create_dir_all(plugin.parent().unwrap()).unwrap();
+        fs::write(&plugin, b"{}").unwrap();
+        let locked = fs::OpenOptions::new()
+            .read(true)
+            .share_mode(0)
+            .open(&plugin)
+            .unwrap();
+        let target = root.path().join("target");
+        fs::create_dir(&target).unwrap();
+        dispatch(
+            &config,
+            &db,
+            "data.relocation.prepare",
+            &json!({"targetPath":target,"operationId":"move-locked"}),
+        )
+        .unwrap_err();
+        drop(locked);
+        // The freeze is released, the prepared copy is discarded and the source
+        // database and stores are untouched.
+        assert!(!relocation_blocks(&config, "settings.update").unwrap());
+        assert!(target.is_dir(), "the chosen target folder stays for a retry");
+        assert_eq!(fs::read_dir(&target).unwrap().count(), 0);
+        assert!(!target.join("relocation.ready.json").exists());
+        assert!(!target.join("threadterm-v3.sqlite3").exists());
+        assert!(!target.join("review-objects").exists());
+        assert!(config.database_path.is_file());
+        assert!(config.data_dir.join("review-objects").is_dir());
+        assert!(plugin.is_file());
+        assert_eq!(dispatch(&config, &db, "data.status", &json!({})).unwrap().unwrap()["root"], json!(config.data_dir));
     }
 
     #[test]

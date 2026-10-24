@@ -37,6 +37,7 @@ const TURN_BUDGET: Duration = Duration::from_secs(10);
 const REVIEW_BUDGET: Duration = Duration::from_secs(60);
 const MAX_LABEL_CHARS: usize = 160;
 const MAX_REVIEW_CACHES: usize = 256;
+const MAX_UNAVAILABLE_DETAIL: usize = 400;
 
 const SCHEMA: &str = "CREATE TABLE IF NOT EXISTS review_checkpoints (id TEXT PRIMARY KEY, session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE, kind TEXT NOT NULL, turn_id TEXT, label TEXT, operation_id TEXT UNIQUE, store TEXT, tree TEXT, status TEXT NOT NULL, error TEXT, skipped TEXT NOT NULL DEFAULT '[]', created_at TEXT NOT NULL); CREATE INDEX IF NOT EXISTS review_checkpoints_session ON review_checkpoints(session_id, created_at);";
 
@@ -921,6 +922,50 @@ impl Store {
         result
     }
 
+    /// Resolves one file inside a checkpoint tree by reading the tree objects.
+    /// A readable tree that does not list the path means the file is verified
+    /// absent; an unreadable tree (missing store, pruned or corrupt object) is
+    /// an unavailable checkpoint rather than an empty baseline.
+    fn listed_blob(
+        &self,
+        tree: &str,
+        path: &str,
+        env: &[(&'static str, OsString)],
+        deadline: Instant,
+    ) -> Result<Option<String>> {
+        let full = format!("{}{}", self.prefix, path.replace('\\', "/"));
+        let mut scoped = env.to_vec();
+        scoped.push(("GIT_LITERAL_PATHSPECS", OsString::from("1")));
+        let output = self
+            .run(
+                &["ls-tree", "-r", "-z", "--full-tree", tree, "--", &full],
+                &scoped,
+                None,
+                deadline,
+            )
+            .map_err(|error| checkpoint_unavailable(&error))?;
+        for record in String::from_utf8_lossy(&output)
+            .split('\0')
+            .filter(|record| !record.is_empty())
+        {
+            let Some((meta, listed)) = record.split_once('\t') else {
+                return Err(anyhow!("checkpoint_unavailable: malformed tree entry"));
+            };
+            if listed != full {
+                continue;
+            }
+            let mut fields = meta.split(' ');
+            let (Some(_mode), Some(kind), Some(oid)) =
+                (fields.next(), fields.next(), fields.next())
+            else {
+                return Err(anyhow!("checkpoint_unavailable: malformed tree entry"));
+            };
+            // Directories and submodule commits are not reviewable files.
+            return Ok((kind == "blob").then(|| oid.to_owned()));
+        }
+        Ok(None)
+    }
+
     fn blob(
         &self,
         tree: &str,
@@ -929,23 +974,22 @@ impl Store {
         deadline: Instant,
     ) -> Result<Option<Vec<u8>>> {
         let env = self.env(None, extra)?;
-        let spec = format!("{tree}:{}{}", self.prefix, path.replace('\\', "/"));
-        if self
-            .run(&["cat-file", "-e", &spec], &env, None, deadline)
-            .is_err()
-        {
+        let Some(oid) = self.listed_blob(tree, path, &env, deadline)? else {
             return Ok(None);
-        }
-        let size: usize =
-            String::from_utf8(self.run(&["cat-file", "-s", &spec], &env, None, deadline)?)?
-                .trim()
-                .parse()
-                .map_err(|_| anyhow!("git_failed"))?;
+        };
+        let size: usize = String::from_utf8(
+            self.run(&["cat-file", "-s", &oid], &env, None, deadline)
+                .map_err(|error| checkpoint_unavailable(&error))?,
+        )?
+        .trim()
+        .parse()
+        .map_err(|_| anyhow!("checkpoint_unavailable: unreadable blob size"))?;
         if size > MAX_TEXT_BYTES {
             return Err(anyhow!("file_too_large"));
         }
-        self.run(&["cat-file", "blob", &spec], &env, None, deadline)
+        self.run(&["cat-file", "blob", &oid], &env, None, deadline)
             .map(Some)
+            .map_err(|error| checkpoint_unavailable(&error))
     }
 
     /// Changed files between two trees, restricted to the registered root.
@@ -1020,6 +1064,17 @@ impl Store {
         }
         Ok(files)
     }
+}
+
+/// Distinguishes an unreadable checkpoint object from a file the checkpoint
+/// tree verifiably does not contain. The detail stays short and user-facing.
+fn checkpoint_unavailable(error: &anyhow::Error) -> anyhow::Error {
+    let detail: String = error
+        .to_string()
+        .chars()
+        .take(MAX_UNAVAILABLE_DETAIL)
+        .collect();
+    anyhow!("checkpoint_unavailable: {detail}")
 }
 
 struct Scope {
@@ -2544,6 +2599,176 @@ mod tests {
         )
         .unwrap();
         assert_eq!(between["files"], json!([{"path":"src/新.ts","status":"A","added":1,"removed":0}]));
+    }
+
+    fn store_oid(store: &Store, tree: &str, path: &str) -> String {
+        let env = store.env(None, &[]).unwrap();
+        String::from_utf8(
+            store
+                .run(
+                    &["rev-parse", &format!("{tree}:{path}")],
+                    &env,
+                    None,
+                    Instant::now() + TURN_BUDGET,
+                )
+                .unwrap(),
+        )
+        .unwrap()
+        .trim()
+        .to_owned()
+    }
+
+    fn writable_store_object(store: &Store, oid: &str) -> PathBuf {
+        let path = store.objects.join(&oid[..2]).join(&oid[2..]);
+        let mut permissions = fs::metadata(&path).unwrap().permissions();
+        permissions.set_readonly(false);
+        fs::set_permissions(&path, permissions).unwrap();
+        path
+    }
+
+    #[test]
+    fn a_missing_checkpoint_blob_fails_closed_and_never_touches_the_worktree() {
+        let (_temp, db, repo, session) = setup();
+        // Uncommitted bytes live only in the private review store.
+        fs::write(repo.join("a.txt"), "private baseline\n").unwrap();
+        let checkpoint = capture_before_turn(&db, &session, "send-missing-blob", "change").unwrap();
+        fs::write(repo.join("a.txt"), "later content\n").unwrap();
+        let diff = call(
+            &db,
+            "review.diff",
+            json!({"sessionId":session,"from":checkpoint,"path":"a.txt"}),
+        )
+        .unwrap();
+        assert_eq!(diff["oldText"], "private baseline\n");
+        let fingerprint = diff["fingerprint"].as_str().unwrap().to_owned();
+
+        let store = Store::open(&db, &repo, Instant::now() + TURN_BUDGET).unwrap();
+        let tree = ready_tree_for(&db, &checkpoint);
+        fs::remove_file(writable_store_object(&store, &store_oid(&store, &tree, "a.txt"))).unwrap();
+
+        let error = call(
+            &db,
+            "review.diff",
+            json!({"sessionId":session,"from":checkpoint,"path":"a.txt"}),
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(error.contains("checkpoint_unavailable"), "{error}");
+        let error = call(
+            &db,
+            "review.revert",
+            json!({"sessionId":session,"checkpointId":checkpoint,"paths":["a.txt"],"expectedFingerprints":{"a.txt":fingerprint},"operationId":"revert-missing-blob"}),
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(error.contains("checkpoint_unavailable"), "{error}");
+        assert_eq!(
+            fs::read_to_string(repo.join("a.txt")).unwrap(),
+            "later content\n",
+            "a revert must not change a file it cannot verify"
+        );
+    }
+
+    #[test]
+    fn a_corrupt_checkpoint_blob_fails_closed_and_never_touches_the_worktree() {
+        let (_temp, db, repo, session) = setup();
+        fs::write(repo.join("a.txt"), "private baseline\n").unwrap();
+        let checkpoint = capture_before_turn(&db, &session, "send-corrupt-blob", "change").unwrap();
+        fs::write(repo.join("a.txt"), "later content\n").unwrap();
+        let diff = call(
+            &db,
+            "review.diff",
+            json!({"sessionId":session,"from":checkpoint,"path":"a.txt"}),
+        )
+        .unwrap();
+        let fingerprint = diff["fingerprint"].as_str().unwrap().to_owned();
+
+        let store = Store::open(&db, &repo, Instant::now() + TURN_BUDGET).unwrap();
+        let tree = ready_tree_for(&db, &checkpoint);
+        let path = writable_store_object(&store, &store_oid(&store, &tree, "a.txt"));
+        fs::write(&path, b"not a git object").unwrap();
+
+        let error = call(
+            &db,
+            "review.diff",
+            json!({"sessionId":session,"from":checkpoint,"path":"a.txt"}),
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(error.contains("checkpoint_unavailable"), "{error}");
+        let error = call(
+            &db,
+            "review.revert",
+            json!({"sessionId":session,"checkpointId":checkpoint,"paths":["a.txt"],"expectedFingerprints":{"a.txt":fingerprint},"operationId":"revert-corrupt-blob"}),
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(error.contains("checkpoint_unavailable"), "{error}");
+        assert_eq!(fs::read_to_string(repo.join("a.txt")).unwrap(), "later content\n");
+    }
+
+    #[test]
+    fn an_unavailable_checkpoint_store_fails_closed_and_never_touches_the_worktree() {
+        let (temp, db, repo, session) = setup();
+        fs::write(repo.join("a.txt"), "private baseline\n").unwrap();
+        let checkpoint = capture_before_turn(&db, &session, "send-missing-store", "change").unwrap();
+        fs::write(repo.join("a.txt"), "later content\n").unwrap();
+        let diff = call(
+            &db,
+            "review.diff",
+            json!({"sessionId":session,"from":checkpoint,"path":"a.txt"}),
+        )
+        .unwrap();
+        let fingerprint = diff["fingerprint"].as_str().unwrap().to_owned();
+
+        let store = Store::open(&db, &repo, Instant::now() + TURN_BUDGET).unwrap();
+        fs::rename(&store.objects, temp.path().join("unavailable-review-objects")).unwrap();
+
+        let error = call(
+            &db,
+            "review.diff",
+            json!({"sessionId":session,"from":checkpoint,"path":"a.txt"}),
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(error.contains("checkpoint_unavailable"), "{error}");
+        let error = call(
+            &db,
+            "review.revert",
+            json!({"sessionId":session,"checkpointId":checkpoint,"paths":["a.txt"],"expectedFingerprints":{"a.txt":fingerprint},"operationId":"revert-missing-store"}),
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(error.contains("checkpoint_unavailable"), "{error}");
+        assert_eq!(fs::read_to_string(repo.join("a.txt")).unwrap(), "later content\n");
+    }
+
+    #[test]
+    fn a_verified_absent_baseline_file_keeps_the_recycle_flow() {
+        let (_temp, db, repo, session) = setup();
+        let checkpoint = capture_before_turn(&db, &session, "send-absent", "add a file").unwrap();
+        fs::write(repo.join("added.txt"), "added later\n").unwrap();
+        let diff = call(
+            &db,
+            "review.diff",
+            json!({"sessionId":session,"from":checkpoint,"path":"added.txt"}),
+        )
+        .unwrap();
+        assert_eq!(diff["exists"], true);
+        assert_eq!(diff["oldText"], "");
+        let fingerprint = diff["fingerprint"].as_str().unwrap().to_owned();
+        match call(
+            &db,
+            "review.revert",
+            json!({"sessionId":session,"checkpointId":checkpoint,"paths":["added.txt"],"expectedFingerprints":{"added.txt":fingerprint},"operationId":"revert-absent"}),
+        ) {
+            Ok(value) => {
+                assert_eq!(value["recycled"], json!(["added.txt"]));
+                assert!(!repo.join("added.txt").exists());
+            }
+            // Volumes without a Recycle Bin refuse instead of deleting.
+            Err(error) => assert!(error.to_string().contains("recycle_unavailable"), "{error}"),
+        }
     }
 
     #[test]

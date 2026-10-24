@@ -2911,6 +2911,12 @@
         },
         "activationToken": {
           "type": "string"
+        },
+        "includes": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
         }
       },
       "required": [

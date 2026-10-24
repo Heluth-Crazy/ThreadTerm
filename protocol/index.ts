@@ -316,7 +316,7 @@ export interface RemoteAccessStatus { enabled:boolean; url?:string; port?:number
 export interface PairingOffer { id:string; code:string; qrPayload:string; permission:DevicePermission; expiresAt:string; serverUrl:string; tlsFingerprint:string }
 export interface PairedDevice { id:string; name:string; permission:DevicePermission; createdAt:string; expiresAt:string; lastSeenAt?:string; revokedAt?:string }
 export interface DataRelocationStatus { frozen:boolean; sourceRoot:string; targetRoot?:string }
-export interface DataRelocationPrepared { sourceRoot:string; targetRoot:string; activationToken:string }
+export interface DataRelocationPrepared { sourceRoot:string; targetRoot:string; activationToken:string; includes?:string[] }
 export interface RuntimeEvent<E extends string=string,D=unknown> { v:1; event:E; epoch:string; seq:number; data:D }
 export type ChatTurnSpeedEvent=RuntimeEvent<'chat.turnSpeed',ChatTurnSpeed>;
 export interface TerminalLaunchState { phase:'preparing'|'launching'|'running'|'failed'|'cancelled'; error?:{code:string;message:string} }
