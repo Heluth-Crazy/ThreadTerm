@@ -140,6 +140,7 @@ impl Database {
             )?;
         }
         crate::quick_launch::initialize_connection(&connection)?;
+        crate::usage_ledger::initialize_connection(&connection)?;
         Ok(Self {
             connection: Mutex::new(connection),
             path: path.to_owned(),

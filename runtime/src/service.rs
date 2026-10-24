@@ -1359,6 +1359,7 @@ impl RuntimeService {
             .map_err(file_reference_rpc_error);
         }
         let outcome = (|| -> Result<Value> {
+            if let Some(value) = crate::usage_ledger::dispatch(&self.db, &request.method, &request.params)? { return Ok(value); }
             if request.method == "browser.approval.read" {
                 return self.browser_tools.approval_read(principal, &request.params);
             }
@@ -1738,6 +1739,7 @@ impl RuntimeService {
                         self.db
                             .update_settings(&p.patch, p.expected_revision, &p.operation_id)?;
                     self.providers.configure_network(&settings.value)?;
+                    if p.patch.get("modelPrices").is_some() { crate::usage_ledger::schedule_pricing(&self.db)?; }
                     Ok(serde_json::to_value(settings)?)
                 }
                 "provider.list" => Ok(Value::Array(self.providers.capability_snapshot_result()?)),

@@ -1,6 +1,1386 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
   "definitions": {
+    "RequestResult<\"usage.ledger.summary\">": {
+      "$ref": "#/definitions/UsageLedgerSummary"
+    },
+    "UsageLedgerSummary": {
+      "type": "object",
+      "properties": {
+        "tokens": {
+          "$ref": "#/definitions/UsageLedgerTokens",
+          "description": "Disjoint known/unknown bucket values."
+        },
+        "cost": {
+          "$ref": "#/definitions/UsageLedgerCost",
+          "description": "Provider and API-equivalent cost coverage."
+        },
+        "requests": {
+          "type": "number",
+          "description": "Included request fact count."
+        },
+        "sessions": {
+          "type": "number",
+          "description": "Included provider/native session count."
+        },
+        "activeTimeMs": {
+          "type": "number",
+          "description": "Unioned active interval duration."
+        },
+        "activeTimeEstimated": {
+          "type": "boolean",
+          "description": "Whether native timestamp gaps estimated activity."
+        },
+        "quality": {
+          "$ref": "#/definitions/UsageLedgerQuality",
+          "description": "Request and known-token evidence shares."
+        },
+        "bucketCoverage": {
+          "type": "object",
+          "properties": {
+            "input": {
+              "$ref": "#/definitions/UsageLedgerBucketCoverage"
+            },
+            "cacheRead": {
+              "$ref": "#/definitions/UsageLedgerBucketCoverage"
+            },
+            "cacheWrite5m": {
+              "$ref": "#/definitions/UsageLedgerBucketCoverage"
+            },
+            "cacheWrite1h": {
+              "$ref": "#/definitions/UsageLedgerBucketCoverage"
+            },
+            "cacheWriteUnknown": {
+              "$ref": "#/definitions/UsageLedgerBucketCoverage"
+            },
+            "output": {
+              "$ref": "#/definitions/UsageLedgerBucketCoverage"
+            },
+            "reasoning": {
+              "$ref": "#/definitions/UsageLedgerBucketCoverage"
+            }
+          },
+          "required": [
+            "input",
+            "cacheRead",
+            "cacheWrite5m",
+            "cacheWrite1h",
+            "cacheWriteUnknown",
+            "output",
+            "reasoning"
+          ],
+          "additionalProperties": false,
+          "description": "Per-bucket reported-request coverage."
+        },
+        "pricingPending": {
+          "type": "boolean",
+          "description": "True while a bounded reprice index job is updating derived values."
+        },
+        "from": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Echoed inclusive local range boundary, or null."
+        },
+        "to": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Echoed exclusive local range boundary, or null."
+        },
+        "scope": {
+          "$ref": "#/definitions/UsageLedgerScope",
+          "description": "Echoed ownership scope after defaults."
+        },
+        "sessionsWithoutUsage": {
+          "type": "number",
+          "description": "Sessions matching scope that have no selected usage facts."
+        }
+      },
+      "required": [
+        "activeTimeEstimated",
+        "activeTimeMs",
+        "bucketCoverage",
+        "cost",
+        "from",
+        "pricingPending",
+        "quality",
+        "requests",
+        "scope",
+        "sessions",
+        "sessionsWithoutUsage",
+        "to",
+        "tokens"
+      ],
+      "additionalProperties": false
+    },
+    "UsageLedgerTokens": {
+      "type": "object",
+      "properties": {
+        "total": {
+          "type": "number",
+          "description": "Known-bucket subtotal; not proof that all requests report every bucket."
+        },
+        "input": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "description": "Uncached input, or null when no selected request reports it."
+        },
+        "cacheRead": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "description": "Cache reads, or null when no selected request reports it."
+        },
+        "cacheWrite5m": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "description": "Five-minute cache writes, or null when absent from every request."
+        },
+        "cacheWrite1h": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "description": "One-hour cache writes, or null when absent from every request."
+        },
+        "cacheWriteUnknown": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "description": "Cache writes with unknown TTL; these make the fact API-unpriceable."
+        },
+        "output": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "description": "Output (including reasoning where applicable), or null when unreported."
+        },
+        "reasoning": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "description": "Output subset; never added again to total."
+        }
+      },
+      "required": [
+        "total",
+        "input",
+        "cacheRead",
+        "cacheWrite5m",
+        "cacheWrite1h",
+        "cacheWriteUnknown",
+        "output",
+        "reasoning"
+      ],
+      "additionalProperties": false
+    },
+    "UsageLedgerCost": {
+      "type": "object",
+      "properties": {
+        "reportedUsd": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "description": "Provider-recorded subtotal, or null if no selected request reports cost."
+        },
+        "apiEquivalentUsd": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "description": "Known-priced subtotal; null while repricing or when no selected fact can be priced."
+        },
+        "pricedTokens": {
+          "type": "number",
+          "description": "Tokens from fully priced facts."
+        },
+        "unpricedTokens": {
+          "type": "number",
+          "description": "Tokens from facts lacking a complete safe price."
+        },
+        "reportedRequests": {
+          "type": "number",
+          "description": "Requests with a provider-recorded cost."
+        },
+        "pricedRequests": {
+          "type": "number",
+          "description": "Requests whose reported buckets all have safe prices."
+        },
+        "coverage": {
+          "type": "number",
+          "description": "pricedTokens / known token total."
+        }
+      },
+      "required": [
+        "reportedUsd",
+        "apiEquivalentUsd",
+        "pricedTokens",
+        "unpricedTokens",
+        "reportedRequests",
+        "pricedRequests",
+        "coverage"
+      ],
+      "additionalProperties": false
+    },
+    "UsageLedgerQuality": {
+      "type": "object",
+      "properties": {
+        "exactRequests": {
+          "type": "number",
+          "description": "Directly provider-reported request count."
+        },
+        "derivedRequests": {
+          "type": "number",
+          "description": "Counter-delta derived request count."
+        },
+        "estimatedRequests": {
+          "type": "number",
+          "description": "Inferred request count."
+        },
+        "exactTokens": {
+          "type": "number",
+          "description": "Known tokens from exact requests."
+        },
+        "derivedTokens": {
+          "type": "number",
+          "description": "Known tokens from derived requests."
+        },
+        "estimatedTokens": {
+          "type": "number",
+          "description": "Known tokens from estimated requests."
+        },
+        "exactShare": {
+          "type": "number",
+          "description": "exactTokens / known token subtotal."
+        },
+        "derivedShare": {
+          "type": "number",
+          "description": "derivedTokens / known token subtotal."
+        },
+        "estimatedShare": {
+          "type": "number",
+          "description": "estimatedTokens / known token subtotal."
+        }
+      },
+      "required": [
+        "exactRequests",
+        "derivedRequests",
+        "estimatedRequests",
+        "exactTokens",
+        "derivedTokens",
+        "estimatedTokens",
+        "exactShare",
+        "derivedShare",
+        "estimatedShare"
+      ],
+      "additionalProperties": false
+    },
+    "UsageLedgerBucketCoverage": {
+      "type": "object",
+      "properties": {
+        "reportedRequests": {
+          "type": "number",
+          "description": "Selected requests that reported this bucket."
+        },
+        "requests": {
+          "type": "number",
+          "description": "All selected requests."
+        }
+      },
+      "required": [
+        "reportedRequests",
+        "requests"
+      ],
+      "additionalProperties": false
+    },
+    "UsageLedgerScope": {
+      "type": "string",
+      "enum": [
+        "all",
+        "threadterm",
+        "outside"
+      ],
+      "description": "Local usage accounting; ranges are inclusive from / exclusive to."
+    },
+    "RequestResult<\"usage.ledger.series\">": {
+      "$ref": "#/definitions/UsageLedgerSeries"
+    },
+    "UsageLedgerSeries": {
+      "type": "object",
+      "properties": {
+        "from": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Echoed inclusive local range boundary, or null."
+        },
+        "to": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Echoed exclusive local range boundary, or null."
+        },
+        "granularity": {
+          "$ref": "#/definitions/UsageLedgerGranularity",
+          "description": "Local bucket width."
+        },
+        "stack": {
+          "$ref": "#/definitions/UsageLedgerStack",
+          "description": "Value grouping dimension."
+        },
+        "points": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/UsageLedgerSeriesPoint"
+          },
+          "description": "Ordered zero-filled local-time buckets."
+        }
+      },
+      "required": [
+        "from",
+        "to",
+        "granularity",
+        "stack",
+        "points"
+      ],
+      "additionalProperties": false
+    },
+    "UsageLedgerGranularity": {
+      "type": "string",
+      "enum": [
+        "day",
+        "week",
+        "month"
+      ]
+    },
+    "UsageLedgerStack": {
+      "type": "string",
+      "enum": [
+        "provider",
+        "tokens"
+      ]
+    },
+    "UsageLedgerSeriesPoint": {
+      "type": "object",
+      "properties": {
+        "tokens": {
+          "$ref": "#/definitions/UsageLedgerTokens",
+          "description": "Disjoint known/unknown bucket values."
+        },
+        "cost": {
+          "$ref": "#/definitions/UsageLedgerCost",
+          "description": "Provider and API-equivalent cost coverage."
+        },
+        "requests": {
+          "type": "number",
+          "description": "Included request fact count."
+        },
+        "sessions": {
+          "type": "number",
+          "description": "Included provider/native session count."
+        },
+        "activeTimeMs": {
+          "type": "number",
+          "description": "Unioned active interval duration."
+        },
+        "activeTimeEstimated": {
+          "type": "boolean",
+          "description": "Whether native timestamp gaps estimated activity."
+        },
+        "quality": {
+          "$ref": "#/definitions/UsageLedgerQuality",
+          "description": "Request and known-token evidence shares."
+        },
+        "bucketCoverage": {
+          "type": "object",
+          "properties": {
+            "input": {
+              "$ref": "#/definitions/UsageLedgerBucketCoverage"
+            },
+            "cacheRead": {
+              "$ref": "#/definitions/UsageLedgerBucketCoverage"
+            },
+            "cacheWrite5m": {
+              "$ref": "#/definitions/UsageLedgerBucketCoverage"
+            },
+            "cacheWrite1h": {
+              "$ref": "#/definitions/UsageLedgerBucketCoverage"
+            },
+            "cacheWriteUnknown": {
+              "$ref": "#/definitions/UsageLedgerBucketCoverage"
+            },
+            "output": {
+              "$ref": "#/definitions/UsageLedgerBucketCoverage"
+            },
+            "reasoning": {
+              "$ref": "#/definitions/UsageLedgerBucketCoverage"
+            }
+          },
+          "required": [
+            "input",
+            "cacheRead",
+            "cacheWrite5m",
+            "cacheWrite1h",
+            "cacheWriteUnknown",
+            "output",
+            "reasoning"
+          ],
+          "additionalProperties": false,
+          "description": "Per-bucket reported-request coverage."
+        },
+        "pricingPending": {
+          "type": "boolean",
+          "description": "True while a bounded reprice index job is updating derived values."
+        },
+        "start": {
+          "type": "string",
+          "description": "Inclusive local bucket boundary."
+        },
+        "end": {
+          "type": "string",
+          "description": "Exclusive local bucket boundary."
+        },
+        "values": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/UsageLedgerSeriesValue"
+          },
+          "description": "Provider or token stack values."
+        }
+      },
+      "required": [
+        "activeTimeEstimated",
+        "activeTimeMs",
+        "bucketCoverage",
+        "cost",
+        "end",
+        "pricingPending",
+        "quality",
+        "requests",
+        "sessions",
+        "start",
+        "tokens",
+        "values"
+      ],
+      "additionalProperties": false
+    },
+    "UsageLedgerSeriesValue": {
+      "type": "object",
+      "properties": {
+        "key": {
+          "type": "string",
+          "description": "Provider id or token-bucket key selected by stack."
+        },
+        "tokens": {
+          "type": "number",
+          "description": "Value token subtotal; for token stacks this is that bucket only."
+        },
+        "costUsd": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "description": "Provider API-equivalent cost; null for token stacks to avoid duplication."
+        },
+        "activeTimeMs": {
+          "type": "number",
+          "description": "Value active time in milliseconds."
+        },
+        "requests": {
+          "type": "number",
+          "description": "Value request count."
+        }
+      },
+      "required": [
+        "key",
+        "tokens",
+        "costUsd",
+        "activeTimeMs",
+        "requests"
+      ],
+      "additionalProperties": false
+    },
+    "RequestResult<\"usage.ledger.breakdown\">": {
+      "$ref": "#/definitions/UsageLedgerBreakdown"
+    },
+    "UsageLedgerBreakdown": {
+      "type": "object",
+      "properties": {
+        "dimension": {
+          "type": "string",
+          "enum": [
+            "provider",
+            "model",
+            "project"
+          ],
+          "description": "Requested grouping dimension."
+        },
+        "items": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/UsageLedgerBreakdownItem"
+          },
+          "description": "Descending-token aggregate groups."
+        }
+      },
+      "required": [
+        "dimension",
+        "items"
+      ],
+      "additionalProperties": false
+    },
+    "UsageLedgerBreakdownItem": {
+      "type": "object",
+      "properties": {
+        "tokens": {
+          "$ref": "#/definitions/UsageLedgerTokens",
+          "description": "Disjoint known/unknown bucket values."
+        },
+        "cost": {
+          "$ref": "#/definitions/UsageLedgerCost",
+          "description": "Provider and API-equivalent cost coverage."
+        },
+        "requests": {
+          "type": "number",
+          "description": "Included request fact count."
+        },
+        "sessions": {
+          "type": "number",
+          "description": "Included provider/native session count."
+        },
+        "activeTimeMs": {
+          "type": "number",
+          "description": "Unioned active interval duration."
+        },
+        "activeTimeEstimated": {
+          "type": "boolean",
+          "description": "Whether native timestamp gaps estimated activity."
+        },
+        "quality": {
+          "$ref": "#/definitions/UsageLedgerQuality",
+          "description": "Request and known-token evidence shares."
+        },
+        "bucketCoverage": {
+          "type": "object",
+          "properties": {
+            "input": {
+              "$ref": "#/definitions/UsageLedgerBucketCoverage"
+            },
+            "cacheRead": {
+              "$ref": "#/definitions/UsageLedgerBucketCoverage"
+            },
+            "cacheWrite5m": {
+              "$ref": "#/definitions/UsageLedgerBucketCoverage"
+            },
+            "cacheWrite1h": {
+              "$ref": "#/definitions/UsageLedgerBucketCoverage"
+            },
+            "cacheWriteUnknown": {
+              "$ref": "#/definitions/UsageLedgerBucketCoverage"
+            },
+            "output": {
+              "$ref": "#/definitions/UsageLedgerBucketCoverage"
+            },
+            "reasoning": {
+              "$ref": "#/definitions/UsageLedgerBucketCoverage"
+            }
+          },
+          "required": [
+            "input",
+            "cacheRead",
+            "cacheWrite5m",
+            "cacheWrite1h",
+            "cacheWriteUnknown",
+            "output",
+            "reasoning"
+          ],
+          "additionalProperties": false,
+          "description": "Per-bucket reported-request coverage."
+        },
+        "pricingPending": {
+          "type": "boolean",
+          "description": "True while a bounded reprice index job is updating derived values."
+        },
+        "key": {
+          "type": "string",
+          "description": "Stable provider, model, or project key."
+        },
+        "label": {
+          "type": "string",
+          "description": "Provider/model/project name, with fallback labels localized via labelKey."
+        },
+        "labelKey": {
+          "type": "string",
+          "enum": [
+            "otherFolders",
+            "unknownModel",
+            "grokModelNotReported"
+          ],
+          "description": "Stable fallback-label translation key."
+        }
+      },
+      "required": [
+        "activeTimeEstimated",
+        "activeTimeMs",
+        "bucketCoverage",
+        "cost",
+        "key",
+        "label",
+        "pricingPending",
+        "quality",
+        "requests",
+        "sessions",
+        "tokens"
+      ],
+      "additionalProperties": false
+    },
+    "RequestResult<\"usage.ledger.sessions\">": {
+      "$ref": "#/definitions/UsageLedgerSessions"
+    },
+    "UsageLedgerSessions": {
+      "type": "object",
+      "properties": {
+        "total": {
+          "type": "number",
+          "description": "Matching count before pagination."
+        },
+        "offset": {
+          "type": "number",
+          "description": "Echoed zero-based offset."
+        },
+        "limit": {
+          "type": "number",
+          "description": "Echoed validated page limit (1..200)."
+        },
+        "items": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/UsageLedgerSession"
+          },
+          "description": "Stable-sorted session page."
+        }
+      },
+      "required": [
+        "total",
+        "offset",
+        "limit",
+        "items"
+      ],
+      "additionalProperties": false
+    },
+    "UsageLedgerSession": {
+      "type": "object",
+      "properties": {
+        "tokens": {
+          "$ref": "#/definitions/UsageLedgerTokens",
+          "description": "Disjoint known/unknown bucket values."
+        },
+        "cost": {
+          "$ref": "#/definitions/UsageLedgerCost",
+          "description": "Provider and API-equivalent cost coverage."
+        },
+        "requests": {
+          "type": "number",
+          "description": "Included request fact count."
+        },
+        "sessions": {
+          "type": "number",
+          "description": "Included provider/native session count."
+        },
+        "activeTimeMs": {
+          "type": "number",
+          "description": "Unioned active interval duration."
+        },
+        "activeTimeEstimated": {
+          "type": "boolean",
+          "description": "Whether native timestamp gaps estimated activity."
+        },
+        "quality": {
+          "$ref": "#/definitions/UsageLedgerQuality",
+          "description": "Request and known-token evidence shares."
+        },
+        "bucketCoverage": {
+          "type": "object",
+          "properties": {
+            "input": {
+              "$ref": "#/definitions/UsageLedgerBucketCoverage"
+            },
+            "cacheRead": {
+              "$ref": "#/definitions/UsageLedgerBucketCoverage"
+            },
+            "cacheWrite5m": {
+              "$ref": "#/definitions/UsageLedgerBucketCoverage"
+            },
+            "cacheWrite1h": {
+              "$ref": "#/definitions/UsageLedgerBucketCoverage"
+            },
+            "cacheWriteUnknown": {
+              "$ref": "#/definitions/UsageLedgerBucketCoverage"
+            },
+            "output": {
+              "$ref": "#/definitions/UsageLedgerBucketCoverage"
+            },
+            "reasoning": {
+              "$ref": "#/definitions/UsageLedgerBucketCoverage"
+            }
+          },
+          "required": [
+            "input",
+            "cacheRead",
+            "cacheWrite5m",
+            "cacheWrite1h",
+            "cacheWriteUnknown",
+            "output",
+            "reasoning"
+          ],
+          "additionalProperties": false,
+          "description": "Per-bucket reported-request coverage."
+        },
+        "pricingPending": {
+          "type": "boolean",
+          "description": "True while a bounded reprice index job is updating derived values."
+        },
+        "provider": {
+          "type": "string",
+          "description": "Provider identifier."
+        },
+        "nativeSessionId": {
+          "type": "string",
+          "description": "Provider-native session coordinate."
+        },
+        "threadtermSessionId": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "ThreadTerm session id, or null for outside history."
+        },
+        "projectId": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "ThreadTerm project id, or null for Other folders."
+        },
+        "projectName": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Project name, or null for Other folders."
+        },
+        "cwd": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Recorded working folder; never a tool file path."
+        },
+        "parentNativeSessionId": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Native parent coordinate for forks or sub-agents, otherwise null."
+        },
+        "subagent": {
+          "type": "boolean",
+          "description": "True only for a known sub-agent relationship."
+        },
+        "models": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Distinct recorded model ids."
+        },
+        "firstOccurredAt": {
+          "type": "string",
+          "description": "First fact timestamp in UTC."
+        },
+        "lastOccurredAt": {
+          "type": "string",
+          "description": "Last fact timestamp in UTC."
+        },
+        "scope": {
+          "type": "string",
+          "enum": [
+            "threadterm",
+            "outside"
+          ],
+          "description": "In-ThreadTerm or outside relationship."
+        },
+        "subagentCount": {
+          "type": "number",
+          "description": "Native child/sub-agent session count."
+        }
+      },
+      "required": [
+        "activeTimeEstimated",
+        "activeTimeMs",
+        "bucketCoverage",
+        "cost",
+        "cwd",
+        "firstOccurredAt",
+        "lastOccurredAt",
+        "models",
+        "nativeSessionId",
+        "parentNativeSessionId",
+        "pricingPending",
+        "projectId",
+        "projectName",
+        "provider",
+        "quality",
+        "requests",
+        "scope",
+        "sessions",
+        "subagent",
+        "subagentCount",
+        "threadtermSessionId",
+        "tokens"
+      ],
+      "additionalProperties": false
+    },
+    "RequestResult<\"usage.ledger.session\">": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/UsageLedgerSessionDetail"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "UsageLedgerSessionDetail": {
+      "type": "object",
+      "properties": {
+        "tokens": {
+          "$ref": "#/definitions/UsageLedgerTokens",
+          "description": "Disjoint known/unknown bucket values."
+        },
+        "cost": {
+          "$ref": "#/definitions/UsageLedgerCost",
+          "description": "Provider and API-equivalent cost coverage."
+        },
+        "requests": {
+          "type": "number",
+          "description": "Included request fact count."
+        },
+        "sessions": {
+          "type": "number",
+          "description": "Included provider/native session count."
+        },
+        "activeTimeMs": {
+          "type": "number",
+          "description": "Unioned active interval duration."
+        },
+        "activeTimeEstimated": {
+          "type": "boolean",
+          "description": "Whether native timestamp gaps estimated activity."
+        },
+        "quality": {
+          "$ref": "#/definitions/UsageLedgerQuality",
+          "description": "Request and known-token evidence shares."
+        },
+        "bucketCoverage": {
+          "type": "object",
+          "properties": {
+            "input": {
+              "$ref": "#/definitions/UsageLedgerBucketCoverage"
+            },
+            "cacheRead": {
+              "$ref": "#/definitions/UsageLedgerBucketCoverage"
+            },
+            "cacheWrite5m": {
+              "$ref": "#/definitions/UsageLedgerBucketCoverage"
+            },
+            "cacheWrite1h": {
+              "$ref": "#/definitions/UsageLedgerBucketCoverage"
+            },
+            "cacheWriteUnknown": {
+              "$ref": "#/definitions/UsageLedgerBucketCoverage"
+            },
+            "output": {
+              "$ref": "#/definitions/UsageLedgerBucketCoverage"
+            },
+            "reasoning": {
+              "$ref": "#/definitions/UsageLedgerBucketCoverage"
+            }
+          },
+          "required": [
+            "input",
+            "cacheRead",
+            "cacheWrite5m",
+            "cacheWrite1h",
+            "cacheWriteUnknown",
+            "output",
+            "reasoning"
+          ],
+          "additionalProperties": false,
+          "description": "Per-bucket reported-request coverage."
+        },
+        "pricingPending": {
+          "type": "boolean",
+          "description": "True while a bounded reprice index job is updating derived values."
+        },
+        "provider": {
+          "type": "string",
+          "description": "Provider identifier."
+        },
+        "nativeSessionId": {
+          "type": "string",
+          "description": "Provider-native session coordinate."
+        },
+        "threadtermSessionId": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "ThreadTerm session id, or null for outside history."
+        },
+        "projectId": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "ThreadTerm project id, or null for Other folders."
+        },
+        "projectName": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Project name, or null for Other folders."
+        },
+        "cwd": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Recorded working folder; never a tool file path."
+        },
+        "parentNativeSessionId": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Native parent coordinate for forks or sub-agents, otherwise null."
+        },
+        "subagent": {
+          "type": "boolean",
+          "description": "True only for a known sub-agent relationship."
+        },
+        "models": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Distinct recorded model ids."
+        },
+        "firstOccurredAt": {
+          "type": "string",
+          "description": "First fact timestamp in UTC."
+        },
+        "lastOccurredAt": {
+          "type": "string",
+          "description": "Last fact timestamp in UTC."
+        },
+        "scope": {
+          "type": "string",
+          "enum": [
+            "threadterm",
+            "outside"
+          ],
+          "description": "In-ThreadTerm or outside relationship."
+        },
+        "subagentCount": {
+          "type": "number",
+          "description": "Native child/sub-agent session count."
+        },
+        "days": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/UsageLedgerSeriesPoint"
+          },
+          "description": "Local-day aggregates for this session's own requests."
+        },
+        "subagents": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/UsageLedgerSession"
+          },
+          "description": "Separate child/sub-agent aggregates; do not re-add them to global totals."
+        }
+      },
+      "required": [
+        "activeTimeEstimated",
+        "activeTimeMs",
+        "bucketCoverage",
+        "cost",
+        "cwd",
+        "days",
+        "firstOccurredAt",
+        "lastOccurredAt",
+        "models",
+        "nativeSessionId",
+        "parentNativeSessionId",
+        "pricingPending",
+        "projectId",
+        "projectName",
+        "provider",
+        "quality",
+        "requests",
+        "scope",
+        "sessions",
+        "subagent",
+        "subagentCount",
+        "subagents",
+        "threadtermSessionId",
+        "tokens"
+      ],
+      "additionalProperties": false
+    },
+    "RequestResult<\"usage.ledger.sources\">": {
+      "$ref": "#/definitions/UsageLedgerSources"
+    },
+    "UsageLedgerSources": {
+      "type": "object",
+      "properties": {
+        "providers": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/UsageLedgerSource"
+          },
+          "description": "Sources in provider-id order."
+        },
+        "parserVersion": {
+          "type": "number",
+          "description": "Parser version used by incremental cursors."
+        },
+        "scan": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/UsageLedgerScanState"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Process-local worker state, or null before any job starts."
+        }
+      },
+      "required": [
+        "providers",
+        "parserVersion",
+        "scan"
+      ],
+      "additionalProperties": false
+    },
+    "UsageLedgerSource": {
+      "type": "object",
+      "properties": {
+        "provider": {
+          "type": "string",
+          "description": "Provider identifier."
+        },
+        "root": {
+          "type": "string",
+          "description": "Provider root only; never a transcript child path."
+        },
+        "status": {
+          "type": "string",
+          "enum": [
+            "ready",
+            "partial",
+            "not_installed",
+            "not_supported_yet",
+            "history_not_read",
+            "cancelled",
+            "failed"
+          ],
+          "description": "Latest source state. `history_not_read` means settings retain ThreadTerm live facts without reading native history."
+        },
+        "missingSources": {
+          "type": "number",
+          "description": "Retained native source records whose files disappeared; their historical facts remain until rebuild."
+        },
+        "historyReadEnabled": {
+          "type": "boolean",
+          "description": "Whether this provider's native history is currently allowed to be read."
+        },
+        "historyReadLabelKey": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "enum": [
+            "historyNotReadThreadtermOnly",
+            null
+          ],
+          "description": "Localized coverage explanation when native history is disabled."
+        },
+        "lastRead": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Latest completed/read timestamp, or null before scanning."
+        },
+        "stats": {
+          "$ref": "#/definitions/UsageLedgerScanStats",
+          "description": "Latest cumulative source statistics."
+        },
+        "bucketsReported": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/UsageLedgerBucket"
+          },
+          "description": "Buckets this source can report."
+        }
+      },
+      "required": [
+        "provider",
+        "root",
+        "status",
+        "missingSources",
+        "historyReadEnabled",
+        "historyReadLabelKey",
+        "lastRead",
+        "stats",
+        "bucketsReported"
+      ],
+      "additionalProperties": false
+    },
+    "UsageLedgerScanStats": {
+      "type": "object",
+      "properties": {
+        "filesFound": {
+          "type": "number",
+          "description": "Candidate history files discovered."
+        },
+        "filesRead": {
+          "type": "number",
+          "description": "Files opened/read this scan."
+        },
+        "bytesRead": {
+          "type": "number",
+          "description": "Provider-history bytes read."
+        },
+        "facts": {
+          "type": "number",
+          "description": "Facts parsed and persisted/merged."
+        },
+        "problems": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "number"
+          },
+          "description": "Counts by stable parse/discovery problem kind."
+        },
+        "cancelled": {
+          "type": "boolean",
+          "description": "Whether this scan observed cancellation."
+        }
+      },
+      "required": [
+        "filesFound",
+        "filesRead",
+        "bytesRead",
+        "facts",
+        "problems",
+        "cancelled"
+      ],
+      "additionalProperties": false
+    },
+    "UsageLedgerBucket": {
+      "type": "string",
+      "enum": [
+        "input",
+        "cacheRead",
+        "cacheWrite5m",
+        "cacheWrite1h",
+        "cacheWriteUnknown",
+        "output",
+        "reasoning"
+      ]
+    },
+    "UsageLedgerScanState": {
+      "type": "object",
+      "properties": {
+        "scanId": {
+          "type": "string",
+          "description": "Worker identifier."
+        },
+        "state": {
+          "type": "string",
+          "enum": [
+            "running",
+            "idle"
+          ],
+          "description": "Whether the process-local worker is active."
+        }
+      },
+      "required": [
+        "scanId",
+        "state"
+      ],
+      "additionalProperties": false
+    },
+    "RequestResult<\"usage.ledger.refresh\">": {
+      "$ref": "#/definitions/UsageLedgerStartResult"
+    },
+    "UsageLedgerStartResult": {
+      "type": "object",
+      "properties": {
+        "scanId": {
+          "type": "string",
+          "description": "New or already-active worker identifier."
+        },
+        "state": {
+          "type": "string",
+          "enum": [
+            "running",
+            "already_running"
+          ],
+          "description": "Whether this request started a worker or joined the existing one."
+        }
+      },
+      "required": [
+        "scanId",
+        "state"
+      ],
+      "additionalProperties": false
+    },
+    "RequestResult<\"usage.ledger.rebuild\">": {
+      "$ref": "#/definitions/UsageLedgerStartResult"
+    },
+    "RequestResult<\"usage.ledger.cancel\">": {
+      "$ref": "#/definitions/UsageLedgerCancelResult"
+    },
+    "UsageLedgerCancelResult": {
+      "type": "object",
+      "properties": {
+        "scanId": {
+          "type": "string",
+          "description": "Echoed worker identifier."
+        },
+        "cancelRequested": {
+          "type": "boolean",
+          "description": "True when the matching worker was active and its cancellation flag was set."
+        }
+      },
+      "required": [
+        "scanId",
+        "cancelRequested"
+      ],
+      "additionalProperties": false
+    },
+    "RequestResult<\"usage.ledger.settings\">": {
+      "$ref": "#/definitions/UsageLedgerSettingsResult"
+    },
+    "UsageLedgerSettingsResult": {
+      "type": "object",
+      "properties": {
+        "revision": {
+          "type": "number",
+          "description": "Optimistic-concurrency revision."
+        },
+        "value": {
+          "$ref": "#/definitions/UsageLedgerSettings",
+          "description": "Complete persisted Usage settings."
+        }
+      },
+      "required": [
+        "revision",
+        "value"
+      ],
+      "additionalProperties": false
+    },
+    "UsageLedgerSettings": {
+      "type": "object",
+      "properties": {
+        "includeOutside": {
+          "type": "boolean",
+          "description": "Whether native history is read and outside-ThreadTerm facts are shown; false retains only ThreadTerm live facts."
+        },
+        "providers": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "boolean"
+          },
+          "description": "Whether each provider's native history is read; false retains that provider's ThreadTerm live facts."
+        },
+        "weekStart": {
+          "$ref": "#/definitions/UsageLedgerWeekStart",
+          "description": "Local week boundary preference."
+        },
+        "priceOverrides": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/definitions/UsageLedgerPriceOverride"
+          },
+          "description": "Provider/model keyed price overrides."
+        }
+      },
+      "required": [
+        "includeOutside",
+        "providers",
+        "weekStart",
+        "priceOverrides"
+      ],
+      "additionalProperties": false
+    },
+    "UsageLedgerWeekStart": {
+      "type": "string",
+      "enum": [
+        "auto",
+        "monday",
+        "sunday"
+      ]
+    },
+    "UsageLedgerPriceOverride": {
+      "type": "object",
+      "properties": {
+        "input": {
+          "type": "number",
+          "description": "USD per million uncached input tokens."
+        },
+        "output": {
+          "type": "number",
+          "description": "USD per million output tokens."
+        },
+        "cacheRead": {
+          "type": "number",
+          "description": "USD per million cache-read tokens."
+        },
+        "cacheWrite5m": {
+          "type": "number",
+          "description": "USD per million five-minute cache-write tokens."
+        },
+        "cacheWrite1h": {
+          "type": "number",
+          "description": "USD per million one-hour cache-write tokens."
+        }
+      },
+      "additionalProperties": false
+    },
+    "RequestResult<\"usage.ledger.settings.update\">": {
+      "$ref": "#/definitions/UsageLedgerSettingsResult"
+    },
     "RequestResult<\"preview.attach\">": {
       "type": "object",
       "properties": {
@@ -6295,6 +7675,292 @@
     }
   },
   "oneOf": [
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "usage.ledger.summary"
+        },
+        "result": {
+          "$ref": "#/definitions/RequestResult%3C%22usage.ledger.summary%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "result"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "usage.ledger.series"
+        },
+        "result": {
+          "$ref": "#/definitions/RequestResult%3C%22usage.ledger.series%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "result"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "usage.ledger.breakdown"
+        },
+        "result": {
+          "$ref": "#/definitions/RequestResult%3C%22usage.ledger.breakdown%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "result"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "usage.ledger.sessions"
+        },
+        "result": {
+          "$ref": "#/definitions/RequestResult%3C%22usage.ledger.sessions%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "result"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "usage.ledger.session"
+        },
+        "result": {
+          "$ref": "#/definitions/RequestResult%3C%22usage.ledger.session%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "result"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "usage.ledger.sources"
+        },
+        "result": {
+          "$ref": "#/definitions/RequestResult%3C%22usage.ledger.sources%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "result"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "usage.ledger.refresh"
+        },
+        "result": {
+          "$ref": "#/definitions/RequestResult%3C%22usage.ledger.refresh%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "result"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "usage.ledger.rebuild"
+        },
+        "result": {
+          "$ref": "#/definitions/RequestResult%3C%22usage.ledger.rebuild%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "result"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "usage.ledger.cancel"
+        },
+        "result": {
+          "$ref": "#/definitions/RequestResult%3C%22usage.ledger.cancel%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "result"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "usage.ledger.settings"
+        },
+        "result": {
+          "$ref": "#/definitions/RequestResult%3C%22usage.ledger.settings%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "result"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "usage.ledger.settings.update"
+        },
+        "result": {
+          "$ref": "#/definitions/RequestResult%3C%22usage.ledger.settings.update%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "result"
+      ],
+      "additionalProperties": false
+    },
     {
       "type": "object",
       "properties": {

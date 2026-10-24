@@ -1,6 +1,534 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
   "definitions": {
+    "RequestParams<\"usage.ledger.summary\">": {
+      "$ref": "#/definitions/UsageLedgerQueryParams"
+    },
+    "UsageLedgerQueryParams": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "filters": {
+          "$ref": "#/definitions/UsageLedgerFilters",
+          "description": "Nested filters take precedence over the optional root-level filters."
+        },
+        "from": {
+          "type": "string",
+          "description": "Inclusive local day (YYYY-MM-DD)."
+        },
+        "to": {
+          "type": "string",
+          "description": "Exclusive local day (YYYY-MM-DD)."
+        },
+        "scope": {
+          "$ref": "#/definitions/UsageLedgerScope",
+          "description": "ThreadTerm/native ownership scope."
+        },
+        "projectId": {
+          "type": "string",
+          "description": "ThreadTerm project identifier filter."
+        },
+        "provider": {
+          "type": "string",
+          "description": "Provider identifier filter."
+        },
+        "model": {
+          "type": "string",
+          "description": "Recorded model identifier filter."
+        },
+        "nativeSessionId": {
+          "type": "string",
+          "description": "Exact native coordinate, normally used by session detail."
+        },
+        "includeOutside": {
+          "type": "boolean",
+          "description": "False selects ThreadTerm live facts only, even when scope requests outside history."
+        },
+        "enabledProviders": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Explicit native-history provider selection; ThreadTerm live facts remain available for excluded providers."
+        }
+      }
+    },
+    "UsageLedgerFilters": {
+      "type": "object",
+      "properties": {
+        "from": {
+          "type": "string",
+          "description": "Inclusive local day (YYYY-MM-DD)."
+        },
+        "to": {
+          "type": "string",
+          "description": "Exclusive local day (YYYY-MM-DD)."
+        },
+        "scope": {
+          "$ref": "#/definitions/UsageLedgerScope",
+          "description": "ThreadTerm/native ownership scope."
+        },
+        "projectId": {
+          "type": "string",
+          "description": "ThreadTerm project identifier filter."
+        },
+        "provider": {
+          "type": "string",
+          "description": "Provider identifier filter."
+        },
+        "model": {
+          "type": "string",
+          "description": "Recorded model identifier filter."
+        },
+        "nativeSessionId": {
+          "type": "string",
+          "description": "Exact native coordinate, normally used by session detail."
+        },
+        "includeOutside": {
+          "type": "boolean",
+          "description": "False selects ThreadTerm live facts only, even when scope requests outside history."
+        },
+        "enabledProviders": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Explicit native-history provider selection; ThreadTerm live facts remain available for excluded providers."
+        }
+      },
+      "additionalProperties": false
+    },
+    "UsageLedgerScope": {
+      "type": "string",
+      "enum": [
+        "all",
+        "threadterm",
+        "outside"
+      ],
+      "description": "Local usage accounting; ranges are inclusive from / exclusive to."
+    },
+    "RequestParams<\"usage.ledger.series\">": {
+      "$ref": "#/definitions/UsageLedgerSeriesRequest"
+    },
+    "UsageLedgerSeriesRequest": {
+      "type": "object",
+      "properties": {
+        "filters": {
+          "$ref": "#/definitions/UsageLedgerFilters",
+          "description": "Nested filters take precedence over the optional root-level filters."
+        },
+        "from": {
+          "type": "string",
+          "description": "Inclusive local day (YYYY-MM-DD)."
+        },
+        "to": {
+          "type": "string",
+          "description": "Exclusive local day (YYYY-MM-DD)."
+        },
+        "scope": {
+          "$ref": "#/definitions/UsageLedgerScope",
+          "description": "ThreadTerm/native ownership scope."
+        },
+        "projectId": {
+          "type": "string",
+          "description": "ThreadTerm project identifier filter."
+        },
+        "provider": {
+          "type": "string",
+          "description": "Provider identifier filter."
+        },
+        "model": {
+          "type": "string",
+          "description": "Recorded model identifier filter."
+        },
+        "nativeSessionId": {
+          "type": "string",
+          "description": "Exact native coordinate, normally used by session detail."
+        },
+        "includeOutside": {
+          "type": "boolean",
+          "description": "False selects ThreadTerm live facts only, even when scope requests outside history."
+        },
+        "enabledProviders": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Explicit native-history provider selection; ThreadTerm live facts remain available for excluded providers."
+        },
+        "granularity": {
+          "$ref": "#/definitions/UsageLedgerGranularity",
+          "description": "Local calendar bucket width; default day."
+        },
+        "stack": {
+          "$ref": "#/definitions/UsageLedgerStack",
+          "description": "Provider or disjoint-token stacks; default provider."
+        },
+        "weekStart": {
+          "$ref": "#/definitions/UsageLedgerWeekStart",
+          "description": "Overrides the saved week-boundary preference for this query."
+        }
+      },
+      "additionalProperties": false
+    },
+    "UsageLedgerGranularity": {
+      "type": "string",
+      "enum": [
+        "day",
+        "week",
+        "month"
+      ]
+    },
+    "UsageLedgerStack": {
+      "type": "string",
+      "enum": [
+        "provider",
+        "tokens"
+      ]
+    },
+    "UsageLedgerWeekStart": {
+      "type": "string",
+      "enum": [
+        "auto",
+        "monday",
+        "sunday"
+      ]
+    },
+    "RequestParams<\"usage.ledger.breakdown\">": {
+      "$ref": "#/definitions/UsageLedgerBreakdownRequest"
+    },
+    "UsageLedgerBreakdownRequest": {
+      "type": "object",
+      "properties": {
+        "filters": {
+          "$ref": "#/definitions/UsageLedgerFilters",
+          "description": "Nested filters take precedence over the optional root-level filters."
+        },
+        "from": {
+          "type": "string",
+          "description": "Inclusive local day (YYYY-MM-DD)."
+        },
+        "to": {
+          "type": "string",
+          "description": "Exclusive local day (YYYY-MM-DD)."
+        },
+        "scope": {
+          "$ref": "#/definitions/UsageLedgerScope",
+          "description": "ThreadTerm/native ownership scope."
+        },
+        "projectId": {
+          "type": "string",
+          "description": "ThreadTerm project identifier filter."
+        },
+        "provider": {
+          "type": "string",
+          "description": "Provider identifier filter."
+        },
+        "model": {
+          "type": "string",
+          "description": "Recorded model identifier filter."
+        },
+        "nativeSessionId": {
+          "type": "string",
+          "description": "Exact native coordinate, normally used by session detail."
+        },
+        "includeOutside": {
+          "type": "boolean",
+          "description": "False selects ThreadTerm live facts only, even when scope requests outside history."
+        },
+        "enabledProviders": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Explicit native-history provider selection; ThreadTerm live facts remain available for excluded providers."
+        },
+        "dimension": {
+          "type": "string",
+          "enum": [
+            "provider",
+            "model",
+            "project"
+          ],
+          "description": "Dimension whose groups are ordered by descending known tokens."
+        }
+      },
+      "required": [
+        "dimension"
+      ],
+      "additionalProperties": false
+    },
+    "RequestParams<\"usage.ledger.sessions\">": {
+      "$ref": "#/definitions/UsageLedgerSessionsRequest"
+    },
+    "UsageLedgerSessionsRequest": {
+      "type": "object",
+      "properties": {
+        "filters": {
+          "$ref": "#/definitions/UsageLedgerFilters",
+          "description": "Nested filters take precedence over the optional root-level filters."
+        },
+        "from": {
+          "type": "string",
+          "description": "Inclusive local day (YYYY-MM-DD)."
+        },
+        "to": {
+          "type": "string",
+          "description": "Exclusive local day (YYYY-MM-DD)."
+        },
+        "scope": {
+          "$ref": "#/definitions/UsageLedgerScope",
+          "description": "ThreadTerm/native ownership scope."
+        },
+        "projectId": {
+          "type": "string",
+          "description": "ThreadTerm project identifier filter."
+        },
+        "provider": {
+          "type": "string",
+          "description": "Provider identifier filter."
+        },
+        "model": {
+          "type": "string",
+          "description": "Recorded model identifier filter."
+        },
+        "nativeSessionId": {
+          "type": "string",
+          "description": "Exact native coordinate, normally used by session detail."
+        },
+        "includeOutside": {
+          "type": "boolean",
+          "description": "False selects ThreadTerm live facts only, even when scope requests outside history."
+        },
+        "enabledProviders": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Explicit native-history provider selection; ThreadTerm live facts remain available for excluded providers."
+        },
+        "search": {
+          "type": "string",
+          "description": "Literal substring across session identity, provider, models, folder, and title; max 256."
+        },
+        "sort": {
+          "type": "string",
+          "enum": [
+            "tokens",
+            "cost",
+            "recent",
+            "activeTime"
+          ],
+          "description": "Ranking metric; default tokens."
+        },
+        "order": {
+          "type": "string",
+          "enum": [
+            "asc",
+            "desc"
+          ],
+          "description": "Ranking direction; default descending."
+        },
+        "limit": {
+          "type": "number",
+          "description": "Page size 1..200; default 50."
+        },
+        "offset": {
+          "type": "number",
+          "description": "Zero-based offset; default zero."
+        }
+      },
+      "additionalProperties": false
+    },
+    "RequestParams<\"usage.ledger.session\">": {
+      "$ref": "#/definitions/UsageLedgerSessionRequest"
+    },
+    "UsageLedgerSessionRequest": {
+      "type": "object",
+      "properties": {
+        "filters": {
+          "$ref": "#/definitions/UsageLedgerFilters",
+          "description": "Nested filters take precedence over the optional root-level filters."
+        },
+        "from": {
+          "type": "string",
+          "description": "Inclusive local day (YYYY-MM-DD)."
+        },
+        "to": {
+          "type": "string",
+          "description": "Exclusive local day (YYYY-MM-DD)."
+        },
+        "scope": {
+          "$ref": "#/definitions/UsageLedgerScope",
+          "description": "ThreadTerm/native ownership scope."
+        },
+        "projectId": {
+          "type": "string",
+          "description": "ThreadTerm project identifier filter."
+        },
+        "provider": {
+          "type": "string",
+          "description": "Required provider half of the native coordinate."
+        },
+        "model": {
+          "type": "string",
+          "description": "Recorded model identifier filter."
+        },
+        "nativeSessionId": {
+          "type": "string",
+          "description": "Required native session half of the coordinate."
+        },
+        "includeOutside": {
+          "type": "boolean",
+          "description": "False selects ThreadTerm live facts only, even when scope requests outside history."
+        },
+        "enabledProviders": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Explicit native-history provider selection; ThreadTerm live facts remain available for excluded providers."
+        },
+        "weekStart": {
+          "$ref": "#/definitions/UsageLedgerWeekStart",
+          "description": "Optional week preference; daily detail itself remains local-day based."
+        }
+      },
+      "required": [
+        "provider",
+        "nativeSessionId"
+      ],
+      "additionalProperties": false
+    },
+    "RequestParams<\"usage.ledger.sources\">": {
+      "type": "object",
+      "additionalProperties": {
+        "not": {}
+      }
+    },
+    "RequestParams<\"usage.ledger.refresh\">": {
+      "$ref": "#/definitions/UsageLedgerStartRequest"
+    },
+    "UsageLedgerStartRequest": {
+      "type": "object",
+      "properties": {
+        "operationId": {
+          "type": "string",
+          "description": "Stable idempotency key, bound to this exact operation and request."
+        }
+      },
+      "required": [
+        "operationId"
+      ],
+      "additionalProperties": false
+    },
+    "RequestParams<\"usage.ledger.rebuild\">": {
+      "$ref": "#/definitions/UsageLedgerStartRequest"
+    },
+    "RequestParams<\"usage.ledger.cancel\">": {
+      "$ref": "#/definitions/UsageLedgerCancelRequest"
+    },
+    "UsageLedgerCancelRequest": {
+      "type": "object",
+      "properties": {
+        "operationId": {
+          "type": "string",
+          "description": "Stable idempotency key, bound to this exact operation and request."
+        },
+        "scanId": {
+          "type": "string",
+          "description": "Worker to cancel cooperatively."
+        }
+      },
+      "required": [
+        "operationId",
+        "scanId"
+      ],
+      "additionalProperties": false
+    },
+    "RequestParams<\"usage.ledger.settings\">": {
+      "type": "object",
+      "additionalProperties": {
+        "not": {}
+      }
+    },
+    "RequestParams<\"usage.ledger.settings.update\">": {
+      "$ref": "#/definitions/UsageLedgerSettingsUpdate"
+    },
+    "UsageLedgerSettingsUpdate": {
+      "type": "object",
+      "properties": {
+        "operationId": {
+          "type": "string",
+          "description": "Stable idempotency key, bound to this exact operation and request."
+        },
+        "value": {
+          "type": "object",
+          "properties": {
+            "includeOutside": {
+              "type": "boolean",
+              "description": "Whether native history is read and outside-ThreadTerm facts are shown; false retains only ThreadTerm live facts."
+            },
+            "providers": {
+              "type": "object",
+              "additionalProperties": {
+                "type": "boolean"
+              },
+              "description": "Whether each provider's native history is read; false retains that provider's ThreadTerm live facts."
+            },
+            "weekStart": {
+              "$ref": "#/definitions/UsageLedgerWeekStart",
+              "description": "Local week boundary preference."
+            },
+            "priceOverrides": {
+              "type": "object",
+              "additionalProperties": {
+                "$ref": "#/definitions/UsageLedgerPriceOverride"
+              },
+              "description": "Provider/model keyed price overrides."
+            }
+          },
+          "additionalProperties": false,
+          "description": "Partial top-level settings; supplied nested maps replace those maps."
+        },
+        "expectedRevision": {
+          "type": "number",
+          "description": "Existing global settings revision for optimistic concurrency."
+        }
+      },
+      "required": [
+        "expectedRevision",
+        "operationId",
+        "value"
+      ],
+      "additionalProperties": false
+    },
+    "UsageLedgerPriceOverride": {
+      "type": "object",
+      "properties": {
+        "input": {
+          "type": "number",
+          "description": "USD per million uncached input tokens."
+        },
+        "output": {
+          "type": "number",
+          "description": "USD per million output tokens."
+        },
+        "cacheRead": {
+          "type": "number",
+          "description": "USD per million cache-read tokens."
+        },
+        "cacheWrite5m": {
+          "type": "number",
+          "description": "USD per million five-minute cache-write tokens."
+        },
+        "cacheWrite1h": {
+          "type": "number",
+          "description": "USD per million one-hour cache-write tokens."
+        }
+      },
+      "additionalProperties": false
+    },
     "RequestParams<\"preview.attach\">": {
       "type": "object",
       "properties": {
@@ -4295,6 +4823,292 @@
     }
   },
   "oneOf": [
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "usage.ledger.summary"
+        },
+        "params": {
+          "$ref": "#/definitions/RequestParams%3C%22usage.ledger.summary%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "params"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "usage.ledger.series"
+        },
+        "params": {
+          "$ref": "#/definitions/RequestParams%3C%22usage.ledger.series%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "params"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "usage.ledger.breakdown"
+        },
+        "params": {
+          "$ref": "#/definitions/RequestParams%3C%22usage.ledger.breakdown%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "params"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "usage.ledger.sessions"
+        },
+        "params": {
+          "$ref": "#/definitions/RequestParams%3C%22usage.ledger.sessions%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "params"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "usage.ledger.session"
+        },
+        "params": {
+          "$ref": "#/definitions/RequestParams%3C%22usage.ledger.session%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "params"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "usage.ledger.sources"
+        },
+        "params": {
+          "$ref": "#/definitions/RequestParams%3C%22usage.ledger.sources%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "params"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "usage.ledger.refresh"
+        },
+        "params": {
+          "$ref": "#/definitions/RequestParams%3C%22usage.ledger.refresh%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "params"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "usage.ledger.rebuild"
+        },
+        "params": {
+          "$ref": "#/definitions/RequestParams%3C%22usage.ledger.rebuild%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "params"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "usage.ledger.cancel"
+        },
+        "params": {
+          "$ref": "#/definitions/RequestParams%3C%22usage.ledger.cancel%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "params"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "usage.ledger.settings"
+        },
+        "params": {
+          "$ref": "#/definitions/RequestParams%3C%22usage.ledger.settings%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "params"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "usage.ledger.settings.update"
+        },
+        "params": {
+          "$ref": "#/definitions/RequestParams%3C%22usage.ledger.settings.update%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "params"
+      ],
+      "additionalProperties": false
+    },
     {
       "type": "object",
       "properties": {

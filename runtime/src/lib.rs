@@ -31,6 +31,7 @@ pub mod output;
 pub mod project_catalog;
 pub mod providers;
 pub mod quick_launch;
+pub mod usage_ledger;
 mod provider_events;
 pub mod plugins;
 mod plugin_services;

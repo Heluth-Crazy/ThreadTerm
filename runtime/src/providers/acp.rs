@@ -1827,6 +1827,9 @@ fn emit_acp_message(
         }
         return;
     }
+    if let Some(usage) = crate::usage_ledger::live::acp_payload(&raw, turn_id.as_deref()) {
+        emit(events, provider, session_id, native_id.as_deref(), turn_id.as_deref(), "chat.usage.fact", usage);
+    }
     if matches!(kind, "usage_update" | "usageUpdate") {
         // Context pressure arrives as its own session update for agents that
         // implement the ACP usage extension; nothing is polled.

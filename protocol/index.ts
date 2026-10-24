@@ -444,8 +444,263 @@ export function parseGroupMentions(text:string,handles:readonly string[],previou
  const leadingEnd=end; const references=[...new Set(mentions.filter(match=>(match.index??0)>=leadingEnd&&known.has(match[1].toLowerCase())).map(match=>match[1].toLowerCase()))];
  return {to:to.length?to:(previousRecipients.length?[...previousRecipients]:['all']),referenceHandles:references,unknownHandles:unknown};
 }
+/** Local usage accounting; ranges are inclusive from / exclusive to. */
+export type UsageLedgerScope = 'all'|'threadterm'|'outside';
+export type UsageLedgerBucket = 'input'|'cacheRead'|'cacheWrite5m'|'cacheWrite1h'|'cacheWriteUnknown'|'output'|'reasoning';
+export type UsageLedgerGranularity = 'day'|'week'|'month';
+export type UsageLedgerStack = 'provider'|'tokens';
+export type UsageLedgerWeekStart = 'auto'|'monday'|'sunday';
+
+export interface UsageLedgerFilters {
+  /** Inclusive local day (YYYY-MM-DD). */ from?: string;
+  /** Exclusive local day (YYYY-MM-DD). */ to?: string;
+  /** ThreadTerm/native ownership scope. */ scope?: UsageLedgerScope;
+  /** ThreadTerm project identifier filter. */ projectId?: string;
+  /** Provider identifier filter. */ provider?: string;
+  /** Recorded model identifier filter. */ model?: string;
+  /** Exact native coordinate, normally used by session detail. */ nativeSessionId?: string;
+  /** False selects ThreadTerm live facts only, even when scope requests outside history. */ includeOutside?: boolean;
+  /** Explicit native-history provider selection; ThreadTerm live facts remain available for excluded providers. */ enabledProviders?: string[];
+}
+export interface UsageLedgerTokens {
+  /** Known-bucket subtotal; not proof that all requests report every bucket. */ total: number;
+  /** Uncached input, or null when no selected request reports it. */ input: number|null;
+  /** Cache reads, or null when no selected request reports it. */ cacheRead: number|null;
+  /** Five-minute cache writes, or null when absent from every request. */ cacheWrite5m: number|null;
+  /** One-hour cache writes, or null when absent from every request. */ cacheWrite1h: number|null;
+  /** Cache writes with unknown TTL; these make the fact API-unpriceable. */ cacheWriteUnknown: number|null;
+  /** Output (including reasoning where applicable), or null when unreported. */ output: number|null;
+  /** Output subset; never added again to total. */ reasoning: number|null;
+}
+export interface UsageLedgerBucketCoverage {
+  /** Selected requests that reported this bucket. */ reportedRequests: number;
+  /** All selected requests. */ requests: number;
+}
+export interface UsageLedgerCost {
+  /** Provider-recorded subtotal, or null if no selected request reports cost. */ reportedUsd: number|null;
+  /** Known-priced subtotal; null while repricing or when no selected fact can be priced. */ apiEquivalentUsd: number|null;
+  /** Tokens from fully priced facts. */ pricedTokens: number;
+  /** Tokens from facts lacking a complete safe price. */ unpricedTokens: number;
+  /** Requests with a provider-recorded cost. */ reportedRequests: number;
+  /** Requests whose reported buckets all have safe prices. */ pricedRequests: number;
+  /** pricedTokens / known token total. */ coverage: number;
+}
+export interface UsageLedgerQuality {
+  /** Directly provider-reported request count. */ exactRequests: number;
+  /** Counter-delta derived request count. */ derivedRequests: number;
+  /** Inferred request count. */ estimatedRequests: number;
+  /** Known tokens from exact requests. */ exactTokens: number;
+  /** Known tokens from derived requests. */ derivedTokens: number;
+  /** Known tokens from estimated requests. */ estimatedTokens: number;
+  /** exactTokens / known token subtotal. */ exactShare: number;
+  /** derivedTokens / known token subtotal. */ derivedShare: number;
+  /** estimatedTokens / known token subtotal. */ estimatedShare: number;
+}
+export interface UsageLedgerAggregate {
+  /** Disjoint known/unknown bucket values. */ tokens: UsageLedgerTokens;
+  /** Provider and API-equivalent cost coverage. */ cost: UsageLedgerCost;
+  /** Included request fact count. */ requests: number;
+  /** Included provider/native session count. */ sessions: number;
+  /** Unioned active interval duration. */ activeTimeMs: number;
+  /** Whether native timestamp gaps estimated activity. */ activeTimeEstimated: boolean;
+  /** Request and known-token evidence shares. */ quality: UsageLedgerQuality;
+  /** Per-bucket reported-request coverage. */ bucketCoverage: Record<UsageLedgerBucket,UsageLedgerBucketCoverage>;
+  /** True while a bounded reprice index job is updating derived values. */ pricingPending: boolean;
+}
+export interface UsageLedgerSummary extends UsageLedgerAggregate {
+  /** Echoed inclusive local range boundary, or null. */ from: string|null;
+  /** Echoed exclusive local range boundary, or null. */ to: string|null;
+  /** Echoed ownership scope after defaults. */ scope: UsageLedgerScope;
+  /** Sessions matching scope that have no selected usage facts. */ sessionsWithoutUsage: number;
+}
+export interface UsageLedgerSeriesValue {
+  /** Provider id or token-bucket key selected by stack. */ key: string;
+  /** Value token subtotal; for token stacks this is that bucket only. */ tokens: number;
+  /** Provider API-equivalent cost; null for token stacks to avoid duplication. */ costUsd: number|null;
+  /** Value active time in milliseconds. */ activeTimeMs: number;
+  /** Value request count. */ requests: number;
+}
+export interface UsageLedgerSeriesPoint extends UsageLedgerAggregate {
+  /** Inclusive local bucket boundary. */ start: string;
+  /** Exclusive local bucket boundary. */ end: string;
+  /** Provider or token stack values. */ values: UsageLedgerSeriesValue[];
+}
+export interface UsageLedgerSeries {
+  /** Echoed inclusive local range boundary, or null. */ from: string|null;
+  /** Echoed exclusive local range boundary, or null. */ to: string|null;
+  /** Local bucket width. */ granularity: UsageLedgerGranularity;
+  /** Value grouping dimension. */ stack: UsageLedgerStack;
+  /** Ordered zero-filled local-time buckets. */ points: UsageLedgerSeriesPoint[];
+}
+export interface UsageLedgerBreakdownItem extends UsageLedgerAggregate {
+  /** Stable provider, model, or project key. */ key: string;
+  /** Provider/model/project name, with fallback labels localized via labelKey. */ label: string;
+  /** Stable fallback-label translation key. */ labelKey?: 'otherFolders'|'unknownModel'|'grokModelNotReported';
+}
+export interface UsageLedgerBreakdown {
+  /** Requested grouping dimension. */ dimension: 'provider'|'model'|'project';
+  /** Descending-token aggregate groups. */ items: UsageLedgerBreakdownItem[];
+}
+export interface UsageLedgerSession extends UsageLedgerAggregate {
+  /** Provider identifier. */ provider: string;
+  /** Provider-native session coordinate. */ nativeSessionId: string;
+  /** ThreadTerm session id, or null for outside history. */ threadtermSessionId: string|null;
+  /** ThreadTerm project id, or null for Other folders. */ projectId: string|null;
+  /** Project name, or null for Other folders. */ projectName: string|null;
+  /** Recorded working folder; never a tool file path. */ cwd: string|null;
+  /** Native parent coordinate for forks or sub-agents, otherwise null. */ parentNativeSessionId: string|null;
+  /** True only for a known sub-agent relationship. */ subagent: boolean;
+  /** Distinct recorded model ids. */ models: string[];
+  /** First fact timestamp in UTC. */ firstOccurredAt: string;
+  /** Last fact timestamp in UTC. */ lastOccurredAt: string;
+  /** In-ThreadTerm or outside relationship. */ scope: Exclude<UsageLedgerScope,'all'>;
+  /** Native child/sub-agent session count. */ subagentCount: number;
+}
+export interface UsageLedgerSessions {
+  /** Matching count before pagination. */ total: number;
+  /** Echoed zero-based offset. */ offset: number;
+  /** Echoed validated page limit (1..200). */ limit: number;
+  /** Stable-sorted session page. */ items: UsageLedgerSession[];
+}
+export interface UsageLedgerSessionDetail extends UsageLedgerSession {
+  /** Local-day aggregates for this session's own requests. */ days: UsageLedgerSeriesPoint[];
+  /** Separate child/sub-agent aggregates; do not re-add them to global totals. */ subagents: UsageLedgerSession[];
+}
+export interface UsageLedgerScanStats {
+  /** Candidate history files discovered. */ filesFound: number;
+  /** Files opened/read this scan. */ filesRead: number;
+  /** Provider-history bytes read. */ bytesRead: number;
+  /** Facts parsed and persisted/merged. */ facts: number;
+  /** Counts by stable parse/discovery problem kind. */ problems: Record<string,number>;
+  /** Whether this scan observed cancellation. */ cancelled: boolean;
+}
+export interface UsageLedgerSource {
+  /** Provider identifier. */ provider: string;
+  /** Provider root only; never a transcript child path. */ root: string;
+  /** Latest source state. `history_not_read` means settings retain ThreadTerm live facts without reading native history. */ status: 'ready'|'partial'|'not_installed'|'not_supported_yet'|'history_not_read'|'cancelled'|'failed';
+  /** Retained native source records whose files disappeared; their historical facts remain until rebuild. */ missingSources: number;
+  /** Whether this provider's native history is currently allowed to be read. */ historyReadEnabled: boolean;
+  /** Localized coverage explanation when native history is disabled. */ historyReadLabelKey: 'historyNotReadThreadtermOnly'|null;
+  /** Latest completed/read timestamp, or null before scanning. */ lastRead: string|null;
+  /** Latest cumulative source statistics. */ stats: UsageLedgerScanStats;
+  /** Buckets this source can report. */ bucketsReported: UsageLedgerBucket[];
+}
+export interface UsageLedgerSources {
+  /** Sources in provider-id order. */ providers: UsageLedgerSource[];
+  /** Parser version used by incremental cursors. */ parserVersion: number;
+  /** Process-local worker state, or null before any job starts. */ scan: UsageLedgerScanState|null;
+}
+export interface UsageLedgerPriceOverride {
+  /** USD per million uncached input tokens. */ input?: number;
+  /** USD per million output tokens. */ output?: number;
+  /** USD per million cache-read tokens. */ cacheRead?: number;
+  /** USD per million five-minute cache-write tokens. */ cacheWrite5m?: number;
+  /** USD per million one-hour cache-write tokens. */ cacheWrite1h?: number;
+}
+export interface UsageLedgerSettings {
+  /** Whether native history is read and outside-ThreadTerm facts are shown; false retains only ThreadTerm live facts. */ includeOutside: boolean;
+  /** Whether each provider's native history is read; false retains that provider's ThreadTerm live facts. */ providers: Record<string,boolean>;
+  /** Local week boundary preference. */ weekStart: UsageLedgerWeekStart;
+  /** Provider/model keyed price overrides. */ priceOverrides: Record<string,UsageLedgerPriceOverride>;
+}
+export interface UsageLedgerSettingsResult {
+  /** Optimistic-concurrency revision. */ revision: number;
+  /** Complete persisted Usage settings. */ value: UsageLedgerSettings;
+}
+export interface UsageLedgerProgress {
+  /** Scan id from refresh/rebuild. */ scanId: string;
+  /** Provider being read; absent for whole-scan terminal state. */ provider?: string;
+  /** Scan lifecycle state. */ state: 'running'|'completed'|'cancelled'|'failed';
+  /** Latest provider scan statistics. */ stats?: UsageLedgerScanStats;
+  /** Stable failure code, or null on a successful terminal event. */ error?: string|null;
+  /** Optional work phase after source reading. */ phase?: 'pricing';
+}
+export interface UsageLedgerScanState {
+  /** Worker identifier. */ scanId: string;
+  /** Whether the process-local worker is active. */ state: 'running'|'idle';
+}
+export type UsageLedgerQueryParams = UsageLedgerFilters & {
+  /** Nested filters take precedence over the optional root-level filters. */ filters?: UsageLedgerFilters;
+};
+export interface UsageLedgerSeriesRequest extends UsageLedgerQueryParams {
+  /** Local calendar bucket width; default day. */ granularity?: UsageLedgerGranularity;
+  /** Provider or disjoint-token stacks; default provider. */ stack?: UsageLedgerStack;
+  /** Overrides the saved week-boundary preference for this query. */ weekStart?: UsageLedgerWeekStart;
+}
+export interface UsageLedgerBreakdownRequest extends UsageLedgerQueryParams {
+  /** Dimension whose groups are ordered by descending known tokens. */ dimension: 'provider'|'model'|'project';
+}
+export interface UsageLedgerSessionsRequest extends UsageLedgerQueryParams {
+  /** Literal substring across session identity, provider, models, folder, and title; max 256. */ search?: string;
+  /** Ranking metric; default tokens. */ sort?: 'tokens'|'cost'|'recent'|'activeTime';
+  /** Ranking direction; default descending. */ order?: 'asc'|'desc';
+  /** Page size 1..200; default 50. */ limit?: number;
+  /** Zero-based offset; default zero. */ offset?: number;
+}
+export interface UsageLedgerSessionRequest extends UsageLedgerQueryParams {
+  /** Required provider half of the native coordinate. */ provider: string;
+  /** Required native session half of the coordinate. */ nativeSessionId: string;
+  /** Optional week preference; daily detail itself remains local-day based. */ weekStart?: UsageLedgerWeekStart;
+}
+export interface UsageLedgerStartRequest {
+  /** Stable idempotency key, bound to this exact operation and request. */ operationId: string;
+}
+export interface UsageLedgerStartResult {
+  /** New or already-active worker identifier. */ scanId: string;
+  /** Whether this request started a worker or joined the existing one. */ state: 'running'|'already_running';
+}
+export interface UsageLedgerCancelRequest extends UsageLedgerStartRequest {
+  /** Worker to cancel cooperatively. */ scanId: string;
+}
+export interface UsageLedgerCancelResult {
+  /** Echoed worker identifier. */ scanId: string;
+  /** True when the matching worker was active and its cancellation flag was set. */ cancelRequested: boolean;
+}
+export interface UsageLedgerSettingsUpdate extends UsageLedgerStartRequest {
+  /** Partial top-level settings; supplied nested maps replace those maps. */ value: Partial<UsageLedgerSettings>;
+  /** Existing global settings revision for optimistic concurrency. */ expectedRevision: number;
+}
+export interface UsageLedgerRequestMap {
+  'usage.ledger.summary': UsageLedgerQueryParams;
+  'usage.ledger.series': UsageLedgerSeriesRequest;
+  'usage.ledger.breakdown': UsageLedgerBreakdownRequest;
+  'usage.ledger.sessions': UsageLedgerSessionsRequest;
+  'usage.ledger.session': UsageLedgerSessionRequest;
+  'usage.ledger.sources': Record<string,never>;
+  'usage.ledger.refresh': UsageLedgerStartRequest;
+  'usage.ledger.rebuild': UsageLedgerStartRequest;
+  'usage.ledger.cancel': UsageLedgerCancelRequest;
+  'usage.ledger.settings': Record<string,never>;
+  'usage.ledger.settings.update': UsageLedgerSettingsUpdate;
+}
+export interface UsageLedgerSuccessMap {
+  'usage.ledger.summary': UsageLedgerSummary;
+  'usage.ledger.series': UsageLedgerSeries;
+  'usage.ledger.breakdown': UsageLedgerBreakdown;
+  'usage.ledger.sessions': UsageLedgerSessions;
+  'usage.ledger.session': UsageLedgerSessionDetail|null;
+  'usage.ledger.sources': UsageLedgerSources;
+  'usage.ledger.refresh': UsageLedgerStartResult;
+  'usage.ledger.rebuild': UsageLedgerStartResult;
+  'usage.ledger.cancel': UsageLedgerCancelResult;
+  'usage.ledger.settings': UsageLedgerSettingsResult;
+  'usage.ledger.settings.update': UsageLedgerSettingsResult;
+}
+export type UsageLedgerMethod = keyof UsageLedgerRequestMap;
+export type UsageLedgerProgressEvent = RuntimeEvent<'usage.ledger.progress',UsageLedgerProgress>;
 
 export interface RequestMap {
+ 'usage.ledger.summary':[UsageLedgerRequestMap['usage.ledger.summary'],UsageLedgerSuccessMap['usage.ledger.summary']];
+ 'usage.ledger.series':[UsageLedgerRequestMap['usage.ledger.series'],UsageLedgerSuccessMap['usage.ledger.series']];
+ 'usage.ledger.breakdown':[UsageLedgerRequestMap['usage.ledger.breakdown'],UsageLedgerSuccessMap['usage.ledger.breakdown']];
+ 'usage.ledger.sessions':[UsageLedgerRequestMap['usage.ledger.sessions'],UsageLedgerSuccessMap['usage.ledger.sessions']];
+ 'usage.ledger.session':[UsageLedgerRequestMap['usage.ledger.session'],UsageLedgerSuccessMap['usage.ledger.session']];
+ 'usage.ledger.sources':[UsageLedgerRequestMap['usage.ledger.sources'],UsageLedgerSuccessMap['usage.ledger.sources']];
+ 'usage.ledger.refresh':[UsageLedgerRequestMap['usage.ledger.refresh'],UsageLedgerSuccessMap['usage.ledger.refresh']];
+ 'usage.ledger.rebuild':[UsageLedgerRequestMap['usage.ledger.rebuild'],UsageLedgerSuccessMap['usage.ledger.rebuild']];
+ 'usage.ledger.cancel':[UsageLedgerRequestMap['usage.ledger.cancel'],UsageLedgerSuccessMap['usage.ledger.cancel']];
+ 'usage.ledger.settings':[UsageLedgerRequestMap['usage.ledger.settings'],UsageLedgerSuccessMap['usage.ledger.settings']];
+ 'usage.ledger.settings.update':[UsageLedgerRequestMap['usage.ledger.settings.update'],UsageLedgerSuccessMap['usage.ledger.settings.update']];
  'preview.attach': [{sessionId:string;viewId:string;workspaceId?:string},{attachmentId:string;associations:PreviewAssociation[]}];
  'preview.detach': [{sessionId:string;attachmentId:string},null];
  'preview.snapshot': [{sessionId:string;attachmentId:string},PreviewAssociation[]];
@@ -701,7 +956,7 @@ export interface ThreadTermBridge {
  exportDiagnostics():Promise<string|null>;
  scheduleElectronCacheCleanup(schedule:boolean):Promise<{scheduled:boolean;available:boolean;result?:string}>;
 }
-export const METHODS = ['browser.approval.read','browser.approval.resolve','git.commit.selected','preview.attach','preview.detach','preview.snapshot','preview.prepare','preview.ack','preview.observe','preview.close','chat.repair','filesystem.resolve','session.launch.read','catalog.visibility.list','catalog.visibility.update','session.resume','session.organize','git.merge','git.merge.abort','project.catalog.list','project.update','worktree.branches','worktree.relocate','session.rerun','git.fetch','git.pull','git.push','session.config.read','session.config.save','session.retry.read','session.retry.update','chat.draft.read','chat.draft.save','device.status','device.enable','device.disable','device.pairing.create','device.pairing.cancel','device.list','device.rename','device.renew','device.revoke','git.stage','git.unstage','git.commit','filesystem.image','chat.snapshot','terminal.read','session.lookup','session.present','chat.read','chat.subagent.read','data.status','data.backup','data.relocation.status','data.relocation.prepare','data.relocation.cancel','settings.export','settings.import.preview','settings.import.apply','usage.query','runtime.health','terminal.host','runtime.shutdown','runtime.snapshot','project.add','project.remove','session.create','history.import','session.stop','session.update','session.attention.acknowledge','session.claim','session.renew','session.release','terminal.input','terminal.resize','settings.update','provider.list','provider.refresh','plugin.list','plugin.setEnabled','plugin.selectBrowserBinding','plugin.reload','chat.queue.read','chat.queue.add','chat.queue.update','chat.queue.remove','chat.queue.move','chat.queue.pause','chat.queue.resume','chat.queue.send','quickLaunch.list','quickLaunch.save','quickLaunch.delete','quickLaunch.run','quickLaunch.setup.read','quickLaunch.setup.save','quickLaunch.setup.run','quickLaunch.setup.status','history.list','history.read','chat.send','chat.cancel','chat.approve','chat.answer','chat.options','chat.option.set','chat.connection','chat.context.read','chat.connect','filesystem.list','filesystem.read','filesystem.write','draft.list','draft.put','draft.delete','git.status','git.diff','worktree.list','worktree.create','worktree.remove','workspace.save','workspace.delete','inbox.read','git.index.write','git.discard','git.checkout','git.branch.delete','git.branches','git.log','git.commit.show','git.commit.diff','git.blame','filesystem.create','filesystem.rename','filesystem.delete','filesystem.files','filesystem.search','review.list','review.changes','review.diff','review.revert','review.checkpoint','agentReview.start','agentReview.list','agentReview.mark','group.prerequisites','group.create','group.list','group.read','group.send','group.stop','group.resend','group.member.add','group.member.update','group.member.remove','group.rename','group.archive','session.documents.list','session.documents.pin','session.documents.unpin','chat.projectTrust.set','chat.feedback.add','chat.feedback.read','chat.feedback.dismiss','chat.fork','chat.backgroundTasks.list','chat.backgroundTask.stop','chat.steer'] as const satisfies readonly Method[];
+export const METHODS = ['browser.approval.read','browser.approval.resolve','git.commit.selected','preview.attach','preview.detach','preview.snapshot','preview.prepare','preview.ack','preview.observe','preview.close','chat.repair','filesystem.resolve','session.launch.read','catalog.visibility.list','catalog.visibility.update','session.resume','session.organize','git.merge','git.merge.abort','project.catalog.list','project.update','worktree.branches','worktree.relocate','session.rerun','git.fetch','git.pull','git.push','session.config.read','session.config.save','session.retry.read','session.retry.update','chat.draft.read','chat.draft.save','device.status','device.enable','device.disable','device.pairing.create','device.pairing.cancel','device.list','device.rename','device.renew','device.revoke','git.stage','git.unstage','git.commit','filesystem.image','chat.snapshot','terminal.read','session.lookup','session.present','chat.read','chat.subagent.read','data.status','data.backup','data.relocation.status','data.relocation.prepare','data.relocation.cancel','settings.export','settings.import.preview','settings.import.apply','usage.query','usage.ledger.summary','usage.ledger.series','usage.ledger.breakdown','usage.ledger.sessions','usage.ledger.session','usage.ledger.sources','usage.ledger.refresh','usage.ledger.rebuild','usage.ledger.cancel','usage.ledger.settings','usage.ledger.settings.update','runtime.health','terminal.host','runtime.shutdown','runtime.snapshot','project.add','project.remove','session.create','history.import','session.stop','session.update','session.attention.acknowledge','session.claim','session.renew','session.release','terminal.input','terminal.resize','settings.update','provider.list','provider.refresh','plugin.list','plugin.setEnabled','plugin.selectBrowserBinding','plugin.reload','chat.queue.read','chat.queue.add','chat.queue.update','chat.queue.remove','chat.queue.move','chat.queue.pause','chat.queue.resume','chat.queue.send','quickLaunch.list','quickLaunch.save','quickLaunch.delete','quickLaunch.run','quickLaunch.setup.read','quickLaunch.setup.save','quickLaunch.setup.run','quickLaunch.setup.status','history.list','history.read','chat.send','chat.cancel','chat.approve','chat.answer','chat.options','chat.option.set','chat.connection','chat.context.read','chat.connect','filesystem.list','filesystem.read','filesystem.write','draft.list','draft.put','draft.delete','git.status','git.diff','worktree.list','worktree.create','worktree.remove','workspace.save','workspace.delete','inbox.read','git.index.write','git.discard','git.checkout','git.branch.delete','git.branches','git.log','git.commit.show','git.commit.diff','git.blame','filesystem.create','filesystem.rename','filesystem.delete','filesystem.files','filesystem.search','review.list','review.changes','review.diff','review.revert','review.checkpoint','agentReview.start','agentReview.list','agentReview.mark','group.prerequisites','group.create','group.list','group.read','group.send','group.stop','group.resend','group.member.add','group.member.update','group.member.remove','group.rename','group.archive','session.documents.list','session.documents.pin','session.documents.unpin','chat.projectTrust.set','chat.feedback.add','chat.feedback.read','chat.feedback.dismiss','chat.fork','chat.backgroundTasks.list','chat.backgroundTask.stop','chat.steer'] as const satisfies readonly Method[];
 // Kept additive while this long-standing literal remains source-compatible.
 // The RPC has a RequestMap entry above and must also pass the runtime registry.
 const stringFields: Partial<Record<Method,readonly string[]>> = {
@@ -753,6 +1008,7 @@ const stringFields: Partial<Record<Method,readonly string[]>> = {
  'agentReview.start':['sessionId','agent','operationId'],'agentReview.list':['sessionId'],'agentReview.mark':['reviewId','state','operationId'],
  'group.create':['cwd','operationId'],'group.read':['id'],'group.send':['id','text','operationId'],'group.stop':['id','messageId','operationId'],'group.resend':['id','messageId','handle','operationId'],'group.member.add':['id','provider','operationId'],'group.member.update':['id','sessionId','operationId'],'group.member.remove':['id','sessionId','operationId'],'group.rename':['id','title','operationId'],'group.archive':['id','operationId'],
  'session.documents.list':['sessionId'],'session.documents.pin':['sessionId','path','operationId'],'session.documents.unpin':['sessionId','path','operationId'],
+ 'usage.ledger.session':['provider','nativeSessionId'],'usage.ledger.refresh':['operationId'],'usage.ledger.rebuild':['operationId'],'usage.ledger.cancel':['scanId','operationId'],'usage.ledger.settings.update':['operationId'],
 };
 export function isRecord(value:unknown):value is Record<string,unknown> { return typeof value==='object' && value!==null && !Array.isArray(value); }
 export function validateRequest(method:unknown,params:unknown):asserts method is Method {
@@ -760,6 +1016,27 @@ export function validateRequest(method:unknown,params:unknown):asserts method is
  if(!isRecord(params)) throw new Error('Request parameters must be an object');
  if(!validateWireRequest({v:1,id:'boundary',method,params})) throw new Error('Request does not match the protocol schema');
  const m=method as Method;
+ if(m.startsWith('usage.ledger.')) {
+  const ledger=params as Record<string,unknown>,filters=isRecord(ledger.filters)?ledger.filters:ledger;
+  for(const key of ['from','to']) if(filters[key]!==undefined&&(typeof filters[key]!=='string'||!/^\d{4}-\d{2}-\d{2}$/.test(filters[key] as string))) throw new Error('Invalid usage date');
+  if(filters.scope!==undefined&&!['all','threadterm','outside'].includes(String(filters.scope))) throw new Error('Invalid usage scope');
+  if(filters.includeOutside!==undefined&&typeof filters.includeOutside!=='boolean') throw new Error('Invalid usage scope');
+  if(filters.enabledProviders!==undefined&&(!Array.isArray(filters.enabledProviders)||filters.enabledProviders.length>128||filters.enabledProviders.some(value=>typeof value!=='string'||!value||value.length>64))) throw new Error('Invalid usage providers');
+  if(m==='usage.ledger.series'&&ledger.granularity!==undefined&&!['day','week','month'].includes(String(ledger.granularity))) throw new Error('Invalid usage granularity');
+  if(m==='usage.ledger.series'&&ledger.stack!==undefined&&!['provider','tokens'].includes(String(ledger.stack))) throw new Error('Invalid usage stack');
+  if((m==='usage.ledger.series'||m==='usage.ledger.session')&&ledger.weekStart!==undefined&&!['auto','monday','sunday'].includes(String(ledger.weekStart))) throw new Error('Invalid usage week start');
+  if(m==='usage.ledger.breakdown'&&!['provider','model','project'].includes(String(ledger.dimension))) throw new Error('Invalid usage breakdown');
+  if(m==='usage.ledger.sessions') {
+   if(ledger.sort!==undefined&&!['tokens','cost','recent','activeTime'].includes(String(ledger.sort))) throw new Error('Invalid usage sort');
+   if(ledger.order!==undefined&&!['asc','desc'].includes(String(ledger.order))) throw new Error('Invalid usage order');
+   if(ledger.offset!==undefined&&(!Number.isSafeInteger(ledger.offset)||Number(ledger.offset)<0)) throw new Error('Invalid usage offset');
+   if(ledger.search!==undefined&&(typeof ledger.search!=='string'||ledger.search.length>256)) throw new Error('Invalid usage search');
+  }
+  if(m==='usage.ledger.settings.update') {
+   if(!Number.isSafeInteger(ledger.expectedRevision)||Number(ledger.expectedRevision)<0||!isRecord(ledger.value)) throw new Error('Invalid usage settings revision');
+   for(const key of Object.keys(ledger.value)) if(!['includeOutside','providers','weekStart','priceOverrides'].includes(key)) throw new Error('Invalid usage settings');
+  }
+ }
  if(m==='git.commit.selected') {
   if(typeof params.message!=='string'||!params.message.trim()||new TextEncoder().encode(params.message).length+(params.message.endsWith('\n')?0:1)>64*1024)throw new Error('Invalid commit message');
   if(typeof params.expectedIndexFingerprint!=='string'||!/^[a-f0-9]{64}$/.test(params.expectedIndexFingerprint))throw new Error('Invalid index snapshot');

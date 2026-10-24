@@ -319,6 +319,9 @@ fn record_tx(
   let now=timestamp.to_rfc3339();
   let turn=turn_id.or_else(||data.pointer("/raw/params/turn/id").and_then(Value::as_str)).or_else(||data.pointer("/raw/params/turnId").and_then(Value::as_str));
   let turn_key=turn.unwrap_or("current");
+  let usage_projection=crate::usage_ledger::live::project_event(tx,session_id,turn,kind,data,&now)?;
+  let data=usage_projection.as_ref().unwrap_or(data);
+  if kind=="chat.usage.fact" { return Ok(()); }
   let raw_item=data.get("item").or_else(||data.pointer("/raw/params/item"));
   let native_item=raw_item.and_then(|i|i.get("id")).and_then(Value::as_str).or_else(||data.pointer("/raw/params/itemId").and_then(Value::as_str));
   let native_created_at=raw_item.and_then(|item|item.get("createdAt")).and_then(Value::as_str)

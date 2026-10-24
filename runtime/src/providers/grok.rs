@@ -1468,6 +1468,9 @@ impl GrokChat {
                         json!({"parts":[{"type":"text","text":"Grok completed conversation compaction.","status":"complete"}]}),
                     );
                 }
+                if let Some(usage) = result.as_ref().ok().and_then(|value| crate::usage_ledger::live::grok_payload(value, Some(&turn_id))) {
+                    emit(&events, "grok", &session_id, Some(&native_id), Some(&turn_id), "chat.usage.fact", usage);
+                }
                 if let Some(context) = result.as_ref().ok().and_then(grok_turn_context) {
                     emit(&events, "grok", &session_id, Some(&native_id), Some(&turn_id), "chat.context", context);
                 }

@@ -31,6 +31,7 @@ rcgen = "0.13"
 regex = "1.11"
 reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"] }
 rusqlite = { version = "0.32", features = ["bundled", "chrono", "backup"] }
+ruzstd = "0.8"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 sha2 = "0.10"

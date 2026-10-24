@@ -1872,6 +1872,9 @@ fn pi_event(
     {
         return;
     }
+    if record_type == "message_end" {
+        if let Some(usage) = crate::usage_ledger::live::pi_payload(&raw, turn_id.as_deref()) { emit("chat.usage.fact", usage); }
+    }
     match record_type {
         "extension_ui_request" => {
             let responder = {
