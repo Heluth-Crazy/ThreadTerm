@@ -725,7 +725,7 @@ export interface RequestMap {
  'device.rename': [{deviceId:string;name:string;operationId:string},PairedDevice];
  'device.renew': [{deviceId:string;operationId:string},PairedDevice];
  'device.revoke': [{deviceId:string;operationId:string},null];
- 'terminal.read': [{sessionId:string;cursor?:number;limit?:number;tail?:boolean},{sessionId:string;fromCursor:number;nextCursor:number;truncated:boolean;encoding:'base64';data:string}];
+ 'terminal.read': [{sessionId:string;cursor?:number;limit?:number;tail?:boolean},{sessionId:string;fromCursor:number;nextCursor:number;truncated:boolean;encoding:'base64';data:string;/** Set while durable recording is degraded; the process keeps running. */storageDegraded?:{reason:string;cursor:number}}];
  'session.lookup': [{operationId:string},Session|null];
  'session.resume': [{sessionId:string;cwd?:string;operationId:string},Session];
  'session.rerun': [{sessionId:string;operationId:string},Session];

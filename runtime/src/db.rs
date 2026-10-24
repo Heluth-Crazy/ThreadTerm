@@ -14,6 +14,9 @@ use std::{
 };
 use uuid::Uuid;
 
+/// Reason carried by the terminal storage-degraded marker and event (F23).
+pub const TERMINAL_STORAGE_FAILED: &str = "terminal_output_storage_failed";
+
 pub struct Database {
     connection: Mutex<Connection>,
     path: PathBuf,
@@ -32,6 +35,7 @@ impl Database {
              CREATE TABLE IF NOT EXISTS projects (id TEXT PRIMARY KEY, name TEXT NOT NULL, path TEXT NOT NULL UNIQUE, created_at TEXT NOT NULL);
              CREATE TABLE IF NOT EXISTS sessions (id TEXT PRIMARY KEY, project_id TEXT REFERENCES projects(id) ON DELETE SET NULL, worktree_path TEXT, title TEXT NOT NULL, provider TEXT NOT NULL, mode TEXT NOT NULL, status TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, native_id TEXT, exit_code INTEGER, followed INTEGER NOT NULL DEFAULT 0, read_only INTEGER NOT NULL DEFAULT 0);
              CREATE TRIGGER IF NOT EXISTS sessions_delete_chat_integrity AFTER DELETE ON sessions BEGIN DELETE FROM metadata WHERE key='chat.integrity:'||OLD.id; END;
+             CREATE TRIGGER IF NOT EXISTS sessions_delete_terminal_storage AFTER DELETE ON sessions BEGIN DELETE FROM metadata WHERE key='terminal.storage:'||OLD.id; END;
              CREATE UNIQUE INDEX IF NOT EXISTS active_native_owner ON sessions(provider, native_id) WHERE native_id IS NOT NULL AND status NOT IN ('exited','interrupted','error');
              CREATE TABLE IF NOT EXISTS settings (singleton INTEGER PRIMARY KEY CHECK(singleton=1), revision INTEGER NOT NULL, value TEXT NOT NULL);
              DROP TABLE IF EXISTS presets;
@@ -257,6 +261,47 @@ impl Database {
             }
             Ok(())
         })
+    }
+    /// Terminal output the database refused stays in memory in the output store
+    /// (bounded) while the PTY reader keeps draining the process, so the session
+    /// keeps its running status. This durable marker is the visible state.
+    pub fn mark_terminal_storage_degraded(&self, session_id: &str, cursor: i64) -> Result<()> {
+        self.transaction(|tx| {
+            let marker = json!({"degraded":true,"reason":TERMINAL_STORAGE_FAILED,"cursor":cursor});
+            tx.execute(
+                "INSERT INTO metadata(key,value) SELECT ?,? WHERE EXISTS(SELECT 1 FROM sessions WHERE id=?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                params![format!("terminal.storage:{session_id}"), serde_json::to_string(&marker)?, session_id],
+            )?;
+            emit(tx, "terminal.storage", json!({"sessionId":session_id,"degraded":true,"reason":TERMINAL_STORAGE_FAILED,"cursor":cursor}))?;
+            Ok(())
+        })
+    }
+    /// Storage accepted the pending bytes again: recording continues from the
+    /// unchanged cursor, so the client reads them instead of a gap.
+    pub fn clear_terminal_storage_degraded(&self, session_id: &str) -> Result<()> {
+        self.transaction(|tx| {
+            tx.execute(
+                "DELETE FROM metadata WHERE key=?",
+                [format!("terminal.storage:{session_id}")],
+            )?;
+            emit(tx, "terminal.storage", json!({"sessionId":session_id,"degraded":false}))?;
+            Ok(())
+        })
+    }
+    pub fn terminal_storage_degraded(&self, session_id: &str) -> Result<Option<Value>> {
+        let conn = self
+            .connection
+            .lock()
+            .map_err(|_| anyhow!("database lock poisoned"))?;
+        let raw: Option<String> = conn
+            .query_row(
+                "SELECT value FROM metadata WHERE key=?",
+                [format!("terminal.storage:{session_id}")],
+                |row| row.get(0),
+            )
+            .optional()?;
+        raw.map(|value| serde_json::from_str(&value).map_err(Into::into))
+            .transpose()
     }
     pub fn claim_external_operation(&self, operation_id: &str) -> Result<bool> {
         self.transaction(|tx| {

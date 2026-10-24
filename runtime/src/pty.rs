@@ -177,6 +177,11 @@ impl PtyManager {
             .spawn(move || {
                 let mut buffer = [0u8; 8192];
                 let mut startup = crate::conpty::StartupQueryFilter::new(bundled_host);
+                // Storage failure policy (output.rs): a refused append keeps the
+                // bytes pending and marks the terminal degraded, so the reader
+                // keeps draining and the live view catches up once the database
+                // accepts data again. Report the transition once, not per chunk.
+                let mut storage_failure: Option<String> = None;
                 loop {
                     match reader.read(&mut buffer) {
                         Ok(0) => break,
@@ -188,8 +193,11 @@ impl PtyManager {
                                 }
                                 if observer.is_done() { run_observer = None; }
                             }
-                            if !data.is_empty() && output.append(&reader_db, &id, &data).is_err() {
-                                break;
+                            if !data.is_empty() {
+                                match output.append(&reader_db, &id, &data) {
+                                    Ok(_) => storage_failure = None,
+                                    Err(error) => report_storage_failure(&mut storage_failure, &id, &error),
+                                }
                             }
                         }
                         Err(_) => break,
@@ -202,7 +210,9 @@ impl PtyManager {
                     }
                 }
                 if !rest.is_empty() {
-                    let _ = output.append(&reader_db, &id, &rest);
+                    if let Err(error) = output.append(&reader_db, &id, &rest) {
+                        report_storage_failure(&mut storage_failure, &id, &error);
+                    }
                 }
             })?;
         let live = Arc::new(LivePty {
@@ -414,6 +424,15 @@ impl PtyManager {
             .cloned()
             .ok_or_else(|| anyhow!("session is not running"))
     }
+}
+/// Reports the first failed durable append of one stretch of storage failure.
+fn report_storage_failure(seen: &mut Option<String>, session_id: &str, error: &anyhow::Error) {
+    if seen.is_some() {
+        return;
+    }
+    let message = error.to_string();
+    eprintln!("Terminal output for {session_id} could not be saved: {message}");
+    *seen = Some(message);
 }
 fn default_shell() -> &'static str {
     if cfg!(windows) {
@@ -655,6 +674,63 @@ mod tests {
         std::thread::sleep(Duration::from_millis(500));
         assert_eq!(db.output_end(&session.id).unwrap(), before, "the refused launch wrote into the live session: {:?}", text());
         assert!(manager.live(&session.id).is_ok());
+        manager.stop(&db, &session.id, true).unwrap();
+    }
+
+    /// F23: a refused durable append used to end the PTY reader silently. The
+    /// reader now keeps draining, the session stays live, and recording resumes
+    /// from the unchanged cursor once storage accepts data again.
+    #[test]
+    fn a_storage_failure_keeps_the_reader_draining_and_marks_the_terminal() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Arc::new(Database::open(&dir.path().join("runtime.sqlite")).unwrap());
+        let session = db
+            .create_session(CreateSession { project_id: None, title: None, provider: "shell", mode: "terminal", native_id: None, operation_id: "pty-storage-degraded" })
+            .unwrap();
+        // Cursor 0 is occupied, so the reader's first durable append is refused.
+        db.append_output(&session.id, 0, b"occupied").unwrap();
+        let output = Arc::new(OutputStore::default());
+        let manager = PtyManager::new(Arc::clone(&output));
+        #[cfg(windows)]
+        let (program, args) = (
+            "cmd.exe",
+            vec!["/Q".to_owned(), "/K".to_owned(), "prompt READY$G".to_owned()],
+        );
+        #[cfg(not(windows))]
+        let (program, args) = (
+            "/bin/sh",
+            vec!["-c".to_owned(), "printf 'READY>'; read line; printf 'AFTER-MARKER'".to_owned()],
+        );
+        manager
+            .launch(Arc::clone(&db), &session.id, dir.path().to_str().unwrap(), Some(program), &args)
+            .unwrap();
+        let deadline = Instant::now() + Duration::from_secs(20);
+        while db.terminal_storage_degraded(&session.id).unwrap().is_none() {
+            assert!(Instant::now() < deadline, "the refused append was not reported");
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert_eq!(db.session_by_id(&session.id).unwrap().unwrap().status, "running", "a storage failure must not end the session");
+        assert!(manager.live(&session.id).is_ok());
+        // Storage recovers, then the live process writes again.
+        db.transaction(|tx| {
+            tx.execute("DELETE FROM output_chunks WHERE session_id=?", [&session.id])?;
+            Ok(())
+        })
+        .unwrap();
+        #[cfg(windows)]
+        let input = b"echo AFTER-MARKER\r".to_vec();
+        #[cfg(not(windows))]
+        let input = b"go\n".to_vec();
+        manager.input(&session.id, &input).unwrap();
+        let text = || {
+            let bytes: Vec<u8> = db.output_from(&session.id, 0, 1 << 20).unwrap().into_iter().flat_map(|(_, data)| data).collect();
+            String::from_utf8_lossy(&bytes).into_owned()
+        };
+        while !text().contains("AFTER-MARKER") {
+            assert!(Instant::now() < deadline, "the reader stopped draining after a storage failure: {:?}", text());
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert!(db.terminal_storage_degraded(&session.id).unwrap().is_none(), "recording must resume without keeping the degraded marker");
         manager.stop(&db, &session.id, true).unwrap();
     }
 

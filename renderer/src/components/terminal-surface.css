@@ -55,6 +55,9 @@
 .terminal-local-action-row > .surface-local-actions:empty { display:none; }
 .terminal-local-action-row > .surface-local-actions .btn { min-height:26px; padding:3px 8px; white-space:nowrap; }
 .term-legacy-note { flex:0 0 auto; min-width:0; margin:0; padding:6px 12px; border-bottom:1px solid var(--border); color:var(--muted); background:var(--surface); font-size:12px; line-height:1.45; overflow-wrap:anywhere; }
+/* Durable recording failed but the process and its live view continue (F23). */
+.term-storage-degraded { display:flex; flex:0 0 auto; flex-wrap:wrap; column-gap:8px; min-width:0; margin:0; padding:6px 12px; border-bottom:1px solid color-mix(in srgb, var(--danger) 30%, var(--border)); background:color-mix(in srgb, var(--danger) 7%, var(--surface)); color:var(--danger); font-size:12px; line-height:1.45; overflow-wrap:anywhere; }
+.term-storage-degraded strong { font-weight:600; }
 /* Ended / read-only footer: where input would go, says why there is none and offers the next step. */
 .term-ended-banner { display:flex; flex:0 0 auto; align-items:center; gap:10px; min-width:0; min-height:44px; padding:7px 10px 7px 16px; border-top:1px solid var(--border); background:var(--raised); font-size:12px; line-height:1.45; }
 .term-ended-dot { flex:0 0 auto; width:6px; height:6px; border-radius:50%; background:var(--st-ended); }

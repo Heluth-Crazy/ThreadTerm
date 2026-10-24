@@ -1544,9 +1544,17 @@ impl RuntimeService {
                         p.tail,
                         limit as usize,
                     )?;
-                    Ok(
-                        json!({"sessionId":p.session_id,"fromCursor":from,"nextCursor":next,"truncated":truncated,"encoding":"base64","data":base64::engine::general_purpose::STANDARD.encode(data)}),
-                    )
+                    // A terminal whose durable recording is degraded keeps
+                    // running; the surface needs that state on load, not only
+                    // from the live `terminal.storage` event.
+                    let mut result = json!({"sessionId":p.session_id,"fromCursor":from,"nextCursor":next,"truncated":truncated,"encoding":"base64","data":base64::engine::general_purpose::STANDARD.encode(data)});
+                    if let Some(degraded) = self.db.terminal_storage_degraded(&p.session_id)? {
+                        result["storageDegraded"] = json!({
+                            "reason": degraded.get("reason").cloned().unwrap_or_else(|| json!(crate::db::TERMINAL_STORAGE_FAILED)),
+                            "cursor": degraded.get("cursor").cloned().unwrap_or_else(|| json!(next)),
+                        });
+                    }
+                    Ok(result)
                 }
                 "session.launch.read" => {
                     #[derive(Deserialize)]

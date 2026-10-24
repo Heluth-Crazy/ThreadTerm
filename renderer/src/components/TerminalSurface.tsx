@@ -13,6 +13,7 @@ import { useThemeState } from '../themes';
 import { shiftEnterBytes } from '../terminalKeys';
 import { createResizeScheduler, RESIZE_QUIET_MS } from '../terminalResize';
 import { conptyHost, windowsPtyFor } from '../terminalHost';
+import { applyStorageEvent, storageNoteFromRead, terminalStorageAttention, terminalStorageLabel, type TerminalStorageNote } from '../terminalStorageNote';
 import './terminal-surface.css';
 import {BlockInspector} from './BlockInspector';
 import { AgentIcon, Icon } from './PrototypeIcon';
@@ -113,6 +114,7 @@ export function TerminalSurface({ sessionId, provider, theme, terminalCompatibil
   const retryControlRef = useRef<(() => void) | undefined>(undefined);
   const [controlState, setControlState] = useState<TerminalControlState>({ phase: 'disabled' });
   const [issue, setIssue] = useState<string>();
+  const [storageNote, setStorageNote] = useState<TerminalStorageNote>();
   const [unread, setUnread] = useState(0);
   const [selectedLink, setSelectedLink] = useState<string>();
   const [inspected, setInspected] = useState<string>();
@@ -293,7 +295,7 @@ export function TerminalSurface({ sessionId, provider, theme, terminalCompatibil
     const scrollDisposable = terminal.onScroll(() => {
       if (terminal.buffer.active.viewportY >= terminal.buffer.active.baseY) setUnread(0);
     });
-    terminal.options.disableStdin = true; setIssue(undefined); setReplayFailure(undefined); setCompletionHint(false);
+    terminal.options.disableStdin = true; setIssue(undefined); setReplayFailure(undefined); setCompletionHint(false); setStorageNote(undefined);
     // Legacy records have no trustworthy geometry. Keep their documented
     // best-effort current-pane replay instead of inventing an 80x24 history.
     if (!fixedSize) { try { fit.fit(); } catch { /* host may not be measurable yet */ } }
@@ -366,6 +368,13 @@ export function TerminalSurface({ sessionId, provider, theme, terminalCompatibil
       }
     });
     controlRef.current = setControl;
+    // Durable recording can fail while the process keeps running (F23): the
+    // runtime reports it once per transition, and a reload reads the same
+    // marker from terminal.read below.
+    const unsubscribeStorage = subscribeEvents(event => {
+      if (disposed) return;
+      setStorageNote(current => applyStorageEvent(current, sessionId, event));
+    });
     replayTimer = window.setInterval(() => {
       if (!replayComplete && Date.now() - replayLastProgress >= REPLAY_STALL_MS) {
         const seconds = REPLAY_STALL_MS / 1000;
@@ -380,6 +389,7 @@ export function TerminalSurface({ sessionId, provider, theme, terminalCompatibil
         let outputTail = "";
         const boundary = await request('terminal.read', { sessionId, tail: true, limit: 1 });
         if (disposed || replayAborted) return;
+        setStorageNote(storageNoteFromRead(boundary.storageDegraded));
         const replayEnd = boundary.nextCursor;
         if (!Number.isSafeInteger(replayEnd) || replayEnd < 0) throw new Error("Terminal replay returned an invalid history boundary.");
         replayTotal = replayEnd;
@@ -473,7 +483,7 @@ export function TerminalSurface({ sessionId, provider, theme, terminalCompatibil
         failReplay(message.includes("terminal_history_gap") ? "gap" : "error", message);
       }
     })();
-    return () => { disposed = true; control.dispose(); unsubscribeControl(); window.removeEventListener('focus', wakeControl); document.removeEventListener('visibilitychange', wakeControl); if (retryControlRef.current === retryControl) retryControlRef.current = undefined; resumeFrameProbeRef.current?.dispose(); resumeFrameProbeRef.current = undefined; window.clearInterval(replayTimer); for (const settle of pendingWrites) settle(); unregisterInput(); observer.disconnect(); resizeScheduler.dispose(); dataDisposable.dispose(); scrollDisposable.dispose(); selectionDisposable.dispose(); fileLinkDisposable.dispose(); fileLinkHitArea?.dispose(); fileLinkInteraction.dispose(); unsubscribeOutput?.(); terminal.dispose(); if (devServerDetectorRef.current === devServerDetector) devServerDetectorRef.current = undefined; if (terminalRef.current === terminal) terminalRef.current = undefined; if (nativeCursorRef.current === nativeCursor) nativeCursorRef.current = undefined; if (controlRef.current === setControl) controlRef.current = undefined; };
+    return () => { disposed = true; control.dispose(); unsubscribeControl(); unsubscribeStorage(); window.removeEventListener('focus', wakeControl); document.removeEventListener('visibilitychange', wakeControl); if (retryControlRef.current === retryControl) retryControlRef.current = undefined; resumeFrameProbeRef.current?.dispose(); resumeFrameProbeRef.current = undefined; window.clearInterval(replayTimer); for (const settle of pendingWrites) settle(); unregisterInput(); observer.disconnect(); resizeScheduler.dispose(); dataDisposable.dispose(); scrollDisposable.dispose(); selectionDisposable.dispose(); fileLinkDisposable.dispose(); fileLinkHitArea?.dispose(); fileLinkInteraction.dispose(); unsubscribeOutput?.(); terminal.dispose(); if (devServerDetectorRef.current === devServerDetector) devServerDetectorRef.current = undefined; if (terminalRef.current === terminal) terminalRef.current = undefined; if (nativeCursorRef.current === nativeCursor) nativeCursorRef.current = undefined; if (controlRef.current === setControl) controlRef.current = undefined; };
   }, [provider, sessionId, replayAttempt]);
   useEffect(() => {
     const setControl = controlRef.current;
@@ -653,6 +663,7 @@ export function TerminalSurface({ sessionId, provider, theme, terminalCompatibil
       {onCloseView && <button className="menu-item" onClick={onCloseView}>{zh ? "关闭视图" : "Close view"}</button>}
     </SurfaceActions>
     </div>
+    {storageNote && <p className="term-storage-degraded" role="alert"><strong>{terminalStorageLabel(zh)}</strong><span>{terminalStorageAttention(zh)}</span></p>}
     {unknownGeometry && <p className="term-legacy-note" role="status">{zh ? "该历史会话未记录终端尺寸，部分全屏界面可能错位。重新运行可生成可稳定回放的新记录。" : "This historical session has no recorded terminal size; full-screen interfaces may be misaligned. Rerun it to create a new record that replays reliably."}</p>}
     <div className="term-content"><div className={`terminal-host term-output${fixedSize ? " fixed-geometry" : ""}`} ref={host} aria-label={zh ? '实时终端输出' : 'Live terminal output'} />
     {(hasSelection || (selectionFile && openFileRef.current)) && <div className="terminal-selection-actions">

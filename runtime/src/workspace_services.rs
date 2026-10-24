@@ -8,21 +8,35 @@ use rusqlite::{params, OptionalExtension, Transaction};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::{
-    collections::HashSet,
+    collections::{HashMap, HashSet},
     ffi::OsString,
     fs,
     io::Read,
     path::{Component, Path, PathBuf},
     process::Command,
+    sync::{Arc, Mutex, OnceLock},
+    time::Duration,
 };
 
 pub const MAX_DOCUMENT_BYTES: usize = 1024 * 1024;
 const MAX_IMAGE_BYTES: u64 = 4 * 1024 * 1024;
 const MAX_FILE_REFERENCE_PATH_BYTES: usize = 16 * 1024;
 const MAX_FILE_REFERENCE_POSITION: u32 = 1_000_000;
+/// Worktree Git work runs outside the database lock under this deadline; a
+/// repository's checkout hooks may legitimately take minutes.
+const WORKTREE_TIMEOUT: Duration = Duration::from_secs(300);
+const CREATE_WORKTREE: &str = "worktree.create";
+const REMOVE_WORKTREE: &str = "worktree.remove";
 
 pub fn initialize(db: &Database) -> Result<()> {
-    db.transaction(|tx| { tx.execute_batch("CREATE TABLE IF NOT EXISTS drafts (id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE, worktree_path TEXT NOT NULL DEFAULT '', path TEXT NOT NULL, content TEXT NOT NULL, base_fingerprint TEXT NOT NULL, revision INTEGER NOT NULL, updated_at TEXT NOT NULL, UNIQUE(project_id,worktree_path,path)); CREATE TABLE IF NOT EXISTS workspaces (id TEXT PRIMARY KEY, name TEXT NOT NULL, project_id TEXT REFERENCES projects(id) ON DELETE SET NULL, worktree_path TEXT, revision INTEGER NOT NULL, layout TEXT NOT NULL, updated_at TEXT NOT NULL); CREATE TABLE IF NOT EXISTS worktrees (id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE, path TEXT NOT NULL UNIQUE, branch TEXT, head TEXT NOT NULL, is_main INTEGER NOT NULL, locked INTEGER NOT NULL DEFAULT 0);")?; let columns:Vec<String>={let mut s=tx.prepare("PRAGMA table_info(drafts)")?;let values=s.query_map([],|r|r.get(1))?.collect::<rusqlite::Result<_>>()?;values};if !columns.iter().any(|x|x=="worktree_path"){tx.execute_batch("ALTER TABLE drafts RENAME TO drafts_legacy; CREATE TABLE drafts (id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE, worktree_path TEXT NOT NULL DEFAULT '', path TEXT NOT NULL, content TEXT NOT NULL, base_fingerprint TEXT NOT NULL, revision INTEGER NOT NULL, updated_at TEXT NOT NULL, UNIQUE(project_id,worktree_path,path)); INSERT INTO drafts(id,project_id,worktree_path,path,content,base_fingerprint,revision,updated_at) SELECT id,project_id,'',path,content,base_fingerprint,revision,updated_at FROM drafts_legacy; DROP TABLE drafts_legacy;")?;} Ok(()) })
+    db.transaction(|tx| { tx.execute_batch("CREATE TABLE IF NOT EXISTS drafts (id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE, worktree_path TEXT NOT NULL DEFAULT '', path TEXT NOT NULL, content TEXT NOT NULL, base_fingerprint TEXT NOT NULL, revision INTEGER NOT NULL, updated_at TEXT NOT NULL, UNIQUE(project_id,worktree_path,path)); CREATE TABLE IF NOT EXISTS workspaces (id TEXT PRIMARY KEY, name TEXT NOT NULL, project_id TEXT REFERENCES projects(id) ON DELETE SET NULL, worktree_path TEXT, revision INTEGER NOT NULL, layout TEXT NOT NULL, updated_at TEXT NOT NULL); CREATE TABLE IF NOT EXISTS worktrees (id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE, path TEXT NOT NULL UNIQUE, branch TEXT, head TEXT NOT NULL, is_main INTEGER NOT NULL, locked INTEGER NOT NULL DEFAULT 0); CREATE TABLE IF NOT EXISTS worktree_intents (operation_id TEXT PRIMARY KEY, method TEXT NOT NULL, project_id TEXT NOT NULL, path TEXT NOT NULL, branch TEXT, created_at TEXT NOT NULL);")?; let columns:Vec<String>={let mut s=tx.prepare("PRAGMA table_info(drafts)")?;let values=s.query_map([],|r|r.get(1))?.collect::<rusqlite::Result<_>>()?;values};if !columns.iter().any(|x|x=="worktree_path"){tx.execute_batch("ALTER TABLE drafts RENAME TO drafts_legacy; CREATE TABLE drafts (id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE, worktree_path TEXT NOT NULL DEFAULT '', path TEXT NOT NULL, content TEXT NOT NULL, base_fingerprint TEXT NOT NULL, revision INTEGER NOT NULL, updated_at TEXT NOT NULL, UNIQUE(project_id,worktree_path,path)); INSERT INTO drafts(id,project_id,worktree_path,path,content,base_fingerprint,revision,updated_at) SELECT id,project_id,'',path,content,base_fingerprint,revision,updated_at FROM drafts_legacy; DROP TABLE drafts_legacy;")?;} Ok(()) })?;
+    // A worktree intent left by a crash is reconciled against the filesystem
+    // once at startup, never by repeating the Git effect. A failure here must
+    // not block startup: the intent stays for the next attempt.
+    if let Err(error) = reconcile_worktree_intents(db) {
+        eprintln!("Worktree intents could not be reconciled: {error}");
+    }
+    Ok(())
 }
 
 #[allow(clippy::possible_missing_else)]
@@ -84,6 +98,11 @@ pub fn dispatch(db: &Database, method: &str, params: &Value) -> Result<Option<Va
         };
         return Ok(Some(result));
     }
+    // Worktree mutations record an intent, run Git outside the database lock and
+    // commit the result (F10): a slow hook never freezes unrelated persistence.
+    if matches!(method, CREATE_WORKTREE | REMOVE_WORKTREE) {
+        return Ok(Some(mutate_worktree(db, method, object)?));
+    }
     let result = db.transaction(|tx| {
         let project_id = object.get("projectId").and_then(Value::as_str);
         let worktree_path = object.get("worktreePath").and_then(Value::as_str);
@@ -99,8 +118,6 @@ pub fn dispatch(db: &Database, method: &str, params: &Value) -> Result<Option<Va
             "workspace.save" => { let op=operation("operationId")?; if let Some(value)=idempotent(tx,op)?{return Ok(value)} let id=object.get("id").and_then(Value::as_str).map(str::to_owned).unwrap_or_else(||uuid::Uuid::new_v4().to_string()); let expected=object.get("expectedRevision").and_then(Value::as_i64).ok_or_else(||anyhow!("invalid_request"))?; let existing:Option<i64>=tx.query_row("SELECT revision FROM workspaces WHERE id=?",[&id],|r|r.get(0)).optional()?; if existing.unwrap_or(0)!=expected{return Err(anyhow!("revision_conflict"))} let name=object.get("name").and_then(Value::as_str).ok_or_else(||anyhow!("invalid_request"))?; let layout=object.get("layout").ok_or_else(||anyhow!("invalid_request"))?; validate_layout(layout)?; let project=object.get("projectId").and_then(Value::as_str); let worktree=object.get("worktreePath").and_then(Value::as_str); if let Some(project)=project{root_for(tx,project,worktree)?;}else if worktree.is_some(){return Err(anyhow!("invalid_request"))} let next=expected+1; let now=Utc::now().to_rfc3339(); tx.execute("INSERT INTO workspaces(id,name,project_id,worktree_path,revision,layout,updated_at) VALUES(?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET name=excluded.name,project_id=excluded.project_id,worktree_path=excluded.worktree_path,revision=excluded.revision,layout=excluded.layout,updated_at=excluded.updated_at",params![id,name,project,worktree,next,serde_json::to_string(layout)?,now])?; let mut value=serde_json::Map::new(); value.insert("id".into(),json!(id)); value.insert("name".into(),json!(name)); value.insert("revision".into(),json!(next)); value.insert("layout".into(),layout.clone()); if let Some(project)=project{value.insert("projectId".into(),json!(project));} if let Some(worktree)=worktree{value.insert("worktreePath".into(),json!(worktree));} complete(tx,op,method,&Value::Object(value)) }
             "worktree.list" => { let project=project_id.ok_or_else(||anyhow!("invalid_request"))?; let root=root(project)?; reconcile_worktrees(tx,project,&root) }
             "worktree.relocate" => relocate_worktree(tx, object, method),
-            "worktree.create" => { let project=project_id.ok_or_else(||anyhow!("invalid_request"))?; let root=root(project)?; let op=operation("operationId")?; if let Some(value)=idempotent(tx,op)?{return Ok(value)} let path=object.get("path").and_then(Value::as_str).ok_or_else(||anyhow!("invalid_path"))?; let branch=object.get("branch").and_then(Value::as_str).ok_or_else(||anyhow!("invalid_request"))?; let target=PathBuf::from(path); if !target.is_absolute()||target.exists()||target.parent().and_then(|parent|parent.canonicalize().ok()).is_none(){return Err(anyhow!("invalid_path"))} let create=object.get("createBranch").and_then(Value::as_bool).unwrap_or(false); let start_point=object.get("startPoint").and_then(Value::as_str); if start_point.is_some_and(|value|value.is_empty()||value.starts_with('-')||value.len()>256){return Err(anyhow!("invalid_request"))} if create { let mut args=vec!["worktree","add","-b",branch,path]; args.extend(start_point); git(&root,&args)?; } else { git(&root,&["worktree","add",path,branch])?; } let target=target.canonicalize().context("canonicalizing worktree")?.to_string_lossy().to_string(); let head=git(Path::new(&target),&["rev-parse","HEAD"]).unwrap_or_default(); let id=upsert_worktree(tx,project,&target,Some(branch),head.trim(),false,false)?; complete(tx,op,method,&worktree_json(&id,project,&target,Some(branch),head.trim(),false,false)) }
-            "worktree.remove" => remove_worktree(tx, object, method),
             _ => unreachable!()
         }
     })?;
@@ -526,49 +543,366 @@ fn relocate_worktree(
     )
 }
 
+/// A reserved worktree mutation. The identity and the intent are durable before
+/// Git runs, so a crash between the effect and its receipt is reconciled at the
+/// next startup instead of repeating the effect.
+struct WorktreeIntent {
+    operation_id: String,
+    method: String,
+    project_id: String,
+    path: String,
+    branch: Option<String>,
+}
+
+fn mutate_worktree(
+    db: &Database,
+    method: &str,
+    object: &serde_json::Map<String, Value>,
+) -> Result<Value> {
+    let operation_id = required_string(object, "operationId")?;
+    // A completed receipt is replayed before any preflight reads mutable state:
+    // a retry after a lost response is the same operation even when the branch,
+    // the worktree list or the target directory changed since.
+    if let Some(value) = db.operation(operation_id)? {
+        db.bind_operation(operation_id, method, &Value::Object(object.clone()))?;
+        return Ok(value);
+    }
+    if method == CREATE_WORKTREE {
+        create_worktree(db, object, method, operation_id)
+    } else {
+        remove_worktree(db, object, method)
+    }
+}
+
+fn create_worktree(
+    db: &Database,
+    object: &serde_json::Map<String, Value>,
+    method: &str,
+    operation_id: &str,
+) -> Result<Value> {
+    let project_id = required_string(object, "projectId")?;
+    let path = required_string(object, "path")?;
+    let branch = required_string(object, "branch")?;
+    let create_branch = object
+        .get("createBranch")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let start_point = object.get("startPoint").and_then(Value::as_str);
+    if start_point.is_some_and(|value| value.is_empty() || value.starts_with('-') || value.len() > 256)
+    {
+        return Err(anyhow!("invalid_request"));
+    }
+    let target = PathBuf::from(path);
+    if !target.is_absolute()
+        || target.exists()
+        || target
+            .parent()
+            .and_then(|parent| parent.canonicalize().ok())
+            .is_none()
+    {
+        return Err(anyhow!("invalid_path"));
+    }
+    db.bind_operation(operation_id, method, &Value::Object(object.clone()))?;
+    let intent = WorktreeIntent {
+        operation_id: operation_id.to_owned(),
+        method: method.to_owned(),
+        project_id: project_id.to_owned(),
+        path: path.to_owned(),
+        branch: Some(branch.to_owned()),
+    };
+    // Reserve: resolve the root and record the intent in one short transaction.
+    let root = db.transaction(|tx| {
+        let root = root_for(tx, project_id, None)?;
+        tx.execute(
+            "INSERT OR IGNORE INTO worktree_intents(operation_id,method,project_id,path,branch,created_at) VALUES(?,?,?,?,?,?)",
+            params![intent.operation_id, intent.method, intent.project_id, intent.path, intent.branch, Utc::now().to_rfc3339()],
+        )?;
+        Ok(root)
+    })?;
+    if !db.claim_external_operation(operation_id)? {
+        return reconcile_worktree(db, &intent)?.ok_or_else(|| anyhow!("operation_outcome_unknown"));
+    }
+    // Execute outside the database lock, one mutation per repository.
+    let lock = repository_gate(&root);
+    let _gate = lock.lock().map_err(|_| anyhow!("worktree lock poisoned"))?;
+    let mut args = vec!["worktree", "add"];
+    if create_branch {
+        args.extend(["-b", branch]);
+    }
+    args.push(path);
+    if !create_branch {
+        args.push(branch);
+    }
+    if let Some(start) = start_point {
+        args.push(start);
+    }
+    let executed = crate::git_read::run_git(&root, &args, &[], None, WORKTREE_TIMEOUT).map(|_| ());
+    drop(_gate);
+    match executed {
+        Ok(()) => finish_worktree_creation(db, &intent),
+        Err(error) => match reconcile_worktree(db, &intent)? {
+            // The command may have completed before its deadline, or spent its
+            // time in a hook after the worktree already existed.
+            Some(value) => Ok(value),
+            None => {
+                discard_worktree_intent(db, &intent)?;
+                Err(error)
+            }
+        },
+    }
+}
+
+/// One mutation at a time per repository; persistence is never serialized on it.
+fn repository_gate(root: &Path) -> Arc<Mutex<()>> {
+    static GATES: OnceLock<Mutex<HashMap<PathBuf, Arc<Mutex<()>>>>> = OnceLock::new();
+    let key = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
+    let gates = GATES.get_or_init(|| Mutex::new(HashMap::new()));
+    let mut gates = gates
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    Arc::clone(gates.entry(key).or_default())
+}
+
+fn finish_worktree_creation(db: &Database, intent: &WorktreeIntent) -> Result<Value> {
+    let target = Path::new(&intent.path)
+        .canonicalize()
+        .context("canonicalizing worktree")?
+        .to_string_lossy()
+        .to_string();
+    let head = crate::git_read::run_git(
+        Path::new(&target),
+        &["rev-parse", "HEAD"],
+        &[],
+        None,
+        WORKTREE_TIMEOUT,
+    )
+    .map(|stdout| String::from_utf8_lossy(&stdout).trim().to_owned())
+    .unwrap_or_default();
+    db.transaction(|tx| {
+        let id = upsert_worktree(
+            tx,
+            &intent.project_id,
+            &target,
+            intent.branch.as_deref(),
+            &head,
+            false,
+            false,
+        )?;
+        let value = worktree_json(
+            &id,
+            &intent.project_id,
+            &target,
+            intent.branch.as_deref(),
+            &head,
+            false,
+            false,
+        );
+        tx.execute(
+            "DELETE FROM worktree_intents WHERE operation_id=?",
+            [&intent.operation_id],
+        )?;
+        complete(tx, &intent.operation_id, &intent.method, &value)
+    })
+}
+
+fn finish_worktree_removal(db: &Database, intent: &WorktreeIntent) -> Result<Value> {
+    db.transaction(|tx| {
+        tx.execute(
+            "DELETE FROM worktrees WHERE project_id=? AND path=?",
+            params![intent.project_id, intent.path],
+        )?;
+        tx.execute(
+            "DELETE FROM worktree_intents WHERE operation_id=?",
+            [&intent.operation_id],
+        )?;
+        complete(tx, &intent.operation_id, &intent.method, &Value::Null)
+    })
+}
+
+fn discard_worktree_intent(db: &Database, intent: &WorktreeIntent) -> Result<()> {
+    db.transaction(|tx| {
+        tx.execute(
+            "DELETE FROM worktree_intents WHERE operation_id=?",
+            [&intent.operation_id],
+        )?;
+        tx.execute(
+            "DELETE FROM external_operations WHERE id=?",
+            [&intent.operation_id],
+        )?;
+        Ok(())
+    })
+}
+
+/// Resolves a reserved intent against the filesystem: either the effect is
+/// visible, in which case its receipt is committed, or nothing happened.
+fn reconcile_worktree(db: &Database, intent: &WorktreeIntent) -> Result<Option<Value>> {
+    let Ok(root) = db.transaction(|tx| root_for(tx, &intent.project_id, None)) else {
+        // The project is gone; there is no Git scope left to reconcile against.
+        return Ok(None);
+    };
+    let path = Path::new(&intent.path);
+    let listed = path.exists() && listed_worktree(&root, path)?;
+    if intent.method == REMOVE_WORKTREE {
+        return if listed {
+            Ok(None)
+        } else {
+            finish_worktree_removal(db, intent).map(Some)
+        };
+    }
+    if !listed {
+        return Ok(None);
+    }
+    finish_worktree_creation(db, intent).map(Some)
+}
+
+fn listed_worktree(root: &Path, target: &Path) -> Result<bool> {
+    let raw = crate::git_read::run_git(
+        root,
+        &["worktree", "list", "--porcelain"],
+        &[],
+        None,
+        WORKTREE_TIMEOUT,
+    )?;
+    let raw = String::from_utf8_lossy(&raw).into_owned();
+    let target = target.canonicalize().unwrap_or_else(|_| target.to_path_buf());
+    for block in raw.split("\n\n") {
+        let Some(listed) = block
+            .lines()
+            .find_map(|line| line.strip_prefix("worktree "))
+        else {
+            continue;
+        };
+        let listed = Path::new(listed);
+        let listed = listed
+            .canonicalize()
+            .unwrap_or_else(|_| listed.to_path_buf());
+        if same_lexical_path(&listed, &target).unwrap_or(false) {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+fn reconcile_worktree_intents(db: &Database) -> Result<()> {
+    let intents = db.transaction(|tx| {
+        let mut statement = tx.prepare(
+            "SELECT operation_id,method,project_id,path,branch FROM worktree_intents ORDER BY created_at",
+        )?;
+        let rows = statement.query_map([], |row| {
+            Ok(WorktreeIntent {
+                operation_id: row.get(0)?,
+                method: row.get(1)?,
+                project_id: row.get(2)?,
+                path: row.get(3)?,
+                branch: row.get(4)?,
+            })
+        })?;
+        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+    })?;
+    for intent in intents {
+        match reconcile_worktree(db, &intent) {
+            Ok(Some(_)) => {}
+            Ok(None) => discard_worktree_intent(db, &intent)?,
+            Err(error) => eprintln!(
+                "Worktree intent {} is still unresolved: {error}",
+                intent.operation_id
+            ),
+        }
+    }
+    Ok(())
+}
+
 fn remove_worktree(
-    tx: &Transaction<'_>,
+    db: &Database,
     object: &serde_json::Map<String, Value>,
     method: &str,
 ) -> Result<Value> {
-    let id = required_string(object, "id")?;
     let operation_id = required_string(object, "operationId")?;
-    if let Some(value) = idempotent(tx, operation_id)? {
-        return Ok(value);
+    let id = required_string(object, "id")?;
+    db.bind_operation(operation_id, method, &Value::Object(object.clone()))?;
+    // Reserve: every guard that reads durable state and the intent itself commit
+    // in one short transaction, before Git runs.
+    let intent = db.transaction(|tx| {
+        let (project, path, is_main, locked, branch): (String, String, i64, i64, Option<String>) = tx
+            .query_row(
+                "SELECT project_id,path,is_main,locked,branch FROM worktrees WHERE id=?",
+                [id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?)),
+            )
+            .map_err(|_| anyhow!("worktree_not_registered"))?;
+        if is_main != 0 {
+            return Err(anyhow!("worktree_main"));
+        }
+        if locked != 0 {
+            return Err(anyhow!("worktree_locked"));
+        }
+        if scoped_sessions(tx, &project, &path)?
+            .iter()
+            .any(|(_, status, read_only)| !read_only && is_live_status(status))
+        {
+            return Err(anyhow!("worktree_running_session"));
+        }
+        if has_scoped_rows(tx, "drafts", &project, &path)? {
+            return Err(anyhow!("worktree_unsaved_drafts"));
+        }
+        if has_scoped_rows(tx, "workspaces", &project, &path)? {
+            return Err(anyhow!("worktree_saved_workspace"));
+        }
+        let intent = WorktreeIntent {
+            operation_id: operation_id.to_owned(),
+            method: method.to_owned(),
+            project_id: project,
+            path,
+            branch,
+        };
+        tx.execute(
+            "INSERT OR IGNORE INTO worktree_intents(operation_id,method,project_id,path,branch,created_at) VALUES(?,?,?,?,?,?)",
+            params![intent.operation_id, intent.method, intent.project_id, intent.path, intent.branch, Utc::now().to_rfc3339()],
+        )?;
+        Ok(intent)
+    })?;
+    let root = db.transaction(|tx| root_for(tx, &intent.project_id, None))?;
+    if !db.claim_external_operation(operation_id)? {
+        // An execution without a receipt was interrupted: reconcile the recorded
+        // intent instead of repeating the removal.
+        return reconcile_worktree(db, &intent)?.ok_or_else(|| anyhow!("operation_outcome_unknown"));
     }
-    let (project, path, is_main, locked): (String, String, i64, i64) = tx
-        .query_row(
-            "SELECT project_id,path,is_main,locked FROM worktrees WHERE id=?",
-            [id],
-            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
-        )
-        .map_err(|_| anyhow!("worktree_not_registered"))?;
-    if is_main != 0 {
-        return Err(anyhow!("worktree_main"));
+    // Execute outside the database lock, one mutation per repository.
+    let lock = repository_gate(&root);
+    let _gate = lock.lock().map_err(|_| anyhow!("worktree lock poisoned"))?;
+    let executed = (|| -> Result<()> {
+        let dirty = crate::git_read::run_git(
+            Path::new(&intent.path),
+            &["status", "--porcelain"],
+            &[],
+            None,
+            WORKTREE_TIMEOUT,
+        )?;
+        if !String::from_utf8_lossy(&dirty).trim().is_empty() {
+            return Err(anyhow!("worktree_dirty"));
+        }
+        crate::git_read::run_git(
+            &root,
+            &["worktree", "remove", "--", &intent.path],
+            &[],
+            None,
+            WORKTREE_TIMEOUT,
+        )?;
+        Ok(())
+    })();
+    drop(_gate);
+    match executed {
+        Ok(()) => finish_worktree_removal(db, &intent),
+        Err(error) => match reconcile_worktree(db, &intent)? {
+            // The removal may have completed before its deadline or a hook failed
+            // after the directory was already gone.
+            Some(value) => Ok(value),
+            None => {
+                discard_worktree_intent(db, &intent)?;
+                Err(error)
+            }
+        },
     }
-    if locked != 0 {
-        return Err(anyhow!("worktree_locked"));
-    }
-    let dirty = git(Path::new(&path), &["status", "--porcelain"])?;
-    if !dirty.trim().is_empty() {
-        return Err(anyhow!("worktree_dirty"));
-    }
-    if scoped_sessions(tx, &project, &path)?
-        .iter()
-        .any(|(_, status, read_only)| !read_only && is_live_status(status))
-    {
-        return Err(anyhow!("worktree_running_session"));
-    }
-    if has_scoped_rows(tx, "drafts", &project, &path)? {
-        return Err(anyhow!("worktree_unsaved_drafts"));
-    }
-    if has_scoped_rows(tx, "workspaces", &project, &path)? {
-        return Err(anyhow!("worktree_saved_workspace"));
-    }
-    let project_root = root_for(tx, &project, None)?;
-    git(&project_root, &["worktree", "remove", "--", &path])?;
-    tx.execute("DELETE FROM worktrees WHERE id=?", [id])?;
-    complete(tx, operation_id, method, &Value::Null)
 }
 
 fn required_string<'a>(object: &'a serde_json::Map<String, Value>, key: &str) -> Result<&'a str> {
@@ -2105,6 +2439,239 @@ mod tests {
             assert!(validate_layout(&layout).is_err());
         }
     }
+    /// A repository with one commit, configured for throwaway test commits.
+    fn initialized_repository(repo: &Path) {
+        fs::create_dir(repo).unwrap();
+        git(repo, &["init"]).unwrap();
+        git(repo, &["config", "user.email", "tests@threadterm.invalid"]).unwrap();
+        git(repo, &["config", "user.name", "ThreadTerm Tests"]).unwrap();
+        fs::write(repo.join("README.md"), "initial").unwrap();
+        git(repo, &["add", "README.md"]).unwrap();
+        git(repo, &["commit", "-m", "initial"]).unwrap();
+    }
+
+    /// Writes a hook that blocks Git at a barrier until the release file exists,
+    /// with a wall-clock bound so a failed assertion can never hang the suite.
+    fn barrier_hook(repo: &Path, name: &str, started: &Path, release: &Path) {
+        let hook = repo.join(".git/hooks").join(name);
+        let dash = |path: &Path| path.to_string_lossy().replace('\\', "/");
+        fs::write(
+            &hook,
+            format!(
+                "#!/bin/sh\nstart=$(date +%s)\n: > \"{}\"\ni=0\nwhile [ ! -f \"{}\" ]; do\n  i=$((i+1))\n  if [ $((i % 200)) -eq 0 ]; then\n    [ $(( $(date +%s) - start )) -ge 15 ] && exit 1\n  fi\ndone\nexit 0\n",
+                dash(started),
+                dash(release),
+            ),
+        )
+        .unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut permissions = fs::metadata(&hook).unwrap().permissions();
+            permissions.set_mode(0o755);
+            fs::set_permissions(&hook, permissions).unwrap();
+        }
+    }
+
+    /// F10: worktree Git used to run inside the global database transaction, so a
+    /// slow repository hook froze every other durable write.
+    #[test]
+    fn a_blocked_worktree_hook_does_not_block_other_durable_writes() {
+        let parent = tempfile::tempdir().unwrap();
+        let repo = parent.path().join("repo");
+        initialized_repository(&repo);
+        let started = parent.path().join("hook-started");
+        let release = parent.path().join("hook-release");
+        barrier_hook(&repo, "post-checkout", &started, &release);
+        let db = Database::open(&parent.path().join("db.sqlite")).unwrap();
+        initialize(&db).unwrap();
+        let project = db
+            .add_project(repo.to_str().unwrap(), Some("p"), "project-op")
+            .unwrap();
+        let target = parent.path().join("feature");
+        std::thread::scope(|scope| {
+            let create = {
+                let db = &db;
+                let target = &target;
+                let project_id = &project.id;
+                scope.spawn(move || {
+                    dispatch(
+                        db,
+                        "worktree.create",
+                        &json!({"projectId":project_id,"path":target.to_string_lossy(),"branch":"feature","createBranch":true,"operationId":"worktree-create-blocked"}),
+                    )
+                })
+            };
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+            while !started.exists() {
+                assert!(std::time::Instant::now() < deadline, "the worktree hook never started");
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            // The hook is blocked inside Git now. An unrelated durable write must
+            // not wait for it.
+            let began = std::time::Instant::now();
+            dispatch(
+                &db,
+                "draft.put",
+                &json!({"projectId":project.id,"path":"README.md","content":"while a hook runs","baseFingerprint":"base","expectedRevision":0,"operationId":"draft-during-hook"}),
+            )
+            .unwrap();
+            let elapsed = began.elapsed();
+            fs::write(&release, b"go").unwrap();
+            let created = create.join().unwrap().unwrap().unwrap();
+            assert_eq!(created["branch"], "feature");
+            assert!(
+                elapsed < std::time::Duration::from_secs(2),
+                "a blocked worktree hook held the database for {elapsed:?}"
+            );
+        });
+        assert!(target.exists());
+    }
+
+    /// F10: a crash after Git created the worktree must be reconciled at startup,
+    /// not repeated, and the replay must return the completed receipt.
+    #[test]
+    fn a_worktree_creation_interrupted_before_its_receipt_reconciles_at_startup() {
+        let parent = tempfile::tempdir().unwrap();
+        let repo = parent.path().join("repo");
+        initialized_repository(&repo);
+        let db = Database::open(&parent.path().join("db.sqlite")).unwrap();
+        initialize(&db).unwrap();
+        let project = db
+            .add_project(repo.to_str().unwrap(), Some("p"), "project-op")
+            .unwrap();
+        let target = parent.path().join("feature");
+        let params = json!({"projectId":project.id,"path":target.to_string_lossy(),"branch":"feature","createBranch":true,"operationId":"worktree-create-crashed"});
+        // Model the crash: the intent and the execution claim are durable, then Git
+        // ran, then the process died before the receipt was committed.
+        db.bind_operation("worktree-create-crashed", "worktree.create", &params)
+            .unwrap();
+        db.transaction(|tx| {
+            tx.execute(
+                "INSERT INTO worktree_intents(operation_id,method,project_id,path,branch,created_at) VALUES('worktree-create-crashed','worktree.create',?,?,?,'now')",
+                params![project.id, target.to_string_lossy(), "feature"],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+        assert!(db.claim_external_operation("worktree-create-crashed").unwrap());
+        git(&repo, &["worktree", "add", "-b", "feature", target.to_str().unwrap()]).unwrap();
+
+        // Startup reconciliation registers the created worktree and completes the
+        // operation instead of running `worktree add` a second time.
+        initialize(&db).unwrap();
+        let listed = dispatch(&db, "worktree.list", &json!({"projectId":project.id}))
+            .unwrap()
+            .unwrap();
+        assert_eq!(listed.as_array().unwrap().len(), 2);
+        let replay = dispatch(&db, "worktree.create", &params).unwrap().unwrap();
+        assert_eq!(replay["path"], listed[1]["path"]);
+        assert_eq!(replay["branch"], "feature");
+        let intents: i64 = db
+            .transaction(|tx| Ok(tx.query_row("SELECT COUNT(*) FROM worktree_intents", [], |r| r.get(0))?))
+            .unwrap();
+        assert_eq!(intents, 0);
+    }
+
+    /// A removal interrupted after Git already deleted the directory reconciles
+    /// at startup: the registration and the intent go, the receipt is returned.
+    #[test]
+    fn a_worktree_removal_interrupted_after_its_effect_reconciles_at_startup() {
+        let parent = tempfile::tempdir().unwrap();
+        let repo = parent.path().join("repo");
+        initialized_repository(&repo);
+        let db = Database::open(&parent.path().join("db.sqlite")).unwrap();
+        initialize(&db).unwrap();
+        let project = db
+            .add_project(repo.to_str().unwrap(), Some("p"), "project-op")
+            .unwrap();
+        let target = parent.path().join("feature");
+        let created = dispatch(
+            &db,
+            "worktree.create",
+            &json!({"projectId":project.id,"path":target.to_string_lossy(),"branch":"feature","createBranch":true,"operationId":"worktree-create"}),
+        )
+        .unwrap()
+        .unwrap();
+        let params = json!({"id":created["id"],"operationId":"worktree-remove-crashed"});
+        db.bind_operation("worktree-remove-crashed", "worktree.remove", &params)
+            .unwrap();
+        db.transaction(|tx| {
+            tx.execute(
+                "INSERT INTO worktree_intents(operation_id,method,project_id,path,branch,created_at) VALUES('worktree-remove-crashed','worktree.remove',?,?,'feature','now')",
+                params![project.id, created["path"].as_str().unwrap()],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+        assert!(db.claim_external_operation("worktree-remove-crashed").unwrap());
+        git(&repo, &["worktree", "remove", "--", created["path"].as_str().unwrap()]).unwrap();
+
+        initialize(&db).unwrap();
+        assert_eq!(
+            dispatch(&db, "worktree.list", &json!({"projectId":project.id}))
+                .unwrap()
+                .unwrap()
+                .as_array()
+                .unwrap()
+                .len(),
+            1
+        );
+        assert_eq!(
+            dispatch(&db, "worktree.remove", &params).unwrap(),
+            Some(Value::Null),
+            "the reconciled removal replays its receipt"
+        );
+    }
+
+    /// The mirror case: an interrupted removal whose Git effect never happened
+    /// leaves nothing registered behind, and its retry still works.
+    #[test]
+    fn an_interrupted_worktree_removal_without_an_effect_can_be_retried() {
+        let parent = tempfile::tempdir().unwrap();
+        let repo = parent.path().join("repo");
+        initialized_repository(&repo);
+        let db = Database::open(&parent.path().join("db.sqlite")).unwrap();
+        initialize(&db).unwrap();
+        let project = db
+            .add_project(repo.to_str().unwrap(), Some("p"), "project-op")
+            .unwrap();
+        let target = parent.path().join("feature");
+        let created = dispatch(
+            &db,
+            "worktree.create",
+            &json!({"projectId":project.id,"path":target.to_string_lossy(),"branch":"feature","createBranch":true,"operationId":"worktree-create"}),
+        )
+        .unwrap()
+        .unwrap();
+        let params = json!({"id":created["id"],"operationId":"worktree-remove-crashed"});
+        db.bind_operation("worktree-remove-crashed", "worktree.remove", &params)
+            .unwrap();
+        db.transaction(|tx| {
+            tx.execute(
+                "INSERT INTO worktree_intents(operation_id,method,project_id,path,branch,created_at) VALUES('worktree-remove-crashed','worktree.remove',?,?,'feature','now')",
+                params![project.id, created["path"].as_str().unwrap()],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+        initialize(&db).unwrap();
+        // The directory is still there, so nothing was recorded as removed.
+        assert!(target.exists());
+        let listed = dispatch(&db, "worktree.list", &json!({"projectId":project.id}))
+            .unwrap()
+            .unwrap();
+        assert_eq!(listed.as_array().unwrap().len(), 2);
+        let removed = dispatch(
+            &db,
+            "worktree.remove",
+            &json!({"id":created["id"],"operationId":"worktree-remove-after-reconcile"}),
+        )
+        .unwrap();
+        assert_eq!(removed, Some(Value::Null));
+        assert!(!target.exists());
+    }
+
     #[test]
     fn creates_lists_and_removes_a_registered_worktree_idempotently() {
         let parent = tempfile::tempdir().unwrap();
@@ -2292,6 +2859,58 @@ mod tests {
             expected_child.to_string_lossy()
         );
     }
+    /// The dirty guard still runs before the removal and a refusal leaves no
+    /// reserved intent or execution claim behind, so the retry stays possible.
+    #[test]
+    fn a_dirty_worktree_is_refused_and_leaves_no_reserved_intent() {
+        let parent = tempfile::tempdir().unwrap();
+        let repo = parent.path().join("repo");
+        initialized_repository(&repo);
+        let db = Database::open(&parent.path().join("db.sqlite")).unwrap();
+        initialize(&db).unwrap();
+        let project = db
+            .add_project(repo.to_str().unwrap(), Some("p"), "project-op")
+            .unwrap();
+        let target = parent.path().join("feature");
+        let created = dispatch(
+            &db,
+            "worktree.create",
+            &json!({"projectId":project.id,"path":target.to_string_lossy(),"branch":"feature","createBranch":true,"operationId":"worktree-create"}),
+        )
+        .unwrap()
+        .unwrap();
+        fs::write(target.join("README.md"), "uncommitted").unwrap();
+        let refused = dispatch(
+            &db,
+            "worktree.remove",
+            &json!({"id":created["id"],"operationId":"worktree-remove-dirty"}),
+        )
+        .unwrap_err();
+        assert_eq!(refused.to_string(), "worktree_dirty");
+        assert!(target.exists());
+        let (intents, claims): (i64, i64) = db
+            .transaction(|tx| {
+                Ok((
+                    tx.query_row("SELECT COUNT(*) FROM worktree_intents", [], |r| r.get(0))?,
+                    tx.query_row("SELECT COUNT(*) FROM external_operations WHERE id='worktree-remove-dirty'", [], |r| r.get(0))?,
+                ))
+            })
+            .unwrap();
+        assert_eq!((intents, claims), (0, 0));
+        // Cleaning the worktree makes the same removal succeed.
+        git(&target, &["checkout", "--", "README.md"]).unwrap();
+        assert_eq!(
+            dispatch(
+                &db,
+                "worktree.remove",
+                &json!({"id":created["id"],"operationId":"worktree-remove-clean"}),
+            )
+            .unwrap(),
+            Some(Value::Null)
+        );
+        assert!(!target.exists());
+    }
+
     #[test]
     fn removal_rejects_a_live_session_in_a_worktree_descendant() {
         let parent = tempfile::tempdir().unwrap();

@@ -1828,6 +1828,22 @@
         },
         "data": {
           "type": "string"
+        },
+        "storageDegraded": {
+          "type": "object",
+          "properties": {
+            "reason": {
+              "type": "string"
+            },
+            "cursor": {
+              "type": "number"
+            }
+          },
+          "required": [
+            "reason",
+            "cursor"
+          ],
+          "additionalProperties": false
         }
       },
       "required": [
