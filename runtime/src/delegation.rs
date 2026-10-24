@@ -68,7 +68,15 @@ pub const TOOL_NAMES: [&str; 6] = [
     "delegate_result",
     "delegate_cancel",
 ];
-const ACTIVE_STATES: &str = "('starting','running','awaiting_parent','awaiting_user')";
+/// The live (non-terminal) link states; `ACTIVE_STATES` is their SQL literal
+/// (a unit test keeps the two in step).
+const LIVE_STATES: [&str; 6] = ["starting", "running", "awaiting_parent", "awaiting_user", "cancelling", "cancel_failed"];
+const ACTIVE_STATES: &str = "('starting','running','awaiting_parent','awaiting_user','cancelling','cancel_failed')";
+/// States in which a stop was requested but not observed yet: the turn may
+/// still be working, so they hold capacity and keep the link non-terminal.
+const STOP_REQUESTED_STATES: [&str; 2] = ["cancelling", "cancel_failed"];
+/// The delegate's runtime died mid-turn (startup reconciliation).
+pub(crate) const INTERRUPTED_REASON: &str = "The runtime stopped before the delegated turn finished";
 /// Error messages that are also the RPC error code the MCP host reports.
 pub const ERROR_CODES: [&str; 17] = [
     "delegation_unauthorized",
@@ -109,6 +117,9 @@ pub struct Delegations {
     tokens: Mutex<HashMap<String, String>>,
     /// Serializes the cap check with the row insert across MCP connections.
     pub(crate) start_gate: Mutex<()>,
+    /// Serializes a delegate's first send with a cancel (F09): a cancel that
+    /// lands between the active check and the send produces no send.
+    send_fence: Mutex<()>,
 }
 
 impl Delegations {
@@ -214,13 +225,15 @@ pub(crate) struct ChildLink {
     pub id: String,
     pub parent_session_id: String,
     pub state: String,
+    /// The turn this link started: only its events settle the link (F08).
+    pub turn_id: Option<String>,
 }
 
 pub(crate) fn active_link(tx: &Transaction<'_>, child_session_id: &str) -> Result<Option<ChildLink>> {
     tx.query_row(
-        &format!("SELECT id,parent_session_id,state FROM delegations WHERE child_session_id=? AND state IN {ACTIVE_STATES}"),
+        &format!("SELECT id,parent_session_id,state,turn_id FROM delegations WHERE child_session_id=? AND state IN {ACTIVE_STATES}"),
         [child_session_id],
-        |row| Ok(ChildLink { id: row.get(0)?, parent_session_id: row.get(1)?, state: row.get(2)? }),
+        |row| Ok(ChildLink { id: row.get(0)?, parent_session_id: row.get(1)?, state: row.get(2)?, turn_id: row.get(3)? }),
     )
     .optional()
     .map_err(Into::into)
@@ -234,12 +247,13 @@ pub(crate) fn active_children(tx: &Transaction<'_>, parent_session_id: &str) -> 
     rows.collect::<rusqlite::Result<Vec<_>>>().map_err(Into::into)
 }
 
-/// The parent agent can answer requests only while it is inside a turn.
-pub(crate) fn parent_turn_active(tx: &Transaction<'_>, parent_session_id: &str) -> Result<bool> {
+/// A turn is running while the session is live and its activity says so; a
+/// terminal session and an idle one have nothing left to stop.
+fn turn_active(tx: &Transaction<'_>, session_id: &str) -> Result<bool> {
     let row: Option<(String, Option<String>)> = tx
         .query_row(
             "SELECT sessions.status,session_activity.state FROM sessions LEFT JOIN session_activity ON session_activity.session_id=sessions.id WHERE sessions.id=?",
-            [parent_session_id],
+            [session_id],
             |row| Ok((row.get(0)?, row.get(1)?)),
         )
         .optional()?;
@@ -247,6 +261,16 @@ pub(crate) fn parent_turn_active(tx: &Transaction<'_>, parent_session_id: &str) 
         !matches!(status.as_str(), "exited" | "interrupted" | "error")
             && matches!(state.as_deref(), Some("running" | "awaiting_approval"))
     }))
+}
+
+/// The parent agent can answer requests only while it is inside a turn.
+pub(crate) fn parent_turn_active(tx: &Transaction<'_>, parent_session_id: &str) -> Result<bool> {
+    turn_active(tx, parent_session_id)
+}
+
+/// A stop was requested and the child still owes us a turn end.
+pub(crate) fn stop_requested(state: &str) -> bool {
+    STOP_REQUESTED_STATES.contains(&state)
 }
 
 pub(crate) fn set_state(
@@ -274,11 +298,18 @@ pub(crate) fn set_state(
 /// Delegation state machine, driven by the delegated session's projected
 /// events inside the projection transaction. Only the delegated turn counts:
 /// terminal states are final, so later turns the user sends change nothing.
-pub(crate) fn project_child_event(tx: &Transaction<'_>, link: &ChildLink, kind: &str, data: &Value) -> Result<()> {
+pub(crate) fn project_child_event(tx: &Transaction<'_>, link: &ChildLink, turn: Option<&str>, kind: &str, data: &Value) -> Result<()> {
+    // The link answers for the turn it started (F08): an unrelated later turn
+    // of the same child session cannot settle it.
+    if !same_turn(link, turn) {
+        return Ok(());
+    }
     let started = link.state != "starting";
+    let stopping = stop_requested(&link.state);
     match kind {
         "message.user" if !started => set_state(tx, &link.id, "running", None, None),
-        "chat.approval" | "chat.approval.resolved" if started => {
+        // A pending stop keeps its state: the child still owes us a turn end.
+        "chat.approval" | "chat.approval.resolved" if started && !stopping => {
             let state = match crate::chat_projection::pending_approval_route(tx, &child_of(tx, &link.id)?)? {
                 Some("parent") => "awaiting_parent",
                 Some(_) => "awaiting_user",
@@ -289,6 +320,8 @@ pub(crate) fn project_child_event(tx: &Transaction<'_>, link: &ChildLink, kind: 
         "chat.turn.completed" if started => {
             let state = match data.get("status").and_then(Value::as_str) {
                 Some("cancelled" | "canceled" | "interrupted") => "cancelled",
+                // An abort after the stop request is the stop, not a failure.
+                Some("failed" | "error") if stopping => "cancelled",
                 Some("failed" | "error") => "failed",
                 _ => "completed",
             };
@@ -299,9 +332,21 @@ pub(crate) fn project_child_event(tx: &Transaction<'_>, link: &ChildLink, kind: 
         "chat.error" if started => {
             let message = data.get("message").and_then(Value::as_str).unwrap_or("Provider request failed");
             let answer = final_answer(tx, &child_of(tx, &link.id)?)?;
-            set_state(tx, &link.id, "failed", Some(&answer), Some(message))
+            let state = if stopping { "cancelled" } else { "failed" };
+            set_state(tx, &link.id, state, Some(&answer), Some(message))
         }
         _ => Ok(()),
+    }
+}
+
+/// A link settles only for the turn it started. Until the send reports that
+/// turn (the link is `starting` then) and for rows written before binding
+/// existed, any event counts. A later turn never matches a bound link.
+fn same_turn(link: &ChildLink, turn: Option<&str>) -> bool {
+    match (link.turn_id.as_deref(), turn) {
+        (None, _) => true,
+        (Some(bound), Some(turn)) => bound == turn,
+        (Some(_), None) => false,
     }
 }
 
@@ -332,11 +377,17 @@ pub(crate) fn final_answer_for_turn(tx: &Transaction<'_>, child_session_id: &str
             }
         }
     }
-    let mut answer = texts.join("\n\n");
-    if turn_id.is_none() && answer.chars().count() > MAX_RESULT_CHARS {
-        answer = answer.chars().take(MAX_RESULT_CHARS).collect::<String>() + "\n…(truncated)";
+    let answer = texts.join("\n\n");
+    Ok(if turn_id.is_none() { truncate_answer(answer) } else { answer })
+}
+
+/// Keeps a result small enough for the delegating agent's context.
+fn truncate_answer(answer: String) -> String {
+    if answer.chars().count() > MAX_RESULT_CHARS {
+        answer.chars().take(MAX_RESULT_CHARS).collect::<String>() + "\n…(truncated)"
+    } else {
+        answer
     }
-    Ok(answer)
 }
 
 pub(crate) struct NewDelegation<'a> {
@@ -601,6 +652,7 @@ fn git_output(cwd: &Path, args: &[&str]) -> Result<String> {
 /// Background start: connect the delegate's Chat and auto-send the prompt
 /// through the same paths `chat.connect` and `chat.send` use.
 pub(crate) fn run_start(
+    delegations: &Delegations,
     db: &Database,
     providers: &Providers,
     delegation_id: &str,
@@ -614,12 +666,21 @@ pub(crate) fn run_start(
     if let Err(error) = crate::service::connect_chat_session(db, providers, child_session_id) {
         return fail(format!("The delegated agent could not connect: {error}"));
     }
+    // The fence with `cancel` (F09): a cancel that lands between the active
+    // check and the send produces no send. Only these two steps need it, so a
+    // slow connect never delays a cancel.
+    let fence = match delegations.send_fence.lock() {
+        Ok(fence) => fence,
+        Err(_) => return fail("The delegation start fence is unavailable".into()),
+    };
     if !is_active(db, delegation_id) {
         return;
     }
     match crate::service::send_chat_message(db, providers, child_session_id, prompt, &[], send_operation_id) {
         Ok(result) => {
             if let Some(turn_id) = result.get("turnId").and_then(Value::as_str) {
+                // Bind the link to the turn it started: from here on only that
+                // turn's events settle it (F08).
                 let _ = db.transaction(|tx| {
                     tx.execute("UPDATE delegations SET turn_id=? WHERE id=?", params![turn_id, delegation_id])?;
                     Ok(())
@@ -628,6 +689,7 @@ pub(crate) fn run_start(
         }
         Err(error) => fail(format!("The delegated prompt could not be sent: {error}")),
     }
+    drop(fence);
 }
 
 fn is_active(db: &Database, delegation_id: &str) -> bool {
@@ -642,11 +704,34 @@ fn is_active(db: &Database, delegation_id: &str) -> bool {
     .unwrap_or(false)
 }
 
-/// `session.stop` on a delegate ends its delegation as cancelled.
+/// `session.stop` on a delegate ends its delegation as cancelled. The worker is
+/// stopped, so the stop is observed (F09): cancelled is truthful here.
 pub fn cancel_stopped(db: &Database, session_id: &str) -> Result<()> {
     db.transaction(|tx| match active_link(tx, session_id)? {
         Some(link) => set_state(tx, &link.id, "cancelled", None, None),
         None => Ok(()),
+    })
+}
+
+/// Startup (F08): a link that was live when this runtime died is not live now.
+/// Every non-terminal link becomes an explicit `interrupted` result that keeps
+/// the delegate's partial answer and its worktree; the cap counts live states,
+/// so capacity is free again and nothing is resent.
+pub fn reconcile_interrupted(db: &Database) -> Result<usize> {
+    db.transaction(|tx| {
+        let links: Vec<(String, String, Option<String>)> = {
+            let mut statement = tx.prepare(&format!(
+                "SELECT id,child_session_id,turn_id FROM delegations WHERE state IN {ACTIVE_STATES}"
+            ))?;
+            let rows = statement.query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?;
+            rows.collect::<rusqlite::Result<Vec<_>>>()?
+        };
+        for (id, child, turn) in &links {
+            let partial = truncate_answer(final_answer_for_turn(tx, child, turn.as_deref())?);
+            let partial = (!partial.trim().is_empty()).then_some(partial);
+            set_state(tx, id, "interrupted", partial.as_deref(), Some(INTERRUPTED_REASON))?;
+        }
+        Ok(links.len())
     })
 }
 
@@ -713,7 +798,7 @@ pub(crate) fn dispatch(
         "delegation.cancel" => {
             let request: OneRequest = parse(params)?;
             let parent = delegations.authorize(db, &request.caller_session_id, &request.caller_token)?;
-            cancel(db, providers, &parent, &request.id)?
+            cancel(delegations, db, providers, &parent, &request.id)?
         }
         _ => return Ok(None),
     };
@@ -852,21 +937,73 @@ fn changed_files(db: &Database, child_session_id: &str, send_operation_id: &str)
         .and_then(|value| value.get("files").cloned())
 }
 
-fn cancel(db: &Database, providers: &Providers, parent: &Session, id: &str) -> Result<Value> {
+/// Provider errors that mean the turn is already over (nothing left to stop).
+fn already_stopped(code: &str) -> bool {
+    // `turn_not_active`/`turn_not_started`/`turn_changed`: that turn is over;
+    // `chat_not_open`/`provider_disconnected`: its worker is gone.
+    matches!(
+        code,
+        "turn_not_active" | "turn_not_started" | "turn_changed" | "chat_not_open" | "provider_disconnected"
+    )
+}
+
+/// A link that is not finished: its state is one `ACTIVE_STATES` names.
+fn live(state: &str) -> bool {
+    LIVE_STATES.contains(&state)
+}
+
+fn cancel(delegations: &Delegations, db: &Database, providers: &Providers, parent: &Session, id: &str) -> Result<Value> {
     let row = owned_row(db, &parent.id, id)?;
-    if !matches!(row.state.as_str(), "starting" | "running" | "awaiting_parent" | "awaiting_user") {
+    if !live(&row.state) {
         return Ok(json!({"delegationId": row.id, "state": row.state}));
     }
-    let turn = row
-        .turn_id
-        .clone()
-        .or_else(|| db.session_by_id(&row.child).ok().flatten().and_then(|session| session.activity).and_then(|activity| activity.turn_id));
-    db.transaction(|tx| set_state(tx, &row.id, "cancelled", None, None))?;
-    if let Some(turn) = turn {
-        // Best effort: an idle or not-yet-connected delegate has no turn to stop.
-        let _ = providers.chat_cancel(&row.child, &turn);
+    // The fence with `run_start` (F09): a cancel that lands between the start's
+    // active check and its send means the send never happens.
+    let turn = {
+        let _fence = delegations.send_fence.lock().map_err(|_| anyhow!("delegation_fence_unavailable"))?;
+        let row = owned_row(db, &parent.id, id)?;
+        if !live(&row.state) {
+            return Ok(json!({"delegationId": row.id, "state": row.state}));
+        }
+        // Nothing was sent yet (and, under the fence, nothing will be), or no
+        // turn of this delegate is running: the child is contained, so the stop
+        // is already true and frees its capacity.
+        if row.state == "starting" || !turn_running(db, &row.child)? {
+            db.transaction(|tx| set_state(tx, &row.id, "cancelled", None, None))?;
+            return Ok(json!({"delegationId": row.id, "state": "cancelled"}));
+        }
+        db.transaction(|tx| set_state(tx, &row.id, "cancelling", None, None))?;
+        row.turn_id
+            .clone()
+            .or_else(|| db.session_by_id(&row.child).ok().flatten().and_then(|session| session.activity).and_then(|activity| activity.turn_id))
+    };
+    // The provider reports the turn's end, which settles the link as cancelled;
+    // a refusal stays visible instead of pretending the work stopped.
+    match turn {
+        Some(turn) => match providers.chat_cancel(&row.child, &turn) {
+            Ok(()) => {
+                if !turn_running(db, &row.child)? {
+                    db.transaction(|tx| set_state(tx, &row.id, "cancelled", None, None))?;
+                }
+            }
+            Err(error) if already_stopped(&error.code) => {
+                db.transaction(|tx| set_state(tx, &row.id, "cancelled", None, None))?;
+            }
+            Err(error) => {
+                db.transaction(|tx| set_state(tx, &row.id, "cancel_failed", None, Some(&error.message)))?;
+                return Ok(json!({"delegationId": row.id, "state": "cancel_failed", "error": error.message}));
+            }
+        },
+        None => db.transaction(|tx| set_state(tx, &row.id, "cancelled", None, None))?,
     }
-    Ok(json!({"delegationId": row.id, "state": "cancelled"}))
+    // Whatever the provider answered, the link reports what it knows now: while
+    // a stop is pending that is `cancelling`, after a refusal `cancel_failed`.
+    let state = owned_row(db, &parent.id, id)?.state;
+    Ok(json!({"delegationId": row.id, "state": state}))
+}
+
+fn turn_running(db: &Database, session_id: &str) -> Result<bool> {
+    db.transaction(|tx| turn_active(tx, session_id))
 }
 
 #[cfg(test)]
@@ -884,6 +1021,11 @@ mod tests {
         assert!(!delegations.token_matches("other", &second));
         assert!(!delegations.token_matches("s", ""));
         assert_eq!(second.len(), 64);
+    }
+
+    #[test]
+    fn the_live_state_list_and_its_sql_literal_agree() {
+        assert_eq!(format!("('{}')", LIVE_STATES.join("','")), ACTIVE_STATES);
     }
 
     #[test]

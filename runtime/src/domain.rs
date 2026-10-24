@@ -64,7 +64,8 @@ pub struct SessionDelegation {
     pub workspace: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub branch: Option<String>,
-    /// starting | running | awaiting_parent | awaiting_user | completed | failed | cancelled
+    /// starting | running | awaiting_parent | awaiting_user | cancelling | cancel_failed |
+    /// completed | failed | cancelled | interrupted
     pub state: String,
     /// How many of the user's messages from the parent chat ThreadTerm
     /// attached to the delegate's first message (sent only when some were).

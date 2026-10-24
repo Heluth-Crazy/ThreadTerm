@@ -40,6 +40,7 @@ async fn main() -> Result<()> {
     threadterm_v3_runtime::session_documents::initialize(&db)?;
     threadterm_v3_runtime::agent_review::initialize(&db)?;
     db.mark_live_sessions_interrupted()?;
+    threadterm_v3_runtime::delegation::reconcile_interrupted(&db)?;
     threadterm_v3_runtime::quick_launch::mark_setup_runs_interrupted(&db)?;
     let service = Arc::new(RuntimeService::new(config, db));
     service.initialize_remote()?;

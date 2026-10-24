@@ -27,15 +27,16 @@ export function delegationToolLabel(tool: DelegationTool, copy: (en: string, zh:
   }
 }
 
-/** A delegation that has not finished (its delegated turn is still going). */
+/** A delegation that has not finished (its delegated turn is still going, or a stop is unconfirmed). */
 export function delegationActive(state: SessionDelegationState): boolean {
-  return state === 'starting' || state === 'running' || state === 'awaiting_parent' || state === 'awaiting_user';
+  return state === 'starting' || state === 'running' || state === 'awaiting_parent' || state === 'awaiting_user'
+    || state === 'cancelling' || state === 'cancel_failed';
 }
 
 export function delegationStateLabel(state: SessionDelegationState, zh: boolean): string {
   return zh
-    ? ({ starting: '启动中', running: '执行中', awaiting_parent: '等待委派方', awaiting_user: '待你处理', completed: '已完成', failed: '失败', cancelled: '已取消' })[state]
-    : ({ starting: 'Starting', running: 'Running', awaiting_parent: 'Waiting for parent agent', awaiting_user: 'Needs you', completed: 'Completed', failed: 'Failed', cancelled: 'Cancelled' })[state];
+    ? ({ starting: '启动中', running: '执行中', awaiting_parent: '等待委派方', awaiting_user: '待你处理', cancelling: '停止中', cancel_failed: '停止失败', completed: '已完成', failed: '失败', cancelled: '已取消', interrupted: '已中断' })[state]
+    : ({ starting: 'Starting', running: 'Running', awaiting_parent: 'Waiting for parent agent', awaiting_user: 'Needs you', cancelling: 'Stopping', cancel_failed: 'Stop failed', completed: 'Completed', failed: 'Failed', cancelled: 'Cancelled', interrupted: 'Interrupted' })[state];
 }
 
 /** Ordered, compact status groups for the parent Chat's delegation strip. */
@@ -48,15 +49,18 @@ export function delegationStateSummary(delegates: readonly Session[], copy: (en:
       counts.set(group, (counts.get(group) ?? 0) + 1);
     }
   }
-  const order: SessionDelegationState[] = ['awaiting_user', 'awaiting_parent', 'running', 'failed', 'cancelled', 'completed'];
+  const order: SessionDelegationState[] = ['awaiting_user', 'cancel_failed', 'cancelling', 'awaiting_parent', 'running', 'failed', 'interrupted', 'cancelled', 'completed'];
   return order.flatMap(state => {
     const count = counts.get(state);
     if (!count) return [];
     const label = {
       awaiting_user: copy(`${count} ${count === 1 ? 'needs' : 'need'} you`, `${count} 个待你处理`),
+      cancel_failed: copy(`${count} stop failed`, `${count} 个停止失败`),
+      cancelling: copy(`${count} stopping`, `${count} 个停止中`),
       awaiting_parent: copy(`${count} waiting for parent`, `${count} 个等待委派方`),
       running: copy(`${count} running`, `${count} 个执行中`),
       failed: copy(`${count} failed`, `${count} 个失败`),
+      interrupted: copy(`${count} interrupted`, `${count} 个已中断`),
       cancelled: copy(`${count} cancelled`, `${count} 个已取消`),
       completed: copy(`${count} completed`, `${count} 个已完成`),
       starting: '',

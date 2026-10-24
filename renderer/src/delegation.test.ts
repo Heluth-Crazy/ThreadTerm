@@ -77,6 +77,32 @@ test('delegation states are bilingual and only unfinished ones are active', () =
   assert.ok(!delegationActive('cancelled'));
 });
 
+test('a stop that is not observed yet, or was refused, is its own visible state', () => {
+  // The delegate may still be working, so both hold the slot and keep the card open.
+  assert.ok(delegationActive('cancelling'));
+  assert.ok(delegationActive('cancel_failed'));
+  assert.ok(!delegationActive('interrupted'));
+  assert.equal(delegationStateLabel('cancelling', false), 'Stopping');
+  assert.equal(delegationStateLabel('cancelling', true), '停止中');
+  assert.equal(delegationStateLabel('cancel_failed', false), 'Stop failed');
+  assert.equal(delegationStateLabel('cancel_failed', true), '停止失败');
+  assert.equal(delegationStateLabel('interrupted', false), 'Interrupted');
+  assert.equal(delegationStateLabel('interrupted', true), '已中断');
+  const en = (english: string) => english, zh = (_english: string, chinese: string) => chinese;
+  const stopping = [delegate('a', 'cancel_failed'), delegate('b', 'cancelling'), delegate('c', 'interrupted')];
+  assert.deepEqual(delegationStateSummary(stopping, en), [
+    { state: 'cancel_failed', label: '1 stop failed' },
+    { state: 'cancelling', label: '1 stopping' },
+    { state: 'interrupted', label: '1 interrupted' },
+  ]);
+  assert.deepEqual(delegationStateSummary(stopping, zh).map(group => group.label), ['1 个停止失败', '1 个停止中', '1 个已中断']);
+  // A stop request and an interruption are new activity on a hidden strip.
+  for (const state of ['cancelling', 'cancel_failed'] as const) {
+    assert.equal(delegationStripVisible(['a'], [delegate('a', state)]), true, state);
+  }
+  assert.equal(delegationStripVisible(['a'], [delegate('a', 'interrupted')]), false);
+});
+
 test("a delegate card says how many of the user's messages were attached, in both languages", () => {
   const en = (english: string) => english, zh = (_english: string, chinese: string) => chinese;
   assert.equal(attachedMessagesLabel(3, en).label, '3 of your messages attached');

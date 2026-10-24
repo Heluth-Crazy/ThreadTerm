@@ -28,6 +28,11 @@ struct FixtureAdapter {
     /// Delegation tests run several chats at once; real providers give each a
     /// distinct native id, which `accept_chat_connection` requires.
     unique_native_ids: bool,
+    /// Blocks the first send until the test releases it (F09 cancel race).
+    send_gate: Option<(SyncSender<()>, Arc<Mutex<Receiver<()>>>)>,
+    cancels: Arc<AtomicUsize>,
+    /// Cancel errors the fixture's chats return, in order (F09 refusal).
+    cancel_failures: Arc<Mutex<Vec<ProviderError>>>,
 }
 
 impl ProviderAdapter for FixtureAdapter {
@@ -150,6 +155,9 @@ impl ProviderAdapter for FixtureAdapter {
                 *self.alive.lock().unwrap() = Arc::clone(&flag);
                 flag
             },
+            send_gate: self.send_gate.clone(),
+            cancels: Arc::clone(&self.cancels),
+            cancel_failures: Arc::clone(&self.cancel_failures),
         }))
     }
 }
@@ -158,6 +166,9 @@ struct FixtureChat {
     native: String,
     stops: Arc<AtomicUsize>,
     alive: Arc<std::sync::atomic::AtomicBool>,
+    send_gate: Option<(SyncSender<()>, Arc<Mutex<Receiver<()>>>)>,
+    cancels: Arc<AtomicUsize>,
+    cancel_failures: Arc<Mutex<Vec<ProviderError>>>,
 }
 
 impl ChatSession for FixtureChat {
@@ -170,11 +181,29 @@ impl ChatSession for FixtureChat {
     }
 
     fn send(&mut self, _text: &str, _operation_id: &str) -> Result<Value, ProviderError> {
+        if let Some((started, release)) = &self.send_gate {
+            started
+                .send(())
+                .map_err(|error| ProviderError::new("fixture_failed", error.to_string()))?;
+            release
+                .lock()
+                .map_err(|_| ProviderError::new("fixture_failed", "release lock poisoned"))?
+                .recv()
+                .map_err(|error| ProviderError::new("fixture_failed", error.to_string()))?;
+        }
         Ok(json!({"turnId":"fixture-turn"}))
     }
 
     fn cancel(&mut self, _turn_id: &str) -> Result<(), ProviderError> {
-        Ok(())
+        self.cancels.fetch_add(1, AtomicOrdering::SeqCst);
+        let failure = {
+            let mut failures = self
+                .cancel_failures
+                .lock()
+                .map_err(|_| ProviderError::new("fixture_failed", "cancel failure lock poisoned"))?;
+            (!failures.is_empty()).then(|| failures.remove(0))
+        };
+        failure.map_or(Ok(()), Err)
     }
 
     fn approve(
@@ -203,6 +232,11 @@ struct Fixture {
     worker_tokens: Arc<Mutex<Vec<String>>>,
     started: Option<Receiver<()>>,
     release: Option<SyncSender<()>>,
+    /// Set when the send blocks: the send is in flight until `send_release` fires.
+    send_started: Option<Receiver<()>>,
+    send_release: Option<SyncSender<()>>,
+    cancels: Arc<AtomicUsize>,
+    cancel_failures: Arc<Mutex<Vec<ProviderError>>>,
 }
 
 impl Fixture {
@@ -221,23 +255,30 @@ impl Fixture {
             status_before_return,
             false,
             true,
+            false,
         )
     }
 
     fn with_failures(failures: Vec<ProviderError>) -> Self {
-        Self::build(false, failures, None, false, true)
+        Self::build(false, failures, None, false, true, false)
     }
 
     fn with_failures_and_liveness(
         failures: Vec<ProviderError>,
         initial_liveness: bool,
     ) -> Self {
-        Self::build(false, failures, None, false, initial_liveness)
+        Self::build(false, failures, None, false, initial_liveness, false)
     }
 
     /// Several concurrent chats (parent and delegates) with distinct native ids.
     fn for_delegation() -> Self {
-        Self::build(false, Vec::new(), None, true, true)
+        Self::build(false, Vec::new(), None, true, true, false)
+    }
+
+    /// `for_delegation` where the first send of a delegate blocks until the
+    /// test releases it: the window between the start's check and its send.
+    fn for_delegation_with_blocked_send() -> Self {
+        Self::build(false, Vec::new(), None, true, true, true)
     }
 
     fn build(
@@ -246,6 +287,7 @@ impl Fixture {
         status_before_return: Option<&'static str>,
         unique_native_ids: bool,
         initial_liveness: bool,
+        blocked_send: bool,
     ) -> Self {
         let root = tempfile::tempdir().unwrap();
         let db = Arc::new(Database::open(&root.path().join("runtime.sqlite")).unwrap());
@@ -260,6 +302,10 @@ impl Fixture {
         ))));
         let (started_tx, started_rx) = mpsc::sync_channel(1);
         let (release_tx, release_rx) = mpsc::sync_channel(1);
+        let (send_started_tx, send_started_rx) = mpsc::sync_channel(1);
+        let (send_release_tx, send_release_rx) = mpsc::sync_channel(1);
+        let cancels = Arc::new(AtomicUsize::new(0));
+        let cancel_failures = Arc::new(Mutex::new(Vec::new()));
         let adapter = Arc::new(FixtureAdapter {
             gate: slow.then_some(OpenGate {
                 started: started_tx,
@@ -273,6 +319,10 @@ impl Fixture {
             worker_tokens: Arc::clone(&worker_tokens),
             initial_liveness,
             unique_native_ids,
+            send_gate: blocked_send
+                .then(|| (send_started_tx, Arc::new(Mutex::new(send_release_rx)))),
+            cancels: Arc::clone(&cancels),
+            cancel_failures: Arc::clone(&cancel_failures),
         });
         let output = Arc::new(OutputStore::default());
         let service = Arc::new(RuntimeService {
@@ -311,6 +361,10 @@ impl Fixture {
             worker_tokens,
             started: slow.then_some(started_rx),
             release: slow.then_some(release_tx),
+            send_started: blocked_send.then_some(send_started_rx),
+            send_release: blocked_send.then_some(send_release_tx),
+            cancels,
+            cancel_failures,
         }
     }
 
@@ -1266,6 +1320,9 @@ fn provider_handoff_does_not_publish_an_already_dead_worker() {
         worker_tokens: Arc::new(Mutex::new(Vec::new())),
         initial_liveness: false,
         unique_native_ids: false,
+        send_gate: None,
+        cancels: Arc::new(AtomicUsize::new(0)),
+        cancel_failures: Arc::new(Mutex::new(Vec::new())),
     };
     let providers = Providers::for_test(vec![Arc::new(adapter)]);
     assert_eq!(
@@ -1396,7 +1453,12 @@ fn replacement_connecting_expires_old_cards_before_new_worker_cards_arrive() {
 // projection entry point, instead of a live provider.
 
 fn rpc(fixture: &Fixture, method: &str, params: Value) -> Result<Value, RpcError> {
-    fixture.service.dispatch(
+    rpc_service(&fixture.service, method, params)
+}
+
+/// `rpc` for a thread that may only hold the service (F09 cancel races).
+fn rpc_service(service: &Arc<RuntimeService>, method: &str, params: Value) -> Result<Value, RpcError> {
+    service.dispatch(
         "mcp-test",
         RpcRequest {
             v: 1,
@@ -1446,6 +1508,17 @@ fn delegation_state(fixture: &Fixture, child: &str) -> String {
         .delegation
         .unwrap()
         .state
+}
+
+fn delegation_id(fixture: &Fixture, child: &str) -> String {
+    fixture
+        .db
+        .session_by_id(child)
+        .unwrap()
+        .unwrap()
+        .delegation
+        .unwrap()
+        .id
 }
 
 fn activity_state(fixture: &Fixture, session: &str) -> String {
@@ -1669,21 +1742,178 @@ fn delegation_rejects_wrong_tokens_and_delegates_that_try_to_delegate() {
 fn delegation_caps_active_delegates_per_parent() {
     let fixture = Fixture::for_delegation();
     let (parent, token) = delegation_parent(&fixture, "parent-create");
+    let mut children = Vec::new();
     for index in 0..crate::delegation::MAX_ACTIVE_DELEGATES {
-        running_delegate(&fixture, &parent, &token, &format!("start-{index}"));
+        children.push(running_delegate(&fixture, &parent, &token, &format!("start-{index}")));
     }
     let over = start_delegate(&fixture, &parent, &token, "start-over").unwrap_err();
     assert_eq!(over.code, "delegation_limit_reached");
-    // Cancelling one frees a slot.
-    let first = status_of(&fixture, &parent, &token)["delegates"][0]["delegationId"].clone();
-    let cancelled = rpc(
+    // Cancelling asks the provider to stop; the slot is freed only once the
+    // stop is observed (F09).
+    let first = children[0].clone();
+    let id = delegation_id(&fixture, &first);
+    let cancelling = rpc(
         &fixture,
         "delegation.cancel",
-        json!({"callerSessionId":parent,"callerToken":token,"id":first}),
+        json!({"callerSessionId":parent,"callerToken":token,"id":id}),
     )
     .unwrap();
-    assert_eq!(cancelled["state"], "cancelled");
+    assert_eq!(cancelling["state"], "cancelling");
+    assert_eq!(
+        start_delegate(&fixture, &parent, &token, "start-too-early").unwrap_err().code,
+        "delegation_limit_reached",
+        "a delegate that may still be working keeps its slot",
+    );
+    fixture
+        .db
+        .record_provider_event(&first, Some("fixture-turn"), "chat.turn.completed", &json!({"status":"cancelled"}))
+        .unwrap();
+    assert_eq!(delegation_state(&fixture, &first), "cancelled");
     assert!(start_delegate(&fixture, &parent, &token, "start-after-cancel").is_ok());
+}
+
+#[test]
+fn a_restart_reconciles_live_delegates_to_interrupted_without_resending() {
+    let fixture = Fixture::for_delegation();
+    let (parent, token) = delegation_parent(&fixture, "parent-create");
+    let mut children = Vec::new();
+    for index in 0..crate::delegation::MAX_ACTIVE_DELEGATES {
+        children.push(running_delegate(&fixture, &parent, &token, &format!("start-{index}")));
+    }
+    // The first delegate had answered part of its task before the runtime died.
+    fixture
+        .db
+        .record_provider_event(&children[0], Some("fixture-turn"), "chat.delta", &json!({"text":"Partial: 2 of 5 files"}))
+        .unwrap();
+    let prompted: Vec<usize> = children.iter().map(|child| fixture.db.chat_items(child).unwrap().len()).collect();
+    // Restart: the same two recovery steps the daemon runs before serving.
+    fixture.db.mark_live_sessions_interrupted().unwrap();
+    let reconciled = crate::delegation::reconcile_interrupted(&fixture.db).unwrap();
+    assert_eq!(reconciled, crate::delegation::MAX_ACTIVE_DELEGATES as usize);
+    for (index, child) in children.iter().enumerate() {
+        assert_eq!(delegation_state(&fixture, child), "interrupted");
+        assert_eq!(fixture.db.session_by_id(child).unwrap().unwrap().status, "interrupted");
+        // Never auto-resend: the dead delegate keeps exactly what it had.
+        assert_eq!(fixture.db.chat_items(child).unwrap().len(), prompted[index]);
+    }
+    // The partial answer, the folder and worktree info survive as the reason.
+    let id = delegation_id(&fixture, &children[0]);
+    let result = rpc(
+        &fixture,
+        "delegation.result",
+        json!({"callerSessionId":parent,"callerToken":token,"id":id}),
+    )
+    .unwrap();
+    assert_eq!(result["state"], "interrupted");
+    assert!(result["finalAnswer"].as_str().unwrap().contains("Partial: 2 of 5 files"));
+    assert_eq!(result["error"], crate::delegation::INTERRUPTED_REASON);
+    assert!(result["workspacePath"].as_str().is_some_and(|path| !path.is_empty()));
+    // Capacity is free again: new work starts, old links never settle.
+    let started = start_delegate(&fixture, &parent, &token, "start-after-restart").unwrap();
+    assert_eq!(started["state"], "starting");
+    fixture
+        .db
+        .record_provider_event(&children[0], Some("fixture-turn"), "chat.turn.completed", &json!({"status":"completed"}))
+        .unwrap();
+    assert_eq!(delegation_state(&fixture, &children[0]), "interrupted");
+}
+
+#[test]
+fn a_later_turn_in_a_delegate_cannot_settle_its_delegation() {
+    let fixture = Fixture::for_delegation();
+    let (parent, token) = delegation_parent(&fixture, "parent-create");
+    let child = running_delegate(&fixture, &parent, &token, "start-1");
+    // The user types into the delegate's Chat: a second, unrelated turn.
+    fixture
+        .db
+        .record_provider_event(&child, Some("later-turn"), "message.user", &json!({"text":"Also do X"}))
+        .unwrap();
+    fixture
+        .db
+        .record_provider_event(&child, Some("later-turn"), "chat.turn.completed", &json!({"status":"completed"}))
+        .unwrap();
+    assert_eq!(delegation_state(&fixture, &child), "running", "the delegated turn is still running");
+    // Its own turn still settles the link.
+    fixture
+        .db
+        .record_provider_event(&child, Some("fixture-turn"), "chat.turn.completed", &json!({"status":"completed"}))
+        .unwrap();
+    assert_eq!(delegation_state(&fixture, &child), "completed");
+}
+
+#[test]
+fn a_cancel_while_the_first_send_is_in_flight_stops_the_turn_before_the_link_settles() {
+    let fixture = Fixture::for_delegation_with_blocked_send();
+    let (parent, token) = delegation_parent(&fixture, "parent-create");
+    let started = start_delegate(&fixture, &parent, &token, "start-1").unwrap();
+    let child = started["sessionId"].as_str().unwrap().to_owned();
+    let id = started["delegationId"].clone();
+    // The prompt is recorded; the provider call has not returned yet.
+    fixture
+        .send_started
+        .as_ref()
+        .unwrap()
+        .recv_timeout(Duration::from_secs(10))
+        .unwrap();
+    assert_eq!(delegation_state(&fixture, &child), "running");
+    let service = Arc::clone(&fixture.service);
+    let (caller, caller_token) = (parent.clone(), token.clone());
+    let cancel = std::thread::spawn(move || {
+        rpc_service(
+            &service,
+            "delegation.cancel",
+            json!({"callerSessionId":caller,"callerToken":caller_token,"id":id}),
+        )
+    });
+    // Let the send return: the cancel waited on the start/cancel fence.
+    fixture.send_release.as_ref().unwrap().send(()).unwrap();
+    let answer = cancel.join().unwrap().unwrap();
+    assert_eq!(answer["state"], "cancelling", "a stop is requested, not yet observed");
+    assert_eq!(fixture.cancels.load(AtomicOrdering::SeqCst), 1, "the in-flight turn was stopped");
+    fixture
+        .db
+        .record_provider_event(&child, Some("fixture-turn"), "chat.turn.completed", &json!({"status":"cancelled"}))
+        .unwrap();
+    assert_eq!(delegation_state(&fixture, &child), "cancelled");
+}
+
+#[test]
+fn a_refused_native_cancel_stays_visible_and_keeps_the_delegates_capacity() {
+    let fixture = Fixture::for_delegation();
+    let (parent, token) = delegation_parent(&fixture, "parent-create");
+    let mut children = Vec::new();
+    for index in 0..crate::delegation::MAX_ACTIVE_DELEGATES {
+        children.push(running_delegate(&fixture, &parent, &token, &format!("start-{index}")));
+    }
+    fixture
+        .cancel_failures
+        .lock()
+        .unwrap()
+        .push(ProviderError::new("provider_busy", "The provider refused to stop the turn"));
+    let id = delegation_id(&fixture, &children[0]);
+    let refused = rpc(
+        &fixture,
+        "delegation.cancel",
+        json!({"callerSessionId":parent,"callerToken":token,"id":id}),
+    )
+    .unwrap();
+    assert_eq!(refused["state"], "cancel_failed");
+    assert_eq!(delegation_state(&fixture, &children[0]), "cancel_failed");
+    // The delegate may still be working: the slot stays taken.
+    assert_eq!(
+        start_delegate(&fixture, &parent, &token, "start-over").unwrap_err().code,
+        "delegation_limit_reached",
+    );
+    let status = status_of(&fixture, &parent, &token);
+    let row = status["delegates"].as_array().unwrap().iter().find(|row| row["delegationId"] == id).unwrap();
+    assert_eq!(row["state"], "cancel_failed");
+    assert_eq!(row["error"], "The provider refused to stop the turn");
+    // When the turn really ends, the link settles.
+    fixture
+        .db
+        .record_provider_event(&children[0], Some("fixture-turn"), "chat.turn.completed", &json!({"status":"cancelled"}))
+        .unwrap();
+    assert_eq!(delegation_state(&fixture, &children[0]), "cancelled");
 }
 
 #[test]

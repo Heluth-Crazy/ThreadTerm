@@ -555,7 +555,7 @@ fn record_tx(
   if let Some(activity) = project_activity(tx, session_id, turn, kind, data, resolved_pending_approval, routed_to_parent)? {
    tx.execute("INSERT INTO outbox(event,data,created_at) VALUES ('session.activity',?,?)",params![serde_json::to_string(&json!({"sessionId":session_id,"activity":activity}))?,now])?;
   }
-  if let Some(link)=&delegation {crate::delegation::project_child_event(tx,link,kind,data)?;}
+  if let Some(link)=&delegation {crate::delegation::project_child_event(tx,link,turn,kind,data)?;}
   crate::group_chat::project_event(tx,session_id,turn,kind,data)?;
   // A parent whose turn ends can no longer answer: its delegates' requests go to the user.
   if matches!(kind,"chat.turn.completed"|"chat.error") {escalate_parent_requests(tx,session_id,&now)?;}
@@ -1152,7 +1152,11 @@ pub(crate) fn escalate_parent_requests(
             )?;
         }
         if let Some(link) = crate::delegation::active_link(tx, &child)? {
-            crate::delegation::set_state(tx, &link.id, "awaiting_user", None, None)?;
+            // A pending stop keeps its state: the delegate may still be working,
+            // and a cancel must not be overwritten by an escalation.
+            if !crate::delegation::stop_requested(&link.state) {
+                crate::delegation::set_state(tx, &link.id, "awaiting_user", None, None)?;
+            }
         }
     }
     Ok(())

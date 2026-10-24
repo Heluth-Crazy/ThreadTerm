@@ -2044,9 +2044,12 @@
         "running",
         "awaiting_parent",
         "awaiting_user",
+        "cancelling",
+        "cancel_failed",
         "completed",
         "failed",
-        "cancelled"
+        "cancelled",
+        "interrupted"
       ]
     },
     "SessionGroup": {

@@ -27,7 +27,11 @@ export interface CatalogVisibility { kind:'project'|'worktree'|'session'; id:str
 export interface LocalBranch { name:string; current:boolean; upstream?:string; lastCommit:CommitSummary }
 // awaiting_parent: a delegated session's request is waiting for the agent that delegated it, not the user.
 export interface SessionActivity { state:'running'|'awaiting_approval'|'awaiting_parent'|'awaiting_input'|'idle'|'unknown'; revision:number; turnId?:string; reason?:string }
-export type SessionDelegationState = 'starting'|'running'|'awaiting_parent'|'awaiting_user'|'completed'|'failed'|'cancelled';
+// Delegation state of the delegated turn only (a later turn of the same session does not change it).
+// `cancelling`: a stop was requested and the agent has not confirmed the end yet; the delegate may still work.
+// `cancel_failed`: the agent refused or failed to stop; it may still work. `interrupted`: the runtime stopped
+// before the delegated turn finished (startup reconciliation); its partial answer is kept.
+export type SessionDelegationState = 'starting'|'running'|'awaiting_parent'|'awaiting_user'|'cancelling'|'cancel_failed'|'completed'|'failed'|'cancelled'|'interrupted';
 // Present on a Chat session that another agent started through ThreadTerm delegation.
 export interface SessionDelegation { id:string; parentSessionId:string; workspace:'shared'|'worktree'; branch?:string; state:SessionDelegationState; /** How many of the user's messages from the parent chat were attached to the delegate's first message; absent when none. */ userMessages?:number }
 export interface SessionForkOrigin { sessionId:string; itemId?:string; title?:string }

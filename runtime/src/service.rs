@@ -2174,12 +2174,14 @@ impl RuntimeService {
             },
         )?;
         let (db, providers) = (Arc::clone(&self.db), Arc::clone(&self.providers));
+        let worker_delegations = Arc::clone(&self.delegations);
         let (worker_delegation, worker_child, prompt) =
             (delegation_id.clone(), child_id.clone(), first_message);
         std::thread::Builder::new()
             .name(format!("delegate-{short}"))
             .spawn(move || {
                 crate::delegation::run_start(
+                    &worker_delegations,
                     &db,
                     &providers,
                     &worker_delegation,

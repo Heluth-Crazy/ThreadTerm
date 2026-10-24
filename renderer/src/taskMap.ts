@@ -60,7 +60,7 @@ function sessionState(session: Session): TaskMapStatus {
   if (state) {
     if (state === 'awaiting_parent' || state === 'awaiting_user') return 'waiting';
     if (delegationActive(state)) return 'running';
-    return state === 'failed' || state === 'cancelled' ? state : 'done';
+    return state === 'failed' || state === 'cancelled' || state === 'interrupted' ? (state === 'failed' ? 'failed' : 'cancelled') : 'done';
   }
   // A Chat whose turn ended rests in `waiting`/`awaiting_input` until the next prompt: that is done, not "needs you".
   const activity = session.activity?.state;

@@ -4,9 +4,10 @@
 .delegation-link { display:inline-flex; align-items:center; gap:4px; min-width:0; padding:0; border:0; background:none; color:var(--text); font:inherit; cursor:pointer; text-align:left; }
 .delegation-link:hover { text-decoration:underline; }
 .delegation-state { flex:none; padding:0 6px; border-radius:var(--radius); background:var(--soft); color:var(--muted); font-size:11px; line-height:18px; }
-.delegation-state.st-running, .delegation-state.st-starting, .delegation-state.st-awaiting_parent { color:var(--text); }
+.delegation-state.st-running, .delegation-state.st-starting, .delegation-state.st-awaiting_parent, .delegation-state.st-cancelling { color:var(--text); }
 .delegation-state.st-awaiting_user { background:color-mix(in srgb,var(--st-needs) 16%,transparent); color:var(--text); }
-.delegation-state.st-failed { background:color-mix(in srgb,var(--st-failed) 14%,transparent); color:var(--text); }
+.delegation-state.st-failed, .delegation-state.st-cancel_failed { background:color-mix(in srgb,var(--st-failed) 14%,transparent); color:var(--text); }
+.delegation-state.st-interrupted { background:color-mix(in srgb,var(--st-stalled) 14%,transparent); color:var(--text); }
 .delegation-branch { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:var(--faint); font-family:var(--mono, ui-monospace, monospace); font-size:11px; }
 .delegation-strip { display:grid; gap:6px; min-width:0; }
 .delegation-header { display:grid; grid-template-columns:auto minmax(0,1fr) auto; align-items:start; column-gap:8px; min-width:0; }

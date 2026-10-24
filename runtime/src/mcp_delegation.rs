@@ -32,7 +32,7 @@ const MAX_WAIT_SECONDS: u64 = 45;
 const DEFAULT_WAIT_SECONDS: u64 = 30;
 const POLL_INTERVAL: Duration = Duration::from_millis(1000);
 const AGENTS: [&str; 6] = ["claude", "codex", "kimi", "grok", "gemini", "opencode"];
-const TERMINAL_STATES: [&str; 3] = ["completed", "failed", "cancelled"];
+const TERMINAL_STATES: [&str; 4] = ["completed", "failed", "cancelled", "interrupted"];
 const MAX_INFLIGHT_CALLS: usize = 64;
 const BROWSER_RPC_TIMEOUT: Duration = Duration::from_secs(12);
 const BROWSER_CANCEL_TIMEOUT: Duration = Duration::from_secs(2);
@@ -67,7 +67,7 @@ const INSTRUCTIONS: &str = concat!(
     "ThreadTerm delegation: start other coding agents as visible ThreadTerm Chat sessions \
 and follow them. In ThreadTerm these tools are the way to hand work to another agent: do not also check or use other \
 delegation plugins, MCP servers or agent CLIs started from a shell, unless the user names that tool. Workflow: delegate_start (one call per task; up to 4 at once) → delegate_wait repeatedly until \
-every delegate is completed, failed or cancelled → delegate_result for each answer. When a delegate is \
+every delegate is completed, failed, cancelled or interrupted → delegate_result for each answer. When a delegate is \
 awaiting_parent it needs your decision: answer its pendingRequests with delegate_respond. Stay in your turn while \
 delegates run; if your turn ends, their requests go to the user instead. Delegates cannot delegate further.\n\n",
     handoff_guide!()
@@ -1093,13 +1093,13 @@ user asks for another agent. The delegate does not see your conversation, so mak
         ),
         tool(
             "delegate_status",
-            "List your delegates (or the given ids) with their state (starting, running, awaiting_parent, awaiting_user, completed, failed, cancelled) and pending requests, plus the agents you can delegate to. This list is complete: no other delegation system needs \
+            "List your delegates (or the given ids) with their state (starting, running, awaiting_parent, awaiting_user, cancelling, cancel_failed, completed, failed, cancelled, interrupted) and pending requests, plus the agents you can delegate to. This list is complete: no other delegation system needs \
 checking.",
             json!({"type":"object","additionalProperties":false,"properties":{"ids":{"type":"array","items":{"type":"string"}}}}),
         ),
         tool(
             "delegate_wait",
-            "Wait up to timeoutSeconds (default 30, max 45) for your delegates (or the given ids) to change state; returns early on any change or as soon as one needs you. Call it repeatedly until every delegate is completed, failed or cancelled. A delegate in awaiting_parent needs your decision: answer its pendingRequests with delegate_respond. Stay in your turn while delegates run; if your turn ends, their requests go to the user.",
+            "Wait up to timeoutSeconds (default 30, max 45) for your delegates (or the given ids) to change state; returns early on any change or as soon as one needs you. Call it repeatedly until every delegate is completed, failed, cancelled or interrupted. A delegate in awaiting_parent needs your decision: answer its pendingRequests with delegate_respond. Stay in your turn while delegates run; if your turn ends, their requests go to the user.",
             json!({"type":"object","additionalProperties":false,"properties":{
                 "ids":{"type":"array","items":{"type":"string"}},
                 "timeoutSeconds":{"type":"integer","minimum":1,"maximum":MAX_WAIT_SECONDS}
@@ -1119,7 +1119,7 @@ checking.",
         ),
         tool(
             "delegate_cancel",
-            "Stop a delegate's work. Its session stays visible to the user.",
+            "Stop a delegate's work. Returns at once with state cancelling; the delegate becomes cancelled only when its turn has actually ended, and cancel_failed means the agent refused or failed to stop (it may still be working). Its session stays visible to the user.",
             json!({"type":"object","additionalProperties":false,"required":["id"],"properties":{"id":{"type":"string","description":"delegationId"}}}),
         ),
     ]
