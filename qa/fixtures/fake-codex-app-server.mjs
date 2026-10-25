@@ -159,15 +159,7 @@ try {
         threadSettings: { summary: 'auto', collaborationMode: { mode: 'default', settings: {} } },
         thread: fixtureThread(nativeId, configuration.cwd, includeTurns),
       });
-      sendNotification('thread/tokenUsage/updated', {
-        threadId: nativeId,
-        turnId: `turn-${nativeId}`,
-        tokenUsage: {
-          last: { totalTokens: 94_700, inputTokens: 60_000, outputTokens: 34_700 },
-          total: { totalTokens: 94_700, inputTokens: 60_000, outputTokens: 34_700 },
-          modelContextWindow: 258_000,
-        },
-      });
+      // A read-only history/preflight read does not activate a live thread.
       continue;
     }
     if (request.method === 'thread/resume') {

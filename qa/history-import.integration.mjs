@@ -304,7 +304,14 @@ try {
   assert.equal((await snapshotSession(primaryPeer, imported.id)).readOnly, undefined);
   // cb84e4c projects the native resume usage update as an empty live assistant
   // boundary. Keep proving that imported history itself survives unchanged.
-  const resumedTranscript = await primaryPeer.request('chat.read', { sessionId: imported.id });
+  let resumedTranscript = [];
+  const resumeUsageDeadline = Date.now() + 5_000;
+  while (Date.now() < resumeUsageDeadline) {
+    resumedTranscript = await primaryPeer.request('chat.read', { sessionId: imported.id });
+    if (resumedTranscript.some((item) => item.turnOrigin !== 'history'
+      && item.turnId === `turn-${nativeId}` && item.turnUsage)) break;
+    await delay(25);
+  }
   assert.deepEqual(resumedTranscript.filter((item) => item.turnOrigin === 'history'), importedTranscript);
   const liveBoundaries = resumedTranscript.filter((item) => item.turnOrigin !== 'history');
   assert.equal(liveBoundaries.length, 1);

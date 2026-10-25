@@ -666,7 +666,11 @@ impl ProviderAdapter for CodexAdapter {
     ) -> Result<Box<dyn ChatSession>, ProviderError> {
         let options = startup.permissions;
         let permissions = codex_startup_permissions(options)?;
-        let native = Arc::new(Mutex::new(None));
+        if let Some(native_id) = native_id {
+            validate_native_id(native_id)?;
+        }
+        // Resume notifications can precede the reply that confirms this known identity.
+        let native = Arc::new(Mutex::new(native_id.map(ToOwned::to_owned)));
         let approvals = Arc::new(Mutex::new(HashMap::new()));
         let active_turn = new_codex_turn_state();
         let ui = Arc::new(Mutex::new(CodexUiState::default()));
@@ -686,7 +690,6 @@ impl ProviderAdapter for CodexAdapter {
             *slot = Some(process.responder());
         }
         let thread_response = if let Some(native_id) = native_id {
-            validate_native_id(native_id)?;
             // Report missing identities precisely; only a caller that knows
             // the durable Chat history may authorize empty-chat recovery.
             let existing = process.request(
@@ -727,15 +730,13 @@ impl ProviderAdapter for CodexAdapter {
             json!({"nativeId":native_id}),
             Some(worker_token),
         );
-        let prior_status = ui.lock().ok().map(|state| state.status.clone());
         let mut loaded = load_codex_ui(&process, &thread, &thread_response, cwd);
-        if let Some(prior_status) = prior_status.as_ref() {
-            merge_status_runtime_data(&mut loaded.status, prior_status);
-        }
         // A CLI that answered an older shape is reported once here and in
         // Settings -> Tools; it never blocks the connect.
         loaded.notice = self.api_notice();
         if let Ok(mut state) = ui.lock() {
+            // Merge notifications received during discovery under the replacement lock.
+            merge_status_runtime_data(&mut loaded.status, &state.status);
             // Native task events can arrive while model/skill discovery reads
             // are pending. Replacing option metadata must preserve that state.
             loaded.background_tasks = std::mem::take(&mut state.background_tasks);
@@ -7491,6 +7492,55 @@ createInterface({{ input: process.stdin, crlfDelay: Infinity }}).on('line', line
             json!([{"id":"mode","value":"never"},{"id":"mode","value":"on-request"}]),
         ] {
             assert_eq!(codex_startup_permissions(&options).unwrap_err().code, "chat_permission_restore_failed");
+        }
+    }
+
+    #[test]
+    fn resumed_context_usage_survives_startup_discovery() {
+        let Some(node) = crate::providers::common::find_executable("node") else {
+            eprintln!("node is unavailable; skipping Codex resume-usage fixture");
+            return;
+        };
+        for usage_method in ["thread/resume", "model/list"] {
+            let scratch = tempfile::tempdir().unwrap();
+            let script = scratch.path().join("fake-codex-resume-usage.mjs");
+            std::fs::write(&script, r#"import { createInterface } from 'node:readline';
+for (const key of Object.keys(process.env)) if (key.toLowerCase() === 'path') delete process.env[key];
+const write = value => process.stdout.write(JSON.stringify(value) + '\n');
+const thread = { id: 'thread-resume', status: { type: 'idle' } };
+createInterface({ input: process.stdin, crlfDelay: Infinity }).on('line', line => {
+  const request = JSON.parse(line);
+  if (request.id === undefined) return;
+  if (request.method === 'USAGE_METHOD') {
+    // Exercise notifications before the resume reply and during discovery.
+    write({ method: 'thread/tokenUsage/updated', params: { threadId: thread.id,
+      turnId: 'saved-turn', tokenUsage: { last: { totalTokens: 94700 }, modelContextWindow: 258000 } } });
+  }
+  if (request.method === 'thread/read' || request.method === 'thread/resume')
+    return write({ id: request.id, result: { thread } });
+  if (request.method === 'model/list') return write({ id: request.id, result: { data: [] } });
+  if (request.method === 'turn/start') process.exit(3);
+  write({ id: request.id, result: {} });
+});
+"#.replace("USAGE_METHOD", usage_method)).unwrap();
+            let spec = CommandSpec::from_path(node.clone(), vec![script.to_string_lossy().into_owned()]).unwrap();
+            let (events, mut received) = crate::provider_events::tap_channel(64);
+            let adapter = CodexAdapter::with_test_app_server_spec(events, spec);
+            let cwd = scratch.path().to_string_lossy().into_owned();
+            let mut chat = adapter.open_chat_scoped("card-resume", &cwd, Some("thread-resume"), "worker-resume").unwrap();
+            for command in ["status", "usage"] {
+                let operation = format!("resume-{command}");
+                assert_eq!(chat.send(&format!("/{command}"), &operation).unwrap()["turnId"], operation);
+                let item = std::iter::from_fn(|| received.try_recv().ok())
+                    .find(|event| event.kind == "chat.item" && event.turn_id.as_deref() == Some(operation.as_str()))
+                    .expect("local command emits a status item");
+                assert_eq!(item.worker_token.as_deref(), Some("worker-resume"));
+                let report = &item.data["parts"][0]["data"];
+                assert_eq!(report["kind"], command);
+                assert_eq!(report["context"]["modelContextWindow"], 258000);
+                assert_eq!(report["context"]["remainingTokens"], 163300);
+            }
+            chat.stop().unwrap();
         }
     }
 
