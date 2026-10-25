@@ -853,6 +853,20 @@ pub(crate) fn normalize_chat_ui(value: Value) -> Value {
     if let Some(trust) = normalized_pi_trust(value.get("piTrust")) {
         normalized["piTrust"] = trust;
     }
+    // One non-blocking provider notice (for example an older Codex CLI that
+    // answers without some app-server calls). Dropped unless it reads as one.
+    if let Some(notice) = value.get("notice") {
+        let text = |key: &str| notice.get(key).and_then(Value::as_str).filter(|value| !value.trim().is_empty());
+        if let (Some(code), Some(message)) = (text("code"), text("message")) {
+            let mut normalized_notice = json!({"code":code,"message":message});
+            for key in ["version", "feature"] {
+                if let Some(field) = text(key) {
+                    normalized_notice[key] = json!(field);
+                }
+            }
+            normalized["notice"] = normalized_notice;
+        }
+    }
     // Skills stay absent unless the adapter can tell them apart (E3); a
     // malformed row is dropped rather than shown as an invocable skill.
     if let Some(skills) = value.get("skills").and_then(Value::as_array) {

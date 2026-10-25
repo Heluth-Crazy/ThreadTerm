@@ -1,3 +1,9 @@
+/** A runtime sentence written as "English / 中文" shows only the reader's language. */
+export function runtimeText(message: string, zh: boolean): string {
+  const bilingual = message.split(' / ');
+  return bilingual.length > 1 ? (zh ? bilingual.slice(1).join(' / ') : bilingual[0]) : message;
+}
+
 export function contextError(error: unknown, zh: boolean): string {
   const message = error instanceof Error ? error.message : String(error);
   const bilingual = message.split(' / ');

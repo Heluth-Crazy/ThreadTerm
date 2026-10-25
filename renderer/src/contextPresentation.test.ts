@@ -8,7 +8,7 @@ import { ContextMessage, ContextQueueBadge, ContextTray } from './components/Con
 import { MessageMentionText } from './components/MessageMentionText';
 import { serializeContext, serializeMentionedContext, type ContextItem } from './chatContext';
 import type { MentionEntry } from './inlineMentions';
-import { contextError } from './contextErrors';
+import { contextError, runtimeText } from './contextErrors';
 
 const items: ContextItem[] = [{ kind: 'terminal', id: 'build', sessionTitle: 'build', lines: 1, text: 'PRIVATE OUTPUT WALL' }, { kind: 'file', id: 'file', path: 'src/cart.ts', startLine: 12, endLine: 20 }];
 
@@ -57,4 +57,11 @@ test('sent-message badge tooltips use the localized context title', () => {
   }));
   assert.match(render(false), /title="File: src\/cart\.ts"/);
   assert.match(render(true), /title="文件： src\/cart\.ts"/);
+});
+
+test('a bilingual runtime notice shows only the reader language', () => {
+  const notice = 'This Codex CLI (0.159.1) does not support thread/inject_items. / 当前 Codex CLI（0.159.1）不支持 thread/inject_items。';
+  assert.equal(runtimeText(notice, false), 'This Codex CLI (0.159.1) does not support thread/inject_items.');
+  assert.equal(runtimeText(notice, true), '当前 Codex CLI（0.159.1）不支持 thread/inject_items。');
+  assert.equal(runtimeText('Only English.', true), 'Only English.');
 });

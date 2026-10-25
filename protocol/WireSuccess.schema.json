@@ -5107,6 +5107,29 @@
           ],
           "additionalProperties": false
         },
+        "notice": {
+          "type": "object",
+          "properties": {
+            "code": {
+              "type": "string"
+            },
+            "message": {
+              "type": "string"
+            },
+            "version": {
+              "type": "string"
+            },
+            "feature": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "code",
+            "message"
+          ],
+          "additionalProperties": false,
+          "description": "Non-blocking provider limitation notice (for example an older CLI); the chat stays usable."
+        },
         "piTrust": {
           "$ref": "#/definitions/PiTrustState"
         }

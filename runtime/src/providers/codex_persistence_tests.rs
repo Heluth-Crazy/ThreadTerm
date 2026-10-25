@@ -16,24 +16,40 @@ impl PersistenceFixture {
 import {{ appendFileSync, existsSync, readFileSync, writeFileSync }} from 'node:fs';
 import {{ createInterface }} from 'node:readline';
 const calls = {}, stored = {}, failure = {};
-const thread = {{id:'01a13d87-08fc-7300-a8a8-42abc9af43c5',source:'vscode',turns:[],preview:'',name:null}};
+// `failure` selects the server shape this run models: '' is a current Codex;
+// 'inject' answers thread/inject_items with method-not-found; 'verify' loses the
+// thread between processes; 'metadata' omits the optional turns array.
+const thread = {{id:'01a13d87-08fc-7300-a8a8-42abc9af43c5',source:'vscode',turns:[],preview:'',name:null,cliVersion:'0.100.0'}};
 const timer = setTimeout(() => process.exit(124), 10000).unref();
 createInterface({{input:process.stdin,crlfDelay:Infinity}}).on('line', line => {{
   const request = JSON.parse(line);
   appendFileSync(calls, JSON.stringify({{pid:process.pid,...request}}) + '\n');
   if (request.id === undefined) return;
+  const event = (method, params) => process.stdout.write(JSON.stringify({{method, params}}) + '\n');
   let result = {{}};
   let error;
+  if (request.method === 'initialize') result = {{userAgent:'codex_cli_rs/0.100.0 (Windows 10.0.26100; x86_64)'}};
   if (request.method === 'thread/start') result = {{thread}};
   if (request.method === 'thread/inject_items') {{
-    if (failure === 'inject') error = {{code:-32601,message:'inject unsupported'}};
+    if (failure === 'inject') error = {{code:-32601,message:'unknown method thread/inject_items'}};
     else writeFileSync(stored, JSON.stringify(thread));
   }}
   if (request.method === 'thread/read') {{
     if (!existsSync(stored) || failure === 'verify') error = {{code:-32600,message:'thread not loaded: ' + request.params.threadId}};
-    else result = {{thread:JSON.parse(readFileSync(stored,'utf8'))}};
+    else {{
+      const saved = JSON.parse(readFileSync(stored,'utf8'));
+      if (failure === 'metadata') delete saved.turns;
+      result = {{thread:saved}};
+    }}
   }}
   if (request.method === 'thread/resume') result = {{thread}};
+  if (request.method === 'turn/start') {{
+    const turnId = 'turn-1';
+    event('turn/started', {{threadId:request.params.threadId, turn:{{id:turnId}}}});
+    result = {{turn:{{id:turnId}}}};
+    event('item/completed', {{threadId:request.params.threadId, turnId, item:{{id:turnId + '-answer', type:'agentMessage', phase:'final_answer', text:'fixture answer'}}}});
+    event('turn/completed', {{threadId:request.params.threadId, turn:{{id:turnId, status:'completed'}}}});
+  }}
   if (request.method === 'model/list') result = {{data:[]}};
   if (request.method === 'skills/list') result = {{data:[]}};
   process.stdout.write(JSON.stringify({{id:request.id,...(error ? {{error}} : {{result}})}}) + '\n');
@@ -153,25 +169,186 @@ fn terminal_and_chat_use_the_same_verified_materialization_sequence() {
 }
 
 #[test]
-fn new_chat_materialization_and_verification_failures_never_emit_ready() {
-    for failure in ["inject", "verify"] {
-        let mut fixture = PersistenceFixture::new(failure);
-        let error = fixture
-            .adapter
-            .open_chat_with_tools("empty", "D:/repo", None, "worker", None)
-            .err()
-            .unwrap();
-        assert!(matches!(
-            error.code.as_str(),
-            "provider_method_unsupported" | "provider_error"
-        ));
-        assert!(std::iter::from_fn(|| fixture.events.try_recv().ok())
-            .all(|event| event.kind != "session.ready"));
-        assert!(!fixture
+fn new_chat_verification_failure_never_emits_ready() {
+    // A thread another process cannot load is not durable: the Chat must not
+    // claim a resumable identity. A CLI that cannot materialize at all now
+    // degrades instead of failing; the tests below cover that.
+    let mut fixture = PersistenceFixture::new("verify");
+    let error = fixture
+        .adapter
+        .open_chat_with_tools("empty", "D:/repo", None, "worker", None)
+        .err()
+        .unwrap();
+    assert!(matches!(
+        error.code.as_str(),
+        "provider_error" | "native_thread_missing"
+    ));
+    assert!(std::iter::from_fn(|| fixture.events.try_recv().ok())
+        .all(|event| event.kind != "session.ready"));
+    assert!(!fixture
+        .calls()
+        .iter()
+        .any(|call| call["method"] == "turn/start"));
+}
+
+const THREAD_ID: &str = "01a13d87-08fc-7300-a8a8-42abc9af43c5";
+
+fn wait_for(fixture: &mut PersistenceFixture, kind: &str) -> bool {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while Instant::now() < deadline {
+        if let Ok(event) = fixture.events.try_recv() {
+            if event.kind == kind {
+                return true;
+            }
+        } else {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+    false
+}
+
+/// An older Codex CLI answers `thread/inject_items` with method-not-found. The
+/// Chat must connect and run a turn anyway, and say once what is off.
+#[test]
+fn chat_connects_and_chats_when_the_cli_lacks_inject_items() {
+    let mut fixture = PersistenceFixture::new("inject");
+    let mut chat = fixture
+        .adapter
+        .open_chat_with_tools("empty", "D:/repo", None, "worker", None)
+        .unwrap();
+    assert_eq!(chat.native_id().as_deref(), Some(THREAD_ID));
+    // Without the materialization there is nothing to verify, so no second
+    // process starts and no thread/read is attempted.
+    assert!(fixture
+        .calls()
+        .iter()
+        .all(|call| call["method"] != "thread/read"));
+    let state = chat.ui_state();
+    let notice = &state["notice"];
+    assert_eq!(notice["code"], "codex_cli_limited");
+    assert_eq!(notice["version"], "0.100.0");
+    assert_eq!(notice["feature"], "thread/inject_items");
+    let message = notice["message"].as_str().unwrap();
+    assert!(message.contains("thread/inject_items"), "{message}");
+    assert!(message.contains("npm install -g @openai/codex"), "{message}");
+    // English and Chinese, as everywhere else that reports a provider limit.
+    assert!(message.contains("\u{66f4}\u{65b0}"), "{message}");
+    // Settings -> Tools reads the same text through the readiness reason.
+    assert_eq!(
+        fixture.adapter.api_notice_message().as_deref(),
+        Some(message)
+    );
+    assert_eq!(chat.send("hello", "turn-1").unwrap()["turnId"], "turn-1");
+    assert!(
+        wait_for(&mut fixture, "chat.turn.completed"),
+        "the degraded chat runs a turn"
+    );
+    assert!(fixture.calls().iter().any(|call| {
+        call["method"] == "turn/start" && call["params"]["threadId"] == THREAD_ID
+    }));
+    chat.stop().unwrap();
+}
+
+/// An older app-server answers `thread/read` without the optional turns array.
+/// The identity is still proven across processes, so the Chat opens, the
+/// missing transcript is reported, and a turn still runs.
+#[test]
+fn chat_connects_when_thread_read_has_no_turns_and_history_says_so() {
+    let mut fixture = PersistenceFixture::new("metadata");
+    let mut chat = fixture
+        .adapter
+        .open_chat_with_tools("empty", "D:/repo", None, "worker", None)
+        .unwrap();
+    assert_eq!(chat.native_id().as_deref(), Some(THREAD_ID));
+    let reads: Vec<_> = fixture
+        .calls()
+        .into_iter()
+        .filter(|call| call["method"] == "thread/read")
+        .collect();
+    assert_eq!(
+        reads
+            .iter()
+            .map(|call| call["params"]["includeTurns"].clone())
+            .collect::<Vec<_>>(),
+        vec![json!(true), json!(false)]
+    );
+    let state = chat.ui_state();
+    assert_eq!(state["notice"]["code"], "codex_cli_limited");
+    assert_eq!(state["notice"]["feature"], "thread/read includeTurns");
+    assert!(state["notice"]["message"]
+        .as_str()
+        .unwrap()
+        .contains("reading saved chat history"));
+    // No native turns means no transcript: report it rather than an empty
+    // history that would look like lost messages.
+    let error = fixture.adapter.history_read(THREAD_ID).unwrap_err();
+    assert_eq!(error.code, "provider_method_unsupported");
+    assert!(error.message.contains("saved chat turns"), "{}", error.message);
+    assert_eq!(chat.send("hello", "turn-1").unwrap()["turnId"], "turn-1");
+    assert!(
+        wait_for(&mut fixture, "chat.turn.completed"),
+        "the degraded chat runs a turn"
+    );
+    chat.stop().unwrap();
+}
+
+/// One CLI serves every Chat: the missing method is recorded once, and later
+/// connects take the fallback without probing again.
+#[test]
+fn a_missing_method_is_recorded_once_for_every_chat() {
+    let fixture = PersistenceFixture::new("inject");
+    let mut first = fixture
+        .adapter
+        .open_chat_with_tools("one", "D:/repo", None, "worker-1", None)
+        .unwrap();
+    let notice = first.ui_state()["notice"].clone();
+    first.stop().unwrap();
+    let mut second = fixture
+        .adapter
+        .open_chat_with_tools("two", "D:/repo", None, "worker-2", None)
+        .unwrap();
+    assert_eq!(second.ui_state()["notice"], notice);
+    assert_eq!(
+        fixture
             .calls()
             .iter()
-            .any(|call| call["method"] == "turn/start"));
-    }
+            .filter(|call| call["method"] == "thread/inject_items")
+            .count(),
+        1
+    );
+    second.stop().unwrap();
+}
+
+#[test]
+fn cli_version_comes_from_the_initialize_user_agent() {
+    assert_eq!(
+        codex_cli_version("codex_cli_rs/0.161.0 (Windows 10.0.26100; x86_64)"),
+        "0.161.0"
+    );
+    assert_eq!(
+        codex_cli_version("codex_cli_rs/0.100.0-alpha.2 (Linux 6.8.0)"),
+        "0.100.0-alpha.2"
+    );
+    assert_eq!(codex_cli_version("codex 0.9"), "0.9");
+    // An unparsable agent string is kept short instead of leaked whole.
+    assert_eq!(codex_cli_version("unknown server"), "unknown server");
+}
+
+#[test]
+fn a_missing_feature_notice_is_written_once_and_names_the_cli() {
+    let mut api = CodexApiSupport::default();
+    api.version = Some("0.100.0".to_owned());
+    assert!(api.supports(CodexFeature::InjectItems));
+    api.record_missing(CodexFeature::InjectItems);
+    let notice = api.notice.clone().unwrap();
+    assert_eq!(notice["code"], "codex_cli_limited");
+    assert_eq!(notice["version"], "0.100.0");
+    assert_eq!(notice["feature"], "thread/inject_items");
+    assert!(!api.supports(CodexFeature::InjectItems));
+    // A second missing feature keeps the first message: one old CLI, one notice.
+    api.record_missing(CodexFeature::HistoryTurns);
+    assert_eq!(api.notice.as_ref().unwrap(), &notice);
+    assert!(!api.supports(CodexFeature::HistoryTurns));
 }
 
 #[test]

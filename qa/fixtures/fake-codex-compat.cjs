@@ -1,4 +1,7 @@
-// Isolated app-server mirror for Codex 0.159.1 compatibility QA; never contacts a model.
+// Isolated app-server mirror for an older Codex (0.159.1) CLI; never contacts a model.
+// It models the portable-degrade path in runtime/src/providers/codex.rs: the
+// experimental `thread/inject_items` is method-not-found, and `thread/read`
+// answers without the optional turns array. A Chat must still connect and run.
 const { appendFileSync } = require('node:fs');
 const { createInterface } = require('node:readline');
 const log = process.env.THREADTERM_QA_CODEX_COMPAT_LOG;
@@ -16,7 +19,8 @@ createInterface({ input: process.stdin, crlfDelay: Infinity }).on('line', line =
   if (!line.trim()) return;
   const request = JSON.parse(line); if (request.id === undefined) return;
   const { id, method, params = {} } = request; record(method, params);
-  if (method === 'initialize') return result(id, { capabilities: {} });
+  if (method === 'initialize') return result(id, { capabilities: {}, userAgent: 'codex_cli_rs/0.159.1 (compat fixture)' });
+  if (method === 'thread/inject_items') return error(id, 'Method not found', -32601);
   if (method === 'account/read') return result(id, { account: { type: 'chatgpt' }, requiresOpenaiAuth: false });
   if (method === 'account/rateLimits/read') return result(id, {});
   if (method === 'thread/start' || method === 'thread/resume') return result(id, response());

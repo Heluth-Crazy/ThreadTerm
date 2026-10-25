@@ -12,6 +12,7 @@ export function chatUiFromEvent(data: Partial<ChatUiState>): ChatUiState {
     ...(data.error !== undefined ? { error: data.error } : {}),
     ...(data.piTrust !== undefined ? { piTrust: data.piTrust } : {}),
     ...(Array.isArray(data.backgroundTasks) ? { backgroundTasks: data.backgroundTasks } : {}),
+    ...(data.notice !== undefined ? { notice: data.notice } : {}),
   };
 }
 

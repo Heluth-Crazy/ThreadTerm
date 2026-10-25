@@ -24,18 +24,22 @@ use tokio::sync::broadcast;
 
 pub struct CodexAdapter {
     events: crate::provider_events::Sender,
+    /// What this machine's Codex CLI answers. Every Chat, terminal and history
+    /// read uses the same installed CLI, so a method found missing is recorded
+    /// once here and later calls take the fallback without probing again.
+    api: Arc<Mutex<CodexApiSupport>>,
     #[cfg(test)]
     test_app_server_spec: Option<CommandSpec>,
 }
 
 impl CodexAdapter {
     pub fn new(events: crate::provider_events::Sender) -> Self {
-        Self { events, #[cfg(test)] test_app_server_spec: None }
+        Self { events, api: Arc::new(Mutex::new(CodexApiSupport::default())), #[cfg(test)] test_app_server_spec: None }
     }
 
     #[cfg(test)]
     fn with_test_app_server_spec(events: crate::provider_events::Sender, test_app_server_spec: CommandSpec) -> Self {
-        Self { events, test_app_server_spec: Some(test_app_server_spec) }
+        Self { events, api: Arc::new(Mutex::new(CodexApiSupport::default())), test_app_server_spec: Some(test_app_server_spec) }
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -96,7 +100,7 @@ impl CodexAdapter {
             EnvelopeStyle::Codex,
             on_message,
         )?;
-        codex_request(
+        let initialized = codex_request(
             &process,
             "initialize",
             json!({
@@ -104,8 +108,44 @@ impl CodexAdapter {
                 "capabilities": {"experimentalApi":true,"requestAttestation":false}
             }),
         )?;
+        // The answer names the server (`userAgent`); capability support itself
+        // is discovered from the individual calls (see `CodexFeature`).
+        self.observe_version(initialized.get("userAgent").and_then(Value::as_str));
         process.notification("initialized", json!({}))?;
         Ok(process)
+    }
+
+    /// Records the server version once per adapter. `userAgent` is the
+    /// `initialize` answer; a thread's `cliVersion` is the fallback for servers
+    /// that omit it.
+    fn observe_version(&self, raw: Option<&str>) {
+        let Some(raw) = raw.filter(|value| !value.trim().is_empty()) else { return };
+        if let Ok(mut api) = self.api.lock() {
+            if api.version.is_none() {
+                api.version = Some(codex_cli_version(raw));
+            }
+        }
+    }
+
+    fn supports(&self, feature: CodexFeature) -> bool {
+        self.api.lock().map(|api| api.supports(feature)).unwrap_or(true)
+    }
+
+    /// Records a missing feature the first time it is observed, so the notice is
+    /// one stable message instead of one per connect.
+    fn record_missing(&self, feature: CodexFeature) {
+        if let Ok(mut api) = self.api.lock() {
+            api.record_missing(feature);
+        }
+    }
+
+    fn api_notice(&self) -> Option<Value> {
+        self.api.lock().ok().and_then(|api| api.notice.clone())
+    }
+
+    fn api_notice_message(&self) -> Option<String> {
+        self.api_notice()
+            .and_then(|notice| notice.get("message").and_then(Value::as_str).map(str::to_owned))
     }
 
     fn temporary_process(&self) -> Result<JsonLineProcess, ProviderError> {
@@ -127,6 +167,7 @@ impl CodexAdapter {
         process: &JsonLineProcess,
         cwd: &str,
         permissions: &CodexStartupPermissions,
+        require_durability: bool,
     ) -> Result<Value, ProviderError> {
         let mut params = json!({"cwd":cwd,"threadSource":"user"});
         if let Some(mode) = permissions.mode.as_deref() {
@@ -141,23 +182,151 @@ impl CodexAdapter {
             ProviderError::new("provider_protocol", "Codex returned no thread id")
         })?;
         validate_native_id(native_id)?;
+        self.observe_version(thread.get("cliVersion").and_then(Value::as_str));
         // thread/start allocates an id but does not persist an empty rollout.
         // This native history item adds no instructions or model/user turn.
-        codex_request(
-            process,
-            "thread/inject_items",
-            json!({"threadId":native_id,"items":[{"type":"message","role":"developer","content":[]}]}),
-        )?;
-        // Keep the caller's thread loaded in its original process, but prove
-        // another process can resume it before advertising a durable identity.
+        // A Chat still opens without it (with that limitation recorded), but a
+        // terminal's preassigned id is only useful if it can be resumed later.
+        if self.supports(CodexFeature::InjectItems) {
+            match codex_request(
+                process,
+                "thread/inject_items",
+                json!({"threadId":native_id,"items":[{"type":"message","role":"developer","content":[]}]}),
+            ) {
+                Ok(_) => self.verify_materialized_thread(native_id)?,
+                Err(error)
+                    if error.code == "provider_method_unsupported" && !require_durability =>
+                {
+                    self.record_missing(CodexFeature::InjectItems);
+                }
+                Err(error) => return Err(error),
+            }
+        } else if require_durability {
+            return Err(ProviderError::new(
+                "provider_method_unsupported",
+                "This Codex CLI cannot save a new terminal session. Update the Codex CLI you installed (for example npm install -g @openai/codex), then open the terminal again. / 当前 Codex CLI 无法保存新的终端会话。请更新你安装的 Codex CLI（例如 npm install -g @openai/codex），然后重新打开终端。",
+            ));
+        }
+        Ok(response)
+    }
+
+    /// Keep the caller's thread loaded in its original process, but prove
+    /// another process can resume it before advertising a durable identity.
+    /// `includeTurns` is optional on older app-servers: a reply without turns
+    /// still proves the identity, so the check falls back to a metadata-only
+    /// read and records the missing transcript instead of failing.
+    fn verify_materialized_thread(&self, native_id: &str) -> Result<(), ProviderError> {
         let verifier = self.temporary_process()?;
         let stored = verifier.request(
             "thread/read",
             json!({"threadId":native_id,"includeTurns":true}),
         )?;
-        validate_resume_thread(codex_history_thread(&stored, native_id)?)?;
-        Ok(response)
+        let thread = stored.get("thread").unwrap_or(&stored);
+        if thread.get("turns").is_some_and(Value::is_array) {
+            return validate_resume_thread(codex_history_thread(&stored, native_id)?);
+        }
+        self.record_missing(CodexFeature::HistoryTurns);
+        let stored = verifier.request(
+            "thread/read",
+            json!({"threadId":native_id,"includeTurns":false}),
+        )?;
+        let thread = stored.get("thread").unwrap_or(&stored);
+        if thread.get("id").and_then(Value::as_str) != Some(native_id) {
+            return Err(ProviderError::new(
+                "invalid_history_transcript",
+                "Codex history response did not match the requested thread",
+            ));
+        }
+        validate_resume_thread(thread)
     }
+}
+
+/// A Codex app-server call ThreadTerm needs for full fidelity. An older CLI
+/// answers method-not-found; each feature degrades to a documented fallback.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum CodexFeature {
+    /// Persists an otherwise empty thread, so a new Chat survives a restart.
+    InjectItems,
+    /// `thread/read` turns carry the saved transcript.
+    HistoryTurns,
+}
+
+impl CodexFeature {
+    fn name(self) -> &'static str {
+        match self {
+            Self::InjectItems => "thread/inject_items",
+            Self::HistoryTurns => "thread/read includeTurns",
+        }
+    }
+
+    fn label(self) -> (&'static str, &'static str) {
+        match self {
+            Self::InjectItems => (
+                "saving a new chat before its first message",
+                "保存首条消息之前的空会话",
+            ),
+            Self::HistoryTurns => ("reading saved chat history", "读取已保存的对话记录"),
+        }
+    }
+}
+
+/// What this machine's Codex CLI has been observed to answer, plus the single
+/// notice shown in Settings -> Tools and in Chat. Written only by a native call
+/// that answered something other than the current release: no polling.
+#[derive(Default)]
+struct CodexApiSupport {
+    version: Option<String>,
+    unsupported: Vec<CodexFeature>,
+    notice: Option<Value>,
+}
+
+impl CodexApiSupport {
+    fn supports(&self, feature: CodexFeature) -> bool {
+        !self.unsupported.contains(&feature)
+    }
+
+    /// Records a missing feature and, the first time, one readable notice. A
+    /// later missing feature adds no second message: the cause is one old CLI.
+    fn record_missing(&mut self, feature: CodexFeature) {
+        if !self.unsupported.contains(&feature) {
+            self.unsupported.push(feature);
+        }
+        if self.notice.is_some() {
+            return;
+        }
+        let (en_label, zh_label) = feature.label();
+        let method = feature.name();
+        let version = self.version.as_deref().filter(|value| !value.is_empty());
+        let named = match version {
+            Some(version) => format!("This Codex CLI ({version})"),
+            None => "This Codex CLI".to_owned(),
+        };
+        let named_zh = match version {
+            Some(version) => format!("当前 Codex CLI（{version}）"),
+            None => "当前 Codex CLI".to_owned(),
+        };
+        self.notice = Some(json!({
+            "code": "codex_cli_limited",
+            "message": format!("{named} does not support {method} ({en_label}). Chat still works with fewer features. Update the Codex CLI you installed (for example npm install -g @openai/codex), then restart ThreadTerm. / {named_zh}不支持 {method}（{zh_label}）。Chat 仍可使用，但功能有所减少。请更新你安装的 Codex CLI（例如 npm install -g @openai/codex），然后重启 ThreadTerm。"),
+            "version": version,
+            "feature": feature.name(),
+        }));
+    }
+}
+
+/// `initialize`'s `userAgent` looks like `codex_cli_rs/0.161.0 (Windows ...)`.
+/// Keep the CLI version token only; the rest names this machine.
+fn codex_cli_version(raw: &str) -> String {
+    raw.split(|character: char| character.is_whitespace() || character == '/')
+        .find(|token| {
+            token.starts_with(|character: char| character.is_ascii_digit())
+                && token.contains('.')
+                && token
+                    .chars()
+                    .all(|character| character.is_ascii_alphanumeric() || matches!(character, '.' | '-' | '+'))
+        })
+        .map(str::to_owned)
+        .unwrap_or_else(|| raw.trim().chars().take(40).collect())
 }
 
 #[derive(Debug, Default)]
@@ -304,7 +473,8 @@ impl ProviderAdapter for CodexAdapter {
             history: installed,
             resume: installed,
             terminal_resume_capture: self.terminal_capture().as_str(),
-            reason: codex_capability_reason(installed, &auth, probe_error),
+            reason: codex_capability_reason(installed, &auth, probe_error)
+                .or_else(|| self.api_notice_message()),
             auth,
         }
     }
@@ -358,7 +528,7 @@ impl ProviderAdapter for CodexAdapter {
 
     fn prepare_terminal(&self, cwd: &str) -> Result<Option<String>, ProviderError> {
         let process = self.temporary_process()?;
-        let response = self.start_persistent_thread(&process, cwd, &CodexStartupPermissions::default())?;
+        let response = self.start_persistent_thread(&process, cwd, &CodexStartupPermissions::default(), true)?;
         let thread = response
             .get("thread")
             .cloned()
@@ -391,12 +561,31 @@ impl ProviderAdapter for CodexAdapter {
     fn history_read(&self, native_id: &str) -> Result<Value, ProviderError> {
         validate_native_id(native_id)?;
         let process = self.temporary_process()?;
-        let response = process.request(
+        let response = match codex_request(
+            &process,
             "thread/read",
             json!({"threadId":native_id,"includeTurns":true}),
-        )?;
-        let thread = codex_history_thread(&response, native_id)?;
-        Ok(Value::Array(codex_transcript_items(thread)))
+        ) {
+            Ok(response) => response,
+            Err(error) => {
+                if error.code == "provider_method_unsupported" {
+                    self.record_missing(CodexFeature::HistoryTurns);
+                }
+                return Err(error);
+            }
+        };
+        let thread = response.get("thread").unwrap_or(&response);
+        if thread.get("turns").is_some_and(Value::is_array) {
+            let thread = codex_history_thread(&response, native_id)?;
+            return Ok(Value::Array(codex_transcript_items(thread)));
+        }
+        // A transcript cannot be rebuilt without native turns. Report what to
+        // update instead of an empty history that would look like data loss.
+        self.record_missing(CodexFeature::HistoryTurns);
+        Err(ProviderError::new(
+            "provider_method_unsupported",
+            "This Codex CLI cannot return saved chat turns. Update the Codex CLI you installed (for example npm install -g @openai/codex), then reopen the chat. / 当前 Codex CLI 无法返回已保存的对话轮次。请更新你安装的 Codex CLI（例如 npm install -g @openai/codex），然后重新打开对话。",
+        ))
     }
 
     fn fork_session(
@@ -518,7 +707,7 @@ impl ProviderAdapter for CodexAdapter {
             }
             process.request("thread/resume", params)?
         } else {
-            self.start_persistent_thread(&process, cwd, &permissions)?
+            self.start_persistent_thread(&process, cwd, &permissions, false)?
         };
         let thread = thread_response
             .get("thread")
@@ -547,6 +736,9 @@ impl ProviderAdapter for CodexAdapter {
         if let Some(prior_status) = prior_status.as_ref() {
             merge_status_runtime_data(&mut loaded.status, prior_status);
         }
+        // A CLI that answered an older shape is reported once here and in
+        // Settings -> Tools; it never blocks the connect.
+        loaded.notice = self.api_notice();
         if let Ok(mut state) = ui.lock() {
             // Native task events can arrive while model/skill discovery reads
             // are pending. Replacing option metadata must preserve that state.
@@ -1659,6 +1851,8 @@ struct CodexUiState {
     background_candidates: HashMap<String, CodexBackgroundCandidate>,
     background_revision: u64,
     background_terminal_items: VecDeque<(String, String)>,
+    /// One non-blocking notice about this CLI's limits (older app-server).
+    notice: Option<Value>,
 }
 
 /// A native Codex `plan` item held until its turn ends. The plan approval
@@ -1842,6 +2036,9 @@ impl CodexUiState {
         if let Some(error) = &self.options_error {
             wire["loadState"] = json!("error");
             wire["error"] = json!({"code":error.code,"message":error.message});
+        }
+        if let Some(notice) = &self.notice {
+            wire["notice"] = notice.clone();
         }
         wire
     }

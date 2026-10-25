@@ -80,7 +80,7 @@ import { mentionActionSnapshot, mentionActionStillValid, mentionContainingSelect
 import { composerEditable, composerSnapshot, decodeLocalRecovery, encodeLocalRecovery, localRecoveryDiffers, MAX_MENTION_MESSAGE, mentionDescription, mentionInsertedText, mentionPickStillValid, serializeComposerSnapshot, tentativeMentionPick, type ComposerInputState, type ComposerSnapshot, type LocalRecovery, type MentionPickTicket } from '../composerMentions';
 import { applyNativeEdit } from '../nativeTextEdit';
 import { mentionSerializedBlock, type SessionContextItem } from '../chatContext';
-import { contextError } from '../contextErrors';
+import { contextError, runtimeText } from '../contextErrors';
 import { CHAT_REPAIR_REQUEST, setChatRepairAvailability, type ChatRepairAvailability } from '../chatRepair';
 import { discoveredRepair, discoveryMatches, type RepairDiscovery } from '../chatRepairDiscovery';
 import { SurfaceDialog } from './SurfaceDialog';
@@ -1731,6 +1731,7 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession, 
       {connectionHeld && canControl && !ended && <button type="button" className="btn" disabled={repairBusy} onClick={continueWithoutReload}>{copy('Continue chat without reloading', '不重新加载，继续聊天')}</button>}
     </section>}
     {repairFollowup && <p className="chat-repair-notice" role="status">{copy('History repaired. Queued prompts stay paused until ThreadTerm restarts.', '历史已修复。排队的提示词将保持暂停，直到 ThreadTerm 重启。')}</p>}
+    {ui.notice && <p className="chat-repair-notice" role="status">{runtimeText(ui.notice.message, zh)}</p>}
     {overlay === "banner" && <ChatConnectOverlay provider={session.provider} phase={connection.phase} slow={false} error={connection.error} variant="banner" onRetry={retryConnection} copy={copy} transportDown={link.transport !== "up"} options={ui.options} />}
     <PiProjectTrust trust={ui.piTrust} disabled={!writable || trustBusy || Boolean(liveTurn) || !session.projectId} disabledReason={!session.projectId ? copy('Add this session to a project before changing project trust.', '请先将此会话加入项目，再更改项目信任。') : undefined} onDecide={setPiProjectTrust} copy={copy} />
     {!permissionRecovery && ui.loadState === "error" && ui.error && <p className="surface-error" role="alert">{ui.error.message} <button type="button" className="btn" disabled={!writable} onClick={() => void request("chat.options", { sessionId: session.id }).then(setUi).catch(caught => setUi(current => ({ ...current, loadState: "error", error: { code: "options_failed", message: asUserError(caught, copy("Options could not be loaded.", "无法读取选项。")) } })))}>{copy("Retry options", "重试读取选项")}</button></p>}

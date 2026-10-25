@@ -216,6 +216,8 @@ export interface ChatUiState {
  inputCapabilities?:{images?:boolean;steer?:'native'|'note'};
  loadState?:ChatOptionsLoadState;
  error?:{code:string;message:string};
+ /** Non-blocking provider limitation notice (for example an older CLI); the chat stays usable. */
+ notice?:{code:string;message:string;version?:string;feature?:string};
  piTrust?:PiTrustState;
 }
 export type ChatConnectionPhase = 'disconnected'|'connecting'|'ready'|'failed'|'unavailable';
