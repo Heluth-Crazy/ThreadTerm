@@ -2,7 +2,8 @@
 // Does not launch a provider or touch user runtime data.
 import assert from 'node:assert/strict';
 import { build } from 'esbuild';
-import { _electron as electron } from '@playwright/test';
+import { electron } from './lib/desktop1.mjs';
+import { acquireElectronQaLock } from './lib/electron-lock.mjs';
 import { mkdir, mkdtemp, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
@@ -96,7 +97,9 @@ html[data-theme="dark"] .chat-connect-mask{background:rgba(16,18,22,.94);color:#
 </style><div id="root"></div><script src="qa.js"></script>`);
 await writeFile(join(scratch, 'main.cjs'), `const {app,BrowserWindow}=require('electron');app.setPath('userData',${JSON.stringify(join(scratch, 'profile'))});app.whenReady().then(()=>{const w=new BrowserWindow({width:1280,height:900,show:true,webPreferences:{contextIsolation:true,nodeIntegration:false,sandbox:true}});w.loadFile(${JSON.stringify(join(scratch, 'index.html'))});});`);
 let app;
+let releaseLock;
 try {
+  releaseLock = await acquireElectronQaLock();
   app = await electron.launch({ args: [join(scratch, 'main.cjs')] });
   const page = await app.firstWindow();
   const errors = [];
@@ -240,5 +243,6 @@ try {
   assert.equal(await page.locator('[data-testid="kimi-status-card"]').count(), 1, 'grok /status uses the shared ACP status card');
   console.log('chat-connect visual fixtures written to', out);
 } finally {
-  await app?.close();
+  try { await app?.close(); }
+  finally { await releaseLock?.(); }
 }

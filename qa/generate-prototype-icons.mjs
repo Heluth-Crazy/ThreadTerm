@@ -7,7 +7,7 @@ const extract = (start,end,name) => vm.runInNewContext(`${source.slice(source.in
 const icons=extract('const ICONS =','const icon =','ICONS');
 const brands=extract('const AGENT_BRAND =','function agentIcon','AGENT_BRAND');
 const extras=extract('const extra =','const body = AGENT_BRAND','extra');
-Object.assign(icons,{minimize:'<path d="M5 12h14"/>',maximize:'<rect x="5" y="5" width="14" height="14"/>',arrowUp:'<path d="M12 19V5M5 12l7-7 7 7"/>'});
+Object.assign(icons,{flow:'<rect x="3" y="3" width="6" height="6" rx="1.5"/><rect x="15" y="3" width="6" height="6" rx="1.5"/><rect x="15" y="15" width="6" height="6" rx="1.5"/><path d="M9 6h6M6 9v9h9"/>',globe:'<circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a14 14 0 0 1 0 18M12 3a14 14 0 0 0 0 18"/>',image:'<rect x="3" y="5" width="18" height="14" rx="2"/><circle cx="8" cy="10" r="1.5"/><path d="m4 17 5-5 3 3 2-2 6 4"/>',plug:'<path d="M8 3v6M16 3v6M6 9h12v3a6 6 0 0 1-6 6v3M12 18v3"/>',wrench:'<path d="M14 6a5 5 0 0 0-6 6L3 17l4 4 5-5a5 5 0 0 0 6-6l-3 3-3-3z"/>',agents:'<circle cx="9" cy="8" r="3"/><circle cx="17" cy="10" r="2.5"/><path d="M3 20a6 6 0 0 1 12 0M14 16a5 5 0 0 1 7 4"/>',minimize:'<path d="M5 12h14"/>',maximize:'<rect x="5" y="5" width="14" height="14"/>',arrowUp:'<path d="M12 19V5M5 12l7-7 7 7"/>'});
 Object.assign(brands,extras);
 const normalized=Object.fromEntries(Object.entries(brands).map(([name,value])=>[name.toLowerCase(),value.replaceAll('stopColor=','stop-color=').replaceAll('stopOpacity=','stop-opacity=')]));
 await writeFile(new URL('renderer/src/components/PrototypeIcon.tsx',root),`import { createContext, useContext, type ReactNode, type SVGProps } from 'react';

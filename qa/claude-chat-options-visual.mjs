@@ -5,7 +5,8 @@
 //   node qa/claude-chat-options-visual.mjs
 import assert from 'node:assert/strict';
 import { build } from 'esbuild';
-import { _electron as electron } from '@playwright/test';
+import { electron } from './lib/desktop1.mjs';
+import { acquireElectronQaLock } from './lib/electron-lock.mjs';
 import { mkdir, mkdtemp, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
@@ -84,7 +85,7 @@ await writeFile(join(scratch, 'main.cjs'), `const {app,BrowserWindow}=require('e
 
 const expected = {
   'zh-CN': { mode: '默认', think: '高', buttons: ['允许一次', '在此项目中始终允许', '拒绝'], scopes: ['仅本次', '始终', '仅本次'], modes: ['默认', '接受编辑', '规划', '不问', '自动'], thinks: ['低', '中', '高', '超高', 'Max'], plan: '规划' },
-  en: { mode: 'Default', think: 'High', buttons: ['Allow once', 'Always allow in this project', 'Deny'], scopes: ['This time', 'Always', 'This time'], modes: ['Default', 'Accept edits', 'Plan', "Don't ask", 'Auto'], thinks: ['Low', 'Medium', 'High', 'Extra high', 'Max'], plan: 'Plan' },
+  en: { mode: 'Default', think: 'High', buttons: ['Allow once', 'Always allow in this project', 'Deny'], scopes: ['This time', 'Always', 'This time'], modes: ['Default', 'Accept edits', 'Plan', "Don't ask", 'Auto'], thinks: ['Low', 'Medium', 'High', 'Xhigh', 'Max'], plan: 'Plan' },
 };
 const checks = [];
 // DOM events instead of OS input: a background Electron window may never
@@ -96,7 +97,9 @@ const type = (locator, value) => locator.evaluate((element, text) => {
   element.dispatchEvent(new Event('input', { bubbles: true }));
 }, value);
 let app;
+let releaseLock;
 try {
+  releaseLock = await acquireElectronQaLock();
   app = await electron.launch({ args: [join(scratch, 'main.cjs')] });
   const page = await app.firstWindow();
   const errors = [];
@@ -118,13 +121,13 @@ try {
 
     await press(page.locator('.chat-mode-chip'));
     await page.locator('.chat-menu-mode').waitFor();
-    assert.deepEqual((await page.locator('.chat-menu-mode .chat-menu-item span').allInnerTexts()).map(text => text.trim()), want.modes);
+    assert.deepEqual((await page.locator('.chat-menu-mode .chat-menu-item .chat-menu-text > span').allInnerTexts()).map(text => text.trim()), want.modes);
     await page.screenshot({ path: join(out, `claude-mode-menu-${locale}.png`) });
     await escape(page);
 
     await press(page.locator('.chat-model-chip'));
     await page.locator('.chat-menu-model').waitFor();
-    const rows = (await page.locator('.chat-menu-model .chat-menu-item span').allInnerTexts()).map(text => text.trim());
+    const rows = (await page.locator('.chat-menu-model .chat-menu-item .chat-menu-text > span').allInnerTexts()).map(text => text.trim());
     assert.deepEqual(rows.slice(0, 4), ['Default (recommended)', 'Sonnet', 'Opus', 'Haiku']);
     assert.deepEqual(rows.slice(4), want.thinks);
     await page.screenshot({ path: join(out, `claude-model-menu-${locale}.png`) });
@@ -169,5 +172,6 @@ try {
   assert.equal(errors.length, 0, errors.join('\n'));
   console.log(JSON.stringify({ passed: true, checks, shots: out }, null, 2));
 } finally {
-  await app?.close();
+  try { await app?.close(); }
+  finally { await releaseLock?.(); }
 }

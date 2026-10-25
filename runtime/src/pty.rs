@@ -452,7 +452,7 @@ mod tests {
     #[test]
     fn windows_script_receives_args_verbatim_through_bootstrap_pty() {
         use crate::providers::common::windows_script_fixtures::{
-            fixture_dir, parse_echo_output, strip_ansi,
+            echo_fixture_completed, fixture_dir, parse_echo_output, strip_ansi,
         };
         let (_root, script) = fixture_dir();
         let cwd = script.parent().unwrap().to_string_lossy().into_owned();
@@ -494,7 +494,7 @@ mod tests {
             for (_, bytes) in db.output_from(&session.id, 0, 64 * 1024).unwrap() {
                 output.extend(bytes);
             }
-            if strip_ansi(&String::from_utf8_lossy(&output)).contains("DONE") {
+            if echo_fixture_completed(&strip_ansi(&String::from_utf8_lossy(&output))) {
                 break;
             }
             std::thread::sleep(Duration::from_millis(50));

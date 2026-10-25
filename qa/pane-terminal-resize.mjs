@@ -5,7 +5,8 @@
 // TerminalSurface with an in-memory bridge; no provider, runtime, or user profile.
 import assert from 'node:assert/strict';
 import { build } from 'esbuild';
-import { _electron as electron } from '@playwright/test';
+import { electron } from './lib/desktop1.mjs';
+import { acquireElectronQaLock } from './lib/electron-lock.mjs';
 import { mkdir, mkdtemp, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
@@ -221,7 +222,9 @@ const assertFinalConsistency = async (label, sides) => {
   }
 };
 
+let releaseLock;
 try {
+  releaseLock = await acquireElectronQaLock();
   app = await electron.launch({ args: [join(scratch, 'main.cjs')] });
   page = await app.firstWindow();
   const errors = [];
@@ -358,5 +361,6 @@ try {
   report.completedAt = new Date().toISOString();
   await writeFile(join(out, 'report.json'), JSON.stringify(report, null, 2));
   await app?.close().catch(() => {});
+  await releaseLock?.();
   console.log(JSON.stringify({ passed: report.passed, out, checks: report.checks, geometry: report.geometry, error: report.error }, null, 2));
 }

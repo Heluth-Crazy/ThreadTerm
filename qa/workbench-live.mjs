@@ -3,25 +3,33 @@
 // commit, branches), history, blame, agent-change review/revert and send-to-agent.
 // Isolated data/profile/pipe and a temporary Git repository; no provider or model calls.
 import assert from 'node:assert/strict';
-import {spawn} from 'node:child_process';
+import {spawn,spawnSync} from 'node:child_process';
 import {existsSync} from 'node:fs';
 import {mkdtemp,mkdir,readFile,writeFile,writeFile as write} from 'node:fs/promises';
-import {join,resolve} from 'node:path';
+import {dirname,join,resolve} from 'node:path';
 import {tmpdir} from 'node:os';
 import {randomUUID} from 'node:crypto';
-import {_electron as electron} from '@playwright/test';
+import {electron} from './lib/desktop1.mjs';
+import {acquireElectronQaLock} from './lib/electron-lock.mjs';
+import {build as esbuild} from 'esbuild';
+import {build as viteBuild} from 'vite';
 
 const out=join('qa','results','workbench-live',new Date().toISOString().replace(/[:.]/g,'-'));
 const scratch=await mkdtemp(join(tmpdir(),'threadterm-workbench-'));
 const project=join(scratch,'repo 工作区');
 const pipe='\\\\.\\pipe\\threadterm-v3-workbench-'+randomUUID();
-const runtimeBin=process.env.THREADTERM_V3_RUNTIME_BIN||resolve('runtime/target/debug/threadterm-v3-runtime.exe');
+const runtimeBin=process.env.THREADTERM_V3_RUNTIME_BIN||resolve('runtime/target-qa/debug/threadterm-v3-runtime.exe');
 assert.ok(existsSync(runtimeBin),`runtime binary missing: ${runtimeBin}`);
-const env={...process.env,THREADTERM_V3_DATA:join(scratch,'data'),THREADTERM_V3_USER_DATA:join(scratch,'profile'),THREADTERM_V3_PIPE:pipe,THREADTERM_V3_RUNTIME:runtimeBin};
+const gitProbe=spawnSync(process.platform==='win32'?'where.exe':'which',['git'],{encoding:'utf8',windowsHide:true,timeout:10000});
+const gitExe=process.env.THREADTERM_TEST_GIT||gitProbe.stdout?.split(/\r?\n/).find(value=>existsSync(value.trim()))?.trim();
+assert.ok(gitExe&&existsSync(gitExe),'This QA requires Git on PATH or THREADTERM_TEST_GIT.');
+const appDir=join(scratch,'app');
+const env=Object.fromEntries(Object.entries(process.env).filter(([key])=>!/^(path|threadterm_.*|electron_run_as_node|tt_qa_.*)$/i.test(key)));
+Object.assign(env,{PATH:[dirname(process.execPath),dirname(gitExe),join(process.env.SystemRoot,'System32')].join(';'),THREADTERM_V3_DATA:join(scratch,'data'),THREADTERM_V3_USER_DATA:join(scratch,'profile'),THREADTERM_V3_PIPE:pipe,THREADTERM_V3_RUNTIME:runtimeBin});
 const report={startedAt:new Date().toISOString(),scratch,runtimeBin,checks:[],screenshots:[],notes:[]};
-let app,page,settingsRevision=0;
+let app,page,releaseLock,settingsRevision=0;
 const rpc=(method,params={})=>page.evaluate(([m,p])=>Promise.race([window.threadterm.request(m,p),new Promise((_,reject)=>setTimeout(()=>reject(new Error('RPC timeout: '+m)),45000))]),[method,params]);
-const git=(args)=>new Promise((res,rej)=>{const p=spawn('git',['-c','core.quotepath=off',...args],{cwd:project,windowsHide:true});let o='',e='';p.stdout.on('data',b=>o+=b);p.stderr.on('data',b=>e+=b);p.once('exit',code=>code===0?res(o):rej(Error('git '+args.join(' ')+': '+e)));});
+const git=(args)=>new Promise((res,rej)=>{const p=spawn(gitExe,['-c','core.quotepath=off',...args],{cwd:project,windowsHide:true});let o='',e='';p.stdout.on('data',b=>o+=b);p.stderr.on('data',b=>e+=b);p.once('error',rej);p.once('exit',code=>code===0?res(o):rej(Error('git '+args.join(' ')+': '+e)));});
 const panelShot=async name=>{await page.waitForTimeout(250);await page.locator('.wb-panel').screenshot({path:join(out,name)});report.screenshots.push(name);};
 const shot=async name=>{await page.waitForTimeout(200);await page.screenshot({path:join(out,name)});report.screenshots.push(name);};
 const until=async(check,message,timeout=15000)=>{const end=Date.now()+timeout;let last;while(Date.now()<end){try{if(await check())return;}catch(error){last=error;}await new Promise(r=>setTimeout(r,150));}throw new Error(message+(last?`: ${last.message}`:''));};
@@ -42,11 +50,17 @@ try {
  await git(['add','.']);await git(['commit','-qm','initial commit']);
  await writeFile(join(project,'src','app.ts'),app10.replace('line2 = 2','line2 = 20'));await git(['commit','-qam','second commit']);
 
- app=await electron.launch({args:[resolve('.')],env,timeout:60000});
+ releaseLock=await acquireElectronQaLock();
+ await mkdir(appDir,{recursive:true});
+ for(const name of ['main','preload'])await esbuild({entryPoints:[resolve(`desktop/src/${name}.ts`)],bundle:true,platform:'node',target:'node22',format:'cjs',external:['electron'],outfile:join(appDir,`${name}.cjs`),logLevel:'error'});
+ await viteBuild({configFile:resolve('vite.config.ts'),logLevel:'error',build:{outDir:join(appDir,'renderer'),emptyOutDir:true}});
+ await writeFile(join(appDir,'package.json'),JSON.stringify({name:'workbench-live-qa',version:'0.1.0',main:'main.cjs'}));
+ app=await electron.launch({args:['--disable-features=CalculateNativeWinOcclusion',appDir],env,timeout:60000});
  page=await app.firstWindow({timeout:30000});page.setDefaultTimeout(20000);
  const errors=[];page.on('pageerror',error=>errors.push(error.message));
  await page.waitForFunction(()=>!!window.threadterm);await page.locator('.app-shell').waitFor();
- await setSettings({language:'en',theme:'light'});
+ settingsRevision=(await rpc('runtime.snapshot')).settings.revision;
+ await setSettings({language:'en',theme:'light',notifications:{native:false,attention:false,completed:false,sound:false}});
  await size(1280);
  const added=await rpc('project.add',{path:project,name:'Workbench QA',operationId:randomUUID()});
  const session=await rpc('session.create',{projectId:added.id,cwd:project,provider:'shell',mode:'terminal',title:'Workbench shell',operationId:randomUUID()});
@@ -154,7 +168,7 @@ try {
  report.checks.push('Stage hunk writes exactly one hunk to the index (verified with git diff --cached / git diff)');
  await page.locator('.wb-change-group[aria-label="Staged changes"]').waitFor();
  await page.getByRole('textbox',{name:'Commit message'}).fill('QA: stage one hunk');
- await page.locator('.wb-commit').getByRole('button',{name:'Commit',exact:true}).click();
+ await page.locator('.wb-commit').getByRole('button',{name:'Commit all staged',exact:true}).click();
  await until(async()=>(await git(['log','-1','--format=%s'])).trim()==='QA: stage one hunk','commit did not happen');
  assert.ok((await git(['diff'])).includes('line11 = 1100'),'unstaged hunk remains in the working tree');
  report.checks.push('Commit records only staged content; the other hunk stays unstaged');
@@ -230,6 +244,8 @@ try {
  await page.locator('.wb-checkpoint').first().waitFor();
  const before=await readFile(join(project,'notes','todo.md'),'utf8');
  await write(join(project,'notes','todo.md'),before+'- edited by an agent\n');
+ // An external fixture write emits no runtime event; the panel intentionally has no idle poll.
+ await page.locator('.wb-panel-head').getByRole('button',{name:'Refresh',exact:true}).click();
  const reviewRow=page.locator('.wb-review .wb-change-open',{hasText:'todo.md'}).first();
  await until(()=>reviewRow.isVisible(),'review list did not pick up the edit',20000);
  await reviewRow.click();
@@ -334,6 +350,7 @@ try {
  // The runtime outlives the window by design; stop the isolated one so it does not hold the pipes open.
  if(page)await rpc('runtime.shutdown',{operationId:randomUUID()}).catch(()=>{});
  if(app){await app.evaluate(({app})=>app.exit(0)).catch(()=>{});await app.close().catch(()=>{});}
+ await releaseLock?.();
  console.log(JSON.stringify({passed:report.passed,out,checks:report.checks.length,error:report.error?.split('\n').slice(0,3).join(' | ')},null,1));
  if(!report.passed)process.exitCode=1;
 }

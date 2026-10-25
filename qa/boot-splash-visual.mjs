@@ -2,8 +2,8 @@
 // the window's first paint, holds while the runtime is still starting, never disappears before the app has loaded,
 // hands over as soon as its finale ends, remembers theme + language for the next launch, honours reduced motion,
 // and clears promptly when the runtime cannot start.
-// Isolated Electron (own data, user data and pipe; app bundle cached in the git-ignored runtime/target-qa folder,
-// --rebuild after app changes; desktop-dist and renderer/dist untouched) on the target-qa runtime. No providers are
+// Isolated Electron (own data, user data, pipe and app bundle in disposable scratch;
+// desktop-dist and renderer/dist untouched) on the target-qa runtime. No providers are
 // needed: PATH holds only node and System32 (every case of PATH dropped first), so no agent CLI can start.
 // The slow start is real: the runtime is launched through a shim that waits SLOW_MS before starting it.
 //   node qa/boot-splash-visual.mjs [--rebuild] [--keep]
@@ -16,7 +16,8 @@ import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { _electron as electron } from '@playwright/test';
+import { electron } from './lib/desktop1.mjs';
+import { acquireElectronQaLock } from './lib/electron-lock.mjs';
 import { build as esbuild } from 'esbuild';
 import { build as viteBuild } from 'vite';
 
@@ -27,17 +28,17 @@ const keep = process.argv.includes('--keep');
 const SLOW_MS = 5000;
 const delay = ms => new Promise(done => setTimeout(done, ms));
 const scratch = await mkdtemp(join(tmpdir(), 'tt-boot-splash-'));
-const bin = join(scratch, 'bin'), appDir = join(root, 'runtime/target-qa/boot-splash-qa-app');
+const bin = join(scratch, 'bin'), appDir = join(scratch, 'app');
 const out = join(root, 'qa/results/boot-splash');
 const report = { passed: false, scratch, checks: [], notes: [], shots: [], errors: [] };
 const check = text => { report.checks.push(text); console.log(`PASS ${text}`); };
 const note = text => { report.notes.push(text); console.log(`NOTE ${text}`); };
-let app, page;
+let app, page, releaseLock;
 
 async function prepare() {
   await mkdir(bin, { recursive: true });
   await writeFile(join(bin, 'slow-runtime.rs'), 'fn main(){let ms:u64=std::env::var("TT_QA_RUNTIME_DELAY_MS").ok().and_then(|v|v.parse().ok()).unwrap_or(5000);std::thread::sleep(std::time::Duration::from_millis(ms));let status=std::process::Command::new(std::env::var_os("TT_QA_REAL_RUNTIME").expect("TT_QA_REAL_RUNTIME")).status().unwrap();std::process::exit(status.code().unwrap_or(1));}');
-  const compiled = spawnSync('rustc', ['-O', join(bin, 'slow-runtime.rs'), '-o', join(bin, 'slow-runtime.exe')], { encoding: 'utf8', windowsHide: true });
+  const compiled = spawnSync('rustc', ['-O', join(bin, 'slow-runtime.rs'), '-o', join(bin, 'slow-runtime.exe')], { encoding: 'utf8', windowsHide: true, timeout: 120000 });
   assert.equal(compiled.status, 0, compiled.stderr);
   if (process.argv.includes('--rebuild') || !existsSync(join(appDir, 'renderer', 'index.html'))) {
     console.log('building the QA app bundle…');
@@ -63,7 +64,7 @@ function environment(name, runtimeExecutable) {
 }
 
 async function launch(name, runtimeExecutable) {
-  app = await electron.launch({ args: [appDir], cwd: root, env: environment(name, runtimeExecutable), timeout: 60000 });
+  app = await electron.launch({ args: ['--disable-features=CalculateNativeWinOcclusion', appDir], cwd: root, env: environment(name, runtimeExecutable), timeout: 60000 });
   page = await app.firstWindow({ timeout: 45000 });
   page.on('pageerror', error => report.errors.push(`${name}: ${error.message}`));
   page.on('console', message => { if (message.type() === 'error') report.errors.push(`${name} console: ${message.text()}`); });
@@ -93,7 +94,8 @@ async function waitForTimelineEnd(label) {
   await page.waitForFunction(() => window.__splashLog?.done === true, null, { timeout: 30000 }).catch(() => { throw Error(`launch screen never handed over (${label})`); });
   return timeline();
 }
-const at = ms => page.waitForFunction(value => performance.now() >= value, ms, { timeout: 30000 });
+// Playwright can attach well after navigation under load; sample offsets start with this splash timeline.
+const at = ms => page.waitForFunction(value => performance.now() - window.__splashLog.started >= value, ms, { timeout: 30000 });
 const shot = async name => { await page.screenshot({ path: join(out, name) }); report.shots.push(name); };
 
 /** The launch screen may only be gone once the app has rendered; returns the hand-over latency. */
@@ -120,8 +122,8 @@ async function teardown() {
 }
 
 try {
-  await rm(out, { recursive: true, force: true });
   await mkdir(out, { recursive: true });
+  releaseLock = await acquireElectronQaLock();
   await prepare();
 
   // 1. Cold start with a slow runtime: no saved appearance yet (system theme, English default).
@@ -212,6 +214,7 @@ try {
   if (page) report.timeline = await timeline().catch(() => undefined);
 } finally {
   await teardown();
+  await releaseLock?.();
   await writeFile(join(out, 'report.json'), JSON.stringify(report, null, 2));
   if (!keep) await rm(scratch, { recursive: true, force: true }).catch(() => {});
   console.log(report.passed && !report.errors.length ? 'BOOT SPLASH QA PASSED' : `BOOT SPLASH QA FAILED\n${report.errors.join('\n')}`);

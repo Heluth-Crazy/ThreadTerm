@@ -281,14 +281,15 @@ export function ToolCard({ entry, index, open, active, awaitingApproval, session
   canOpenDiff?: (path: string) => boolean;
 }) {
   const view = toolView(entry.part);
+  const redactedBrowser = hasRedactedBrowserResult(entry.part);
   // Delegation tools keep the drawer header's localized name, not the raw "threadterm: delegate_start".
   const described = describeTool(entry.part, copy);
-  const title = described.kind === 'delegation' ? described.name : view.kind === 'command' ? view.display : view.kind === 'read' ? view.path || view.title : view.kind === 'mcp' ? view.tool : view.title;
-  const suffix = view.kind === 'mcp' && described.kind !== 'delegation' ? view.server : undefined;
+  const title = described.kind === 'delegation' ? described.name : view.kind === 'command' ? view.display : view.kind === 'read' ? view.path || view.title : view.kind === 'mcp' ? redactedBrowser ? view.title : view.tool : view.title;
+  const suffix = view.kind === 'mcp' && described.kind !== 'delegation' && !redactedBrowser ? view.server : undefined;
   const status = view.kind === 'mcp' && view.browserActivity?.outcome === 'outcome_unknown'
     ? { key: 'failed', label: copy('Outcome unknown', '操作结果未知') }
     : toolStatusLabel(view.status, active, awaitingApproval, copy);
-  const references = hasRedactedBrowserResult(entry.part) ? undefined : entry.part.fileReferences;
+  const references = redactedBrowser ? undefined : entry.part.fileReferences;
   const body = entry.part.text ?? (entry.part.fileReferences?.length ? partBody(entry.part) : '');
   return <div role="listitem" className={`chat-tool-entry tool-card is-${status.key} is-${view.kind}`} data-tool-id={entry.part.toolId || entry.id} data-tool-kind={view.kind} data-tool-status={view.status}>
     <div className="chat-tool-entry-label tool-card-head">

@@ -11,7 +11,7 @@
 //
 // Packaging: `npm run dist:win` runs this script with --release first. --release verifies the working tree (that is
 // what the installer is built from); the only way past it is the loudly printed THREADTERM_SKIP_CHECK=1 escape hatch.
-import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync } from 'node:fs';
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, unlinkSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { delimiter, dirname, join, relative, resolve } from 'node:path';
@@ -216,7 +216,12 @@ function materializeTree() {
 
 const tree = materializeTree();
 const root = tree.root;
-const scratch = join(root, 'runtime', 'target-check', 'check-scratch');
+const scratch = mkdtempSync(join(tmpdir(), 'tt-check-'));
+link(join(root, 'node_modules'), join(scratch, 'node_modules'));
+// One scratch per run, removed on every exit: drop the node_modules link itself first so removal never walks into it.
+process.on('exit', () => {
+  try { unlinkSync(join(scratch, 'node_modules')); rmSync(scratch, { recursive: true, force: true }); } catch {}
+});
 
 function freshScratch(name) {
   const dir = join(scratch, name);
@@ -286,17 +291,15 @@ npmRun('claude sidecar build', root, ['--workspace', '@threadterm/v3-claude-sdk'
 npmRun('claude sidecar tests', root, ['--workspace', '@threadterm/v3-claude-sdk', 'test'], 600000);
 
 // Pure qa/*.test.mjs suites: no Electron window, no network, no runtime executable, no user profile. Everything else
-// under qa/ is an environment-only harness (Electron views, real providers, loopback servers) or a documented
-// failure at HEAD (browser-activity-card "conflicting identities", icon-generator icon-set drift): neither belongs
-// in the release gate.
+// under qa/ is an environment-only harness (Electron views, real providers or loopback servers).
 const QA = [
-  'agent-history', 'browser-agent-controller', 'browser-agent-reads', 'browser-dev-server', 'browser-eval-approval',
+  'agent-history', 'browser-activity-card', 'browser-agent-controller', 'browser-agent-reads', 'browser-dev-server', 'browser-eval-approval',
   'browser-fixture', 'browser-handoff-core', 'browser-handoff-input', 'browser-handoff-native', 'browser-handoff-terminal',
   'browser-markup-mount', 'browser-markup', 'browser-new-tab', 'browser-occlusion', 'browser-page-comments',
   'browser-preview-mount', 'browser-shot-draft', 'browser-tab-activity', 'browser-tab-title', 'browser-view-cleanup',
   'browser-view-core', 'browser-view-diagnostics', 'chat-connect-transition', 'chat-plan-fixture', 'chat-state', 'codex-reconnect-fixture',
-  'codex-stream', 'codex-transcript', 'command-presets', 'file-drag', 'file-references', 'file-workspace-fixtures',
-  'icon-stability', 'inbox-visibility', 'mcp-smoke', 'native-browser', 'oc1-visual-fixtures', 'oc2-opencode-fixture',
+  'codex-stream', 'codex-transcript', 'command-presets', 'electron-harness-isolation', 'electron-lock', 'file-drag', 'file-references', 'file-workspace-fixtures',
+  'icon-generator', 'icon-stability', 'inbox-visibility', 'mcp-smoke', 'native-browser', 'oc1-visual-fixtures', 'oc2-opencode-fixture',
   'oc2-opencode-harness', 'oc2-opencode-options-regression', 'oc2-opencode-visual-fixture', 'opencode-reconnect-ordering',
   'opencode-retry', 'palette-sessions', 'pane-geometry', 'review-comments', 'selected-commit-selection',
   'send-latency-breakdown', 'session-activity', 'session-ordering', 'session-state', 'terminal-file-links', 'token-speed',

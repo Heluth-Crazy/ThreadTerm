@@ -10,12 +10,14 @@ import { DatabaseSync } from 'node:sqlite';
 import { build as esbuild } from 'esbuild';
 import { build as viteBuild } from 'vite';
 import { electron } from './lib/desktop1.mjs';
+import { acquireElectronQaLock } from './lib/electron-lock.mjs';
+import { tmpdir } from 'node:os';
 import { connectPeer } from './pipe-client.mjs';
 import { closeBrowserViewFixture, within } from './lib/browser-view-cleanup.mjs';
 import { writeBrowserViewDiagnostics } from './lib/browser-view-diagnostics.mjs';
 import { assertNoControlViolations, checkControlConsistency } from './lib/visual-consistency.mjs';
 
-const root = resolve(import.meta.dirname, '..'), scratchBase = resolve('D:/project/ThreadTerm/tt-qa-temp');
+const root = resolve(import.meta.dirname, '..'), scratchBase = resolve(process.env.TEMP || tmpdir());
 const runtime = resolve(process.env.THREADTERM_V3_RUNTIME_BIN || join(root, 'runtime/target-qa/debug/threadterm-v3-runtime.exe'));
 const mcp = join(dirname(runtime), 'threadterm-v3-mcp.exe');
 const out = resolve(process.env.THREADTERM_QA_BROWSER_TOOLS_OUT || join(root, 'qa/results/browser-agent-tools-visual'));
@@ -23,7 +25,7 @@ await mkdir(scratchBase, { recursive: true }); await mkdir(out, { recursive: tru
 const scratch = await mkdtemp(join(scratchBase, 'tt-browser-agent-tools-')), appDir = join(scratch, 'app'), bin = join(scratch, 'bin'), plugins = join(scratch, 'plugins'), fixture = join(plugins, 'browser-agent-reads-qa'), work = join(scratch, 'work'), foreignWork = join(scratch, 'foreign-work'), eventFile = join(out, 'provider-events.jsonl'), pipe = `\\\\.\\pipe\\tt-browser-tools-${randomUUID()}`;
 assert.equal(dirname(resolve(scratch)).toLowerCase(), scratchBase.toLowerCase());
 const report = { passed: false, checks: [], errors: [], screenshots: [], themes: [], limitations: ['Fake Codex and public ACP providers only; no live accounts/model calls.', 'Private broker transport isolation and native-provider Chat projection are separate assertions.'], binaryHashes: {} };
-const servers = []; let app, page, runtimeProcess, baseUrl;
+const servers = []; let app, page, runtimeProcess, baseUrl, releaseLock;
 const snapshotMarker=`PAGE_PRIVATE_${randomUUID()}`,consoleMarker=`CONSOLE_PRIVATE_${randomUUID()}`;
 const privateImageHashes = new Set();
 const check = message => { report.checks.push(message); console.log(`PASS ${message}`); };
@@ -102,10 +104,11 @@ try {
   for (const path of [bin, work, foreignWork, plugins, join(scratch, 'home'), join(scratch, 'appdata'), join(scratch, 'localappdata')]) await mkdir(path, { recursive: true });
   for (const executable of [runtime, mcp]) { assert.ok(existsSync(executable), `Missing candidate ${executable}`); report.binaryHashes[executable] = createHash('sha256').update(await readFile(executable)).digest('hex'); }
   cpSync(join(root, 'qa/fixtures/browser-agent-reads'), fixture, { recursive: true }); await writeFile(eventFile, ''); await writeFile(join(bin, 'codex.cmd'), `@"${process.execPath}" "${join(fixture, 'codex.cjs')}" %*\r\n`);
+  releaseLock = await acquireElectronQaLock();
   await buildApp();
   runtimeProcess = spawn(runtime, [], { env: environment(), windowsHide: true, stdio: 'ignore' });
   await until(async () => { let peer; try { peer = await connectPeer(`${pipe}-control`); await peer.auth((await readFile(join(scratch, 'data/runtime.credential'), 'utf8')).trim()); return true; } finally { peer?.close(); } }, 'isolated real runtime pipe');
-  app = await electron.launch({ args: [appDir], cwd: root, env: environment(), timeout: 60_000 }); page = await app.firstWindow({ timeout: 45_000 }); page.setDefaultTimeout(20_000); page.on('pageerror', error => report.errors.push(error.message));
+  app = await electron.launch({ args: ['--disable-features=CalculateNativeWinOcclusion', appDir], cwd: root, env: environment(), timeout: 60_000 }); page = await app.firstWindow({ timeout: 45_000 }); page.setDefaultTimeout(20_000); page.on('pageerror', error => report.errors.push(error.message));
   await page.waitForFunction(() => Boolean(window.threadterm?.browserCommand)); await page.locator('#boot-splash').waitFor({ state: 'detached' });
   let snap = await request('runtime.snapshot'); await request('settings.update', { patch: { language: 'en', theme: 'light', notifications: { native: false, attention: false, completed: false, sound: false } }, expectedRevision: snap.settings.revision, operationId: randomUUID() });
   await until(async () => (await request('provider.list')).some(provider => provider.id === 'codex' && provider.chat), 'fake Codex capability');
@@ -170,8 +173,14 @@ try {
   await readOn();await sendUi(codex,'final-read-handle',[{tool:'browser_list_tabs'}]); await app.evaluate(({ BrowserWindow }) => { const window = BrowserWindow.getAllWindows()[0]; window.setContentSize(1600, 1000); });
   for (const width of [720, 565, 400]) { await paneWidth(width); for (const theme of ['light', 'dark', 'custom']) { await setTheme(theme); const result = await checkControlConsistency(page, '.pane-tab-surface:not([hidden]) .wb-web-preview .wb-browser-toolbar', { checkStates: true, checkDisabledRows: true }); assertNoControlViolations(result, `B3 ${theme} ${width}px`); report.themes.push({ width, theme, result }); await shot(`sharing-${theme}-${width}.png`); } }
   await setTheme('light'); await readOff();
-  for (let count = 0; count < 80; count++) { if (await page.evaluate(() => document.activeElement?.getAttribute('aria-label') === 'Agent access Read')) break; await page.keyboard.press('Tab'); }
-  assert.equal(await page.evaluate(() => document.activeElement?.getAttribute('aria-label')), 'Agent access Read'); await page.keyboard.press('Enter'); await until(async () => (await state()).sharing.level === 'read', 'keyboard Read grant');
+  // Desktop 1 deliberately never activates its OS window; seed DOM focus instead of tabbing from a native view.
+  const readButton = preview().getByRole('button', { name: 'Agent access Read', exact: true });
+  report.keyboardFocus = { windowFocused: await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].isFocused()), before: await page.evaluate(() => document.activeElement?.getAttribute('aria-label')) };
+  await readButton.focus();
+  assert.equal(await readButton.evaluate(element => document.activeElement === element && element.tabIndex >= 0), true, 'Read is a keyboard-focusable native button');
+  report.keyboardFocus.after = await page.evaluate(() => document.activeElement?.getAttribute('aria-label'));
+  await page.keyboard.press('Enter'); await until(async () => (await state()).sharing.level === 'read', 'keyboard Read grant');
+  await shot('keyboard-read.png');
   await sendUi(codex, 'keyboard-read-handle', [{ tool: 'browser_list_tabs' }]);
   check('Sharing controls support keyboard activation and shared-token light/dark/custom layouts at wide, ~565px and ~400px panes');
   await browser({ type: 'navigate', tabId: source, url: `${baseUrl}/busy` }); await loaded(`${baseUrl}/busy`); await pause(2200);
@@ -196,6 +205,7 @@ try {
 finally {
   if (app && page) await within(() => writeBrowserViewDiagnostics(app, page, out), 5000);
   const cleanup = await closeBrowserViewFixture({ app, page, runtime: runtimeProcess, shutdownRuntime: true }); report.errors.push(...cleanup);
+  await releaseLock?.();
   await Promise.all(servers.map(server => new Promise(done => server.close(done))));
   const target = resolve(scratch); assert.equal(dirname(target).toLowerCase(), scratchBase.toLowerCase()); await rm(target, { recursive: true, force: true, maxRetries: 5 }).catch(error => { report.errors.push(String(error)); });
   report.scratchRemoved = !existsSync(target); if (!report.scratchRemoved) report.errors.push('Disposable fixture scratch cleanup did not finish.');

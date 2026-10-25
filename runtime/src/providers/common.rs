@@ -1397,6 +1397,15 @@ pub(crate) mod windows_script_fixtures {
         script
     }
 
+    /// Returns whether the fixture emitted its completion marker. ConPTY can
+    /// pad a repainted row with spaces, so the marker is compared after
+    /// trimming that display-only suffix.
+    pub(crate) fn echo_fixture_completed(output: &str) -> bool {
+        output
+            .lines()
+            .any(|line| line.trim_end_matches(['\r', '\n', ' ']) == "DONE")
+    }
+
     /// Extracts the echoed argument values in order. Panics unless the script
     /// ran to completion.
     pub(crate) fn parse_echo_output(output: &str) -> Vec<String> {
@@ -1404,7 +1413,7 @@ pub(crate) mod windows_script_fixtures {
         let mut done = false;
         for line in output.lines() {
             let line = line.trim_end_matches(['\r', '\n']);
-            if line == "DONE" {
+            if line.trim_end_matches(' ') == "DONE" {
                 done = true;
                 break;
             }
@@ -1546,7 +1555,8 @@ pub(crate) mod windows_script_fixtures {
 #[cfg(all(test, windows))]
 mod windows_script_tests {
     use super::windows_script_fixtures::{
-        assert_echo_matches, fixture_dir, oem_attainable_args, oem_decode,
+        assert_echo_matches, echo_fixture_completed, fixture_dir, oem_attainable_args, oem_decode,
+        parse_echo_output,
     };
     use super::*;
 
@@ -1636,6 +1646,15 @@ mod windows_script_tests {
             let output = oem_decode(&run_command_bytes(&spec, cwd));
             assert_echo_matches(&output, &oem_attainable_args(&args));
         }
+    }
+
+    #[test]
+    fn echo_fixture_completion_accepts_conpty_row_padding() {
+        let output = "ARG1=with space   \r\nDONE   \r\n";
+        assert!(echo_fixture_completed(output));
+        assert!(!echo_fixture_completed("ARG1=value\r\nNOT_DONE\r\n"));
+        assert!(!echo_fixture_completed("ARG1=value\r\n"));
+        assert_eq!(parse_echo_output(output), vec!["with space   "]);
     }
 
     #[test]

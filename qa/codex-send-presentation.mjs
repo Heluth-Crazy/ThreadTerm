@@ -3,7 +3,8 @@ import assert from 'node:assert/strict';
 import { mkdtemp, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
-import { _electron as electron } from '@playwright/test';
+import { electron } from './lib/desktop1.mjs';
+import { acquireElectronQaLock } from './lib/electron-lock.mjs';
 import { build } from 'esbuild';
 
 const scratch = await mkdtemp(join(tmpdir(), 'threadterm-codex-send-presentation-'));
@@ -91,7 +92,9 @@ await writeFile(join(scratch, 'index.html'), '<meta charset="utf-8"><link rel="s
 await writeFile(join(scratch, 'main.cjs'), `const {app,BrowserWindow}=require('electron');app.setPath('userData',${JSON.stringify(join(scratch, 'profile'))});app.whenReady().then(()=>new BrowserWindow({width:1280,height:900,show:true,webPreferences:{contextIsolation:true,nodeIntegration:false,sandbox:true,backgroundThrottling:false}}).loadFile(${JSON.stringify(join(scratch, 'index.html'))}));`);
 
 let app;
+let releaseLock;
 try {
+  releaseLock = await acquireElectronQaLock();
   app = await electron.launch({ args: [join(scratch, 'main.cjs')] });
   const page = await app.firstWindow();
   page.setDefaultTimeout(15_000);
@@ -267,5 +270,6 @@ try {
   await page.evaluate(() => window.qaResolve('send'));
   console.log('Codex send presentation fixture passed', JSON.stringify({ scratch }));
 } finally {
-  await app?.close();
+  try { await app?.close(); }
+  finally { await releaseLock?.(); }
 }
