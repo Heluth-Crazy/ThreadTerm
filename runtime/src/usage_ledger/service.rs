@@ -445,7 +445,7 @@ fn start(db: &Arc<Database>, params: &Value, rebuild: bool, scan_history: bool) 
         }));
         let (state,error) = match outcome {
             Ok(Ok(())) => (if cancel.load(Ordering::Relaxed) {"cancelled"} else {"completed"}, None),
-            Ok(Err(error)) => { let _ = error; ("failed",Some("usage_scan_failed")) },
+            Ok(Err(error)) => { eprintln!("usage history scan failed: {error:#}"); ("failed",Some("usage_scan_failed")) },
             Err(_) => ("failed",Some("usage_scan_panicked")),
         };
         let pending_reprice = jobs().lock().ok().and_then(|mut guard| {

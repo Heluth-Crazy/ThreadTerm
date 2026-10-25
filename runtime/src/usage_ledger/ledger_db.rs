@@ -155,6 +155,9 @@ pub fn worker_connection(main: &Path) -> Result<Connection> {
     )?;
     conn.busy_timeout(std::time::Duration::from_millis(5000))?;
     conn.set_prepared_statement_cache_capacity(128);
+    // Every worker write may reach the checkpoint cadence, including the live-log
+    // import that runs before the query cache configures this connection.
+    super::write_priority::initialize_checkpoint_cadence(&conn)?;
     Ok(conn)
 }
 
@@ -416,6 +419,41 @@ mod tests {
     fn data_version(conn: &Connection) -> i64 {
         conn.pragma_query_value(None, "data_version", |row| row.get(0))
             .unwrap()
+    }
+
+    /// A live request logged while the ledger was busy is imported first on the
+    /// next scan, before the query cache configures the worker connection. That
+    /// import must not fail (it once aborted every scan with `no such table:
+    /// temp.usage_checkpoint_cadence`, leaving the page at live usage only).
+    #[test]
+    fn a_pending_live_log_row_imports_on_a_fresh_worker_connection() {
+        let dir = tempfile::tempdir().unwrap();
+        let (main, probe) = seeded_main(dir.path());
+        let mut fact = crate::usage_ledger::facts::Fact::new(
+            "codex",
+            "synthetic-session",
+            "synthetic-session:live-1",
+            "2026-01-04T15:00:00Z",
+        );
+        fact.threadterm_session_id = Some("session".into());
+        fact.turn_id = Some("turn".into());
+        fact.buckets.input = Some(23_950);
+        fact.buckets.output = Some(39);
+        fact.source = "live:session:turn:usage:0:0".into();
+        probe
+            .execute(
+                "INSERT INTO usage_live_events(fact_key,threadterm_session_id,turn_id,created_at,fact)
+                 VALUES(?1,'session','turn','2026-01-04T15:00:00Z',?2)",
+                rusqlite::params![fact.key, serde_json::to_string(&fact).unwrap()],
+            )
+            .unwrap();
+        let conn = open_worker(&main).unwrap();
+        crate::usage_ledger::live::import_log(&conn, &AtomicBool::new(false)).unwrap();
+        assert_eq!(
+            conn.query_row("SELECT COUNT(*) FROM usage_facts", [], |row| row.get::<_, i64>(0))
+                .unwrap(),
+            1
+        );
     }
 
     /// The attach itself is the guarantee: SQLite refuses writes that reach the
