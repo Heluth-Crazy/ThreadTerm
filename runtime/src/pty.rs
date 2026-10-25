@@ -214,6 +214,8 @@ impl PtyManager {
                         report_storage_failure(&mut storage_failure, &id, &error);
                     }
                 }
+                // The final drain can race the process-exit status write.
+                reader_db.schedule_retention();
             })?;
         let live = Arc::new(LivePty {
             master: Mutex::new(pair.master),

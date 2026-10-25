@@ -1,6 +1,6 @@
 import { createHash, createHmac, randomUUID, timingSafeEqual } from 'node:crypto';
 import { execFile, type ChildProcess } from 'node:child_process';
-import { appendFile, closeSync, existsSync, fstatSync, openSync, readFile, readFileSync, readSync } from 'node:fs';
+import { closeSync, existsSync, fstatSync, openSync, readFile, readFileSync, readSync } from 'node:fs';
 import { platform, env, hrtime } from 'node:process';
 import { join, resolve } from 'node:path';
 import net from 'node:net';
@@ -26,6 +26,7 @@ import {
   type RuntimeEvent,
 } from '@threadterm/protocol';
 import { OutputFanout } from './output-fanout.js';
+import { RuntimeLogWriter } from './runtime-log.js';
 
 const CONNECT_TIMEOUT_MS = 1_500;
 const RUNTIME_READY_TIMEOUT_MS = 12_000;
@@ -33,6 +34,7 @@ const RETRY_DELAY_MS = 400;
 const INITIAL_OUTPUT_CREDIT = 64 * 1024;
 const MAX_OUTPUT_CREDIT = 8 * 1024 * 1024;
 const SEND_TRACE_ENV = 'THREADTERM_V3_SEND_TRACE';
+const SEND_TRACE_LOG_FILE = 'desktop-send-trace.log';
 const MAX_CORRELATION_ID_LENGTH = 128;
 const MAX_PENDING_SEND_TRACE_RECORDS = 256;
 const BROWSER_REQUEST_TIMEOUT_MS = 10_000;
@@ -54,12 +56,14 @@ const pendingSendTraceRecords: string[] = [];
 let sendTraceWriteActive = false;
 let sendTracePathResolving = false;
 let sendTraceLogPath: string | undefined;
+let sendTraceLogWriter: RuntimeLogWriter | undefined;
 
 function resolveSendTraceLogPath(): void {
   if (sendTraceLogPath || sendTracePathResolving) return;
   try {
     if (env.THREADTERM_V3_DATA) {
-      sendTraceLogPath = join(env.THREADTERM_V3_DATA, 'runtime.log');
+      sendTraceLogPath = join(env.THREADTERM_V3_DATA, SEND_TRACE_LOG_FILE);
+      sendTraceLogWriter = new RuntimeLogWriter(sendTraceLogPath);
       drainSendTraceRecords();
       return;
     }
@@ -72,7 +76,8 @@ function resolveSendTraceLogPath(): void {
           if (isRecord(value) && typeof value.root === 'string' && value.root) root = value.root;
         } catch {}
         const dataRoot = root || join(env.LOCALAPPDATA || env.APPDATA || app.getPath('appData'), 'ThreadTermV3');
-        sendTraceLogPath = join(dataRoot, 'runtime.log');
+        sendTraceLogPath = join(dataRoot, SEND_TRACE_LOG_FILE);
+        sendTraceLogWriter = new RuntimeLogWriter(sendTraceLogPath);
       } catch {
         pendingSendTraceRecords.length = 0;
       }
@@ -87,15 +92,14 @@ function resolveSendTraceLogPath(): void {
 
 function drainSendTraceRecords(): void {
   if (sendTraceWriteActive) return;
-  if (!sendTraceLogPath) { resolveSendTraceLogPath(); return; }
+  if (!sendTraceLogPath || !sendTraceLogWriter) { resolveSendTraceLogPath(); return; }
   const line = pendingSendTraceRecords.shift();
   if (!line) return;
   sendTraceWriteActive = true;
   try {
-    appendFile(sendTraceLogPath, line, 'utf8', () => {
-      sendTraceWriteActive = false;
-      drainSendTraceRecords();
-    });
+    sendTraceLogWriter.write(line);
+    sendTraceWriteActive = false;
+    drainSendTraceRecords();
   } catch {
     sendTraceWriteActive = false;
     pendingSendTraceRecords.length = 0;
@@ -767,7 +771,15 @@ export class RuntimeClient {
       this.handleDisconnect(new Error('Runtime sent browser traffic on the control pipe'));
       return;
     }
-    if (isRuntimeEvent(value)) { for (const listener of this.eventListeners) listener(value); return; }
+    if (isRuntimeEvent(value)) {
+      if (value.event === 'runtime.degraded' && isRecord(value.data)
+        && value.data.reason === 'outbox_history_pruned' && value.data.snapshotRequired === true) {
+        this.handleDisconnect(new RuntimeUnavailableError('outbox_history_pruned: Refreshing the runtime snapshot'));
+        return;
+      }
+      for (const listener of this.eventListeners) listener(value);
+      return;
+    }
     if (!isControlResponse(value)) { this.handleDisconnect(new Error('Runtime sent an invalid control response')); return; }
     const pending = this.pending.get(value.id);
     if (!pending) return;
@@ -988,8 +1000,8 @@ async function launchRuntimeIfNeeded(controlPipe: string, assertOpen: () => void
   const child = (() => {
     try {
       return executable.kind === 'cargo'
-        ? spawn('cargo', ['run', '--manifest-path', executable.path, '--bin', 'threadterm-v3-runtime'], { cwd: app.getAppPath(), detached: true, stdio: ['ignore', log, log], windowsHide: true, env: runtimeEnv })
-        : spawn(executable.path, [], { detached: true, stdio: ['ignore', log, log], windowsHide: true, env: runtimeEnv });
+        ? spawn('cargo', ['run', '--manifest-path', executable.path, '--bin', 'threadterm-v3-runtime'], { cwd: app.getAppPath(), detached: true, stdio: ['ignore', 'ignore', log], windowsHide: true, env: runtimeEnv })
+        : spawn(executable.path, [], { detached: true, stdio: ['ignore', 'ignore', log], windowsHide: true, env: runtimeEnv });
     } finally {
       closeSync(log);
     }

@@ -49,6 +49,14 @@ fn source_for<'a>(
     if source_session_id.is_some() {
         return Ok("rerun");
     }
+    let projected_native: bool = tx.query_row(
+        "SELECT EXISTS(SELECT 1 FROM metadata WHERE key=? AND value='true')",
+        [format!("retention.nativeHistory:{session_id}")],
+        |row| row.get(0),
+    )?;
+    if projected_native {
+        return Ok("native-history");
+    }
     let native: Option<()> = tx.query_row(
         "SELECT 1 FROM operation_requests WHERE method IN ('session.create','history.import') AND json_extract(params,'$.nativeId') IS NOT NULL AND json_extract(params,'$.operationId') IN (SELECT id FROM operations WHERE json_extract(result,'$.id')=?) LIMIT 1",
         [session_id], |_| Ok(())
@@ -61,9 +69,11 @@ fn source_for<'a>(
 }
 
 fn status_events(tx: &rusqlite::Transaction<'_>, session_id: &str) -> Result<Vec<Value>> {
-    let mut statement = tx.prepare("SELECT created_at,json_extract(data,'$.status') FROM outbox WHERE event='session.status' AND json_extract(data,'$.sessionId')=? ORDER BY seq")?;
+    let mut statement = tx.prepare(
+        "SELECT created_at,status FROM (SELECT seq,created_at,json_extract(data,'$.status') AS status FROM outbox WHERE event='session.status' AND json_extract(data,'$.sessionId')=? UNION ALL SELECT seq,created_at,json_extract(data,'$.status') AS status FROM retention_event_state WHERE session_id=? AND event='session.status') ORDER BY seq",
+    )?;
     let events = statement
-        .query_map([session_id], |row| {
+        .query_map([session_id, session_id], |row| {
             Ok(json!({"recordedAt":row.get::<_, String>(0)?,"status":row.get::<_, String>(1)?}))
         })?
         .collect::<rusqlite::Result<Vec<_>>>()
@@ -231,5 +241,31 @@ mod tests {
         assert_eq!(rows[0]["source"], "native-history");
         assert!(rows[0].get("sessionLifetimeSeconds").is_none());
         assert_eq!(summary(&rows)["runningCount"], 0);
+    }
+
+    #[test]
+    fn lifecycle_uses_retained_projections_after_history_pruning() {
+        let temp = tempfile::tempdir().unwrap();
+        let db = Database::open(&temp.path().join("metrics.sqlite")).unwrap();
+        crate::session_configs::initialize(&db).unwrap();
+        let session = db
+            .create_session(CreateSession {
+                project_id: None, title: None, provider: "codex", mode: "chat",
+                native_id: None, operation_id: "retained-session",
+            })
+            .unwrap();
+        db.transaction(|tx| {
+            tx.execute("UPDATE sessions SET status='error' WHERE id=?", [&session.id])?;
+            tx.execute("INSERT INTO metadata(key,value) VALUES(?, 'true')", [format!("retention.nativeHistory:{}", session.id)])?;
+            tx.execute("CREATE TABLE IF NOT EXISTS retention_event_state(session_id TEXT,event TEXT,seq INTEGER,data TEXT,created_at TEXT,PRIMARY KEY(session_id,event))", [])?;
+            tx.execute(
+                "INSERT INTO retention_event_state(session_id,event,seq,data,created_at) VALUES(?,'session.status',42,?,?)",
+                rusqlite::params![session.id, json!({"sessionId":session.id,"status":"error"}).to_string(), "2026-01-01T00:00:30Z"],
+            )?;
+            Ok(())
+        }).unwrap();
+        let rows = lifecycle(&db, &Map::new()).unwrap();
+        assert_eq!(rows[0]["source"], "native-history");
+        assert_eq!(rows[0]["endedAt"], "2026-01-01T00:00:30Z");
     }
 }

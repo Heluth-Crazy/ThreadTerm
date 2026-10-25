@@ -35,6 +35,14 @@ fn ua1_tables_in_the_main_database_are_dropped_and_trigger_a_rescan() {
     }
     let ledger_file = ledger_db::path_for(&main);
     assert!(!ledger_file.exists());
+    // The schema-zero fixture must not retain projections from migration two.
+    Connection::open(&main).unwrap().execute_batch(
+        "DROP TRIGGER IF EXISTS sessions_delete_retention;
+         DROP INDEX IF EXISTS retention_outbox_age;
+         DROP INDEX IF EXISTS retention_operations_age;
+         DROP INDEX IF EXISTS retention_ended_sessions;
+         DROP TABLE IF EXISTS retention_event_state;"
+    ).unwrap();
     let db = crate::db::Database::open(&main).unwrap();
     // Opening the runtime creates the ledger file, drops the UA1 tables and
     // requests a rescan.

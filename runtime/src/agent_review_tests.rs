@@ -385,6 +385,20 @@ fn projected_completed_turn_transitions_a_running_review_to_completed() {
 }
 
 #[test]
+fn completed_review_survives_pruned_activity_history() {
+    let fixture = Fixture::new(true, true);
+    let session = fixture.session(fixture.root.path(), "implementation");
+    let reviewer = fixture.session(fixture.root.path(), "reviewer");
+    fixture.review(&session, &reviewer, "running", fixture.root.path());
+    fixture.db.record_provider_event(&reviewer, Some("turn"), "message.user", &json!({"text":"review"})).unwrap();
+    fixture.db.record_provider_event(&reviewer, Some("turn"), "chat.delta", &json!({"text":"done"})).unwrap();
+    fixture.db.record_provider_event(&reviewer, Some("turn"), "chat.turn.completed", &json!({"status":"completed"})).unwrap();
+    fixture.db.record_provider_event(&reviewer, Some("later"), "chat.turn.started", &json!({})).unwrap();
+    fixture.db.transaction(|tx| { tx.execute("DELETE FROM outbox", [])?; Ok(()) }).unwrap();
+    assert_eq!(agent_review::list(&fixture.db, &session).unwrap()[0]["state"], "completed");
+}
+
+#[test]
 fn completed_reviews_survive_later_stop_or_deletion_and_list_is_bounded() {
     let fixture = Fixture::new(true, true);
     let session = fixture.session(fixture.root.path(), "implementation");

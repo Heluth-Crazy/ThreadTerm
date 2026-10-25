@@ -581,8 +581,8 @@ fn project_native_title(tx: &rusqlite::Transaction<'_>, session_id: &str, data: 
  let current:Option<(String,String)>=tx.query_row("SELECT title,provider FROM sessions WHERE id=?",[session_id],|row|Ok((row.get(0)?,row.get(1)?))).optional()?;
  if current.as_ref().is_none_or(|(current,provider)|current!=provider) {return Ok(false)}
  let user_owned:bool=tx.query_row(
-  "SELECT EXISTS(SELECT 1 FROM operation_requests WHERE (method='session.update' AND json_extract(params,'$.sessionId')=? AND json_type(params,'$.title')='text') OR (method IN ('session.create','history.import') AND json_type(params,'$.title')='text' AND id IN (SELECT id FROM operations WHERE json_extract(result,'$.id')=?)))",
- params![session_id,session_id],|row|row.get(0))?;
+  "SELECT EXISTS(SELECT 1 FROM metadata WHERE key=? AND value='true') OR EXISTS(SELECT 1 FROM operation_requests WHERE (method='session.update' AND json_extract(params,'$.sessionId')=? AND json_type(params,'$.title')='text') OR (method IN ('session.create','history.import') AND json_type(params,'$.title')='text' AND id IN (SELECT id FROM operations WHERE json_extract(result,'$.id')=?)))",
+ params![format!("retention.userTitle:{session_id}"),session_id,session_id],|row|row.get(0))?;
  if user_owned {return Ok(false)}
  if tx.execute("UPDATE sessions SET title=?,updated_at=? WHERE id=?",params![title,now,session_id])?==1 {
   tx.execute("INSERT INTO outbox(event,data,created_at) VALUES ('state.changed',?,?)",params![serde_json::to_string(&json!({"sessionId":session_id,"kind":"session.title"}))?,now])?;
@@ -643,7 +643,11 @@ fn turn_model(data: &Value) -> Option<String> {
 }
 
 fn model_from_latest_ui(tx: &rusqlite::Transaction<'_>, session_id: &str) -> Option<String> {
-    let raw: Option<String> = tx.query_row("SELECT data FROM outbox WHERE event='chat.ui' AND json_extract(data,'$.sessionId')=? ORDER BY seq DESC LIMIT 1", [session_id], |row| row.get(0)).optional().ok().flatten();
+    let raw: Option<String> = tx.query_row(
+        "SELECT data FROM (SELECT seq,data FROM outbox WHERE event='chat.ui' AND json_extract(data,'$.sessionId')=? UNION ALL SELECT seq,data FROM retention_event_state WHERE session_id=? AND event='chat.ui') ORDER BY seq DESC LIMIT 1",
+        params![session_id, session_id],
+        |row| row.get(0),
+    ).optional().ok().flatten();
     serde_json::from_str::<Value>(raw?.as_str()).ok()?.get("options")?.as_array()?.iter()
         .find(|option| option.get("id").and_then(Value::as_str)==Some("model"))?.get("value")?.as_str()
         .filter(|value| !value.is_empty()).map(str::to_owned)
@@ -1810,6 +1814,23 @@ mod tests {
         db.bind_operation("rename-default", "session.update", &json!({"sessionId":"s","title":"codex","operationId":"rename-default"})).unwrap();
         record(&db, "s", None, "chat.title", &json!({"title":"New native title"})).unwrap();
         assert_eq!(db.session_by_id("s").unwrap().unwrap().title, "codex", "a manual rename back to the default spelling remains user-owned");
+    }
+    #[test]
+    fn native_title_and_turn_model_survive_pruned_history_projections() {
+        let db = db();
+        db.transaction(|tx| {
+            tx.execute("INSERT INTO metadata(key,value) VALUES('retention.userTitle:s','true')", [])?;
+            tx.execute("CREATE TABLE IF NOT EXISTS retention_event_state(session_id TEXT,event TEXT,seq INTEGER,data TEXT,created_at TEXT,PRIMARY KEY(session_id,event))", [])?;
+            tx.execute(
+                "INSERT INTO retention_event_state(session_id,event,seq,data,created_at) VALUES('s','chat.ui',1,?,'now')",
+                [json!({"sessionId":"s","options":[{"id":"model","value":"retained-model"}]}).to_string()],
+            )?;
+            Ok(())
+        }).unwrap();
+        record(&db, "s", None, "chat.title", &json!({"title":"Native title"})).unwrap();
+        record(&db, "s", Some("turn"), "chat.turn.started", &json!({})).unwrap();
+        assert_eq!(db.session_by_id("s").unwrap().unwrap().title, "test");
+        assert_eq!(db.chat_items("s").unwrap().into_iter().find(|item| item.id == "s:assistant:turn").unwrap().turn_model.as_deref(), Some("retained-model"));
     }
     #[test]
     fn speed_projection_persists_final_usage_and_keeps_native_exact_counts() {

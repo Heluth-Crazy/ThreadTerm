@@ -64,7 +64,10 @@ async function main() {
     assert.deepEqual(env.PATH.split(';'), [bin, dirname(process.execPath), system32]);
     return env;
   };
-  const readTrace = async () => parseTrace(await readFile(join(activeData, 'runtime.log'), 'utf8').catch(() => ''));
+  const readTrace = async () => parseTrace((await Promise.all([
+    readFile(join(activeData, 'runtime.log'), 'utf8').catch(() => ''),
+    readFile(join(activeData, 'desktop-send-trace.log'), 'utf8').catch(() => ''),
+  ])).join('\n'));
   const rpc = (method, params = {}) => page.evaluate(([name, value]) => window.threadterm.request(name, value), [method, params]);
   const until = async (probe, label, timeout = 45000) => {
     const deadline = Date.now() + timeout;

@@ -34,6 +34,7 @@ const providerHome = join(scratch, 'provider-home');
 const appData = join(scratch, 'appdata');
 const localAppData = join(scratch, 'localappdata');
 const runtimeLog = join(data, 'runtime.log');
+const desktopTraceLog = join(data, 'desktop-send-trace.log');
 const fakeLog = join(scratch, 'fake.jsonl');
 const gitLog = join(scratch, 'git.jsonl');
 const gate = join(scratch, 'git.gate');
@@ -61,7 +62,8 @@ async function until(check, label, timeout = 20_000) {
   throw new Error(`Timed out: ${label}`);
 }
 async function traceRows() {
-  const lines = (await readFile(runtimeLog, 'utf8').catch(() => '')).split(/\r?\n/u);
+  const lines = (await Promise.all([runtimeLog, desktopTraceLog]
+    .map(path => readFile(path, 'utf8').catch(() => '')))).join('\n').split(/\r?\n/u);
   const rows = [];
   for (const line of lines) {
     try {

@@ -6,6 +6,7 @@ import { userErrorText } from './runtimeError';
 const ipcWrapped = (message: string) => new Error(`Error invoking remote method 'threadterm:request': RuntimeRequestError: ${message}`);
 
 test('a code the UI explains is shown in the reader language, not the raw IPC text', () => {
+  assert.equal(userErrorText(ipcWrapped('outbox_history_pruned: Refreshing the runtime snapshot'), 'fallback', true), '较早的事件记录已清理，正在刷新会话快照。');
   const caught = ipcWrapped('response_too_large: response exceeds 6291456 bytes');
   assert.equal(userErrorText(caught, 'fallback', false), 'This part of the conversation is too large to load at once.');
   assert.equal(userErrorText(caught, 'fallback', true), '此部分对话过大，无法一次加载。');

@@ -6,7 +6,14 @@ use threadterm_v3_runtime::{
 };
 
 #[tokio::main]
-async fn main() -> Result<()> {
+async fn main() {
+    if let Err(error) = run().await {
+        threadterm_v3_runtime::runtime_log::emit(format_args!("{error:#}"));
+        std::process::exit(1);
+    }
+}
+
+async fn run() -> Result<()> {
     #[cfg(windows)]
     if std::env::args().any(|argument| argument == "--pty-bootstrap") {
         std::process::exit(threadterm_v3_runtime::bootstrap::run()?);
@@ -14,6 +21,7 @@ async fn main() -> Result<()> {
     // First: what Windows defined when this environment was inherited (environment.rs).
     threadterm_v3_runtime::environment::initialize();
     let config = RuntimeConfig::load()?;
+    threadterm_v3_runtime::runtime_log::initialize(config.data_dir.join("runtime.log"));
     let _singleton = RuntimeLock::acquire(&format!(
         "Local\\ThreadTermV3-{}",
         config.pipe_base.replace('\\', "_")

@@ -254,6 +254,18 @@ fn last_answer(db: &Database, reviewer: &str) -> Result<Option<crate::domain::Ch
     })
 }
 
+/// Completion survives outbox compaction because turn status is projected into
+/// the reviewer's durable transcript.
+fn completed_turn(db: &Database, reviewer: &str, turn: &str, created_at: &str) -> Result<bool> {
+    db.transaction(|tx| {
+        Ok(tx.query_row(
+            "SELECT EXISTS(SELECT 1 FROM chat_items WHERE session_id=? AND turn_id=? AND created_at>=? AND json_extract(data,'$.turnStatus')='completed')",
+            params![reviewer, turn, created_at],
+            |row| row.get(0),
+        )?)
+    })
+}
+
 pub(crate) fn list(db: &Database, session_id: &str) -> Result<Value> {
     if db.session_by_id(session_id)?.is_none() { return Err(fault("session_not_found")); }
     let rows = db.transaction(|tx| {
@@ -275,9 +287,9 @@ pub(crate) fn list(db: &Database, session_id: &str) -> Result<Value> {
                 matches!(activity.state.as_str(), "awaiting_input"|"idle") && activity.reason.is_none() && activity.turn_id.is_some() && (turn.is_none() || turn == activity.turn_id)
             }) || if let Some(turn) = &turn {
                 // Completion attention can be acknowledged or superseded by a
-                // newer turn before the first list. Its durable event still
-                // proves that this review's original turn succeeded.
-                db.transaction(|tx| Ok(tx.query_row("SELECT EXISTS(SELECT 1 FROM outbox WHERE event='session.activity' AND json_extract(data,'$.sessionId')=? AND json_extract(data,'$.activity.turnId')=? AND json_extract(data,'$.activity.state')='awaiting_input' AND created_at>=?)", params![reviewer,turn,row["createdAt"].as_str().unwrap()], |r| r.get::<_,bool>(0))?))?
+                // newer turn before the first list. The transcript is the
+                // durable source of truth after outbox compaction.
+                completed_turn(db, reviewer, turn, row["createdAt"].as_str().unwrap())?
             } else { false });
             if completed { state(db, id, "completed", None)?; }
             else if matches!(session.status.as_str(), "exited"|"interrupted"|"error") {

@@ -516,6 +516,29 @@ test('a stale control frame cannot publish an event from the replaced transport'
   }
 });
 
+test('a pruned outbox cursor invalidates the control session for a snapshot refresh', () => {
+  const { client } = clientWithPipes();
+  const internal = client as unknown as ClientInternals;
+  let controlClosed = 0, outputClosed = 0;
+  internal.control = { write() {}, close() { controlClosed += 1; } };
+  internal.output = { write() {}, close() { outputClosed += 1; } };
+  const events: string[] = [];
+  const unsubscribe = client.onEvent(event => events.push(event.event));
+  try {
+    internal.handleControlFrame(Buffer.from(JSON.stringify({
+      v: 1, event: 'runtime.degraded', epoch: 'runtime-epoch', seq: 44,
+      data: { reason: 'outbox_history_pruned', snapshotRequired: true },
+    }), 'utf8'));
+    assert.equal(controlClosed, 1);
+    assert.equal(outputClosed, 1);
+    assert.equal(internal.control, undefined);
+    assert.deepEqual(events, ['runtime.transport']);
+  } finally {
+    unsubscribe();
+    client.dispose();
+  }
+});
+
 test('ephemeral chat turn-speed events are neither deduplicated nor replayed and do not change output replay cursors', () => {
   const { client, writes } = clientWithPipes();
   const internal = client as unknown as ClientInternals;

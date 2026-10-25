@@ -1539,10 +1539,7 @@ impl RuntimeService {
                         return Err(anyhow::anyhow!("invalid_output_limit"));
                     }
                     let (from, next, truncated, data) = self.db.read_output_window(
-                        &p.session_id,
-                        p.cursor,
-                        p.tail,
-                        limit as usize,
+                        &p.session_id, p.cursor, p.tail, limit as usize,
                     )?;
                     // A terminal whose durable recording is degraded keeps
                     // running; the surface needs that state on load, not only
@@ -4269,6 +4266,90 @@ mod tests {
                 )
                 .is_err());
         }
+    }
+
+    #[test]
+    fn terminal_read_restarts_a_pruned_cursor_at_the_oldest_retained_output() {
+        let root = tempfile::tempdir().unwrap();
+        let db = Arc::new(Database::open(&root.path().join("runtime.sqlite")).unwrap());
+        let session = db
+            .create_session(CreateSession {
+                project_id: None,
+                title: None,
+                provider: "shell",
+                mode: "terminal",
+                native_id: None,
+                operation_id: "pruned-terminal-read",
+            })
+            .unwrap();
+        // Compaction deletes complete old chunks and leaves their original
+        // cursor coordinates intact.
+        db.append_output(&session.id, 4_096, b"retained output").unwrap();
+        db.transaction(|tx| {
+            tx.execute("INSERT INTO metadata(key,value) VALUES(?, '4111')", [format!("terminal.outputEnd:{}", session.id)])?;
+            Ok(())
+        }).unwrap();
+        let service = test_service(root.path(), db);
+        let read = service
+            .dispatch(
+                "desktop",
+                RpcRequest {
+                    v: 1,
+                    id: "read-pruned-output".into(),
+                    method: "terminal.read".into(),
+                    params: json!({"sessionId":session.id,"cursor":0,"limit":1024}),
+                },
+            )
+            .unwrap();
+        assert_eq!(read["fromCursor"], 4_096);
+        assert_eq!(read["nextCursor"], 4_111);
+        assert_eq!(read["truncated"], true);
+        assert_eq!(
+            base64::engine::general_purpose::STANDARD
+                .decode(read["data"].as_str().unwrap())
+                .unwrap(),
+            b"retained output"
+        );
+    }
+
+    #[test]
+    fn terminal_read_advances_past_a_fully_pruned_stream() {
+        let root = tempfile::tempdir().unwrap();
+        let db = Arc::new(Database::open(&root.path().join("runtime.sqlite")).unwrap());
+        let session = db
+            .create_session(CreateSession {
+                project_id: None,
+                title: None,
+                provider: "shell",
+                mode: "terminal",
+                native_id: None,
+                operation_id: "fully-pruned-terminal-read",
+            })
+            .unwrap();
+        db.transaction(|tx| {
+            tx.execute(
+                "INSERT INTO metadata(key,value) VALUES(?,?)",
+                rusqlite::params![format!("terminal.outputEnd:{}", session.id), "8192"],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+        let service = test_service(root.path(), db);
+        let read = service
+            .dispatch(
+                "desktop",
+                RpcRequest {
+                    v: 1,
+                    id: "read-fully-pruned-output".into(),
+                    method: "terminal.read".into(),
+                    params: json!({"sessionId":session.id,"cursor":0,"limit":1024}),
+                },
+            )
+            .unwrap();
+        assert_eq!(read["fromCursor"], 8_192);
+        assert_eq!(read["nextCursor"], 8_192);
+        assert_eq!(read["truncated"], true);
+        assert_eq!(read["data"], "");
     }
 
     #[test]

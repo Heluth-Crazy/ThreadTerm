@@ -282,6 +282,7 @@ struct Reply {
     body: Result<Value>,
     sequenced: bool,
     accepted_shutdown: bool,
+    served_snapshot: bool,
 }
 
 #[cfg(windows)]
@@ -388,6 +389,7 @@ async fn run_request(
 ) -> Reply {
     let id = request.id.clone();
     let is_shutdown = request.method == "runtime.shutdown";
+    let is_snapshot = request.method == "runtime.snapshot";
     let is_chat_send = request.method == "chat.send";
     let trace_context = is_chat_send
         .then(|| SendTraceContext::capture(
@@ -422,6 +424,7 @@ async fn run_request(
             })
         }) };
     let accepted_shutdown = is_shutdown && result.is_ok();
+    let served_snapshot = is_snapshot && result.is_ok();
     let response = match result {
         Ok(result) => RpcResponse::Ok {
             v: PROTOCOL_VERSION,
@@ -438,6 +441,7 @@ async fn run_request(
         body: serde_json::to_value(response).map_err(Into::into),
         sequenced,
         accepted_shutdown,
+        served_snapshot,
     }
 }
 
@@ -548,6 +552,7 @@ async fn serve_control(
                     return Ok(());
                 }
                 delivery?;
+                if reply.served_snapshot { service.db.start_retention(); }
             }
             received = turn_speeds.recv(), if turn_speeds_open && sequenced_in_flight == 0 => {
                 let epoch = service.db.epoch()?;

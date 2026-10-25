@@ -21,6 +21,7 @@ pub struct Database {
     connection: Mutex<Connection>,
     path: PathBuf,
     quiet_terminal_exits: std::sync::atomic::AtomicBool,
+    pub(crate) retention: Mutex<Option<std::sync::mpsc::SyncSender<()>>>,
 }
 
 #[path = "schema.rs"]
@@ -169,6 +170,7 @@ impl Database {
             connection: Mutex::new(connection),
             path: path.to_owned(),
             quiet_terminal_exits: std::sync::atomic::AtomicBool::new(false),
+            retention: Mutex::new(None),
         })
     }
     pub fn begin_shutdown(&self) {
@@ -421,7 +423,7 @@ impl Database {
     pub(crate) fn latest_chat_options(&self, session_id: &str) -> Result<Value> {
         self.transaction(|tx| {
             let raw: Option<String> = tx.query_row(
-                "SELECT data FROM outbox WHERE event='chat.ui' AND json_extract(data,'$.sessionId')=? ORDER BY seq DESC LIMIT 1",
+                "SELECT data FROM (SELECT seq,data FROM outbox WHERE event='chat.ui' AND json_extract(data,'$.sessionId')=?1 UNION ALL SELECT seq,data FROM retention_event_state WHERE event='chat.ui' AND session_id=?1) ORDER BY seq DESC LIMIT 1",
                 [session_id],
                 |row| row.get(0),
             ).optional()?;
@@ -645,6 +647,14 @@ impl Database {
             .connection
             .lock()
             .map_err(|_| anyhow!("database lock poisoned"))?;
+        let pruned: i64 = conn.query_row(
+            "SELECT COALESCE((SELECT CAST(value AS INTEGER) FROM metadata WHERE key='retention.outboxPrunedThrough'),0)",
+            [], |row| row.get(0),
+        )?;
+        if after < pruned {
+            let revision: i64 = conn.query_row("SELECT COALESCE(MAX(seq),0) FROM outbox", [], |row| row.get(0))?;
+            return Ok(vec![(revision, "runtime.degraded".into(), json!({"reason":"outbox_history_pruned","snapshotRequired":true,"oldestCursor":pruned}))]);
+        }
         let mut statement =
             conn.prepare("SELECT seq,event,data FROM outbox WHERE seq>? ORDER BY seq LIMIT 256")?;
         let rows = statement.query_map([after], |row| {
@@ -667,7 +677,9 @@ impl Database {
         kind: &str,
         data: &Value,
     ) -> Result<()> {
-        crate::chat_projection::record(self, session_id, turn_id, kind, data)
+        let result = crate::chat_projection::record(self, session_id, turn_id, kind, data);
+        if result.is_ok() && kind == "session.closed" { self.schedule_retention(); }
+        result
     }
     pub fn chat_items(&self, session_id: &str) -> Result<Vec<ChatItem>> {
         Ok(self.chat_snapshot(session_id)?.0)
@@ -1538,7 +1550,7 @@ impl Database {
     }
 
     pub fn set_session_status(&self, id: &str, status: &str, exit_code: Option<i32>) -> Result<()> {
-        self.transaction(|tx| {
+        let result = self.transaction(|tx| {
             let (previous,prior_code,mode):(String,Option<i32>,String)=tx.query_row("SELECT status,exit_code,mode FROM sessions WHERE id=?",[id],|row|Ok((row.get(0)?,row.get(1)?,row.get(2)?)))?;
             if previous==status&&prior_code==exit_code{return Ok(());}
             tx.execute("UPDATE sessions SET status=?,exit_code=?,updated_at=? WHERE id=?",params![status,exit_code,now(),id])?;
@@ -1570,7 +1582,9 @@ impl Database {
                 tx.execute("INSERT OR IGNORE INTO inbox(id,session_id,kind,data,resolved,created_at) VALUES (?,?,?,?,1,?)",params![format!("{id}:exit"),id,kind,json!({"exitCode":exit_code}).to_string(),now()])?;
             }
             Ok(())
-        })
+        });
+        if result.is_ok() && matches!(status, "exited" | "interrupted" | "error") { self.schedule_retention(); }
+        result
     }
 
     pub fn settings_value(&self) -> Result<Value> {
@@ -1661,10 +1675,27 @@ impl Database {
             .lock()
             .map_err(|_| anyhow!("database lock poisoned"))?;
         Ok(conn.query_row(
-            "SELECT COALESCE(MAX(start_cursor+length(data)),0) FROM output_chunks WHERE session_id=?",
-            [session_id],
+            "SELECT MAX(\
+                COALESCE((SELECT MAX(start_cursor+length(data)) FROM output_chunks WHERE session_id=?),0),\
+                COALESCE((SELECT CAST(value AS INTEGER) FROM metadata WHERE key=?),0)\
+             )",
+            params![session_id, format!("terminal.outputEnd:{session_id}")],
             |row| row.get(0),
         )?)
+    }
+    /// The first cursor still backed by durable output after retention pruning.
+    /// `None` distinguishes a fully-pruned stream from a stream beginning at 0.
+    pub fn output_start(&self, session_id: &str) -> Result<Option<i64>> {
+        let conn = self
+            .connection
+            .lock()
+            .map_err(|_| anyhow!("database lock poisoned"))?;
+        conn.query_row(
+            "SELECT MIN(start_cursor) FROM output_chunks WHERE session_id=?",
+            [session_id],
+            |row| row.get(0),
+        )
+        .map_err(Into::into)
     }
     pub fn output_from(
         &self,
@@ -1750,11 +1781,23 @@ impl Database {
             )
             .optional()?
             .unwrap_or(0);
-        let from = if tail {
+        let retained_end: Option<i64> = conn.query_row(
+            "SELECT CAST(value AS INTEGER) FROM metadata WHERE key=?",
+            [format!("terminal.outputEnd:{session_id}")], |row| row.get(0),
+        ).optional()?;
+        let end = end.max(retained_end.unwrap_or(0));
+        let requested = if tail {
             end.saturating_sub(max_bytes as i64).max(0)
         } else {
             cursor.unwrap_or(0)
         };
+        // The retention watermark distinguishes a pruned prefix from corrupt
+        // history. Compute the boundary and page under this same lock so a
+        // background batch cannot race terminal.read between separate reads.
+        let from = if retained_end.is_some() {
+            let oldest: Option<i64> = conn.query_row("SELECT MIN(start_cursor) FROM output_chunks WHERE session_id=?", [session_id], |row| row.get(0))?;
+            requested.max(oldest.unwrap_or(end))
+        } else { requested };
         let prior: Option<(i64, i64)> = conn
             .query_row(
                 "SELECT start_cursor,start_cursor + length(data) FROM output_chunks WHERE session_id=? AND start_cursor<=? ORDER BY start_cursor DESC LIMIT 1",
@@ -1798,7 +1841,7 @@ impl Database {
             }
         }
         let next = expected_cursor;
-        let truncated = if tail { from > 0 } else { next < end };
+        let truncated = from > requested || if tail { from > 0 } else { next < end };
         Ok((from, next, truncated, data))
     }
     pub fn mark_live_sessions_interrupted(&self) -> Result<()> {
@@ -3230,6 +3273,7 @@ mod tests {
             .unwrap();
         db.append_output(&session.id, 6_000, &vec![b'b'; 6_000])
             .unwrap();
+        assert_eq!(db.output_start(&session.id).unwrap(), Some(0));
 
         let (from, next, truncated, tail) = db
             .read_output_window(&session.id, None, true, 8_192)
@@ -3266,6 +3310,7 @@ mod tests {
             .unwrap_err()
             .to_string()
             .contains("session_not_found"));
+        assert_eq!(db.output_start("missing").unwrap(), None);
     }
     #[test]
     fn output_history_gaps_fail_instead_of_forging_continuous_cursors() {

@@ -39,6 +39,7 @@ export function SettingsData({ settings, zh, onSaved }: { settings: Settings; zh
       <tr><td>{text("主题和偏好", "Themes & preferences")}</td><td>{text("计入数据库", "Included in database")}</td><td>{Object.keys(settings).filter(key => key !== "revision").length}</td></tr>
       <tr><td>{text("可重建缓存", "Rebuildable cache")}</td><td>—</td><td>—</td></tr>
     </tbody></table>
+    <p className="hint">{text("历史记录保留 30 天；每个会话的终端输出最多保留 8 MB。", "History is kept for 30 days; terminal output up to 8 MB per session.")}</p>
     {window.threadterm.platform === "win32" ? <SettingsSwitch disabled={busy} checked={cache?.state === "scheduled"} onChange={value => run(async () => { await scheduleElectronCacheCleanup(value); await onSaved(); })}>{text("下次启动时重建可重建缓存", "Rebuild cache next start")}</SettingsSwitch> : <p className="hint">{text("此平台的浏览器缓存由系统管理。", "Browser cache is managed by the system on this platform.")}</p>}
     {cache?.state === "failed" && <p className="surface-error">{cache.message}</p>}
     <div className="setting-divider" />

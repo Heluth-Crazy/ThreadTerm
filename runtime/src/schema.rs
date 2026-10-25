@@ -10,7 +10,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-pub(crate) const MAIN_VERSION: u32 = 1;
+pub(crate) const MAIN_VERSION: u32 = 2;
 pub(crate) const LEDGER_VERSION: u32 = 1;
 const HISTORY_LIMIT: usize = 16;
 
@@ -106,6 +106,27 @@ const MAIN_MIGRATIONS: &[Migration] = &[Migration {
     apply: |tx| {
         tx.execute_batch("DROP TABLE IF EXISTS presets;")?;
         crate::usage_ledger::ledger_db::migrate_legacy_main_tables(tx)?;
+        Ok(())
+    },
+}, Migration {
+    version: 2,
+    min_reader: 2,
+    destructive: false,
+    needs_backup: |_| Ok(false),
+    apply: |tx| {
+        tx.execute_batch(
+            "CREATE TABLE IF NOT EXISTS retention_event_state (
+                session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+                event TEXT NOT NULL, seq INTEGER NOT NULL, data TEXT NOT NULL, created_at TEXT NOT NULL,
+                PRIMARY KEY(session_id,event));
+             CREATE INDEX IF NOT EXISTS retention_outbox_age ON outbox(created_at,seq);
+             CREATE INDEX IF NOT EXISTS retention_operations_age ON operations(created_at,id);
+             CREATE INDEX IF NOT EXISTS retention_ended_sessions ON sessions(status,updated_at,id);
+             CREATE INDEX IF NOT EXISTS retention_delegations_state ON delegations(state,operation_id);
+             CREATE TRIGGER IF NOT EXISTS sessions_delete_retention AFTER DELETE ON sessions BEGIN
+                DELETE FROM metadata WHERE key IN ('terminal.outputEnd:'||OLD.id,'retention.userTitle:'||OLD.id,'retention.nativeHistory:'||OLD.id);
+             END;"
+        )?;
         Ok(())
     },
 }];

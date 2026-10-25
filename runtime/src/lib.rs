@@ -3,6 +3,14 @@
 //! The runtime has no Electron dependency.  It is the only writer of the V3
 //! database and owns interactive processes for their complete lifetime.
 
+// Keep all runtime diagnostics bounded/redacted without coupling the daemon
+// to a desktop-owned pipe. Lexical scope covers the modules below.
+macro_rules! eprintln {
+    () => { $crate::runtime_log::emit(format_args!("")) };
+    ($($arg:tt)*) => { $crate::runtime_log::emit(format_args!($($arg)*)) };
+}
+pub mod runtime_log;
+
 #[cfg(windows)]
 pub mod bootstrap;
 pub mod config;
@@ -29,6 +37,7 @@ pub(crate) mod git_selected_commit;
 pub mod job;
 pub mod leases;
 pub mod output;
+pub(crate) mod retention;
 pub mod project_catalog;
 pub mod providers;
 pub mod quick_launch;
