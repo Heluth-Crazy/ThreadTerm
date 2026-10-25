@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type FormEvent, type ReactNode } from 'react';
-import type { Session, Snapshot, UsageRecord, UsageResult, Worktree, WorktreeSetupRun } from '@threadterm/protocol';
+import type { Session, Snapshot, UsageLedgerSeries, UsageLedgerSummary, Worktree, WorktreeSetupRun } from '@threadterm/protocol';
 import { operationId, request, subscribeEvents } from '../bridge';
 import { isActionableInboxItem } from '../inboxVisibility';
 import { displayPath, sameCanonicalScope } from '../projectScope';
@@ -16,6 +16,8 @@ import { sessionState, sessionStateLabel, type SessionViewState } from '../sessi
 import { agentName } from '../agents';
 import { setupForRoot } from '../worktreeSetup';
 import { quickLaunchError } from '../quickLaunch';
+import { overviewUsageMetrics, overviewUsageRequests } from '../usageOverview';
+import { compactTokens, costDisplay } from '../usageFormat';
 
 type Props={projectId:string;data:Snapshot;initialWorktreePath?:string;onScopeChange:(path?:string)=>void;onSession:(id:string)=>void;onRemoved:()=>void;onCreate:(projectId:string,path:string)=>void;onInbox:()=>void;onChanged:()=>void;onUsage:(projectId:string)=>void};
 type ViewState=SessionViewState;
@@ -26,10 +28,10 @@ function Spark({values,fill=false}:{values:number[];fill?:boolean}){const max=Ma
 export function ProjectOverview({projectId,data,initialWorktreePath,onScopeChange,onSession,onRemoved,onCreate,onInbox,onChanged,onUsage}:Props){
   const providerName=(id:string)=>agentName(id,data.providers);
   const {locale,formatDate}=useTranslation(),zh=locale==='zh-CN',project=data.projects.find(p=>p.id===projectId)!;
-   const [trees,setTrees]=useState<Worktree[]>([]),[usage,setUsage]=useState<UsageResult>(),[setupRuns,setSetupRuns]=useState<WorktreeSetupRun[]>([]),[issue,setIssue]=useState<string>(),[dialog,setDialog]=useState<'follow'|'activity'|'tree'|'manage'|undefined>(),[fileView,setFileView]=useState<'file'|'diff'|undefined>();
+   const [trees,setTrees]=useState<Worktree[]>([]),[usage,setUsage]=useState<{summary:UsageLedgerSummary;series:UsageLedgerSeries}>(),[setupRuns,setSetupRuns]=useState<WorktreeSetupRun[]>([]),[issue,setIssue]=useState<string>(),[dialog,setDialog]=useState<'follow'|'activity'|'tree'|'manage'|undefined>(),[fileView,setFileView]=useState<'file'|'diff'|undefined>();
    const setupGeneration=useRef(0);
   const [followQuery,setFollowQuery]=useState(''),[picked,setPicked]=useState<Set<string>>(new Set()),[busy,setBusy]=useState(false),[menu,setMenu]=useState(false),[activityPage,setActivityPage]=useState(0),[fileTarget,setFileTarget]=useState<{path:string;staged:boolean}>();
-   useEffect(()=>{let current=true;setIssue(undefined);void request('worktree.list',{projectId}).then(value=>{if(current)setTrees(value);}).catch(error=>{if(current)setIssue(String(error));});void request('usage.query',{projectId}).then(value=>{if(current)setUsage(value);}).catch(()=>{if(current)setUsage(undefined);});return()=>{current=false;};},[projectId,data.revision]);
+   useEffect(()=>{let current=true;setIssue(undefined);setUsage(undefined);void request('worktree.list',{projectId}).then(value=>{if(current)setTrees(value);}).catch(error=>{if(current)setIssue(String(error));});const requests=overviewUsageRequests(projectId);void Promise.all([request('usage.ledger.summary',requests.summary),request('usage.ledger.series',requests.series)]).then(([summary,series])=>{if(current)setUsage({summary,series});}).catch(()=>{if(current)setUsage(undefined);});return()=>{current=false;};},[projectId,data.revision]);
    useEffect(()=>{const reload=()=>{const token=++setupGeneration.current;void request('quickLaunch.setup.status',{projectId}).then(value=>{if(token===setupGeneration.current)setSetupRuns(value);}).catch(error=>{if(token===setupGeneration.current)setIssue(quickLaunchError(error,zh));});};reload();const unsubscribe=subscribeEvents(event=>{const detail=event.data as {kind?:unknown;projectId?:unknown}|null;if(event.event==='state.changed'&&detail?.kind==='quickLaunch.setup'&&detail.projectId===projectId)reload();});return()=>{setupGeneration.current++;unsubscribe();};},[projectId,zh]);
   const tree=trees.find(t=>sameCanonicalScope(t.path,initialWorktreePath));
   const sessions=data.sessions.filter(s=>s.projectId===projectId&&!s.archived&&(!initialWorktreePath||sameCanonicalScope(s.worktreePath??project.path,initialWorktreePath)));
@@ -39,13 +41,6 @@ export function ProjectOverview({projectId,data,initialWorktreePath,onScopeChang
   const state=tree?.missing?'stalled':priority(sessions),path=initialWorktreePath??project.path;
   const treeFor=(s:Session)=>trees.find(t=>sameCanonicalScope(t.path,s.worktreePath??project.path));
   const time=(value:string)=>sessionTime(value,locale);
-  const records=(usage?.records??[]).filter(row=>ids.has(row.sessionId)),today=new Date();today.setHours(0,0,0,0);const week=new Date(today);week.setDate(week.getDate()-6);
-  const period=(from:Date)=>records.filter(r=>new Date(r.recordedAt)>=from);
-  const todayRows=period(today),weekRows=period(week);
-  const tokens=(rows:UsageRecord[])=>{const known=rows.filter(r=>r.inputTokens!==undefined||r.outputTokens!==undefined);return known.length?known.reduce((sum,r)=>sum+(r.inputTokens??0)+(r.outputTokens??0),0):undefined;};
-  const number=(value:number|undefined)=>value===undefined?'—':new Intl.NumberFormat(locale,{notation:'compact',maximumFractionDigits:2}).format(value);
-  const cost=(rows:UsageRecord[])=>{const known=rows.filter(r=>r.estimatedCost!==undefined&&r.currency);const currency=known[0]?.currency;if(!known.length||known.some(r=>r.currency!==currency))return zh?'费用未知':'Cost unknown';return new Intl.NumberFormat(locale,{style:'currency',currency}).format(known.reduce((sum,r)=>sum+r.estimatedCost!,0));};
-  const usageSeries=Array.from({length:7},(_,index)=>{const from=new Date(week);from.setDate(from.getDate()+index);const until=new Date(from);until.setDate(until.getDate()+1);return tokens(weekRows.filter(row=>new Date(row.recordedAt)>=from&&new Date(row.recordedAt)<until))??0;});
   const activeTrees=trees.filter(t=>allProjectSessions.some(s=>sameCanonicalScope(s.worktreePath??project.path,t.path)&&stateOf(s)!=='ended'));
   const activity=sessions.slice().sort((a,b)=>b.updatedAt.localeCompare(a.updatedAt));
   const closed=()=>{if(!busy)setDialog(undefined);};
@@ -56,8 +51,7 @@ export function ProjectOverview({projectId,data,initialWorktreePath,onScopeChang
   const activeSessions=sessions.filter(live).sort((a,b)=>rank[stateOf(a)]-rank[stateOf(b)]||b.updatedAt.localeCompare(a.updatedAt));
   // A branch page lists its live sessions above, so its timeline only adds the ended ones (no row twice).
   const recent=scopeBranch?activity.filter(s=>!live(s)):activity;
-  const knownCost=(rows:UsageRecord[])=>{const text=cost(rows);return text===(zh?'费用未知':'Cost unknown')?undefined:text;};
-  const todayTokens=tokens(todayRows),weekTokens=tokens(weekRows),usageLabel=scopeBranch?(zh?'本分支用量':'Branch usage'):(zh?'本项目用量':'Project usage');
+  const overviewUsage=overviewUsageMetrics(usage?.summary,usage?.series),usageLabel=zh?'本项目用量':'Project usage';
   const metric=(label:string,value:number,cls?:ViewState,click?:()=>void)=>{const body=<><span className="ov-metric-label">{label}</span><b className={`tnum${cls&&value?' st-'+cls:''}`}>{value}</b></>;return click?<button type="button" className="ov-metric" onClick={click}>{body}</button>:<div className="ov-metric">{body}</div>;};
   const section=(key:string,title:string,count:number|undefined,action:ReactNode,body:ReactNode)=><section className={`ov-sec ov-sec-${key}`} data-testid={`home-${key}`}><header className="ov-sec-head"><h2>{title}{count!==undefined&&<span className="count">{count}</span>}</h2>{action}</header>{body}</section>;
   const empty=(text:string)=><p className="ov-empty">{text}</p>;
@@ -72,9 +66,9 @@ export function ProjectOverview({projectId,data,initialWorktreePath,onScopeChang
     {tree?.missing&&<div className="catalog-banner"><Icon name="info"/><span>{zh?'工作树目录缺失。历史仍可阅读，重新定位后才能继续。':'Worktree directory is missing. History remains readable; locate the directory before continuing.'}</span><button className="btn" onClick={()=>setDialog('manage')}>{zh?'重新定位':'Locate directory'}</button></div>}{issue&&<p className="surface-error" role="alert">{issue}</p>}
     <div className="ov-metrics" data-testid="home-metrics">
       <div className="ov-metric-group" role="group" aria-label={zh?'会话状态':'Session status'} data-testid="home-status">{metric(zh?'运行中':'Running',sessions.filter(s=>stateOf(s)==='running').length,'running')}{metric(zh?'待处理':'Pending',attention.length,'needs',onInbox)}{metric(zh?'停滞':'Stalled',sessions.filter(s=>stateOf(s)==='stalled').length,'stalled')}{metric(scopeBranch?(zh?'已关注':'Followed'):(zh?'工作树':'Worktrees'),scopeBranch?followed.length:trees.length)}{metric(zh?'会话':'Sessions',sessions.length)}</div>
-      <div className="ov-metric-group ov-usage" role="group" aria-label={usageLabel}>{weekTokens===undefined
+      <div className="ov-metric-group ov-usage" role="group" aria-label={usageLabel}>{!overviewUsage
         ?<div className="ov-metric ov-usage-none"><span className="ov-metric-label">{usageLabel}</span><span className="ov-metric-note">{zh?'暂无用量记录':'No usage recorded yet'}</span></div>
-        :<><div className="ov-metric"><span className="ov-metric-label">{zh?'今日 Token':'Tokens today'}</span><span className="ov-metric-value"><b className="tnum">{number(todayTokens??0)}</b>{knownCost(todayRows)&&<i>{knownCost(todayRows)}</i>}</span></div><div className="ov-metric ov-metric-wide"><span className="ov-metric-label">{zh?'近 7 日 Token':'Tokens, past 7 days'}</span><span className="ov-metric-value"><b className="tnum">{number(weekTokens)}</b><i>{knownCost(weekRows)??(zh?'费用未知':'Cost unknown')}</i><span className="ov-spark" title={zh?'近 7 日每日 Token':'Daily tokens, past 7 days'}><Spark values={usageSeries} fill/></span></span></div></>}
+        :<><div className="ov-metric"><span className="ov-metric-label">{zh?'今日 Token':'Tokens today'}</span><span className="ov-metric-value"><b className="tnum">{compactTokens(overviewUsage.todayTokens,zh?'zh-CN':'en')}</b><i>{costDisplay(overviewUsage.todayCost,zh?'zh-CN':'en').text}</i></span></div><div className="ov-metric ov-metric-wide"><span className="ov-metric-label">{zh?'近 7 日 Token':'Tokens, past 7 days'}</span><span className="ov-metric-value"><b className="tnum">{compactTokens(overviewUsage.weekTokens,zh?'zh-CN':'en')}</b><i>{costDisplay(overviewUsage.weekCost,zh?'zh-CN':'en').text}</i><span className="ov-spark" title={zh?'近 7 日每日 Token':'Daily tokens, past 7 days'}><Spark values={overviewUsage.series} fill/></span></span></div></>}
         <button type="button" className="ov-metric ov-metric-more" onClick={()=>onUsage(projectId)} title={zh?'用量':'Usage'}><span>{zh?'明细':'Details'}</span><Icon name="chevR"/></button></div>
     </div>
     <div className="ov-body"><div className="ov-main">

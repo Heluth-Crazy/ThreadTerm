@@ -1,8 +1,9 @@
 import { useEffect, useRef, useState } from 'react';
 import type { ChatItem, Session } from '@threadterm/protocol';
 import { request } from '../bridge';
-import { chatExportUsage, chatMarkdownExportBundle, type ChatExportMeta } from '../chatMarkdownExport';
+import { chatMarkdownExportBundle, type ChatExportMeta } from '../chatMarkdownExport';
 import { loadAllChatPages } from '../chatPaging';
+import { readUsageExport } from '../usageExport';
 import { SurfaceDialog } from './SurfaceDialog';
 type Props = { session: Session; copy: (en: string, zh: string) => string; onClose: () => void; items?: readonly ChatItem[]; meta?: ChatExportMeta; save?: (markdown: string) => Promise<string | null> };
 export function ChatExportDialog({ session, copy, onClose, items, meta, save }: Props) {
@@ -13,12 +14,18 @@ export function ChatExportDialog({ session, copy, onClose, items, meta, save }: 
   useEffect(() => {
     const token = ++generation.current; setLoaded(items); setIssue(''); setUsageReady(items !== undefined); setUsage(undefined); setModel(undefined);
     if (!items) void loadAllChatPages(before => request('chat.snapshot', { sessionId: session.id, ...(before ? { before } : {}) })).then(all => { if (token === generation.current) setLoaded(all); }).catch(error => { if (token === generation.current) setIssue(String(error)); });
-    if (!items) void request('usage.query', { sessionId: session.id }).then(result => {
-      if (token !== generation.current) return;
-      const usage = chatExportUsage(result.records, session.id); setModel(usage.model); setUsage(usage.tokens);
-    }).catch(() => { /* Export remains available with explicitly unreported usage. */ }).finally(() => { if (token === generation.current) setUsageReady(true); });
+    if (!items) {
+      const readUsage = readUsageExport(session, {
+        ledgerSession: (provider, nativeSessionId) => request('usage.ledger.session', { filters: { scope: 'all', includeOutside: true }, provider, nativeSessionId }),
+        legacySession: async sessionId => (await request('usage.query', { sessionId })).records,
+      });
+      void readUsage.then(next => {
+        if (token !== generation.current) return;
+        setModel(next.model); setUsage(next.tokens);
+      }).catch(() => { /* Export remains available with explicitly unreported usage. */ }).finally(() => { if (token === generation.current) setUsageReady(true); });
+    }
     return () => { generation.current++; };
-  }, [items, session.id]);
+  }, [items, session.id, session.nativeId, session.provider]);
   const close = () => { if (!locked.current) { generation.current++; onClose(); } };
   const exportMarkdown = async () => {
     if (!loaded || !usageReady || locked.current) return;

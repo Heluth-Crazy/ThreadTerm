@@ -77,8 +77,12 @@ export function dateTimeText(iso: string | null | undefined, locale: UsageLocale
 
 export function percentText(share: number | null | undefined, locale: UsageLocale): string {
   if (share === null || share === undefined || !Number.isFinite(share)) return '—';
-  const text = new Intl.NumberFormat(numberLocale(locale), { style: 'percent', maximumFractionDigits: share < 0.01 ? 2 : 1 }).format(share);
-  return text;
+  const precision = share < 0.01 ? 2 : 1;
+  const scale = 10 ** (precision + 2);
+  const floored = Math.floor((share + Number.EPSILON) * scale) / scale;
+  const displayed = share > 0 && share < 1 ? Math.min(floored, 1 - 1 / scale) : floored;
+  const format = new Intl.NumberFormat(numberLocale(locale), { style: 'percent', maximumFractionDigits: precision });
+  return share > 0 && displayed === 0 ? `< ${format.format(0.0001)}` : format.format(displayed);
 }
 
 export type TokenShare = { key: keyof UsageLedgerTokens; share: number };

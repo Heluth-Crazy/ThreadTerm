@@ -90,23 +90,25 @@ export function thinLabels(
   gap = 8,
 ): AxisLabel[] {
   if (!candidates.length || !Number.isFinite(pitch) || pitch <= 0) return [];
-  const center = (index: number) => index * pitch + pitch / 2;
   const last = candidates.at(-1)!;
-  const lastLeft = center(last.index) - widthOf(last.label) / 2;
+  const rect = (candidate: AxisLabel, first: boolean) => {
+    const width = widthOf(candidate.label);
+    const left = candidate === last && candidate.index > 0 ? (candidate.index + 1) * pitch - width
+      : first ? candidate.index * pitch : candidate.index * pitch + pitch / 2 - width / 2;
+    return { left, right: left + width };
+  };
+  const lastLeft = rect(last, false).left;
   const kept: AxisLabel[] = [];
   let right = Number.NEGATIVE_INFINITY;
   for (const candidate of candidates) {
-    const half = widthOf(candidate.label) / 2;
-    const middle = center(candidate.index);
-    if (middle - half < right + gap) continue;
-    if (candidate !== last && middle + half + gap > lastLeft) continue;
+    const box = rect(candidate, kept.length === 0);
+    if (box.left < right + gap) continue;
+    if (candidate !== last && box.right + gap > lastLeft) continue;
     kept.push(candidate);
-    right = middle + half;
+    right = box.right;
   }
   if (kept.at(-1) !== last) {
-    const half = widthOf(last.label) / 2;
-    const left = center(last.index) - half;
-    while (kept.length && center(kept.at(-1)!.index) + widthOf(kept.at(-1)!.label) / 2 + gap > left) kept.pop();
+    while (kept.length && rect(kept.at(-1)!, kept.length === 1).right + gap > lastLeft) kept.pop();
     kept.push(last);
   }
   return kept.map((tick, index) => index === kept.length - 1 && tick.index > 0 ? { ...tick, align: 'end' } : index === 0 ? { ...tick, align: 'start' } : tick);

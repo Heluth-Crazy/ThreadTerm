@@ -45,6 +45,16 @@ test('percentages keep one decimal, two below one percent', () => {
   assert.equal(percentText(null, 'en'), '—');
 });
 
+test('a partial evidence or pricing share never rounds up to full coverage', () => {
+  for (const locale of ['en', 'zh-CN'] as const) {
+    assert.equal(percentText(0.9999, locale), '99.9%');
+    assert.equal(percentText(0.0001, locale), '0.01%');
+    assert.equal(percentText(0.000001, locale), '< 0.01%');
+    assert.equal(percentText(1, locale), '100%');
+    assert.equal(percentText(0, locale), '0%');
+  }
+});
+
 test('bucket shares use the known subtotal and never add reasoning again', () => {
   const shares = tokenShares(tokens({ total: 100, input: 6, cacheRead: 88, cacheWrite5m: 1, output: 5, reasoning: 2 }));
   assert.deepEqual(shares.map(item => item.key), ['input', 'cacheRead', 'cacheWrite5m', 'output']);

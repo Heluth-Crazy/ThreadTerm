@@ -88,7 +88,7 @@ function List({ dimension, title, items, locale, copy, loading, label, swatch, s
               {outside && <span className="usage-bd-outside">{copy.breakdown.outside}</span>}
             </span>
             <span className="usage-bd-value tnum">{compactTokens(item.tokens.total, locale)}</span>
-            <span className="usage-bd-track" aria-hidden="true"><i style={{ width: `${share > 0 ? Math.max(share * 100, 2) : 0}%` }} /></span>
+            <span className="usage-bd-track" aria-hidden="true"><i className={slot !== undefined ? `usage-swatch sv-${slot}` : undefined} style={{ width: `${share > 0 ? Math.max(share * 100, 2) : 0}%` }} /></span>
             <span className="usage-bd-cost tnum" title={cost.noPrice ? copy.cost.noPrice : copy.cost.tooltip}>{cost.text}</span>
           </>;
           const labelText = `${copy.breakdown.share(name + (outside ? ` ${copy.breakdown.outside}` : ''), compactTokens(item.tokens.total, locale), percentText(share, locale))} · ${copy.cost.column} ${cost.noPrice ? copy.cost.noPrice : cost.text}`;

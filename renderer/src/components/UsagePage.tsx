@@ -4,7 +4,7 @@ import { agentName } from '../agents';
 import { useTranslation } from '../i18n';
 import { usageCopy } from '../usageCopy';
 import {
-  activeTimeText, compactTokens, costCoverage, costDisplay, evidenceLine, fullNumber, percentText, reportedCostText, tilesState, tokenShares, type UsageLocale,
+  compactTokens, costCoverage, costDisplay, evidenceLine, fullNumber, percentText, reportedCostText, tilesState, tokenShares, type UsageLocale,
 } from '../usageFormat';
 import { heatmapRange, granularityFor, localDay, rangeFor, shiftLocalDay, USAGE_RANGES, useUsageBreakdowns, useUsageLedger, type UsageQuery, type UsageRangePreset } from '../usageLedger';
 import { Select } from './ui/Select';
@@ -15,6 +15,9 @@ import { UsageHeatmap } from './UsageHeatmap';
 import { UsageSessions } from './UsageSessions';
 import { UsageSources } from './UsageSources';
 import { UsageTrendChart } from './UsageTrendChart';
+import { aggregateActiveTime, usageDays } from '../usagePresentation';
+import { usageScanNotice } from '../usageScan';
+import { UsageScanNotice } from './UsageScanNotice';
 import './usage-page.css';
 
 type Props = {
@@ -56,7 +59,7 @@ export function UsagePage({ initialProjectId, data, onOpenSession }: Props) {
   const settings = ledger.settings;
   const weekStartPreference = settings?.weekStart ?? 'auto';
   const outsideAllowed = settings?.includeOutside !== false;
-  const breakdowns = useUsageBreakdowns(query, ledger.version);
+  const breakdowns = useUsageBreakdowns(query, ledger.version + ledger.liveVersion);
 
   // A saved "outside usage off" setting is a product rule, not a suggestion: the scope switch keeps only ThreadTerm,
   // and the remembered scope comes back when the setting does (the page must not stay pinned to In ThreadTerm).
@@ -73,7 +76,7 @@ export function UsagePage({ initialProjectId, data, onOpenSession }: Props) {
 
   const summary = ledger.summary;
   const trend = ledger.trend;
-  const activeDays = useMemo(() => (trend?.points ?? []).filter(point => point.activeTimeMs > 0).length, [trend]);
+  const activeDays = useMemo(() => usageDays(ledger.heat, range.from, range.to), [ledger.heat, range.from, range.to]);
   const sessionsWithoutUsage = summary?.sessionsWithoutUsage ?? 0;
   const shares = summary ? tokenShares(summary.tokens) : [];
   const evidence = summary ? evidenceLine(summary.quality) : undefined;
@@ -84,18 +87,19 @@ export function UsagePage({ initialProjectId, data, onOpenSession }: Props) {
   const projectName = projectId ? data?.projects.find(project => project.id === projectId)?.name ?? projectId : undefined;
   const scan = ledger.scan;
   const running = scan?.state === 'running';
+  const scanNotice = usageScanNotice(scan, ledger.firstScan, usageLocale, providerName);
   // Two different silences: while history is still being read the tiles hold a placeholder, and only a finished read
   // with nothing in range may say there was no usage.
   const tiles = tilesState({ requests: summary?.requests ?? 0, loading: ledger.loading, scanning: running });
   const reading = tiles === 'reading';
   const placeholder = <span className="usage-skel" aria-hidden="true" />;
-  const progressText = running
-    ? scan?.phase === 'pricing' ? copy.pricing
-      : scan?.provider ? (scan.filesFound > 0 ? copy.reading(providerName(scan.provider), scan.filesRead, scan.filesFound) : copy.readingUnknown(providerName(scan.provider)))
-        : copy.busy
-    : undefined;
 
-  const bucketSplit = shares.map(item => {
+  const displayShares = [
+    ...shares.filter(item => item.key === 'input' || item.key === 'cacheRead'),
+    { key: 'cacheWrite5m', share: shares.filter(item => item.key.startsWith('cacheWrite')).reduce((sum, item) => sum + item.share, 0) },
+    ...shares.filter(item => item.key === 'output'),
+  ].filter(item => item.share > 0);
+  const bucketSplit = displayShares.map(item => {
     const label = item.key === 'cacheWrite5m' ? copy.buckets.cacheWrite : item.key === 'cacheWrite1h' ? `${copy.buckets.cacheWrite} (1h)` : item.key === 'cacheWriteUnknown' ? copy.buckets.cacheWrite : item.key === 'input' ? copy.buckets.input : item.key === 'cacheRead' ? copy.buckets.cacheRead : item.key === 'output' ? copy.buckets.output : copy.buckets.reasoning;
     return `${label} ${percentText(item.share, usageLocale)}`;
   }).join(' · ');
@@ -111,9 +115,9 @@ export function UsagePage({ initialProjectId, data, onOpenSession }: Props) {
 
   return <section className="usage-page" aria-label={copy.title}>
     <header className="wb-panel-head usage-head">
-      <strong>{copy.title}</strong>
-      <div className="usage-seg" role="group" aria-label={copy.scope.label}>
-        {(['all', 'threadterm', 'outside'] as UsageLedgerScope[]).map(value => <button key={value} type="button" className="usage-seg-item" aria-pressed={scope === value}
+      <Icon name="layers" /><strong>{copy.title}</strong>
+      <div className="seg" role="group" aria-label={copy.scope.label}>
+        {(['all', 'threadterm', 'outside'] as UsageLedgerScope[]).map(value => <button key={value} type="button" className={`seg-btn btn-tab${scope === value ? ' active' : ''}`} aria-pressed={scope === value}
           disabled={!outsideAllowed && value !== 'threadterm'}
           title={!outsideAllowed && value !== 'threadterm' ? copy.outsideDisabled : undefined}
           onClick={() => setScope(value)}>
@@ -130,42 +134,38 @@ export function UsagePage({ initialProjectId, data, onOpenSession }: Props) {
           <input type="date" className="usage-date" aria-label={copy.range.to} value={customTo} min={customFrom} max={today} onChange={event => { setCustomTo(event.target.value); setGranularity(undefined); }} />
         </>}
       </div>
-      {activeFilters.map(filter => <button key={filter.key} type="button" className="usage-chip" title={copy.breakdown.clearFilter} onClick={filter.clear}>
+      {activeFilters.map(filter => <button key={filter.key} type="button" className="chip chip-btn is-plain usage-filter" title={`${filter.label} · ${copy.breakdown.clearFilter}`} onClick={filter.clear}>
         <span>{filter.label}</span><Icon name="close" />
       </button>)}
       <span className="usage-head-spacer" />
-      <span className="usage-progress" role="status" aria-live="polite">
-        {progressText}{running && <button type="button" className="btn btn-sm" onClick={ledger.cancel}>{copy.cancel}</button>}
-        {!running && scan?.state === 'failed' && <span className="usage-error-inline">{copy.scanFailed}</span>}
-      </span>
+      <span className="usage-progress" />
       <button type="button" className="icon-btn" aria-label={copy.refresh} title={copy.refresh} aria-busy={running} onClick={ledger.refresh}><WbIcon name="refresh" /></button>
     </header>
     <div className="usage-scroll">
+      {scanNotice && <UsageScanNotice notice={scanNotice} onAction={running ? ledger.cancel : ledger.refresh} />}
       {ledger.error ? <p className="surface-error" role="alert">{copy.unavailable} {ledger.error}</p> : <>
           <div className="usage-tiles" aria-busy={reading || undefined}>
             {tile(copy.tiles.tokens,
               reading ? placeholder : hasUsage ? compactTokens(summary!.tokens.total, usageLocale) : copy.unknown,
-              reading ? copy.readingHistory : hasUsage ? undefined : copy.noData,
+              reading ? copy.readingHistory : hasUsage && evidence ? `${copy.evidence.exact} ${percentText(evidence.exact, usageLocale)}${evidence.derived > 0 ? ` · ${copy.evidence.derived} ${percentText(evidence.derived, usageLocale)}` : ''}${evidence.estimated > 0 ? ` · ≈ ${percentText(evidence.estimated, usageLocale)}` : ''}` : copy.noData,
               !reading && bucketSplit && <span className="usage-tile-extra" title={reasoningShare > 0 ? `${copy.buckets.reasoning} ${percentText(reasoningShare, usageLocale)}` : undefined}>{bucketSplit}</span>)}
             {tile(copy.tiles.cost,
               reading ? placeholder : hasUsage ? cost!.text : copy.unknown,
               reading ? copy.readingHistory : hasUsage && coverage && coverage.pricedTokens > 0 ? copy.tiles.priced(percentText(coverage.priced, usageLocale)) : hasUsage && cost?.noPrice ? copy.cost.noPrice : undefined,
-              !reading && summary?.cost.reportedUsd ? <span className="usage-tile-extra">{reportedCostText(summary.cost.reportedUsd, usageLocale)} {copy.tiles.reportedCost}</span> : undefined,
+              !reading && <span className="usage-tile-extra">{[
+                summary?.cost.reportedUsd ? `${reportedCostText(summary.cost.reportedUsd, usageLocale)} ${copy.tiles.reportedCost}` : undefined,
+                coverage && coverage.unpricedTokens > 0 ? copy.evidence.unpriced(compactTokens(coverage.unpricedTokens, usageLocale)) : undefined,
+              ].filter(Boolean).join(' · ')}</span>,
               copy.cost.tooltip)}
             {tile(copy.tiles.requests,
               reading ? placeholder : hasUsage ? fullNumber(summary!.requests, usageLocale) : copy.unknown,
-              reading ? copy.readingHistory : hasUsage ? copy.tiles.sessions(summary!.sessions) : copy.noData)}
+              reading ? copy.readingHistory : hasUsage ? copy.tiles.sessions(summary!.sessions) : copy.noData,
+              sessionsWithoutUsage > 0 ? <span className="usage-tile-extra">{copy.evidence.sessionsWithoutUsage(sessionsWithoutUsage)}</span> : undefined)}
             {tile(copy.tiles.activeTime,
-              reading ? placeholder : hasUsage ? <>≈ <span className="usage-estimated" title={copy.tiles.estimatedMethod}>{activeTimeText(summary!.activeTimeMs, usageLocale)}</span></> : copy.unknown,
-              reading ? copy.readingHistory : hasUsage ? copy.tiles.days(activeDays) : copy.noData)}
+              reading ? placeholder : hasUsage ? aggregateActiveTime(summary!.activeTimeMs, summary!.requests, usageLocale) : copy.unknown,
+              reading ? copy.readingHistory : hasUsage ? activeDays === undefined ? undefined : copy.tiles.days(activeDays) : copy.noData,
+              undefined, copy.tiles.estimatedMethod)}
           </div>
-          {hasUsage && <p className="usage-coverage">
-            {evidence && <span>{copy.evidence.exact} {percentText(evidence.exact, usageLocale)}</span>}
-            {evidence && evidence.derived > 0 && <span>{copy.evidence.derived} {percentText(evidence.derived, usageLocale)}</span>}
-            {evidence && evidence.estimated > 0 && <span className="usage-estimated" title={copy.tiles.estimatedMethod}>≈ {percentText(evidence.estimated, usageLocale)}</span>}
-            {sessionsWithoutUsage > 0 && <span>{copy.evidence.sessionsWithoutUsage(sessionsWithoutUsage)}</span>}
-            {coverage && coverage.unpricedTokens > 0 && <span>{copy.evidence.unpriced(compactTokens(coverage.unpricedTokens, usageLocale))}</span>}
-          </p>}
           {settings && !settings.includeOutside && <p className="usage-note">{copy.outsideDisabled}</p>}
           <UsageHeatmap
             series={ledger.heat}
@@ -208,6 +208,7 @@ export function UsagePage({ initialProjectId, data, onOpenSession }: Props) {
             copy={copy}
             providerName={providerName}
             version={ledger.version}
+            liveVersion={ledger.liveVersion}
             onOpenSession={onOpenSession}
             onImported={ledger.reload}
           />

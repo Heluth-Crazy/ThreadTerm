@@ -23,7 +23,7 @@ export function sourceState(status: UsageLedgerSource['status'] | string): Sourc
 export const PROBLEM_LABELS = [
   'not_supported_yet', 'unsupported_format', 'unreadable', 'invalid_json', 'record_too_large',
   'truncated_last_line', 'symlink_skipped', 'depth_limit', 'database_error', 'io_error',
-  'unsupported_zstd', 'copied_fork_prefix_excluded', 'cumulative_counter_reset', 'scanner_error',
+  'unsupported_zstd', 'copied_fork_prefix_excluded', 'cumulative_counter_reset', 'scanner_error', 'model_not_reported_per_request',
 ] as const;
 
 export type ProblemLabel = typeof PROBLEM_LABELS[number];
@@ -43,6 +43,11 @@ export function humanizeProblem(kind: string): string {
 }
 
 export type ProblemCount = { kind: string; label: ProblemLabel | null; count: number };
+
+export function sourceProblemMatchesState(problem: ProblemCount, state: SourceState): boolean {
+  return problem.count === 1 && state === 'unsupported'
+    && (problem.label === 'not_supported_yet' || problem.label === 'unsupported_format');
+}
 
 /** Descending counts, ties broken by key, so the tallest problem is first and the order never flickers. */
 export function problemCounts(problems: Readonly<Record<string, number>> | undefined): ProblemCount[] {

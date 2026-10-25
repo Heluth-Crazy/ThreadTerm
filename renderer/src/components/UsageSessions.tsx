@@ -1,9 +1,9 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import type { ProviderId, Snapshot, UsageLedgerSession, UsageLedgerSessionDetail } from '@threadterm/protocol';
 import { operationId, request } from '../bridge';
 import { useUsageSession, useUsageSessions, type UsageQuery } from '../usageLedger';
 import {
-  activeTimeText, compactTokens, costDisplay, dayText, fullNumber, localDayOf, type UsageLocale,
+  compactTokens, costDisplay, dayText, fullNumber, localDayOf, type UsageLocale,
 } from '../usageFormat';
 import { clampOffset, modelLabel, pageCount, sessionHeading, sessionQuery, USAGE_SESSION_SORTS, type UsageSessionSort } from '../usageSessions';
 import type { UsageCopy } from '../usageCopy';
@@ -11,6 +11,8 @@ import { AgentIcon } from './PrototypeIcon';
 import { SurfaceDialog } from './SurfaceDialog';
 import { Select } from './ui/Select';
 import { WbIcon } from '../workbench/icons';
+import { sessionActiveTime } from '../usagePresentation';
+import { canRefreshUsageSessions, createUsageSessionRefresh } from '../usageScan';
 
 type Props = {
   query: UsageQuery;
@@ -20,6 +22,7 @@ type Props = {
   providerName: (id: string) => string;
   /** Bumped when a scan finishes, so the page re-reads its own slice. */
   version: number;
+  liveVersion: number;
   onOpenSession?: (sessionId: string) => void;
   onImported?: () => void;
 };
@@ -27,25 +30,48 @@ type Props = {
 const rowKey = (session: Pick<UsageLedgerSession, 'provider' | 'nativeSessionId'>) => `${session.provider}\u0000${session.nativeSessionId}`;
 
 /** The sessions list: search, sort, paging, a drawer per session and the existing history import for outside rows. */
-export function UsageSessions({ query, data, locale, copy, providerName, version, onOpenSession, onImported }: Props) {
+export function UsageSessions({ query, data, locale, copy, providerName, version, liveVersion, onOpenSession, onImported }: Props) {
   const [sort, setSort] = useState<UsageSessionSort>('tokens');
   const [offset, setOffset] = useState(0);
   const [searchDraft, setSearchDraft] = useState('');
   const [search, setSearch] = useState('');
-  const [openKey, setOpenKey] = useState<string>();
+  const [open, setOpen] = useState<UsageLedgerSession>();
   const [notice, setNotice] = useState<{ kind: 'ok' | 'error'; text: string }>();
   const [importing, setImporting] = useState<string>();
+  const host = useRef<HTMLElement>(null);
+  const [visible, setVisible] = useState(false), [focused, setFocused] = useState(false), [hovered, setHovered] = useState(false);
+  const [sessionLiveKey, setSessionLiveKey] = useState(0);
+  const liveUpdates = useRef<ReturnType<typeof createUsageSessionRefresh> | undefined>(undefined);
+  const mayRefresh = canRefreshUsageSessions(visible, focused || hovered || Boolean(open || importing) || searchDraft.trim() !== search);
+  useEffect(() => {
+    const node = host.current;
+    if (!node) return;
+    const observer = new IntersectionObserver(entries => setVisible(entries.some(entry => entry.isIntersecting)), { root: node.closest('.usage-scroll') });
+    observer.observe(node);
+    return () => observer.disconnect();
+  }, []);
+  useEffect(() => {
+    const updates = createUsageSessionRefresh(() => setSessionLiveKey(value => value + 1));
+    liveUpdates.current = updates;
+    return () => updates.dispose();
+  }, []);
+  useEffect(() => { liveUpdates.current?.finish(liveVersion); /* terminal reload consumes pending live data */ }, [version]);
+  useEffect(() => { liveUpdates.current?.update(liveVersion, mayRefresh); }, [liveVersion, mayRefresh]);
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => setSearch(searchDraft.trim()), 300);
+    return () => window.clearTimeout(timer);
+  }, [searchDraft]);
 
   // A new range, scope, filter or search starts at the first page again.
-  useEffect(() => { setOffset(0); }, [query.from, query.to, query.scope, query.projectId, query.provider, query.model, search, sort, version]);
+  useEffect(() => { setOffset(0); }, [query.from, query.to, query.scope, query.projectId, query.provider, query.model, search, sort]);
 
   const params = useMemo(() => sessionQuery({ sort, offset, search }), [sort, offset, search]);
-  const { page, loading, error } = useUsageSessions(query, params, version);
+  const { page, loading, error } = useUsageSessions(query, params, version + sessionLiveKey);
   const items = page?.items ?? [];
   const total = page?.total ?? 0;
   const pages = pageCount(total, params.limit);
   const current = Math.floor(clampOffset(offset, total, params.limit) / params.limit) + 1;
-  const open = items.find(session => rowKey(session) === openKey);
 
   const titleFor = (session: UsageLedgerSession) => session.threadtermSessionId
     ? data?.sessions.find(candidate => candidate.id === session.threadtermSessionId)?.title
@@ -56,7 +82,7 @@ export function UsageSessions({ query, data, locale, copy, providerName, version
 
   const openRow = (session: UsageLedgerSession) => {
     if (session.threadtermSessionId && onOpenSession) onOpenSession(session.threadtermSessionId);
-    else setOpenKey(rowKey(session));
+    else setOpen(session);
   };
 
   const importSession = async (session: UsageLedgerSession) => {
@@ -82,7 +108,9 @@ export function UsageSessions({ query, data, locale, copy, providerName, version
     }
   };
 
-  return <section className="usage-sessions" aria-label={copy.sessions.title}>
+  return <section ref={host} className="usage-sessions" aria-label={copy.sessions.title}
+    onPointerEnter={() => setHovered(true)} onPointerLeave={() => setHovered(false)}
+    onFocusCapture={() => setFocused(true)} onBlurCapture={event => { if (!event.currentTarget.contains(event.relatedTarget)) setFocused(false); }}>
     <header className="usage-section-head">
       <h2>{copy.sessions.title}</h2>
       <div className="usage-search" role="search">
@@ -114,7 +142,7 @@ export function UsageSessions({ query, data, locale, copy, providerName, version
         : <ul className="usage-session-rows">
           {items.map(session => <SessionRow key={rowKey(session)} session={session} heading={sessionHeading(session, titleFor(session))}
             locale={locale} copy={copy} providerName={providerName}
-            importing={importing === rowKey(session)} onOpen={() => openRow(session)} onDetails={() => setOpenKey(rowKey(session))}
+            importing={importing === rowKey(session)} onOpen={() => openRow(session)} onDetails={() => setOpen(session)}
             onImport={() => void importSession(session)} />)}
         </ul>}
       {total > params.limit && <div className="usage-page-actions">
@@ -124,7 +152,7 @@ export function UsageSessions({ query, data, locale, copy, providerName, version
       </div>}
     </>}
     {open && <SessionDrawer session={open} query={query} version={version} locale={locale} copy={copy} providerName={providerName}
-      heading={sessionHeading(open, titleFor(open))} onClose={() => setOpenKey(undefined)}
+      heading={sessionHeading(open, titleFor(open))} onClose={() => setOpen(undefined)}
       canOpen={Boolean(open.threadtermSessionId && onOpenSession)} onOpenChat={() => { if (open.threadtermSessionId) onOpenSession?.(open.threadtermSessionId); }} />}
   </section>;
 }
@@ -154,11 +182,11 @@ function SessionRow({ session, heading, locale, copy, providerName, importing, o
     copy.sessions.requests(session.requests),
     compactTokens(session.tokens.total, locale),
     `${copy.cost.short} ${cost.text}`,
-    activeTimeText(session.activeTimeMs, locale),
+    sessionActiveTime(session.activeTimeMs, session.requests, locale),
     day ? dayText(day, locale) : undefined,
   ].filter(Boolean).join(' · ');
   return <li className="usage-session-row">
-    <button type="button" className="usage-session-main" onClick={onOpen} aria-label={`${provider} · ${name} · ${meta}`}>
+    <button type="button" className="usage-session-main" title={`${provider} · ${name} · ${meta}`} onClick={onOpen} aria-label={`${provider} · ${name} · ${meta}`}>
       <span className="usage-session-line">
         <AgentIcon provider={session.provider} size={14} />
         <span className="usage-session-provider">{provider}</span>
@@ -169,14 +197,12 @@ function SessionRow({ session, heading, locale, copy, providerName, importing, o
       <span className="usage-session-meta tnum" title={cost.noPrice ? `${copy.cost.short} — ${copy.cost.noPrice}` : copy.cost.tooltip}>{meta}</span>
     </button>
     <span className="usage-session-actions">
-      {inThreadTerm
-        ? <>
-          <button type="button" className="icon-btn icon-btn-sm" aria-label={copy.sessions.drawerTitle} title={copy.sessions.drawerTitle} onClick={onDetails}><WbIcon name="chevR" /></button>
-          <button type="button" className="btn btn-sm" onClick={onOpen}>{copy.sessions.openChat}</button>
-        </>
-        : <button type="button" className="btn btn-sm" disabled={importing || !session.cwd}
+      {inThreadTerm ? <>
+        <button type="button" className="icon-btn icon-btn-sm" aria-label={copy.sessions.drawerTitle} title={copy.sessions.drawerTitle} onClick={onDetails}><WbIcon name="chevR" /></button>
+        <button type="button" className="btn btn-sm" onClick={onOpen}>{copy.sessions.openChat}</button>
+      </> : <button type="button" className="btn btn-sm" disabled={importing || !session.cwd}
           title={session.cwd ? copy.sessions.importSession : copy.sessions.importNeedsFolder}
-          onClick={onImport}>{importing ? copy.sessions.importing : copy.sessions.importSession}</button>}
+          onClick={onImport}>{importing ? copy.sessions.importing : copy.sessions.importAction}</button>}
     </span>
   </li>;
 }
@@ -199,14 +225,14 @@ function SessionDrawer({ session, query, version, locale, copy, providerName, he
     onClose={onClose}
     footer={<>
       {canOpen && <button type="button" className="btn" onClick={onOpenChat}>{copy.sessions.openChat}</button>}
-      <button type="button" className="btn btn-primary" onClick={onClose}>{copy.sessions.close}</button>
+      <button type="button" className="btn" onClick={onClose}>{copy.sessions.close}</button>
     </>}>
     <div className="usage-drawer">
       <div className="usage-drawer-stats">
         <Stat label={copy.tiles.tokens} value={compactTokens(session.tokens.total, locale)} />
         <Stat label={copy.cost.short} value={costDisplay(session.cost, locale, session.pricingPending).text} title={session.cost.pricedTokens > 0 ? copy.cost.tooltip : copy.cost.noPrice} />
         <Stat label={copy.tiles.requests} value={fullNumber(session.requests, locale)} />
-        <Stat label={copy.tiles.activeTime} value={activeTimeText(session.activeTimeMs, locale)} />
+        <Stat label={copy.tiles.activeTime} value={`≈ ${sessionActiveTime(session.activeTimeMs, session.requests, locale)}`} title={copy.tiles.estimatedMethod} />
       </div>
       {error ? <p className="surface-error" role="alert">{error}</p> : loading && !detail ? <p className="usage-empty">{copy.readingHistory}</p> : <>
         <Detail detail={detail} session={session} locale={locale} copy={copy} providerName={providerName} />
@@ -269,8 +295,8 @@ function Detail({ detail, session, locale, copy, providerName }: {
 }
 
 function Stat({ label, value, title }: { label: string; value: string; title?: string }) {
-  return <div className="usage-drawer-stat" title={title}>
-    <span>{label}</span>
-    <b className="tnum">{value}</b>
+  return <div className="usage-tile usage-drawer-stat">
+    <span className="usage-tile-label" title={title}>{label}</span>
+    <b className="usage-tile-value tnum">{value}</b>
   </div>;
 }

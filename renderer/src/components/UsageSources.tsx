@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { rebuildUsageLedger, useUsageSources } from '../usageLedger';
 import { dateTimeText, type UsageLocale } from '../usageFormat';
 import {
-  bucketLabel, fileLine, humanizeProblem, problemCounts, reportedBuckets, sourceState, sourceTotals,
+  bucketLabel, fileLine, humanizeProblem, problemCounts, reportedBuckets, sourceProblemMatchesState, sourceState, sourceTotals,
 } from '../usageSources';
 import type { UsageCopy } from '../usageCopy';
 import type { UsageLedgerSource } from '@threadterm/protocol';
@@ -91,7 +91,7 @@ function SourceRow({ source, locale, copy, providerName }: {
   const stateText = copy.sources.state[state] ?? state;
   const problemText = (problem: ReturnType<typeof problemCounts>[number]) => problem.label ? copy.sources.problemLabels[problem.label] ?? humanizeProblem(problem.kind) : humanizeProblem(problem.kind);
   // A single problem that only repeats the state chip ("Format not supported yet") adds nothing.
-  const problems = problemCounts(source.stats?.problems).filter(problem => !(problem.count === 1 && problemText(problem).toLowerCase() === stateText.toLowerCase()));
+  const problems = problemCounts(source.stats?.problems).filter(problem => !sourceProblemMatchesState(problem, state) && !(problem.count === 1 && problemText(problem).toLowerCase() === stateText.toLowerCase()));
   // The three cache-write buckets (5 m, 1 h, unknown TTL) read as one word, like the tiles.
   const buckets = wasRead ? [...new Set(reportedBuckets(source.bucketsReported).map(bucket => bucketLabel(bucket, copy)))] : [];
   const lastRead = wasRead ? dateTimeText(source.lastRead, locale) : null;
@@ -100,7 +100,7 @@ function SourceRow({ source, locale, copy, providerName }: {
     <span className="usage-source-head">
       <AgentIcon provider={source.provider} size={14} />
       <b>{providerName(source.provider)}</b>
-      <span className={`chip flat usage-source-state is-${state}`}>{stateText}</span>
+      <span className={`chip usage-source-state ${state === 'found' ? 'st-running' : state === 'failed' ? 'st-failed' : state === 'partial' || state === 'cancelled' ? 'st-stalled' : 'st-ended'}`}>{stateText}</span>
       <span className="usage-source-meta">
         {files && <span>{copy.sources.files(files.read, files.found)}</span>}
         {lastRead && <span>{copy.sources.lastRead(lastRead)}</span>}

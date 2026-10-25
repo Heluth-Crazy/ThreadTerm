@@ -127,9 +127,10 @@ export function SettingsUsage({ data, zh }: Props) {
   const pricesDraft = draft && { ...draft.value, priceOverrides: priceOverridesFromDraft(prices) };
   const pricesDirty = Boolean(draft && pricesDraft && !usageSettingsEqual(pricesDraft, draft.value));
 
-  if (!draft) return <div className="settings-card"><div className="settings-card-row"><div>
+  if (!draft) return <div className="settings-card" aria-busy={!issue}><div className="settings-card-row"><div>
     <div className="settings-card-title">{copy.settings.title}</div>
-    <p>{issue ? `${copy.settings.unavailable} ${issue}` : copy.settings.loading}</p>
+    {issue ? <p className="surface-error" role="alert">{`${copy.settings.unavailable} ${issue}`}</p>
+      : <p role="status" aria-live="polite">{copy.settings.loading}</p>}
   </div></div></div>;
 
   return <>
@@ -161,9 +162,11 @@ export function SettingsUsage({ data, zh }: Props) {
         {providers.map(provider => <div key={provider} className={`settings-card-row${draft.value.includeOutside ? '' : ' is-muted'}`}>
           <div>
             <div className="settings-card-title">{providerLabel(provider)}</div>
-            <p>{sourceStates.get(provider) === 'notInstalled' ? copy.sources.state.notInstalled : draft.value.includeOutside && providerHistoryEnabled(draft.value, provider)
-              ? copy.settings.providerToggle(providerLabel(provider))
-              : copy.settings.providerOff(providerLabel(provider))}</p>
+            {sourceStates.get(provider) === 'notInstalled' || data.providers.some(capability => capability.id === provider && capability.installed === false)
+              ? <p className="settings-provider-detail"><span className="chip flat settings-provider-state">{copy.sources.state.notInstalled}</span><span>{draft.value.includeOutside && providerHistoryEnabled(draft.value, provider) ? copy.settings.providerToggle(providerLabel(provider)) : copy.settings.providerOff(providerLabel(provider))}</span></p>
+              : <p>{draft.value.includeOutside && providerHistoryEnabled(draft.value, provider)
+                ? copy.settings.providerToggle(providerLabel(provider))
+                : copy.settings.providerOff(providerLabel(provider))}</p>}
           </div>
           <SettingsSwitch checked={providerHistoryEnabled(draft.value, provider)} disabled={saving || !draft.value.includeOutside}
             aria-label={copy.settings.providerToggle(providerLabel(provider))}

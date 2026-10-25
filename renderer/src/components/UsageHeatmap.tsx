@@ -7,14 +7,15 @@ import { activeTimeText, compactTokens, costText, dayHasUsage, fullNumber, numbe
 import { labelWidth } from '../usageTextMetrics';
 import type { UsageCopy } from '../usageCopy';
 import { AgentIcon } from './PrototypeIcon';
+import type { TipBounds } from '../usagePresentation';
+import { UsageTooltip } from './UsageTooltip';
 
 export type HeatMetric = 'tokens' | 'cost' | 'active';
 
 /** Level 0 is an empty day; 1-4 come from the quantile thresholds. */
 const LEVEL_CLASS = ['is-empty', 'is-1', 'is-2', 'is-3', 'is-4'] as const;
-/** Cells scale with the card so a year fits at 1280 px; very wide cards keep a readable cell and stay left-aligned. */
+/** Cells fill the available width; narrow cards scroll to the latest week. */
 const CELL_MIN = 10;
-const CELL_MAX = 16;
 const CELL_GAP = 2;
 
 type Props = {
@@ -41,7 +42,7 @@ function metricText(value: number, metric: HeatMetric, locale: UsageLocale): str
 export function UsageHeatmap({ series, locale, copy, weekStartPreference, providerName, onSelectDay, from, to }: Props) {
   const [metric, setMetric] = useState<HeatMetric>('tokens');
   const [tableOpen, setTableOpen] = useState(false);
-  const [tip, setTip] = useState<{ day: string; x: number; y: number; below: boolean }>();
+  const [tip, setTip] = useState<{ day: string; x: number; y: number; bounds: TipBounds }>();
   const [focusDay, setFocusDay] = useState<string>(() => localTodayClamped(from, to));
   const [cell, setCell] = useState(11);
   const host = useRef<HTMLDivElement>(null);
@@ -74,7 +75,7 @@ export function UsageHeatmap({ series, locale, copy, weekStartPreference, provid
       const width = node.clientWidth;
       if (!width) return;
       const fit = (width - CELL_GAP * (grid.columns.length - 1)) / grid.columns.length;
-      const next = Math.min(CELL_MAX, Math.max(CELL_MIN, Math.round(fit * 100) / 100));
+      const next = Math.max(CELL_MIN, Math.floor(fit * 100) / 100);
       setCell(current => current === next ? current : next);
     };
     measure();
@@ -113,9 +114,11 @@ export function UsageHeatmap({ series, locale, copy, weekStartPreference, provid
   const showTip = (day: string, element: HTMLElement) => {
     const box = element.getBoundingClientRect(), origin = host.current?.getBoundingClientRect();
     if (!origin) return;
-    // Cells in the first rows flip the tooltip below themselves so it never covers the card header.
-    const below = box.top - origin.top < 140;
-    setTip({ day, x: box.left - origin.left + box.width / 2, y: box.top - origin.top + (below ? box.height : 0), below });
+    const gridBox = host.current?.querySelector('.usage-heat-grid')?.getBoundingClientRect();
+    if (!gridBox) return;
+    const left = Math.max(gridBox.left, origin.left);
+    setTip({ day, x: box.left - origin.left + box.width / 2, y: box.top - origin.top,
+      bounds: { left: left - origin.left, top: gridBox.top - origin.top, width: Math.min(gridBox.right, origin.right) - left, height: gridBox.height } });
   };
 
   const dayLabel = (day: string) => {
@@ -129,14 +132,14 @@ export function UsageHeatmap({ series, locale, copy, weekStartPreference, provid
   return <section className="usage-heat" aria-label={copy.heatmap.title}>
     <header className="usage-section-head">
       <h2>{copy.heatmap.title}</h2>
-      <div className="usage-seg" role="group" aria-label={copy.heatmap.metric}>
-        {(['tokens', 'cost', 'active'] as HeatMetric[]).map(value => <button key={value} type="button" className="usage-seg-item" aria-pressed={metric === value}
+      <div className="seg" role="group" aria-label={copy.heatmap.metric}>
+        {(['tokens', 'cost', 'active'] as HeatMetric[]).map(value => <button key={value} type="button" className={`seg-btn btn-tab${metric === value ? ' active' : ''}`} aria-pressed={metric === value}
           title={value === 'cost' ? copy.heatmap.costHint : undefined}
           onClick={() => setMetric(value)}>
           {value === 'tokens' ? copy.heatmap.tokens : value === 'cost' ? copy.heatmap.cost : copy.heatmap.activeTime}
         </button>)}
       </div>
-      <button type="button" className="btn btn-ghost usage-table-toggle" aria-pressed={tableOpen} onClick={() => setTableOpen(value => !value)}>
+      <button type="button" className="btn btn-sm btn-ghost usage-table-toggle" aria-pressed={tableOpen} onClick={() => setTableOpen(value => !value)}>
         {tableOpen ? copy.heatmap.asChart : copy.heatmap.asTable}
       </button>
     </header>
@@ -162,7 +165,7 @@ export function UsageHeatmap({ series, locale, copy, weekStartPreference, provid
               {shownMonths.has(month.column) ? copy.heatmap.monthNames[month.month] : ''}
             </span>)}
           </div>
-          <div className="usage-heat-grid" role="grid" aria-label={copy.heatmap.tableCaption} style={{ gridTemplateColumns: `repeat(${grid.columns.length}, ${cell}px)`, gridTemplateRows: `repeat(7, ${cell}px)` }} onKeyDown={onKeyDown} onMouseLeave={() => setTip(undefined)}>
+          <div className="usage-heat-grid" role="grid" aria-label={copy.heatmap.tableCaption} style={{ gridTemplateColumns: `repeat(${grid.columns.length}, ${cell}px)`, gridTemplateRows: 'repeat(7, max(20px, var(--heat-cell)))' }} onKeyDown={onKeyDown} onMouseLeave={() => setTip(undefined)}>
             {grid.columns.map((column, columnIndex) => column.map((cellValue, row) => cellValue
               ? <button
                 key={cellValue.day}
@@ -190,19 +193,19 @@ export function UsageHeatmap({ series, locale, copy, weekStartPreference, provid
           </div>
         </div>
       </div>
-      {tip && <HeatTooltip day={tip.day} point={points.get(tip.day)} locale={locale} copy={copy} providerName={providerName} x={tip.x} y={tip.y} below={tip.below} />}
+      {tip && <HeatTooltip day={tip.day} point={points.get(tip.day)} locale={locale} copy={copy} providerName={providerName} x={tip.x} y={tip.y} bounds={tip.bounds} />}
     </div>}
   </section>;
 }
 
-function HeatTooltip({ day, point, locale, copy, providerName, x, y, below }: {
+function HeatTooltip({ day, point, locale, copy, providerName, x, y, bounds }: {
   day: string; point: UsageLedgerSeriesPoint | undefined; locale: UsageLocale; copy: UsageCopy;
-  providerName: (id: string) => string; x: number; y: number; below: boolean;
+  providerName: (id: string) => string; x: number; y: number; bounds: TipBounds;
 }) {
   const used = point !== undefined && dayHasUsage(point);
   const sources = (point?.values ?? []).filter(value => value.tokens > 0 || value.requests > 0);
   const cost = point?.cost.apiEquivalentUsd;
-  return <div className={`usage-tip${below ? ' is-below' : ''}`} role="tooltip" style={{ left: x, top: y }}>
+  return <UsageTooltip className="usage-tip-heat" x={x} y={y} bounds={bounds}>
     <b>{copy.heatmap.tooltipTitle(formatDay(day, locale))}</b>
     {point && used ? <>
       <span>{copy.heatmap.tokenTotal(fullNumber(point.tokens.total, locale))}</span>
@@ -212,7 +215,7 @@ function HeatTooltip({ day, point, locale, copy, providerName, x, y, below }: {
       <span>{copy.heatmap.requestsLine(point.requests)}</span>
       {sources.length > 0 && <span className="usage-tip-sources">{sources.map(value => <i key={value.key}><AgentIcon provider={value.key} />{providerName(value.key)}</i>)}</span>}
     </> : <span>{copy.heatmap.emptyDay}</span>}
-  </div>;
+  </UsageTooltip>;
 }
 
 function bucketLine(point: UsageLedgerSeriesPoint, locale: UsageLocale, copy: UsageCopy): string {

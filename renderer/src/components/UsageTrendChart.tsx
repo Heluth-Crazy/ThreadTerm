@@ -4,6 +4,8 @@ import { axisTicks, providerSlots, stackedColumns, thinLabels, tokenSlots, type 
 import { compactTokens, fullNumber, type UsageLocale } from '../usageFormat';
 import { labelWidth } from '../usageTextMetrics';
 import type { UsageCopy } from '../usageCopy';
+import type { TipBounds } from '../usagePresentation';
+import { UsageTooltip } from './UsageTooltip';
 
 type Props = {
   series: UsageLedgerSeries | undefined;
@@ -48,7 +50,7 @@ function axisLabel(column: TrendColumn, locale: UsageLocale, granularity: 'day' 
 
 export function UsageTrendChart({ series, stack, locale, copy, reading, providerName, onToggleStack, onGranularity }: Props) {
   const [tableOpen, setTableOpen] = useState(false);
-  const [tip, setTip] = useState<{ column: number; x: number; y: number }>();
+  const [tip, setTip] = useState<{ column: number; x: number; y: number; bounds: TipBounds }>();
   const host = useRef<HTMLDivElement>(null);
   const resizeObserver = useRef<ResizeObserver>(undefined);
   const [plotWidth, setPlotWidth] = useState(0);
@@ -65,9 +67,6 @@ export function UsageTrendChart({ series, stack, locale, copy, reading, provider
   for (const column of columns) for (const segment of column.segments) totals.set(segment.key, (totals.get(segment.key) ?? 0) + segment.value);
   const legend = keys.length >= 2 ? [...totals.entries()].sort((left, right) => right[1] - left[1]) : [];
   const heightOf = (value: number) => yMax > 0 ? `${(value / yMax) * 100}%` : '0%';
-  // One direct label carries the tallest column's total (the axis scale is the other half of the reading); the legend
-  // and tooltip carry the rest.
-  const directColumn = columns.reduce<TrendColumn | undefined>((best, column) => !best || column.total > best.total ? column : best, undefined);
 
   // Bands spread across the whole plot, so thinning needs the real band pitch. The chart only exists once there are
   // columns, so the width is measured when its node appears and re-measured on resize (no timers, no polling).
@@ -88,13 +87,15 @@ export function UsageTrendChart({ series, stack, locale, copy, reading, provider
     return [{ index, label: axisLabel(column, locale, granularity, granularity === 'month' && multiYear) }];
   }), [columns, granularity, locale, multiYear]);
   const pitch = columns.length > 0 ? plotWidth / columns.length : 0;
-  const xTicks = useMemo(() => thinLabels(candidates, pitch, label => labelWidth(label)), [candidates, pitch]);
+  const xTicks = useMemo(() => thinLabels(candidates, pitch, label => labelWidth(label, '11px system-ui'), 12), [candidates, pitch]);
   const xLabels = new Map(xTicks.map(tick => [tick.index, tick]));
 
   const showTip = (index: number, element: HTMLElement) => {
     const box = element.getBoundingClientRect(), origin = host.current?.getBoundingClientRect();
-    if (!origin) return;
-    setTip({ column: index, x: box.left - origin.left + box.width / 2, y: box.top - origin.top });
+    const plot = host.current?.querySelector('.usage-chart-plot')?.getBoundingClientRect();
+    if (!origin || !plot) return;
+    setTip({ column: index, x: box.left - origin.left + box.width / 2, y: box.top - origin.top,
+      bounds: { left: plot.left - origin.left, top: plot.top - origin.top, width: plot.width, height: plot.height } });
   };
 
   const columnLabel = (column: TrendColumn) => `${periodLabel(column, locale, granularity)} — ${copy.trend.total} ${compactTokens(column.total, locale)}`;
@@ -102,20 +103,20 @@ export function UsageTrendChart({ series, stack, locale, copy, reading, provider
   return <section className="usage-trend" aria-label={copy.trend.title}>
     <header className="usage-section-head">
       <h2>{copy.trend.title}</h2>
-      <div className="usage-seg" role="group" aria-label={copy.trend.granularity}>
-        {(['day', 'week', 'month'] as const).map(value => <button key={value} type="button" className="usage-seg-item" aria-pressed={granularity === value} onClick={() => onGranularity(value)}>
+      <div className="seg" role="group" aria-label={copy.trend.granularity}>
+        {(['day', 'week', 'month'] as const).map(value => <button key={value} type="button" className={`seg-btn btn-tab${granularity === value ? ' active' : ''}`} aria-pressed={granularity === value} onClick={() => onGranularity(value)}>
           {copy.trend[value]}
         </button>)}
       </div>
-      <div className="usage-seg" role="group" aria-label={copy.trend.stack}>
-        {(['provider', 'tokens'] as const).map(value => <button key={value} type="button" className="usage-seg-item" aria-pressed={stack === value} onClick={() => onToggleStack(value)}>
+      <div className="seg" role="group" aria-label={copy.trend.stack}>
+        {(['provider', 'tokens'] as const).map(value => <button key={value} type="button" className={`seg-btn btn-tab${stack === value ? ' active' : ''}`} aria-pressed={stack === value} onClick={() => onToggleStack(value)}>
           {value === 'provider' ? copy.trend.provider : copy.trend.tokens}
         </button>)}
       </div>
       <div className="usage-legend usage-legend-trend">
         {legend.map(([key, total]) => <span key={key}><i className={`usage-swatch sv-${slotOf(key)}`} aria-hidden="true" />{seriesLabel(key, stack, copy, providerName)}<em>{compactTokens(total, locale)}</em></span>)}
       </div>
-      <button type="button" className="btn btn-ghost usage-table-toggle" aria-pressed={tableOpen} onClick={() => setTableOpen(value => !value)}>
+      <button type="button" className="btn btn-sm btn-ghost usage-table-toggle" aria-pressed={tableOpen} onClick={() => setTableOpen(value => !value)}>
         {tableOpen ? copy.trend.asChart : copy.trend.asTable}
       </button>
     </header>
@@ -157,7 +158,6 @@ export function UsageTrendChart({ series, stack, locale, copy, reading, provider
                     style={{ height: heightOf(segment.value) }}
                   />)}
                 </span>
-                {directColumn === column && column.total > 0 && <span className="usage-chart-direct" style={{ bottom: `calc(${heightOf(column.total)} + 2px)` }}>{compactTokens(column.total, locale)}</span>}
               </button>)}
             </div>
           </div>
@@ -168,13 +168,13 @@ export function UsageTrendChart({ series, stack, locale, copy, reading, provider
             })}
           </div>
         </div>
-        {tip && <div className="usage-tip usage-tip-chart" role="tooltip" style={{ left: tip.x, top: tip.y }}>
+        {tip && <UsageTooltip className="usage-tip-chart" x={tip.x} y={tip.y} bounds={tip.bounds}>
           <b>{periodLabel(columns[tip.column]!, locale, granularity)}</b>
           {columns[tip.column]!.segments.length === 0
             ? <span>{copy.trend.empty}</span>
             : [...columns[tip.column]!.segments].reverse().map(segment => <span key={segment.key}><i className={`usage-swatch sv-${slotOf(segment.key)}`} aria-hidden="true" />{seriesLabel(segment.key, stack, copy, providerName)}<em>{compactTokens(segment.value, locale)}</em></span>)}
           <span className="usage-tip-total">{copy.trend.total}<em>{compactTokens(columns[tip.column]!.total, locale)}</em></span>
-        </div>}
+        </UsageTooltip>}
       </div>}
   </section>;
 }

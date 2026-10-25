@@ -1,8 +1,9 @@
 // Data access for the Usage page. Every read is an aggregate RPC; the page never holds a record list.
-// The page scans only when it opens or the user asks: no timers, no polling. Progress arrives as events.
+// Scans run only on open or request. Progress events drive throttled reads; there is no idle polling.
 import { useEffect, useRef, useState } from 'react';
 import { operationId, request, subscribeEvents } from './bridge';
 import { sessionQuery, type SessionQuery, type UsageSessionSort } from './usageSessions';
+import { createUsageProgressThrottle, hasReadProviderHistory, usageScanErrorCode } from './usageScan';
 import type {
   UsageLedgerBreakdown,
   UsageLedgerProgress,
@@ -97,6 +98,9 @@ export type UsageLedgerData = {
   scan: UsageScanState | undefined;
   /** Bumped when a scan reaches a terminal state, so every section below re-reads its own aggregate. */
   version: number;
+  /** Event-throttled refreshes while history is still being counted. */
+  liveVersion: number;
+  firstScan: boolean;
   reload: () => void;
   refresh: () => void;
   cancel: () => void;
@@ -126,6 +130,12 @@ export function useUsageLedger(query: UsageQuery, granularity: UsageLedgerGranul
   const latestQuery = useRef({ query, granularity, stack, weekStart });
   latestQuery.current = { query, granularity, stack, weekStart };
   const [reloadKey, setReloadKey] = useState(0);
+  const [liveVersion, setLiveVersion] = useState(0);
+  const [firstScanId, setFirstScanId] = useState<string>();
+  const pendingFirstRead = useRef(false);
+  const refreshGeneration = useRef(0);
+  const mounted = useRef(true);
+  useEffect(() => { mounted.current = true; return () => { mounted.current = false; generation.current++; }; }, []);
 
   const load = async () => {
     const token = ++generation.current;
@@ -150,6 +160,25 @@ export function useUsageLedger(query: UsageQuery, granularity: UsageLedgerGranul
     }
   };
 
+  const refresh = async () => {
+    const token = ++refreshGeneration.current;
+    let firstRead = false;
+    try {
+      const sources = await request('usage.ledger.sources', {});
+      firstRead = !hasReadProviderHistory(sources.providers);
+    } catch { /* A source-status failure must not prevent retrying the scan. */ }
+    if (!mounted.current || token !== refreshGeneration.current) return;
+    pendingFirstRead.current = firstRead;
+    try {
+      const result = await request('usage.ledger.refresh', { operationId: operationId() });
+      if (!mounted.current || token !== refreshGeneration.current) return;
+      setFirstScanId(firstRead ? result.scanId : undefined);
+      setScan(current => current?.scanId === result.scanId ? current : { scanId: result.scanId, state: 'running', filesRead: 0, filesFound: 0 });
+    } catch (caught) {
+      if (mounted.current && token === refreshGeneration.current) setScan({ scanId: '', state: 'failed', filesRead: 0, filesFound: 0, error: usageScanErrorCode(caught) });
+    }
+  };
+
   // Settings once: page defaults (week start, whether outside usage may be included) and the provider toggles.
   useEffect(() => {
     let current = true;
@@ -160,15 +189,13 @@ export function useUsageLedger(query: UsageQuery, granularity: UsageLedgerGranul
     return () => { current = false; };
   }, []);
 
-  useEffect(() => { void load(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [query.from, query.to, query.scope, query.projectId, query.provider, query.model, query.includeOutside, granularity, stack, weekStart, savedWeekStart, reloadKey]);
+  useEffect(() => { void load(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [query.from, query.to, query.scope, query.projectId, query.provider, query.model, query.includeOutside, granularity, stack, weekStart, savedWeekStart, reloadKey, liveVersion]);
 
   // One incremental refresh when the page opens; a settings read failure must not block reading the ledger.
   useEffect(() => {
     if (started.current) return;
     started.current = true;
-    void request('usage.ledger.refresh', { operationId: operationId() }).then(result => {
-      setScan(current => current?.scanId === result.scanId ? current : { scanId: result.scanId, state: 'running', filesRead: 0, filesFound: 0 });
-    }).catch(() => undefined);
+    void refresh();
   }, []);
 
   // Settings can change in another window or in Settings → Usage while this page is open; a settings event re-reads
@@ -183,33 +210,38 @@ export function useUsageLedger(query: UsageQuery, granularity: UsageLedgerGranul
     }).catch(() => undefined);
   }), []);
 
-  // Progress is the only source of scan state: no timer asks the runtime again.
-  useEffect(() => subscribeEvents(event => {
-    if (event.event !== 'usage.ledger.progress') return;
-    const progress = event.data as UsageLedgerProgress;
-    setScan(current => ({
-      scanId: progress.scanId,
-      provider: progress.provider ?? (progress.state === 'running' ? current?.provider : undefined),
-      state: progress.state,
-      phase: progress.phase,
-      filesRead: progress.stats?.filesRead ?? current?.filesRead ?? 0,
-      filesFound: progress.stats?.filesFound ?? current?.filesFound ?? 0,
-      error: progress.error ?? undefined,
-    }));
-    if (progress.state !== 'running' && progress.phase !== 'pricing') setReloadKey(value => value + 1);
-  }), []);
+  // A pending timeout belongs to actual progress, and is discarded at completion or unmount.
+  useEffect(() => {
+    const updates = createUsageProgressThrottle(() => setLiveVersion(value => value + 1));
+    let scanId: string | undefined;
+    const unsubscribe = subscribeEvents(event => {
+      if (event.event !== 'usage.ledger.progress') return;
+      const progress = event.data as UsageLedgerProgress;
+      if (scanId !== progress.scanId) {
+        updates.cancel(); scanId = progress.scanId;
+        setFirstScanId(pendingFirstRead.current ? progress.scanId : undefined); pendingFirstRead.current = false;
+      }
+      setScan(current => ({
+        scanId: progress.scanId,
+        provider: progress.provider ?? (progress.state === 'running' && current?.scanId === progress.scanId ? current.provider : undefined),
+        state: progress.state,
+        phase: progress.phase,
+        filesRead: progress.stats?.filesRead ?? (current?.scanId === progress.scanId ? current.filesRead : 0),
+        filesFound: progress.stats?.filesFound ?? (current?.scanId === progress.scanId ? current.filesFound : 0),
+        error: progress.error ?? undefined,
+      }));
+      if (progress.state === 'running') updates.progress();
+      else { updates.cancel(); setFirstScanId(undefined); pendingFirstRead.current = false; setReloadKey(value => value + 1); }
+    });
+    return () => { unsubscribe(); updates.dispose(); };
+  }, []);
 
-  const refresh = () => {
-    void request('usage.ledger.refresh', { operationId: operationId() }).then(result => {
-      setScan(current => current?.scanId === result.scanId ? { ...current, state: 'running' } : { scanId: result.scanId, state: 'running', filesRead: 0, filesFound: 0 });
-    }).catch(caught => setError(caught instanceof Error ? caught.message : String(caught)));
-  };
   const cancel = () => {
     if (!scan) return;
     void request('usage.ledger.cancel', { scanId: scan.scanId, operationId: operationId() }).catch(() => undefined);
   };
 
-  return { settings, summary, trend, heat, loading, error, scan, version: reloadKey, reload: () => setReloadKey(value => value + 1), refresh, cancel, settingsError, setSettings };
+  return { settings, summary, trend, heat, loading, error, scan, version: reloadKey, liveVersion, firstScan: Boolean(scan && firstScanId === scan.scanId), reload: () => setReloadKey(value => value + 1), refresh, cancel, settingsError, setSettings };
 }
 
 const errorText = (caught: unknown) => caught instanceof Error ? caught.message : String(caught);
