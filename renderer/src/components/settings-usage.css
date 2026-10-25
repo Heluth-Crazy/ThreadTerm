@@ -1,0 +1,35 @@
+/* Settings → Usage (task 10-23-usage-accounting, UA2b). Tokens only: colours come from the theme or --viz-*. */
+.settings-usage-conflict { display:flex; flex-wrap:wrap; align-items:center; gap:8px 12px; margin:0 0 12px; padding:10px 12px; border:1px solid color-mix(in srgb, var(--amber) 45%, var(--border)); border-radius:var(--radius); background:color-mix(in srgb, var(--amber) 9%, transparent); }
+.settings-usage-conflict p { margin:0; flex:1 1 240px; color:var(--text); font-size:12px; line-height:17px; }
+.settings-usage-conflict-actions { display:inline-flex; gap:6px; }
+.settings-provider-list { display:flex; flex-direction:column; }
+.settings-provider-list .settings-card-row { padding:10px 0; }
+.settings-provider-list .settings-card-row:first-child { padding-top:6px; }
+.settings-provider-list .settings-card-row + .settings-card-row { border-top:1px solid color-mix(in srgb, var(--border) 60%, transparent); }
+.settings-provider-list .settings-card-row.is-muted > div { opacity:.6; }
+.settings-usage-note { margin-top:2px !important; color:var(--muted); font-size:11px; }
+
+/* Model prices: one row per model, five rates, a remove button. */
+.settings-price-table { display:flex; flex-direction:column; gap:2px; margin-top:10px; }
+.settings-price-head, .settings-price-row { display:grid; grid-template-columns:minmax(120px, 1.6fr) repeat(5, minmax(56px, 0.7fr)) 26px; align-items:center; gap:6px; }
+.settings-price-head { padding:0 0 4px; color:var(--muted); font-size:10.5px; }
+.settings-price-head > span:first-child { grid-column:1; }
+.settings-price-row { min-height:30px; }
+.settings-price-model { overflow:hidden; color:var(--text); font-size:11.5px; text-overflow:ellipsis; white-space:nowrap; }
+.settings-price-input, .settings-price-model-input { width:100%; height:26px; min-width:0; padding:0 7px; border:1px solid var(--border); border-radius:var(--radius); background:var(--surface); color:var(--text); font:inherit; font-size:11.5px; font-variant-numeric:tabular-nums; }
+.settings-price-model-input { grid-column:1; }
+.settings-price-input:focus-visible, .settings-price-model-input:focus-visible { outline:2px solid var(--primary); outline-offset:1px; }
+.settings-price-input:disabled, .settings-price-model-input:disabled { opacity:.6; }
+.settings-price-row.is-new { margin-top:6px; padding-top:8px; border-top:1px solid color-mix(in srgb, var(--border) 60%, transparent); }
+.settings-price-add { grid-column:2 / -1; }
+.settings-price-empty { margin:4px 0 2px; color:var(--muted); font-size:11.5px; }
+.settings-price-foot { display:flex; align-items:center; gap:10px; margin-top:10px; }
+.settings-price-note { color:var(--muted); font-size:11.5px; }
+
+@media (max-width: 720px) {
+  .settings-price-head { display:none; }
+  .settings-price-row { display:flex; flex-wrap:wrap; row-gap:6px; }
+  .settings-price-model, .settings-price-model-input { flex:1 1 100%; }
+  .settings-price-input { flex:1 1 64px; }
+  .settings-price-add { flex:1 1 100%; }
+}

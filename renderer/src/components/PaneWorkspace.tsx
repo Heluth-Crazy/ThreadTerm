@@ -507,7 +507,7 @@ function Pane({
       focus={workbench?.taskMapFocus?.tabId===item.id?workbench.taskMapFocus:undefined} onOpenSession={onOpenSession}
       onOpenReview={workbench?.openSessionReview} onOpenFile={workbench?.openSessionFile} onClose={()=>onCloseTab({paneId:node.id,tabId:item.id})}/></Suspense>
   ) : item.kind === "usage" ? (
-    <Suspense fallback={<p className="note" role="status">{zh?'正在加载用量…':'Loading usage…'}</p>}><UsagePage initialProjectId={item.projectId} data={data}/></Suspense>
+    <Suspense fallback={<p className="note" role="status">{zh?'正在加载用量…':'Loading usage…'}</p>}><UsagePage initialProjectId={item.projectId} data={data} onOpenSession={onOpenSession}/></Suspense>
   ) : item.kind === "group" || item.kind === "roundtable" ? (
     <Suspense fallback={<p className="note" role="status">{zh?'正在加载群聊…':'Loading group chat…'}</p>}><GroupChatView id={item.kind==='group'?item.groupId:item.roundtableId} providers={providers} sessions={sessions} visible={active&&browserVisible} onOpenSession={id=>onOpenSession?.(id)} onOpenFile={path=>{const groupId=item.kind==='group'?item.groupId:item.roundtableId;const sessionId=sessions.find(candidate=>candidate.group?.id===groupId)?.id;if(sessionId)workbench?.openGroupFile?.({sessionId,path});}} onOpenUrl={url=>workbench?.openWeb?.(url)} onChanged={onSessionChanged??(()=>undefined)} onTitleChanged={workbench?.updateGroupTitle}/></Suspense>
   ) : item.kind === "history" ? (

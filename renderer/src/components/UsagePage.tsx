@@ -1,16 +1,19 @@
-import { useEffect, useMemo, useState, type ReactNode } from 'react';
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import type { Snapshot, UsageLedgerScope, UsageLedgerStack } from '@threadterm/protocol';
 import { agentName } from '../agents';
 import { useTranslation } from '../i18n';
 import { usageCopy } from '../usageCopy';
 import {
-  activeTimeText, compactTokens, costCoverage, costText, evidenceLine, fullNumber, percentText, reportedCostText, tilesState, tokenShares, type UsageLocale,
+  activeTimeText, compactTokens, costCoverage, costDisplay, evidenceLine, fullNumber, percentText, reportedCostText, tilesState, tokenShares, type UsageLocale,
 } from '../usageFormat';
-import { heatmapRange, granularityFor, localDay, rangeFor, shiftLocalDay, USAGE_RANGES, useUsageLedger, type UsageRangePreset } from '../usageLedger';
+import { heatmapRange, granularityFor, localDay, rangeFor, shiftLocalDay, USAGE_RANGES, useUsageBreakdowns, useUsageLedger, type UsageQuery, type UsageRangePreset } from '../usageLedger';
 import { Select } from './ui/Select';
 import { Icon } from './PrototypeIcon';
 import { WbIcon } from '../workbench/icons';
+import { UsageBreakdowns, type BreakdownFilter } from './UsageBreakdowns';
 import { UsageHeatmap } from './UsageHeatmap';
+import { UsageSessions } from './UsageSessions';
+import { UsageSources } from './UsageSources';
 import { UsageTrendChart } from './UsageTrendChart';
 import './usage-page.css';
 
@@ -18,13 +21,14 @@ type Props = {
   /** Set when the project overview opened the page: the whole page is filtered to that project. */
   initialProjectId?: string;
   data: Snapshot | undefined;
+  /** Opens a ThreadTerm session's Chat from the sessions list. */
+  onOpenSession?: (sessionId: string) => void;
 };
 
-/** The Usage page: scope, range, summary tiles, yearly calendar and trend. Aggregate RPCs only. */
-export function UsagePage({ initialProjectId, data }: Props) {
+/** The Usage page: scope, range, tiles, calendar, trend, breakdowns, sessions and sources. Aggregate RPCs only. */
+export function UsagePage({ initialProjectId, data, onOpenSession }: Props) {
   const { locale } = useTranslation();
   const usageLocale: UsageLocale = locale === 'zh-CN' ? 'zh-CN' : 'en';
-  const zh = usageLocale === 'zh-CN';
   const copy = usageCopy(usageLocale);
   const providerName = (id: string) => agentName(id, data?.providers ?? []) || id;
   const [scope, setScope] = useState<UsageLedgerScope>('all');
@@ -32,6 +36,10 @@ export function UsagePage({ initialProjectId, data }: Props) {
   const [customFrom, setCustomFrom] = useState(() => shiftLocalDay(localDay(), -29));
   const [customTo, setCustomTo] = useState(() => localDay());
   const [projectId, setProjectId] = useState(initialProjectId);
+  const [provider, setProvider] = useState<string>();
+  const [model, setModel] = useState<string>();
+  // A saved "outside off" setting forces the ThreadTerm scope; turning it back on restores what the user had.
+  const forcedScope = useRef<UsageLedgerScope | undefined>(undefined);
   const [stack, setStack] = useState<UsageLedgerStack>('provider');
   const [granularity, setGranularity] = useState<'day' | 'week' | 'month' | undefined>(undefined);
   useEffect(() => { setProjectId(initialProjectId); }, [initialProjectId]);
@@ -41,14 +49,27 @@ export function UsagePage({ initialProjectId, data }: Props) {
     ? { from: customFrom, to: shiftLocalDay(customTo, 1) }
     : rangeFor(preset === 'custom' ? '30d' : preset, today);
   const includeOutside = scope !== 'threadterm';
-  const weekStartPreference = 'auto';
   const effectiveGranularity = granularity ?? granularityFor(range.from, range.to);
-  const ledger = useUsageLedger({ from: range.from, to: range.to, scope, projectId, includeOutside }, effectiveGranularity, stack, weekStartPreference);
+  const query: UsageQuery = useMemo(() => ({ from: range.from, to: range.to, scope, projectId, provider, model, includeOutside }), [range.from, range.to, scope, projectId, provider, model, includeOutside]);
+  // The week boundary is a saved preference (Settings → Usage); the page reads it with the rest of its settings.
+  const ledger = useUsageLedger({ from: range.from, to: range.to, scope, projectId, provider, model, includeOutside }, effectiveGranularity, stack, 'auto');
   const settings = ledger.settings;
+  const weekStartPreference = settings?.weekStart ?? 'auto';
   const outsideAllowed = settings?.includeOutside !== false;
+  const breakdowns = useUsageBreakdowns(query, ledger.version);
 
-  // A saved "outside usage off" setting is a product rule, not a suggestion: the scope switch keeps only ThreadTerm.
-  useEffect(() => { if (settings && !settings.includeOutside && scope !== 'threadterm') setScope('threadterm'); }, [settings?.includeOutside, scope]);
+  // A saved "outside usage off" setting is a product rule, not a suggestion: the scope switch keeps only ThreadTerm,
+  // and the remembered scope comes back when the setting does (the page must not stay pinned to In ThreadTerm).
+  useEffect(() => {
+    if (!settings) return;
+    if (!settings.includeOutside) {
+      if (scope !== 'threadterm') { forcedScope.current = scope; setScope('threadterm'); }
+    } else if (forcedScope.current) {
+      const previous = forcedScope.current ?? 'all';
+      forcedScope.current = undefined;
+      setScope(previous);
+    }
+  }, [settings?.includeOutside, scope]);
 
   const summary = ledger.summary;
   const trend = ledger.trend;
@@ -57,6 +78,7 @@ export function UsagePage({ initialProjectId, data }: Props) {
   const shares = summary ? tokenShares(summary.tokens) : [];
   const evidence = summary ? evidenceLine(summary.quality) : undefined;
   const coverage = summary ? costCoverage(summary.cost) : undefined;
+  const cost = summary ? costDisplay(summary.cost, usageLocale, summary.pricingPending) : undefined;
   const hasUsage = Boolean(summary && summary.requests > 0);
   const rangeLabel = (value: UsageRangePreset) => copy.range[value] ?? value;
   const projectName = projectId ? data?.projects.find(project => project.id === projectId)?.name ?? projectId : undefined;
@@ -78,9 +100,14 @@ export function UsagePage({ initialProjectId, data }: Props) {
     return `${label} ${percentText(item.share, usageLocale)}`;
   }).join(' · ');
   const reasoningShare = summary && summary.tokens.total > 0 && summary.tokens.reasoning ? summary.tokens.reasoning / summary.tokens.total : 0;
+  const activeFilters: Array<{ key: string; label: string; clear: () => void }> = [
+    ...(provider ? [{ key: 'provider', label: copy.breakdown.filtered(providerName(provider)), clear: () => setProvider(undefined) }] : []),
+    ...(model ? [{ key: 'model', label: copy.breakdown.filtered(model), clear: () => setModel(undefined) }] : []),
+    ...(projectName ? [{ key: 'project', label: copy.projectFilter(projectName), clear: () => setProjectId(undefined) }] : []),
+  ];
 
-  const tile = (label: string, value: ReactNode, sub: ReactNode, extra?: ReactNode) =>
-    <div className="usage-tile"><span className="usage-tile-label">{label}</span><b className="usage-tile-value tnum">{value}</b><span className="usage-tile-sub">{sub}</span>{extra}</div>;
+  const tile = (label: string, value: ReactNode, sub: ReactNode, extra?: ReactNode, labelTitle?: string) =>
+    <div className="usage-tile"><span className="usage-tile-label" title={labelTitle}>{label}</span><b className="usage-tile-value tnum">{value}</b><span className="usage-tile-sub">{sub}</span>{extra}</div>;
 
   return <section className="usage-page" aria-label={copy.title}>
     <header className="wb-panel-head usage-head">
@@ -103,9 +130,9 @@ export function UsagePage({ initialProjectId, data }: Props) {
           <input type="date" className="usage-date" aria-label={copy.range.to} value={customTo} min={customFrom} max={today} onChange={event => { setCustomTo(event.target.value); setGranularity(undefined); }} />
         </>}
       </div>
-      {projectName && <button type="button" className="usage-chip" title={copy.clearProject} onClick={() => setProjectId(undefined)}>
-        <span>{copy.projectFilter(projectName)}</span><Icon name="close" />
-      </button>}
+      {activeFilters.map(filter => <button key={filter.key} type="button" className="usage-chip" title={copy.breakdown.clearFilter} onClick={filter.clear}>
+        <span>{filter.label}</span><Icon name="close" />
+      </button>)}
       <span className="usage-head-spacer" />
       <span className="usage-progress" role="status" aria-live="polite">
         {progressText}{running && <button type="button" className="btn btn-sm" onClick={ledger.cancel}>{copy.cancel}</button>}
@@ -121,9 +148,10 @@ export function UsagePage({ initialProjectId, data }: Props) {
               reading ? copy.readingHistory : hasUsage ? undefined : copy.noData,
               !reading && bucketSplit && <span className="usage-tile-extra" title={reasoningShare > 0 ? `${copy.buckets.reasoning} ${percentText(reasoningShare, usageLocale)}` : undefined}>{bucketSplit}</span>)}
             {tile(copy.tiles.cost,
-              reading ? placeholder : hasUsage ? (summary?.pricingPending ? copy.tiles.pending : costText(summary!.cost.apiEquivalentUsd, usageLocale)) : copy.unknown,
-              reading ? copy.readingHistory : hasUsage && coverage ? copy.tiles.priced(percentText(coverage.priced, usageLocale)) : undefined,
-              !reading && summary?.cost.reportedUsd ? <span className="usage-tile-extra">{reportedCostText(summary.cost.reportedUsd, usageLocale)} {copy.tiles.reportedCost}</span> : undefined)}
+              reading ? placeholder : hasUsage ? cost!.text : copy.unknown,
+              reading ? copy.readingHistory : hasUsage && coverage && coverage.pricedTokens > 0 ? copy.tiles.priced(percentText(coverage.priced, usageLocale)) : hasUsage && cost?.noPrice ? copy.cost.noPrice : undefined,
+              !reading && summary?.cost.reportedUsd ? <span className="usage-tile-extra">{reportedCostText(summary.cost.reportedUsd, usageLocale)} {copy.tiles.reportedCost}</span> : undefined,
+              copy.cost.tooltip)}
             {tile(copy.tiles.requests,
               reading ? placeholder : hasUsage ? fullNumber(summary!.requests, usageLocale) : copy.unknown,
               reading ? copy.readingHistory : hasUsage ? copy.tiles.sessions(summary!.sessions) : copy.noData)}
@@ -143,7 +171,7 @@ export function UsagePage({ initialProjectId, data }: Props) {
             series={ledger.heat}
             locale={usageLocale}
             copy={copy}
-            weekStartPreference={settings?.weekStart ?? 'auto'}
+            weekStartPreference={weekStartPreference}
             providerName={providerName}
             from={heatmapRange(today).from}
             to={shiftLocalDay(heatmapRange(today).to, -1)}
@@ -159,7 +187,31 @@ export function UsagePage({ initialProjectId, data }: Props) {
             onToggleStack={setStack}
             onGranularity={value => setGranularity(value)}
           />
-          {/* UA2b mounts breakdowns, the sessions list, Sources and Settings here. */}
+          <UsageBreakdowns
+            breakdowns={breakdowns.breakdowns}
+            locale={usageLocale}
+            copy={copy}
+            providerName={providerName}
+            loading={breakdowns.loading}
+            selected={{ provider, model, projectId }}
+            onFilter={(filter: BreakdownFilter) => {
+              if ('provider' in filter) setProvider(filter.provider);
+              if ('model' in filter) setModel(filter.model);
+              if ('projectId' in filter) setProjectId(filter.projectId);
+            }}
+          />
+          {breakdowns.error && <p className="surface-error" role="alert">{breakdowns.error}</p>}
+          <UsageSessions
+            query={query}
+            data={data}
+            locale={usageLocale}
+            copy={copy}
+            providerName={providerName}
+            version={ledger.version}
+            onOpenSession={onOpenSession}
+            onImported={ledger.reload}
+          />
+          <UsageSources locale={usageLocale} copy={copy} providerName={providerName} version={ledger.version} onRebuilt={ledger.reload} />
         </>}
     </div>
   </section>;

@@ -36,11 +36,12 @@ function periodLabel(column: TrendColumn, locale: UsageLocale, granularity: 'day
   return granularity === 'day' ? format.format(start) : `${format.format(start)} – ${format.format(new Date(`${column.end}T00:00:00Z`))}`;
 }
 
-/** X-axis labels: a day or a week start date, or the month name — never the full tooltip label. */
-function axisLabel(column: TrendColumn, locale: UsageLocale, granularity: 'day' | 'week' | 'month'): string {
+/** X-axis labels: a day or a week start date, or the month name — never the full tooltip label. A month axis that
+ *  spans more than one calendar year carries the year, so two "Jan" ticks cannot mean the same period. */
+function axisLabel(column: TrendColumn, locale: UsageLocale, granularity: 'day' | 'week' | 'month', withYear = false): string {
   const start = new Date(`${column.start}T00:00:00Z`);
   const format = new Intl.DateTimeFormat(labelLocale(locale), granularity === 'month'
-    ? { month: 'short', timeZone: 'UTC' }
+    ? (withYear ? { month: 'short', year: 'numeric', timeZone: 'UTC' } : { month: 'short', timeZone: 'UTC' })
     : { month: 'short', day: 'numeric', timeZone: 'UTC' });
   return format.format(start);
 }
@@ -81,10 +82,11 @@ export function UsageTrendChart({ series, stack, locale, copy, reading, provider
   }, []);
 
   // Day charts label every seventh day; week and month charts label every band and let the thinner drop collisions.
+  const multiYear = useMemo(() => new Set(columns.map(column => column.start.slice(0, 4))).size > 1, [columns]);
   const candidates = useMemo<AxisLabel[]>(() => columns.flatMap((column, index) => {
     if (granularity === 'day' && index % 7 !== 0 && index !== columns.length - 1) return [];
-    return [{ index, label: axisLabel(column, locale, granularity) }];
-  }), [columns, granularity, locale]);
+    return [{ index, label: axisLabel(column, locale, granularity, granularity === 'month' && multiYear) }];
+  }), [columns, granularity, locale, multiYear]);
   const pitch = columns.length > 0 ? plotWidth / columns.length : 0;
   const xTicks = useMemo(() => thinLabels(candidates, pitch, label => labelWidth(label)), [candidates, pitch]);
   const xLabels = new Map(xTicks.map(tick => [tick.index, tick.label]));

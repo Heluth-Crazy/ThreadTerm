@@ -2,9 +2,15 @@
 // The page scans only when it opens or the user asks: no timers, no polling. Progress arrives as events.
 import { useEffect, useRef, useState } from 'react';
 import { operationId, request, subscribeEvents } from './bridge';
+import { sessionQuery, type SessionQuery, type UsageSessionSort } from './usageSessions';
 import type {
+  UsageLedgerBreakdown,
   UsageLedgerProgress,
+  UsageLedgerSessionDetail,
+  UsageLedgerSessions,
   UsageLedgerSettings,
+  UsageLedgerSettingsResult,
+  UsageLedgerSources,
   UsageLedgerSummary,
   UsageLedgerSeries,
   UsageLedgerStack,
@@ -57,15 +63,27 @@ export type UsageScanState = {
   error?: string | null;
 };
 
-export type UsageQuery = { from: string; to: string; scope: UsageLedgerScope; projectId?: string; includeOutside: boolean };
+export type UsageQuery = {
+  from: string;
+  to: string;
+  scope: UsageLedgerScope;
+  projectId?: string;
+  /** Row-click filters from the breakdown lists. */
+  provider?: string;
+  model?: string;
+  includeOutside: boolean;
+};
 
-function filtersOf(query: UsageQuery) {
+/** The wire filters for one query. Absent keys are omitted so the runtime keeps its own defaults. */
+export function filtersOf(query: UsageQuery) {
   return {
     from: query.from,
     to: query.to,
     scope: query.scope,
     includeOutside: query.includeOutside,
     ...(query.projectId ? { projectId: query.projectId } : {}),
+    ...(query.provider ? { provider: query.provider } : {}),
+    ...(query.model ? { model: query.model } : {}),
   };
 }
 
@@ -77,9 +95,14 @@ export type UsageLedgerData = {
   loading: boolean;
   error: string | undefined;
   scan: UsageScanState | undefined;
+  /** Bumped when a scan reaches a terminal state, so every section below re-reads its own aggregate. */
+  version: number;
+  reload: () => void;
   refresh: () => void;
   cancel: () => void;
   settingsError: string | undefined;
+  /** Applies a settings change the page itself made (week start), without another read. */
+  setSettings: (value: UsageLedgerSettings) => void;
 };
 
 /**
@@ -97,6 +120,9 @@ export function useUsageLedger(query: UsageQuery, granularity: UsageLedgerGranul
   const [scan, setScan] = useState<UsageScanState>();
   const generation = useRef(0);
   const started = useRef(false);
+  // The saved week boundary is the runtime's own default when the caller passes `auto`; it arrives with the settings
+  // read, so the series is asked again once with the preference the settings hold.
+  const [savedWeekStart, setSavedWeekStart] = useState<'auto' | 'monday' | 'sunday'>();
   const latestQuery = useRef({ query, granularity, stack, weekStart });
   latestQuery.current = { query, granularity, stack, weekStart };
   const [reloadKey, setReloadKey] = useState(0);
@@ -105,13 +131,14 @@ export function useUsageLedger(query: UsageQuery, granularity: UsageLedgerGranul
     const token = ++generation.current;
     const current = latestQuery.current;
     const filters = filtersOf(current.query);
+    const weekStartValue = current.weekStart === 'auto' ? savedWeekStart ?? 'auto' : current.weekStart;
     const today = localDay();
     setLoading(true);
     try {
       const [nextSummary, nextTrend, nextHeat] = await Promise.all([
         request('usage.ledger.summary', { filters }),
-        request('usage.ledger.series', { filters, granularity: current.granularity, stack: current.stack, weekStart: current.weekStart }),
-        request('usage.ledger.series', { filters: filtersOf({ ...current.query, ...heatmapRange(today) }), granularity: 'day', stack: current.stack, weekStart: current.weekStart }),
+        request('usage.ledger.series', { filters, granularity: current.granularity, stack: current.stack, weekStart: weekStartValue }),
+        request('usage.ledger.series', { filters: filtersOf({ ...current.query, ...heatmapRange(today) }), granularity: 'day', stack: current.stack, weekStart: weekStartValue }),
       ]);
       if (token !== generation.current) return;
       setSummary(nextSummary); setTrend(nextTrend); setHeat(nextHeat); setError(undefined);
@@ -128,12 +155,12 @@ export function useUsageLedger(query: UsageQuery, granularity: UsageLedgerGranul
     let current = true;
     void request('usage.ledger.settings', {}).then(result => {
       if (!current) return;
-      setSettings(result.value); setSettingsError(undefined);
+      setSettings(result.value); setSavedWeekStart(result.value.weekStart); setSettingsError(undefined);
     }).catch(caught => { if (current) setSettingsError(caught instanceof Error ? caught.message : String(caught)); });
     return () => { current = false; };
   }, []);
 
-  useEffect(() => { void load(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [query.from, query.to, query.scope, query.projectId, query.includeOutside, granularity, stack, weekStart, reloadKey]);
+  useEffect(() => { void load(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [query.from, query.to, query.scope, query.projectId, query.provider, query.model, query.includeOutside, granularity, stack, weekStart, savedWeekStart, reloadKey]);
 
   // One incremental refresh when the page opens; a settings read failure must not block reading the ledger.
   useEffect(() => {
@@ -143,6 +170,18 @@ export function useUsageLedger(query: UsageQuery, granularity: UsageLedgerGranul
       setScan(current => current?.scanId === result.scanId ? current : { scanId: result.scanId, state: 'running', filesRead: 0, filesFound: 0 });
     }).catch(() => undefined);
   }, []);
+
+  // Settings can change in another window or in Settings → Usage while this page is open; a settings event re-reads
+  // them once (and refreshes the aggregates a week-start or provider-scope change invalidates). Still no polling.
+  useEffect(() => subscribeEvents(event => {
+    if (event.event !== 'state.changed') return;
+    if ((event.data as { kind?: string } | undefined)?.kind !== 'settings') return;
+    void request('usage.ledger.settings', {}).then(result => {
+      setSettings(result.value);
+      setSavedWeekStart(result.value.weekStart);
+      setReloadKey(value => value + 1);
+    }).catch(() => undefined);
+  }), []);
 
   // Progress is the only source of scan state: no timer asks the runtime again.
   useEffect(() => subscribeEvents(event => {
@@ -170,5 +209,142 @@ export function useUsageLedger(query: UsageQuery, granularity: UsageLedgerGranul
     void request('usage.ledger.cancel', { scanId: scan.scanId, operationId: operationId() }).catch(() => undefined);
   };
 
-  return { settings, summary, trend, heat, loading, error, scan, refresh, cancel, settingsError };
+  return { settings, summary, trend, heat, loading, error, scan, version: reloadKey, reload: () => setReloadKey(value => value + 1), refresh, cancel, settingsError, setSettings };
 }
+
+const errorText = (caught: unknown) => caught instanceof Error ? caught.message : String(caught);
+
+export type UsageBreakdownDimension = 'provider' | 'model' | 'project';
+
+/**
+ * The three breakdown lists for one range and scope. They are read together so a row in one list never filters against
+ * a different window than the one next to it.
+ */
+export function useUsageBreakdowns(query: UsageQuery, version: number): {
+  breakdowns: Partial<Record<UsageBreakdownDimension, UsageLedgerBreakdown>>;
+  loading: boolean;
+  error: string | undefined;
+} {
+  const [breakdowns, setBreakdowns] = useState<Partial<Record<UsageBreakdownDimension, UsageLedgerBreakdown>>>({});
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string>();
+  const generation = useRef(0);
+  const latest = useRef(query);
+  latest.current = query;
+
+  useEffect(() => {
+    const token = ++generation.current;
+    const filters = filtersOf(latest.current);
+    setLoading(true);
+    void Promise.all((['provider', 'model', 'project'] as UsageBreakdownDimension[]).map(dimension =>
+      request('usage.ledger.breakdown', { filters, dimension }).then(value => [dimension, value] as const)))
+      .then(entries => {
+        if (token !== generation.current) return;
+        setBreakdowns(Object.fromEntries(entries)); setError(undefined);
+      })
+      .catch(caught => { if (token === generation.current) setError(errorText(caught)); })
+      .finally(() => { if (token === generation.current) setLoading(false); });
+  }, [query.from, query.to, query.scope, query.projectId, query.provider, query.model, query.includeOutside, version]);
+
+  return { breakdowns, loading, error };
+}
+
+/** One page of sessions. `params` is produced by `sessionQuery`, so sorting and paging are already bounded. */
+export function useUsageSessions(query: UsageQuery, params: SessionQuery, version: number): {
+  page: UsageLedgerSessions | undefined;
+  loading: boolean;
+  error: string | undefined;
+} {
+  const [page, setPage] = useState<UsageLedgerSessions>();
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string>();
+  const generation = useRef(0);
+  const latest = useRef(query);
+  latest.current = query;
+
+  useEffect(() => {
+    const token = ++generation.current;
+    const filters = filtersOf(latest.current);
+    setLoading(true);
+    void request('usage.ledger.sessions', { filters, ...params })
+      .then(value => { if (token !== generation.current) return; setPage(value); setError(undefined); })
+      .catch(caught => { if (token === generation.current) setError(errorText(caught)); })
+      .finally(() => { if (token === generation.current) setLoading(false); });
+  }, [query.from, query.to, query.scope, query.projectId, query.provider, query.model, query.includeOutside, params.sort, params.order, params.limit, params.offset, params.search, version]);
+
+  return { page, loading, error };
+}
+
+/** A single session's own days and sub-agents; only read while the drawer is open. */
+export function useUsageSession(
+  query: UsageQuery,
+  target: { provider: string; nativeSessionId: string } | undefined,
+  version: number,
+): { detail: UsageLedgerSessionDetail | undefined; loading: boolean; error: string | undefined } {
+  const [detail, setDetail] = useState<UsageLedgerSessionDetail>();
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string>();
+  const generation = useRef(0);
+  const latest = useRef(query);
+  latest.current = query;
+  const provider = target?.provider, nativeSessionId = target?.nativeSessionId;
+
+  useEffect(() => {
+    if (!provider || !nativeSessionId) { setDetail(undefined); setError(undefined); setLoading(false); return; }
+    const token = ++generation.current;
+    const filters = filtersOf(latest.current);
+    setLoading(true);
+    void request('usage.ledger.session', { filters, provider, nativeSessionId })
+      .then(value => { if (token !== generation.current) return; setDetail(value ?? undefined); setError(undefined); })
+      .catch(caught => { if (token === generation.current) setError(errorText(caught)); })
+      .finally(() => { if (token === generation.current) setLoading(false); });
+  }, [provider, nativeSessionId, query.from, query.to, query.scope, query.projectId, query.provider, query.model, query.includeOutside, version]);
+
+  return { detail, loading, error };
+}
+
+/** Sources are read on demand (panel opened, scan finished, rebuild), never on a schedule. */
+export function useUsageSources(version: number, enabled: boolean): {
+  sources: UsageLedgerSources | undefined;
+  loading: boolean;
+  error: string | undefined;
+  read: () => void;
+} {
+  const [sources, setSources] = useState<UsageLedgerSources>();
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string>();
+  const [key, setKey] = useState(0);
+  const generation = useRef(0);
+
+  useEffect(() => {
+    if (!enabled) return;
+    const token = ++generation.current;
+    setLoading(true);
+    void request('usage.ledger.sources', {})
+      .then(value => { if (token !== generation.current) return; setSources(value); setError(undefined); })
+      .catch(caught => { if (token === generation.current) setError(errorText(caught)); })
+      .finally(() => { if (token === generation.current) setLoading(false); });
+  }, [enabled, version, key]);
+
+  return { sources, loading, error, read: () => setKey(value => value + 1) };
+}
+
+/** Settings write with the runtime's optimistic revision; the caller owns the draft and the retry. */
+export function updateUsageSettings(value: Partial<UsageLedgerSettings>, expectedRevision: number): Promise<UsageLedgerSettingsResult> {
+  return request('usage.ledger.settings.update', { value, expectedRevision, operationId: operationId() });
+}
+
+export function readUsageSettings(): Promise<UsageLedgerSettingsResult> {
+  return request('usage.ledger.settings', {});
+}
+
+/** Drops rebuildable native observations and cursors; the following scan is a full one. */
+export function rebuildUsageLedger(): Promise<{ scanId: string; state: 'running' | 'already_running' }> {
+  return request('usage.ledger.rebuild', { operationId: operationId() });
+}
+
+/** Sort options for the sessions list, in the order the select shows them. */
+export const USAGE_SESSION_SORT_OPTIONS: UsageSessionSort[] = ['tokens', 'cost', 'recent', 'activeTime'];
+
+/** Convenience for the page: the request parameters for one list state. */
+export const sessionsRequest = (options: { sort: UsageSessionSort; offset: number; search?: string }) => sessionQuery(options);

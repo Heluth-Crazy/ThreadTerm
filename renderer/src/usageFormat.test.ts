@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { activeTimeText, compactTokens, costCoverage, costText, dayHasUsage, evidenceLine, percentText, reportedCostText, tilesState, tokenShares } from './usageFormat.js';
+import { activeTimeText, compactTokens, costCoverage, costDisplay, costText, dateTimeText, dayHasUsage, dayText, evidenceLine, localDayOf, percentText, reportedCostText, tilesState, tokenShares } from './usageFormat.js';
 
 const tokens = (partial: Partial<Record<string, number | null>>) => ({
   total: 0, input: null, cacheRead: null, cacheWrite5m: null, cacheWrite1h: null, cacheWriteUnknown: null, output: null, reasoning: null,
@@ -84,4 +84,36 @@ test('a zero day has no usage, whatever metric is on screen', () => {
   assert.equal(dayHasUsage(point(1, 0, 0, 0)), true);
   assert.equal(dayHasUsage(point(0, 0, 60_000, null)), true);
   assert.equal(dayHasUsage(point(0, 0, 0, 0.01)), true);
+});
+
+const cost = (partial: Partial<{ reportedUsd: number | null; apiEquivalentUsd: number | null; pricedTokens: number; unpricedTokens: number; coverage: number }>) => ({
+  reportedUsd: null, apiEquivalentUsd: null, pricedTokens: 0, unpricedTokens: 0, reportedRequests: 0, pricedRequests: 0, coverage: 0,
+  ...partial,
+});
+
+test('an unpriced range reads as an unknown amount, never as a $0.00 estimate', () => {
+  // Every token is unpriced: there is no amount, only a reason.
+  assert.deepEqual(costDisplay(cost({ unpricedTokens: 1_200, coverage: 0 }), 'en'), { text: '—', noPrice: true });
+  // A priced range keeps the estimate and its ≈.
+  assert.deepEqual(costDisplay(cost({ apiEquivalentUsd: 412, pricedTokens: 960, unpricedTokens: 40, coverage: 0.96 }), 'en'), { text: '≈ $412', noPrice: false });
+  // Nothing in range at all: unknown without claiming a missing price.
+  assert.deepEqual(costDisplay(cost({}), 'en'), { text: '—', noPrice: false });
+  // A pending reprice is unknown for its own reason and must not be described as unpriced.
+  assert.deepEqual(costDisplay(cost({ apiEquivalentUsd: 3, pricedTokens: 10 }), 'en', true), { text: '—', noPrice: false });
+  // A genuine zero estimate (a priced model with a zero rate) is still an estimate.
+  assert.deepEqual(costDisplay(cost({ apiEquivalentUsd: 0, pricedTokens: 10 }), 'en'), { text: '≈ $0.00', noPrice: false });
+});
+
+test('provider timestamps become local days and readable local times', () => {
+  const iso = '2026-10-23T12:34:56Z';
+  const day = localDayOf(iso);
+  assert.match(day ?? '', /^\d{4}-\d{2}-\d{2}$/);
+  assert.equal(localDayOf(null), null);
+  assert.equal(localDayOf('not a date'), null);
+  assert.match(dayText(day!, 'en'), /\d/);
+  assert.equal(dayText('2026-10-23', 'zh-CN').includes('10'), true);
+  assert.equal(dayText('yesterday', 'en'), 'yesterday', 'an unparseable day is passed through, not invented');
+  assert.match(dateTimeText(iso, 'en') ?? '', /2026/);
+  assert.equal(dateTimeText(undefined, 'en'), null);
+  assert.equal(dateTimeText('broken', 'en'), 'broken');
 });

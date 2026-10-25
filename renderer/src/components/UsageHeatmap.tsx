@@ -130,7 +130,9 @@ export function UsageHeatmap({ series, locale, copy, weekStartPreference, provid
     <header className="usage-section-head">
       <h2>{copy.heatmap.title}</h2>
       <div className="usage-seg" role="group" aria-label={copy.heatmap.metric}>
-        {(['tokens', 'cost', 'active'] as HeatMetric[]).map(value => <button key={value} type="button" className="usage-seg-item" aria-pressed={metric === value} onClick={() => setMetric(value)}>
+        {(['tokens', 'cost', 'active'] as HeatMetric[]).map(value => <button key={value} type="button" className="usage-seg-item" aria-pressed={metric === value}
+          title={value === 'cost' ? copy.heatmap.costHint : undefined}
+          onClick={() => setMetric(value)}>
           {value === 'tokens' ? copy.heatmap.tokens : value === 'cost' ? copy.heatmap.cost : copy.heatmap.activeTime}
         </button>)}
       </div>

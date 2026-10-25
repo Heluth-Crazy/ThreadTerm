@@ -40,6 +40,41 @@ export function activeTimeText(ms: number, locale: UsageLocale): string {
   return locale === 'zh-CN' ? `${text} 小时` : `${text} h`;
 }
 
+/**
+ * API-equivalent money for an aggregate. A range whose tokens are all unpriced has no amount at all: it reads `—` with
+ * "no price known", never `≈ $0.00` (design §3.5). A pending reprice is also unknown, but for a different reason.
+ */
+export type CostDisplay = { text: string; noPrice: boolean };
+
+export function costDisplay(cost: UsageLedgerCost, locale: UsageLocale, pricingPending = false): CostDisplay {
+  if (pricingPending) return { text: '—', noPrice: false };
+  if (cost.pricedTokens <= 0) return { text: '—', noPrice: cost.unpricedTokens > 0 };
+  return { text: costText(cost.apiEquivalentUsd, locale), noPrice: false };
+}
+
+/** `YYYY-MM-DD` of an ISO instant in the system time zone, or null when the timestamp is not one. */
+export function localDayOf(iso: string | null | undefined): string | null {
+  if (!iso) return null;
+  const value = new Date(iso);
+  if (Number.isNaN(value.getTime())) return null;
+  const month = `${value.getMonth() + 1}`.padStart(2, '0'), day = `${value.getDate()}`.padStart(2, '0');
+  return `${value.getFullYear()}-${month}-${day}`;
+}
+
+/** A calendar day (`YYYY-MM-DD`) as `Oct 23` / `10月23日`; anything else is returned unchanged. */
+export function dayText(day: string, locale: UsageLocale): string {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(day)) return day;
+  return new Intl.DateTimeFormat(numberLocale(locale), { month: 'short', day: 'numeric', timeZone: 'UTC' }).format(new Date(`${day}T00:00:00Z`));
+}
+
+/** A provider timestamp (RFC3339) as local date and time; an unparseable value is shown as it came. */
+export function dateTimeText(iso: string | null | undefined, locale: UsageLocale): string | null {
+  if (!iso) return null;
+  const value = new Date(iso);
+  if (Number.isNaN(value.getTime())) return iso;
+  return new Intl.DateTimeFormat(numberLocale(locale), { dateStyle: 'medium', timeStyle: 'short' }).format(value);
+}
+
 export function percentText(share: number | null | undefined, locale: UsageLocale): string {
   if (share === null || share === undefined || !Number.isFinite(share)) return '—';
   const text = new Intl.NumberFormat(numberLocale(locale), { style: 'percent', maximumFractionDigits: share < 0.01 ? 2 : 1 }).format(share);

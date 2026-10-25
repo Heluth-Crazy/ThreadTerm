@@ -4,7 +4,9 @@
 // Checks: the Usage workspace tab opens from the account menu, the first refresh shows a reading state, tiles/heatmap/
 // trend render, the trend x-axis and direct label agree with the data, the heatmap fills its card and keeps today in
 // view, a zero-usage day says only "No usage", an empty range shows no fabricated $0, en/zh x light/dark x 900/1280/1920
-// are captured, and the page makes zero RPCs while idle.
+// are captured, and the page makes zero RPCs while idle. UA2b adds the three breakdown lists (row click → page filter,
+// unpriced-only range → no $0), the paged sessions list with search/sort and the drawer, the Sources panel and its
+// rebuild confirmation, Settings → Usage (price override, outside switch) and a two-year month axis that names the year.
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
@@ -70,6 +72,12 @@ contextBridge.exposeInMainWorld('threadtermQaCounts', {
 `;
 }
 async function shot(name) { await page.screenshot({ path: join(out, name), animations: 'disabled' }); report.screenshots.push(name); }
+// The app's Select is a custom combobox: open the trigger, then pick the option by its visible label.
+async function selectOption(scope, label) {
+  await page.locator(`${scope} .tt-select-trigger`).first().click();
+  await page.locator('.tt-select-menu .tt-select-option-label', { hasText: label }).first().click();
+  await until(async () => (await page.locator('.tt-select-menu').count()) === 0, `select ${label} closed`, 10_000);
+}
 
 // --- provider history fixtures (a year of varied days, one outlier, priced and unpriced models) ---
 const day = offset => { const value = new Date(Date.UTC(2026, 9, 24)); value.setUTCDate(value.getUTCDate() - offset); return value.toISOString().slice(0, 10); };
@@ -392,6 +400,212 @@ try {
   report.emptyTiles = emptyTiles;
   check('an empty range shows — for cost, "No usage" and no coverage line');
 
+  // ---- UA2b: breakdowns, sessions, drawer, sources, settings ----
+  // Back to a range with usage in it.
+  await selectOption('.usage-range', 'Last 30 days');
+  await until(async () => (await page.locator('.usage-skel').count()) === 0 && (await page.locator('.usage-sessions').count()) > 0, 'sections rendered', 60_000);
+  await until(async () => (await page.locator('.usage-bd-rows .usage-bd-row').count()) >= 3, 'breakdown rows', 60_000);
+
+  const lists = await page.locator('.usage-bd-list').evaluateAll(nodes => nodes.map(node => ({
+    title: node.querySelector('h2')?.textContent ?? '',
+    rows: node.querySelectorAll('.usage-bd-row').length,
+    swatches: node.querySelectorAll('.usage-swatch').length,
+    bars: [...node.querySelectorAll('.usage-bd-track > i')].map(bar => bar.getBoundingClientRect().width),
+  })));
+  assert.equal(lists.length, 3, 'three breakdown lists');
+  assert.deepEqual(lists.map(list => list.title), ['By provider', 'By model', 'By project']);
+  assert.ok(lists.every(list => list.rows > 0), `every list has rows: ${JSON.stringify(lists)}`);
+  assert.ok(lists[0].swatches > 0, 'providers carry their slot swatch');
+  assert.equal(lists[1].swatches, 0, 'models are not coloured');
+  for (const list of lists) {
+    const max = Math.max(...list.bars);
+    assert.ok(max > 0, 'bars are drawn');
+    assert.ok(list.bars.every(width => width <= max + 0.5), 'no bar exceeds the list maximum');
+  }
+  // The largest row fills its track: a floor-only bar would make every row look the same size.
+  const trackWidth = await page.locator('.usage-bd-track').first().evaluate(node => node.getBoundingClientRect().width);
+  assert.ok(Math.max(...lists[0].bars) >= trackWidth * 0.9, `the largest provider bar fills its track (${Math.max(...lists[0].bars)} of ${trackWidth})`);
+  // Three lists side by side at 1280, stacked at 900.
+  const sideBySide = await page.locator('.usage-bd-list').evaluateAll(nodes => nodes.map(node => Math.round(node.getBoundingClientRect().top)));
+  assert.equal(new Set(sideBySide).size, 1, `the three lists share one row at 1280: ${sideBySide}`);
+  report.breakdowns = { lists, tops: sideBySide };
+  check('three breakdown lists render with swatches, values and bars scaled to each list maximum');
+
+  // A row click filters the page; the chip clears it again.
+  await page.locator('.usage-bd-provider .usage-bd-row').filter({ hasText: /pi/i }).first().click();
+  await until(async () => (await page.locator('.usage-head .usage-chip').count()) === 1, 'provider filter chip', 30_000);
+  await until(async () => (await page.locator('.usage-bd-provider .usage-bd-row').count()) === 1, 'provider list narrowed to the filter', 30_000);
+  assert.equal(await page.locator('.usage-bd-provider .usage-bd-row.is-selected').count(), 1, 'the pressed row is marked');
+  // Every Pi fact in the fixture is unpriced: the cost tile must say so instead of inventing $0.00.
+  await until(async () => (await page.locator('.usage-tile-sub').nth(1).innerText()).includes('No price known'), 'unpriced cost reason', 30_000);
+  const unpricedCost = await page.locator('.usage-tile-value').nth(1).innerText();
+  assert.equal(unpricedCost.trim(), '—', `an unpriced-only range has no amount (${unpricedCost})`);
+  assert.ok(!/\$/.test(await page.locator('.usage-tile').nth(1).innerText()), 'no fabricated $0.00 for unpriced models');
+  await shot('en-light-1280-unpriced.png');
+  check('a row click filters the page and an unpriced-only range reads — with "No price known for these models"');
+  await page.locator('.usage-head .usage-chip').first().click();
+  await until(async () => (await page.locator('.usage-head .usage-chip').count()) === 0, 'filter cleared', 30_000);
+  await until(async () => (await page.locator('.usage-bd-provider .usage-bd-row').count()) >= 3, 'breakdowns restored', 30_000);
+
+  // Sessions: rows, search, sort, page 2 and the drawer.
+  const sessionRows = await page.locator('.usage-session-row').count();
+  assert.equal(sessionRows, 25, `a full first page of sessions (${sessionRows})`);
+  const pages = (await page.locator('.usage-page-meta').innerText()).match(/(\d+)\s*(?:\/|of)\s*(\d+)/);
+  assert.ok(pages && Number(pages[2]) > 1, `paging is offered: ${await page.locator('.usage-page-meta').innerText()}`);
+  const firstPageKeys = await page.locator('.usage-session-main').evaluateAll(nodes => nodes.map(node => node.getAttribute('aria-label')));
+  await page.getByRole('button', { name: /^(Next|下一页)$/ }).click();
+  await until(async () => {
+    const labels = await page.locator('.usage-session-main').evaluateAll(nodes => nodes.map(node => node.getAttribute('aria-label')));
+    return labels.length > 0 && labels[0] !== firstPageKeys[0];
+  }, 'page 2 differs from page 1', 30_000);
+  assert.equal(await page.getByRole('button', { name: /^(Previous|上一页)$/ }).isEnabled(), true);
+  report.sessions = { rows: sessionRows, pages: pages?.[2] };
+  check(`the sessions list pages (${sessionRows} rows, ${pages?.[2]} pages) with a stable order`);
+  await page.getByRole('button', { name: /^(Previous|上一页)$/ }).click();
+  await until(async () => (await page.locator('.usage-session-main').first().getAttribute('aria-label')) === firstPageKeys[0], 'back on page 1', 30_000);
+
+  await page.locator('.usage-search-input').fill('claude-session-36');
+  await page.locator('.usage-search-input').press('Enter');
+  await until(async () => (await page.locator('.usage-session-row').count()) < sessionRows, 'search narrowed the list', 30_000);
+  assert.equal(await page.locator('.usage-page-meta').count(), 0, 'a narrowed list fits one page');
+  await page.locator('.usage-search-input').fill('no-such-session-xyz');
+  await page.locator('.usage-search-input').press('Enter');
+  await until(async () => (await page.locator('.usage-sessions .usage-empty').count()) > 0, 'search empty state', 30_000);
+  await page.getByRole('button', { name: /^(Clear search|清除搜索)$/ }).click();
+  await until(async () => (await page.locator('.usage-session-row').count()) === sessionRows, 'search cleared', 30_000);
+  check('session search narrows the list, shows an empty state and clears');
+
+  await selectOption('.usage-sort', 'Cost');
+  await until(async () => (await page.locator('.usage-session-row').count()) === sessionRows, 'cost sort applied', 30_000);
+  assert.equal(await page.locator('.usage-session-row .usage-session-meta').first().innerText().then(text => text.includes('API-equivalent')), true, 'cost sorting keeps the API-equivalent wording on the rows');
+  await selectOption('.usage-sort', 'Tokens');
+  check('sorting by cost and back keeps rows, wording and paging');
+
+  // The drawer: models, days and sub-agents.
+  await page.locator('.usage-session-main').first().click();
+  await page.locator('.usage-drawer').waitFor();
+  await until(async () => (await page.locator('.usage-drawer-stats .usage-drawer-stat').count()) === 4, 'drawer stats', 30_000);
+  await until(async () => (await page.locator('.usage-drawer-section').count()) === 3, 'drawer sections', 30_000);
+  const drawerSections = await page.locator('.usage-drawer-section h3').allInnerTexts();
+  assert.deepEqual(drawerSections, ['Models', 'Days', 'Sub-agents']);
+  const drawerDays = await page.locator('.usage-drawer-section .usage-table tbody tr').count();
+  assert.ok(drawerDays > 0, 'the drawer lists the session days');
+  await shot('en-light-1280-drawer.png');
+  report.drawer = { sections: drawerSections, days: drawerDays };
+  check(`the session drawer shows its models, days and sub-agents (${drawerDays} days)`);
+  await page.getByRole('button', { name: /^(Close|关闭)$/ }).click();
+  await page.locator('.usage-drawer').waitFor({ state: 'detached' });
+
+  await page.locator('.usage-breakdown').scrollIntoViewIfNeeded();
+  await shot('en-light-1280-sections.png');
+
+  // Sources: collapsed by default, one row per provider, a confirm dialog for the rebuild.
+  assert.equal(await page.locator('.usage-sources-body').count(), 0, 'sources start collapsed');
+  await page.locator('.usage-disclosure').click();
+  await page.locator('.usage-sources-body').waitFor();
+  await until(async () => (await page.locator('.usage-source-row').count()) >= 3, 'source rows', 30_000);
+  const sourceRows = await page.locator('.usage-source-row').allInnerTexts();
+  assert.ok(sourceRows.every(text => /Found|Partly read|Format not supported yet|Not installed|Not read/.test(text)), `every row names its state: ${sourceRows[0]}`);
+  assert.ok(sourceRows.some(text => /files/.test(text)), 'the rows report how many files were read');
+  await page.locator('.usage-sources').scrollIntoViewIfNeeded();
+  await shot('en-light-1280-sources.png');
+  report.sources = sourceRows.map(text => text.split('\n').slice(0, 4).join(' | '));
+  check(`the sources panel is collapsed until opened and then lists ${sourceRows.length} providers with files, buckets and problems`);
+  await page.getByRole('button', { name: /^(Rebuild usage index|重建用量索引)$/ }).click();
+  await page.locator('.dlg-foot').waitFor();
+  const rebuildTitle = await page.locator('.dlg-head h2').innerText();
+  assert.match(rebuildTitle, /Rebuild the usage index\?|重建用量索引？/);
+  await shot('en-light-1280-rebuild-confirm.png');
+  await page.locator('.dlg-foot').getByRole('button', { name: /^(Cancel|取消)$/ }).click();
+  await page.locator('.dlg-foot').waitFor({ state: 'detached' });
+  check('"Rebuild usage index" asks for confirmation before dropping the rebuildable index');
+
+  // Settings → Usage: the outside switch, provider toggles, week start and price overrides.
+  await page.locator('.user-row').click();
+  await page.locator('.account-menu').getByRole('button', { name: /^(Settings|设置)$/ }).click();
+  await page.locator('.settings-panel').waitFor();
+  await page.locator('.settings-panel').getByRole('tab', { name: /^(Usage|用量)$/ }).click();
+  await page.locator('.settings-group.active .setting-switch').first().waitFor();
+  const usageSettings = await page.locator('.settings-group.active').innerText();
+  assert.match(usageSettings, /Include usage from outside ThreadTerm/);
+  assert.match(usageSettings, /Read .* history/);
+  assert.match(usageSettings, /Week starts on/);
+  assert.match(usageSettings, /Model price overrides/);
+  await shot('en-light-1280-settings-usage.png');  // A price override saves through usage.ledger.settings.update and shows up in the runtime's settings.
+  await page.locator('.settings-price-model-input').fill('claude/claude-opus-4-5');
+  await page.getByRole('button', { name: /^(Add a model price|添加模型价格)$/ }).click();
+  await page.locator('.settings-price-row .settings-price-input').first().fill('7.5');
+  await page.getByRole('button', { name: /^(Save|保存)$/ }).click();
+  await until(async () => (await page.locator('.settings-price-note').innerText().catch(() => '')).includes('Saved'), 'price override saved', 30_000);
+  const storedPrices = (await request('usage.ledger.settings', {})).value.priceOverrides;
+  assert.equal(storedPrices['claude/claude-opus-4-5']?.input, 7.5, `the override reached the ledger settings: ${JSON.stringify(storedPrices['claude/claude-opus-4-5'])}`);
+  report.priceOverride = storedPrices['claude/claude-opus-4-5'];
+  assert.equal(await page.locator('.settings-usage-conflict').count(), 0, 'our own save must not raise a conflict banner');
+  await page.locator('.settings-price-table').scrollIntoViewIfNeeded();
+  await shot('en-light-1280-settings-usage-prices.png');
+  check('Settings → Usage saves a per-model price override through usage.ledger.settings.update');
+  // The outside switch disables the provider toggles and the page's scope switch.
+  await page.locator('.settings-group.active .setting-switch').first().click();
+  await until(async () => (await request('usage.ledger.settings', {})).value.includeOutside === false, 'outside switch saved', 30_000);
+  assert.equal(await page.locator('.settings-provider-list .setting-switch input:disabled').count() > 0, true, 'provider toggles are disabled while outside usage is off');
+  await until(async () => (await page.locator('.settings-provider-list').innerText()).includes('When off'), 'the provider rows explain the off state', 15_000);
+  assert.equal(await page.locator('.settings-usage-conflict').count(), 0, 'no conflict banner for its own toggle');
+  await shot('en-light-1280-settings-usage-off.png');
+  await page.locator('.settings-group.active .setting-switch').first().click();
+  await until(async () => (await request('usage.ledger.settings', {})).value.includeOutside === true, 'outside switch restored', 30_000);
+  await until(async () => !(await page.locator('.settings-provider-list').innerText()).includes('When off'), 'the off note cleared', 15_000);
+  assert.equal(await page.locator('.settings-usage-conflict').count(), 0, 'no conflict banner for its own toggles');
+  await until(async () => (await page.locator('.settings-usage-note').count()) === 0, 'the off note cleared', 15_000);
+  check('turning outside usage off saves and disables the per-provider switches, and turns back on');
+  await page.getByRole('button', { name: /^(Close settings|关闭设置)$/ }).click();
+  await page.locator('.settings-panel').waitFor({ state: 'detached' });
+  // The page followed the settings events: outside usage is back and the forced In-ThreadTerm scope was released.
+  await until(async () => (await page.locator('.usage-note').count()) === 0, 'page reflects the restored setting', 30_000);
+  await until(async () => (await page.locator('.usage-seg-item[aria-pressed="true"]').first().innerText()).match(/All usage|全部用量/) !== null, 'scope restored to all usage', 30_000);
+  await until(async () => (await page.locator('.usage-tile-value').first().innerText()).trim() !== '—', 'usage visible again', 60_000);
+  check('the page releases the forced In-ThreadTerm scope when outside usage is turned back on');
+  // A settings change reprices the ledger; let that finish so the remaining screenshots are not all "Repricing…".
+  await until(async () => (await page.locator('.usage-progress').innerText().catch(() => '')).trim() === '', 'reprice finished', 150_000);
+
+  // A multi-year range labels its month ticks with the year. The end goes first: each date input rejects a value
+  // outside the other one's current bound, so widening has to happen from the right edge outwards.
+  await selectOption('.usage-range', 'Custom');
+  await page.locator('.usage-date').last().fill('2026-10-24');
+  await page.locator('.usage-date').first().fill('2025-01-05');
+  assert.deepEqual(await page.locator('.usage-date').evaluateAll(nodes => nodes.map(node => node.value)), ['2025-01-05', '2026-10-24'], 'the custom range took both dates');
+  // Month granularity is automatic for a range this long; wait for that series (the day axis has no year).
+  await until(async () => (await page.locator('.usage-chart-xaxis > span').allInnerTexts()).some(label => /\d{4}/.test(label)), 'two-year month axis', 90_000);
+  assert.equal(await page.locator('.usage-trend .usage-seg').first().getByRole('button', { name: 'Month' }).getAttribute('aria-pressed'), 'true', 'a two-year range switches the trend to months');
+  const monthColumns = await page.locator('.usage-chart-col').count();
+  assert.ok(monthColumns > 12 && monthColumns < 40, `month buckets for the whole range (${monthColumns})`);
+  const multiYearLabels = await page.locator('.usage-chart-xaxis > span').allInnerTexts();
+  assert.ok(multiYearLabels.some(label => /\d{4}/.test(label)), `a two-year month axis carries the year: ${multiYearLabels.join(', ')}`);
+  report.multiYearLabels = multiYearLabels.filter(Boolean);
+  check(`a multi-year month axis labels the year (${multiYearLabels.filter(Boolean).join(', ')})`);
+  // Narrow layout: the breakdowns stack and the page keeps one scroll axis.
+  await resize(900, 800);
+  const stacked = await page.locator('.usage-bd-list').evaluateAll(nodes => nodes.map(node => Math.round(node.getBoundingClientRect().left)));
+  assert.equal(new Set(stacked).size, 1, `the three lists stack at 900 px: ${stacked}`);
+  const narrowSections = await page.locator('.usage-scroll').evaluate(element => ({ client: element.clientWidth, scroll: element.scrollWidth }));
+  assert.ok(narrowSections.scroll <= narrowSections.client + 1, `no page overflow at 900 px (${narrowSections.scroll} > ${narrowSections.client})`);
+  await page.locator('.usage-breakdown').scrollIntoViewIfNeeded();
+  await shot('en-light-900-sections.png');
+  check('at 900 px the breakdowns stack and the page keeps a single scroll axis');
+  await resize(1280, 800);
+  await selectOption('.usage-range', 'Last 30 days');
+  await until(async () => (await page.locator('.usage-heat-grid button.usage-heat-cell').count()) > 360, 'dashboard restored', 60_000);
+
+  // Chinese copy of the new sections.
+  await setAppearance('zh-CN', 'dark');
+  await page.locator('.usage-breakdown').scrollIntoViewIfNeeded();
+  const zhSections = await page.locator('.usage-page').innerText();
+  assert.match(zhSections, /按提供商/);
+  assert.match(zhSections, /按 API 价格估算/);
+  await shot('zh-dark-1280-sections.png');
+  report.zhSections = zhSections.split('\n').filter(line => /按提供商|按模型|按项目|会话|数据来源|按 API 价格估算/.test(line)).slice(0, 8);
+  check('the new sections are translated (zh-CN) and keep the 按 API 价格估算 wording');
+  await setAppearance('en', 'light');
+
   // Refresh is a user action and the only thing that starts another scan.
   await resetCounts();
   await page.locator('.usage-head .icon-btn[aria-label="Refresh usage"]').click();
@@ -408,6 +622,21 @@ try {
   report.idle = { windowMs: 10_000, usage: idle, other: seen };
   assert.deepEqual(idle, {}, `idle usage.ledger RPCs: ${JSON.stringify(idle)}`);
   check('zero renderer→runtime RPCs while the Usage page sits idle for 10 s');
+
+  // Last: a native session imported into ThreadTerm becomes an In-ThreadTerm row, and that row opens its session.
+  // Runs last because opening it navigates away from the Usage page, which nothing below depends on.
+  const imported = await request('history.import', { cwd: work, provider: 'claude', nativeId: 'claude-session-1', mode: 'chat', operationId: randomUUID() });
+  await page.locator('.usage-head .icon-btn[aria-label="Refresh usage"]').click();
+  await until(async () => !(await page.locator('.usage-progress').innerText().catch(() => '')).includes('…'), 'refresh after import finished', 180_000);
+  await until(async () => (await page.locator('.usage-session-row').allInnerTexts()).some(text => /In ThreadTerm/.test(text)), 'an In-ThreadTerm session row', 120_000);
+  const inThreadTerm = page.locator('.usage-session-row').filter({ hasText: 'In ThreadTerm' }).first();
+  assert.equal(await inThreadTerm.getByRole('button', { name: /^(Open chat|打开 Chat)$/ }).count(), 1, 'an In-ThreadTerm row offers its Chat');
+  await inThreadTerm.locator('.usage-session-main').click();
+  await until(async () => (await page.locator('.imported-history-view').first().isVisible().catch(() => false))
+    || (await page.locator('[data-chat-log]').first().isVisible().catch(() => false)), 'the session view opened', 30_000);
+  assert.equal(await page.locator('.usage-page').first().isVisible().catch(() => false), false, 'the row navigated away from the Usage page');
+  report.importedSession = imported.id;
+  check('an imported native session becomes an In-ThreadTerm row that opens its session view');
 
   assert.deepEqual(report.errors, []);
   report.passed = true;
