@@ -176,6 +176,8 @@ try {
   // Desktop 1 deliberately never activates its OS window; seed DOM focus instead of tabbing from a native view.
   const readButton = preview().getByRole('button', { name: 'Agent access Read', exact: true });
   report.keyboardFocus = { windowFocused: await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].isFocused()), before: await page.evaluate(() => document.activeElement?.getAttribute('aria-label')) };
+  // The runtime acknowledges Off before the renderer re-enables Read; a disabled button cannot take focus.
+  await until(() => readButton.isEnabled(), 'Read re-enabled after Off');
   await readButton.focus();
   assert.equal(await readButton.evaluate(element => document.activeElement === element && element.tabIndex >= 0), true, 'Read is a keyboard-focusable native button');
   report.keyboardFocus.after = await page.evaluate(() => document.activeElement?.getAttribute('aria-label'));
