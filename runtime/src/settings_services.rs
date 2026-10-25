@@ -79,6 +79,20 @@ fn relocation_key(config: &RuntimeConfig) -> Result<PathBuf> {
         )
     })
 }
+
+/// Paths leave the runtime in their plain form; `fs::canonicalize` returns `\\?\` paths on Windows.
+fn wire_display_path(path: &Path) -> String {
+    crate::git_read::plain_path(path).to_string_lossy().into_owned()
+}
+
+fn wire_relocation_result(mut result: Value) -> Value {
+    for key in ["sourceRoot", "targetRoot"] {
+        if let Some(path) = result.get(key).and_then(Value::as_str) {
+            result[key] = Value::String(wire_display_path(Path::new(path)));
+        }
+    }
+    result
+}
 /// Called by RuntimeService while dispatching a request; mutating requests stay
 /// fenced between prepare and explicit cancel/shutdown.
 pub fn relocation_blocks(config: &RuntimeConfig, method: &str) -> Result<bool> {
@@ -201,7 +215,7 @@ fn data_status(config: &RuntimeConfig, db: &Database) -> Result<Value> {
         "drafts": count(tx, "drafts")?, "usageRecords": count(tx, "usage_records")?
     })))?;
     Ok(
-        json!({"root":config.data_dir,"database":{"path":db.path(),"sizeBytes":database_size},"counts":counts}),
+        json!({"root":wire_display_path(&config.data_dir),"database":{"path":wire_display_path(db.path()),"sizeBytes":database_size},"counts":counts}),
     )
 }
 
@@ -240,9 +254,10 @@ fn relocation_status(config: &RuntimeConfig) -> Result<Value> {
         .lock()
         .map_err(|_| anyhow!("relocation_lock"))?;
     let slot = slots.get(&key);
-    let mut status = json!({"frozen":slot.is_some(),"sourceRoot":config.data_dir});
+    let mut status =
+        json!({"frozen":slot.is_some(),"sourceRoot":wire_display_path(&config.data_dir)});
     if let Some(target_root) = slot.map(|item| &item.target_root) {
-        status["targetRoot"] = Value::String(target_root.to_owned());
+        status["targetRoot"] = Value::String(wire_display_path(Path::new(target_root)));
     }
     Ok(status)
 }
@@ -470,7 +485,7 @@ fn relocation_prepare(
                 );
             }
         }
-        return Ok(result);
+        return Ok(wire_relocation_result(result));
     }
     if !target.is_absolute()
         || target == config.data_dir
@@ -558,7 +573,7 @@ fn relocation_prepare(
     match result {
         Ok(result) => {
             db.transaction(|tx| complete(tx, operation_id, "data.relocation.prepare", &result))?;
-            Ok(result)
+            Ok(wire_relocation_result(result))
         }
         Err(error) => {
             // Keep the user's target folder for a retry, but discard every
@@ -1132,6 +1147,28 @@ mod tests {
             credential_path: root.join("credential"),
             pipe_base: r"\\.\pipe\threadterm-v3-test".into(),
         }
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn wire_display_path_removes_windows_verbatim_prefixes() {
+        assert_eq!(
+            wire_display_path(Path::new(r"\\?\C:\data\ThreadTerm")),
+            r"C:\data\ThreadTerm"
+        );
+        assert_eq!(
+            wire_display_path(Path::new(r"\\?\UNC\server\share\data")),
+            r"\\server\share\data"
+        );
+        assert_eq!(
+            wire_display_path(Path::new(r"C:\data\ThreadTerm")),
+            r"C:\data\ThreadTerm"
+        );
+        let result = wire_relocation_result(
+            json!({"sourceRoot":r"\\?\C:\source","targetRoot":r"\\?\UNC\server\share\target"}),
+        );
+        assert_eq!(result["sourceRoot"], r"C:\source");
+        assert_eq!(result["targetRoot"], r"\\server\share\target");
     }
 
     #[test]

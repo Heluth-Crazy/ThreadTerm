@@ -3,6 +3,7 @@ import { randomUUID } from 'node:crypto';
 import { dirname, isAbsolute, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { release } from 'node:os';
+import { canonicalRelocationPath } from './relocationPaths.js';
 import { readFileSync, renameSync, writeFileSync, unlinkSync, realpathSync, statSync, mkdirSync } from 'node:fs';
 import { validateRequest, type Method, type RequestParams, type RuntimeEvent } from '@threadterm/protocol';
 import { RuntimeClient, RuntimeRequestError, runtimePipeIsOpen, waitForPendingRuntimeStartup } from './runtime-client.js';
@@ -640,7 +641,7 @@ function restorePointer(path: string, previous: { root: string; previousRoot?: s
   if (previous) writePointer(path, previous);
   else { try { unlinkSync(path); } catch { /* pointer did not exist */ } }
 }
-function canonicalPath(value: string): string { return realpathSync(value).toLowerCase(); }
+function canonicalPath(value: string): string { return canonicalRelocationPath(value, realpathSync, process.platform); }
 
 function requestApplicationRestart(): void {
   if (process.env.THREADTERM_V3_RELOCATION_QA === '1' && !app.isPackaged) {
