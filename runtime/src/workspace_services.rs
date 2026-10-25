@@ -1041,7 +1041,7 @@ fn scoped_sessions(
         .collect::<rusqlite::Result<Vec<_>>>()?;
     rows.into_iter()
         .filter_map(|(id, path, status, read_only)| {
-            match path_is_within(Path::new(&path), Path::new(root)) {
+            match stored_scope_is_within(Path::new(&path), Path::new(root)) {
                 Ok(true) => Some(Ok((id, status, read_only))),
                 Ok(false) => None,
                 Err(error) => Some(Err(error)),
@@ -1067,7 +1067,7 @@ fn scoped_row_ids(
         .collect::<rusqlite::Result<Vec<_>>>()?;
     rows.into_iter()
         .filter_map(
-            |(id, path)| match path_is_within(Path::new(&path), Path::new(root)) {
+            |(id, path)| match stored_scope_is_within(Path::new(&path), Path::new(root)) {
                 Ok(true) => Some(Ok(id)),
                 Ok(false) => None,
                 Err(error) => Some(Err(error)),
@@ -1102,8 +1102,13 @@ fn rebind_scoped_rows(
 }
 
 fn rebase_descendant(path: &Path, old_root: &Path, new_root: &Path) -> Result<Option<PathBuf>> {
-    let path = lexical_components(path)?;
     let root = lexical_components(old_root)?;
+    // A stored path that is empty or relative is not below any worktree; an absolute
+    // one that cannot be read still fails the relocation.
+    if !path.is_absolute() {
+        return Ok(None);
+    }
+    let path = lexical_components(path)?;
     if path.len() < root.len()
         || !path
             .iter()
@@ -1117,6 +1122,18 @@ fn rebase_descendant(path: &Path, old_root: &Path, new_root: &Path) -> Result<Op
         rebased.push(component);
     }
     Ok(Some(rebased))
+}
+
+/// A stored scope (a draft, workspace or session `worktree_path`) that is empty or
+/// relative is a project-level row: it belongs to the project, not to any worktree,
+/// so it neither blocks nor is rebound by a worktree operation. An absolute scope
+/// that cannot be compared still fails the operation, so a guard never skips a row
+/// it could not check.
+fn stored_scope_is_within(path: &Path, root: &Path) -> Result<bool> {
+    if !path.is_absolute() {
+        return Ok(false);
+    }
+    path_is_within(path, root)
 }
 
 fn path_is_within(path: &Path, root: &Path) -> Result<bool> {
@@ -3436,6 +3453,204 @@ mod tests {
                 .launch
                 .cwd,
             expected_child.to_string_lossy()
+        );
+    }
+
+    /// A project-level draft stores an empty scope and a legacy row may store a
+    /// relative one: neither belongs to a worktree, so a relocation rebinds only
+    /// the drafts inside it and leaves the project-level rows untouched.
+    #[test]
+    fn relocates_a_worktree_while_project_level_drafts_keep_their_own_scope() {
+        let parent = tempfile::tempdir().unwrap();
+        let repo = parent.path().join("repo");
+        initialized_repository(&repo);
+        let db = Database::open(&parent.path().join("db.sqlite")).unwrap();
+        initialize(&db).unwrap();
+        crate::session_configs::initialize(&db).unwrap();
+        let project = db
+            .add_project(repo.to_str().unwrap(), Some("p"), "project-op")
+            .unwrap();
+        let old_path = parent.path().join("feature-old");
+        let created = dispatch(
+            &db,
+            "worktree.create",
+            &json!({"projectId":project.id,"path":old_path.to_string_lossy(),"branch":"feature","createBranch":true,"operationId":"worktree-create"}),
+        )
+        .unwrap()
+        .unwrap();
+        let old_text = created["path"].as_str().unwrap().to_owned();
+        let project_draft = dispatch(
+            &db,
+            "draft.put",
+            &json!({"projectId":project.id,"path":"README.md","content":"project level","baseFingerprint":"base","expectedRevision":0,"operationId":"project-draft"}),
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(project_draft["worktreePath"], "");
+        db.transaction(|tx| {
+            tx.execute(
+                "INSERT INTO drafts(id,project_id,worktree_path,path,content,base_fingerprint,revision,updated_at) VALUES('relative-scope-draft',?,'feature-old','README.md','relative scope','base',1,'now')",
+                params![project.id],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+        let worktree_draft = dispatch(
+            &db,
+            "draft.put",
+            &json!({"projectId":project.id,"worktreePath":old_text,"path":"README.md","content":"worktree body","baseFingerprint":"base","expectedRevision":0,"operationId":"worktree-draft"}),
+        )
+        .unwrap()
+        .unwrap();
+        let new_path = parent.path().join("feature-new");
+        git(
+            &repo,
+            &[
+                "worktree",
+                "move",
+                old_text.as_str(),
+                new_path.to_str().unwrap(),
+            ],
+        )
+        .unwrap();
+        let relocated = dispatch(
+            &db,
+            "worktree.relocate",
+            &json!({"id":created["id"],"path":new_path.to_string_lossy(),"operationId":"worktree-relocate"}),
+        )
+        .unwrap()
+        .unwrap();
+        let new_text = relocated["path"].as_str().unwrap().to_owned();
+        assert_ne!(new_text, old_text);
+        let draft_row = |db: &Database, id: &str| -> (String, String) {
+            db.transaction(|tx| {
+                Ok(tx.query_row(
+                    "SELECT worktree_path,content FROM drafts WHERE id=?",
+                    [id],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )?)
+            })
+            .unwrap()
+        };
+        assert_eq!(
+            draft_row(&db, project_draft["id"].as_str().unwrap()),
+            (String::new(), "project level".to_owned())
+        );
+        assert_eq!(
+            draft_row(&db, "relative-scope-draft"),
+            ("feature-old".to_owned(), "relative scope".to_owned())
+        );
+        assert_eq!(
+            draft_row(&db, worktree_draft["id"].as_str().unwrap()),
+            (new_text, "worktree body".to_owned())
+        );
+    }
+
+    /// The removal guard reads the same stored scopes: a project-level draft or
+    /// workspace neither keeps a worktree alive nor is touched by its removal.
+    #[test]
+    fn a_project_level_draft_or_workspace_does_not_block_a_worktree_removal() {
+        let parent = tempfile::tempdir().unwrap();
+        let repo = parent.path().join("repo");
+        initialized_repository(&repo);
+        let db = Database::open(&parent.path().join("db.sqlite")).unwrap();
+        initialize(&db).unwrap();
+        crate::session_configs::initialize(&db).unwrap();
+        let project = db
+            .add_project(repo.to_str().unwrap(), Some("p"), "project-op")
+            .unwrap();
+        let target = parent.path().join("feature");
+        let created = dispatch(
+            &db,
+            "worktree.create",
+            &json!({"projectId":project.id,"path":target.to_string_lossy(),"branch":"feature","createBranch":true,"operationId":"worktree-create"}),
+        )
+        .unwrap()
+        .unwrap();
+        let project_draft = dispatch(
+            &db,
+            "draft.put",
+            &json!({"projectId":project.id,"path":"README.md","content":"project level","baseFingerprint":"base","expectedRevision":0,"operationId":"project-draft"}),
+        )
+        .unwrap()
+        .unwrap();
+        db.transaction(|tx| {
+            tx.execute(
+                "INSERT INTO drafts(id,project_id,worktree_path,path,content,base_fingerprint,revision,updated_at) VALUES('relative-scope-draft',?,'feature','README.md','relative scope','base',1,'now')",
+                params![project.id],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+        let layout = json!({"kind":"pane","id":"main","tabs":[],"activeTabId":null});
+        // A legacy row may store a relative scope; it is not inside any worktree.
+        db.transaction(|tx| {
+            tx.execute(
+                "INSERT INTO workspaces(id,name,project_id,worktree_path,revision,layout,updated_at) VALUES('relative-scope-workspace','Relative',?,'feature',1,?,'now')",
+                params![project.id, serde_json::to_string(&layout).unwrap()],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+        let workspace = dispatch(
+            &db,
+            "workspace.save",
+            &json!({"name":"Project","projectId":project.id,"layout":layout,"expectedRevision":0,"operationId":"project-workspace"}),
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(
+            dispatch(
+                &db,
+                "worktree.remove",
+                &json!({"id":created["id"],"operationId":"worktree-remove"}),
+            )
+            .unwrap(),
+            Some(Value::Null)
+        );
+        assert!(!target.exists());
+        let draft_row = |db: &Database, id: &str| -> (String, String) {
+            db.transaction(|tx| {
+                Ok(tx.query_row(
+                    "SELECT worktree_path,content FROM drafts WHERE id=?",
+                    [id],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )?)
+            })
+            .unwrap()
+        };
+        assert_eq!(
+            draft_row(&db, project_draft["id"].as_str().unwrap()),
+            (String::new(), "project level".to_owned())
+        );
+        assert_eq!(
+            draft_row(&db, "relative-scope-draft"),
+            ("feature".to_owned(), "relative scope".to_owned())
+        );
+        let (scope, stored_layout): (Option<String>, String) = db
+            .transaction(|tx| {
+                Ok(tx.query_row(
+                    "SELECT worktree_path,layout FROM workspaces WHERE id=?",
+                    [workspace["id"].as_str().unwrap()],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )?)
+            })
+            .unwrap();
+        assert_eq!(scope, None);
+        assert_eq!(serde_json::from_str::<Value>(&stored_layout).unwrap(), layout);
+        let (relative_scope, relative_layout): (String, String) = db
+            .transaction(|tx| {
+                Ok(tx.query_row(
+                    "SELECT worktree_path,layout FROM workspaces WHERE id='relative-scope-workspace'",
+                    [],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )?)
+            })
+            .unwrap();
+        assert_eq!(relative_scope, "feature");
+        assert_eq!(
+            serde_json::from_str::<Value>(&relative_layout).unwrap(),
+            layout
         );
     }
 
