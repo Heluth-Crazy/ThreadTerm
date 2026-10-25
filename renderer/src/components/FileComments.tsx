@@ -14,12 +14,12 @@ export type CommentSelection = {side:'old'|'new';startLine:number;endLine:number
 /** One folder's pending comments, shared by every file view and refreshed across windows. */
 export function useFileComments(scope?:CommentScope):FileComment[] {
  const scopeKey = scope ? `${scope.projectId}:${canonicalScopePath(scope.root)}` : undefined;
- const [state, setState] = useState(() => ({key:scopeKey, comments:scope ? loadFileComments(scope) : []}));
+ const [state, setState] = useState<{key:string|undefined;comments:FileComment[]}>({key:scopeKey,comments:[]});
  useEffect(() => {
   if(!scope) { setState({key:undefined, comments:[]}); return; }
-  const refresh = () => setState({key:scopeKey, comments:loadFileComments(scope)});
+  let active=true; const refresh = () => { void loadFileComments(scope).then(comments=>{if(active)setState({key:scopeKey,comments});}).catch(()=>undefined); };
   refresh();
-  return subscribeFileComments(scope, refresh);
+  const unsubscribe=subscribeFileComments(scope, refresh); return () => {active=false;unsubscribe();};
  }, [scopeKey]);
  return state.key === scopeKey ? state.comments : [];
 }
@@ -27,11 +27,11 @@ export function useFileComments(scope?:CommentScope):FileComment[] {
 /** The pending strip includes pages; file-view line marks continue using useFileComments. */
 export function useReviewComments(scope?:CommentScope):ReviewComment[] {
  const scopeKey=scope?`${scope.projectId}:${canonicalScopePath(scope.root)}`:undefined;
- const [state,setState]=useState(()=>({key:scopeKey,comments:scope?loadReviewComments(scope):[]}));
+ const [state,setState]=useState<{key:string|undefined;comments:ReviewComment[]}>({key:scopeKey,comments:[]});
  useEffect(()=>{
   if(!scope){setState({key:undefined,comments:[]});return;}
-  const refresh=()=>setState({key:scopeKey,comments:loadReviewComments(scope)});
-  refresh(); return subscribeFileComments(scope,refresh);
+  let active=true;const refresh=()=>{void loadReviewComments(scope).then(comments=>{if(active)setState({key:scopeKey,comments});}).catch(()=>undefined);};
+  refresh();const unsubscribe=subscribeFileComments(scope,refresh);return()=>{active=false;unsubscribe();};
  },[scopeKey]);
  return state.key===scopeKey?state.comments:[];
 }
@@ -42,31 +42,34 @@ function commentError(error:unknown, zh:boolean):string {
  return reason === 'review_comments_full' ? copy(`This folder already has ${MAX_FILE_COMMENTS} comments. Add them to the message or remove some first.`, `此文件夹已有 ${MAX_FILE_COMMENTS} 条审查意见。请先加入消息或删除一些。`)
   : reason === 'review_comment_empty' ? copy('Enter a comment first.', '请先填写审查意见。')
   : reason === 'review_comment_too_long' ? copy(`A comment can be at most ${MAX_REVIEW_COMMENT_BODY} characters.`, `一条审查意见最多 ${MAX_REVIEW_COMMENT_BODY} 个字符。`)
+  : reason === 'review_comments_conflict' ? copy('Comments changed in another window. The latest comments were loaded; try again.', '评论已在另一个窗口更改。已加载最新评论，请重试。')
   : reason === 'review_comments_unavailable' ? copy('Comments cannot be stored in this window.', '此窗口无法保存审查意见。') : reason;
 }
 
 export function CommentForm({scope, path, version, selection, zh, onCancel, onAdded}:{scope:CommentScope;path:string;version:CommentVersion;selection:CommentSelection;zh:boolean;onCancel:()=>void;onAdded:()=>void}) {
  const [body, setBody] = useState('');
+ const [saving, setSaving] = useState(false);
  const [issue, setIssue] = useState<string>();
  const copy = (en:string, cn:string) => zh ? cn : en;
  const place = fileCommentPlace({path, version, ...selection}, {fileRoot:scope.root, sessionRoot:scope.root}, zh);
- const addComment = () => {
-  if(!body.trim()) return;
+ const addComment = async () => {
+  if(saving || !body.trim()) return;
+  setSaving(true);
   try {
-   addFileComment({...scope, path, version, ...selection, body});
+   await addFileComment({...scope, path, version, ...selection, body});
    onAdded();
-  } catch(error) { setIssue(commentError(error, zh)); }
+  } catch(error) { setIssue(commentError(error, zh)); } finally { setSaving(false); }
  };
  return <div className="wb-review-comment-form">
   <span className="wb-review-comment-where" title={selection.text}>{place}</span>
   {issue && <p className="wb-issue" role="alert">{issue}</p>}
-  <textarea autoFocus aria-label={copy('Comment for the agent', '给 Agent 的评论')} maxLength={MAX_REVIEW_COMMENT_BODY} value={body}
+  <textarea autoFocus disabled={saving} aria-label={copy('Comment for the agent', '给 Agent 的评论')} maxLength={MAX_REVIEW_COMMENT_BODY} value={body}
    placeholder={copy('What should the agent do here?', '希望 Agent 在这里怎么改？')}
    onChange={event => setBody(event.target.value)}
-   onKeyDown={event => { if(event.key === 'Enter' && (event.ctrlKey || event.metaKey)) { event.preventDefault(); addComment(); } else if(event.key === 'Escape') { event.preventDefault(); onCancel(); } }}/>
+   onKeyDown={event => { if(event.key === 'Enter' && (event.ctrlKey || event.metaKey)) { event.preventDefault(); void addComment(); } else if(event.key === 'Escape') { event.preventDefault(); onCancel(); } }}/>
   <div className="wb-review-comment-actions"><span className="dim">{copy('Ctrl+Enter adds · Esc cancels', 'Ctrl+Enter 添加 · Esc 取消')}</span><span className="grow"/>
-   <button type="button" className="btn btn-sm" onClick={onCancel}>{copy('Cancel', '取消')}</button>
-   <button type="button" className="btn btn-sm btn-primary" disabled={!body.trim()} onClick={addComment}>{copy('Add comment', '添加评论')}</button></div>
+   <button type="button" className="btn btn-sm" disabled={saving} onClick={onCancel}>{copy('Cancel', '取消')}</button>
+   <button type="button" className="btn btn-sm btn-primary" disabled={saving || !body.trim()} onClick={()=>void addComment()}>{copy('Add comment', '添加评论')}</button></div>
  </div>;
 }
 
@@ -98,8 +101,8 @@ export function PendingComments({scope, host, comments:providedComments, zh, pre
  useEffect(() => { if(noticeCode==='page_shots_file_path')host.notice?.(copy('Some screenshots were added by file path only. The receiving session can read those files.', '部分截图仅以文件路径加入，接收会话可以读取这些文件。')); }, [zh, noticeCode]);
  useEffect(() => { setTransfer(undefined); }, [comments.map(item=>item.id).join('|')]);
  useEffect(() => { if(!notice) return; const timer = setTimeout(() => {setNotice(undefined);setNoticeCode(undefined);}, 4000); return () => clearTimeout(timer); }, [notice]);
- const removeComments = (ids:string[]) => {
-  try { removeReviewComments(scope, ids); setIssue(undefined); setIssueCode(undefined); }
+ const removeComments = async (ids:string[]) => {
+  try { await removeReviewComments(scope, ids); setIssue(undefined); setIssueCode(undefined); }
   catch(error) { setIssueCode(undefined); setIssue(commentError(error, zh)); }
  };
  const insertToMessage = async (inserted:ReviewComment[], pinnedReceiverId:string) => {
@@ -117,7 +120,7 @@ export function PendingComments({scope, host, comments:providedComments, zh, pre
     if(images.length<MAX_CHAT_IMAGES)images.push(image);
    }
    const attached=await host.insert(pinnedReceiver.id, formatReviewComments(inserted, {fileRoot:scope.root,sessionRoot:pinnedReceiver.root}, zh), images.length?images:undefined);
-   releaseReviewComments(scope, inserted.map(item => item.id));
+   await releaseReviewComments(scope, inserted.map(item => item.id));
    if(shots.length>(attached??0)){const message=copy('Some screenshots were added by file path only. The receiving session can read those files.', '部分截图仅以文件路径加入，接收会话可以读取这些文件。');setNoticeCode('page_shots_file_path');setNotice(message);host.notice?.(message);}
   } catch(error) { const message=error instanceof Error ? error.message : String(error);if(message==='page_shot_read'||message==='page_shot_unavailable'){setIssue(undefined);setIssueCode(message);}else{setIssueCode(undefined);setIssue(message);} }
   finally { setBusy(false); }
@@ -155,7 +158,7 @@ export function PendingComments({scope, host, comments:providedComments, zh, pre
     {item.shot&&<img src={item.shot.thumbnail} alt={copy('Page screenshot', '页面截图')}/>}<span><b>{pageCommentLabel(item.target,zh)}</b><small>{pageCommentLocation(item.url)}</small></span>
    </button>:<span className="wb-review-comment-where" title={`${fileCommentPlace(item, roots, zh)}\n${item.excerpt}`}>{fileCommentShortPlace(item, zh)}</span>}
    <span className="body" title={item.body}>{item.body}</span>
-   <button type="button" className="icon-btn" disabled={busy} aria-label={copy('Remove comment', '删除评论')} title={copy('Remove comment', '删除评论')} onClick={() => removeComments([item.id])}><Icon name="close"/></button>
+   <button type="button" className="icon-btn" disabled={busy} aria-label={copy('Remove comment', '删除评论')} title={copy('Remove comment', '删除评论')} onClick={() => void removeComments([item.id])}><Icon name="close"/></button>
   </li>)}</ul>
    {transfer&&<SurfaceDialog size="sm" icon="warning" className="page-comment-transfer-dialog" title={copy('Transfer page comments?', '转移页面评论？')} subtitle={copy(`${transfer.comments.filter(isPageComment).length} page comment${transfer.comments.filter(isPageComment).length===1?'':'s'} will be added to the destination draft. Nothing is sent.`, `${transfer.comments.filter(isPageComment).length} 条页面评论将加入目标草稿，不会发送。`)} onClose={()=>setTransfer(undefined)}
     footer={<><button type="button" className="btn" disabled={busy} onClick={()=>setTransfer(undefined)}>{copy('Cancel','取消')}</button><button type="button" className="btn btn-sm btn-primary" disabled={busy} onClick={()=>{const current=host.receivers.find(item=>item.id===transfer.receiverId);if(!current){setTransfer(undefined);setIssueCode(undefined);setIssue(copy('The selected destination is no longer available. Comments were kept.','所选目标已不可用。评论已保留。'));return;}const pinned=transfer;setTransfer(undefined);void insertToMessage(pinned.comments,pinned.receiverId);}}>{copy('Add to draft','加入草稿')}</button></>}>
@@ -166,7 +169,7 @@ export function PendingComments({scope, host, comments:providedComments, zh, pre
     </dl>
    </SurfaceDialog>}
    {confirmClear && <SurfaceDialog size="sm" icon="trash" title={copy('Clear all review comments?', '清除全部审查意见？')} subtitle={pages?copy(`${comments.length} comments in ${pages} pages and ${files} files`, `${comments.length} 条，涉及 ${pages} 个页面、${files} 个文件`):copy(`${comments.length} comments in ${files} files`, `${comments.length} 条，涉及 ${files} 个文件`)} onClose={() => setConfirmClear(false)}
-   footer={<><button type="button" className="btn" onClick={() => setConfirmClear(false)}>{copy('Cancel', '取消')}</button><button type="button" className="btn btn-danger" onClick={() => { removeComments(comments.map(item => item.id)); setConfirmClear(false); setNotice(undefined); setNoticeCode(undefined); }}>{copy('Clear', '清除')}</button></>}>
+   footer={<><button type="button" className="btn" onClick={() => setConfirmClear(false)}>{copy('Cancel', '取消')}</button><button type="button" className="btn btn-danger" onClick={() => { void removeComments(comments.map(item => item.id)); setConfirmClear(false); setNotice(undefined); setNoticeCode(undefined); }}>{copy('Clear', '清除')}</button></>}>
    <p>{copy('They have not been sent to the agent and cannot be restored.', '这些意见尚未发给 Agent，清除后无法恢复。')}</p>
   </SurfaceDialog>}
  </div>;

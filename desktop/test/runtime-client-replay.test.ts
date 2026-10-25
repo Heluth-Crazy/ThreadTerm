@@ -1,3 +1,4 @@
+import './backup-timeout.test.js';
 import assert from 'node:assert/strict';
 import { createHmac, randomUUID } from 'node:crypto';
 import { access, mkdtemp, rm, writeFile } from 'node:fs/promises';

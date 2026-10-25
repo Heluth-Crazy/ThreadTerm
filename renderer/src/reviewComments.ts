@@ -2,7 +2,7 @@ import { isLocalHtmlPreviewUrl } from './htmlPreviewUrl';
 import { canonicalScopePath } from "./projectScope";
 import { formatAgentReference, referencePath } from "./workbench/agentReference";
 import type { PagePick, PageTargetRef } from "@threadterm/protocol";
-import { deletePageShots } from "./bridge";
+import { operationId, request, subscribeEvents } from "./bridge";
 
 export type CommentVersion =
   | { kind: "file" }
@@ -27,16 +27,16 @@ export type PageCommentProvenance = {
 };
 export type PageComment = PagePick & CommentScope & { kind: "page"; id: string; body: string; createdAt: string; provenance?: PageCommentProvenance };
 export type ReviewComment = FileComment | PageComment;
-export type DeletePageShots = (ids: string[]) => void | Promise<void>;
 
 export const MAX_FILE_COMMENTS = 200;
 export const MAX_REVIEW_COMMENT_BODY = 4000;
 const MAX_EXCERPT = 160;
-const EVENT = "threadterm:file-comments";
-type Store = Pick<Storage, "getItem" | "setItem" | "removeItem">;
 type Roots = { fileRoot: string; sessionRoot?: string };
-const storage = (): Store | undefined => { try { return globalThis.localStorage; } catch { return undefined; } };
-const key = (scope: CommentScope) => `threadterm.v3.file-comments:${scope.projectId}:${canonicalScopePath(scope.root) ?? ""}`;
+const LEGACY_PREFIX = "threadterm.v3.file-comments:";
+const LEGACY_MARKER = "review-comments-local-storage-v1";
+const LEGACY_IMPORT_BATCH = 8;
+const revisions = new Map<string, number>();
+let legacyImport: Promise<void> | undefined;
 const range = (comment: Pick<FileComment, "startLine" | "endLine">) => comment.endLine > comment.startLine ? `${comment.startLine}-${comment.endLine}` : `${comment.startLine}`;
 const many = (comment: Pick<FileComment, "startLine" | "endLine">) => comment.endLine > comment.startLine;
 
@@ -90,57 +90,100 @@ function validPage(value: unknown, scope: CommentScope): value is PageComment {
   if (target.type === "element") return text(target.selector, 500) && !!target.selector && text(target.tag, 80) && !!target.tag && text(target.label, 160) && !!target.label && text(target.html, 600) && !!target.attributes && typeof target.attributes === "object" && !Array.isArray(target.attributes) && Object.entries(target.attributes as Record<string, unknown>).every(([key, value]) => text(key, 80) && text(value, 300));
   return target.type === "area" && Array.isArray(target.elements) && target.elements.length <= 8 && target.elements.every(item => text(item, 160) && !!item);
 }
-function load(scope: CommentScope, store: Store | undefined = storage()): ReviewComment[] {
-  try { const value: unknown = JSON.parse(store?.getItem(key(scope)) ?? "[]"); return Array.isArray(value) ? value.filter(item => item && typeof item === "object" && (item as Record<string, unknown>).kind === "page" ? validPage(item, scope) : valid(item, scope)).slice(0, MAX_FILE_COMMENTS) : []; } catch { return []; }
+function assetPaths(comment: ReviewComment): string[] { return isPageComment(comment) && comment.shot ? [comment.shot.path] : []; }
+function storedScope(scope: CommentScope): CommentScope { return { projectId: scope.projectId, root: canonicalScopePath(scope.root) ?? scope.root }; }
+function legacyScope(storageKey: string): CommentScope | undefined {
+  if (!storageKey.startsWith(LEGACY_PREFIX)) return undefined;
+  const body = storageKey.slice(LEGACY_PREFIX.length), separator = body.indexOf(":");
+  if (separator <= 0) return undefined;
+  const projectId = body.slice(0, separator), root = body.slice(separator + 1);
+  return projectId && root ? { projectId, root } : undefined;
 }
-
-export function loadFileComments(scope: CommentScope, store: Store | undefined = storage()): FileComment[] {
-  return load(scope, store).filter((comment): comment is FileComment => !isPageComment(comment));
+async function importLegacyComments(): Promise<void> {
+  const store = (() => { try { return globalThis.localStorage; } catch { return undefined; } })();
+  const entries: { storageKey: string; scope: CommentScope; comments: ReviewComment[] }[] = [];
+  if (store) for (let index = 0; index < store.length; index++) {
+    const storageKey = store.key(index); if (!storageKey) continue;
+    const scope = legacyScope(storageKey); if (!scope) continue;
+    try { const value: unknown = JSON.parse(store.getItem(storageKey) ?? "[]"); const comments = Array.isArray(value) ? value.filter(item => item && typeof item === "object" && (item as Record<string, unknown>).kind === "page" ? validPage(item, scope) : valid(item, scope)).slice(0, MAX_FILE_COMMENTS) : []; entries.push({ storageKey, scope, comments }); } catch { /* Leave malformed legacy data untouched. */ }
+  }
+  const drafts = entries.flatMap(({ scope, comments }) => comments.map(comment => ({ draftId: comment.id, scopeProjectId: scope.projectId, scopeRoot: storedScope(scope).root, draft: comment, assetPaths: assetPaths(comment) })));
+  // The transport caps frames at 8 MiB. A bounded batch leaves space for framing and an individual draft is itself
+  // runtime-bounded; only the final acknowledged batch writes the durable import marker.
+  const batches = Array.from({ length: Math.max(1, Math.ceil(drafts.length / LEGACY_IMPORT_BATCH)) }, (_, index) => drafts.slice(index * LEGACY_IMPORT_BATCH, (index + 1) * LEGACY_IMPORT_BATCH));
+  for (let index = 0; index < batches.length; index++) await request("reviewDrafts.importLegacy", { marker: LEGACY_MARKER, drafts: batches[index]!, complete: index === batches.length - 1, operationId: operationId() });
+  // Do not discard migration evidence until the runtime commits its idempotent marker.
+  if (store) for (const { storageKey } of entries) store.removeItem(storageKey);
 }
-export function loadReviewComments(scope: CommentScope, store: Store | undefined = storage()): ReviewComment[] { return load(scope, store); }
-function persist(scope: CommentScope, comments: ReviewComment[], store: Store | undefined) {
-  if (!store) throw new Error("review_comments_unavailable");
-  const storageKey = key(scope);
-  if (comments.length) store.setItem(storageKey, JSON.stringify(comments)); else store.removeItem(storageKey);
-  try { globalThis.dispatchEvent?.(new CustomEvent(EVENT, { detail: { key: storageKey } })); } catch { /* Node tests have no window events. */ }
+async function ensureLegacyImported(): Promise<void> {
+  legacyImport ??= importLegacyComments().catch(error => { legacyImport = undefined; throw error; });
+  return legacyImport;
 }
-export function addFileComment(input: Omit<FileComment, "id" | "createdAt" | "excerpt"> & { text: string }, store: Store | undefined = storage()): FileComment[] {
+/** Start the idempotent legacy import before maintenance or backup work observes owned review data. */
+export const ensureReviewCommentsImported = ensureLegacyImported;
+function rowsFor(scope: CommentScope, rows: Awaited<ReturnType<typeof request<"reviewDrafts.list">>>["drafts"]): ReviewComment[] {
+  const comments: ReviewComment[] = [];
+  for (const row of rows) {
+    const value = row.draft;
+    if (value && typeof value === "object" && ((value as Record<string, unknown>).kind === "page" ? validPage(value, scope) : valid(value, scope))) { revisions.set(row.draftId, row.revision); comments.push(value as ReviewComment); }
+  }
+  return comments.sort((a,b)=>a.createdAt.localeCompare(b.createdAt)||a.id.localeCompare(b.id));
+}
+export async function loadReviewComments(scope: CommentScope): Promise<ReviewComment[]> {
+  await ensureLegacyImported();
+  const stored = storedScope(scope), all = [] as Awaited<ReturnType<typeof request<"reviewDrafts.list">>>["drafts"];
+  let after: string | undefined;
+  do { const rows = await request("reviewDrafts.list", { scopeProjectId: stored.projectId, scopeRoot: stored.root, ...(after ? { after } : {}) }); all.push(...rows.drafts); after = rows.nextAfter; } while (after);
+  return rowsFor(scope, all);
+}
+export async function loadFileComments(scope: CommentScope): Promise<FileComment[]> { return (await loadReviewComments(scope)).filter((comment): comment is FileComment => !isPageComment(comment)); }
+async function put(scope: CommentScope, comment: ReviewComment, expectedRevision: number): Promise<void> {
+  const stored = storedScope(scope), result = await request("reviewDrafts.upsert", { draftId: comment.id, scopeProjectId: stored.projectId, scopeRoot: stored.root, draft: comment, assetPaths: assetPaths(comment), expectedRevision, operationId: operationId() });
+  if (result.status === "conflict") { if (result.draft) revisions.set(result.draft.draftId, result.draft.revision); await loadReviewComments(scope); throw new Error("review_comments_conflict"); }
+  revisions.set(result.draft.draftId, result.draft.revision);
+}
+export async function addFileComment(input: Omit<FileComment, "id" | "createdAt" | "excerpt"> & { text: string }): Promise<FileComment[]> {
   const body = input.body.trim();
   if (!body) throw new Error("review_comment_empty");
   if (body.length > MAX_REVIEW_COMMENT_BODY) throw new Error("review_comment_too_long");
-  const scope = { projectId: input.projectId, root: input.root }, comments = load(scope, store);
+  const scope = { projectId: input.projectId, root: input.root }, comments = await loadReviewComments(scope);
   if (comments.length >= MAX_FILE_COMMENTS) throw new Error("review_comments_full");
-  const { text, ...rest } = input, comment: FileComment = { ...rest, body, excerpt: reviewExcerpt(text), id: crypto.randomUUID(), createdAt: new Date().toISOString() }, next = [...comments, comment];
-  persist(scope, next, store); return next.filter((item): item is FileComment => !isPageComment(item));
+  const { text, ...rest } = input, comment: FileComment = { ...rest, body, excerpt: reviewExcerpt(text), id: crypto.randomUUID(), createdAt: new Date().toISOString() };
+  await put(scope, comment, 0); return await loadFileComments(scope);
 }
-export function removeFileComments(scope: CommentScope, ids: readonly string[], store: Store | undefined = storage()): FileComment[] {
-  const next = load(scope, store).filter(comment => isPageComment(comment) || !ids.includes(comment.id)); persist(scope, next, store); return next.filter((item): item is FileComment => !isPageComment(item));
+export async function removeFileComments(scope: CommentScope, ids: readonly string[]): Promise<FileComment[]> {
+  const expected = new Map(revisions);
+  const files = await loadFileComments(scope);
+  await removeIds(scope, files.filter(comment => ids.includes(comment.id)).map(comment => comment.id), expected); return await loadFileComments(scope);
 }
 export function isPageComment(comment: ReviewComment): comment is PageComment { return "kind" in comment && comment.kind === "page"; }
-export function addPageComment(input: CommentScope & PagePick & { body: string; provenance?: PageCommentProvenance }, store: Store | undefined = storage()): ReviewComment[] {
+export async function addPageComment(input: CommentScope & PagePick & { body: string; provenance?: PageCommentProvenance }): Promise<ReviewComment[]> {
   const body = input.body.trim();
   if (!body) throw new Error("review_comment_empty");
   if (body.length > MAX_REVIEW_COMMENT_BODY) throw new Error("review_comment_too_long");
-  const scope = { projectId: input.projectId, root: input.root }, comments = load(scope, store);
+  const scope = { projectId: input.projectId, root: input.root }, comments = await loadReviewComments(scope);
   if (comments.length >= MAX_FILE_COMMENTS) throw new Error("review_comments_full");
-  const { body: _body, ...pick } = input, comment: PageComment = { ...pick, kind: "page", body, id: crypto.randomUUID(), createdAt: new Date().toISOString() }, next = [...comments, comment];
-  persist(scope, next, store); return next;
+  const { body: _body, ...pick } = input, comment: PageComment = { ...pick, kind: "page", body, id: crypto.randomUUID(), createdAt: new Date().toISOString() };
+  await put(scope, comment, 0); return await loadReviewComments(scope);
 }
-export function removeReviewComments(scope: CommentScope, ids: readonly string[], store: Store | undefined = storage(), deleteShots: DeletePageShots = deletePageShots): ReviewComment[] {
-  const removed = load(scope, store).filter(comment => ids.includes(comment.id)), next = load(scope, store).filter(comment => !ids.includes(comment.id));
-  persist(scope, next, store);
-  const shots = removed.filter(isPageComment).flatMap(comment => comment.shot ? [comment.shot.id] : []);
-  if (shots.length) void deleteShots?.(shots);
-  return next;
+export async function removeReviewComments(scope: CommentScope, ids: readonly string[]): Promise<ReviewComment[]> {
+  return removeIds(scope, ids, new Map(revisions));
+}
+async function removeIds(scope: CommentScope, ids: readonly string[], expected: ReadonlyMap<string, number>): Promise<ReviewComment[]> {
+  await ensureLegacyImported();
+  for (const id of ids) {
+    const result = await request("reviewDrafts.delete", { draftId: id, expectedRevision: expected.get(id) ?? 0, operationId: operationId() });
+    if (result.status === "conflict") { if (result.draft) revisions.set(result.draft.draftId, result.draft.revision); await loadReviewComments(scope); throw new Error("review_comments_conflict"); }
+    revisions.set(id, result.revision);
+  }
+  return await loadReviewComments(scope);
 }
 /** Remove comments after their screenshot files have been transferred to a chat composer. */
-export function releaseReviewComments(scope: CommentScope, ids: readonly string[], store: Store | undefined = storage()): ReviewComment[] {
-  const next = load(scope, store).filter(comment => !ids.includes(comment.id)); persist(scope, next, store); return next;
+export async function releaseReviewComments(scope: CommentScope, ids: readonly string[]): Promise<ReviewComment[]> {
+  return removeReviewComments(scope, ids);
 }
 export function subscribeFileComments(scope: CommentScope, listener: () => void): () => void {
-  const storageKey = key(scope), local = (event: Event) => { if ((event as CustomEvent<{ key?: string }>).detail?.key === storageKey) listener(); }, shared = (event: StorageEvent) => { if (event.key === storageKey) listener(); };
-  addEventListener(EVENT, local); addEventListener("storage", shared);
-  return () => { removeEventListener(EVENT, local); removeEventListener("storage", shared); };
+  return subscribeEvents(event => { const data = event.data as { kind?: unknown } | undefined; if (event.event === "state.changed" && data?.kind === "reviewDrafts") listener(); });
 }
 
 export function sameCommentVersion(a: CommentVersion, b: CommentVersion): boolean {

@@ -4,15 +4,20 @@ import { sanitizePagePick } from './pageCommentsCore.js';
 import { isLocalHtmlPreviewUrl } from '../../renderer/src/htmlPreviewUrl.js';
 import { addPageComment, loadReviewComments } from '../../renderer/src/reviewComments.js';
 
-test('saved HTML selections survive desktop validation and persisted comment reload', () => {
+test('saved HTML selections survive desktop validation and persisted comment reload', async () => {
   const url = `tt-preview://${'a'.repeat(32)}/site/index.html?reload=1`;
   const pick = { url, title: 'Fixture', viewport: { width: 800, height: 600 }, target: { type: 'area', rect: { x: 1, y: 2, width: 30, height: 40 }, elements: ['Heading'] } };
   assert.deepEqual(sanitizePagePick(pick), pick);
-  const values = new Map<string, string>();
-  const store = { getItem: (key: string) => values.get(key) ?? null, setItem: (key: string, value: string) => { values.set(key, value); }, removeItem: (key: string) => { values.delete(key); } };
+  const rows = new Map<string, { draftId:string; scopeProjectId?:string; scopeRoot?:string; draft:unknown; revision:number; updatedAt:string }>();
+  (globalThis as unknown as { window: unknown }).window = { threadterm: { request: async (method:string, params:Record<string, unknown>) => {
+    if(method === 'reviewDrafts.importLegacy') return { imported:false, drafts:[...rows.values()] };
+    if(method === 'reviewDrafts.list') return { drafts:[...rows.values()].filter(row=>row.scopeProjectId===params.scopeProjectId&&row.scopeRoot===params.scopeRoot) };
+    if(method === 'reviewDrafts.upsert') { const row={draftId:params.draftId as string,scopeProjectId:params.scopeProjectId as string,scopeRoot:params.scopeRoot as string,draft:params.draft,revision:(params.expectedRevision as number)+1,updatedAt:'now'};rows.set(row.draftId,row);return {status:'ok',draft:row}; }
+    throw new Error(method);
+  }, onEvent: () => () => {} } };
   const scope = { projectId: 'fixture', root: '/workspace' };
-  addPageComment({ ...scope, ...sanitizePagePick(pick)!, body: 'Adjust the heading' }, store);
-  assert.equal(loadReviewComments(scope, store).length, 1);
+  await addPageComment({ ...scope, ...sanitizePagePick(pick)!, body: 'Adjust the heading' });
+  assert.equal((await loadReviewComments(scope)).length, 1);
 });
 
 test('comment URLs accept only the grant URL form, never host file or executable schemes', () => {

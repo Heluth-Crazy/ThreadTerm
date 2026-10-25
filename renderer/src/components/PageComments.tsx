@@ -57,17 +57,17 @@ export function PageCommentControls({preview,zh,variant='text',hint=true}:{previ
 }
 
 export function PageCommentForm({preview,scope,zh}:{preview:ReturnType<typeof usePageCommentPreview>;scope?:CommentScope;zh:boolean}) {
- const [body,setBody]=useState(''),[issue,setIssue]=useState<string>(); const copy=(en:string,cn:string)=>zh?cn:en;
+ const [body,setBody]=useState(''),[issue,setIssue]=useState<string>(),[saving,setSaving]=useState(false); const copy=(en:string,cn:string)=>zh?cn:en;
  const pick=preview.pick;
  useEffect(()=>{setBody('');setIssue(undefined);},[pick]);
  if(!scope||!pick||preview.pickScopeKey!==preview.scopeKey)return null;
  const cancel=()=>{preview.discard(pick);preview.added();};
- const add=()=>{if(!body.trim())return;try{addPageComment({...scope,...pick,body,provenance:preview.provenance});preview.added();}catch(error){const reason=error instanceof Error?error.message:'';setIssue(reason==='review_comments_full'?copy('This folder already has 200 comments. Add them to the message or remove some first.','此文件夹已有 200 条审查意见。请先加入消息或删除一些。'):reason==='review_comment_empty'?copy('Enter a comment first.','请先填写审查意见。'):reason==='review_comment_too_long'?copy('A comment can be at most 4000 characters.','一条审查意见最多 4000 个字符。'):copy('The page comment could not be saved.','无法保存页面评论。'));}};
+ const add=async()=>{if(saving||!body.trim())return;setSaving(true);try{await addPageComment({...scope,...pick,body,provenance:preview.provenance});preview.added();}catch(error){const reason=error instanceof Error?error.message:'';setIssue(reason==='review_comments_full'?copy('This folder already has 200 comments. Add them to the message or remove some first.','此文件夹已有 200 条审查意见。请先加入消息或删除一些。'):reason==='review_comment_empty'?copy('Enter a comment first.','请先填写审查意见。'):reason==='review_comment_too_long'?copy('A comment can be at most 4000 characters.','一条审查意见最多 4000 个字符。'):reason==='review_comments_conflict'?copy('Comments changed in another window. The latest comments were loaded; try again.','评论已在另一个窗口更改。已加载最新评论，请重试。'):copy('The page comment could not be saved.','无法保存页面评论。'));}finally{setSaving(false);}};
  return <div className="wb-review-comment-form wb-page-comment-form">
   <div className="wb-page-comment-target">{pick.shot&&<img src={pick.shot.thumbnail} alt={copy('Selected page area','已选页面区域')}/>}<span className="wb-review-comment-where" title={pageCommentLabel(pick.target,zh)}>{pageCommentLabel(pick.target,zh)}</span></div>
   {(issue||preview.issue)&&<p className="wb-issue" role="alert">{issue??preview.issue}</p>}
-  <textarea autoFocus aria-label={copy('Comment for the agent','给 Agent 的评论')} maxLength={MAX_REVIEW_COMMENT_BODY} value={body} placeholder={copy('What should the agent do here?','希望 Agent 在这里怎么改？')} onChange={event=>setBody(event.target.value)} onKeyDown={event=>{if(event.key==='Enter'&&(event.ctrlKey||event.metaKey)){event.preventDefault();add();}else if(event.key==='Escape'){event.preventDefault();cancel();}}}/>
-  <div className="wb-review-comment-actions"><span className="dim">{copy('Ctrl+Enter adds · Esc cancels','Ctrl+Enter 添加 · Esc 取消')}</span><span className="grow"/><button type="button" className="btn btn-sm" onClick={cancel}>{copy('Cancel','取消')}</button><button type="button" className="btn btn-sm btn-primary" disabled={!body.trim()} onClick={add}>{copy('Add comment','添加评论')}</button></div>
+  <textarea autoFocus disabled={saving} aria-label={copy('Comment for the agent','给 Agent 的评论')} maxLength={MAX_REVIEW_COMMENT_BODY} value={body} placeholder={copy('What should the agent do here?','希望 Agent 在这里怎么改？')} onChange={event=>setBody(event.target.value)} onKeyDown={event=>{if(event.key==='Enter'&&(event.ctrlKey||event.metaKey)){event.preventDefault();void add();}else if(event.key==='Escape'){event.preventDefault();cancel();}}}/>
+  <div className="wb-review-comment-actions"><span className="dim">{copy('Ctrl+Enter adds · Esc cancels','Ctrl+Enter 添加 · Esc 取消')}</span><span className="grow"/><button type="button" className="btn btn-sm" disabled={saving} onClick={cancel}>{copy('Cancel','取消')}</button><button type="button" className="btn btn-sm btn-primary" disabled={saving||!body.trim()} onClick={()=>void add()}>{copy('Add comment','添加评论')}</button></div>
  </div>;
 }
 

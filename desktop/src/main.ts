@@ -320,7 +320,10 @@ function registerIpc(): void {
     return {browserRequest:(method,params)=>runtime.browserRequest(method,params),onBrowserFrame:listener=>runtime.onBrowserFrame(listener),onBrowserDisconnect:listener=>runtime.onBrowserDisconnect(listener),onEvent:listener=>runtime.onEvent(listener),snapshot:()=>runtime.request('runtime.snapshot',{})};
   });
   registerHtmlPreviewIpc(htmlPreviewGrants, assertTrustedRenderer, runtimeFor, () => htmlPreviewPreloadReady);
-  registerPageComments(assertTrustedRenderer);
+  registerPageComments(assertTrustedRenderer, async after => {
+    const references = await adminRuntime.request('reviewDrafts.assetReferences', after ? { after, limit: 200 } : { limit: 200 });
+    return { paths: references.paths, nextAfter: references.nextAfter, legacyImportComplete: references.legacyImportComplete };
+  });
   ipcMain.handle('threadterm:export-chat-markdown', (event, payload: unknown) => saveChatMarkdown(event, payload, {
     assertTrusted: assertTrustedRenderer,
     choosePath: async options => { const owner = BrowserWindow.fromWebContents(event.sender); return owner ? dialog.showSaveDialog(owner, options) : dialog.showSaveDialog(options); },
@@ -331,7 +334,10 @@ function registerIpc(): void {
   ipcMain.handle('threadterm:request', async (event, method: unknown, params: unknown) => {
     assertTrustedRenderer(event);
     validateRequest(method, params);
-    return runtimeFor(event).request(method, params as RequestParams<Method>);
+    const runtime = runtimeFor(event);
+    if (method === 'data.backup') await session.defaultSession.flushStorageData();
+    const requestParams = method === 'data.backup' ? { ...params as RequestParams<'data.backup'>, desktopDataRoot: app.getPath('userData') } : params;
+    return runtime.request(method, requestParams as RequestParams<Method>);
   });
   ipcMain.handle('threadterm:qa-drop-control', (event) => {
     assertTrustedRenderer(event);
@@ -402,7 +408,7 @@ function registerIpc(): void {
     const owner = BrowserWindow.fromWebContents(event.sender);
     const options = {
       title: kind === 'database' ? 'Back up ThreadTerm data' : 'Save ThreadTerm settings',
-      defaultPath: kind === 'database' ? 'threadterm-v3-backup.sqlite3' : `threadterm-v3-${kind}.json`,
+      defaultPath: kind === 'database' ? `threadterm-v3-backup-${new Date().toISOString().replace(/[:.]/g, '-')}.sqlite3` : `threadterm-v3-${kind}.json`,
       filters: kind === 'database' ? [{ name: 'SQLite database', extensions: ['sqlite3'] }] : [{ name: 'JSON', extensions: ['json'] }],
     } satisfies Electron.SaveDialogOptions;
     const result = owner ? await dialog.showSaveDialog(owner, options) : await dialog.showSaveDialog(options);

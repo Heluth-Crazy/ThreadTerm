@@ -18,7 +18,7 @@ const electron={app,ipcMain:{handle:(name,handler)=>handlers.set(name,handler)},
 const cache=new Map();
 function load(path){path=resolve(path);if(cache.has(path))return cache.get(path).exports;const module={exports:{}};cache.set(path,module);const code=ts.transpileModule(readFileSync(path,'utf8'),{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022,esModuleInterop:true}}).outputText;
  const localRequire=name=>name==='electron'?electron:name.startsWith('.')?load(resolve(dirname(path),name.replace(/\.js$/,'.ts'))):require(name);
- vm.runInNewContext(`(function(require,module,exports){${code}\n})`,{Buffer,console,URL,Promise,setTimeout,clearTimeout,setInterval,clearInterval},{filename:path})(localRequire,module,module.exports);return module.exports;
+ vm.runInNewContext(`(function(require,module,exports){${code}\n})`,{Buffer,console,URL,Promise,process,setTimeout,clearTimeout,setInterval,clearInterval},{filename:path})(localRequire,module,module.exports);return module.exports;
 }
 const api=load('desktop/src/pageComments.ts');api.registerPageComments(event=>{if(!event.trusted)throw Error('Untrusted');});
 const frameName='tt-preview-nativecomments';let serial=0;
@@ -37,7 +37,7 @@ const tick=()=>new Promise(resolve=>setImmediate(resolve));
 test('native picks execute the shared picker in an isolated world and capture scaled clamped pixels',async()=>{
  const f=fixture(),pending=invoke('pick-page-target',f.event,request);await tick();assert.ok(f.pick());f.pick()(pick());const selected=await pending;
  assert.equal(f.calls[0].world,999);assert.equal(f.calls[0].gesture,false);assert.equal(selected.target.type,'area');assert.ok(selected.shot?.id);assert.deepEqual(JSON.parse(JSON.stringify(f.crops)),[{x:760,y:560,width:40,height:40}]);assert.equal(f.sender.focused,true);
- await api.deletePageShots([selected.shot.id]);f.close();
+ await api.deletePageShots([selected.shot.id],{force:true});f.close();
 });
 
 test('native pages cannot be picked through another renderer identity',async()=>{

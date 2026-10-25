@@ -3,6 +3,7 @@ import test from 'node:test';
 import { EventEmitter } from 'node:events';
 import { mkdtempSync, mkdirSync, writeFileSync, utimesSync } from 'node:fs';
 import { createRequire } from 'node:module';
+import { tmpdir } from 'node:os';
 import { mkdir, readFile, readdir, rm, symlink, writeFile } from 'node:fs/promises';
 import { resolve, join } from 'node:path';
 import { randomUUID } from 'node:crypto';
@@ -11,28 +12,43 @@ import type { IpcMainInvokeEvent } from 'electron';
 const require = createRequire(resolve('package.json'));
 type Handler = (event: unknown, ...args: unknown[]) => Promise<unknown>;
 const handlers = new Map<string, Handler>();
-const root = mkdtempSync(join(resolve('desktop-dist'), 'page-comments-test-'));
+const root = mkdtempSync(join(tmpdir(), 'threadterm-v3-page-comments-'));
 let profile = root;
 const shots = join(root, 'page-comments');
 mkdirSync(shots);
 const oldId = randomUUID();
+const oldReferencedLaterId = randomUUID();
+const oldUnreferencedId = randomUUID();
 const freshId = randomUUID();
 writeFileSync(join(shots, `${oldId}.png`), 'old');
+writeFileSync(join(shots, `${oldReferencedLaterId}.png`), 'old referenced later');
+writeFileSync(join(shots, `${oldUnreferencedId}.png`), 'old unreferenced');
 writeFileSync(join(shots, `${freshId}.jpg`), 'fresh');
 const oldDate = new Date(Date.now() - 31 * 86400000);
 utimesSync(join(shots, `${oldId}.png`), oldDate, oldDate);
+utimesSync(join(shots, `${oldReferencedLaterId}.png`), oldDate, oldDate);
+utimesSync(join(shots, `${oldUnreferencedId}.png`), oldDate, oldDate);
 writeFileSync(join(shots, 'unowned.txt'), 'preserve');
 
 const electronPath = require.resolve('electron');
 const cached = require.cache[electronPath];
 let webContentsCreated: ((event: unknown, contents: EventEmitter) => void) | undefined;
+let referencesAvailable = true;
 require.cache[electronPath] = { exports: {
   app: { getPath: () => profile, on: (name: string, listener: (event: unknown, contents: EventEmitter) => void) => { if (name === 'web-contents-created') webContentsCreated = listener; } },
   ipcMain: { handle: (channel: string, handler: Handler) => handlers.set(channel, handler) },
   BrowserWindow: { fromWebContents: () => ({ getContentSize: () => [1200, 900] }) },
 } } as NodeModule;
 const registered = import('../src/pageComments.js').then(({ registerPageComments }) => {
-  registerPageComments((event: IpcMainInvokeEvent) => { if (!(event as unknown as { trusted: boolean }).trusted) throw new Error('Untrusted renderer'); });
+  registerPageComments(
+    (event: IpcMainInvokeEvent) => { if (!(event as unknown as { trusted: boolean }).trusted) throw new Error('Untrusted renderer'); },
+    async after => {
+      if (!referencesAvailable) throw new Error('catalog unavailable');
+      if (after === undefined) return { paths: [join(shots, `${oldId}.png`)], nextAfter: 'page-2', legacyImportComplete: true };
+      if (after === 'page-2') return { paths: [join(shots, `${oldReferencedLaterId}.png`)], legacyImportComplete: true };
+      throw new Error('unexpected catalog cursor');
+    },
+  );
 });
 test.after(async () => {
   if (cached) require.cache[electronPath] = cached;
@@ -314,9 +330,16 @@ test('shot access rejects traversal, symlinks, over-limit files, and invalid del
   await assert.rejects(invoke('delete-page-shots', event, [id]), /Invalid page shot file/);
 });
 
-test('startup cleanup removes only old UUID shot files', async () => {
+test('catalog-aware cleanup retains referenced old screenshots and removes unreferenced ones', async () => {
   // Earlier async tests give the nonblocking cleanup time to finish.
-  await assert.rejects(readFile(join(shots, `${oldId}.png`)), { code: 'ENOENT' });
+  assert.equal(await readFile(join(shots, `${oldId}.png`), 'utf8'), 'old');
+  assert.equal(await readFile(join(shots, `${oldReferencedLaterId}.png`), 'utf8'), 'old referenced later');
+  await invoke('delete-page-shots', { trusted: true }, [oldId]);
+  assert.equal(await readFile(join(shots, `${oldId}.png`), 'utf8'), 'old');
+  referencesAvailable = false;
+  await invoke('delete-page-shots', { trusted: true }, [freshId]);
+  assert.equal(await readFile(join(shots, `${freshId}.jpg`), 'utf8'), 'fresh');
+  await assert.rejects(readFile(join(shots, `${oldUnreferencedId}.png`)), { code: 'ENOENT' });
   assert.equal(await readFile(join(shots, `${freshId}.jpg`), 'utf8'), 'fresh');
   assert.equal(await readFile(join(shots, 'unowned.txt'), 'utf8'), 'preserve');
 });

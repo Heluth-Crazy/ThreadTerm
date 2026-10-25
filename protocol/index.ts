@@ -120,6 +120,14 @@ export interface Settings { revision:number; theme?:'light'|'dark'|'system'; lan
 /** A file picked through the desktop's native open dialog. */
 export interface AttachedFile { path:string; name:string; dataUrl?:string }
 export interface Workspace { id:string; name:string; revision:number; layout:PaneLayout; projectId?:string; worktreePath?:string }
+/** A renderer-owned review-comment payload persisted canonically by the runtime. */
+export interface ReviewDraft { draftId:string; scopeProjectId?:string; scopeRoot?:string; draft:unknown; revision:number; deleted?:boolean; updatedAt:string }
+export type ReviewDraftMutation =
+ | {status:'ok';draft:ReviewDraft}
+ | {status:'conflict';draft:ReviewDraft|null};
+export type ReviewDraftDelete =
+ | {status:'deleted';draftId:string;revision:number}
+ | {status:'conflict';draft:ReviewDraft|null};
 export interface InboxItem { id:string; sessionId:string; kind:string; title:string; createdAt:string; read:boolean }
 export interface Snapshot { epoch:string; revision:number; projects:Project[]; sessions:Session[]; settings:Settings; workspaces:Workspace[]; inbox:InboxItem[]; providers:ProviderCapability[] }
 export interface NativeHistoryItem { provider:ProviderId; nativeId:string; title:string; cwd?:string; updatedAt:string; resumable:boolean; reason?:string }
@@ -579,9 +587,9 @@ export interface UsageLedgerSessionDetail extends UsageLedgerSession {
 }
 export interface UsageLedgerScanStats {
   /** Candidate history files discovered. */ filesFound: number;
-  /** Files opened/read this scan. */ filesRead: number;
-  /** Provider-history bytes read. */ bytesRead: number;
-  /** Facts parsed and persisted/merged. */ facts: number;
+  /** Progress: files read this scan. Sources: present files with persisted index cursors. */ filesRead: number;
+  /** Progress: bytes read this scan. Sources: indexed source-file sizes, including compressed sizes. */ bytesRead: number;
+  /** Progress: facts parsed this scan. Sources: effective indexed request facts, after reconciliation. */ facts: number;
   /** Counts by stable parse/discovery problem kind. */ problems: Record<string,number>;
   /** Whether this scan observed cancellation. */ cancelled: boolean;
 }
@@ -592,8 +600,8 @@ export interface UsageLedgerSource {
   /** Retained native source records whose files disappeared; their historical facts remain until rebuild. */ missingSources: number;
   /** Whether this provider's native history is currently allowed to be read. */ historyReadEnabled: boolean;
   /** Localized coverage explanation when native history is disabled. */ historyReadLabelKey: 'historyNotReadThreadtermOnly'|null;
-  /** Latest completed/read timestamp, or null before scanning. */ lastRead: string|null;
-  /** Latest cumulative source statistics. */ stats: UsageLedgerScanStats;
+  /** Latest actual source read; unchanged refreshes preserve it, null before any source read. */ lastRead: string|null;
+  /** Indexed state, retained across unchanged refreshes. Progress events separately describe the current scan. */ stats: UsageLedgerScanStats;
   /** Buckets this source can report. */ bucketsReported: UsageLedgerBucket[];
 }
 export interface UsageLedgerSources {
@@ -750,8 +758,16 @@ export interface RequestMap {
  'chat.feedback.dismiss': [{sessionId:string;noteIds:string[];operationId:string;leaseEpoch:number},{removed:string[]}];
  'chat.fork': [{sessionId:string;itemId?:string;operationId:string;leaseEpoch:number},{session:Session;mode:'native'|'copy'}];
  'chat.draft.save': [{sessionId:string;text:string;expectedRevision:number;leaseEpoch:number;operationId:string},{text:string;revision:number}];
+ 'reviewDrafts.list': [{scopeProjectId?:string;scopeRoot?:string;after?:string;limit?:number},{drafts:ReviewDraft[];nextAfter?:string}];
+ 'reviewDrafts.upsert': [{draftId:string;scopeProjectId?:string;scopeRoot?:string;draft:unknown;assetPaths:string[];expectedRevision:number;operationId:string},ReviewDraftMutation];
+ 'reviewDrafts.delete': [{draftId:string;expectedRevision:number;operationId:string},ReviewDraftDelete];
+ /** `marker` is persisted atomically, so retrying a legacy-localStorage import cannot overwrite a newer row. */
+ 'reviewDrafts.importLegacy': [{marker:string;drafts:{draftId:string;scopeProjectId?:string;scopeRoot?:string;draft:unknown;assetPaths:string[]}[];complete?:boolean;operationId:string},{imported:boolean;complete:boolean}];
+ /** Desktop asset cleanup must retain files until `legacyImportComplete` is true. */
+ 'reviewDrafts.assetReferences': [{after?:string;limit?:number},{paths:string[];nextAfter?:string;legacyImportComplete:boolean}];
  'data.status': [{},DataStatus];
- 'data.backup': [{targetPath:string;operationId:string},{path:string;sizeBytes:number}];
+ 'data.backup': [{targetPath:string;operationId:string;desktopDataRoot?:string},{path:string;sizeBytes:number;format?:string;verification?:DataBackupVerification}];
+ 'data.backup.verify': [{path:string},DataBackupVerification];
  'data.relocation.status': [{},DataRelocationStatus];
  'data.relocation.prepare': [{targetPath:string;operationId:string},DataRelocationPrepared];
  'data.relocation.cancel': [{preparedOperationId:string;operationId:string},null];
@@ -970,8 +986,14 @@ export interface ThreadTermBridge {
  exportDiagnostics():Promise<string|null>;
  scheduleElectronCacheCleanup(schedule:boolean):Promise<{scheduled:boolean;available:boolean;result?:string}>;
 }
-export const METHODS = ['browser.approval.read','browser.approval.resolve','git.commit.selected','preview.attach','preview.detach','preview.snapshot','preview.prepare','preview.ack','preview.observe','preview.close','chat.repair','filesystem.resolve','session.launch.read','catalog.visibility.list','catalog.visibility.update','session.resume','session.organize','git.merge','git.merge.abort','project.catalog.list','project.update','worktree.branches','worktree.relocate','session.rerun','git.fetch','git.pull','git.push','session.config.read','session.config.save','session.retry.read','session.retry.update','chat.draft.read','chat.draft.save','device.status','device.enable','device.disable','device.identity.reset','device.pairing.create','device.pairing.cancel','device.list','device.rename','device.renew','device.revoke','git.stage','git.unstage','git.commit','filesystem.image','chat.snapshot','chat.image.read','terminal.read','session.lookup','session.present','chat.read','chat.subagent.read','data.status','data.backup','data.relocation.status','data.relocation.prepare','data.relocation.cancel','settings.export','settings.import.preview','settings.import.apply','usage.query','usage.ledger.summary','usage.ledger.series','usage.ledger.breakdown','usage.ledger.sessions','usage.ledger.session','usage.ledger.sources','usage.ledger.refresh','usage.ledger.rebuild','usage.ledger.cancel','usage.ledger.settings','usage.ledger.settings.update','runtime.health','terminal.host','runtime.shutdown','runtime.snapshot','project.add','project.remove','session.create','history.import','session.stop','session.update','session.attention.acknowledge','session.claim','session.renew','session.release','terminal.input','terminal.resize','settings.update','provider.list','provider.refresh','plugin.list','plugin.setEnabled','plugin.selectBrowserBinding','plugin.reload','chat.queue.read','chat.queue.add','chat.queue.update','chat.queue.remove','chat.queue.move','chat.queue.pause','chat.queue.resume','chat.queue.send','quickLaunch.list','quickLaunch.save','quickLaunch.delete','quickLaunch.run','quickLaunch.setup.read','quickLaunch.setup.save','quickLaunch.setup.run','quickLaunch.setup.status','history.list','history.read','chat.send','chat.cancel','chat.approve','chat.answer','chat.options','chat.option.set','chat.connection','chat.context.read','chat.connect','filesystem.list','filesystem.read','filesystem.write','draft.list','draft.put','draft.delete','git.status','git.diff','worktree.list','worktree.create','worktree.remove','workspace.save','workspace.delete','inbox.read','git.index.write','git.discard','git.checkout','git.branch.delete','git.branches','git.log','git.commit.show','git.commit.diff','git.blame','filesystem.create','filesystem.rename','filesystem.delete','filesystem.files','filesystem.search','review.list','review.changes','review.diff','review.revert','review.checkpoint','agentReview.start','agentReview.list','agentReview.mark','group.prerequisites','group.create','group.list','group.read','group.send','group.stop','group.resend','group.member.add','group.member.update','group.member.remove','group.rename','group.archive','session.documents.list','session.documents.pin','session.documents.unpin','chat.projectTrust.set','chat.feedback.add','chat.feedback.read','chat.feedback.dismiss','chat.fork','chat.backgroundTasks.list','chat.backgroundTask.stop','chat.steer'] as const satisfies readonly Method[];
+export const METHODS = ['browser.approval.read','browser.approval.resolve','git.commit.selected','preview.attach','preview.detach','preview.snapshot','preview.prepare','preview.ack','preview.observe','preview.close','chat.repair','filesystem.resolve','session.launch.read','catalog.visibility.list','catalog.visibility.update','session.resume','session.organize','git.merge','git.merge.abort','project.catalog.list','project.update','worktree.branches','worktree.relocate','session.rerun','git.fetch','git.pull','git.push','session.config.read','session.config.save','session.retry.read','session.retry.update','chat.draft.read','chat.draft.save','device.status','device.enable','device.disable','device.identity.reset','device.pairing.create','device.pairing.cancel','device.list','device.rename','device.renew','device.revoke','git.stage','git.unstage','git.commit','filesystem.image','chat.snapshot','chat.image.read','terminal.read','session.lookup','session.present','chat.read','chat.subagent.read','data.status','data.backup','data.backup.verify','data.relocation.status','data.relocation.prepare','data.relocation.cancel','settings.export','settings.import.preview','settings.import.apply','usage.query','usage.ledger.summary','usage.ledger.series','usage.ledger.breakdown','usage.ledger.sessions','usage.ledger.session','usage.ledger.sources','usage.ledger.refresh','usage.ledger.rebuild','usage.ledger.cancel','usage.ledger.settings','usage.ledger.settings.update','runtime.health','terminal.host','runtime.shutdown','runtime.snapshot','project.add','project.remove','session.create','history.import','session.stop','session.update','session.attention.acknowledge','session.claim','session.renew','session.release','terminal.input','terminal.resize','settings.update','provider.list','provider.refresh','plugin.list','plugin.setEnabled','plugin.selectBrowserBinding','plugin.reload','chat.queue.read','chat.queue.add','chat.queue.update','chat.queue.remove','chat.queue.move','chat.queue.pause','chat.queue.resume','chat.queue.send','quickLaunch.list','quickLaunch.save','quickLaunch.delete','quickLaunch.run','quickLaunch.setup.read','quickLaunch.setup.save','quickLaunch.setup.run','quickLaunch.setup.status','history.list','history.read','chat.send','chat.cancel','chat.approve','chat.answer','chat.options','chat.option.set','chat.connection','chat.context.read','chat.connect','filesystem.list','filesystem.read','filesystem.write','draft.list','draft.put','draft.delete','git.status','git.diff','worktree.list','worktree.create','worktree.remove','workspace.save','workspace.delete','inbox.read','git.index.write','git.discard','git.checkout','git.branch.delete','git.branches','git.log','git.commit.show','git.commit.diff','git.blame','filesystem.create','filesystem.rename','filesystem.delete','filesystem.files','filesystem.search','review.list','review.changes','review.diff','review.revert','review.checkpoint','agentReview.start','agentReview.list','agentReview.mark','group.prerequisites','group.create','group.list','group.read','group.send','group.stop','group.resend','group.member.add','group.member.update','group.member.remove','group.rename','group.archive','session.documents.list','session.documents.pin','session.documents.unpin','chat.projectTrust.set','chat.feedback.add','chat.feedback.read','chat.feedback.dismiss','chat.fork','chat.backgroundTasks.list','chat.backgroundTask.stop','chat.steer'] as const satisfies readonly Method[];
 // Kept additive while this long-standing literal remains source-compatible.
+// The legacy list predates review-draft RPCs; extend it here so old callers of
+// `validateRequest` accept the additive methods without rebuilding that list.
+(METHODS as unknown as string[]).unshift(
+ 'reviewDrafts.list','reviewDrafts.upsert','reviewDrafts.delete',
+ 'reviewDrafts.importLegacy','reviewDrafts.assetReferences',
+);
 // The RPC has a RequestMap entry above and must also pass the runtime registry.
 const stringFields: Partial<Record<Method,readonly string[]>> = {
  'browser.approval.read':['sessionId','turnId','approvalId'],
@@ -994,7 +1016,7 @@ const stringFields: Partial<Record<Method,readonly string[]>> = {
  'chat.snapshot':['sessionId'],
  'chat.image.read':['sessionId','itemId'],
  'chat.repair':['sessionId','operationId'],
- 'data.backup':['targetPath','operationId'],'data.relocation.prepare':['targetPath','operationId'],'data.relocation.cancel':['preparedOperationId','operationId'],'settings.import.preview':['bundle'],'settings.import.apply':['bundle','operationId'],
+ 'data.backup':['targetPath','operationId'],'data.backup.verify':['path'],'data.relocation.prepare':['targetPath','operationId'],'data.relocation.cancel':['preparedOperationId','operationId'],'settings.import.preview':['bundle'],'settings.import.apply':['bundle','operationId'],
  'runtime.shutdown':['operationId'],
  'project.add':['path','operationId'],'project.remove':['id','operationId'],
  'session.create':['cwd','provider','mode','operationId'],'history.import':['cwd','provider','nativeId','mode','operationId'],'session.config.read':['sessionId'],'session.config.save':['sessionId','cwd','provider','mode','operationId'],'session.retry.read':['sessionId'],'session.retry.update':['sessionId','operationId'],'session.stop':['sessionId','operationId'],
@@ -1369,6 +1391,7 @@ export function protocolIncompatibleReason(peer:unknown,role:'desktop'|'runtime'
 export type WireRequest = { [M in Method]: { v:1; id:string; method:M; params:RequestParams<M> } }[Method];
 export type WireSuccess = { [M in Method]: { v:1; id:string; method:M; result:RequestResult<M> } }[Method];
 
+export interface DataBackupVerification { verified:boolean; files:number; sizeBytes:number; checkedAt:string }
 export interface DataStatus { root:string;database:{path:string;sizeBytes:number};counts:{projects:number;sessions:number;workspaces:number;drafts:number;usageRecords:number} }
 export interface ThemeTokens { background:string;surface:string;text:string;muted:string;accent:string;border:string }
 export interface SettingsBundle { marker:'threadterm-v3-settings';version:1;exportedAt:string;settings:{theme?:'light'|'dark'|'system';language?:'zh-CN'|'en';shortcuts?:Record<string,string>;notifications?:Record<string,boolean>;customThemes?:Record<string,ThemeTokens>;themeSelection?:string;terminalCompatibility?:{aiCompletionHints:boolean};quickMessages?:QuickMessage[];'chatTools.ask'?:boolean;'chatTools.sessionInfo'?:boolean;'chatTools.feedback'?:boolean;'chatTools.delegation'?:boolean} }

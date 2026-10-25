@@ -1869,6 +1869,16 @@ impl RuntimeService {
                         &p.operation_id,
                     )
                 }
+                "reviewDrafts.list" | "reviewDrafts.assetReferences" => {
+                    crate::review_drafts::read(&self.db, &request.method, &request.params)
+                }
+                "reviewDrafts.upsert" | "reviewDrafts.delete" | "reviewDrafts.importLegacy" => {
+                    let operation_id = request.params.get("operationId")
+                        .and_then(Value::as_str)
+                        .ok_or_else(|| anyhow::anyhow!("invalid_request"))?;
+                    self.db.bind_operation(operation_id, &request.method, &request.params)?;
+                    crate::review_drafts::mutate(&self.db, &request.method, &request.params)
+                }
                 "chat.snapshot" => {
                     let p: ChatSnapshotRead = parse(&request.params)?;
                     self.db.acknowledge_session_replies(&p.session_id)?;

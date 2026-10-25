@@ -1264,6 +1264,141 @@
       ],
       "additionalProperties": false
     },
+    "RequestParams<\"reviewDrafts.list\">": {
+      "type": "object",
+      "properties": {
+        "scopeProjectId": {
+          "type": "string"
+        },
+        "scopeRoot": {
+          "type": "string"
+        },
+        "after": {
+          "type": "string"
+        },
+        "limit": {
+          "type": "number"
+        }
+      },
+      "additionalProperties": false
+    },
+    "RequestParams<\"reviewDrafts.upsert\">": {
+      "type": "object",
+      "properties": {
+        "draftId": {
+          "type": "string"
+        },
+        "scopeProjectId": {
+          "type": "string"
+        },
+        "scopeRoot": {
+          "type": "string"
+        },
+        "draft": {},
+        "assetPaths": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "expectedRevision": {
+          "type": "number"
+        },
+        "operationId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "draftId",
+        "draft",
+        "assetPaths",
+        "expectedRevision",
+        "operationId"
+      ],
+      "additionalProperties": false
+    },
+    "RequestParams<\"reviewDrafts.delete\">": {
+      "type": "object",
+      "properties": {
+        "draftId": {
+          "type": "string"
+        },
+        "expectedRevision": {
+          "type": "number"
+        },
+        "operationId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "draftId",
+        "expectedRevision",
+        "operationId"
+      ],
+      "additionalProperties": false
+    },
+    "RequestParams<\"reviewDrafts.importLegacy\">": {
+      "type": "object",
+      "properties": {
+        "marker": {
+          "type": "string"
+        },
+        "drafts": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "draftId": {
+                "type": "string"
+              },
+              "scopeProjectId": {
+                "type": "string"
+              },
+              "scopeRoot": {
+                "type": "string"
+              },
+              "draft": {},
+              "assetPaths": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              }
+            },
+            "required": [
+              "draftId",
+              "draft",
+              "assetPaths"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "complete": {
+          "type": "boolean"
+        },
+        "operationId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "marker",
+        "drafts",
+        "operationId"
+      ],
+      "additionalProperties": false
+    },
+    "RequestParams<\"reviewDrafts.assetReferences\">": {
+      "type": "object",
+      "properties": {
+        "after": {
+          "type": "string"
+        },
+        "limit": {
+          "type": "number"
+        }
+      },
+      "additionalProperties": false
+    },
     "RequestParams<\"data.status\">": {
       "type": "object",
       "additionalProperties": false
@@ -1276,11 +1411,26 @@
         },
         "operationId": {
           "type": "string"
+        },
+        "desktopDataRoot": {
+          "type": "string"
         }
       },
       "required": [
         "targetPath",
         "operationId"
+      ],
+      "additionalProperties": false
+    },
+    "RequestParams<\"data.backup.verify\">": {
+      "type": "object",
+      "properties": {
+        "path": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "path"
       ],
       "additionalProperties": false
     },
@@ -6122,6 +6272,136 @@
         },
         "method": {
           "type": "string",
+          "const": "reviewDrafts.list"
+        },
+        "params": {
+          "$ref": "#/definitions/RequestParams%3C%22reviewDrafts.list%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "params"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "reviewDrafts.upsert"
+        },
+        "params": {
+          "$ref": "#/definitions/RequestParams%3C%22reviewDrafts.upsert%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "params"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "reviewDrafts.delete"
+        },
+        "params": {
+          "$ref": "#/definitions/RequestParams%3C%22reviewDrafts.delete%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "params"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "reviewDrafts.importLegacy"
+        },
+        "params": {
+          "$ref": "#/definitions/RequestParams%3C%22reviewDrafts.importLegacy%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "params"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "reviewDrafts.assetReferences"
+        },
+        "params": {
+          "$ref": "#/definitions/RequestParams%3C%22reviewDrafts.assetReferences%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "params"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
           "const": "data.status"
         },
         "params": {
@@ -6152,6 +6432,32 @@
         },
         "params": {
           "$ref": "#/definitions/RequestParams%3C%22data.backup%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "params"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "data.backup.verify"
+        },
+        "params": {
+          "$ref": "#/definitions/RequestParams%3C%22data.backup.verify%22%3E"
         }
       },
       "required": [

@@ -37,9 +37,36 @@ fn schema_empty_first_creation_has_no_upgrade_data_to_back_up() {
     drop(Database::open(&path).unwrap());
     assert!(backups(root.path()).is_empty());
     let conn = Connection::open(path).unwrap();
-    assert_eq!(value(&conn, "schema.version"), "2");
+    assert_eq!(value(&conn, "schema.version"), "3");
     let history: Value = serde_json::from_str(&value(&conn, "schema.history")).unwrap();
     assert!(history[0]["backupFile"].is_null());
+}
+
+#[test]
+fn schema_migration_three_creates_review_draft_tables_and_reopens() {
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("review-drafts.sqlite");
+    drop(Database::open(&path).unwrap());
+    let conn = Connection::open(&path).unwrap();
+    for table in [
+        "review_drafts",
+        "review_draft_assets",
+        "review_draft_imports",
+    ] {
+        assert!(
+            conn.query_row(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
+                [table],
+                |_| Ok(()),
+            )
+            .is_ok(),
+            "missing {table}"
+        );
+    }
+    drop(conn);
+    drop(Database::open(&path).unwrap());
+    let conn = Connection::open(path).unwrap();
+    assert_eq!(value(&conn, "schema.version"), "3");
 }
 
 #[test]
@@ -63,10 +90,10 @@ fn schema_old_copy_is_backed_up_verified_and_migrated_only_once() {
         "Daily"
     );
     let conn = Connection::open(&path).unwrap();
-    assert_eq!(value(&conn, "schema.version"), "2");
-    assert_eq!(value(&conn, "schema.minReader"), "2");
+    assert_eq!(value(&conn, "schema.version"), "3");
+    assert_eq!(value(&conn, "schema.minReader"), "3");
     let history: Value = serde_json::from_str(&value(&conn, "schema.history")).unwrap();
-    assert_eq!(history.as_array().unwrap().len(), 2);
+    assert_eq!(history.as_array().unwrap().len(), 3);
     assert_eq!(history[0]["version"], 1);
     assert!(history[0]["appliedAt"].as_str().is_some());
     assert_eq!(history[0]["appVersion"], crate::RUNTIME_VERSION);
@@ -106,9 +133,12 @@ fn schema_unversioned_database_without_presets_upgrades_without_a_backup() {
         .unwrap();
     }
     drop(Database::open(&path).unwrap());
-    assert!(backups(root.path()).is_empty(), "nothing unrecoverable to back up");
+    assert!(
+        backups(root.path()).is_empty(),
+        "nothing unrecoverable to back up"
+    );
     let conn = Connection::open(&path).unwrap();
-    assert_eq!(value(&conn, "schema.version"), "2");
+    assert_eq!(value(&conn, "schema.version"), "3");
     let history: Value = serde_json::from_str(&value(&conn, "schema.history")).unwrap();
     assert!(history[0]["backupFile"].is_null());
     assert!(conn.prepare("SELECT * FROM usage_facts").is_err());

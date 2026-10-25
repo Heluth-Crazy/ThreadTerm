@@ -7,6 +7,9 @@ import { MAX_PAGE_SHOT_BYTES, pageCaptureRect, pageImageSize, pageRect, pageShot
 import { pagePickerSource } from './pagePickerScript.js';
 
 type PendingPick = { frame: WebFrameMain; cancel: () => void; cancelled: boolean };
+type PageShotReferenceCatalog = { paths: readonly string[]; nextAfter?: string; legacyImportComplete: boolean };
+type PageShotReferenceReader = (after?: string) => Promise<PageShotReferenceCatalog>;
+type DeletePageShotOptions = { force?: boolean; assetReferences?: PageShotReferenceReader };
 const pendingPicks = new Map<string, PendingPick>();
 /** Native browser pages are deliberately registered by the browser owner, keyed to the trusted app renderer.
  * FilePreview continues to use the iframe lookup below. */
@@ -46,6 +49,31 @@ async function confinedShot(directory: string, id: string, extension: 'png' | 'j
   } catch (error) { if (missingFile(error)) return undefined; throw error; }
 }
 
+function pathKey(path: string): string {
+  const value = resolve(path);
+  return process.platform === 'win32' ? value.toLowerCase() : value;
+}
+
+async function referencedShotPaths(directory: string, assetReferences: PageShotReferenceReader | undefined): Promise<Set<string> | undefined> {
+  if (!assetReferences) return undefined;
+  try {
+    const parent = pathKey(directory), references = new Set<string>(), cursors = new Set<string>();
+    let after: string | undefined;
+    for (;;) {
+      const catalog = await assetReferences(after);
+      if (!catalog?.legacyImportComplete || !Array.isArray(catalog.paths) || !catalog.paths.every(path => typeof path === 'string')) return undefined;
+      for (const path of catalog.paths) {
+        const resolved = resolve(path), name = resolved.slice(Math.max(resolved.lastIndexOf('\\'), resolved.lastIndexOf('/')) + 1), match = /^(.+)\.(png|jpg)$/i.exec(name);
+        if (match && validPageShotId(match[1]) && pathKey(dirname(resolved)) === parent) references.add(pathKey(resolved));
+      }
+      if (catalog.nextAfter === undefined) return references;
+      if (typeof catalog.nextAfter !== 'string' || !catalog.nextAfter || cursors.has(catalog.nextAfter)) return undefined;
+      cursors.add(catalog.nextAfter);
+      after = catalog.nextAfter;
+    }
+  } catch { return undefined; }
+}
+
 export async function readPageShot(id: unknown): Promise<string | undefined> {
   if (!validPageShotId(id)) throw new Error('Invalid page shot id');
   let directory: string;
@@ -67,20 +95,24 @@ export async function readPageShot(id: unknown): Promise<string | undefined> {
   return undefined;
 }
 
-export async function deletePageShots(ids: unknown): Promise<void> {
+export async function deletePageShots(ids: unknown, options: DeletePageShotOptions = {}): Promise<void> {
   if (!Array.isArray(ids) || ids.length > 200 || !ids.every(validPageShotId)) throw new Error('Invalid page shot ids');
   let directory: string;
   try { directory = await shotDirectory(); } catch (error) { if (missingFile(error)) return; throw error; }
+  const references = options.force ? new Set<string>() : await referencedShotPaths(directory, options.assetReferences);
+  if (!references) return;
   for (const id of new Set(ids)) {
     for (const extension of ['png', 'jpg'] as const) {
       const path = await confinedShot(directory, id, extension);
-      if (path) await unlink(path).catch((error: unknown) => { if (!missingFile(error)) throw error; });
+      if (path && !references.has(pathKey(path))) await unlink(path).catch((error: unknown) => { if (!missingFile(error)) throw error; });
     }
   }
 }
 
-async function cleanupPageShots(): Promise<void> {
+async function cleanupPageShots(assetReferences: PageShotReferenceReader | undefined): Promise<void> {
   const directory = await shotDirectory();
+  const references = await referencedShotPaths(directory, assetReferences);
+  if (!references) return;
   const cutoff = Date.now() - 30 * 24 * 60 * 60 * 1000;
   for (const entry of await readdir(directory, { withFileTypes: true })) {
     if (!entry.isFile()) continue;
@@ -88,7 +120,7 @@ async function cleanupPageShots(): Promise<void> {
     if (!match || !validPageShotId(match[1])) continue;
     try {
       const path = await confinedShot(directory, match[1], match[2] as 'png' | 'jpg');
-      if (path && (await lstat(path)).mtimeMs < cutoff) await unlink(path);
+      if (path && !references.has(pathKey(path)) && (await lstat(path)).mtimeMs < cutoff) await unlink(path);
     } catch { /* A busy or removed shot can be retried next startup. */ }
   }
 }
@@ -169,7 +201,7 @@ async function pickPageTarget(event: IpcMainInvokeEvent, value: unknown): Promis
     if (!pick) return null;
     const capture = captureShot(sender, frameRect, pick).then(async (shot) => {
       if (pending.cancelled || frame.detached) {
-        if (shot) await deletePageShots([shot.id]);
+        if (shot) await deletePageShots([shot.id], { force: true });
         return undefined;
       }
       return shot;
@@ -204,7 +236,7 @@ async function pickNativePage(native: NativePage, sender: WebContents, frameName
     if (pending.cancelled || contents.isDestroyed()) return null;
     const pick = sanitizePagePick(raw); if (!pick) return null;
     const capture = captureNativePageShot(contents, pick).then(async shot => {
-      if (pending.cancelled && shot) { await deletePageShots([shot.id]); return undefined; }
+      if (pending.cancelled && shot) { await deletePageShots([shot.id], { force: true }); return undefined; }
       return shot;
     });
     const shot = await Promise.race([capture, cancelled]);
@@ -236,7 +268,10 @@ async function previewFrameInfo(sender: WebContents, name: string): Promise<{ re
   try { const value = await sender.mainFrame.executeJavaScript(source, false) as { rect?: unknown; staticFrame?: unknown }; return typeof value?.staticFrame === 'boolean' ? { rect: pageRect(value.rect), staticFrame: value.staticFrame } : undefined; } catch { return undefined; }
 }
 
-export function registerPageComments(assertTrustedRenderer: (event: IpcMainInvokeEvent) => void): void {
+export function registerPageComments(
+  assertTrustedRenderer: (event: IpcMainInvokeEvent) => void,
+  assetReferences?: PageShotReferenceReader,
+): void {
   app.on('web-contents-created', (_event, contents) => {
     let latestContext = 0;
     contents.on('context-menu', (_menuEvent, params) => {
@@ -266,7 +301,7 @@ export function registerPageComments(assertTrustedRenderer: (event: IpcMainInvok
         const pick = sanitizePagePick(await frame.executeJavaScript(pagePickerSource('at', undefined, undefined, { x: x - rect.x, y: y - rect.y }), false));
         if (!pick || !current()) return;
         const shot = await captureShot(contents, rect, pick);
-        if (!current()) { if (shot) await deletePageShots([shot.id]); return; }
+        if (!current()) { if (shot) await deletePageShots([shot.id], { force: true }); return; }
         contents.send('threadterm:page-context-menu', { frameName, x, y, pick: { ...pick, ...(shot ? { shot } : {}) }, selectionText });
       })().catch(() => undefined).finally(() => {
         contents.removeListener('did-start-navigation', navigating);
@@ -296,6 +331,6 @@ export function registerPageComments(assertTrustedRenderer: (event: IpcMainInvok
     return frame.executeJavaScript(pagePickerSource('mark', target, request.flash as boolean | undefined), false).then((result: unknown) => result === true, () => false);
   });
   ipcMain.handle('threadterm:read-page-shot', async (event, id: unknown) => { assertTrustedRenderer(event); return readPageShot(id); });
-  ipcMain.handle('threadterm:delete-page-shots', async (event, ids: unknown) => { assertTrustedRenderer(event); return deletePageShots(ids); });
-  void cleanupPageShots().catch(() => undefined);
+  ipcMain.handle('threadterm:delete-page-shots', async (event, ids: unknown) => { assertTrustedRenderer(event); return deletePageShots(ids, { assetReferences }); });
+  void cleanupPageShots(assetReferences).catch(() => undefined);
 }

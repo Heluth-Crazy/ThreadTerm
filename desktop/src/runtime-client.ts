@@ -274,6 +274,13 @@ export async function waitForPendingRuntimeStartup(timeoutMs = 30_000): Promise<
   }
 }
 
+const DEFAULT_REQUEST_TIMEOUT_MS = 30_000;
+const BACKUP_REQUEST_TIMEOUT_MS = 30 * 60_000;
+
+function requestTimeoutMs(method: Method): number {
+  return method === 'data.backup' || method === 'data.backup.verify' ? BACKUP_REQUEST_TIMEOUT_MS : DEFAULT_REQUEST_TIMEOUT_MS;
+}
+
 export class RuntimeClient {
   constructor(private readonly options: { autoLaunch?: boolean } = {}) {}
   private control?: LengthPrefixedSocket;
@@ -321,7 +328,7 @@ export class RuntimeClient {
       const timer = setTimeout(() => {
         this.pending.delete(id);
         reject(new RuntimeUnavailableError(`Runtime request ${method} timed out`));
-      }, 30_000);
+      }, requestTimeoutMs(method));
       this.pending.set(id, { method, resolve: resolvePromise as (value: unknown) => void, reject, timer });
       try {
         this.control?.write(Buffer.from(JSON.stringify(message), 'utf8'));

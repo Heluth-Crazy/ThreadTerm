@@ -10,7 +10,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-pub(crate) const MAIN_VERSION: u32 = 2;
+pub(crate) const MAIN_VERSION: u32 = 3;
 pub(crate) const LEDGER_VERSION: u32 = 1;
 const HISTORY_LIMIT: usize = 16;
 
@@ -126,6 +126,35 @@ const MAIN_MIGRATIONS: &[Migration] = &[Migration {
              CREATE TRIGGER IF NOT EXISTS sessions_delete_retention AFTER DELETE ON sessions BEGIN
                 DELETE FROM metadata WHERE key IN ('terminal.outputEnd:'||OLD.id,'retention.userTitle:'||OLD.id,'retention.nativeHistory:'||OLD.id);
              END;"
+        )?;
+        Ok(())
+    },
+}, Migration {
+    version: 3,
+    min_reader: 3,
+    destructive: false,
+    needs_backup: |_| Ok(false),
+    apply: |tx| {
+        tx.execute_batch(
+            "CREATE TABLE IF NOT EXISTS review_drafts (
+                draft_id TEXT PRIMARY KEY,
+                scope_project_id TEXT,
+                scope_root TEXT,
+                content_json TEXT NOT NULL,
+                revision INTEGER NOT NULL,
+                deleted INTEGER NOT NULL DEFAULT 0 CHECK(deleted IN (0,1)),
+                updated_at TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS review_draft_assets (
+                draft_id TEXT NOT NULL REFERENCES review_drafts(draft_id) ON DELETE CASCADE,
+                path TEXT NOT NULL,
+                PRIMARY KEY(draft_id,path)
+            );
+            CREATE INDEX IF NOT EXISTS review_draft_assets_path ON review_draft_assets(path);
+            CREATE TABLE IF NOT EXISTS review_draft_imports (
+                marker TEXT PRIMARY KEY,
+                imported_at TEXT NOT NULL
+            );"
         )?;
         Ok(())
     },

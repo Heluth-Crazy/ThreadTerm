@@ -17,7 +17,7 @@
     "dev:renderer": "vite --config vite.config.ts --host 127.0.0.1",
     "dev:desktop": "npm run build:desktop && wait-on http://127.0.0.1:5173 && cross-env THREADTERM_V3_DEV_SERVER_URL=http://127.0.0.1:5173 electron .",
     "protocol:generate": "node protocol/generate.mjs",
-    "test:protocol": "node --experimental-strip-types --test protocol/contracts.test.mjs qa/browser-private-protocol.test.mjs",
+    "test:protocol": "node --experimental-strip-types --test protocol/contracts.test.mjs protocol/backup.test.mjs protocol/review-drafts.test.mjs qa/browser-private-protocol.test.mjs",
     "build": "npm run protocol:generate && npm run build:claude-sdk && npm run build:desktop && npm run build:renderer",
     "build:claude-sdk": "npm --workspace @threadterm/v3-claude-sdk run build",
     "build:desktop": "esbuild desktop/src/main.ts --bundle --platform=node --target=node22 --format=cjs --external:electron --outfile=desktop-dist/main.cjs && esbuild desktop/src/preload.ts --bundle --platform=node --target=node22 --format=cjs --external:electron --outfile=desktop-dist/preload.cjs && esbuild desktop/src/htmlPreviewSandboxPreload.ts --bundle --platform=node --target=node22 --format=cjs --external:electron --outfile=desktop-dist/htmlPreviewSandboxPreload.cjs",

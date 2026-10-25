@@ -1138,11 +1138,11 @@
             "string",
             "null"
           ],
-          "description": "Latest completed/read timestamp, or null before scanning."
+          "description": "Latest actual source read; unchanged refreshes preserve it, null before any source read."
         },
         "stats": {
           "$ref": "#/definitions/UsageLedgerScanStats",
-          "description": "Latest cumulative source statistics."
+          "description": "Indexed state, retained across unchanged refreshes. Progress events separately describe the current scan."
         },
         "bucketsReported": {
           "type": "array",
@@ -1174,15 +1174,15 @@
         },
         "filesRead": {
           "type": "number",
-          "description": "Files opened/read this scan."
+          "description": "Progress: files read this scan. Sources: present files with persisted index cursors."
         },
         "bytesRead": {
           "type": "number",
-          "description": "Provider-history bytes read."
+          "description": "Progress: bytes read this scan. Sources: indexed source-file sizes, including compressed sizes."
         },
         "facts": {
           "type": "number",
-          "description": "Facts parsed and persisted/merged."
+          "description": "Progress: facts parsed this scan. Sources: effective indexed request facts, after reconciliation."
         },
         "problems": {
           "type": "object",
@@ -2845,6 +2845,194 @@
       ],
       "additionalProperties": false
     },
+    "RequestResult<\"reviewDrafts.list\">": {
+      "type": "object",
+      "properties": {
+        "drafts": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/ReviewDraft"
+          }
+        },
+        "nextAfter": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "drafts"
+      ],
+      "additionalProperties": false
+    },
+    "ReviewDraft": {
+      "type": "object",
+      "properties": {
+        "draftId": {
+          "type": "string"
+        },
+        "scopeProjectId": {
+          "type": "string"
+        },
+        "scopeRoot": {
+          "type": "string"
+        },
+        "draft": {},
+        "revision": {
+          "type": "number"
+        },
+        "deleted": {
+          "type": "boolean"
+        },
+        "updatedAt": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "draftId",
+        "draft",
+        "revision",
+        "updatedAt"
+      ],
+      "additionalProperties": false,
+      "description": "A renderer-owned review-comment payload persisted canonically by the runtime."
+    },
+    "RequestResult<\"reviewDrafts.upsert\">": {
+      "$ref": "#/definitions/ReviewDraftMutation"
+    },
+    "ReviewDraftMutation": {
+      "anyOf": [
+        {
+          "type": "object",
+          "properties": {
+            "status": {
+              "type": "string",
+              "const": "ok"
+            },
+            "draft": {
+              "$ref": "#/definitions/ReviewDraft"
+            }
+          },
+          "required": [
+            "status",
+            "draft"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "status": {
+              "type": "string",
+              "const": "conflict"
+            },
+            "draft": {
+              "anyOf": [
+                {
+                  "$ref": "#/definitions/ReviewDraft"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "required": [
+            "status",
+            "draft"
+          ],
+          "additionalProperties": false
+        }
+      ]
+    },
+    "RequestResult<\"reviewDrafts.delete\">": {
+      "$ref": "#/definitions/ReviewDraftDelete"
+    },
+    "ReviewDraftDelete": {
+      "anyOf": [
+        {
+          "type": "object",
+          "properties": {
+            "status": {
+              "type": "string",
+              "const": "deleted"
+            },
+            "draftId": {
+              "type": "string"
+            },
+            "revision": {
+              "type": "number"
+            }
+          },
+          "required": [
+            "status",
+            "draftId",
+            "revision"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "status": {
+              "type": "string",
+              "const": "conflict"
+            },
+            "draft": {
+              "anyOf": [
+                {
+                  "$ref": "#/definitions/ReviewDraft"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "required": [
+            "status",
+            "draft"
+          ],
+          "additionalProperties": false
+        }
+      ]
+    },
+    "RequestResult<\"reviewDrafts.importLegacy\">": {
+      "type": "object",
+      "properties": {
+        "imported": {
+          "type": "boolean"
+        },
+        "complete": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "imported",
+        "complete"
+      ],
+      "additionalProperties": false
+    },
+    "RequestResult<\"reviewDrafts.assetReferences\">": {
+      "type": "object",
+      "properties": {
+        "paths": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "nextAfter": {
+          "type": "string"
+        },
+        "legacyImportComplete": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "paths",
+        "legacyImportComplete"
+      ],
+      "additionalProperties": false
+    },
     "RequestResult<\"data.status\">": {
       "$ref": "#/definitions/DataStatus"
     },
@@ -2914,6 +3102,12 @@
         },
         "sizeBytes": {
           "type": "number"
+        },
+        "format": {
+          "type": "string"
+        },
+        "verification": {
+          "$ref": "#/definitions/DataBackupVerification"
         }
       },
       "required": [
@@ -2921,6 +3115,33 @@
         "sizeBytes"
       ],
       "additionalProperties": false
+    },
+    "DataBackupVerification": {
+      "type": "object",
+      "properties": {
+        "verified": {
+          "type": "boolean"
+        },
+        "files": {
+          "type": "number"
+        },
+        "sizeBytes": {
+          "type": "number"
+        },
+        "checkedAt": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "verified",
+        "files",
+        "sizeBytes",
+        "checkedAt"
+      ],
+      "additionalProperties": false
+    },
+    "RequestResult<\"data.backup.verify\">": {
+      "$ref": "#/definitions/DataBackupVerification"
     },
     "RequestResult<\"data.relocation.status\">": {
       "$ref": "#/definitions/DataRelocationStatus"
@@ -9014,6 +9235,136 @@
         },
         "method": {
           "type": "string",
+          "const": "reviewDrafts.list"
+        },
+        "result": {
+          "$ref": "#/definitions/RequestResult%3C%22reviewDrafts.list%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "result"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "reviewDrafts.upsert"
+        },
+        "result": {
+          "$ref": "#/definitions/RequestResult%3C%22reviewDrafts.upsert%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "result"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "reviewDrafts.delete"
+        },
+        "result": {
+          "$ref": "#/definitions/RequestResult%3C%22reviewDrafts.delete%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "result"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "reviewDrafts.importLegacy"
+        },
+        "result": {
+          "$ref": "#/definitions/RequestResult%3C%22reviewDrafts.importLegacy%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "result"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "reviewDrafts.assetReferences"
+        },
+        "result": {
+          "$ref": "#/definitions/RequestResult%3C%22reviewDrafts.assetReferences%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "result"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
           "const": "data.status"
         },
         "result": {
@@ -9044,6 +9395,32 @@
         },
         "result": {
           "$ref": "#/definitions/RequestResult%3C%22data.backup%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "result"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "data.backup.verify"
+        },
+        "result": {
+          "$ref": "#/definitions/RequestResult%3C%22data.backup.verify%22%3E"
         }
       },
       "required": [

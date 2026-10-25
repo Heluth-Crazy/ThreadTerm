@@ -81,6 +81,7 @@ import { parseSupervision } from "./supervision";
 import { visibleCatalogSnapshot } from "./catalogVisibility";
 import { sessionWorkspaceKey } from "./sessionFileViews";
 import { acknowledgeGroupNavigation, observeGroupNavigation, type GroupNavigation } from "./groupNavigation";
+import { ensureReviewCommentsImported } from "./reviewComments";
 
 const TerminalSurface = lazy(async () => ({
   default: (await import("./components/TerminalSurface")).TerminalSurface,
@@ -163,6 +164,7 @@ export function App() {
       setError(caught);
     }
   }, []);
+  useEffect(() => { if (rawData) void ensureReviewCommentsImported().catch(() => undefined); }, [rawData]);
   useEffect(() => {
     void refresh();
     return subscribeEvents((event) => {

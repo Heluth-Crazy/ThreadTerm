@@ -22,14 +22,14 @@ export function AgentReviewSection({reviews,session,root,zh,scopeLabels,anchorRe
  const add=async(review:AgentReview)=>{
   const findings=review.findings?.filter(finding=>selected[review.id]?.has(finding.id)&&finding.path&&finding.line&&!unavailable.has(finding.id))??[];
   if(!root||!session.projectId||!findings.length)return;
-  if(loadReviewComments({projectId:session.projectId,root}).length+findings.length>MAX_FILE_COMMENTS){setIssue(text('There is not enough space for all selected comments.','没有足够空间添加所有选中的评论。'));return;}
   setBusy(`${review.id}:added`);
   try {
+   if((await loadReviewComments({projectId:session.projectId,root})).length+findings.length>MAX_FILE_COMMENTS){setIssue(text('There is not enough space for all selected comments.','没有足够空间添加所有选中的评论。'));return;}
    const settled=await Promise.allSettled(findings.map(async finding=>({finding,document:await request('filesystem.read',{projectId:session.projectId!,...(session.worktreePath?{worktreePath:session.worktreePath}:{}),path:finding.path!})})));
    const documents=settled.flatMap(result=>result.status==='fulfilled'?[result.value]:[]);
    const stale=[...settled.flatMap((result,index)=>result.status==='rejected'?[findings[index].id]:[]),...documents.filter(({finding,document})=>document.content.split(/\r?\n/)[finding.line!-1]===undefined).map(({finding})=>finding.id)];
    if(stale.length){setUnavailable(current=>new Set([...current,...stale]));setIssue(text('Some findings no longer point to a current file line. They are available to copy instead.','部分发现项不再指向当前文件行，现可复制。'));return;}
-   for(const {finding,document} of documents){const input=findingCommentInput(finding,{projectId:session.projectId,root,text:document.content.split(/\r?\n/)[finding.line!-1]});if(!input)throw new Error('agent_review_anchor_unavailable');addFileComment(input);}
+   for(const {finding,document} of documents){const input=findingCommentInput(finding,{projectId:session.projectId,root,text:document.content.split(/\r?\n/)[finding.line!-1]});if(!input)throw new Error('agent_review_anchor_unavailable');await addFileComment(input);}
    await request('agentReview.mark',{reviewId:review.id,findingIds:findings.map(finding=>finding.id),state:'added',operationId:operationId()});onChanged();
   }catch(error){setIssue(workbenchError(error,zh));}finally{setBusy(undefined);}
  };

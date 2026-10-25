@@ -165,6 +165,7 @@ pub fn dispatch(
         method,
         "data.status"
             | "data.backup"
+            | "data.backup.verify"
             | "data.relocation.status"
             | "data.relocation.prepare"
             | "data.relocation.cancel"
@@ -177,7 +178,8 @@ pub fn dispatch(
     }
     let result = match method {
         "data.status" => data_status(config, db)?,
-        "data.backup" => data_backup(db, object(params)?)?,
+        "data.backup" => data_backup(config, db, object(params)?)?,
+        "data.backup.verify" => crate::data_backup::verify(Path::new(string(object(params)?, "path")?))?,
         "data.relocation.status" => relocation_status(config)?,
         "data.relocation.prepare" => relocation_prepare(config, db, object(params)?)?,
         "data.relocation.cancel" => relocation_cancel(config, db, object(params)?)?,
@@ -219,31 +221,18 @@ fn data_status(config: &RuntimeConfig, db: &Database) -> Result<Value> {
     )
 }
 
-fn data_backup(db: &Database, values: &Map<String, Value>) -> Result<Value> {
+fn data_backup(
+    config: &RuntimeConfig,
+    db: &Database,
+    values: &Map<String, Value>,
+) -> Result<Value> {
     let target = Path::new(string(values, "targetPath")?);
     let operation_id = string(values, "operationId")?;
     if let Some(value) = db.operation(operation_id)? {
         return Ok(value);
     }
-    if target
-        .extension()
-        .and_then(|x| x.to_str())
-        .is_none_or(|x| !x.eq_ignore_ascii_case("sqlite3"))
-    {
-        return Err(anyhow!("invalid_backup_path"));
-    }
-    let parent = target.parent().filter(|parent| parent.is_dir());
-    if !target.is_absolute()
-        || target == db.path()
-        || parent.is_none()
-        || target.file_name().is_none()
-    {
-        return Err(anyhow!("invalid_backup_path"));
-    }
-    // A save-dialog-selected absolute file is explicit user intent. The runtime
-    // never derives a backup destination from settings or a relative cwd.
-    db.backup_to(target)?;
-    let result = json!({"path":target,"sizeBytes":fs::metadata(target)?.len()});
+    let desktop_root = Path::new(string(values, "desktopDataRoot")?);
+    let result = crate::data_backup::create(config, db, target, desktop_root)?;
     db.transaction(|tx| complete(tx, operation_id, "data.backup", &result))?;
     Ok(result)
 }
@@ -1602,25 +1591,30 @@ mod tests {
     #[test]
     fn backups_are_sqlite_snapshots() {
         let root = tempfile::tempdir().unwrap();
-        let config = config(root.path());
+        let data = root.path().join("data");
+        fs::create_dir(&data).unwrap();
+        let config = config(&data);
         let db = Database::open(&config.database_path).unwrap();
         initialize(&db).unwrap();
         let backup = root.path().join("backup.sqlite3");
+        let profile = root.path().join("profile");
+        fs::create_dir(&profile).unwrap();
         let result = dispatch(
             &config,
             &db,
             "data.backup",
-            &json!({"targetPath":backup,"operationId":"backup"}),
+            &json!({"targetPath":backup,"operationId":"backup","desktopDataRoot":profile}),
         )
         .unwrap()
         .unwrap();
         assert!(PathBuf::from(result["path"].as_str().unwrap()).exists());
         assert!(result["sizeBytes"].as_u64().unwrap() > 0);
+        assert_eq!(result["verification"]["verified"], true);
         assert!(dispatch(
             &config,
             &db,
             "data.backup",
-            &json!({"targetPath":"relative.sqlite3","operationId":"relative"})
+            &json!({"targetPath":"relative.sqlite3","operationId":"relative","desktopDataRoot":profile})
         )
         .is_err());
     }
