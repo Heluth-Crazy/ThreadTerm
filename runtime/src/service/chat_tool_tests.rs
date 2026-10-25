@@ -714,11 +714,45 @@ fn session_info_is_scoped_to_owned_delegates_and_caps_the_latest_transcript() {
             )
             .unwrap();
     }
+    fixture.db.bind_native_id(&target, "target-native").unwrap();
+    let ledger = crate::usage_ledger::ledger_db::test_connection(fixture.db.path()).unwrap();
+    let mut native = crate::usage_ledger::facts::Fact::new(
+        "codex",
+        "target-native",
+        "native-target",
+        "2026-01-02T00:00:00Z",
+    );
+    native.source = "native:fixture@1".into();
+    native.buckets.input = Some(12);
+    native.buckets.cache_read = Some(56);
+    native.buckets.output = Some(34);
+    native.buckets.reasoning = Some(78);
+    crate::usage_ledger::store::upsert_fact(&ledger, &native).unwrap();
+    crate::usage_ledger::store::cover_session(
+        &ledger,
+        "codex",
+        "target-native",
+        "native:fixture@1",
+    )
+    .unwrap();
+    // A different provider can share a native-looking identifier but must not
+    // contribute to this Codex session.
+    let mut other_provider = native.clone();
+    other_provider.provider = "claude".into();
+    other_provider.key = "other-provider".into();
+    crate::usage_ledger::store::upsert_fact(&ledger, &other_provider).unwrap();
+    crate::usage_ledger::store::cover_session(
+        &ledger,
+        "claude",
+        "target-native",
+        "native:fixture@1",
+    )
+    .unwrap();
     fixture
         .db
         .transaction(|tx| {
             tx.execute(
-                "INSERT INTO usage_records(id,session_id,provider,recorded_at,input_tokens,output_tokens) VALUES('usage',?,'codex',?,12,34)",
+                "INSERT INTO usage_records(id,session_id,provider,recorded_at,input_tokens,output_tokens) VALUES('usage',?,'codex',?,999,999)",
                 rusqlite::params![target, chrono::Utc::now().to_rfc3339()],
             )?;
             Ok(())
@@ -758,6 +792,34 @@ fn session_info_is_scoped_to_owned_delegates_and_caps_the_latest_transcript() {
             .unwrap_err()
             .to_string(),
         "session_info_scope_denied"
+    );
+}
+
+#[test]
+fn session_info_uses_live_ledger_facts_before_native_history_exists() {
+    let fixture = Fixture::new(false, true, false);
+    let target = create_chat(&fixture.db, "Live", "live-session");
+    let ledger = crate::usage_ledger::ledger_db::test_connection(fixture.db.path()).unwrap();
+    let mut live = crate::usage_ledger::facts::Fact::new(
+        "codex",
+        &target,
+        "live-target",
+        "2026-01-02T00:00:00Z",
+    );
+    live.source = format!("live:{target}:call");
+    live.threadterm_session_id = Some(target.clone());
+    live.buckets.input = Some(5);
+    live.buckets.cache_read = Some(7);
+    live.buckets.output = Some(6);
+    live.buckets.reasoning = Some(8);
+    crate::usage_ledger::store::upsert_fact(&ledger, &live).unwrap();
+
+    let info = fixture
+        .tool("chat.tool.sessionInfo", json!({"session":target}))
+        .unwrap();
+    assert_eq!(
+        info["tokenTotals"],
+        json!({"input":5,"output":6,"total":11})
     );
 }
 

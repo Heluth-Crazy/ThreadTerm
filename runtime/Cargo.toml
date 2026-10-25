@@ -25,6 +25,7 @@ hyper = { version = "1.6", features = ["http1", "server"] }
 hyper-util = { version = "0.1", features = ["tokio"] }
 ignore = "0.4"
 local-ip-address = "0.6.5"
+memchr = "2"
 portable-pty = "0.8"
 rand = "0.8"
 rcgen = "0.13"
@@ -60,3 +61,9 @@ path = "src/bin/threadterm-v3-mcp.rs"
 name = "pty_lifecycle"
 path = "tests/pty_lifecycle.rs"
 harness = false
+
+# Dev builds keep the runtime's own code unoptimized for debugging but optimize
+# dependencies (bundled SQLite, serde_json, zstd): a first Usage history scan went
+# from ~11 min to ~2 min. Costs one longer dependency build after a clean.
+[profile.dev.package."*"]
+opt-level = 2

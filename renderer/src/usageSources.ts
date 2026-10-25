@@ -104,7 +104,8 @@ export function reportedBuckets(buckets: readonly string[] | undefined): string[
   return BUCKET_ORDER.filter(bucket => known.has(bucket));
 }
 
-/** A provider row with nothing to say about files stays quiet instead of printing zeros. */
+/** Sources counts describe indexed files, retained across unchanged refreshes.
+ * A provider with no indexed or discovered files stays quiet. */
 export function fileLine(stats: UsageLedgerScanStats | undefined): { read: number; found: number } | null {
   const read = count(stats?.filesRead), found = count(stats?.filesFound);
   return read || found ? { read, found } : null;

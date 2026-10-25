@@ -3,7 +3,7 @@ use super::*;
 use chrono::{Duration, Local};
 use rusqlite::Connection;
 use serde_json::{json, Value};
-use std::{fs, sync::Arc, time::Instant};
+use std::{fs, io::Write, sync::Arc, time::Instant};
 
 fn scrub(value: &mut Value) {
     match value {
@@ -142,9 +142,30 @@ fn usage_accuracy_export() {
     }
     let daily = raw(&conn, "provider,date(occurred_at,'localtime'),model");
     let sessions = raw(&conn, "provider,native_session_id,model");
+    // Numeric request snapshots prove that differences between real-history
+    // runs are appended requests, without retaining transcript bytes or paths.
+    let mut numeric =
+        std::io::BufWriter::new(fs::File::create(output.join("facts.jsonl")).unwrap());
+    let mut statement = conn.prepare("SELECT json_array(fact_key,provider,native_session_id,model,occurred_at,input_tokens,cache_read_tokens,cache_write5m_tokens,cache_write1h_tokens,cache_write_unknown_tokens,output_tokens,reasoning_tokens,reported_cost,estimated_cost,source) FROM usage_facts ORDER BY fact_key").unwrap();
+    for row in statement
+        .query_map([], |row| row.get::<_, String>(0))
+        .unwrap()
+    {
+        writeln!(numeric, "{}", row.unwrap()).unwrap();
+    }
+    numeric.flush().unwrap();
+    let progress_events: i64 = db
+        .transaction(|tx| {
+            Ok(tx.query_row(
+                "SELECT COUNT(*) FROM outbox WHERE event='usage.ledger.progress'",
+                [],
+                |row| row.get(0),
+            )?)
+        })
+        .unwrap();
     let second_ms = refresh(&db);
     let result = json!({"capturedAt":chrono::Utc::now().to_rfc3339(),"parserVersion":facts::PARSER_VERSION,"timeZone":Local::now().offset().to_string(),
-        "firstScanMs":first_ms,"secondScanMs":second_ms,"ingestionProfile":ingestion_profile,"ranges":ranges,
+        "firstScanMs":first_ms,"secondScanMs":second_ms,"firstScanProgressEvents":progress_events,"ingestionProfile":ingestion_profile,"ranges":ranges,
         "rawDaily":daily,"rawSessions":sessions,"sources":rpc(&db,"usage.ledger.sources",&json!({}))});
     fs::write(
         output.join("threadterm.json"),
@@ -152,4 +173,121 @@ fn usage_accuracy_export() {
     )
     .unwrap();
     println!("PASS usage_accuracy_export first_scan_ms={first_ms} second_scan_ms={second_ms} facts_sessions={}", result["rawSessions"].as_array().unwrap().len());
+}
+
+#[test]
+#[ignore = "Explicit real-history refresh timing with a controlled TEMP-only append"]
+fn usage_real_history_single_append() {
+    let seed = std::path::PathBuf::from(
+        std::env::var_os("UA3_APPEND_SEED_DIR").expect("set UA3_APPEND_SEED_DIR"),
+    );
+    let output =
+        std::path::PathBuf::from(std::env::var_os("UA3_EXPORT_DIR").expect("set UA3_EXPORT_DIR"));
+    assert!(seed.is_absolute() && seed.starts_with(std::env::temp_dir()));
+    assert!(output.is_absolute() && output.starts_with(std::env::temp_dir()));
+    fs::create_dir_all(&output).unwrap();
+    let scratch = tempfile::tempdir().unwrap();
+    for name in [
+        "audit.sqlite",
+        "audit.sqlite-wal",
+        "usage-ledger.sqlite",
+        "usage-ledger.sqlite-wal",
+    ] {
+        let source = seed.join(name);
+        if source.is_file() {
+            fs::copy(source, scratch.path().join(name)).unwrap();
+        }
+    }
+    let db = Arc::new(crate::db::Database::open(&scratch.path().join("audit.sqlite")).unwrap());
+    let conn = ledger_db::open_worker(db.path()).unwrap();
+    let cancelled = std::sync::atomic::AtomicBool::new(false);
+    let fixture = scratch.path().join("active.jsonl");
+    let event = |index| {
+        json!({"type":"token_usage_record","timestamp":"2026-01-02T00:00:01Z","payload":{
+        "thread_id":"append-fixture", "response_id":format!("append-{index}"), "model":"fixture-model",
+        "usage":{"input_tokens":2,"cached_input_tokens":1,"output_tokens":1}}})
+    };
+    fs::write(
+        &fixture,
+        format!(
+            "{}\n{}\n",
+            json!({"type":"session_meta","payload":{"id":"append-fixture"}}),
+            event(0)
+        ),
+    )
+    .unwrap();
+    let mut roots = discovery::roots();
+    roots
+        .iter_mut()
+        .find(|root| root.provider == "codex")
+        .unwrap()
+        .trees
+        .push(fixture.clone());
+    let run = || {
+        let started = Instant::now();
+        live::import_log(&conn, &cancelled).unwrap();
+        store::rebuild_query_cache(&conn, &cancelled).unwrap();
+        store::import_legacy_cancellable(&conn, &cancelled).unwrap();
+        let mut reads = std::collections::BTreeMap::new();
+        for root in &roots {
+            let stats = scanner::scan(root, &conn, &cancelled, &mut |provider, stats| {
+                db.transaction(|tx| {
+                    tx.execute("INSERT INTO outbox(event,data,created_at) VALUES('usage.ledger.progress',?,?)", rusqlite::params![json!({"provider":provider,"state":"running","stats":stats}).to_string(), chrono::Utc::now().to_rfc3339()])?;
+                    Ok(())
+                }).unwrap();
+            }).unwrap();
+            reads.insert(root.provider.clone(), stats.files_read);
+        }
+        store::refresh_attributions(&conn, &cancelled).unwrap();
+        live::import_log(&conn, &cancelled).unwrap();
+        store::rebuild_dirty_activity(&conn, &cancelled).unwrap();
+        store::reprice_all(&conn, &json!({}), &cancelled).unwrap();
+        (started.elapsed().as_millis(), reads)
+    };
+    let mut measurements = Vec::new();
+    let mut steady = None;
+    for _ in 0..5 {
+        let (ms, reads) = run();
+        measurements.push(json!({"kind":"warm","ms":ms,"filesRead":reads}));
+        fs::write(
+            output.join("refresh-timings.json"),
+            serde_json::to_vec_pretty(&json!({"measurements":measurements})).unwrap(),
+        )
+        .unwrap();
+        if reads.values().sum::<u64>() == 0 {
+            steady = Some(ms);
+            break;
+        }
+    }
+    let no_change_ms = steady;
+    let before: i64 = conn.query_row("SELECT COUNT(*) FROM usage_facts WHERE provider='codex' AND native_session_id='append-fixture'", [], |row| row.get(0)).unwrap();
+    let mut single = None;
+    for index in 1..=5 {
+        writeln!(
+            fs::OpenOptions::new().append(true).open(&fixture).unwrap(),
+            "{}",
+            event(index)
+        )
+        .unwrap();
+        let (ms, reads) = run();
+        measurements.push(json!({"kind":"append","ms":ms,"filesRead":reads}));
+        fs::write(
+            output.join("refresh-timings.json"),
+            serde_json::to_vec_pretty(&json!({"measurements":measurements})).unwrap(),
+        )
+        .unwrap();
+        let count: i64 = conn.query_row("SELECT COUNT(*) FROM usage_facts WHERE provider='codex' AND native_session_id='append-fixture'", [], |row| row.get(0)).unwrap();
+        assert_eq!(count, before + index);
+        if reads.values().sum::<u64>() == 1 {
+            single = Some(ms);
+            break;
+        }
+    }
+    let append_ms = single;
+    fs::write(output.join("refresh-timings.json"), serde_json::to_vec_pretty(&json!({"noChangeMs":no_change_ms,"singleAppendMs":append_ms,"measurements":measurements})).unwrap()).unwrap();
+    println!("PASS usage_real_history_single_append controlled_requests_preserved");
+    match (no_change_ms, append_ms) {
+        (Some(warm), Some(appended)) => println!("PASS real_history_refresh no_change_ms={warm} single_append_ms={appended}"),
+        _ => println!("INCONCLUSIVE strict_refresh_samples real_histories_changed=true; inspect refresh-timings.json"),
+    }
 }

@@ -1722,6 +1722,7 @@ dependencies = [
  "hyper-util",
  "ignore",
  "local-ip-address",
+ "memchr",
  "portable-pty",
  "rand 0.8.8",
  "rcgen",

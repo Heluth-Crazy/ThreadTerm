@@ -434,7 +434,7 @@ fn needs_json_parse(provider: &str, line: &[u8]) -> bool {
         "\"token_count\"",
     ]
     .into_iter()
-    .any(|needle| line.contains(needle))
+    .any(|needle| memchr::memmem::find(line.as_bytes(), needle.as_bytes()).is_some())
 }
 
 /// Returns an unescaped root `type` value found before a nested value. A
@@ -532,6 +532,16 @@ pub fn scan(
         profile_print(&root.provider);
         return Ok(stats);
     }
+    let mut last_progress = None;
+    let mut report = |provider: &str, stats: &ScanStats| {
+        let now = std::time::Instant::now();
+        if last_progress
+            .is_none_or(|last| now.duration_since(last) >= std::time::Duration::from_millis(250))
+        {
+            progress(provider, stats);
+            last_progress = Some(now);
+        }
+    };
     let mut found = false;
     let mut seen_sources = BTreeSet::new();
     for tree in &root.trees {
@@ -558,7 +568,7 @@ pub fn scan(
                 conn,
                 cancelled,
                 &mut stats,
-                progress,
+                &mut report,
                 &mut seen_sources,
             ) {
                 if database_busy(&error) {
@@ -566,7 +576,7 @@ pub fn scan(
                 }
                 candidate_error(&mut stats, &error);
             }
-            progress(&root.provider, &stats);
+            report(&root.provider, &stats);
             continue;
         }
         // A stack of directory iterators bounds memory by depth, not file count.
@@ -608,7 +618,7 @@ pub fn scan(
                             conn,
                             cancelled,
                             &mut stats,
-                            progress,
+                            &mut report,
                             &mut seen_sources,
                         ) {
                             if database_busy(&error) {
@@ -616,7 +626,7 @@ pub fn scan(
                             }
                             candidate_error(&mut stats, &error);
                         }
-                        progress(&root.provider, &stats);
+                        report(&root.provider, &stats);
                     }
                 }
             }
@@ -637,6 +647,7 @@ pub fn scan(
     };
     save_provider(conn, root, status, &stats)?;
     store::force_checkpoint_index_connection(conn)?;
+    drop(report);
     progress(&root.provider, &stats);
     #[cfg(test)]
     profile_print(&root.provider);
@@ -645,8 +656,23 @@ pub fn scan(
 
 fn save_provider(conn: &Connection, root: &Root, status: &str, stats: &ScanStats) -> Result<()> {
     let root_path = root.path.to_string_lossy().into_owned();
-    let stats = serde_json::to_string(stats)?;
-    let last_read = chrono::Utc::now().to_rfc3339();
+    // Progress counts belong to this scan; Sources describes the retained index.
+    let mut indexed = stats.clone();
+    let (files, bytes, last_read): (u64, u64, Option<String>) = conn.query_row(
+        "SELECT COUNT(*),COALESCE(SUM(CASE WHEN json_valid(cursor) THEN json_extract(cursor,'$.size') ELSE 0 END),0),MAX(last_read)
+         FROM usage_sources WHERE provider=? AND missing=0",
+        [&root.provider],
+        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+    )?;
+    indexed.files_read = files;
+    indexed.bytes_read = bytes;
+    indexed.facts = conn.query_row(
+        "SELECT COALESCE(SUM(requests),0) FROM usage_daily_rollups WHERE provider=?",
+        [&root.provider],
+        |row| row.get(0),
+    )?;
+    let stats = serde_json::to_string(&indexed)?;
+    let last_read = last_read.unwrap_or_default();
     let sql = "INSERT INTO usage_scan_providers(provider,root,status,stats,last_read) VALUES(?,?,?,?,?) ON CONFLICT(provider) DO UPDATE SET root=excluded.root,status=excluded.status,stats=excluded.stats,last_read=excluded.last_read";
     if conn.is_autocommit() {
         let write_started = std::time::Instant::now();
@@ -967,7 +993,7 @@ where
     F: FnMut(&mut R, &mut Cursor),
 {
     let mut lines = 0;
-    let mut fact_limit = 32usize;
+    let mut fact_limit = 128usize;
     let mut facts = Vec::new();
     let mut replaced = Vec::new();
     let mut covered = BTreeSet::new();
@@ -1045,10 +1071,9 @@ where
                 }
             }
             progress(&root.provider, stats);
-            // The transaction and any scheduled checkpoint have both completed.
-            // Give an interactive connection a predictable admission opportunity
-            // before the scanner prepares another batch.
-            std::thread::sleep(std::time::Duration::from_millis(1));
+            // The ledger commit is complete; let ready interactive work run
+            // without a fixed pause for every ingestion batch.
+            std::thread::yield_now();
         }
     }
     cursor.exhausted = !cancelled.load(Ordering::Relaxed);
@@ -1239,27 +1264,8 @@ fn bounded_line(
     }
 }
 
-/// Checks eight ASCII bytes at once, then confirms the rare candidate byte.
-/// This avoids a scalar iterator step for every decoded Codex byte without an
-/// additional dependency.
 fn find_newline(bytes: &[u8]) -> Option<usize> {
-    const LOW_BITS: u64 = 0x0101_0101_0101_0101;
-    const HIGH_BITS: u64 = 0x8080_8080_8080_8080;
-    const NEWLINES: u64 = 0x0A0A_0A0A_0A0A_0A0A;
-    let mut chunks = bytes.chunks_exact(8);
-    for (chunk_index, chunk) in chunks.by_ref().enumerate() {
-        let word = u64::from_ne_bytes(chunk.try_into().expect("eight-byte chunk"));
-        let differs = word ^ NEWLINES;
-        if differs.wrapping_sub(LOW_BITS) & !differs & HIGH_BITS != 0 {
-            if let Some(offset) = chunk.iter().position(|byte| *byte == b'\n') {
-                return Some(chunk_index * 8 + offset);
-            }
-        }
-    }
-    let tail = chunks.remainder();
-    tail.iter()
-        .position(|byte| *byte == b'\n')
-        .map(|offset| bytes.len() - tail.len() + offset)
+    memchr::memchr(b'\n', bytes)
 }
 
 pub fn sources(conn: &Connection) -> Result<Value> {
@@ -1281,7 +1287,7 @@ pub fn sources(conn: &Connection) -> Result<Value> {
     let mut providers = Vec::new();
     for row in rows {
         let (provider, root, status, stats, last_read, missing_sources) = row?;
-        providers.push(json!({"provider":provider,"root":root,"status":status,"lastRead":last_read,
+        providers.push(json!({"provider":provider,"root":root,"status":status,"lastRead":(!last_read.is_empty()).then_some(last_read),
             "stats":serde_json::from_str::<Value>(&stats)?,"missingSources":missing_sources,"bucketsReported": match provider.as_str() {
                 "claude" => vec!["input","cacheRead","cacheWrite5m","cacheWrite1h","cacheWriteUnknown","output"],
                 "opencode" | "pi" | "kimi" => vec!["input","cacheRead","cacheWriteUnknown","output","reasoning"],
@@ -1345,6 +1351,64 @@ mod scanner_revision_tests {
     }
 
     #[test]
+    fn unchanged_refresh_preserves_indexed_source_statistics_and_last_read() {
+        let (dir, conn) = scratch();
+        let history = dir.path().join("history");
+        fs::create_dir(&history).unwrap();
+        fs::write(history.join("session.jsonl"), format!("{}\n", json!({
+            "sessionId":"source-session", "requestId":"request", "timestamp":"2026-01-02T03:04:05Z",
+            "message":{"id":"message", "usage":{"input_tokens":3,"output_tokens":2}}
+        }))).unwrap();
+        let root = Root {
+            provider: "claude".into(),
+            path: history.clone(),
+            trees: vec![history],
+        };
+        let cancelled = AtomicBool::new(false);
+        scan(&root, &conn, &cancelled, &mut |_, _| {}).unwrap();
+        let before = sources(&conn).unwrap()["providers"][0].clone();
+        let refresh = scan(&root, &conn, &cancelled, &mut |_, _| {}).unwrap();
+        assert_eq!(refresh.files_read, 0, "progress describes this scan only");
+        let after = sources(&conn).unwrap()["providers"][0].clone();
+        assert_eq!(after["stats"]["filesRead"], 1);
+        assert_eq!(after["stats"]["facts"], 1);
+        assert_eq!(after["stats"]["bytesRead"], before["stats"]["bytesRead"]);
+        assert_eq!(after["lastRead"], before["lastRead"]);
+    }
+
+    #[test]
+    fn scan_progress_is_time_bounded_and_keeps_final_counts() {
+        let (dir, conn) = scratch();
+        let history = dir.path().join("history");
+        fs::create_dir(&history).unwrap();
+        for index in 0..24 {
+            fs::write(history.join(format!("session-{index}.jsonl")), "{}\n").unwrap();
+        }
+        let root = Root {
+            provider: "claude".into(),
+            path: history.clone(),
+            trees: vec![history],
+        };
+        let cancelled = AtomicBool::new(false);
+        scan(&root, &conn, &cancelled, &mut |_, _| {}).unwrap();
+        let mut events = Vec::new();
+        let started = std::time::Instant::now();
+        let stats = scan(&root, &conn, &cancelled, &mut |_, stats| {
+            events.push(stats.clone())
+        })
+        .unwrap();
+        let maximum = started.elapsed().as_millis() / 250 + 2;
+        assert!(
+            events.len() as u128 <= maximum,
+            "{} events exceed cadence {maximum}",
+            events.len()
+        );
+        assert_eq!(events.last().unwrap().files_found, stats.files_found);
+        assert_eq!(events.last().unwrap().files_read, 0);
+        assert_eq!(stats.files_found, 24);
+    }
+
+    #[test]
     fn codex_prefilter_skips_response_item_transcript_keywords() {
         let line = br#"{"timestamp":"2026-01-02T03:04:05Z","type":"response_item","payload":{"text":"token_count token_usage_record"}}"#;
         assert_eq!(root_json_type(line), Some(&b"response_item"[..]));
@@ -1361,6 +1425,15 @@ mod scanner_revision_tests {
         assert_eq!(find_newline(b"abcdefgh\n"), Some(8));
         assert_eq!(find_newline(b"abc"), None);
         assert_eq!(find_newline(b"\nabcdef"), Some(0));
+        for length in 0..128 {
+            let mut bytes = vec![0xff; length];
+            assert_eq!(find_newline(&bytes), None);
+            for offset in 0..length {
+                bytes[offset] = b'\n';
+                assert_eq!(find_newline(&bytes), Some(offset));
+                bytes[offset] = 0xff;
+            }
+        }
     }
 
     #[test]

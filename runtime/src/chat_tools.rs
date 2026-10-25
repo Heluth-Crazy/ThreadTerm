@@ -503,13 +503,13 @@ impl ChatTools {
                 let cwd = crate::session_configs::read(&self.db, &session.id)?
                     .map(|config| config.launch.cwd)
                     .or_else(|| session.worktree_path.clone());
-                let (input_tokens, output_tokens): (i64, i64) = self.db.transaction(|tx| {
-                    Ok(tx.query_row(
-                        "SELECT COALESCE(SUM(input_tokens),0),COALESCE(SUM(output_tokens),0) FROM usage_records WHERE session_id=?",
-                        [&session.id],
-                        |row| Ok((row.get(0)?, row.get(1)?)),
-                    )?)
-                })?;
+                let (input_tokens, output_tokens) =
+                    crate::usage_ledger::queries::session_token_totals(
+                        self.db.path(),
+                        &session.provider,
+                        session.native_id.as_deref(),
+                        &session.id,
+                    )?;
                 let items: Vec<crate::domain::ChatItem> = self.db.transaction(|tx| {
                     let mut statement = tx.prepare(
                         "SELECT data FROM (
@@ -565,6 +565,8 @@ impl ChatTools {
             "status":session.status,
             "createdAt":session.created_at,
             "updatedAt":session.updated_at,
+            // `tokenTotals` remains the long-standing fresh-input plus generated-output
+            // view. Ledger cache and reasoning buckets stay out of these fields.
             "tokenTotals":{"input":input_tokens,"output":output_tokens,"total":input_tokens.saturating_add(output_tokens)},
             "transcript":transcript,
             "truncated":truncated,

@@ -1,5 +1,5 @@
 use super::{
-    store,
+    ledger_db, store,
     time::{self, Granularity},
 };
 use anyhow::{anyhow, Result};
@@ -752,6 +752,54 @@ pub fn query(conn: &Connection, method: &str, params: &Value) -> Result<Value> {
         "usage.ledger.session" => session(conn, &f, params),
         _ => Err(anyhow!("unknown_usage_method")),
     }
+}
+
+/// Returns the existing session-info token fields: fresh input and generated
+/// output. Cached and reasoning buckets deliberately remain outside that
+/// legacy two-field contract.
+pub fn session_token_totals(
+    main: &std::path::Path,
+    provider: &str,
+    native_id: Option<&str>,
+    threadterm_session_id: &str,
+) -> Result<(i64, i64)> {
+    let reader = ledger_db::reader(main)?;
+    let conn = reader
+        .lock()
+        .map_err(|_| anyhow!("usage_ledger_reader_lock"))?;
+    if let Some(native_id) = native_id.filter(|id| !id.is_empty()) {
+        let covered: bool = conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM usage_native_coverage
+             WHERE provider=? AND native_session_id=?)",
+            params![provider, native_id],
+            |row| row.get(0),
+        )?;
+        if covered {
+            let sql = format!(
+                "SELECT COALESCE(SUM(f.input_tokens),0),COALESCE(SUM(f.output_tokens),0)
+                 FROM usage_facts f
+                 WHERE f.provider=? AND f.native_session_id=? AND {}",
+                store::EFFECTIVE_FACT
+            );
+            return Ok(conn.query_row(&sql, params![provider, native_id], |row| {
+                Ok((row.get(0)?, row.get(1)?))
+            })?);
+        }
+    }
+    let sql = format!(
+        "SELECT COALESCE(SUM(f.input_tokens),0),COALESCE(SUM(f.output_tokens),0)
+         FROM usage_facts f
+         WHERE f.provider=? AND f.threadterm_session_id=?
+           AND EXISTS(SELECT 1 FROM usage_fact_observations live
+                      WHERE live.fact_key=f.fact_key AND live.source LIKE 'live:%')
+           AND {}",
+        store::EFFECTIVE_FACT
+    );
+    Ok(
+        conn.query_row(&sql, params![provider, threadterm_session_id], |row| {
+            Ok((row.get(0)?, row.get(1)?))
+        })?,
+    )
 }
 fn summary(conn: &Connection, f: &Filter) -> Result<Value> {
     let mut value = aggregate(conn, f)?.value(active(conn, f)?, pricing_pending(conn));
@@ -1590,5 +1638,4 @@ fn session(conn: &Connection, f: &Filter, params: &Value) -> Result<Value> {
     result["subagents"] = json!(subagents);
     Ok(result)
 }
-
 
