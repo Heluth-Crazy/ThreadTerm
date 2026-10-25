@@ -14,7 +14,7 @@ use crate::{
         git_text_until, plain_path, repo_paths_until, repo_prefix, run_git, text_of,
         validate_relative, MAX_TEXT_BYTES,
     },
-    workspace_services::{fingerprint, root_for, scoped_path},
+    workspace_services::{fingerprint, replace_file_atomically, root_for, scoped_path},
 };
 use anyhow::{anyhow, Result};
 use chrono::Utc;
@@ -1649,12 +1649,8 @@ fn revert(db: &Database, session_id: &str, object: &Map<String, Value>) -> Resul
                 } else {
                     contained_parent_for(&scope.root, path)?
                 };
-                let temporary =
-                    target.with_extension(format!("threadterm-review-{}", std::process::id()));
-                fs::write(&temporary, &bytes)?;
-                fs::rename(&temporary, &target).inspect_err(|_| {
-                    let _ = fs::remove_file(&temporary);
-                })?;
+                // Never write through a predictable sibling temp name (F24).
+                replace_file_atomically(&scope.root, &target, &bytes)?;
                 restored.push(path.to_owned());
             }
             None if exists => {

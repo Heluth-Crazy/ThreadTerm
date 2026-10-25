@@ -76,6 +76,8 @@ pub(crate) fn run_git(
     let trace_timer = crate::send_trace::Timer::start();
     crate::send_trace::emit(crate::send_trace::Event::new("review.git.spawn")
         .method("chat.send").step(trace_step));
+    #[cfg(test)]
+    git_barrier::pass(root);
     let mut child = match command.spawn().context("launching git") {
         Ok(child) => child,
         Err(error) => {
@@ -148,6 +150,115 @@ pub(crate) fn run_git(
 pub(crate) fn git_text(root: &Path, args: &[&str]) -> Result<String> {
     let bytes = run_git(root, args, &[], None, LOCAL_TIMEOUT)?;
     Ok(String::from_utf8_lossy(&bytes).into_owned())
+}
+
+/// A test-only barrier on Git invocations of one root. The suites use it to prove
+/// that a slow Git never holds the runtime's single database connection (F10/F24
+/// follow-up) without a fake executable or a deliberately slow repository. It is
+/// never compiled into the product.
+#[cfg(test)]
+pub(crate) mod git_barrier {
+    use std::{
+        path::{Path, PathBuf},
+        sync::{Condvar, Mutex, MutexGuard, OnceLock},
+        time::{Duration, Instant},
+    };
+
+    /// A deadlocked Git (a failing assertion) is always released by this bound.
+    const MAX_HOLD: Duration = Duration::from_secs(10);
+
+    struct State {
+        root: Option<PathBuf>,
+        budget: usize,
+        held: usize,
+        released: bool,
+    }
+
+    fn shared() -> &'static (Mutex<State>, Condvar) {
+        static SHARED: OnceLock<(Mutex<State>, Condvar)> = OnceLock::new();
+        SHARED.get_or_init(|| {
+            (
+                Mutex::new(State {
+                    root: None,
+                    budget: 0,
+                    held: 0,
+                    released: true,
+                }),
+                Condvar::new(),
+            )
+        })
+    }
+
+    fn lock() -> MutexGuard<'static, State> {
+        shared()
+            .0
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    fn wait<'a>(state: MutexGuard<'a, State>, timeout: Duration) -> MutexGuard<'a, State> {
+        shared()
+            .1
+            .wait_timeout(state, timeout)
+            .map(|(guard, _)| guard)
+            .unwrap_or_else(|poisoned| poisoned.into_inner().0)
+    }
+
+    /// Holds the next `count` Git invocations that run in `root`.
+    pub(crate) fn arm(root: &Path, count: usize) {
+        let mut state = lock();
+        state.root = Some(root.canonicalize().unwrap_or_else(|_| root.to_path_buf()));
+        state.budget = count;
+        state.held = 0;
+        state.released = false;
+    }
+
+    /// Blocks the Git thread while the barrier is armed for its root.
+    pub(crate) fn pass(root: &Path) {
+        if lock().root.is_none() {
+            return;
+        }
+        let root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
+        let mut state = lock();
+        if state.root.as_deref() != Some(root.as_path()) || state.budget == 0 || state.released {
+            return;
+        }
+        state.budget -= 1;
+        state.held += 1;
+        shared().1.notify_all();
+        let deadline = Instant::now() + MAX_HOLD;
+        while !state.released {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                break;
+            }
+            state = wait(state, remaining);
+        }
+    }
+
+    /// Waits until `count` Git invocations are held.
+    pub(crate) fn wait_held(count: usize, timeout: Duration) -> bool {
+        let mut state = lock();
+        let deadline = Instant::now() + timeout;
+        while state.held < count {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                return false;
+            }
+            state = wait(state, remaining);
+        }
+        true
+    }
+
+    /// Releases every held Git invocation and disarms the barrier.
+    pub(crate) fn release() {
+        let mut state = lock();
+        state.budget = 0;
+        state.held = 0;
+        state.released = true;
+        state.root = None;
+        shared().1.notify_all();
+    }
 }
 
 fn remaining_git_budget(deadline: Instant) -> Result<Duration> {

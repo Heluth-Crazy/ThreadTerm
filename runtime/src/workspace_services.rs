@@ -11,7 +11,7 @@ use std::{
     collections::{HashMap, HashSet},
     ffi::OsString,
     fs,
-    io::Read,
+    io::{ErrorKind, Read, Write},
     path::{Component, Path, PathBuf},
     process::Command,
     sync::{Arc, Mutex, OnceLock},
@@ -27,6 +27,7 @@ const MAX_FILE_REFERENCE_POSITION: u32 = 1_000_000;
 const WORKTREE_TIMEOUT: Duration = Duration::from_secs(300);
 const CREATE_WORKTREE: &str = "worktree.create";
 const REMOVE_WORKTREE: &str = "worktree.remove";
+const RELOCATE_WORKTREE: &str = "worktree.relocate";
 
 pub fn initialize(db: &Database) -> Result<()> {
     db.transaction(|tx| { tx.execute_batch("CREATE TABLE IF NOT EXISTS drafts (id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE, worktree_path TEXT NOT NULL DEFAULT '', path TEXT NOT NULL, content TEXT NOT NULL, base_fingerprint TEXT NOT NULL, revision INTEGER NOT NULL, updated_at TEXT NOT NULL, UNIQUE(project_id,worktree_path,path)); CREATE TABLE IF NOT EXISTS workspaces (id TEXT PRIMARY KEY, name TEXT NOT NULL, project_id TEXT REFERENCES projects(id) ON DELETE SET NULL, worktree_path TEXT, revision INTEGER NOT NULL, layout TEXT NOT NULL, updated_at TEXT NOT NULL); CREATE TABLE IF NOT EXISTS worktrees (id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE, path TEXT NOT NULL UNIQUE, branch TEXT, head TEXT NOT NULL, is_main INTEGER NOT NULL, locked INTEGER NOT NULL DEFAULT 0); CREATE TABLE IF NOT EXISTS worktree_intents (operation_id TEXT PRIMARY KEY, method TEXT NOT NULL, project_id TEXT NOT NULL, path TEXT NOT NULL, branch TEXT, created_at TEXT NOT NULL);")?; let columns:Vec<String>={let mut s=tx.prepare("PRAGMA table_info(drafts)")?;let values=s.query_map([],|r|r.get(1))?.collect::<rusqlite::Result<_>>()?;values};if !columns.iter().any(|x|x=="worktree_path"){tx.execute_batch("ALTER TABLE drafts RENAME TO drafts_legacy; CREATE TABLE drafts (id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE, worktree_path TEXT NOT NULL DEFAULT '', path TEXT NOT NULL, content TEXT NOT NULL, base_fingerprint TEXT NOT NULL, revision INTEGER NOT NULL, updated_at TEXT NOT NULL, UNIQUE(project_id,worktree_path,path)); INSERT INTO drafts(id,project_id,worktree_path,path,content,base_fingerprint,revision,updated_at) SELECT id,project_id,'',path,content,base_fingerprint,revision,updated_at FROM drafts_legacy; DROP TABLE drafts_legacy;")?;} Ok(()) })?;
@@ -98,6 +99,30 @@ pub fn dispatch(db: &Database, method: &str, params: &Value) -> Result<Option<Va
         };
         return Ok(Some(result));
     }
+    // `worktree.list` refreshes the registrations from Git, so that read runs
+    // outside the database lock like the other Git reads (F24 follow-up).
+    if method == "worktree.list" {
+        let project_id = object
+            .get("projectId")
+            .and_then(Value::as_str)
+            .ok_or_else(|| anyhow!("invalid_request"))?;
+        let worktree_path = object.get("worktreePath").and_then(Value::as_str);
+        let root = db.transaction(|tx| root_for(tx, project_id, worktree_path))?;
+        let raw = git_bounded(
+            &root,
+            &["worktree", "list", "--porcelain"],
+            crate::git_read::LOCAL_TIMEOUT,
+        )
+        .unwrap_or_default();
+        return Ok(Some(db.transaction(|tx| {
+            reconcile_worktrees(tx, project_id, &root, &raw)
+        })?));
+    }
+    // A relocation rebinds durable rows once Git confirmed the new location; the
+    // Git read itself never runs inside the database lock.
+    if method == RELOCATE_WORKTREE {
+        return Ok(Some(relocate_worktree(db, object, method)?));
+    }
     // Worktree mutations record an intent, run Git outside the database lock and
     // commit the result (F10): a slow hook never freezes unrelated persistence.
     if matches!(method, CREATE_WORKTREE | REMOVE_WORKTREE) {
@@ -116,8 +141,6 @@ pub fn dispatch(db: &Database, method: &str, params: &Value) -> Result<Option<Va
             "draft.put" => { let id=project_id.ok_or_else(||anyhow!("invalid_request"))?; if worktree_path.is_some(){root_for(tx,id,worktree_path)?;} let scope=worktree_path.unwrap_or(""); let path=object.get("path").and_then(Value::as_str).ok_or_else(||anyhow!("invalid_path"))?; let content=object.get("content").and_then(Value::as_str).ok_or_else(||anyhow!("invalid_content"))?; if content.len()>MAX_DOCUMENT_BYTES||content.as_bytes().contains(&0){return Err(anyhow!("invalid_content"))} let expected=object.get("expectedRevision").and_then(Value::as_i64).ok_or_else(||anyhow!("invalid_request"))?; let op=operation("operationId")?; if let Some(value)=idempotent(tx,op)? {return Ok(value)} let current:Option<(String,i64)>=tx.query_row("SELECT id,revision FROM drafts WHERE project_id=? AND worktree_path=? AND path=?",params![id,scope,path],|r|Ok((r.get(0)?,r.get(1)?))).optional()?; if current.as_ref().map(|x|x.1).unwrap_or(0)!=expected{return Err(anyhow!("revision_conflict"))} let draft_id=current.map(|x|x.0).unwrap_or_else(||uuid::Uuid::new_v4().to_string()); let revision=expected+1; let base=object.get("baseFingerprint").and_then(Value::as_str).ok_or_else(||anyhow!("invalid_request"))?; let now=Utc::now().to_rfc3339(); tx.execute("INSERT INTO drafts(id,project_id,worktree_path,path,content,base_fingerprint,revision,updated_at) VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(project_id,worktree_path,path) DO UPDATE SET content=excluded.content,base_fingerprint=excluded.base_fingerprint,revision=excluded.revision,updated_at=excluded.updated_at",params![draft_id,id,scope,path,content,base,revision,now])?; complete(tx,op,method,&json!({"id":draft_id,"projectId":id,"worktreePath":scope,"path":path,"content":content,"baseFingerprint":base,"revision":revision,"updatedAt":now})) }
             "draft.delete"|"workspace.delete" => { let id=object.get("id").and_then(Value::as_str).ok_or_else(||anyhow!("invalid_request"))?; let expected=object.get("expectedRevision").and_then(Value::as_i64).ok_or_else(||anyhow!("invalid_request"))?; let op=operation("operationId")?; if let Some(value)=idempotent(tx,op)?{return Ok(value)} let table=if method=="draft.delete"{"drafts"}else{"workspaces"}; let revision:i64=tx.query_row(&format!("SELECT revision FROM {table} WHERE id=?"),[id],|r|r.get(0))?; if revision!=expected{return Err(anyhow!("revision_conflict"))} tx.execute(&format!("DELETE FROM {table} WHERE id=?"),[id])?; complete(tx,op,method,&Value::Null) }
             "workspace.save" => { let op=operation("operationId")?; if let Some(value)=idempotent(tx,op)?{return Ok(value)} let id=object.get("id").and_then(Value::as_str).map(str::to_owned).unwrap_or_else(||uuid::Uuid::new_v4().to_string()); let expected=object.get("expectedRevision").and_then(Value::as_i64).ok_or_else(||anyhow!("invalid_request"))?; let existing:Option<i64>=tx.query_row("SELECT revision FROM workspaces WHERE id=?",[&id],|r|r.get(0)).optional()?; if existing.unwrap_or(0)!=expected{return Err(anyhow!("revision_conflict"))} let name=object.get("name").and_then(Value::as_str).ok_or_else(||anyhow!("invalid_request"))?; let layout=object.get("layout").ok_or_else(||anyhow!("invalid_request"))?; validate_layout(layout)?; let project=object.get("projectId").and_then(Value::as_str); let worktree=object.get("worktreePath").and_then(Value::as_str); if let Some(project)=project{root_for(tx,project,worktree)?;}else if worktree.is_some(){return Err(anyhow!("invalid_request"))} let next=expected+1; let now=Utc::now().to_rfc3339(); tx.execute("INSERT INTO workspaces(id,name,project_id,worktree_path,revision,layout,updated_at) VALUES(?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET name=excluded.name,project_id=excluded.project_id,worktree_path=excluded.worktree_path,revision=excluded.revision,layout=excluded.layout,updated_at=excluded.updated_at",params![id,name,project,worktree,next,serde_json::to_string(layout)?,now])?; let mut value=serde_json::Map::new(); value.insert("id".into(),json!(id)); value.insert("name".into(),json!(name)); value.insert("revision".into(),json!(next)); value.insert("layout".into(),layout.clone()); if let Some(project)=project{value.insert("projectId".into(),json!(project));} if let Some(worktree)=worktree{value.insert("worktreePath".into(),json!(worktree));} complete(tx,op,method,&Value::Object(value)) }
-            "worktree.list" => { let project=project_id.ok_or_else(||anyhow!("invalid_request"))?; let root=root(project)?; reconcile_worktrees(tx,project,&root) }
-            "worktree.relocate" => relocate_worktree(tx, object, method),
             _ => unreachable!()
         }
     })?;
@@ -412,17 +435,21 @@ fn relative_path_string(root: &Path, path: &Path) -> Result<String> {
         .map(|components| components.join("/"))
 }
 
-fn relocate_worktree(
-    tx: &Transaction<'_>,
-    object: &serde_json::Map<String, Value>,
-    method: &str,
-) -> Result<Value> {
-    let id = required_string(object, "id")?;
-    let path = required_string(object, "path")?;
-    let operation_id = required_string(object, "operationId")?;
-    if let Some(value) = idempotent(tx, operation_id)? {
-        return Ok(value);
-    }
+/// The durable facts a relocation is planned from. Every guard is read here and
+/// read again inside the commit transaction, so a session that starts while Git
+/// runs still refuses the rebinding.
+struct RelocatePlan {
+    project: String,
+    old_path: String,
+    branch: Option<String>,
+    old_head: String,
+    is_main: i64,
+    locked: i64,
+    target: PathBuf,
+    target_text: String,
+}
+
+fn relocate_plan(tx: &Transaction<'_>, id: &str, path: &str) -> Result<RelocatePlan> {
     let (project, old_path, branch, old_head, is_main, locked): (
         String,
         String,
@@ -470,38 +497,109 @@ fn relocate_worktree(
     if conflict.as_deref().is_some_and(|other| other != id) {
         return Err(anyhow!("worktree_already_registered"));
     }
-    let root = root_for(tx, &project, None)?;
-    let known = git(&root, &["worktree", "list", "--porcelain"])?;
-    if !known.lines().any(|line| {
-        line.strip_prefix("worktree ").is_some_and(|candidate| {
-            Path::new(candidate)
-                .canonicalize()
-                .ok()
-                .as_ref()
-                .is_some_and(|candidate| same_lexical_path(candidate, &target).unwrap_or(false))
-        })
-    }) {
-        return Err(anyhow!("worktree_not_project_member"));
+    Ok(RelocatePlan {
+        project,
+        old_path,
+        branch,
+        old_head,
+        is_main,
+        locked,
+        target,
+        target_text,
+    })
+}
+
+/// A relocation only reads Git: the directory was moved before the request, so
+/// Git confirms the new location and one transaction rebinds the durable rows
+/// afterwards. Git therefore never runs while the database connection is
+/// locked, and an interrupted call leaves nothing half written: it is retried.
+fn relocate_worktree(
+    db: &Database,
+    object: &serde_json::Map<String, Value>,
+    method: &str,
+) -> Result<Value> {
+    let id = required_string(object, "id")?;
+    let path = required_string(object, "path")?;
+    let operation_id = required_string(object, "operationId")?;
+    if let Some(value) = db.operation(operation_id)? {
+        return Ok(value);
     }
-    let new_head = git(&target, &["rev-parse", "HEAD"])
-        .unwrap_or(old_head)
-        .trim()
-        .to_owned();
+    // Reserve: the registration, its repository root and every durable guard
+    // commit before Git runs.
+    let (root, plan) = db.transaction(|tx| {
+        let plan = relocate_plan(tx, id, path)?;
+        let root = root_for(tx, &plan.project, None)?;
+        Ok((root, plan))
+    })?;
+    // Execute outside the database lock, one mutation or relocation per
+    // repository.
+    let new_head = {
+        let gate = repository_gate(&root);
+        let _gate = gate.lock().map_err(|_| anyhow!("worktree lock poisoned"))?;
+        let known = git_bounded(
+            &root,
+            &["worktree", "list", "--porcelain"],
+            crate::git_read::LOCAL_TIMEOUT,
+        )?;
+        if !known.lines().any(|line| {
+            line.strip_prefix("worktree ").is_some_and(|candidate| {
+                Path::new(candidate).canonicalize().ok().as_ref().is_some_and(
+                    |candidate| same_lexical_path(candidate, &plan.target).unwrap_or(false),
+                )
+            })
+        }) {
+            return Err(anyhow!("worktree_not_project_member"));
+        }
+        git_bounded(
+            &plan.target,
+            &["rev-parse", "HEAD"],
+            crate::git_read::LOCAL_TIMEOUT,
+        )
+        .map(|head| head.trim().to_owned())
+        .unwrap_or_else(|_| plan.old_head.clone())
+    };
+    // Commit: the guards are re-read together with the rebinding.
+    db.transaction(|tx| relocate_commit(tx, id, path, &plan, &new_head, operation_id, method))
+}
+
+fn relocate_commit(
+    tx: &Transaction<'_>,
+    id: &str,
+    path: &str,
+    planned: &RelocatePlan,
+    new_head: &str,
+    operation_id: &str,
+    method: &str,
+) -> Result<Value> {
+    let plan = relocate_plan(tx, id, path)?;
+    if plan.old_path != planned.old_path {
+        // Another relocation won while Git ran; rebinding from a stale source
+        // would move the wrong rows.
+        return Err(anyhow!("operation_outcome_unknown"));
+    }
     tx.execute(
         "UPDATE worktrees SET path=?,branch=?,head=? WHERE id=?",
-        params![&target_text, branch, &new_head, id],
+        params![&plan.target_text, plan.branch.as_deref(), new_head, id],
     )?;
-    rebind_scoped_rows(tx, "drafts", &project, &old_path, &target_text)?;
-    rebind_scoped_rows(tx, "workspaces", &project, &old_path, &target_text)?;
-    for (session_id, _, _) in sessions {
+    rebind_scoped_rows(tx, "drafts", &plan.project, &plan.old_path, &plan.target_text)?;
+    rebind_scoped_rows(
+        tx,
+        "workspaces",
+        &plan.project,
+        &plan.old_path,
+        &plan.target_text,
+    )?;
+    for (session_id, _, _) in scoped_sessions(tx, &plan.project, &plan.old_path)? {
         let session_path: String = tx.query_row(
             "SELECT worktree_path FROM sessions WHERE id=?",
             [&session_id],
             |row| row.get(0),
         )?;
-        if let Some(rebased) =
-            rebase_descendant(Path::new(&session_path), Path::new(&old_path), &target)?
-        {
+        if let Some(rebased) = rebase_descendant(
+            Path::new(&session_path),
+            Path::new(&plan.old_path),
+            &plan.target,
+        )? {
             tx.execute(
                 "UPDATE sessions SET worktree_path=? WHERE id=?",
                 params![rebased.to_string_lossy(), session_id],
@@ -513,14 +611,16 @@ fn relocate_worktree(
             "SELECT c.session_id,c.cwd FROM session_launch_configs c JOIN sessions s ON s.id=c.session_id WHERE s.project_id=?",
         )?;
         let rows = statement
-            .query_map([&project], |row| {
+            .query_map([&plan.project], |row| {
                 Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         rows
     };
     for (session_id, cwd) in launch_configs {
-        if let Some(rebased) = rebase_descendant(Path::new(&cwd), Path::new(&old_path), &target)? {
+        if let Some(rebased) =
+            rebase_descendant(Path::new(&cwd), Path::new(&plan.old_path), &plan.target)?
+        {
             tx.execute(
                 "UPDATE session_launch_configs SET cwd=? WHERE session_id=?",
                 params![rebased.to_string_lossy(), session_id],
@@ -533,12 +633,12 @@ fn relocate_worktree(
         method,
         &worktree_json(
             id,
-            &project,
-            &target_text,
-            branch.as_deref(),
-            &new_head,
-            is_main != 0,
-            locked != 0,
+            &plan.project,
+            &plan.target_text,
+            plan.branch.as_deref(),
+            new_head,
+            plan.is_main != 0,
+            plan.locked != 0,
         ),
     )
 }
@@ -1278,8 +1378,9 @@ pub fn validate_layout(layout: &Value) -> Result<()> {
     visit(layout, 0, &mut 0, &mut HashSet::new())
 }
 fn branches(root: &Path) -> Result<Value> {
-    let current = git(root, &["branch", "--show-current"]).unwrap_or_default();
-    let raw=git(root,&["for-each-ref","--format=%(refname:short)%00%(upstream:short)%00%(objectname)%00%(subject)%00%(committerdate:iso-strict)","refs/heads"])?;
+    let current = git_bounded(root, &["branch", "--show-current"], crate::git_read::LOCAL_TIMEOUT)
+        .unwrap_or_default();
+    let raw=git_bounded(root,&["for-each-ref","--format=%(refname:short)%00%(upstream:short)%00%(objectname)%00%(subject)%00%(committerdate:iso-strict)","refs/heads"],crate::git_read::LOCAL_TIMEOUT)?;
     let rows=raw.lines().filter_map(|line|{let mut p=line.split('\0');let name=p.next()?.to_owned();let upstream=p.next().filter(|v|!v.is_empty()).map(str::to_owned);let id=p.next()?.to_owned();let subject=p.next()?.to_owned();let committed_at=p.next()?.to_owned();let mut value=json!({"name":name,"current":name==current,"lastCommit":{"id":id,"subject":subject,"committedAt":committed_at}});if let Some(upstream)=upstream {value["upstream"]=json!(upstream);}Some(value)}).collect::<Vec<_>>();
     Ok(json!(rows))
 }
@@ -1314,8 +1415,7 @@ fn upsert_worktree(
     tx.execute("INSERT INTO worktrees(id,project_id,path,branch,head,is_main,locked) VALUES(?,?,?,?,?,?,?) ON CONFLICT(path) DO UPDATE SET project_id=excluded.project_id,branch=excluded.branch,head=excluded.head,is_main=excluded.is_main,locked=excluded.locked",params![&id,project_id,path,branch,head,i64::from(is_main),i64::from(locked)])?;
     Ok(id)
 }
-fn reconcile_worktrees(tx: &Transaction<'_>, project_id: &str, root: &Path) -> Result<Value> {
-    let raw = git(root, &["worktree", "list", "--porcelain"]).unwrap_or_default();
+fn reconcile_worktrees(tx: &Transaction<'_>, project_id: &str, root: &Path, raw: &str) -> Result<Value> {
     let canonical_root = root
         .canonicalize()
         .unwrap_or_else(|_| root.to_path_buf())
@@ -1497,13 +1597,115 @@ pub fn write_document(
     if fingerprint(&existing) != expected {
         return Err(anyhow!("file_conflict"));
     }
-    let temporary = path.with_extension(format!("threadterm-{}", std::process::id()));
-    fs::write(&temporary, content.as_bytes())?;
-    // Rename is atomic when both files share the same parent directory.
-    fs::rename(&temporary, &path).inspect_err(|_error| {
-        let _ = fs::remove_file(&temporary);
-    })?;
+    replace_file_atomically(root, &path, content.as_bytes())?;
     Ok((fingerprint(content.as_bytes()), content.to_owned()))
+}
+
+/// A link, junction or other reparse point at `path` itself; its target is never
+/// resolved here.
+fn is_link(metadata: &fs::Metadata) -> bool {
+    if metadata.file_type().is_symlink() {
+        return true;
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
+        metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0
+    }
+    #[cfg(not(windows))]
+    false
+}
+
+/// Creates a random temp file in `directory` exclusively, so a name that already
+/// exists (a planted file, link or junction) is never reused or followed.
+fn create_temporary_file(directory: &Path) -> Result<(fs::File, PathBuf)> {
+    let mut collision = None;
+    for _ in 0..8 {
+        let path = directory.join(format!(".threadterm-{}.tmp", uuid::Uuid::new_v4()));
+        match fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)
+        {
+            Ok(file) => return Ok((file, path)),
+            Err(error) if error.kind() == ErrorKind::AlreadyExists => collision = Some(error),
+            Err(error) => return Err(error.into()),
+        }
+    }
+    Err(collision.map_or_else(|| anyhow!("path_escape"), Into::into))
+}
+
+/// Best effort: make a rename durable on platforms that sync directories.
+fn sync_directory(directory: &Path) {
+    #[cfg(unix)]
+    let _ = fs::File::open(directory).and_then(|handle| handle.sync_all());
+    #[cfg(not(unix))]
+    let _ = directory;
+}
+
+/// Atomically replaces `target` with `bytes` through a random sibling temp file
+/// (F24). A link or junction planted at a predictable temp name cannot redirect
+/// the write: the temp is created exclusively, neither it nor the target may be
+/// a link, and the parent is canonicalized again after creation and before the
+/// rename.
+///
+/// On failure only the temp file this call created is removed; the target keeps
+/// its old content.
+pub(crate) fn replace_file_atomically(root: &Path, target: &Path, bytes: &[u8]) -> Result<()> {
+    let root = root.canonicalize()?;
+    let parent = target
+        .parent()
+        .ok_or_else(|| anyhow!("invalid_path"))?;
+    let directory = parent.canonicalize().map_err(|_| anyhow!("invalid_path"))?;
+    if !path_is_within(&directory, &root)? {
+        return Err(anyhow!("path_escape"));
+    }
+    if let Ok(metadata) = fs::symlink_metadata(target) {
+        // Rename replaces a link rather than following it, but content must never
+        // travel through a link or junction on the way in.
+        if is_link(&metadata) || !metadata.is_file() {
+            return Err(anyhow!("path_escape"));
+        }
+    }
+    let (mut file, temporary) = create_temporary_file(&directory)?;
+    let result = (|| -> Result<()> {
+        file.write_all(bytes)?;
+        file.sync_all()?;
+        drop(file);
+        // The directory must still be the one verified above: a junction swapped
+        // in while the bytes were written would move the rename out of the root.
+        let current = parent.canonicalize().map_err(|_| anyhow!("path_escape"))?;
+        if !same_lexical_path(&current, &directory)? {
+            return Err(anyhow!("path_escape"));
+        }
+        let expected = directory.join(
+            temporary
+                .file_name()
+                .ok_or_else(|| anyhow!("path_escape"))?,
+        );
+        let resolved = temporary
+            .canonicalize()
+            .map_err(|_| anyhow!("path_escape"))?;
+        if !same_lexical_path(&resolved, &expected)? {
+            return Err(anyhow!("path_escape"));
+        }
+        // Rename is atomic when both paths share the same parent directory.
+        fs::rename(&temporary, target)?;
+        sync_directory(&directory);
+        Ok(())
+    })();
+    if result.is_err() {
+        let _ = fs::remove_file(&temporary);
+    }
+    result
+}
+
+/// Runs Git outside the database lock with a bounded deadline. Errors keep the
+/// `git_failed: <stderr>` shape of [`git`].
+fn git_bounded(root: &Path, arguments: &[&str], timeout: Duration) -> Result<String> {
+    crate::git_read::run_git(root, arguments, &[], None, timeout)
+        .map(|stdout| String::from_utf8_lossy(&stdout).into_owned())
 }
 
 pub fn git(root: &Path, arguments: &[&str]) -> Result<String> {
@@ -2044,6 +2246,202 @@ mod tests {
         fs::write(temp.path().join("a.txt"), "changed").unwrap();
         assert!(write_document(temp.path(), "a.txt", "two", &fingerprint).is_err());
     }
+
+    /// A file link where the old code put its predictable temp file (a hard link
+    /// on Windows, a symlink elsewhere) must not receive the content.
+    fn link_file(target: &Path, link: &Path) {
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(target, link).unwrap();
+        #[cfg(windows)]
+        fs::hard_link(target, link).unwrap();
+    }
+
+    /// A directory junction (Windows) or directory symlink (elsewhere).
+    #[allow(dead_code)]
+    fn link_directory(target: &Path, link: &Path) {
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(target, link).unwrap();
+        #[cfg(windows)]
+        {
+            // Junctions need no privilege, unlike symlinks.
+            let status = Command::new("cmd")
+                .arg("/c")
+                .arg("mklink")
+                .arg("/J")
+                .arg(link)
+                .arg(target)
+                .output()
+                .unwrap()
+                .status;
+            assert!(status.success(), "creating the junction failed");
+        }
+    }
+
+    fn temporary_leftovers(directory: &Path) -> Vec<String> {
+        fs::read_dir(directory)
+            .unwrap()
+            .flatten()
+            .map(|entry| entry.file_name().to_string_lossy().to_string())
+            .filter(|name| name.starts_with(".threadterm-"))
+            .collect()
+    }
+
+    /// F24: the old save wrote `<name>.threadterm-<pid>` next to the target with
+    /// an ordinary `fs::write`, so a link planted at that name redirected it.
+    #[test]
+    fn a_link_planted_at_the_old_temp_name_cannot_redirect_the_write() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("workspace");
+        let outside = temp.path().join("outside");
+        fs::create_dir_all(&root).unwrap();
+        fs::create_dir_all(&outside).unwrap();
+        fs::write(root.join("notes.md"), "one").unwrap();
+        fs::write(outside.join("planted.txt"), "outside").unwrap();
+        let (expected, _) = read_document(&root, "notes.md").unwrap();
+        let planted = root.join(format!("notes.threadterm-{}", std::process::id()));
+        link_file(&outside.join("planted.txt"), &planted);
+
+        let (_, content) = write_document(&root, "notes.md", "two", &expected).unwrap();
+        assert_eq!(content, "two");
+        assert_eq!(fs::read_to_string(root.join("notes.md")).unwrap(), "two");
+        assert_eq!(
+            fs::read_to_string(outside.join("planted.txt")).unwrap(),
+            "outside",
+            "the planted link received the saved content"
+        );
+        assert!(temporary_leftovers(&root).is_empty());
+    }
+
+    /// A junction planted at the old temp name must neither break nor redirect a
+    /// save.
+    #[cfg(windows)]
+    #[test]
+    fn a_junction_at_the_old_temp_name_cannot_redirect_the_write() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("workspace");
+        let outside = temp.path().join("outside");
+        fs::create_dir_all(&root).unwrap();
+        fs::create_dir_all(&outside).unwrap();
+        fs::write(root.join("notes.md"), "one").unwrap();
+        let (expected, _) = read_document(&root, "notes.md").unwrap();
+        let planted = root.join(format!("notes.threadterm-{}", std::process::id()));
+        link_directory(&outside, &planted);
+
+        write_document(&root, "notes.md", "two", &expected).unwrap();
+        assert_eq!(fs::read_to_string(root.join("notes.md")).unwrap(), "two");
+        assert_eq!(fs::read_dir(&outside).unwrap().count(), 0);
+        assert!(fs::symlink_metadata(&planted)
+            .map(|metadata| is_link(&metadata))
+            .unwrap_or(false));
+        assert!(temporary_leftovers(&root).is_empty());
+    }
+
+    /// A target that is itself a link is refused instead of being written through.
+    /// A Windows symlink needs a privilege the test runner may not have; the
+    /// refusal is skipped when the link cannot be created at all.
+    #[test]
+    fn a_linked_target_is_refused() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("workspace");
+        let outside = temp.path().join("outside");
+        fs::create_dir_all(&root).unwrap();
+        fs::create_dir_all(&outside).unwrap();
+        fs::write(outside.join("real.txt"), "outside").unwrap();
+        let linked = root.join("linked.md");
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(outside.join("real.txt"), &linked).unwrap();
+        #[cfg(windows)]
+        if std::os::windows::fs::symlink_file(outside.join("real.txt"), &linked).is_err() {
+            // Developer Mode / the symlink privilege is unavailable here.
+            return;
+        }
+
+        let error = replace_file_atomically(&root, &linked, b"two").unwrap_err();
+        assert_eq!(error.to_string(), "path_escape");
+        assert_eq!(
+            fs::read_to_string(outside.join("real.txt")).unwrap(),
+            "outside"
+        );
+        assert!(temporary_leftovers(&root).is_empty());
+    }
+
+    /// F24: `with_extension` gave `a.md` and `a.txt` the same temp name, so two
+    /// concurrent saves clobbered each other's temp file.
+    #[test]
+    fn concurrent_saves_never_share_a_temporary_file() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().to_path_buf();
+        fs::write(root.join("a.md"), "md-0").unwrap();
+        fs::write(root.join("a.txt"), "txt-0").unwrap();
+        for round in 1..=200 {
+            let (md, _) = read_document(&root, "a.md").unwrap();
+            let (txt, _) = read_document(&root, "a.txt").unwrap();
+            let expected_md = format!("md-{round}");
+            let expected_txt = format!("txt-{round}");
+            std::thread::scope(|scope| {
+                let markdown = {
+                    let root = &root;
+                    let expected_md = &expected_md;
+                    scope.spawn(move || write_document(root, "a.md", expected_md, &md))
+                };
+                let text = {
+                    let root = &root;
+                    let expected_txt = &expected_txt;
+                    scope.spawn(move || write_document(root, "a.txt", expected_txt, &txt))
+                };
+                markdown.join().unwrap().unwrap();
+                text.join().unwrap().unwrap();
+            });
+            assert_eq!(
+                fs::read_to_string(root.join("a.md")).unwrap(),
+                expected_md,
+                "a concurrent save overwrote a.md"
+            );
+            assert_eq!(
+                fs::read_to_string(root.join("a.txt")).unwrap(),
+                expected_txt,
+                "a concurrent save overwrote a.txt"
+            );
+        }
+        assert!(temporary_leftovers(&root).is_empty());
+    }
+
+    /// A failed rename keeps the old content and leaves no temp file behind.
+    /// Windows refuses to replace a read-only target with a rename; elsewhere the
+    /// same failure is produced by a target inside a read-only directory.
+    #[test]
+    fn a_failed_rename_leaves_the_target_intact_and_no_temporary_file_behind() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("workspace");
+        fs::create_dir(&root).unwrap();
+        fs::write(root.join("doc.md"), "old").unwrap();
+        #[cfg(windows)]
+        {
+            let mut permissions = fs::metadata(root.join("doc.md")).unwrap().permissions();
+            permissions.set_readonly(true);
+            fs::set_permissions(root.join("doc.md"), permissions).unwrap();
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&root, fs::Permissions::from_mode(0o555)).unwrap();
+        }
+
+        assert!(replace_file_atomically(&root, &root.join("doc.md"), b"new").is_err());
+        assert_eq!(fs::read_to_string(root.join("doc.md")).unwrap(), "old");
+        assert!(temporary_leftovers(&root).is_empty(), "a temp file was left behind");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&root, fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        #[cfg(windows)]
+        {
+            let mut permissions = fs::metadata(root.join("doc.md")).unwrap().permissions();
+            permissions.set_readonly(false);
+            fs::set_permissions(root.join("doc.md"), permissions).unwrap();
+        }
+    }
     #[test]
     fn real_git_temp_repository() {
         let temp = tempfile::tempdir().unwrap();
@@ -2558,6 +2956,121 @@ mod tests {
         assert!(target.exists());
     }
 
+    /// F24 follow-up: `worktree.list` refreshed the registrations with
+    /// `git worktree list` inside the global database transaction.
+    #[test]
+    fn a_blocked_worktree_list_does_not_block_other_durable_writes() {
+        let parent = tempfile::tempdir().unwrap();
+        let repo = parent.path().join("repo");
+        initialized_repository(&repo);
+        let db = Database::open(&parent.path().join("db.sqlite")).unwrap();
+        initialize(&db).unwrap();
+        let project = db
+            .add_project(repo.to_str().unwrap(), Some("p"), "project-op")
+            .unwrap();
+        crate::git_read::git_barrier::arm(&repo, 1);
+        std::thread::scope(|scope| {
+            let list = {
+                let db = &db;
+                let project_id = &project.id;
+                scope.spawn(move || {
+                    dispatch(db, "worktree.list", &json!({"projectId":project_id}))
+                })
+            };
+            assert!(
+                crate::git_read::git_barrier::wait_held(1, std::time::Duration::from_secs(20)),
+                "the worktree list never reached Git"
+            );
+            let began = std::time::Instant::now();
+            dispatch(
+                &db,
+                "draft.put",
+                &json!({"projectId":project.id,"path":"README.md","content":"while Git is blocked","baseFingerprint":"base","expectedRevision":0,"operationId":"draft-during-list"}),
+            )
+            .unwrap();
+            let elapsed = began.elapsed();
+            crate::git_read::git_barrier::release();
+            let listed = list.join().unwrap().unwrap().unwrap();
+            assert_eq!(listed.as_array().unwrap().len(), 1);
+            assert!(
+                elapsed < std::time::Duration::from_secs(2),
+                "a blocked worktree list held the database for {elapsed:?}"
+            );
+        });
+    }
+
+    /// F24 follow-up: `worktree.relocate` ran `git worktree list` and
+    /// `git rev-parse` inside the global database transaction.
+    #[test]
+    fn a_blocked_relocate_does_not_block_other_durable_writes() {
+        let parent = tempfile::tempdir().unwrap();
+        let repo = parent.path().join("repo");
+        initialized_repository(&repo);
+        let db = Database::open(&parent.path().join("db.sqlite")).unwrap();
+        initialize(&db).unwrap();
+        crate::session_configs::initialize(&db).unwrap();
+        let project = db
+            .add_project(repo.to_str().unwrap(), Some("p"), "project-op")
+            .unwrap();
+        let old_path = parent.path().join("feature-old");
+        let created = dispatch(
+            &db,
+            "worktree.create",
+            &json!({"projectId":project.id,"path":old_path.to_string_lossy(),"branch":"feature","createBranch":true,"operationId":"worktree-create"}),
+        )
+        .unwrap()
+        .unwrap();
+        let new_path = parent.path().join("feature-new");
+        git(
+            &repo,
+            &[
+                "worktree",
+                "move",
+                old_path.to_str().unwrap(),
+                new_path.to_str().unwrap(),
+            ],
+        )
+        .unwrap();
+        crate::git_read::git_barrier::arm(&repo, 1);
+        std::thread::scope(|scope| {
+            let relocate = {
+                let db = &db;
+                let id = created["id"].as_str().unwrap();
+                let new_path = new_path.to_string_lossy().to_string();
+                scope.spawn(move || {
+                    dispatch(
+                        db,
+                        "worktree.relocate",
+                        &json!({"id":id,"path":new_path,"operationId":"worktree-relocate-blocked"}),
+                    )
+                })
+            };
+            assert!(
+                crate::git_read::git_barrier::wait_held(1, std::time::Duration::from_secs(20)),
+                "the relocation never reached Git"
+            );
+            let began = std::time::Instant::now();
+            // Another client's durable write, unrelated to the worktree.
+            dispatch(
+                &db,
+                "workspace.save",
+                &json!({"name":"During a blocked relocation","layout":{"kind":"pane","id":"main","tabs":[],"activeTabId":null},"expectedRevision":0,"operationId":"workspace-during-relocate"}),
+            )
+            .unwrap();
+            let elapsed = began.elapsed();
+            crate::git_read::git_barrier::release();
+            let relocated = relocate.join().unwrap().unwrap().unwrap();
+            assert_eq!(
+                Path::new(relocated["path"].as_str().unwrap()).file_name(),
+                new_path.file_name()
+            );
+            assert!(
+                elapsed < std::time::Duration::from_secs(2),
+                "a blocked relocation held the database for {elapsed:?}"
+            );
+        });
+    }
+
     /// F10: a crash after Git created the worktree must be reconciled at startup,
     /// not repeated, and the replay must return the completed receipt.
     #[test]
@@ -2888,6 +3401,93 @@ mod tests {
                 .cwd,
             expected_child.to_string_lossy()
         );
+    }
+
+    /// F24 follow-up: a relocation that stops after Git ran (the crash window of
+    /// the old in-transaction call) leaves no partial rebinding, and the same
+    /// operation id can be retried once the directory is a listed worktree again.
+    #[test]
+    fn an_interrupted_relocate_leaves_no_partial_rebinding_and_can_be_retried() {
+        let parent = tempfile::tempdir().unwrap();
+        let repo = parent.path().join("repo");
+        initialized_repository(&repo);
+        let db = Database::open(&parent.path().join("db.sqlite")).unwrap();
+        initialize(&db).unwrap();
+        crate::session_configs::initialize(&db).unwrap();
+        let project = db
+            .add_project(repo.to_str().unwrap(), Some("p"), "project-op")
+            .unwrap();
+        let old_path = parent.path().join("feature-old");
+        let created = dispatch(
+            &db,
+            "worktree.create",
+            &json!({"projectId":project.id,"path":old_path.to_string_lossy(),"branch":"feature","createBranch":true,"operationId":"worktree-create"}),
+        )
+        .unwrap()
+        .unwrap();
+        let old_text = created["path"].as_str().unwrap().to_owned();
+        let registered = created["id"].as_str().unwrap().to_owned();
+        let draft = dispatch(
+            &db,
+            "draft.put",
+            &json!({"projectId":project.id,"worktreePath":old_text,"path":"README.md","content":"draft body","baseFingerprint":"base","expectedRevision":0,"operationId":"draft-before-interruption"}),
+        )
+        .unwrap()
+        .unwrap();
+        // The directory moved but Git does not list it as a worktree: the
+        // relocation stops after its Git stage, exactly like an interruption.
+        let new_path = parent.path().join("feature-new");
+        fs::rename(&old_path, &new_path).unwrap();
+        let interrupted = dispatch(
+            &db,
+            "worktree.relocate",
+            &json!({"id":registered,"path":new_path.to_string_lossy(),"operationId":"worktree-relocate-interrupted"}),
+        )
+        .unwrap_err();
+        assert_eq!(interrupted.to_string(), "worktree_not_project_member");
+        let registered_path: String = db
+            .transaction(|tx| {
+                Ok(tx.query_row("SELECT path FROM worktrees WHERE id=?", [&registered], |row| {
+                    row.get(0)
+                })?)
+            })
+            .unwrap();
+        assert_eq!(registered_path, old_text);
+        // The draft still belongs to the old scope: nothing was rebound.
+        let draft_scope = |db: &Database| -> (String, String) {
+            db.transaction(|tx| {
+                Ok(tx.query_row(
+                    "SELECT worktree_path,content FROM drafts WHERE id=?",
+                    [draft["id"].as_str().unwrap()],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )?)
+            })
+            .unwrap()
+        };
+        assert_eq!(draft_scope(&db), (old_text.clone(), "draft body".into()));
+
+        // Finishing the move and replaying the same operation reconciles it.
+        fs::rename(&new_path, &old_path).unwrap();
+        git(
+            &repo,
+            &[
+                "worktree",
+                "move",
+                old_text.as_str(),
+                new_path.to_str().unwrap(),
+            ],
+        )
+        .unwrap();
+        let relocated = dispatch(
+            &db,
+            "worktree.relocate",
+            &json!({"id":registered,"path":new_path.to_string_lossy(),"operationId":"worktree-relocate-interrupted"}),
+        )
+        .unwrap()
+        .unwrap();
+        let new_text = relocated["path"].as_str().unwrap().to_owned();
+        assert_ne!(new_text, old_text);
+        assert_eq!(draft_scope(&db), (new_text, "draft body".into()));
     }
     /// The dirty guard still runs before the removal and a refusal leaves no
     /// reserved intent or execution claim behind, so the retry stays possible.
