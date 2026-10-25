@@ -14,21 +14,23 @@ use sha2::{Digest, Sha256};
 use super::facts::Fact;
 
 const SNAPSHOT: &str = include_str!("prices.snapshot.json");
-const ALIAS_NORMALIZATION_VERSION: &str = "alias-normalization-v2";
+const ALIAS_NORMALIZATION_VERSION: &str = "alias-normalization-v3";
 
 /// Stable input to the ledger's pricing revision. A snapshot or safe alias
 /// normalization change must reprice existing facts even when user overrides
 /// did not change.
 pub fn catalog_revision() -> &'static str {
     static REVISION: OnceLock<String> = OnceLock::new();
-    REVISION.get_or_init(|| {
-        let mut hash = Sha256::new();
-        hash.update(b"threadterm-usage-price-catalog\0");
-        hash.update(ALIAS_NORMALIZATION_VERSION.as_bytes());
-        hash.update(b"\0");
-        hash.update(SNAPSHOT.as_bytes());
-        hex::encode(hash.finalize())
-    })
+    REVISION.get_or_init(|| catalog_revision_for(ALIAS_NORMALIZATION_VERSION, SNAPSHOT))
+}
+
+fn catalog_revision_for(alias_version: &str, snapshot: &str) -> String {
+    let mut hash = Sha256::new();
+    hash.update(b"threadterm-usage-price-catalog\0");
+    hash.update(alias_version.as_bytes());
+    hash.update(b"\0");
+    hash.update(snapshot.as_bytes());
+    hex::encode(hash.finalize())
 }
 
 #[derive(Debug, Deserialize)]
@@ -115,6 +117,12 @@ pub fn estimate(fact: &Fact, overrides: &Value) -> Option<f64> {
 }
 
 fn find_model<'a>(catalog: &'a Snapshot, provider: &str, model: &str) -> Option<&'a ModelPrice> {
+    // A provider-qualified snapshot key can deliberately differ from a bare
+    // spelling. Preserve it before normalization removes that qualification.
+    let exact_key = model.trim().to_ascii_lowercase();
+    if let Some(price) = catalog.models.get(&exact_key) {
+        return Some(price);
+    }
     let aliases = catalog.aliases.get_or_init(|| {
         let mut aliases = BTreeMap::new();
         for (name, price) in &catalog.models {
@@ -142,6 +150,10 @@ fn find_model<'a>(catalog: &'a Snapshot, provider: &str, model: &str) -> Option<
 /// the exact snapshot equivalence without exposing prices or transcript data.
 pub fn catalog_model_id(provider: &str, model: &str) -> Option<String> {
     let catalog = snapshot()?;
+    let exact_key = model.trim().to_ascii_lowercase();
+    if catalog.models.contains_key(&exact_key) {
+        return Some(exact_key);
+    }
     let aliases = catalog.aliases.get_or_init(|| {
         let mut aliases = BTreeMap::new();
         for (name, price) in &catalog.models {
@@ -336,15 +348,15 @@ mod tests {
 
     #[test]
     fn catalog_revision_is_stable_and_versions_alias_normalization() {
-        let mut hash = Sha256::new();
-        hash.update(b"threadterm-usage-price-catalog\0");
-        hash.update(ALIAS_NORMALIZATION_VERSION.as_bytes());
-        hash.update(b"\0");
-        hash.update(SNAPSHOT.as_bytes());
-        let expected = hex::encode(hash.finalize());
+        let expected = catalog_revision_for(ALIAS_NORMALIZATION_VERSION, SNAPSHOT);
         assert_eq!(catalog_revision(), expected);
         assert_eq!(catalog_revision(), catalog_revision());
         assert_eq!(catalog_revision().len(), 64);
+        assert_ne!(
+            catalog_revision_for("alias-normalization-v2", SNAPSHOT),
+            catalog_revision(),
+            "a normalization change must schedule repricing of stored facts"
+        );
     }
 
     #[test]
@@ -404,6 +416,45 @@ mod tests {
         assert_eq!(
             strip_date_suffix("fixture-模型-2026-10-23"),
             "fixture-模型-2026-10-23"
+        );
+    }
+
+    #[test]
+    fn qualified_catalog_key_precedes_a_lossy_normalized_alias() {
+        let mut models = BTreeMap::new();
+        models.insert(
+            "gemini-exp-1206".into(),
+            ModelPrice {
+                provider: "gemini".into(),
+                aliases: vec![],
+                rates: Rates {
+                    input: Some(1.0),
+                    ..Default::default()
+                },
+                tiers: vec![],
+            },
+        );
+        models.insert(
+            "gemini/gemini-exp-1206".into(),
+            ModelPrice {
+                provider: "gemini".into(),
+                aliases: vec![],
+                rates: Rates {
+                    input: Some(0.0),
+                    ..Default::default()
+                },
+                tiers: vec![],
+            },
+        );
+        let catalog = Snapshot {
+            version: 1,
+            models,
+            aliases: OnceLock::new(),
+        };
+        assert_eq!(
+            find_model(&catalog, "gemini", "gemini/gemini-exp-1206")
+                .and_then(|price| price.rates.input),
+            Some(0.0),
         );
     }
 

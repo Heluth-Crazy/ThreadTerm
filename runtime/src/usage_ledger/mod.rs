@@ -1,5 +1,13 @@
 #[cfg(test)]
 mod benchmarks;
+#[cfg(test)]
+mod accuracy_export;
+#[cfg(test)]
+mod accuracy_refresh_tests;
+#[cfg(test)]
+mod accuracy_query_tests;
+#[cfg(test)]
+mod attribution_accuracy_tests;
 pub mod discovery;
 pub mod facts;
 mod incremental;

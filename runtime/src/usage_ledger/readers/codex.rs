@@ -18,8 +18,14 @@ fn payload(value: &Value) -> &Value {
 fn update_context(value: &Value, state: &mut ReaderState) {
     let payload = payload(value);
     if value.get("type").and_then(Value::as_str) == Some("session_meta") {
+        // Spawned rollouts can embed the parent's metadata after their own
+        // root header. Only the first root owns this stream's legacy usage.
+        if state.data["codexRootMetadataSeen"].as_bool() == Some(true) {
+            return;
+        }
         if let Some(session) = bounded(text(payload, &["id", "session_id", "thread_id"])) {
             state.session_id = session;
+            data_object(state).insert("codexRootMetadataSeen".into(), Value::Bool(true));
         }
         if let Some(parent) = bounded(text(
             payload,
@@ -147,48 +153,121 @@ fn append_mirror(state: &mut ReaderState, name: &str, mirror: Value) {
     }
 }
 
-fn mirror_matches(mirror: &Value, turn: &str, coordinate: &Value) -> bool {
-    mirror.get("turn").and_then(Value::as_str) == Some(turn)
-        && mirror.get("coordinate") == Some(coordinate)
+fn mirror_matches(
+    mirror: &Value,
+    session: &str,
+    turn: Option<&str>,
+    coordinate: &Value,
+    usage: Option<&Value>,
+    occurred_at: &str,
+) -> bool {
+    if mirror.get("session").and_then(Value::as_str) != Some(session) {
+        return false;
+    }
+    let known_turn = match (mirror.get("turn").and_then(Value::as_str), turn) {
+        (Some(left), Some(right)) if left != right => return false,
+        (Some(_), Some(_)) => true,
+        _ => false,
+    };
+    let exact = mirror.get("coordinate") == Some(coordinate)
+        || mirror.get("legacyCoordinate") == Some(coordinate);
+    if exact && known_turn {
+        return true;
+    }
+    let nearby = mirror
+        .get("at")
+        .and_then(Value::as_str)
+        .and_then(|at| chrono::DateTime::parse_from_rfc3339(at).ok())
+        .zip(chrono::DateTime::parse_from_rfc3339(occurred_at).ok())
+        .is_some_and(|(earlier, now)| {
+            (now.timestamp_millis() - earlier.timestamp_millis()).abs() <= 60_000
+        });
+    // Compaction can put typed and legacy totals on different cumulative axes.
+    // Pair equal last usage only once, near in time, with no conflicting turn.
+    nearby
+        && (exact
+            || (mirror.get("legacyCoordinate").is_none()
+                && usage.is_some_and(|usage| {
+                    mirror.get("usage") == Some(usage)
+                        && ["input", "output"]
+                            .into_iter()
+                            .any(|key| usage[key].as_i64().unwrap_or(0) > 0)
+                })))
 }
 
 fn matching_legacy_keys(
     state: &mut ReaderState,
+    session: &str,
     turn: Option<&str>,
     coordinate: &Value,
-) -> Vec<String> {
-    let Some(turn) = turn else { return Vec::new() };
+    usage: &Value,
+    occurred_at: &str,
+) -> (Vec<String>, Option<Value>) {
     let Some(mirrors) = data_object(state)
         .get_mut("legacyMirrors")
         .and_then(Value::as_array_mut)
     else {
-        return Vec::new();
+        return (Vec::new(), None);
     };
-    let mut keys = Vec::new();
-    mirrors.retain(|mirror| {
-        if mirror_matches(mirror, turn, coordinate) {
-            if let Some(key) = mirror.get("key").and_then(Value::as_str) {
-                keys.push(key.to_owned());
-            }
-            false
-        } else {
-            true
-        }
-    });
-    keys
+    let best = mirrors
+        .iter()
+        .enumerate()
+        .filter(|(_, mirror)| {
+            mirror_matches(mirror, session, turn, coordinate, Some(usage), occurred_at)
+        })
+        .min_by_key(|(_, mirror)| {
+            let exact = mirror.get("coordinate") == Some(coordinate);
+            let gap = mirror
+                .get("at")
+                .and_then(Value::as_str)
+                .and_then(|at| chrono::DateTime::parse_from_rfc3339(at).ok())
+                .zip(chrono::DateTime::parse_from_rfc3339(occurred_at).ok())
+                .map(|(a, b)| (a.timestamp_millis() - b.timestamp_millis()).abs())
+                .unwrap_or(i64::MAX);
+            (!exact, gap)
+        })
+        .map(|(index, _)| index);
+    let Some(index) = best else {
+        return (Vec::new(), None);
+    };
+    let mirror = mirrors.remove(index);
+    (
+        mirror
+            .get("key")
+            .and_then(Value::as_str)
+            .map(str::to_owned)
+            .into_iter()
+            .collect(),
+        mirror.get("coordinate").cloned(),
+    )
 }
 
-fn has_typed_mirror(state: &ReaderState, turn: Option<&str>, coordinate: &Value) -> bool {
-    let Some(turn) = turn else { return false };
-    state
-        .data
-        .get("typedMirrors")
-        .and_then(Value::as_array)
-        .is_some_and(|mirrors| {
-            mirrors
-                .iter()
-                .any(|mirror| mirror_matches(mirror, turn, coordinate))
-        })
+fn has_typed_mirror(
+    state: &mut ReaderState,
+    session: &str,
+    turn: Option<&str>,
+    coordinate: &Value,
+    usage: Option<&Value>,
+    occurred_at: &str,
+) -> bool {
+    let Some(mirrors) = data_object(state)
+        .get_mut("typedMirrors")
+        .and_then(Value::as_array_mut)
+    else {
+        return false;
+    };
+    let Some(mirror) = mirrors
+        .iter_mut()
+        .rev()
+        .find(|mirror| mirror_matches(mirror, session, turn, coordinate, usage, occurred_at))
+    else {
+        return false;
+    };
+    mirror
+        .as_object_mut()
+        .unwrap()
+        .insert("legacyCoordinate".into(), coordinate.clone());
+    true
 }
 
 fn save_counter(state: &mut ReaderState, totals: &Value, sequence: u64) {
@@ -246,15 +325,22 @@ pub fn parse(value: &Value, offset: u64, file_id: &str, state: &mut ReaderState)
         };
         let mirror_coordinate = record.get("thread_token_usage").map(coordinate);
         let mirror_turn = current_turn(state, Some(record));
-        if let (Some(coordinate), Some(turn)) = (&mirror_coordinate, mirror_turn.as_deref()) {
-            parsed
-                .replaced_keys
-                .extend(matching_legacy_keys(state, Some(turn), coordinate));
-            append_mirror(
+        let raw_usage = coordinate(usage);
+        if let Some(coordinate) = &mirror_coordinate {
+            let (keys, legacy_coordinate) = matching_legacy_keys(
                 state,
-                "typedMirrors",
-                json!({ "turn": turn, "coordinate": coordinate }),
+                &session,
+                mirror_turn.as_deref(),
+                coordinate,
+                &raw_usage,
+                &occurred_at,
             );
+            parsed.replaced_keys.extend(keys);
+            let mut mirror = json!({ "session": session, "turn": mirror_turn, "coordinate": coordinate, "usage": raw_usage, "at": occurred_at });
+            if let Some(coordinate) = legacy_coordinate {
+                mirror["legacyCoordinate"] = coordinate;
+            }
+            append_mirror(state, "typedMirrors", mirror);
         }
         let mut fact = Fact::new(
             "codex",
@@ -301,7 +387,7 @@ pub fn parse(value: &Value, offset: u64, file_id: &str, state: &mut ReaderState)
     {
         return parsed;
     }
-    let Some(info) = payload.get("info") else {
+    let Some(info) = payload.get("info").filter(|info| info.is_object()) else {
         return parsed;
     };
     let Some(totals) = info.get("total_token_usage") else {
@@ -346,21 +432,37 @@ pub fn parse(value: &Value, offset: u64, file_id: &str, state: &mut ReaderState)
         parsed.problems.push("copied_fork_prefix_excluded".into());
         return parsed;
     }
-    if previous.is_none() && state.parent_session_id.is_some() {
+    if previous.is_none()
+        && state.parent_session_id.is_some()
+        && state.data["codexSubagent"].as_bool() != Some(true)
+    {
         parsed
             .problems
             .push("Codex fork legacy baseline omitted to exclude copied history".into());
         return parsed;
     }
-    if has_typed_mirror(state, mirror_turn.as_deref(), &mirror_coordinate) {
+    let last = info
+        .get("last_token_usage")
+        .filter(|usage| usage.is_object());
+    let raw_usage = last.map(coordinate);
+    if has_typed_mirror(
+        state,
+        &session,
+        mirror_turn.as_deref(),
+        &mirror_coordinate,
+        raw_usage.as_ref(),
+        &occurred_at,
+    ) {
         return parsed;
     }
-    let mut previous = previous.unwrap_or(Value::Null);
-    if [
+    let previous = previous.unwrap_or(Value::Null);
+    let reset = [
         "input",
         "cached",
         "output",
         "reasoning",
+        "cacheWrite5m",
+        "cacheWrite1h",
         "cacheWriteUnknown",
     ]
     .into_iter()
@@ -370,11 +472,28 @@ pub fn parse(value: &Value, offset: u64, file_id: &str, state: &mut ReaderState)
             .and_then(Value::as_i64)
             .zip(previous.get(key).and_then(Value::as_i64))
             .is_some_and(|(now, before)| now < before)
-    }) {
-        previous = Value::Null;
+    });
+    let mut epoch = state.data["legacyEpoch"].as_u64().unwrap_or(0);
+    if reset {
+        epoch += 1;
+        data_object(state).insert("legacyEpoch".into(), json!(epoch));
         parsed.problems.push("cumulative_counter_reset".into());
     }
-    let (input, cache_read, output, reasoning) = match normalized_buckets(totals, &mut parsed) {
+    if reset && last.is_none() {
+        parsed
+            .problems
+            .push("counter_reset_without_last_usage".into());
+        return parsed;
+    }
+    // Last usage is the completed request, even across compaction/corrections.
+    // Cumulative counters remain the status/mirror identity and legacy fallback.
+    let usage = last.unwrap_or(totals);
+    let previous = if last.is_some() {
+        Value::Null
+    } else {
+        previous
+    };
+    let (input, cache_read, output, reasoning) = match normalized_buckets(usage, &mut parsed) {
         Some(buckets) => buckets,
         None => return parsed,
     };
@@ -382,36 +501,45 @@ pub fn parse(value: &Value, offset: u64, file_id: &str, state: &mut ReaderState)
     let prior_cache = number(&previous, &["cached"]);
     let prior_output = number(&previous, &["output"]);
     let prior_reasoning = number(&previous, &["reasoning"]);
-    let mut fact = Fact::new(
-        "codex",
-        &session,
-        &format!(
-            "legacy:{session}:{}:{}:{}",
-            mirror_turn.as_deref().unwrap_or("unknown"),
-            number(totals, &["input_tokens", "inputTokens"]).unwrap_or(0),
-            number(totals, &["output_tokens", "outputTokens"]).unwrap_or(0)
-        ),
-        &occurred_at,
+    let mut key = format!(
+        "legacy:{session}:{}:{}:{}",
+        mirror_turn.as_deref().unwrap_or("unknown"),
+        number(totals, &["input_tokens", "inputTokens"]).unwrap_or(0),
+        number(totals, &["output_tokens", "outputTokens"]).unwrap_or(0)
     );
+    if epoch > 0 {
+        key.push_str(&format!(":epoch:{epoch}"));
+    }
+    let mut fact = Fact::new("codex", &session, &key, &occurred_at);
     fact.model = bounded(text(info, &["model"])).or_else(|| state.model.clone());
     let prior_uncached = match (prior_input, prior_cache) {
         (Some(input), Some(cache)) if cache <= input => Some(input - cache),
         (Some(input), None) => Some(input),
         _ => None,
     };
+    if last.is_none()
+        && input
+            .zip(prior_uncached)
+            .is_some_and(|(now, before)| now < before)
+    {
+        parsed
+            .problems
+            .push("cache_counter_correction_without_last_usage".into());
+        return parsed;
+    }
     fact.buckets.input = subtract(input, prior_uncached);
     fact.buckets.cache_read = subtract(cache_read, prior_cache);
-    // Apply the same no-TTL rule to legacy cumulative deltas.
+    // Apply the same no-TTL rule to last usage and cumulative deltas.
     fact.buckets.cache_write5m = subtract(
         number(
-            totals,
+            usage,
             &["cache_write_5m_input_tokens", "cacheWrite5mInputTokens"],
         ),
         number(&previous, &["cacheWrite5m"]),
     );
     fact.buckets.cache_write1h = subtract(
         number(
-            totals,
+            usage,
             &["cache_write_1h_input_tokens", "cacheWrite1hInputTokens"],
         ),
         number(&previous, &["cacheWrite1h"]),
@@ -419,7 +547,7 @@ pub fn parse(value: &Value, offset: u64, file_id: &str, state: &mut ReaderState)
     if fact.buckets.cache_write5m.is_none() && fact.buckets.cache_write1h.is_none() {
         fact.buckets.cache_write_unknown = subtract(
             number(
-                totals,
+                usage,
                 &["cache_write_input_tokens", "cacheWriteInputTokens"],
             ),
             number(&previous, &["cacheWriteUnknown"]),
@@ -432,17 +560,18 @@ pub fn parse(value: &Value, offset: u64, file_id: &str, state: &mut ReaderState)
     fact.subagent = state.data["codexSubagent"].as_bool() == Some(true);
     fact.cwd = state.cwd.clone();
     fact.source = format!("native:{file_id}@{offset}");
-    if let Some(turn) = mirror_turn {
-        append_mirror(
-            state,
-            "legacyMirrors",
-            json!({
-                "turn": turn,
-                "coordinate": mirror_coordinate,
-                "key": fact.key.clone(),
-            }),
-        );
-    }
+    append_mirror(
+        state,
+        "legacyMirrors",
+        json!({
+            "session": session,
+            "turn": mirror_turn,
+            "at": occurred_at,
+            "coordinate": mirror_coordinate,
+            "usage": raw_usage,
+            "key": fact.key.clone(),
+        }),
+    );
     parsed.covered_sessions.push(session);
     parsed.facts.push(fact);
     parsed

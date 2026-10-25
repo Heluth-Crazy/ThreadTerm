@@ -538,7 +538,7 @@ fn aggregate_rpc_contract_scope_children_and_reconciliation() {
     assert_eq!(all["tokens"]["input"], 60);
     assert_eq!(all["tokens"]["cacheRead"], Value::Null);
     assert_eq!(all["activeTimeMs"], 2000);
-    for (scope, count) in [("threadterm", 4), ("outside", 2)] {
+    for (scope, count) in [("threadterm", 5), ("outside", 1)] {
         let v = queries::query(&conn, "usage.ledger.summary", &json!({"scope":scope})).unwrap();
         assert_eq!(v["requests"], count);
     }

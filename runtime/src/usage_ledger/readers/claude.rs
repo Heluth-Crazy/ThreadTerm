@@ -115,6 +115,11 @@ pub fn parse(value: &Value, offset: u64, file_id: &str, state: &mut ReaderState)
             "Claude cache creation lifetime is unsupported; cache write retained as unpriced coverage".into(),
         );
     }
+    let synthetic = fact.model.as_deref() == Some("<synthetic>");
+    let api_error = value.get("isApiErrorMessage").and_then(Value::as_bool) == Some(true);
+    if fact.buckets.total() == 0 && (synthetic || api_error) {
+        return parsed;
+    }
     fact.parent_native_session_id = state.parent_session_id.clone();
     fact.subagent = fact.parent_native_session_id.is_some();
     if value.get("isSidechain").and_then(Value::as_bool) == Some(true)
@@ -212,5 +217,56 @@ mod tests {
             &mut ReaderState::default(),
         );
         assert_eq!(identified.replaced_keys, vec!["claude:message-a:fallback"]);
+    }
+
+    #[test]
+    fn synthetic_zero_usage_errors_are_not_requests_but_reported_calls_are_retained() {
+        let synthetic = parse(
+            &json!({
+                "sessionId":"session-a", "requestId":"request-a", "timestamp":"2026-01-02T03:04:05Z",
+                "isApiErrorMessage":true,
+                "message":{"id":"message-a", "model":"<synthetic>", "usage":{
+                    "input_tokens":0, "cache_read_input_tokens":0,
+                    "cache_creation_input_tokens":0, "output_tokens":0
+                }}
+            }),
+            0,
+            "a",
+            &mut ReaderState::default(),
+        );
+        assert!(synthetic.facts.is_empty());
+        assert!(synthetic.covered_sessions.is_empty());
+
+        let known_zero = parse(
+            &json!({
+                "sessionId":"session-a", "requestId":"request-b", "timestamp":"2026-01-02T03:04:06Z",
+                "message":{"id":"message-b", "model":"claude-known", "usage":{
+                    "input_tokens":0, "cache_read_input_tokens":0,
+                    "cache_creation_input_tokens":0, "output_tokens":0
+                }}
+            }),
+            1,
+            "a",
+            &mut ReaderState::default(),
+        );
+        assert_eq!(known_zero.facts.len(), 1);
+        assert_eq!(known_zero.covered_sessions, vec!["session-a"]);
+        assert_eq!(known_zero.facts[0].buckets.total(), 0);
+
+        let billable_error = parse(
+            &json!({
+                "sessionId":"session-a", "requestId":"request-c", "timestamp":"2026-01-02T03:04:07Z",
+                "isApiErrorMessage":true,
+                "message":{"id":"message-c", "model":"claude-known", "usage":{
+                    "input_tokens":3, "output_tokens":5
+                }}
+            }),
+            2,
+            "a",
+            &mut ReaderState::default(),
+        );
+        assert_eq!(billable_error.facts.len(), 1);
+        assert_eq!(billable_error.covered_sessions, vec!["session-a"]);
+        assert_eq!(billable_error.facts[0].buckets.total(), 8);
     }
 }

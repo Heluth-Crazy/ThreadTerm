@@ -19,6 +19,8 @@ const PRICE_REVISION_KEY: &str = "pricing-revision";
 const PRICE_PENDING_KEY: &str = "pricing-pending-revision";
 const PRICE_PENDING_COMPAT_KEY: &str = "pricing-pending";
 const NATIVE_TIMESTAMP_ORDER_KEY: &str = "native-timestamp-order-verified";
+const ATTRIBUTION_ALGORITHM_REVISION: &[u8] = b"subagent-parent-chain-v2";
+const MAX_ATTRIBUTION_PARENT_HOPS: usize = 32;
 static WRITE_COUNT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 static WRITE_MAX_US: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 #[cfg(test)]
@@ -311,6 +313,7 @@ pub fn initialize(conn: &Connection) -> Result<()> {
          CREATE INDEX IF NOT EXISTS usage_facts_session_day ON usage_facts(provider,native_session_id,local_day,fact_key);
          CREATE INDEX IF NOT EXISTS usage_facts_time ON usage_facts(occurred_at);
          CREATE INDEX IF NOT EXISTS usage_facts_parent ON usage_facts(provider,parent_native_session_id,subagent,native_session_id);
+         CREATE INDEX IF NOT EXISTS usage_facts_subagent_parent ON usage_facts(provider,native_session_id,subagent,parent_native_session_id);
          CREATE INDEX IF NOT EXISTS usage_facts_threadterm_source ON usage_facts(threadterm_session_id,source);
          CREATE INDEX IF NOT EXISTS usage_facts_turn ON usage_facts(threadterm_session_id,turn_id,source);
          CREATE INDEX IF NOT EXISTS usage_rollups_range ON usage_daily_rollups(local_day,scope,provider,model);
@@ -453,7 +456,17 @@ struct Attribution {
 pub(super) struct RefreshContext {
     overrides: Value,
     projects: Vec<ProjectRoot>,
-    attributions: BTreeMap<(String, String, Option<String>, Option<String>), Attribution>,
+    attributions: BTreeMap<
+        (
+            String,
+            String,
+            Option<String>,
+            Option<String>,
+            Option<String>,
+            bool,
+        ),
+        Attribution,
+    >,
 }
 
 impl RefreshContext {
@@ -471,6 +484,8 @@ impl RefreshContext {
             fact.native_session_id.clone(),
             fact.threadterm_session_id.clone(),
             fact.cwd.clone(),
+            fact.parent_native_session_id.clone(),
+            fact.subagent,
         );
         if let Some(value) = self.attributions.get(&cache_key) {
             return Ok(value.clone());
@@ -480,15 +495,10 @@ impl RefreshContext {
             .as_deref()
             .and_then(|id| session_by_id(conn, id).ok().flatten());
         if session.is_none() {
-            session = conn
-                .query_row(
-                    "SELECT id,project_id,worktree_path FROM sessions
-                     WHERE provider=? AND native_id=?
-                     ORDER BY updated_at DESC,id LIMIT 1",
-                    params![fact.provider, fact.native_session_id],
-                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
-                )
-                .optional()?;
+            session = session_by_native_id(conn, &fact.provider, &fact.native_session_id)?;
+        }
+        if session.is_none() {
+            session = inherited_parent_session(conn, fact)?;
         }
         let (threadterm_session_id, session_project, session_cwd) = session.unwrap_or_default();
         let cwd = fact.cwd.clone().or(session_cwd);
@@ -524,6 +534,79 @@ fn session_by_id(
             |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
         )
         .optional()?)
+}
+
+fn session_by_native_id(
+    conn: &Connection,
+    provider: &str,
+    native_id: &str,
+) -> Result<Option<(String, Option<String>, Option<String>)>> {
+    Ok(conn
+        .query_row(
+            "SELECT id,project_id,worktree_path FROM sessions
+             WHERE provider=? AND native_id=?
+             ORDER BY updated_at DESC,id LIMIT 1",
+            params![provider, native_id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .optional()?)
+}
+
+enum ParentLink {
+    Terminal,
+    Next(String),
+    Ambiguous,
+}
+
+fn inherited_parent_session(
+    conn: &Connection,
+    fact: &Fact,
+) -> Result<Option<(String, Option<String>, Option<String>)>> {
+    if !fact.subagent {
+        return Ok(None);
+    }
+    let mut next = fact.parent_native_session_id.clone();
+    let mut seen = BTreeSet::new();
+    seen.insert(fact.native_session_id.clone());
+    for _ in 0..MAX_ATTRIBUTION_PARENT_HOPS {
+        let Some(native_id) = next else {
+            return Ok(None);
+        };
+        if !seen.insert(native_id.clone()) {
+            return Ok(None);
+        }
+        if let Some(session) = session_by_native_id(conn, &fact.provider, &native_id)? {
+            // An exact provider/native binding is the authoritative endpoint;
+            // do not scan the bound parent transcript merely to inspect stale
+            // descendant links.
+            return Ok(Some(session));
+        }
+        next = match subagent_parent_link(conn, &fact.provider, &native_id)? {
+            ParentLink::Terminal => return Ok(None),
+            ParentLink::Next(parent) => Some(parent),
+            ParentLink::Ambiguous => return Ok(None),
+        };
+    }
+    Ok(None)
+}
+
+fn subagent_parent_link(conn: &Connection, provider: &str, native_id: &str) -> Result<ParentLink> {
+    let parents = conn
+        .prepare_cached(
+            "SELECT parent_native_session_id FROM usage_facts
+             INDEXED BY usage_facts_subagent_parent
+             WHERE provider=? AND native_session_id=? AND subagent=1
+               AND parent_native_session_id IS NOT NULL AND parent_native_session_id<>''
+             GROUP BY parent_native_session_id
+             ORDER BY parent_native_session_id LIMIT 2",
+        )?
+        .query_map(params![provider, native_id], |row| row.get::<_, String>(0))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(match parents.as_slice() {
+        [] => ParentLink::Terminal,
+        [parent] => ParentLink::Next(parent.clone()),
+        _ => ParentLink::Ambiguous,
+    })
 }
 
 fn table_exists(conn: &Connection, table: &str) -> Result<bool> {
@@ -2760,12 +2843,17 @@ pub fn rebuild_session(conn: &Connection, provider: &str, native_session_id: &st
     refresh_session_rollups(conn, provider, native_session_id)
 }
 
-/// Refresh cached ownership only when explicit refresh observes changed app metadata.
+/// Refresh cached ownership when app metadata or native parent links change.
 pub fn refresh_attributions(conn: &Connection, cancelled: &AtomicBool) -> Result<bool> {
     let mut hash = Sha256::new();
+    hash.update(ATTRIBUTION_ALGORITHM_REVISION);
     for sql in [
         "SELECT id,provider,COALESCE(native_id,''),COALESCE(project_id,''),COALESCE(worktree_path,'') FROM sessions ORDER BY id",
         "SELECT id,name,path FROM projects ORDER BY id",
+        "SELECT DISTINCT provider,native_session_id,parent_native_session_id
+         FROM usage_facts INDEXED BY usage_facts_subagent_parent
+         WHERE subagent=1 AND parent_native_session_id IS NOT NULL AND parent_native_session_id<>''
+         ORDER BY provider,native_session_id,parent_native_session_id",
     ] {
         let mut statement=conn.prepare(sql)?;
         let count=statement.column_count();
@@ -2788,7 +2876,12 @@ pub fn refresh_attributions(conn: &Connection, cancelled: &AtomicBool) -> Result
         if cancelled.load(Ordering::Relaxed) {
             return Ok(false);
         }
-        let mut statement=conn.prepare("SELECT fact_key,provider,native_session_id,cwd,CASE WHEN source LIKE 'live:%' THEN threadterm_session_id END FROM usage_facts WHERE fact_key>? ORDER BY fact_key LIMIT 512")?;
+        let mut statement = conn.prepare(
+            "SELECT fact_key,provider,native_session_id,cwd,
+                CASE WHEN source LIKE 'live:%' THEN threadterm_session_id END,
+                parent_native_session_id,subagent
+             FROM usage_facts WHERE fact_key>? ORDER BY fact_key LIMIT 512",
+        )?;
         let page = statement
             .query_map([&cursor], |r| {
                 Ok((
@@ -2797,6 +2890,8 @@ pub fn refresh_attributions(conn: &Connection, cancelled: &AtomicBool) -> Result
                     r.get::<_, String>(2)?,
                     r.get::<_, Option<String>>(3)?,
                     r.get::<_, Option<String>>(4)?,
+                    r.get::<_, Option<String>>(5)?,
+                    r.get::<_, i64>(6)? != 0,
                 ))
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -2807,10 +2902,12 @@ pub fn refresh_attributions(conn: &Connection, cancelled: &AtomicBool) -> Result
         let write_start = std::time::Instant::now();
         let tx = super::write_priority::transaction(conn)?;
         let mut context = RefreshContext::load(&tx)?;
-        for (key, provider, native, cwd, tt) in &page {
+        for (key, provider, native, cwd, tt, parent, subagent) in &page {
             let mut fact = Fact::new(provider, native, key, "2000-01-01T00:00:00Z");
             fact.cwd = cwd.clone();
             fact.threadterm_session_id = tt.clone();
+            fact.parent_native_session_id = parent.clone();
+            fact.subagent = *subagent;
             let attribution = context.attribution(&tx, &fact)?;
             tx.execute("UPDATE usage_facts SET threadterm_session_id=?,project_id=?,scope=? WHERE fact_key=?",params![(!attribution.threadterm_session_id.is_empty()).then_some(attribution.threadterm_session_id),attribution.project_id,attribution.scope,key])?;
         }
@@ -5034,6 +5131,4 @@ mod tests {
         );
     }
 }
-
-
 

@@ -1,5 +1,5 @@
 use crate::usage_ledger::facts::{number, text, timestamp, Buckets, Fact, Parsed, ReaderState};
-use serde_json::{json, Value};
+use serde_json::Value;
 
 fn counters(usage: &Value) -> Buckets {
     let cached = number(usage, &["cachedReadTokens", "cached_read_tokens"]);
@@ -20,54 +20,6 @@ fn counters(usage: &Value) -> Buckets {
     }
 }
 
-fn delta(now: &Buckets, previous: Option<&Buckets>) -> (Buckets, bool) {
-    let reset = previous.is_some_and(|old| {
-        [
-            now.input.zip(old.input),
-            now.cache_read.zip(old.cache_read),
-            now.cache_write_unknown.zip(old.cache_write_unknown),
-            now.output.zip(old.output),
-        ]
-        .into_iter()
-        .flatten()
-        .any(|(next, before)| next < before)
-    });
-    let subtract = |next: Option<i64>, before: Option<i64>| match (next, before, reset) {
-        (Some(next), Some(before), false) => Some(next.saturating_sub(before)),
-        (value, _, _) => value,
-    };
-    (
-        Buckets {
-            input: subtract(now.input, previous.and_then(|v| v.input)),
-            cache_read: subtract(now.cache_read, previous.and_then(|v| v.cache_read)),
-            cache_write5m: None,
-            cache_write1h: None,
-            cache_write_unknown: subtract(
-                now.cache_write_unknown,
-                previous.and_then(|v| v.cache_write_unknown),
-            ),
-            output: subtract(now.output, previous.and_then(|v| v.output)),
-            reasoning: subtract(now.reasoning, previous.and_then(|v| v.reasoning)),
-            ..Default::default()
-        },
-        reset,
-    )
-}
-
-fn state_buckets(state: &ReaderState, key: &str) -> Option<Buckets> {
-    state
-        .data
-        .get(key)
-        .and_then(|value| serde_json::from_value(value.clone()).ok())
-}
-
-fn save_state(state: &mut ReaderState, key: &str, value: Value) {
-    if !state.data.is_object() {
-        state.data = json!({});
-    }
-    state.data[key] = value;
-}
-
 fn timestamp_millis(value: &Value) -> Option<i64> {
     let value = value.as_i64()?;
     if value.abs() < 100_000_000_000 {
@@ -77,10 +29,9 @@ fn timestamp_millis(value: &Value) -> Option<i64> {
     }
 }
 
-/// Parses durable Grok Build turn-completed updates. Counters are cumulative,
-/// so a prompt keeps a baseline from immediately before its first snapshot.
-/// Repeated snapshots therefore replace the same stable request key with its
-/// full delta, which is safe for the store's max merge.
+/// Parses durable Grok Build turn-completed updates. Each prompt carries its
+/// own reported turn totals; repeated snapshots share a stable fact key and
+/// are merged by the ledger's max-merge rule.
 pub fn parse(value: &Value, offset: u64, file_id: &str, state: &mut ReaderState) -> Parsed {
     let mut parsed = Parsed::default();
     let params = value.get("params").unwrap_or(value);
@@ -136,94 +87,10 @@ pub fn parse(value: &Value, offset: u64, file_id: &str, state: &mut ReaderState)
             .problems
             .push("grok inclusive input has no cache-read breakdown".into());
     }
-    let previous = state_buckets(state, "grok_latest");
-    let same_prompt = state.data.get("grok_prompt").and_then(Value::as_str) == Some(prompt);
-    let baseline = if same_prompt {
-        state_buckets(state, "grok_prompt_baseline")
-    } else {
-        previous.clone()
-    };
-    let (buckets, mut reset) = delta(&now, baseline.as_ref());
-    // A repeat is merged against its prompt baseline, so that delta alone
-    // cannot reveal a counter reset. Compare it with the immediately prior
-    // snapshot as well before retaining the new epoch.
-    if same_prompt {
-        reset |= delta(&now, previous.as_ref()).1;
-    }
     let cost_ticks = number(usage, &["costUsdTicks", "cost_usd_ticks"]);
-    let previous_cost = state.data.get("grok_cost_latest").and_then(Value::as_i64);
-    let cost_baseline = if same_prompt {
-        state
-            .data
-            .get("grok_prompt_cost_baseline")
-            .and_then(Value::as_i64)
-    } else {
-        previous_cost
-    };
-    if cost_ticks
-        .zip(cost_baseline)
-        .is_some_and(|(next, before)| next < before)
-    {
-        reset = true;
-    }
-    let cost_delta = match (cost_ticks, cost_baseline, reset) {
-        (Some(next), Some(before), false) => Some(next.saturating_sub(before)),
-        (next, _, _) => next,
-    };
-    let mut epoch = state
-        .data
-        .get("grok_reset_epoch")
-        .and_then(Value::as_i64)
-        .unwrap_or(0);
-    if reset {
-        epoch += 1;
-        // Reset values are a new cumulative sequence.  Baseline them at zero
-        // and give the record a new coordinate so it cannot be max-merged with
-        // a prior, larger snapshot for the same prompt.
-        let (reset_buckets, _) = delta(&now, None);
-        save_state(state, "grok_prompt_baseline", Value::Null);
-        save_state(state, "grok_prompt_cost_baseline", Value::Null);
-        save_state(state, "grok_reset_epoch", json!(epoch));
-        save_state(
-            state,
-            "grok_latest",
-            serde_json::to_value(&now).unwrap_or(Value::Null),
-        );
-        save_state(state, "grok_cost_latest", json!(cost_ticks));
-        save_state(state, "grok_prompt", json!(prompt));
-        return emit_fact(
-            &mut parsed,
-            update,
-            state,
-            file_id,
-            offset,
-            &session,
-            prompt,
-            &occurred_at,
-            reset_buckets,
-            cost_ticks,
-            epoch,
-            true,
-        );
-    }
-    save_state(
-        state,
-        "grok_latest",
-        serde_json::to_value(&now).unwrap_or(Value::Null),
-    );
-    save_state(state, "grok_cost_latest", json!(cost_ticks));
-    save_state(state, "grok_prompt", json!(prompt));
-    if !same_prompt {
-        save_state(
-            state,
-            "grok_prompt_baseline",
-            serde_json::to_value(&previous).unwrap_or(Value::Null),
-        );
-        save_state(state, "grok_prompt_cost_baseline", json!(previous_cost));
-    }
-    // A resumed child begins with counters that may already include its parent.
-    // Establish a baseline before accepting child deltas so those copied totals
-    // can never be re-added as a child request.
+    // A fork archive can contain the parent's pre-fork prompt records under
+    // the child source. Those records are not child usage; later child turns
+    // retain their full per-prompt totals.
     let before_child_creation = state.parent_session_id.is_some()
         && state
             .data
@@ -231,30 +98,8 @@ pub fn parse(value: &Value, offset: u64, file_id: &str, state: &mut ReaderState)
             .and_then(Value::as_i64)
             .zip(value.get("timestamp").and_then(timestamp_millis))
             .is_some_and(|(created, event)| event < created);
-    if (previous.is_none() && state.parent_session_id.is_some()) || before_child_creation {
-        save_state(
-            state,
-            "grok_prompt_baseline",
-            serde_json::to_value(&now).unwrap_or(Value::Null),
-        );
-        save_state(state, "grok_prompt_cost_baseline", json!(cost_ticks));
+    if before_child_creation {
         parsed.covered_sessions.push(session.clone());
-        parsed
-            .problems
-            .push("grok child baseline skipped to exclude inherited counters".into());
-        return parsed;
-    }
-    if buckets.total() == 0
-        && [
-            buckets.input,
-            buckets.cache_read,
-            buckets.cache_write5m,
-            buckets.cache_write_unknown,
-            buckets.output,
-        ]
-        .iter()
-        .all(Option::is_none)
-    {
         return parsed;
     }
     emit_fact(
@@ -266,10 +111,8 @@ pub fn parse(value: &Value, offset: u64, file_id: &str, state: &mut ReaderState)
         &session,
         prompt,
         &occurred_at,
-        buckets,
-        cost_delta,
-        epoch,
-        false,
+        now,
+        cost_ticks,
     )
 }
 
@@ -285,8 +128,6 @@ fn emit_fact(
     occurred_at: &str,
     buckets: Buckets,
     cost_ticks: Option<i64>,
-    epoch: i64,
-    reset: bool,
 ) -> Parsed {
     if buckets.total() == 0
         && [
@@ -301,11 +142,7 @@ fn emit_fact(
     {
         return std::mem::take(parsed);
     }
-    let key = if epoch == 0 {
-        format!("{session}:{prompt}")
-    } else {
-        format!("{session}:{prompt}:reset:{epoch}")
-    };
+    let key = format!("{session}:{prompt}");
     let mut fact = Fact::new("grok", session, &key, occurred_at);
     fact.buckets = buckets;
     fact.quality = "derived".into();
@@ -328,11 +165,6 @@ fn emit_fact(
     fact.cwd = state.cwd.clone();
     fact.source = format!("native:{file_id}@{offset}");
     fact.reported_cost = cost_ticks.map(|ticks| ticks as f64 / 10_000_000_000.0);
-    if reset {
-        parsed.problems.push(
-            "grok cumulative counters reset; treated current counters as a new baseline".into(),
-        );
-    }
     parsed.covered_sessions.push(session.to_owned());
     parsed.facts.push(fact);
     std::mem::take(parsed)
@@ -344,7 +176,7 @@ mod tests {
     use serde_json::json;
 
     #[test]
-    fn cumulative_turns_become_deltas_and_reasoning_stays_in_output() {
+    fn completed_turns_keep_reported_buckets_and_reasoning_stays_in_output() {
         let mut state = ReaderState::default();
         let first = parse(
             &json!({"timestamp":1,"params":{"sessionId":"s","update":{"sessionUpdate":"turn_completed","prompt_id":"p1","usage":{"inputTokens":100,"cachedReadTokens":90,"outputTokens":5,"reasoningTokens":3,"costUsdTicks":10}}}}),
@@ -359,9 +191,9 @@ mod tests {
             &mut state,
         );
         assert_eq!(first.facts[0].buckets.input, Some(10));
-        assert_eq!(second.facts[0].buckets.input, Some(10));
-        assert_eq!(second.facts[0].buckets.output, Some(4));
-        assert_eq!(second.facts[0].buckets.reasoning, Some(1));
+        assert_eq!(second.facts[0].buckets.input, Some(20));
+        assert_eq!(second.facts[0].buckets.output, Some(9));
+        assert_eq!(second.facts[0].buckets.reasoning, Some(4));
     }
 
     #[test]
@@ -385,7 +217,28 @@ mod tests {
     }
 
     #[test]
-    fn counter_reset_gets_a_new_request_coordinate() {
+    fn distinct_completed_prompts_keep_their_full_reported_usage_and_cost() {
+        let mut state = ReaderState::default();
+        let first = parse(
+            &json!({"timestamp":1,"params":{"sessionId":"s","update":{"sessionUpdate":"turn_completed","prompt_id":"p1","usage":{"inputTokens":100,"cachedReadTokens":80,"outputTokens":10,"costUsdTicks":100}}}}),
+            0,
+            "updates",
+            &mut state,
+        );
+        let second = parse(
+            &json!({"timestamp":2,"params":{"sessionId":"s","update":{"sessionUpdate":"turn_completed","prompt_id":"p2","usage":{"inputTokens":150,"cachedReadTokens":100,"outputTokens":20,"costUsdTicks":150}}}}),
+            1,
+            "updates",
+            &mut state,
+        );
+        assert_eq!(first.facts[0].buckets.input, Some(20));
+        assert_eq!(second.facts[0].buckets.input, Some(50));
+        assert_eq!(second.facts[0].buckets.output, Some(20));
+        assert_eq!(second.facts[0].reported_cost, Some(0.000000015));
+    }
+
+    #[test]
+    fn lower_repeated_prompt_snapshot_keeps_the_same_request_coordinate() {
         let mut state = ReaderState::default();
         let first = parse(
             &json!({"timestamp":1,"params":{"sessionId":"s","update":{"sessionUpdate":"turn_completed","prompt_id":"p","usage":{"inputTokens":100,"cachedReadTokens":0,"outputTokens":10}}}}),
@@ -393,13 +246,60 @@ mod tests {
             "updates",
             &mut state,
         );
-        let reset = parse(
+        let revised = parse(
             &json!({"timestamp":2,"params":{"sessionId":"s","update":{"sessionUpdate":"turn_completed","prompt_id":"p","usage":{"inputTokens":5,"cachedReadTokens":0,"outputTokens":1}}}}),
             1,
             "updates",
             &mut state,
         );
-        assert_ne!(first.facts[0].key, reset.facts[0].key);
-        assert_eq!(reset.facts[0].buckets.input, Some(5));
+        assert_eq!(first.facts[0].key, revised.facts[0].key);
     }
+
+    #[test]
+    fn first_completed_child_prompt_is_counted_as_its_own_turn() {
+        let mut state = ReaderState {
+            session_id: "child".into(),
+            parent_session_id: Some("parent".into()),
+            ..Default::default()
+        };
+        let parsed = parse(
+            &json!({"timestamp":1,"params":{"sessionId":"child","update":{"sessionUpdate":"turn_completed","prompt_id":"p","usage":{"inputTokens":100,"cachedReadTokens":80,"outputTokens":10,"costUsdTicks":100}}}}),
+            0,
+            "updates",
+            &mut state,
+        );
+        assert_eq!(parsed.facts.len(), 1);
+        assert_eq!(parsed.facts[0].native_session_id, "child");
+        assert_eq!(parsed.facts[0].parent_native_session_id.as_deref(), Some("parent"));
+        assert_eq!(parsed.facts[0].buckets.input, Some(20));
+        assert_eq!(parsed.facts[0].buckets.output, Some(10));
+        assert_eq!(parsed.facts[0].reported_cost, Some(0.00000001));
+    }
+
+    #[test]
+    fn child_fork_prefix_before_creation_is_excluded_but_new_turn_counts() {
+        let mut state = ReaderState {
+            session_id: "child".into(),
+            parent_session_id: Some("parent".into()),
+            data: json!({"grokForkCreatedAt": 2_000}),
+            ..Default::default()
+        };
+        let copied_prefix = parse(
+            &json!({"timestamp":1,"params":{"sessionId":"child","update":{"sessionUpdate":"turn_completed","prompt_id":"parent-prompt","usage":{"inputTokens":100,"cachedReadTokens":80,"outputTokens":10}}}}),
+            0,
+            "updates",
+            &mut state,
+        );
+        let child_turn = parse(
+            &json!({"timestamp":3,"params":{"sessionId":"child","update":{"sessionUpdate":"turn_completed","prompt_id":"child-prompt","usage":{"inputTokens":150,"cachedReadTokens":100,"outputTokens":20,"costUsdTicks":150}}}}),
+            1,
+            "updates",
+            &mut state,
+        );
+        assert!(copied_prefix.facts.is_empty());
+        assert_eq!(child_turn.facts.len(), 1);
+        assert_eq!(child_turn.facts[0].buckets.input, Some(50));
+        assert_eq!(child_turn.facts[0].reported_cost, Some(0.000000015));
+    }
+
 }
