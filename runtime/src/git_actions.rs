@@ -265,7 +265,15 @@ pub fn dispatch(db: &Database, method: &str, params_value: &Value) -> Result<Opt
     };
     // Do not hide an uncertain external outcome: failure to persist completion is returned
     // to the caller; the reserved operation remains distinguishable from a successful one.
-    db.transaction(|tx| complete(tx, operation_id, method, &result))?;
+    db.transaction(|tx| {
+        complete(
+            tx,
+            operation_id,
+            method,
+            &result,
+            Some((project_id, worktree)),
+        )
+    })?;
     Ok(Some(result))
 }
 
@@ -433,11 +441,16 @@ fn verify_fingerprints(
     }
     Ok(())
 }
+
+/// Records a completed operation and publishes one `state.changed`. `scope` is the worktree the
+/// operation touched: open Source Control and Agent-changes panels refresh from that event instead
+/// of polling, and `None` only for receipts that change nothing on disk.
 pub(crate) fn complete(
     tx: &Transaction<'_>,
     operation_id: &str,
     method: &str,
     result: &Value,
+    scope: Option<(&str, Option<&str>)>,
 ) -> Result<()> {
     let prior: Option<String> = tx
         .query_row(
@@ -458,9 +471,17 @@ pub(crate) fn complete(
             Utc::now().to_rfc3339()
         ],
     )?;
+    let data = match scope {
+        Some((project_id, worktree)) => json!({
+            "kind":"git",
+            "projectId":project_id,
+            "worktreePath":worktree,
+        }),
+        None => json!({}),
+    };
     tx.execute(
-        "INSERT INTO outbox(event,data,created_at) VALUES('state.changed','{}',?)",
-        [Utc::now().to_rfc3339()],
+        "INSERT INTO outbox(event,data,created_at) VALUES('state.changed',?,?)",
+        params![serde_json::to_string(&data)?, Utc::now().to_rfc3339()],
     )?;
     Ok(())
 }
@@ -645,6 +666,48 @@ mod tests {
 
     fn call(db: &Database, method: &str, params: Value) -> Result<Value> {
         dispatch(db, method, &params).map(Option::unwrap)
+    }
+
+    fn last_event(db: &Database) -> Value {
+        let data = db
+            .transaction(|tx| {
+                tx.query_row(
+                    "SELECT data FROM outbox ORDER BY seq DESC LIMIT 1",
+                    [],
+                    |row| row.get::<_, String>(0),
+                )
+                .map_err(Into::into)
+            })
+            .unwrap();
+        serde_json::from_str(&data).unwrap()
+    }
+
+    /// F16: a Git mutation publishes one scoped change event (never a timer-driven refresh), and a
+    /// replayed receipt does not publish a second one.
+    #[test]
+    fn mutations_publish_one_scoped_worktree_event() {
+        let (temp, db, project_id) = setup();
+        fs::write(temp.path().join("a.txt"), "changed").unwrap();
+        let stage = json!({"projectId":project_id,"paths":["a.txt"],"operationId":"scoped-event"});
+        dispatch(&db, "git.stage", &stage).unwrap();
+        assert_eq!(
+            last_event(&db),
+            json!({"kind":"git","projectId":project_id,"worktreePath":null})
+        );
+        let before: i64 = db
+            .transaction(|tx| {
+                tx.query_row("SELECT COUNT(*) FROM outbox", [], |row| row.get(0))
+                    .map_err(Into::into)
+            })
+            .unwrap();
+        dispatch(&db, "git.stage", &stage).unwrap();
+        let after: i64 = db
+            .transaction(|tx| {
+                tx.query_row("SELECT COUNT(*) FROM outbox", [], |row| row.get(0))
+                    .map_err(Into::into)
+            })
+            .unwrap();
+        assert_eq!(before, after, "a replayed receipt must not republish");
     }
 
     #[test]

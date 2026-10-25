@@ -329,7 +329,15 @@ pub(crate) fn dispatch(db: &Database, method: &str, params: &Value) -> Result<Op
     // Publication already happened. A receipt failure is an uncertain outcome,
     // never an invitation to repeat hooks or create a second commit.
     if db
-        .transaction(|tx| crate::git_actions::complete(tx, &request.operation_id, METHOD, &result))
+        .transaction(|tx| {
+            crate::git_actions::complete(
+                tx,
+                &request.operation_id,
+                METHOD,
+                &result,
+                Some((&request.project_id, request.worktree_path.as_deref())),
+            )
+        })
         .is_err()
     {
         return Err(anyhow!("operation_outcome_unknown"));

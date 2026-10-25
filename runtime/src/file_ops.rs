@@ -77,7 +77,7 @@ pub fn dispatch(db: &Database, method: &str, params: &Value) -> Result<Option<Va
         )?,
         _ => unreachable!(),
     };
-    db.transaction(|tx| complete(tx, operation_id, method, &result))?;
+    db.transaction(|tx| complete(tx, operation_id, method, &result, Some((project_id, worktree))))?;
     Ok(Some(result))
 }
 
@@ -572,6 +572,32 @@ mod tests {
 
     fn call(db: &Database, method: &str, params: Value) -> Result<Value> {
         dispatch(db, method, &params).map(Option::unwrap)
+    }
+
+    /// F16: a created or renamed file changes the worktree, so the panels hear about it once.
+    #[test]
+    fn file_mutations_publish_a_scoped_worktree_event() {
+        let (_temp, db, project) = setup();
+        call(
+            &db,
+            "filesystem.create",
+            json!({"projectId":project,"path":"created.txt","kind":"file","operationId":"event-create"}),
+        )
+        .unwrap();
+        let data = db
+            .transaction(|tx| {
+                tx.query_row(
+                    "SELECT data FROM outbox ORDER BY seq DESC LIMIT 1",
+                    [],
+                    |row| row.get::<_, String>(0),
+                )
+                .map_err(Into::into)
+            })
+            .unwrap();
+        assert_eq!(
+            serde_json::from_str::<Value>(&data).unwrap(),
+            json!({"kind":"git","projectId":project,"worktreePath":null})
+        );
     }
 
     #[test]

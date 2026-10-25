@@ -10,6 +10,8 @@ import { relativeTime } from './CodeEditor';
 import { workbenchError } from '../workbench/errors';
 import { baseName, FILES_CHANGED_EVENT, notifyFilesChanged, parentPath, type WorkbenchActions } from '../workbench/types';
 import { agentReviewError, defaultReviewAgent } from '../agentReview';
+import { createRefreshQueue } from '../workbench/refreshQueue';
+import { eventTouchesWorktree } from '../workbench/refreshTriggers';
 import { AgentReviewSection } from './AgentReview';
 
 const kindLabel = (checkpoint:ReviewCheckpoint, zh:boolean) => ({
@@ -45,6 +47,8 @@ export function AgentChangesView({sessions, activeSessionId, actions, zh, visibl
  const generation = useRef(0);
  const reviewGeneration = useRef(0), reviewSessionId = useRef(sessionId), visibleRef = useRef(visible);
  const reviewerIds = useRef<Set<string>>(new Set());
+ // The session list changes on every status tick; keep it out of the effect's dependencies.
+ const sessionsRef = useRef(sessions); sessionsRef.current = sessions;
  const [anchorRevision, setAnchorRevision] = useState(0);
  visibleRef.current = visible;
  const text = (en:string, cn:string) => zh ? cn : en;
@@ -80,16 +84,22 @@ export function AgentChangesView({sessions, activeSessionId, actions, zh, visibl
  // The reviewer's rows are event driven. The existing file-refresh timer never calls agentReview.list.
  useEffect(() => {
   if(!visible) return;
-  void load(); void loadAgentReviews();
-  const timer = setInterval(() => { if(document.visibilityState === 'visible') void load(); }, 5000);
-  const changed = () => { setAnchorRevision(value=>value+1); void load(); };
-  addEventListener(FILES_CHANGED_EVENT, changed);
+  const queue = createRefreshQueue(load);
+  // The worktree of this session: only its own sessions' turns say an agent may have changed files.
+  const target = sessionsRef.current.find(candidate => candidate.id === sessionId);
+  const projectId = target?.projectId ?? '', worktreePath = target?.worktreePath;
+  const ids = new Set(sessionsRef.current.filter(candidate => candidate.projectId === projectId && (candidate.worktreePath ?? '') === (worktreePath ?? '')).map(candidate => candidate.id));
+  void queue.request(); void loadAgentReviews();
+  const changed = () => { setAnchorRevision(value=>value+1); void queue.request(); };
+  const shown = () => { if(document.visibilityState === 'visible') void queue.request(); };
+  addEventListener(FILES_CHANGED_EVENT, changed); addEventListener('visibilitychange', shown);
   const unsubscribe = subscribeEvents(event => {
    const data = event.data as {kind?:unknown;sessionId?:unknown}|undefined;
    if(event.event === 'state.changed' && data?.kind === 'agentReview' && data.sessionId === sessionId) void loadAgentReviews();
    if((event.event === 'session.status' || event.event === 'session.activity') && reviewerIds.current.has(String(data?.sessionId ?? ''))) void loadAgentReviews();
+   if(eventTouchesWorktree(event, {projectId, worktreePath}, ids)) void queue.request();
   });
-  return () => { clearInterval(timer); removeEventListener(FILES_CHANGED_EVENT, changed); unsubscribe(); };
+  return () => { queue.stop(); removeEventListener(FILES_CHANGED_EVENT, changed); removeEventListener('visibilitychange', shown); unsubscribe(); };
  }, [visible, load, loadAgentReviews, sessionId]);
  const toggleTurn = async (checkpoint:ReviewCheckpoint, next?:ReviewCheckpoint) => {
   const id = checkpoint.id;

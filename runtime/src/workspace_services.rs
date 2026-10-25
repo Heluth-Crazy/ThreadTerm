@@ -132,15 +132,18 @@ pub fn dispatch(db: &Database, method: &str, params: &Value) -> Result<Option<Va
         let project_id = object.get("projectId").and_then(Value::as_str);
         let worktree_path = object.get("worktreePath").and_then(Value::as_str);
         let root = |id: &str| root_for(tx, id, worktree_path);
+        // Only a worktree write (an editor save) publishes a Git-shaped change; drafts, workspaces
+        // and worktree registrations change ThreadTerm's own rows instead.
+        let scope = project_id.map(|id| (id, worktree_path));
         match method {
             "filesystem.list" => { let root = root(project_id.ok_or_else(|| anyhow!("invalid_request"))?)?; let relative=object.get("path").and_then(Value::as_str).ok_or_else(||anyhow!("invalid_path"))?; let dir=scoped_path(&root,relative,true)?; let mut entries=Vec::new(); for item in fs::read_dir(dir)? { let item=item?; let meta=item.file_type()?; let mut entry=serde_json::Map::new(); entry.insert("name".into(),json!(item.file_name().to_string_lossy())); entry.insert("path".into(),json!(if relative.is_empty(){item.file_name().to_string_lossy().to_string()}else{format!("{relative}/{}",item.file_name().to_string_lossy())})); entry.insert("kind".into(),json!(if meta.is_dir(){"directory"}else if meta.is_symlink(){"symlink"}else{"file"})); if let Ok(metadata)=item.metadata(){entry.insert("size".into(),json!(metadata.len()));} entries.push(Value::Object(entry)); } Ok(json!(entries)) }
             "filesystem.read" => { let root=root(project_id.ok_or_else(||anyhow!("invalid_request"))?)?; let path=object.get("path").and_then(Value::as_str).ok_or_else(||anyhow!("invalid_path"))?; let resolved=scoped_path(&root,path,true)?; let (fingerprint,content)=read_document(&root,path)?; let meta=fs::metadata(resolved)?; Ok(json!({"path":path,"content":content,"fingerprint":fingerprint,"readonly":meta.permissions().readonly(),"size":meta.len(),"modifiedAt":Utc::now().to_rfc3339()})) }
             "filesystem.image" => { let root=root(project_id.ok_or_else(||anyhow!("invalid_request"))?)?; let path=object.get("path").and_then(Value::as_str).ok_or_else(||anyhow!("invalid_path"))?; let (mime,data)=read_image(&root,path)?; Ok(json!({"mime":mime,"data":BASE64.encode(data)})) }
-            "filesystem.write" => { let root=root(project_id.ok_or_else(||anyhow!("invalid_request"))?)?; let path=object.get("path").and_then(Value::as_str).ok_or_else(||anyhow!("invalid_path"))?; let content=object.get("content").and_then(Value::as_str).ok_or_else(||anyhow!("invalid_content"))?; let expected=object.get("expectedFingerprint").and_then(Value::as_str).ok_or_else(||anyhow!("invalid_request"))?; let op=operation("operationId")?; if let Some(value)=idempotent(tx,op)? { return Ok(value); } let (fingerprint,content)=write_document(&root,path,content,expected)?; crate::group_chat::editor_saved(tx,&root.to_string_lossy(),path)?; complete(tx,op,method,&json!({"path":path,"content":content,"fingerprint":fingerprint,"readonly":false,"size":content.len(),"modifiedAt":Utc::now().to_rfc3339()})) }
+            "filesystem.write" => { let root=root(project_id.ok_or_else(||anyhow!("invalid_request"))?)?; let path=object.get("path").and_then(Value::as_str).ok_or_else(||anyhow!("invalid_path"))?; let content=object.get("content").and_then(Value::as_str).ok_or_else(||anyhow!("invalid_content"))?; let expected=object.get("expectedFingerprint").and_then(Value::as_str).ok_or_else(||anyhow!("invalid_request"))?; let op=operation("operationId")?; if let Some(value)=idempotent(tx,op)? { return Ok(value); } let (fingerprint,content)=write_document(&root,path,content,expected)?; crate::group_chat::editor_saved(tx,&root.to_string_lossy(),path)?; complete(tx,op,method,&json!({"path":path,"content":content,"fingerprint":fingerprint,"readonly":false,"size":content.len(),"modifiedAt":Utc::now().to_rfc3339()}),scope) }
             "draft.list" => { let id=project_id.ok_or_else(||anyhow!("invalid_request"))?; if worktree_path.is_some(){root_for(tx,id,worktree_path)?;} let scope=worktree_path.unwrap_or(""); let mut stmt=tx.prepare("SELECT id,project_id,worktree_path,path,content,base_fingerprint,revision,updated_at FROM drafts WHERE project_id=? AND worktree_path=? ORDER BY updated_at")?; let rows=stmt.query_map(params![id,scope],|r| Ok(json!({"id":r.get::<_,String>(0)?,"projectId":r.get::<_,String>(1)?,"worktreePath":r.get::<_,String>(2)?,"path":r.get::<_,String>(3)?,"content":r.get::<_,String>(4)?,"baseFingerprint":r.get::<_,String>(5)?,"revision":r.get::<_,i64>(6)?,"updatedAt":r.get::<_,String>(7)?})))?; Ok(json!(rows.collect::<rusqlite::Result<Vec<_>>>()?)) }
-            "draft.put" => { let id=project_id.ok_or_else(||anyhow!("invalid_request"))?; if worktree_path.is_some(){root_for(tx,id,worktree_path)?;} let scope=worktree_path.unwrap_or(""); let path=object.get("path").and_then(Value::as_str).ok_or_else(||anyhow!("invalid_path"))?; let content=object.get("content").and_then(Value::as_str).ok_or_else(||anyhow!("invalid_content"))?; if content.len()>MAX_DOCUMENT_BYTES||content.as_bytes().contains(&0){return Err(anyhow!("invalid_content"))} let expected=object.get("expectedRevision").and_then(Value::as_i64).ok_or_else(||anyhow!("invalid_request"))?; let op=operation("operationId")?; if let Some(value)=idempotent(tx,op)? {return Ok(value)} let current:Option<(String,i64)>=tx.query_row("SELECT id,revision FROM drafts WHERE project_id=? AND worktree_path=? AND path=?",params![id,scope,path],|r|Ok((r.get(0)?,r.get(1)?))).optional()?; if current.as_ref().map(|x|x.1).unwrap_or(0)!=expected{return Err(anyhow!("revision_conflict"))} let draft_id=current.map(|x|x.0).unwrap_or_else(||uuid::Uuid::new_v4().to_string()); let revision=expected+1; let base=object.get("baseFingerprint").and_then(Value::as_str).ok_or_else(||anyhow!("invalid_request"))?; let now=Utc::now().to_rfc3339(); tx.execute("INSERT INTO drafts(id,project_id,worktree_path,path,content,base_fingerprint,revision,updated_at) VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(project_id,worktree_path,path) DO UPDATE SET content=excluded.content,base_fingerprint=excluded.base_fingerprint,revision=excluded.revision,updated_at=excluded.updated_at",params![draft_id,id,scope,path,content,base,revision,now])?; complete(tx,op,method,&json!({"id":draft_id,"projectId":id,"worktreePath":scope,"path":path,"content":content,"baseFingerprint":base,"revision":revision,"updatedAt":now})) }
-            "draft.delete"|"workspace.delete" => { let id=object.get("id").and_then(Value::as_str).ok_or_else(||anyhow!("invalid_request"))?; let expected=object.get("expectedRevision").and_then(Value::as_i64).ok_or_else(||anyhow!("invalid_request"))?; let op=operation("operationId")?; if let Some(value)=idempotent(tx,op)?{return Ok(value)} let table=if method=="draft.delete"{"drafts"}else{"workspaces"}; let revision:i64=tx.query_row(&format!("SELECT revision FROM {table} WHERE id=?"),[id],|r|r.get(0))?; if revision!=expected{return Err(anyhow!("revision_conflict"))} tx.execute(&format!("DELETE FROM {table} WHERE id=?"),[id])?; complete(tx,op,method,&Value::Null) }
-            "workspace.save" => { let op=operation("operationId")?; if let Some(value)=idempotent(tx,op)?{return Ok(value)} let id=object.get("id").and_then(Value::as_str).map(str::to_owned).unwrap_or_else(||uuid::Uuid::new_v4().to_string()); let expected=object.get("expectedRevision").and_then(Value::as_i64).ok_or_else(||anyhow!("invalid_request"))?; let existing:Option<i64>=tx.query_row("SELECT revision FROM workspaces WHERE id=?",[&id],|r|r.get(0)).optional()?; if existing.unwrap_or(0)!=expected{return Err(anyhow!("revision_conflict"))} let name=object.get("name").and_then(Value::as_str).ok_or_else(||anyhow!("invalid_request"))?; let layout=object.get("layout").ok_or_else(||anyhow!("invalid_request"))?; validate_layout(layout)?; let project=object.get("projectId").and_then(Value::as_str); let worktree=object.get("worktreePath").and_then(Value::as_str); if let Some(project)=project{root_for(tx,project,worktree)?;}else if worktree.is_some(){return Err(anyhow!("invalid_request"))} let next=expected+1; let now=Utc::now().to_rfc3339(); tx.execute("INSERT INTO workspaces(id,name,project_id,worktree_path,revision,layout,updated_at) VALUES(?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET name=excluded.name,project_id=excluded.project_id,worktree_path=excluded.worktree_path,revision=excluded.revision,layout=excluded.layout,updated_at=excluded.updated_at",params![id,name,project,worktree,next,serde_json::to_string(layout)?,now])?; let mut value=serde_json::Map::new(); value.insert("id".into(),json!(id)); value.insert("name".into(),json!(name)); value.insert("revision".into(),json!(next)); value.insert("layout".into(),layout.clone()); if let Some(project)=project{value.insert("projectId".into(),json!(project));} if let Some(worktree)=worktree{value.insert("worktreePath".into(),json!(worktree));} complete(tx,op,method,&Value::Object(value)) }
+            "draft.put" => { let id=project_id.ok_or_else(||anyhow!("invalid_request"))?; if worktree_path.is_some(){root_for(tx,id,worktree_path)?;} let scope=worktree_path.unwrap_or(""); let path=object.get("path").and_then(Value::as_str).ok_or_else(||anyhow!("invalid_path"))?; let content=object.get("content").and_then(Value::as_str).ok_or_else(||anyhow!("invalid_content"))?; if content.len()>MAX_DOCUMENT_BYTES||content.as_bytes().contains(&0){return Err(anyhow!("invalid_content"))} let expected=object.get("expectedRevision").and_then(Value::as_i64).ok_or_else(||anyhow!("invalid_request"))?; let op=operation("operationId")?; if let Some(value)=idempotent(tx,op)? {return Ok(value)} let current:Option<(String,i64)>=tx.query_row("SELECT id,revision FROM drafts WHERE project_id=? AND worktree_path=? AND path=?",params![id,scope,path],|r|Ok((r.get(0)?,r.get(1)?))).optional()?; if current.as_ref().map(|x|x.1).unwrap_or(0)!=expected{return Err(anyhow!("revision_conflict"))} let draft_id=current.map(|x|x.0).unwrap_or_else(||uuid::Uuid::new_v4().to_string()); let revision=expected+1; let base=object.get("baseFingerprint").and_then(Value::as_str).ok_or_else(||anyhow!("invalid_request"))?; let now=Utc::now().to_rfc3339(); tx.execute("INSERT INTO drafts(id,project_id,worktree_path,path,content,base_fingerprint,revision,updated_at) VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(project_id,worktree_path,path) DO UPDATE SET content=excluded.content,base_fingerprint=excluded.base_fingerprint,revision=excluded.revision,updated_at=excluded.updated_at",params![draft_id,id,scope,path,content,base,revision,now])?; complete(tx,op,method,&json!({"id":draft_id,"projectId":id,"worktreePath":scope,"path":path,"content":content,"baseFingerprint":base,"revision":revision,"updatedAt":now}),None) }
+            "draft.delete"|"workspace.delete" => { let id=object.get("id").and_then(Value::as_str).ok_or_else(||anyhow!("invalid_request"))?; let expected=object.get("expectedRevision").and_then(Value::as_i64).ok_or_else(||anyhow!("invalid_request"))?; let op=operation("operationId")?; if let Some(value)=idempotent(tx,op)?{return Ok(value)} let table=if method=="draft.delete"{"drafts"}else{"workspaces"}; let revision:i64=tx.query_row(&format!("SELECT revision FROM {table} WHERE id=?"),[id],|r|r.get(0))?; if revision!=expected{return Err(anyhow!("revision_conflict"))} tx.execute(&format!("DELETE FROM {table} WHERE id=?"),[id])?; complete(tx,op,method,&Value::Null,None) }
+            "workspace.save" => { let op=operation("operationId")?; if let Some(value)=idempotent(tx,op)?{return Ok(value)} let id=object.get("id").and_then(Value::as_str).map(str::to_owned).unwrap_or_else(||uuid::Uuid::new_v4().to_string()); let expected=object.get("expectedRevision").and_then(Value::as_i64).ok_or_else(||anyhow!("invalid_request"))?; let existing:Option<i64>=tx.query_row("SELECT revision FROM workspaces WHERE id=?",[&id],|r|r.get(0)).optional()?; if existing.unwrap_or(0)!=expected{return Err(anyhow!("revision_conflict"))} let name=object.get("name").and_then(Value::as_str).ok_or_else(||anyhow!("invalid_request"))?; let layout=object.get("layout").ok_or_else(||anyhow!("invalid_request"))?; validate_layout(layout)?; let project=object.get("projectId").and_then(Value::as_str); let worktree=object.get("worktreePath").and_then(Value::as_str); if let Some(project)=project{root_for(tx,project,worktree)?;}else if worktree.is_some(){return Err(anyhow!("invalid_request"))} let next=expected+1; let now=Utc::now().to_rfc3339(); tx.execute("INSERT INTO workspaces(id,name,project_id,worktree_path,revision,layout,updated_at) VALUES(?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET name=excluded.name,project_id=excluded.project_id,worktree_path=excluded.worktree_path,revision=excluded.revision,layout=excluded.layout,updated_at=excluded.updated_at",params![id,name,project,worktree,next,serde_json::to_string(layout)?,now])?; let mut value=serde_json::Map::new(); value.insert("id".into(),json!(id)); value.insert("name".into(),json!(name)); value.insert("revision".into(),json!(next)); value.insert("layout".into(),layout.clone()); if let Some(project)=project{value.insert("projectId".into(),json!(project));} if let Some(worktree)=worktree{value.insert("worktreePath".into(),json!(worktree));} complete(tx,op,method,&Value::Object(value),None) }
             _ => unreachable!()
         }
     })?;
@@ -640,6 +643,7 @@ fn relocate_commit(
             plan.is_main != 0,
             plan.locked != 0,
         ),
+        None,
     )
 }
 
@@ -801,7 +805,7 @@ fn finish_worktree_creation(db: &Database, intent: &WorktreeIntent) -> Result<Va
             "DELETE FROM worktree_intents WHERE operation_id=?",
             [&intent.operation_id],
         )?;
-        complete(tx, &intent.operation_id, &intent.method, &value)
+        complete(tx, &intent.operation_id, &intent.method, &value, None)
     })
 }
 
@@ -815,7 +819,7 @@ fn finish_worktree_removal(db: &Database, intent: &WorktreeIntent) -> Result<Val
             "DELETE FROM worktree_intents WHERE operation_id=?",
             [&intent.operation_id],
         )?;
-        complete(tx, &intent.operation_id, &intent.method, &Value::Null)
+        complete(tx, &intent.operation_id, &intent.method, &Value::Null, None)
     })
 }
 
@@ -1483,7 +1487,16 @@ fn idempotent(tx: &Transaction<'_>, id: &str) -> Result<Option<Value>> {
     raw.map(|x| serde_json::from_str(&x).map_err(Into::into))
         .transpose()
 }
-fn complete(tx: &Transaction<'_>, id: &str, method: &str, value: &Value) -> Result<Value> {
+/// Records a completed operation and publishes one `state.changed`. `scope` is the worktree the
+/// operation changed on disk (open Source Control and Agent-changes panels refresh from it) and
+/// `None` for receipts that only touch ThreadTerm's own rows.
+fn complete(
+    tx: &Transaction<'_>,
+    id: &str,
+    method: &str,
+    value: &Value,
+    scope: Option<(&str, Option<&str>)>,
+) -> Result<Value> {
     tx.execute(
         "INSERT INTO operations(id,method,result,created_at) VALUES(?,?,?,?)",
         params![
@@ -1493,9 +1506,17 @@ fn complete(tx: &Transaction<'_>, id: &str, method: &str, value: &Value) -> Resu
             Utc::now().to_rfc3339()
         ],
     )?;
+    let data = match scope {
+        Some((project_id, worktree)) => serde_json::to_string(&json!({
+            "kind":"git",
+            "projectId":project_id,
+            "worktreePath":worktree,
+        }))?,
+        None => "{}".to_owned(),
+    };
     tx.execute(
-        "INSERT INTO outbox(event,data,created_at) VALUES('state.changed','{}',?)",
-        [Utc::now().to_rfc3339()],
+        "INSERT INTO outbox(event,data,created_at) VALUES('state.changed',?,?)",
+        params![data, Utc::now().to_rfc3339()],
     )?;
     Ok(value.clone())
 }
@@ -2686,6 +2707,21 @@ mod tests {
         let fp = read["fingerprint"].as_str().unwrap();
         let write=dispatch(&db,"filesystem.write",&json!({"projectId":project.id,"path":"a.txt","content":"two","expectedFingerprint":fp,"operationId":"write-op"})).unwrap().unwrap();
         assert_eq!(write["content"], "two");
+        // F16: an editor save is a worktree change the side bar's Git status must hear about once.
+        let event = db
+            .transaction(|tx| {
+                tx.query_row(
+                    "SELECT data FROM outbox ORDER BY seq DESC LIMIT 1",
+                    [],
+                    |row| row.get::<_, String>(0),
+                )
+                .map_err(Into::into)
+            })
+            .unwrap();
+        assert_eq!(
+            serde_json::from_str::<Value>(&event).unwrap(),
+            json!({"kind":"git","projectId":project.id,"worktreePath":null})
+        );
         assert!(dispatch(&db,"filesystem.write",&json!({"projectId":project.id,"path":"a.txt","content":"three","expectedFingerprint":fp,"operationId":"stale-write"})).is_err());
         let draft=dispatch(&db,"draft.put",&json!({"projectId":project.id,"path":"a.txt","content":"draft","baseFingerprint":"x","expectedRevision":0,"operationId":"draft-op"})).unwrap().unwrap();
         assert_eq!(draft["revision"], 1);

@@ -65,30 +65,14 @@ export function SourceControlView({scope, actions, git, zh, compact = false, too
  // Success notices are transient; errors stay until dismissed.
  useEffect(() => { if(!notice) return; const timer = setTimeout(() => setNotice(undefined), 4000); return () => clearTimeout(timer); }, [notice]);
 
- const refreshFailure = (operation:{en:string;cn:string}, succeeded:boolean, error:unknown) => {
-  const detail=workbenchError(error,zh);
-  return succeeded
-   ? text(`${operation.en} completed, but status refresh failed: ${detail}`, `${operation.cn}已完成，但状态刷新失败：${detail}`)
-   : text(`${operation.en} failed, and status refresh also failed: ${detail}`, `${operation.cn}失败，状态刷新也失败：${detail}`);
- };
- const ordinaryOperation = (label:string) => label === 'stage'
-  ? {en:'Staging changes',cn:'暂存更改'}
-  : label === 'unstage' ? {en:'Unstaging changes',cn:'取消暂存更改'} : {en:'Action',cn:'操作'};
- const selectedOperation = (label:string) => label === 'stage-selected'
-  ? {en:'Staging selected files',cn:'暂存所选文件'}
-  : label === 'unstage-selected' ? {en:'Unstaging selected files',cn:'取消暂存所选文件'} : {en:'Commit',cn:'提交'};
  const run = async (label:string, action:() => Promise<unknown>, done?:string) => {
   const epoch=scopeEpoch.current; let succeeded=false;
   setBusy(label); setIssue(undefined); setNotice(undefined); setCommittedWarning(undefined);
   try { await action(); succeeded=true; if(epoch===scopeEpoch.current&&done)setNotice(done); }
   catch(error) { if(epoch===scopeEpoch.current)setIssue(workbenchError(error, zh)); }
-  finally {
-   if(epoch===scopeEpoch.current) {
-    try { await git.refresh(); }
-    catch(error) { if(epoch===scopeEpoch.current)setIssue(refreshFailure(ordinaryOperation(label),succeeded,error)); }
-    finally { if(epoch===scopeEpoch.current)setBusy(undefined); }
-   }
-  }
+  // The shared Git status refreshes from the runtime's scoped `state.changed` for this operation, so
+  // a successful action costs exactly one `git.status`; this panel never polls and never doubles it.
+  finally { if(epoch===scopeEpoch.current)setBusy(undefined); }
   return succeeded&&epoch===scopeEpoch.current;
  };
  const stage = (paths:string[]) => run('stage', () => request('git.stage', {...params, paths, operationId:operationId()}));
@@ -102,11 +86,7 @@ export function SourceControlView({scope, actions, git, zh, compact = false, too
   } catch(error) {
    if(epoch===scopeEpoch.current)setIssue(workbenchError(error,zh));
   } finally {
-   if(epoch===scopeEpoch.current) {
-    try { await git.refresh(); }
-    catch(error) { if(epoch===scopeEpoch.current)setIssue(refreshFailure(selectedOperation(label),succeeded,error)); }
-    finally { if(epoch===scopeEpoch.current)setBusy(undefined); }
-   }
+   if(epoch===scopeEpoch.current) setBusy(undefined);
   }
   return succeeded&&epoch===scopeEpoch.current?result:undefined;
  };

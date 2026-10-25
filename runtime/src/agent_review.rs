@@ -330,7 +330,7 @@ pub(crate) fn mark(db: &Database, params: &Value) -> Result<Value> {
             value["findings"] = json!(findings); value["updatedAt"] = json!(now);
             event(tx, value["sessionId"].as_str().unwrap())?;
         }
-        crate::git_actions::complete(tx, operation, "agentReview.mark", &value)?;
+        crate::git_actions::complete(tx, operation, "agentReview.mark", &value, None)?;
         Ok(value)
     })
 }

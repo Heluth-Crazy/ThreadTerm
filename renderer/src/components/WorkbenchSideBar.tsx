@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react';
 import { createPortal } from 'react-dom';
 import type { GitStatus, Session } from '@threadterm/protocol';
-import { request } from '../bridge';
+import { request, subscribeEvents } from '../bridge';
 import { Icon } from './PrototypeIcon';
 import { ExplorerView } from './ExplorerView';
 import { SearchView } from './SearchView';
@@ -9,6 +9,8 @@ import { SourceControlView } from './SourceControlView';
 import { AgentChangesView } from './AgentChangesView';
 import { workbenchError } from '../workbench/errors';
 import { FILES_CHANGED_EVENT, scopeParams, type GitState, type WorkbenchActions, type WorkbenchScope } from '../workbench/types';
+import { createRefreshQueue, type RefreshQueue } from '../workbench/refreshQueue';
+import { eventTouchesWorktree } from '../workbench/refreshTriggers';
 import '../workbench/workbench.css';
 import './panel-headers.css';
 
@@ -30,33 +32,47 @@ function readStored():Stored {
  } catch { return {view:'files', width:280}; }
 }
 
-/** Shared Git status for the side bar; refreshed on demand, on focus and by a slow visible-only poll. */
-export function useGitStatus(scope:Pick<WorkbenchScope,'projectId'|'worktreePath'>, active:boolean, zh:boolean):GitState {
+/** Shared Git status for the side bar, refreshed only when this worktree can have changed: this app's own Git
+ * and file actions, an agent turn or terminal run finishing in the scope, window focus, the panel becoming visible
+ * and the explicit Refresh button. There is no timer, so an open panel costs nothing while nothing happens; bursts
+ * coalesce into one request with at most one waiting behind it. */
+export function useGitStatus(scope:Pick<WorkbenchScope,'projectId'|'worktreePath'>, active:boolean, zh:boolean, sessionIds:readonly string[] = []):GitState {
  const [status, setStatus] = useState<GitStatus>();
  const [error, setError] = useState<string>();
  const [loading, setLoading] = useState(false);
- const inflight = useRef<Promise<void>|undefined>(undefined);
  const scopeKey = `${scope.projectId}\0${scope.worktreePath ?? ''}`;
  const key = useRef(scopeKey); key.current = scopeKey;
- const refresh = useCallback(() => {
-  if(inflight.current) return inflight.current;
+ // Sessions of this worktree: their turns and terminal runs are the only hint that an agent changed files.
+ const sessions = useRef(new Set(sessionIds)); sessions.current = new Set(sessionIds);
+ const queue = useRef<RefreshQueue|undefined>(undefined);
+ const load = useCallback(() => {
   const requested = scopeKey;
   setLoading(true);
-  const pending = request('git.status', scopeParams(scope))
+  return request('git.status', scopeParams(scope))
    .then(value => { if(key.current === requested) { setStatus(value); setError(undefined); } })
    .catch(failure => { if(key.current === requested) { setStatus(undefined); setError(workbenchError(failure, zh)); } })
-   .finally(() => { inflight.current = undefined; if(key.current === requested) setLoading(false); });
-  inflight.current = pending;
-  return pending;
+   .finally(() => { if(key.current === requested) setLoading(false); });
  }, [scopeKey, zh]);
- useEffect(() => { setStatus(undefined); setError(undefined); void refresh(); }, [scopeKey]);
+ const loadRef = useRef(load); loadRef.current = load;
+ const refresh = useCallback(() => queue.current ? queue.current.request() : loadRef.current(), []);
+ // A closed panel still reads once per scope (badge); an open one reads through its queue below, so a new scope
+ // never costs two `git.status` calls.
+ useEffect(() => { setStatus(undefined); setError(undefined); if(!active) void load(); }, [scopeKey]);
  useEffect(() => {
   if(!active) return;
-  const focus = () => void refresh();
-  addEventListener('focus', focus); addEventListener(FILES_CHANGED_EVENT, focus);
-  const timer = setInterval(() => { if(document.visibilityState === 'visible') void refresh(); }, 5000);
-  return () => { removeEventListener('focus', focus); removeEventListener(FILES_CHANGED_EVENT, focus); clearInterval(timer); };
- }, [active, refresh]);
+  const requests = createRefreshQueue(() => loadRef.current());
+  queue.current = requests;
+  const trigger = () => { void requests.request(); };
+  const shown = () => { if(document.visibilityState === 'visible') trigger(); };
+  const unsubscribe = subscribeEvents(event => { if(eventTouchesWorktree(event, {projectId:scope.projectId, worktreePath:scope.worktreePath}, sessions.current)) trigger(); });
+  addEventListener('focus', trigger); addEventListener('visibilitychange', shown); addEventListener(FILES_CHANGED_EVENT, trigger);
+  // Opening the panel is itself an invalidation: the status may have drifted while it was closed.
+  trigger();
+  return () => {
+   requests.stop(); if(queue.current === requests) queue.current = undefined;
+   unsubscribe(); removeEventListener('focus', trigger); removeEventListener('visibilitychange', shown); removeEventListener(FILES_CHANGED_EVENT, trigger);
+  };
+ }, [active, scope.projectId, scope.worktreePath]);
  return {status, error, loading, refresh};
 }
 
@@ -72,7 +88,7 @@ export function WorkbenchSideBar({scope, actions, sessions, activeSessionId, act
  const [visited, setVisited] = useState<Set<WorkbenchView>>(() => new Set([stored.view]));
  const [focusKey, setFocusKey] = useState<string>();
  const [actionsHost, setActionsHost] = useState<HTMLDivElement|null>(null);
- const git = useGitStatus(scope, open, zh);
+ const git = useGitStatus(scope, open, zh, sessions.filter(session => session.projectId === scope.projectId && (session.worktreePath ?? '') === (scope.worktreePath ?? '')).map(session => session.id));
  const text = (en:string, cn:string) => zh ? cn : en;
  const update = (patch:Partial<Stored>) => setStored(current => {
   const next = {...current, ...patch};

@@ -157,8 +157,9 @@ export function ExplorerView({scope, actions, git, zh, activePath, focusKey, too
     if(created.kind === 'file') actions.openFile(created.path);
    }
    setEditing(undefined);
+   // The runtime publishes the worktree change; the shared Git status (and its decorations) refresh
+   // from that event, so this view only reloads its own tree here.
    await refresh();
-   void git.refresh();
   } catch(error) {
    setEditing(current => current && {...current, error:workbenchError(error, zh)});
   } finally { setBusy(false); }
@@ -171,7 +172,6 @@ export function ExplorerView({scope, actions, git, zh, activePath, focusKey, too
    actions.deleted(confirm.path);
    setConfirm(undefined);
    await refresh();
-   void git.refresh();
   } catch(error) {
    if(!permanent && /recycle_unavailable|recycle_failed/.test(String(error))) setConfirm({...confirm, permanent:true});
    else { setIssue(workbenchError(error, zh)); setConfirm(undefined); }

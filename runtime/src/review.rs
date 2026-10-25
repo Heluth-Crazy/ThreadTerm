@@ -1458,7 +1458,7 @@ pub fn dispatch(db: &Database, method: &str, params: &Value) -> Result<Option<Va
                 REVIEW_BUDGET,
             )?;
             let value = checkpoint_json(db, &id)?;
-            db.transaction(|tx| complete(tx, operation_id, method, &value))?;
+            db.transaction(|tx| complete(tx, operation_id, method, &value, None))?;
             value
         }
         "review.changes" | "review.diff" => {
@@ -1661,7 +1661,15 @@ fn revert(db: &Database, session_id: &str, object: &Map<String, Value>) -> Resul
         }
     }
     let result = json!({"restored":restored,"recycled":recycled});
-    db.transaction(|tx| complete(tx, operation_id, "review.revert", &result))?;
+    db.transaction(|tx| {
+        complete(
+            tx,
+            operation_id,
+            "review.revert",
+            &result,
+            Some((&scope.project_id, scope.worktree_path.as_deref())),
+        )
+    })?;
     Ok(result)
 }
 
