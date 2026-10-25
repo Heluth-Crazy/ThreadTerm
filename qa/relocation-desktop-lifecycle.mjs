@@ -8,7 +8,7 @@ import assert from 'node:assert/strict';
 const scratch=await mkdtemp(join(tmpdir(),'threadterm-v3-relocation-desktop-'));
 const userData=join(scratch,'electron-user'),localAppData=join(scratch,'local-app-data'),target=join(scratch,'target');
 await Promise.all([mkdir(userData),mkdir(localAppData),mkdir(target)]);
-const env={...process.env,LOCALAPPDATA:localAppData,APPDATA:join(scratch,'app-data'),THREADTERM_V3_USER_DATA:userData,THREADTERM_V3_PIPE:`\\\\.\\pipe\\threadterm-v3-relocation-desktop-${randomUUID()}`,THREADTERM_V3_RUNTIME:resolve('runtime/target/debug/threadterm-v3-runtime.exe'),THREADTERM_V3_RELOCATION_QA:'1'};
+const env={...process.env,LOCALAPPDATA:localAppData,APPDATA:join(scratch,'app-data'),THREADTERM_V3_USER_DATA:userData,THREADTERM_V3_PIPE:`\\\\.\\pipe\\threadterm-v3-relocation-desktop-${randomUUID()}`,THREADTERM_V3_RUNTIME:process.env.THREADTERM_V3_RUNTIME_BIN??resolve('runtime/target-qa/debug/threadterm-v3-runtime.exe'),THREADTERM_V3_RELOCATION_QA:'1'};
 delete env.THREADTERM_V3_DATA;
 let app;
 let releaseLock;

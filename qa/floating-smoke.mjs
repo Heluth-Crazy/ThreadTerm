@@ -7,7 +7,7 @@ import { connectPeer } from './pipe-client.mjs';
 import assert from 'node:assert/strict';
 
 const scratch = await mkdtemp(join(tmpdir(), 'threadterm-v3-floating-'));
-const runtime = resolve('runtime/target/debug/threadterm-v3-runtime.exe');
+const runtime = process.env.THREADTERM_V3_RUNTIME_BIN ?? resolve('runtime/target-qa/debug/threadterm-v3-runtime.exe');
 const pipe = `\\\\.\\pipe\\threadterm-v3-floating-${process.pid}-${Date.now()}`;
 const env = {
   ...process.env,
@@ -30,17 +30,15 @@ async function updateSettings(patch) {
   await page.evaluate(() => window.threadterm.desktopPreferences());
 }
 async function selectSession(id, title) {
-  const selector = page.locator('.session-header select[aria-label]');
-  if (await selector.count()) await selector.selectOption(id);
-  else await page.getByRole('button', { name: new RegExp(title, 'i') }).click();
-  await page.getByLabel(/select session|选择会话/i).waitFor();
-  await page.waitForFunction((sessionId) => document.querySelector('.session-header select')?.value === sessionId, id);
+  await runtimeRequest('session.present', { sessionId: id, placement: 'workspace', presentation: 'focused', operationId: crypto.randomUUID() });
+  await page.locator(`[data-content-id="session-${id}"]:not([hidden])`).waitFor();
 }
 async function openSessionWindow(id, title) {
   await selectSession(id, title);
   const count = app.windows().length;
   const added = app.waitForEvent('window', { predicate: (candidate) => candidate !== page, timeout: 12_000 });
-  await page.getByRole('button', { name: /open.*window|打开窗口/i }).click();
+  await page.getByRole('button', { name: /Workspace actions|工作区操作/i }).click();
+  await page.locator('.workspace-action-menu').getByRole('button', { name: /Open floating window|弹出为浮窗/i }).click();
   const window = await added;
   await window.waitForFunction(() => !!window.threadterm);
   await window.waitForFunction((sessionId) => new URLSearchParams(location.search).get('sessionId') === sessionId, id);
@@ -72,26 +70,28 @@ try {
   assert.equal(new URLSearchParams(await secondFloat.evaluate(() => location.search)).get('sessionId'), second.id);
   const countAfterDistinct = app.windows().length;
   await selectSession(first.id, 'Float QA First');
-  await page.getByRole('button', { name: /open.*window|打开窗口/i }).click();
+  await page.getByRole('button', { name: /Workspace actions|工作区操作/i }).click();
+  await page.locator('.workspace-action-menu').getByRole('button', { name: /Open floating window|弹出为浮窗/i }).click();
   await page.waitForTimeout(250);
   assert.equal(app.windows().length, countAfterDistinct, 'opening the same target reuses its float in cycle mode');
   assert.equal(new URLSearchParams(await firstFloat.evaluate(() => location.search)).get('sessionId'), first.id);
   report.checks.push('cycle mode opens a distinct explicit target and reuses the exact existing target');
 
   await runtimeRequest('session.present', { sessionId: second.id, placement: 'workspace', presentation: 'focused', operationId: crypto.randomUUID() });
-  await page.waitForFunction((sessionId) => document.querySelector('.session-header select')?.value === sessionId, second.id);
+  await page.locator(`[data-content-id="session-${second.id}"]:not([hidden])`).waitFor();
   await page.waitForTimeout(200);
-  assert.equal(await firstFloat.locator('.session-header select[aria-label]').inputValue(), first.id, 'shared session.present must not retarget a floating renderer');
+  assert.equal(await firstFloat.locator(`[data-content-id="session-${first.id}"]:not([hidden])`).count(), 1, 'shared session.present must not retarget a floating renderer');
   report.checks.push('floating renderer ignored shared workspace presentation navigation');
 
   await updateSettings({ lightweightMode: true, floatMode: 'cycle' });
   const beforeLightweight = app.windows().length;
   await selectSession(first.id, 'Float QA First');
   await page.evaluate((sessionId) => window.threadterm.openWindow({ sessionId }), third.id);
-  await page.waitForFunction((sessionId) => document.querySelector('.session-header select')?.value === sessionId, third.id);
+  await page.locator(`[data-content-id="session-${third.id}"]:not([hidden])`).waitFor();
   assert.equal(app.windows().length, beforeLightweight, 'lightweight openWindow does not add a BrowserWindow');
   report.checks.push('lightweight openWindow navigated the main window to the requested session without changing float count');
 
+  if(!await page.locator('.session-fullscreen-row').count())await page.getByRole('button',{name:/^Session details$|^会话详情面板$/}).click();
   const fullscreen = page.getByRole('button', { name: /fullscreen terminal|全屏终端/i });
   await fullscreen.click();
   await page.waitForFunction(() => getComputedStyle(document.querySelector('.titlebar')).display === 'none');
@@ -108,7 +108,7 @@ try {
   await page.keyboard.down('Control'); await page.keyboard.up('Control');
   await page.waitForTimeout(70);
   await page.keyboard.down('Control'); await page.keyboard.up('Control');
-  await page.waitForFunction((sessionId) => document.querySelector('.session-header select')?.value === sessionId, first.id);
+  await page.locator(`[data-content-id="session-${first.id}"]:not([hidden])`).waitFor();
   report.checks.push('double Ctrl switched from the current session to the last active session');
 
   for (const session of [first, second, third])

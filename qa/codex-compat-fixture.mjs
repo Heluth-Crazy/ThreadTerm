@@ -1,6 +1,6 @@
 // Real Electron and isolated QA runtime; native boundary is a deterministic fixture.
 import assert from 'node:assert/strict';
-import { copyFile, mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
@@ -52,8 +52,9 @@ async function send(text, expected, menu = false) {
 try {
   await Promise.all([bin, cwd, env.THREADTERM_V3_DATA, env.THREADTERM_V3_USER_DATA, env.CODEX_HOME].map(path => mkdir(path)));
   await writeFile(log, '');
-  await copyFile(process.execPath, join(bin, 'codex.exe'));
-  await writeFile(join(bin, 'app-server'), `require(${JSON.stringify(resolve(qa, 'fixtures/fake-codex-compat.cjs'))});\n`);
+  const launcher = join(bin, 'fake-codex-launcher.cjs');
+  await writeFile(launcher, `if (process.argv.includes('--version')) { console.log('codex-cli 0.159.1'); process.exit(0); } if (process.argv.includes('login') && process.argv.includes('status')) { console.log('Logged in using ChatGPT'); process.exit(0); } if (process.argv.includes('--help')) { console.log('Usage: codex app-server'); process.exit(0); } require(${JSON.stringify(resolve(qa, 'fixtures/fake-codex-compat.cjs'))});\n`);
+  await writeFile(join(bin, 'codex.cmd'), `@"${process.execPath}" "${launcher}" %*\r\n`);
   env.Path = [bin, dirname(process.execPath), join(process.env.SystemRoot ?? 'C:\\Windows', 'System32')].join(';');
   releaseLock = await acquireElectronQaLock();
   app = await electron.launch({ args: [root], cwd: bin, env, timeout: 60_000 });
@@ -93,8 +94,9 @@ try {
   assert.equal((await requests()).filter(row => row.method === 'thread/settings/update').length, count);
   await send('/sandbox read-only', /Sandbox: read-only/);
   await send('/model qa-unconfirmed', /did not confirm/);
-  await send('/model qa-unsupported', /does not support/);
   await send('/model qa-rejected', /QA model rejected/);
+  // A method-not-found response disables later settings calls for this adapter.
+  await send('/model qa-unsupported', /chat settings cannot be changed/);
   const options = await rpc('chat.options', { sessionId: session.id });
   assert.equal(options.options.find(option => option.id === 'model').value, 'qa-model-b');
   assert.equal(options.options.find(option => option.id === 'mode').value, 'never');
@@ -109,7 +111,7 @@ try {
   await assert.rejects(rpc('chat.send', { sessionId: session.id, text: '/plan', operationId: randomUUID(), leaseEpoch: lease.leaseEpoch }), /active turn/);
   await page.locator('.chat-compose-send.is-stop').click();
   await page.locator('.chat-compose-send[type="submit"]').waitFor();
-  assert.equal((await requests()).filter(row => row.method === 'turn/interrupt').length, 1);
+  await until(async () => (await requests()).filter(row => row.method === 'turn/interrupt').length === 1, 'native interrupt recorded');
   report.checks.push('active-turn conflict, replay and cancellation preserved the original turn');
   report.passed = true;
 } catch (error) {

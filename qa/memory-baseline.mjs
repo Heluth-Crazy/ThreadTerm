@@ -19,7 +19,7 @@ const scratch=await mkdtemp(join(tmpdir(),'threadterm-v3-memory-'));
 const project=join(scratch,'project');
 const inheritedEnv={...process.env}; delete inheritedEnv.THREADTERM_V3_RUNTIME; delete inheritedEnv.THREADTERM_V3_DEV_SERVER_URL;
 const env={...inheritedEnv,THREADTERM_V3_DATA:join(scratch,'data'),THREADTERM_V3_USER_DATA:join(scratch,'profile'),THREADTERM_V3_PIPE:'\\\\.\\pipe\\threadterm-v3-memory-'+randomUUID(),
-  ...(exe?{}:{THREADTERM_V3_RUNTIME:resolve('runtime/target/release/threadterm-v3-runtime.exe')}),...(devServer?{THREADTERM_V3_DEV_SERVER_URL:devServer}:{})};
+  ...(exe?{}:{THREADTERM_V3_RUNTIME:process.env.THREADTERM_V3_RUNTIME_BIN??resolve('runtime/target-qa/debug/threadterm-v3-runtime.exe')}),...(devServer?{THREADTERM_V3_DEV_SERVER_URL:devServer}:{})};
 const report={label,startedAt:new Date().toISOString(),exe:exe??'electron .',devServer:devServer??null,terminals,lines,settleMs,phases:{}};
 const sleep=ms=>new Promise(r=>setTimeout(r,ms));
 const run=(cmd,args,cwd)=>new Promise((ok,fail)=>{const p=spawn(cmd,args,{cwd,windowsHide:true});p.once('exit',code=>code===0?ok():fail(Error(cmd+' '+args.join(' '))))});

@@ -7,7 +7,7 @@ import {connectPeer} from './pipe-client.mjs';
 const dir=await mkdtemp(join(tmpdir(),'threadterm-v3-providers-'));
 const pipe=`\\\\.\\pipe\\threadterm-v3-provider-qa-${randomUUID()}`;
 const env={...process.env,THREADTERM_V3_DATA:join(dir,'data'),THREADTERM_V3_PIPE:pipe};
-const daemon=spawn(process.env.THREADTERM_V3_RUNTIME_BIN ?? resolve('runtime/target/debug/threadterm-v3-runtime.exe'),[],{env,windowsHide:true,stdio:['ignore','ignore','pipe']});let diagnostic='';daemon.stderr.on('data',b=>diagnostic+=b);
+const daemon=spawn(process.env.THREADTERM_V3_RUNTIME_BIN ?? resolve('runtime/target-qa/debug/threadterm-v3-runtime.exe'),[],{env,windowsHide:true,stdio:['ignore','ignore','pipe']});let diagnostic='';daemon.stderr.on('data',b=>diagnostic+=b);
 let peer;const delay=ms=>new Promise(r=>setTimeout(r,ms));
 try{
  for(let n=0;n<150;n++){try{peer=await connectPeer(`${pipe}-control`);const secret=(await readFile(join(dir,'data/runtime.credential'),'utf8')).trim();await peer.auth(secret);break}catch(e){peer?.close();peer=undefined;if(daemon.exitCode!==null)throw Error(`runtime failed: ${diagnostic}`);await delay(100)}}

@@ -12,7 +12,7 @@ import { electron } from './lib/desktop1.mjs';
 import { attachedBrowserPages, writeBrowserViewDiagnostics } from './lib/browser-view-diagnostics.mjs';
 const packagedExecutable=process.argv[2]?resolve(process.argv[2]):undefined;
 const scratchRoot='D:/project/ThreadTerm/tt-qa-temp';await mkdir(scratchRoot,{recursive:true});
-const root=resolve(fileURLToPath(new URL('..',import.meta.url))), runtime=packagedExecutable?join(dirname(packagedExecutable),'resources/runtime/threadterm-v3-runtime.exe'):process.env.THREADTERM_V3_RUNTIME_BIN??join(root,'runtime/target/debug/threadterm-v3-runtime.exe'), fixture=join(root,'qa/fixtures/browser-plugins'), out=join(root,packagedExecutable?'qa/results/agent-browser-plugins/package':'qa/results/agent-browser-plugins'), scratch=await mkdtemp(join(scratchRoot,'tt-browser-plugins-'));
+const root=resolve(fileURLToPath(new URL('..',import.meta.url))), runtime=packagedExecutable?join(dirname(packagedExecutable),'resources/runtime/threadterm-v3-runtime.exe'):process.env.THREADTERM_V3_RUNTIME_BIN??join(root,'runtime/target-qa/debug/threadterm-v3-runtime.exe'), fixture=join(root,'qa/fixtures/browser-plugins'), out=join(root,packagedExecutable?'qa/results/agent-browser-plugins/package':'qa/results/agent-browser-plugins'), scratch=await mkdtemp(join(scratchRoot,'tt-browser-plugins-'));
 assert.equal(dirname(resolve(scratch)).toLowerCase(),resolve(scratchRoot).toLowerCase(),'scratch remains inside the approved QA root');
 const http=createServer((_,response)=>{response.writeHead(200,{'content-type':'text/html'});response.end('<button id="browser-qa-target">Browser QA target</button>')});
 await new Promise(done=>http.listen(0,'127.0.0.1',done));

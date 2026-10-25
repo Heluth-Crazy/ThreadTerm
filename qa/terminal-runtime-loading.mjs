@@ -17,7 +17,7 @@ const data = join(scratch, 'data'); await mkdir(data);
 // ThreadTerm state (DATA, PIPE, USER_DATA) in this test's private directory.
 const cwd = resolve(process.env.THREADTERM_QA_CODEX_CWD ?? '..');
 const pipe = `\\\\.\\pipe\\threadterm-loading-${randomUUID()}`;
-const exe = resolve(process.env.THREADTERM_V3_RUNTIME_BIN ?? 'runtime/target/debug/threadterm-v3-runtime.exe');
+const exe = resolve(process.env.THREADTERM_V3_RUNTIME_BIN ?? 'runtime/target-qa/debug/threadterm-v3-runtime.exe');
 const runtimeEnv = {...process.env, THREADTERM_V3_DATA:data, THREADTERM_V3_PIPE:pipe, THREADTERM_V3_RUNTIME:exe};
 const checks = [];
 async function until(check, label, timeout=30000) {

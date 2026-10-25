@@ -56,7 +56,7 @@ await symlink(outside, junction, process.platform === 'win32' ? 'junction' : 'di
 const fallbackRuntime = resolve('runtime/target-qa/debug/threadterm-v3-runtime.exe');
 const runtime = process.env.THREADTERM_QA_RUNTIME_EXE
   || process.env.THREADTERM_V3_RUNTIME_BIN
-  || (existsSync(fallbackRuntime) ? fallbackRuntime : resolve('runtime/target/debug/threadterm-v3-runtime.exe'));
+  || (existsSync(fallbackRuntime) ? fallbackRuntime : resolve('runtime/target-qa/debug/threadterm-v3-runtime.exe'));
 assert.ok(existsSync(runtime), `runtime binary missing: ${runtime}`);
 const daemon = spawn(runtime, [], {
   windowsHide: true,

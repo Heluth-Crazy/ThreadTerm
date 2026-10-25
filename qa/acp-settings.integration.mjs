@@ -3,7 +3,6 @@
 import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { existsSync } from 'node:fs';
 import { mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
@@ -24,7 +23,7 @@ for (const provider of ['kimi', 'gemini']) {
   const output = spawnSync('rustc', [shim, '-o', join(bin, `${provider}.exe`)], { encoding: 'utf8', windowsHide: true });
   assert.equal(output.status, 0, output.stderr);
 }
-const runtime = process.env.THREADTERM_QA_RUNTIME_EXE || process.env.THREADTERM_V3_RUNTIME_BIN || (existsSync(resolve('runtime/target/debug/threadterm-v3-runtime.exe')) ? resolve('runtime/target/debug/threadterm-v3-runtime.exe') : resolve('runtime/target-qa/debug/threadterm-v3-runtime.exe'));
+const runtime = process.env.THREADTERM_QA_RUNTIME_EXE || process.env.THREADTERM_V3_RUNTIME_BIN || resolve('runtime/target-qa/debug/threadterm-v3-runtime.exe');
 const env = {
   // Every case of PATH goes (Git Bash passes `PATH`): a second key would let the runtime find the real CLIs.
   ...Object.fromEntries(Object.entries(process.env).filter(([key]) => key.toLowerCase() !== 'path')),

@@ -16,7 +16,7 @@ const root = resolve(qa, '..');
 const args = process.argv.slice(2);
 const option = name => args.indexOf(name) >= 0 ? args[args.indexOf(name) + 1] : undefined;
 const baseline = args.includes('--baseline');
-const suppliedRuntime = option('--runtime') ?? process.env.THREADTERM_QA_RUNTIME_EXE;
+const suppliedRuntime = option('--runtime') ?? process.env.THREADTERM_QA_RUNTIME_EXE ?? process.env.THREADTERM_V3_RUNTIME_BIN;
 const defaultRuntime = resolve(root, baseline && existsSync(resolve(root, 'runtime/target-qa/baseline/threadterm-v3-runtime.exe'))
   ? 'runtime/target-qa/baseline/threadterm-v3-runtime.exe'
   : 'runtime/target-qa/debug/threadterm-v3-runtime.exe');
@@ -75,7 +75,9 @@ try {
   // A .cmd launcher intentionally accepts Codex's per-Chat `-c` MCP override
   // before the app-server subcommand.  A copied node.exe cannot: node treats
   // that first `-c` as its own syntax-check flag.
-  await writeFile(join(bin, 'codex.cmd'), `@"${process.execPath}" "${fixture}" %*\r\n`);
+  const launcher = join(bin, 'fake-codex-launcher.cjs');
+  await writeFile(launcher, `if (process.argv.includes('--version')) { console.log('codex-cli 0.159.1'); process.exit(0); } if (process.argv.includes('login') && process.argv.includes('status')) { console.log('Logged in using ChatGPT'); process.exit(0); } if (process.argv.includes('--help')) { console.log('Usage: codex app-server'); process.exit(0); } require(${JSON.stringify(fixture)});\n`);
+  await writeFile(join(bin, 'codex.cmd'), `@"${process.execPath}" "${launcher}" %*\r\n`);
   env.Path = [bin, dirname(process.execPath), join(process.env.SystemRoot ?? 'C:\\Windows', 'System32')].join(';');
   releaseLock = await acquireElectronQaLock();
   app = await electron.launch({ args: [root], cwd: bin, env, timeout: 60_000 });

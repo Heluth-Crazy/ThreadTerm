@@ -18,7 +18,7 @@ import { PROTOCOL_CONTRACT } from '../protocol/index.ts';
 
 assert.equal(process.platform, 'win32', 'this regression exercises Windows drive-style Markdown hrefs');
 const root = resolve(import.meta.dirname, '..');
-const runtime = resolve(process.env.THREADTERM_QA_RUNTIME_EXE ?? process.env.THREADTERM_V3_RUNTIME_BIN ?? 'runtime/target/release/threadterm-v3-runtime.exe');
+const runtime = resolve(process.env.THREADTERM_QA_RUNTIME_EXE ?? process.env.THREADTERM_V3_RUNTIME_BIN ?? 'runtime/target-qa/debug/threadterm-v3-runtime.exe');
 assert.ok(existsSync(runtime), `release runtime binary missing: ${runtime}`);
 const scratch = await mkdtemp(join(tmpdir(), 'tt-windows-markdown-link-'));
 const data = join(scratch, 'data'), userData = join(scratch, 'user-data'), home = join(scratch, 'home');

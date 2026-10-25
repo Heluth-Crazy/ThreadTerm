@@ -4,7 +4,7 @@
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import { existsSync } from 'node:fs';
-import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -13,8 +13,9 @@ import { build as viteBuild, createServer as createViteServer } from 'vite';
 import { electron } from './lib/desktop1.mjs';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
-const runtime = resolve(process.env.THREADTERM_QA_RUNTIME_EXE ?? join(root, 'runtime/target/debug/threadterm-v3-runtime.exe'));
+const runtime = resolve(process.env.THREADTERM_QA_RUNTIME_EXE ?? process.env.THREADTERM_V3_RUNTIME_BIN ?? join(root, 'runtime/target-qa/debug/threadterm-v3-runtime.exe'));
 const out = join(root, 'qa/results/brand-mark');
+const scratch = await mkdtemp(join(tmpdir(), 'tt-brand-mark-'));
 const mark = join(root, 'renderer/public/brand-mark.png');
 const sourceMark = join(root, 'desktop/assets/threadterm.png');
 const report = { passed: false, checks: [], screenshots: [], errors: [] };
@@ -39,21 +40,21 @@ async function buildApp(appDir) {
 try {
   assert.ok(existsSync(mark) && existsSync(sourceMark), 'generate desktop/assets and renderer/public brand marks before QA');
   assert.equal((await readFile(mark)).equals(await readFile(sourceMark)), true, 'boot/navigation PNG must be the same generated file as the desktop mark');
-  await rm(out, { recursive: true, force: true });
   await mkdir(out, { recursive: true });
   // Exercise Vite's real public-directory and relative-base behavior, rather
   // than emulating `/brand-mark.png` with a hand-written static server.
   server = await createViteServer({ configFile: join(root, 'vite.config.ts'), server: { host: '127.0.0.1', port: 0 } });
   await server.listen();
   const origin = server.resolvedUrls.local[0].replace(/\/$/, '');
-  const splashDir = join(out, 'splash-app');
+  const splashDir = join(scratch, 'splash-app');
   await mkdir(splashDir, { recursive: true });
+  await mkdir(join(scratch, 'splash-profile'), { recursive: true });
   await writeFile(join(splashDir, 'package.json'), JSON.stringify({ name: 'brand-splash-qa', version: '0.1.0', main: 'main.cjs' }));
   // Vite serves the real entry module too. This inert bridge lets React begin
   // without starting a runtime or reporting expected bridge errors while the
   // test captures only index.html's pre-paint boot surface.
   await writeFile(join(splashDir, 'preload.cjs'), `window.threadterm={platform:'win32',request:()=>new Promise(()=>{}),onEvent:()=>()=>{},onDesktopNavigate:()=>()=>{},windowState:()=>Promise.resolve({maximized:false}),onWindowState:()=>()=>{}};`);
-  await writeFile(join(splashDir, 'main.cjs'), `const { app, BrowserWindow } = require('electron');\napp.whenReady().then(() => { const win = new BrowserWindow({ width: 1280, height: 880, show: true, backgroundColor: '#111111', webPreferences:{contextIsolation:false,preload:${JSON.stringify(join(splashDir, 'preload.cjs'))} } }); win.loadURL(process.env.TT_QA_URL); });\n`);
+  await writeFile(join(splashDir, 'main.cjs'), `const { app, BrowserWindow } = require('electron');\napp.setPath('userData',${JSON.stringify(join(scratch, 'splash-profile'))});\napp.whenReady().then(() => { const win = new BrowserWindow({ width: 1280, height: 880, show: true, backgroundColor: '#111111', webPreferences:{contextIsolation:false,preload:${JSON.stringify(join(splashDir, 'preload.cjs'))} } }); win.loadURL(process.env.TT_QA_URL); });\n`);
   splashApp = await electron.launch({ args: [splashDir], cwd: splashDir, env: { ...process.env, TT_QA_URL: `${origin}/index.html` }, timeout: 60_000 });
   splashPage = await splashApp.firstWindow({ timeout: 30_000 });
   splashPage.setDefaultTimeout(15_000);
@@ -100,8 +101,7 @@ try {
   splashApp = undefined;
 
   assert.ok(existsSync(runtime), `missing runtime ${runtime}`);
-  const appDir = join(out, 'app');
-  const scratch = join(out, 'scratch');
+  const appDir = join(scratch, 'app');
   await buildApp(appDir);
   const dropped = /^(path|codex_home|openai_api_key|threadterm_v3_data|threadterm_v3_user_data|threadterm_v3_pipe|threadterm_v3_runtime)$/iu;
   const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !dropped.test(key)));

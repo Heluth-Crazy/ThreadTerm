@@ -10,7 +10,7 @@ const delay=ms=>new Promise(r=>setTimeout(r,ms));
 const scratch=await mkdtemp(join(tmpdir(),'threadterm-v3-ipc-'));
 const data=join(scratch,'data'),project=join(scratch,'project');await mkdir(data);await mkdir(project);
 const pipe=`\\\\.\\pipe\\threadterm-v3-qa-${randomUUID()}`;
-const exe=resolve(process.env.THREADTERM_QA_RUNTIME_EXE || 'runtime/target/debug/threadterm-v3-runtime.exe');
+const exe=resolve(process.env.THREADTERM_QA_RUNTIME_EXE || process.env.THREADTERM_V3_RUNTIME_BIN || 'runtime/target-qa/debug/threadterm-v3-runtime.exe');
 let stderr='';
 const daemon=spawn(exe,[],{env:{...process.env,THREADTERM_V3_DATA:data,THREADTERM_V3_PIPE:pipe},windowsHide:true,stdio:['ignore','ignore','pipe']});
 daemon.stderr.on('data',b=>stderr+=b);

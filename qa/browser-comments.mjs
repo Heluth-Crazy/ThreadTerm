@@ -13,7 +13,7 @@ import { attachedNativeBrowserPages, dismissBrowserNotifications, nativeBrowserC
 import { writeBrowserViewDiagnostics } from './lib/browser-view-diagnostics.mjs';
 
 const scratchRoot='D:/project/ThreadTerm/tt-qa-temp';await mkdir(scratchRoot,{recursive:true});
-const root=resolve(fileURLToPath(new URL('..',import.meta.url))),runtime=process.env.THREADTERM_V3_RUNTIME_BIN??join(root,'runtime/target/debug/threadterm-v3-runtime.exe'),fixture=join(root,'qa/fixtures/browser-plugins'),out=join(root,'qa/results/browser-comments'),scratch=await mkdtemp(join(scratchRoot,'tt-browser-comments-'));
+const root=resolve(fileURLToPath(new URL('..',import.meta.url))),runtime=process.env.THREADTERM_V3_RUNTIME_BIN??join(root,'runtime/target-qa/debug/threadterm-v3-runtime.exe'),fixture=join(root,'qa/fixtures/browser-plugins'),out=join(root,'qa/results/browser-comments'),scratch=await mkdtemp(join(scratchRoot,'tt-browser-comments-'));
 assert.equal(dirname(resolve(scratch)).toLowerCase(),resolve(scratchRoot).toLowerCase(),'scratch remains inside the approved QA root');
 const report={passed:false,fixtureEventLog:join(out,'provider-events.jsonl'),scratch,checks:[],screenshots:[],errors:[],limitations:['Deterministic local Codex fixtures only; no live provider or external browser.']};let app,page,server;
 const sleep=ms=>new Promise(r=>setTimeout(r,ms));const check=x=>{report.checks.push(x);console.log('PASS '+x)};

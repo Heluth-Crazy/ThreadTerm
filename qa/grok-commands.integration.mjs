@@ -4,7 +4,6 @@ import assert from 'node:assert/strict';
 import {spawn, spawnSync} from 'node:child_process';
 import {randomUUID} from 'node:crypto';
 import {mkdtemp, mkdir, readFile, writeFile} from 'node:fs/promises';
-import {existsSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {dirname, join, resolve} from 'node:path';
 import {connectPeer} from './pipe-client.mjs';
@@ -66,7 +65,7 @@ await writeFile(join(bin, 'fake-grok.mjs'), fake);
 await writeFile(join(bin, 'shim.rs'), 'fn main(){let status=std::process::Command::new(std::env::var("TT_QA_NODE").unwrap()).arg(std::env::var("TT_QA_SCRIPT").unwrap()).args(std::env::args().skip(1)).status().unwrap();std::process::exit(status.code().unwrap_or(1));}');
 const compiled = spawnSync('rustc', [join(bin, 'shim.rs'), '-o', join(bin, 'grok.exe')], {encoding:'utf8', windowsHide:true});
 assert.equal(compiled.status, 0, compiled.stderr);
-const runtimeBin = process.env.THREADTERM_QA_RUNTIME_EXE || process.env.THREADTERM_V3_RUNTIME_BIN || (existsSync(resolve('runtime/target-qa/debug/threadterm-v3-runtime.exe')) ? resolve('runtime/target-qa/debug/threadterm-v3-runtime.exe') : resolve('runtime/target/debug/threadterm-v3-runtime.exe'));
+const runtimeBin = process.env.THREADTERM_QA_RUNTIME_EXE || process.env.THREADTERM_V3_RUNTIME_BIN || resolve('runtime/target-qa/debug/threadterm-v3-runtime.exe');
 // Every case of PATH goes (Git Bash passes `PATH`): a second key would let the runtime find the real CLIs.
 const environment = {...Object.fromEntries(Object.entries(process.env).filter(([key]) => key.toLowerCase() !== 'path')), Path:[bin, dirname(process.execPath), join(process.env.SystemRoot || 'C:\\Windows', 'System32')].join(';'), THREADTERM_V3_DATA:data, THREADTERM_V3_PIPE:pipe, TT_QA_NODE:process.execPath, TT_QA_SCRIPT:join(bin, 'fake-grok.mjs'), TT_QA_FRAMES:frames};
 const daemon = spawn(runtimeBin, [], {env:environment, windowsHide:true, stdio:['ignore', 'ignore', 'pipe']});

@@ -19,7 +19,7 @@ const delay = (milliseconds) => new Promise((resolveDelay) => setTimeout(resolve
 const qaDirectory = dirname(fileURLToPath(import.meta.url));
 const v3Root = resolve(qaDirectory, '..');
 const runtimeExecutable = process.env.THREADTERM_V3_RUNTIME_BIN
-  ?? resolve(v3Root, 'runtime/target/debug/threadterm-v3-runtime.exe');
+  ?? resolve(v3Root, 'runtime/target-qa/debug/threadterm-v3-runtime.exe');
 const fixtureSource = resolve(qaDirectory, 'fixtures/fake-codex-app-server.mjs');
 const scratch = await mkdtemp(join(tmpdir(), 'threadterm-v3-history-import-'));
 const dataDirectory = join(scratch, 'data');

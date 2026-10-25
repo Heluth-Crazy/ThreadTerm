@@ -20,7 +20,7 @@ const scratch=await mkdtemp(join(tmpdir(),'threadterm-agent-file-nav-live-'));
 const data=join(scratch,'data'),profile=join(scratch,'profile'),workspace=join(scratch,'workspace');
 const pipe=`\\\\.\\pipe\\threadterm-agent-file-nav-${id()}`;
 const fallback=resolve('runtime/target-qa/debug/threadterm-v3-runtime.exe');
-const runtime=process.env.THREADTERM_QA_RUNTIME_EXE||process.env.THREADTERM_V3_RUNTIME_BIN||(existsSync(fallback)?fallback:resolve('runtime/target/debug/threadterm-v3-runtime.exe'));
+const runtime=process.env.THREADTERM_QA_RUNTIME_EXE||process.env.THREADTERM_V3_RUNTIME_BIN||(existsSync(fallback)?fallback:resolve('runtime/target-qa/debug/threadterm-v3-runtime.exe'));
 const report={startedAt:new Date().toISOString(),live:enabled,providers:[],ui:'deferred: Electron is scheduled separately'};
 let daemon,peer;
 const prompt='只输出 [sample.md](sample.md) 和 `sample.md`，不执行工具。';

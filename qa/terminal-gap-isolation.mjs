@@ -12,7 +12,7 @@ import {connectPeer} from './pipe-client.mjs';
 
 const delay = milliseconds => new Promise(resolve => setTimeout(resolve, milliseconds));
 const root = resolve(fileURLToPath(new URL('..', import.meta.url)));
-const executable = resolve(process.env.THREADTERM_V3_RUNTIME_BIN ?? join(root, 'runtime/target/resume-qa/debug/threadterm-v3-runtime.exe'));
+const executable = resolve(process.env.THREADTERM_V3_RUNTIME_BIN ?? join(root, 'runtime/target-qa/debug/threadterm-v3-runtime.exe'));
 const scratch = await mkdtemp(join(tmpdir(), 'threadterm-gap-isolation-'));
 const data = join(scratch, 'data');
 const cwd = join(scratch, 'project');

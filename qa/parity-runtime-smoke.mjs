@@ -10,7 +10,7 @@ import { acquireElectronQaLock } from './lib/electron-lock.mjs';
 const electronArg=process.argv.find(value=>value.startsWith('--exe='));
 const runtimeArg=process.argv.find(value=>value.startsWith('--runtime='));
 const exe=electronArg?.slice(6);
-const runtime=runtimeArg?.slice(10)||resolve('runtime/target/debug/threadterm-v3-runtime.exe');
+const runtime=runtimeArg?.slice(10)||process.env.THREADTERM_V3_RUNTIME_BIN||resolve('runtime/target-qa/debug/threadterm-v3-runtime.exe');
 const out=join('qa','results','parity-runtime-smoke-'+new Date().toISOString().replace(/[:.]/g,'-'));
 const scratch=await mkdtemp(join(tmpdir(),'threadterm-v3-runtime-smoke-'));
 const project=join(scratch,'project'),tree=join(scratch,'tree');

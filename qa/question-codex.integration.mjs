@@ -24,7 +24,7 @@ assert.deepEqual(Object.keys(env).filter(key => key.toLowerCase() === 'path'), [
 await writeFile(join(bin, 'shim.rs'), 'fn main(){let status=std::process::Command::new(std::env::var("TT_QA_NODE").unwrap()).arg(std::env::var("TT_QA_SCRIPT").unwrap()).args(std::env::args().skip(1)).status().unwrap();std::process::exit(status.code().unwrap_or(1));}');
 const compiled = spawnSync('rustc', [join(bin, 'shim.rs'), '-o', join(bin, 'codex.exe')], { encoding: 'utf8', windowsHide: true });
 assert.equal(compiled.status, 0, compiled.stderr);
-const runtime = resolve(process.env.THREADTERM_QA_RUNTIME_EXE ?? 'runtime/target/debug/threadterm-v3-runtime.exe');
+const runtime = resolve(process.env.THREADTERM_QA_RUNTIME_EXE ?? process.env.THREADTERM_V3_RUNTIME_BIN ?? 'runtime/target-qa/debug/threadterm-v3-runtime.exe');
 const daemon = spawn(runtime, [], { env, windowsHide: true, stdio: ['ignore', 'ignore', 'pipe'] });
 let diagnostic = '', peer; daemon.stderr.on('data', bytes => { diagnostic += bytes.toString(); });
 const report = { passed: false, scratch, runtime, checks: [] };

@@ -19,7 +19,7 @@ await Promise.all([mkdir(bin), mkdir(cwd)]);
 await writeFile(join(bin, 'shim.rs'), 'fn main(){let status=std::process::Command::new(std::env::var("TT_QA_NODE").unwrap()).arg(std::env::var("TT_QA_SCRIPT").unwrap()).args(std::env::args().skip(1)).status().unwrap();std::process::exit(status.code().unwrap_or(1));}');
 const compiled = spawnSync('rustc', [join(bin, 'shim.rs'), '-o', join(bin, 'opencode.exe')], { encoding: 'utf8', windowsHide: true });
 assert.equal(compiled.status, 0, compiled.stderr);
-const runtime = process.env.THREADTERM_QA_RUNTIME_EXE || resolve('runtime/target/debug/threadterm-v3-runtime.exe');
+const runtime = process.env.THREADTERM_QA_RUNTIME_EXE || process.env.THREADTERM_V3_RUNTIME_BIN || resolve('runtime/target-qa/debug/threadterm-v3-runtime.exe');
 assert.ok(existsSync(runtime), `runtime binary missing: ${runtime}`);
 const runtimeCopy = join(root, 'runtime.exe'); await copyFile(runtime, runtimeCopy);
 const environment = {

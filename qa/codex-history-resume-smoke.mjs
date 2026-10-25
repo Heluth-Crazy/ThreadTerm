@@ -13,7 +13,7 @@ const root = await mkdtemp(join(tmpdir(), 'threadterm-v3-codex-history-'));
 const cwd = process.env.THREADTERM_V3_CWD ?? join(root, 'workspace');
 const pipe = `\\\\.\\pipe\\threadterm-v3-codex-history-${randomUUID()}`;
 await mkdir(cwd, { recursive: true });
-const daemon = spawn(process.env.THREADTERM_V3_RUNTIME_BIN ?? resolve('runtime/target/debug/threadterm-v3-runtime.exe'), [], {
+const daemon = spawn(process.env.THREADTERM_V3_RUNTIME_BIN ?? resolve('runtime/target-qa/debug/threadterm-v3-runtime.exe'), [], {
   env: { ...process.env, THREADTERM_V3_DATA: join(root, 'data'), THREADTERM_V3_PIPE: pipe },
   windowsHide: true,
   stdio: ['ignore', 'ignore', 'pipe'],

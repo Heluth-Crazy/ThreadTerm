@@ -1,7 +1,6 @@
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { mkdtemp, mkdir, readFile, writeFile, rm } from 'node:fs/promises';
-import { existsSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import { randomUUID } from 'node:crypto';
@@ -13,10 +12,7 @@ const root = await mkdtemp(join(tmpdir(), 'threadterm-v3-grok-chat-'));
 const cwd = join(root, 'workspace');
 const pipe = `\\\\.\\pipe\\threadterm-v3-grok-chat-${id()}`;
 await mkdir(cwd);
-const runtimeBin = process.env.THREADTERM_V3_RUNTIME_BIN
-  || (existsSync(resolve('runtime/target-qa/debug/threadterm-v3-runtime.exe'))
-    ? resolve('runtime/target-qa/debug/threadterm-v3-runtime.exe')
-    : resolve('runtime/target/debug/threadterm-v3-runtime.exe'));
+const runtimeBin = process.env.THREADTERM_V3_RUNTIME_BIN || resolve('runtime/target-qa/debug/threadterm-v3-runtime.exe');
 const daemon = spawn(runtimeBin, [], {
   env: { ...process.env, THREADTERM_V3_DATA: join(root, 'data'), THREADTERM_V3_PIPE: pipe },
   windowsHide: true,

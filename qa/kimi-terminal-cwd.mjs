@@ -32,7 +32,7 @@ capabilities = ["tool_use"]
 `);
 const pipe = `\\\\.\\pipe\\threadterm-kimi-cwd-${randomUUID()}`;
 const env = { ...process.env, THREADTERM_V3_DATA: data, THREADTERM_V3_USER_DATA: join(scratch, 'user-data'), THREADTERM_V3_PIPE: pipe, KIMI_CODE_HOME: providerHome, KIMI_CODE_NO_AUTO_UPDATE: '1', KIMI_DISABLE_TELEMETRY: '1' };
-const daemon = spawn(process.env.THREADTERM_V3_RUNTIME_BIN ?? join(root, 'runtime/target/debug/threadterm-v3-runtime.exe'), [], {
+const daemon = spawn(process.env.THREADTERM_V3_RUNTIME_BIN ?? join(root, 'runtime/target-qa/debug/threadterm-v3-runtime.exe'), [], {
   windowsHide: true, stdio: ['ignore', 'ignore', 'pipe'],
   env,
 });

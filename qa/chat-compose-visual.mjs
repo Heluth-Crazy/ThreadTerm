@@ -13,7 +13,7 @@ const out=join('qa','results','chat-compose-'+new Date().toISOString().replace(/
 const scratch=await mkdtemp(join(tmpdir(),'threadterm-chat-compose-'));
 const project=join(scratch,'project');
 const pipe='\\\\.\\pipe\\threadterm-v3-chat-compose-'+randomUUID();
-const env={...process.env,THREADTERM_V3_DATA:join(scratch,'data'),THREADTERM_V3_USER_DATA:join(scratch,'profile'),THREADTERM_V3_PIPE:pipe,THREADTERM_V3_RUNTIME:resolve('runtime/target/debug/threadterm-v3-runtime.exe')};
+const env={...process.env,THREADTERM_V3_DATA:join(scratch,'data'),THREADTERM_V3_USER_DATA:join(scratch,'profile'),THREADTERM_V3_PIPE:pipe,THREADTERM_V3_RUNTIME:process.env.THREADTERM_V3_RUNTIME_BIN??resolve('runtime/target-qa/debug/threadterm-v3-runtime.exe')};
 const report={startedAt:new Date().toISOString(),retainedScratch:scratch,checks:[],observations:{}}; let app,page,releaseLock;
 const rpc=(method,params={})=>page.evaluate(([m,p])=>Promise.race([window.threadterm.request(m,p),new Promise((_,reject)=>setTimeout(()=>reject(new Error('RPC timeout: '+m)),30000))]),[method,params]);
 const run=(cmd,args,cwd)=>new Promise((res,rej)=>{const p=spawn(cmd,args,{cwd,windowsHide:true});let e='';p.stderr.on('data',b=>e+=b);p.once('exit',code=>code===0?res():rej(Error(cmd+' '+e)));});

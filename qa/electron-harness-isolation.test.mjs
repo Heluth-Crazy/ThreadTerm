@@ -58,3 +58,15 @@ test('every Electron harness launches on Desktop 1', async () => {
   }
   assert.deepEqual(offenders, []);
 });
+
+
+test('every QA harness avoids the user development runtime build', async () => {
+  const directory = new URL('.', import.meta.url);
+  const files = (await readdir(directory)).filter(file => /\.(?:mjs|cjs)$/.test(file)).sort();
+  const offenders = [];
+  for (const file of files) {
+    const source = await readFile(new URL(file, directory), 'utf8');
+    if (/runtime[\\/]target[\\/]/.test(source) || /['"]runtime['"]\s*,\s*['"]target['"]/.test(source)) offenders.push(file);
+  }
+  assert.deepEqual(offenders, []);
+});

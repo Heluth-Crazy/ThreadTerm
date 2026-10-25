@@ -66,6 +66,7 @@ createInterface({ input: process.stdin, crlfDelay: Infinity }).on('line', line =
   const { id, method, params = {} } = request;
   record(method, params);
   if (method === 'initialize') return result(id, { capabilities: {} });
+  if (method === 'thread/inject_items') return send({ id, error: { code: -32601, message: 'Method not found' } });
   if (method === 'account/read') return result(id, { account: { type: 'chatgpt' }, requiresOpenaiAuth: false });
   if (method === 'account/rateLimits/read') return result(id, {});
   if (method === 'thread/start' || method === 'thread/resume') return result(id, response());

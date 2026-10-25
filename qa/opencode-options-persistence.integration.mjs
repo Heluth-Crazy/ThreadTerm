@@ -20,7 +20,7 @@ const shim = 'fn main(){let status=std::process::Command::new(std::env::var("TT_
 await writeFile(join(bin, 'shim.rs'), shim);
 const compiled = spawnSync('rustc', [join(bin, 'shim.rs'), '-o', join(bin, 'opencode.exe')], { encoding: 'utf8', windowsHide: true });
 assert.equal(compiled.status, 0, compiled.stderr);
-const runtimeSource = process.env.THREADTERM_QA_RUNTIME_EXE || resolve('runtime/target/debug/threadterm-v3-runtime.exe');
+const runtimeSource = process.env.THREADTERM_QA_RUNTIME_EXE || process.env.THREADTERM_V3_RUNTIME_BIN || resolve('runtime/target-qa/debug/threadterm-v3-runtime.exe');
 assert.ok(existsSync(runtimeSource), `runtime binary missing: ${runtimeSource}`);
 const runtime = join(root, 'runtime.exe'); await copyFile(runtimeSource, runtime);
 const env = {

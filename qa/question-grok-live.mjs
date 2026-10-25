@@ -10,7 +10,7 @@ import { electron } from './lib/desktop1.mjs';
 
 assert.equal(process.platform, 'win32', 'Desktop-1 Grok QA requires Windows');
 const root = resolve(import.meta.dirname, '..');
-const runtime = resolve(process.env.THREADTERM_QA_RUNTIME_EXE ?? join(root, 'runtime/target/debug/threadterm-v3-runtime.exe'));
+const runtime = resolve(process.env.THREADTERM_QA_RUNTIME_EXE ?? process.env.THREADTERM_V3_RUNTIME_BIN ?? join(root, 'runtime/target-qa/debug/threadterm-v3-runtime.exe'));
 assert.ok(existsSync(runtime), `Missing runtime: ${runtime}`);
 process.env.TT_QA_DESKTOP = '1';
 const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !/^(path|threadterm_|grok_home)$/i.test(key)));

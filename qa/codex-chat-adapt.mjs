@@ -15,7 +15,7 @@ const root = await mkdtemp(join(tmpdir(), 'threadterm-v3-codex-adapt-'));
 const cwd = join(root, 'workspace');
 const pipe = `\\\\.\\pipe\\threadterm-v3-codex-adapt-${id()}`;
 await mkdir(cwd);
-const runtimeBin = process.env.THREADTERM_V3_RUNTIME_BIN ?? resolve('runtime/target/debug/threadterm-v3-runtime.exe');
+const runtimeBin = process.env.THREADTERM_V3_RUNTIME_BIN ?? resolve('runtime/target-qa/debug/threadterm-v3-runtime.exe');
 const daemon = spawn(runtimeBin, [], {
   env: {
     ...process.env,

@@ -1,4 +1,5 @@
-import { mkdir, rmdir } from 'node:fs/promises';
+import { rmdirSync } from 'node:fs';
+import { mkdir } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -16,5 +17,29 @@ export async function acquireElectronQaLock({ directory = tmpdir(), timeoutMs = 
     }
   }
   let held = true;
-  return async () => { if (held) { await rmdir(lock); held = false; } };
+  const releaseSync = () => {
+    if (!held) return;
+    try { rmdirSync(lock); held = false; }
+    catch (error) { if (error.code === 'ENOENT') held = false; else throw error; }
+  };
+  const removeCleanupHooks = () => {
+    process.removeListener('exit', onExit);
+    process.removeListener('SIGINT', onSigint);
+    process.removeListener('SIGTERM', onSigterm);
+  };
+  const onExit = () => { try { releaseSync(); } catch {} };
+  const onSignal = signal => {
+    try { releaseSync(); } catch {}
+    removeCleanupHooks();
+    process.kill(process.pid, signal);
+  };
+  const onSigint = () => onSignal('SIGINT');
+  const onSigterm = () => onSignal('SIGTERM');
+  process.once('exit', onExit);
+  process.once('SIGINT', onSigint);
+  process.once('SIGTERM', onSigterm);
+  return async () => {
+    releaseSync();
+    removeCleanupHooks();
+  };
 }

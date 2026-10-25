@@ -11,7 +11,7 @@ const root = await mkdtemp(join(tmpdir(), 'threadterm-v3-chat-smoke-'));
 const cwd = join(root, 'workspace');
 const pipe = `\\\\.\\pipe\\threadterm-v3-chat-smoke-${id()}`;
 await mkdir(cwd);
-const daemon = spawn(resolve('runtime/target/debug/threadterm-v3-runtime.exe'), [], {
+const daemon = spawn(process.env.THREADTERM_V3_RUNTIME_BIN ?? resolve('runtime/target-qa/debug/threadterm-v3-runtime.exe'), [], {
   env: {
     ...process.env,
     THREADTERM_V3_DATA: join(root, 'data'),

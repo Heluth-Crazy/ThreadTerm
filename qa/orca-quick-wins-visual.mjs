@@ -22,8 +22,10 @@ import { build as viteBuild } from 'vite';
 import { attachedNativeBrowserPages, dismissBrowserNotifications } from './lib/native-browser.mjs';
 
 const root = resolve(fileURLToPath(new URL('..', import.meta.url)));
-const runtime = join(root, 'runtime/target-qa/debug/threadterm-v3-runtime.exe');
+const runtime = process.env.THREADTERM_V3_RUNTIME_BIN ?? join(root, 'runtime/target-qa/debug/threadterm-v3-runtime.exe');
 assert.ok(existsSync(runtime), `missing ${runtime}`);
+const protocolContract = (await readFile(join(root, 'protocol/index.ts'), 'utf8')).match(/PROTOCOL_CONTRACT = (\d+)/)?.[1];
+assert.ok(protocolContract, 'protocol contract was not found');
 const keep = process.argv.includes('--keep');
 const gitDir = (() => {
   const found = spawnSync('where', ['git'], { encoding: 'utf8', windowsHide: true }).stdout.split(/\r?\n/).filter(Boolean);
@@ -34,7 +36,7 @@ const gitDir = (() => {
 const delay = ms => new Promise(done => setTimeout(done, ms));
 const scratch = await mkdtemp(join(tmpdir(), 'tt-orca-visual-'));
 const workspace = join(scratch, 'shop app');
-const bin = join(scratch, 'bin'), appDir = join(root, 'runtime/target-qa/orca-qa-app');
+const bin = join(scratch, 'bin'), appDir = join(tmpdir(), 'threadterm-orca-qa-app');
 const out = join(root, 'qa/results/orca-quick-wins');
 const report = { passed: false, scratch, checks: [], notes: [], shots: [], errors: [] };
 const check = text => { report.checks.push(text); console.log(`PASS ${text}`); };
@@ -83,8 +85,9 @@ async function prepare() {
   await writeFile(join(bin, 'shim.rs'), 'fn main(){let status=std::process::Command::new(std::env::var_os("TT_QA_NODE").expect("TT_QA_NODE")).arg(std::env::var_os("TT_QA_SCRIPT").expect("TT_QA_SCRIPT")).args(std::env::args_os().skip(1)).status().unwrap();std::process::exit(status.code().unwrap_or(1));}');
   const compiled = spawnSync('rustc', ['-O', join(bin, 'shim.rs'), '-o', join(bin, 'grok.exe')], { encoding: 'utf8', windowsHide: true });
   assert.equal(compiled.status, 0, compiled.stderr);
-  // The app bundle is cached in the git-ignored target-qa folder; --rebuild after changing app code.
-  if (process.argv.includes('--rebuild') || !existsSync(join(appDir, 'renderer', 'index.html'))) {
+  // Keep rebuild cleanup inside TEMP; the cached bundle is keyed by the wire contract.
+  const cacheContract = existsSync(join(appDir, '.protocol-contract')) ? await readFile(join(appDir, '.protocol-contract'), 'utf8') : '';
+  if (process.argv.includes('--rebuild') || cacheContract.trim() !== protocolContract || !existsSync(join(appDir, 'renderer', 'index.html'))) {
     console.log('building the QA app bundle…');
     await mkdir(appDir, { recursive: true });
     for (const name of ['main', 'preload']) {
@@ -92,6 +95,7 @@ async function prepare() {
     }
     await viteBuild({ configFile: join(root, 'vite.config.ts'), logLevel: 'warn', build: { outDir: join(appDir, 'renderer'), emptyOutDir: true } });
     await writeFile(join(appDir, 'package.json'), JSON.stringify({ name: 'threadterm-v3-orca-qa', version: '0.1.0', main: 'main.cjs' }));
+    await writeFile(join(appDir, '.protocol-contract'), `${protocolContract}\n`);
   } else console.log(`reusing the QA app bundle in ${appDir} (--rebuild to rebuild)`);
   server = createServer((request, response) => {
     response.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
@@ -311,6 +315,7 @@ try {
   await page.locator('.wb-checkpoint').first().waitFor();
   const cart = await readFile(join(workspace, 'src/cart.ts'), 'utf8');
   await writeFile(join(workspace, 'src/cart.ts'), cart.replace('  let sum = 0;\n  for (const item of items) sum += item;\n  return sum;', '  return items.reduce((sum, item) => sum + item, 0);').replace('export function empty', 'export function isEmpty'));
+  await page.locator('.wb-panel-head').getByRole('button',{name:'Refresh',exact:true}).click();
   const change = review.locator('.wb-change-open', { hasText: 'cart.ts' }).first();
   await until(() => change.isVisible(), 'the edit did not show in Agent changes', 20000);
   await change.click();
@@ -416,6 +421,7 @@ try {
   // The prompt above took a checkpoint before it was sent (as every chat.send does): edit again so there is a change.
   await writeFile(join(workspace, 'src/cart.ts'), (await readFile(join(workspace, 'src/cart.ts'), 'utf8')).replace('export function isEmpty(', 'export function isEmptyCart('));
   await openView('Agent 改动');
+  await page.locator('.wb-panel-head').getByRole('button',{name:'刷新',exact:true}).click();
   await page.locator('.wb-review .wb-change-open', { hasText: 'cart.ts' }).first().click();
   const zhDiff = page.locator('.pane-tab-surface:not([hidden]) .wb-review-diff').first();
   await zhDiff.locator('.cm-merge-b .cm-line', { hasText: 'isEmpty' }).first().click();

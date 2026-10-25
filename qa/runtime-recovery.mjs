@@ -3,7 +3,7 @@ import {mkdtemp, mkdir, readFile, rm} from 'node:fs/promises';
 import {join, resolve} from 'node:path'; import {tmpdir} from 'node:os'; import {randomUUID} from 'node:crypto'; import assert from 'node:assert/strict';
 import {connectPeer} from './pipe-client.mjs';
 const delay=ms=>new Promise(resolve=>setTimeout(resolve,ms));
-const root=resolve(new URL('..',import.meta.url).pathname.slice(1)); const executable=join(root,'runtime/target/debug/threadterm-v3-runtime.exe');
+const root=resolve(new URL('..',import.meta.url).pathname.slice(1)); const executable=process.env.THREADTERM_V3_RUNTIME_BIN??join(root,'runtime/target-qa/debug/threadterm-v3-runtime.exe');
 const scratch=await mkdtemp(join(tmpdir(),'threadterm-v3-recovery-')); const data=join(scratch,'data'),project=join(scratch,'project'),marker=join(scratch,'child-pid.txt'); const pipe=`\\\\.\\pipe\\threadterm-v3-recovery-${randomUUID()}`;
 let daemon; const peers=[]; let stderr='';
 function startDaemon(){stderr='';daemon=spawn(executable,[],{windowsHide:true,env:{...process.env,THREADTERM_V3_DATA:data,THREADTERM_V3_PIPE:pipe},stdio:['ignore','ignore','pipe']});daemon.stderr.on('data',chunk=>stderr+=chunk)}

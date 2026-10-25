@@ -21,8 +21,8 @@ env.Path = [join(process.env.SystemRoot || 'C:\\Windows', 'System32')].join(';')
 env.THREADTERM_V3_DATA = data; env.THREADTERM_V3_PIPE = pipe;
 const qaRuntime = join(root, 'runtime/target-qa/debug/threadterm-v3-runtime.exe');
 const qaMcp = join(root, 'runtime/target-qa/debug/threadterm-v3-mcp.exe');
-const runtimeExe = process.env.THREADTERM_QA_RUNTIME_EXE || process.env.THREADTERM_QA_E1_RUNTIME_EXE || (existsSync(qaRuntime) ? qaRuntime : join(root, 'runtime/target/debug/threadterm-v3-runtime.exe'));
-const mcpExe = process.env.THREADTERM_QA_E1_HOST_EXE || process.env.THREADTERM_QA_MCP_EXE || (existsSync(qaMcp) ? qaMcp : join(root, 'runtime/target/debug/threadterm-v3-mcp.exe'));
+const runtimeExe = process.env.THREADTERM_QA_RUNTIME_EXE || process.env.THREADTERM_QA_E1_RUNTIME_EXE || process.env.THREADTERM_V3_RUNTIME_BIN || (existsSync(qaRuntime) ? qaRuntime : join(root, 'runtime/target-qa/debug/threadterm-v3-runtime.exe'));
+const mcpExe = process.env.THREADTERM_QA_E1_HOST_EXE || process.env.THREADTERM_QA_MCP_EXE || (existsSync(qaMcp) ? qaMcp : join(root, 'runtime/target-qa/debug/threadterm-v3-mcp.exe'));
 assert.deepEqual(Object.keys(env).filter(key => key.toLowerCase() === 'path'), ['Path']);
 const children = new Set();
 let daemon;

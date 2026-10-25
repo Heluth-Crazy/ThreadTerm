@@ -15,7 +15,7 @@ import { build as viteBuild } from 'vite';
 import { electron } from './lib/desktop1.mjs';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
-const runtime = resolve(process.env.THREADTERM_QA_RUNTIME_EXE ?? join(root, 'runtime/target/debug/threadterm-v3-runtime.exe'));
+const runtime = resolve(process.env.THREADTERM_QA_RUNTIME_EXE ?? process.env.THREADTERM_V3_RUNTIME_BIN ?? join(root, 'runtime/target-qa/debug/threadterm-v3-runtime.exe'));
 const argument = name => process.argv.includes(name) ? process.argv[process.argv.indexOf(name) + 1] : undefined;
 const legacyRuntime = argument('--legacy-runtime') ? resolve(argument('--legacy-runtime')) : undefined;
 const legacyResumed = process.argv.includes('--legacy-resumed');

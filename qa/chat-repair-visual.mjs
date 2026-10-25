@@ -16,7 +16,7 @@ const root = resolve(qa, '..');
 const args = process.argv.slice(2);
 const option = name => args.includes(name) ? args[args.indexOf(name) + 1] : undefined;
 process.env.TT_QA_DESKTOP = '1';
-const runtime = resolve(option('--runtime') ?? process.env.THREADTERM_QA_RUNTIME_EXE ?? join(root, 'runtime', 'target', 'debug', 'threadterm-v3-runtime.exe'));
+const runtime = resolve(option('--runtime') ?? process.env.THREADTERM_QA_RUNTIME_EXE ?? process.env.THREADTERM_V3_RUNTIME_BIN ?? join(root, 'runtime', 'target-qa', 'debug', 'threadterm-v3-runtime.exe'));
 assert.ok(existsSync(runtime), `Missing QA runtime: ${runtime}`);
 const scratch = await mkdtemp(join(tmpdir(), 'threadterm-chat-repair-'));
 const bin = join(scratch, 'bin'); const workspace = join(scratch, 'workspace');

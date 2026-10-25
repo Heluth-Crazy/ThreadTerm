@@ -13,7 +13,7 @@ import { build as viteBuild } from 'vite';
 import { electron } from './lib/desktop1.mjs';
 
 const root = resolve(fileURLToPath(new URL('..', import.meta.url)));
-const runtime = process.env.THREADTERM_V3_RUNTIME_BIN ?? join(root, 'runtime/target/debug/threadterm-v3-runtime.exe');
+const runtime = process.env.THREADTERM_V3_RUNTIME_BIN ?? join(root, 'runtime/target-qa/debug/threadterm-v3-runtime.exe');
 const fixture = join(root, 'qa/fixtures/browser-plugins');
 const out = join(root, 'qa/results/browser-preview-lifetime');
 const scratch = await mkdtemp(join(tmpdir(), 'tt-browser-preview-lifetime-'));

@@ -19,8 +19,8 @@ const args = process.argv.slice(2);
 const option = name => args.includes(name) ? args[args.indexOf(name) + 1] : undefined;
 // desktop1.mjs reads this process environment before spawning Electron.
 process.env.TT_QA_DESKTOP = '1';
-const suppliedRuntime = option('--runtime') ?? process.env.THREADTERM_QA_RUNTIME_EXE;
-const runtime = resolve(suppliedRuntime ?? join(root, 'runtime', 'target', 'debug', 'threadterm-v3-runtime.exe'));
+const suppliedRuntime = option('--runtime') ?? process.env.THREADTERM_QA_RUNTIME_EXE ?? process.env.THREADTERM_V3_RUNTIME_BIN;
+const runtime = resolve(suppliedRuntime ?? join(root, 'runtime', 'target-qa', 'debug', 'threadterm-v3-runtime.exe'));
 assert.match(runtime.replace(/\\/gu, '/'), /runtime\/(?:target|target-qa)\/(?:debug\/)?threadterm-v3-runtime\.exe$/u, 'QA runtime required');
 assert.ok(existsSync(runtime), `Missing QA runtime: ${runtime}`);
 

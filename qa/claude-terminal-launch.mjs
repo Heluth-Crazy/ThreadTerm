@@ -18,7 +18,7 @@ const { Terminal } = xterm;
 
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
 const root = resolve(fileURLToPath(new URL('..', import.meta.url)));
-const exe = process.env.THREADTERM_V3_RUNTIME_BIN ?? join(root, 'runtime/target/debug/threadterm-v3-runtime.exe');
+const exe = process.env.THREADTERM_V3_RUNTIME_BIN ?? join(root, 'runtime/target-qa/debug/threadterm-v3-runtime.exe');
 const cwd = process.env.THREADTERM_QA_CLAUDE_CWD ?? 'D:/project/ThreadTerm/ThreadTerm';
 const scratch = await mkdtemp(join(tmpdir(), 'threadterm-claude-launch-'));
 const data = join(scratch, 'data');

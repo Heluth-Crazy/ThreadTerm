@@ -21,7 +21,7 @@ const shim = 'fn main(){let status=std::process::Command::new(std::env::var("TT_
 await writeFile(join(bin, 'shim.rs'), shim);
 const compiled = spawnSync('rustc', [join(bin, 'shim.rs'), '-o', join(bin, 'codex.exe')], { encoding: 'utf8', windowsHide: true });
 assert.equal(compiled.status, 0, compiled.stderr);
-const runtime = resolve(process.env.THREADTERM_QA_RUNTIME_EXE || 'runtime/target/debug/threadterm-v3-runtime.exe');
+const runtime = resolve(process.env.THREADTERM_QA_RUNTIME_EXE || process.env.THREADTERM_V3_RUNTIME_BIN || 'runtime/target-qa/debug/threadterm-v3-runtime.exe');
 assert.ok(existsSync(runtime), `Missing built runtime: ${runtime}`);
 const runtimeCopy = join(root, 'runtime.exe');
 await copyFile(runtime, runtimeCopy);

@@ -1,7 +1,6 @@
 import assert from 'node:assert/strict';
-import {existsSync} from 'node:fs';
 import {mkdtemp,mkdir,writeFile} from 'node:fs/promises';
-import {join,resolve} from 'node:path';
+import {dirname,join,resolve} from 'node:path';
 import {tmpdir} from 'node:os';
 import {randomUUID} from 'node:crypto';
 import { electron } from './lib/desktop1.mjs';
@@ -11,11 +10,12 @@ const out=join('qa','results','workbench-agent-'+new Date().toISOString().replac
 const scratch=await mkdtemp(join(tmpdir(),'threadterm-workbench-agent-'));
 const project=join(scratch,'project');
 const pipe='\\\\.\\pipe\\threadterm-v3-workbench-agent-'+randomUUID();
-const runtimeBin=process.env.THREADTERM_V3_RUNTIME_BIN
-  || (existsSync(resolve('runtime/target-qa/debug/threadterm-v3-runtime.exe'))
-    ? resolve('runtime/target-qa/debug/threadterm-v3-runtime.exe')
-    : resolve('runtime/target/debug/threadterm-v3-runtime.exe'));
+const runtimeBin=process.env.THREADTERM_V3_RUNTIME_BIN ?? resolve('runtime/target-qa/debug/threadterm-v3-runtime.exe');
+const bin=join(scratch,'bin');
 const env={...process.env,THREADTERM_V3_DATA:join(scratch,'data'),THREADTERM_V3_USER_DATA:join(scratch,'profile'),THREADTERM_V3_PIPE:pipe,THREADTERM_V3_RUNTIME:runtimeBin};
+for(const key of Object.keys(env))if(key.toLowerCase()==='path')delete env[key];
+env.PATH=[bin,dirname(process.execPath),join(process.env.SystemRoot||'C:\\Windows','System32')].join(';');
+env.HOME=env.USERPROFILE=join(scratch,'home');
 const report={startedAt:new Date().toISOString(),retainedScratch:scratch,checks:[],observations:{}}; let app,page,releaseLock;
 const rpc=(method,params={})=>page.evaluate(([m,p])=>Promise.race([window.threadterm.request(m,p),new Promise((_,reject)=>setTimeout(()=>reject(new Error('RPC timeout: '+m)),45000))]),[method,params]);
 try {
@@ -23,11 +23,15 @@ try {
   await mkdir(project,{recursive:true});
   await mkdir(join(scratch,'data'),{recursive:true});
   await mkdir(join(scratch,'profile'),{recursive:true});
+  await mkdir(bin,{recursive:true});
+  for(const name of ['codex','claude','kimi','gemini','opencode','grok'])await writeFile(join(bin,name+'.cmd'),'@echo off\r\necho '+name+' 1.0.0\r\n');
   releaseLock=await acquireElectronQaLock();
   app=await electron.launch({args:[resolve('.')],env,timeout:60000});
   page=await app.firstWindow({timeout:30000}); page.setDefaultTimeout(30000);
   await page.waitForFunction(()=>!!window.threadterm);
   await page.locator('.app-shell').waitFor();
+  await page.waitForFunction(async()=>{const rows=await window.threadterm.request('provider.list',{});return ['codex','claude','kimi','gemini','opencode','grok'].every(id=>rows.some(row=>row.id===id&&row.installed));},null,{timeout:45000});
+  report.observations.providers=await rpc('provider.list');
   await rpc('project.add',{path:project,name:'Agent menu QA',operationId:randomUUID()});
   await page.reload();
   await page.waitForFunction(()=>!!window.threadterm);
@@ -40,7 +44,7 @@ try {
   report.observations.menu=await page.locator('.composer-agent-menu').innerText();
   const names=await page.locator('.composer-agent-item-name').allInnerTexts();
   report.observations.names=names;
-  assert.equal(names.length,8);
+  assert.deepEqual(names,['Codex','Claude Code','Kimi','Gemini','OpenCode','Grok','Pi','Shell','Preset']);
   assert.match(names.join('|'),/Codex/);
   assert.match(names.join('|'),/Gemini/);
   assert.match(names.join('|'),/Grok/);

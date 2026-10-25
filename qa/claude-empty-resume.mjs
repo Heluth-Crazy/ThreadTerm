@@ -11,7 +11,7 @@ import { connectPeer } from './pipe-client.mjs';
 
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
 const root = resolve(fileURLToPath(new URL('..', import.meta.url)));
-const exe = process.env.THREADTERM_V3_RUNTIME_BIN ?? join(root, 'runtime/target/debug/threadterm-v3-runtime.exe');
+const exe = process.env.THREADTERM_V3_RUNTIME_BIN ?? join(root, 'runtime/target-qa/debug/threadterm-v3-runtime.exe');
 const scratch = await mkdtemp(join(tmpdir(), 'threadterm-claude-empty-resume-'));
 const data = join(scratch, 'data');
 const cwd = join(scratch, 'cwd');

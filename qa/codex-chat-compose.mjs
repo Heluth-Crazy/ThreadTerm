@@ -2,7 +2,6 @@
 // Isolated temp data/profile/pipe; test model gpt-6-luna (only GPT-6 Luna / 6.1 Sol are used in QA).
 import assert from 'node:assert/strict';
 import {spawn} from 'node:child_process';
-import {existsSync} from 'node:fs';
 import {mkdtemp,mkdir,writeFile} from 'node:fs/promises';
 import {join,resolve} from 'node:path';
 import {tmpdir} from 'node:os';
@@ -15,10 +14,7 @@ const out=join('qa','results','codex-chat-compose-'+new Date().toISOString().rep
 const scratch=await mkdtemp(join(tmpdir(),'threadterm-codex-compose-'));
 const project=join(scratch,'project');
 const pipe='\\\\.\\pipe\\threadterm-v3-codex-compose-'+randomUUID();
-const runtimeBin=process.env.THREADTERM_V3_RUNTIME_BIN
-  || (existsSync(resolve('runtime/target-qa/debug/threadterm-v3-runtime.exe'))
-    ? resolve('runtime/target-qa/debug/threadterm-v3-runtime.exe')
-    : resolve('runtime/target/debug/threadterm-v3-runtime.exe'));
+const runtimeBin=process.env.THREADTERM_V3_RUNTIME_BIN||resolve('runtime/target-qa/debug/threadterm-v3-runtime.exe');
 const env={...process.env,THREADTERM_V3_DATA:join(scratch,'data'),THREADTERM_V3_USER_DATA:join(scratch,'profile'),THREADTERM_V3_PIPE:pipe,THREADTERM_V3_RUNTIME:runtimeBin};
 const report={startedAt:new Date().toISOString(),retainedScratch:scratch,checks:[],observations:{}}; let app,page,releaseLock;
 const rpc=(method,params={})=>page.evaluate(([m,p])=>Promise.race([window.threadterm.request(m,p),new Promise((_,reject)=>setTimeout(()=>reject(new Error('RPC timeout: '+m)),45000))]),[method,params]);

@@ -15,7 +15,7 @@ const out=join('qa','results','workbench-standalone-visual',new Date().toISOStri
 const scratch=await mkdtemp(join(tmpdir(),'threadterm-standalone-'));
 const project=join(scratch,'standalone repo');
 const pipe='\\\\.\\pipe\\threadterm-v3-standalone-'+randomUUID();
-const runtimeBin=process.env.THREADTERM_V3_RUNTIME_BIN||resolve('runtime/target/debug/threadterm-v3-runtime.exe');
+const runtimeBin=process.env.THREADTERM_V3_RUNTIME_BIN||resolve('runtime/target-qa/debug/threadterm-v3-runtime.exe');
 assert.ok(existsSync(runtimeBin),`runtime binary missing: ${runtimeBin}`);
 const env={...process.env,THREADTERM_V3_DATA:join(scratch,'data'),THREADTERM_V3_USER_DATA:join(scratch,'profile'),THREADTERM_V3_PIPE:pipe,THREADTERM_V3_RUNTIME:runtimeBin};
 const report={startedAt:new Date().toISOString(),scratch,checks:[],screenshots:[]};

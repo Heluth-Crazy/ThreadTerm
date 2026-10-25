@@ -15,7 +15,7 @@ import {connectPeer} from './pipe-client.mjs';
 const delay = milliseconds => new Promise(resolveDelay => setTimeout(resolveDelay, milliseconds));
 const root = resolve(new URL('..', import.meta.url).pathname.slice(1));
 const desktopMain = join(root, 'desktop-dist', 'main.cjs');
-const runtime = resolve(process.env.THREADTERM_V3_RUNTIME_BIN ?? join(root, 'runtime/target/debug/threadterm-v3-runtime.exe'));
+const runtime = resolve(process.env.THREADTERM_V3_RUNTIME_BIN ?? join(root, 'runtime/target-qa/debug/threadterm-v3-runtime.exe'));
 const scratch = await mkdtemp(join(tmpdir(), 'threadterm-desktop-quit-'));
 const visualOut = join(root, 'qa/results/desktop-quit');
 await mkdir(visualOut, {recursive:true});

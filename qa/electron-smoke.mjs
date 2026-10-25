@@ -7,7 +7,7 @@ import assert from 'node:assert/strict';
 
 const scratch=await mkdtemp(join(tmpdir(),'threadterm-v3-electron-'));
 const pipe=`\\\\.\\pipe\\threadterm-v3-qa-${process.pid}-${Date.now()}`;
-const env={...process.env,THREADTERM_V3_DATA:join(scratch,'data'),THREADTERM_V3_USER_DATA:join(scratch,'profile'),THREADTERM_V3_PIPE:pipe,THREADTERM_V3_RUNTIME:resolve('runtime/target/debug/threadterm-v3-runtime.exe')};
+const env={...process.env,THREADTERM_V3_DATA:join(scratch,'data'),THREADTERM_V3_USER_DATA:join(scratch,'profile'),THREADTERM_V3_PIPE:pipe,THREADTERM_V3_RUNTIME:process.env.THREADTERM_V3_RUNTIME_BIN??resolve('runtime/target-qa/debug/threadterm-v3-runtime.exe')};
 let app, releaseLock;
 let page;
 const report={version:'Electron 44.3.0',startedAt:new Date().toISOString(),checks:[]};
@@ -20,18 +20,20 @@ try {
   const initial=await page.evaluate(()=>window.threadterm.request('runtime.snapshot',{})); assert.equal(initial.sessions.length,0);
   const project=await page.evaluate(async path=>window.threadterm.request('project.add',{path,name:'V3 QA Project',operationId:crypto.randomUUID()}),join(scratch,'project'));
   const session=await page.evaluate(async ({projectId,cwd})=>window.threadterm.request('session.create',{projectId,cwd,provider:'shell',mode:'terminal',title:'Electron live shell',executable:'cmd.exe',args:['/Q','/K'],operationId:crypto.randomUUID()}),{projectId:project.id,cwd:join(scratch,'project')});
-  await page.getByRole('button',{name:/Electron live shell/}).click();
+  await page.locator('.quiet-block').first().locator('.quiet-row',{hasText:'Electron live shell'}).click();
   await page.locator('.terminal-host').waitFor();
   // TerminalSurface owns this lease before the floating window is created.
   await page.locator('.terminal-host').click();
   await page.keyboard.type('echo ELECTRON_REAL_TERMINAL'); await page.keyboard.press('Enter');
   await page.waitForFunction(()=>document.querySelector('.xterm-rows')?.textContent?.includes('ELECTRON_REAL_TERMINAL'),{timeout:12_000});
   report.checks.push('TerminalSurface acquired the main-window lease and accepted real PTY input/output');
-  await page.getByRole('button',{name:/Open (window|in window)|打开窗口/i}).click();
-  const second=await app.waitForEvent('window',{predicate:window=>window!==page,timeout:12_000});
+  const opened=app.waitForEvent('window',{predicate:window=>window!==page,timeout:12_000});
+  await page.getByRole('button',{name:/Workspace actions|工作区操作/i}).click();
+  await page.locator('.workspace-action-menu').getByRole('button',{name:/Open floating window|弹出为浮窗/i}).click();
+  const second=await opened;
   await second.waitForFunction(()=>!!window.threadterm); await second.locator('.terminal-host').waitFor();
   await second.waitForFunction(()=>document.querySelector('.xterm-rows')?.textContent?.includes('ELECTRON_REAL_TERMINAL'),{timeout:12_000});
-  await second.waitForFunction(()=>document.querySelector('[role="alert"]')?.textContent?.includes('Read-only view'),{timeout:12_000});
+  await second.locator('.terminal-control-note[role="status"]',{hasText:'Another window controls this terminal.'}).waitFor({timeout:12_000});
   const rejected=await second.evaluate(async id=>{try { await window.threadterm.request('session.claim',{sessionId:id,clientId:'qa-second-window'}); return false; } catch { return true; }},session.id);
   assert.equal(rejected,true,'second window must not obtain the active terminal lease');
   report.checks.push('floating TerminalSurface showed replayed output and was read-only while the main lease remained active');

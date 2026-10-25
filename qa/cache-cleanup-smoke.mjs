@@ -8,7 +8,8 @@ import assert from 'node:assert/strict';
 
 const root = await mkdtemp(join(tmpdir(), 'threadterm-v3-cache-'));
 const bin = join(root, 'runtime.exe');
-await copyFile(resolve('runtime/target/debug/threadterm-v3-runtime.exe'), bin);
+const runtime = process.env.THREADTERM_V3_RUNTIME_BIN ?? resolve('runtime/target-qa/debug/threadterm-v3-runtime.exe');
+await copyFile(runtime, bin);
 const env = { ...process.env, THREADTERM_V3_DATA: join(root, 'data'), THREADTERM_V3_USER_DATA: join(root, 'profile'), THREADTERM_V3_PIPE: `\\\\.\\pipe\\threadterm-v3-cache-${process.pid}`, THREADTERM_V3_RUNTIME: bin };
 let app, page, releaseLock;
 let hits = 0;
