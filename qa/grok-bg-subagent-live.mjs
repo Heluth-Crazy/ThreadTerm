@@ -7,11 +7,13 @@ import { randomUUID } from 'node:crypto';
 import { dirname, join, resolve } from 'node:path';
 import { homedir, tmpdir } from 'node:os';
 import { electron } from './lib/desktop1.mjs';
+import { buildQaApp } from './lib/qa-app.mjs';
 
 assert.equal(process.platform, 'win32', 'Desktop-1 Grok QA requires Windows');
 const root = resolve(import.meta.dirname, '..');
 const runtime = resolve(process.env.THREADTERM_QA_RUNTIME_EXE ?? process.env.THREADTERM_V3_RUNTIME_BIN ?? join(root, 'runtime/target-qa/debug/threadterm-v3-runtime.exe'));
 assert.ok(existsSync(runtime), `Missing runtime: ${runtime}`);
+const { appDir, cleanup: cleanupApp } = await buildQaApp({ root });
 process.env.TT_QA_DESKTOP = '1';
 const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !/^(path|grok_home)$/i.test(key) && !key.toLowerCase().startsWith('threadterm_')));
 const sourcePath = process.env.Path ?? process.env.PATH ?? '';
@@ -52,7 +54,7 @@ async function shot(name, target) {
   report.screenshots.push(name); report.paneWidths.push({ name, target, paneWidth, viewportWidth: width, ...fit });
 }
 try {
-  app = await electron.launch({ args: [root], cwd: bin, env, timeout: 60_000 });
+  app = await electron.launch({ args: [appDir], cwd: bin, env, timeout: 60_000 });
   page = await app.firstWindow({ timeout: 30_000 }); await page.waitForFunction(() => Boolean(window.threadterm));
   const rpc = (method, params = {}) => page.evaluate(([m, p]) => window.threadterm.request(m, p), [method, params]);
   const initial = await rpc('runtime.snapshot');
@@ -78,4 +80,4 @@ try {
   await shot('05-follow-up-wide.png', 1000); await shot('06-follow-up-narrow.png', 420);
   report.checks.push('Desktop 1 Grok background card ran to completion and an agent-initiated follow-up rendered in its own assistant turn'); report.passed = true;
 } catch (error) { report.error = error instanceof Error ? error.stack : String(error); process.exitCode = 1; }
-finally { if (page) await page.evaluate(() => window.threadterm.request('runtime.shutdown', { operationId: crypto.randomUUID() })).catch(() => {}); if (app) { await app.evaluate(({ app }) => app.exit(0)).catch(() => {}); await app.close().catch(() => {}); } await writeFile(join(out, 'report.json'), `${JSON.stringify(report, null, 2)}\n`); const sessionsRoot = resolve(homedir(), '.grok', 'sessions'); const grokSession = resolve(sessionsRoot, encodeURIComponent(work)); assert.ok(grokSession.startsWith(`${sessionsRoot}\\`)); await rm(grokSession, { recursive: true, force: true }).catch(() => {}); const tempRoot = resolve(tmpdir()); assert.ok(resolve(scratch).startsWith(`${tempRoot}\\`) && scratch.includes('tt-grok-bg-subagent-live-')); await rm(scratch, { recursive: true, force: true }); console.log(JSON.stringify(report)); }
+finally { if (page) await page.evaluate(() => window.threadterm.request('runtime.shutdown', { operationId: crypto.randomUUID() })).catch(() => {}); if (app) { await app.evaluate(({ app }) => app.exit(0)).catch(() => {}); await app.close().catch(() => {}); } await writeFile(join(out, 'report.json'), `${JSON.stringify(report, null, 2)}\n`); const sessionsRoot = resolve(homedir(), '.grok', 'sessions'); const grokSession = resolve(sessionsRoot, encodeURIComponent(work)); assert.ok(grokSession.startsWith(`${sessionsRoot}\\`)); await rm(grokSession, { recursive: true, force: true }).catch(() => {}); const tempRoot = resolve(tmpdir()); assert.ok(resolve(scratch).startsWith(`${tempRoot}\\`) && scratch.includes('tt-grok-bg-subagent-live-')); await rm(scratch, { recursive: true, force: true }); console.log(JSON.stringify(report)); await cleanupApp(); }

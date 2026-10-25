@@ -2,17 +2,19 @@ import net from 'node:net';
 import {spawn} from 'node:child_process';
 import {createHmac,randomUUID} from 'node:crypto';
 import {mkdtemp,readFile,mkdir,writeFile} from 'node:fs/promises';
-import {join,resolve} from 'node:path';
+import {dirname,join,resolve} from 'node:path';
 import {tmpdir} from 'node:os';
 import assert from 'node:assert/strict';
-import {validateResult} from '../protocol/index.ts';
+import {PROTOCOL_CONTRACT,PROTOCOL_VERSION,validateResult} from '../protocol/index.ts';
 const delay=ms=>new Promise(r=>setTimeout(r,ms));
 const scratch=await mkdtemp(join(tmpdir(),'threadterm-v3-ipc-'));
 const data=join(scratch,'data'),project=join(scratch,'project');await mkdir(data);await mkdir(project);
 const pipe=`\\\\.\\pipe\\threadterm-v3-qa-${randomUUID()}`;
 const exe=resolve(process.env.THREADTERM_QA_RUNTIME_EXE || process.env.THREADTERM_V3_RUNTIME_BIN || 'runtime/target-qa/debug/threadterm-v3-runtime.exe');
+function qaEnv(){const value=Object.fromEntries(Object.entries(process.env).filter(([key])=>!['path','temp','tmp','home','userprofile','codex_home','threadterm_v3_data','threadterm_v3_user_data','threadterm_v3_pipe'].includes(key.toLowerCase())));Object.assign(value,{TEMP:scratch,TMP:scratch,PATH:[dirname(process.execPath),join(process.env.SystemRoot||'C:\\Windows','System32')].join(';'),HOME:join(scratch,'home'),USERPROFILE:join(scratch,'home'),CODEX_HOME:join(scratch,'home','.codex'),THREADTERM_V3_DATA:data,THREADTERM_V3_USER_DATA:join(scratch,'profile'),THREADTERM_V3_PIPE:pipe});assert.equal(Object.keys(value).filter(key=>key.toLowerCase()==='path').length,1,'PATH isolation keeps exactly one spelling');return value}
+const env=qaEnv();
 let stderr='';
-const daemon=spawn(exe,[],{env:{...process.env,THREADTERM_V3_DATA:data,THREADTERM_V3_PIPE:pipe},windowsHide:true,stdio:['ignore','ignore','pipe']});
+const daemon=spawn(exe,[],{env,windowsHide:true,stdio:['ignore','ignore','pipe']});
 daemon.stderr.on('data',b=>stderr+=b);
 class Peer {
  queue=[];waiters=[];pending=Buffer.alloc(0);closed=false;
@@ -22,7 +24,8 @@ class Peer {
  send(b){const f=Buffer.alloc(b.length+4);f.writeUInt32LE(b.length);b.copy(f,4);this.socket.write(f)}
  json(v){this.send(Buffer.from(JSON.stringify(v)))}
  binary(kind,header){const h=Buffer.from(JSON.stringify(header)),b=Buffer.alloc(5+h.length);b[0]=kind;b.writeUInt32LE(h.length,1);h.copy(b,5);this.send(b)}
- async auth(credential,id=randomUUID()){const challenge=JSON.parse(await this.next());assert.equal(challenge.contract,2);this.json({kind:'auth',clientId:id,protocol:1,contract:2,nonce:challenge.nonce,hmac:createHmac('sha256',credential).update(`1:${id}:${challenge.nonce}`).digest('hex')});const proof=JSON.parse(await this.next());assert.equal(proof.kind,'authenticated');this.epoch=proof.epoch;assert.equal(proof.contract,2);assert.equal(proof.hmac,createHmac('sha256',credential).update(`server:1:${id}:${challenge.nonce}`).digest('hex'));return id}
+ // 45c4ee8 raised the semantic contract to 17 for group Chat; preserve the handshake assertion by following the shared contract.
+ async auth(credential,id=randomUUID()){const challenge=JSON.parse(await this.next());assert.equal(challenge.contract,PROTOCOL_CONTRACT);this.json({kind:'auth',clientId:id,protocol:PROTOCOL_VERSION,contract:PROTOCOL_CONTRACT,nonce:challenge.nonce,hmac:createHmac('sha256',credential).update(`${PROTOCOL_VERSION}:${id}:${challenge.nonce}`).digest('hex')});const proof=JSON.parse(await this.next());assert.equal(proof.kind,'authenticated');this.epoch=proof.epoch;assert.equal(proof.contract,PROTOCOL_CONTRACT);assert.equal(proof.hmac,createHmac('sha256',credential).update(`server:${PROTOCOL_VERSION}:${id}:${challenge.nonce}`).digest('hex'));return id}
  async request(method,params={}){const id=randomUUID();this.json({v:1,id,method,params});for(;;){const msg=JSON.parse(await this.next(10000));if(msg.id!==id)continue;if(msg.error)throw Object.assign(Error(msg.error.message),{code:msg.error.code});validateResult(method,msg.result);return msg.result}}
  close(){this.socket.destroy()}
 }
@@ -60,7 +63,7 @@ try {
  const replay=await connect(`${pipe}-output`);await replay.auth(credential,principal);replay.binary(3,{sessionId:session.id,cursor:0});replay.binary(2,{sessionId:session.id,credit:65536});
  const firstReplay=await replay.next();assert.equal(firstReplay[0],1);assert.equal(JSON.parse(firstReplay.subarray(5,5+firstReplay.readUInt32LE(1))).cursor,0);
  // A second daemon must exit before recovery can corrupt the first daemon's live state.
- const duplicate=spawn(exe,[],{env:{...process.env,THREADTERM_V3_DATA:data,THREADTERM_V3_PIPE:pipe},windowsHide:true,stdio:'ignore'});
+ const duplicate=spawn(exe,[],{env,windowsHide:true,stdio:'ignore'});
  await new Promise((r,j)=>{const timer=setTimeout(()=>{duplicate.kill();j(Error('duplicate daemon did not exit'))},5000);duplicate.on('exit',()=>{clearTimeout(timer);r()})});
  const current=await controller.request('runtime.snapshot');assert.equal(current.sessions.find(s=>s.id===session.id).status,'running');
  await controller.request('session.stop',{sessionId:session.id,operationId:randomUUID()});

@@ -26,7 +26,12 @@ createInterface({ input: process.stdin, crlfDelay: Infinity }).on('line', (line)
   if (request.id === undefined) return;
   const { id, method, params = {} } = request;
   record(method, params);
-  if (method === 'initialize') return response(id, { protocolVersion: 1, agentCapabilities: { loadSession: true } });
+  // 614e22b: ACP admission reads sessionCapabilities, not the obsolete
+  // loadSession shorthand, before advertising Chat.
+  if (method === 'initialize') return response(id, {
+    protocolVersion: 1,
+    agentCapabilities: { sessionCapabilities: { list: {}, load: {}, resume: {} } },
+  });
   if (method === 'session/new' || method === 'session/load') return response(id, { sessionId, configOptions: options() });
   if (method === 'session/set_config_option') {
     const { configId, value } = params;

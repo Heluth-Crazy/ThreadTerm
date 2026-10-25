@@ -1,14 +1,11 @@
 import { appendFileSync } from 'node:fs';
 import { mkdir, readFile } from 'node:fs/promises';
-import { basename, join } from 'node:path';
+import { join } from 'node:path';
 import { createInterface } from 'node:readline';
 
 const eventsDirectory = process.env.THREADTERM_QA_FAKE_CODEX_EVENTS;
 const controlPath = process.env.THREADTERM_QA_FAKE_CODEX_CONTROL;
-const directArguments = process.argv.slice(2);
-const cliArguments = basename(process.argv[1]).toLowerCase() === 'app-server'
-  ? ['app-server', ...directArguments]
-  : directArguments;
+const cliArguments = process.argv.slice(2);
 
 if (!eventsDirectory || !controlPath) {
   process.stderr.write('isolated fake Codex paths are required\n');
@@ -18,6 +15,14 @@ if (!eventsDirectory || !controlPath) {
 await mkdir(eventsDirectory, { recursive: true });
 const eventPath = join(eventsDirectory, `${process.pid}.jsonl`);
 let eventSequence = 0;
+function isAppServerCommand(args) {
+  let index = 0;
+  while (args[index] === '-c') {
+    if (typeof args[index + 1] !== 'string' || !args[index + 1]) return false;
+    index += 2;
+  }
+  return args[index] === 'app-server' && index === args.length - 1;
+}
 const record = (event, detail = {}) => appendFileSync(
   eventPath,
   `${JSON.stringify({
@@ -38,9 +43,11 @@ if (cliArguments[0] === 'login' && cliArguments[1] === 'status') {
   process.stdout.write('authenticated QA fixture\n');
   process.exit(0);
 }
-if (cliArguments[0] !== 'app-server' || cliArguments[1] !== '--stdio') {
+// f8a90ae: app-server stdio is the native default. The runtime may put its
+// per-Chat `-c` MCP overrides before `app-server`, but never needs --stdio.
+if (!isAppServerCommand(cliArguments)) {
   record('unexpectedInvocation');
-  process.stderr.write('fake Codex only supports app-server --stdio\n');
+  process.stderr.write('fake Codex requires app-server without --stdio\n');
   process.exit(3);
 }
 

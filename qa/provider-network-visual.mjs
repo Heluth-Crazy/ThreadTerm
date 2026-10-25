@@ -7,6 +7,7 @@ import { tmpdir } from "node:os";
 import { randomUUID } from "node:crypto";
 import { electron } from "./lib/desktop1.mjs";
 import { acquireElectronQaLock } from "./lib/electron-lock.mjs";
+import { buildQaApp } from "./lib/qa-app.mjs";
 
 const scratch = await mkdtemp(join(tmpdir(), "threadterm-provider-network-"));
 const out = join("qa", "results", `provider-network-${new Date().toISOString().replace(/[:.]/g, "-")}`);
@@ -19,6 +20,7 @@ const env = {
   THREADTERM_V3_RUNTIME: runtimeBin,
 };
 const report = { startedAt: new Date().toISOString(), screenshots: [], checks: [], passed: false };
+const { appDir, cleanup: cleanupApp } = await buildQaApp();
 let app;
 let releaseLock;
 let page;
@@ -39,7 +41,7 @@ async function capture(name, width, theme) {
 try {
   await Promise.all([mkdir(out, { recursive: true }), mkdir(join(scratch, "data")), mkdir(join(scratch, "profile"))]);
   releaseLock = await acquireElectronQaLock();
-  app = await electron.launch({ args: [resolve(".")], env, timeout: 60_000 });
+  app = await electron.launch({ args: [appDir], env, timeout: 60_000 });
   page = await app.firstWindow({ timeout: 30_000 });
   page.setDefaultTimeout(20_000);
   const errors = [];
@@ -109,4 +111,5 @@ try {
   await writeFile(join(out, "report.json"), JSON.stringify(report, null, 2) + "\n");
   await rm(scratch, { recursive: true, force: true });
   console.log(JSON.stringify({ out, passed: report.passed, error: report.error }, null, 2));
+  await cleanupApp();
 }

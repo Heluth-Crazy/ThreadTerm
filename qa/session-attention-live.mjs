@@ -6,11 +6,13 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { electron } from './lib/desktop1.mjs';
 import { acquireElectronQaLock } from './lib/electron-lock.mjs';
+import { buildQaApp } from './lib/qa-app.mjs';
 
 const scratch=await mkdtemp(join(tmpdir(),'threadterm-session-attention-live-'));
 const runtime=resolve('runtime/target-qa/debug/threadterm-v3-runtime.exe');
 const workspace=join(scratch,'workspace'), data=join(scratch,'data'), profile=join(scratch,'profile'), codexHome=join(scratch,'codex-home');
 const report={scratch,runtime,passed:false,checks:[],errors:[]};
+const { appDir, cleanup: cleanupApp } = await buildQaApp();
 let app,page,releaseLock;
 const wait=ms=>new Promise(resolve=>setTimeout(resolve,ms));
 async function request(method,params={}){return page.evaluate(([method,params])=>window.threadterm.request(method,params),[method,params]);}
@@ -23,7 +25,7 @@ try{
  const env=Object.fromEntries(Object.entries(process.env).filter(([key])=>!excluded.has(key.toLowerCase())));
  Object.assign(env,{CODEX_HOME:codexHome,THREADTERM_V3_DATA:data,THREADTERM_V3_USER_DATA:profile,THREADTERM_V3_PIPE:`\\\\.\\pipe\\threadterm-activity-${randomUUID()}`,THREADTERM_V3_RUNTIME:runtime});
  releaseLock=await acquireElectronQaLock();
- app=await electron.launch({args:[resolve('.')],cwd:resolve('.'),env,timeout:60000});
+ app=await electron.launch({args:[appDir],cwd:resolve('.'),env,timeout:60000});
  page=await app.firstWindow({timeout:45000});page.setDefaultTimeout(20000);
  await page.waitForFunction(()=>Boolean(window.threadterm));
  const settings=(await request('runtime.snapshot')).settings;
@@ -79,4 +81,5 @@ finally{
  if(app){await app.evaluate(({app})=>app.exit(0)).catch(()=>{});await app.close().catch(()=>{});}
  await releaseLock?.();
  await writeFile(join(scratch,'report.json'),JSON.stringify(report,null,2));console.log(JSON.stringify(report,null,2));if(!report.passed)process.exitCode=1;
+ await cleanupApp();
 }

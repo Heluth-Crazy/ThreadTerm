@@ -17,6 +17,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { electron } from './lib/desktop1.mjs';
 import { connectSubagentPeer as connectPeer } from './lib/subagent-peer.mjs';
 import { PROTOCOL_CONTRACT } from '../protocol/index.ts';
+import { buildQaApp } from './lib/qa-app.mjs';
 
 assert.equal(process.platform, 'win32', 'this acceptance QA requires Windows');
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
@@ -38,6 +39,7 @@ assert.ok(python && rustc, 'Python and Rust compiler are required for this isola
 
 const runId = `${new Date().toISOString().replaceAll(/[:.]/gu, '-')}-${randomUUID()}`;
 const scratch = await mkdtemp(join(tmpdir(), 'tt-checkpoint-send-'));
+const { appDir, cleanup: cleanupApp } = await buildQaApp({ root });
 const outDir = join(root, 'qa', 'results', 'checkpoint-send-performance');
 const outPath = join(outDir, `${runId}.json`);
 const bin = join(scratch, 'bin');
@@ -379,7 +381,7 @@ fn main(){
   };
   await writeFile(join(bin, 'codex.cmd'), `@echo off\r\n"${process.execPath}" "${fixture}" %*\r\n`);
   app = await electron.launch({
-    args: ['--disable-gpu', '--in-process-gpu', '--no-sandbox', root],
+    args: ['--disable-gpu', '--in-process-gpu', '--no-sandbox', appDir],
     cwd: bin,
     env,
     timeout: 60_000,
@@ -500,4 +502,5 @@ fn main(){
   if (report.passed && runtimeStopped && !cleanupFailure) await rm(scratch, { recursive: true, force: true }).catch(() => {});
   process.stdout.write(`${JSON.stringify(report)}\n`);
   if (!report.passed) process.exitCode = 1;
+  await cleanupApp();
 }

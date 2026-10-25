@@ -37,6 +37,11 @@ try {
   const session = await peer.request('session.create', { cwd, provider: 'codex', mode: 'chat', title: 'Codex question QA', operationId: randomUUID() });
   let { leaseEpoch } = await peer.request('session.claim', { sessionId: session.id });
   await peer.request('chat.connect', { sessionId: session.id, leaseEpoch, operationId: randomUUID() });
+  const persisted = (await readFile(log, 'utf8')).trim().split(/\r?\n/).filter(Boolean).map(JSON.parse)
+    .filter(entry => entry.direction === 'in' && entry.method === 'thread/inject_items');
+  assert.equal(persisted.length, 1, 'one empty native thread persistence request');
+  assert.equal(persisted[0].params.threadId, 'qa-codex-questions-thread');
+  assert.deepEqual(persisted[0].params.items, [{ type: 'message', role: 'developer', content: [] }]);
   async function run(prompt, response) {
     await peer.request('chat.send', { sessionId: session.id, text: prompt, leaseEpoch, operationId: randomUUID() });
     const card = await pending(session.id); const turnId = card.data?.turnId ?? card.turnId; if (!turnId) throw new Error(`pending card lacks turnId: ${JSON.stringify(card)}`); await peer.request('chat.answer', { sessionId: session.id, turnId, approvalId: card.approvalId, response, leaseEpoch, operationId: randomUUID() });
@@ -61,6 +66,6 @@ try {
     ['qa-form', { action: 'accept', content: { name: 'a@b.co', count: 2, enabled: false, colour: 'red', tags: ['one', 'two'] } }],
     ['qa-form', { action: 'decline' }], ['qa-unsupported', { action: 'decline' }], ['qa-url', { action: 'accept' }], ['qa-url', { action: 'decline' }],
   ]);
-  report.checks = ['sanitized case-insensitive PATH and fake Codex fixture only', 'requestUserInput exact submit JSON including other/secret/options:null metadata', 'form exact accept content JSON', 'unsupported form exact decline JSON', 'url exact accept JSON']; report.passed = true;
+  report.checks = ['sanitized case-insensitive PATH and fake Codex fixture only', '42403c6 empty developer persistence item before the first question', 'requestUserInput exact submit JSON including other/secret/options:null metadata', 'form exact accept content JSON', 'unsupported form exact decline JSON', 'url exact accept JSON']; report.passed = true;
 } catch (error) { report.error = error.stack ?? String(error); report.diagnostic = diagnostic; process.exitCode = 1; }
 finally { if (peer) { await peer.request('runtime.shutdown', { operationId: randomUUID() }).catch(() => {}); peer.close(); } if (daemon.exitCode === null) await Promise.race([new Promise(done => daemon.once('exit', done)), pause(3000)]); if (daemon.exitCode === null) daemon.kill(); await writeFile(join(out, 'runtime-report.json'), `${JSON.stringify(report, null, 2)}\n`); console.log(JSON.stringify(report, null, 2)); }

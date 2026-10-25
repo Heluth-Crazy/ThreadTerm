@@ -5,6 +5,7 @@ import {tmpdir} from 'node:os';
 import {randomUUID} from 'node:crypto';
 import { electron } from './lib/desktop1.mjs';
 import { acquireElectronQaLock } from './lib/electron-lock.mjs';
+import { buildQaApp } from './lib/qa-app.mjs';
 
 const out=join('qa','results','workbench-agent-'+new Date().toISOString().replace(/[:.]/g,'-'));
 const scratch=await mkdtemp(join(tmpdir(),'threadterm-workbench-agent-'));
@@ -17,6 +18,7 @@ for(const key of Object.keys(env))if(key.toLowerCase()==='path')delete env[key];
 env.PATH=[bin,dirname(process.execPath),join(process.env.SystemRoot||'C:\\Windows','System32')].join(';');
 env.HOME=env.USERPROFILE=join(scratch,'home');
 const report={startedAt:new Date().toISOString(),retainedScratch:scratch,checks:[],observations:{}}; let app,page,releaseLock;
+const { appDir, cleanup: cleanupApp } = await buildQaApp();
 const rpc=(method,params={})=>page.evaluate(([m,p])=>Promise.race([window.threadterm.request(m,p),new Promise((_,reject)=>setTimeout(()=>reject(new Error('RPC timeout: '+m)),45000))]),[method,params]);
 try {
   await mkdir(out,{recursive:true});
@@ -26,7 +28,7 @@ try {
   await mkdir(bin,{recursive:true});
   for(const name of ['codex','claude','kimi','gemini','opencode','grok'])await writeFile(join(bin,name+'.cmd'),'@echo off\r\necho '+name+' 1.0.0\r\n');
   releaseLock=await acquireElectronQaLock();
-  app=await electron.launch({args:[resolve('.')],env,timeout:60000});
+  app=await electron.launch({args:[appDir],env,timeout:60000});
   page=await app.firstWindow({timeout:30000}); page.setDefaultTimeout(30000);
   await page.waitForFunction(()=>!!window.threadterm);
   await page.locator('.app-shell').waitFor();
@@ -67,4 +69,5 @@ try {
   await mkdir(out,{recursive:true});
   await writeFile(join(out,'report.json'),JSON.stringify(report,null,2)+'\n');
   console.log(JSON.stringify({out,passed:report.passed,observations:report.observations,error:report.error},null,2));
+  await cleanupApp();
 }

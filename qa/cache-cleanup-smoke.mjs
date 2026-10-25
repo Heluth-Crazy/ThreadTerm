@@ -1,5 +1,6 @@
 import { electron } from './lib/desktop1.mjs';
 import { acquireElectronQaLock } from './lib/electron-lock.mjs';
+import { buildQaApp } from './lib/qa-app.mjs';
 import { mkdtemp, mkdir, rm, copyFile, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -11,6 +12,7 @@ const bin = join(root, 'runtime.exe');
 const runtime = process.env.THREADTERM_V3_RUNTIME_BIN ?? resolve('runtime/target-qa/debug/threadterm-v3-runtime.exe');
 await copyFile(runtime, bin);
 const env = { ...process.env, THREADTERM_V3_DATA: join(root, 'data'), THREADTERM_V3_USER_DATA: join(root, 'profile'), THREADTERM_V3_PIPE: `\\\\.\\pipe\\threadterm-v3-cache-${process.pid}`, THREADTERM_V3_RUNTIME: bin };
+const { appDir, cleanup: cleanupApp } = await buildQaApp();
 let app, page, releaseLock;
 let hits = 0;
 const server = createServer((_request, response) => {
@@ -23,7 +25,7 @@ const cacheUrl = `http://127.0.0.1:${server.address().port}/cache-proof`;
 const report = { startedAt: new Date().toISOString(), passed: false, checks: [] };
 async function launch() {
   releaseLock ??= await acquireElectronQaLock();
-  app = await electron.launch({ args: [resolve('.')], env, timeout: 30000 });
+  app = await electron.launch({ args: [appDir], env, timeout: 30000 });
   page = await app.firstWindow();
   await page.waitForFunction(() => !!window.threadterm);
   return page;
@@ -92,4 +94,5 @@ try {
   await releaseLock?.();
   await new Promise(resolve => server.close(resolve));
   await rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 250 });
+  await cleanupApp();
 }

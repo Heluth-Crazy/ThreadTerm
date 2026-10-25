@@ -1,5 +1,6 @@
 import { electron } from './lib/desktop1.mjs';
 import { acquireElectronQaLock } from './lib/electron-lock.mjs';
+import { buildQaApp } from './lib/qa-app.mjs';
 import { access, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -17,6 +18,7 @@ const env = {
   THREADTERM_V3_RUNTIME: runtime,
 };
 const report = { passed: false, startedAt: new Date().toISOString(), checks: [] };
+const { appDir, cleanup: cleanupApp } = await buildQaApp();
 let app, releaseLock;
 let page;
 let shutdownCompleted = false;
@@ -51,7 +53,7 @@ try {
   await mkdir(join(scratch, 'project'));
   await mkdir('qa/results', { recursive: true });
   releaseLock = await acquireElectronQaLock();
-  app = await electron.launch({ args: [resolve('.')], env, timeout: 30_000 });
+  app = await electron.launch({ args: [appDir], env, timeout: 30_000 });
   page = await app.firstWindow();
   await page.waitForFunction(() => !!window.threadterm, { timeout: 15_000 });
   const projectPath = join(scratch, 'project');
@@ -139,5 +141,6 @@ try {
   }
   await releaseLock?.();
   await rm(scratch, { recursive: true, force: true });
+  await cleanupApp();
 }
 

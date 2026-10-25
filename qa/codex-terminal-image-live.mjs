@@ -1,5 +1,6 @@
 // Real Codex CLI, no model submission; clipboard restored after isolated QA.
 import { electron } from './lib/desktop1.mjs';
+import { buildQaApp } from './lib/qa-app.mjs';
 import { acquireElectronQaLock } from './lib/electron-lock.mjs';
 import { mkdtemp, mkdir, copyFile, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -10,6 +11,7 @@ const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !/^
 Object.assign(env, { CODEX_HOME: join(scratch, 'codex-home'), THREADTERM_V3_RUNTIME: resolve('runtime/target-qa/debug/threadterm-v3-runtime.exe'), THREADTERM_V3_DATA: join(scratch, 'data'), THREADTERM_V3_USER_DATA: join(scratch, 'profile'), THREADTERM_V3_PIPE: `\\\\.\\pipe\\threadterm-image-cli-${randomUUID()}` });
 let app, page, priorClipboard, releaseLock;
 const report = { scratch, passed: false };
+const { appDir, cleanup: cleanupApp } = await buildQaApp();
 const delay = ms => new Promise(done => setTimeout(done, ms));
 try {
   await Promise.all([mkdir(env.CODEX_HOME), mkdir(env.THREADTERM_V3_DATA), mkdir(env.THREADTERM_V3_USER_DATA), mkdir(join(scratch, 'workspace'))]);
@@ -20,7 +22,7 @@ try {
   await copyFile(join(process.env.USERPROFILE, '.codex', '.sandbox', 'setup_marker.json'), join(env.CODEX_HOME, '.sandbox', 'setup_marker.json'));
   await writeFile(join(env.CODEX_HOME, 'config.toml'), '[windows]\nsandbox = "elevated"\n');
   releaseLock = await acquireElectronQaLock();
-  app = await electron.launch({ args: [resolve('.')], env, timeout: 60_000 });
+  app = await electron.launch({ args: [appDir], env, timeout: 60_000 });
   page = await app.firstWindow({ timeout: 30_000 });
   await page.waitForFunction(() => Boolean(window.threadterm));
   const rpc = (method, params = {}) => page.evaluate(([m, p]) => window.threadterm.request(m, p), [method, params]);
@@ -70,4 +72,5 @@ finally {
   await writeFile(join(scratch, 'report.json'), JSON.stringify(report, null, 2));
   console.log(`Codex terminal image ${report.passed ? 'passed' : 'failed'}: ${join(scratch, 'report.json')}`);
   if (!report.passed) process.exitCode = 1;
+  await cleanupApp();
 }

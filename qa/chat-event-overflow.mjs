@@ -9,10 +9,12 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { electron } from './lib/desktop1.mjs';
 import { acquireElectronQaLock } from './lib/electron-lock.mjs';
+import { buildQaApp } from './lib/qa-app.mjs';
 
 const delay = milliseconds => new Promise(done => setTimeout(done, milliseconds));
 const qa = dirname(fileURLToPath(import.meta.url));
 const root = resolve(qa, '..');
+const { appDir, cleanup: cleanupApp } = await buildQaApp({ root });
 const args = process.argv.slice(2);
 const option = name => args.indexOf(name) >= 0 ? args[args.indexOf(name) + 1] : undefined;
 const baseline = args.includes('--baseline');
@@ -80,7 +82,7 @@ try {
   await writeFile(join(bin, 'codex.cmd'), `@"${process.execPath}" "${launcher}" %*\r\n`);
   env.Path = [bin, dirname(process.execPath), join(process.env.SystemRoot ?? 'C:\\Windows', 'System32')].join(';');
   releaseLock = await acquireElectronQaLock();
-  app = await electron.launch({ args: [root], cwd: bin, env, timeout: 60_000 });
+  app = await electron.launch({ args: [appDir], cwd: bin, env, timeout: 60_000 });
   page = await app.firstWindow({ timeout: 30_000 });
   await page.waitForFunction(() => Boolean(window.threadterm));
   await rpc('project.add', { path: workspace, name: 'Chat overflow QA', operationId: randomUUID() });
@@ -165,4 +167,5 @@ try {
   await releaseLock?.();
   await writeFile(join(scratch, 'report.json'), `${JSON.stringify(report, null, 2)}\n`);
   process.stdout.write(`${JSON.stringify(report, null, 2)}\n`);
+  await cleanupApp();
 }

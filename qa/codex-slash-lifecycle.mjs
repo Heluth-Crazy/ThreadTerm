@@ -7,6 +7,7 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { electron } from './lib/desktop1.mjs';
 import { checkControlConsistency, assertNoControlViolations } from './lib/visual-consistency.mjs';
+import { buildQaApp } from './lib/qa-app.mjs';
 const delay = milliseconds => new Promise(resolveDelay => setTimeout(resolveDelay, milliseconds));
 
 const qaDir = dirname(fileURLToPath(import.meta.url));
@@ -23,6 +24,7 @@ const pipe = `\\\\.\\pipe\\threadterm-codex-slash-${randomUUID()}`;
 const out = resolve(v3Root, 'qa/results/chat-parity/D2/codex-slash');
 await mkdir(out, { recursive: true });
 const report = { passed: false, scratch, runtime, checks: [] };
+const { appDir, cleanup: cleanupApp } = await buildQaApp({ root: v3Root });
 let app;
 let page;
 
@@ -90,7 +92,7 @@ try {
   env.THREADTERM_QA_CODEX_SLASH_LOG = log;
   env.THREADTERM_QA_CODEX_SLASH_CWD = workspace;
   await mkdir(env.CODEX_HOME);
-  app = await electron.launch({ args: [v3Root], cwd: bin, env, timeout: 60_000 });
+  app = await electron.launch({ args: [appDir], cwd: bin, env, timeout: 60_000 });
   page = await app.firstWindow({ timeout: 30_000 });
   page.setDefaultTimeout(20_000);
   await page.waitForFunction(() => Boolean(window.threadterm));
@@ -196,4 +198,5 @@ try {
   }
   await writeFile(join(out, 'report.json'), `${JSON.stringify(report, null, 2)}\n`);
   process.stdout.write(`${JSON.stringify(report, null, 2)}\n`);
+  await cleanupApp();
 }

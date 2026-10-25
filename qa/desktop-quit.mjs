@@ -8,23 +8,33 @@ import {promisify} from 'node:util';
 import {mkdtemp, mkdir, readFile, rm, writeFile} from 'node:fs/promises';
 import net from 'node:net';
 import {tmpdir} from 'node:os';
-import {join, resolve} from 'node:path';
+import {join, resolve, relative, isAbsolute} from 'node:path';
+import {fileURLToPath} from 'node:url';
 import {electron} from './lib/desktop1.mjs';
 import {connectPeer} from './pipe-client.mjs';
+import {buildQaApp} from './lib/qa-app.mjs';
+import {acquireElectronQaLock} from './lib/electron-lock.mjs';
 
 const delay = milliseconds => new Promise(resolveDelay => setTimeout(resolveDelay, milliseconds));
-const root = resolve(new URL('..', import.meta.url).pathname.slice(1));
-const desktopMain = join(root, 'desktop-dist', 'main.cjs');
+const root = resolve(fileURLToPath(new URL('..', import.meta.url)));
 const runtime = resolve(process.env.THREADTERM_V3_RUNTIME_BIN ?? join(root, 'runtime/target-qa/debug/threadterm-v3-runtime.exe'));
 const scratch = await mkdtemp(join(tmpdir(), 'threadterm-desktop-quit-'));
 const visualOut = join(root, 'qa/results/desktop-quit');
 await mkdir(visualOut, {recursive:true});
+const appDir = join(scratch, 'app');
+const desktopMain = join(appDir, 'main.cjs');
 const harness = join(scratch, 'desktop-quit-harness.cjs');
+const releaseLock = await acquireElectronQaLock();
+try {
+  await buildQaApp({root, outDir:appDir});
+} catch (error) { await releaseLock(); throw error; }
 
 await writeFile(harness, `
 const electron = require('electron');
+// 7a2b7c1c preapproves ordinary QA quits; this harness verifies the confirmation itself.
+process.env.THREADTERM_V3_QA_AUTO_CONFIRM_QUIT = '0';
 process.chdir(${JSON.stringify(root)});
-electron.app.setAppPath(${JSON.stringify(root)});
+electron.app.setAppPath(${JSON.stringify(appDir)});
 const originalSetContextMenu = electron.Tray.prototype.setContextMenu;
 globalThis.__desktopQuitQa = { menu: undefined, dialogs: [], response: 0, pending: [] };
 electron.Tray.prototype.setContextMenu = function(menu) {
@@ -256,7 +266,7 @@ async function launch(name, runtimePath, beforeLaunch, extraEnvironment = {}) {
   const pipe = `\\\\.\\pipe\\threadterm-desktop-quit-${randomUUID()}`;
   await Promise.all([mkdir(data), mkdir(userData), mkdir(project)]);
   const fixture = await beforeLaunch?.({data, userData, pipe, project});
-  const app = await electron.launch({args: [harness, '--disable-gpu', '--in-process-gpu', '--no-sandbox'], env: {...isolatedEnvironment(data, userData, pipe, runtimePath), ...extraEnvironment}, timeout: 30_000});
+  const app = await electron.launch({args: [harness, '--disable-features=CalculateNativeWinOcclusion', '--disable-gpu', '--in-process-gpu', '--no-sandbox'], env: {...isolatedEnvironment(data, userData, pipe, runtimePath), ...extraEnvironment}, timeout: 30_000});
   const page = await app.firstWindow();
   await page.waitForFunction(() => Boolean(window.threadterm), {timeout: 15_000});
   await app.evaluate(() => {
@@ -274,7 +284,7 @@ try {
   active = await launch('active', runtime);
   await active.page.evaluate(async () => {
     const snapshot = await window.threadterm.request('runtime.snapshot', {});
-    await window.threadterm.request('settings.update', {patch: {notifications: {native:false, attention:false, completed:false, sound:false}}, expectedRevision: snapshot.settings.revision, operationId: crypto.randomUUID()});
+    await window.threadterm.request('settings.update', {patch: {language: 'en', notifications: {native:false, attention:false, completed:false, sound:false}}, expectedRevision: snapshot.settings.revision, operationId: crypto.randomUUID()});
   });
   const session = await active.page.evaluate(async ({cwd}) => await window.threadterm.request('session.create', {
     cwd, title: 'desktop quit QA', provider: 'custom', mode: 'terminal', executable: 'cmd.exe', args: ['/Q', '/K'], operationId: crypto.randomUUID(),
@@ -421,11 +431,14 @@ try {
   assert.equal(await pipeOpen(`${late.pipe}-control`), false, 'late startup must be observed and shut down without an orphaned runtime');
   checks.push('Quit waits for an already-owned late runtime bind and leaves no orphaned daemon');
 
+  for (const check of checks) console.log(`PASS ${check}`);
   console.log(JSON.stringify({passed: true, checks, scratch}));
 } finally {
   if (active) { await active.app.evaluate(({app}) => app.exit(0)).catch(() => {}); await active.app.close().catch(() => {}); await closeRuntime(active.data, active.pipe); }
   if (noActive) { await noActive.app.evaluate(({app}) => app.exit(0)).catch(() => {}); await noActive.app.close().catch(() => {}); await closeRuntime(noActive.data, noActive.pipe); }
   if (failure) { await failure.app.evaluate(({app}) => app.exit(0)).catch(() => {}); await failure.app.close().catch(() => {}); await failure.fixture.close().catch(() => {}); }
   if (late) { await late.app.evaluate(({app}) => app.exit(0)).catch(() => {}); await late.app.close().catch(() => {}); await closeRuntime(late.data, late.pipe); }
-  await rm(scratch, {recursive: true, force: true, maxRetries: 10, retryDelay: 250});
+  const scratchRelative = relative(resolve(tmpdir()), resolve(scratch));
+  assert.ok(scratchRelative && !scratchRelative.startsWith('..') && !isAbsolute(scratchRelative), 'cleanup stays inside the temporary QA root');
+  try { await rm(scratch, {recursive: true, force: true, maxRetries: 10, retryDelay: 250}); } finally { await releaseLock(); }
 }

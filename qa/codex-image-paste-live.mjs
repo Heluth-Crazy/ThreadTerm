@@ -7,6 +7,7 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { electron } from './lib/desktop1.mjs';
 import { acquireElectronQaLock } from './lib/electron-lock.mjs';
+import { buildQaApp } from './lib/qa-app.mjs';
 
 const wait = milliseconds => new Promise(done => setTimeout(done, milliseconds));
 const qaDir = dirname(fileURLToPath(import.meta.url));
@@ -17,6 +18,7 @@ if (!/runtime[\\/]target-qa[\\/]debug[\\/]threadterm-v3-runtime\.exe$/iu.test(ru
 }
 
 const scratch = await mkdtemp(join(tmpdir(), 'threadterm-codex-image-paste-'));
+const { appDir, cleanup: cleanupApp } = await buildQaApp({ root });
 const workspace = join(scratch, 'workspace');
 const data = join(scratch, 'data');
 const profile = join(scratch, 'profile');
@@ -111,7 +113,7 @@ try {
   Object.assign(env, { CODEX_HOME: codexHome, THREADTERM_V3_DATA: data, THREADTERM_V3_USER_DATA: profile, THREADTERM_V3_PIPE: pipe, THREADTERM_V3_RUNTIME: runtime });
 
   releaseLock = await acquireElectronQaLock();
-  app = await electron.launch({ args: [root], cwd: root, env, timeout: 60_000 });
+  app = await electron.launch({ args: [appDir], cwd: root, env, timeout: 60_000 });
   page = await app.firstWindow({ timeout: 45_000 });
   page.setDefaultTimeout(30_000);
   await page.waitForFunction(() => Boolean(window.threadterm));
@@ -230,6 +232,7 @@ try {
   await releaseLock?.();
   await writeFile(join(scratch, 'report.json'), `${JSON.stringify(redact(report), null, 2)}\n`);
   process.stdout.write(`Codex image paste QA ${report.passed ? 'passed' : 'failed'}; report: ${join(scratch, 'report.json')}\n`);
+  await cleanupApp();
 }
 
 async function expectPreview(container) {

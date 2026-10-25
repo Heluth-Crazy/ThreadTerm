@@ -1,5 +1,6 @@
 import { electron } from './lib/desktop1.mjs';
 import { acquireElectronQaLock } from './lib/electron-lock.mjs';
+import { buildQaApp } from './lib/qa-app.mjs';
 import {mkdtemp,mkdir,readFile,writeFile} from 'node:fs/promises';
 import {join,resolve} from 'node:path';
 import {tmpdir} from 'node:os';
@@ -15,8 +16,9 @@ await writeFile(join(project,'nested','README.md'),'# Preview\n\n![pixel](pixel.
 await writeFile(join(project,'nested','pixel.png'),Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+j0c8AAAAASUVORK5CYII=','base64'));
 const env={...process.env,THREADTERM_V3_DATA:join(scratch,'data'),THREADTERM_V3_USER_DATA:join(scratch,'electron'),THREADTERM_V3_PIPE:`\\\\.\\pipe\\threadterm-v3-editor-${randomUUID()}`,THREADTERM_V3_RUNTIME:resolve('runtime/target-qa/debug/threadterm-v3-runtime.exe')};
 let runtimeLog='';const daemon=spawn(env.THREADTERM_V3_RUNTIME,[],{env,windowsHide:true,stdio:['ignore','ignore','pipe']});daemon.stderr.on('data',chunk=>{runtimeLog+=chunk;});let app;let releaseLock;
+const { appDir, cleanup: cleanupApp } = await buildQaApp();
 try{
- stage('runtime spawned');stage('electron launch begin');releaseLock=await acquireElectronQaLock();app=await electron.launch({args:[resolve('.')],env,timeout:30_000});stage('electron launched');const page=await app.firstWindow({timeout:20_000});stage('first window');page.setDefaultTimeout(15_000);const errors=[];page.on('pageerror',error=>errors.push(error.message));
+ stage('runtime spawned');stage('electron launch begin');releaseLock=await acquireElectronQaLock();app=await electron.launch({args:[appDir],env,timeout:30_000});stage('electron launched');const page=await app.firstWindow({timeout:20_000});stage('first window');page.setDefaultTimeout(15_000);const errors=[];page.on('pageerror',error=>errors.push(error.message));
  await page.waitForFunction(()=>!!window.threadterm,{timeout:15_000});stage('bridge ready');
  const projectRecord=await page.evaluate(async path=>{const s=await window.threadterm.request('runtime.snapshot',{});await window.threadterm.request('settings.update',{patch:{language:'en'},expectedRevision:s.settings.revision,operationId:crypto.randomUUID()});return window.threadterm.request('project.add',{path,name:'Editor QA',operationId:crypto.randomUUID()});},project);
  stage('project added');if(process.env.THREADTERM_V3_QA_THEME)await page.evaluate(async theme=>{const s=await window.threadterm.request('runtime.snapshot',{});await window.threadterm.request('settings.update',{patch:{theme},expectedRevision:s.settings.revision,operationId:crypto.randomUUID()});},process.env.THREADTERM_V3_QA_THEME);stage('theme applied');
@@ -50,4 +52,4 @@ try{
  await page.evaluate(()=>window.threadterm.request('runtime.shutdown',{operationId:crypto.randomUUID()}));
  const report={passed:true,checks:['non-Git scope files','directory expansion','CodeMirror input+Chinese','draft autosync','Ctrl+S latest content','dirty switch cancel/discard','close-current selects adjacent open file','external fingerprint conflict','filesystem.image Markdown asset','Markdown scripts removed'],scratch};await writeFile('qa/results/editor-smoke.json',JSON.stringify(report,null,2));console.log(JSON.stringify(report));
 }catch(error){console.error(`[editor-smoke] failed during ${currentStage}`,error, runtimeLog);process.exitCode=1;if(app)await app.windows()[0]?.screenshot({path:'qa/results/editor-failure.png'}).catch(()=>{});}
-finally{if(app){await app.evaluate(({app})=>{setTimeout(()=>app.exit(),0)}).catch(()=>{});await app.close().catch(()=>{});}await releaseLock?.();if(daemon.exitCode===null)daemon.kill();}
+finally{if(app){await app.evaluate(({app})=>{setTimeout(()=>app.exit(),0)}).catch(()=>{});await app.close().catch(()=>{});}await releaseLock?.();if(daemon.exitCode===null)daemon.kill();await cleanupApp();}

@@ -9,6 +9,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { electron } from './lib/desktop1.mjs';
+import { buildQaApp } from './lib/qa-app.mjs';
 
 const delay = ms => new Promise(done => setTimeout(done, ms));
 const qa = dirname(fileURLToPath(import.meta.url));
@@ -18,6 +19,7 @@ const option = name => args.includes(name) ? args[args.indexOf(name) + 1] : unde
 process.env.TT_QA_DESKTOP = '1';
 const runtime = resolve(option('--runtime') ?? process.env.THREADTERM_QA_RUNTIME_EXE ?? process.env.THREADTERM_V3_RUNTIME_BIN ?? join(root, 'runtime', 'target-qa', 'debug', 'threadterm-v3-runtime.exe'));
 assert.ok(existsSync(runtime), `Missing QA runtime: ${runtime}`);
+const { appDir, cleanup: cleanupApp } = await buildQaApp({ root });
 const scratch = await mkdtemp(join(tmpdir(), 'threadterm-chat-repair-'));
 const bin = join(scratch, 'bin'); const workspace = join(scratch, 'workspace');
 const fixture = resolve(qa, 'fixtures', 'fake-codex-repair.cjs');
@@ -101,7 +103,7 @@ try {
   await Promise.all([bin, workspace, env.THREADTERM_V3_DATA, env.THREADTERM_V3_USER_DATA, env.CODEX_HOME, out].map(path => mkdir(path, { recursive: true }))); await writeFile(log, '');
   await writeFile(join(bin, 'shim.rs'), 'fn main(){let s=std::process::Command::new(std::env::var("TT_QA_NODE").unwrap()).arg(std::env::var("TT_QA_SCRIPT").unwrap()).args(std::env::args().skip(1)).status().unwrap();std::process::exit(s.code().unwrap_or(1));}');
   const compiled = spawnSync('rustc', [join(bin, 'shim.rs'), '-o', join(bin, 'codex.exe')], { encoding: 'utf8', windowsHide: true }); assert.equal(compiled.status, 0, compiled.stderr);
-  app = await electron.launch({ args: ['--disable-gpu', '--in-process-gpu', '--no-sandbox', root], cwd: bin, env, timeout: 60_000 }); page = await app.firstWindow({ timeout: 30_000 }); page.setDefaultTimeout(30_000); await page.waitForFunction(() => Boolean(window.threadterm));
+  app = await electron.launch({ args: ['--disable-gpu', '--in-process-gpu', '--no-sandbox', appDir], cwd: bin, env, timeout: 60_000 }); page = await app.firstWindow({ timeout: 30_000 }); page.setDefaultTimeout(30_000); await page.waitForFunction(() => Boolean(window.threadterm));
   await settings('en', 'light'); project = await rpc('project.add', { path: workspace, name: 'Chat repair QA', operationId: randomUUID() });
   session = await rpc('session.create', { projectId: project.id, cwd: workspace, provider: 'codex', mode: 'chat', title: 'Chat repair QA', operationId: randomUUID() }); leaseEpoch = (await rpc('session.claim', { sessionId: session.id, clientId: 'chat-repair-visual' })).leaseEpoch; await rpc('session.present', { sessionId: session.id, placement: 'workspace', presentation: 'focused', operationId: randomUUID() }); await chat().waitFor(); await until(async () => (await rpc('chat.connection', { sessionId: session.id })).phase === 'ready', 'fake Codex ready');
   await page.evaluate(async sessionId => { if (!window.threadtermQa?.failChatProjection) throw new Error('QA projection-failure bridge unavailable'); await window.threadtermQa.failChatProjection(sessionId); }, session.id);
@@ -127,4 +129,4 @@ try {
   const calls = (await readFile(log, 'utf8')).trim().split(/\r?\n/u).filter(Boolean).map(JSON.parse).filter(row => row.direction === 'in').map(row => row.method); const repairCalls = calls.slice(beforeRepairCalls.length); assert.equal(repairCalls.filter(method => method === 'thread/read').length, 1, 'repair made exactly one native history read'); assert.equal(repairCalls.filter(method => ['thread/start', 'thread/resume', 'turn/start'].includes(method)).length, 0, 'repair did not open/resume/send a provider turn');
   report.checks = ['Desktop 1, inactive launch, notifications disabled', 'case-insensitive PATH isolation and fake Codex only', 'QA hook fails one projection; degraded marker/banner persists; Stop settles eligibility', 'pending request is non-actionable and ingress-fenced queued prompt stays paused', 'repair transcript exactly equals fake thread/read in native order', 'banner, confirmation and result captured at 1000px/420px for English/Chinese and light/dark']; report.passed = true;
 } catch (error) { report.error = error instanceof Error ? error.stack : String(error); if (page) await page.screenshot({ path: join(out, 'failure.png') }).catch(() => {}); process.exitCode = 1; }
-finally { if (page) await rpc('runtime.shutdown', { operationId: randomUUID() }).catch(() => {}); if (app) { await app.evaluate(({ app: electronApp }) => electronApp.exit(0)).catch(() => {}); await app.close().catch(() => {}); } await mkdir(out, { recursive: true }); await writeFile(join(out, 'report.json'), `${JSON.stringify(report, null, 2)}\n`); process.stdout.write(`${JSON.stringify(report, null, 2)}\n`); }
+finally { if (page) await rpc('runtime.shutdown', { operationId: randomUUID() }).catch(() => {}); if (app) { await app.evaluate(({ app: electronApp }) => electronApp.exit(0)).catch(() => {}); await app.close().catch(() => {}); } await mkdir(out, { recursive: true }); await writeFile(join(out, 'report.json'), `${JSON.stringify(report, null, 2)}\n`); process.stdout.write(`${JSON.stringify(report, null, 2)}\n`); await cleanupApp(); }

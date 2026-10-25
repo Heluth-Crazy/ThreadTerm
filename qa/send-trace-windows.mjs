@@ -8,6 +8,7 @@ import { randomUUID } from 'node:crypto';
 import { dirname, join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import { electron } from './lib/desktop1.mjs';
+import { buildQaApp } from './lib/qa-app.mjs';
 
 assert.equal(process.platform, 'win32');
 const option = name => {
@@ -23,6 +24,7 @@ process.env.TT_QA_DESKTOP = '1';
 
 const root = resolve(import.meta.dirname, '..');
 const scratch = await mkdtemp(join(tmpdir(), `tt-send-trace-${enabled ? 'on' : 'off'}-`));
+const { appDir, cleanup: cleanupApp } = await buildQaApp({ root });
 const bin = join(scratch, 'bin');
 const plain = join(scratch, 'plain');
 const data = join(scratch, 'data');
@@ -128,7 +130,7 @@ try {
   await writeFile(join(bin, 'codex.cmd'), `@echo off\r\n"${process.execPath}" "${fixture}" %*\r\n`);
   await Promise.all([writeFile(gate, 'release'), writeFile(release, 'go'), writeFile(fakeLog, ''), writeFile(gitLog, '')]);
 
-  app = await electron.launch({ args: ['--disable-gpu', '--in-process-gpu', '--no-sandbox', root], cwd: bin, env: sanitizedEnvironment(), timeout: 60_000 });
+  app = await electron.launch({ args: ['--disable-gpu', '--in-process-gpu', '--no-sandbox', appDir], cwd: bin, env: sanitizedEnvironment(), timeout: 60_000 });
   page = await app.firstWindow({ timeout: 30_000 });
   await page.waitForFunction(() => Boolean(window.threadterm));
   const rpc = (method, params = {}) => page.evaluate(([name, value]) => window.threadterm.request(name, value), [method, params]);
@@ -245,4 +247,5 @@ try {
   await writeFile(reportPath, `${JSON.stringify(report, null, 2)}\n`);
   if (!keep) await rm(scratch, { recursive: true, force: true });
   process.stdout.write(`${JSON.stringify(report)}\n`);
+  await cleanupApp();
 }

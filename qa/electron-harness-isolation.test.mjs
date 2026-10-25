@@ -70,3 +70,51 @@ test('every QA harness avoids the user development runtime build', async () => {
   }
   assert.deepEqual(offenders, []);
 });
+
+// A harness hands Electron its own built app (qa/lib/qa-app.mjs), never the repository root. `args: [root]` or
+// `args: [resolve('.')]` starts package.json "main", the user's desktop-dist bundle, which can be stale or mid-rebuild.
+// The one exception is open-parity-preview.mjs: the user opens it on purpose to click through their real app.
+const repoRootAppAllowList = new Map([['open-parity-preview.mjs', 'visible user-owned preview of the real app']]);
+const REPO_ROOT_ARG = /^(?:root|v3Root|repoRoot|repoDir|appRoot)$|^resolve\(\s*['"]\.['"]\s*\)$|^process\.cwd\(\)$/;
+
+// Reads the opening bracket at `start` and returns it with everything up to its partner.
+function balanced(source, start) {
+  const open = source[start];
+  const close = open === '{' ? '}' : ']';
+  let depth = 0;
+  for (let index = start; index < source.length; index += 1) {
+    if (source[index] === open) depth += 1;
+    else if (source[index] === close && --depth === 0) return source.slice(start, index + 1);
+  }
+  return undefined;
+}
+
+// App-path arguments of every electron.launch call in a harness.
+function launchArgs(source) {
+  const found = [];
+  for (const match of source.matchAll(/electron\.launch\s*\(/g)) {
+    const optionsAt = source.indexOf('{', match.index);
+    const options = optionsAt < 0 ? undefined : balanced(source, optionsAt);
+    if (!options) continue;
+    const argsAt = options.search(/\bargs\s*:\s*\[/);
+    if (argsAt < 0) continue;
+    const array = balanced(options, options.indexOf('[', argsAt));
+    if (array) found.push(array.slice(1, -1).split(',').map(item => item.trim()));
+  }
+  return found;
+}
+
+test('no harness launches the repository root as its Electron app', async () => {
+  const directory = new URL('.', import.meta.url);
+  const files = (await readdir(directory)).filter(file => file.endsWith('.mjs')).sort();
+  const offenders = [];
+  for (const file of files) {
+    if (repoRootAppAllowList.has(file)) continue;
+    const source = await readFile(new URL(file, directory), 'utf8');
+    for (const args of launchArgs(source)) {
+      const appPath = args.find(item => REPO_ROOT_ARG.test(item));
+      if (appPath) offenders.push(`${file}: launches ${appPath}; build an app with ./lib/qa-app.mjs instead`);
+    }
+  }
+  assert.deepEqual(offenders, []);
+});

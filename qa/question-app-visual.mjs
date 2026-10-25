@@ -10,6 +10,7 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { electron } from './lib/desktop1.mjs';
 import { assertNoControlViolations, checkControlConsistency } from './lib/visual-consistency.mjs';
+import { buildQaApp } from './lib/qa-app.mjs';
 
 const pause = milliseconds => new Promise(done => setTimeout(done, milliseconds));
 const qa = dirname(fileURLToPath(import.meta.url));
@@ -27,6 +28,7 @@ const fixture = resolve(qa, 'fixtures', 'fake-codex-questions.cjs');
 const log = join(scratch, 'fake-codex-questions.jsonl');
 const out = resolve(root, 'qa', 'results', 'chat-parity', 'D1', 'question-app');
 assert.ok(existsSync(fixture), `Missing fake Codex question fixture: ${fixture}`);
+const { appDir, cleanup: cleanupApp } = await buildQaApp({ root });
 
 // Strip every inherited PATH spelling before installing the only codex.exe.
 const blocked = new Set(['path', 'codex_home', 'openai_api_key', 'threadterm_v3_data', 'threadterm_v3_user_data', 'threadterm_v3_pipe', 'threadterm_v3_runtime', 'threadterm_v3_dev_server_url']);
@@ -113,7 +115,7 @@ try {
   const compiled = spawnSync('rustc', [join(bin, 'shim.rs'), '-o', join(bin, 'codex.exe')], { encoding: 'utf8', windowsHide: true });
   assert.equal(compiled.status, 0, compiled.stderr);
 
-  app = await electron.launch({ args: ['--disable-gpu', '--in-process-gpu', '--no-sandbox', root], cwd: bin, env, timeout: 60_000 });
+  app = await electron.launch({ args: ['--disable-gpu', '--in-process-gpu', '--no-sandbox', appDir], cwd: bin, env, timeout: 60_000 });
   page = await app.firstWindow({ timeout: 30_000 });
   page.setDefaultTimeout(30_000);
   page.on('pageerror', error => pageErrors.push(error.stack ?? error.message));
@@ -173,4 +175,5 @@ try {
   if (app) { await app.evaluate(({ app: electronApp }) => electronApp.exit(0)).catch(() => {}); await app.close().catch(() => {}); }
   await writeFile(join(out, 'report.json'), `${JSON.stringify(report, null, 2)}\n`);
   process.stdout.write(`${JSON.stringify(report, null, 2)}\n`);
+  await cleanupApp();
 }

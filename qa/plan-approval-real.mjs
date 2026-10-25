@@ -10,12 +10,14 @@ import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
 import { electron } from './lib/desktop1.mjs';
 import { assertNoControlViolations, checkControlConsistency } from './lib/visual-consistency.mjs';
+import { buildQaApp } from './lib/qa-app.mjs';
 
 const root=resolve(dirname(fileURLToPath(import.meta.url)),'..');
 const runtime=resolve(process.env.THREADTERM_QA_RUNTIME_EXE??join(root,'runtime/target-qa/debug/threadterm-v3-runtime.exe'));
 const fixture=join(root,'qa/fixtures/fake-codex-plan-approval.cjs');
 const out=join(root,'qa/results/chat-parity/D2/plan-approval-real');
 assert.ok(existsSync(runtime),`Build QA runtime first: ${runtime}`); assert.ok(existsSync(fixture),`Missing ${fixture}`);
+const { appDir, cleanup: cleanupApp } = await buildQaApp({ root });
 const scratch=await mkdtemp(join(tmpdir(),'threadterm-plan-approval-real-')); const bin=join(scratch,'bin'),workspace=join(scratch,'workspace'),log=join(scratch,'requests.jsonl');
 const env=Object.fromEntries(Object.entries(process.env).filter(([key])=>!['path','codex_home','openai_api_key','threadterm_v3_data','threadterm_v3_user_data','threadterm_v3_pipe','threadterm_v3_runtime'].includes(key.toLowerCase())));
 Object.assign(env,{Path:[bin,dirname(process.execPath),join(process.env.SystemRoot??'C:\\Windows','System32')].join(';'),CODEX_HOME:join(scratch,'codex-home'),THREADTERM_V3_DATA:join(scratch,'data'),THREADTERM_V3_USER_DATA:join(scratch,'profile-lane2'),THREADTERM_V3_PIPE:`\\\\.\\pipe\\threadterm-plan-approval-${randomUUID()}`,THREADTERM_V3_RUNTIME:runtime,THREADTERM_QA_CODEX_PLAN_APPROVAL_LOG:log,THREADTERM_QA_CODEX_PLAN_APPROVAL_CWD:workspace});
@@ -30,7 +32,7 @@ async function send(text){await chat().locator('.chat-compose-shell textarea').f
 try {
  await Promise.all([bin,workspace,env.CODEX_HOME,env.THREADTERM_V3_DATA,env.THREADTERM_V3_USER_DATA,out].map(path=>mkdir(path,{recursive:true}))); await writeFile(log,'');
  await writeFile(join(bin,'codex.cmd'),`@echo off\r\nnode ${JSON.stringify(fixture)}\r\n`);
- process.env.TT_QA_DESKTOP='1'; app=await electron.launch({args:['--disable-gpu','--in-process-gpu','--no-sandbox',root],cwd:bin,env,timeout:60_000}); page=await app.firstWindow({timeout:30_000}); page.setDefaultTimeout(30_000);
+ process.env.TT_QA_DESKTOP='1'; app=await electron.launch({args:['--disable-gpu','--in-process-gpu','--no-sandbox',appDir],cwd:bin,env,timeout:60_000}); page=await app.firstWindow({timeout:30_000}); page.setDefaultTimeout(30_000);
  await page.waitForFunction(()=>Boolean(window.threadterm)); await page.locator('#boot-splash').waitFor({state:'detached'});
   await page.evaluate(() => Object.defineProperty(navigator,'clipboard',{configurable:true,value:{writeText:async value=>{window.__lane2Clipboard=value;},readText:async()=>window.__lane2Clipboard??''}}));
   await page.evaluate(()=>{document.title='ThreadTerm lane2 D2 plan QA';});
@@ -42,4 +44,4 @@ try {
  await card().getByRole('button',{name:/Approve/}).click(); await until(async()=>/Plan approved|计划已批准/.test(await card().innerText()),'approved receipt');
  const requests=(await readFile(log,'utf8')).trim().split(/\r?\n/u).filter(Boolean).map(JSON.parse); const updates=requests.filter(entry=>entry.method==='thread/settings/update'); const turns=requests.filter(entry=>entry.method==='turn/start'); assert.ok(updates.some(entry=>entry.params.collaborationMode?.mode==='default'),'approve restores default collaboration'); assert.equal(turns.filter(entry=>entry.params.input?.some(item=>item.text==='Implement the plan.')).length,1,'approve sends exactly one Codex implementation prompt'); report.checks.push('fake plan card approved: one default-mode update and exactly one Implement the plan prompt');
  assert.deepEqual(await checkControlConsistency(page,'.chat-plan-approval').then(value=>value.violations),[]); report.passed=true;
-} catch(error) { report.error=error instanceof Error?error.stack:String(error); process.exitCode=1; if(page) await capture('failure.png').catch(()=>{}); } finally { if(page) await rpc('runtime.shutdown',{operationId:randomUUID()}).catch(()=>{}); if(app){await app.evaluate(({app})=>app.exit(0)).catch(()=>{});await app.close().catch(()=>{})} await writeFile(join(out,'report.json'),JSON.stringify(report,null,2)+'\n'); console.log(JSON.stringify(report,null,2)); }
+} catch(error) { report.error=error instanceof Error?error.stack:String(error); process.exitCode=1; if(page) await capture('failure.png').catch(()=>{}); } finally { if(page) await rpc('runtime.shutdown',{operationId:randomUUID()}).catch(()=>{}); if(app){await app.evaluate(({app})=>app.exit(0)).catch(()=>{});await app.close().catch(()=>{})} await writeFile(join(out,'report.json'),JSON.stringify(report,null,2)+'\n'); console.log(JSON.stringify(report,null,2)); await cleanupApp(); }

@@ -7,6 +7,7 @@ import { randomUUID } from 'node:crypto';
 import { dirname, join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import { electron } from './lib/desktop1.mjs';
+import { buildQaApp } from './lib/qa-app.mjs';
 assert.equal(process.platform, 'win32');
 const arg = n => { const i = process.argv.indexOf(n); return i < 0 ? undefined : process.argv[i + 1]; };
 const selftest = process.argv.includes('--selftest'), keep = process.argv.includes('--keep'), runtime = arg('--runtime');
@@ -15,6 +16,7 @@ if (!selftest)
 process.env.TT_QA_DESKTOP = '1';
 const root = resolve(import.meta.dirname, '..'), scratch = await mkdtemp(join(tmpdir(), 'tt-send-latency-')), repo = join(scratch, 'repo'), bin = join(scratch, 'bin'), gate = join(scratch, 'git.gate'), release = join(scratch, 'fake.release'), fakeLog = join(scratch, 'fake.jsonl'), gitLog = join(scratch, 'git.jsonl'), out = join(root, 'qa', 'results', 'send-latency-followup'), fixture = join(root, 'qa', 'fixtures', 'fake-codex-latency.cjs');
 const report = { passed: false, scratch: keep ? scratch : undefined, checks: [], stages: [], screenshots: [] };
+const { appDir, cleanup: cleanupApp } = selftest ? {} : await buildQaApp({ root });
 let app, page, session;
 const where = x => execFileSync('where', [x], { encoding: 'utf8', windowsHide: true }).split(/\r?\n/).find(Boolean), realGit = where('git'), python = where('python');
 assert.ok(realGit && python);
@@ -60,7 +62,7 @@ try {
     if (selftest)
         report.passed = true;
     else {
-        app = await electron.launch({ args: ['--disable-gpu', '--in-process-gpu', '--no-sandbox', root], cwd: bin, env: env(), timeout: 60000 });
+        app = await electron.launch({ args: ['--disable-gpu', '--in-process-gpu', '--no-sandbox', appDir], cwd: bin, env: env(), timeout: 60000 });
         page = await app.firstWindow({ timeout: 30000 });
         await page.waitForFunction(() => Boolean(window.threadterm));
         const rpc = (m, p = {}) => page.evaluate(([a, b]) => window.threadterm.request(a, b), [m, p]);
@@ -158,4 +160,5 @@ finally {
     if (!keep)
         await rm(scratch, { recursive: true, force: true });
     console.log(JSON.stringify(report));
+    await cleanupApp?.();
 }

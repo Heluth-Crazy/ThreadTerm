@@ -5,18 +5,21 @@ import { randomUUID } from 'node:crypto';
 import { existsSync } from 'node:fs';
 import { mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
+import { tmpdir } from 'node:os';
 import { DatabaseSync } from 'node:sqlite';
 import { fileURLToPath } from 'node:url';
 import { connectPeer } from './pipe-client.mjs';
 import { electron } from './lib/desktop1.mjs';
 import { checkControlConsistency } from './lib/visual-consistency.mjs';
+import { buildQaApp } from './lib/qa-app.mjs';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
+const { appDir, cleanup: cleanupApp } = await buildQaApp({ root });
 const args = process.argv.slice(2);
 const theme = args.includes('--theme') ? args[args.indexOf('--theme') + 1] : 'light';
 assert.ok(['light', 'dark'].includes(theme));
 const narrow = args.includes('--narrow');
-const qaTemp = 'D:/project/ThreadTerm/tt-qa-temp';
+const qaTemp = process.env.TEMP ?? process.env.TMP ?? tmpdir();
 process.env.TEMP = process.env.TMP = qaTemp;
 process.env.TT_QA_DESKTOP = '1';
 const runtime = join(root, 'runtime/target-qa/debug/threadterm-v3-runtime.exe');
@@ -201,7 +204,7 @@ try {
   await writeFile(join(scratch, 'plugins/permission-qa/threadterm-plugin.json'), JSON.stringify({ schemaVersion: 1, id: 'permission-qa', name: 'Permission QA', version: '1.0.0', publisher: 'QA', contributes: { agents: [{ id: 'permission-qa', name: 'Permission QA', command: 'codex', args: ['--qa-acp'], versionArgs: ['--version'], chat: { protocol: 'acp', args: [] } }] } }));
   await seed();
   env.THREADTERM_V3_PIPE = `\\\\.\\pipe\\tt-permission-visual-${randomUUID()}`;
-  app = await electron.launch({ args: [root], cwd: bin, env, timeout: 60_000 });
+  app = await electron.launch({ args: [appDir], cwd: bin, env, timeout: 60_000 });
   appProcess = app.process();
   report.electronPid = appProcess.pid;
   appProcess.stderr.on('data', bytes => { const text = bytes.toString(); if (text.includes('[desktop1]')) report.errors.push(text); });
@@ -270,4 +273,5 @@ try {
   await writeFile(join(out, 'report.json'), `${JSON.stringify(report, null, 2)}\n`);
   console.log(JSON.stringify({ passed: report.passed, appClosed: report.appClosed, focusEvents: report.focusEvents, report: join(out, 'report.json'), errors: report.errors }));
   if (!report.passed) process.exitCode = 1;
+  await cleanupApp();
 }

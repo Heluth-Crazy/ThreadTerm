@@ -11,8 +11,10 @@ import { fileURLToPath } from 'node:url';
 import { electron } from './lib/desktop1.mjs';
 import { fixtureConnectStarted, selectWorkerOwner, summarizeFrames, waitForNonReadyConnection } from './lib/chat-connect-transition.mjs';
 import { checkControlConsistency } from './lib/visual-consistency.mjs';
+import { buildQaApp } from './lib/qa-app.mjs';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
+const { appDir, cleanup: cleanupApp } = await buildQaApp({ root });
 const args = process.argv.slice(2);
 const option = name => args.includes(name) ? args[args.indexOf(name) + 1] : undefined;
 const theme = option('--theme') ?? 'light';
@@ -346,7 +348,7 @@ try {
   await writeFile(join(bin, 'shim.rs'), shim);
   const compiled = spawnSync('rustc', [join(bin, 'shim.rs'), '-o', join(bin, 'codex.exe')], { encoding: 'utf8', windowsHide: true });
   assert.equal(compiled.status, 0, compiled.stderr);
-  app = await electron.launch({ args: [root], cwd: bin, env, timeout: 60_000 });
+  app = await electron.launch({ args: [appDir], cwd: bin, env, timeout: 60_000 });
   appProcess = app.process();
   report.electronPid = appProcess.pid;
   await app.evaluate(({ app: electronApp, BrowserWindow }) => {
@@ -475,4 +477,5 @@ try {
   }
   await writeFile(join(out, 'report.json'), `${JSON.stringify(report, null, 2)}\n`);
   console.log(JSON.stringify({ passed: report.passed, report: join(out, 'report.json'), errors: report.errors }));
+  await cleanupApp();
 }

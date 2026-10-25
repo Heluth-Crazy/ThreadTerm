@@ -6,13 +6,22 @@ const { createInterface } = require('node:readline');
 const log = process.env.THREADTERM_QA_CODEX_QUESTIONS_LOG;
 const cwd = process.env.THREADTERM_QA_CODEX_QUESTIONS_CWD;
 if (!log || !cwd) process.exit(2);
-const nativeId = `qa-codex-questions-thread-${require('node:crypto').randomUUID()}`;
+// 42403c6 verifies durability through a second app-server process, so this
+// native id represents storage shared by both fixture processes.
+const nativeId = 'qa-codex-questions-thread';
 let turn = 0;
 const record = (direction, method, params) => appendFileSync(log, `${JSON.stringify({ direction, method, params })}\n`);
 const send = value => { record('out', value.method ?? 'response', value.params ?? value); process.stdout.write(`${JSON.stringify(value)}\n`); };
 const result = (id, value) => send({ id, result: value });
 const event = (method, params) => send({ method, params });
-const thread = () => ({ id: nativeId, cwd, model: 'qa-question-model', status: { type: 'idle' } });
+const thread = () => ({ id: nativeId, cwd, model: 'qa-question-model', status: { type: 'idle' }, turns: [] });
+const persistedThread = params => params?.threadId === nativeId
+  && Array.isArray(params.items)
+  && params.items.length === 1
+  && params.items[0]?.type === 'message'
+  && params.items[0]?.role === 'developer'
+  && Array.isArray(params.items[0]?.content)
+  && params.items[0].content.length === 0;
 
 function finish(nativeTurn) {
   event('turn/completed', { threadId: nativeId, turn: { id: nativeTurn, status: 'completed' } });
@@ -60,6 +69,12 @@ createInterface({ input: process.stdin, crlfDelay: Infinity }).on('line', line =
   if (method === 'account/read') return result(id, { account: { type: 'chatgpt' }, requiresOpenaiAuth: false });
   if (method === 'account/rateLimits/read') return result(id, {});
   if (method === 'thread/start' || method === 'thread/resume') return result(id, { thread: thread(), threadSettings: { model: 'qa-question-model', approvalPolicy: 'on-request' } });
+  // 42403c6: a fresh Codex Chat persists its empty native thread with this
+  // exact developer item before the first user turn.
+  if (method === 'thread/inject_items') {
+    if (!persistedThread(params)) return send({ id, error: { code: -32602, message: 'invalid QA thread persistence item' } });
+    return result(id, {});
+  }
   if (method === 'thread/read') return result(id, { thread: thread() });
   if (method === 'model/list') return result(id, { data: [{ id: 'qa-question-model', displayName: 'QA question', supportedReasoningEfforts: [] }] });
   if (method === 'skills/list') return result(id, { data: [] });

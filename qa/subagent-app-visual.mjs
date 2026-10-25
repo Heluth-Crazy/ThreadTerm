@@ -11,6 +11,8 @@ import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { electron } from './lib/desktop1.mjs';
+import { acquireElectronQaLock } from './lib/electron-lock.mjs';
+import { buildQaApp } from './lib/qa-app.mjs';
 
 const pause = milliseconds => new Promise(done => setTimeout(done, milliseconds));
 const qa = dirname(fileURLToPath(import.meta.url));
@@ -21,10 +23,11 @@ const option = name => args.includes(name) ? args[args.indexOf(name) + 1] : unde
 process.env.TT_QA_DESKTOP = '1';
 const suppliedRuntime = option('--runtime') ?? process.env.THREADTERM_QA_RUNTIME_EXE ?? process.env.THREADTERM_V3_RUNTIME_BIN;
 const runtime = resolve(suppliedRuntime ?? join(root, 'runtime', 'target-qa', 'debug', 'threadterm-v3-runtime.exe'));
-assert.match(runtime.replace(/\\/gu, '/'), /runtime\/(?:target|target-qa)\/(?:debug\/)?threadterm-v3-runtime\.exe$/u, 'QA runtime required');
+assert.match(runtime.replace(/\\/gu, '/'), /runtime\/target-(?:qa|ua)\/debug\/threadterm-v3-runtime\.exe$/u, 'QA runtime required');
 assert.ok(existsSync(runtime), `Missing QA runtime: ${runtime}`);
 
 const scratch = await mkdtemp(join(tmpdir(), 'threadterm-subagent-app-'));
+const appDir = join(scratch, 'app');
 const bin = join(scratch, 'bin');
 const workspace = join(scratch, 'workspace');
 const log = join(scratch, 'codex-subagent.jsonl');
@@ -51,6 +54,7 @@ Object.assign(env, {
 assert.deepEqual(Object.keys(env).filter(key => key.toLowerCase() === 'path'), ['Path'], 'every inherited PATH spelling was removed');
 assert.deepEqual(env.Path.split(';'), [bin, dirname(process.execPath), join(process.env.SystemRoot ?? 'C:\\Windows', 'System32')], 'runtime PATH contains only the fake-provider shim, Node, and System32');
 
+let releaseLock;
 let app;
 let page;
 let session;
@@ -77,7 +81,11 @@ async function openSession(mode) {
   leaseEpoch = (await rpc('session.claim', { sessionId: session.id, clientId: 'subagent-app-visual' })).leaseEpoch;
   await rpc('session.present', { sessionId: session.id, placement: 'workspace', presentation: 'focused', operationId: randomUUID() });
   await sessionChat().waitFor();
-  await until(async () => (await rpc('chat.connection', { sessionId: session.id })).phase === 'ready', `chat connection ready (${mode})`);
+  await until(async () => {
+    const connection = await rpc('chat.connection', { sessionId: session.id });
+    assert.ok(!['failed', 'unavailable'].includes(connection.phase), `chat connection ${mode}: ${JSON.stringify(connection.error ?? connection)}`);
+    return connection.phase === 'ready';
+  }, `chat connection ready (${mode})`);
 }
 async function shot(name) {
   const path = join(out, name);
@@ -86,18 +94,20 @@ async function shot(name) {
 }
 
 try {
+  releaseLock = await acquireElectronQaLock();
+  await buildQaApp({ root, outDir: appDir });
   await Promise.all([bin, workspace, ...['slow', 'normal', 'approval'].map(mode => join(workspace, `scenario-${mode}`)), env.THREADTERM_V3_DATA, env.THREADTERM_V3_USER_DATA, env.CODEX_HOME, out].map(path => mkdir(path, { recursive: true })));
   await writeFile(log, '');
   // The fixture is the only executable named codex on this PATH.  Use an exe
   // shim so Windows process lookup cannot select a host codex.cmd/bat.
   const shim = 'fn main(){let status=std::process::Command::new(std::env::var("TT_QA_NODE").unwrap()).arg(std::env::var("TT_QA_SCRIPT").unwrap()).args(std::env::args().skip(1)).status().unwrap();std::process::exit(status.code().unwrap_or(1));}';
   await writeFile(join(bin, 'shim.rs'), shim);
-  const compiled = spawnSync('rustc', [join(bin, 'shim.rs'), '-o', join(bin, 'codex.exe')], { encoding: 'utf8', windowsHide: true });
+  const compiled = spawnSync('rustc', [join(bin, 'shim.rs'), '-o', join(bin, 'codex.exe')], { encoding: 'utf8', windowsHide: true, timeout: 30_000 });
   assert.equal(compiled.status, 0, compiled.stderr);
   assert.ok(existsSync(join(bin, 'codex.exe')), 'fake Codex rustc shim exists');
   assert.equal(env.TT_QA_SCRIPT, fixture, 'the fake provider script is explicit');
 
-  app = await electron.launch({ args: [root], cwd: bin, env, timeout: 60_000 });
+  app = await electron.launch({ args: [appDir, '--disable-features=CalculateNativeWinOcclusion'], cwd: bin, env, timeout: 60_000 });
   page = await app.firstWindow({ timeout: 30_000 });
   page.setDefaultTimeout(30_000);
   await page.waitForFunction(() => Boolean(window.threadterm));
@@ -158,6 +168,7 @@ try {
   ];
   report.turns = { slow: slow.turnId, normal: normal.turnId, approval: approval.turnId };
   report.passed = true;
+  for (const check of report.checks) console.log(`PASS ${check}`);
 } catch (error) {
   report.error = error instanceof Error ? error.stack : String(error);
   if (page) await page.screenshot({ path: join(out, 'failure.png') }).catch(() => {});
@@ -168,6 +179,7 @@ try {
     await app.evaluate(({ app: electronApp }) => electronApp.exit(0)).catch(() => {});
     await app.close().catch(() => {});
   }
+  await releaseLock?.();
   await writeFile(join(out, 'report.json'), `${JSON.stringify(report, null, 2)}\n`);
   process.stdout.write(`${JSON.stringify(report, null, 2)}\n`);
 }

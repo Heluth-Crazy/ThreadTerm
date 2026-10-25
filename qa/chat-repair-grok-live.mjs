@@ -7,11 +7,13 @@ import { randomUUID } from 'node:crypto';
 import { dirname, join, resolve } from 'node:path';
 import { homedir, tmpdir } from 'node:os';
 import { electron } from './lib/desktop1.mjs';
+import { buildQaApp } from './lib/qa-app.mjs';
 
 assert.equal(process.platform, 'win32', 'Desktop-1 Grok QA requires Windows');
 const root = resolve(import.meta.dirname, '..');
 const runtime = resolve(process.env.THREADTERM_QA_RUNTIME_EXE ?? process.env.THREADTERM_V3_RUNTIME_BIN ?? join(root, 'runtime', 'target-qa', 'debug', 'threadterm-v3-runtime.exe'));
 assert.ok(existsSync(runtime), `Missing QA runtime: ${runtime}`);
+const { appDir, cleanup: cleanupApp } = await buildQaApp({ root });
 process.env.TT_QA_DESKTOP = '1';
 
 const sourcePath = process.env.Path ?? process.env.PATH ?? '';
@@ -182,7 +184,7 @@ async function repairAction() {
 }
 
 try {
-  app = await electron.launch({ args: ['--disable-gpu', '--in-process-gpu', '--no-sandbox', root], cwd: bin, env, timeout: 60_000 });
+  app = await electron.launch({ args: ['--disable-gpu', '--in-process-gpu', '--no-sandbox', appDir], cwd: bin, env, timeout: 60_000 });
   page = await app.firstWindow({ timeout: 30_000 });
   page.setDefaultTimeout(30_000);
   await page.waitForFunction(() => Boolean(window.threadterm));
@@ -312,4 +314,5 @@ try {
   }
   await writeFile(join(out, 'report.json'), `${JSON.stringify(report, null, 2)}\n`);
   process.stdout.write(`${JSON.stringify(report, null, 2)}\n`);
+  await cleanupApp();
 }

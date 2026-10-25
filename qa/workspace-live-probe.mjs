@@ -2,6 +2,7 @@
 // splits, and types in a real TypeScript editor. Never touches the user's profile or runtime.
 import { electron } from './lib/desktop1.mjs';
 import { acquireElectronQaLock } from './lib/electron-lock.mjs';
+import { buildQaApp } from './lib/qa-app.mjs';
 import { mkdtemp, mkdir, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -14,10 +15,11 @@ await writeFile(join(project, 'src', 'app.ts'), 'export function run() {\n  cons
 const env = { ...process.env, THREADTERM_V3_DATA: join(scratch, 'data'), THREADTERM_V3_USER_DATA: join(scratch, 'electron'), THREADTERM_V3_PIPE: `\\\\.\\pipe\\threadterm-v3-probe-${randomUUID()}`, THREADTERM_V3_RUNTIME: resolve('runtime/target-qa/debug/threadterm-v3-runtime.exe') };
 let runtimeLog = ''; const daemon = spawn(env.THREADTERM_V3_RUNTIME, [], { env, windowsHide: true, stdio: ['ignore', 'ignore', 'pipe'] }); daemon.stderr.on('data', chunk => { runtimeLog += chunk; });
 const out = resolve('qa/results/workspace-live-probe'); await mkdir(out, { recursive: true });
+const { appDir, cleanup: cleanupApp } = await buildQaApp();
 let app; let releaseLock; const report = { scratch };
 try {
   releaseLock = await acquireElectronQaLock();
-  app = await electron.launch({ args: [resolve('.')], env, timeout: 30_000 });
+  app = await electron.launch({ args: [appDir], env, timeout: 30_000 });
   const page = await app.firstWindow({ timeout: 20_000 }); page.setDefaultTimeout(15_000);
   const errors = []; page.on('pageerror', error => errors.push(error.message));
   await page.waitForFunction(() => !!window.threadterm);
@@ -67,4 +69,5 @@ try {
   if (app) { await app.evaluate(({ app }) => { setTimeout(() => app.exit(), 0); }).catch(() => {}); await app.close().catch(() => {}); }
   await releaseLock?.();
   if (daemon.exitCode === null) daemon.kill();
+  await cleanupApp();
 }

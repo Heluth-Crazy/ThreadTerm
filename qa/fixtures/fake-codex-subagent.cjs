@@ -4,6 +4,14 @@ const { createInterface } = require('node:readline');
 const log = process.env.THREADTERM_QA_CODEX_SUBAGENT_LOG;
 const cwd = process.env.THREADTERM_QA_CODEX_SUBAGENT_CWD;
 if (!log || !cwd) process.exit(2);
+if (process.argv.includes('--version')) {
+  process.stdout.write('codex_cli_rs/qa-subagent-fixture\n');
+  process.exit(0);
+}
+if (process.argv.includes('--help')) {
+  process.stdout.write('QA-only Codex app-server fixture\n');
+  process.exit(0);
+}
 let parent = 'qa-subagent-parent';
 const child = 'qa-subagent-child';
 let sequence = 0;
@@ -13,7 +21,14 @@ const record = (method, params) => appendFileSync(log, `${JSON.stringify({ metho
 const send = value => process.stdout.write(`${JSON.stringify(value)}\n`);
 const result = (id, value) => send({ id, result: value });
 const event = (method, params) => { record(`event.${method}`, params); send({ method, params }); };
-const thread = () => ({ id: parent, cwd, status: { type: 'idle' } });
+const thread = (id = parent) => ({ id, cwd, status: { type: 'idle' }, turns: [] });
+const persistedThread = params => params?.threadId === parent
+  && Array.isArray(params.items)
+  && params.items.length === 1
+  && params.items[0]?.type === 'message'
+  && params.items[0]?.role === 'developer'
+  && Array.isArray(params.items[0]?.content)
+  && params.items[0].content.length === 0;
 function item(threadId, turnId, value, started = false) {
   event(started ? 'item/started' : 'item/completed', { threadId, turnId, item: value });
 }
@@ -62,7 +77,13 @@ createInterface({ input: process.stdin, crlfDelay: Infinity }).on('line', line =
     if (scenario) parent = `qa-subagent-parent-${scenario[1]}`;
     return result(id, { thread: thread(), threadSettings: { model: 'qa-subagent-model', approvalPolicy: 'on-request' } });
   }
-  if (method === 'thread/read') return result(id, { thread: thread() });
+  // 42403c6: a fresh Codex Chat persists its empty native thread with this
+  // exact developer item before the parent starts its first turn.
+  if (method === 'thread/inject_items') {
+    if (!persistedThread(params)) return send({ id, error: { code: -32602, message: 'invalid QA thread persistence item' } });
+    return result(id, {});
+  }
+  if (method === 'thread/read') return result(id, { thread: thread(params.threadId) });
   if (method === 'model/list') return result(id, { data: [{ id: 'qa-subagent-model', displayName: 'QA subagent model', supportedReasoningEfforts: [{ reasoningEffort: 'medium' }] }] });
   if (method === 'skills/list') return result(id, { data: [] });
   if (method === 'turn/start') {

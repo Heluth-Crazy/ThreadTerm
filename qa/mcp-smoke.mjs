@@ -3,7 +3,7 @@ import {randomUUID} from 'node:crypto';
 import {existsSync} from 'node:fs';
 import {mkdtemp, mkdir, readFile} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
-import {join, resolve} from 'node:path';
+import {dirname, join, resolve} from 'node:path';
 import {fileURLToPath} from 'node:url';
 import assert from 'node:assert/strict';
 import {connectPeer} from './pipe-client.mjs';
@@ -16,14 +16,13 @@ const data = join(scratch, 'data');
 const project = join(scratch, 'project');
 await Promise.all([mkdir(data), mkdir(project)]);
 const pipe = `\\\\.\\pipe\\threadterm-v3-mcp-smoke-${randomUUID()}`;
-const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => key.toLowerCase() !== 'path'));
-env.Path = [join(process.env.SystemRoot || 'C:\\Windows', 'System32')].join(';');
-env.THREADTERM_V3_DATA = data; env.THREADTERM_V3_PIPE = pipe;
+const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !['path', 'temp', 'tmp', 'home', 'userprofile', 'codex_home', 'threadterm_v3_data', 'threadterm_v3_user_data', 'threadterm_v3_pipe'].includes(key.toLowerCase())));
+Object.assign(env, {TEMP: scratch, TMP: scratch, PATH: [dirname(process.execPath), join(process.env.SystemRoot || 'C:\\Windows', 'System32')].join(';'), HOME: join(scratch, 'home'), USERPROFILE: join(scratch, 'home'), CODEX_HOME: join(scratch, 'home', '.codex'), THREADTERM_V3_DATA: data, THREADTERM_V3_USER_DATA: join(scratch, 'profile'), THREADTERM_V3_PIPE: pipe});
 const qaRuntime = join(root, 'runtime/target-qa/debug/threadterm-v3-runtime.exe');
 const qaMcp = join(root, 'runtime/target-qa/debug/threadterm-v3-mcp.exe');
 const runtimeExe = process.env.THREADTERM_QA_RUNTIME_EXE || process.env.THREADTERM_QA_E1_RUNTIME_EXE || process.env.THREADTERM_V3_RUNTIME_BIN || (existsSync(qaRuntime) ? qaRuntime : join(root, 'runtime/target-qa/debug/threadterm-v3-runtime.exe'));
 const mcpExe = process.env.THREADTERM_QA_E1_HOST_EXE || process.env.THREADTERM_QA_MCP_EXE || (existsSync(qaMcp) ? qaMcp : join(root, 'runtime/target-qa/debug/threadterm-v3-mcp.exe'));
-assert.deepEqual(Object.keys(env).filter(key => key.toLowerCase() === 'path'), ['Path']);
+assert.deepEqual(Object.keys(env).filter(key => key.toLowerCase() === 'path'), ['PATH']);
 const children = new Set();
 let daemon;
 let peer;
@@ -62,17 +61,42 @@ async function shutdownRuntime() {
 function mcpRequest(lines, extraEnv = {}) {
   return new Promise((resolveRequest, reject) => {
     const child = launch(mcpExe, [], {env: {...env, ...extraEnv}, stdio: ['pipe', 'pipe', 'pipe']});
-    let stdout = ''; let stderr = '';
+    const expected = new Set(lines.filter(line => line.id !== undefined && line.id !== null).map(line => JSON.stringify(line.id)));
+    const rows = [];
+    let pending = ''; let stderr = ''; let stdinClosed = false;
+    const closeStdin = () => { if (!stdinClosed) { stdinClosed = true; child.stdin.end(); } };
+    const timeout = setTimeout(() => {
+      closeStdin();
+      reject(new Error(`MCP timed out waiting for responses for ${[...expected].join(', ')}`));
+    }, 30_000);
     child.stdout.setEncoding('utf8'); child.stderr.setEncoding('utf8');
-    child.stdout.on('data', dataChunk => { stdout += dataChunk; });
+    child.stdout.on('data', dataChunk => {
+      pending += dataChunk;
+      const complete = pending.split(/\r?\n/);
+      pending = complete.pop();
+      for (const line of complete) {
+        if (!line) continue;
+        const row = JSON.parse(line);
+        rows.push(row);
+        expected.delete(JSON.stringify(row.id));
+      }
+      // 0ffc068 made EOF cancel queued MCP calls. Keep stdin open until every
+      // request response arrives, then close it so the helper can exit.
+      if (expected.size === 0) closeStdin();
+    });
     child.stderr.on('data', dataChunk => { stderr += dataChunk; });
     child.once('error', reject);
     child.once('exit', code => {
+      clearTimeout(timeout);
       if (code !== 0) return reject(new Error(`MCP exited ${code}: ${stderr}`));
-      try { resolveRequest(stdout.trim().split(/\r?\n/).filter(Boolean).map(line => JSON.parse(line))); }
+      try {
+        if (pending.trim()) rows.push(JSON.parse(pending));
+        if (expected.size) throw new Error(`MCP exited without responses for ${[...expected].join(', ')}`);
+        resolveRequest(rows);
+      }
       catch (error) { reject(error); }
     });
-    child.stdin.end(`${lines.map(line => JSON.stringify(line)).join('\n')}\n`);
+    child.stdin.write(`${lines.map(line => JSON.stringify(line)).join('\n')}\n`);
   });
 }
 function baseRequests() {
@@ -81,7 +105,12 @@ function baseRequests() {
     {jsonrpc: '2.0', method: 'notifications/initialized'},
   ];
 }
-function response(rows, id) { return rows.find(row => row.id === id)?.result; }
+function response(rows, id) {
+  const row = rows.find(row => row.id === id);
+  assert.ok(row, `MCP returned a response for request ${id}`);
+  assert.ok('result' in row, `MCP request ${id} returned a result instead of a JSON-RPC error`);
+  return row.result;
+}
 async function chatCatalog(flags) {
   const rows = await mcpRequest([...baseRequests(), {jsonrpc: '2.0', id: 91, method: 'tools/list', params: {}}], {
     THREADTERM_MCP_PROFILE: 'chat-tools', THREADTERM_CHAT_SESSION_ID: 'qa-session', THREADTERM_CHAT_TOKEN: 'qa-token',

@@ -73,6 +73,11 @@ try {
     const parts = async () => (await rows()).flatMap(item => item.parts);
     const state = async () => (await peer.request('runtime.snapshot')).sessions.find(row => row.id === sessionId);
     const requests = async () => (await readFile(log, 'utf8')).trim().split(/\r?\n/u).filter(Boolean).map(JSON.parse);
+    const persisted = (await requests()).filter(row => row.method === 'thread/inject_items' && row.params.threadId === parentId);
+    assert.deepEqual(persisted.map(row => row.params), [{
+      threadId: parentId,
+      items: [{ type: 'message', role: 'developer', content: [] }],
+    }]);
     const before = (await requests()).length;
     await writeFile(release, '');
     const sent = await peer.request('chat.send', { sessionId, text: mode, leaseEpoch, operationId: randomUUID() });
@@ -117,7 +122,7 @@ try {
       const childEnd = records.findIndex(row => row.method === 'event.turn/completed' && row.params.threadId === 'qa-subagent-child');
       const parentEnd = records.findIndex(row => row.method === 'event.turn/completed' && row.params.threadId === parentId);
       assert.ok(parentEnd > childEnd && childEnd >= 0);
-      report.checks.push(`${mode}: isolated child transcript, one completed card/tool, parent remains running until parent completion`);
+      report.checks.push(`${mode}: 42403c6 persistence, isolated child transcript, one completed card/tool, parent remains running until parent completion`);
     }
     await peer.request('session.stop', { sessionId, operationId: randomUUID() });
   }

@@ -9,10 +9,12 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { electron } from './lib/desktop1.mjs';
 import { connectSubagentPeer } from './lib/subagent-peer.mjs';
+import { buildQaApp } from './lib/qa-app.mjs';
 
 const delay = milliseconds => new Promise(resolvePromise => setTimeout(resolvePromise, milliseconds));
 const qa = dirname(fileURLToPath(import.meta.url));
 const root = resolve(qa, '..');
+const { appDir, cleanup: cleanupApp } = await buildQaApp({ root });
 const args = process.argv.slice(2);
 const option = name => args.includes(name) ? args[args.indexOf(name) + 1] : undefined;
 process.env.TT_QA_DESKTOP = '1';
@@ -111,7 +113,7 @@ try {
   const compiled = spawnSync('rustc', [join(bin, 'shim.rs'), '-o', join(bin, 'codex.exe')], { encoding: 'utf8', windowsHide: true });
   assert.equal(compiled.status, 0, compiled.stderr);
 
-  app = await electron.launch({ args: [root], cwd: bin, env, timeout: 60_000 });
+  app = await electron.launch({ args: [appDir], cwd: bin, env, timeout: 60_000 });
   page = await app.firstWindow({ timeout: 30_000 });
   page.setDefaultTimeout(30_000);
   await page.waitForFunction(() => Boolean(window.threadterm));
@@ -197,4 +199,5 @@ try {
   if (app) { await app.evaluate(({ app: electronApp }) => electronApp.exit(0)).catch(() => {}); await app.close().catch(() => {}); }
   await writeFile(join(out, 'report.json'), `${JSON.stringify(report, null, 2)}\n`);
   process.stdout.write(`${JSON.stringify(report, null, 2)}\n`);
+  await cleanupApp();
 }

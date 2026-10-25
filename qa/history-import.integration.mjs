@@ -1,8 +1,7 @@
 import assert from 'node:assert/strict';
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import {
-  copyFile,
   mkdir,
   mkdtemp,
   readFile,
@@ -12,7 +11,7 @@ import {
 } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
-import { fileURLToPath, pathToFileURL } from 'node:url';
+import { fileURLToPath } from 'node:url';
 import { connectPeer } from './pipe-client.mjs';
 
 const delay = (milliseconds) => new Promise((resolveDelay) => setTimeout(resolveDelay, milliseconds));
@@ -136,6 +135,8 @@ function startDaemon() {
   childEnvironment.THREADTERM_V3_PIPE = pipeBase;
   childEnvironment.THREADTERM_QA_FAKE_CODEX_EVENTS = fakeEventsDirectory;
   childEnvironment.THREADTERM_QA_FAKE_CODEX_CONTROL = fakeControlPath;
+  childEnvironment.TT_QA_NODE = process.execPath;
+  childEnvironment.TT_QA_SCRIPT = fixtureSource;
   daemon = spawn(runtimeExecutable, [], {
     cwd: fixtureBin,
     env: childEnvironment,
@@ -233,15 +234,10 @@ try {
     mkdir(dirname(resultPath), { recursive: true }),
   ]);
   await writeControl();
-  await copyFile(process.execPath, join(fixtureBin, 'codex.exe'));
-  await writeFile(join(fixtureBin, 'app-server'), [
-    `'use strict';`,
-    `import(${JSON.stringify(pathToFileURL(fixtureSource).href)}).catch((error) => {`,
-    `  process.stderr.write(String(error?.stack ?? error));`,
-    `  process.exitCode = 5;`,
-    `});`,
-    '',
-  ].join('\n'));
+  const shim = join(fixtureBin, 'shim.rs');
+  await writeFile(shim, 'fn main(){let status=std::process::Command::new(std::env::var("TT_QA_NODE").unwrap()).arg(std::env::var("TT_QA_SCRIPT").unwrap()).args(std::env::args().skip(1)).status().unwrap();std::process::exit(status.code().unwrap_or(1));}');
+  const compiled = spawnSync('rustc', [shim, '-o', join(fixtureBin, 'codex.exe')], { encoding: 'utf8', windowsHide: true, timeout: 30_000 });
+  assert.equal(compiled.status, 0, compiled.stderr);
 
   startDaemon();
   primaryPeer = await connectAuthenticatedPeer();
@@ -306,7 +302,19 @@ try {
   assert.ok(firstInteractive);
   await waitForPidState(firstInteractive.pid, true, 'explicit resume worker alive');
   assert.equal((await snapshotSession(primaryPeer, imported.id)).readOnly, undefined);
-  assert.deepEqual(await primaryPeer.request('chat.read', { sessionId: imported.id }), importedTranscript);
+  // cb84e4c projects the native resume usage update as an empty live assistant
+  // boundary. Keep proving that imported history itself survives unchanged.
+  const resumedTranscript = await primaryPeer.request('chat.read', { sessionId: imported.id });
+  assert.deepEqual(resumedTranscript.filter((item) => item.turnOrigin === 'history'), importedTranscript);
+  const liveBoundaries = resumedTranscript.filter((item) => item.turnOrigin !== 'history');
+  assert.equal(liveBoundaries.length, 1);
+  const [usageBoundary] = liveBoundaries;
+  assert.equal(usageBoundary.role, 'assistant');
+  assert.deepEqual(usageBoundary.parts, []);
+  assert.equal(usageBoundary.turnId, `turn-${nativeId}`);
+  assert.deepEqual(usageBoundary.turnUsage, {
+    inputTokens: 60_000, outputTokens: 34_700, outputTokensEstimated: false, totalTokens: 94_700,
+  });
   result.fakeProviderPids.push(firstInteractive.pid);
   result.checks.push('explicit session.resume preserved session/native identity, cleared read-only, and left one local fake CLI worker alive');
   const statusLease = await primaryPeer.request('session.claim', {

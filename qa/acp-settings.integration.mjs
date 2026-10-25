@@ -61,7 +61,14 @@ try {
     }
   }
   assert.ok(peer, 'isolated runtime authenticated');
-  const capabilities = await peer.request('provider.list');
+  // 614e22b: capability probing is asynchronous; wait for both isolated ACP
+  // fixtures to complete initialization rather than sampling the cold cache.
+  let capabilities = [];
+  for (let attempt = 0; attempt < 120; attempt += 1) {
+    capabilities = await peer.request('provider.list');
+    if (['kimi', 'gemini'].every(provider => capabilities.find(item => item.id === provider)?.chat)) break;
+    await delay(50);
+  }
   for (const provider of ['kimi', 'gemini']) {
     assert.equal(capabilities.find(item => item.id === provider)?.chat, true, `${provider} fake ACP capability`);
     const session = await peer.request('session.create', { cwd: workspace, provider, mode: 'chat', title: `${provider} settings QA`, operationId: randomUUID() });

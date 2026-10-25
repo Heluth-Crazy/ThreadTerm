@@ -12,6 +12,7 @@ import { dirname, join, resolve } from 'node:path';
 import { electron } from './lib/desktop1.mjs';
 import { connectPeer } from './pipe-client.mjs';
 import { PROTOCOL_CONTRACT } from '../protocol/index.ts';
+import { buildQaApp } from './lib/qa-app.mjs';
 
 assert.equal(process.platform, 'win32', 'Desktop-1 QA requires Windows');
 const option = name => {
@@ -31,6 +32,7 @@ const pendingScreenshotPath = join(evidenceDir, 'pending.png');
 const confirmedScreenshotPath = join(evidenceDir, 'confirmed.png');
 
 const scratch = await mkdtemp(join(tmpdir(), 'tt-cold-provider-'));
+const { appDir, cleanup: cleanupApp } = await buildQaApp({ root });
 const bin = join(scratch, 'bin');
 const data = join(scratch, 'data');
 const profile = join(scratch, 'profile');
@@ -139,7 +141,7 @@ try {
   await writeFile(join(bin, 'kimi.cmd'), `@echo off\r\n"${process.execPath}" "${fixture}" %*\r\n`);
 
   app = await electron.launch({
-    args: ['--disable-gpu', '--in-process-gpu', '--no-sandbox', root],
+    args: ['--disable-gpu', '--in-process-gpu', '--no-sandbox', appDir],
     cwd: bin,
     env: isolatedEnvironment(),
     timeout: 60_000,
@@ -307,4 +309,5 @@ try {
   process.stdout.write(`${JSON.stringify(report)}\n`);
   if (!keep && !cleanupError) await rm(scratch, { recursive: true, force: true });
   if (!report.passed) process.exitCode = 1;
+  await cleanupApp();
 }

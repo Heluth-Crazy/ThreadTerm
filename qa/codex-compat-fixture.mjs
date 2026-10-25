@@ -7,10 +7,12 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { electron } from './lib/desktop1.mjs';
 import { acquireElectronQaLock } from './lib/electron-lock.mjs';
+import { buildQaApp } from './lib/qa-app.mjs';
 
 const delay = ms => new Promise(done => setTimeout(done, ms));
 const qa = dirname(fileURLToPath(import.meta.url));
 const root = resolve(qa, '..');
+const { appDir, cleanup: cleanupApp } = await buildQaApp({ root });
 const runtime = process.env.THREADTERM_V3_RUNTIME_BIN ?? resolve(root, 'runtime/target-qa/debug/threadterm-v3-runtime.exe');
 assert.match(runtime.replace(/\\/g, '/'), /runtime\/target-qa\/debug\/threadterm-v3-runtime\.exe$/, 'QA runtime required');
 const scratch = await mkdtemp(join(tmpdir(), 'threadterm-codex-compat-'));
@@ -57,7 +59,7 @@ try {
   await writeFile(join(bin, 'codex.cmd'), `@"${process.execPath}" "${launcher}" %*\r\n`);
   env.Path = [bin, dirname(process.execPath), join(process.env.SystemRoot ?? 'C:\\Windows', 'System32')].join(';');
   releaseLock = await acquireElectronQaLock();
-  app = await electron.launch({ args: [root], cwd: bin, env, timeout: 60_000 });
+  app = await electron.launch({ args: [appDir], cwd: bin, env, timeout: 60_000 });
   page = await app.firstWindow({ timeout: 30_000 });
   await page.waitForFunction(() => Boolean(window.threadterm));
   const settings = (await rpc('runtime.snapshot')).settings;
@@ -123,4 +125,5 @@ try {
   await releaseLock?.();
   await writeFile(join(scratch, 'report.json'), `${JSON.stringify(report, null, 2)}\n`);
   console.log(JSON.stringify(report, null, 2));
+  await cleanupApp();
 }

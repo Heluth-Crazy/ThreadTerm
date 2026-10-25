@@ -9,6 +9,7 @@ import {randomUUID} from 'node:crypto';
 import {promisify} from 'node:util';
 import { electron } from './lib/desktop1.mjs';
 import { acquireElectronQaLock } from './lib/electron-lock.mjs';
+import { buildQaApp } from './lib/qa-app.mjs';
 
 const arg=name=>process.argv.find(value=>value.startsWith(`--${name}=`))?.slice(name.length+3);
 const exe=arg('exe'), devServer=arg('dev-server');
@@ -21,6 +22,7 @@ const inheritedEnv={...process.env}; delete inheritedEnv.THREADTERM_V3_RUNTIME; 
 const env={...inheritedEnv,THREADTERM_V3_DATA:join(scratch,'data'),THREADTERM_V3_USER_DATA:join(scratch,'profile'),THREADTERM_V3_PIPE:'\\\\.\\pipe\\threadterm-v3-memory-'+randomUUID(),
   ...(exe?{}:{THREADTERM_V3_RUNTIME:process.env.THREADTERM_V3_RUNTIME_BIN??resolve('runtime/target-qa/debug/threadterm-v3-runtime.exe')}),...(devServer?{THREADTERM_V3_DEV_SERVER_URL:devServer}:{})};
 const report={label,startedAt:new Date().toISOString(),exe:exe??'electron .',devServer:devServer??null,terminals,lines,settleMs,phases:{}};
+const { appDir, cleanup: cleanupApp } = exe ? {} : await buildQaApp();
 const sleep=ms=>new Promise(r=>setTimeout(r,ms));
 const run=(cmd,args,cwd)=>new Promise((ok,fail)=>{const p=spawn(cmd,args,{cwd,windowsHide:true});p.once('exit',code=>code===0?ok():fail(Error(cmd+' '+args.join(' '))))});
 let app,page,releaseLock;
@@ -67,7 +69,7 @@ try {
   await run('git',['init'],project); await writeFile(join(project,'README.md'),'memory baseline\n');
   await run('git',['-c','user.email=qa@example.test','-c','user.name=QA','commit','--allow-empty','-m','init'],project);
   releaseLock=await acquireElectronQaLock();
-  app=await electron.launch(exe?{executablePath:resolve(exe),args:[],env,timeout:30000}:{args:[resolve('.')],env,timeout:30000});
+  app=await electron.launch(exe?{executablePath:resolve(exe),args:[],env,timeout:30000}:{args:[appDir],env,timeout:30000});
   const rootPid=app.process().pid;
   page=await app.firstWindow({timeout:30000}); page.setDefaultTimeout(30000);
   await page.waitForFunction(()=>!!window.threadterm); await page.locator('.app-shell').waitFor();
@@ -96,4 +98,5 @@ finally {
   if(app){await app.evaluate(({app})=>app.exit(0)).catch(()=>{});await app.close().catch(()=>{});}
   await releaseLock?.();
   report.completedAt=new Date().toISOString(); await writeFile(join(out,'report.json'),JSON.stringify(report,null,2)); console.log(JSON.stringify({out,passed:report.passed,error:report.error}));
+  await cleanupApp?.();
 }
