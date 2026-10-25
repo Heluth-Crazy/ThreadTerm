@@ -124,14 +124,6 @@ export function SessionCreateDialog({ data, onClose, onCreated, onGroupCreated, 
           capabilities={data.providers} members={members} lockedFirstProvider={sourceSession?.provider} tx={tx}
           onMembers={next => { membersTouched.current = true; setMembers(next); }}
           onOpenHomepage={url => void openExternal(url).catch(error => setIssue(createIssue(error)))} onOpenSettings={onOpenSettings} />
-        {currentPrerequisites && <div className="group-folder-notices" data-testid="group-folder-notices">
-          {!currentPrerequisites.git.found && <div className="group-notice" role="status">
-            <Icon name="info" /><span>{tx("Git not found — install Git to check that agents don't change files.", "未找到 Git——请安装 Git 以检查智能体是否更改文件。")}</span>
-          </div>}
-          {currentPrerequisites.git.found && currentPrerequisites.folder && !currentPrerequisites.folder.repository && <div className="group-notice" role="status">
-            <Icon name="info" /><span>{tx("Not a Git repository — file changes can't be checked.", "不是 Git 仓库——无法检查文件更改。")}</span>
-          </div>}
-        </div>}
         {currentPrerequisites && usableProviders.length === 0 && <div className="group-notice group-notice-error" data-testid="group-needs-agent" role="alert">
           <Icon name="info" /><span>{tx("A group needs at least one agent that can chat. Install or sign in to an agent.", "群聊至少需要一个可以聊天的智能体。请安装或登录智能体。")}</span>
         </div>}

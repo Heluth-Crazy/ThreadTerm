@@ -46,7 +46,7 @@ async function build(appDir) {
 }
 async function screenshot(page, name) { await page.screenshot({ path: join(out, `${name}.png`), animations: 'disabled' }); report.screenshots.push(`${name}.png`); }
 async function settings(request, page, language, theme) { const snapshot = await request('runtime.snapshot'); await request('settings.update', { patch: { language, theme, themeSelection: theme, notifications: { native: false, attention: false, completed: false, sound: false } }, expectedRevision: snapshot.settings.revision, operationId: randomUUID() }); await page.waitForFunction(value => document.documentElement.lang === value, language); }
-async function profile({ name, appDir, fixture, git, folder, prerequisiteFixture, expectBlocked, expectedFolder }) {
+async function profile({ name, appDir, fixture, git, folder, prerequisiteFixture, expectBlocked, readOnlyFolder }) {
   const base = join(scratch, name); const plugins = join(base, 'plugins'); const pluginDir = join(plugins, 'group-chat-prerequisites'); const home = join(base, 'home'); await mkdir(pluginDir, { recursive: true }); await mkdir(home, { recursive: true });
   await writeFile(join(pluginDir, 'threadterm-plugin.json'), JSON.stringify({ schemaVersion: 1, id: 'group-chat-prerequisites', name: 'Group chat prerequisites QA', version: '0.0.0', publisher: 'ThreadTerm QA', description: 'Offline deterministic prerequisite fixture.', contributes: { agents: [{ id: 'group-chat-prerequisite-agent', name: 'Group chat fixture agent', command: 'node', args: [fixture], versionArgs: ['--version'], chat: { protocol: 'acp', args: ['--acp'] } }] } }));
   const app = await electron.launch({ args: ['--disable-features=CalculateNativeWinOcclusion', appDir], cwd: root, env: environment({ git, home, data: join(base, 'data'), plugins, events: join(base, 'events.jsonl') }), timeout: 60_000 });
@@ -78,27 +78,30 @@ async function profile({ name, appDir, fixture, git, folder, prerequisiteFixture
         assert.equal(await page.getByTestId('group-create').isDisabled(), false, 'one usable provider supports repeated seats');
       }
     }
-    if (expectedFolder) await until(() => page.getByTestId('group-folder-notices').innerText().then(text => text.includes(expectedFolder)), 'folder prerequisite notice');
-    const screenshotFocus = expectBlocked ? page.getByTestId('group-needs-agent') : expectedFolder ? page.getByTestId('group-folder-notices') : page.getByTestId('group-folder-notices');
-    for (const [language, theme] of [['en', 'light'], ['zh-CN', 'dark']]) { await settings(request, page, language, theme); await assertNoControlViolations(await checkControlConsistency(page, '[role="dialog"] .group-members', { checkStates: true, checkDisabledRows: true }), `${name} Group chat participant controls`); await screenshotFocus.scrollIntoViewIfNeeded(); await screenshot(page, `${name}-${language}-${theme}-1280`); }
+    // Assert and capture only once the folder's prerequisites have loaded: a usable seat and an enabled Create.
+    const settled = () => until(async () => !(await page.getByTestId('group-create').isDisabled()) && !/unavailable|不可用/.test(await dialog.getByTestId('group-member-0').innerText().catch(() => 'unavailable')), 'group prerequisites loaded');
+    if (readOnlyFolder) { await settled(); assert.doesNotMatch(await dialog.innerText(), /Git not found|Not a Git repository|未找到 Git|不是 Git 仓库/, 'the create dialog must not claim Git is required for read-only file checks'); }
+    const screenshotFocus = expectBlocked ? page.getByTestId('group-needs-agent') : dialog;
+    for (const [language, theme] of [['en', 'light'], ['zh-CN', 'dark']]) { await settings(request, page, language, theme); if (!expectBlocked) await settled(); await assertNoControlViolations(await checkControlConsistency(page, '[role="dialog"] .group-members', { checkStates: true, checkDisabledRows: true }), `${name} Group chat participant controls`); await screenshotFocus.scrollIntoViewIfNeeded(); await screenshot(page, `${name}-${language}-${theme}-1280`); }
     if (expectBlocked) { check(`${name} disabled-provider remediation and no-agent blocker`); return; }
-    if (expectedFolder) { const mode = dialog.getByTestId('group-member-0').getByRole('combobox').nth(1); await mode.click(); await page.locator('[role=option][data-value="read_only"]').click(); }
+    if (readOnlyFolder) { const mode = dialog.getByTestId('group-member-0').getByRole('combobox').nth(1); await mode.click(); await page.locator('[role=option][data-value="read_only"]').click(); }
     await settings(request, page, 'en', 'light'); await page.getByTestId('group-create').click(); await page.getByTestId('group-view').waitFor({ timeout: 60_000 });
-    if (expectedFolder) {
+    if (readOnlyFolder) {
+      // Change attribution compares the folder itself (group_folder snapshots), so a read-only
+      // room works without Git and outside a repository and must not warn about either.
       const line = page.getByTestId('group-view').locator('.gc-files-check');
-      await until(() => line.count().then(count => count === 1), 'one room file-check-off line');
-      assert.match(await line.innerText(), new RegExp(expectedFolder));
+      assert.equal(await line.count(), 0, 'no file-check prerequisite notice in a room without Git');
       for (const [language, theme] of [['en', 'light'], ['zh-CN', 'dark']]) { await settings(request, page, language, theme); await screenshot(page, `${name}-room-${language}-${theme}-1280`); }
-    }
-    check(`${name} prerequisites, repeated seats, and room file-check state`);
+      check(`${name} read-only room and room file-check state`);
+    } else check(`${name} prerequisites and repeated seats`);
   } finally { await request('runtime.shutdown', { operationId: randomUUID() }).catch(() => {}); await app.evaluate(({ app: electronApp }) => electronApp.exit(0)).catch(() => {}); await app.close().catch(() => {}); }
 }
 try {
   assert.ok(existsSync(runtime), `missing QA runtime: ${runtime}`); await mkdir(scratchRoot, { recursive: true }); await mkdir(out, { recursive: true }); await lockAcquire(); const appDir = join(scratch, 'app'); const repository = join(scratch, 'repository'); const plain = join(scratch, 'plain'); const fixture = join(root, 'qa/fixtures/fake-group-chat.cjs'); const git = command('git'); await mkdir(repository, { recursive: true }); await mkdir(plain, { recursive: true }); await writeFile(join(repository, 'README.md'), 'fixture\n'); execFileSync(git, ['init', '-q'], { cwd: repository, windowsHide: true }); await build(appDir);
   await profile({ name: 'group-chat-prerequisites', appDir, fixture, git, folder: repository, prerequisiteFixture: true });
   await profile({ name: 'group-chat-no-usable', appDir, fixture, git, folder: repository, prerequisiteFixture: 'blocked', expectBlocked: true });
-  await profile({ name: 'group-chat-nonrepo', appDir, fixture, git, folder: plain, expectedFolder: 'Not a Git repository' });
-  await profile({ name: 'group-chat-nogit', appDir, fixture, folder: plain, expectedFolder: 'Git not found' }); report.passed = true;
+  await profile({ name: 'group-chat-nonrepo', appDir, fixture, git, folder: plain, readOnlyFolder: true });
+  await profile({ name: 'group-chat-nogit', appDir, fixture, folder: plain, readOnlyFolder: true }); report.passed = true;
 } catch (error) { report.errors.push(String(error?.stack ?? error)); } finally { if (lockHeld) await rm(lock, { recursive: true, force: true }).catch(() => {}); await writeFile(join(out, 'prerequisites-report.json'), JSON.stringify(report, null, 2)); await rm(scratch, { recursive: true, force: true }).catch(() => {}); console.log(report.passed ? 'GROUP CHAT PREREQUISITES VISUAL QA PASSED' : `GROUP CHAT PREREQUISITES VISUAL QA FAILED\n${report.errors.join('\n')}`); if (!report.passed) process.exitCode = 1; }
 
 

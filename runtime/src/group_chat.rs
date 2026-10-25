@@ -119,10 +119,29 @@ fn store(tx: &Transaction<'_>, g: &Value) -> Result<()> {
     )?;
     Ok(())
 }
+/// What a message send depends on: the archive flag and the member set its recipients resolve
+/// against. Delivery progress bumps `revision` (readers need it to merge) but not this value, so
+/// a send after a delivery finished is not refused as a stale revision.
+fn send_fingerprint(g: &Value) -> String {
+    let members = g["members"]
+        .as_array()
+        .map(|rows| {
+            rows.iter()
+                .map(|m| json!([m["sessionId"], m["handle"], m["mode"]]))
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    json!({"archived": g["archived"], "members": members}).to_string()
+}
 fn touch(tx: &Transaction<'_>, id: &str) -> Result<()> {
     let mut g = load(tx, id)?;
     g["revision"] = json!(g["revision"].as_i64().unwrap_or(0) + 1);
     g["updatedAt"] = json!(now());
+    let fingerprint = send_fingerprint(&g);
+    if g["sendFingerprint"].as_str() != Some(fingerprint.as_str()) {
+        g["sendFingerprint"] = json!(fingerprint);
+        g["sendRevision"] = g["revision"].clone();
+    }
     store(tx, &g)?;
     tx.execute(
         "INSERT INTO outbox(event,data,created_at) VALUES('state.changed',?,?)",
@@ -218,6 +237,11 @@ fn read_tx(tx: &Transaction<'_>, id: &str, p: &Value) -> Result<Value> {
         g["before"] = m["id"].clone();
     }
     g["messages"] = json!(messages);
+    if let Some(g) = g.as_object_mut() {
+        // Send-conflict bookkeeping stays in the database; it is not part of the wire Group.
+        g.remove("sendFingerprint");
+        g.remove("sendRevision");
+    }
     Ok(g)
 }
 pub(crate) fn read(db: &Database, id: &str, p: &Value) -> Result<Value> {
@@ -1425,10 +1449,20 @@ pub(crate) fn dispatch(
     } else {
         let gid = string(p, "id")?;
         let g = db.transaction(|tx| load(tx, gid))?;
-        if p["expectedRevision"]
-            .as_i64()
-            .is_some_and(|r| r != g["revision"].as_i64().unwrap_or(0))
-        {
+        // Sends and delivery actions only depend on the archive flag and the member set
+        // (send_fingerprint), so they accept any revision at or after the last structural change;
+        // delivery progress must not reject them. Structural mutations compare the full revision.
+        let stale = p["expectedRevision"].as_i64().is_some_and(|r| {
+            if matches!(method, "group.send" | "group.stop" | "group.resend") {
+                let structure = g["sendRevision"]
+                    .as_i64()
+                    .unwrap_or_else(|| g["revision"].as_i64().unwrap_or(0));
+                r < structure
+            } else {
+                r != g["revision"].as_i64().unwrap_or(0)
+            }
+        });
+        if stale {
             return Err(err("revision_conflict"));
         }
         if matches!(method, "group.send" | "group.resend" | "group.member.add")

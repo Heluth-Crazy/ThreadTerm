@@ -1,4 +1,6 @@
 import type { GroupMessage, GroupReference } from '@threadterm/protocol';
+import { runtimeText } from './contextErrors';
+import { runtimeErrorCode, runtimeErrorText } from './runtimeErrors';
 
 export type GroupIssue = { en: string; zh: string } | { code: string };
 const errors: Record<string, [string, string]> = {
@@ -38,6 +40,16 @@ export function groupIssueText(issue: GroupIssue, zh: boolean): string {
  return text ? text[zh ? 1 : 0] : `${zh ? '无法完成群聊操作。' : 'The group action could not be completed.'} (${issue.code})`;
 }
 export const groupIssueTitle = (issue: GroupIssue) => 'code' in issue ? issue.code : undefined;
+
+/** A rejected runtime request keeps its code (translated below) or, for prose, a readable detail. */
+export function groupRuntimeIssue(error: unknown, fallback: { en: string; zh: string }): GroupIssue {
+ const code = runtimeErrorCode(error);
+ if (code) return { code };
+ const text = runtimeErrorText(error);
+ if (!text) return fallback;
+ const detail = (zh: boolean) => { const line = runtimeText(text, zh); return line.length > 300 ? `${line.slice(0, 300)}…` : line; };
+ return { en: `${fallback.en} (${detail(false)})`, zh: `${fallback.zh}（${detail(true)}）` };
+}
 
 export type GroupComposerWarning = GroupIssue & { source: 'attach' | 'drop' };
 export const groupAttachWarning: GroupComposerWarning = { source: 'attach', en: 'Choose a path inside the group folder or an HTTP(S) URL.', zh: '请选择群聊目录内的路径或 HTTP(S) 网址。' };

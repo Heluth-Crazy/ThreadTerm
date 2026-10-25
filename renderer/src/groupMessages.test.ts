@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { clearGroupWarning, groupAttachEscape, groupAttachWarning, groupDropWarning, groupIssueText, groupIssueTitle, groupReferenceTitle } from './groupMessages';
+import { clearGroupWarning, groupAttachEscape, groupAttachWarning, groupDropWarning, groupIssueText, groupIssueTitle, groupReferenceTitle, groupRuntimeIssue } from './groupMessages';
 
 test('warnings raised in Chinese render in English after a locale switch', () => {
  const issue = groupAttachWarning;
@@ -16,6 +16,21 @@ test('runtime failures have bilingual explanations and preserve diagnostic codes
  assert.match(groupIssueText({ code: 'future_failure' }, true), /无法完成群聊操作/);
  assert.match(groupIssueText({ code: '__proto__' }, false), /__proto__/);
 });
+test('IPC-wrapped runtime failures keep their code and unknown prose keeps a readable detail', () => {
+ const fallback = { en: 'The group action could not be completed.', zh: '无法完成群聊操作。' };
+ const wrapped = new Error("Error invoking remote method 'threadterm:request': RuntimeRequestError: revision_conflict");
+ assert.deepEqual(groupRuntimeIssue(wrapped, fallback), { code: 'revision_conflict' });
+ const named = new Error("Error invoking remote method 'threadterm:request': Error: group_member_busy");
+ assert.deepEqual(groupRuntimeIssue(named, fallback), { code: 'group_member_busy' });
+ assert.match(groupIssueText(groupRuntimeIssue(wrapped, fallback), false), /The group changed/);
+ assert.match(groupIssueText(groupRuntimeIssue(wrapped, fallback), true), /群聊已更新/);
+ const prose = new Error("Error invoking remote method 'threadterm:request': RuntimeUnavailableError: Runtime pipe closed");
+ assert.deepEqual(groupRuntimeIssue(prose, fallback), { en: 'The group action could not be completed. (Runtime pipe closed)', zh: '无法完成群聊操作。（Runtime pipe closed）' });
+ assert.deepEqual(groupRuntimeIssue(undefined, fallback), fallback);
+ const bilingual = new Error("Error invoking remote method 'threadterm:request': RuntimeRequestError: The folder is gone. / 文件夹已不存在。");
+ assert.deepEqual(groupRuntimeIssue(bilingual, fallback), { en: 'The group action could not be completed. (The folder is gone.)', zh: '无法完成群聊操作。（文件夹已不存在。）' });
+});
+
 test('attach warnings clear on edit, close, include, dismissal and successful send', () => {
  for (const event of ['attach-edit', 'attach-close', 'include', 'dismiss', 'send'] as const) assert.equal(clearGroupWarning(groupAttachWarning, event), undefined);
  assert.equal(clearGroupWarning(groupAttachWarning, 'edit'), groupAttachWarning);

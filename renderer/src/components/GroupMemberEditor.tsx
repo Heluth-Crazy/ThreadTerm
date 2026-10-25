@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { groupIssueText, groupIssueTitle, groupReadOnlyNote, type GroupIssue } from '../groupMessages';
+import { groupIssueText, groupIssueTitle, groupReadOnlyNote, groupRuntimeIssue, type GroupIssue } from '../groupMessages';
 import type { Group, GroupMember, GroupPrerequisites, ProviderCapability } from '@threadterm/protocol';
 import { request } from '../bridge';
 import { agentName } from '../agents';
@@ -38,7 +38,7 @@ export function GroupMemberEditor({ group, providers, member, initialHandle, zh,
     setCheckedProvider(provider);
    })
    .catch(error => {
-    if (active) setIssue(error instanceof Error ? { code: error.message } : { en: 'Could not check this agent.', zh: '无法检查此智能体。' });
+    if (active) setIssue(groupRuntimeIssue(error, { en: 'Could not check this agent.', zh: '无法检查此智能体。' }));
    });
   return () => { active = false; };
  }, [provider, group.cwd, member?.sessionId]);

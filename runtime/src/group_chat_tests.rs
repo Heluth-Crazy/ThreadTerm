@@ -624,6 +624,86 @@ fn group_header_displays_windows_verbatim_paths_without_changing_stored_canonica
 }
 
 #[test]
+fn send_accepts_an_older_revision_when_only_delivery_progress_changed() {
+    let fixture = Fixture::new();
+    let group = fixture.create(1);
+    let id = group["id"].as_str().unwrap().to_owned();
+    let handle = group["members"][0]["handle"].as_str().unwrap().to_owned();
+    let seen = fixture.read(&id)["revision"].as_i64().unwrap();
+    assert!(fixture.read(&id).get("sendRevision").is_none());
+    fixture.dispatch(
+        "group.send",
+        json!({"id":id,"text":"first","to":[handle],"expectedRevision":seen,"operationId":"first"}),
+    );
+    wait_for(|| !fixture.script.lock().unwrap().sent.is_empty());
+    let sent = fixture.script.lock().unwrap().sent[0].clone();
+    fixture.complete(&sent, "done");
+    wait_for(|| fixture.read(&id)["revision"].as_i64().unwrap() > seen);
+    let accepted = fixture.dispatch(
+        "group.send",
+        json!({"id":id,"text":"second","to":[handle],"expectedRevision":seen,"operationId":"second"}),
+    );
+    assert!(accepted["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|message| message["body"] == "second"));
+}
+
+#[test]
+fn stop_accepts_an_older_revision_when_only_delivery_progress_changed() {
+    let fixture = Fixture::new();
+    let group = fixture.create(1);
+    let id = group["id"].as_str().unwrap().to_owned();
+    let handle = group["members"][0]["handle"].as_str().unwrap().to_owned();
+    let seen = fixture.read(&id)["revision"].as_i64().unwrap();
+    let sent = fixture.dispatch(
+        "group.send",
+        json!({"id":id,"text":"busy stop fixture","to":[handle],"expectedRevision":seen,"operationId":"busy"}),
+    );
+    let mid = sent["messages"].as_array().unwrap().last().unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    wait_for(|| !fixture.script.lock().unwrap().sent.is_empty());
+    assert!(fixture.read(&id)["revision"].as_i64().unwrap() > seen);
+    let stopped = fixture.dispatch(
+        "group.stop",
+        json!({"id":id,"messageId":mid,"handle":handle,"expectedRevision":seen,"operationId":"stop"}),
+    );
+    let row = stopped["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|message| message["id"] == mid)
+        .unwrap();
+    assert_eq!(row["deliveries"][0]["state"], "stopped");
+}
+
+#[test]
+fn send_is_refused_when_membership_changed_after_the_view_was_read() {
+    let fixture = Fixture::new();
+    let group = fixture.create(2);
+    let id = group["id"].as_str().unwrap().to_owned();
+    let seen = fixture.read(&id)["revision"].as_i64().unwrap();
+    let second = group["members"][1]["sessionId"].as_str().unwrap().to_owned();
+    fixture.dispatch(
+        "group.member.remove",
+        json!({"id":id,"sessionId":second,"expectedRevision":seen,"operationId":"remove"}),
+    );
+    let refused = group_chat::dispatch(
+        &fixture.db,
+        &fixture.providers,
+        &fixture.queues,
+        "group.send",
+        &json!({"id":id,"text":"stale","to":["all"],"expectedRevision":seen,"operationId":"stale"}),
+        &|_| unreachable!("a stale send must be refused before any side effect"),
+    )
+    .unwrap_err();
+    assert_eq!(refused.to_string(), "revision_conflict");
+}
+
+#[test]
 fn all_routes_to_every_member_and_each_reply_is_linked_to_the_user_message() {
     let fixture = Fixture::new();
     let group = fixture.create(2);

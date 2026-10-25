@@ -93,7 +93,7 @@ export async function captureGroupGc6rMatrix({ page, app, request, groupId, take
           assert.equal(await rows.first().getAttribute('data-change-status'), 'changed', `${locale}/${theme}/${width}: tool-only Changed row is unknown-status evidence`);
         }
         if (state.name === 'many') assert.ok(await rows.count() >= 10, `${locale}/${theme}/${width}: expanded Changed list shows ten or more files`);
-        if (state.incomplete) assert.match(await changed.locator('summary').innerText(), /…/, `${locale}/${theme}/${width}: incomplete Changed warning is visible`);
+        if (state.incomplete) assert.match(await changed.locator('summary').innerText(), locale === 'zh-CN' ? /可能缺少部分更改/ : /some changes may be missing/, `${locale}/${theme}/${width}: incomplete Changed warning is visible`);
         const bounds = await page.evaluate(({ replyId }) => {
           const reply = document.querySelector(`[data-message-id="${replyId}"]`);
           const timeline = [...document.querySelectorAll('.gc-timeline')].find(node => node.getBoundingClientRect().width && node.getBoundingClientRect().height);

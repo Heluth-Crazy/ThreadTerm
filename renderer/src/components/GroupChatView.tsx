@@ -4,7 +4,7 @@ import { operationId, request, subscribeEvents } from '../bridge';
 import { useTranslation } from '../i18n';
 import { liveGroupDeliveries, mergeGroupMessages, type GroupReferenceInput } from '../groupComposer';
 import { readLoadedGroupWindow } from '../groupHistory';
-import { groupIssueText, groupIssueTitle, type GroupIssue } from '../groupMessages';
+import { groupIssueText, groupIssueTitle, groupRuntimeIssue, type GroupIssue } from '../groupMessages';
 import { Icon } from './PrototypeIcon';
 import { GroupComposer, type GroupComposeIntent } from './GroupComposer';
 import { GroupMemberEditor } from './GroupMemberEditor';
@@ -50,7 +50,7 @@ function GroupRoom({ id, providers, sessions, visible = true, onOpenSession, onO
     if (cancelled) return;
     apply(next); setConnected(true); setNow(Date.now());
    } while (again && !cancelled); }
-   catch (error) { if (!cancelled) setIssue(error instanceof Error ? { code: error.message } : { en: 'Could not load this group.', zh: '无法加载此群聊。' }); }
+   catch (error) { if (!cancelled) setIssue(groupRuntimeIssue(error, { en: 'Could not load this group.', zh: '无法加载此群聊。' })); }
    finally { reading = false; }
   };
   refreshRef.current = refresh;
@@ -75,13 +75,13 @@ function GroupRoom({ id, providers, sessions, visible = true, onOpenSession, onO
  const loadOlder = async () => {
   if (pageBusy.current || !cursor.current?.hasMore || !cursor.current.before) return;
   pageBusy.current = true; setPaging(true);
-  try { const next = await request('group.read', { id, before: cursor.current.before }); const element = board.current; if (element) prepend.current = { top: element.scrollTop, height: element.scrollHeight }; apply(next, true); } catch (error) { prepend.current = undefined; setIssue(error instanceof Error ? { code: error.message } : { en: 'Could not load older messages.', zh: '无法加载更早的消息。' }); } finally { pageBusy.current = false; setPaging(false); }
+  try { const next = await request('group.read', { id, before: cursor.current.before }); const element = board.current; if (element) prepend.current = { top: element.scrollTop, height: element.scrollHeight }; apply(next, true); } catch (error) { prepend.current = undefined; setIssue(groupRuntimeIssue(error, { en: 'Could not load older messages.', zh: '无法加载更早的消息。' })); } finally { pageBusy.current = false; setPaging(false); }
  };
  const run = async (action: () => Promise<Group>) => {
   if (operationBusy.current) return false;
   operationBusy.current = true; setBusy(true); setIssue(undefined);
   try { apply(await action()); onChanged(); return true; }
-  catch (error) { const text = error instanceof Error ? error.message : String(error); if (mounted.current) setIssue({ code: text }); void refreshRef.current(); return false; }
+  catch (error) { if (mounted.current) setIssue(groupRuntimeIssue(error, { en: 'The group action could not be completed.', zh: '无法完成群聊操作。' })); void refreshRef.current(); return false; }
   finally { operationBusy.current = false; if (mounted.current) setBusy(false); }
  };
  const send = (text: string, to: string[], references: GroupReferenceInput[]) => run(() => request('group.send', { id, text, to, references, expectedRevision: current.current?.revision, operationId: operationId() }));
@@ -111,7 +111,7 @@ function GroupRoom({ id, providers, sessions, visible = true, onOpenSession, onO
     before = page.before; more = page.hasMore;
    }
    setIssue({ en: `@${handle} has not posted a reply.`, zh: `@${handle} 尚未发布回复。` });
-  } catch (error) { setIssue(error instanceof Error ? { code: error.message } : { en: 'Could not find the reply.', zh: '无法查找回复。' }); } finally { if (mounted.current) setBusy(false); }
+  } catch (error) { setIssue(groupRuntimeIssue(error, { en: 'Could not find the reply.', zh: '无法查找回复。' })); } finally { if (mounted.current) setBusy(false); }
  };
  if (!group) return <div className="group-chat gc-loading" data-testid="group-view" role="status">{issue ? groupIssueText(issue, zh) : copy('Loading group chat…', '正在加载群聊…')}{issue && <button className="btn" onClick={() => void refreshRef.current()}>{copy('Retry', '重试')}</button>}</div>;
  const disabled = busy || !connected, composeGroup = { ...group, messages: mergeGroupMessages(referenceMessages, messages) };
@@ -132,11 +132,7 @@ function GroupRoom({ id, providers, sessions, visible = true, onOpenSession, onO
    {group.filesCheck?.state === 'off' && group.members.some(member => member.mode === 'read_only') && (
     <div className="gc-notice gc-files-check" title={group.filesCheck.detail} role="status">
      <Icon name="info" />
-     <span>{group.filesCheck.reason === 'no_git'
-      ? copy('Git not found — install Git to check read-only members’ file changes.', '未找到 Git — 安装 Git 后可检查只读成员的文件变更。')
-      : group.filesCheck.reason === 'not_a_repository'
-       ? copy('Not a Git repository — read-only file checks are off.', '此文件夹不是 Git 仓库 — 只读文件检查已关闭。')
-       : copy('Read-only file checks are unavailable for this folder.', '此文件夹无法进行只读文件检查。')}</span>
+     <span>{copy('Changed-file checks are off for this folder — read-only members’ files are listed from their own tools only.', '此文件夹的变更文件检查已关闭 — 只读成员的文件仅按其自身工具记录列出。')}</span>
     </div>
    )}
    {issue && (
