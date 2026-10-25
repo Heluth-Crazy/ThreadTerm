@@ -12,6 +12,13 @@ export function partBody(part: ChatPart): string {
   return JSON.stringify(part.data, null, 2);
 }
 
+/** A settled turn that failed or was interrupted says so once, even with no activity or timing, unless an error
+ * part in the turn already explains it. */
+export function turnOutcome(status: string | undefined, items: readonly ChatItem[]): "failed" | "interrupted" | undefined {
+  if (status !== "failed" && status !== "interrupted") return undefined;
+  return items.some(item => item.parts.some(part => part.type === "error")) ? undefined : status;
+}
+
 export function formatChatDuration(ms: number, zh: boolean): string {
   const total = Math.max(0, Math.round(ms / 1000));
   const minutes = Math.floor(total / 60);

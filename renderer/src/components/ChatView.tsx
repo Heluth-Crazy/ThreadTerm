@@ -21,7 +21,7 @@ import { delegationTool, delegationToolLabel } from "../delegation";
 import { UsageCard } from './UsageCard';
 import { usageCardsForItems } from '../usageCard';
 import { canRecoverPermissions, connectionFeedbackPhase, connectionStatusText, emptyLink, overlayKind, providerLabel, reduceChatLink, type ChatConnectAttempt } from "../chatConnection";
-import { activeTurnId, activeTurnIdFromIndex, chatCanControl, chatPresentationIndex, formatChatDuration, itemShowsStreaming, matchSlashCommands, partBody, partLabel, shouldRenderPart, slashQuery } from "../chatPresentation";
+import { activeTurnId, activeTurnIdFromIndex, chatCanControl, chatPresentationIndex, formatChatDuration, itemShowsStreaming, matchSlashCommands, partBody, partLabel, shouldRenderPart, slashQuery, turnOutcome } from "../chatPresentation";
 import { groupCodexTranscript, type CodexTurn } from "../codexTranscript";
 import { completedTurnPresentation, groupToolActivity, toolEntriesForItems, type ToolActivityEntry } from "../toolActivity";
 import { ToolActivity } from './ToolActivity';
@@ -1769,7 +1769,7 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession, 
     const outcome = group.turnStatus === 'failed' ? copy('Turn failed', '回合失败') : group.turnStatus === 'interrupted' ? copy('Turn interrupted', '回合已中断') : undefined;
     const summary = group.elapsedMs == null ? (activity.length ? copy('Activity','过程') : outcome ?? copy('Completed','已完成')) : formatChatDuration(group.elapsedMs, zh);
     return [
-      outcome && (activity.length || group.elapsedMs != null) && !group.items.some(item => item.parts.some(part => part.type === 'error'))
+      outcome && turnOutcome(group.turnStatus, group.items)
         ? <p className="chat-duration" key={`${group.id}-status`}>{outcome}</p> : null,
       !group.response.some(item => usageCards.has(item.id)) && (activity.length ? <FoldedActivity key={`${group.id}-work`} summary={<>{summary}<Icon name="chevR" /></>}>
         {() => activity.length ? activity.map(item => renderItem(item)) : <p className="dim">{copy('No additional activity recorded.', '没有记录额外的过程。')}</p>}

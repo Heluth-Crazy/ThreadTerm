@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { activeTurnId, activeTurnIdFromIndex, chatCanControl, chatPresentationIndex, formatChatDuration, itemShowsStreaming, matchSlashCommands, partBody, partLabel, shouldRenderPart, slashQuery } from "../renderer/src/chatPresentation.ts";
+import { activeTurnId, activeTurnIdFromIndex, chatCanControl, chatPresentationIndex, formatChatDuration, itemShowsStreaming, matchSlashCommands, partBody, partLabel, shouldRenderPart, slashQuery, turnOutcome } from "../renderer/src/chatPresentation.ts";
 import { isCompletedForkReply } from "../renderer/src/chatFork.ts";
 import { legacyActiveTurnId, legacyItemShowsStreaming, randomTranscript, seededRandom } from "./lib/chat-presentation-legacy.mjs";
 
@@ -154,4 +154,14 @@ test('per-item presentation lookups never rescan the transcript', () => {
     assert.equal(activeTurnIdFromIndex(guardedIndex, 'running'), legacyActiveTurnId(items, 'running'));
     assert.equal(isCompletedForkReply(item, guarded, guardedIndex), isCompletedForkReply(item, items), `fork ${item.id}`);
   }
+});
+
+test("a failed or interrupted turn states its outcome even without activity or timing, unless an error part explains it", () => {
+  const reply = { id: "r", role: "assistant", parts: [{ type: "text", text: "partial" }] };
+  const error = { id: "e", role: "assistant", parts: [{ type: "error", text: "Provider failed" }] };
+  assert.equal(turnOutcome("failed", []), "failed", "an empty failed turn is not silent");
+  assert.equal(turnOutcome("interrupted", [reply]), "interrupted");
+  assert.equal(turnOutcome("failed", [reply, error]), undefined, "an explicit error part is not repeated");
+  assert.equal(turnOutcome("completed", []), undefined);
+  assert.equal(turnOutcome(undefined, [reply]), undefined);
 });

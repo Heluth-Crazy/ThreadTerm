@@ -74,7 +74,7 @@
 .imported-history-view header > div { display:grid; flex:1 1 220px; gap:3px; min-width:0; }
 .imported-history-view header strong { overflow-wrap:anywhere; }
 .imported-history-view header small { color:var(--muted); font-size:12px; }
-.imported-history-view header > button { flex:none; }
+.imported-history-view > header > .btn { flex:none; min-width:0; max-width:100%; height:auto; min-height:32px; white-space:normal; overflow-wrap:anywhere; }
 .imported-history-view > .surface-error { flex:none; margin:0; }
 .imported-history-scroll { flex:1; min-height:0; min-width:0; overflow:auto; }
 /* Same top-of-transcript control as ChatView: earlier pages are always reachable. */
