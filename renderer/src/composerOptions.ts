@@ -33,7 +33,7 @@ const VALUE_LABELS: Record<string, [string, string]> = {
   on: ["On", "开"],
   medium: ["Medium", "中"],
   high: ["High", "高"],
-  xhigh: ["Xhigh", "超高"],
+  xhigh: ["Extra high", "超高"],
   max: ["Max", "Max"],
   ultra: ["Ultra", "Ultra"],
   user: ["User", "用户"],

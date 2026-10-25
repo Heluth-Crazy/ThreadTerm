@@ -8,6 +8,7 @@ import { CatalogPopover } from './CatalogActions';
 import { SurfaceDialog } from './SurfaceDialog';
 import { changeGroups, decorationFor, type ChangeGroup } from '../workbench/gitDecorations';
 import { workbenchError } from '../workbench/errors';
+import { selectedCommitUnsupportedText } from '../workbench/selectedCommitSupport';
 import { absolutePath, baseName, parentPath, scopeParams, type GitState, type WorkbenchActions, type WorkbenchScope } from '../workbench/types';
 import { ContextSendAction, sendContextToAgent } from './ContextSendAction';
 import { changedFileContext } from './GitContextActions';
@@ -49,6 +50,7 @@ export function SourceControlView({scope, actions, git, zh, compact = false, too
  const scopeKey=`${scope.projectId}\u0000${scope.worktreePath ?? ''}\u0000${scope.rootPath}`;
  if(renderedScope.current!==scopeKey) { renderedScope.current=scopeKey; scopeEpoch.current++; }
  const selectedCommit=status?.selectedCommit;
+ const selectedCommitReason=selectedCommitUnsupportedText(selectedCommit?.unsupportedReason,zh);
  const groups = useMemo(() => {
   const value:Record<ChangeGroup,GitChange[]> = {conflicts:[], staged:[], changes:[], untracked:[]};
   for(const change of status?.changes ?? []) for(const group of changeGroups(change)) value[group].push(change);
@@ -143,7 +145,7 @@ export function SourceControlView({scope, actions, git, zh, compact = false, too
   const trimmed=message.trim();
   if(!trimmed) { messageRef.current?.focus(); setIssue(text('Write a commit message first.', '请先填写提交说明。')); return; }
   if(!selectedStaged.length) return;
-  if(!selectedCommit?.supported) { setIssue(selectedCommit?.unsupportedReason ?? text('Restart the ThreadTerm runtime to enable selected commits.', '请重启 ThreadTerm 运行时以启用选择性提交。')); return; }
+  if(!selectedCommit?.supported) { setIssue(selectedCommitReason); return; }
   const selected=[...selectedStaged];
   const result=await runSelected<GitSelectedCommitResult>('commit-selected',()=>request('git.commit.selected',{...params,message:trimmed,selected:selected.map(change=>({path:change.path,indexStatus:change.indexStatus,...(change.originalPath?{originalPath:change.originalPath}:{})})),expectedHead:selectedCommit.head,expectedIndexFingerprint:selectedCommit.indexFingerprint,operationId:operationId()}),[['staged',selected]],text('Selected staged files committed.','已提交所选暂存文件。'));
   if(!result) return;
@@ -251,11 +253,12 @@ export function SourceControlView({scope, actions, git, zh, compact = false, too
    <textarea ref={messageRef} value={message} onChange={event => setMessage(event.target.value)} rows={2} placeholder={text('Message (Ctrl+Enter to commit)', '提交说明（Ctrl+Enter 提交）')} aria-label={text('Commit message', '提交说明')}
     onKeyDown={event => { if(event.key === 'Enter' && (event.ctrlKey || event.metaKey)) { event.preventDefault(); if(!busy) void (commitSelectedActive ? commitSelected() : commit('commit')); } }}/>
    <div className="wb-commit-actions">
-   <button type="button" className="btn btn-primary wb-commit-main" disabled={!!busy || (commitSelectedActive ? !selectedCommit?.supported : !groups.staged.length)} title={commitSelectedActive&&!selectedCommit?.supported ? selectedCommit?.unsupportedReason ?? text('Restart the ThreadTerm runtime to enable selected commits.', '请重启 ThreadTerm 运行时以启用选择性提交。') : !commitSelectedActive&&!groups.staged.length ? text('Stage changes first', '请先暂存更改') : undefined} onClick={() => void (commitSelectedActive ? commitSelected() : commit('commit'))}>
+   <button type="button" className="btn btn-primary wb-commit-main" disabled={!!busy || (commitSelectedActive ? !selectedCommit?.supported : !groups.staged.length)} title={commitSelectedActive&&!selectedCommit?.supported ? `${selectedCommitReason}${selectedCommit?.unsupportedReason ? ` (${selectedCommit.unsupportedReason})` : ''}` : !commitSelectedActive&&!groups.staged.length ? text('Stage changes first', '请先暂存更改') : undefined} onClick={() => void (commitSelectedActive ? commitSelected() : commit('commit'))}>
      {busy === 'commit-selected' ? text('Committing selected…', '正在提交所选文件…') : busy === 'commit' ? text('Committing all…', '正在提交全部…') : commitSelectedActive ? text('Commit selected', '提交所选') : text('Commit all staged', '提交全部暂存')}
     </button>
     <button type="button" className="btn wb-commit-more" aria-label={text('More commit actions', '更多提交操作')} disabled={!!busy} onClick={event => setCommitMenu(event.currentTarget)}><Icon name="chevron"/></button>
    </div>
+   {commitSelectedActive&&!selectedCommit?.supported && <p className="wb-selected-summary" title={selectedCommit?.unsupportedReason}>{selectedCommitReason}</p>}
    {(commitSelectedActive||selectedForStage>0) && <p className="wb-selected-summary" aria-live="polite">{commitSelectedActive ? text(`${selectedStaged.length} staged file(s) selected for this commit.`, `已选择 ${selectedStaged.length} 个暂存文件用于此次提交。`) : ''}{commitSelectedActive&&selectedForStage>0?' ':''}{selectedForStage>0 ? text(`${selectedForStage} change(s) selected to stage; they are not included until staged.`, `已选择 ${selectedForStage} 个更改待暂存；暂存前不会包含在提交中。`) : ''}</p>}
   </div>
   {busy && busy !== 'commit' && <p className="wb-summary" aria-live="polite">{text('Working…', '正在执行…')}</p>}

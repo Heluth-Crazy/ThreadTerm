@@ -85,7 +85,7 @@ await writeFile(join(scratch, 'main.cjs'), `const {app,BrowserWindow}=require('e
 
 const expected = {
   'zh-CN': { mode: '默认', think: '高', buttons: ['允许一次', '在此项目中始终允许', '拒绝'], scopes: ['仅本次', '始终', '仅本次'], modes: ['默认', '接受编辑', '规划', '不问', '自动'], thinks: ['低', '中', '高', '超高', 'Max'], plan: '规划' },
-  en: { mode: 'Default', think: 'High', buttons: ['Allow once', 'Always allow in this project', 'Deny'], scopes: ['This time', 'Always', 'This time'], modes: ['Default', 'Accept edits', 'Plan', "Don't ask", 'Auto'], thinks: ['Low', 'Medium', 'High', 'Xhigh', 'Max'], plan: 'Plan' },
+  en: { mode: 'Default', think: 'High', buttons: ['Allow once', 'Always allow in this project', 'Deny'], scopes: ['This time', 'Always', 'This time'], modes: ['Default', 'Accept edits', 'Plan', "Don't ask", 'Auto'], thinks: ['Low', 'Medium', 'High', 'Extra high', 'Max'], plan: 'Plan' },
 };
 const checks = [];
 // DOM events instead of OS input: a background Electron window may never
@@ -100,7 +100,7 @@ let app;
 let releaseLock;
 try {
   releaseLock = await acquireElectronQaLock();
-  app = await electron.launch({ args: [join(scratch, 'main.cjs')] });
+  app = await electron.launch({ args: ['--disable-features=CalculateNativeWinOcclusion', join(scratch, 'main.cjs')] });
   const page = await app.firstWindow();
   const errors = [];
   page.on('pageerror', error => errors.push(error.message));
@@ -147,6 +147,31 @@ try {
     assert.equal(set.optionId, 'mode');
     assert.equal(set.value, 'plan');
     await page.evaluate(() => window.threadterm.request('chat.option.set', { optionId: 'mode', value: 'default' }));
+    // Exercise the longest offered model with the expanded English thinking label.
+    await press(page.locator('.chat-model-chip'));
+    await press(page.locator('.chat-menu-model .chat-menu-item', { hasText: want.thinks[3] }));
+    await page.waitForFunction(text => document.querySelector('.chat-model-think')?.textContent?.trim() === text, want.thinks[3]);
+    await page.evaluate(() => { document.getElementById('root').style.width = '420px'; });
+    await page.evaluate(() => new Promise(done => requestAnimationFrame(() => requestAnimationFrame(done))));
+    const layout = await page.locator('.chat-compose-bar').evaluate(bar => {
+      const rect = bar.getBoundingClientRect();
+      const left = bar.querySelector('.chat-compose-left').getBoundingClientRect();
+      const right = bar.querySelector('.chat-compose-right').getBoundingClientRect();
+      const controls = [...bar.querySelectorAll('.chat-compose-left > *, .chat-compose-right > *')].map(node => node.getBoundingClientRect()).filter(box => box.width > 0 && box.height > 0);
+      const model = bar.querySelector('.chat-model-name');
+      return { width: rect.width, height: rect.height, leftTop: left.top, rightTop: right.top,
+        spread: Math.max(...controls.map(box => box.top)) - Math.min(...controls.map(box => box.top)),
+        scrollWidth: bar.scrollWidth, clientWidth: bar.clientWidth, modelWidth: model.clientWidth,
+        text: bar.querySelector('.chat-model-chip').textContent, title: bar.querySelector('.chat-model-chip').title };
+    });
+    assert.match(layout.title, /Default \(recommended\).*Extra high/, 'the full model and effort stay discoverable when the narrow chip hides effort');
+    assert.ok(layout.width <= 420, JSON.stringify(layout));
+    assert.ok(Math.abs(layout.leftTop - layout.rightTop) < 2 && layout.spread < 2 && layout.height < 40, `420px single row: ${JSON.stringify(layout)}`);
+    assert.ok(layout.scrollWidth <= layout.clientWidth + 1 && layout.modelWidth >= 48, `420px readable model without overflow: ${JSON.stringify(layout)}`);
+    await page.screenshot({ path: join(out, `claude-options-420-${locale}.png`) });
+    checks.push(`${locale}: PASS 420px one row, longest offered model + ${want.thinks[3]}: ${JSON.stringify(layout)}`);
+    await page.evaluate(() => { document.getElementById('root').style.width = ''; });
+    await page.evaluate(() => window.threadterm.request('chat.option.set', { optionId: 'thinking', value: 'high' }));
     checks.push(`${locale}: chips, approval labels/scopes, mode/model menus, slash menu, mode switch -> chat.option.set`);
   }
   // The message being sent must look exactly like the saved message that replaces it.

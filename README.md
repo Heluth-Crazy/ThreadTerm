@@ -7,6 +7,7 @@ and a Rust runtime. All commands below run from the repository root.
 
 Use Node.js 22 (see `.nvmrc`) and the Rust toolchain. On Windows, Rust also needs
 the MSVC build tools.
+Committing selected files requires Git 2.36 or newer; install or update it from [git-scm.com](https://git-scm.com), then restart ThreadTerm.
 
 ```powershell
 npm install

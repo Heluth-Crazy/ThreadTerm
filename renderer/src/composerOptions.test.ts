@@ -141,3 +141,10 @@ test('virtualWindow clamps both bounds and keeps a nonempty terminal window', ()
     assert.ok(window.start >= 0 && window.end <= 200 && window.start < window.end, `scroll ${scrollTop} yielded ${window.start}..${window.end}`);
   }
 });
+
+test('extra high thinking uses readable bilingual chip and menu labels', () => {
+  const thinking = option({ id: 'thinking', value: 'xhigh', choices: [{ value: 'xhigh', name: 'Xhigh' }] });
+  assert.equal(thinkingChipText(thinking, false), 'Extra high');
+  assert.equal(thinkingChipText(thinking, true), '超高');
+  assert.equal(choiceText(thinking, thinking.choices[0], false), 'Extra high');
+});

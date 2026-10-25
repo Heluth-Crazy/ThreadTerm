@@ -49,6 +49,11 @@ const LOCAL_TIMEOUT: Duration = Duration::from_secs(30);
 const HOOK_TIMEOUT: Duration = Duration::from_secs(300);
 #[cfg(test)]
 const HOOK_TIMEOUT: Duration = Duration::from_secs(1);
+#[cfg(test)]
+thread_local! {
+    static TEST_HOOK_TIMEOUT: std::cell::Cell<Duration> =
+        std::cell::Cell::new(HOOK_TIMEOUT);
+}
 const STATUS_RETRIES: usize = 3;
 const CAPABILITY_CACHE_ENTRIES: usize = 8;
 
@@ -904,12 +909,23 @@ fn run_hook(
         args.push("--".to_owned());
         args.extend_from_slice(hook_args);
     }
-    let output = run_managed_git(root, &args, env, None, HOOK_TIMEOUT, git)
+    let output = run_managed_git(root, &args, env, None, hook_timeout(), git)
         .map_err(|_| anyhow!("git_selected_commit_hook_failed"))?;
     if output.status.success() {
         Ok(())
     } else {
         Err(anyhow!("git_selected_commit_hook_failed"))
+    }
+}
+
+fn hook_timeout() -> Duration {
+    #[cfg(test)]
+    {
+        return TEST_HOOK_TIMEOUT.with(|timeout| timeout.get());
+    }
+    #[cfg(not(test))]
+    {
+        HOOK_TIMEOUT
     }
 }
 
@@ -2223,6 +2239,20 @@ mod tests {
         }
     }
 
+    struct HookTimeoutGuard(Duration);
+
+    impl HookTimeoutGuard {
+        fn set(timeout: Duration) -> Self {
+            Self(TEST_HOOK_TIMEOUT.with(|current| current.replace(timeout)))
+        }
+    }
+
+    impl Drop for HookTimeoutGuard {
+        fn drop(&mut self) {
+            TEST_HOOK_TIMEOUT.with(|current| current.set(self.0));
+        }
+    }
+
     fn command(git: &GitExecutable, root: &Path, args: &[&str]) -> Result<String> {
         let args = args.iter().map(|arg| (*arg).to_owned()).collect::<Vec<_>>();
         checked_text(run_direct_git(root, &args, &[], None, LOCAL_TIMEOUT, git)?)
@@ -2471,6 +2501,8 @@ mod tests {
     #[test]
     fn exact_replay_returns_the_receipt_without_rerunning_hooks() {
         let repository = Repository::new();
+        // Let a loaded Windows Git/shell launch complete; timeout tests retain the short default.
+        let _hook_timeout = HookTimeoutGuard::set(Duration::from_secs(10));
         fs::write(repository.root().join("a.txt"), "a1\n").unwrap();
         command(&repository.git, repository.root(), &["add", "a.txt"]).unwrap();
         write_hook(
