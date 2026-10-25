@@ -174,7 +174,7 @@ export function AgentChangesView({sessions, activeSessionId, actions, zh, visibl
  const openReview = (checkpoint:ReviewCheckpoint, path:string, next?:ReviewCheckpoint) => {
   if(sessionId) actions.openReview?.({sessionId, checkpointId:checkpoint.id, ...(next ? {toCheckpointId:next.id} : {}), path});
  };
- const toolbar = toolbarHost ? createPortal(<><button type="button" className="btn btn-sm" data-testid="agent-review-start" disabled={!canReview || busy} onClick={() => void openAgentReview()}>{text('Review with agent', '请智能体审查')}</button><button type="button" className="icon-btn" title={text('Refresh', '刷新')} aria-label={text('Refresh', '刷新')} disabled={!sessionId} onClick={() => void load()}><WbIcon name="refresh"/></button></>, toolbarHost) : null;
+ const toolbar = toolbarHost ? createPortal(<><button type="button" className="icon-btn" data-testid="agent-review-start" title={text('Review with agent', '请智能体审查')} aria-label={text('Review with agent', '请智能体审查')} disabled={!canReview || busy} onClick={() => void openAgentReview()}><Icon name="spark"/></button><button type="button" className="icon-btn" title={text('Refresh', '刷新')} aria-label={text('Refresh', '刷新')} disabled={!sessionId} onClick={() => void load()}><WbIcon name="refresh"/></button></>, toolbarHost) : null;
  if(!sessions.length) return <div className="wb-review"><div className="wb-empty-state"><Icon name="spark"/><strong>{text('No sessions in this workspace', '此工作区没有会话')}</strong><p>{text('Start an agent session to review what it changes.', '启动 Agent 会话后即可审查其改动。')}</p></div></div>;
  return <div className="wb-review">
   {toolbar}

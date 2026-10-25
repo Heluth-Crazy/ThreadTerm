@@ -229,7 +229,8 @@ fn chat_connects_and_chats_when_the_cli_lacks_inject_items() {
     assert_eq!(notice["version"], "0.100.0");
     assert_eq!(notice["feature"], "thread/inject_items");
     let message = notice["message"].as_str().unwrap();
-    assert!(message.contains("thread/inject_items"), "{message}");
+    assert!(!message.contains("thread/inject_items"), "{message}");
+    assert!(message.contains("a new chat is saved only after its first message"), "{message}");
     assert!(message.contains("npm install -g @openai/codex"), "{message}");
     // English and Chinese, as everywhere else that reports a provider limit.
     assert!(message.contains("\u{66f4}\u{65b0}"), "{message}");
@@ -278,12 +279,12 @@ fn chat_connects_when_thread_read_has_no_turns_and_history_says_so() {
     assert!(state["notice"]["message"]
         .as_str()
         .unwrap()
-        .contains("reading saved chat history"));
+        .contains("saved chat history cannot be displayed"));
     // No native turns means no transcript: report it rather than an empty
     // history that would look like lost messages.
     let error = fixture.adapter.history_read(THREAD_ID).unwrap_err();
     assert_eq!(error.code, "provider_method_unsupported");
-    assert!(error.message.contains("saved chat turns"), "{}", error.message);
+    assert!(error.message.contains("saved chat history cannot be displayed"), "{}", error.message);
     assert_eq!(chat.send("hello", "turn-1").unwrap()["turnId"], "turn-1");
     assert!(
         wait_for(&mut fixture, "chat.turn.completed"),
@@ -345,9 +346,10 @@ fn a_missing_feature_notice_is_written_once_and_names_the_cli() {
     assert_eq!(notice["version"], "0.100.0");
     assert_eq!(notice["feature"], "thread/inject_items");
     assert!(!api.supports(CodexFeature::InjectItems));
-    // A second missing feature keeps the first message: one old CLI, one notice.
+    // A newly discovered feature must be visible after dismissing the earlier one.
     api.record_missing(CodexFeature::HistoryTurns);
-    assert_eq!(api.notice.as_ref().unwrap(), &notice);
+    assert_ne!(api.notice.as_ref().unwrap(), &notice);
+    assert_eq!(api.notice.as_ref().unwrap()["feature"], "thread/read includeTurns");
     assert!(!api.supports(CodexFeature::HistoryTurns));
 }
 
@@ -450,4 +452,44 @@ fn missing_thread_classification_requires_an_exact_native_read_failure() {
         codex_missing_thread_error("invalid-id", native.clone()),
         native
     );
+}
+
+#[test]
+fn limitation_notices_explain_each_loss_without_protocol_names() {
+    let mut api = CodexApiSupport::default();
+    api.version = Some("qa-version".to_owned());
+    for (feature, en, zh) in [
+        (CodexFeature::InjectItems, "a new chat is saved only after its first message", "新对话只有在发送首条消息后才会保存"),
+        (CodexFeature::HistoryTurns, "saved chat history cannot be displayed", "无法显示已保存的对话记录"),
+    ] {
+        api.record_missing(feature);
+        let notice = api.notice.clone().unwrap();
+        assert_eq!(notice["feature"], feature.name());
+        assert_eq!(notice["version"], "qa-version");
+        assert_eq!(notice["code"], "codex_cli_limited");
+        let message = notice["message"].as_str().unwrap();
+        assert!(message.contains(en), "{message}");
+        assert!(message.contains(zh), "{message}");
+        assert!(!message.contains("thread/"), "{message}");
+        assert!(message.contains("npm install -g @openai/codex"), "{message}");
+        api.record_missing(feature);
+        assert_eq!(api.notice.as_ref(), Some(&notice));
+    }
+}
+
+#[test]
+fn unsupported_codex_actions_keep_protocol_names_in_diagnostics_only() {
+    for (method, loss) in [
+        ("thread/inject_items", "a new terminal session cannot be saved for later resume"),
+        ("thread/read", "saved chat history cannot be displayed"),
+        ("thread/settings/update", "chat settings cannot be changed"),
+        ("other/native/action", "this action is unavailable"),
+    ] {
+        let error = codex_protocol_error(method, ProviderError::new("provider_error", "Method not found").with_details(json!({"code": -32601})));
+        assert_eq!(error.code, "provider_method_unsupported");
+        assert_eq!(error.details.as_ref().unwrap()["method"], method);
+        assert!(error.message.contains(loss), "{}", error.message);
+        assert!(!error.message.contains(method), "{}", error.message);
+        assert!(error.message.contains(" / "), "{}", error.message);
+    }
 }

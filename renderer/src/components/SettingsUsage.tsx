@@ -2,7 +2,8 @@ import { useEffect, useRef, useState } from 'react';
 import type { Snapshot, UsageLedgerSettings } from '@threadterm/protocol';
 import { agentIds, agentName } from '../agents';
 import { subscribeEvents } from '../bridge';
-import { readUsageSettings, updateUsageSettings } from '../usageLedger';
+import { readUsageSettings, updateUsageSettings, useUsageSources } from '../usageLedger';
+import { sourceState } from '../usageSources';
 import { usageCopy, type UsageCopy } from '../usageCopy';
 import {
   adoptStoredUsageSettings, changedUsageSettings, draftFromPriceOverrides, editUsageSettings, initialUsageSettingsDraft,
@@ -35,6 +36,9 @@ export function SettingsUsage({ data, zh }: Props) {
   current.current = draft;
   const writing = useRef(false);
   writing.current = saving;
+  // The ledger already knows which native histories are available; this is a read of that result, not a provider probe.
+  const { sources } = useUsageSources(0, true);
+  const sourceStates = new Map((sources?.providers ?? []).map(source => [source.provider, sourceState(source.status)]));
   const providers = [...new Set([...agentIds(data.providers), ...Object.keys(draft?.value.providers ?? {})])];
   const providerLabel = (id: string) => agentName(id, data.providers) || id;
 
@@ -157,7 +161,7 @@ export function SettingsUsage({ data, zh }: Props) {
         {providers.map(provider => <div key={provider} className={`settings-card-row${draft.value.includeOutside ? '' : ' is-muted'}`}>
           <div>
             <div className="settings-card-title">{providerLabel(provider)}</div>
-            <p>{draft.value.includeOutside && providerHistoryEnabled(draft.value, provider)
+            <p>{sourceStates.get(provider) === 'notInstalled' ? copy.sources.state.notInstalled : draft.value.includeOutside && providerHistoryEnabled(draft.value, provider)
               ? copy.settings.providerToggle(providerLabel(provider))
               : copy.settings.providerOff(providerLabel(provider))}</p>
           </div>

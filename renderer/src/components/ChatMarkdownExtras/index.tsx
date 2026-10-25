@@ -16,14 +16,14 @@ export function MarkdownBlock(props: BlockProps) {
   return <Suspense fallback={<div className="markdown-extra-loading" role="status">{props.copy('Loading renderer…', '正在加载渲染器…')}<pre>{props.source}</pre></div>}><Component {...props} /></Suspense>;
 }
 
-export function ChatMarkdown({ sanitizedHtml, references, openFile, copy, onInsert }: { sanitizedHtml: string; references?: FileReference[]; openFile?: (reference: FileReference) => void; copy: BlockProps['copy']; onInsert?: BlockProps['onInsert'] }) {
+export function ChatMarkdown({ sanitizedHtml, references, openFile, copy, onInsert, zh }: { sanitizedHtml: string; references?: FileReference[]; openFile?: (reference: FileReference) => void; copy: BlockProps['copy']; onInsert?: BlockProps['onInsert']; zh?: boolean }) {
   const rendered = useCallback((html: string): ReactNode => {
     const root = document.createElement('div'); root.innerHTML = html;
     const node = (value: Node, key: number): ReactNode => {
       if (value.nodeType === Node.TEXT_NODE) return value.textContent;
       if (!(value instanceof HTMLElement)) return null;
       // An inert remote image (F17) is a real component: loading it must not rewrite DOM React owns.
-      const inertImage = value.matches('.md-remote-image') ? inertRemoteImage(value.getAttribute('data-remote-image'), value.querySelector('.md-remote-image-alt')?.textContent) : undefined;
+      const inertImage = value.matches('.md-remote-image') ? inertRemoteImage(value.getAttribute('data-remote-image'), value.querySelector('.md-remote-image-alt')?.textContent, zh) : undefined;
       if (inertImage) return <RemoteImage key={`${key}:${inertImage.source}`} image={inertImage} />;
       const code = value.matches('.md-code-block, pre') ? value.querySelector('pre > code, :scope > code') : null;
       const kind = code && (['mermaid', 'json', 'threadterm-ui'] as const).find(kind => code.classList.contains(`language-${kind}`));
@@ -40,7 +40,7 @@ export function ChatMarkdown({ sanitizedHtml, references, openFile, copy, onInse
       return createElement(tag, props, ...(['img', 'br', 'hr', 'wbr'].includes(tag) ? [] : Array.from(value.childNodes).map(node)));
     };
     return Array.from(root.childNodes).map(node);
-  }, [copy, onInsert]);
+  }, [copy, onInsert, zh]);
   const extras = /language-(?:mermaid|json|threadterm-ui)|data-threadterm-math/.test(sanitizedHtml);
   return <FileLinkedMarkdown sanitizedHtml={sanitizedHtml} references={references} openFile={openFile} renderHtml={extras ? rendered : undefined} />;
 }

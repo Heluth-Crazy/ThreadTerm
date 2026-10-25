@@ -133,7 +133,7 @@ export function TaskMapDetails({ node, lane, sessions, items, zh, visible, targe
     <div className="task-map-inspector-body">
       {node.kind === 'tools' && <div className="chat-tool-entries" role="list">{toolParts.map((value, index) => <ToolCard key={`${value.item.id}:${value.partIndex}`} entry={{ id: `${value.item.id}:${value.partIndex}`, itemId: value.item.id, part: value.part }} index={index} open active={node.status === 'running'} awaitingApproval={node.status === 'waiting'} copy={copy} openFile={reference => openFile(reference.path)} />)}</div>}
       {node.kind === 'prompt' && <pre className="task-map-inspector-pre">{promptText}</pre>}
-      {node.kind === 'reply' && replyText && <ChatMarkdown sanitizedHtml={renderCodexMarkdown(replyText, zh)} copy={copy} />}
+      {node.kind === 'reply' && replyText && <ChatMarkdown sanitizedHtml={renderCodexMarkdown(replyText, zh)} copy={copy} zh={zh} />}
       {node.kind === 'plan' && <PlanDetails parts={parts} copy={copy} />}
       {node.kind === 'delegate' && <DelegateDetails key={node.id} node={node} sessions={sessions} items={items} copy={copy} zh={zh} />}
       {node.kind === 'subagent' && node.subagent && <SubagentDetails info={node.subagent} transcript={transcriptState} copy={copy} zh={zh} openFile={openFile} retry={() => { if (transcriptKey) detailCache.transcripts.delete(transcriptKey); loadTranscript(); }} />}

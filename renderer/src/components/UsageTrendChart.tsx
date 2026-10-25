@@ -89,7 +89,7 @@ export function UsageTrendChart({ series, stack, locale, copy, reading, provider
   }), [columns, granularity, locale, multiYear]);
   const pitch = columns.length > 0 ? plotWidth / columns.length : 0;
   const xTicks = useMemo(() => thinLabels(candidates, pitch, label => labelWidth(label)), [candidates, pitch]);
-  const xLabels = new Map(xTicks.map(tick => [tick.index, tick.label]));
+  const xLabels = new Map(xTicks.map(tick => [tick.index, tick]));
 
   const showTip = (index: number, element: HTMLElement) => {
     const box = element.getBoundingClientRect(), origin = host.current?.getBoundingClientRect();
@@ -162,7 +162,10 @@ export function UsageTrendChart({ series, stack, locale, copy, reading, provider
             </div>
           </div>
           <div className="usage-chart-xaxis" aria-hidden="true">
-            {columns.map((column, index) => <span key={column.start}>{xLabels.get(index) ?? ''}</span>)}
+            {columns.map((column, index) => {
+              const tick = xLabels.get(index);
+              return <span key={column.start} className={tick?.align ? `is-${tick.align}` : undefined}>{tick && <i>{tick.label}</i>}</span>;
+            })}
           </div>
         </div>
         {tip && <div className="usage-tip usage-tip-chart" role="tooltip" style={{ left: tip.x, top: tip.y }}>

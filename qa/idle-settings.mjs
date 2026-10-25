@@ -13,17 +13,18 @@ import { existsSync } from 'node:fs';
 import { build as esbuild } from 'esbuild';
 import { build as viteBuild } from 'vite';
 import { electron } from './lib/desktop1.mjs';
+import { acquireElectronQaLock } from './lib/electron-lock.mjs';
 
 const root = resolve(import.meta.dirname, '..');
-const runtime = join(root, 'runtime/target-qa/debug/threadterm-v3-runtime.exe');
+const runtime = process.env.THREADTERM_V3_RUNTIME_BIN || join(root, 'runtime/target-qa/debug/threadterm-v3-runtime.exe');
+const rendererRoot = process.env.THREADTERM_QA_RENDERER_ROOT || join(root, 'renderer');
 const out = join(root, 'qa/results/idle-settings');
 const scratchBase = resolve(process.env.TEMP || tmpdir());
 const scratch = await mkdtemp(join(scratchBase, 'tt-idle-settings-'));
 const appDir = join(scratch, 'app'), work = join(scratch, 'work'), bin = join(scratch, 'bin');
-const lock = resolve('D:/project/ThreadTerm/tt-qa-temp/qa-electron.lock');
 const IDLE_MS = 6000;
 const report = { passed: false, checks: [], idle: {}, screenshots: [], errors: [] };
-let app, page, locked = false;
+let app, page, releaseLock;
 const sleep = ms => new Promise(done => setTimeout(done, ms));
 const check = value => { report.checks.push(value); console.log(`PASS ${value}`); };
 const request = (method, params = {}) => page.evaluate(([method, params]) => window.threadterm.request(method, params), [method, params]);
@@ -84,6 +85,12 @@ async function applySettings(language, theme) {
   await request('settings.update', { patch: { language, theme, themeSelection: theme, notifications: { native: false, attention: false, completed: false, sound: false } }, expectedRevision: snapshot.settings.revision, operationId: randomUUID() });
   await page.waitForFunction(({ language, theme }) => document.documentElement.lang === language && document.documentElement.dataset.theme === theme, { language, theme });
 }
+async function resize(width, height) {
+  await app.evaluate(({ BrowserWindow }, [w, h]) => BrowserWindow.getAllWindows()[0].setSize(w, h), [width, height]);
+  await page.setViewportSize({ width, height }).catch(() => undefined);
+  await sleep(300);
+  return page.evaluate(() => Math.round(document.documentElement.clientWidth));
+}
 async function openSettings(tab) {
   // The Workbench route has no legacy toolbar; Settings lives in the account menu.
   await page.locator('.user-row').click();
@@ -113,13 +120,10 @@ try {
   await writeFile(join(scratch, 'preload-entry.ts'), preloadWrapper());
   await esbuild({ entryPoints: [join(root, 'desktop/src/main.ts')], bundle: true, platform: 'node', target: 'node22', format: 'cjs', external: ['electron'], outfile: join(appDir, 'main.cjs'), logLevel: 'error' });
   await esbuild({ entryPoints: [join(scratch, 'preload-entry.ts')], bundle: true, platform: 'node', target: 'node22', format: 'cjs', external: ['electron'], outfile: join(appDir, 'preload.cjs'), logLevel: 'error' });
-  await viteBuild({ configFile: join(root, 'vite.config.ts'), logLevel: 'error', build: { outDir: join(appDir, 'renderer'), emptyOutDir: true, minify: false } });
+  await viteBuild({ configFile: join(root, 'vite.config.ts'), root: rendererRoot, logLevel: 'error', build: { outDir: join(appDir, 'renderer'), emptyOutDir: true, minify: false } });
   await writeFile(join(appDir, 'package.json'), JSON.stringify({ name: 'idle-settings-qa', version: '0.1.0', main: 'main.cjs' }));
 
-  const deadline = Date.now() + 40 * 60 * 1000;
-  for (;;) {
-    try { await mkdir(lock); locked = true; break; } catch (error) { if (error.code !== 'EEXIST' || Date.now() > deadline) throw error; console.log('Waiting for shared Electron QA lock'); await sleep(15_000); }
-  }
+  releaseLock = await acquireElectronQaLock({ directory: scratchBase });
   app = await electron.launch({ args: ['--disable-features=CalculateNativeWinOcclusion', appDir], cwd: root, env: childEnv(), timeout: 60_000 });
   page = await app.firstWindow({ timeout: 45_000 }); page.setDefaultTimeout(20_000);
   page.on('pageerror', error => report.errors.push(error.message));
@@ -174,6 +178,10 @@ try {
   const maximum = page.locator('.retry-settings input[type=number]');
   await page.locator('.retry-settings .retry-toggle input').click();
   await until(() => maximum.isEnabled(), 'retry maximum enabled');
+  assert.match(await page.locator('.retry-settings .retry-save').getAttribute('class'), /btn-sm/, 'retry save uses the shared inline button size');
+  const retryText = await page.locator('.retry-settings').innerText();
+  assert.equal((retryText.match(/Only failed local terminal sessions are eligible/g) ?? []).length, 1, 'retry policy hint is not repeated in its empty history');
+  check('the Retry save action is inline and its policy hint appears once');
   await maximum.fill('3');
   await maximum.press('Tab');
   await request('session.create', { projectId: project.id, cwd: work, title: 'Unrelated session', provider: 'shell', mode: 'terminal', operationId: randomUUID() });
@@ -181,6 +189,19 @@ try {
   assert.equal(await maximum.inputValue(), '3', 'a typed maximum survives another session launching');
   check('a typed retry maximum survives another session launching');
   await shotElement('.retry-settings', 'en-light-retry.png');
+
+  const retryMatrix = [];
+  for (const [language, theme] of [['en', 'light'], ['en', 'dark'], ['zh-CN', 'light'], ['zh-CN', 'dark']]) {
+    await applySettings(language, theme);
+    for (const requestedWidth of [1280, 900]) {
+      const viewportWidth = await resize(requestedWidth, 800);
+      await shotElement('.retry-settings', `${language}-${theme}-retry-viewport-${viewportWidth}.png`);
+      retryMatrix.push({ language, theme, requestedWidth, viewportWidth });
+    }
+  }
+  assert.ok(retryMatrix.some(entry => entry.viewportWidth <= 900), `Retry narrow viewport was honored: ${JSON.stringify(retryMatrix)}`);
+  report.retryMatrix = retryMatrix;
+  await resize(1440, 900);
 
   for (const [language, theme, mobileTab] of [
     ['en', 'dark', 'Mobile'],
@@ -203,6 +224,22 @@ try {
     await closeSettings();
   }
 
+  const usageMatrix = [];
+  for (const [language, theme, tab] of [['en', 'light', 'Usage'], ['en', 'dark', 'Usage'], ['zh-CN', 'light', '用量'], ['zh-CN', 'dark', '用量']]) {
+    await applySettings(language, theme);
+    await openSettings(tab);
+    await until(async () => (await page.locator('.settings-provider-list .settings-card-row').count()) > 0, 'Usage settings provider rows');
+    for (const requestedWidth of [1280, 900]) {
+      const viewportWidth = await resize(requestedWidth, 800);
+      await shot(`${language}-${theme}-settings-usage-viewport-${viewportWidth}.png`);
+      usageMatrix.push({ language, theme, requestedWidth, viewportWidth });
+    }
+    await closeSettings();
+  }
+  assert.ok(usageMatrix.some(entry => entry.viewportWidth <= 900), `Settings Usage narrow viewport was honored: ${JSON.stringify(usageMatrix)}`);
+  report.usageMatrix = usageMatrix;
+  check('Retry and Settings Usage captures cover en/zh, light/dark, wide and actual narrow viewports');
+
   assert.deepEqual(report.errors, []);
   report.passed = true;
 } catch (error) {
@@ -212,7 +249,7 @@ try {
 } finally {
   if (page) await page.evaluate(() => window.threadterm.request('runtime.shutdown', { operationId: crypto.randomUUID() })).catch(() => {});
   if (app) { await app.evaluate(({ app: electronApp }) => electronApp.exit(0)).catch(() => {}); await app.close().catch(() => {}); }
-  if (locked) await rm(lock, { recursive: true, force: true });
+  if (releaseLock) await releaseLock();
   await mkdir(out, { recursive: true });
   await writeFile(join(out, 'report.json'), JSON.stringify(report, null, 2));
   await rm(scratch, { recursive: true, force: true, maxRetries: 5 }).catch(() => {});

@@ -15,9 +15,10 @@ import { spawnSync } from 'node:child_process';
 import { build as esbuild } from 'esbuild';
 import { build as viteBuild } from 'vite';
 import { electron } from './lib/desktop1.mjs';
+import { acquireElectronQaLock } from './lib/electron-lock.mjs';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
-const runtime = join(root, 'runtime/target-qa/debug/threadterm-v3-runtime.exe');
+const runtime = process.env.THREADTERM_V3_RUNTIME_BIN || join(root, 'runtime/target-qa/debug/threadterm-v3-runtime.exe');
 const fixture = join(root, 'qa/fixtures/fake-codex-old-cli.cjs');
 const out = join(root, 'qa/results/chat-parity/B5/old-cli');
 const scratch = await mkdtemp(join(tmpdir(), 'tt-codex-old-cli-'));
@@ -26,7 +27,7 @@ const bin = join(scratch, 'bin');
 const workspace = join(scratch, 'workspace');
 const log = join(scratch, 'codex-requests.jsonl');
 const report = { passed: false, checks: [], screenshots: [], errors: [] };
-let app; let page;
+let app; let page; let releaseLock;
 const delay = ms => new Promise(done => setTimeout(done, ms));
 const check = value => { report.checks.push(value); console.log(`PASS ${value}`); };
 const request = (method, params = {}) => page.evaluate(([name, value]) => window.threadterm.request(name, value), [method, params]);
@@ -34,12 +35,13 @@ const requests = async () => (await readFile(log, 'utf8')).split(/\r?\n/).filter
 const composer = id => page.locator(`[data-testid="session-chat-${id}"] .chat-compose-shell textarea`);
 async function until(probe, label, timeout = 30_000) { const end = Date.now() + timeout; let error; for (;;) { try { const value = await probe(); if (value) return value; } catch (caught) { error = caught; } if (Date.now() > end) throw new Error(`Timed out: ${label}${error ? `: ${error.message}` : ''}`); await delay(150); } }
 async function shot(name) { await delay(200); await page.screenshot({ path: join(out, name), animations: 'disabled' }); report.screenshots.push(name); }
-async function buildApp() { await mkdir(appDir, { recursive: true }); for (const name of ['main', 'preload']) await esbuild({ entryPoints: [join(root, `desktop/src/${name}.ts`)], bundle: true, platform: 'node', target: 'node22', format: 'cjs', external: ['electron'], outfile: join(appDir, `${name}.cjs`), logLevel: 'error' }); await viteBuild({ configFile: join(root, 'vite.config.ts'), logLevel: 'warn', build: { outDir: join(appDir, 'renderer'), emptyOutDir: true } }); await writeFile(join(appDir, 'package.json'), JSON.stringify({ name: 'codex-old-cli-qa', version: '0.1.0', main: 'main.cjs' })); }
+async function buildApp() { await mkdir(appDir, { recursive: true }); for (const name of ['main', 'preload']) await esbuild({ entryPoints: [join(root, `desktop/src/${name}.ts`)], bundle: true, platform: 'node', target: 'node22', format: 'cjs', external: ['electron'], outfile: join(appDir, `${name}.cjs`), logLevel: 'error' }); await viteBuild({ ...(process.env.THREADTERM_QA_RENDERER_ROOT ? { root: resolve(process.env.THREADTERM_QA_RENDERER_ROOT) } : {}), configFile: join(root, 'vite.config.ts'), logLevel: 'warn', build: { outDir: join(appDir, 'renderer'), emptyOutDir: true } }); await writeFile(join(appDir, 'package.json'), JSON.stringify({ name: 'codex-old-cli-qa', version: '0.1.0', main: 'main.cjs' })); }
 
 try {
+  releaseLock = await acquireElectronQaLock();
   assert.ok(existsSync(runtime), `missing ${runtime}; build runtime/target-qa before running this QA`);
   assert.ok(existsSync(fixture), 'missing fake Codex old-CLI fixture');
-  await rm(out, { recursive: true, force: true }); await mkdir(out, { recursive: true }); await mkdir(bin, { recursive: true }); await mkdir(workspace, { recursive: true }); await writeFile(log, '');
+  await mkdir(out, { recursive: true }); await mkdir(bin, { recursive: true }); await mkdir(workspace, { recursive: true }); await writeFile(log, '');
   await buildApp();
   // Fake Codex: a cmd shim runs the fixture regardless of the `-c` overrides the
   // runtime puts before the `app-server` argument.
@@ -55,10 +57,11 @@ try {
     THREADTERM_V3_RUNTIME: runtime,
     THREADTERM_QA_CODEX_OLD_CLI_LOG: log,
     THREADTERM_QA_CODEX_OLD_CLI_CWD: workspace,
+    THREADTERM_QA_CODEX_OLD_CLI_IMAGE: 'http://127.0.0.1:1/qa-image.png',
   });
   assert.equal(Object.keys(env).filter(key => key.toLowerCase() === 'path').length, 1, 'PATH isolation keeps exactly one spelling');
   await mkdir(env.CODEX_HOME, { recursive: true });
-  app = await electron.launch({ args: [appDir], cwd: bin, env, timeout: 60_000 });
+  app = await electron.launch({ args: [appDir, '--disable-features=CalculateNativeWinOcclusion', '--force-device-scale-factor=1'], cwd: bin, env, timeout: 60_000 });
   page = await app.firstWindow({ timeout: 45_000 });
   page.setDefaultTimeout(20_000);
   page.on('pageerror', error => report.errors.push(`page: ${error.message}`));
@@ -92,8 +95,9 @@ try {
   const banner = scope.locator('.chat-repair-notice');
   await banner.waitFor({ timeout: 20_000 });
   const bannerText = await banner.innerText();
-  assert.match(bannerText, /does not support thread\/inject_items/);
-  assert.match(bannerText, /Update the Codex CLI/);
+  assert.match(bannerText, /a new chat is saved only after its first message/);
+  assert.doesNotMatch(bannerText, /thread\//);
+  assert.match(bannerText, /Update Codex/);
   assert.doesNotMatch(bannerText, /[\u3400-\u9fff]/, 'an English window shows only the English sentence');
   assert.equal(await composer(chat.id).isEnabled(), true, 'the notice never blocks the composer');
   check('one non-blocking notice names the CLI version and what to update');
@@ -109,16 +113,39 @@ try {
   assert.ok(calls.every(row => row.method !== 'thread/read'), 'nothing tries to verify a thread that cannot be materialized');
   check('the degraded Chat runs a turn and never retries the missing method');
 
-  await shot('old-cli-light-1440-en.png');
-  const snapshot = await request('runtime.snapshot');
-  await request('settings.update', { patch: { language: 'zh-CN', theme: 'dark' }, expectedRevision: snapshot.settings.revision, operationId: randomUUID() });
-  await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].setContentSize(420, 900));
-  await until(async () => /当前 Codex CLI/.test(await banner.innerText()), 'zh notice');
-  assert.doesNotMatch(await banner.innerText(), /Update the Codex CLI/, 'a Chinese window shows only the Chinese sentence');
-  const overflow = await scope.locator('.chat-log-shell').evaluate(element => element.scrollWidth - element.clientWidth);
-  assert.ok(overflow <= 1, `the notice does not overflow at 420 px (${overflow})`);
-  await shot('old-cli-dark-420-zh.png');
-  check('the notice renders translated and without overflow at 420 px');
+  for (const language of ['en', 'zh-CN']) for (const theme of ['light', 'dark']) {
+    const snapshot = await request('runtime.snapshot');
+    await request('settings.update', { patch: { language, theme, themeSelection: theme }, expectedRevision: snapshot.settings.revision, operationId: randomUUID() });
+    await page.waitForFunction(value => document.documentElement.dataset.theme === value, theme);
+    const zh = language === 'zh-CN';
+    await until(async () => zh === /当前 Codex CLI/.test(await banner.innerText()), 'translated notice');
+    assert.doesNotMatch(await banner.innerText(), zh ? /Update Codex/ : /[\u3400-\u9fff]/);
+    const imageLoad = scope.locator('.md-remote-image-load');
+    await until(async () => await imageLoad.innerText() === (zh ? '载入图片' : 'Load image'), 'live Chat remote-image action locale');
+    assert.equal(await scope.locator('img[src^="http:"]').count(), 0, 'the remote image stays inert until explicitly loaded');
+    await scope.evaluate(element => { element.style.width = ''; element.style.maxWidth = ''; element.style.minWidth = ''; });
+    await shot(`old-cli-${theme}-1440-${language}.png`);
+    // Narrow the actual chat surface, rather than asking Electron to violate its window minimum.
+    await scope.evaluate(element => { element.style.width = '420px'; element.style.maxWidth = '420px'; element.style.minWidth = '0'; });
+    const paneWidth = await scope.evaluate(element => element.getBoundingClientRect().width);
+    assert.ok(Math.abs(paneWidth - 420) <= 1, `the chat pane is really 420 px (${paneWidth})`);
+    const overflow = await scope.locator('.chat-log-shell').evaluate(element => element.scrollWidth - element.clientWidth);
+    assert.ok(overflow <= 1, `the notice does not overflow a real 420 px pane (${overflow})`);
+    const name = `old-cli-${theme}-pane-420-${language}.png`;
+    await scope.screenshot({ path: join(out, name), animations: 'disabled' }); report.screenshots.push(name);
+    check(`${language} ${theme}: notice fits a measured 420 px chat pane`);
+  }
+  await banner.getByRole('button', { name: '关闭', exact: true }).click();
+  await until(async () => await banner.count() === 0, 'notice dismissed');
+  const optionsAfterDismiss = await request('chat.options', { sessionId: chat.id });
+  assert.equal(optionsAfterDismiss.notice.feature, options.notice.feature, 'dismissal does not change provider diagnostics');
+  await page.reload();
+  await page.locator('#boot-splash').waitFor({ state: 'detached', timeout: 30_000 });
+  await request('session.present', { sessionId: chat.id, placement: 'workspace', presentation: 'focused', operationId: randomUUID() });
+  await until(() => composer(chat.id).isEnabled(), 'chat ready after reload');
+  await until(async () => (await request('chat.options', { sessionId: chat.id })).notice?.feature === options.notice.feature, 'notice restored by runtime');
+  assert.equal(await page.locator('.chat-provider-notice').count(), 0, 'dismissal survives Chat remount and reload');
+  check('CLI notice dismissal survives remount while diagnostics remain available');
 
   assert.deepEqual(report.errors, [], report.errors.join('\n'));
   report.passed = true;
@@ -133,6 +160,7 @@ try {
   if (existsSync(log)) await writeFile(join(out, 'codex-requests.jsonl'), await readFile(log)).catch(() => {});
   if (existsSync(join(scratch, 'data/runtime.log'))) await writeFile(join(out, 'runtime.log'), await readFile(join(scratch, 'data/runtime.log'))).catch(() => {});
   await rm(scratch, { recursive: true, force: true, maxRetries: 10, retryDelay: 250 }).catch(() => {});
+  if (releaseLock) await releaseLock();
   console.log(report.passed ? 'CODEX OLD-CLI QA PASSED' : `CODEX OLD-CLI QA FAILED\n${report.errors.join('\n')}`);
 }
 assert.equal(report.errors.length, 0, report.errors.join('\n'));

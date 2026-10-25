@@ -1,6 +1,7 @@
 import { ClipboardEvent, FormEvent, Fragment, KeyboardEvent, type MouseEvent as ReactMouseEvent, type ReactNode, useContext, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { sanitizeMarkdownHtml } from '../markdownPolicy';
 import { parseChatMarkdown } from '../chatMath';
+import { ChatProviderNotice } from './ChatProviderNotice';
 import { ChatMarkdown } from './ChatMarkdownExtras';
 import type { ChatAnswerResponse, ChatContextUsage, ChatPart, ChatQueue, ChatQueueItem, ChatSlashCommand, ChatUiState, FileReference, GitCommitInfo, Session } from "@threadterm/protocol";
 import { ChatItem, attachFiles, openExternal, operationId, request, subscribeEvents } from "../bridge";
@@ -127,7 +128,7 @@ function renderCodexMarkdown(text: string, zh: boolean): string {
     anchor.removeAttribute('href');
     anchor.setAttribute('data-threadterm-file-reference', JSON.stringify(reference));
   }
-  const sanitized = sanitizeMarkdownHtml(template.innerHTML);
+  const sanitized = sanitizeMarkdownHtml(template.innerHTML, { zh });
   // Copy controls are added after sanitizing: they are our own inert markup,
   // and the read-only pre content is never carried into an attribute.
   const holder = document.createElement('div');
@@ -1708,7 +1709,7 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession, 
         // A question can paint before chat.send settles. The composer busy flag
         // must not disable that card, or Dismiss enables under the pointer.
         if (part.type === "approval") return <div className={`chat-part approval v3-tool-card ${part.status ?? ""}`} key={`${part.type}-${index}`}>
-          <ChatApprovalCard part={part} writable={writable} browserEvalContext={{sessionId:session.id,turnId:item.turnId??'',leaseEpoch:leaseSessionId.current===session.id?lease.current??0:0,generation:`${connection.runtimeEpoch??''}:${connection.connectionGeneration}:${link.transportGeneration}`,writable:!nested&&item.turnOrigin!=='history'&&writable,live:!nested&&item.turnOrigin!=='history'&&item.turnId!==undefined&&item.turnId===liveTurn}} submitting={approvalBusy?.startsWith(`${part.approvalId ?? ""}:`) ? approvalBusy.slice((part.approvalId ?? "").length + 1) : undefined} onChoose={choiceId => { if (item.turnId && part.approvalId) void approval(item.turnId, part.approvalId, choiceId); }} onAnswer={response => { if (item.turnId && part.approvalId) void answer(item.turnId, part.approvalId, response); }} onPlanResponse={response => { if (item.turnId && part.approvalId) void answer(item.turnId, part.approvalId, response); }} copy={copy} />
+          <ChatApprovalCard part={part} writable={writable} browserEvalContext={{sessionId:session.id,turnId:item.turnId??'',leaseEpoch:leaseSessionId.current===session.id?lease.current??0:0,generation:`${connection.runtimeEpoch??''}:${connection.connectionGeneration}:${link.transportGeneration}`,writable:!nested&&item.turnOrigin!=='history'&&writable,live:!nested&&item.turnOrigin!=='history'&&item.turnId!==undefined&&item.turnId===liveTurn}} submitting={approvalBusy?.startsWith(`${part.approvalId ?? ""}:`) ? approvalBusy.slice((part.approvalId ?? "").length + 1) : undefined} onChoose={choiceId => { if (item.turnId && part.approvalId) void approval(item.turnId, part.approvalId, choiceId); }} onAnswer={response => { if (item.turnId && part.approvalId) void answer(item.turnId, part.approvalId, response); }} onPlanResponse={response => { if (item.turnId && part.approvalId) void answer(item.turnId, part.approvalId, response); }} copy={copy} zh={zh} />
         </div>;
         const label = partLabel(part, copy);
         const redactedBrowser=hasRedactedBrowserResult(part);
@@ -1725,7 +1726,7 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession, 
           {foldedTool ? <CodexToolPart part={part} copy={copy} openFile={openFile} /> : <>
             {label && <strong>{label}</strong>}
             {body ? codexMarkdown
-              ? <ChatMarkdown sanitizedHtml={renderCodexMarkdown(body, zh)} references={part.fileReferences} openFile={openFile} copy={copy} onInsert={writable ? text => insertChatText(session.id, text) : undefined} />
+              ? <ChatMarkdown sanitizedHtml={renderCodexMarkdown(body, zh)} references={part.fileReferences} openFile={openFile} copy={copy} zh={zh} onInsert={writable ? text => insertChatText(session.id, text) : undefined} />
               : item.role === 'user' ? <><ContextMessage text={body} zh={zh}>{(value, badges) => <div className="v3-message-text"><MessageMentionText text={value} badges={badges} openFile={openFile} zh={zh} /></div>}</ContextMessage>{asRecord(part.data).steered === true && <span className="chip is-plain chat-inserted-tag" data-testid="inserted-tag">{copy('Inserted', '已插入')}</span>}</> : <div className="v3-message-text"><FileLinkedText text={body} openFile={openFile} /></div>
               : null}
             {!codexMarkdown && <FileReferenceChips references={redactedBrowser?undefined:part.fileReferences} visibleText={body} openFile={openFile} />}
@@ -1791,7 +1792,7 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession, 
       {connectionHeld && canControl && !ended && <button type="button" className="btn" disabled={repairBusy} onClick={continueWithoutReload}>{copy('Continue chat without reloading', '不重新加载，继续聊天')}</button>}
     </section>}
     {repairFollowup && <p className="chat-repair-notice" role="status">{copy('History repaired. Queued prompts stay paused until ThreadTerm restarts.', '历史已修复。排队的提示词将保持暂停，直到 ThreadTerm 重启。')}</p>}
-    {ui.notice && <p className="chat-repair-notice" role="status">{runtimeText(ui.notice.message, zh)}</p>}
+    {ui.notice && <ChatProviderNotice notice={ui.notice} message={runtimeText(ui.notice.message, zh)} />}
     {overlay === "banner" && <ChatConnectOverlay provider={session.provider} phase={connection.phase} slow={false} error={connection.error} variant="banner" onRetry={retryConnection} copy={copy} transportDown={link.transport !== "up"} options={ui.options} />}
     <PiProjectTrust trust={ui.piTrust} disabled={!writable || trustBusy || Boolean(liveTurn) || !session.projectId} disabledReason={!session.projectId ? copy('Add this session to a project before changing project trust.', '请先将此会话加入项目，再更改项目信任。') : undefined} onDecide={setPiProjectTrust} copy={copy} />
     {!permissionRecovery && ui.loadState === "error" && ui.error && <p className="surface-error" role="alert">{ui.error.message} <button type="button" className="btn" disabled={!writable} onClick={() => void request("chat.options", { sessionId: session.id }).then(setUi).catch(caught => setUi(current => ({ ...current, loadState: "error", error: { code: "options_failed", message: asUserError(caught, copy("Options could not be loaded.", "无法读取选项。")) } })))}>{copy("Retry options", "重试读取选项")}</button></p>}

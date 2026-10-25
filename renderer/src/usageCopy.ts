@@ -53,7 +53,7 @@ export function usageCopy(locale: UsageLocale) {
       cacheRead: zh ? '缓存读取' : 'Cache read',
       cacheWrite: zh ? '缓存写入' : 'Cache write',
       output: zh ? '输出' : 'Output',
-      reasoning: zh ? '推理' : 'reasoning',
+      reasoning: zh ? '推理' : 'Reasoning',
     },
     evidence: {
       exact: zh ? '精确' : 'Exact',

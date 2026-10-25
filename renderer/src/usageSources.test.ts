@@ -1,8 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  fileLine, humanizeProblem, problemCounts, problemLabel, reportedBuckets, sourceState, sourceTotals,
+  bucketLabel, fileLine, humanizeProblem, problemCounts, problemLabel, reportedBuckets, sourceState, sourceTotals,
 } from './usageSources.js';
+import { usageCopy } from './usageCopy.js';
 
 const stats = (partial: Partial<{ filesFound: number; filesRead: number; bytesRead: number; facts: number; problems: Record<string, number>; cancelled: boolean }>) => ({
   filesFound: 0, filesRead: 0, bytesRead: 0, facts: 0, problems: {}, cancelled: false, ...partial,
@@ -56,6 +57,11 @@ test('reported buckets keep one fixed order and unknown buckets are dropped', ()
   assert.deepEqual(reportedBuckets(['output', 'input', 'reasoning', 'nope']), ['input', 'output', 'reasoning']);
   assert.deepEqual(reportedBuckets([]), []);
   assert.deepEqual(reportedBuckets(undefined), []);
+});
+
+test('bucket labels use the localized reasoning word instead of a raw key', () => {
+  assert.equal(bucketLabel('reasoning', usageCopy('en')), 'Reasoning');
+  assert.equal(bucketLabel('reasoning', usageCopy('zh-CN')), '推理');
 });
 
 test('a provider with no files stays quiet instead of printing zeros', () => {

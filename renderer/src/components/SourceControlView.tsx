@@ -221,10 +221,11 @@ export function SourceControlView({scope, actions, git, zh, compact = false, too
   const selectedCount=selectionGroup?selectedIn(selectionGroup).length:0;
   return <section className="wb-change-group" aria-label={title}>
    <div className="wb-group-head">
+    {selectionGroup && <GroupSelectionToggle checked={selectedCount===items.length} mixed={selectedCount>0&&selectedCount<items.length} label={text(`Select all ${title}`, `全选${title}`)} onChange={()=>toggleGroupSelection(selectionGroup)}/>}
     <button type="button" className="wb-group-toggle" aria-expanded={!closed} onClick={() => setCollapsed(current => { const next = new Set(current); if(next.has(group)) next.delete(group); else next.add(group); return next; })}>
      <span className={`wb-chevron${closed ? '' : ' open'}`} aria-hidden="true"><Icon name="chevR"/></span>{title}<span className="wb-count">{items.length}</span>
     </button>
-    {selectionGroup && <GroupSelectionToggle checked={selectedCount===items.length} mixed={selectedCount>0&&selectedCount<items.length} label={text(`Select all ${title}`, `全选${title}`)} onChange={()=>toggleGroupSelection(selectionGroup)}/>}<span className="wb-row-actions">{actionsNode}</span>
+    <span className="wb-row-actions">{actionsNode}</span>
    </div>
    {!closed && <div role="list">{items.map(change => row(change, group))}</div>}
   </section>;

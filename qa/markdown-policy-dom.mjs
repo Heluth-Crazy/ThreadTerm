@@ -9,16 +9,16 @@ import { basename, dirname, join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import { build as esbuild } from 'esbuild';
 import { electron } from './lib/desktop1.mjs';
+import { acquireElectronQaLock } from './lib/electron-lock.mjs';
 import { startReadonlyReferenceServer } from './parity/reference-server.mjs';
 
 const root = resolve(import.meta.dirname, '..');
 const out = join(root, 'qa', 'results', 'markdown-policy');
 const tempRoot = resolve(process.env.TEMP || tmpdir());
-const lock = join(tempRoot, 'qa-electron.lock');
 const scratch = await mkdtemp(join(tempRoot, 'tt-markdown-policy-'));
 const fixture = join(scratch, 'fixture'), renderer = join(scratch, 'renderer'), profile = join(scratch, 'profile');
 const isolatedHome = join(scratch, 'home'), isolatedAppData = join(scratch, 'appdata'), isolatedLocalAppData = join(scratch, 'localappdata');
-let app, server, imageServer, locked = false;
+let app, server, imageServer, releaseLock;
 const report = { passed: false, checks: [], screenshots: [], errors: [] };
 const sleep = ms => new Promise(done => setTimeout(done, ms));
 const check = label => { report.checks.push(label); console.log(`PASS ${label}`); };
@@ -219,12 +219,6 @@ const api = {
 (window as unknown as { __markdownQA: typeof api }).__markdownQA = api;
 `;
 
-async function takeLock() {
-  const deadline = Date.now() + 40 * 60 * 1000;
-  for (;;) {
-    try { await mkdir(lock); locked = true; return; } catch (error) { if (error.code !== 'EEXIST' || Date.now() > deadline) throw error; console.log('Waiting for shared Electron QA lock'); await sleep(15_000); }
-  }
-}
 
 async function capture(name) {
   await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].webContents.executeJavaScript('new Promise(done=>requestAnimationFrame(()=>requestAnimationFrame(done)))'));
@@ -234,7 +228,7 @@ async function capture(name) {
 }
 
 try {
-  await takeLock();
+  releaseLock = await acquireElectronQaLock({ directory: tempRoot });
   await Promise.all([fixture, renderer, profile, isolatedHome, isolatedAppData, isolatedLocalAppData, out].map(path => mkdir(path, { recursive: true })));
   // Loopback image server: a hit is one request a rendered message made on its own.
   imageServer = createServer((request, response) => {
@@ -451,11 +445,15 @@ try {
   await capture('markdown-policy-dark.png');
   await page.evaluate(() => window.__markdownQA.setTheme('light'));
   await page.evaluate(() => window.__markdownQA.setLanguage('zh-CN'));
-  await page.evaluate(text => window.__markdownQA.render('live', text, true), `远端图片：![构建图表](${imageOrigin}/screenshot.png)`);
-  const zhPlaceholder = (await inspect('live')).remoteImages[0];
-  assert.equal(zhPlaceholder.action, '载入图片', 'the load action is translated');
-  assert.equal(zhPlaceholder.hostText, imageHost, 'the host is shown in both languages');
-  assert.equal(zhPlaceholder.label, `远端图片 ${imageHost}`);
+  const chineseScreenshotText=`远端图片：![构建图表](${imageOrigin}/screenshot.png)`;
+  for(const surface of ['live','history','plan','file','chat-react']){
+    await page.evaluate(([surface,text]) => window.__markdownQA.render(surface, text, true), [surface,chineseScreenshotText]);
+    await page.waitForFunction(surface=>Boolean(document.querySelector(`[data-surface="${surface}"] [data-remote-image]`)),surface);
+    const [placeholder]=(await inspect(surface)).remoteImages;
+    assert.equal(placeholder.action, '载入图片', `${surface}: the load action is translated`);
+    assert.equal(placeholder.hostText, imageHost, `${surface}: the host is shown in Chinese`);
+    assert.equal(placeholder.label, `远端图片 ${imageHost}`, `${surface}: the accessible label is translated`);
+  }
   await capture('markdown-policy-remote-image-zh-light.png');
   await page.evaluate(() => window.__markdownQA.setTheme('dark'));
   await capture('markdown-policy-remote-image-zh-dark.png');
@@ -480,7 +478,7 @@ try {
   await app?.close().catch(() => {});
   await server?.close().catch(() => {});
   if (imageServer) { imageServer.closeAllConnections?.(); imageServer.close(); }
-  if (locked) await rm(lock, { recursive: true, force: true }).catch(() => {});
+  await releaseLock?.().catch(() => {});
   const resolved = resolve(scratch);
   if (dirname(resolved).toLowerCase() === tempRoot.toLowerCase() && basename(resolved).startsWith('tt-markdown-policy-')) await rm(resolved, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 }).catch(() => {});
 }

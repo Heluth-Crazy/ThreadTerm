@@ -13,18 +13,18 @@ import { existsSync } from 'node:fs';
 import { build as esbuild } from 'esbuild';
 import { build as viteBuild } from 'vite';
 import { electron } from './lib/desktop1.mjs';
+import { acquireElectronQaLock } from './lib/electron-lock.mjs';
 
 const root = resolve(import.meta.dirname, '..');
-const runtime = join(root, 'runtime/target-qa/debug/threadterm-v3-runtime.exe');
-const out = join(root, 'qa/results/idle-workbench');
+const runtime = process.env.THREADTERM_V3_RUNTIME_BIN || join(root, 'runtime/target-qa/debug/threadterm-v3-runtime.exe');
+const out = process.env.THREADTERM_QA_OUTPUT_DIR || join(root, 'qa/results/idle-workbench-ac2');
 const scratchBase = resolve(process.env.TEMP || tmpdir());
 const scratch = await mkdtemp(join(scratchBase, 'tt-idle-workbench-'));
 const appDir = join(scratch, 'app'), bin = join(scratch, 'bin');
 const repo = join(scratch, 'repo');
-const lock = resolve('D:/project/ThreadTerm/tt-qa-temp/qa-electron.lock');
 const IDLE_MS = 15_000;
 const report = { passed: false, checks: [], idle: {}, refreshes: {}, notes: [], screenshots: [], errors: [] };
-let app, page, locked = false;
+let app, page, releaseLock;
 const sleep = ms => new Promise(done => setTimeout(done, ms));
 const check = value => { report.checks.push(value); console.log(`PASS ${value}`); };
 const request = (method, params = {}) => page.evaluate(([method, params]) => window.threadterm.request(method, params), [method, params]);
@@ -101,6 +101,36 @@ async function openView(name) {
   if (await rail(name).getAttribute('aria-pressed') !== 'true') await rail(name).click();
   await page.locator('.wb-sidebar').waitFor();
 }
+async function applySettings(language, theme) {
+  const snapshot = await request('runtime.snapshot');
+  await request('settings.update', { patch: { language, theme, themeSelection: theme, notifications: { native: false, attention: false, completed: false, sound: false } }, expectedRevision: snapshot.settings.revision, operationId: randomUUID() });
+  await page.waitForFunction(({ language, theme }) => document.documentElement.lang === language && document.documentElement.dataset.theme === theme, { language, theme });
+}
+async function setContentSize(width, height) {
+  if (width === 1440 && height === 900) await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].setContentSize(1440, 900));
+  else if (width === 900 && height === 720) await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].setContentSize(900, 720));
+  else throw Error(`unsupported QA content size ${width}x${height}`);
+  return app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].getContentSize());
+}
+async function assertAgentChangesHeader() {
+  const layout = await page.evaluate(() => {
+    const panel = document.querySelector('.wb-sidebar')?.getBoundingClientRect();
+    const title = document.querySelector('.wb-panel-head strong');
+    return { panelWidth: panel?.width, title: title?.textContent, titleFits: title ? title.scrollWidth <= title.clientWidth : false };
+  });
+  assert.ok(layout.panelWidth && Math.abs(layout.panelWidth - 280) <= 1, `the default side bar must be 280px: ${JSON.stringify(layout)}`);
+  assert.equal(layout.title, 'Agent changes', `the Agent changes title must remain readable: ${JSON.stringify(layout)}`);
+  assert.equal(layout.titleFits, true, `the Agent changes title must not be truncated: ${JSON.stringify(layout)}`);
+}
+async function assertSelectionAlignment() {
+  const layout = await page.evaluate(() => {
+    const group = document.querySelector('.wb-change-group[aria-label="Changes"]');
+    const selectAll = group?.querySelector('.wb-group-head > .wb-change-select')?.getBoundingClientRect();
+    const row = group?.querySelector('.wb-change-row .wb-change-select')?.getBoundingClientRect();
+    return { selectAllLeft: selectAll?.left, rowLeft: row?.left };
+  });
+  assert.ok(layout.selectAllLeft !== undefined && layout.rowLeft !== undefined && Math.abs(layout.selectAllLeft - layout.rowLeft) <= 1, `the CHANGES select-all checkbox must align with file-row checkboxes: ${JSON.stringify(layout)}`);
+}
 async function idle(label) {
   await sleep(1500);
   await resetCounts();
@@ -119,7 +149,7 @@ try {
   await writeFile(join(scratch, 'preload-entry.ts'), preloadWrapper());
   await esbuild({ entryPoints: [join(root, 'desktop/src/main.ts')], bundle: true, platform: 'node', target: 'node22', format: 'cjs', external: ['electron'], outfile: join(appDir, 'main.cjs'), logLevel: 'error' });
   await esbuild({ entryPoints: [join(scratch, 'preload-entry.ts')], bundle: true, platform: 'node', target: 'node22', format: 'cjs', external: ['electron'], outfile: join(appDir, 'preload.cjs'), logLevel: 'error' });
-  await viteBuild({ configFile: join(root, 'vite.config.ts'), logLevel: 'error', build: { outDir: join(appDir, 'renderer'), emptyOutDir: true, minify: false } });
+  await viteBuild({ ...(process.env.THREADTERM_QA_RENDERER_ROOT ? { root: resolve(process.env.THREADTERM_QA_RENDERER_ROOT) } : {}), configFile: join(root, 'vite.config.ts'), logLevel: 'error', build: { outDir: join(appDir, 'renderer'), emptyOutDir: true, minify: false } });
   await writeFile(join(appDir, 'package.json'), JSON.stringify({ name: 'idle-workbench-qa', version: '0.1.0', main: 'main.cjs' }));
 
   // A real repository with one committed file and one edited file, so Source Control has a change to commit.
@@ -132,10 +162,7 @@ try {
   await git(['commit', '-qm', 'initial commit']);
   await writeFile(join(repo, 'notes.md'), '# notes\n\nedited by the QA harness\n');
 
-  const deadline = Date.now() + 40 * 60 * 1000;
-  for (;;) {
-    try { await mkdir(lock); locked = true; break; } catch (error) { if (error.code !== 'EEXIST' || Date.now() > deadline) throw error; console.log('Waiting for shared Electron QA lock'); await sleep(15_000); }
-  }
+  releaseLock = await acquireElectronQaLock({ directory: scratchBase });
   app = await electron.launch({ args: ['--disable-features=CalculateNativeWinOcclusion', appDir], cwd: root, env: childEnv(), timeout: 60_000 });
   page = await app.firstWindow({ timeout: 45_000 }); page.setDefaultTimeout(20_000);
   page.on('pageerror', error => report.errors.push(error.message));
@@ -168,6 +195,7 @@ try {
   const scm = await idle('source-control-open');
   assert.deepEqual(scm, {}, `an open Source Control panel must not poll: ${JSON.stringify(scm)}`);
   check(`Source Control with a pending change makes zero git.*/review.* requests in ${IDLE_MS} ms`);
+  await assertSelectionAlignment();
   await shot('en-light-source-control.png');
 
   // Agent changes: mounting and switching views refreshes once, then nothing.
@@ -177,6 +205,8 @@ try {
   const changes = await idle('agent-changes-open');
   assert.deepEqual(changes, {}, `an open Agent changes panel must not poll: ${JSON.stringify(changes)}`);
   check(`Agent changes makes zero git.*/review.* requests in ${IDLE_MS} ms while idle`);
+  await assertAgentChangesHeader();
+  check('the default 280px Workbench header keeps Agent changes readable and aligns CHANGES select-all with file rows');
   await shot('en-light-agent-changes.png');
 
   // A commit through the Source Control UI costs exactly one status refresh, and none of it repeated.
@@ -219,6 +249,25 @@ try {
   assert.deepEqual(final, {}, `both panels visited and idle must stay quiet: ${JSON.stringify(final)}`);
   check('with both panels visited, an idle workbench makes zero git.*/review.* requests again');
 
+  // Capture each locale/theme at the wide width, then use the actual window width after requesting a narrow size.
+  for (const [language, theme, scmName, changesName, prefix] of [
+    ['en', 'light', 'Source Control', 'Agent changes', 'en-light'],
+    ['en', 'dark', 'Source Control', 'Agent changes', 'en-dark'],
+    ['zh-CN', 'light', '源代码管理', 'Agent 改动', 'zh-light'],
+    ['zh-CN', 'dark', '源代码管理', 'Agent 改动', 'zh-dark'],
+  ]) {
+    await applySettings(language, theme);
+    await setContentSize(1440, 900);
+    await openView(changesName);
+    await shot(`${prefix}-wide-agent-changes.png`);
+    const [narrowWidth] = await setContentSize(900, 720);
+    assert.ok(narrowWidth < 1440, `the narrow capture must use the real narrower window width: ${narrowWidth}`);
+    report.notes.push(`${prefix} narrow content width ${narrowWidth}px`);
+    await openView(scmName);
+    await shot(`${prefix}-narrow-source-control.png`);
+  }
+  check('captured Source Control and Agent changes in English/Chinese, light/dark, wide and real narrow windows');
+
   assert.deepEqual(report.errors, []);
   report.passed = true;
 } catch (error) {
@@ -228,7 +277,7 @@ try {
 } finally {
   if (page) await page.evaluate(() => window.threadterm.request('runtime.shutdown', { operationId: crypto.randomUUID() })).catch(() => {});
   if (app) { await app.evaluate(({ app: electronApp }) => electronApp.exit(0)).catch(() => {}); await app.close().catch(() => {}); }
-  if (locked) await rm(lock, { recursive: true, force: true });
+  if (releaseLock) await releaseLock().catch(() => {});
   await mkdir(out, { recursive: true });
   await writeFile(join(out, 'report.json'), JSON.stringify(report, null, 2));
   await rm(scratch, { recursive: true, force: true, maxRetries: 5 }).catch(() => {});

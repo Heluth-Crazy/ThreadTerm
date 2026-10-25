@@ -15,9 +15,9 @@ const HistoryMessage = memo(function HistoryMessage({ item, zh, actions }: { ite
   const parts = useMemo(() => item.parts.filter(historyRenderablePart).map(part => {
     const body = partBody(part);
     const parsed = item.role === "assistant" && part.type === "text" ? marked.parse(body, { gfm: true, breaks: true, async: false }) : undefined;
-    const html = parsed === undefined ? undefined : sanitizeMarkdownHtml(parsed, { forbidFileReferences: true });
+    const html = parsed === undefined ? undefined : sanitizeMarkdownHtml(parsed, { forbidFileReferences: true, zh });
     return { part, body, html };
-  }), [item]);
+  }), [item, zh]);
   if (!parts.length) return null;
   return <article className={`history-transcript-item history-message-${item.role}`} data-role={item.role}>
     {parts.map(({ part, body, html }, index) => {

@@ -77,7 +77,7 @@ export function stackedColumns(
   });
 }
 
-export type AxisLabel = { index: number; label: string };
+export type AxisLabel = { index: number; label: string; align?: 'start' | 'end' };
 
 /**
  * Keeps x-axis labels from colliding: walks the candidates left to right, drops any whose measured text would touch the
@@ -109,7 +109,7 @@ export function thinLabels(
     while (kept.length && center(kept.at(-1)!.index) + widthOf(kept.at(-1)!.label) / 2 + gap > left) kept.pop();
     kept.push(last);
   }
-  return kept;
+  return kept.map((tick, index) => index === kept.length - 1 && tick.index > 0 ? { ...tick, align: 'end' } : index === 0 ? { ...tick, align: 'start' } : tick);
 }
 
 /** Rounded axis ticks: 0 up to the first rounded step at or above the tallest column. */

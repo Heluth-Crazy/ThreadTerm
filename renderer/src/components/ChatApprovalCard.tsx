@@ -23,6 +23,7 @@ export function ChatApprovalCard({
   onPlanResponse,
   browserEvalContext,
   copy,
+  zh = false,
 }: {
   part: ChatPart;
   submitting?: string;
@@ -32,6 +33,7 @@ export function ChatApprovalCard({
   onPlanResponse?: (response: ChatAnswerResponse) => void;
   browserEvalContext?: BrowserEvalContext;
   copy: (en: string, zh: string) => string;
+  zh?: boolean;
 }) {
   const [showAll, setShowAll] = useState(false);
   if(isBrowserEvalApproval(part))return <BrowserEvalApprovalCard part={part} context={browserEvalContext} copy={copy}/>;
@@ -46,7 +48,7 @@ export function ChatApprovalCard({
   if (!data) {
     return <p className="chat-approval-stale">{copy("This older approval cannot be acted on. Reload the live session to review current requests.", "这条旧审批无法操作。请同步当前会话后再查看新的请求。")}</p>;
   }
-  if (data.interaction === "plan") return <PlanApprovalCard part={part} writable={writable} submitting={submitting} onRespond={onPlanResponse} copy={copy} />;
+  if (data.interaction === "plan") return <PlanApprovalCard part={part} writable={writable} submitting={submitting} onRespond={onPlanResponse} copy={copy} zh={zh} />;
   // A provider with no request text falls back to its protocol method (Codex file changes); name it instead.
   const rawTitle = !data.title || data.title === data.requestType;
   const title = !rawTitle ? data.title

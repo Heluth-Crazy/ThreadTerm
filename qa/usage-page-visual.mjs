@@ -9,23 +9,24 @@
 // rebuild confirmation, Settings → Usage (price override, outside switch) and a two-year month axis that names the year.
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, writeFile } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
 import { build as esbuild } from 'esbuild';
 import { build as viteBuild } from 'vite';
 import { electron } from './lib/desktop1.mjs';
+import { acquireElectronQaLock } from './lib/electron-lock.mjs';
 
 const root = resolve(import.meta.dirname, '..');
 const runtime = process.env.THREADTERM_V3_RUNTIME_BIN ?? join(root, 'runtime/target-qa/debug/threadterm-v3-runtime.exe');
-const out = join(root, 'qa/results/usage-page');
+const rendererRoot = process.env.THREADTERM_QA_RENDERER_ROOT ?? join(root, 'renderer');
+const out = resolve(process.env.THREADTERM_QA_OUTPUT_DIR ?? join(root, 'qa/results/usage-page'));
 const scratchBase = resolve('D:/project/ThreadTerm/tt-qa-temp');
 await mkdir(scratchBase, { recursive: true });
 const scratch = await mkdtemp(join(scratchBase, 'tt-usage-page-'));
 const appDir = join(scratch, 'app'), work = join(scratch, 'work'), bin = join(scratch, 'bin');
 const claudeHome = join(scratch, 'claude'), codexHome = join(scratch, 'codex'), piHome = join(scratch, 'pi');
-const lock = join(scratchBase, 'qa-electron.lock');
 const report = { passed: false, checks: [], screenshots: [], idle: {}, errors: [], limitations: [] };
-let app, page, locked = false;
+let app, page, releaseLock;
 const sleep = ms => new Promise(done => setTimeout(done, ms));
 const check = value => { report.checks.push(value); console.log(`PASS ${value}`); };
 const request = (method, params = {}) => page.evaluate(([a, b]) => window.threadterm.request(a, b), [method, params]);
@@ -72,6 +73,7 @@ contextBridge.exposeInMainWorld('threadtermQaCounts', {
 `;
 }
 async function shot(name) { await page.screenshot({ path: join(out, name), animations: 'disabled' }); report.screenshots.push(name); }
+async function shotElement(selector, name) { await page.locator(selector).screenshot({ path: join(out, name), animations: 'disabled' }); report.screenshots.push(name); }
 // The app's Select is a custom combobox: open the trigger, then pick the option by its visible label.
 async function selectOption(scope, label) {
   await page.locator(`${scope} .tt-select-trigger`).first().click();
@@ -120,16 +122,8 @@ async function buildApp() {
   // Harness-only preload wrapper: it imports the product preload unmodified and counts request channels.
   await writeFile(join(scratch, 'preload-entry.ts'), preloadWrapper());
   await esbuild({ entryPoints: [join(scratch, 'preload-entry.ts')], bundle: true, platform: 'node', target: 'node22', format: 'cjs', external: ['electron'], outfile: join(appDir, 'preload.cjs'), logLevel: 'error' });
-  await viteBuild({ configFile: join(root, 'vite.config.ts'), logLevel: 'warn', build: { outDir: join(appDir, 'renderer'), emptyOutDir: true } });
+  await viteBuild({ configFile: join(root, 'vite.config.ts'), root: rendererRoot, logLevel: 'warn', build: { outDir: join(appDir, 'renderer'), emptyOutDir: true } });
   await writeFile(join(appDir, 'package.json'), JSON.stringify({ name: 'usage-page-visual-qa', version: '1', main: 'main.cjs' }));
-}
-async function takeLock() {
-  const deadline = Date.now() + 40 * 60_000;
-  for (;;) {
-    try { await mkdir(lock); locked = true; return; } catch { /* another harness holds it */ }
-    if (Date.now() > deadline) throw Error('Timed out waiting for the Electron QA lock');
-    await sleep(15_000);
-  }
 }
 async function resize(width, height) {
   await app.evaluate(({ BrowserWindow }, [w, h]) => { const win = BrowserWindow.getAllWindows()[0]; win.setSize(w, h); win.show(); }, [width, height]);
@@ -150,7 +144,7 @@ async function openUsage() {
 }
 
 try {
-  await takeLock();
+  releaseLock = await acquireElectronQaLock({ directory: scratchBase });
   await mkdir(out, { recursive: true });
   await mkdir(bin, { recursive: true });
   await mkdir(work, { recursive: true });
@@ -245,7 +239,12 @@ try {
     const columns = await page.locator('.usage-chart-col').count();
     report[`axis-${context}`] = { spans: entries.length, columns, labelled: labelled.map(entry => `${entry.text}@${Math.round(entry.box.left)}-${Math.round(entry.box.right)}/span ${Math.round(entry.span.left)}-${Math.round(entry.span.right)}`) };
     assert.ok(labelled.length >= 2, `${context}: x-axis labels (${labelled.length}) of ${entries.length} spans, ${columns} columns`);
-    for (const entry of labelled) assert.match(entry.text, /[A-Za-z\u4e00-\u9fff]/, `${context}: label text ${entry.text}`);
+    const plot = await page.locator('.usage-chart-main').boundingBox();
+    assert.ok(plot, `${context}: chart plot bounds`);
+    for (const entry of labelled) {
+      assert.match(entry.text, /[A-Za-z\u4e00-\u9fff]/, `${context}: label text ${entry.text}`);
+      assert.ok(entry.box.left >= plot.x - 1 && entry.box.right <= plot.x + plot.width + 1, `${context}: ${entry.text} stays inside the plot (${Math.round(entry.box.left)}-${Math.round(entry.box.right)} outside ${Math.round(plot.x)}-${Math.round(plot.x + plot.width)})`);
+    }
     const sorted = [...labelled].sort((left, right) => left.box.left - right.box.left);
     for (let index = 1; index < sorted.length; index += 1) {
       assert.ok(sorted[index].box.left >= sorted[index - 1].box.right + 1, `${context}: labels ${sorted[index - 1].text}/${sorted[index].text} overlap (${Math.round(sorted[index].box.left)} < ${Math.round(sorted[index - 1].box.right)}), ${columns} columns, ${entries.length} spans`);
@@ -507,10 +506,33 @@ try {
   const sourceRows = await page.locator('.usage-source-row').allInnerTexts();
   assert.ok(sourceRows.every(text => /Found|Partly read|Format not supported yet|Not installed|Not read/.test(text)), `every row names its state: ${sourceRows[0]}`);
   assert.ok(sourceRows.some(text => /files/.test(text)), 'the rows report how many files were read');
+  assert.ok(sourceRows.some(text => /Reports .*Reasoning/.test(text)), `reasoning bucket has a readable label: ${sourceRows.join(' | ')}`);
   await page.locator('.usage-sources').scrollIntoViewIfNeeded();
   await shot('en-light-1280-sources.png');
   report.sources = sourceRows.map(text => text.split('\n').slice(0, 4).join(' | '));
-  check(`the sources panel is collapsed until opened and then lists ${sourceRows.length} providers with files, buckets and problems`);
+  check(`the sources panel is collapsed until opened and then lists ${sourceRows.length} providers with files, localized buckets and problems`);
+  // Capture the two affected Usage surfaces at the actual rendered width. Element shots keep the evidence focused while
+  // the name records the viewport size Electron accepted (rather than assuming a requested narrow window was honored).
+  const usageMatrix = [];
+  for (const [language, theme] of [['en', 'light'], ['en', 'dark'], ['zh-CN', 'light'], ['zh-CN', 'dark']]) {
+    await setAppearance(language, theme);
+    for (const requestedWidth of [1280, 900]) {
+      await resize(requestedWidth, 800);
+      const viewportWidth = await page.evaluate(() => Math.round(document.documentElement.clientWidth));
+      const suffix = `${language}-${theme}-viewport-${viewportWidth}`;
+      await page.locator('.usage-trend').scrollIntoViewIfNeeded();
+      if (requestedWidth === 900) await assertAxis(`${suffix}-trend`);
+      await shotElement('.usage-trend', `${suffix}-trend.png`);
+      await page.locator('.usage-sources').scrollIntoViewIfNeeded();
+      await shotElement('.usage-sources', `${suffix}-sources.png`);
+      usageMatrix.push({ language, theme, requestedWidth, viewportWidth });
+    }
+  }
+  report.usageMatrix = usageMatrix;
+  assert.ok(usageMatrix.some(entry => entry.viewportWidth <= 900), `Usage narrow viewport was honored: ${JSON.stringify(usageMatrix)}`);
+  check('Usage Sources and trend captures cover en/zh, light/dark, wide and actual narrow viewports');
+  await setAppearance('en', 'light');
+  await resize(1280, 800);
   await page.getByRole('button', { name: /^(Rebuild usage index|重建用量索引)$/ }).click();
   await page.locator('.dlg-foot').waitFor();
   const rebuildTitle = await page.locator('.dlg-head h2').innerText();
@@ -529,6 +551,7 @@ try {
   const usageSettings = await page.locator('.settings-group.active').innerText();
   assert.match(usageSettings, /Include usage from outside ThreadTerm/);
   assert.match(usageSettings, /Read .* history/);
+  assert.match(usageSettings, /Not installed/, 'Settings → Usage reuses the ledger\'s unavailable-provider state');
   assert.match(usageSettings, /Week starts on/);
   assert.match(usageSettings, /Model price overrides/);
   await shot('en-light-1280-settings-usage.png');  // A price override saves through usage.ledger.settings.update and shows up in the runtime's settings.
@@ -654,5 +677,5 @@ try {
   process.exitCode = 1;
 } finally {
   try { await app?.close(); } catch { /* already gone */ }
-  if (locked) { await rm(lock, { recursive: true, force: true }).catch(() => undefined); }
+  if (releaseLock) await releaseLock();
 }

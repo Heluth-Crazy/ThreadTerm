@@ -7,17 +7,18 @@ import './plan-approval.css';
 
 type Copy = (en: string, zh: string) => string;
 
-export function PlanApprovalCard({ part, writable, submitting, onRespond, copy }: {
+export function PlanApprovalCard({ part, writable, submitting, onRespond, copy, zh = false }: {
   part: ChatPart;
   writable: boolean;
   submitting?: string;
   onRespond?: (response: ChatAnswerResponse) => void;
   copy: Copy;
+  zh?: boolean;
 }) {
   const data = approvalData(part);
   const [editing, setEditing] = useState(false);
   const [feedback, setFeedback] = useState('');
-  const html = useMemo(() => sanitizeMarkdownHtml(marked.parse(data?.plan ?? '', { async: false }) as string), [data?.plan]);
+  const html = useMemo(() => sanitizeMarkdownHtml(marked.parse(data?.plan ?? '', { async: false }) as string, { zh }), [data?.plan, zh]);
   if (!data) return null;
   const pending = part.status === 'pending';
   const waitingForPrompt = data.waitingForPrompt === true;

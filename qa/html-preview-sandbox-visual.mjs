@@ -12,16 +12,17 @@ import { dirname, join, resolve, relative, isAbsolute } from 'node:path';
 import { build as esbuild } from 'esbuild';
 import { build as viteBuild } from 'vite';
 import { electron } from './lib/desktop1.mjs';
+import { acquireElectronQaLock } from './lib/electron-lock.mjs';
 import { connectPeer } from './pipe-client.mjs';
 import { closeBrowserViewFixture, within } from './lib/browser-view-cleanup.mjs';
 import { startHtmlPreviewProbes } from './lib/html-preview-probes.mjs';
 
-const root=resolve(import.meta.dirname,'..'),scratchBase=resolve(process.env.TEMP||join(tmpdir(),'ThreadTerm'),'html-preview-qa');
+const root=resolve(import.meta.dirname,'..'),rendererRoot=process.env.THREADTERM_QA_RENDERER_ROOT?resolve(process.env.THREADTERM_QA_RENDERER_ROOT):join(root,'renderer'),scratchBase=resolve(process.env.TEMP||join(tmpdir(),'ThreadTerm'),'html-preview-qa');
 const runtime=process.env.THREADTERM_V3_RUNTIME_BIN??join(root,'runtime/target-qa/debug/threadterm-v3-runtime.exe');
-const out=join(root,'qa/results/html-preview-sandbox'),lock=join(resolve(process.env.TEMP||join(tmpdir(),'ThreadTerm')),'qa-electron.lock');
+const out=join(root,'qa/results/html-preview-sandbox');
 await mkdir(scratchBase,{recursive:true});
 const scratch=await mkdtemp(join(scratchBase,'run-')),appDir=join(scratch,'app'),bin=join(scratch,'bin'),plugins=join(scratch,'plugins'),work=join(scratch,'work'),site=join(work,'site'),outside=join(scratch,'outside'),pipe=`\\\\.\\pipe\\tt-html-preview-${randomUUID()}`;
-let app,page,server,probesServer,runtimeProcess,locked=false;
+let app,page,server,probesServer,runtimeProcess,releaseLock;
 const report={passed:false,checks:[],screenshots:[],errors:[],limitations:['Inactive Desktop 1 captures can intermittently omit isolated-frame pixels even when DOM, font, image, and network assertions pass. Review fresh visual-control captures separately; automated PASS covers the asserted behavior and security checks.']};
 const sleep=ms=>new Promise(done=>setTimeout(done,ms));
 const pass=value=>{report.checks.push(value);console.log(`PASS ${value}`)};
@@ -54,19 +55,25 @@ async function toolbarMatrix(){
   report.toolbarMatrix.push({language,theme,width,screenshot:name});
  }
  const toolbar=page.locator('.sandboxed-html-preview-toolbar');
- // Size only the preview's own layout surface: this models a split pane narrower than a 900px window.
- const width=await toolbar.evaluate(node=>{const buttons=[...node.querySelectorAll('button')];return Math.ceil(buttons.reduce((sum,button)=>sum+button.getBoundingClientRect().width,0)+6*(buttons.length)+20+20)});
- await page.locator('.sandboxed-html-preview').evaluate((node,width)=>{node.style.width=width+'px';node.style.maxWidth=width+'px';node.style.flex='0 0 auto'},width);
- await toolbar.evaluate(()=>new Promise(done=>requestAnimationFrame(()=>requestAnimationFrame(done))));
- await toolbarFits();
- const compact=await page.locator('.sandboxed-html-preview-status').evaluate(node=>({width:node.getBoundingClientRect().width,tooltip:node.title,icon:[...node.querySelectorAll('svg')].some(svg=>svg.getBoundingClientRect().width>0),text:[...node.querySelectorAll('span')].some(span=>span.getBoundingClientRect().width>0)}));
- assert.ok(compact.icon&&compact.width<=32,'very narrow pane replaces the status label with a compact glyph');
- await shot('gc5r-compact-status.png');report.compactStatus={paneWidth:width,...compact};
+ // Use one exact split-pane width for both locales. English controls are wider, so this reproduces the former mismatch.
+ await request('settings.update',{patch:{language:'en',theme:'light',themeSelection:'light'},expectedRevision:(await request('runtime.snapshot')).settings.revision,operationId:randomUUID()});
+ await page.getByRole('button',{name:'Allow remote content',exact:true}).waitFor();
+ const width=await toolbar.evaluate(node=>{const style=getComputedStyle(node),buttons=[...node.querySelectorAll('button')];return Math.ceil(buttons.reduce((sum,button)=>sum+button.getBoundingClientRect().width,0)+6*buttons.length+Number.parseFloat(style.paddingInlineStart)+Number.parseFloat(style.paddingInlineEnd)+50)});
+ report.compactStatus={paneWidth:width,locales:[]};
+ for(const [language,label] of [['en','Allow remote content'],['zh-CN','允许远程内容']]){
+  await request('settings.update',{patch:{language,theme:'light',themeSelection:'light'},expectedRevision:(await request('runtime.snapshot')).settings.revision,operationId:randomUUID()});
+  await page.getByRole('button',{name:label,exact:true}).waitFor();
+  await page.locator('.sandboxed-html-preview').evaluate((node,width)=>{node.style.width=width+'px';node.style.maxWidth=width+'px';node.style.flex='0 0 auto'},width);
+  await toolbar.evaluate(()=>new Promise(done=>requestAnimationFrame(()=>requestAnimationFrame(done))));
+  await toolbarFits();
+  const compact=await page.locator('.sandboxed-html-preview-status').evaluate(node=>({width:node.getBoundingClientRect().width,tooltip:node.title,compact:node.classList.contains('is-compact'),icon:[...node.querySelectorAll('svg')].some(svg=>svg.getBoundingClientRect().width>0)}));
+  assert.ok(compact.compact&&compact.icon&&compact.width<=32,`${language}: the same narrow pane replaces the status label with a compact glyph`);
+  await shot(`gc5r-compact-status-${language}.png`);report.compactStatus.locales.push({language,...compact});
+ }
  await page.locator('.sandboxed-html-preview').evaluate(node=>{node.style.removeProperty('width');node.style.removeProperty('max-width');node.style.removeProperty('flex')});
- pass('en/zh-CN × light/dark × 900/1280 toolbar matrix stays on one row; very narrow pane uses the full-tooltip compact status');
+ pass('en/zh-CN × light/dark × 900/1280 toolbar matrix stays on one row; one measured narrow pane uses the full-tooltip compact status in both locales');
 }
-async function takeLock(){const deadline=Date.now()+40*60*1000;for(;;){try{await mkdir(lock);locked=true;return}catch(error){if(error.code!=='EEXIST'||Date.now()>deadline)throw error;console.log('Waiting for shared Electron QA lock');await sleep(15_000)}}}
-async function buildApp(){await mkdir(appDir,{recursive:true});for(const name of ['main','preload','htmlPreviewSandboxPreload'])await esbuild({entryPoints:[join(root,`desktop/src/${name}.ts`)],bundle:true,platform:'node',target:'node22',format:'cjs',external:['electron'],outfile:join(appDir,`${name}.cjs`),logLevel:'error'});await viteBuild({configFile:join(root,'vite.config.ts'),logLevel:'warn',build:{outDir:join(appDir,'renderer'),emptyOutDir:true}});await writeFile(join(appDir,'package.json'),JSON.stringify({name:'html-preview-sandbox-qa',version:'1',main:'main.cjs'}))}
+async function buildApp(){await mkdir(appDir,{recursive:true});for(const name of ['main','preload','htmlPreviewSandboxPreload'])await esbuild({entryPoints:[join(root,`desktop/src/${name}.ts`)],bundle:true,platform:'node',target:'node22',format:'cjs',external:['electron'],outfile:join(appDir,`${name}.cjs`),logLevel:'error'});await viteBuild({root:rendererRoot,configFile:join(root,'vite.config.ts'),logLevel:'warn',build:{outDir:join(appDir,'renderer'),emptyOutDir:true}});await writeFile(join(appDir,'package.json'),JSON.stringify({name:'html-preview-sandbox-qa',version:'1',main:'main.cjs'}))}
 async function fixture(){
  await Promise.all([site,outside,bin,plugins,join(scratch,'downloads')].map(path=>mkdir(path,{recursive:true})));await writeFile(join(outside,'outside.txt'),'must never be visible');
  const fonts=join(process.env.WINDIR||process.env.SystemRoot||'','Fonts');const candidates=['arial.ttf','segoeui.ttf','calibri.ttf'];const font=candidates.map(name=>join(fonts,name)).find(existsSync);if(font)await copyFile(font,join(site,'fixture.ttf'));else report.limitations.push('No detected system TTF; fixture uses the browser fallback font.');
@@ -90,7 +97,7 @@ async function start(){
 }
 async function frame(){const element=page.locator('iframe[name^="tt-preview-"]').first(),name=await element.getAttribute('name');assert.ok(name,'sandbox frame has page-comment-compatible tt-preview name');return {element,name,content:page.frameLocator(`iframe[name="${name}"]`)};}
 try{
- assert.ok(existsSync(runtime),`missing QA runtime ${runtime}`);await mkdir(out,{recursive:true});probesServer=await startHtmlPreviewProbes(scratch);server=probesServer.http;await fixture();await buildApp();await takeLock();const identity=await start();if(probesServer.https)await app.evaluate(({session})=>session.defaultSession.setCertificateVerifyProc((request,callback)=>callback(request.hostname==='127.0.0.1'?0:-3)));
+ assert.ok(existsSync(runtime),`missing QA runtime ${runtime}`);await mkdir(out,{recursive:true});probesServer=await startHtmlPreviewProbes(scratch);server=probesServer.http;await fixture();await buildApp();releaseLock=await acquireElectronQaLock({directory:resolve(process.env.TEMP||join(tmpdir(),'ThreadTerm'))});const identity=await start();if(probesServer.https)await app.evaluate(({session})=>session.defaultSession.setCertificateVerifyProc((request,callback)=>callback(request.hostname==='127.0.0.1'?0:-3)));
  const parentUrl=page.url();
  const preview=await frame();await preview.content.locator('#script-output').getByText('local JSON loaded').waitFor();assert.equal(await preview.content.locator('#head-style').evaluate(node=>getComputedStyle(node).color),'rgb(118, 42, 131)');assert.equal(await preview.content.locator('.linked').evaluate(node=>getComputedStyle(node).fontSize),'27px');assert.equal(await preview.content.locator('.picture').evaluate(node=>node.naturalWidth),24);assert.equal(await preview.content.locator('#inline-svg').count(),1);await preview.content.locator('#form button').click();await expectText(preview.content.locator('#script-output'),'form handled');await preview.content.locator('#about-link').click();await expectText(preview.content.locator('#about'),'local linked page');pass('head style, linked CSS, relative image/font/SVG, script fetch/form, and local multi-page link render');
  await page.getByRole('button',{name:'Reload',exact:true}).click();await preview.content.locator('#script-built').getByText('linked JavaScript rendered this row').waitFor();await startLifetimeProbe(preview);const oldGrant=await preview.element.getAttribute('src');await page.getByRole('button',{name:'Reload',exact:true}).click();await until(async()=>{const src=await page.locator('iframe[name^="tt-preview-"]').first().getAttribute('src');return src&&src!==oldGrant},'new revoked-on-reload grant');const restored=await frame();await restored.content.locator('#script-output').getByText('local JSON loaded').waitFor();const revoked=await app.evaluate(async ({session},old)=>{try{return (await session.defaultSession.fetch(old)).status}catch{return 0}},oldGrant);assert.equal(revoked,404,'old grant is unavailable after reload');await assertLifetimeStopped();await crossGrantProbe(identity,restored);await toolbarFits();await shot('fixture-light-blocked.png');assert.equal(probesServer.hits.http+probesServer.hits.https+probesServer.hits.websocket,0,'blocked remote elements must make no loopback request');const probes=await restored.content.locator('body').evaluate(async()=>{await new Promise(done=>setTimeout(done,600));return window.probes});assert.deepEqual({bridge:probes.bridge,require:probes.require,process:probes.process},{bridge:'undefined',require:'undefined',process:'undefined'});assert.equal(probes.parent,'SecurityError');assert.ok(probes.permissions?.every(Boolean),'clipboard, media, and notification requests are denied');assert.notEqual(probes.webrtc,'offered','WebRTC data channel must not make a STUN offer from a blocked preview');assert.equal((await restored.element.getAttribute('src'))?.startsWith('tt-preview://'),true,'top/mailto/custom navigation leaves the sandbox on its grant');assert.equal(page.url(),parentUrl,'preview cannot navigate the app');assert.equal(probesServer.hits.stun+probesServer.hits.turn,0,'RTC sends no loopback STUN/TURN traffic');pass('default sandbox blocks loopback image/fetch/beacon/link, WebRTC/STUN, parent access, top/mailto/custom navigation, permissions, and Electron/Node globals');
@@ -108,7 +115,7 @@ try{
  await toolbarMatrix();
  if(report.liveLanding){const live=await savedFixture('live.html');await live.content.locator('h1').first().waitFor();await shot('gc3-live-landing.png');pass('GC3 saved landing page renders its original head styles in the sandbox');}await revocationRaceProbe(identity);await windowCloseProbe(identity);assert.deepEqual(report.errors,[]);report.passed=true;
 }catch(error){report.errors.push(error.stack??String(error));if(page)await shot('failure.png').catch(()=>{});process.exitCode=1}
-finally{report.errors.push(...await closeBrowserViewFixture({app,page,runtime:runtimeProcess}));await probesServer?.close().catch(error=>report.errors.push(String(error)));if(locked)await rm(lock,{recursive:true,force:true});await mkdir(out,{recursive:true});await writeFile(join(out,'report.json'),JSON.stringify(report,null,2));await rm(scratch,{recursive:true,force:true,maxRetries:5}).catch(()=>{});console.log(report.passed?'HTML PREVIEW SANDBOX VISUAL QA PASSED':`HTML PREVIEW SANDBOX VISUAL QA FAILED\n${report.errors.join('\n')}`);process.exitCode=report.passed?0:1;}
+finally{report.errors.push(...await closeBrowserViewFixture({app,page,runtime:runtimeProcess}));await probesServer?.close().catch(error=>report.errors.push(String(error)));await releaseLock?.().catch(error=>report.errors.push(String(error)));await mkdir(out,{recursive:true});await writeFile(join(out,'report.json'),JSON.stringify(report,null,2));await rm(scratch,{recursive:true,force:true,maxRetries:5}).catch(()=>{});console.log(report.passed?'HTML PREVIEW SANDBOX VISUAL QA PASSED':`HTML PREVIEW SANDBOX VISUAL QA FAILED\n${report.errors.join('\n')}`);process.exitCode=report.passed?0:1;}
 
 
 async function copyLiveLanding(){

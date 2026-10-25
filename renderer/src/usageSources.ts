@@ -2,6 +2,7 @@
 // "format not supported yet" and unreadable buckets) are unit-testable and every provider state has one stable key the
 // copy table can translate.
 import type { UsageLedgerScanStats, UsageLedgerSource } from '@threadterm/protocol';
+import type { UsageCopy } from './usageCopy';
 
 /** Provider states the panel can show. `history_not_read` is the settings switch, not a failure. */
 export type SourceState = 'found' | 'partial' | 'notInstalled' | 'unsupported' | 'notRead' | 'cancelled' | 'failed';
@@ -86,6 +87,12 @@ function sumProblems(stats: UsageLedgerScanStats | undefined): number {
 
 /** What a provider can report, in a fixed order so two providers with the same buckets read the same way. */
 export const BUCKET_ORDER = ['input', 'cacheRead', 'cacheWrite5m', 'cacheWrite1h', 'cacheWriteUnknown', 'output', 'reasoning'] as const;
+
+/** Bucket keys become the page's own token words, so a source row reads like the tiles. */
+export function bucketLabel(bucket: string, copy: Pick<UsageCopy, 'buckets'>): string {
+  if (bucket === 'cacheWrite5m' || bucket === 'cacheWrite1h' || bucket === 'cacheWriteUnknown') return copy.buckets.cacheWrite;
+  return (copy.buckets as Record<string, string>)[bucket] ?? bucket;
+}
 
 export function reportedBuckets(buckets: readonly string[] | undefined): string[] {
   const known = new Set(buckets ?? []);

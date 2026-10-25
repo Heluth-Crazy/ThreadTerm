@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { rebuildUsageLedger, useUsageSources } from '../usageLedger';
 import { dateTimeText, type UsageLocale } from '../usageFormat';
 import {
-  fileLine, humanizeProblem, problemCounts, reportedBuckets, sourceState, sourceTotals,
+  bucketLabel, fileLine, humanizeProblem, problemCounts, reportedBuckets, sourceState, sourceTotals,
 } from '../usageSources';
 import type { UsageCopy } from '../usageCopy';
 import type { UsageLedgerSource } from '@threadterm/protocol';
@@ -117,10 +117,4 @@ function SourceRow({ source, locale, copy, providerName }: {
       </span>}
     </span>}
   </li>;
-}
-
-/** Bucket keys become the page's own token words, so a source row reads like the tiles. */
-function bucketLabel(bucket: string, copy: UsageCopy): string {
-  if (bucket === 'cacheWrite5m' || bucket === 'cacheWrite1h' || bucket === 'cacheWriteUnknown') return copy.buckets.cacheWrite;
-  return (copy.buckets as Record<string, string>)[bucket] ?? bucket;
 }

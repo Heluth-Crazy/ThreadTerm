@@ -149,6 +149,7 @@ html[data-theme="dark"] { color-scheme:dark; }
 .dialog-form fieldset label { display:flex; align-items:center; gap:6px; font-size:12px; }
 .dialog-form fieldset.retry-settings { display:grid; grid-template-columns:minmax(0,1fr); gap:8px; }
 .dialog-form fieldset.retry-settings p, .dialog-form fieldset.retry-settings .retry-history { min-width:0; overflow-wrap:break-word; }
+.dialog-form fieldset.retry-settings .retry-save { justify-self:start; }
 .dialog-form legend { margin-bottom:8px; color:var(--muted); font-size:12px; }
 .dialog-actions { display:flex; align-items:center; justify-content:flex-end; gap:8px; }
 .path-row { display:flex; align-items:center; gap:8px; }

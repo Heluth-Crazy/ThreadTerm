@@ -204,7 +204,7 @@ impl CodexAdapter {
         } else if require_durability {
             return Err(ProviderError::new(
                 "provider_method_unsupported",
-                "This Codex CLI cannot save a new terminal session. Update the Codex CLI you installed (for example npm install -g @openai/codex), then open the terminal again. / 当前 Codex CLI 无法保存新的终端会话。请更新你安装的 Codex CLI（例如 npm install -g @openai/codex），然后重新打开终端。",
+                "Your Codex CLI is older than ThreadTerm expects: a new terminal session cannot be saved for later resume. Update Codex (for example npm install -g @openai/codex), then open the terminal again. / 当前 Codex CLI 版本低于 ThreadTerm 所需版本：无法保存新的终端会话以供稍后恢复。请更新 Codex（例如 npm install -g @openai/codex），然后重新打开终端。",
             ));
         }
         Ok(response)
@@ -262,10 +262,10 @@ impl CodexFeature {
     fn label(self) -> (&'static str, &'static str) {
         match self {
             Self::InjectItems => (
-                "saving a new chat before its first message",
-                "保存首条消息之前的空会话",
+                "a new chat is saved only after its first message",
+                "新对话只有在发送首条消息后才会保存",
             ),
-            Self::HistoryTurns => ("reading saved chat history", "读取已保存的对话记录"),
+            Self::HistoryTurns => ("saved chat history cannot be displayed", "无法显示已保存的对话记录"),
         }
     }
 }
@@ -285,21 +285,17 @@ impl CodexApiSupport {
         !self.unsupported.contains(&feature)
     }
 
-    /// Records a missing feature and, the first time, one readable notice. A
-    /// later missing feature adds no second message: the cause is one old CLI.
+    /// Keeps one notice; a newly discovered limitation replaces the earlier one.
     fn record_missing(&mut self, feature: CodexFeature) {
-        if !self.unsupported.contains(&feature) {
-            self.unsupported.push(feature);
-        }
-        if self.notice.is_some() {
+        if self.unsupported.contains(&feature) {
             return;
         }
+        self.unsupported.push(feature);
         let (en_label, zh_label) = feature.label();
-        let method = feature.name();
         let version = self.version.as_deref().filter(|value| !value.is_empty());
         let named = match version {
-            Some(version) => format!("This Codex CLI ({version})"),
-            None => "This Codex CLI".to_owned(),
+            Some(version) => format!("Your Codex CLI ({version})"),
+            None => "Your Codex CLI".to_owned(),
         };
         let named_zh = match version {
             Some(version) => format!("当前 Codex CLI（{version}）"),
@@ -307,7 +303,7 @@ impl CodexApiSupport {
         };
         self.notice = Some(json!({
             "code": "codex_cli_limited",
-            "message": format!("{named} does not support {method} ({en_label}). Chat still works with fewer features. Update the Codex CLI you installed (for example npm install -g @openai/codex), then restart ThreadTerm. / {named_zh}不支持 {method}（{zh_label}）。Chat 仍可使用，但功能有所减少。请更新你安装的 Codex CLI（例如 npm install -g @openai/codex），然后重启 ThreadTerm。"),
+            "message": format!("{named} is older than ThreadTerm expects: {en_label}. Update Codex (for example npm install -g @openai/codex), then restart ThreadTerm. / {named_zh}版本低于 ThreadTerm 所需版本：{zh_label}。请更新 Codex（例如 npm install -g @openai/codex），然后重启 ThreadTerm。"),
             "version": version,
             "feature": feature.name(),
         }));
@@ -584,7 +580,7 @@ impl ProviderAdapter for CodexAdapter {
         self.record_missing(CodexFeature::HistoryTurns);
         Err(ProviderError::new(
             "provider_method_unsupported",
-            "This Codex CLI cannot return saved chat turns. Update the Codex CLI you installed (for example npm install -g @openai/codex), then reopen the chat. / 当前 Codex CLI 无法返回已保存的对话轮次。请更新你安装的 Codex CLI（例如 npm install -g @openai/codex），然后重新打开对话。",
+            "Your Codex CLI is older than ThreadTerm expects: saved chat history cannot be displayed. Update Codex (for example npm install -g @openai/codex), then reopen the chat. / 当前 Codex CLI 版本低于 ThreadTerm 所需版本：无法显示已保存的对话记录。请更新 Codex（例如 npm install -g @openai/codex），然后重新打开对话。",
         ))
     }
 
@@ -2267,7 +2263,13 @@ fn codex_protocol_error(method: &str, error: ProviderError) -> ProviderError {
             && error.message.contains("unknown variant")
             && error.message.contains(&format!("`{method}`")))
     {
-        ProviderError::new("provider_method_unsupported", format!("This Codex CLI does not support {method}. Update Codex to use this feature. / 当前 Codex 版本不支持 {method}，请更新 Codex 后使用此功能。"))
+        let (en, zh) = match method {
+            "thread/inject_items" => ("a new terminal session cannot be saved for later resume", "无法保存新的终端会话以供稍后恢复"),
+            "thread/read" => ("saved chat history cannot be displayed", "无法显示已保存的对话记录"),
+            "thread/settings/update" => ("chat settings cannot be changed", "无法更改对话设置"),
+            _ => ("this action is unavailable", "无法使用此操作"),
+        };
+        ProviderError::new("provider_method_unsupported", format!("Your Codex CLI is older than ThreadTerm expects: {en}. Update Codex (for example npm install -g @openai/codex), then restart ThreadTerm. / 当前 Codex CLI 版本低于 ThreadTerm 所需版本：{zh}。请更新 Codex（例如 npm install -g @openai/codex），然后重启 ThreadTerm。"))
             .with_details(json!({"method":method,"nativeError":error.details}))
     } else {
         error

@@ -83,12 +83,19 @@ export function SandboxedHtmlPreview({ projectId, worktreePath, path, savedConte
     const update = () => {
       const style = getComputedStyle(element);
       const controls = [...element.querySelectorAll<HTMLButtonElement>('button')];
+      const status = element.querySelector<HTMLElement>('.sandboxed-html-preview-status');
       const controlWidth = controls.reduce((total, control) => total + control.getBoundingClientRect().width, 0);
+      if (!status) return;
+      const compact = status.classList.contains('is-compact');
+      const label = status.querySelector<HTMLElement>('span');
+      status.classList.remove('is-compact');
+      const statusWidth = label?.scrollWidth ?? status.scrollWidth;
+      if (compact) status.classList.add('is-compact');
       // Always use the expanded gap so the compact layout cannot toggle itself at the threshold.
       const gap = 6;
       const padding = (Number.parseFloat(style.paddingInlineStart) || 0) + (Number.parseFloat(style.paddingInlineEnd) || 0);
-      const remaining = element.clientWidth - padding - controlWidth - gap * controls.length;
-      setCompactStatus(current => current === (remaining < 60) ? current : remaining < 60);
+      const needsCompactStatus = element.clientWidth < padding + controlWidth + statusWidth + gap * controls.length;
+      setCompactStatus(current => current === needsCompactStatus ? current : needsCompactStatus);
     };
     update();
     const observer = typeof ResizeObserver === 'undefined' ? undefined : new ResizeObserver(update);

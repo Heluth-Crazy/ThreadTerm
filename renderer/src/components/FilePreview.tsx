@@ -55,7 +55,7 @@ export function FilePreview({projectId,worktreePath,path,content,savedContent,im
       if(!markdown){if(active)setHtml('');return;}
       const markdownContent=withoutYamlFrontMatter(content);
       const raw=await marked.parse(markdownContent,{gfm:true});
-      const safe=sanitizeMarkdownHtml(raw);
+      const safe=sanitizeMarkdownHtml(raw,{zh});
       const fragment=new DOMParser().parseFromString(safe,'text/html');
       await Promise.all([...fragment.querySelectorAll('img')].map(async image=>{
         const relative=relativeAsset(path,image.getAttribute('src')??'');
@@ -72,7 +72,7 @@ export function FilePreview({projectId,worktreePath,path,content,savedContent,im
       if(active)setHtml(fragment.body.innerHTML);
     })().catch(error=>{if(active)setIssue(error instanceof Error?error.message:String(error));});
     return()=>{active=false;};
-  },[projectId,worktreePath,path,markdown,content]);
+  },[projectId,worktreePath,path,markdown,content,zh]);
   useEffect(()=>{if(!imageFile||image)return;let active=true;void request('filesystem.image',{projectId,worktreePath,path}).then(asset=>{if(active)setLoadedImage(asset);}).catch(error=>{if(active)setIssue(error instanceof Error?error.message:String(error));});return()=>{active=false;};},[projectId,worktreePath,path,imageFile,image]);
   function previewAddress(){try{const url=new URL(address);if(!['http:','https:'].includes(url.protocol))throw Error();pagePreview.cancel();setLiveUrl(url.href);setIssue(undefined);}catch{setIssue(zh?'请输入 HTTP 或 HTTPS 地址。':'Use an HTTP or HTTPS address.');}}
   const openPreviewMenu=(event:React.MouseEvent<HTMLElement>)=>{

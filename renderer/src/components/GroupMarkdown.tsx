@@ -15,5 +15,5 @@ export function GroupMarkdown({ text, zh, onOpenFile, onOpenUrl }: { text: strin
   }
   return sanitizeMarkdownHtml(template.innerHTML, { forbidImages: true });
  }, [text]);
- return <div className="gc-markdown" onClickCapture={event => { const anchor = (event.target as Element).closest?.('a[href]'); const href = anchor?.getAttribute('href'); if (href && /^https?:\/\//i.test(href)) { event.preventDefault(); event.stopPropagation(); onOpenUrl(href); } }}><ChatMarkdown sanitizedHtml={html} copy={(en, cn) => zh ? cn : en} openFile={reference => onOpenFile(reference.path)} /></div>;
+ return <div className="gc-markdown" onClickCapture={event => { const anchor = (event.target as Element).closest?.('a[href]'); const href = anchor?.getAttribute('href'); if (href && /^https?:\/\//i.test(href)) { event.preventDefault(); event.stopPropagation(); onOpenUrl(href); } }}><ChatMarkdown sanitizedHtml={html} copy={(en, cn) => zh ? cn : en} zh={zh} openFile={reference => onOpenFile(reference.path)} /></div>;
 }

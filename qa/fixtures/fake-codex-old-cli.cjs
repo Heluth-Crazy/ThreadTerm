@@ -39,7 +39,7 @@ createInterface({ input: process.stdin, crlfDelay: Infinity }).on('line', (line)
     const nativeTurn = `qa-old-cli-turn-${++turn}`;
     event('turn/started', { threadId: nativeId, turn: { id: nativeTurn } });
     result(id, { turn: { id: nativeTurn } });
-    event('item/completed', { threadId: nativeId, turnId: nativeTurn, item: { id: 'qa-old-cli-answer', type: 'agentMessage', phase: 'final_answer', text: 'The old CLI answered.' } });
+    event('item/completed', { threadId: nativeId, turnId: nativeTurn, item: { id: 'qa-old-cli-answer', type: 'agentMessage', phase: 'final_answer', text: 'The old CLI answered.' + (process.env.THREADTERM_QA_CODEX_OLD_CLI_IMAGE ? `\n\n![QA image](${process.env.THREADTERM_QA_CODEX_OLD_CLI_IMAGE})` : '') } });
     event('turn/completed', { threadId: nativeId, turn: { id: nativeTurn, status: 'completed' } });
     return;
   }

@@ -89,3 +89,13 @@ test('the latest period keeps its label and gives up a neighbour instead', () =>
   assert.deepEqual(thinLabels([], 20, () => 34), []);
   assert.deepEqual(thinLabels(dense, 0, () => 34), []);
 });
+
+test('edge ticks align inward so their text stays inside the plot', () => {
+  const ticks = thinLabels([
+    { index: 0, label: 'Jan 2026' },
+    { index: 11, label: 'Oct 2026' },
+  ], 24, () => 48);
+  assert.equal(ticks[0]!.align, 'start');
+  assert.equal(ticks[1]!.align, 'end');
+  assert.equal(thinLabels([{ index: 11, label: 'Oct 2026' }], 24, () => 48)[0]!.align, 'end', 'a sole latest tick anchors to the plot end');
+});

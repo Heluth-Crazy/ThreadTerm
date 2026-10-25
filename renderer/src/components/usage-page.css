@@ -100,7 +100,10 @@ button.usage-heat-cell:hover, button.usage-heat-cell:focus-visible { outline:1.5
 .usage-chart-seg.is-top { border-radius:4px 4px 1px 1px; }
 .usage-chart-direct { position:absolute; left:50%; transform:translateX(-50%); margin:0; color:var(--muted); font-size:10px; line-height:10px; text-align:center; font-variant-numeric:tabular-nums; pointer-events:none; white-space:nowrap; }
 .usage-chart-xaxis { display:flex; gap:2px; height:14px; color:var(--faint); font-size:10px; line-height:14px; font-variant-numeric:tabular-nums; }
-.usage-chart-xaxis > span { flex:1 1 0; min-width:0; text-align:center; white-space:nowrap; }
+.usage-chart-xaxis > span { position:relative; flex:1 1 0; min-width:0; }
+.usage-chart-xaxis > span > i { position:absolute; top:0; left:50%; font-style:normal; transform:translateX(-50%); white-space:nowrap; }
+.usage-chart-xaxis > span.is-start > i { left:0; transform:none; }
+.usage-chart-xaxis > span.is-end > i { right:0; left:auto; transform:none; }
 .usage-chart-col:focus-visible { outline:2px solid var(--primary); outline-offset:1px; border-radius:4px; }
 
 /* Tooltip shared by the calendar and the trend. */
