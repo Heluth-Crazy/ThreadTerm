@@ -68,10 +68,10 @@
   font-weight: 600;
 }
 .workbench-page .composer-agent-menu {
-  position: absolute;
+  position: fixed;
   left: 0;
-  top: calc(100% + 6px);
-  z-index: 8;
+  top: 0;
+  z-index: 35;
   width: 248px;
   max-height: 360px;
   overflow: auto;
@@ -230,4 +230,21 @@
 }
 .workbench-page .workbench-links button:hover {
   color: var(--text);
+}
+
+.workbench-page .composer-agent-menu { width: min(360px, calc(100vw - 48px)); }
+.workbench-page .composer-agent-item { flex-wrap: wrap; }
+.workbench-page .composer-agent-item small { white-space: normal; overflow-wrap: anywhere; }
+.workbench-page .composer-agent-option .provider-readiness-action { margin: 0 10px 8px 34px; max-width: calc(100% - 44px); white-space: normal; }
+.workbench-page .composer-send:disabled { opacity: .5; cursor: default; }
+.workbench-page .group-notice { display: flex; align-items: center; gap: 8px; margin-top: 12px; padding: 8px 12px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--raised); color: var(--text); font-size: 12px; line-height: 1.45; flex-wrap: wrap; overflow-wrap: anywhere; }
+.workbench-page .group-notice > .ico { flex: none; }
+
+.start.workbench-page { min-width: 0; width: 100%; box-sizing: border-box; grid-template-columns: minmax(0, 1fr); }
+.workbench-page .composer, .workbench-page .composer textarea { min-width: 0; }
+.workbench-page .composer textarea { width: 100%; }
+.workbench-page .composer-row > * { max-width: 100%; }
+@media (max-width: 760px) {
+  .workbench-page .quiet-row { flex-wrap: wrap; }
+  .workbench-page .quiet-row .meta { max-width: 100%; white-space: normal; overflow-wrap: anywhere; }
 }

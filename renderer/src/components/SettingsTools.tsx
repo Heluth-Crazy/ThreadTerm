@@ -11,7 +11,7 @@ import { ProviderSettingsPanel } from "./ProviderSettingsPanel";
 import { SurfaceDialog } from "./SurfaceDialog";
 import "./settings-tools.css";
 
-type Props = { data: Snapshot; onSaved: () => Promise<void> };
+type Props = { data: Snapshot; onSaved: () => Promise<void>; focusAccounts?: boolean };
 type Placement = "workspace" | "window";
 type Presentation = "background" | "focused";
 type ToolRun = { id: string; cwd: string; placement: Placement; presentation: Presentation };
@@ -30,9 +30,16 @@ function savedRuns(): Map<string, ToolRun> {
 }
 function persistRuns(runs: Map<string, ToolRun>) { try { localStorage.setItem(RUNS_KEY, JSON.stringify([...runs.values()])); } catch { /* Storage is only a convenience index. */ } }
 
-export function SettingsTools({ data, onSaved }: Props) {
+export function SettingsTools({ data, onSaved, focusAccounts = false }: Props) {
   const zh = localeFromSettings(data.settings) === "zh-CN";
   const copy = zh ? cn : en;
+  const accounts = useRef<HTMLDetailsElement>(null);
+  useEffect(() => {
+    if (!focusAccounts || !accounts.current) return;
+    accounts.current.open = true;
+    accounts.current.scrollIntoView({ block: "start" });
+    accounts.current.querySelector("summary")?.focus({ preventScroll: true });
+  }, [focusAccounts]);
   const [projectId, setProjectId] = useState(() => data.projects[0]?.id ?? "");
   const [cwd, setCwd] = useState(() => data.projects[0]?.path ?? "");
   const [placement, setPlacement] = useState<Placement>("workspace");
@@ -150,7 +157,7 @@ export function SettingsTools({ data, onSaved }: Props) {
       <button className="btn" type="button" disabled={Boolean(busy) || !cwd.trim()} onClick={createTerminal}><Icon name="terminal" />{busy === "create" ? copy.creating : copy.create}</button>
       <ul className="settings-tool-runs" aria-label={copy.runList} data-run-version={runVersion}>{runSessions.length ? runSessions.map(session => <RunRow key={session.id} session={session} run={runs.current.get(session.id)!} busy={busy} copy={copy} onShow={() => showRun(session)} onEnd={() => endRun(session)} onForce={() => setForceTarget(session)} />) : <li className="settings-tool-empty">{copy.noRuns}</li>}</ul>
     </section>
-    <details className="settings-tool-accounts"><summary>{copy.accounts}</summary><ProviderSettingsPanel data={data} onRefreshed={onSaved} onCreated={async session => { const config = await request("session.config.read", { sessionId: session.id }); const shown = presentationRequest({ sessionId: session.id, presentation: "focused", workspacePath: session.worktreePath ?? config.cwd }); if (!shown) throw new Error(copy.failed); await request("session.present", { ...shown, placement: "workspace", operationId: operationId() }); await onSaved(); }} /></details>
+    <details ref={accounts} open={focusAccounts} className="settings-tool-accounts"><summary>{copy.accounts}</summary><ProviderSettingsPanel data={data} onRefreshed={onSaved} onCreated={async session => { const config = await request("session.config.read", { sessionId: session.id }); const shown = presentationRequest({ sessionId: session.id, presentation: "focused", workspacePath: session.worktreePath ?? config.cwd }); if (!shown) throw new Error(copy.failed); await request("session.present", { ...shown, placement: "workspace", operationId: operationId() }); await onSaved(); }} /></details>
     {notice && <p className="settings-tool-notice" role="status" aria-live="polite">{notice}</p>}{issue && <p className="surface-error" role="alert">{issue}</p>}
     {gitOpen && project && <SurfaceDialog className="sheet-fill sheet-edge-to-edge" title={copy.gitDialog} subtitle={project.name} icon="branch" size="wide" onClose={() => setGitOpen(false)}><FileWorkspace projectId={project.id} initialView="diff" rootPath={project.path} /></SurfaceDialog>}
     {forceTarget && <SurfaceDialog title={copy.forceTitle} subtitle={forceTarget.title} icon="terminal" size="sm" onClose={() => { if (!busy) { setForceTarget(undefined); setForceIssue(undefined); } }} footer={<><button className="btn" disabled={Boolean(busy)} onClick={() => { setForceTarget(undefined); setForceIssue(undefined); }}>{copy.cancel}</button><button className="btn btn-danger" disabled={Boolean(busy)} onClick={() => endRun(forceTarget, true)}>{busy?.startsWith("force-") ? copy.forcing : copy.force}</button></>}><p>{copy.forceBody}</p><code className="settings-tools-force-cwd">{displayPath(runs.current.get(forceTarget.id)?.cwd ?? forceTarget.worktreePath) || copy.cwdUnknown}</code>{forceIssue && <p className="surface-error" role="alert">{forceIssue}</p>}</SurfaceDialog>}

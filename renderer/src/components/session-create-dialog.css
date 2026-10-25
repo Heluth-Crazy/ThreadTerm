@@ -1,3 +1,11 @@
 .create-form .create-block { border:0; padding:0; margin:0; min-width:0; }
 .create-form .create-block > .create-label { display:block; }
 .create-form .create-choice input[type="radio"] { width:auto; }
+
+.create-form .provider-choice { min-width: 0; }
+.create-form .provider-choice .create-type { width: 100%; }
+.create-form .provider-choice .create-hint { margin: 6px 0; overflow-wrap: anywhere; }
+.create-form .provider-choice .btn { max-width: 100%; height: auto; min-height: 26px; padding: 5px 10px; line-height: 1.35; white-space: normal; }
+.create-form .create-pending-fields { display: contents; border: 0; padding: 0; margin: 0; }
+
+.create-form .create-type-grid { grid-template-columns: repeat(auto-fit, minmax(min(170px, 100%), 1fr)); }

@@ -118,7 +118,7 @@ export function App() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [settingsInitialTab, setSettingsInitialTab] = useState<"tools">();
   const [creatorOpen, setCreatorOpen] = useState(false);
-  const [creatorDefaults, setCreatorDefaults] = useState<{projectId?:string;path?:string;provider?:ProviderId;title?:string}>();
+  const [creatorDefaults, setCreatorDefaults] = useState<{projectId?:string;path?:string;provider?:ProviderId;title?:string;draft?:string;mode?:"chat"|"terminal"}>();
   const [groupCreate,setGroupCreate]=useState(false);
   const [groupContext,setGroupContext]=useState<{sessionId:string}>();
   const [groupToOpen,setGroupToOpen]=useState<{id:string;title:string;members:{sessionId:string}[]}>();
@@ -521,7 +521,7 @@ export function App() {
           ) : route.kind === "usage" ? (
             <UsagePage data={data} />
           ) : route.kind === "workbench" ? (
-            <WorkbenchPage data={data} recentIds={recentIds} onProject={id=>void navigate({kind:"project",id})} onSession={id=>void navigate({kind:"session",id})} onCreate={defaults=>{setCreatorDefaults(defaults);setCreatorOpen(true);}} onAddProject={()=>setProjectCreatorOpen(true)} onAll={()=>void navigate({kind:"all"})} onInbox={()=>void navigate({kind:"inbox"})}/>
+            <WorkbenchPage data={data} onCreated={created=>{openCreatedSession(created);void refresh();}} recentIds={recentIds} onProject={id=>void navigate({kind:"project",id})} onSession={id=>void navigate({kind:"session",id})} onCreate={defaults=>{setCreatorDefaults(defaults);setCreatorOpen(true);}} onAddProject={()=>setProjectCreatorOpen(true)} onAll={()=>void navigate({kind:"all"})} onInbox={()=>void navigate({kind:"inbox"})} onOpenSettings={()=>{setSettingsInitialTab("tools");setSettingsOpen(true);}}/>
           ) : route.kind === "inbox" ? (
             <InboxPage
               data={scopedData??data}
@@ -576,8 +576,8 @@ export function App() {
         {paletteOpen && data && <CommandPalette data={data} workbench={route.kind === "session" || route.kind === "workspace"} onClose={()=>setPaletteOpen(false)} onSession={id=>void navigate({kind:"session",id})} onProject={id=>void navigate({kind:"project",id})} onCreate={()=>{setGroupCreate(false);setGroupContext(undefined);setCreatorOpen(true);}} onCreateGroup={()=>{setGroupCreate(true);setGroupContext(undefined);setCreatorOpen(true);}} onAll={()=>void navigate({kind:"all"})} onInbox={()=>void navigate({kind:"inbox"})} onSettings={()=>setSettingsOpen(true)} onUsage={()=>{setPaletteOpen(false);openUsage();}}/>}
         {creatorOpen && data && (
           <SessionCreateDialog data={data}
-            initialProjectId={creatorDefaults?.projectId} initialPath={creatorDefaults?.path} initialProvider={creatorDefaults?.provider} initialTitle={creatorDefaults?.title}
-            defaultKind={groupCreate?'group':undefined} fromSessionId={groupContext?.sessionId}
+            initialProjectId={creatorDefaults?.projectId} initialPath={creatorDefaults?.path} initialProvider={creatorDefaults?.provider} initialTitle={creatorDefaults?.title} initialDraft={creatorDefaults?.draft}
+            defaultKind={groupCreate?'group':creatorDefaults?.mode} fromSessionId={groupContext?.sessionId}
             onClose={() => {setCreatorOpen(false);setCreatorDefaults(undefined);setGroupCreate(false);setGroupContext(undefined);}}
             onCreated={(created) => {setCreatorOpen(false);setCreatorDefaults(undefined);setGroupCreate(false);setGroupContext(undefined);openCreatedSession(created);void refresh();}}
             onGroupCreated={()=>void refresh()}

@@ -20,14 +20,14 @@ function render(language: string, statuses: Session['status'][] = []) {
   return renderToStaticMarkup(createElement(I18nProvider, { locale: language === 'zh-CN' ? 'zh-CN' : 'en', children: page }));
 }
 
-// F22: the home field only names the session; it must not read like an initial task prompt.
+// F22: terminal choices use a title; ready Chat choices use an unsent draft.
 test('the Workbench home field is labelled as a session title in both languages', () => {
   const en = render('en');
-  assert.match(en, /placeholder="Session title \(optional\)[^"]*first message/);
+  assert.match(en, /placeholder="Session title \(optional\)"/);
   assert.match(en, /aria-label="Session title"/);
   assert.doesNotMatch(en, /Describe a session to start/i);
   const zh = render('zh-CN');
-  assert.match(zh, /placeholder="会话标题（可选）[^"]*第一条消息/);
+  assert.match(zh, /placeholder="会话标题（可选）"/);
   assert.match(zh, /aria-label="会话标题"/);
   assert.doesNotMatch(zh, /描述要开的会话/);
 });
@@ -41,5 +41,22 @@ test('Workbench session rows show translated status labels', () => {
   for (const [status, en, zh] of labels) {
     assert.match(render('en', [status]), new RegExp(`class="chip st-[a-z]+">${en}<`), `en label for ${status}`);
     assert.match(render('zh-CN', [status]), new RegExp(`class="chip st-[a-z]+">${zh}<`), `zh label for ${status}`);
+  }
+});
+
+test('Workbench requires an explicit Shell choice when no agent is ready', () => {
+  const html = render('en');
+  assert.match(html, /No agent is ready/);
+  assert.match(html, /composer-send[^>]*disabled/);
+});
+
+test('Workbench calls Chat text an unsent draft and terminal text a title', () => {
+  const base = snapshot('en');
+  for (const [language, label, hint] of [['en', 'Chat draft', 'press Send'], ['zh-CN', '聊天草稿', '点击发送']] as const) {
+    const data = { ...base, settings: { ...base.settings, language }, providers: [{ id: 'test-agent', name: 'Test agent', installed: true, terminal: false, chat: true, history: false, resume: false, auth: 'authenticated' as const }] };
+    const html = renderToStaticMarkup(createElement(WorkbenchPage, { data, onCreate: () => {}, onProject: () => {}, onSession: () => {}, onAddProject: () => {}, onAll: () => {}, onInbox: () => {} }));
+    assert.match(html, new RegExp(`aria-label="${label}"`));
+    assert.match(html, new RegExp(hint));
+    assert.doesNotMatch(html, /composer-send[^>]*disabled/);
   }
 });
