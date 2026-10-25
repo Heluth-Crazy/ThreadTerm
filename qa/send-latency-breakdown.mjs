@@ -9,6 +9,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { aggregateTrace, assertCheckpointTargets, checkpointTargetReport, parseTrace, summarizeRuns } from './lib/send-latency-breakdown.mjs';
 import { removeScratch } from './lib/qa-cleanup.mjs';
+import { acquireElectronQaLock } from './lib/electron-lock.mjs';
 import { PROTOCOL_CONTRACT } from '../protocol/index.ts';
 
 const option = name => { const index = process.argv.indexOf(name); return index < 0 ? undefined : process.argv[index + 1]; };
@@ -41,7 +42,7 @@ async function main() {
     projects: {}, ...(assertTargets ? { checkpointAssertion: { enabled: true, toleranceMs: assertToleranceMs,
       definition: 'Requires a ready review checkpoint for every send, including warm-up. Excludes each provider/project first send only from timing. Repeated checkpoint median must be <= 150 ms (small) or <= 600 ms (user-shaped); nearest-rank p90 must be <= target + tolerance.' } } : {}),
     scratch: process.argv.includes('--keep') ? scratch : undefined };
-  let app, page, activeData;
+  let app, page, activeData, releaseLock;
   const system32 = join(process.env.SystemRoot ?? 'C:\\Windows', 'System32');
   let realGit;
   const safeBase = Object.fromEntries(Object.entries(process.env).filter(([key]) =>
@@ -127,6 +128,7 @@ async function main() {
       css: { postcss: { plugins: [] } }, logLevel: 'warn', build: { outDir: join(appDir, 'renderer'), emptyOutDir: true } });
     await writeFile(join(appDir, 'package.json'), JSON.stringify({ name: 'threadterm-send-breakdown-qa', version: '0.1.0', main: 'main.cjs' }));
     process.env.TT_QA_DESKTOP = '1';
+    releaseLock = await acquireElectronQaLock();
     for (const provider of providers) for (const project of ['small', 'user-shaped']) {
       const base = join(scratch, `${provider}-${project}`), env = environment(base);
       await Promise.all(['home', 'appdata', 'localappdata', 'tmp', 'data', 'profile', 'codex-home', 'kimi-home', 'config', 'share']
@@ -254,6 +256,7 @@ async function main() {
     if (page) await page.screenshot({ path: join(out, `${runId}-failure.png`) }).catch(() => {});
   } finally {
     await closeApp();
+    await releaseLock?.();
     report.summaries = summarizeRuns(report.runs);
     await mkdir(out, { recursive: true });
     await writeFile(join(out, `${runId}.json`), JSON.stringify(report, null, 2) + '\n');

@@ -5,7 +5,8 @@ import { randomUUID } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { _electron as electron } from '@playwright/test';
+import { electron } from './lib/desktop1.mjs';
+import { acquireElectronQaLock } from './lib/electron-lock.mjs';
 
 const wait = milliseconds => new Promise(done => setTimeout(done, milliseconds));
 const qaDir = dirname(fileURLToPath(import.meta.url));
@@ -22,7 +23,7 @@ const profile = join(scratch, 'profile');
 const codexHome = join(scratch, 'codex-home');
 const pipe = `\\\\.\\pipe\\threadterm-codex-image-paste-${randomUUID()}`;
 const report = { passed: false, runtime, scratch, checks: [], observations: {} };
-let app;
+let app, releaseLock;
 let page;
 let savedClipboard;
 
@@ -109,6 +110,7 @@ try {
   const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !banned.has(key.toLowerCase())));
   Object.assign(env, { CODEX_HOME: codexHome, THREADTERM_V3_DATA: data, THREADTERM_V3_USER_DATA: profile, THREADTERM_V3_PIPE: pipe, THREADTERM_V3_RUNTIME: runtime });
 
+  releaseLock = await acquireElectronQaLock();
   app = await electron.launch({ args: [root], cwd: root, env, timeout: 60_000 });
   page = await app.firstWindow({ timeout: 45_000 });
   page.setDefaultTimeout(30_000);
@@ -225,6 +227,7 @@ try {
     await app.evaluate(({ app: electronApp }) => electronApp.exit(0)).catch(() => undefined);
     await app.close().catch(() => undefined);
   }
+  await releaseLock?.();
   await writeFile(join(scratch, 'report.json'), `${JSON.stringify(redact(report), null, 2)}\n`);
   process.stdout.write(`Codex image paste QA ${report.passed ? 'passed' : 'failed'}; report: ${join(scratch, 'report.json')}\n`);
 }

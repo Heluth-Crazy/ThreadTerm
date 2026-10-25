@@ -10,7 +10,8 @@ import { copyFile, mkdir, mkdtemp, readdir, readFile, rm, writeFile } from 'node
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { _electron as electron } from '@playwright/test';
+import { electron } from './lib/desktop1.mjs';
+import { acquireElectronQaLock } from './lib/electron-lock.mjs';
 import { build as esbuild } from 'esbuild';
 import { build as viteBuild } from 'vite';
 
@@ -37,7 +38,7 @@ const profile = join(scratch, 'profile');
 const codexHome = join(scratch, 'codex-home');
 const pipe = `\\\\.\\pipe\\threadterm-chat-overflow-luna-${randomUUID()}`;
 const report = { passed: false, startedAt: new Date().toISOString(), runtime, appDir, scratch, checks: [], timingsMs: {}, observations: {}, errors: [] };
-let app;
+let app, releaseLock;
 let page;
 
 function failureText(error) { return error instanceof Error ? error.stack ?? error.message : String(error); }
@@ -167,6 +168,7 @@ try {
 
   const inherited = Object.fromEntries(Object.entries(process.env).filter(([name]) => !/^(threadterm_|codex_home$|electron_run_as_node$)/iu.test(name)));
   const env = { ...inherited, CODEX_HOME: codexHome, THREADTERM_V3_DATA: data, THREADTERM_V3_USER_DATA: profile, THREADTERM_V3_PIPE: pipe, THREADTERM_V3_RUNTIME: runtime };
+  releaseLock = await acquireElectronQaLock();
   app = await electron.launch({ args: [appDir], cwd: root, env, timeout: 60_000 });
   page = await app.firstWindow({ timeout: 45_000 });
   page.setDefaultTimeout(30_000);
@@ -253,6 +255,7 @@ try {
     await Promise.race([app.close(), delay(5_000)]).catch(() => undefined);
     try { app.process()?.kill(); } catch { /* already closed */ }
   }
+  await releaseLock?.();
   if (!prepareOnly) {
     try {
       const nativeHistory = await inspectNativeHistory();

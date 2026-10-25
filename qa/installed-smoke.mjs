@@ -1,4 +1,5 @@
-import { _electron as electron } from '@playwright/test';
+import { electron } from './lib/desktop1.mjs';
+import { acquireElectronQaLock } from './lib/electron-lock.mjs';
 import { access, mkdtemp, mkdir, readFile, realpath, writeFile } from 'node:fs/promises';
 import { basename, dirname, join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -22,7 +23,7 @@ await mkdir(projectPath);
 const env = { ...process.env, THREADTERM_V3_DATA: join(scratch, 'data'), THREADTERM_V3_USER_DATA: join(scratch, 'profile'), THREADTERM_V3_PIPE: `\\\\.\\pipe\\threadterm-v3-installed-${randomUUID()}` };
 delete env.THREADTERM_V3_RUNTIME;
 delete env.THREADTERM_V3_DEV_SERVER_URL;
-let app, page;
+let app, page, releaseLock;
 const report = { startedAt: new Date().toISOString(), installRoot, retainedData: env.THREADTERM_V3_DATA, passed: false, checks: [] };
 function finishWithin(promise, timeoutMs) {
   let timeout;
@@ -62,6 +63,7 @@ try {
     worker.stdin.end(JSON.stringify({ id: 1, op: 'host.ping' }) + '\n');
   });
   report.checks.push('installed Electron ran the bundled Claude SDK host and answered host.ping without external Node on PATH');
+  releaseLock = await acquireElectronQaLock();
   app = await electron.launch({ executablePath, args: [], env, timeout: 45_000 });
   page = await app.firstWindow();
   await page.waitForFunction(() => !!window.threadterm, { timeout: 30_000 });
@@ -113,6 +115,7 @@ try {
   process.exitCode = 1;
 } finally {
   await closeApp().catch(() => {});
+  await releaseLock?.();
   report.completedAt = new Date().toISOString();
   await mkdir('qa/results', { recursive: true });
   await writeFile('qa/results/installed-smoke.json', JSON.stringify(report, null, 2));

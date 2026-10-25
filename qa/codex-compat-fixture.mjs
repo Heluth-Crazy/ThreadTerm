@@ -5,7 +5,8 @@ import { randomUUID } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { _electron as electron } from '@playwright/test';
+import { electron } from './lib/desktop1.mjs';
+import { acquireElectronQaLock } from './lib/electron-lock.mjs';
 
 const delay = ms => new Promise(done => setTimeout(done, ms));
 const qa = dirname(fileURLToPath(import.meta.url));
@@ -24,7 +25,7 @@ Object.assign(env, {
   CODEX_HOME: join(scratch, 'provider-home'), THREADTERM_QA_CODEX_COMPAT_LOG: log, THREADTERM_QA_CODEX_COMPAT_CWD: cwd,
 });
 const report = { passed: false, scratch, runtime, checks: [] };
-let app, page, session;
+let app, page, session, releaseLock;
 const requests = async () => (await readFile(log, 'utf8')).split(/\r?\n/).filter(Boolean).map(JSON.parse);
 const rpc = (method, params = {}) => page.evaluate(([name, value]) => window.threadterm.request(name, value), [method, params]);
 async function until(check, label, timeout = 15_000) {
@@ -54,6 +55,7 @@ try {
   await copyFile(process.execPath, join(bin, 'codex.exe'));
   await writeFile(join(bin, 'app-server'), `require(${JSON.stringify(resolve(qa, 'fixtures/fake-codex-compat.cjs'))});\n`);
   env.Path = [bin, dirname(process.execPath), join(process.env.SystemRoot ?? 'C:\\Windows', 'System32')].join(';');
+  releaseLock = await acquireElectronQaLock();
   app = await electron.launch({ args: [root], cwd: bin, env, timeout: 60_000 });
   page = await app.firstWindow({ timeout: 30_000 });
   await page.waitForFunction(() => Boolean(window.threadterm));
@@ -116,6 +118,7 @@ try {
 } finally {
   if (page) await rpc('runtime.shutdown', { operationId: randomUUID() }).catch(() => {});
   if (app) { await app.evaluate(({ app }) => app.exit(0)).catch(() => {}); await app.close().catch(() => {}); }
+  await releaseLock?.();
   await writeFile(join(scratch, 'report.json'), `${JSON.stringify(report, null, 2)}\n`);
   console.log(JSON.stringify(report, null, 2));
 }

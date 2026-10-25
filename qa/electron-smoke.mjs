@@ -1,4 +1,5 @@
-import {_electron as electron} from '@playwright/test';
+import { electron } from './lib/desktop1.mjs';
+import { acquireElectronQaLock } from './lib/electron-lock.mjs';
 import {mkdtemp,mkdir,rm,writeFile} from 'node:fs/promises';
 import {join,resolve} from 'node:path';
 import {tmpdir} from 'node:os';
@@ -7,11 +8,12 @@ import assert from 'node:assert/strict';
 const scratch=await mkdtemp(join(tmpdir(),'threadterm-v3-electron-'));
 const pipe=`\\\\.\\pipe\\threadterm-v3-qa-${process.pid}-${Date.now()}`;
 const env={...process.env,THREADTERM_V3_DATA:join(scratch,'data'),THREADTERM_V3_USER_DATA:join(scratch,'profile'),THREADTERM_V3_PIPE:pipe,THREADTERM_V3_RUNTIME:resolve('runtime/target/debug/threadterm-v3-runtime.exe')};
-let app;
+let app, releaseLock;
 let page;
 const report={version:'Electron 44.3.0',startedAt:new Date().toISOString(),checks:[]};
 try {
   await mkdir(join(scratch,'project')); await mkdir('qa/results',{recursive:true});
+  releaseLock=await acquireElectronQaLock();
   app=await electron.launch({args:[resolve('.')],env,timeout:30_000});
   page=await app.firstWindow(); const errors=[]; page.on('pageerror',error=>errors.push(error.message));
   await page.waitForFunction(()=>!!window.threadterm,{timeout:15_000});
@@ -57,5 +59,6 @@ try {
 } finally {
   if(page) await page.evaluate(()=>window.threadterm.request('runtime.shutdown',{operationId:crypto.randomUUID()})).catch(()=>{});
   if(app){await app.evaluate(({app})=>app.exit(0)).catch(()=>{});await app.close().catch(()=>{});}
+  await releaseLock?.();
   await rm(scratch,{recursive:true,force:true});
 }

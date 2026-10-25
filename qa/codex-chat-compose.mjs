@@ -7,7 +7,8 @@ import {mkdtemp,mkdir,writeFile} from 'node:fs/promises';
 import {join,resolve} from 'node:path';
 import {tmpdir} from 'node:os';
 import {randomUUID} from 'node:crypto';
-import {_electron as electron} from '@playwright/test';
+import { electron } from './lib/desktop1.mjs';
+import { acquireElectronQaLock } from './lib/electron-lock.mjs';
 
 const TEST_MODEL=/gpt-6-luna/i;
 const out=join('qa','results','codex-chat-compose-'+new Date().toISOString().replace(/[:.]/g,'-'));
@@ -19,7 +20,7 @@ const runtimeBin=process.env.THREADTERM_V3_RUNTIME_BIN
     ? resolve('runtime/target-qa/debug/threadterm-v3-runtime.exe')
     : resolve('runtime/target/debug/threadterm-v3-runtime.exe'));
 const env={...process.env,THREADTERM_V3_DATA:join(scratch,'data'),THREADTERM_V3_USER_DATA:join(scratch,'profile'),THREADTERM_V3_PIPE:pipe,THREADTERM_V3_RUNTIME:runtimeBin};
-const report={startedAt:new Date().toISOString(),retainedScratch:scratch,checks:[],observations:{}}; let app,page;
+const report={startedAt:new Date().toISOString(),retainedScratch:scratch,checks:[],observations:{}}; let app,page,releaseLock;
 const rpc=(method,params={})=>page.evaluate(([m,p])=>Promise.race([window.threadterm.request(m,p),new Promise((_,reject)=>setTimeout(()=>reject(new Error('RPC timeout: '+m)),45000))]),[method,params]);
 const run=(cmd,args,cwd)=>new Promise((res,rej)=>{const p=spawn(cmd,args,{cwd,windowsHide:true});let e='';p.stderr.on('data',b=>e+=b);p.once('exit',code=>code===0?res():rej(Error(cmd+' '+e)));});
 const shot=name=>page.screenshot({path:join(out,name)});
@@ -28,6 +29,7 @@ try {
   await mkdir(join(scratch,'data'),{recursive:true}); await mkdir(join(scratch,'profile'),{recursive:true});
   await run('git',['init'],project); await run('git',['config','user.email','qa@example.test'],project); await run('git',['config','user.name','QA'],project);
   await writeFile(join(project,'README.md'),'codex chat compose visual\n'); await run('git',['add','.'],project); await run('git',['commit','-m','init'],project);
+  releaseLock=await acquireElectronQaLock();
   app=await electron.launch({args:[resolve('.')],env,timeout:60000});
   page=await app.firstWindow({timeout:30000}); page.setDefaultTimeout(30000);
   const errors=[]; page.on('pageerror',e=>errors.push(e.message));
@@ -110,6 +112,7 @@ try {
 } finally {
   if(page)await rpc('runtime.shutdown',{operationId:randomUUID()}).catch(()=>{});
   if(app){await app.evaluate(({app})=>app.exit(0)).catch(()=>{}); await app.close().catch(()=>{});}
+  await releaseLock?.();
   report.completedAt=new Date().toISOString();
   await mkdir(out,{recursive:true});
   await writeFile(join(out,'report.json'),JSON.stringify(report,null,2)+'\n');

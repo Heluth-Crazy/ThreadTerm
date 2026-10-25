@@ -18,7 +18,8 @@ import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { basename, dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { _electron as electron } from '@playwright/test';
+import { electron } from './lib/desktop1.mjs';
+import { acquireElectronQaLock } from './lib/electron-lock.mjs';
 import { build as esbuild } from 'esbuild';
 import { build as viteBuild } from 'vite';
 import { removeAgentHistory } from './agent-history.mjs';
@@ -36,7 +37,7 @@ const out = join(root, 'qa/results/delegation-visual');
 const report = { passed: false, scratch, checks: [], notes: [], shots: [], errors: [] };
 const check = text => { report.checks.push(text); console.log(`PASS ${text}`); };
 const note = text => { report.notes.push(text); console.log(`NOTE ${text}`); };
-let app, page;
+let app, page, releaseLock;
 
 async function buildApp() {
   await mkdir(appDir, { recursive: true });
@@ -296,6 +297,7 @@ try {
     // chat lost control right after it became writable ("Chat is read-only", 2026-10-14), so its turn never began.
     THREADTERM_CLAUDE_NODE: process.execPath,
   });
+  releaseLock = await acquireElectronQaLock();
   app = await electron.launch({ args: [appDir], cwd: root, env, timeout: 60000 });
   page = await app.firstWindow({ timeout: 45000 });
   page.setDefaultTimeout(20000);
@@ -318,6 +320,7 @@ try {
 } finally {
   if (page) await request('runtime.shutdown', { operationId: randomUUID() }).catch(() => {});
   if (app) { await app.evaluate(({ app }) => app.exit(0)).catch(() => {}); await app.close().catch(() => {}); }
+  await releaseLock?.();
   // Closed CLIs may still be writing for a few seconds (the Claude SDK allows ~7 s on Windows).
   await delay(8000);
   report.historyLeft = removeAgentHistory(slug);

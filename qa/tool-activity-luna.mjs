@@ -10,7 +10,8 @@ import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { _electron as electron } from '@playwright/test';
+import { electron } from './lib/desktop1.mjs';
+import { acquireElectronQaLock } from './lib/electron-lock.mjs';
 import { build as esbuild } from 'esbuild';
 import { build as viteBuild } from 'vite';
 
@@ -34,7 +35,7 @@ const profile = join(scratch, 'profile');
 const codexHome = join(scratch, 'codex-home');
 const pipe = `\\\\.\\pipe\\threadterm-tool-activity-luna-${randomUUID()}`;
 const report = { passed: false, startedAt: new Date().toISOString(), runtime, appDir, scratch, checks: [], observations: {}, errors: [] };
-let app;
+let app, releaseLock;
 let page;
 let fixtureServer;
 
@@ -123,6 +124,7 @@ try {
   await prepareApp();
   const inherited = Object.fromEntries(Object.entries(process.env).filter(([name]) => !/^(threadterm_|codex_home$|electron_run_as_node$)/iu.test(name)));
   const env = { ...inherited, CODEX_HOME: codexHome, THREADTERM_V3_DATA: data, THREADTERM_V3_USER_DATA: profile, THREADTERM_V3_PIPE: pipe, THREADTERM_V3_RUNTIME: runtime };
+  releaseLock = await acquireElectronQaLock();
   app = await electron.launch({ args: [appDir], cwd: root, env, timeout: 60_000 });
   page = await app.firstWindow({ timeout: 45_000 });
   page.setDefaultTimeout(30_000);
@@ -215,6 +217,7 @@ try {
 } finally {
   try { if (page) await request('runtime.shutdown', { operationId: randomUUID() }); } catch { /* owned QA runtime only */ }
   if (app) { await app.evaluate(({ app: electronApp }) => electronApp.exit(0)).catch(() => undefined); await app.close().catch(() => undefined); try { app.process()?.kill(); } catch {} }
+  await releaseLock?.();
   if (fixtureServer) await new Promise(done => fixtureServer.close(done));
   report.finishedAt = new Date().toISOString();
   await mkdir(reportDir, { recursive: true }).catch(() => undefined);

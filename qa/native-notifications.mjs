@@ -14,7 +14,8 @@ import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { _electron as electron } from '@playwright/test';
+import { electron } from './lib/desktop1.mjs';
+import { acquireElectronQaLock } from './lib/electron-lock.mjs';
 import { build as esbuild } from 'esbuild';
 import { build as viteBuild } from 'vite';
 
@@ -29,7 +30,7 @@ const out = join(root, 'qa/results/native-notifications');
 const report = { passed: false, scratch, checks: [], notes: [], toasts: [], errors: [] };
 const check = text => { report.checks.push(text); console.log(`PASS ${text}`); };
 const note = text => { report.notes.push(text); console.log(`NOTE ${text}`); };
-let app, page;
+let app, page, releaseLock;
 
 async function prepare() {
   await mkdir(work, { recursive: true });
@@ -82,6 +83,7 @@ try {
     THREADTERM_V3_DATA: join(scratch, 'data'), THREADTERM_V3_USER_DATA: join(scratch, 'profile'),
     THREADTERM_V3_PIPE: `\\\\.\\pipe\\tt-notifications-${randomUUID()}`, THREADTERM_V3_RUNTIME: runtime, THREADTERM_CLAUDE_NODE: process.execPath,
   });
+  releaseLock = await acquireElectronQaLock();
   app = await electron.launch({ args: [appDir], cwd: root, env, timeout: 60000 });
   page = await app.firstWindow({ timeout: 45000 });
   page.on('pageerror', error => report.errors.push(error.message));
@@ -190,6 +192,7 @@ try {
 } finally {
   if (page) await page.evaluate(() => window.threadterm.request('runtime.shutdown', { operationId: crypto.randomUUID() })).catch(() => {});
   if (app) { await app.evaluate(({ app: electronApp }) => electronApp.exit(0)).catch(() => {}); await Promise.race([app.close(), delay(5000)]).catch(() => {}); try { app.process()?.kill(); } catch { /* already gone */ } }
+  await releaseLock?.();
   await writeFile(join(out, 'report.json'), JSON.stringify(report, null, 2));
   if (!keep) await rm(scratch, { recursive: true, force: true, maxRetries: 10, retryDelay: 250 }).catch(() => {});
   console.log(report.passed && !report.errors.length ? 'NATIVE NOTIFICATIONS QA PASSED' : `NATIVE NOTIFICATIONS QA FAILED\n${report.errors.join('\n')}`);

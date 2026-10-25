@@ -5,7 +5,8 @@ import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { randomUUID } from "node:crypto";
-import { _electron as electron } from "@playwright/test";
+import { electron } from "./lib/desktop1.mjs";
+import { acquireElectronQaLock } from "./lib/electron-lock.mjs";
 
 const scratch = await mkdtemp(join(tmpdir(), "threadterm-provider-network-"));
 const out = join("qa", "results", `provider-network-${new Date().toISOString().replace(/[:.]/g, "-")}`);
@@ -19,6 +20,7 @@ const env = {
 };
 const report = { startedAt: new Date().toISOString(), screenshots: [], checks: [], passed: false };
 let app;
+let releaseLock;
 let page;
 const rpc = (method, params = {}) => page.evaluate(([name, values]) => window.threadterm.request(name, values), [method, params]);
 const snapshot = () => rpc("runtime.snapshot", {});
@@ -36,6 +38,7 @@ async function capture(name, width, theme) {
 
 try {
   await Promise.all([mkdir(out, { recursive: true }), mkdir(join(scratch, "data")), mkdir(join(scratch, "profile"))]);
+  releaseLock = await acquireElectronQaLock();
   app = await electron.launch({ args: [resolve(".")], env, timeout: 60_000 });
   page = await app.firstWindow({ timeout: 30_000 });
   page.setDefaultTimeout(20_000);
@@ -101,6 +104,7 @@ try {
     await app.evaluate(({ app: electronApp }) => electronApp.exit(0)).catch(() => {});
     await app.close().catch(() => {});
   }
+  await releaseLock?.();
   report.completedAt = new Date().toISOString();
   await writeFile(join(out, "report.json"), JSON.stringify(report, null, 2) + "\n");
   await rm(scratch, { recursive: true, force: true });

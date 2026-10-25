@@ -3,17 +3,19 @@ import { mkdtemp, mkdir, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { randomUUID } from 'node:crypto';
-import { _electron as electron } from '@playwright/test';
+import { electron } from './lib/desktop1.mjs';
+import { acquireElectronQaLock } from './lib/electron-lock.mjs';
 const scratch = await mkdtemp(join(tmpdir(), 'threadterm-alt-v-'));
 const runtime = resolve('runtime/target-qa/debug/threadterm-v3-runtime.exe');
 assert.match(runtime, /runtime[\\/]target-qa[\\/]debug/);
 const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !/^threadterm_v3_(runtime|data|user_data|pipe)$/i.test(key)));
 Object.assign(env, { THREADTERM_V3_RUNTIME: runtime, THREADTERM_V3_DATA: join(scratch, 'data'), THREADTERM_V3_USER_DATA: join(scratch, 'profile'), THREADTERM_V3_PIPE: `\\\\.\\pipe\\threadterm-alt-v-${randomUUID()}` });
-let app, page;
+let app, page, releaseLock;
 const report = { scratch, bytes: [] };
 const delay = ms => new Promise(done => setTimeout(done, ms));
 try {
   await Promise.all([mkdir(env.THREADTERM_V3_DATA), mkdir(env.THREADTERM_V3_USER_DATA)]);
+  releaseLock = await acquireElectronQaLock();
   app = await electron.launch({ args: [resolve('.')], env, timeout: 60_000 });
   page = await app.firstWindow({ timeout: 30_000 });
   await page.waitForFunction(() => Boolean(window.threadterm));
@@ -47,6 +49,7 @@ try {
 finally {
   if (page) await page.evaluate(() => window.threadterm.request('runtime.shutdown', { operationId: crypto.randomUUID() })).catch(() => {});
   if (app) { await app.evaluate(({ app }) => app.exit(0)).catch(() => {}); await app.close().catch(() => {}); }
+  await releaseLock?.();
   await writeFile(join(scratch, 'report.json'), JSON.stringify(report, null, 2));
   console.log(JSON.stringify(report, null, 2));
 }

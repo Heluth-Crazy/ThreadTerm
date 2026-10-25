@@ -7,7 +7,8 @@ import {join,resolve} from 'node:path';
 import {tmpdir} from 'node:os';
 import {randomUUID} from 'node:crypto';
 import {promisify} from 'node:util';
-import {_electron as electron} from '@playwright/test';
+import { electron } from './lib/desktop1.mjs';
+import { acquireElectronQaLock } from './lib/electron-lock.mjs';
 
 const arg=name=>process.argv.find(value=>value.startsWith(`--${name}=`))?.slice(name.length+3);
 const exe=arg('exe'), devServer=arg('dev-server');
@@ -22,7 +23,7 @@ const env={...inheritedEnv,THREADTERM_V3_DATA:join(scratch,'data'),THREADTERM_V3
 const report={label,startedAt:new Date().toISOString(),exe:exe??'electron .',devServer:devServer??null,terminals,lines,settleMs,phases:{}};
 const sleep=ms=>new Promise(r=>setTimeout(r,ms));
 const run=(cmd,args,cwd)=>new Promise((ok,fail)=>{const p=spawn(cmd,args,{cwd,windowsHide:true});p.once('exit',code=>code===0?ok():fail(Error(cmd+' '+args.join(' '))))});
-let app,page;
+let app,page,releaseLock;
 const rpc=(method,params={})=>page.evaluate(([m,p])=>window.threadterm.request(m,p),[method,params]);
 
 async function processTable() {
@@ -65,6 +66,7 @@ try {
   await mkdir(out,{recursive:true}); await mkdir(project,{recursive:true}); await mkdir(env.THREADTERM_V3_DATA,{recursive:true});
   await run('git',['init'],project); await writeFile(join(project,'README.md'),'memory baseline\n');
   await run('git',['-c','user.email=qa@example.test','-c','user.name=QA','commit','--allow-empty','-m','init'],project);
+  releaseLock=await acquireElectronQaLock();
   app=await electron.launch(exe?{executablePath:resolve(exe),args:[],env,timeout:30000}:{args:[resolve('.')],env,timeout:30000});
   const rootPid=app.process().pid;
   page=await app.firstWindow({timeout:30000}); page.setDefaultTimeout(30000);
@@ -92,5 +94,6 @@ try {
 finally {
   if(page)await rpc('runtime.shutdown',{operationId:randomUUID()}).catch(()=>{});
   if(app){await app.evaluate(({app})=>app.exit(0)).catch(()=>{});await app.close().catch(()=>{});}
+  await releaseLock?.();
   report.completedAt=new Date().toISOString(); await writeFile(join(out,'report.json'),JSON.stringify(report,null,2)); console.log(JSON.stringify({out,passed:report.passed,error:report.error}));
 }

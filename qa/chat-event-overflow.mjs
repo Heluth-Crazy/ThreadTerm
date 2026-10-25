@@ -7,7 +7,8 @@ import { randomUUID } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { _electron as electron } from '@playwright/test';
+import { electron } from './lib/desktop1.mjs';
+import { acquireElectronQaLock } from './lib/electron-lock.mjs';
 
 const delay = milliseconds => new Promise(done => setTimeout(done, milliseconds));
 const qa = dirname(fileURLToPath(import.meta.url));
@@ -30,7 +31,7 @@ const fixture = resolve(qa, 'fixtures/fake-codex-overflow.cjs');
 const commandOutput = 'o'.repeat(1024 * 1024);
 const streamedAssistantText = Array.from({ length: 1536 }, (_, index) => `[${String(index).padStart(4, '0')}]`).join('');
 const report = { passed: false, baseline, runtime, scratch, eventCounts: {}, checks: [] };
-let app;
+let app, releaseLock;
 let page;
 let session;
 let sibling;
@@ -76,6 +77,7 @@ try {
   // that first `-c` as its own syntax-check flag.
   await writeFile(join(bin, 'codex.cmd'), `@"${process.execPath}" "${fixture}" %*\r\n`);
   env.Path = [bin, dirname(process.execPath), join(process.env.SystemRoot ?? 'C:\\Windows', 'System32')].join(';');
+  releaseLock = await acquireElectronQaLock();
   app = await electron.launch({ args: [root], cwd: bin, env, timeout: 60_000 });
   page = await app.firstWindow({ timeout: 30_000 });
   await page.waitForFunction(() => Boolean(window.threadterm));
@@ -158,6 +160,7 @@ try {
 } finally {
   if (page) await rpc('runtime.shutdown', { operationId: randomUUID() }).catch(() => {});
   if (app) { await app.evaluate(({ app: electronApp }) => electronApp.exit(0)).catch(() => {}); await app.close().catch(() => {}); }
+  await releaseLock?.();
   await writeFile(join(scratch, 'report.json'), `${JSON.stringify(report, null, 2)}\n`);
   process.stdout.write(`${JSON.stringify(report, null, 2)}\n`);
 }

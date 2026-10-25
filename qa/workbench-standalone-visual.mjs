@@ -8,7 +8,8 @@ import {mkdtemp,mkdir,writeFile} from 'node:fs/promises';
 import {join,resolve} from 'node:path';
 import {tmpdir} from 'node:os';
 import {randomUUID} from 'node:crypto';
-import {_electron as electron} from '@playwright/test';
+import { electron } from './lib/desktop1.mjs';
+import { acquireElectronQaLock } from './lib/electron-lock.mjs';
 
 const out=join('qa','results','workbench-standalone-visual',new Date().toISOString().replace(/[:.]/g,'-'));
 const scratch=await mkdtemp(join(tmpdir(),'threadterm-standalone-'));
@@ -18,7 +19,7 @@ const runtimeBin=process.env.THREADTERM_V3_RUNTIME_BIN||resolve('runtime/target/
 assert.ok(existsSync(runtimeBin),`runtime binary missing: ${runtimeBin}`);
 const env={...process.env,THREADTERM_V3_DATA:join(scratch,'data'),THREADTERM_V3_USER_DATA:join(scratch,'profile'),THREADTERM_V3_PIPE:pipe,THREADTERM_V3_RUNTIME:runtimeBin};
 const report={startedAt:new Date().toISOString(),scratch,checks:[],screenshots:[]};
-let app,page,settingsRevision=0;
+let app,page,settingsRevision=0,releaseLock;
 const rpc=(method,params={})=>page.evaluate(([m,p])=>window.threadterm.request(m,p),[method,params]);
 const git=args=>new Promise((res,rej)=>{const p=spawn('git',args,{cwd:project,windowsHide:true});let e='';p.stderr.on('data',b=>e+=b);p.once('exit',code=>code===0?res():rej(Error('git '+args.join(' ')+': '+e)));});
 const shot=async name=>{await page.waitForTimeout(250);await page.screenshot({path:join(out,name)});report.screenshots.push(name);};
@@ -35,6 +36,7 @@ try {
  await writeFile(join(project,'src','main.ts'),'export const answer = 42;\nexport const name = "qa";\n');
  await writeFile(join(project,'notes.txt'),'untracked\n');
 
+ releaseLock=await acquireElectronQaLock();
  app=await electron.launch({args:[resolve('.')],env,timeout:60000});
  page=await app.firstWindow({timeout:30000});page.setDefaultTimeout(20000);
  const errors=[];page.on('pageerror',error=>errors.push(error.message));
@@ -102,6 +104,7 @@ try {
  // The runtime outlives the window by design; stop the isolated one so it does not hold the pipes open.
  if(page)await rpc('runtime.shutdown',{operationId:randomUUID()}).catch(()=>{});
  if(app){await app.evaluate(({app})=>app.exit(0)).catch(()=>{});await app.close().catch(()=>{});}
+ await releaseLock?.();
  console.log(JSON.stringify({passed:report.passed,out,checks:report.checks.length,error:report.error?.split('\n').slice(0,3).join(' | ')},null,1));
  if(!report.passed)process.exitCode=1;
 }

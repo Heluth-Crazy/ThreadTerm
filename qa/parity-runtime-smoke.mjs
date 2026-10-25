@@ -4,7 +4,8 @@ import {mkdtemp,mkdir,writeFile,access} from 'node:fs/promises';
 import {join,resolve} from 'node:path';
 import {tmpdir} from 'node:os';
 import {randomUUID} from 'node:crypto';
-import {_electron as electron} from '@playwright/test';
+import { electron } from './lib/desktop1.mjs';
+import { acquireElectronQaLock } from './lib/electron-lock.mjs';
 
 const electronArg=process.argv.find(value=>value.startsWith('--exe='));
 const runtimeArg=process.argv.find(value=>value.startsWith('--runtime='));
@@ -17,7 +18,7 @@ const pipe='\\\\.\\pipe\\threadterm-v3-runtime-smoke-'+randomUUID();
 const inheritedEnv={...process.env}; delete inheritedEnv.THREADTERM_V3_RUNTIME;
 const env={...inheritedEnv,THREADTERM_V3_DATA:join(scratch,'data'),THREADTERM_V3_USER_DATA:join(scratch,'profile'),THREADTERM_V3_PIPE:pipe,...(exe?{}:{THREADTERM_V3_RUNTIME:runtime})};
 const marker='RUNTIME_SMOKE_'+randomUUID().replaceAll('-','');
-const report={startedAt:new Date().toISOString(),electron:exe??'development Electron',runtime:exe?'bundled':runtime,retainedScratch:scratch,checks:[]}; let app,page;
+const report={startedAt:new Date().toISOString(),electron:exe??'development Electron',runtime:exe?'bundled':runtime,retainedScratch:scratch,checks:[]}; let app,page,releaseLock;
 const run=(cmd,args,cwd)=>new Promise((resolve,reject)=>{const p=spawn(cmd,args,{cwd,windowsHide:true});let e='';p.stderr.on('data',b=>e+=b);p.once('exit',code=>code===0?resolve():reject(Error(cmd+' '+args.join(' ')+' '+e)))});
 const rpc=(method,params={})=>page.evaluate(([m,p])=>Promise.race([window.threadterm.request(m,p),new Promise((_,reject)=>setTimeout(()=>reject(new Error('RPC timeout: '+m)),20000))]),[method,params]);
 const stage=name=>console.log(JSON.stringify({name,at:new Date().toISOString()}));
@@ -26,7 +27,7 @@ try {
  await run('git',['init'],project); await run('git',['config','user.email','qa@example.test'],project); await run('git',['config','user.name','QA'],project);
  await writeFile(join(project,'README.md'),'runtime smoke\n'); await run('git',['add','.'],project); await run('git',['commit','-m','init'],project);
  stage('launching Electron');
- app=await electron.launch(exe?{executablePath:exe,args:[],env,timeout:30000}:{args:[resolve('.')],env,timeout:30000}); stage('Electron launched');
+ releaseLock=await acquireElectronQaLock(); app=await electron.launch(exe?{executablePath:exe,args:[],env,timeout:30000}:{args:[resolve('.')],env,timeout:30000}); stage('Electron launched');
  if(exe){assert.equal(await app.evaluate(({app})=>app.isPackaged),true);report.checks.push('Electron packaged runtime');stage('packaged state confirmed');}
  page=await app.firstWindow({timeout:30000}); stage('first window available'); page.setDefaultTimeout(15000);
  const errors=[];page.on('pageerror',e=>errors.push(e.message)); await page.waitForFunction(()=>!!window.threadterm);
@@ -65,5 +66,5 @@ try {
  await rpc('data.status',{}); report.checks.push('local data RPC'); await page.screenshot({path:join(out,'success.png')});
  assert.deepEqual(errors,[]); report.passed=true;
 } catch(error) { report.passed=false;report.error=error instanceof Error?error.stack:String(error);if(page)await page.screenshot({path:join(out,'failure.png')}).catch(()=>{});process.exitCode=1; }
-finally { if(page)await rpc('runtime.shutdown',{operationId:randomUUID()}).catch(()=>{});if(app){await app.evaluate(({app})=>app.exit(0)).catch(()=>{});await app.close().catch(()=>{});}report.completedAt=new Date().toISOString();await writeFile(join(out,'report.json'),JSON.stringify(report,null,2));console.log(JSON.stringify({out,report})); }
+finally { if(page)await rpc('runtime.shutdown',{operationId:randomUUID()}).catch(()=>{});if(app){await app.evaluate(({app})=>app.exit(0)).catch(()=>{});await app.close().catch(()=>{});}await releaseLock?.();report.completedAt=new Date().toISOString();await writeFile(join(out,'report.json'),JSON.stringify(report,null,2));console.log(JSON.stringify({out,report})); }
 

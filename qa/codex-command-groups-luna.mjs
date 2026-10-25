@@ -9,7 +9,8 @@ import { copyFile, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { _electron as electron } from '@playwright/test';
+import { electron } from './lib/desktop1.mjs';
+import { acquireElectronQaLock } from './lib/electron-lock.mjs';
 import { build as esbuild } from 'esbuild';
 import { build as viteBuild } from 'vite';
 
@@ -32,7 +33,7 @@ const profile = join(scratch, 'profile');
 const codexHome = join(scratch, 'codex-home');
 const pipe = `\\\\.\\pipe\\threadterm-codex-command-groups-luna-${randomUUID()}`;
 const report = { passed: false, startedAt: new Date().toISOString(), runtime, appDir, scratch, checks: [], observations: {}, errors: [] };
-let app;
+let app, releaseLock;
 let page;
 
 function failureText(error) { return error instanceof Error ? error.stack ?? error.message : String(error); }
@@ -109,6 +110,7 @@ try {
   await prepareApp();
   const inherited = Object.fromEntries(Object.entries(process.env).filter(([name]) => !/^(threadterm_|codex_home$|electron_run_as_node$)/iu.test(name)));
   const env = { ...inherited, CODEX_HOME: codexHome, THREADTERM_V3_DATA: data, THREADTERM_V3_USER_DATA: profile, THREADTERM_V3_PIPE: pipe, THREADTERM_V3_RUNTIME: runtime };
+  releaseLock = await acquireElectronQaLock();
   app = await electron.launch({ args: [appDir], cwd: root, env, timeout: 60_000 });
   page = await app.firstWindow({ timeout: 45_000 });
   page.setDefaultTimeout(30_000);
@@ -186,6 +188,7 @@ try {
   await writeFile(join(reportDir, 'report.json'), `${JSON.stringify(redact(report), null, 2)}\n`).catch(() => undefined);
   if (page) await request('runtime.shutdown', { operationId: randomUUID() }).catch(() => undefined);
   if (app) { await app.evaluate(({ app: electronApp }) => electronApp.exit(0)).catch(() => undefined); await app.close().catch(() => undefined); }
+  await releaseLock?.();
   if (!keep) await rm(scratch, { recursive: true, force: true, maxRetries: 10, retryDelay: 250 }).catch(() => undefined);
   console.log(`${report.passed && !report.errors.length ? 'CODEX COMMAND GROUP LUNA QA PASSED' : 'CODEX COMMAND GROUP LUNA QA FAILED'}; report: ${join(reportDir, 'report.json')}`);
 }

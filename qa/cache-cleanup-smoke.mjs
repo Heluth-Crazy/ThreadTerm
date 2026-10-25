@@ -1,4 +1,5 @@
-import { _electron as electron } from '@playwright/test';
+import { electron } from './lib/desktop1.mjs';
+import { acquireElectronQaLock } from './lib/electron-lock.mjs';
 import { mkdtemp, mkdir, rm, copyFile, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -9,7 +10,7 @@ const root = await mkdtemp(join(tmpdir(), 'threadterm-v3-cache-'));
 const bin = join(root, 'runtime.exe');
 await copyFile(resolve('runtime/target/debug/threadterm-v3-runtime.exe'), bin);
 const env = { ...process.env, THREADTERM_V3_DATA: join(root, 'data'), THREADTERM_V3_USER_DATA: join(root, 'profile'), THREADTERM_V3_PIPE: `\\\\.\\pipe\\threadterm-v3-cache-${process.pid}`, THREADTERM_V3_RUNTIME: bin };
-let app, page;
+let app, page, releaseLock;
 let hits = 0;
 const server = createServer((_request, response) => {
   hits++;
@@ -20,6 +21,7 @@ await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
 const cacheUrl = `http://127.0.0.1:${server.address().port}/cache-proof`;
 const report = { startedAt: new Date().toISOString(), passed: false, checks: [] };
 async function launch() {
+  releaseLock ??= await acquireElectronQaLock();
   app = await electron.launch({ args: [resolve('.')], env, timeout: 30000 });
   page = await app.firstWindow();
   await page.waitForFunction(() => !!window.threadterm);
@@ -86,6 +88,7 @@ try {
   await writeFile('qa/results/cache-cleanup-smoke.json', JSON.stringify(report, null, 2));
   console.log(JSON.stringify(report));
   await stop();
+  await releaseLock?.();
   await new Promise(resolve => server.close(resolve));
   await rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 250 });
 }

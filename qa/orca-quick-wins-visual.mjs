@@ -15,7 +15,8 @@ import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { _electron as electron } from '@playwright/test';
+import { electron } from './lib/desktop1.mjs';
+import { acquireElectronQaLock } from './lib/electron-lock.mjs';
 import { build as esbuild } from 'esbuild';
 import { build as viteBuild } from 'vite';
 import { attachedNativeBrowserPages, dismissBrowserNotifications } from './lib/native-browser.mjs';
@@ -38,7 +39,7 @@ const out = join(root, 'qa/results/orca-quick-wins');
 const report = { passed: false, scratch, checks: [], notes: [], shots: [], errors: [] };
 const check = text => { report.checks.push(text); console.log(`PASS ${text}`); };
 const note = text => { report.notes.push(text); console.log(`NOTE ${text}`); };
-let app, page, server;
+let app, page, server, releaseLock;
 
 // ---------- fakes ----------
 const fakeGrok = `
@@ -125,6 +126,7 @@ try {
     THREADTERM_CLAUDE_SDK_HOST: join(scratch, 'fake-claude-host.mjs'), THREADTERM_CLAUDE_NODE: process.execPath,
     TT_QA_NODE: process.execPath, TT_QA_SCRIPT: join(bin, 'fake-grok.mjs'), TT_QA_URL: url,
   });
+  releaseLock = await acquireElectronQaLock();
   app = await electron.launch({ args: [appDir], cwd: root, env, timeout: 60000 });
   page = await app.firstWindow({ timeout: 45000 });
   page.setDefaultTimeout(20000);
@@ -440,6 +442,7 @@ try {
   if (page) await page.evaluate(() => window.threadterm.request('runtime.shutdown', { operationId: crypto.randomUUID() })).catch(() => {});
   // Exit the QA app at once: a still-running desktop would start a new runtime after the shutdown.
   if (app) { await app.evaluate(({ app: electronApp }) => electronApp.exit(0)).catch(() => {}); await Promise.race([app.close(), delay(5000)]).catch(() => {}); try { app.process()?.kill(); } catch { /* already gone */ } }
+  await releaseLock?.();
   await delay(1500);
   // Safety net: only the target-qa runtime (never the user's ThreadTerm, which runs another executable).
   spawnSync('powershell.exe', ['-NoProfile', '-Command', "Get-CimInstance Win32_Process | Where-Object { $_.ExecutablePath -like '*\\runtime\\target-qa\\debug\\threadterm-v3-runtime.exe' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force }"], { windowsHide: true });
