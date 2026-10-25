@@ -13,6 +13,13 @@ test('a code the UI explains is shown in the reader language, not the raw IPC te
   assert.equal(userErrorText(typed, 'fallback', true), '此部分对话过大，无法一次加载。');
 });
 
+test('schema startup codes explain how to recover on the runtime failure screen', () => {
+  assert.equal(userErrorText(new Error('schema_too_new: database requires a newer reader'), 'fallback', false), 'This database was upgraded by a newer ThreadTerm. Update the app or restore a backup.');
+  assert.equal(userErrorText(new Error('schema_too_new: database requires a newer reader'), 'fallback', true), '此数据库已由较新的 ThreadTerm 升级。请更新应用或恢复备份。');
+  assert.equal(userErrorText(new Error('schema_backup_failed: access denied'), 'fallback', false), 'ThreadTerm could not back up the database before upgrading it. Check free disk space and folder permissions, then try again.');
+  assert.equal(userErrorText(new Error('schema_backup_failed: access denied'), 'fallback', true), 'ThreadTerm 无法在升级数据库前创建备份。请检查磁盘空间和文件夹权限，然后重试。');
+});
+
 test('an unknown error shows its own sentence in one language, never the wrapper', () => {
   assert.equal(userErrorText(ipcWrapped('Session not found'), 'fallback', false), 'Session not found');
   assert.equal(userErrorText(new Error('The group changed. / 群聊已更新。'), 'fallback', true), '群聊已更新。');

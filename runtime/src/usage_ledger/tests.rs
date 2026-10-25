@@ -22,7 +22,8 @@ fn ua1_tables_in_the_main_database_are_dropped_and_trigger_a_rescan() {
         let legacy = Connection::open(&main).unwrap();
         legacy
             .execute_batch(
-                "CREATE TABLE usage_facts(fact_key TEXT PRIMARY KEY);
+                "DELETE FROM metadata WHERE key IN ('schema.version','schema.minReader','schema.history');
+                 CREATE TABLE usage_facts(fact_key TEXT PRIMARY KEY);
                  INSERT INTO usage_facts VALUES('stale');
                  CREATE INDEX usage_sessions_native_lookup ON sessions(provider,native_id,updated_at);
                  INSERT INTO sessions(id,title,provider,mode,status,created_at,updated_at,followed,read_only)

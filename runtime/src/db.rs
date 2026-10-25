@@ -23,13 +23,18 @@ pub struct Database {
     quiet_terminal_exits: std::sync::atomic::AtomicBool,
 }
 
+#[path = "schema.rs"]
+pub(crate) mod schema;
+
 impl Database {
     pub fn open(path: &Path) -> Result<Self> {
-        let connection =
+        let mut connection =
             Connection::open(path).with_context(|| format!("opening {}", path.display()))?;
+        schema::check_reader(&connection, schema::MAIN_VERSION)?;
         connection.execute_batch(
             "PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000;",
         )?;
+        let upgrade_backup = schema::prepare_main(&connection, path)?;
         connection.execute_batch(
             "CREATE TABLE IF NOT EXISTS metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL);
              CREATE TABLE IF NOT EXISTS projects (id TEXT PRIMARY KEY, name TEXT NOT NULL, path TEXT NOT NULL UNIQUE, created_at TEXT NOT NULL);
@@ -38,7 +43,6 @@ impl Database {
              CREATE TRIGGER IF NOT EXISTS sessions_delete_terminal_storage AFTER DELETE ON sessions BEGIN DELETE FROM metadata WHERE key='terminal.storage:'||OLD.id; END;
              CREATE UNIQUE INDEX IF NOT EXISTS active_native_owner ON sessions(provider, native_id) WHERE native_id IS NOT NULL AND status NOT IN ('exited','interrupted','error');
              CREATE TABLE IF NOT EXISTS settings (singleton INTEGER PRIMARY KEY CHECK(singleton=1), revision INTEGER NOT NULL, value TEXT NOT NULL);
-             DROP TABLE IF EXISTS presets;
              CREATE TABLE IF NOT EXISTS usage_records (id TEXT PRIMARY KEY, session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE, provider TEXT NOT NULL, recorded_at TEXT NOT NULL, input_tokens INTEGER, output_tokens INTEGER, estimated_cost REAL, currency TEXT, model TEXT);
              CREATE TABLE IF NOT EXISTS operations (id TEXT PRIMARY KEY, method TEXT NOT NULL, result TEXT NOT NULL, created_at TEXT NOT NULL);
              CREATE TABLE IF NOT EXISTS operation_requests (id TEXT PRIMARY KEY, method TEXT NOT NULL, params TEXT NOT NULL);
@@ -160,6 +164,7 @@ impl Database {
         }
         crate::quick_launch::initialize_connection(&connection)?;
         crate::usage_ledger::initialize_connection(&connection)?;
+        schema::migrate_main(&mut connection, upgrade_backup)?;
         Ok(Self {
             connection: Mutex::new(connection),
             path: path.to_owned(),
@@ -4710,3 +4715,7 @@ mod browser_eval_context_tests {
         assert!(!outbox.contains("PRIVATE_PAYLOAD"));
     }
 }
+
+#[cfg(test)]
+#[path = "schema_tests.rs"]
+mod schema_tests;

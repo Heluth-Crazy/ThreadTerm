@@ -222,6 +222,34 @@ for (const operation of ['dispose', 'suspend'] as const) {
   });
 }
 
+test('a schema startup code written to this launch log reaches the connection caller', async () => {
+  const dataDirectory = await mkdtemp(join(tmpdir(), 'threadterm-runtime-schema-startup-'));
+  const bootstrapPath = join(dataDirectory, 'schema-startup.cjs');
+  const previousPipe = process.env.THREADTERM_V3_PIPE;
+  const previousData = process.env.THREADTERM_V3_DATA;
+  const previousRuntime = process.env.THREADTERM_V3_RUNTIME;
+  const previousNodeOptions = process.env.NODE_OPTIONS;
+  await writeFile(join(dataDirectory, 'runtime.log'), 'schema_backup_failed: stale failure from an earlier launch\n');
+  await writeFile(bootstrapPath, "console.error('schema_too_new: database requires a newer reader'); process.exit(1);\n");
+  process.env.THREADTERM_V3_PIPE = `\\\\.\\pipe\\threadterm-runtime-schema-startup-${process.pid}-${randomUUID()}`;
+  process.env.THREADTERM_V3_DATA = dataDirectory;
+  process.env.THREADTERM_V3_RUNTIME = process.execPath;
+  process.env.NODE_OPTIONS = `${previousNodeOptions ? `${previousNodeOptions} ` : ''}--require="${bootstrapPath.replace(/\\/g, '/')}"`;
+  const client = new RuntimeClient();
+  try {
+    await assert.rejects(client.request('runtime.health', {}), (error: unknown) => (
+      error instanceof RuntimeUnavailableError && error.message === 'schema_too_new'
+    ));
+  } finally {
+    client.dispose();
+    await rm(dataDirectory, { recursive: true, force: true });
+    if (previousPipe === undefined) delete process.env.THREADTERM_V3_PIPE; else process.env.THREADTERM_V3_PIPE = previousPipe;
+    if (previousData === undefined) delete process.env.THREADTERM_V3_DATA; else process.env.THREADTERM_V3_DATA = previousData;
+    if (previousRuntime === undefined) delete process.env.THREADTERM_V3_RUNTIME; else process.env.THREADTERM_V3_RUNTIME = previousRuntime;
+    if (previousNodeOptions === undefined) delete process.env.NODE_OPTIONS; else process.env.NODE_OPTIONS = previousNodeOptions;
+  }
+});
+
 test('shutdown waits for every owned startup until a surviving child binds the control pipe', async () => {
   const dataDirectory = await mkdtemp(join(tmpdir(), 'threadterm-runtime-pending-'));
   const pipeBase = `\\\\.\\pipe\\threadterm-runtime-pending-${process.pid}-${randomUUID()}`;

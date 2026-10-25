@@ -1,6 +1,6 @@
 import { createHash, createHmac, randomUUID, timingSafeEqual } from 'node:crypto';
 import { execFile, type ChildProcess } from 'node:child_process';
-import { appendFile, existsSync, readFile, readFileSync } from 'node:fs';
+import { appendFile, closeSync, existsSync, fstatSync, openSync, readFile, readFileSync, readSync } from 'node:fs';
 import { platform, env, hrtime } from 'node:process';
 import { join, resolve } from 'node:path';
 import net from 'node:net';
@@ -38,6 +38,7 @@ const MAX_PENDING_SEND_TRACE_RECORDS = 256;
 const BROWSER_REQUEST_TIMEOUT_MS = 10_000;
 const MAX_BROWSER_PENDING_REQUESTS = 64;
 const MAX_BROWSER_REGISTRATION_REQUESTS = 48;
+const MAX_STARTUP_FAILURE_LOG_BYTES = 64 * 1024;
 
 type SendTraceMethod = 'chat.send' | 'chat.draft.save';
 interface SendTraceContext {
@@ -146,8 +147,9 @@ function emitSendTrace(
   drainSendTraceRecords();
 }
 
-interface PendingRuntimeStartup { child: ChildProcess }
+interface PendingRuntimeStartup { child: ChildProcess; logPath: string; logOffset: number }
 const pendingRuntimeStartups = new Map<string, Set<PendingRuntimeStartup>>();
+const startupFailureCodes = new Map<string, string>();
 
 interface ControlRequest { v: 1; id: string; method: string; params: Record<string, unknown> }
 interface ControlResponse { v: 1; id: string; result?: unknown; error?: RuntimeError }
@@ -668,7 +670,9 @@ export class RuntimeClient {
       await launchRuntimeIfNeeded(pipes.control, () => this.assertOpen());
     }
     this.assertOpen();
-    const token = await waitForCredential();
+    let token: string;
+    try { token = await waitForCredential(); }
+    catch (error) { throw startupFailure(pipes.control) ?? error; }
     this.assertOpen();
     let control: LengthPrefixedSocket;
     try { control = await connectUntilReady(pipes.control, CONNECT_TIMEOUT_MS); }
@@ -677,7 +681,8 @@ export class RuntimeClient {
       if (this.options.autoLaunch === false) throw new RuntimeUnavailableError('Runtime is not running');
       await launchRuntimeIfNeeded(pipes.control, () => this.assertOpen());
       this.assertOpen();
-      control = await connectUntilReady(pipes.control, RUNTIME_READY_TIMEOUT_MS);
+      try { control = await connectUntilReady(pipes.control, RUNTIME_READY_TIMEOUT_MS); }
+      catch (error) { throw startupFailure(pipes.control) ?? error; }
     }
     try {
       this.assertOpen();
@@ -960,7 +965,7 @@ async function authenticate(connection: LengthPrefixedSocket, token: string, cli
 }
 async function launchRuntimeIfNeeded(controlPipe: string, assertOpen: () => void): Promise<void> {
   const { spawn } = await import('node:child_process');
-  const { closeSync, mkdirSync, openSync } = await import('node:fs');
+  const { mkdirSync, statSync } = await import('node:fs');
   // Suspension or disposal may happen while the lazy imports resolve. Keep the
   // irreversible spawn on the current side of that asynchronous boundary.
   assertOpen();
@@ -977,6 +982,8 @@ async function launchRuntimeIfNeeded(controlPipe: string, assertOpen: () => void
   // launch the data folder does not exist yet (the runtime creates its own files).
   mkdirSync(v3DataDirectory(), { recursive: true });
   const logPath = join(v3DataDirectory(), 'runtime.log');
+  let logOffset = 0;
+  try { logOffset = statSync(logPath).size; } catch {}
   const log = openSync(logPath, 'a');
   const child = (() => {
     try {
@@ -987,12 +994,13 @@ async function launchRuntimeIfNeeded(controlPipe: string, assertOpen: () => void
       closeSync(log);
     }
   })();
-  trackRuntimeStartup(controlPipe, child);
+  startupFailureCodes.delete(controlPipe);
+  trackRuntimeStartup(controlPipe, child, logPath, logOffset);
   child.unref();
 }
 
-function trackRuntimeStartup(controlPipe: string, child: ChildProcess): void {
-  const tracker: PendingRuntimeStartup = { child };
+function trackRuntimeStartup(controlPipe: string, child: ChildProcess, logPath: string, logOffset: number): void {
+  const tracker: PendingRuntimeStartup = { child, logPath, logOffset };
   let tracked = pendingRuntimeStartups.get(controlPipe);
   if (!tracked) {
     tracked = new Set();
@@ -1003,6 +1011,8 @@ function trackRuntimeStartup(controlPipe: string, child: ChildProcess): void {
     const current = pendingRuntimeStartups.get(controlPipe);
     if (!current?.delete(tracker)) return;
     if (current.size === 0) pendingRuntimeStartups.delete(controlPipe);
+    const code = startupFailureCode(tracker);
+    if (code) startupFailureCodes.set(controlPipe, code);
   };
   child.once('exit', remove);
   child.once('error', remove);
@@ -1011,6 +1021,27 @@ function trackRuntimeStartup(controlPipe: string, child: ChildProcess): void {
 
 function markRuntimeStartupReady(controlPipe: string): void {
   pendingRuntimeStartups.delete(controlPipe);
+  startupFailureCodes.delete(controlPipe);
+}
+
+function startupFailure(controlPipe: string): RuntimeUnavailableError | undefined {
+  const code = startupFailureCodes.get(controlPipe);
+  return code ? new RuntimeUnavailableError(code) : undefined;
+}
+
+function startupFailureCode({ logPath, logOffset }: PendingRuntimeStartup): string | undefined {
+  let descriptor: number | undefined;
+  try {
+    descriptor = openSync(logPath, 'r');
+    const size = fstatSync(descriptor).size;
+    const start = Math.max(logOffset, size - MAX_STARTUP_FAILURE_LOG_BYTES);
+    const length = size - start;
+    if (length <= 0) return undefined;
+    const output = Buffer.allocUnsafe(length);
+    const bytesRead = readSync(descriptor, output, 0, length, start);
+    return /\b(schema_too_new|schema_backup_failed)\b(?=[:\s]|$)/.exec(output.subarray(0, bytesRead).toString('utf8'))?.[1];
+  } catch { return undefined; }
+  finally { if (descriptor !== undefined) try { closeSync(descriptor); } catch {} }
 }
 
 function pipeIsOpen(pipe: string, timeoutMs: number): Promise<boolean> {

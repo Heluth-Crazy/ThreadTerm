@@ -14,7 +14,7 @@
 
 use super::{live, scanner, store};
 use anyhow::{anyhow, Result};
-use rusqlite::{Connection, OpenFlags};
+use rusqlite::{Connection, OpenFlags, OptionalExtension};
 use std::{
     collections::HashMap,
     path::{Path, PathBuf},
@@ -85,10 +85,18 @@ pub fn migrate_legacy_main_tables(conn: &Connection) -> Result<()> {
     for table in present {
         conn.execute_batch(&format!("DROP TABLE IF EXISTS {table}"))?;
     }
-    if let Some(main) = conn.path() {
-        // A fresh file already implies a full scan; the marker also forces one
-        // when a previous attempt created the file before the drop finished.
-        let _ = mark_rescan_required(Path::new(main));
+    conn.execute("INSERT INTO metadata(key,value) VALUES('schema.usageRescanRequired','1') ON CONFLICT(key) DO UPDATE SET value='1'", [])?;
+    Ok(())
+}
+
+/// Deliver a committed migration's rescan marker outside the main transaction.
+pub(crate) fn finish_legacy_main_migration(conn: &Connection) -> Result<()> {
+    let pending = conn.query_row("SELECT value FROM metadata WHERE key='schema.usageRescanRequired'", [], |row| row.get::<_, String>(0)).optional()?;
+    if pending.as_deref() == Some("1") {
+        if let Some(main) = conn.path() {
+            mark_rescan_required(Path::new(main))?;
+            conn.execute("DELETE FROM metadata WHERE key='schema.usageRescanRequired'", [])?;
+        }
     }
     Ok(())
 }
@@ -244,11 +252,12 @@ fn open_file(main: &Path, create: bool) -> Result<Connection> {
         drop(open_file(main, true)?);
     }
     let conn = Connection::open_with_flags(&path, flags)?;
+    let schema_version = crate::db::schema::check_reader(&conn, crate::db::schema::LEDGER_VERSION)?;
     #[cfg(test)]
     if let Ok(mut paths) = MAIN_PATHS.get_or_init(Default::default).lock() {
         paths.insert(path.clone(), absolute(main));
     }
-    if create {
+    if create || schema_version == 0 {
         initialize(&conn)?;
     }
     // Bounded 64 MiB page cache: a sessions page hydrates slices, ranges and
@@ -261,9 +270,11 @@ fn open_file(main: &Path, create: bool) -> Result<Connection> {
 
 /// Ledger schema, owned entirely by the ledger file.
 pub fn initialize(conn: &Connection) -> Result<()> {
+    crate::db::schema::check_reader(conn, crate::db::schema::LEDGER_VERSION)?;
     scanner::initialize(conn)?;
     store::initialize(conn)?;
     live::initialize(conn)?;
+    crate::db::schema::stamp_ledger(conn)?;
     Ok(())
 }
 

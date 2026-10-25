@@ -37,9 +37,8 @@ pub use service::schedule_pricing;
 
 /// Additive schema hook for the main runtime database, called from
 /// `Database::open`. The bulk ledger now lives in its own file, so this only
-/// keeps the durable live-usage log and moves UA1's old tables out.
+/// keeps the durable live-usage log. Numbered migrations retire UA1 tables.
 pub fn initialize_connection(conn: &rusqlite::Connection) -> anyhow::Result<()> {
-    ledger_db::migrate_legacy_main_tables(conn)?;
     live::initialize_log(conn)?;
     Ok(())
 }

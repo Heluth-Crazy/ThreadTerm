@@ -43,6 +43,7 @@ import {
   upsertSession,
 } from "./presentation";
 import { applyThemeTokens, customTheme } from "./themes";
+import { userErrorText } from "./runtimeError";
 import { rememberBootAppearance, settleBootSplash } from "./bootSplash";
 import { SettingsDialog } from "./components/SettingsDialog";
 import { AppSettingsProvider } from "./appSettings";
@@ -114,7 +115,7 @@ export function App() {
     {const initial=routeFromSearch(window.location.search);return initial.kind==="all"?{kind:"workbench"}:initial;},
   );
   const [scopeProjectId, setScopeProjectId] = useState<string>();
-  const [error, setError] = useState<string>();
+  const [error, setError] = useState<unknown>();
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [settingsInitialTab, setSettingsInitialTab] = useState<"tools">();
   const [creatorOpen, setCreatorOpen] = useState(false);
@@ -159,11 +160,7 @@ export function App() {
       setCatalogVisibility(visibility);
     } catch (caught) {
       if (generation !== refreshGeneration.current) return;
-      setError(
-        caught instanceof Error
-          ? caught.message
-          : "Unable to connect to ThreadTerm runtime.",
-      );
+      setError(caught);
     }
   }, []);
   useEffect(() => {
@@ -470,7 +467,7 @@ export function App() {
             </div>
           </div>
           {error ? (
-            <Unavailable onRetry={refresh} />
+            <Unavailable error={error} onRetry={refresh} />
           ) : !data ? (
             <Loading />
           ) : sessionView === "ready" && session ? (
@@ -641,12 +638,13 @@ function SessionOpening({ onBack }: { onBack: () => void }) {
     </section>
   );
 }
-function Unavailable({ onRetry }: { onRetry: () => Promise<void> }) {
-  const { t } = useTranslation();
+function Unavailable({ error, onRetry }: { error: unknown; onRetry: () => Promise<void> }) {
+  const { t, locale } = useTranslation();
+  const message = userErrorText(error, t("runtimeUnavailableMessage"), locale === "zh-CN");
   return (
     <div className="state">
       <h1>{t("runtimeUnavailable")}</h1>
-      <p>{t("runtimeUnavailableMessage")}</p>
+      <p>{message}</p>
       <button className="primary" onClick={() => void onRetry()}>
         {t("retryConnection")}
       </button>
