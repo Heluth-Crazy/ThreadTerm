@@ -13,7 +13,7 @@ const connection = { sessionId: session.id, runtimeEpoch: 'fixture', connectionG
 const bridge = {
   onEvent: () => () => {},
   request: async (method: string) => {
-    if (method === 'chat.snapshot') return { items: requiredSurfaceItems, revision: 1, repair: { offered: true, mode: 'rebuild', degraded: true, diagnostic: 'Fixture projection gap.' } };
+    if (method === 'chat.snapshot') return { items: requiredSurfaceItems, revision: 1, hasEarlier: false, repair: { offered: true, mode: 'rebuild', degraded: true, diagnostic: 'Fixture projection gap.' } };
     if (method === 'chat.draft.read') return { text: '', revision: 1 };
     if (method === 'chat.queue.read') return requiredSurfaceQueue;
     if (method === 'chat.connection' || method === 'chat.connect') return connection;

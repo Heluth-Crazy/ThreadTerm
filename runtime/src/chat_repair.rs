@@ -9,6 +9,15 @@ use std::collections::{HashMap, HashSet};
 const METHOD: &str = "chat.repair";
 pub(crate) const MAX_HISTORY_BYTES: usize = 8 * 1024 * 1024;
 pub(crate) const HISTORY_FRAME_HEADROOM_BYTES: usize = 64 * 1024;
+/// One `chat.snapshot` page never serializes to more than this. It is far below
+/// the response ceiling, so a legal long or image-bearing conversation always
+/// reopens instead of closing the control connection.
+pub(crate) const SNAPSHOT_PAGE_BYTES: usize = 2 * 1024 * 1024;
+/// A client may ask for less, but never for more than one page.
+const SNAPSHOT_PAGE_MIN_BYTES: usize = 64 * 1024;
+/// Cursor = ordering key `created_at` + separator + item id. Both are immutable
+/// for an item, so a cursor stays valid while newer items arrive.
+const CURSOR_SEPARATOR: char = '\u{1f}';
 const EXPIRED_EN: &str = "This request expired when history was repaired.";
 const EXPIRED_ZH_CN: &str = "此请求已在历史修复时过期。";
 
@@ -115,6 +124,56 @@ pub(crate) struct ChatRepairSnapshot {
     pub items: Vec<ChatItem>,
     pub revision: i64,
     pub repair: ChatRepairAvailability,
+    /// Older items exist: `next_before` continues from here.
+    pub has_earlier: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub next_before: Option<String>,
+}
+
+/// Optional page selector for `chat.snapshot`. Absent fields mean "the newest
+/// page", so older clients keep working against the bounded answer.
+#[derive(Clone, Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct ChatSnapshotPage {
+    pub before: Option<String>,
+    pub max_bytes: Option<usize>,
+}
+
+fn encode_cursor(created_at: &str, id: &str) -> String {
+    format!("{created_at}{CURSOR_SEPARATOR}{id}")
+}
+
+fn parse_cursor(cursor: &str) -> Result<(String, String)> {
+    cursor
+        .split_once(CURSOR_SEPARATOR)
+        .map(|(created_at, id)| (created_at.to_owned(), id.to_owned()))
+        .ok_or_else(|| anyhow!("invalid_cursor"))
+}
+
+/// Inline image data URLs become references that the UI reads through the
+/// bounded `chat.image.read` RPC. Text is never touched.
+fn detach_inline_images(item: &mut ChatItem, item_id: &str) {
+    for (part_index, part) in item.parts.iter_mut().enumerate() {
+        let Some(data) = part.get_mut("data").and_then(Value::as_object_mut) else { continue };
+        let Some(images) = data.get("images").and_then(Value::as_array) else { continue };
+        let mut placeholders = Vec::with_capacity(images.len());
+        let mut refs = Vec::with_capacity(images.len());
+        for (index, image) in images.iter().enumerate() {
+            let bytes = image.as_str().map_or(0, str::len);
+            let mime = image.as_str().and_then(inline_image_mime).unwrap_or("image/*");
+            placeholders.push(Value::Null);
+            refs.push(json!({"itemId":item_id,"part":part_index,"index":index,"bytes":bytes,"mime":mime}));
+        }
+        data.insert("images".into(), Value::Array(placeholders));
+        data.insert("imageRefs".into(), Value::Array(refs));
+    }
+}
+
+fn inline_image_mime(data_url: &str) -> Option<&str> {
+    data_url
+        .strip_prefix("data:")
+        .and_then(|rest| rest.split_once(';'))
+        .map(|(mime, _)| mime)
 }
 
 pub(crate) fn availability(
@@ -232,24 +291,72 @@ pub(crate) fn capture(
 pub(crate) fn snapshot(
     tx: &Transaction<'_>,
     session_id: &str,
+    page: &ChatSnapshotPage,
     worker: &RepairWorkerState,
     reader_available: bool,
 ) -> Result<ChatRepairSnapshot> {
-    let mut statement =
-        tx.prepare("SELECT data FROM chat_items WHERE session_id=? ORDER BY created_at,id")?;
-    let rows = statement.query_map([session_id], |row| row.get::<_, String>(0))?;
-    let mut items = Vec::new();
+    let before = page.before.as_deref().map(parse_cursor).transpose()?;
+    let budget = page.max_bytes.map_or(SNAPSHOT_PAGE_BYTES, |bytes| {
+        bytes.clamp(SNAPSHOT_PAGE_MIN_BYTES, SNAPSHOT_PAGE_BYTES)
+    });
+    let mut statement = tx.prepare(
+        "SELECT created_at,id,data FROM chat_items WHERE session_id=?1
+           AND (?2 IS NULL OR created_at<?2 OR (created_at=?2 AND id<?3))
+         ORDER BY created_at DESC,id DESC",
+    )?;
+    let rows = statement.query_map(
+        params![
+            session_id,
+            before.as_ref().map(|(created_at, _)| created_at.as_str()),
+            before.as_ref().map(|(_, id)| id.as_str()),
+        ],
+        |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+            ))
+        },
+    )?;
+    // Newest first while filling the budget, then restored to transcript order.
+    let mut page_items: Vec<(String, String, ChatItem)> = Vec::new();
+    let mut used = 2usize;
+    let mut has_earlier = false;
     for row in rows {
-        items.push(serde_json::from_str(&row?)?);
+        let (created_at, id, data) = row?;
+        let mut item: ChatItem = serde_json::from_str(&data)?;
+        let mut size = serde_json::to_vec(&item)?.len() + 1;
+        if size > budget {
+            // One message can outweigh a whole page. It is never dropped: its
+            // inline image payload becomes a reference and its text stays whole.
+            detach_inline_images(&mut item, &id);
+            size = serde_json::to_vec(&item)?.len() + 1;
+        }
+        if !page_items.is_empty() && used + size > budget {
+            has_earlier = true;
+            break;
+        }
+        used += size;
+        page_items.push((created_at, id, item));
     }
     drop(statement);
+    let next_before = if has_earlier {
+        page_items
+            .last()
+            .map(|(created_at, id, _)| encode_cursor(created_at, id))
+    } else {
+        None
+    };
+    page_items.reverse();
     let revision = tx.query_row("SELECT COALESCE(MAX(seq),0) FROM outbox", [], |row| {
         row.get(0)
     })?;
     Ok(ChatRepairSnapshot {
-        items,
+        items: page_items.into_iter().map(|(_, _, item)| item).collect(),
         revision,
         repair: availability(tx, session_id, worker, reader_available)?,
+        has_earlier,
+        next_before,
     })
 }
 
@@ -1835,6 +1942,119 @@ mod tests {
             result.extend(rows.collect::<rusqlite::Result<Vec<_>>>()?);
         }
         Ok(result)
+    }
+
+    fn page(fixture: &Fixture, before: Option<String>, max_bytes: usize) -> ChatRepairSnapshot {
+        fixture
+            .db
+            .transaction(|tx| {
+                snapshot(
+                    tx,
+                    &fixture.session,
+                    &ChatSnapshotPage { before, max_bytes: Some(max_bytes) },
+                    &fixture.worker,
+                    true,
+                )
+            })
+            .unwrap()
+    }
+
+    fn ordered_item(id: &str, created_at: &str, text: &str) -> ChatItem {
+        let mut item = text_item(id, "user", text);
+        item.created_at = created_at.to_owned();
+        item
+    }
+
+    #[test]
+    fn snapshot_pages_backwards_with_a_cursor_that_survives_new_items() {
+        let fixture = Fixture::new();
+        for index in 0..6 {
+            fixture.insert_item(&ordered_item(
+                &format!("item-{index}"),
+                &format!("2026-01-01T00:00:0{index}+00:00"),
+                &"x".repeat(40 * 1024),
+            ));
+        }
+        let first = page(&fixture, None, 64 * 1024);
+        assert_eq!(first.items.iter().map(|item| item.id.as_str()).collect::<Vec<_>>(), vec!["item-5"]);
+        assert!(first.has_earlier);
+        let cursor = first.next_before.clone().expect("older items need a cursor");
+        // A live item arrives while the user reads an earlier page. The cursor
+        // orders on immutable keys, so it cannot shift the page under them.
+        fixture.insert_item(&ordered_item("item-live", "2026-01-01T00:01:00+00:00", "live"));
+        let second = page(&fixture, Some(cursor), 64 * 1024);
+        assert_eq!(second.items.iter().map(|item| item.id.as_str()).collect::<Vec<_>>(), vec!["item-4"]);
+        let mut ids: Vec<String> = first.items.iter().map(|item| item.id.clone()).collect();
+        ids.extend(second.items.iter().map(|item| item.id.clone()));
+        let mut before = second.next_before.clone();
+        while let Some(cursor) = before {
+            let next = page(&fixture, Some(cursor), 64 * 1024);
+            ids.extend(next.items.iter().map(|item| item.id.clone()));
+            before = next.next_before.clone();
+            if !next.has_earlier { break; }
+        }
+        assert_eq!(ids, vec!["item-5", "item-4", "item-3", "item-2", "item-1", "item-0"]);
+        // The newest page without a cursor is still the bounded newest page.
+        let newest = page(&fixture, None, 64 * 1024);
+        assert_eq!(newest.items.iter().map(|item| item.id.as_str()).collect::<Vec<_>>(), vec!["item-5", "item-live"]);
+        assert!(newest.has_earlier);
+        // An unreadable cursor is a typed error, never a silent full snapshot.
+        let error = fixture
+            .db
+            .transaction(|tx| snapshot(tx, &fixture.session, &ChatSnapshotPage { before: Some("not-a-cursor".into()), max_bytes: None }, &fixture.worker, true))
+            .unwrap_err();
+        assert!(error.to_string().contains("invalid_cursor"));
+    }
+
+    #[test]
+    fn snapshot_pages_never_exceed_their_byte_budget() {
+        let fixture = Fixture::new();
+        for index in 0..20 {
+            fixture.insert_item(&ordered_item(
+                &format!("item-{index:02}"),
+                &format!("2026-01-01T00:00:{index:02}+00:00"),
+                &"y".repeat(20 * 1024),
+            ));
+        }
+        let mut before = None;
+        let mut pages = 0;
+        loop {
+            let snapshot = page(&fixture, before.clone(), 64 * 1024);
+            let bytes: usize = snapshot.items.iter().map(|item| serde_json::to_vec(item).unwrap().len()).sum();
+            assert!(bytes <= 64 * 1024, "page {pages} serialized to {bytes} bytes");
+            assert!(!snapshot.items.is_empty(), "a page always carries at least one item");
+            pages += 1;
+            before = snapshot.next_before.clone();
+            if !snapshot.has_earlier { break; }
+        }
+        assert!(pages >= 7, "{pages} pages for 400 KiB of items");
+    }
+
+    #[test]
+    fn a_message_larger_than_a_page_keeps_its_text_and_refers_its_images() {
+        let fixture = Fixture::new();
+        fixture.insert_item(&ordered_item("older", "2026-01-01T00:00:00+00:00", "older"));
+        let mut image = ordered_item("image", "2026-01-01T00:00:01+00:00", "look");
+        let payload = format!("data:image/png;base64,{}", "A".repeat(200 * 1024));
+        image.parts[0]["data"] = json!({"images":[payload.clone()]});
+        fixture.insert_item(&image);
+        let snapshot = page(&fixture, None, 64 * 1024);
+        assert_eq!(snapshot.items.len(), 2, "the newest message is never dropped");
+        assert_eq!(snapshot.items[1].id, "image");
+        assert!(!snapshot.has_earlier, "the stripped page still leaves room for the older message");
+        let item = &snapshot.items[1];
+        assert_eq!(item.id, "image");
+        assert_eq!(item.parts[0]["text"], "look", "text is never cut or dropped");
+        assert!(item.parts[0]["data"]["images"][0].is_null());
+        assert_eq!(item.parts[0]["data"]["imageRefs"][0]["part"], 0);
+        assert_eq!(item.parts[0]["data"]["imageRefs"][0]["index"], 0);
+        assert_eq!(item.parts[0]["data"]["imageRefs"][0]["bytes"], payload.len());
+        assert_eq!(item.parts[0]["data"]["imageRefs"][0]["mime"], "image/png");
+        // The bytes stay local and the bounded RPC returns them unchanged.
+        let stored = fixture.db.chat_image(&fixture.session, "image", 0, 0).unwrap();
+        assert_eq!(stored["data"], payload);
+        assert!(fixture.db.chat_image(&fixture.session, "image", 0, 1).is_err());
+        assert!(fixture.db.chat_image(&fixture.session, "missing", 0, 0).is_err());
     }
 
     fn repair_state(tx: &Transaction<'_>, session: &str) -> Result<Vec<String>> {

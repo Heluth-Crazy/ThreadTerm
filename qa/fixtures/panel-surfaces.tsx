@@ -64,7 +64,7 @@ const mapFixture = () => taskMapFixture('delegation');
     ]);
     if (method === 'chat.snapshot') {
       const fixture = mapFixture();
-      return { items: clone(fixture.items.get(String(params.sessionId)) ?? []), revision: 1, repair: { offered: false } };
+      return { items: clone(fixture.items.get(String(params.sessionId)) ?? []), revision: 1, hasEarlier: false, repair: { offered: false } };
     }
     if (method === 'session.documents.list') return clone(mapFixture().documents);
     if (method === 'review.changes') return { files: [{ path: 'renderer/src/components/BlockInspector.tsx', added: 4, removed: 1, status: 'M' }] };

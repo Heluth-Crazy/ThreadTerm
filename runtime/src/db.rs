@@ -667,6 +667,38 @@ impl Database {
     pub fn chat_items(&self, session_id: &str) -> Result<Vec<ChatItem>> {
         Ok(self.chat_snapshot(session_id)?.0)
     }
+    /// On-demand read of one inline image that a bounded snapshot page replaced
+    /// with a reference. The item must belong to the session.
+    pub fn chat_image(
+        &self,
+        session_id: &str,
+        item_id: &str,
+        part: usize,
+        index: usize,
+    ) -> Result<Value> {
+        let data: Option<String> = self.transaction(|tx| {
+            Ok(tx
+                .query_row(
+                    "SELECT data FROM chat_items WHERE session_id=? AND id=?",
+                    params![session_id, item_id],
+                    |r| r.get(0),
+                )
+                .optional()?)
+        })?;
+        let data = data.ok_or_else(|| anyhow!("image_not_found"))?;
+        let item: Value = serde_json::from_str(&data)?;
+        let image = item
+            .get("parts")
+            .and_then(Value::as_array)
+            .and_then(|parts| parts.get(part))
+            .and_then(|part| part.get("data"))
+            .and_then(|data| data.get("images"))
+            .and_then(Value::as_array)
+            .and_then(|images| images.get(index))
+            .and_then(Value::as_str)
+            .ok_or_else(|| anyhow!("image_not_found"))?;
+        Ok(json!({"data":image}))
+    }
     pub fn subagent_card(&self, session_id: &str, key: &str) -> Result<Option<ChatItem>> {
         self.transaction(|tx| subagent_card_tx(tx, session_id, key))
     }

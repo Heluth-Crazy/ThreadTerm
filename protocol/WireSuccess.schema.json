@@ -2602,12 +2602,19 @@
         },
         "repair": {
           "$ref": "#/definitions/ChatRepairAvailability"
+        },
+        "hasEarlier": {
+          "type": "boolean"
+        },
+        "nextBefore": {
+          "type": "string"
         }
       },
       "required": [
         "items",
         "revision",
-        "repair"
+        "repair",
+        "hasEarlier"
       ],
       "additionalProperties": false
     },
@@ -2650,6 +2657,18 @@
       ],
       "additionalProperties": false,
       "description": "Runtime-authored, on-demand availability. Integrity is durable; repair never resumes an agent or queue."
+    },
+    "RequestResult<\"chat.image.read\">": {
+      "type": "object",
+      "properties": {
+        "data": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "data"
+      ],
+      "additionalProperties": false
     },
     "RequestResult<\"chat.repair\">": {
       "$ref": "#/definitions/ChatRepairResult"
@@ -8765,6 +8784,32 @@
         },
         "result": {
           "$ref": "#/definitions/RequestResult%3C%22chat.snapshot%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "result"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "chat.image.read"
+        },
+        "result": {
+          "$ref": "#/definitions/RequestResult%3C%22chat.image.read%22%3E"
         }
       },
       "required": [

@@ -48,6 +48,8 @@ const MAX_REQUEST_BYTES: usize = 128 * 1024;
 const MAX_REMOTE_OUTPUT_BYTES: u32 = 256 * 1024;
 const MAX_REMOTE_INPUT_BYTES: usize = 64 * 1024;
 const MAX_CONNECTIONS: usize = 32;
+/// Mirrors the control transport ceiling: a bigger answer is a typed error.
+const MAX_RESPONSE_BYTES: usize = crate::transport::MAX_RESPONSE_BYTES;
 const TLS_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
 const HTTP_CONNECTION_TIMEOUT: Duration = Duration::from_secs(120);
 const REQUEST_BODY_TIMEOUT: Duration = Duration::from_secs(10);
@@ -626,7 +628,7 @@ impl RemoteAccess {
             .map_err(|_| HttpFailure::unauthorized())?;
         let request: RemoteRpcRequest = parse_body(body)?;
         let result = self.dispatch_remote(&device.id, device.permission, request)?;
-        Ok(json!({"result":result}))
+        Ok(bounded_remote_result(result)?)
     }
 
     fn dispatch_remote(
@@ -928,6 +930,19 @@ fn parse<T: DeserializeOwned>(value: &Value) -> Result<T> {
 fn parse_body<T: DeserializeOwned>(body: &[u8]) -> std::result::Result<T, HttpFailure> {
     serde_json::from_slice(body).map_err(|_| HttpFailure::bad_request("invalid JSON body"))
 }
+/// One oversized answer is a per-request failure; the session and the runtime
+/// keep serving other requests.
+fn bounded_remote_result(result: Value) -> std::result::Result<Value, HttpFailure> {
+    if serde_json::to_vec(&result).map_or(true, |bytes| bytes.len() > MAX_RESPONSE_BYTES) {
+        return Err(HttpFailure::new(
+            StatusCode::PAYLOAD_TOO_LARGE,
+            "response_too_large",
+            // A transport that keeps only the message still carries the code.
+            "response_too_large: response exceeds the remote response limit",
+        ));
+    }
+    Ok(json!({"result":result}))
+}
 
 fn empty_object() -> Value {
     json!({})
@@ -1209,6 +1224,17 @@ mod tests {
         mpsc,
     };
     use tempfile::tempdir;
+
+    #[test]
+    fn an_oversized_remote_answer_is_a_per_request_payload_error() {
+        let fits = bounded_remote_result(json!({"items":[]})).unwrap();
+        assert_eq!(fits["result"]["items"], json!([]));
+        let error = bounded_remote_result(json!({"data":"x".repeat(MAX_RESPONSE_BYTES + 1)}))
+            .expect_err("an oversized answer must not be written");
+        assert_eq!(error.status, StatusCode::PAYLOAD_TOO_LARGE);
+        assert_eq!(error.code, "response_too_large");
+        assert!(error.message.starts_with("response_too_large: "));
+    }
 
     #[test]
     fn remote_allowlist_redacts_paths_and_denies_readonly_control() {

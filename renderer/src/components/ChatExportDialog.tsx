@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import type { ChatItem, Session } from '@threadterm/protocol';
 import { request } from '../bridge';
 import { chatExportUsage, chatMarkdownExportBundle, type ChatExportMeta } from '../chatMarkdownExport';
+import { loadAllChatPages } from '../chatPaging';
 import { SurfaceDialog } from './SurfaceDialog';
 type Props = { session: Session; copy: (en: string, zh: string) => string; onClose: () => void; items?: readonly ChatItem[]; meta?: ChatExportMeta; save?: (markdown: string) => Promise<string | null> };
 export function ChatExportDialog({ session, copy, onClose, items, meta, save }: Props) {
@@ -11,7 +12,7 @@ export function ChatExportDialog({ session, copy, onClose, items, meta, save }: 
   const generation = useRef(0), locked = useRef(false);
   useEffect(() => {
     const token = ++generation.current; setLoaded(items); setIssue(''); setUsageReady(items !== undefined); setUsage(undefined); setModel(undefined);
-    if (!items) void request('chat.snapshot', { sessionId: session.id }).then(snapshot => { if (token === generation.current) setLoaded(snapshot.items); }).catch(error => { if (token === generation.current) setIssue(String(error)); });
+    if (!items) void loadAllChatPages(before => request('chat.snapshot', { sessionId: session.id, ...(before ? { before } : {}) })).then(all => { if (token === generation.current) setLoaded(all); }).catch(error => { if (token === generation.current) setIssue(String(error)); });
     if (!items) void request('usage.query', { sessionId: session.id }).then(result => {
       if (token !== generation.current) return;
       const usage = chatExportUsage(result.records, session.id); setModel(usage.model); setUsage(usage.tokens);

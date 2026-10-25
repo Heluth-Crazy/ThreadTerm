@@ -473,6 +473,91 @@ fn lease_takeover_during_native_read_supersedes_without_replacing_the_transcript
 }
 
 #[test]
+fn snapshot_dispatch_pages_a_long_transcript_and_keeps_serving_other_requests() {
+    let fixture = Fixture::new(Ok(json!([])), false);
+    let (session, _) = fixture.session();
+    fixture
+        .db
+        .transaction(|tx| {
+            for index in 0..12 {
+                let data = item(&format!("page-{index:02}"), "user", &"z".repeat(40 * 1024));
+                tx.execute(
+                    "INSERT INTO chat_items(id,session_id,kind,data,created_at) VALUES (?,?,'message',?,?)",
+                    rusqlite::params![
+                        format!("page-{index:02}"),
+                        session,
+                        serde_json::to_string(&data)?,
+                        format!("2026-10-08T00:00:{index:02}Z")
+                    ],
+                )?;
+            }
+            Ok(())
+        })
+        .unwrap();
+    let first = fixture
+        .service
+        .dispatch(
+            PRINCIPAL,
+            RpcRequest {
+                v: 1,
+                id: "page-1".into(),
+                method: "chat.snapshot".into(),
+                params: json!({"sessionId":session,"maxBytes":65536}),
+            },
+        )
+        .unwrap();
+    let ids: Vec<&str> = first["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|item| item["id"].as_str().unwrap())
+        .collect();
+    assert_eq!(ids, vec!["page-11"], "a page carries only what fits its byte budget");
+    assert_eq!(first["hasEarlier"], true);
+    let cursor = first["nextBefore"].as_str().unwrap().to_owned();
+    let second = fixture
+        .service
+        .dispatch(
+            PRINCIPAL,
+            RpcRequest {
+                v: 1,
+                id: "page-2".into(),
+                method: "chat.snapshot".into(),
+                params: json!({"sessionId":session,"before":cursor,"maxBytes":65536}),
+            },
+        )
+        .unwrap();
+    assert_eq!(second["items"][0]["id"], "page-10");
+    // A refused page is a per-request error; the same service still answers.
+    let error = fixture
+        .service
+        .dispatch(
+            PRINCIPAL,
+            RpcRequest {
+                v: 1,
+                id: "page-bad".into(),
+                method: "chat.snapshot".into(),
+                params: json!({"sessionId":session,"before":"broken"}),
+            },
+        )
+        .unwrap_err();
+    assert!(error.message.contains("invalid_cursor"));
+    let again = fixture
+        .service
+        .dispatch(
+            PRINCIPAL,
+            RpcRequest {
+                v: 1,
+                id: "page-3".into(),
+                method: "chat.snapshot".into(),
+                params: json!({"sessionId":session}),
+            },
+        )
+        .unwrap();
+    assert_eq!(again["items"].as_array().unwrap().last().unwrap()["id"], "page-11");
+}
+
+#[test]
 fn snapshot_advertises_repair_without_probing_the_native_provider() {
     let mut fixture = Fixture::new(Ok(json!([])), false);
     let (session, _) = fixture.session();

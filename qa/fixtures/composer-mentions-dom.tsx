@@ -91,7 +91,7 @@ function route(method: string, params: Record<string, unknown>): Promise<unknown
       qa.revision = Number(params.expectedRevision ?? 0) + 1;
       qa.savedDrafts.push(String(params.text));
       return { text: params.text, revision: qa.revision };
-    case 'chat.snapshot': return { items: qa.items, revision: 1 };
+    case 'chat.snapshot': return { items: qa.items, revision: 1, hasEarlier: false };
     case 'chat.options': return { options: [], commands: [], loadState: 'unknown', inputCapabilities: qa.capabilities };
     case 'chat.connection': return { sessionId: params.sessionId, runtimeEpoch: 'e', connectionGeneration: 1, revision: 1, phase: 'ready', optionsLoadState: 'unknown' };
     case 'chat.connect': return { sessionId: params.sessionId, runtimeEpoch: 'e', connectionGeneration: 2, revision: 2, phase: 'ready', optionsLoadState: 'unknown' };

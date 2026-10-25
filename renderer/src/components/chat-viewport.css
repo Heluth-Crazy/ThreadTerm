@@ -8,3 +8,6 @@
 /* Reserve room so the overlay never covers the last card's content or actions. */
 .chat-view .chat-log-shell:has(.chat-back-to-bottom) .v3-chat-log { padding-bottom:52px; padding-right:52px; }
 .chat-log-shell .v3-chat-log:focus-visible { outline:2px solid var(--border); outline-offset:-2px; }
+/* One row above the oldest loaded message: the status row, or the control that
+   pages back when the wheel alone cannot reach the rest of the transcript. */
+.chat-earlier-page { display:flex; justify-content:center; margin:8px 0; font-size:12px; color:var(--muted); }

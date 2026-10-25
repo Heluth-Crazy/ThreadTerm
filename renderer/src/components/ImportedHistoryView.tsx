@@ -2,6 +2,8 @@ import { useEffect, useId, useRef, useState } from "react";
 import type { ChatItem, ChatRepairAvailability, Session } from "@threadterm/protocol";
 import { operationId, request, subscribeEvents } from "../bridge";
 import { acquireControl } from "../controlLease";
+import { mergeEarlierPage } from "../chatPaging";
+import { userErrorText } from "../runtimeError";
 import { useTranslation } from "../i18n";
 import { HistoryTranscript } from "./HistoryTranscript";
 import { SurfaceDialog } from "./SurfaceDialog";
@@ -20,6 +22,10 @@ export function ImportedHistoryView({ session, onResumed, onOpenSession }: Props
   const zh = locale === "zh-CN";
   const copy = (en: string, cn: string) => zh ? cn : en;
   const [items, setItems] = useState<ChatItem[]>();
+  // The runtime sends the newest page; the rest of an imported transcript is read on demand.
+  const [earlier, setEarlier] = useState<{ hasEarlier: boolean; before?: string }>({ hasEarlier: false });
+  const [loadingEarlier, setLoadingEarlier] = useState(false);
+  const loadingEarlierRef = useRef(false);
   const [issue, setIssue] = useState<string>();
   const [resuming, setResuming] = useState(false);
   const [repair, setRepair] = useState<ChatRepairAvailability>();
@@ -35,27 +41,44 @@ export function ImportedHistoryView({ session, onResumed, onOpenSession }: Props
   }, [session.id]);
   useEffect(() => {
     let current = true;
-    setItems(undefined); setIssue(undefined);
+    setItems(undefined); setIssue(undefined); setEarlier({ hasEarlier: false });
     void request("chat.snapshot", { sessionId: session.id })
-      .then(result => { if (current) { setItems(result.items); setRepair(result.repair); } })
-      .catch(error => { if (current) setIssue(error instanceof Error ? error.message : copy("Saved history could not be read.", "无法读取已保存的历史。")); });
+      .then(result => { if (current) { setItems(result.items); setEarlier({ hasEarlier: result.hasEarlier, before: result.nextBefore }); setRepair(result.repair); } })
+      .catch(error => { if (current) setIssue(userErrorText(error, copy("Saved history could not be read.", "无法读取已保存的历史。"), zh)); });
     const unsubscribe = subscribeEvents(event => {
       const data = event.data as { sessionId?: string; kind?: string } | null;
       if (event.event === 'state.changed' && data?.sessionId === session.id && data.kind === 'chat.repair') {
         void request('chat.snapshot', {sessionId: session.id}).then(result => {
-          if (current) { setItems(result.items); setRepair(result.repair); }
-        }).catch(error => { if (current) setIssue(String(error)); });
+          if (current) { setItems(result.items); setEarlier({ hasEarlier: result.hasEarlier, before: result.nextBefore }); setRepair(result.repair); }
+        }).catch(error => { if (current) setIssue(userErrorText(error, copy("Saved history could not be read.", "无法读取已保存的历史。"), zh)); });
       }
     });
     return () => { current = false; unsubscribe(); };
   }, [session.id, locale]);
+  const loadEarlier = async () => {
+    const page = earlier;
+    if (!page.hasEarlier || !page.before || loadingEarlierRef.current) return;
+    const generation = lifecycle.current;
+    loadingEarlierRef.current = true; setLoadingEarlier(true);
+    try {
+      const next = await request('chat.snapshot', { sessionId: session.id, before: page.before });
+      if (generation !== lifecycle.current) return;
+      setItems(current => current ? mergeEarlierPage(current, next.items) : next.items);
+      setEarlier({ hasEarlier: next.hasEarlier, before: next.nextBefore });
+    } catch (error) {
+      if (generation === lifecycle.current) setIssue(userErrorText(error, copy('Earlier messages could not be loaded.', '无法加载更早的消息。'), zh));
+    } finally {
+      loadingEarlierRef.current = false;
+      if (generation === lifecycle.current) setLoadingEarlier(false);
+    }
+  };
   const resume = async () => {
     setResuming(true); setIssue(undefined);
     try {
       const resumed = await request("session.resume", { sessionId: session.id, cwd: session.worktreePath, operationId: operationId() });
       if (resumed.id !== session.id || resumed.readOnly) throw new Error(copy('The runtime did not confirm this session was resumed.', '运行时未确认此会话已恢复。'));
       onResumed?.(resumed);
-    } catch (error) { setIssue(error instanceof Error ? error.message : copy("The session could not be resumed.", "无法恢复会话。")); }
+    } catch (error) { setIssue(userErrorText(error, copy("The session could not be resumed.", "无法恢复会话。"), zh)); }
     finally { setResuming(false); }
   };
   const reload = async () => {
@@ -75,9 +98,9 @@ export function ImportedHistoryView({ session, onResumed, onOpenSession }: Props
       await request('chat.repair', {sessionId: session.id, leaseEpoch: control.epoch, operationId: operationId()});
       const snapshot = await request('chat.snapshot', {sessionId: session.id});
       if (generation !== lifecycle.current) return;
-      setItems(snapshot.items); setRepair(snapshot.repair); setRepairDialog(false);
+      setItems(snapshot.items); setEarlier({ hasEarlier: snapshot.hasEarlier, before: snapshot.nextBefore }); setRepair(snapshot.repair); setRepairDialog(false);
     } catch (error) {
-      if (generation === lifecycle.current) setIssue(error instanceof Error ? error.message : copy('Saved history could not be reloaded.', '无法重新加载已保存的历史。'));
+      if (generation === lifecycle.current) setIssue(userErrorText(error, copy('Saved history could not be reloaded.', '无法重新加载已保存的历史。'), zh));
     } finally {
       control?.release();
       if (generation === lifecycle.current) setRepairing(false);
@@ -89,6 +112,7 @@ export function ImportedHistoryView({ session, onResumed, onOpenSession }: Props
     <header className="control-row-lg"><div><strong>{session.title || copy("Imported history", "已导入历史")}</strong><small>{copy("Read-only until you explicitly resume it.", "在显式恢复前仅可读取。")}</small></div>{repair?.offered && <button className="btn" onClick={() => setRepairDialog(true)} disabled={repairing || resuming}>{copy('Reload native history', '重新加载原生历史')}</button>}{session.readOnly && <button className="btn btn-primary" onClick={() => void resume()} disabled={resuming || repairing}>{copy("Resume explicitly", "显式恢复")}</button>}</header>
     {issue && <p className="surface-error" role="alert">{issue}</p>}
     <div className="imported-history-scroll">
+      {(loadingEarlier || earlier.hasEarlier) && <div className="imported-history-earlier"><button type="button" className="btn" disabled={loadingEarlier} role={loadingEarlier ? 'status' : undefined} aria-live="polite" onClick={() => void loadEarlier()}>{loadingEarlier ? copy('Loading earlier messages…', '正在加载更早的消息…') : copy('Load earlier messages', '加载更早的消息')}</button></div>}
       {!items && !issue && <p className="history-transcript-empty">{copy("Loading saved transcript…", "正在加载已保存的记录…")}</p>}
       {items && <HistoryTranscript items={items} empty={copy("This provider returned no structured transcript.", "该提供方未返回结构化记录。")} actions={item=>{
         const markdown=replyMarkdown(item);

@@ -1077,10 +1077,40 @@
       "properties": {
         "sessionId": {
           "type": "string"
+        },
+        "before": {
+          "type": "string"
+        },
+        "maxBytes": {
+          "type": "number"
         }
       },
       "required": [
         "sessionId"
+      ],
+      "additionalProperties": false
+    },
+    "RequestParams<\"chat.image.read\">": {
+      "type": "object",
+      "properties": {
+        "sessionId": {
+          "type": "string"
+        },
+        "itemId": {
+          "type": "string"
+        },
+        "part": {
+          "type": "number"
+        },
+        "index": {
+          "type": "number"
+        }
+      },
+      "required": [
+        "sessionId",
+        "itemId",
+        "part",
+        "index"
       ],
       "additionalProperties": false
     },
@@ -5862,6 +5892,32 @@
         },
         "params": {
           "$ref": "#/definitions/RequestParams%3C%22chat.snapshot%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "params"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "chat.image.read"
+        },
+        "params": {
+          "$ref": "#/definitions/RequestParams%3C%22chat.image.read%22%3E"
         }
       },
       "required": [

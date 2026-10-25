@@ -1,10 +1,11 @@
-import { ClipboardEvent, FormEvent, Fragment, KeyboardEvent, type MouseEvent as ReactMouseEvent, type ReactNode, useContext, useEffect, useId, useMemo, useRef, useState } from "react";
+import { ClipboardEvent, FormEvent, Fragment, KeyboardEvent, type MouseEvent as ReactMouseEvent, type ReactNode, useContext, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { sanitizeMarkdownHtml } from '../markdownPolicy';
 import { parseChatMarkdown } from '../chatMath';
 import { ChatMarkdown } from './ChatMarkdownExtras';
 import type { ChatAnswerResponse, ChatContextUsage, ChatPart, ChatQueue, ChatQueueItem, ChatSlashCommand, ChatUiState, FileReference, GitCommitInfo, Session } from "@threadterm/protocol";
 import { ChatItem, attachFiles, openExternal, operationId, request, subscribeEvents } from "../bridge";
 import { beginResync, chatUiFromEvent, completeResync, nextRepairRevision, upsertChatItem, type ChatResync } from "../chatState";
+import { anchoredScrollTop, mergeEarlierPage, needsAnotherPage, shouldLoadEarlier } from "../chatPaging";
 import { acquireControl } from '../controlLease';
 import { createDraftWriter } from '../chatDraft';
 import { useTranslation } from '../i18n';
@@ -53,7 +54,8 @@ import { CatalogPopover } from './CatalogActions';
 import { isWebTabUrl } from '../workspaceTabs';
 import { insertAtCaret } from '../workbench/agentReference';
 import "./chat-network-notice.css";
-import { isChatImage, readClipboardImage, selectChatImageAttachments, validateChatImages } from '../chatImages';
+import { isChatImage, isChatImageRef, readClipboardImage, selectChatImageAttachments, validateChatImages } from '../chatImages';
+import { ChatMessageImages } from './ChatMessageImages';
 import './chat-images.css';
 import { queueComposerMode } from '../chatQueue';
 import { isComposingKey, slashPaletteEnter } from '../composeKeys';
@@ -81,6 +83,7 @@ import { composerEditable, composerSnapshot, decodeLocalRecovery, encodeLocalRec
 import { applyNativeEdit } from '../nativeTextEdit';
 import { mentionSerializedBlock, type SessionContextItem } from '../chatContext';
 import { contextError, runtimeText } from '../contextErrors';
+import { userErrorText } from '../runtimeError';
 import { CHAT_REPAIR_REQUEST, setChatRepairAvailability, type ChatRepairAvailability } from '../chatRepair';
 import { discoveredRepair, discoveryMatches, type RepairDiscovery } from '../chatRepairDiscovery';
 import { SurfaceDialog } from './SurfaceDialog';
@@ -379,10 +382,6 @@ function KimiStatusCard({ rows, zh, copy }: { rows: { key: string; value: string
 }
 
 const isEnded = (session: Session) => Boolean(session.readOnly) || session.status === "exited";
-const asUserError = (caught: unknown, fallback: string) => {
-  const message = caught instanceof Error ? caught.message : String(caught);
-  return message.replace(/^Error invoking remote method '[^']+': (?:Error:\s*)?/, "") || fallback;
-};
 // Option classification and labels moved to ../composerOptions (C2).
 type DraftWriter = ReturnType<typeof createDraftWriter>;
 type ControlToken = { epoch: number; check: () => Promise<void>; release: () => void; valid: boolean };
@@ -421,6 +420,8 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession, 
   // back to the language that was active when the click happened.
   const zhRef = useRef(zh); zhRef.current = zh;
   const copy = (en: string, cn: string) => zh ? cn : en;
+  // A failed request shown in the reader's language, never as the raw IPC text.
+  const asUserError = (caught: unknown, fallback: string) => userErrorText(caught, fallback, zh);
   const repairDescriptionId = useId();
   const mentionDescriptionId = useId();
   // A clicked http(s) link in the transcript: the same actions as the terminal's link bar, as a menu at the link.
@@ -471,6 +472,14 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession, 
   const [historyLoaded, setHistoryLoaded] = useState(false);
   const [historyFailed, setHistoryFailed] = useState(false);
   const [historyIssue, setHistoryIssue] = useState<string>();
+  // The transcript arrives newest page first; older pages load on demand while
+  // the user scrolls up. The runtime keeps every answer under the wire ceiling.
+  const [earlierPage, setEarlierPage] = useState<{ hasEarlier: boolean; before?: string }>({ hasEarlier: false });
+  const earlierPageRef = useRef(earlierPage); earlierPageRef.current = earlierPage;
+  const [loadingEarlier, setLoadingEarlier] = useState(false);
+  const loadingEarlierRef = useRef(false);
+  const loadEarlierRef = useRef<() => void>(() => undefined);
+  const prependAnchorRef = useRef<{ top: number; height: number } | undefined>(undefined);
   const context = useChatContext(session.id, zh, setError);
   const contextRef = useRef(context); contextRef.current = context;
   const appSettings = useAppSettings();
@@ -516,6 +525,21 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession, 
   const logContentRef = useRef<HTMLDivElement>(null);
   const viewport = useChatViewport(session.id, viewportSessionId === session.id, logRef, logContentRef);
   const flowSync = useChatFlowSync(session.id, logRef, logContentRef, items, viewport);
+  // A prepended page of older messages must not move the message being read.
+  useLayoutEffect(() => {
+    const anchor = prependAnchorRef.current;
+    const log = logRef.current;
+    if (!anchor || !log) return;
+    prependAnchorRef.current = undefined;
+    log.scrollTop = anchoredScrollTop(anchor.top, anchor.height, log.scrollHeight);
+  }, [items]);
+  // A newest page shorter than the viewport leaves nothing to scroll, so the
+  // wheel could never reach the transcript above it: fetch the next page instead.
+  useLayoutEffect(() => {
+    const log = logRef.current;
+    if (!log) return;
+    if (needsAnotherPage(log.scrollHeight, log.clientHeight, earlierPageRef.current.hasEarlier, loadingEarlierRef.current)) loadEarlierRef.current();
+  }, [items]);
   async function refreshBackgroundTasks() {
     const revision = uiUpdates.current, generation = transportGeneration.current, owner = lifecycle.current;
     const snapshot = await request('chat.backgroundTasks.list', { sessionId: session.id });
@@ -628,12 +652,13 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession, 
       && transportGeneration.current === generation;
     const isCurrentHistory = (generation: number) => !disposed && lifecycle.current === sessionLifecycle
       && historyGeneration.current === generation;
-    const finishResync = (generation: number, transcript?: { items: ChatItem[]; revision: number; repair?: ChatRepairAvailability }) => {
+    const finishResync = (generation: number, transcript?: { items: ChatItem[]; revision: number; repair?: ChatRepairAvailability; hasEarlier?: boolean; nextBefore?: string }) => {
       if (!isCurrentHistory(generation)) return;
       const completed = resync;
       if (!completed || completed.generation !== generation) return;
       resync = undefined;
       setItems(current => completeResync(completed, session.id, generation, current, transcript) ?? current);
+      setEarlierPage({ hasEarlier: Boolean(transcript?.hasEarlier), before: transcript?.nextBefore });
       if (transcript) {
         setViewportSessionId(session.id);
         setRepair(transcript.repair); setChatRepairAvailability(session.id, repairDescriptionId, transcript.repair);
@@ -667,6 +692,10 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession, 
     };
     clearFirstResponseWait();
     setViewportSessionId(undefined);
+    setEarlierPage({ hasEarlier: false });
+    loadingEarlierRef.current = false;
+    setLoadingEarlier(false);
+    prependAnchorRef.current = undefined;
     setHistoryIssue(undefined);
     setSubmissionPreview(undefined);
     setItems([]); setText(''); setBusy(false); setQueue(undefined); setDraftLoaded(false); setHistoryLoaded(false); setHistoryFailed(false); setLiveTurnUsage(undefined); setLink(emptyLink(session.id, canControl && !ended ? "connecting" : "unavailable")); setConnectSlow(false); setError(undefined); setRepair(undefined); setRepairDialog(false); setRepairBusy(false); setRepairNotice(undefined); setIngressFailed(false); setRepairFollowup(false); setChatRepairAvailability(session.id, repairDescriptionId, undefined);draftReady.current=false;writer.current=undefined;setDraftFailed(false);setRecovery(undefined);setApprovalBusy(undefined);composingRef.current=false;pickTicket.current=undefined;composerGeneration.current+=1;mentionCatalogueRef.current=[];setMentionCatalogue([]);setMentionPreview(undefined);
@@ -690,6 +719,13 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession, 
       if (event.event === 'runtime.degraded' && (!data.sessionId || data.sessionId === session.id)) {
         if (!data.sessionId) { ingressWasFailed = true; setIngressFailed(true); }
         integrityError = data.reason ?? 'Chat updates are incomplete.';
+        // An item too large for one live frame is still durable: resynchronize
+        // through the bounded pages instead of waiting for the next live event.
+        if (data.reason === 'chat_event_too_large') {
+          setError(copy('A message was too large to stream; reloading it from saved history.', '有一条消息过大，无法实时传输；正在从已保存的历史重新加载。'));
+          discoverHistoryRef.current();
+          return;
+        }
         setError(integrityError);
         refreshRepair();
       }
@@ -782,13 +818,34 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession, 
         }
       } catch { /* Runtime draft is still available. */ }
     }).catch(caught=>{if(!disposed){setError(`Draft could not be loaded: ${String(caught)}`);setDraftFailed(true);setDraftLoaded(true);}});
+    loadEarlierRef.current = () => {
+      const page = earlierPageRef.current;
+      if (!page.hasEarlier || !page.before || loadingEarlierRef.current) return;
+      const generation = historyGeneration.current;
+      const log = logRef.current;
+      const anchor = log ? { top: log.scrollTop, height: log.scrollHeight } : undefined;
+      loadingEarlierRef.current = true;
+      setLoadingEarlier(true);
+      void request('chat.snapshot', { sessionId: session.id, before: page.before }).then(next => {
+        if (!isCurrentHistory(generation)) return;
+        const merged = mergeEarlierPage(itemsRef.current, next.items);
+        if (merged !== itemsRef.current && anchor) prependAnchorRef.current = anchor;
+        setItems(current => mergeEarlierPage(current, next.items));
+        setEarlierPage({ hasEarlier: next.hasEarlier, before: next.nextBefore });
+      }).catch(caught => {
+        if (isCurrentHistory(generation)) setError(asUserError(caught, copy('Earlier messages could not be loaded.', '无法加载更早的消息。')));
+      }).finally(() => {
+        loadingEarlierRef.current = false;
+        if (!disposed) setLoadingEarlier(false);
+      });
+    };
     discoverHistoryRef.current = () => {
       const generation = ++historyGeneration.current;
       resync = beginResync(session.id, generation, resync);
       setRepairDiscovery({ sessionId: session.id, generation, phase: 'pending' });
       void request('chat.snapshot', {sessionId: session.id}).then(transcript => {
         finishResync(generation, transcript);
-      }).catch(caught => { finishResync(generation); if (isCurrentHistory(generation)) setHistoryIssue(String(caught)); });
+      }).catch(caught => { finishResync(generation); if (isCurrentHistory(generation)) setHistoryIssue(asUserError(caught, copy('Saved history could not be loaded.', '无法加载已保存的历史。'))); });
     };
     discoverHistoryRef.current();
     const onRepairRequest = (event: Event) => {
@@ -808,7 +865,7 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession, 
           try { if (localStorage.getItem(recoveryKey) === value) localStorage.removeItem(recoveryKey); } catch { /* The runtime copy is durable. */ }
         }).catch(() => undefined);
       }
-      if (lifecycle.current === sessionLifecycle) { lifecycle.current = undefined; discoverHistoryRef.current = () => undefined; }
+      if (lifecycle.current === sessionLifecycle) { lifecycle.current = undefined; discoverHistoryRef.current = () => undefined; loadEarlierRef.current = () => undefined; }
     };
   }, [session.id]);
   useEffect(() => {
@@ -1523,8 +1580,9 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession, 
         queryText: currentText.current.slice(range.start, range.end),
       };
       pickTicket.current = ticket;
-      void request('chat.read', { sessionId: sessionItem.sessionId })
-        .then(items => {
+      void request('chat.snapshot', { sessionId: sessionItem.sessionId })
+        .then(snapshot => {
+          const items = snapshot.items;
           if (pickTicket.current?.id !== ticket.id) return;
           const stillValid = mentionPickStillValid(ticket, {
             lifecycle: lifecycle.current,
@@ -1634,7 +1692,7 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession, 
       const replyText = item.role === 'assistant' && !nested && replyEligible && item.parts.some(isReplyTextPart) ? replyActions.get(item.id) ?? '' : '';
       const showReplyActions = !!replyText;
       return <article data-chat-item={item.id} className={`v3-chat-message ${item.role} is-native is-${session.provider}${showReplyActions ? ' has-reply-actions' : ''}`} key={item.id} onClick={copyCodeBlock}>
-      {item.parts.filter(part => shouldRenderPart(part) || (Array.isArray(asRecord(part.data).images) && (asRecord(part.data).images as unknown[]).some(isChatImage))).map((part, index) => {
+      {item.parts.filter(part => shouldRenderPart(part) || (Array.isArray(asRecord(part.data).images) && (asRecord(part.data).images as unknown[]).some(isChatImage)) || (Array.isArray(asRecord(part.data).imageRefs) && (asRecord(part.data).imageRefs as unknown[]).some(isChatImageRef))).map((part, index) => {
         if (isSubagentPart(part)) {
           const info = subagentInfo(part);
           return <p className="chat-subagent-nested" key={`subagent-${index}`}>{info ? subagentTitle(info, copy) : copy('Subagent', '子代理')}</p>;
@@ -1658,10 +1716,12 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession, 
         const body = redactedBrowser?partBody(part):asString(localizedText[zh ? "zh-CN" : "en"], partBody(part));
         const partImages = asRecord(part.data).images;
         const messageImages = !redactedBrowser&&Array.isArray(partImages) ? partImages.filter(isChatImage) : [];
+        const partImageRefs = asRecord(part.data).imageRefs;
+        const messageImageRefs = !redactedBrowser&&Array.isArray(partImageRefs) ? partImageRefs.filter(isChatImageRef) : [];
         const foldedTool = part.type === "tool";
         const codexMarkdown = item.role !== "user" && part.type === "text";
         return <div className={`chat-part ${part.type}${part.type === 'tool' ? ` v3-tool-card ${part.status ?? ''}` : ''}`} key={`${part.type}-${index}`}>
-          {!!messageImages.length && <div className="chat-message-images">{messageImages.map((image, imageIndex) => <img key={imageIndex} src={image} alt={`${copy('Pasted image', '已粘贴图片')} ${imageIndex + 1}`} loading="lazy" />)}</div>}
+          {(!!messageImages.length || !!messageImageRefs.length) && <ChatMessageImages sessionId={session.id} images={messageImages} refs={messageImageRefs} copy={copy} />}
           {foldedTool ? <CodexToolPart part={part} copy={copy} openFile={openFile} /> : <>
             {label && <strong>{label}</strong>}
             {body ? codexMarkdown
@@ -1753,7 +1813,7 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession, 
       event.preventDefault();
       const url = anchor.getAttribute('href') ?? '';
       if (isWebTabUrl(url)) { setLinkIssue(undefined); setLinkMenu({ anchor, url }); }
-    }} onScroll={viewport.onScroll}><ChatPlanPanel items={items} copy={copy} liveTurnId={activeTurnIdFromIndex(presentation, session.status)} historyReady={historyLoaded} navigation={items.filter(item => item.role === 'user').length >= 3 ? <ChatMessageNavigation items={items} copy={copy} onNavigate={viewport.navigateToMessage} /> : undefined} /><div ref={logContentRef}>{items.length ? turnGroups.map((group, groupIndex) => <section className="codex-turn chat-turn" key={group.id} data-chat-turn={group.id}>
+    }} onScroll={() => { viewport.onScroll(); const log = logRef.current; if (log && shouldLoadEarlier(log.scrollTop, earlierPageRef.current.hasEarlier, loadingEarlierRef.current)) loadEarlierRef.current(); }}><ChatPlanPanel items={items} copy={copy} liveTurnId={activeTurnIdFromIndex(presentation, session.status)} historyReady={historyLoaded} navigation={items.filter(item => item.role === 'user').length >= 3 ? <ChatMessageNavigation items={items} copy={copy} onNavigate={viewport.navigateToMessage} /> : undefined} /><div ref={logContentRef}>{(loadingEarlier || earlierPage.hasEarlier) && <div className="chat-earlier-page"><button type="button" className="btn" disabled={loadingEarlier} role={loadingEarlier ? 'status' : undefined} aria-live="polite" onClick={() => loadEarlierRef.current()}>{loadingEarlier ? copy('Loading earlier messages…', '正在加载更早的消息…') : copy('Load earlier messages', '加载更早的消息')}</button></div>}{items.length ? turnGroups.map((group, groupIndex) => <section className="codex-turn chat-turn" key={group.id} data-chat-turn={group.id}>
       {renderTurn(group, groupIndex)}
     </section>) : firstResponseWait ? null : <div className="empty v3-empty"><strong>{copy('No messages yet.', '暂无消息。')}</strong><p>{copy('Send a message to start working with this provider.', '发送消息，开始与此提供方协作。')}</p></div>}
       {submissionPreview && !items.some(item => item.role === 'user' && item.turnId === submissionPreview.token) && <article className={`v3-chat-message user is-native is-${session.provider} chat-pending-submission`} aria-label={copy('Message being sent', '正在发送的消息')}>

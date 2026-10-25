@@ -102,7 +102,14 @@ test('the additive plan part type requires a valid plan payload',()=>{
  const part={type:'plan',toolId:'plan:turn-1',data:{entries:[{content:'Write the tests',status:'in_progress',priority:'high'},{content:'Ship it',status:'pending'}],explanation:'Two-step plan'}};
  const item={id:'plan-item',role:'assistant',createdAt:'2026-01-01T00:00:00Z',turnId:'turn-1',parts:[part]};
  validateResult('chat.read',[item]);
- validateResult('chat.snapshot',{items:[item],revision:1,repair:{offered:false,reason:'history_unavailable',degraded:false}});
+ validateResult('chat.snapshot',{items:[item],revision:1,repair:{offered:false,reason:'history_unavailable',degraded:false},hasEarlier:false});
+ // A page continues from a cursor and reports older items behind it.
+ validateResult('chat.snapshot',{items:[item],revision:1,repair:{offered:false,reason:'history_unavailable',degraded:false},hasEarlier:true,nextBefore:'2026-01-01T00:00:00Z\u001fitem-1'});
+ validateRequest('chat.snapshot',{sessionId:'s',before:'2026-01-01T00:00:00Z\u001fitem-1',maxBytes:65536});
+ // An answer without the bounded-page flag is not a valid snapshot.
+ assert.throws(()=>validateResult('chat.snapshot',{items:[item],revision:1,repair:{offered:false,reason:'history_unavailable',degraded:false}}));
+ validateResult('chat.image.read',{data:'data:image/png;base64,AAAA'});
+ validateRequest('chat.image.read',{sessionId:'s',itemId:'item-1',part:0,index:0});
  // An empty snapshot is an explicit clearing marker.
  validateResult('chat.read',[{...item,parts:[{...part,data:{entries:[]}}]}]);
  for(const data of [undefined,null,{}, {entries:{}}, {entries:[{}]}, {entries:[{content:'Missing status'}]}, {entries:[{content:7,status:'pending'}]}, {entries:[{content:'Bad status',status:'started'}]}, {entries:[{content:'Bad priority',status:'pending',priority:'urgent'}]}, {entries:[],unexpected:true}, {entries:[{content:'Unexpected field',status:'pending',extra:true}]}, {entries:[],explanation:7}])
@@ -168,7 +175,7 @@ test('native turn outcome and message phase are typed independently of duration'
  assert.throws(()=>validateResult('chat.read',[{...item,turnStatus:'historical'}]));
  assert.throws(()=>validateResult('chat.read',[{...item,turnOrigin:'live'}]));
  assert.throws(()=>validateResult('chat.read',[{...item,parts:[{type:'text',text:'answer',phase:'unknown'}]}]));
- const snapshot={items:[item],revision:1,repair:{offered:true,mode:'rebuild',degraded:false,reason:'history_metadata_missing'}};
+ const snapshot={items:[item],revision:1,repair:{offered:true,mode:'rebuild',degraded:false,reason:'history_metadata_missing'},hasEarlier:false};
  validateResult('chat.snapshot',snapshot);
  assert.throws(()=>validateResult('chat.snapshot',{...snapshot,repair:{...snapshot.repair,reason:'invented_reason'}}));
 });
@@ -182,10 +189,10 @@ test('chat repair is a leased rebuild with bounded integer counts and snapshot i
  for(const key of ['added','updated','removed','expired','total','revision']) for(const value of [-1,0.5,Infinity,Number.MAX_SAFE_INTEGER+1]) assert.throws(()=>validateResult('chat.repair',{...result,[key]:value}));
  assert.throws(()=>validateResult('chat.repair',{...result,mode:'merge'}));
  assert.throws(()=>validateResult('chat.repair',{...result,sessionId:''}));
- validateResult('chat.snapshot',{items:[],revision:10,repair:{offered:true,mode:'rebuild',degraded:true,ingressFailed:true}});
- assert.throws(()=>validateResult('chat.snapshot',{items:[],revision:10,repair:{offered:true,mode:'rebuild',degraded:true,ingressFailed:'true'}}));
- validateResult('chat.snapshot',{items:[],revision:10,repair:{offered:false,reason:'history_unavailable',degraded:false}});
- assert.throws(()=>validateResult('chat.snapshot',{items:[],revision:10,repair:{offered:false,reason:'reader_start_required',degraded:false}}));
+ validateResult('chat.snapshot',{items:[],revision:10,repair:{offered:true,mode:'rebuild',degraded:true,ingressFailed:true},hasEarlier:false});
+ assert.throws(()=>validateResult('chat.snapshot',{items:[],revision:10,repair:{offered:true,mode:'rebuild',degraded:true,ingressFailed:'true'},hasEarlier:false}));
+ validateResult('chat.snapshot',{items:[],revision:10,repair:{offered:false,reason:'history_unavailable',degraded:false},hasEarlier:false});
+ assert.throws(()=>validateResult('chat.snapshot',{items:[],revision:10,repair:{offered:false,reason:'reader_start_required',degraded:false},hasEarlier:false}));
 });
 
 test('chat allows image-only input while retaining empty-message and type guards',()=>{

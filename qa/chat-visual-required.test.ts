@@ -21,6 +21,6 @@ test('required Chat visual fixture uses renderable contract shapes', () => {
   assert.equal(contextSerializedBlocks(requiredSurfaceContext).length, 1);
   assert.equal(parseContext(serialized)?.items.length, 1);
   assert.equal(requiredSurfaceQueue.sessionId, requiredSurfaceSession.id);
-  assert.ok(validateWireSuccess({ v: 1, id: 'fixture', method: 'chat.snapshot', result: { items: requiredSurfaceItems, revision: 1, repair: { offered: true, mode: 'rebuild', degraded: true, diagnostic: 'Fixture projection gap.' } } }), JSON.stringify(validateWireSuccess.errors));
+  assert.ok(validateWireSuccess({ v: 1, id: 'fixture', method: 'chat.snapshot', result: { items: requiredSurfaceItems, revision: 1, hasEarlier: false, repair: { offered: true, mode: 'rebuild', degraded: true, diagnostic: 'Fixture projection gap.' } } }), JSON.stringify(validateWireSuccess.errors));
   assert.ok(validateWireSuccess({ v: 1, id: 'fixture', method: 'chat.queue.read', result: requiredSurfaceQueue }));
 });

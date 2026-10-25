@@ -1873,17 +1873,25 @@ impl RuntimeService {
                     )
                 }
                 "chat.snapshot" => {
-                    let p: ChatRead = parse(&request.params)?;
+                    let p: ChatSnapshotRead = parse(&request.params)?;
                     self.db.acknowledge_session_replies(&p.session_id)?;
                     let session = self.db.session_by_id(&p.session_id)?.ok_or_else(|| anyhow::anyhow!("session_not_found"))?;
                     let available = self.providers.history_reader_available(&session.provider);
+                    let page = crate::chat_repair::ChatSnapshotPage {
+                        before: p.before,
+                        max_bytes: p.max_bytes.map(|bytes| bytes as usize),
+                    };
                     self.providers.with_chat_repair_state(&p.session_id, |worker| {
                         self.db.transaction(|tx| {
-                            let mut snapshot = crate::chat_repair::snapshot(tx, &p.session_id, &worker, available)?;
+                            let mut snapshot = crate::chat_repair::snapshot(tx, &p.session_id, &page, &worker, available)?;
                             if self.chat_queues.ingress_failed() { snapshot.repair.ingress_failed = Some(true); }
                             Ok(serde_json::to_value(snapshot)?)
                         })
                     })
+                }
+                "chat.image.read" => {
+                    let p: ChatImageRead = parse(&request.params)?;
+                    self.db.chat_image(&p.session_id, &p.item_id, p.part, p.index)
                 }
                 "chat.feedback.add" => {
                     #[derive(Deserialize)]
@@ -3411,6 +3419,22 @@ struct ChatConnect {
 #[serde(rename_all = "camelCase")]
 struct ChatRead {
     session_id: String,
+}
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ChatSnapshotRead {
+    session_id: String,
+    /// Continue with the page strictly older than this cursor.
+    before: Option<String>,
+    max_bytes: Option<u64>,
+}
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ChatImageRead {
+    session_id: String,
+    item_id: String,
+    part: usize,
+    index: usize,
 }
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]

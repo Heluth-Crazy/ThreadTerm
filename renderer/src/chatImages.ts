@@ -4,6 +4,16 @@ export { MAX_CHAT_IMAGE_BYTES, MAX_CHAT_IMAGES };
 export function isChatImage(value: unknown): value is string {
   return typeof value === 'string' && /^data:image\/(?:png|jpeg|gif|webp);base64,[A-Za-z0-9+/]+={0,2}$/.test(value);
 }
+/** A transcript page replaced an oversized inline image with this reference;
+ * the bytes stay in the local runtime and are read on demand. */
+export type ChatImageRef = { itemId: string; part: number; index: number; bytes?: number; mime?: string };
+export function isChatImageRef(value: unknown): value is ChatImageRef {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const ref = value as Record<string, unknown>;
+  return typeof ref.itemId === 'string' && ref.itemId.length > 0
+    && Number.isSafeInteger(ref.part) && Number(ref.part) >= 0
+    && Number.isSafeInteger(ref.index) && Number(ref.index) >= 0;
+}
 export function validateChatImages(images: unknown): string[] {
   if (!Array.isArray(images) || images.length > MAX_CHAT_IMAGES || !images.every(isChatImage)
       || images.reduce((size, image) => size + image.length, 0) > MAX_CHAT_IMAGE_BYTES) {

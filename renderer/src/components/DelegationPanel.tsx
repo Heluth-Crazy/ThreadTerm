@@ -87,9 +87,10 @@ function DelegateCard({ delegate, onOpenSession, copy, zh }: { delegate: Session
   useEffect(() => {
     if (active) { setPreview(undefined); return; }
     let disposed = false;
-    // The delegate's answer (or failure) once the delegated turn ended.
-    void request("chat.read", { sessionId: delegate.id }).then(items => {
-      if (!disposed) setPreview(delegateOutcomePreview(items, failed));
+    // The delegate's answer (or failure) once the delegated turn ended. A preview
+    // needs only the newest bounded page, never the whole transcript.
+    void request("chat.snapshot", { sessionId: delegate.id }).then(snapshot => {
+      if (!disposed) setPreview(delegateOutcomePreview(snapshot.items, failed));
     }).catch(() => { if (!disposed) setPreview(undefined); });
     return () => { disposed = true; };
   }, [delegate.id, active, failed]);

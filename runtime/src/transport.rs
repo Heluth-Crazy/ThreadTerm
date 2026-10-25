@@ -16,6 +16,10 @@ use std::sync::{Arc, Mutex};
 use crate::send_trace::{self, Context as SendTraceContext, Event as SendTraceEvent, Timer as SendTraceTimer};
 
 pub const MAX_FRAME: usize = 8 * 1024 * 1024;
+/// One control frame never carries more than this. A larger answer is refused
+/// for that request alone (`response_too_large`), so a legal long transcript can
+/// never tear down the connection and the other views on it.
+pub const MAX_RESPONSE_BYTES: usize = 6 * 1024 * 1024;
 const TERMINAL_HISTORY_GAP: &str = "terminal_history_gap";
 type HmacSha256 = Hmac<Sha256>;
 
@@ -235,7 +239,8 @@ fn request_lane(method: &str) -> Lane {
     if matches!(method, "browser.tool.call" | "browser.tool.cancel") { return Lane::Concurrent; }
     if method.starts_with("preview.") { return Lane::Concurrent; }
     match method {
-        "chat.tool.ask" | "chat.tool.sessionInfo" | "chat.tool.feedback" | "chat.feedback.read" => Lane::Concurrent,
+        "chat.tool.ask" | "chat.tool.sessionInfo" | "chat.tool.feedback" | "chat.feedback.read"
+        | "chat.image.read" => Lane::Concurrent,
         "group.prerequisites"
         | "terminal.read"
         | "project.catalog.list"
@@ -332,8 +337,8 @@ fn trace_method(method: &str) -> &'static str {
         "chat.connection", "chat.context.read", "chat.draft.read", "chat.draft.save", "chat.option.set",
         "chat.options", "chat.queue.add", "chat.queue.move", "chat.queue.pause",
         "chat.queue.read", "chat.queue.remove", "chat.queue.resume", "chat.queue.send",
-        "chat.queue.update", "chat.read", "chat.repair", "chat.send", "chat.snapshot",
-        "chat.subagent.read", "data.backup", "data.relocation.cancel",
+        "chat.image.read", "chat.queue.update", "chat.read", "chat.repair", "chat.send",
+        "chat.snapshot", "chat.subagent.read", "data.backup", "data.relocation.cancel",
         "data.relocation.prepare", "data.relocation.status", "data.status", "device.disable",
         "device.enable", "device.list", "device.pairing.cancel", "device.pairing.create",
         "device.rename", "device.renew", "device.revoke", "draft.delete", "draft.put",
@@ -532,7 +537,7 @@ async fn serve_control(
                 if reply.sequenced {
                     sequenced_in_flight = sequenced_in_flight.saturating_sub(1);
                 }
-                let delivery = write_json(&mut writer, &reply.body?).await;
+                let delivery = write_response(&mut writer, reply.body).await;
                 if reply.accepted_shutdown {
                     // Do not tear down Tokio while the response is still in the
                     // pipe. New clients acknowledge receipt; older clients get
@@ -553,11 +558,20 @@ async fn serve_control(
         if sequenced_in_flight == 0 {
             let epoch = service.db.epoch()?;
             for (seq, event, data) in service.db.events_after(sent_seq)? {
-                write_json(
-                    &mut writer,
-                    &json!({"v":PROTOCOL_VERSION,"event":event,"epoch":epoch,"seq":seq,"data":data}),
-                )
-                .await?;
+                let frame = json!({"v":PROTOCOL_VERSION,"event":event,"epoch":epoch,"seq":seq,"data":data});
+                // Durable state that cannot fit a frame stays in the database; the
+                // connection reports a projection gap instead of dying, and the view
+                // resynchronizes through the bounded snapshot pages.
+                let bytes = serde_json::to_vec(&frame)?;
+                if bytes.len() > MAX_RESPONSE_BYTES {
+                    write_json(
+                        &mut writer,
+                        &json!({"v":PROTOCOL_VERSION,"event":"runtime.degraded","epoch":epoch,"seq":seq,"data":{"reason":"chat_event_too_large"}}),
+                    )
+                    .await?;
+                } else {
+                    write_binary(&mut writer, &bytes).await?;
+                }
                 sent_seq = seq;
             }
         }
@@ -790,6 +804,38 @@ async fn read_json<T: tokio::io::AsyncRead + Unpin>(stream: &mut T) -> Result<Va
 async fn write_json<T: tokio::io::AsyncWrite + Unpin>(stream: &mut T, value: &Value) -> Result<()> {
     write_binary(stream, &serde_json::to_vec(value)?).await
 }
+/// One oversized answer becomes a typed error for its own request id; the
+/// connection and its event stream stay open.
+#[cfg(windows)]
+async fn write_response<T: tokio::io::AsyncWrite + Unpin>(
+    stream: &mut T,
+    body: Result<Value>,
+) -> Result<()> {
+    let value = body?;
+    let bytes = serde_json::to_vec(&value)?;
+    if bytes.len() <= MAX_RESPONSE_BYTES {
+        return write_binary(stream, &bytes).await;
+    }
+    let id = value
+        .get("id")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_owned();
+    write_binary(stream, &serde_json::to_vec(&response_too_large(&id))?).await
+}
+#[cfg(windows)]
+fn response_too_large(id: &str) -> Value {
+    json!(RpcResponse::Err {
+        v: PROTOCOL_VERSION,
+        id: id.to_owned(),
+        error: crate::domain::RpcError {
+            code: "response_too_large".into(),
+            // Electron's IPC drops the typed code, so the message repeats it.
+            message: format!("response_too_large: response exceeds {MAX_RESPONSE_BYTES} bytes"),
+            details: Some(json!({"limitBytes": MAX_RESPONSE_BYTES})),
+        },
+    })
+}
 #[cfg(windows)]
 async fn read_binary<T: tokio::io::AsyncRead + Unpin>(stream: &mut T) -> Result<Vec<u8>> {
     use tokio::io::AsyncReadExt;
@@ -849,6 +895,32 @@ async fn write_output<T: tokio::io::AsyncWrite + Unpin>(
 mod decoder_tests {
     use super::*;
     use tokio::io::AsyncWriteExt;
+    /// An answer over the response ceiling fails for its own request id only;
+    /// the same connection keeps serving. Before this guard the oversized write
+    /// errored and `serve_control` dropped the whole control connection.
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn an_oversized_answer_fails_alone_and_the_connection_keeps_serving() {
+        let (mut server, mut client) = tokio::io::duplex(32 * 1024 * 1024);
+        let big = json!({"v":PROTOCOL_VERSION,"id":"big","result":{"items":[{"text":"x".repeat(MAX_FRAME + 1)}]}});
+        // This is the exact write that used to fail and take the connection down.
+        assert!(write_json(&mut server, &big).await.is_err(), "an over-MAX_FRAME answer cannot be written raw");
+        write_response(&mut server, Ok(big)).await.unwrap();
+        let first = read_json(&mut client).await.unwrap();
+        assert_eq!(first["id"], "big");
+        assert_eq!(first["error"]["code"], "response_too_large");
+        assert_eq!(first["error"]["details"]["limitBytes"], MAX_RESPONSE_BYTES);
+        // The code survives a transport that carries only the message (Electron IPC).
+        assert!(first["error"]["message"].as_str().unwrap().starts_with("response_too_large: "));
+        assert!(first.get("result").is_none());
+        let small = json!({"v":PROTOCOL_VERSION,"id":"small","result":{"items":[]}});
+        write_response(&mut server, Ok(small.clone())).await.unwrap();
+        assert_eq!(read_json(&mut client).await.unwrap(), small, "the connection still answers the next request");
+        // An answer that fits is written unchanged, including a large one.
+        let fits = json!({"v":PROTOCOL_VERSION,"id":"fits","result":{"text":"y".repeat(MAX_RESPONSE_BYTES - 1024)}});
+        write_response(&mut server, Ok(fits.clone())).await.unwrap();
+        assert_eq!(read_json(&mut client).await.unwrap(), fits);
+    }
     #[cfg(windows)]
     #[tokio::test]
     async fn turn_speed_forwarding_uses_current_epoch_and_an_ephemeral_sequence() {

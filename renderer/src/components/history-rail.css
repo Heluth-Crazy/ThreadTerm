@@ -77,6 +77,8 @@
 .imported-history-view header > button { flex:none; }
 .imported-history-view > .surface-error { flex:none; margin:0; }
 .imported-history-scroll { flex:1; min-height:0; min-width:0; overflow:auto; }
+/* Same top-of-transcript control as ChatView: earlier pages are always reachable. */
+.imported-history-earlier { display:flex; justify-content:center; margin:8px 0; }
 @media (max-width:700px) { .history-native-list > article { flex-direction:column; }.history-row-actions { justify-content:flex-start; } }
 @media (max-width:700px) {
   .session-history-rail .history-native-list > article { grid-template-columns:auto minmax(0,1fr); }
