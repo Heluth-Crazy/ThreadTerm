@@ -30,6 +30,30 @@
   --shadow:0 16px 48px rgba(0,0,0,.42); --shadow-soft:0 8px 24px rgba(0,0,0,.32); --app-window-stroke:rgba(250,244,228,.12);
 }
 
+/* Palette roles are set together by themeCssVariables; every derived fill follows them. */
+:root {
+  --sidebar:var(--side); --editor:var(--surface);
+  --raised:color-mix(in srgb,var(--surface) 45%,var(--bg));
+  --soft:color-mix(in srgb,var(--text) 5.5%,transparent);
+  --faint:color-mix(in srgb,var(--muted) 70%,var(--surface));
+  --primary-hover:color-mix(in srgb,var(--primary) 88%,var(--custom-hover-target,var(--text)));
+  --primary-tint:color-mix(in srgb,var(--primary) 12%,transparent);
+  --primary-contrast:var(--primary-fg); --switch-off-fg:var(--custom-switch-off-fg,var(--surface));
+  --mint:var(--primary); --mint-ink:var(--primary-fg); --ink:var(--primary); --ink-fg:var(--primary-fg);
+  --accent:var(--primary-tint); --accent-fg:var(--primary); --blue:var(--primary);
+  --focus-ring:color-mix(in srgb,var(--primary) 85%,var(--text));
+  --scrollbar:color-mix(in srgb,var(--text) 15%,transparent);
+  --scrollbar-hover:color-mix(in srgb,var(--text) 25%,transparent);
+  --diff-added-bg:color-mix(in srgb,var(--st-running) 12%,var(--editor));
+  --diff-deleted-bg:color-mix(in srgb,var(--danger) 12%,var(--editor));
+  --term-dim:var(--muted); --term-line:var(--border); --term-prompt:var(--primary);
+  --app-window-stroke:var(--border);
+}
+:root[data-theme="dark"] { --raised:color-mix(in srgb,var(--text) 4%,var(--surface)); --faint:color-mix(in srgb,var(--muted) 60%,var(--surface)); }
+* { scrollbar-color:var(--scrollbar) transparent; }
+::-webkit-scrollbar-thumb { background:var(--scrollbar); }
+::-webkit-scrollbar-thumb:hover { background:var(--scrollbar-hover); }
+
 /* Status colours (user decision 2026-09-28, departs from the prototype): stalled was purple, next to the brand
    indigo; it is orange now. Pill text is 80% status + 20% text so light pills reach 4.5:1 on their tint (they were
    3.9-4.5:1); the dot keeps the pure status colour. Dark after light: both selectors match <html>. Dark stalled is
@@ -103,7 +127,7 @@ html[data-theme="dark"] { color-scheme:dark; }
 .window-controls button:last-child:hover:not(:disabled) { background:var(--danger); color:var(--bg); }
 .window-controls svg { width:12px; height:12px; }
 .app-shell > .sidebar, .app-shell > .content.main { grid-row:2; }
-.app-shell > .sidebar { grid-column:1; }
+.app-shell > .sidebar { grid-column:1; background:var(--sidebar); }
 .app-shell > .content.main { grid-column:2; padding:0; }
 .legacy-toolbar { display:none; }
 .content.main:has(> .session-screen), .content.main:has(> .file-workspace), .content.main:has(> .pane-workspace) { display:flex; flex-direction:column; overflow:hidden; }
@@ -723,13 +747,4 @@ code.chat-status-value { font-family:var(--mono); font-size:11px; }
 .desktop-companion-summary b { color:var(--text); font-size:14px; }
 .desktop-companion-inbox, .desktop-companion-reset { width:100%; margin-top:6px; }
 
-/* Custom palettes own surface/accent aliases; status, depth and wallpaper keep the base theme. */
-:root[data-custom-theme="true"] {
-  --bg:var(--custom-background); --side:var(--custom-background); --surface:var(--custom-surface); --raised:var(--custom-surface);
-  --text:var(--custom-text); --muted:var(--custom-muted); --faint:color-mix(in srgb,var(--custom-muted) 70%,var(--custom-surface)); --border:var(--custom-border); --soft:color-mix(in srgb,var(--custom-text) 5%,transparent);
-  --primary:var(--custom-accent); --primary-fg:var(--custom-primary-fg,var(--custom-text)); --primary-contrast:var(--primary-fg); --primary-hover:color-mix(in srgb,var(--custom-accent) 88%,var(--custom-hover-target,var(--custom-text))); --primary-tint:color-mix(in srgb,var(--custom-accent) 12%,transparent); --switch-off-fg:var(--custom-switch-off-fg,var(--custom-surface));
-  --mint:var(--primary); --mint-ink:var(--primary-fg); --ink:var(--primary); --ink-fg:var(--primary-fg); --accent:var(--primary-tint); --accent-fg:var(--primary); --blue:var(--primary);
-  --term-bg:var(--custom-background); --term-fg:var(--custom-text); --term-dim:var(--custom-muted); --term-line:var(--custom-border); --term-prompt:var(--custom-accent);
-  --app-window-stroke:var(--custom-border);
-}
 @media (prefers-reduced-motion:reduce) { .spinner, .chat-first-response-dots i { animation:none; } }

@@ -30,6 +30,9 @@ export function xtermThemeFor(resolved: ResolvedTheme): ITheme {
     cursorAccent: colors.accentFg,
     selectionBackground: `${colors.accent}59`,
     selectionInactiveBackground: `${colors.accent}33`,
+    scrollbarSliderBackground: `${colors.text}26`,
+    scrollbarSliderHoverBackground: `${colors.text}40`,
+    scrollbarSliderActiveBackground: `${colors.text}59`,
     black, red, green, yellow, blue, magenta, cyan, white,
     brightBlack, brightRed, brightGreen, brightYellow, brightBlue, brightMagenta, brightCyan, brightWhite,
   };

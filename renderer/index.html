@@ -40,11 +40,13 @@
         splash.lang = saved.locale === "zh-CN" ? "zh-CN" : "en";
         if (query.get("chrome") === "native") splash.dataset.chrome = "native";
         if (matchMedia("(prefers-reduced-motion: reduce)").matches) splash.dataset.motion = "reduced";
-        var tokens = saved.tokens && typeof saved.tokens === "object" ? saved.tokens : {};
+        var palette = saved.theme === "system" ? (dark ? saved.darkTokens : saved.lightTokens) || saved.tokens : saved.tokens;
+        var tokens = palette && typeof palette === "object" ? palette : {};
         ["background:bg", "surface:surface", "text:text", "muted:muted", "border:border"].forEach(function (pair) {
           var names = pair.split(":"), value = tokens[names[0]];
           if (typeof value === "string" && /^#[0-9a-f]{6}$/i.test(value)) splash.style.setProperty("--splash-" + names[1], value);
         });
+        splash.style.setProperty("--splash-stroke", "var(--splash-border)");
       })();
     </script>
     <script type="module" src="/src/main.tsx"></script>

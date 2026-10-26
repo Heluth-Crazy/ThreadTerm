@@ -1,7 +1,7 @@
-.terminal-wrap { position:relative; display:flex; flex:1 1 auto; flex-direction:column; min-width:0; min-height:0; overflow:hidden; }
+.terminal-wrap { position:relative; display:flex; flex:1 1 auto; flex-direction:column; min-width:0; min-height:0; overflow:hidden; background:var(--editor); }
 .term-content { position:relative; display:flex; flex:1 1 auto; flex-direction:column; min-width:0; min-height:0; overflow:hidden; }
 .term-content:has(.term-replaying) .terminal-host { visibility:hidden; }
-.term-loading-overlay { position:absolute; inset:0; z-index:20; display:grid; place-items:center; min-width:0; min-height:0; padding:16px; overflow:auto; background:color-mix(in srgb, var(--surface, Canvas) 92%, transparent); color:var(--text, CanvasText); }
+.term-loading-overlay { position:absolute; inset:0; z-index:20; display:grid; place-items:center; min-width:0; min-height:0; padding:16px; overflow:auto; background:color-mix(in srgb, var(--editor, Canvas) 92%, transparent); color:var(--text, CanvasText); }
 .term-loading-overlay.term-replaying { pointer-events:none; }
 .term-loading-overlay.is-failed { pointer-events:auto; }
 .term-loading-overlay .chat-connect-center { gap:12px; }
@@ -17,7 +17,7 @@
 .term-failure-details summary .ico { width:14px; height:14px; transition:transform .15s ease; }
 .term-failure-details[open] summary .ico { transform:rotate(180deg); }
 .term-failure-details p { max-width:min(420px, calc(100vw - 64px)); margin:0; padding:8px 10px; border:1px solid var(--border); border-radius:var(--radius); background:var(--raised); color:var(--muted); font-family:var(--mono); font-size:11px; line-height:1.5; text-align:left; overflow-wrap:anywhere; user-select:text; }
-.term-starting { position:absolute; inset:0; z-index:20; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:10px; min-width:0; min-height:0; padding:16px; background:color-mix(in srgb, var(--surface, Canvas) 92%, transparent); color:var(--text, CanvasText); pointer-events:none; }
+.term-starting { position:absolute; inset:0; z-index:20; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:10px; min-width:0; min-height:0; padding:16px; background:color-mix(in srgb, var(--editor, Canvas) 92%, transparent); color:var(--text, CanvasText); pointer-events:none; }
 /* content-box: FitAddon reads the parent's computed width/height as usable space. Under the
    prototype's global border-box that included this padding, so fit proposed ~2 extra columns and
    sometimes an extra row that were then clipped under the scrollbar and bottom edge. */
@@ -28,19 +28,19 @@
 .terminal-host .xterm .xterm-viewport { background-color:transparent; }
 .star.on { color:var(--amber); }
 .term-stop { white-space:nowrap; }
-.term-modebar { display:flex; align-items:center; gap:6px; flex:0 0 auto; min-height:34px; padding:0 12px; border-bottom:1px solid var(--border); color:var(--muted); background:var(--surface); font-size:12px; }
+.term-modebar { display:flex; align-items:center; gap:6px; flex:0 0 auto; min-height:34px; padding:0 12px; border-bottom:1px solid var(--border); color:var(--muted); background:var(--editor); font-size:12px; }
 .term-modebar .grow { flex:1; }
 .term-modebar .btn { min-height:26px; padding:3px 8px; font-size:11px; }
-.terminal-new-output { position:absolute;bottom:12px;right:18px;z-index:2;display:inline-flex;align-items:center;gap:6px;min-height:28px;padding:4px 12px;border:1px solid var(--border);border-radius:999px;background:var(--raised);color:var(--text);box-shadow:0 2px 8px #0003;font-size:12px;line-height:1.3;cursor:pointer; }
+.terminal-new-output { position:absolute;bottom:12px;right:18px;z-index:2;display:inline-flex;align-items:center;gap:6px;min-height:28px;padding:4px 12px;border:1px solid var(--border);border-radius:999px;background:var(--raised);color:var(--text);box-shadow:var(--shadow-soft);font-size:12px;line-height:1.3;cursor:pointer; }
 .terminal-new-output:hover { border-color:color-mix(in srgb, var(--primary) 40%, var(--border)); }
 .terminal-new-output:focus-visible { outline:2px solid var(--primary); outline-offset:2px; }
-.terminal-link-actions { display:flex;gap:8px;align-items:center;padding:8px;border-top:1px solid var(--border);background:var(--surface); }
+.terminal-link-actions { display:flex;gap:8px;align-items:center;padding:8px;border-top:1px solid var(--border);background:var(--editor); }
 .terminal-link-actions span { flex:1;min-width:0;white-space:nowrap;text-overflow:ellipsis;overflow:hidden; }
 
 .terminal-selection-actions { position:absolute; top:8px; right:18px; z-index:2; display:flex; align-items:center; gap:6px; max-width:calc(100% - 36px); }
-.terminal-inspect-selection, .terminal-open-selection { min-height:26px; padding:3px 10px; background:var(--raised); color:var(--text); border:1px solid var(--border); border-radius:6px; font-size:12px; line-height:1.3; white-space:nowrap; box-shadow:0 1px 4px #0002; cursor:pointer; }
+.terminal-inspect-selection, .terminal-open-selection { min-height:26px; padding:3px 10px; background:var(--raised); color:var(--text); border:1px solid var(--border); border-radius:6px; font-size:12px; line-height:1.3; white-space:nowrap; box-shadow:var(--shadow-soft); cursor:pointer; }
 .terminal-inspect-selection:hover, .terminal-open-selection:hover { border-color:color-mix(in srgb, var(--primary) 40%, var(--border)); }
-.terminal-inspect-selection:focus-visible, .terminal-open-selection:focus-visible { outline:2px solid var(--primary, #4f59c8); outline-offset:2px; }
+.terminal-inspect-selection:focus-visible, .terminal-open-selection:focus-visible { outline:2px solid var(--primary); outline-offset:2px; }
 .terminal-completion-hint { position:absolute; right:18px; bottom:12px; z-index:2; border:1px solid var(--border); border-radius:6px; background:var(--raised); color:var(--muted); padding:5px 8px; font-size:12px; }
 .terminal-host.fixed-geometry { overflow:auto; }
 .terminal-host.fixed-geometry .xterm { height:auto; }
@@ -54,9 +54,9 @@
 .terminal-local-action-row > .surface-local-actions { display:flex; flex:0 0 auto; align-items:center; gap:6px; white-space:nowrap; }
 .terminal-local-action-row > .surface-local-actions:empty { display:none; }
 .terminal-local-action-row > .surface-local-actions .btn { min-height:26px; padding:3px 8px; white-space:nowrap; }
-.term-legacy-note { flex:0 0 auto; min-width:0; margin:0; padding:6px 12px; border-bottom:1px solid var(--border); color:var(--muted); background:var(--surface); font-size:12px; line-height:1.45; overflow-wrap:anywhere; }
+.term-legacy-note { flex:0 0 auto; min-width:0; margin:0; padding:6px 12px; border-bottom:1px solid var(--border); color:var(--muted); background:var(--editor); font-size:12px; line-height:1.45; overflow-wrap:anywhere; }
 /* Durable recording failed but the process and its live view continue (F23). */
-.term-storage-degraded { display:flex; flex:0 0 auto; flex-wrap:wrap; column-gap:8px; min-width:0; margin:0; padding:6px 12px; border-bottom:1px solid color-mix(in srgb, var(--danger) 30%, var(--border)); background:color-mix(in srgb, var(--danger) 7%, var(--surface)); color:var(--danger); font-size:12px; line-height:1.45; overflow-wrap:anywhere; }
+.term-storage-degraded { display:flex; flex:0 0 auto; flex-wrap:wrap; column-gap:8px; min-width:0; margin:0; padding:6px 12px; border-bottom:1px solid color-mix(in srgb, var(--danger) 30%, var(--border)); background:color-mix(in srgb, var(--danger) 7%, var(--editor)); color:var(--danger); font-size:12px; line-height:1.45; overflow-wrap:anywhere; }
 .term-storage-degraded strong { font-weight:600; }
 /* Ended / read-only footer: where input would go, says why there is none and offers the next step. */
 .term-ended-banner { display:flex; flex:0 0 auto; align-items:center; gap:10px; min-width:0; min-height:44px; padding:7px 10px 7px 16px; border-top:1px solid var(--border); background:var(--raised); font-size:12px; line-height:1.45; }

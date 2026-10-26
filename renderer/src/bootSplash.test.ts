@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { readFileSync } from "node:fs";
+import { runInNewContext } from "node:vm";
 
 test("settled splash exits once when an occluded window pauses animation frames", async () => {
   const saved = new Map<string, PropertyDescriptor | undefined>();
@@ -56,4 +58,24 @@ test("settled splash exits once when an occluded window pauses animation frames"
       else Reflect.deleteProperty(globalThis, name);
     }
   }
+});
+
+test("splash first paint follows the stored family palette after an OS appearance change", async () => {
+  const { rememberBootAppearance } = await import("./bootSplash");
+  const originalStorage = globalThis.localStorage;
+  let saved = "";
+  Object.assign(globalThis, { localStorage: { setItem: (_key: string, value: string) => { saved = value; } } });
+  const light = { background: "#fdf6e3", surface: "#fdf6e3", text: "#586e75", muted: "#657b83", border: "#eee8d5" };
+  const dark = { background: "#002b36", surface: "#073642", text: "#93a1a1", muted: "#839496", border: "#586e75" };
+  try {
+    rememberBootAppearance({ theme: "system", locale: "zh-CN", tokens: light, lightTokens: light, darkTokens: dark });
+    const script = readFileSync("renderer/index.html", "utf8").match(/<script>([\s\S]*?)<\/script>/)![1];
+    for (const systemDark of [false, true]) {
+      const values = new Map<string, string>();
+      const splash = { dataset: {}, lang: "", style: { setProperty: (key: string, value: string) => values.set(key, value) } };
+      runInNewContext(script, { document: { getElementById: () => splash }, URLSearchParams, location: { search: "" }, localStorage: { getItem: () => saved }, matchMedia: (query: string) => ({ matches: query.includes("color-scheme") && systemDark }) });
+      assert.equal(values.get("--splash-bg"), (systemDark ? dark : light).background);
+      assert.equal(splash.lang, "zh-CN");
+    }
+  } finally { Object.assign(globalThis, { localStorage: originalStorage }); }
 });

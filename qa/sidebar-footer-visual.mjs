@@ -40,7 +40,7 @@ function env(){
 }
 async function settings(language,theme){
  const snap=await request('runtime.snapshot');
- const custom={background:'#0b1016',surface:'#182430',text:'#f2f6fb',muted:'#93a3b5',accent:'#ff7a45',border:'#26323f'};
+ const custom={background:'#0b1016',sidebar:'#101820',surface:'#182430',editor:'#14212e',text:'#f2f6fb',muted:'#93a3b5',accent:'#ff7a45',border:'#26323f'};
  await request('settings.update',{patch:{language,notifications:{native:false,attention:false,completed:false,sound:false},...(theme==='custom'?{theme:'dark',themeSelection:'custom:inspector-qa',customThemes:{'inspector-qa':custom}}:{theme,themeSelection:theme})},expectedRevision:snap.settings.revision,operationId:randomUUID()});
  await page.waitForFunction(({language,theme})=>document.documentElement.lang===(language==='zh-CN'?'zh-CN':'en')&&document.documentElement.dataset.theme===(theme==='custom'?'dark':theme)&&(document.documentElement.dataset.customTheme==='true')===(theme==='custom'),{language,theme});
 }

@@ -1,8 +1,13 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { applyThemeTokens, contrastRatio, customHoverTarget, customPrimaryForeground, customSwitchOffForeground, customTheme, customTokens, resolveTheme, subscribeThemeState, themeCssVariables, type ThemeTokens } from './themes';
+import { applyThemeTokens, contrastRatio, customHoverTarget, customPrimaryForeground, customSwitchOffForeground, customTheme, customTokens, resolveTheme, subscribeThemeState, themeCssVariables, themeUsesSystemAppearance, type ThemeTokens } from './themes';
 
 const tokens = (overrides: Partial<ThemeTokens> = {}): ThemeTokens => ({ background: '#182430', surface: '#22303d', text: '#f1f5f9', muted: '#94a3b8', accent: '#ff7a45', border: '#44505d', ...overrides });
+
+test('boot appearance follows the OS for paired families and stale selections but keeps concrete palettes fixed', () => {
+  for (const selection of ['system', 'system:github', 'preset:future-theme', 'custom:missing']) assert.equal(themeUsesSystemAppearance(selection), true, selection);
+  for (const selection of ['light', 'preset:dracula', 'system:nord', 'custom:valid']) assert.equal(themeUsesSystemAppearance(selection, { valid: tokens() }), false, selection);
+});
 
 test('custom primary foreground selects the better custom token when it meets contrast', () => {
   const theme = tokens({ accent: '#303030' });
@@ -51,6 +56,36 @@ test('applying theme tokens exposes contrast properties and signals only actual 
 test('custom switch off foreground remains visible when custom muted and surface match', () => {
   const theme = tokens({ muted: '#94a3b8', surface: '#94a3b8' });
   assert.ok(contrastRatio(theme.muted, customSwitchOffForeground(theme)) >= 4.5);
+});
+
+test('resolved theme application replaces same-mode palettes and updates editor roles without duplicate notifications', () => {
+  const values = new Map<string, string>(), originalDocument = globalThis.document;
+  Object.assign(globalThis, { document: { documentElement: { style: { removeProperty: (key: string) => values.delete(key), setProperty: (key: string, value: string) => values.set(key, value) } } } });
+  let changes = 0;
+  const unsubscribe = subscribeThemeState(() => { changes += 1; });
+  try {
+    const github = resolveTheme('preset:github-dark', { systemDark: false });
+    applyThemeTokens(undefined, github.mode, github);
+    applyThemeTokens(undefined, github.mode, resolveTheme('preset:github-dark', { systemDark: false }));
+    assert.equal(changes, 1);
+    const dracula = resolveTheme('preset:dracula', { systemDark: false });
+    applyThemeTokens(undefined, dracula.mode, dracula);
+    assert.equal(changes, 2, 'terminals must receive a same-mode preset change');
+    assert.equal(values.get('--editor'), dracula.colors.editor);
+    assert.equal(values.get('--syn-keyword'), dracula.syn.keyword);
+    const custom = tokens({ editor: '#112233', sidebar: '#223344' });
+    applyThemeTokens(custom, 'dark');
+    applyThemeTokens({ ...custom, editor: '#334455' }, 'dark');
+    assert.equal(changes, 4, 'editor-role-only edits notify mounted terminals');
+    assert.equal(values.get('--editor'), '#334455');
+    assert.equal(values.get('--sidebar'), '#223344');
+    applyThemeTokens(undefined, 'light');
+    assert.equal(values.get('--editor'), resolveTheme('light', { systemDark: false }).colors.editor);
+    assert.equal(values.has('--custom-primary-fg'), false);
+  } finally {
+    unsubscribe();
+    Object.assign(globalThis, { document: originalDocument });
+  }
 });
 
 test('custom theme entries keep the optional sidebar, editor and base keys', () => {

@@ -4,6 +4,7 @@ import {
   Suspense,
   useCallback,
   useEffect,
+  useMemo,
   useRef,
   useState,
 } from "react";
@@ -42,7 +43,7 @@ import {
   sessionViewState,
   upsertSession,
 } from "./presentation";
-import { applyThemeTokens, customTheme } from "./themes";
+import { applyThemeTokens, customTheme, resolveTheme, themeUsesSystemAppearance, type ThemeTokens } from "./themes";
 import { userErrorText } from "./runtimeError";
 import { rememberBootAppearance, settleBootSplash } from "./bootSplash";
 import { SettingsDialog } from "./components/SettingsDialog";
@@ -206,28 +207,30 @@ export function App() {
       ? data?.projects.find((item) => item.id === route.id)
       : undefined;
   const systemDark = useSystemDark();
-  const theme =
-    data?.settings.theme === "light"
-      ? "light"
-      : data?.settings.theme === "dark"
-        ? "dark"
-        : systemDark
-          ? "dark"
-          : "light";
+  const selection = String(data?.settings.themeSelection ?? data?.settings.theme ?? "system");
+  const resolvedTheme = useMemo(() => resolveTheme(selection, { systemDark, customThemes: data?.settings.customThemes as Record<string, ThemeTokens> | undefined }), [selection, systemDark, data?.settings.customThemes]);
+  const theme = resolvedTheme.mode;
   const locale: Locale = localeFromSettings(data?.settings);
   const t = (key: Parameters<typeof translate>[1]) => translate(locale, key);
-  const themeTokens = data ? customTheme(data.settings) : undefined;
+  const themeTokens = useMemo(() => data ? customTheme(data.settings) : undefined, [selection, data?.settings.customThemes]);
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
     document.documentElement.dataset.customTheme = themeTokens
       ? "true"
       : "false";
     document.documentElement.lang = locale;
-    applyThemeTokens(themeTokens, theme);
-  }, [locale, theme, themeTokens]);
+    applyThemeTokens(themeTokens, theme, resolvedTheme);
+  }, [locale, theme, themeTokens, resolvedTheme]);
   const loaded = data !== undefined;
-  const themeSetting = data?.settings.theme === "light" || data?.settings.theme === "dark" ? data.settings.theme : "system";
-  useEffect(() => { if (loaded) rememberBootAppearance({ theme: themeSetting, tokens: themeTokens, locale }); }, [loaded, themeSetting, themeTokens, locale]);
+  useEffect(() => {
+    if (!loaded) return;
+    const followsSystem = themeUsesSystemAppearance(selection, data?.settings.customThemes as Record<string, ThemeTokens> | undefined);
+    const splashTokens = (dark: boolean) => {
+      const { colors } = resolveTheme(selection, { systemDark: dark, customThemes: data?.settings.customThemes as Record<string, ThemeTokens> | undefined });
+      return { background: colors.frame, surface: colors.panel, text: colors.text, muted: colors.muted, border: colors.border };
+    };
+    rememberBootAppearance({ theme: followsSystem ? "system" : theme, tokens: splashTokens(systemDark), ...(followsSystem ? { lightTokens: splashTokens(false), darkTokens: splashTokens(true) } : {}), locale });
+  }, [loaded, selection, theme, systemDark, data?.settings.customThemes, locale]);
   // The launch screen holds until the first snapshot (or the runtime error screen) has rendered behind it.
   useEffect(() => { if (loaded) settleBootSplash("ready"); else if (error) settleBootSplash("failed"); }, [loaded, error]);
   const scopeSessions = data?.sessions.filter(item=>!scopeProjectId||item.projectId===scopeProjectId)??[];

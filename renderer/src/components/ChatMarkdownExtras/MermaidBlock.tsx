@@ -22,7 +22,7 @@ const resolvedThemeColor = (root: HTMLElement | null, property: string) => {
 };
 export default function MermaidBlock({ source, copy }: BlockProps) {
   const id = useId().replace(/[^a-zA-Z0-9]/g, ''), root = useRef<HTMLDivElement>(null);
-  const { tokens: themeTokens, theme } = useThemeState();
+  const { resolved } = useThemeState();
   const [svg, setSvg] = useState(''), [issue, setIssue] = useState(''), [raw, setRaw] = useState(false), [zoom, setZoom] = useState<number>(), [fullscreen, setFullscreen] = useState(false), [downloading, setDownloading] = useState(false);
   const dimensions = useMemo(() => diagramDimensions(svg), [svg]);
   useEffect(() => {
@@ -39,7 +39,7 @@ export default function MermaidBlock({ source, copy }: BlockProps) {
     };
     renderQueue = renderQueue.then(render, render);
     return () => { current = false; };
-  }, [source, id, theme, themeTokens]);
+  }, [source, id, resolved]);
   const download = async (format: 'svg' | 'png' | 'mmd') => {
     if (downloading) return; setDownloading(true); setIssue('');
     try {

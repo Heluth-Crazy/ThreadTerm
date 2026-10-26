@@ -27,7 +27,7 @@ const roleKeys = ["sidebar", "editor"] as const;
 const hexColour = /^#[0-9a-fA-F]{6}$/;
 export const presetIdPattern = /^[a-z0-9-]{1,40}$/;
 
-export type ThemeState = { theme: "light" | "dark"; tokens: ThemeTokens | undefined };
+export type ThemeState = { theme: "light" | "dark"; tokens: ThemeTokens | undefined; resolved?: ResolvedTheme };
 let themeState: ThemeState = { theme: "light", tokens: undefined };
 const themeListeners = new Set<() => void>();
 const channel = (value: string, offset: number) => Number.parseInt(value.slice(offset, offset + 2), 16) / 255;
@@ -57,6 +57,7 @@ export function customHoverTarget(tokens: ThemeTokens): string {
   return textLuminance < accentLuminance ? tokens.text : "#000000";
 }
 const sameThemeState = (left: ThemeState, right: ThemeState) => left.theme === right.theme
+  && left.resolved?.key === right.resolved?.key && left.resolved?.presetId === right.resolved?.presetId
   && keys.every(key => left.tokens?.[key] === right.tokens?.[key])
   && roleKeys.every(key => left.tokens?.[key] === right.tokens?.[key])
   && left.tokens?.base === right.tokens?.base;
@@ -103,7 +104,7 @@ export function customTokens(value: unknown): ThemeTokens | undefined {
   }
   return result;
 }
-export function applyThemeTokens(tokens: ThemeTokens | undefined, theme: "light" | "dark"): void {
+export function applyThemeTokens(tokens: ThemeTokens | undefined, theme: "light" | "dark", resolved = tokens ? customThemeResolved("current", tokens) : resolveTheme(theme, { systemDark: theme === "dark" })): void {
   const style = document.documentElement.style;
   for (const key of keys) style.removeProperty(`--custom-${key}`);
   style.removeProperty("--custom-primary-fg");
@@ -115,7 +116,8 @@ export function applyThemeTokens(tokens: ThemeTokens | undefined, theme: "light"
     style.setProperty("--custom-hover-target", customHoverTarget(tokens));
     style.setProperty("--custom-switch-off-fg", customSwitchOffForeground(tokens));
   }
-  const next = { theme, tokens };
+  for (const [key, value] of Object.entries(themeCssVariables(resolved))) style.setProperty(key, value);
+  const next = { theme, tokens, resolved };
   if (!sameThemeState(themeState, next)) {
     themeState = next;
     themeListeners.forEach(listener => listener());
@@ -197,6 +199,11 @@ function customThemeResolved(name: string, tokens: ThemeTokens): ResolvedTheme {
     presetId: fallback.id,
     custom: true,
   };
+}
+
+/** Includes unknown/stale selections whose safe fallback follows the operating system. */
+export function themeUsesSystemAppearance(selection: string | undefined, customThemes?: Record<string, ThemeTokens>): boolean {
+  return resolveTheme(selection, { systemDark: false, customThemes }).key !== resolveTheme(selection, { systemDark: true, customThemes }).key;
 }
 
 /** The CSS custom properties for a resolved theme (root-level tokens only; hover/soft/faint derivatives are CSS

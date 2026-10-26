@@ -25,6 +25,8 @@ const APPEARANCE_KEY = "threadterm.v3.boot-appearance";
 export type BootAppearance = {
   theme: "light" | "dark" | "system";
   tokens?: { background: string; surface: string; text: string; muted: string; border: string };
+  lightTokens?: BootAppearance["tokens"];
+  darkTokens?: BootAppearance["tokens"];
   locale: "en" | "zh-CN";
 };
 
@@ -36,8 +38,8 @@ const STATUS_TEXT: Record<"en" | "zh-CN", Record<SplashStatus, string>> = {
 let savedAppearance: string | undefined;
 /** Remembers the theme and language the app resolved, so the next launch screen paints in them from its first frame. */
 export function rememberBootAppearance(appearance: BootAppearance): void {
-  const { theme, locale, tokens } = appearance;
-  const value = JSON.stringify(tokens ? { theme, locale, tokens: { background: tokens.background, surface: tokens.surface, text: tokens.text, muted: tokens.muted, border: tokens.border } } : { theme, locale });
+  const { theme, locale, tokens, lightTokens, darkTokens } = appearance;
+  const value = JSON.stringify(tokens ? { theme, locale, tokens: { background: tokens.background, surface: tokens.surface, text: tokens.text, muted: tokens.muted, border: tokens.border }, lightTokens, darkTokens } : { theme, locale });
   if (value === savedAppearance) return;
   savedAppearance = value;
   try { localStorage.setItem(APPEARANCE_KEY, value); } catch { /* The next launch screen falls back to the system theme. */ }

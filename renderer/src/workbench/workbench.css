@@ -10,7 +10,7 @@
   /* Shared metrics: rows follow the app's nav rows (13px text, 6px radius), section labels follow
      .side-label, inputs follow the prototype fields (9px radius, primary border + ring on focus). */
   --wb-row:26px;
-  --wb-ring:0 0 0 2px color-mix(in srgb,var(--primary) 22%,transparent);
+  --wb-ring:0 0 0 2px var(--focus-ring);
   /* Commit graph lanes: eight distinct hues, 3:1+ against the surface in each theme. */
   --wb-lane-0:#4f59c8; --wb-lane-1:#1a7f37; --wb-lane-2:#bc4c00; --wb-lane-3:#8250df;
   --wb-lane-4:#0969da; --wb-lane-5:#bf3989; --wb-lane-6:#9a6700; --wb-lane-7:#1b7c83;
@@ -277,7 +277,7 @@ button.wb-change-row { width:100%; border:0; background:transparent; color:var(-
 .wb-commit-meta code { color:var(--faint); font:11px var(--mono); }
 .wb-commit-meta .icon-btn { width:22px; height:22px; }
 .wb-ref { flex:none; max-width:120px; overflow:hidden; padding:0 6px; border:1px solid color-mix(in srgb,var(--primary) 30%,transparent); border-radius:999px; background:var(--primary-tint); color:var(--primary); font-size:10.5px; line-height:16px; text-overflow:ellipsis; white-space:nowrap; }
-.wb-ref.head { border-color:var(--primary); background:var(--primary); color:var(--primary-fg,#fff); font-weight:600; }
+.wb-ref.head { border-color:var(--primary); background:var(--primary); color:var(--primary-fg); font-weight:600; }
 .wb-ref.tag { border-color:color-mix(in srgb,var(--wb-modified) 35%,transparent); background:color-mix(in srgb,var(--wb-modified) 10%,transparent); color:var(--wb-modified); }
 .wb-ref.remote { border-color:var(--border); background:var(--soft); color:var(--muted); }
 .wb-history .wb-more { display:flex; margin:8px auto; }
@@ -289,7 +289,7 @@ button.wb-change-row { width:100%; border:0; background:transparent; color:var(-
 .wb-commit-files .wb-change-row { padding-left:8px; }
 .wb-history-diff { display:flex; flex:1; flex-direction:column; min-height:0; }
 .wb-history-diff .merge-editor, .wb-review-diff .merge-editor { flex:1; min-height:0; overflow:auto; }
-.tt-diff-shell.wb-review-diff, .wb-review-diff > .file-bar, .wb-review-diff .tt-editor-state { background:var(--surface); }
+.tt-diff-shell.wb-review-diff, .wb-review-diff > .file-bar, .wb-review-diff .tt-editor-state { background:var(--editor); }
 /* Selectors that restyle inputs are scoped one level deeper than the prototype's global input rules. */
 .wb-review-diff > .file-bar > .ico { flex:none; color:var(--muted); }
 .wb-review-diff > .wb-notice { margin:8px 12px 0; }
@@ -358,7 +358,15 @@ button.wb-change-row { width:100%; border:0; background:transparent; color:var(-
 .cm-git-added { background:var(--wb-added); }
 .cm-git-modified { background:var(--wb-modified); }
 .cm-git-deleted { width:0; height:0; margin-top:-3px; border:3px solid transparent; border-left-color:var(--wb-deleted); border-radius:0; background:transparent; }
-.cm-blame-gutter { border-right:1px solid var(--border); background:var(--surface); }
+.cm-blame-gutter { border-right:1px solid var(--border); background:var(--editor); }
+.tt-diff-shell .cm-merge-a .cm-changedLine, .tt-diff-shell .cm-deletedChunk { background:var(--diff-deleted-bg)!important; }
+.tt-diff-shell .cm-merge-b .cm-changedLine, .tt-diff-shell .cm-inlineChangedLine { background:var(--diff-added-bg)!important; }
+.tt-diff-shell .cm-merge-a .cm-changedText, .tt-diff-shell .cm-deletedChunk .cm-deletedText { background:linear-gradient(color-mix(in srgb,var(--danger) 65%,transparent),color-mix(in srgb,var(--danger) 65%,transparent)) bottom/100% 2px no-repeat!important; }
+.tt-diff-shell .cm-merge-b .cm-changedText { background:linear-gradient(color-mix(in srgb,var(--st-running) 65%,transparent),color-mix(in srgb,var(--st-running) 65%,transparent)) bottom/100% 2px no-repeat!important; }
+.tt-diff-shell .cm-merge-b .cm-deletedText { background:color-mix(in srgb,var(--danger) 20%,transparent)!important; }
+.tt-diff-shell .cm-merge-a .cm-changedLineGutter, .tt-diff-shell .cm-deletedLineGutter { background:var(--danger)!important; }
+.tt-diff-shell .cm-merge-b .cm-changedLineGutter { background:var(--st-running)!important; }
+.tt-diff-shell .cm-inlineChangedLineGutter { background:var(--primary)!important; }
 .cm-blame-gutter .cm-gutterElement { padding:0 10px; color:var(--muted); font-family:"Segoe UI","Microsoft YaHei UI",sans-serif; font-size:11px; white-space:nowrap; }
 .cm-blame-entry { max-width:180px; overflow:hidden; text-overflow:ellipsis; cursor:pointer; }
 .cm-blame-entry:hover { color:var(--primary); }

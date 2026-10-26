@@ -13,7 +13,7 @@ import {connectPeer} from './pipe-client.mjs';
 import {closeBrowserViewFixture} from './lib/browser-view-cleanup.mjs';
 import {checkControlConsistency} from './lib/visual-consistency.mjs';
 
-const root=resolve(import.meta.dirname,'..'),scratchBase=resolve('D:/project/ThreadTerm/tt-qa-temp');
+const root=resolve(import.meta.dirname,'..'),scratchBase=resolve(process.env.TEMP??(()=>{throw Error('TEMP must point to the QA scratch directory');})());
 await mkdir(scratchBase,{recursive:true});
 const scratch=await mkdtemp(join(scratchBase,'tt-panel-consistency-'));
 assert.equal(dirname(scratch).toLowerCase(),scratchBase.toLowerCase());
@@ -28,7 +28,7 @@ if(baseline){
  baselineSources.set(join(root,'renderer/src/components/panel-headers.css').replaceAll('\\','/').toLowerCase(),'');
 }
 const appDir=join(scratch,'app'),bin=join(scratch,'bin'),work=join(scratch,'work'),plugins=join(scratch,'plugins');
-const runtime=join(root,'runtime/target-qa/debug/threadterm-v3-runtime.exe'),pipe=`\\\\.\\pipe\\tt-panel-${randomUUID()}`,lock=join(scratchBase,'qa-electron.lock');
+const runtime=process.env.THREADTERM_V3_RUNTIME_BIN??join(root,'runtime/target-qa/debug/threadterm-v3-runtime.exe'),pipe=`\\\\.\\pipe\\tt-panel-${randomUUID()}`,lock=join(scratchBase,'qa-electron.lock');
 const report={passed:false,checks:[],measurements:[],screenshots:[],errors:[],violations:[],limitations:[]};
 let app,page,runtimeProcess,locked=false,chat,server,baseUrl;
 const sleep=ms=>new Promise(done=>setTimeout(done,ms));

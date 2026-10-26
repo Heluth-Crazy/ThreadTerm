@@ -8,6 +8,7 @@ import { Icon } from "./PrototypeIcon";
 import { WbIcon } from "../workbench/icons";
 import { useTranslation } from "../i18n";
 import { RuntimeStatusMenuRow, type RuntimeStatusState } from "./RuntimeStatus";
+import { appearanceModeForSelection, familyForSelection, selectionForFamilyMode } from "../themeSelection";
 import "./shell-menus.css";
 
 type MenuBase = { data: Snapshot; onClose: () => void; onChanged: () => void; anchor?: HTMLElement | null };
@@ -47,7 +48,9 @@ export function AccountMenu({ data, onClose, onSettings, onChanged, anchor, onUs
   const { locale } = useTranslation(); const zh = locale === "zh-CN"; const copy = (en: string, cn: string) => zh ? cn : en; const layer = useDismiss(onClose, anchor);
   const [issue, setIssue] = useState<string>();
   const language = locale;
-  const theme = data.settings.theme === "light" || data.settings.theme === "dark" ? data.settings.theme : "system";
+  const selection = typeof data.settings.themeSelection === "string" ? data.settings.themeSelection : data.settings.theme;
+  const theme = appearanceModeForSelection(selection);
+  const family = familyForSelection(selection, data.settings.customThemes as Record<string, import("../themes").ThemeTokens> | undefined);
   const [busy, setBusy] = useState(false); const update = async (patch: Record<string, unknown>) => {
     if (busy) return; setBusy(true);
     try { await request("settings.update", { patch, expectedRevision: data.settings.revision, operationId: operationId() }); onChanged(); }
@@ -59,7 +62,7 @@ export function AccountMenu({ data, onClose, onSettings, onChanged, anchor, onUs
     <header className="account-row"><span className="avatar account-avatar"><WbIcon name="person" /></span><span><strong>{label}</strong><small>{copy("Local profile", "本地配置")}</small></span><button className="icon-btn" aria-label={copy("Close account menu", "关闭账户菜单")} onClick={onClose}><Icon name="close" /></button></header>
     {issue && <p className="surface-error" role="alert">{issue}</p>}
     <RuntimeStatusMenuRow state={runtimeState} locale={locale} />
-    <div className="menu-label">{copy("Appearance", "外观")}</div><button className="menu-item" disabled={busy} onClick={() => void update({ theme: "light", themeSelection: "light" })}><Icon name="sun" />{copy("Light (warm)", "浅色（暖米）")}<span className="dim">{theme === "light" ? "✓" : ""}</span></button><button className="menu-item" disabled={busy} onClick={() => void update({ theme: "dark", themeSelection: "dark" })}><Icon name="moon" />{copy("Dark (charcoal)", "深色（炭黑）")}<span className="dim">{theme === "dark" ? "✓" : ""}</span></button><button className="menu-item" disabled={busy} onClick={() => void update({ theme: "system", themeSelection: "system" })}><Icon name="sun" />{copy("System", "跟随系统")}<span className="dim">{theme === "system" ? "✓" : ""}</span></button><div className="menu-sep" />
+    <div className="menu-label">{copy("Appearance", "外观")}</div>{(['light','dark','system'] as const).map(mode=><button className="menu-item" disabled={busy} key={mode} onClick={() => { const themeSelection=selectionForFamilyMode(family?.id,mode); void update({ theme: appearanceModeForSelection(themeSelection)??data.settings.theme??"system", themeSelection }); }}><Icon name={mode === "light" ? "sun" : mode === "dark" ? "moon" : "sun"} />{mode === "light" ? copy("Light", "浅色") : mode === "dark" ? copy("Dark", "深色") : copy("System", "跟随系统")}<span className="dim">{theme === mode ? "✓" : ""}</span></button>)}<button className="menu-item" disabled={busy} onClick={onSettings}><Icon name="gear" />{copy("More themes…", "更多主题…")}</button><div className="menu-sep" />
     <label className="shell-menu-field">{copy("Language", "语言")}<Select disabled={busy} value={language} onChange={event => void update({ language: event.target.value })}><option value="zh-CN">简体中文</option><option value="en">English</option></Select></label>
     <footer className="shell-menu-foot">{onUsage && <button className="menu-item" onClick={onUsage}><Icon name="layers" />{copy("Usage", "用量")}</button>}<button className="menu-item" onClick={onSettings}><Icon name="gear" />{copy("Settings", "设置")}</button></footer>
   </aside>, document.body);

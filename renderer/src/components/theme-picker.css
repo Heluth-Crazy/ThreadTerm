@@ -1,0 +1,19 @@
+.theme-gallery { display:grid; gap:16px; margin-top:14px; }
+.theme-gallery-section { display:grid; gap:8px; }
+.theme-gallery-title { color:var(--muted); font-size:12px; font-weight:600; letter-spacing:.04em; text-transform:uppercase; }
+.theme-gallery-grid { display:grid; grid-template-columns:repeat(auto-fit, minmax(148px, 1fr)); gap:8px; }
+.theme-gallery-card { display:grid; gap:7px; min-width:0; min-height:96px; padding:8px; border:1px solid var(--border); border-radius:8px; background:var(--raised); color:var(--text); font:inherit; text-align:left; }
+.theme-gallery-card:hover:not(:disabled) { border-color:color-mix(in srgb, var(--primary) 55%, var(--border)); background:var(--soft); }
+.theme-gallery-card[aria-pressed="true"] { border-color:var(--primary); box-shadow:0 0 0 1px var(--primary); }
+.theme-gallery-card:focus-visible { outline:2px solid var(--focus-ring, var(--primary)); outline-offset:2px; }
+.theme-gallery-swatch { display:grid; grid-template-columns:24% 1fr; min-height:42px; overflow:hidden; border:1px solid color-mix(in srgb, var(--text) 14%, transparent); border-radius:5px; background:var(--theme-frame); }
+.theme-gallery-sidebar { background:var(--theme-sidebar); }
+.theme-gallery-panel { position:relative; margin:7px 0 0 6px; border-radius:4px 0 0 0; background:var(--theme-panel); }
+.theme-gallery-panel::before, .theme-gallery-panel::after { content:""; position:absolute; left:6px; border-radius:999px; background:var(--theme-text); }
+.theme-gallery-panel::before { top:7px; width:45%; height:4px; }
+.theme-gallery-panel::after { top:16px; width:30%; height:3px; opacity:.58; }
+.theme-gallery-accent { position:absolute; right:7px; bottom:6px; width:10px; height:10px; border:1px solid color-mix(in srgb, var(--theme-text) 16%, transparent); border-radius:50%; background:var(--theme-accent); }
+.theme-gallery-label { display:flex; align-items:center; gap:6px; min-width:0; font-size:12px; font-weight:600; }
+.theme-gallery-label > span:first-child { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.theme-gallery-current { margin-left:auto; color:var(--primary); font-size:11px; font-weight:500; }
+@container app (max-width: 720px) { .theme-gallery-grid { grid-template-columns:repeat(2, minmax(0, 1fr)); } }

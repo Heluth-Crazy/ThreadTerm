@@ -14,7 +14,9 @@
 .pane-split.vertical > .pane-divider { cursor:row-resize; }
 .pane-divider:hover { background:var(--primary); border-radius:4px; }
 .workspace-pane.ws-pane { --pane-inner-radius:calc(8px - 1px); display:flex; flex-direction:column; overflow:visible; border:0; border-radius:0; background:transparent; box-shadow:none; }
-.workspace-pane.ws-pane > .pane-card { display:flex; flex:1; flex-direction:column; min-width:0; min-height:0; overflow:hidden; border:1px solid var(--border); border-radius:8px; background:var(--surface); box-shadow:none; }
+.workspace-pane.ws-pane { --pane-surface:var(--surface); }
+.workspace-pane.ws-pane:has(> .pane-card > .pane-body > .pane-tab-surface:not([hidden]) > :is(.file-workspace,.terminal-wrap,.wb-review-diff)) { --pane-surface:var(--editor); }
+.workspace-pane.ws-pane > .pane-card { display:flex; flex:1; flex-direction:column; min-width:0; min-height:0; overflow:hidden; border:1px solid var(--border); border-radius:8px; background:var(--pane-surface); box-shadow:none; }
 .workspace-pane.ws-pane.fullscreen { position:absolute; inset:2px; z-index:8; }
 .workspace-pane .ws-pane-tab { display:flex; align-items:center; gap:5px; min-width:0; max-width:220px; height:24px; padding:0 4px; border:0; background:transparent; color:inherit; font-size:12px; }
 .workspace-pane .ws-pane-tab.active { font-weight:600; }
@@ -47,7 +49,7 @@
 .workspace-toolbar-host { flex:none; min-width:0; }
 .workspace-tabbar.ws-strip { position:relative; z-index:1; display:flex; flex:none; align-items:flex-end; min-width:0; height:43px; margin-bottom:-1px; padding:0 8px; gap:4px; overflow:clip; overflow-clip-margin:2px; border:0; box-shadow:none; background:transparent; }
 /* Leave paint room for the overlap when the card edge falls between device pixels. */
-.workspace-tabs { display:flex; flex:0 1 auto; min-width:0; max-width:100%; height:34px; margin-bottom:-1px; align-items:flex-end; gap:0; padding:0 8px 1px 12px; overflow-x:auto; overflow-y:hidden; scrollbar-width:none; scroll-padding-inline:12px 8px; }
+.workspace-tabs { display:flex; flex:0 1 auto; min-width:0; max-width:100%; height:35px; margin-bottom:-2px; align-items:flex-end; gap:0; padding:0 8px 2px 12px; overflow-x:auto; overflow-y:hidden; scrollbar-width:none; scroll-padding-inline:12px 8px; }
 .workspace-tabs::-webkit-scrollbar { display:none; }
 /* Overflow edges fade (24px = TAB_FADE in WorkspaceTabBar) instead of cutting a tab mid-word. */
 .workspace-tabs.fade-start { mask-image:linear-gradient(to right, transparent, #000 24px); }
@@ -56,10 +58,10 @@
 .workspace-tab { position:relative; display:flex; flex:0 1 240px; align-items:center; max-width:240px; min-width:48px; height:32px; margin-bottom:1px; border-radius:8px 8px 0 0; color:var(--muted); }
 .workspace-tab:not(.active):not(:hover):has(+ .workspace-tab:not(.active):not(:hover))::after { content:""; position:absolute; top:8px; right:0; bottom:8px; width:1px; background:var(--border); pointer-events:none; }
 .workspace-tab:hover { background:var(--soft); color:var(--text); }
-.workspace-tab.active { z-index:1; min-width:120px; height:33px; margin-bottom:0; border:1px solid var(--border); border-bottom:1px solid var(--surface); background:var(--surface); box-shadow:0 1px 0 var(--surface); color:color-mix(in srgb,var(--text) 82%,var(--muted)); }
+.workspace-tab.active { z-index:1; min-width:120px; height:33px; margin-bottom:0; border:1px solid var(--border); border-bottom:1px solid var(--pane-surface,var(--surface)); background:var(--pane-surface,var(--surface)); box-shadow:0 2px 0 var(--pane-surface,var(--surface)); color:color-mix(in srgb,var(--text) 82%,var(--muted)); }
 .workspace-tab.active::before,.workspace-tab.active::after { content:""; position:absolute; bottom:0; width:8px; height:9px; pointer-events:none; }
-.workspace-tab.active::before { left:-8px; background:radial-gradient(circle at 0 0,var(--bg) 7.5px,var(--border) 7.5px 8.5px,transparent 8.5px) 0 0 / 8px 8px no-repeat,linear-gradient(var(--surface),var(--surface)); }
-.workspace-tab.active::after { right:-8px; background:radial-gradient(circle at 100% 0,var(--bg) 7.5px,var(--border) 7.5px 8.5px,transparent 8.5px) 0 0 / 8px 8px no-repeat,linear-gradient(var(--surface),var(--surface)); }
+.workspace-tab.active::before { left:-8px; background:radial-gradient(circle at 0 0,var(--bg) 7.5px,var(--border) 7.5px 8.5px,transparent 8.5px) 0 0 / 8px 8px no-repeat,linear-gradient(var(--pane-surface,var(--surface)),var(--pane-surface,var(--surface))); }
+.workspace-tab.active::after { right:-8px; background:radial-gradient(circle at 100% 0,var(--bg) 7.5px,var(--border) 7.5px 8.5px,transparent 8.5px) 0 0 / 8px 8px no-repeat,linear-gradient(var(--pane-surface,var(--surface)),var(--pane-surface,var(--surface))); }
 .workspace-pane.selected .workspace-tab.active { color:var(--text); font-weight:600; }
 .workspace-tab-select { display:flex; align-items:center; gap:7px; flex:1; height:30px; min-width:0; padding:0 4px 0 9px; border:0; background:transparent; color:inherit; font:inherit; font-size:12px; text-align:left; }
 .workspace-tab-select span { overflow:hidden; white-space:nowrap; text-overflow:ellipsis; }
