@@ -8,10 +8,10 @@ import { build } from 'esbuild';
 import { electron } from './lib/desktop1.mjs';
 import { acquireElectronQaLock } from './lib/electron-lock.mjs';
 import { mkdir, mkdtemp, writeFile } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
-import { join, resolve } from 'node:path';
+import { join, resolve, dirname } from 'node:path';
 
-const scratch = await mkdtemp(join(tmpdir(), 'threadterm-pane-terminal-resize-'));
+const scratchBase=resolve(process.env.TEMP??(()=>{throw Error('TEMP must point to tt-qa-temp');})());assert.match(scratchBase.replaceAll('\\','/').toLowerCase(),/\/tt-qa-temp$/);
+const scratch = await mkdtemp(join(scratchBase, 'threadterm-pane-terminal-resize-'));
 const out = resolve('qa/results/pane-terminal-resize');
 await mkdir(out, { recursive: true });
 
@@ -123,8 +123,8 @@ await writeFile(join(scratch, 'index.html'), `<!doctype html><meta charset="utf-
 <link rel="stylesheet" href="qa.css">
 <style>
 html,body,#root{width:100%;height:100%;margin:0;overflow:hidden}#root{display:flex;min-width:0;min-height:0}
-.pane-workspace{width:100%;height:100%;display:flex;min-width:0;min-height:0}.workspace-pane{display:flex;flex-direction:column;min-width:0;min-height:0}
-.ws-tile-bar{display:flex;flex:0 0 32px;min-width:0}.pane-body{display:flex;flex:1;min-width:0;min-height:0}.pane-divider{background:color-mix(in srgb,#579 18%,transparent)}
+.pane-workspace{width:100%;height:100%;display:flex;min-width:0;min-height:0}.workspace-pane{display:flex;flex-direction:column;min-width:0;min-height:0}.workspace-pane>.pane-card{display:flex;flex:1;min-width:0;min-height:0}
+.pane-body{display:flex;flex:1;min-width:0;min-height:0}.pane-divider{background:color-mix(in srgb,#579 18%,transparent)}
 html[data-theme="dark"]{background:#12161d;color:#ecf2f8}
 </style><div id="root"></div><script src="qa.js"></script>`);
 await writeFile(join(scratch, 'main.cjs'), `
@@ -139,7 +139,7 @@ app.whenReady().then(() => {
 });
 `);
 
-let app;
+const env={PATH:[dirname(process.execPath),join(process.env.SystemRoot||'C:\\Windows','System32')].join(';'),TEMP:scratchBase,TMP:scratchBase,HOME:join(scratch,'home'),USERPROFILE:join(scratch,'home')};let app;
 let page;
 const report = { startedAt: new Date().toISOString(), passed: false, checks: [], screenshots: [], geometry: {} };
 
@@ -224,8 +224,8 @@ const assertFinalConsistency = async (label, sides) => {
 
 let releaseLock;
 try {
-  releaseLock = await acquireElectronQaLock();
-  app = await electron.launch({ args: [join(scratch, 'main.cjs')] });
+  releaseLock = await acquireElectronQaLock({directory:scratchBase});
+  app = await electron.launch({ args: [join(scratch, 'main.cjs')],env });
   page = await app.firstWindow();
   const errors = [];
   page.on('pageerror', error => errors.push(error.message));

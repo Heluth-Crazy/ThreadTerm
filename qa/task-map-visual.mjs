@@ -4,6 +4,7 @@
 import assert from 'node:assert/strict';
 import { build } from 'esbuild';
 import { electron } from './lib/desktop1.mjs';
+import { acquireElectronQaLock } from './lib/electron-lock.mjs';
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { join, resolve, sep } from 'node:path';
 import { checkControlConsistency } from './lib/visual-consistency.mjs';
@@ -12,8 +13,7 @@ const root = resolve(import.meta.dirname, '..');
 const label = process.argv[2] || 'current';
 assert.match(label, /^[A-Za-z0-9][A-Za-z0-9._-]*$/, 'label must be a single safe results directory name');
 const out = join(root, 'qa/results/task-map', label);
-const qaTemp = resolve(root, '..', 'tt-qa-temp');
-await mkdir(qaTemp, { recursive: true });
+const qaTemp = resolve(process.env.TEMP??(()=>{throw Error('TEMP must point to tt-qa-temp');})());assert.match(qaTemp.replaceAll('\\','/').toLowerCase(),/\/tt-qa-temp$/);
 const scratch = await mkdtemp(join(qaTemp, 'threadterm-task-map-'));
 assert.ok(resolve(scratch).startsWith(qaTemp + sep), 'scratch must remain inside tt-qa-temp');
 
@@ -205,7 +205,7 @@ await writeFile(join(scratch, 'index.html'), '<meta charset="utf-8"><link rel="s
 await writeFile(join(scratch, 'main.cjs'), `const{app,BrowserWindow}=require('electron');app.setPath('userData',${JSON.stringify(join(scratch, 'profile'))});app.whenReady().then(()=>new BrowserWindow({width:1440,height:900,show:false,webPreferences:{contextIsolation:true,nodeIntegration:false,sandbox:true,backgroundThrottling:false}}).loadFile(${JSON.stringify(join(scratch, 'index.html'))}));`);
 
 const report = { passed: false, label, screenshots: [], checks: [], timings: {}, requests: {}, errors: [] };
-let app; let page;
+let app; let page; let releaseLock;
 const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
 async function until(check, description, timeout = 5_000) {
   const end = Date.now() + timeout;
@@ -344,7 +344,7 @@ try {
   const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => key.toLowerCase() !== 'path'));
   env.Path = join(process.env.SystemRoot || 'C:\\Windows', 'System32');
   env.TEMP = qaTemp; env.TMP = qaTemp;
-  app = await electron.launch({ args: ['--disable-gpu', join(scratch, 'main.cjs')], env });
+  releaseLock=await acquireElectronQaLock({directory:qaTemp});app = await electron.launch({ args: ['--disable-gpu', join(scratch, 'main.cjs')], env });
   page = await app.firstWindow(); page.setDefaultTimeout(8_000);
   page.on('pageerror', error => report.errors.push(`page: ${error.message}`));
   page.on('console', message => { if (message.type() === 'error') report.errors.push(`console: ${message.text()}`); });
@@ -808,7 +808,7 @@ try {
 } finally {
   assert.ok(resolve(scratch).startsWith(qaTemp + sep), 'cleanup remains in tt-qa-temp');
   await mkdir(out, { recursive: true }); await writeFile(join(out, 'report.json'), `${JSON.stringify(report, null, 2)}\n`);
-  if (app) await app.close(); await rm(scratch, { recursive: true, force: true }).catch(() => {});
+  if (app) await app.close(); await releaseLock?.(); await rm(scratch, { recursive: true, force: true }).catch(() => {});
   console.log(`${report.passed ? 'TASK MAP VISUAL PASSED' : 'TASK MAP VISUAL FAILED'}; ${join(out, 'report.json')}`);
 }
 assert.equal(report.errors.length, 0, report.errors.join('\n'));

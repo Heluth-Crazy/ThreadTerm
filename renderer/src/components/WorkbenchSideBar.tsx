@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react';
 import { createPortal } from 'react-dom';
 import type { GitStatus, Session } from '@threadterm/protocol';
 import { request, subscribeEvents } from '../bridge';
@@ -77,8 +77,8 @@ export function useGitStatus(scope:Pick<WorkbenchScope,'projectId'|'worktreePath
 }
 
 /**
- * View switcher + panel. The switcher is portalled to the start of the session tab bar row and the
- * panel renders in place, as a card in the same row as the panes (same top, bottom and radius).
+ * View switcher + panel. An open panel owns its switcher above its card; otherwise the switcher is
+ * portalled into the top-left pane strip. The panel card shares the pane cards' top and bottom edges.
  */
 export function WorkbenchSideBar({scope, actions, sessions, activeSessionId, activePath, command, switcherHost, zh}:{
  scope:WorkbenchScope; actions:WorkbenchActions; sessions:Session[]; activeSessionId?:string; activePath?:string; command?:WorkbenchCommand; switcherHost?:HTMLElement|null; zh:boolean;
@@ -88,6 +88,7 @@ export function WorkbenchSideBar({scope, actions, sessions, activeSessionId, act
  const [visited, setVisited] = useState<Set<WorkbenchView>>(() => new Set([stored.view]));
  const [focusKey, setFocusKey] = useState<string>();
  const [actionsHost, setActionsHost] = useState<HTMLDivElement|null>(null);
+ const switcherRef=useRef<HTMLElement>(null),switcherFocus=useRef<WorkbenchView|undefined>(undefined),switcherTarget=useRef<HTMLElement|null>(null),relocatingSwitcher=useRef(false);
  const git = useGitStatus(scope, open, zh, sessions.filter(session => session.projectId === scope.projectId && (session.worktreePath ?? '') === (scope.worktreePath ?? '')).map(session => session.id));
  const text = (en:string, cn:string) => zh ? cn : en;
  const update = (patch:Partial<Stored>) => setStored(current => {
@@ -107,6 +108,19 @@ export function WorkbenchSideBar({scope, actions, sessions, activeSessionId, act
   if(command.view === 'toggle') setOpen(value => !value);
   else select(command.view, true);
  }, [command?.key]);
+ useLayoutEffect(()=>{
+  const target=open?null:switcherHost??null;
+  const moved=switcherTarget.current!==target;
+  switcherTarget.current=target;
+  const view=moved?switcherFocus.current:undefined;
+  switcherFocus.current=undefined; relocatingSwitcher.current=false;
+  if(view) switcherRef.current?.querySelector<HTMLButtonElement>(`[data-view="${view}"]`)?.focus();
+  return()=>{
+   const button=document.activeElement instanceof HTMLElement?document.activeElement.closest<HTMLButtonElement>('.wb-switcher [data-view]'):null;
+   switcherFocus.current=button&&switcherRef.current?.contains(button)?button.dataset.view as WorkbenchView:undefined;
+   relocatingSwitcher.current=Boolean(switcherFocus.current);
+  };
+ },[open,switcherHost]);
  const resize = (event:ReactPointerEvent<HTMLDivElement>) => {
   event.preventDefault();
   const start = event.clientX, target = event.currentTarget, width = target.parentElement!.getBoundingClientRect().width;
@@ -123,17 +137,17 @@ export function WorkbenchSideBar({scope, actions, sessions, activeSessionId, act
   {id:'changes', icon:'spark', label:text('Agent changes', 'Agent 改动'), shortcut:''},
  ];
  const current = views.find(view => view.id === stored.view)!;
- const switcher = <nav className="wb-switcher" aria-label={text('Workbench views', '侧栏视图')}>
+ const switcher = <nav ref={switcherRef} className="wb-switcher" aria-label={text('Workbench views', '侧栏视图')} onFocusCapture={event=>{switcherFocus.current=(event.target as HTMLElement).closest<HTMLButtonElement>('[data-view]')?.dataset.view as WorkbenchView|undefined;}} onBlurCapture={event=>{if(!event.currentTarget.contains(event.relatedTarget as Node|null)&&!relocatingSwitcher.current) switcherFocus.current=undefined;}}>
   {views.map(view => <button key={view.id} type="button" className={`wb-switch-btn${open && stored.view === view.id ? ' active' : ''}`}
-   aria-pressed={open && stored.view === view.id} aria-label={view.label}
+   data-view={view.id} aria-pressed={open && stored.view === view.id} aria-label={view.label}
    title={`${view.label}${view.shortcut ? ` (${view.shortcut})` : ''}${open && stored.view === view.id ? text(' · click to hide the side bar (Ctrl+B)', ' · 再次点击隐藏侧栏（Ctrl+B）') : ''}`}
    onClick={() => select(view.id)}>
    <Icon name={view.icon}/>{view.badge ? <span className="wb-switch-badge">{view.badge > 99 ? '99+' : view.badge}</span> : null}
   </button>)}
  </nav>;
  return <>
-  {switcherHost ? createPortal(switcher, switcherHost) : switcher}
-  {open && <aside className="wb-sidebar" style={{width:stored.width}} aria-label={text('Workbench', '工作台侧栏')}>
+  {!open&&switcherHost&&createPortal(switcher, switcherHost)}
+  {open && <div className="wb-sidebar-slot" style={{width:stored.width}}><div className="wb-sidebar-strip">{switcher}</div><aside className="wb-sidebar" aria-label={text('Workbench', '工作台侧栏')}>
    <section className="wb-panel" aria-label={current.label}>
     <header className="wb-panel-head"><strong>{current.label}</strong><div className="wb-panel-actions" ref={setActionsHost}/>
      <button type="button" className="icon-btn wb-panel-close" title={text('Close side bar (Ctrl+B)', '关闭侧栏（Ctrl+B）')} aria-label={text('Close side bar', '关闭侧栏')} onClick={() => setOpen(false)}><Icon name="close"/></button></header>
@@ -146,6 +160,6 @@ export function WorkbenchSideBar({scope, actions, sessions, activeSessionId, act
    </section>
    <div className="wb-resize" role="separator" aria-orientation="vertical" aria-label={text('Resize side bar', '调整侧栏宽度')} aria-valuenow={stored.width} aria-valuemin={MIN_WIDTH} aria-valuemax={MAX_WIDTH} tabIndex={0} onPointerDown={resize}
     onKeyDown={event => { if(event.key === 'ArrowLeft' || event.key === 'ArrowRight') { event.preventDefault(); const width = event.currentTarget.parentElement!.getBoundingClientRect().width; update({width:Math.min(MAX_WIDTH, Math.max(MIN_WIDTH, width + (event.key === 'ArrowLeft' ? -16 : 16)))}); } }}/>
-  </aside>}
+  </aside></div>}
  </>;
 }

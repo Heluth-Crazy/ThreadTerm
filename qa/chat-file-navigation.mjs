@@ -2,13 +2,16 @@
 // isolated Electron renderer. No daemon, provider, model call, or user profile.
 import assert from 'node:assert/strict';
 import { build } from 'esbuild';
-import { _electron as electron } from '@playwright/test';
-import { mkdtemp, readFile, writeFile } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
-import { join, resolve } from 'node:path';
+import { electron } from './lib/desktop1.mjs';
+import { acquireElectronQaLock } from './lib/electron-lock.mjs';
+import { mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises';
+import { dirname, join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
-const scratch=await mkdtemp(join(tmpdir(),'threadterm-chat-files-'));
+const scratchBase=process.env.TEMP;assert.ok(scratchBase,'TEMP must name the isolated QA scratch root');
+const scratch=await mkdtemp(join(resolve(scratchBase),'threadterm-chat-files-'));
+assert.equal(resolve(scratch).startsWith(resolve(scratchBase)),true,'scratch remains under TEMP');
+const out=join(resolve(scratchBase),'chat-file-navigation-results');
 let liveSamples={};
 try{
  const live=JSON.parse(await readFile(resolve('qa/results/agent-file-navigation-live.json'),'utf8'));
@@ -37,7 +40,7 @@ const files={'AGENTS.md':'one\\ntwo\\nthree\\nfour\\nfive\\nsix\\nseven\\neight\
 const chatOptions={options:[],commands:[],loadState:'ready'};
 const liveSamples=${JSON.stringify(liveSamples)};
 const answerText=${JSON.stringify(markdown)}+(liveSamples[provider]?'\\n\\n'+liveSamples[provider]: '');
-const toolPart={type:'tool',toolName:'Read',status:'failed',text:'Read failed',fileReferences:[{path:'D:\\\\project\\\\ThreadTerm\\\\tool.ts',line:5,column:2}]};
+const toolPart={type:'tool',toolName:'Read',status:'failed',text:'Read failed',data:{input:{file_path:'D:\\\\project\\\\ThreadTerm\\\\tool.ts'}},fileReferences:[{path:'D:\\\\project\\\\ThreadTerm\\\\tool.ts',line:5,column:2}]};
 const listeners=new Set();let pointerTarget;
 window.qaCalls=[];window.qaSaved=initial;window.qaEvents=0;window.qaPwned=0;window.qaPointerEvents=[];
 for(const type of ['pointerdown','mousedown','pointerup','mouseup','click'])addEventListener(type,event=>{const target=event.target instanceof Element?event.target.closest('button[data-file-reference]'):null;if(!target)return;if(type==='pointerdown')pointerTarget=target;window.qaPointerEvents.push({type,text:target.textContent,reference:target.getAttribute('data-file-reference'),sameNode:target===pointerTarget});},true);
@@ -78,9 +81,10 @@ await build({stdin:{contents:entry,resolveDir:resolve('.'),loader:'tsx'},bundle:
 await writeFile(join(scratch,'index.html'),'<meta charset="utf-8"><link rel="stylesheet" href="qa.css"><style>html,body,#root{width:100%;height:100%;margin:0}#root{display:flex}</style><div id="root"></div><script src="qa.js"></script>');
 await writeFile(join(scratch,'main.cjs'),`const {app,BrowserWindow}=require('electron');app.setPath('userData',${JSON.stringify(join(scratch,'profile'))});app.whenReady().then(()=>new BrowserWindow({width:1400,height:900,show:false,webPreferences:{contextIsolation:true,nodeIntegration:false,sandbox:true}}).loadFile(${JSON.stringify(join(scratch,'index.html'))}));`);
 
-let app,page;
+let app,page,releaseLock;
+function environment(){const env=Object.fromEntries(Object.entries(process.env).filter(([key])=>!['path','temp','tmp','home','userprofile','codex_home','threadterm_v3_data','threadterm_v3_user_data','threadterm_v3_pipe'].includes(key.toLowerCase())));Object.assign(env,{PATH:[dirname(process.execPath),join(process.env.SystemRoot||'C:\\Windows','System32')].join(';'),TEMP:resolve(scratchBase),TMP:resolve(scratchBase),HOME:join(scratch,'home'),USERPROFILE:join(scratch,'home'),CODEX_HOME:join(scratch,'home','.codex'),THREADTERM_V3_DATA:join(scratch,'data'),THREADTERM_V3_USER_DATA:join(scratch,'profile'),THREADTERM_V3_PIPE:`\\\\.\\pipe\\tt-chat-files-${process.pid}`,THREADTERM_V3_RUNTIME:process.env.THREADTERM_V3_RUNTIME_BIN??resolve('runtime/target-qa/debug/threadterm-v3-runtime.exe')});assert.equal(Object.keys(env).filter(key=>key.toLowerCase()==='path').length,1,'fake-only environment has one PATH spelling');return env;}
 try{
- app=await electron.launch({args:[join(scratch,'main.cjs')],timeout:15_000});
+ await mkdir(out,{recursive:true});releaseLock=await acquireElectronQaLock({directory:resolve(scratchBase)});app=await electron.launch({args:[join(scratch,'main.cjs')],cwd:resolve('.'),env:environment(),timeout:15_000});
  page=await app.firstWindow({timeout:15_000});page.setDefaultTimeout(10_000);
  const errors=[];page.on('pageerror',error=>errors.push(error.message));
  for(const provider of ['codex','claude','kimi','grok']){
@@ -92,9 +96,10 @@ try{
   const before=await page.evaluate(()=>{const node=document.querySelector('[data-testid^="session-chat-"]');window.qaChatNode=node;return{snapshots:window.qaCalls.filter(call=>call.method==='chat.snapshot').length,events:window.qaEvents};});
 
   await page.getByRole('button',{name:'absolute',exact:true}).click();
-  await page.getByRole('button',{name:'Close file preview',exact:true}).waitFor();
-  assert.equal(await page.getByRole('tab').count(),1,'a chat-owned file preview must not enter the global tab bar');
-  const absolute=await page.evaluate(()=>window.qaCalls.find(call=>call.method==='filesystem.resolve'));
+  await page.getByRole('button',{name:'Close tab AGENTS.md',exact:true}).waitFor();
+  assert.equal(await page.getByRole('tab').count(),2,'the chat and its companion each have a pane-local tab');
+  assert.notEqual(await page.getByRole('tab',{name:'AGENTS.md',exact:true}).evaluate(element=>element.closest('[data-pane-id]').dataset.paneId),await page.getByRole('tab',{name:'Chat '+provider,exact:true}).evaluate(element=>element.closest('[data-pane-id]').dataset.paneId),'a wide companion has its own pane strip');
+  const absolute=await page.evaluate(()=>window.qaCalls.find(call=>call.method==='filesystem.resolve'&&call.params.path.includes('AGENTS.md')));
   assert.deepEqual(absolute.params,{sessionId:'chat-'+provider,path:'D:\\project\\ThreadTerm\\AGENTS.md',line:12});
   assert.equal(await composer.inputValue(),'draft stays');
   assert.equal(await page.evaluate(()=>window.qaChatNode?.isConnected),true);
@@ -108,7 +113,7 @@ try{
   assert.equal(await page.locator('[onerror],a[href^="javascript:"],[data-threadterm-file-reference]').count(),0);
   assert.equal(await page.getByRole('button',{name:'javascript',exact:true}).count(),0);
   assert.equal(await page.getByRole('button',{name:'forged',exact:true}).count(),0);
-  if(provider==='codex')await page.screenshot({path:resolve('qa/results/chat-file-navigation.png'),fullPage:true});
+  if(provider==='codex')await page.screenshot({path:join(out,'chat-file-navigation.png'),fullPage:true});
 
   if(liveSamples[provider]){
    const samples=page.getByRole('button',{name:'sample.md',exact:true});
@@ -126,7 +131,7 @@ try{
   await page.getByRole('tab',{name:'Other '+provider,exact:true}).waitFor();
   assert.equal(await page.getByRole('tab',{name:'AGENTS.md',exact:true}).count(),0);
   await page.getByRole('button',{name:'absolute',exact:true}).click();
-  await page.getByRole('button',{name:'Close file preview',exact:true}).waitFor();
+  await page.getByRole('button',{name:'Close tab AGENTS.md',exact:true}).waitFor();
   assert.equal(await page.evaluate(()=>window.qaChatNode.isConnected&&window.qaChatNode.getClientRects().length===0),true);
   const owners=await page.evaluate(()=>{const visit=node=>node.kind==='pane'?node.tabs:visit(node.first).concat(visit(node.second));return visit(window.qaSaved).filter(tab=>tab.path==='AGENTS.md').map(tab=>tab.ownerSessionId).sort();});
   assert.deepEqual(owners,['chat-'+provider,'chat-'+provider+'-other'].sort());
@@ -136,7 +141,7 @@ try{
   assert.equal(await composer.evaluate(element=>element===window.qaOriginalComposer),true);
   assert.equal(await page.evaluate(id=>window.qaCalls.filter(call=>call.method==='chat.snapshot'&&call.params.sessionId===id).length,'chat-'+provider),1);
   // Same composer element and one snapshot prove the Chat survived; file views add their own event subscriptions.
-  assert.equal(await page.getByRole('tab',{name:'AGENTS.md',exact:true}).count(),0,'restored chat companion remains local, not global');
+  assert.equal(await page.getByRole('tab',{name:'AGENTS.md',exact:true}).count(),1,'restored chat companion returns to its pane-local strip');
   if(provider!=='codex')continue;
 
   await page.getByRole('button',{name:'relative',exact:true}).click();
@@ -149,8 +154,11 @@ try{
   await page.waitForFunction(()=>window.qaCalls.some(call=>call.method==='filesystem.resolve'&&call.params.path==='README.md'));
   assert.equal((await page.evaluate(()=>window.qaCalls.filter(call=>call.method==='filesystem.resolve').at(-1))).params.line,4);
 
-  await page.locator('.codex-tool-disclosure summary:visible').click();
-  await page.locator('.codex-tool-disclosure .file-reference-chips .file-reference-link:visible').click();
+  const toolDrawer=page.locator('.chat-tool-activity:visible');
+  await toolDrawer.locator('summary').click();
+  const failedRead=toolDrawer.locator('.chat-tool-entry[data-tool-kind="read"][data-tool-status="failed"]');
+  await failedRead.locator('.tool-card-status').filter({hasText:'Failed'}).waitFor();
+  await failedRead.locator('.file-reference-link:visible').click();
   await page.waitForFunction(()=>window.qaCalls.some(call=>call.method==='filesystem.resolve'&&call.params.path.endsWith('tool.ts')));
   assert.deepEqual((await page.evaluate(()=>window.qaCalls.filter(call=>call.method==='filesystem.resolve').at(-1))).params,{sessionId:'chat-codex',path:'D:\\project\\ThreadTerm\\tool.ts',line:5,column:2});
 
@@ -178,16 +186,16 @@ try{
   await app.evaluate(({BrowserWindow},width)=>BrowserWindow.getAllWindows()[0].setContentSize(width,900),1400-(wide-854));
   await page.waitForFunction(()=>Math.abs(document.querySelector('.ws-content > .ws-pane').clientWidth-854)<=2);
   await page.getByRole('button',{name:'absolute',exact:true}).click();
-  await page.getByRole('button',{name:'Close file preview',exact:true}).waitFor();
+  await page.getByRole('button',{name:'Close tab AGENTS.md',exact:true}).waitFor();
   const placed=await page.evaluate(()=>({panes:document.querySelectorAll('[data-pane-id]').length,chatWidth:Math.round(document.querySelector('.chat-compose textarea')?.getBoundingClientRect().width??0)}));
   assert.equal(placed.panes,2,`${mixed?'mixed':'fresh'}: an 854 px pane area opens the file beside Chat`);
   assert.ok(placed.chatWidth>250,`${mixed?'mixed':'fresh'}: Chat stays visible, not covered by the file`);
   splitChecks.push({mixed,...placed});
-  if(!mixed)await page.screenshot({path:resolve('qa/results/chat-file-navigation-854.png')});
+  if(!mixed)await page.screenshot({path:join(out,'chat-file-navigation-854.png')});
  }
  assert.deepEqual(errors,[]);
- const report={passed:true,checks:['Codex/Claude/Kimi/Grok body click and retained chat draft/subscription','A/B session-owned same-path previews and retained hidden chat/composer/subscriptions','single-pane first navigation creates sibling without remount','non-focused pane click retains the original button through pointerdown/click','Markdown text updates still replace rendered content','encoded absolute Markdown href','relative #L/C anchor','inline code','Kimi/Grok captured provider samples (no live call this run)','structured tool chip','HTTP remains external','resolver failure visible','inert pre-sanitize HTML and forged metadata rejection'],liveSampleProviders:Object.keys(liveSamples),splitChecks,screenshot:resolve('qa/results/chat-file-navigation.png'),scratch};
- await writeFile(resolve('qa/results/chat-file-navigation.json'),JSON.stringify(report,null,2)+'\n');
+ const report={passed:true,checks:['Codex/Claude/Kimi/Grok body click and retained chat draft/subscription','A/B session-owned same-path previews and retained hidden chat/composer/subscriptions','single-pane first navigation creates sibling without remount','non-focused pane click retains the original button through pointerdown/click','Markdown text updates still replace rendered content','encoded absolute Markdown href','relative #L/C anchor','inline code','Kimi/Grok captured provider samples (no live call this run)','structured tool chip','HTTP remains external','resolver failure visible','inert pre-sanitize HTML and forged metadata rejection'],liveSampleProviders:Object.keys(liveSamples),splitChecks,screenshot:join(out,'chat-file-navigation.png'),scratch};
+ await mkdir(out,{recursive:true});await writeFile(join(out,'chat-file-navigation.json'),JSON.stringify(report,null,2)+'\n');
  console.log(JSON.stringify(report));
 }catch(error){console.error(error);if(page)console.error(await page.evaluate(()=>({calls:window.qaCalls,pointerEvents:window.qaPointerEvents,buttons:[...document.querySelectorAll('button[data-file-reference]')].map(element=>({text:element.textContent,data:element.getAttribute('data-file-reference')})),alerts:[...document.querySelectorAll('[role=alert]')].map(element=>element.textContent)})));process.exitCode=1;}
-finally{await app?.close();}
+finally{await app?.close();await releaseLock?.();}

@@ -6,6 +6,8 @@ export type SessionSurfacePresentation = {
  primaryHost:HTMLElement|null;
  menuHost:HTMLElement|null;
  focused:boolean;
+ /** Menu contribution from this pane's active surface, independent of input focus. */
+ actionsVisible?:boolean;
  openFile?:(reference:FileReference)=>void;
  /** Opens a working-tree diff for a path inside the session's project, when the host supports it. */
  openDiff?:(path:string)=>void;
@@ -22,5 +24,6 @@ export function SurfaceActions({slot,children}:{slot:'primary'|'menu';children:R
  const surface=useContext(SessionSurfaceContext);
  if(!surface)return <div className={`surface-local-actions surface-local-${slot}`}>{children}</div>;
  const host=slot==='primary'?surface.primaryHost:surface.menuHost;
- return surface.focused&&host?createPortal(children,host):null;
+ const visible=slot==='menu'?(surface.actionsVisible??surface.focused):surface.focused;
+ return visible&&host?createPortal(children,host):null;
 }

@@ -1,8 +1,8 @@
 // Real-app check of task 10-05-file-comments: comments on lines of ANY file view (editor, Source Control diff,
 // commit history diff, agent review) collect in one list per workspace folder, and "Add to message" inserts them
 // (not sent) into the current session by default or into another chosen Chat session.
-// Isolated Electron (own data, user data and pipe; app bundle cached in the git-ignored runtime/target-qa folder,
-// --rebuild after app changes; desktop-dist and renderer/dist untouched) on the target-qa runtime. Fake providers
+// Isolated Electron (own data, user data, pipe and freshly built app bundle under TEMP;
+// desktop-dist and renderer/dist untouched) on the target-qa runtime. Fake providers
 // only: two fake Grok ACP Chats and a fake Claude SDK host; PATH holds only the fake bin, node, Git's cmd folder and
 // System32 (every case of PATH dropped first), so no real agent CLI can start. Nothing is sent to an agent.
 //   node qa/file-comments-visual.mjs [--rebuild] [--keep]
@@ -12,12 +12,11 @@ import { spawnSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { existsSync } from 'node:fs';
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { electron } from './lib/desktop1.mjs'; // opens on virtual Desktop 1 without focus
-import { build as esbuild } from 'esbuild';
-import { build as viteBuild } from 'vite';
+import { acquireElectronQaLock } from './lib/electron-lock.mjs';
+import { buildQaApp } from './lib/qa-app.mjs';
 
 const root = resolve(fileURLToPath(new URL('..', import.meta.url)));
 const runtime = join(root, 'runtime/target-qa/debug/threadterm-v3-runtime.exe');
@@ -30,14 +29,16 @@ const gitDir = (() => {
   return dirname(git);
 })();
 const delay = ms => new Promise(done => setTimeout(done, ms));
-const scratch = await mkdtemp(join(tmpdir(), 'tt-file-comments-'));
+const scratchBase = resolve(process.env.TEMP ?? (() => { throw Error('TEMP must point to tt-qa-temp'); })());
+assert.match(scratchBase.replaceAll('\\', '/').toLowerCase(), /\/tt-qa-temp$/, 'TEMP must be tt-qa-temp');
+const scratch = await mkdtemp(join(scratchBase, 'tt-file-comments-'));
 const workspace = join(scratch, 'shop app');
-const bin = join(scratch, 'bin'), appDir = join(root, 'runtime/target-qa/orca-qa-app');
+const bin = join(scratch, 'bin'), appDir = join(scratch, 'app');
 const out = join(root, 'qa/results/file-comments');
 const report = { passed: false, scratch, checks: [], notes: [], shots: [], errors: [] };
 const check = text => { report.checks.push(text); console.log(`PASS ${text}`); };
 const note = text => { report.notes.push(text); console.log(`NOTE ${text}`); };
-let app, page;
+let app, page, releaseLock;
 
 const fakeGrok = `
 import { createInterface } from 'node:readline';
@@ -82,18 +83,10 @@ async function prepare() {
   await writeFile(join(bin, 'shim.rs'), 'fn main(){let status=std::process::Command::new(std::env::var_os("TT_QA_NODE").expect("TT_QA_NODE")).arg(std::env::var_os("TT_QA_SCRIPT").expect("TT_QA_SCRIPT")).args(std::env::args_os().skip(1)).status().unwrap();std::process::exit(status.code().unwrap_or(1));}');
   const compiled = spawnSync('rustc', ['-O', join(bin, 'shim.rs'), '-o', join(bin, 'grok.exe')], { encoding: 'utf8', windowsHide: true });
   assert.equal(compiled.status, 0, compiled.stderr);
-  if (process.argv.includes('--rebuild') || !existsSync(join(appDir, 'renderer', 'index.html'))) {
-    console.log('building the QA app bundle…');
-    await mkdir(appDir, { recursive: true });
-    for (const name of ['main', 'preload']) {
-      await esbuild({ entryPoints: [join(root, `desktop/src/${name}.ts`)], bundle: true, platform: 'node', target: 'node22', format: 'cjs', external: ['electron'], outfile: join(appDir, `${name}.cjs`), logLevel: 'error' });
-    }
-    await viteBuild({ configFile: join(root, 'vite.config.ts'), logLevel: 'warn', build: { outDir: join(appDir, 'renderer'), emptyOutDir: true } });
-    await writeFile(join(appDir, 'package.json'), JSON.stringify({ name: 'threadterm-v3-orca-qa', version: '0.1.0', main: 'main.cjs' }));
-  } else console.log(`reusing the QA app bundle in ${appDir} (--rebuild to rebuild)`);
+  console.log('building the isolated QA app bundle…');
+  await buildQaApp({ root, outDir: appDir });
   return commit;
 }
-
 const request = (method, params = {}) => page.evaluate(([name, value]) => window.threadterm.request(name, value), [method, params]);
 async function until(test, label, timeout = 30000) {
   const end = Date.now() + timeout;
@@ -125,7 +118,6 @@ async function comment(host, text, body, { side, expectPlace } = {}) {
 }
 
 try {
-  await rm(out, { recursive: true, force: true });
   await mkdir(out, { recursive: true });
   console.log('preparing fixtures…');
   const commit = await prepare();
@@ -139,7 +131,8 @@ try {
     THREADTERM_CLAUDE_SDK_HOST: join(scratch, 'fake-claude-host.mjs'), THREADTERM_CLAUDE_NODE: process.execPath,
     TT_QA_NODE: process.execPath, TT_QA_SCRIPT: join(bin, 'fake-grok.mjs'),
   });
-  app = await electron.launch({ args: [appDir], cwd: root, env, timeout: 60000 });
+  releaseLock = await acquireElectronQaLock({ directory: scratchBase });
+  app = await electron.launch({ args: ['--disable-features=CalculateNativeWinOcclusion', appDir], cwd: root, env, timeout: 60000 });
   page = await app.firstWindow({ timeout: 45000 });
   page.setDefaultTimeout(20000);
   page.on('pageerror', error => report.errors.push(`pageerror: ${error.message}`));
@@ -193,7 +186,11 @@ try {
   await openView('Agent changes');
   await page.locator('.wb-review').getByRole('button', { name: 'Checkpoint', exact: true }).click();
   await page.locator('.wb-checkpoint').first().waitFor();
-  await writeFile(join(workspace, 'src/cart.ts'), (await readFile(join(workspace, 'src/cart.ts'), 'utf8')).replace('export function total(', 'export function cartTotal('));
+  // Go through the runtime write contract and emit the same workbench refresh signal as FileWorkspace.
+  // A raw Node write bypasses both, so AgentChangesView correctly has no event to reload its checkpoint rows.
+  const currentCart = await request('filesystem.read', { projectId: project.id, path: 'src/cart.ts' });
+  await request('filesystem.write', { projectId: project.id, path: 'src/cart.ts', content: currentCart.content.replace('export function total(', 'export function cartTotal('), expectedFingerprint: currentCart.fingerprint, operationId: randomUUID() });
+  await page.evaluate(() => dispatchEvent(new Event('threadterm:workbench-files-changed')));
   const change = page.locator('.wb-review .wb-change-open', { hasText: 'cart.ts' }).first();
   await until(() => change.isVisible(), 'the edit did not show in Agent changes', 20000);
   await change.click();
@@ -221,10 +218,10 @@ try {
   // ---------- receivers: current session by default, another one chosen ----------
   // ThreadTerm's Select: a combobox button and a listbox of options.
   const picker = strip().getByRole('combobox');
-  assert.equal(await picker.getAttribute('aria-label'), 'Send to session');
+  assert.equal(await picker.getAttribute('aria-label'), 'Destination session');
   assert.equal((await picker.innerText()).trim(), 'Cart agent', 'default = current session');
   await picker.click();
-  const listbox = page.getByRole('listbox', { name: 'Send to session' });
+  const listbox = page.getByRole('listbox', { name: 'Destination session' });
   const options = (await listbox.getByRole('option').allInnerTexts()).map(text => text.trim());
   note(`receivers: ${options.join(' | ')}`);
   assert.deepEqual(options, ['Cart agent', 'Docs agent'], 'current session first, then the folder\'s other Chat');
@@ -257,7 +254,7 @@ try {
   const zhEditor = visible('.file-workspace').first();
   await comment(zhEditor, 'Math.max', '这里改成在调用方处理。', { expectPlace: /^src\/cart\.ts:3$/ });
   await until(async () => /1 条审查意见/.test(await strip().innerText()), 'zh strip');
-  assert.equal(await strip().getByRole('combobox').getAttribute('aria-label'), '发送到会话');
+  assert.equal(await strip().getByRole('combobox').getAttribute('aria-label'), '目标会话');
   await shot('zh-1-strip.png');
   await strip().getByRole('button', { name: '清除', exact: true }).click();
   await page.locator('.runtime-overlay').getByRole('button', { name: '清除', exact: true }).last().click();
@@ -276,8 +273,7 @@ try {
   // Exit the QA app at once: a still-running desktop would start a new runtime after the shutdown.
   if (app) { await app.evaluate(({ app: electronApp }) => electronApp.exit(0)).catch(() => {}); await Promise.race([app.close(), delay(5000)]).catch(() => {}); try { app.process()?.kill(); } catch { /* already gone */ } }
   await delay(1500);
-  // Safety net: only the target-qa runtime (never the user's ThreadTerm, which runs another executable).
-  spawnSync('powershell.exe', ['-NoProfile', '-Command', "Get-CimInstance Win32_Process | Where-Object { $_.ExecutablePath -like '*\\runtime\\target-qa\\debug\\threadterm-v3-runtime.exe' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force }"], { windowsHide: true });
+  await releaseLock?.().catch(error => console.error(`Electron QA lock left: ${error.message}`));
   if (!keep && report.passed) await rm(scratch, { recursive: true, force: true, maxRetries: 5, retryDelay: 300 }).catch(error => console.error(`scratch left: ${scratch} (${error.message})`));
   console.log(JSON.stringify({ passed: report.passed, checks: report.checks.length, notes: report.notes, errors: report.errors, scratch: report.passed && !keep ? undefined : scratch }, null, 2));
 }

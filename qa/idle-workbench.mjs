@@ -7,7 +7,6 @@ import assert from 'node:assert/strict';
 import { spawn, execFileSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { existsSync } from 'node:fs';
 import { build as esbuild } from 'esbuild';
@@ -17,8 +16,10 @@ import { acquireElectronQaLock } from './lib/electron-lock.mjs';
 
 const root = resolve(import.meta.dirname, '..');
 const runtime = process.env.THREADTERM_V3_RUNTIME_BIN || join(root, 'runtime/target-qa/debug/threadterm-v3-runtime.exe');
+assert.ok(!/\/runtime\/target\/(debug|release)\/threadterm-v3-runtime\.exe$/i.test(runtime.replaceAll('\\', '/')), 'never launch the user runtime build');
 const out = process.env.THREADTERM_QA_OUTPUT_DIR || join(root, 'qa/results/idle-workbench-ac2');
-const scratchBase = resolve(process.env.TEMP || tmpdir());
+const scratchBase = resolve(process.env.TEMP ?? (() => { throw Error('TEMP must point to tt-qa-temp'); })());
+assert.match(scratchBase.replaceAll('\\', '/').toLowerCase(), /\/tt-qa-temp$/, 'TEMP must be tt-qa-temp');
 const scratch = await mkdtemp(join(scratchBase, 'tt-idle-workbench-'));
 const appDir = join(scratch, 'app'), bin = join(scratch, 'bin');
 const repo = join(scratch, 'repo');
@@ -180,7 +181,7 @@ try {
   const scope = { projectId: project.id, ...(worktree ? { worktreePath: worktree } : {}) };
   report.notes.push(`session worktree ${JSON.stringify(worktree)}`);
   await page.locator('.xterm').first().waitFor();
-  await page.locator('.wb-tabrow .wb-switcher').waitFor();
+  await page.locator('.wb-switcher').waitFor();
   assert.equal(await page.locator('.wb-sidebar').count(), 0, 'the side bar starts closed');
 
   // Source Control: the panel is visible with a real change present, and opening it reads the status once.

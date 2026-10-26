@@ -8,6 +8,8 @@ import { dirname, join, resolve } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { electron } from './lib/desktop1.mjs';
+import { acquireElectronQaLock } from './lib/electron-lock.mjs';
+import { buildQaApp } from './lib/qa-app.mjs';
 import { startReadonlyReferenceServer } from './parity/reference-server.mjs';
 import { installVisualFixture } from './parity/fixture.mjs';
 
@@ -35,7 +37,7 @@ Object.assign(childEnv, {
 });
 const report = { phase, startedAt: new Date().toISOString(), shots: [], cases: [], errors: [] };
 const apps = [];
-let referenceServer, productionServer;
+let referenceServer, productionServer, qaApp, releaseLock;
 
 function note(name, detail = {}) { report.cases.push({ name, ...detail }); }
 async function open(profile) {
@@ -72,7 +74,7 @@ async function configure(page, app, width, height, theme, lang, origin) {
   await page.goto(`${origin}/?theme=${theme}&lang=${lang}`);
   await page.locator('.sess-row').first().waitFor();
   await page.waitForFunction(expected => document.documentElement.dataset.theme === expected, theme);
-  await page.addStyleTag({ content: '.titlebar.app-chrome{display:none!important}.app-shell{grid-template-rows:minmax(0,1fr) 24px!important}.app-shell>.sidebar,.app-shell>.content.main{grid-row:1!important}.app-shell>.statusbar{grid-row:2!important}*,*::before,*::after{animation:none!important;transition:none!important}' });
+  await page.addStyleTag({ content: '.titlebar.app-chrome{display:none!important}.app-shell{grid-template-rows:minmax(0,1fr)!important}.app-shell>.sidebar,.app-shell>.content.main{grid-row:1!important}*,*::before,*::after{animation:none!important;transition:none!important}' });
   const { settings } = await page.evaluate(() => window.threadterm.request('runtime.snapshot', {}));
   await page.evaluate(([language, revision, id]) => window.threadterm.request('settings.update', { patch: { language }, expectedRevision: revision, operationId: id }), [lang === 'zh' ? 'zh-CN' : 'en', settings.revision, randomUUID()]);
   await page.waitForTimeout(80);
@@ -232,8 +234,10 @@ async function assertNeutralPalette(page, tag) {
 
 try {
   await mkdir(out, { recursive: true });
+  qaApp = await buildQaApp({ root });
+  releaseLock = await acquireElectronQaLock();
   referenceServer = await startReadonlyReferenceServer(join(root, 'reference'));
-  productionServer = await startReadonlyReferenceServer(join(root, 'desktop-dist', 'renderer'));
+  productionServer = await startReadonlyReferenceServer(join(qaApp.appDir, 'renderer'));
   const seed = await seedFixture();
   const production = await open(join(scratch, 'production-profile'));
   const { app, page } = production;
@@ -410,6 +414,8 @@ try {
   for (const app of apps.splice(0)) await app.close().catch(() => {});
   await productionServer?.close().catch(() => {});
   await referenceServer?.close().catch(() => {});
+  await releaseLock?.();
+  await qaApp?.cleanup?.();
   report.completedAt = new Date().toISOString();
   await writeFile(join(out, 'report.json'), JSON.stringify(report, null, 2));
   console.log(JSON.stringify({ out, phase, shots: report.shots.length, cases: report.cases.length, errors: report.errors }, null, 2));

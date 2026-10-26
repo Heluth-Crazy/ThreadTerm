@@ -2,13 +2,15 @@
 // Isolated Electron profile and mocked transport: no daemon or model calls.
 import assert from 'node:assert/strict';
 import {build} from 'esbuild';
-import {_electron as electron} from '@playwright/test';
+import {electron} from './lib/desktop1.mjs';
+import {acquireElectronQaLock} from './lib/electron-lock.mjs';
 import {mkdtemp,mkdir,writeFile} from 'node:fs/promises';
-import {tmpdir} from 'node:os';
-import {join,resolve} from 'node:path';
+import {dirname,join,resolve} from 'node:path';
 
-const scratch=await mkdtemp(join(tmpdir(),'threadterm-companion-placement-'));
-const out=resolve('qa/results/companion-placement-visual');
+const scratchBase=process.env.TEMP;assert.ok(scratchBase,'TEMP must name the isolated QA scratch root');
+const scratch=await mkdtemp(join(resolve(scratchBase),'threadterm-companion-placement-'));
+assert.equal(resolve(scratch).startsWith(resolve(scratchBase)),true,'scratch remains under TEMP');
+const out=join(resolve(scratchBase),'companion-placement-visual-results');
 await mkdir(out,{recursive:true});
 const entry=`
 import React from 'react';
@@ -22,7 +24,7 @@ const session=id=>({id:'session-'+id,kind:'session',sessionId:id});
 const pane=(id,tabs,activeTabId)=>({kind:'pane',id,tabs,activeTabId});
 const split=(id,first,second)=>({kind:'split',id,direction:'horizontal',ratio:0.5,first,second});
 const initial=split('outer',
- split('left',pane('pane-b',[session('b'),{id:'b-mixed-file',kind:'preview',projectId:'project',worktreePath:'D:/fixture',path:'b.md',ownerSessionId:'b'}],'session-b'),pane('pane-c',[session('c')],'session-c')),
+ split('left',pane('pane-b',[session('b')],'session-b'),pane('pane-c',[session('c')],'session-c')),
  split('right',pane('pane-a',[session('a')],'session-a'),pane('pane-d',[session('d')],'session-d')));
 const files={'a.ts':'export const owner = "A";\\n','b.md':'# B preview\\n'};
 let revision=0;
@@ -51,19 +53,26 @@ await build({stdin:{contents:entry,resolveDir:resolve('.'),loader:'tsx'},bundle:
 await writeFile(join(scratch,'index.html'),'<!doctype html><meta charset="utf-8"><link rel="stylesheet" href="qa.css"><style>html,body,#root{width:100%;height:100%;margin:0;overflow:hidden}</style><div id="root"></div><script>window.__qaBootstrapErrors=[];addEventListener("error",event=>window.__qaBootstrapErrors.push(event.message));</script><script src="qa.js"></script>');
 await writeFile(join(scratch,'main.cjs'),`const {app,BrowserWindow}=require('electron');app.setPath('userData',${JSON.stringify(join(scratch,'profile'))});app.whenReady().then(()=>{const win=new BrowserWindow({width:1280,height:860,show:false,webPreferences:{contextIsolation:true,nodeIntegration:false,sandbox:true,backgroundThrottling:false}});win.loadFile(${JSON.stringify(join(scratch,'index.html'))});});`);
 
-let app;let page;const report={passed:false,checks:[],screenshots:[]};
+let app;let page;let releaseLock;const report={passed:false,checks:[],screenshots:[]};
+function environment(){const env=Object.fromEntries(Object.entries(process.env).filter(([key])=>!['path','temp','tmp','home','userprofile','codex_home','threadterm_v3_data','threadterm_v3_user_data','threadterm_v3_pipe'].includes(key.toLowerCase())));Object.assign(env,{PATH:[dirname(process.execPath),join(process.env.SystemRoot||'C:\\Windows','System32')].join(';'),TEMP:resolve(scratchBase),TMP:resolve(scratchBase),HOME:join(scratch,'home'),USERPROFILE:join(scratch,'home'),CODEX_HOME:join(scratch,'home','.codex'),THREADTERM_V3_DATA:join(scratch,'data'),THREADTERM_V3_USER_DATA:join(scratch,'profile'),THREADTERM_V3_PIPE:`\\\\.\\pipe\\tt-companion-placement-${process.pid}`,THREADTERM_V3_RUNTIME:process.env.THREADTERM_V3_RUNTIME_BIN??resolve('runtime/target-qa/debug/threadterm-v3-runtime.exe')});assert.equal(Object.keys(env).filter(key=>key.toLowerCase()==='path').length,1,'fake-only environment has one PATH spelling');return env;}
 try{
- app=await electron.launch({args:[join(scratch,'main.cjs')],timeout:15_000});page=await app.firstWindow({timeout:15_000});page.setDefaultTimeout(12_000);
+ releaseLock=await acquireElectronQaLock({directory:resolve(scratchBase)});app=await electron.launch({args:[join(scratch,'main.cjs')],cwd:resolve('.'),env:environment(),timeout:15_000});page=await app.firstWindow({timeout:15_000});page.setDefaultTimeout(12_000);
  const errors=[];page.on('pageerror',error=>errors.push(error.message));
  await page.waitForFunction(()=>window.qa&&Object.keys(window.qa.terminals).length===4&&window.qa.subscriptions.a===1);
  assert.equal(await page.locator('[data-pane-id]').count(),4,'fixture must stay at the four-pane cap');
  assert.equal(await page.getByRole('tab',{name:'Session A',exact:true}).getAttribute('aria-selected'),'true');
  const initialState=await page.evaluate(()=>({b:Boolean(window.qa.terminals['pane-b']?.element.isConnected),a:Boolean(window.qa.terminals['pane-a']?.element.isConnected)}));
  assert.ok(initialState.a&&initialState.b,'both source and other session xterm surfaces must mount');
- // Production path for a session-owned companion: side bar Files → context menu → Open beside session.
- await page.locator('.wb-switcher').getByRole('button',{name:'Files',exact:true}).click();
- await page.locator('.wb-tree [data-path="a.ts"]').click({button:'right'});
- await page.getByRole('menuitem',{name:'Open beside session',exact:true}).click();
+ // Establish B's companion through the production side bar before testing that A does not reuse it at the pane cap.
+ const waitForActiveSession=label=>page.waitForFunction(name=>[...document.querySelectorAll('[role=tab][aria-selected="true"]')].some(tab=>tab.getAttribute('aria-label')===name)&&Boolean(document.querySelector('.pane-tab-surface:not([hidden]) .xterm')),label);
+ const openBeside=async path=>{const files=page.locator('.wb-switcher').getByRole('button',{name:'Files',exact:true});if(await files.getAttribute('aria-pressed')!=='true')await files.click();const row=page.locator(`.wb-tree [data-path="${path}"]`);for(let attempt=0;attempt<3;attempt++){await row.focus();await row.press('Shift+F10');const action=page.getByRole('menuitem',{name:'Open beside session',exact:true});await action.waitFor();try{await action.focus();await action.press('Enter');return;}catch(error){if(attempt===2)throw error;await page.keyboard.press('Escape').catch(()=>{});}}};
+ await page.getByRole('tab',{name:'Session B',exact:true}).click();
+ await waitForActiveSession('Session B');
+ await openBeside('b.md');
+ await page.getByText('B preview',{exact:true}).waitFor();
+ await page.getByRole('tab',{name:'Session A',exact:true}).click();
+ await waitForActiveSession('Session A');
+ await openBeside('a.ts');
  await page.locator('[data-pane-id="pane-a"] .cm-content[contenteditable=true]').waitFor();
  const state=await page.evaluate(()=>{
   const visit=node=>node.kind==='pane'?[node]:visit(node.first).concat(visit(node.second));
@@ -78,8 +87,10 @@ try{
  assert.equal(state.a.activeTabId,state.a.tabs[1].id,'A file must become active only in A pane');
  assert.equal(state.a.tabs[1].ownerSessionId,'a');
  assert.equal(state.a.tabs[1].path,'a.ts');
- assert.deepEqual(state.b.tabs.map(tab=>tab.id),['session-b','b-mixed-file'],'B mixed preview must not be reused for A');
- assert.equal(state.b.activeTabId,'session-b','B session must not be covered by A file');
+ const bMixed=state.b.tabs.filter(tab=>tab.path==='b.md'&&tab.ownerSessionId==='b');
+ assert.equal(bMixed.length,1,'B mixed preview must persist and must not be reused for A');
+ assert.equal(state.b.tabs[0].id,'session-b');
+ assert.equal(state.b.activeTabId,bMixed[0].id,'B retains its own selected companion while A opens a separate file');
  assert.equal(state.aTerminalConnected,true,'A terminal remains mounted behind its file');
  assert.equal(state.bTerminalConnected,true,'B terminal remains mounted');
  assert.equal(state.subscriptions.a,1);assert.equal(state.subscriptions.b,1);
@@ -90,6 +101,7 @@ try{
  report.passed=true;
 }finally{
  if(app)await app.close();
+ await releaseLock?.();
  await writeFile(join(out,'report.json'),JSON.stringify(report,null,2));
 }
 console.log(JSON.stringify({scratch,out,...report},null,2));

@@ -2,23 +2,24 @@
 // outside a session: the project Files/Changes page and Settings → Tools → "Open files & changes".
 // Isolated data/profile/pipe and a temporary Git repository; read-only (no file or Git mutations).
 import assert from 'node:assert/strict';
-import {spawn} from 'node:child_process';
+import {spawn,spawnSync} from 'node:child_process';
 import {existsSync} from 'node:fs';
 import {mkdtemp,mkdir,writeFile} from 'node:fs/promises';
-import {join,resolve} from 'node:path';
-import {tmpdir} from 'node:os';
+import {join,resolve,dirname} from 'node:path';
 import {randomUUID} from 'node:crypto';
 import { electron } from './lib/desktop1.mjs';
 import { acquireElectronQaLock } from './lib/electron-lock.mjs';
 import { buildQaApp } from './lib/qa-app.mjs';
 
 const out=join('qa','results','workbench-standalone-visual',new Date().toISOString().replace(/[:.]/g,'-'));
-const scratch=await mkdtemp(join(tmpdir(),'threadterm-standalone-'));
+const scratchBase=resolve(process.env.TEMP??(()=>{throw Error('TEMP must point to tt-qa-temp');})());assert.match(scratchBase.replaceAll('\\','/').toLowerCase(),/\/tt-qa-temp$/);
+const scratch=await mkdtemp(join(scratchBase,'threadterm-standalone-'));
 const project=join(scratch,'standalone repo');
 const pipe='\\\\.\\pipe\\threadterm-v3-standalone-'+randomUUID();
 const runtimeBin=process.env.THREADTERM_V3_RUNTIME_BIN||resolve('runtime/target-qa/debug/threadterm-v3-runtime.exe');
 assert.ok(existsSync(runtimeBin),`runtime binary missing: ${runtimeBin}`);
-const env={...process.env,THREADTERM_V3_DATA:join(scratch,'data'),THREADTERM_V3_USER_DATA:join(scratch,'profile'),THREADTERM_V3_PIPE:pipe,THREADTERM_V3_RUNTIME:runtimeBin};
+const gitExe=spawnSync('where',['git'],{encoding:'utf8',windowsHide:true}).stdout.split(/\r?\n/).find(Boolean);assert.ok(gitExe,'Git is required for the isolated fixture');
+const env=Object.fromEntries(Object.entries(process.env).filter(([key])=>!['path','temp','tmp','home','userprofile','appdata','localappdata','codex_home'].includes(key.toLowerCase())));Object.assign(env,{PATH:[dirname(process.execPath),dirname(gitExe),join(process.env.SystemRoot||'C:\\Windows','System32')].join(';'),TEMP:scratchBase,TMP:scratchBase,HOME:join(scratch,'home'),USERPROFILE:join(scratch,'home'),THREADTERM_V3_DATA:join(scratch,'data'),THREADTERM_V3_USER_DATA:join(scratch,'profile'),THREADTERM_V3_PIPE:pipe,THREADTERM_V3_RUNTIME:runtimeBin});
 const report={startedAt:new Date().toISOString(),scratch,checks:[],screenshots:[]};
 let app,page,settingsRevision=0,releaseLock;
 const { appDir, cleanup: cleanupApp } = await buildQaApp();
@@ -38,7 +39,7 @@ try {
  await writeFile(join(project,'src','main.ts'),'export const answer = 42;\nexport const name = "qa";\n');
  await writeFile(join(project,'notes.txt'),'untracked\n');
 
- releaseLock=await acquireElectronQaLock();
+ releaseLock=await acquireElectronQaLock({directory:scratchBase});
  app=await electron.launch({args:[appDir],env,timeout:60000});
  page=await app.firstWindow({timeout:30000});page.setDefaultTimeout(20000);
  const errors=[];page.on('pageerror',error=>errors.push(error.message));

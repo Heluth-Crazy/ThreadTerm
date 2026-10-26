@@ -1,14 +1,16 @@
 // Isolated Electron fixture for the production embedded FileWorkspace preview.
 import {build} from 'esbuild';
 import {electron} from './lib/desktop1.mjs';
+import {acquireElectronQaLock} from './lib/electron-lock.mjs';
 import {mkdtemp,mkdir,writeFile,rm} from 'node:fs/promises';
-import {tmpdir} from 'node:os';
 import {join,resolve,dirname} from 'node:path';
 import {fileURLToPath} from 'node:url';
 import assert from 'node:assert/strict';
 
 process.chdir(resolve(fileURLToPath(new URL('..',import.meta.url))));
-const scratch=await mkdtemp(join(tmpdir(),'threadterm-file-preview-'));
+const scratchBase=resolve(process.env.TEMP??(() => { throw Error('TEMP must point to tt-qa-temp'); })());
+assert.match(scratchBase.replaceAll('\\','/').toLowerCase(),/\/tt-qa-temp$/,'TEMP must be tt-qa-temp');
+const scratch=await mkdtemp(join(scratchBase,'threadterm-file-preview-'));
 const out=resolve('qa/results/file-preview-embedded');
 await mkdir(out,{recursive:true});
 const entry=`
@@ -26,12 +28,12 @@ function Fixture(){const [embedded,setEmbedded]=useState(true),[projectId,setPro
 await build({stdin:{contents:entry,resolveDir:resolve('.'),loader:'tsx'},bundle:true,outfile:join(scratch,'qa.js'),jsx:'automatic',loader:{'.woff2':'dataurl','.woff':'dataurl','.ttf':'dataurl'}});
 await writeFile(join(scratch,'index.html'),'<meta charset="utf-8"><link rel="stylesheet" href="qa.css"><style>html,body,#root,.qa-workspace{width:100%;height:100%;margin:0}.qa-workspace{display:flex;background:var(--surface);border:1px solid var(--border);box-sizing:border-box}.qa-workspace>.file-workspace{flex:1;min-width:0;min-height:0}</style><div id="root"></div><script src="qa.js"></script>');
 await writeFile(join(scratch,'main.cjs'),`const {app,BrowserWindow}=require('electron');app.setPath('userData',${JSON.stringify(join(scratch,'profile'))});app.whenReady().then(()=>{const win=new BrowserWindow({width:1100,height:760,show:false,webPreferences:{contextIsolation:true,nodeIntegration:false,sandbox:true}});win.loadFile(${JSON.stringify(join(scratch,'index.html'))});});`);
-const lock=join(tmpdir(),'qa-electron.lock');let locked=false;
+let releaseLock;
 const env=Object.fromEntries(Object.entries(process.env).filter(([key])=>!(/^(path|home|userprofile|appdata|localappdata|codex_home|electron_run_as_node|threadterm_.*|claude.*|codex_.*)$/i.test(key))));
 Object.assign(env,{PATH:[dirname(process.execPath),join(process.env.SystemRoot||'','System32')].join(process.platform==='win32'?';':':'),HOME:join(scratch,'home'),USERPROFILE:join(scratch,'home'),APPDATA:join(scratch,'appdata'),LOCALAPPDATA:join(scratch,'localappdata'),CODEX_HOME:join(scratch,'home','.codex')});
 let app;const report={passed:false,checks:[],screenshots:[]};
 try{
- const deadline=Date.now()+40*60*1000;while(!locked){try{await mkdir(lock);locked=true}catch(error){if(error.code!=='EEXIST'||Date.now()>deadline)throw error;console.log('Waiting for shared Electron QA lock');await new Promise(done=>setTimeout(done,15_000))}}
+ releaseLock=await acquireElectronQaLock({directory:scratchBase});
  app=await electron.launch({args:['--disable-features=CalculateNativeWinOcclusion',join(scratch,'main.cjs')],env,timeout:15_000});const page=await app.firstWindow({timeout:15_000});page.setDefaultTimeout(10_000);
  const navigation=page.getByRole('combobox',{name:'Switch file preview',exact:true});await navigation.waitFor();await page.getByRole('button',{name:'Close file preview',exact:true}).click();assert.equal(await page.evaluate(()=>window.qa.closed()),1,'close must work before a file loads or after a read failure');assert.equal(await page.getByRole('alert').count(),1,'fixture begins with a read failure');report.checks.push('close and file selector remain available after an initial read failure');
  await navigation.focus();await navigation.press('ArrowDown');await page.waitForFunction(()=>document.querySelector('[role="combobox"]')?.getAttribute('aria-expanded')==='true');await page.keyboard.press('Escape');await page.evaluate(()=>window.qa.select('skill'));await page.waitForFunction(()=>window.qa.active()==='skill');await page.locator('.cm-content').waitFor();assert.equal(await navigation.getAttribute('data-value'),'skill','selector must reflect the chosen file');await page.getByRole('button',{name:'Preview',exact:true}).click();await page.locator('.markdown-preview').waitFor();
@@ -43,4 +45,4 @@ try{
  await page.evaluate(()=>window.qa.setHorizontalRule());await page.waitForFunction(()=>document.querySelector('.cm-content')?.textContent?.includes('正文'));await page.getByRole('button',{name:'Preview',exact:true}).click();await page.locator('.markdown-preview').waitFor();assert.ok((await page.locator('.markdown-preview').innerText()).includes('正文'),'ordinary Markdown horizontal-rule content must remain visible');report.checks.push('ordinary --- Markdown is not mistaken for YAML front matter');
  await page.evaluate(()=>window.qa.setSkill());await page.waitForFunction(()=>document.querySelector('.cm-content')?.textContent?.includes('fixture-skill'));await page.getByRole('button',{name:'Preview',exact:true}).click();await page.locator('.markdown-preview h1').waitFor();for(const theme of ['light','dark']){await page.evaluate(theme=>document.documentElement.dataset.theme=theme,theme);await navigation.click();await page.screenshot({path:join(out,theme+'.png')});await page.keyboard.press('Escape');report.screenshots.push(theme+'.png');}report.passed=true;
 }catch(error){report.error=String(error);console.error(error);process.exitCode=1;}
-finally{if(app)await app.close().catch(()=>{});if(locked)await rm(lock,{recursive:true});await writeFile(join(out,'report.json'),JSON.stringify(report,null,2));console.log(JSON.stringify(report));}
+finally{if(app)await app.close().catch(()=>{});if(releaseLock)await releaseLock();await writeFile(join(out,'report.json'),JSON.stringify(report,null,2));await rm(scratch,{recursive:true,force:true}).catch(()=>{});console.log(JSON.stringify(report));}

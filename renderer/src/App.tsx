@@ -74,6 +74,7 @@ import { SessionCreateDialog } from "./components/SessionCreateDialog";
 import { AddProjectDialog } from "./components/AddProjectDialog";
 import { WorkbenchPage } from "./components/WorkbenchPage";
 import { AccountMenu, NotificationMenu } from "./components/ShellMenus";
+import { RuntimeAvatarBadge, RuntimeStatusChip, useVisibleRuntimeProblem, type RuntimeStatusState } from "./components/RuntimeStatus";
 import { WbIcon } from "./workbench/icons";
 import { CommandPalette } from "./components/CommandPalette";
 import { useSupervision } from "./useSupervision";
@@ -117,6 +118,7 @@ export function App() {
   );
   const [scopeProjectId, setScopeProjectId] = useState<string>();
   const [error, setError] = useState<unknown>();
+  const [runtimeState, setRuntimeState] = useState<RuntimeStatusState>("connecting");
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [settingsInitialTab, setSettingsInitialTab] = useState<"tools">();
   const [creatorOpen, setCreatorOpen] = useState(false);
@@ -159,19 +161,28 @@ export function App() {
       }
       setData(next);
       setCatalogVisibility(visibility);
+      setRuntimeState("connected");
     } catch (caught) {
       if (generation !== refreshGeneration.current) return;
       setError(caught);
+      setRuntimeState("unavailable");
     }
   }, []);
   useEffect(() => { if (rawData) void ensureReviewCommentsImported().catch(() => undefined); }, [rawData]);
   useEffect(() => {
     void refresh();
     return subscribeEvents((event) => {
-      if (event.event === "state.changed" || (event.event === "runtime.transport"
-        && (event.data as { state?: string } | undefined)?.state === "reconnected")) void refresh();
+      if (event.event === "runtime.transport") {
+        const state = (event.data as { state?: string } | undefined)?.state;
+        if (state === "disconnected") setRuntimeState("reconnecting");
+        if (state === "incompatible") setRuntimeState("unavailable");
+        if (state === "reconnected") void refresh();
+        return;
+      }
+      if (event.event === "state.changed") void refresh();
     });
   }, [refresh]);
+  const visibleRuntimeProblem = useVisibleRuntimeProblem(runtimeState);
   const routedWorkspace =
     route.kind === "workspace"
       ? data?.workspaces.find((item) => item.id === route.id)
@@ -425,9 +436,10 @@ export function App() {
             onNewSession={(projectId,path) => {const selected=data?.projects.find(item=>item.id===projectId);if(selected)setCreatorDefaults({projectId:selected.id,path:path??selected.path});setCreatorOpen(true);}}
           />
           </div>
-          <div className="side-foot"><button className="user-row" aria-label={locale === "zh-CN" ? "本地用户" : "Local user"} aria-expanded={shellMenu?.kind==="account"} onClick={event => setShellMenu(shellMenu?.kind==="account"?undefined:{kind:"account",anchor:event.currentTarget})}><span className="avatar"><WbIcon name="person" /></span><span className="user-copy"><span>{locale === "zh-CN" ? "本地用户" : "Local user"}</span><small>{locale === "zh-CN" ? "本地配置" : "Local profile"}</small></span><WbIcon name="chev-up" className="user-selector" /></button></div>
+          <div className="side-foot"><button className="user-row" aria-label={locale === "zh-CN" ? "本地用户" : "Local user"} aria-expanded={shellMenu?.kind==="account"} onClick={event => setShellMenu(shellMenu?.kind==="account"?undefined:{kind:"account",anchor:event.currentTarget})}><span className="avatar runtime-avatar"><WbIcon name="person" /><RuntimeAvatarBadge state={visibleRuntimeProblem} locale={locale} /></span><span className="user-copy"><span>{locale === "zh-CN" ? "本地用户" : "Local user"}</span><small>{locale === "zh-CN" ? "本地配置" : "Local profile"}</small></span><WbIcon name="chev-up" className="user-selector" /></button></div>
         </aside>
         <main className="content main">
+          <div data-runtime-header-host />
           <div className="toolbar legacy-toolbar">
             <div>
               {route.kind === "all"
@@ -548,7 +560,7 @@ export function App() {
             />
           )}
         </main>
-        <footer className="statusbar" role="status"><span className="sb-note"><span className="runtime-dot" data-state={error ? "unavailable" : data ? "connected" : "connecting"} aria-hidden="true" />{error ? t("runtimeUnavailable") : data ? t("runtimeConnected") : t("connecting")}</span><span className="top-spacer" /><span>{locale === "zh-CN" ? "本地运行" : "Local runtime"}</span></footer>
+        <RuntimeStatusChip state={visibleRuntimeProblem} locale={locale} onRetry={() => void refresh()} placementKey={`${route.kind}:${route.id ?? ""}:${sessionView}`} />
         {data && companionEnabled && companionOpen && (
           <DesktopCompanion
             sessions={data.sessions}
@@ -571,7 +583,7 @@ export function App() {
             onChanged={() => void refresh()}
           />
         )}
-        {shellMenu&&data&&(shellMenu.kind==='account'?<AccountMenu data={data} anchor={shellMenu.anchor} onClose={()=>setShellMenu(undefined)} onChanged={()=>void refresh()} onSettings={()=>{setShellMenu(undefined);setSettingsOpen(true);}} onUsage={()=>{setShellMenu(undefined);openUsage();}}/>:<NotificationMenu data={data} anchor={shellMenu.anchor} onClose={()=>setShellMenu(undefined)} onChanged={()=>void refresh()} onSession={id=>{setShellMenu(undefined);void navigate({kind:"session",id});}} onInbox={()=>{setShellMenu(undefined);void navigate({kind:"inbox"});}}/>)}
+        {shellMenu&&data&&(shellMenu.kind==='account'?<AccountMenu data={data} runtimeState={runtimeState} anchor={shellMenu.anchor} onClose={()=>setShellMenu(undefined)} onChanged={()=>void refresh()} onSettings={()=>{setShellMenu(undefined);setSettingsOpen(true);}} onUsage={()=>{setShellMenu(undefined);openUsage();}}/>:<NotificationMenu data={data} anchor={shellMenu.anchor} onClose={()=>setShellMenu(undefined)} onChanged={()=>void refresh()} onSession={id=>{setShellMenu(undefined);void navigate({kind:"session",id});}} onInbox={()=>{setShellMenu(undefined);void navigate({kind:"inbox"});}}/>)}
         {paletteOpen && data && <CommandPalette data={data} workbench={route.kind === "session" || route.kind === "workspace"} onClose={()=>setPaletteOpen(false)} onSession={id=>void navigate({kind:"session",id})} onProject={id=>void navigate({kind:"project",id})} onCreate={()=>{setGroupCreate(false);setGroupContext(undefined);setCreatorOpen(true);}} onCreateGroup={()=>{setGroupCreate(true);setGroupContext(undefined);setCreatorOpen(true);}} onAll={()=>void navigate({kind:"all"})} onInbox={()=>void navigate({kind:"inbox"})} onSettings={()=>setSettingsOpen(true)} onUsage={()=>{setPaletteOpen(false);openUsage();}}/>}
         {creatorOpen && data && (
           <SessionCreateDialog data={data}

@@ -7,6 +7,7 @@ import { isActionableInboxItem } from "../inboxVisibility";
 import { Icon } from "./PrototypeIcon";
 import { WbIcon } from "../workbench/icons";
 import { useTranslation } from "../i18n";
+import { RuntimeStatusMenuRow, type RuntimeStatusState } from "./RuntimeStatus";
 import "./shell-menus.css";
 
 type MenuBase = { data: Snapshot; onClose: () => void; onChanged: () => void; anchor?: HTMLElement | null };
@@ -42,7 +43,7 @@ export function NotificationMenu({ data, onClose, onChanged, onSession, onInbox,
   </aside>, document.body);
 }
 
-export function AccountMenu({ data, onClose, onSettings, onChanged, anchor, onUsage }: MenuBase & { onSettings: () => void; onUsage?: () => void }) {
+export function AccountMenu({ data, onClose, onSettings, onChanged, anchor, onUsage, runtimeState = "connected" }: MenuBase & { onSettings: () => void; onUsage?: () => void; runtimeState?: RuntimeStatusState }) {
   const { locale } = useTranslation(); const zh = locale === "zh-CN"; const copy = (en: string, cn: string) => zh ? cn : en; const layer = useDismiss(onClose, anchor);
   const [issue, setIssue] = useState<string>();
   const language = locale;
@@ -57,6 +58,7 @@ export function AccountMenu({ data, onClose, onSettings, onChanged, anchor, onUs
   return createPortal(<aside {...layer} className="popover shell-menu account-menu shell-menu-above" style={position(anchor, true)} aria-label={copy("Local account", "本地账户")}>
     <header className="account-row"><span className="avatar account-avatar"><WbIcon name="person" /></span><span><strong>{label}</strong><small>{copy("Local profile", "本地配置")}</small></span><button className="icon-btn" aria-label={copy("Close account menu", "关闭账户菜单")} onClick={onClose}><Icon name="close" /></button></header>
     {issue && <p className="surface-error" role="alert">{issue}</p>}
+    <RuntimeStatusMenuRow state={runtimeState} locale={locale} />
     <div className="menu-label">{copy("Appearance", "外观")}</div><button className="menu-item" disabled={busy} onClick={() => void update({ theme: "light", themeSelection: "light" })}><Icon name="sun" />{copy("Light (warm)", "浅色（暖米）")}<span className="dim">{theme === "light" ? "✓" : ""}</span></button><button className="menu-item" disabled={busy} onClick={() => void update({ theme: "dark", themeSelection: "dark" })}><Icon name="moon" />{copy("Dark (charcoal)", "深色（炭黑）")}<span className="dim">{theme === "dark" ? "✓" : ""}</span></button><button className="menu-item" disabled={busy} onClick={() => void update({ theme: "system", themeSelection: "system" })}><Icon name="sun" />{copy("System", "跟随系统")}<span className="dim">{theme === "system" ? "✓" : ""}</span></button><div className="menu-sep" />
     <label className="shell-menu-field">{copy("Language", "语言")}<Select disabled={busy} value={language} onChange={event => void update({ language: event.target.value })}><option value="zh-CN">简体中文</option><option value="en">English</option></Select></label>
     <footer className="shell-menu-foot">{onUsage && <button className="menu-item" onClick={onUsage}><Icon name="layers" />{copy("Usage", "用量")}</button>}<button className="menu-item" onClick={onSettings}><Icon name="gear" />{copy("Settings", "设置")}</button></footer>

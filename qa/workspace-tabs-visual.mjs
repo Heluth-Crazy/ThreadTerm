@@ -2,11 +2,13 @@
 // transport. No daemon, model request, filesystem mutation, or user profile.
 import assert from 'node:assert/strict';
 import {build} from 'esbuild';
-import {_electron as electron} from '@playwright/test';
-import {mkdtemp,mkdir,writeFile} from 'node:fs/promises';
-import {tmpdir} from 'node:os';
+import {electron} from './lib/desktop1.mjs';
+import {acquireElectronQaLock} from './lib/electron-lock.mjs';
+import {mkdtemp,mkdir,rm,writeFile} from 'node:fs/promises';
 import {join,resolve} from 'node:path';
-const scratch=await mkdtemp(join(tmpdir(),'threadterm-tabs-'));
+const scratchBase=resolve(process.env.TEMP??(() => { throw Error('TEMP must point to tt-qa-temp'); })());
+assert.match(scratchBase.replaceAll('\\','/').toLowerCase(),/\/tt-qa-temp$/,'TEMP must be tt-qa-temp');
+const scratch=await mkdtemp(join(scratchBase,'threadterm-tabs-'));
 const out=resolve('qa/results/workspace-tabs');await mkdir(out,{recursive:true});
 const entry=`
 import React,{useState} from 'react';import {createRoot} from 'react-dom/client';
@@ -51,15 +53,16 @@ createRoot(document.getElementById('root')).render(<Fixture/>);
 await build({stdin:{contents:entry,resolveDir:resolve('.'),loader:'tsx'},bundle:true,outfile:join(scratch,'qa.js'),jsx:'automatic',loader:{'.woff2':'dataurl','.woff':'dataurl','.ttf':'dataurl'}});
 await writeFile(join(scratch,'index.html'),'<meta charset="utf-8"><link rel="stylesheet" href="qa.css"><style>html,body,#root{width:100%;height:100%;margin:0;overflow:hidden}#root{display:flex;padding:0;background:var(--bg)}</style><div id="root"></div><script src="qa.js"></script>');
 await writeFile(join(scratch,'main.cjs'),`const {app,BrowserWindow}=require('electron');app.setPath('userData',${JSON.stringify(join(scratch,'profile'))});app.whenReady().then(()=>{const window=new BrowserWindow({width:1280,height:900,show:false,webPreferences:{contextIsolation:true,nodeIntegration:false,sandbox:true}});window.loadFile(${JSON.stringify(join(scratch,'index.html'))});});`);
-let app;const report={passed:false,checks:[],screenshots:[]};
+let app,releaseLock;const report={passed:false,checks:[],screenshots:[]};
 try{
+ releaseLock=await acquireElectronQaLock({directory:scratchBase});
  app=await electron.launch({args:[join(scratch,'main.cjs')],timeout:15000});const page=await app.firstWindow({timeout:15000});page.setDefaultTimeout(10000);
  const errors=[];page.on('pageerror',error=>errors.push(error.message));
  const tabs=()=>page.getByRole('tab');
  const ids=()=>tabs().evaluateAll(elements=>elements.map(el=>el.getAttribute('aria-label')));
- const menu=async name=>{await page.getByRole('button',{name:'Workspace actions',exact:true}).click();await page.getByRole('button',{name,exact:true}).click();await page.keyboard.press('Escape');};
+ const menu=async name=>{await page.locator('.workspace-pane.selected').getByRole('button',{name:'Workspace actions',exact:true}).click();await page.getByRole('button',{name,exact:true}).click();};
  await page.waitForFunction(()=>window.qaNavigate&&document.querySelector('.xterm'));
- assert.equal(await page.locator('.workspace-tabbar').count(),1);assert.equal(await page.locator('.ws-tile-bar,.term-head,.v3-session-controls,.chat-provider-header').count(),0);
+ assert.equal(await page.locator('.workspace-pane[data-pane-id] > .workspace-tabbar.ws-strip').count(),1);assert.equal(await page.locator('.workspace-toolbar-host,.wb-tabrow,.pane-identity,.ws-tile-bar,.term-head,.v3-session-controls,.chat-provider-header').count(),0);
  assert.deepEqual(await ids(),['Session a','Session b','Session c']);assert.equal(await page.getByRole('tab',{name:'Session b'}).getAttribute('aria-selected'),'true');
  await page.getByRole('button',{name:'Close tab Session a',exact:true}).click();await page.waitForFunction(()=>window.qaSaved.tabs.length===2);
  const subscriptions=await page.evaluate(()=>window.qaSubscriptions.b);await page.evaluate(()=>window.qaRefresh());
@@ -77,7 +80,7 @@ try{
  assert.equal(await page.evaluate(()=>window.qaSubscriptions.a),await page.evaluate(()=>window.qaRetainedSubscriptions),'splitting must not replay the source stream');
  await page.getByRole('button',{name:'Choose session',exact:true}).click();await page.getByRole('button',{name:'Session b Codex'}).click();
  await page.getByRole('tab',{name:'Session b',exact:true}).click();
- await menu('Fullscreen pane');assert.equal(await page.locator('.workspace-pane.fullscreen').count(),1);await page.keyboard.press('Escape');
+ await menu('Fullscreen pane');await page.locator('.workspace-pane.fullscreen').waitFor();assert.equal(await page.locator('.workspace-pane.fullscreen').count(),1);await page.keyboard.press('Escape');
  await menu('Close pane');assert.equal(await page.locator('[data-pane-id]').count(),1);
  assert.equal(await page.evaluate(()=>window.qaRetainedElement.isConnected),true,'closing a sibling must retain the original terminal host');
  report.checks.push('empty-pane focus, picker fill, fullscreen/escape and closing pane remain reachable');
@@ -89,11 +92,11 @@ try{
  assert.equal(await page.evaluate(()=>window.qaSubscriptions.a),await page.evaluate(()=>window.qaRetainedSubscriptions),'file navigation must not resubscribe or replay the session');
  assert.equal(await page.locator('.term-replaying').count(),0,'file navigation must not re-enter screen recovery');
  const editor=page.locator('.cm-content[contenteditable=true]');await editor.click();await page.keyboard.press('Control+End');await page.keyboard.insertText('dirty');
- assert.equal(await page.getByRole('tab',{name:'note.ts',exact:true}).count(),0,'linked preview is not an independent top tab');
- assert.equal(await page.getByRole('tab',{name:'Session a',exact:true}).getAttribute('aria-selected'),'true','focused companion keeps its owner selected');
- await page.getByRole('button',{name:'Close file preview',exact:true}).click();await page.getByRole('dialog',{name:'Save changes to this file?'}).waitFor();await page.getByRole('button',{name:'Cancel',exact:true}).click();assert.ok((await editor.innerText()).includes('dirty'));
- assert.equal(await page.getByRole('button',{name:'Close file preview',exact:true}).count(),1);
- await page.getByRole('button',{name:'Close file preview',exact:true}).click();await page.getByRole('button',{name:'Discard changes',exact:true}).click();await page.waitForFunction(()=>!document.querySelector('.file-workspace.embedded'));
+ assert.equal(await page.getByRole('tab',{name:'note.ts',exact:true}).count(),1,'linked preview is its companion-pane tab');
+ assert.equal(await page.getByRole('tab',{name:'note.ts',exact:true}).getAttribute('aria-selected'),'true','focused companion is selected in its own pane strip');
+ await page.getByRole('button',{name:'Close tab note.ts',exact:true}).click();await page.getByRole('dialog',{name:'Save changes to this file?'}).waitFor();await page.getByRole('button',{name:'Cancel',exact:true}).click();assert.ok((await editor.innerText()).includes('dirty'));
+ assert.equal(await page.getByRole('button',{name:'Close tab note.ts',exact:true}).count(),1);
+ await page.getByRole('button',{name:'Close tab note.ts',exact:true}).click();await page.getByRole('button',{name:'Discard changes',exact:true}).click();await page.waitForFunction(()=>!document.querySelector('.file-workspace.embedded'));
  assert.equal(await page.locator('[data-pane-id]').count(),1,'last companion close collapses its empty column');
  assert.equal(await page.evaluate(()=>window.qaRetainedElement.isConnected),true);
  report.checks.push('linked file stays off top bar; owner remains selected; local close cancel keeps dirty input; discard collapses only preview and retains terminal');
@@ -104,8 +107,8 @@ try{
   assert.ok(geometry.x>=0&&geometry.y>=0&&geometry.right<=geometry.width+1&&geometry.bottom<=geometry.height+1,JSON.stringify(geometry));
   await page.screenshot({path:join(out,theme+'-'+width+'.png')});report.screenshots.push(theme+'-'+width+'.png');await page.keyboard.press('Escape');
  }}
- await tabs().first().click({button:'right'});await page.getByRole('menuitem',{name:'Close all',exact:true}).click();await page.waitForFunction(()=>window.qaBack===1);
+ await tabs().first().focus();await page.keyboard.press('Shift+F10');await page.locator('[data-testid="workspace-tab-close-all"]').click();await page.waitForFunction(()=>window.qaBack===1);
  assert.equal(await tabs().count(),0);assert.equal(await page.evaluate(()=>window.qaCalls.some(call=>call.method==='session.stop')),false);assert.deepEqual(errors,[]);
  report.checks.push('light/dark and 125% zoom at wide/narrow sizes; menu viewport containment; close all persists before returning');report.passed=true;
 }catch(error){report.error=String(error);console.error(error);process.exitCode=1;if(app){console.error(await app.windows()[0]?.evaluate(()=>({menus:[...document.querySelectorAll('[role=menu]')].map(el=>el.outerHTML),panes:[...document.querySelectorAll('[data-pane-id]')].map(el=>({class:el.className,id:el.dataset.paneId})),expanded:document.querySelector('[aria-label="Workspace actions"]')?.outerHTML})));await app.windows()[0]?.screenshot({path:join(out,'failure.png')}).catch(()=>{});}}
-finally{if(app)await app.close();await writeFile(join(out,'report.json'),JSON.stringify(report,null,2));console.log(JSON.stringify(report));}
+finally{if(app)await app.close();if(releaseLock)await releaseLock();await writeFile(join(out,'report.json'),JSON.stringify(report,null,2));await rm(scratch,{recursive:true,force:true}).catch(()=>{});console.log(JSON.stringify(report));}

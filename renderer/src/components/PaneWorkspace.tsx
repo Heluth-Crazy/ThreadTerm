@@ -1,5 +1,4 @@
 import { type CSSProperties, type DragEvent as ReactDragEvent, lazy, Suspense, useEffect, useRef, useState } from "react";
-import { createPortal } from 'react-dom';
 import type { ContentRef, FileReference, PaneLayout, PreviewAssociation, ProviderCapability, Session, Snapshot } from "@threadterm/protocol";
 import { confirmCloseEditors } from "../dirtyEditors";
 import { useTranslation } from "../i18n";
@@ -22,14 +21,14 @@ import { WebPreview } from "./WebPreview";
 import { sanitizeBrowserTitle } from '../browserTypes';
 import { BROWSER_NEW_TAB_URL, updateBrowserTab } from '../browserNewTab';
 import type { BrowserShareWorkspace } from '../browserTypes';
-import { AgentIcon, Icon } from "./PrototypeIcon";
+import { Icon } from "./PrototypeIcon";
 import { ImportedHistoryView } from "./ImportedHistoryView";
 import { CatalogPopover } from './CatalogActions';
-import { WorkspaceTabBar } from './WorkspaceTabBar';
+import { WorkspaceTabBar, type WorkspaceTabPresentation } from './WorkspaceTabBar';
 import { SessionSurfaceContext, SurfaceActions } from './SessionSurfaceContext';
-import { contentTitle, focusedWorkspaceTab, isFileTab, isWebTabUrl, tabCloseTargets, workspaceTabs, type WorkspaceTabTarget } from '../workspaceTabs';
+import { focusedWorkspaceTab, isFileTab, isWebTabUrl, tabCloseTargets, workspaceTabs, type FileTab, type WorkspaceTabTarget } from '../workspaceTabs';
 import { paneGeometry, paneRectStyle, PANE_GAP, PANE_DIVIDER_SIZE } from '../paneGeometry';
-import { fileSelectionKey, visibleSessionLayout, workspaceNavigationLayout, workspaceNavigationTarget, withSessionCompanions, removeClosedViews } from '../sessionFileViews';
+import { fileSelectionKey, visibleSessionLayout, withSessionCompanions, removeClosedViews } from '../sessionFileViews';
 import "./workspace-parity.css";
 import { FILE_DRAG_TYPE, readFileDrag } from "../fileDrag";
 import type { FileCommentsHost } from "../fileCommentsHost";
@@ -41,7 +40,7 @@ import { presentedSession } from '../resumedSession';
 import { openForkInPane } from '../chatFork';
 import { isDocumentPinned, sessionDocumentError } from '../sessionDocuments';
 import { fileTabMenuItems } from '../contextMenuSurfaceItems';
-import { showContextMenu } from './ContextMenu';
+import type { ContextMenuItem } from './ContextMenu';
 
 const TaskMapView = lazy(() => import('./TaskMapView'));
 const GroupChatView = lazy(async () => ({ default: (await import('./GroupChatView')).GroupChatView }));
@@ -60,7 +59,7 @@ type Props = {
   onOpenSession?: (sessionId: string) => void;
   ownerSessionId?: string;
   onPickSession?: (paneId: string) => void;
-  toolbarHost?:HTMLElement|null;
+  onSwitcherHost?:(host:HTMLDivElement|null)=>void;
   onEmpty?:()=>void;
   onActiveSession?:(sessionId:string)=>void;
   onInteraction?:()=>void;
@@ -104,7 +103,7 @@ export type PaneWorkbench = {
   /** Documents for the active session, limited to this session's project/worktree root. */
   sessionDocuments?:{projectId:string;rootPath:string;projectRoot?:string} & NonNullable<WorkbenchActions['sessionDocuments']>;
 };
-export function PaneWorkspace({ layout, sessions, data, onChange, theme, terminalCompatibility, providers = [], onSessionChanged, onOpenSession, ownerSessionId, onPickSession,toolbarHost,onEmpty,onActiveSession,onInteraction,onFileReference,focusTarget,fileReveal,onOpenPath,projectPath,onWebClosed,onWebNavigation,prepareBrowserShare,previewProvenance,previewLabels,delegationEnabled,sessionInfoEnabled,workbench }: Props) {
+export function PaneWorkspace({ layout, sessions, data, onChange, theme, terminalCompatibility, providers = [], onSessionChanged, onOpenSession, ownerSessionId, onPickSession,onSwitcherHost,onEmpty,onActiveSession,onInteraction,onFileReference,focusTarget,fileReveal,onOpenPath,projectPath,onWebClosed,onWebNavigation,prepareBrowserShare,previewProvenance,previewLabels,delegationEnabled,sessionInfoEnabled,workbench }: Props) {
   const zh=useTranslation().locale==='zh-CN';
   const [selectedPaneId, setSelectedPaneId] = useState<string|undefined>(focusTarget?.paneId);
   const [paneHost,setPaneHost]=useState<HTMLDivElement|null>(null),[stackHorizontal,setStackHorizontal]=useState(false);
@@ -124,26 +123,10 @@ export function PaneWorkspace({ layout, sessions, data, onChange, theme, termina
       return next ?? current;
     });
   }, [sessions]);
-  const [primaryHost,setPrimaryHost]=useState<HTMLDivElement|null>(null),[menuHost,setMenuHost]=useState<HTMLDivElement|null>(null);
-  const [menuAnchor,setMenuAnchor]=useState<HTMLElement>(),[closing,setClosing]=useState(false),[closeIssue,setCloseIssue]=useState<string>();
-  // Actions are portaled into the host, so they are not React children of it.
-  // Close on a microtask after the click: the action runs, then the menu stops covering the surface.
-  useEffect(() => {
-    if (!menuHost) return;
-    const close = (event: MouseEvent) => {
-      const target = event.target;
-      if (!(target instanceof Element) || !menuHost.contains(target) || !target.closest('button')) return;
-      queueMicrotask(() => setMenuAnchor(undefined));
-    };
-    menuHost.addEventListener('click', close);
-    return () => menuHost.removeEventListener('click', close);
-  }, [menuHost]);
+  const [closing,setClosing]=useState(false),[closeIssue,setCloseIssue]=useState<string>();
   const closingRef=useRef(false),latest=useRef(layout);latest.current=layout;
   const fileSelections=useRef(new Map<string,string>());
   const visibleLayout=visibleSessionLayout(layout,ownerSessionId,fileSelections.current);
-  const withoutWeb=(node:PaneLayout):PaneLayout=>node.kind==='pane'?{...node,tabs:node.tabs.filter(tab=>tab.kind!=='web'),activeTabId:node.tabs.some(tab=>tab.kind!=='web'&&tab.id===node.activeTabId)?node.activeTabId:null}:{...node,first:withoutWeb(node.first),second:withoutWeb(node.second)};
-  // Browser pages are navigated from their own pane strip; this is display-only.
-  const navigationLayout=withoutWeb(workspaceNavigationLayout(layout));
   const latestVisible=useRef(visibleLayout);latestVisible.current=visibleLayout;
   useEffect(()=>{for(const item of workspaceTabs(visibleLayout))if(item.active&&item.tab.kind!=='session'&&ownerSessionId&&item.tab.ownerSessionId===ownerSessionId)fileSelections.current.set(fileSelectionKey(ownerSessionId,item.paneId),item.tab.id);},[visibleLayout,ownerSessionId]);
   const mounted=useRef(true);useEffect(()=>{mounted.current=true;return()=>{mounted.current=false;};},[]);
@@ -177,11 +160,14 @@ export function PaneWorkspace({ layout, sessions, data, onChange, theme, termina
     commit(activate(latest.current,target.paneId,target.tabId));
    }catch(error){if(mounted.current)setCloseIssue(error instanceof Error?error.message:String(error));}
   };
-  const closeTabs=async(target:WorkspaceTabTarget,mode:'current'|'others'|'all',companion=false,onlyKind?:ContentRef['kind'])=>{
+  const closeTabs=async(target:WorkspaceTabTarget,mode:'current'|'others'|'all')=>{
    onInteraction?.();
    if(closingRef.current)return;closingRef.current=true;setClosing(true);setCloseIssue(undefined);
    activation.current++;
-   const requested=tabCloseTargets(companion?latestVisible.current:workspaceNavigationLayout(latest.current),target,mode).filter(candidate=>!onlyKind||workspaceTabs(latest.current).find(item=>item.paneId===candidate.paneId&&item.tab.id===candidate.tabId)?.tab.kind===onlyKind);
+   const visible=workspaceTabs(latestVisible.current).filter(item=>item.paneId===target.paneId);
+   const source=visible.find(item=>item.tab.id===target.tabId);
+   const scope:PaneLayout={kind:'pane',id:target.paneId,tabs:visible.filter(item=>source?.tab.kind!=='web'||item.tab.kind==='web').map(item=>item.tab),activeTabId:source?.tab.id??null};
+   const requested=tabCloseTargets(scope,target,mode);
    const targets=withSessionCompanions(latest.current,requested);
    const editors=workspaceTabs(latest.current).filter(item=>item.tab.kind!=='session'&&targets.some(t=>t.paneId===item.paneId&&t.tabId===item.tab.id)).map(item=>editorId(item.paneId,item.tab));
    try{
@@ -226,6 +212,8 @@ export function PaneWorkspace({ layout, sessions, data, onChange, theme, termina
     if (selectedPaneId && !ids.includes(selectedPaneId)) setSelectedPaneId(undefined);
   }, [visibleLayout, fullscreenPaneId, selectedPaneId]);
   const geometry = paneGeometry(visibleLayout,{stackHorizontal});
+  const switcherPaneId=fullscreenPaneId??geometry.panes[0]?.node.id;
+  const fileMenuItems=(item:FileTab):ContextMenuItem[]=>{const documents=workbench?.sessionDocuments;const matchingDocuments=documents&&item.projectId===documents.projectId&&sameCanonicalScope(item.worktreePath??documents.projectRoot,documents.rootPath)?documents:undefined;const root=item.worktreePath??matchingDocuments?.projectRoot;const pinned=Boolean(matchingDocuments&&isDocumentPinned(matchingDocuments.documents,item.path));const plansLabel=matchingDocuments?(zh?(pinned?'从计划与文档中移除':'添加到计划与文档'):(pinned?'Remove from Plans & docs':'Add to Plans & docs')):undefined;return fileTabMenuItems({zh,canSend:Boolean(workbench?.sendToAgent),plansLabel,canCopy:Boolean(root)}).map(menu=>({...menu,disabled:menu.id==='workspace-tab-plans-docs'&&Boolean(matchingDocuments?.loading||matchingDocuments?.error),reason:menu.id==='workspace-tab-plans-docs'&&matchingDocuments?.error?sessionDocumentError(matchingDocuments.error,zh):menu.id==='workspace-tab-plans-docs'&&matchingDocuments?.loading?(zh?'正在加载计划与文档。':'Plans & docs are loading.'):undefined,onSelect:menu.id==='workspace-tab-send-file'?()=>workbench?.sendToAgent?.({projectId:item.projectId,worktreePath:item.worktreePath,path:item.path}):menu.id==='workspace-tab-plans-docs'?()=>matchingDocuments?.toggle(item.path):menu.id==='workspace-tab-copy-path'?()=>{if(root)return navigator.clipboard.writeText(absolutePath(root,item.path));}:undefined,testId:menu.id}));};
   // Keep leaf surfaces at one stable React ancestry. Nesting the Pane inside
   // Split unmounts it whenever a split is inserted/collapsed, even with a key.
   const panes = paneGeometry(layout,{stackHorizontal}).panes.map(({node}) => {
@@ -256,30 +244,19 @@ export function PaneWorkspace({ layout, sessions, data, onChange, theme, termina
         providers={providers}
         closing={closing}
         onActivateTab={target=>void activateTab(target)}
-        onCloseFile={target=>void closeTabs(target,'current',true)}
         onCloseTab={target=>void closeTabs(target,'current')}
-        onCloseTabs={(target,mode)=>void closeTabs(target,mode,false,'web')}
+        onCloseTabs={(target,mode)=>void closeTabs(target,mode)}
+        onReorder={(paneId,from,to)=>{const visible=workspaceTabs(latestVisible.current).filter(item=>item.paneId===paneId);const all=workspaceTabs(latest.current).filter(item=>item.paneId===paneId);const source=all.findIndex(item=>item.tab.id===visible[from]?.tab.id),destination=all.findIndex(item=>item.tab.id===visible[to]?.tab.id);if(source>=0&&destination>=0)commit(reorderTab(latest.current,paneId,source,destination));}}
+        paneLabel={zh?`窗格 ${geometry.panes.findIndex(pane=>pane.node.id===node.id)+1} 标签`:`Pane ${geometry.panes.findIndex(pane=>pane.node.id===node.id)+1} tabs`}
+        onSwitcherHost={node.id===switcherPaneId?onSwitcherHost:undefined}
+        fileMenuItems={fileMenuItems}
+        onOpenSessionFiles={owner=>{const files=workspaceTabs(latest.current).filter(item=>item.tab.kind!=='session'&&item.tab.ownerSessionId===owner);const target=files.find(item=>item.tab.id===fileSelections.current.get(fileSelectionKey(owner,item.paneId)))??files[0];if(target){activeCallback.current?.(owner);void activateTab({paneId:target.paneId,tabId:target.tab.id});}}}
         onResumed={(session) => { setResumedSessions(current => new Map(current).set(session.id,session)); onSessionChanged?.(); }}
-        primaryHost={primaryHost} menuHost={menuHost} onFileReference={onFileReference} fileReveal={fileReveal} onOpenPath={onOpenPath} projectPath={projectPath} onWebNavigation={onWebNavigation} prepareBrowserShare={prepareBrowserShare} previewProvenance={previewProvenance} previewLabels={previewLabels} delegationEnabled={delegationEnabled} sessionInfoEnabled={sessionInfoEnabled} workbench={workbench}
+        onFileReference={onFileReference} fileReveal={fileReveal} onOpenPath={onOpenPath} projectPath={projectPath} onWebNavigation={onWebNavigation} prepareBrowserShare={prepareBrowserShare} previewProvenance={previewProvenance} previewLabels={previewLabels} delegationEnabled={delegationEnabled} sessionInfoEnabled={sessionInfoEnabled} workbench={workbench}
       />
     );});
-  const companionFiles=workspaceTabs(visibleLayout).filter(item=>item.tab.kind!=='session'&&item.tab.ownerSessionId===ownerSessionId&&Boolean(ownerSessionId));
-  const toolbar=<WorkspaceTabBar layout={navigationLayout} sessions={viewSessions} active={focused?.tab.kind==='web'?undefined:workspaceNavigationTarget(layout,focused)} busy={closing}
-   onActivate={target=>void activateTab(target)}
-   onClose={(target,mode)=>void closeTabs(target,mode)} onReorder={(paneId,from,to)=>{const visible=workspaceTabs(withoutWeb(workspaceNavigationLayout(latest.current))).filter(item=>item.paneId===paneId);const all=workspaceTabs(latest.current).filter(item=>item.paneId===paneId);const source=all.findIndex(item=>item.tab.id===visible[from]?.tab.id),destination=all.findIndex(item=>item.tab.id===visible[to]?.tab.id);if(source>=0&&destination>=0)commit(reorderTab(latest.current,paneId,source,destination));}}
-   fileMenuItems={item=>{const documents=workbench?.sessionDocuments;const matchingDocuments=documents&&item.projectId===documents.projectId&&sameCanonicalScope(item.worktreePath??documents.projectRoot,documents.rootPath)?documents:undefined;const root=item.worktreePath??matchingDocuments?.projectRoot;const pinned=Boolean(matchingDocuments&&isDocumentPinned(matchingDocuments.documents,item.path));const plansLabel=matchingDocuments?(zh?(pinned?'从计划与文档中移除':'添加到计划与文档'):(pinned?'Remove from Plans & docs':'Add to Plans & docs')):undefined;return fileTabMenuItems({zh,canSend:Boolean(workbench?.sendToAgent),plansLabel,canCopy:Boolean(root)}).map(menu=>({...menu,disabled:menu.id==='workspace-tab-plans-docs'&&Boolean(matchingDocuments?.loading||matchingDocuments?.error),reason:menu.id==='workspace-tab-plans-docs'&&matchingDocuments?.error?sessionDocumentError(matchingDocuments.error,zh):menu.id==='workspace-tab-plans-docs'&&matchingDocuments?.loading?(zh?'正在加载计划与文档。':'Plans & docs are loading.'):undefined,onSelect:menu.id==='workspace-tab-send-file'?()=>workbench?.sendToAgent?.({projectId:item.projectId,worktreePath:item.worktreePath,path:item.path}):menu.id==='workspace-tab-plans-docs'?()=>matchingDocuments?.toggle(item.path):menu.id==='workspace-tab-copy-path'?()=>{if(root)return navigator.clipboard.writeText(absolutePath(root,item.path));}:undefined,testId:menu.id}));}}>
-   <div className="workspace-primary-actions" ref={setPrimaryHost}/>
-   {companionFiles.length>0&&<button type="button" className="icon-btn" aria-label={zh?'会话文件':'Open session files'} title={zh?'会话文件':'Open session files'} aria-pressed={Boolean(focused&&focused.tab.kind!=='session'&&focused.tab.ownerSessionId===ownerSessionId)} onClick={()=>{
-    const target=companionFiles.find(item=>item.tab.id===fileSelections.current.get(fileSelectionKey(ownerSessionId,item.paneId)))??companionFiles[0];
-    void activateTab({paneId:target.paneId,tabId:target.tab.id});
-   }}><Icon name="file"/></button>}
-   <button type="button" className="icon-btn" aria-label={zh?'打开会话':'Open session'} title={zh?'打开会话':'Open session'} onClick={()=>onPickSession?.(focusPaneId??paneIdsIn(layout)[0])}><Icon name="plus"/></button>
-   <button type="button" className="icon-btn" aria-label={zh?'工作区操作':'Workspace actions'} title={zh?'工作区操作':'Workspace actions'} aria-expanded={Boolean(menuAnchor)} onClick={event=>{const anchor=event.currentTarget;setMenuAnchor(current=>current?undefined:anchor);}}><Icon name="more"/></button>
-   {menuAnchor&&<CatalogPopover anchor={menuAnchor} label={zh?'工作区操作':'Workspace actions'} onClose={()=>setMenuAnchor(undefined)}><div className="workspace-action-menu" ref={setMenuHost}/></CatalogPopover>}
-  </WorkspaceTabBar>;
   return (
-    <section className={`pane-workspace ws-content ${fullscreenPaneId ? "pane-focused" : ""}`} aria-label="Workspace panes">
-      {toolbarHost?createPortal(toolbar,toolbarHost):toolbar}
+    <section className={`pane-workspace ws-content ${fullscreenPaneId ? "pane-focused" : ""}`} aria-label={zh?'工作区窗格':'Workspace panes'}>
       {closeIssue&&<p className="surface-error" role="alert">{closeIssue}</p>}
       <div className="pane-grid" ref={setPaneHost} style={{'--pane-gap':`${PANE_GAP}px`,'--pane-divider-size':`${PANE_DIVIDER_SIZE}px`} as CSSProperties}>
         {geometry.splits.map(({node,rect})=><Split key={node.id} node={node} direction={stackHorizontal&&node.direction==='horizontal'?'vertical':node.direction} root={layout} style={paneRectStyle(rect)} onChange={commit}/>)}
@@ -374,8 +351,8 @@ function Pane({
   onFork,
   providers,
   onResumed,
-  closing,onActivateTab,onCloseFile,onCloseTab,onCloseTabs,
-  primaryHost,menuHost,onFileReference,fileReveal,onOpenPath,projectPath,onWebNavigation,prepareBrowserShare,previewProvenance,previewLabels,delegationEnabled,sessionInfoEnabled,workbench,
+  closing,onActivateTab,onCloseTab,onCloseTabs,onReorder,paneLabel,onSwitcherHost,fileMenuItems,onOpenSessionFiles,
+  onFileReference,fileReveal,onOpenPath,projectPath,onWebNavigation,prepareBrowserShare,previewProvenance,previewLabels,delegationEnabled,sessionInfoEnabled,workbench,
 }: {
   node: Extract<PaneLayout, { kind: "pane" }>;
   visibleNode?: Extract<PaneLayout, { kind: "pane" }>;
@@ -401,10 +378,13 @@ function Pane({
   onResumed: (session: Session) => void;
   closing:boolean;
   onActivateTab:(target:WorkspaceTabTarget)=>void;
-  onCloseFile:(target:WorkspaceTabTarget)=>void;
   onCloseTab:(target:WorkspaceTabTarget)=>void;
   onCloseTabs:(target:WorkspaceTabTarget,mode:'current'|'others'|'all')=>void;
-  primaryHost:HTMLElement|null;menuHost:HTMLElement|null;
+  onReorder:(paneId:string,from:number,to:number)=>void;
+  paneLabel:string;
+  onSwitcherHost?:(host:HTMLDivElement|null)=>void;
+  fileMenuItems:(item:FileTab)=>ContextMenuItem[];
+  onOpenSessionFiles:(owner:string)=>void;
   onFileReference?:(sessionId:string,reference:FileReference)=>void;
   fileReveal?:{tabId:string;line:number;column?:number;key:string};
   onOpenPath?:(file:{projectId:string;worktreePath?:string;path:string;kind:'file'|'diff'|'preview';assetKind?:'text'|'image';ownerSessionId?:string})=>void;
@@ -422,6 +402,15 @@ function Pane({
   const changeBrowserLayout=(update:(current:PaneLayout)=>PaneLayout)=>{const before=browserLayout.current,next=update(before);if(next!==before){browserLayout.current=next;onChange(next);}};
   const tab =
     visibleNode?.tabs.find((item) => item.id === visibleNode.activeTabId) ?? visibleNode?.tabs[0];
+  const [primaryHost,setPrimaryHost]=useState<HTMLDivElement|null>(null),[menuHost,setMenuHost]=useState<HTMLDivElement|null>(null);
+  const [menuAnchor,setMenuAnchor]=useState<HTMLElement>();
+  const actionsVisible=Boolean(visibleNode)&&browserVisible;
+  useEffect(()=>{setMenuAnchor(undefined);},[tab?.id,actionsVisible]);
+  useEffect(()=>{
+    if(!menuHost)return;
+    const close=(event:MouseEvent)=>{if(event.target instanceof Element&&event.target.closest('button')&&menuHost.contains(event.target))queueMicrotask(()=>setMenuAnchor(undefined));};
+    menuHost.addEventListener('click',close);return()=>menuHost.removeEventListener('click',close);
+  },[menuHost]);
   const visited=useRef(new Set<string>());
   if(tab)visited.current.add(tab.id);
   for(const id of visited.current)if(!node.tabs.some(item=>item.id===id))visited.current.delete(id);
@@ -430,14 +419,6 @@ function Pane({
   const [browserIcons,setBrowserIcons]=useState<Map<string,{favicon?:string;loading:boolean}>>(()=>new Map());
   const [newBrowserTab,setNewBrowserTab]=useState<string>();
   useEffect(()=>{setBrowserIcons(current=>{const ids=new Set(node.tabs.map(item=>item.id));return [...current.keys()].some(id=>!ids.has(id))?new Map([...current].filter(([id])=>ids.has(id))):current;});},[node.tabs]);
-  const browserStrip=useRef<HTMLDivElement>(null),hasBrowserTabs=node.tabs.some(item=>item.kind==='web');
-  const revealBrowserTab=(element?:Element|null)=>(element??browserStrip.current?.querySelector('.browser-page-tab.active'))?.scrollIntoView({inline:'nearest',block:'nearest',behavior:'instant'});
-  useEffect(()=>{if(visibleNode&&browserVisible)revealBrowserTab();},[tab?.id,node.tabs.length,Boolean(visibleNode),browserVisible]);
-  useEffect(()=>{
-    const strip=browserStrip.current;if(!strip)return;
-    const wheel=(event:WheelEvent)=>{if(event.ctrlKey||event.metaKey||!event.deltaY||Math.abs(event.deltaX)>Math.abs(event.deltaY)||strip.scrollWidth<=strip.clientWidth)return;event.preventDefault();strip.scrollLeft+=event.deltaY*(event.deltaMode===1?16:event.deltaMode===2?strip.clientWidth:1);};
-    strip.addEventListener('wheel',wheel,{passive:false});return()=>strip.removeEventListener('wheel',wheel);
-  },[hasBrowserTabs]);
   const [fileDropTarget, setFileDropTarget] = useState<string>();
   const session =
     tab?.kind === "session"
@@ -482,11 +463,11 @@ function Pane({
       <button className="btn btn-primary" onClick={() => onPickSession?.(node.id)}>{zh?"选择会话":"Choose session"}</button>
     </div>
   ) : null;
-  const content = node.tabs.filter(item=>visited.current.has(item.id)).map(item=>{
+  const content = node.tabs.map(item=>{
     const active=Boolean(visibleNode)&&item.id===tab?.id;
     const itemSession=item.kind==='session'?sessions.find(candidate=>candidate.id===item.sessionId):undefined;
-    return <SessionSurfaceContext.Provider key={item.id} value={{primaryHost,menuHost,focused:selected&&active,openFile:itemSession&&onFileReference?reference=>onFileReference(itemSession.id,reference):undefined,...sessionDiffActions(itemSession,projectPath,onOpenPath),openWeb:workbench?.openWeb?openWeb:undefined,openFork:onFork,openTaskMap:itemSession?.mode==='chat'?workbench?.openTaskMap:undefined}}>
-    <div className={`pane-tab-surface${fileDropTarget===item.id?" file-drop-target":""}`} data-content-id={item.id} {...(item.kind==='web'?{id:`browser-panel-${node.id}-${item.id}`,role:'tabpanel','aria-labelledby':`browser-tab-${node.id}-${item.id}`}:{})} hidden={!active} inert={!active}
+    return <SessionSurfaceContext.Provider key={item.id} value={{primaryHost,menuHost,focused:selected&&active&&actionsVisible,actionsVisible:active&&actionsVisible,openFile:itemSession&&onFileReference?reference=>onFileReference(itemSession.id,reference):undefined,...sessionDiffActions(itemSession,projectPath,onOpenPath),openWeb:workbench?.openWeb?openWeb:undefined,openFork:onFork,openTaskMap:itemSession?.mode==='chat'?workbench?.openTaskMap:undefined}}>
+    <div className={`pane-tab-surface${fileDropTarget===item.id?" file-drop-target":""}`} data-content-id={item.id} id={`${item.kind==='web'?'browser':'workspace'}-panel-${node.id}-${item.id}`} role="tabpanel" aria-labelledby={`${item.kind==='web'?'browser':'workspace'}-tab-${node.id}-${item.id}`} hidden={!active} inert={!active}
      {...(itemSession&&!itemSession.readOnly&&workbench?.sendToAgent&&["starting","running","idle","waiting"].includes(itemSession.status)?{
       // An Explorer file dropped here inserts the same reference as "Send to agent", into this session.
       "data-drop-label":zh?"松开以插入文件引用（不会发送）":"Drop to insert the file reference (not sent)",
@@ -494,7 +475,7 @@ function Pane({
       onDragLeave:(event:ReactDragEvent<HTMLDivElement>)=>{if(!event.currentTarget.contains(event.relatedTarget as Node|null))setFileDropTarget(undefined);},
       onDrop:(event:ReactDragEvent<HTMLDivElement>)=>{if(!event.dataTransfer.types.includes(FILE_DRAG_TYPE))return;event.preventDefault();setFileDropTarget(undefined);const file=readFileDrag(event.dataTransfer.getData(FILE_DRAG_TYPE));if(file)workbench.sendToAgent?.({...file,sessionId:itemSession.id});},
      }:{})}>
-    {itemSession?.readOnly ? (
+    {!visited.current.has(item.id)?null:itemSession?.readOnly ? (
     <ImportedHistoryView session={itemSession} onResumed={onResumed} onOpenSession={onOpenSession}/>
   ) : itemSession ? (
     itemSession.mode === "terminal" ? (
@@ -536,12 +517,6 @@ function Pane({
       editorId={editorId(node.id, item)}
       ownerSessionId={item.ownerSessionId}
       sessionDocuments={workbench?.sessionDocuments && item.projectId === workbench.sessionDocuments.projectId && sameCanonicalScope(item.worktreePath ?? workbench.sessionDocuments.projectRoot, workbench.sessionDocuments.rootPath) ? workbench.sessionDocuments : undefined}
-      previewNavigation={item.ownerSessionId?{
-        activeId:item.id,
-        files:workspaceTabs(layout).flatMap(candidate=>isFileTab(candidate.tab)&&candidate.tab.ownerSessionId===item.ownerSessionId?[{id:candidate.tab.id,path:candidate.tab.path,kind:candidate.tab.kind}]:[]),
-        onSelect:id=>{const target=workspaceTabs(layout).find(candidate=>candidate.tab.id===id&&candidate.tab.kind!=='session'&&candidate.tab.ownerSessionId===item.ownerSessionId);if(target)onActivateTab({paneId:target.paneId,tabId:id});},
-        onClose:()=>onCloseFile({paneId:node.id,tabId:item.id}),closing:closing||!active,
-      }:undefined}
       reveal={fileReveal?.tabId===item.id?fileReveal:undefined}
       embedded
       onOpenPath={onOpenPath?(path,kind)=>onOpenPath({projectId:item.projectId,worktreePath:item.worktreePath,path,kind,assetKind:path===item.path?item.assetKind:undefined,ownerSessionId:item.ownerSessionId}):undefined}
@@ -549,9 +524,6 @@ function Pane({
   ) : null}
     </div></SessionSurfaceContext.Provider>;
   });
-  const tabLabel = (item: ContentRef) => item.kind === "session"
-    ? sessions.find(candidate => candidate.id === item.sessionId)?.title ?? (zh?"终端":"Terminal")
-    : item.kind==='map'?`${zh?'任务图':'Task map'} · ${sessions.find(candidate=>candidate.id===item.sessionId)?.title??item.sessionId}`:contentTitle(item, zh).label;
   const browserTabs=node.tabs.filter((item):item is Extract<ContentRef,{kind:'web'}>=>item.kind==='web');
   const browserLabel=(item:Extract<ContentRef,{kind:'web'}>)=>{
    if(item.url===BROWSER_NEW_TAB_URL)return zh?'新标签页':'New tab';
@@ -564,21 +536,20 @@ function Pane({
    const runtime=previewLabels?.get(item.id), owner=runtime?.sessionId?sessions.find(candidate=>candidate.id===runtime.sessionId):undefined;
    return `${item.url}${owner?` — ${owner.title} (${owner.provider})`:''}`;
   };
-  const browserKeys=(event:React.KeyboardEvent<HTMLButtonElement>)=>{
-   if(!['ArrowLeft','ArrowRight','Home','End'].includes(event.key))return;
-   event.preventDefault();const tabs=Array.from(event.currentTarget.closest('[role=tablist]')!.querySelectorAll<HTMLButtonElement>('[role=tab]'));
-   const index=tabs.indexOf(event.currentTarget),next=event.key==='Home'?0:event.key==='End'?tabs.length-1:(index+(event.key==='ArrowRight'?1:-1)+tabs.length)%tabs.length;
-   tabs[next]?.focus();tabs[next]?.click();
-  };
-  const browserMenu=(item:Extract<ContentRef,{kind:'web'}>,event:React.MouseEvent<HTMLElement>)=>{
-   event.preventDefault();const target={paneId:node.id,tabId:item.id};
-   showContextMenu({x:event.clientX,y:event.clientY,restoreFocus:event.currentTarget,items:(['current','others','all'] as const).map(mode=>({id:`browser-tab-close-${mode}`,label:zh?({current:'关闭当前页面',others:'关闭其他页面',all:'关闭所有页面'}[mode]):({current:'Close page',others:'Close other pages',all:'Close all pages'}[mode]),disabled:mode==='others'&&browserTabs.length<2,onSelect:()=>onCloseTabs(target,mode)}))});
-  };
+  const presentation=new Map<string,WorkspaceTabPresentation>(browserTabs.map(item=>[item.id,{label:browserLabel(item),title:browserTitle(item),...browserIcons.get(item.id),provider:previewLabels?.get(item.id)?.sessionId?sessions.find(candidate=>candidate.id===previewLabels.get(item.id)?.sessionId)?.provider:undefined,onFaviconError:()=>{const failed=browserIcons.get(item.id)?.favicon;setBrowserIcons(current=>{const icon=current.get(item.id);return icon?.favicon===failed?new Map(current).set(item.id,{loading:icon?.loading??false}):current;});}}]));
+  const companionOwner=session?.id??(tab&&tab.kind!=='session'?tab.ownerSessionId:undefined);
+  const hasCompanions=Boolean(companionOwner&&workspaceTabs(layout).some(item=>item.tab.kind!=='session'&&item.tab.ownerSessionId===companionOwner));
+  const browserMode=tab?.kind==='web';
   return (
-    <SessionSurfaceContext.Provider value={{primaryHost,menuHost,focused:selected,openFile:session&&onFileReference?reference=>onFileReference(session.id,reference):undefined,...sessionDiffActions(session,projectPath,onOpenPath),openWeb:workbench?.openWeb?openWeb:undefined}}>
-    <section data-pane-id={node.id} hidden={!visibleNode} inert={!visibleNode} style={style} className={`workspace-pane ws-pane ${fullscreen ? "fullscreen" : ""}${selected ? " selected" : ""}`} onPointerDown={event=>{if(event.currentTarget.contains(event.target as Node))onFocus();}}>
-       {session&&tab&&<div className="pane-identity"><AgentIcon provider={session.provider}/><span title={tabLabel(tab)}>{tabLabel(tab)}</span></div>}
-       {browserTabs.length>0&&<div className="browser-page-tabs" ref={browserStrip} onKeyDown={event=>{if((event.ctrlKey||event.metaKey)&&!event.shiftKey&&!event.altKey&&event.key.toLowerCase()==='t'){event.preventDefault();event.stopPropagation();addBrowserTab();}}} role="tablist" aria-label={zh?'浏览器页面':'Browser pages'}>{browserTabs.map(item=>{const label=browserLabel(item),title=browserTitle(item),active=item.id===tab?.id,provider=previewLabels?.get(item.id)?.sessionId?sessions.find(candidate=>candidate.id===previewLabels.get(item.id)?.sessionId)?.provider:undefined;return <div className={`browser-page-tab${active?' active':''}`} key={item.id} onContextMenu={event=>browserMenu(item,event)}><button type="button" id={`browser-tab-${node.id}-${item.id}`} role="tab" aria-selected={active} aria-controls={`browser-panel-${node.id}-${item.id}`} tabIndex={active?0:-1} title={title} aria-label={title} onKeyDown={browserKeys} onClick={event=>{onActivateTab({paneId:node.id,tabId:item.id});revealBrowserTab(event.currentTarget.closest('.browser-page-tab'));}}>{browserIcons.get(item.id)?.loading?<span className="browser-page-loading" aria-hidden="true"/>:browserIcons.get(item.id)?.favicon?<img className="browser-page-favicon" src={browserIcons.get(item.id)!.favicon} width={16} height={16} alt="" aria-hidden="true" onError={event=>{const failed=event.currentTarget.getAttribute('src');setBrowserIcons(current=>{const icon=current.get(item.id);return icon?.favicon===failed?new Map(current).set(item.id,{loading:icon.loading}):current;});}}/>:<Icon name="globe"/>}<span className="browser-page-tab-title">{label}</span>{provider&&<small>{provider}</small>}</button><button type="button" className="browser-page-tab-close" aria-label={zh?`关闭页面 ${label}`:`Close page ${label}`} title={zh?'关闭页面':'Close page'} onPointerDown={event=>event.stopPropagation()} onClick={event=>{event.stopPropagation();onCloseTab({paneId:node.id,tabId:item.id});}}><Icon name="close"/></button></div>;})}<span className="browser-page-new-tab-slot"><button type="button" className="browser-page-new-tab" aria-label={zh?'新标签页':'New tab'} title={zh?'新标签页':'New tab'} onClick={addBrowserTab}><Icon name="plus"/></button></span></div>}
+    <SessionSurfaceContext.Provider value={{primaryHost,menuHost,focused:selected&&actionsVisible,actionsVisible,openFile:session&&onFileReference?reference=>onFileReference(session.id,reference):undefined,...sessionDiffActions(session,projectPath,onOpenPath),openWeb:workbench?.openWeb?openWeb:undefined}}>
+    <section data-pane-id={node.id} hidden={!visibleNode} inert={!visibleNode} style={style} className={`workspace-pane ws-pane ${fullscreen ? "fullscreen" : ""}${selected ? " selected" : ""}`} onPointerDown={event=>{if(event.currentTarget.contains(event.target as Node))onFocus();}} onKeyDown={event=>{if(!event.defaultPrevented&&browserMode&&(event.ctrlKey||event.metaKey)&&!event.shiftKey&&!event.altKey&&event.key.toLowerCase()==='t'){event.preventDefault();event.stopPropagation();addBrowserTab();}}}>
+      {actionsVisible&&visibleNode&&<WorkspaceTabBar layout={visibleNode} sessions={sessions} active={tab?{paneId:node.id,tabId:tab.id}:undefined} paneLabel={paneLabel} busy={closing} onActivate={onActivateTab} onClose={onCloseTabs} onReorder={onReorder} fileMenuItems={fileMenuItems} presentation={presentation} prefix={onSwitcherHost?<div className="pane-switcher-host" ref={onSwitcherHost}/>:undefined} onAdd={browserMode?addBrowserTab:()=>onPickSession?.(node.id)} addLabel={browserMode?(zh?'新标签页':'New tab'):(zh?'打开会话':'Open session')}>
+        <div className="workspace-primary-actions" ref={setPrimaryHost}/>
+        {hasCompanions&&companionOwner&&<button type="button" className="icon-btn" aria-label={zh?'会话文件':'Open session files'} title={zh?'会话文件':'Open session files'} aria-pressed={Boolean(tab&&tab.kind!=='session'&&tab.ownerSessionId===companionOwner)} onClick={()=>onOpenSessionFiles(companionOwner)}><Icon name="file"/></button>}
+        <button type="button" className="icon-btn" aria-label={zh?'工作区操作':'Workspace actions'} title={zh?'工作区操作':'Workspace actions'} aria-expanded={Boolean(menuAnchor)} onClick={event=>{const anchor=event.currentTarget;setMenuAnchor(current=>current?undefined:anchor);}}><Icon name="more"/></button>
+        {menuAnchor&&<CatalogPopover anchor={menuAnchor} label={zh?'工作区操作':'Workspace actions'} onClose={()=>setMenuAnchor(undefined)}><div className="workspace-action-menu" ref={setMenuHost}/></CatalogPopover>}
+      </WorkspaceTabBar>}
+      <div className="pane-card">
       <SurfaceActions slot="menu">
         <button type="button" className="menu-item" onClick={onToggleFullscreen}><Icon name="panel"/>{fullscreen?(zh?'退出窗格全屏':'Restore pane'):(zh?'全屏窗格':'Fullscreen pane')}</button>
         <button type="button" className="menu-item" disabled={paneLimit} title={paneLimit?(zh?'最多 4 个窗格':'Up to 4 panes'):undefined} onClick={()=>split('horizontal')}><Icon name="split"/>{zh?'左右拆分':'Split right'}</button>
@@ -616,6 +587,7 @@ function Pane({
       </SurfaceActions>
       {issue && <p className="surface-error">{issue}</p>}
       <div className="pane-body">{empty}{content}</div>
+      </div>
     </section>
     </SessionSurfaceContext.Provider>
   );

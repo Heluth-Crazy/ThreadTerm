@@ -15,8 +15,13 @@
 .runtime-workspace .ws-top .ql-trigger:hover:not(:disabled) { background:var(--soft); border-color:var(--faint); }
 .runtime-workspace .ws-top .ws-chip:focus-visible,
 .runtime-workspace .ws-top .ql-trigger:focus-visible { outline:2px solid var(--primary); outline-offset:2px; }
-.runtime-workspace.terminal-fullscreen .ws-top,.runtime-workspace.terminal-fullscreen .ws-tabrow,.runtime-workspace.terminal-fullscreen .ws-strip { display:none; }
-.runtime-workspace.terminal-fullscreen .ws-content { padding:2px; }
+.runtime-workspace.terminal-fullscreen .ws-top,.runtime-workspace.terminal-fullscreen .ws-tabrow,.runtime-workspace.terminal-fullscreen .ws-strip,.runtime-workspace.terminal-fullscreen .inspector-slot { display:none; }
+.runtime-workspace .ws-content:not(.pane-workspace) { padding:0 12px 12px; background:var(--bg); }
+.runtime-workspace .ws-content:not(.pane-workspace).with-drawer { gap:12px; }
+.runtime-workspace.terminal-fullscreen .ws-content:not(.pane-workspace) { padding:2px; }
+.runtime-workspace .inspector-slot { display:flex; flex:0 0 320px; flex-direction:column; min-width:0; min-height:0; }
+.runtime-workspace .inspector-slot::before { content:""; flex:none; height:42px; }
+.runtime-workspace .inspector-slot > .inspector { width:auto; flex:1; border:1px solid var(--border); border-radius:8px; background:var(--surface); box-shadow:none; overflow:hidden; }
 .workspace-file-error { display:flex; flex:none; align-items:center; gap:8px; padding:6px 12px; color:var(--text); background:var(--surface); font-size:12px; }
 .workspace-file-error > span { flex:1; min-width:0; overflow-wrap:anywhere; }
 .workspace-file-error code { color:var(--muted); }
@@ -30,12 +35,12 @@
 @media (max-width:760px) {
  .app-shell:has(.runtime-workspace) { grid-template-columns:minmax(0,1fr); }
  .app-shell:has(.runtime-workspace) > .content.main { grid-column:1; }
- .app-shell:has(.runtime-workspace) > .sidebar { position:absolute; z-index:40; top:36px; bottom:24px; left:0; width:min(280px,calc(100% - 44px)); border-right:1px solid var(--border); background:var(--side); box-shadow:var(--shadow); visibility:hidden; pointer-events:none; transform:translateX(-105%); transition:transform .18s ease,visibility 0s linear .18s; }
+ .app-shell:has(.runtime-workspace) > .sidebar { position:absolute; z-index:40; top:36px; bottom:0; left:0; width:min(280px,calc(100% - 44px)); border-right:1px solid var(--border); background:var(--side); box-shadow:var(--shadow); visibility:hidden; pointer-events:none; transform:translateX(-105%); transition:transform .18s ease,visibility 0s linear .18s; }
  .app-shell:has(.runtime-workspace[data-navigation-open="true"]) > .sidebar { visibility:visible; pointer-events:auto; transform:translateX(0); transition-delay:0s; }
  .runtime-workspace .runtime-nav-toggle { display:grid; place-items:center; flex:none; }
  .runtime-workspace .runtime-nav-scrim { display:block; position:fixed; z-index:30; inset:0; border:0; background:color-mix(in srgb,var(--text) 16%,transparent); cursor:default; }
  /* Explorer/SCM is opened deliberately at this width; keep it usable as a
     drawer instead of silently turning the Chat/browser into two narrow panes. */
- .runtime-workspace .ws-content.with-drawer { position:relative; }
- .runtime-workspace .ws-content.with-drawer > .wb-sidebar { position:absolute; z-index:25; top:0; bottom:0; left:0; width:min(300px,calc(100% - 32px)) !important; margin:0; box-shadow:var(--shadow); }
+ .runtime-workspace .ws-content:not(.pane-workspace).with-drawer { position:relative; }
+ .runtime-workspace .ws-content:not(.pane-workspace).with-drawer > .wb-sidebar-slot { position:absolute; z-index:25; top:0; bottom:12px; left:12px; width:min(300px,calc(100% - 24px)) !important; margin:0; box-shadow:var(--shadow); }
 }

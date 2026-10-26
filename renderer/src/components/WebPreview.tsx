@@ -153,7 +153,7 @@ export function WebPreview({tabId,url,visible,zh,commentScope,commentsHost,comme
  useEffect(()=>{
   if(!visible||blank)return;
   const element=placeholder.current;if(!element)return;
-  const radius=()=>{const pane=element.closest('.workspace-pane');return browserInnerRadius(pane?getComputedStyle(pane):undefined);};
+  const radius=()=>{const pane=element.closest('.pane-card')??element.closest('.workspace-pane');return browserInnerRadius(pane?getComputedStyle(pane):undefined);};
   const stopWatching=watchBrowserOverlays(element);
   const bounds=()=>{const currentDevtoolsOpen=Boolean(latest.current.state.devtools?.open);updateBrowserOverlayBounds();const rect=element.getBoundingClientRect(),devtoolsRect=currentDevtoolsOpen?devtools.current?.getBoundingClientRect():undefined;if(currentDevtoolsOpen){const paneHeight=devtoolsPaneHeight();if(paneHeight>0)setDevtoolsHeight(current=>{const next=clampDevtoolsHeight(current||paneHeight*.4,paneHeight);if(next!==current)try{localStorage.setItem('threadterm.browser.devtoolsHeight',String(next));}catch{}return next;});}if(handoffRef.current?.kind==='markup')setMarkupBounds(current=>current&&current.x===rect.x&&current.y===rect.y&&current.width===rect.width&&current.height===rect.height?current:{x:rect.x,y:rect.y,width:rect.width,height:rect.height});command({type:'bounds',tabId,radius:radius(),bounds:{x:Math.round(rect.x),y:Math.round(rect.y),width:Math.round(rect.width),height:Math.round(rect.height)},...(devtoolsRect&&{devtools:{x:Math.round(devtoolsRect.x),y:Math.round(devtoolsRect.y),width:Math.round(devtoolsRect.width),height:Math.round(devtoolsRect.height)}})});};
   sendBounds.current=bounds;

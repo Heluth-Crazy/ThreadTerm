@@ -1,12 +1,13 @@
-import { _electron as electron } from '@playwright/test';
 import { mkdir, mkdtemp, writeFile } from 'node:fs/promises';
-import { spawn } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { startReadonlyReferenceServer } from './parity/reference-server.mjs';
 import { installVisualFixture } from './parity/fixture.mjs';
 import { compareMetrics, metricScript, selectorGroups } from './parity/metrics.mjs';
+import { electron } from './lib/desktop1.mjs';
+import { acquireElectronQaLock } from './lib/electron-lock.mjs';
+import { buildQaApp } from './lib/qa-app.mjs';
 const here=dirname(fileURLToPath(import.meta.url)),v3Root=resolve(here,'..'),resultRoot=resolve(here,'results/parity');
 const referenceOnly=process.argv.includes('--reference-only'),quick=process.argv.includes('--quick');
 const viewports=quick?[[1440,900]]:[[1280,800],[1440,900],[1920,1080]],themes=quick?['light']:['light','dark'];
@@ -20,11 +21,13 @@ const report={startedAt:new Date().toISOString(),visualFixture:true,backendVerif
   'Usage/native history remain empty in the visual fixture; their data values are excluded from equality claims.',
   'No aggregate percentage or automatic visual parity approval. Paired screenshots require visual review.'
 ]};
-async function runBuild(){await new Promise((done,fail)=>{const p=spawn('npm',['run','build:renderer'],{cwd:v3Root,shell:process.platform==='win32',stdio:'inherit'});p.once('error',fail);p.once('exit',code=>code===0?done():fail(new Error('Renderer build failed: '+code)));});}
-async function openStatic(profile){const app=await electron.launch({args:[join(here,'parity/electron-static.cjs')],env:{...process.env,TT_PARITY_PROFILE:profile},timeout:30000});return {app,page:await app.firstWindow()};}
+const systemRoot=process.env.SystemRoot??process.env.SYSTEMROOT??'C:\\Windows';
+const staticEnv=Object.fromEntries(Object.entries(process.env).filter(([key])=>!/^(path|home|userprofile|homedrive|homepath|codex_home|appdata|localappdata|threadterm_v3_.*|tt_qa_.*|tt_parity_profile|electron_run_as_node)$/i.test(key)));
+Object.assign(staticEnv,{Path:[dirname(process.execPath),join(systemRoot,'System32')].join(';'),TT_QA_DESKTOP:'1'});
+async function openStatic(profile){const app=await electron.launch({args:[join(here,'parity/electron-static.cjs')],env:{...staticEnv,TT_PARITY_PROFILE:profile},timeout:30000});return {app,page:await app.firstWindow()};}
 let productionLanguagePinned=false;
 const referenceFrame=`html,body,.desktop{width:100%!important;height:100%!important;overflow:hidden!important}.desktop{padding:0!important;background:none!important}.app-window{width:100%!important;max-width:none!important;height:100%!important;max-height:none!important;margin:0!important;border:0!important;border-radius:0!important;box-shadow:none!important}.app-chrome{display:none!important}.app-stage{width:100%!important;max-width:none!important;height:100%!important}`;
-const productionFrame=`.titlebar.app-chrome{display:none!important}.app-shell{grid-template-rows:minmax(0,1fr) 24px!important}.app-shell>.sidebar,.app-shell>.content.main{grid-row:1!important}.app-shell>.statusbar{grid-row:2!important}`;
+const productionFrame=`.titlebar.app-chrome{display:none!important}.app-shell{grid-template-rows:minmax(0,1fr)!important}.app-shell>.sidebar,.app-shell>.content.main{grid-row:1!important}`;
 async function referenceRoute(page,route,theme){
   await page.evaluate(({route,theme})=>{const api=window.ThreadTermPrototype;api.setTheme(theme);api.navigate(route==='terminals'?'#/terminals':route==='inbox'?'#/inbox':route.startsWith('workspace')?'#/workspace/orbit-shell':route==='workbench'?'#/workbench':'#/project/orbit');},{route,theme});
   if(route.startsWith('settings')){await page.locator('.user-row[data-action="open-settings"]').click();await page.locator('[data-action="settings-open"]').click();await page.locator('.settings-panel').waitFor();await page.locator(`[data-action="settings-theme"][data-theme="${theme}"]`).click();if(route.includes('-'))await page.locator(`[data-action="settings-section"][data-section="${route.split('-')[1]}"]`).click();}
@@ -49,9 +52,10 @@ async function diagnosticClick(page,locator){try{await locator.click({timeout:25
 async function capture(page,path){await page.evaluate(()=>document.fonts.ready);await page.addStyleTag({content:'*,*::before,*::after{animation:none!important;transition:none!important}'});await page.screenshot({path,animations:'disabled'});const metrics=await page.evaluate(metricScript(),{selectors:selectorGroups});await writeFile(path.replace(/\.png$/,'.dom.json'),JSON.stringify(await page.evaluate(()=>({title:document.title,buttons:Array.from(document.querySelectorAll('button')).filter(n=>n.getClientRects().length).map(n=>({text:n.innerText,label:n.getAttribute('aria-label'),action:n.dataset.action,tab:n.dataset.tab})),text:document.body.innerText})),null,2));return metrics;}
 await mkdir(join(runRoot,'reference'),{recursive:true});await mkdir(join(runRoot,'production'),{recursive:true});
 const scratch=await mkdtemp(join(tmpdir(),'threadterm-static-parity-'));report.scratch=scratch;
-let server,app,prodServer,prodApp;
+let server,app,prodServer,prodApp,qaApp,releaseLock;
 try{
-  if(process.argv.includes('--build')&&!referenceOnly)await runBuild();
+  if(!referenceOnly)qaApp=await buildQaApp({root:v3Root});
+  releaseLock=await acquireElectronQaLock();
   server=await startReadonlyReferenceServer(join(v3Root,'reference'));
   let refPage;({app,page:refPage}=await openStatic(join(scratch,'reference-profile')));
   await refPage.addInitScript(()=>localStorage.setItem('threadterm.app.v3',JSON.stringify({welcomeSeen:true,theme:'light'})));
@@ -59,7 +63,7 @@ try{
   const seed=await refPage.evaluate(()=>{const api=window.ThreadTermPrototype;return {projects:api.projects,trees:api.trees,sessions:api.sessions(),store:api.store,fileContents:Object.fromEntries(Object.entries(api.projects).map(([id,p])=>[id,Object.fromEntries(p.files.map((path,index)=>[path,api.fileValue(api.sessions().find(item=>item.project===id),index)]))]))};});
   await writeFile(join(runRoot,'visual-fixture.json'),JSON.stringify(seed,null,2));
   let prodPage;
-  if(!referenceOnly){prodServer=await startReadonlyReferenceServer(join(v3Root,'desktop-dist/renderer'));({app:prodApp,page:prodPage}=await openStatic(join(scratch,'production-profile')));await prodPage.addInitScript(installVisualFixture,{seed,theme:'light'});}
+  if(!referenceOnly){prodServer=await startReadonlyReferenceServer(join(qaApp.appDir,'renderer'));({app:prodApp,page:prodPage}=await openStatic(join(scratch,'production-profile')));await prodPage.addInitScript(installVisualFixture,{seed,theme:'light'});}
   for(const [width,height]of viewports)for(const theme of themes)for(const route of routes){
     const name=`${route}-${theme}-${width}x${height}.png`,scenario={route,theme,viewport:{width,height},reference:null,production:null,deviations:[]};report.scenarios.push(scenario);
     await app.evaluate(({BrowserWindow},size)=>BrowserWindow.getAllWindows()[0].setContentSize(...size),[width,height]);
@@ -76,6 +80,6 @@ try{
 }catch(error){report.error=error.stack||String(error);process.exitCode=1;}
 finally{
   // Profiles stay available for inspection. This harness cannot start a daemon.
-  if(prodApp)await prodApp.close().catch(()=>{});if(app)await app.close().catch(()=>{});if(prodServer)await prodServer.close();if(server)await server.close();
+  if(prodApp)await prodApp.close().catch(()=>{});if(app)await app.close().catch(()=>{});if(prodServer)await prodServer.close();if(server)await server.close();await releaseLock?.();await qaApp?.cleanup?.();
   report.completedAt=new Date().toISOString();await writeFile(join(runRoot,'parity-report.json'),JSON.stringify(report,null,2)+'\n');await writeFile(join(resultRoot,'latest.json'),JSON.stringify({runId,report:join(runId,'parity-report.json')},null,2)+'\n');console.log(JSON.stringify({runRoot,error:report.error},null,2));
 }

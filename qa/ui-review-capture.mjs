@@ -3,14 +3,15 @@
 // Usage: node qa/ui-review-capture.mjs [--build] [--routes=branch,project] [--themes=light,dark]
 //        [--sizes=1280x800,1920x1080] [--langs=zh,en] [--usage] [--label=name]
 //        [--css=file] [--script=file]   (preview a proposal: extra stylesheet / DOM script before each shot)
-import { _electron as electron } from '@playwright/test';
 import { mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises';
-import { spawn } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { startReadonlyReferenceServer } from './parity/reference-server.mjs';
 import { installVisualFixture } from './parity/fixture.mjs';
+import { electron } from './lib/desktop1.mjs';
+import { acquireElectronQaLock } from './lib/electron-lock.mjs';
+import { buildQaApp } from './lib/qa-app.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url)), v3Root = resolve(here, '..');
 const arg = (name, fallback) => process.argv.find(value => value.startsWith(`--${name}=`))?.slice(name.length + 3).split(',') ?? fallback;
@@ -25,11 +26,6 @@ const proposalScript = extraScript ? await readFile(resolve(extraScript), 'utf8'
 const label = arg('label', [new Date().toISOString().replace(/[:.]/g, '-')])[0];
 const out = join(here, 'results/ui-review', label);
 await mkdir(out, { recursive: true });
-
-if (process.argv.includes('--build')) await new Promise((done, fail) => {
-  const child = spawn('npm', ['run', 'build:renderer'], { cwd: v3Root, shell: process.platform === 'win32', stdio: 'inherit' });
-  child.once('error', fail); child.once('exit', code => code === 0 ? done() : fail(new Error('Renderer build failed: ' + code)));
-});
 
 const text = (zh, en) => new RegExp(`^\\s*(${zh}|${en})`);
 async function route(page, name) {
@@ -52,12 +48,17 @@ async function route(page, name) {
 }
 
 const scratch = await mkdtemp(join(tmpdir(), 'threadterm-ui-review-'));
-let referenceServer, productionServer, app;
+const systemRoot = process.env.SystemRoot ?? process.env.SYSTEMROOT ?? 'C:\\Windows';
+const staticEnv = Object.fromEntries(Object.entries(process.env).filter(([key]) => !/^(path|home|userprofile|homedrive|homepath|codex_home|appdata|localappdata|threadterm_v3_.*|tt_qa_.*|tt_parity_profile|electron_run_as_node)$/i.test(key)));
+Object.assign(staticEnv, { Path: [dirname(process.execPath), join(systemRoot, 'System32')].join(';'), TT_QA_DESKTOP: '1' });
+let referenceServer, productionServer, app, qaApp, releaseLock;
 const report = { label, usage, shots: [], errors: [] };
 try {
+  qaApp = await buildQaApp({ root: v3Root });
+  releaseLock = await acquireElectronQaLock();
   referenceServer = await startReadonlyReferenceServer(join(v3Root, 'reference'));
-  productionServer = await startReadonlyReferenceServer(join(v3Root, 'desktop-dist/renderer'));
-  app = await electron.launch({ args: [join(here, 'parity/electron-static.cjs')], env: { ...process.env, TT_PARITY_PROFILE: join(scratch, 'profile') }, timeout: 30000 });
+  productionServer = await startReadonlyReferenceServer(join(qaApp.appDir, 'renderer'));
+  app = await electron.launch({ args: [join(here, 'parity/electron-static.cjs')], env: { ...staticEnv, TT_PARITY_PROFILE: join(scratch, 'profile') }, timeout: 30000 });
   const page = await app.firstWindow();
   page.on('pageerror', error => report.errors.push(error.message));
   await page.addInitScript(() => localStorage.setItem('threadterm.app.v3', JSON.stringify({ welcomeSeen: true, theme: 'light' })));
@@ -72,7 +73,7 @@ try {
     const language = lang === 'zh' ? 'zh-CN' : 'en';
     await page.evaluate(([language, revision, id]) => window.threadterm.request('settings.update', { patch: { language }, expectedRevision: revision, operationId: id }), [language, settings.revision, crypto.randomUUID()]);
     await page.waitForFunction(language => document.body.innerText.includes(language === 'zh-CN' ? '所有终端' : 'All terminals'), language);
-    await page.addStyleTag({ content: '.titlebar.app-chrome{display:none!important}.app-shell{grid-template-rows:minmax(0,1fr) 24px!important}.app-shell>.sidebar,.app-shell>.content.main{grid-row:1!important}.app-shell>.statusbar{grid-row:2!important}*,*::before,*::after{animation:none!important;transition:none!important}' });
+    await page.addStyleTag({ content: '.titlebar.app-chrome{display:none!important}.app-shell{grid-template-rows:minmax(0,1fr)!important}.app-shell>.sidebar,.app-shell>.content.main{grid-row:1!important}*,*::before,*::after{animation:none!important;transition:none!important}' });
     await page.locator('.proj-row').first().waitFor();
     await page.waitForFunction(theme => document.documentElement.dataset.theme === theme, theme);
     if (proposalCss) await page.addStyleTag({ content: proposalCss });
@@ -86,6 +87,7 @@ try {
 } catch (error) { report.error = error.stack ?? String(error); process.exitCode = 1; }
 finally {
   await app?.close().catch(() => {}); await productionServer?.close(); await referenceServer?.close();
+  await releaseLock?.(); await qaApp?.cleanup?.();
   await writeFile(join(out, 'report.json'), JSON.stringify(report, null, 2));
   console.log(JSON.stringify({ out, shots: report.shots.length, errors: report.errors, error: report.error }, null, 2));
 }

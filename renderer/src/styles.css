@@ -91,7 +91,7 @@ html { color-scheme:light; }
 html[data-theme="dark"] { color-scheme:dark; }
 #root { isolation:isolate; padding:10px; }
 #root:has(.app-shell.is-maximized), #root:has(.app-shell.native-chrome) { padding:0; }
-.app-shell { position:relative; height:100%; display:grid; grid-template-columns:240px minmax(0,1fr); grid-template-rows:36px minmax(0,1fr) 24px; background:var(--bg); container-name:app; container-type:inline-size; border:1px solid var(--app-window-stroke, var(--border)); border-radius:var(--radius-window, 8px); overflow:hidden; }
+.app-shell { position:relative; height:100%; display:grid; grid-template-columns:240px minmax(0,1fr); grid-template-rows:36px minmax(0,1fr); background:var(--bg); container-name:app; container-type:inline-size; border:1px solid var(--app-window-stroke, var(--border)); border-radius:var(--radius-window, 8px); overflow:hidden; }
 /* Native chrome (Windows 11): DWM rounds the opaque window, so no CSS frame. */
 .app-shell.is-maximized, .app-shell.native-chrome { border:0; border-radius:0; }
 .app-shell > .titlebar { grid-column:1 / -1; grid-row:1; display:flex; align-items:center; height:36px; border-bottom:1px solid var(--border); background:var(--side); }
@@ -105,17 +105,18 @@ html[data-theme="dark"] { color-scheme:dark; }
 .app-shell > .sidebar, .app-shell > .content.main { grid-row:2; }
 .app-shell > .sidebar { grid-column:1; }
 .app-shell > .content.main { grid-column:2; padding:0; }
-.app-shell > .statusbar { grid-column:1 / -1; grid-row:3; }
 .legacy-toolbar { display:none; }
 .content.main:has(> .session-screen), .content.main:has(> .file-workspace), .content.main:has(> .pane-workspace) { display:flex; flex-direction:column; overflow:hidden; }
 .floating-shell { grid-template-columns:minmax(0,1fr); grid-template-rows:36px minmax(0,1fr); }
-.floating-shell > .sidebar, .floating-shell > .statusbar { display:none; }
+.floating-shell > .sidebar { display:none; }
 .floating-shell > .content.main { grid-row:2; grid-column:1; }
-.app-shell:has(.terminal-fullscreen) > .sidebar, .app-shell:has(.terminal-fullscreen) > .titlebar, .app-shell:has(.terminal-fullscreen) > .statusbar { display:none; }
+.app-shell:has(.terminal-fullscreen) > .sidebar, .app-shell:has(.terminal-fullscreen) > .titlebar { display:none; }
 .app-shell:has(.terminal-fullscreen) { grid-template-columns:1fr; grid-template-rows:1fr; }
 .app-shell:has(.terminal-fullscreen) > .content.main { grid-column:1; grid-row:1; }
 .terminal-fullscreen .prototype-session-header { display:none; }
-
+/* Route roots no longer reserve space for the removed application status row. */
+.page, .start, .terminals-page, .ov-page { padding-bottom:12px; }
+.usage-scroll { padding-bottom:12px; }
 /* Runtime states and guards have no synthetic equivalent in the reference. */
 .surface-error { padding:10px 12px; border:1px solid color-mix(in srgb,var(--danger) 30%,var(--border)); border-radius:var(--radius); background:color-mix(in srgb,var(--danger) 6%,var(--surface)); color:var(--danger); font-size:12px; line-height:1.5; overflow-wrap:anywhere; }
 .state { display:flex; flex-direction:column; align-items:center; justify-content:center; flex:1; min-height:180px; padding:24px; gap:10px; text-align:center; }
