@@ -76,8 +76,8 @@
 .workspace-tab-prefix:has(.wb-switcher) + .workspace-tabs { padding-left:4px; }
 /* In a narrow pane the side-bar switcher gives way before the selected tab: the tabs keep room for one readable tab
    (the tabs take the shrink first), and switcher icons that no longer fit wrap onto a clipped second line. */
-.workspace-tab-prefix:has(> .pane-switcher-host) { flex:0 1 auto; min-width:0; overflow:clip; overflow-clip-margin:4px; }
-.workspace-tab-prefix:has(> .pane-switcher-host) + .workspace-tabs { flex-shrink:100; min-width:min(136px,100%); }
+.workspace-tab-prefix:has(> .pane-switcher-host .wb-switcher) { flex:0 1 auto; min-width:0; overflow:clip; overflow-clip-margin:4px; }
+.workspace-tab-prefix:has(> .pane-switcher-host .wb-switcher) + .workspace-tabs { flex-shrink:100; min-width:min(136px,100%); }
 .pane-switcher-host { min-width:0; height:32px; overflow:clip; overflow-clip-margin:4px; }
 .pane-switcher-host .wb-switcher { flex-wrap:wrap; align-content:flex-start; row-gap:8px; box-sizing:border-box; padding:2px 0; overflow:clip; overflow-clip-margin:4px; }
 /* Zero-width first item: when not even one icon fits, every icon wraps (none is shown cut in half). */
