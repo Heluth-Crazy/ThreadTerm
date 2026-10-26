@@ -15,7 +15,7 @@ test('direct reveal fixture is local to the matching document',()=>{
 
 test('scope-switch fixture remounts state and rejects stale async replies',()=>{
  assert.match(workspace,/function FileWorkspaceInstance/);
- assert.match(workspace,/key=\{`\$\{props\.projectId\}\\0\$\{props\.worktreePath \?\? ""\}`\}/);
+ assert.match(workspace,/key=\{`\$\{props\.projectId\}\\0\$\{props\.worktreePath \?\? ""\}\\0\$\{props\.externalId \?\? ""\}`\}/);
  assert.match(workspace,/mounted\.current = false;\s*generation\.current\+\+;/);
  assert.match(workspace,/ticket !== generation\.current/);
  assert.match(workspace,/filesystem\.write", \{\s*\.\.\.scope,/);

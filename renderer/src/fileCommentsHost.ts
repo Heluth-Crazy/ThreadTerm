@@ -16,6 +16,8 @@ export type FileCommentsHost = {
   insert: (sessionId: string, text: string, images?: string[]) => Promise<void | number>;
   /** Adds a renderer-only context item without inserting or sending text. */
   attachContext?: (sessionId: string, item: import('./chatContext').ContextItem) => Promise<void>;
+  /** Opens a pending file comment in the owning workspace. */
+  openFile?: (file: { projectId: string; root: string; path: string; line: number }) => void;
   /** Shows a transfer outcome after the receiver tab becomes visible. */
   notice?: (text: string) => void;
 };

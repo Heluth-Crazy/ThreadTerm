@@ -88,8 +88,16 @@ assert.equal((await removeFileComments(scope, (await loadFileComments(scope, sto
 await assert.rejects(async () => (await removeFileComments(scope, [], undefined)), /review_comments_unavailable/);
 (await removeFileComments(other, otherComment.map(item => item.id), store));
 assert.equal(store.map.size, 0);
+const externalStore=memory();
+const externalPaths=[join(tmpdir(),'outside comments','notes.ts'),'\\\\server\\share\\outside.ts','/outside/notes.ts'];
+for(const path of externalPaths)await addFileComment({...base,path,body:`Review ${path}`},externalStore);
+assert.deepEqual((await loadFileComments(scope,externalStore)).map(item=>item.path),externalPaths,'external paths survive the same persisted pending-comment batch as relative workspace files');
+assert.deepEqual(await loadFileComments(other,externalStore),[],'external comments stay in the owner Chat workspace batch');
+const externalSaved=await loadFileComments(scope,externalStore);
+await removeFileComments(scope,externalSaved.map(item=>item.id),externalStore);
+assert.equal((await loadFileComments(scope,externalStore)).length,0,'external pending comments can be released through the existing batch flow');
 const damaged = memory(), storageKey = 'threadterm.v3.file-comments:p1:d:\\work\\repo', saved = one[0];
-damaged.setItem(storageKey, JSON.stringify([saved, { ...saved, projectId: 'other' }, { ...saved, root: 'D:/elsewhere' }, { ...saved, path: 'src\\bad.ts' }, { ...saved, path: 'D:/bad.ts' }, { ...saved, path: '../bad.ts' }, { ...saved, version: { kind: 'git', staged: 'yes' } }, { ...saved, version: { kind: 'checkpoint', sessionId: '', checkpointId: 'a' } }, { ...saved, version: { kind: 'checkpoint', sessionId: 's', checkpointId: '' } }, { ...saved, version: { kind: 'checkpoint', sessionId: 's', checkpointId: 'a', toCheckpointId: '' } }, { ...saved, createdAt: 'not-a-date' }, { ...saved, endLine: 1 }, 'junk']));
+damaged.setItem(storageKey, JSON.stringify([saved, { ...saved, projectId: 'other' }, { ...saved, root: 'D:/elsewhere' }, { ...saved, path: 'src\\bad.ts' }, { ...saved, path: 'D:bad.ts' }, { ...saved, path: '/outside/bad\n.ts' }, { ...saved, path: '/'+'多'.repeat(6000) }, { ...saved, path: '../bad.ts' }, { ...saved, version: { kind: 'git', staged: 'yes' } }, { ...saved, version: { kind: 'checkpoint', sessionId: '', checkpointId: 'a' } }, { ...saved, version: { kind: 'checkpoint', sessionId: 's', checkpointId: '' } }, { ...saved, version: { kind: 'checkpoint', sessionId: 's', checkpointId: 'a', toCheckpointId: '' } }, { ...saved, createdAt: 'not-a-date' }, { ...saved, endLine: 1 }, 'junk']));
 assert.deepEqual((await loadFileComments(scope, damaged)).map(item => item.id), [saved.id], 'damaged and foreign entries are dropped');
 damaged.setItem(storageKey, '{not json');
 assert.deepEqual((await loadFileComments(scope, damaged)), []);
@@ -112,6 +120,8 @@ for (const [version, side, english, chinese] of cases) {
 }
 assert.equal(place(file, 'new', false, 'my dir/file.ts', 7, 7), '"my dir/file.ts":7');
 assert.equal(fileCommentPlace({ path: 'src/a.ts', version: file, side: 'new', startLine: 1, endLine: 1 }, { fileRoot: 'D:/repo', sessionRoot: 'D:/other' }, false), 'D:/repo/src/a.ts:1');
+assert.equal(fileCommentPlace({ path: 'D:/outside/a.ts', version: file, side: 'new', startLine: 1, endLine: 1 }, roots, false), 'D:/outside/a.ts:1');
+assert.equal(fileCommentPlace({ path: '\\\\server\\share\\a.ts', version: file, side: 'new', startLine: 1, endLine: 1 }, roots, false), '//server/share/a.ts:1');
 assert.equal(place(file, 'new', false, 'src/file.ts', 7, 7), 'src/file.ts:7');
 const shortCases = [[file, 'old', 'file.ts:3-5', 'file.ts:3-5'], [file, 'new', 'file.ts:3-5', 'file.ts:3-5'], [checkpoint, 'old', 'file.ts:3-5 (checkpoint)', 'file.ts:3-5（检查点）'], [checkpoint, 'new', 'file.ts:3-5', 'file.ts:3-5'], [later, 'old', 'file.ts:3-5 (checkpoint)', 'file.ts:3-5（检查点）'], [later, 'new', 'file.ts:3-5 (later checkpoint)', 'file.ts:3-5（较新检查点）'], [unstaged, 'old', 'file.ts:3-5 (before uncommitted)', 'file.ts:3-5（未提交改动前）'], [unstaged, 'new', 'file.ts:3-5', 'file.ts:3-5'], [staged, 'old', 'file.ts:3-5 (HEAD)', 'file.ts:3-5（HEAD）'], [staged, 'new', 'file.ts:3-5 (staged)', 'file.ts:3-5（暂存）'], [commit, 'old', 'file.ts:3-5 (before 1234567)', 'file.ts:3-5（提交 1234567 之前）'], [commit, 'new', 'file.ts:3-5 (commit 1234567)', 'file.ts:3-5（提交 1234567）']];
 for (const [version, side, english, chinese] of shortCases) {
@@ -136,5 +146,6 @@ const formatted = [
 ];
 assert.equal(formatFileComments(formatted, roots, false), ['Review comments:', '- src/b.ts:12-14 — Keep the public signature unchanged.', '  > export function foo(a: string) {', '- src/b.ts:30 — Rename this.', '  > x', '- src/a.ts (at the checkpoint, line 40) — Why was this removed?', '  It handled the empty case.', '  > return cache.get(key);'].join('\n'));
 assert.equal(formatFileComments(formatted.slice(1, 2), roots, true), ['审查意见：', '- src/a.ts（检查点版本，第 40 行） — Why was this removed?', '  It handled the empty case.', '  > return cache.get(key);'].join('\n'));
+assert.equal(formatFileComments([{ ...formatted[0], path: '/outside/a.ts' }], roots, false), ['Review comments:', '- /outside/a.ts:12-14 — Keep the public signature unchanged.', '  > export function foo(a: string) {'].join('\n'));
 assert.equal(formatFileComments([{ ...formatted[0], excerpt: '' }], roots, false), ['Review comments:', '- src/b.ts:12-14 — Keep the public signature unchanged.'].join('\n'));
 console.log('review comments: ok');

@@ -3,6 +3,7 @@ import { canonicalScopePath } from "./projectScope";
 import { formatAgentReference, referencePath } from "./workbench/agentReference";
 import type { PagePick, PageTargetRef } from "@threadterm/protocol";
 import { operationId, request, subscribeEvents } from "./bridge";
+import { isAbsoluteFilePath } from './externalFiles';
 
 export type CommentVersion =
   | { kind: "file" }
@@ -60,7 +61,9 @@ function valid(value: unknown, scope: CommentScope): value is FileComment {
   if (!value || typeof value !== "object") return false;
   const item = value as Record<string, unknown>, line = (number: unknown) => Number.isSafeInteger(number) && (number as number) >= 1;
   return typeof item.id === "string" && !!item.id && item.projectId === scope.projectId && typeof item.root === "string" && !!canonicalScopePath(item.root) && canonicalScopePath(item.root) === canonicalScopePath(scope.root)
-    && typeof item.path === "string" && !!item.path && !/[\\\u0000]/.test(item.path) && !/^(?:\/|[a-z]:)/i.test(item.path) && item.path.split("/").every(part => !!part && part !== "." && part !== "..") && validVersion(item.version)
+    && typeof item.path === "string" && !!item.path && (isAbsoluteFilePath(item.path)
+      ? !/[\u0000-\u001f\u007f-\u009f]/.test(item.path) && new TextEncoder().encode(item.path).length <= 16_384
+      : !/[\\\u0000]/.test(item.path) && !/^[a-z]:/i.test(item.path) && item.path.split("/").every(part => !!part && part !== "." && part !== "..")) && validVersion(item.version)
     && (item.side === "old" || item.side === "new") && line(item.startLine) && line(item.endLine) && (item.endLine as number) >= (item.startLine as number)
     && typeof item.excerpt === "string" && typeof item.body === "string" && !!item.body.trim() && item.body.length <= MAX_REVIEW_COMMENT_BODY && typeof item.createdAt === "string" && Number.isFinite(Date.parse(item.createdAt));
 }

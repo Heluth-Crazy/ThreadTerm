@@ -31,6 +31,8 @@ import { diffSurfaceMenuItems, sourceEditorMenuItems } from "../fileSurfaceConte
 import { changedFileContext } from "./GitContextActions";
 import { sendContextToAgent } from "./ContextSendAction";
 import { readDiffDocument } from '../fileDiffDocument';
+import { externalFileError, externalFileErrorCode, externalSelectionText } from '../externalFiles';
+import { EditorView } from '@codemirror/view';
 
 type View = "file" | "diff" | "preview";
 type Props = {
@@ -58,7 +60,13 @@ type Props = {
   initialStaged?: boolean;
   /** Absolute root for "Copy path" in the standalone tools panel. */
   rootPath?: string;
-  onSendToAgent?: (target: { path: string; startLine?: number; endLine?: number }) => void;
+  /** A registered external file is read through the explicit external-file API only. */
+  externalId?: string;
+  /** Updates a recovered external registration in the persisted tab layout. */
+  onExternalChange?: (file: { externalId: string; path: string }) => void;
+  /** Whether this tab is active; external files refresh only on activation. */
+  active?: boolean;
+  onSendToAgent?: (target: { path: string; startLine?: number; endLine?: number; selection?: string }) => void;
   onOpenHistory?: (target: { path?: string; commit?: string }) => void;
   /** Present only for file tabs in the active session's worktree. */
   sessionDocuments?: WorkbenchActions["sessionDocuments"];
@@ -68,8 +76,21 @@ const message = (error: unknown) =>
   error instanceof Error ? error.message : String(error);
 const imagePath = (path: string) => /\.(?:png|jpe?g|gif|webp)$/i.test(path);
 
+export function ExternalFileBoundary({ path, zh, noticeOpen, onNoticeToggle, onCopy, onReload }: { path: string; zh: boolean; noticeOpen: boolean; onNoticeToggle: () => void; onCopy: () => void; onReload: () => void }) {
+  const notice = zh ? "ThreadTerm 以只读方式打开此文件。发送它只会让 Agent 按自身权限读取，不会授予写入权限。" : "ThreadTerm opens this file read-only. Sending it lets the agent read it under its own permissions and never grants write access.";
+  return <div className="external-file-boundary" data-testid="external-file-boundary">
+    <button type="button" className="ws-chip external-file-boundary-chip" aria-expanded={noticeOpen} title={notice} onClick={onNoticeToggle}>
+      {zh ? "工作区外 · 只读" : "Outside workspace · Read-only"}
+    </button>
+    {noticeOpen && <span className="external-file-boundary-notice" role="note">{notice}</span>}
+    <span className="path external-file-boundary-path" title={path} aria-label={path}><span className="external-file-path-prefix">{path.slice(0,Math.max(path.lastIndexOf('/'),path.lastIndexOf('\\'))+1)}</span><span className="external-file-path-name">{path.split(/[\\/]/).at(-1)}</span></span>
+    <button type="button" className="btn btn-sm" title={zh ? "复制路径" : "Copy path"} onClick={onCopy}>{zh ? "复制路径" : "Copy path"}</button>
+    <button type="button" className="btn btn-sm" title={zh ? "从磁盘重新载入" : "Reload from disk"} onClick={onReload}>{zh ? "从磁盘重新载入" : "Reload from disk"}</button>
+  </div>;
+}
+
 export function FileWorkspace(props: Props) {
-  return <FileWorkspaceInstance key={`${props.projectId}\0${props.worktreePath ?? ""}`} {...props} />;
+  return <FileWorkspaceInstance key={`${props.projectId}\0${props.worktreePath ?? ""}\0${props.externalId ?? ""}`} {...props} />;
 }
 
 function FileWorkspaceInstance({
@@ -89,11 +110,15 @@ function FileWorkspaceInstance({
   previewNavigation,
   initialStaged,
   rootPath,
+  externalId,
+  onExternalChange,
+  active,
   onSendToAgent,
   onOpenHistory,
   sessionDocuments,
   comments: commentsHost,
 }: Props) {
+  const external = externalId !== undefined;
   const scope = { projectId, worktreePath };
   // A standalone workspace opened without a file (project Files page, Settings → Tools dialog) has
   // nothing else to show, so it starts with its Files & Git panel open.
@@ -104,10 +129,11 @@ function FileWorkspaceInstance({
   const [document, setDocument] = useState<FileDocument>();
   const [image, setImage] = useState<{ mime: string; data: string }>();
   const [text, setText] = useState("");
-  const [internalView, setInternalView] = useState<View>(initialView);
+  const externalInitialView: View = external && initialView === "diff" ? "file" : initialView;
+  const [internalView, setInternalView] = useState<View>(externalInitialView);
   const previousControlledView = useRef<View | undefined>(controlledView);
-  const view =
-    internalView === "preview" ? "preview" : (controlledView ?? internalView);
+  const requestedView = internalView === "preview" ? "preview" : (controlledView ?? internalView);
+  const view: View = external && requestedView === "diff" ? "file" : requestedView;
   const setView = (next: View) => {
     setInternalView(next);
     if (next !== "preview") onViewChange?.(next);
@@ -120,7 +146,7 @@ function FileWorkspaceInstance({
   const [blame, setBlame] = useState<GitBlame>();
   const [diff, setDiff] = useState<GitDiff>();
   const mergeEditor = useRef<MergeEditorHandle>(null);
-  const [issue, setIssue] = useState<string>();
+  const [issue, setIssue] = useState<string | { externalError: unknown }>();
   const [busy, setBusy] = useState(false);
   const [documentPinning, setDocumentPinning] = useState(false);
   const [draftStatus, setDraftStatus] = useState<
@@ -143,14 +169,22 @@ function FileWorkspaceInstance({
   const base = useRef("");
   const loaded = useRef<FileDocument | undefined>(undefined);
   const currentText = useRef(text);
+  const sourceEditorHost = useRef<HTMLElement>(null);
+  const externalPath = useRef<string | undefined>(undefined);
   currentText.current = text;
   const mounted = useRef(true);
   const generation = useRef(0);
-  const dirty = !!document && text !== document.content;
+  const dirty = !external && !!document && text !== document.content;
+  const selectedExternalText = () => {
+    const element=sourceEditorHost.current?.querySelector<HTMLElement>('.cm-content');
+    const editor=element?EditorView.findFromDOM(element):null;
+    return editor?externalSelectionText(editor.state):'';
+  };
   const zh = globalThis.document.documentElement.lang === "zh-CN";
-  const pinnedDocument = document && sessionDocuments && isDocumentPinned(sessionDocuments.documents, document.path);
+  const issueText = typeof issue === "object" ? externalFileError(issue.externalError, zh) : issue;
+  const pinnedDocument = !external && document && sessionDocuments && isDocumentPinned(sessionDocuments.documents, document.path);
   const sessionDocumentIssue = sessionDocuments?.error;
-  const needsSessionDocuments = Boolean(sessionDocuments && document && !image);
+  const needsSessionDocuments = Boolean(!external && sessionDocuments && document && !image);
   useEffect(() => needsSessionDocuments ? sessionDocuments?.retain() : undefined, [needsSessionDocuments, sessionDocuments?.retain]);
   const toggleSessionDocument = async () => {
     if (!document || !sessionDocuments || documentPinning || sessionDocuments.loading) return;
@@ -171,6 +205,7 @@ function FileWorkspaceInstance({
   const fileComments = useFileComments(commentScope);
   const [commentSelection, setCommentSelection] = useState<MergeSelection>();
   const [commentDraft, setCommentDraft] = useState<MergeSelection>();
+  const [externalNoticeOpen, setExternalNoticeOpen] = useState(false);
   const copy = zh
     ? {
         files: "文件",
@@ -223,7 +258,7 @@ function FileWorkspaceInstance({
         noGit: "Git status is unavailable for this directory.",
       };
 
-  const gitState = useGitStatus(scope, toolsOpen, zh);
+  const gitState = useGitStatus(scope, toolsOpen && !external, zh);
   const plainCommentVersion: CommentVersion = { kind: "file" };
   const diffCommentVersion: CommentVersion = { kind: "git", staged };
   const plainCommentMarks = useMemo(
@@ -271,7 +306,7 @@ function FileWorkspaceInstance({
         ? (zh ? "请先完成当前评论。" : "Finish the current comment first.")
         : (zh ? "此工作区无法添加评论。" : "Comments are unavailable in this workspace.");
     const common = {zh,lines:selection,canComment,commentReason:reason,comment:()=>setCommentDraft(kind === "file" ? {side:"new",...selection} : selection as MergeSelection)};
-    const sourceItems = kind === "diff" ? diffSurfaceMenuItems({...common,prefix:"editor",hasSelection:Boolean(menu.hasSelection),sendDiff:commentsHost?.attachContext?async()=>sendContextToAgent({host:commentsHost,context:await changedFileContext(scope,document!.path,staged,zh),zh,sourceRoot:worktreePath??rootPath??commentsHost.projectRoot(projectId)}):undefined,copy:menu.copy ?? (()=>navigator.clipboard.writeText(selection.text)),copyPath:()=>navigator.clipboard.writeText(document!.path)}) : sourceEditorMenuItems({...common,hasSelection:Boolean(menu.hasSelection),readOnly:Boolean(document?.readonly),send:onSendToAgent?()=>onSendToAgent({path:document!.path,...(menu.hasSelection?{startLine:selection.startLine,endLine:selection.endLine}:{})}):undefined,plans:sessionDocuments?()=>void toggleSessionDocument():undefined,pinned:Boolean(pinnedDocument),plansDisabled:Boolean(sessionDocuments?.loading||documentPinning||sessionDocumentIssue),plansReason:sessionDocumentIssue?(zh?"计划与文档当前不可用。":"Plans & docs is unavailable."):undefined,history:onOpenHistory?()=>onOpenHistory({path:document!.path}):undefined,copy:menu.copy??(()=>navigator.clipboard.writeText(selection.text)),cut:menu.cut??(()=>{}),paste:menu.paste??(()=>{}),selectAll:menu.selectAll??(()=>{}),copyPath:()=>navigator.clipboard.writeText(document!.path),copyReference:()=>navigator.clipboard.writeText(`${document!.path}:${selection.startLine}-${selection.endLine}`)});
+    const sourceItems = kind === "diff" ? diffSurfaceMenuItems({...common,prefix:"editor",hasSelection:Boolean(menu.hasSelection),sendDiff:commentsHost?.attachContext?async()=>sendContextToAgent({host:commentsHost,context:await changedFileContext(scope,document!.path,staged,zh),zh,sourceRoot:worktreePath??rootPath??commentsHost.projectRoot(projectId)}):undefined,copy:menu.copy ?? (()=>navigator.clipboard.writeText(selection.text)),copyPath:()=>navigator.clipboard.writeText(document!.path)}) : sourceEditorMenuItems({...common,hasSelection:Boolean(menu.hasSelection),readOnly:Boolean(external||document?.readonly),send:onSendToAgent?()=>onSendToAgent({path:document!.path,...(menu.hasSelection?{startLine:selection.startLine,endLine:selection.endLine, ...(external?{selection:selectedExternalText()}:{})}:{})}):undefined,plans:external?undefined:sessionDocuments?()=>void toggleSessionDocument():undefined,pinned:Boolean(pinnedDocument),plansDisabled:Boolean(external||sessionDocuments?.loading||documentPinning||sessionDocumentIssue),plansReason:external?(zh?"工作区外文件不能固定到计划与文档。":"Outside-workspace files cannot be pinned to Plans & docs."):sessionDocumentIssue?(zh?"计划与文档当前不可用。":"Plans & docs is unavailable."):undefined,history:external?undefined:onOpenHistory?()=>onOpenHistory({path:document!.path}):undefined,copy:menu.copy??(()=>navigator.clipboard.writeText(selection.text)),cut:menu.cut??(()=>{}),paste:menu.paste??(()=>{}),selectAll:menu.selectAll??(()=>{}),copyPath:()=>navigator.clipboard.writeText(document!.path),copyReference:()=>navigator.clipboard.writeText(`${document!.path}:${selection.startLine}-${selection.endLine}`)});
     showContextMenu({ x, y, restoreFocus: target, items: sourceItems });
   };
   async function refreshGit() {
@@ -284,12 +319,41 @@ function FileWorkspaceInstance({
   ) {
     const ticket = ++generation.current;
     try {
+      const externalRead = async (id: string, registeredPath: string, image: boolean, recovered = false): Promise<FileDocument | { mime: string; data: string }> => {
+        try {
+          const value = image
+            ? await request("filesystem.external.image", { id })
+            : await request("filesystem.external.read", { id });
+          if (!image && mounted.current && ticket === generation.current) {
+            externalPath.current = (value as FileDocument).path;
+            if ((value as FileDocument).path !== registeredPath)
+              onExternalChange?.({ externalId: id, path: (value as FileDocument).path });
+          }
+          return value;
+        } catch (error) {
+          if (!recovered && mounted.current && ticket === generation.current && externalFileErrorCode(error) === "external_file_unknown") {
+            const reopened = await request("filesystem.external.open", {
+              path: registeredPath,
+              source: "recent",
+              ...(ownerSessionId ? { sessionId: ownerSessionId } : {}),
+            });
+            if ("file" in reopened && mounted.current && ticket === generation.current) {
+              externalPath.current = reopened.file.path;
+              onExternalChange?.({ externalId: reopened.file.id, path: reopened.file.path });
+              return externalRead(reopened.file.id, reopened.file.path, image, true);
+            }
+          }
+          throw error;
+        }
+      };
       const imageHint = path === initialPath ? assetKind : undefined;
       if (nextView !== "diff" && (imageHint === "image" || imagePath(path))) {
-        const asset = await request("filesystem.image", { ...scope, path });
+        const asset = externalId
+          ? await externalRead(externalId, path, true) as { mime: string; data: string }
+          : await request("filesystem.image", { ...scope, path });
         if (!mounted.current || ticket !== generation.current) return false;
         const imageDocument = {
-          path,
+          path: externalPath.current ?? path,
           content: "",
           fingerprint: "image",
           readonly: true,
@@ -310,7 +374,9 @@ function FileWorkspaceInstance({
         setIssue(undefined);
         return true;
       }
-      const read = () => request("filesystem.read", { ...scope, path });
+      const read = () => externalId
+        ? externalRead(externalId, path, false) as Promise<FileDocument>
+        : request("filesystem.read", { ...scope, path });
       const value: FileDocument & { diffOnly?: true } = nextView === "diff"
         ? await readDiffDocument(path, read, () => request("git.diff", { ...scope, path, staged }))
         : await read();
@@ -340,12 +406,15 @@ function FileWorkspaceInstance({
       );
       return true;
     } catch (error) {
-      if (mounted.current && ticket === generation.current)
-        setIssue(message(error));
+      if (mounted.current && ticket === generation.current) {
+        if (external) { setDocument(undefined); setImage(undefined); }
+        setIssue(external ? { externalError: error } : message(error));
+      }
       return false;
     }
   }
   function persistDraft(doc: FileDocument, value: string, fingerprint: string) {
+    if (external) return Promise.resolve();
     if (mounted.current) setDraftStatus("saving");
     queue.current = queue.current
       .then(async () => {
@@ -376,11 +445,12 @@ function FileWorkspaceInstance({
   }
   useEffect(() => {
     mounted.current = true;
-    void request("draft.list", scope)
+    const draftsLoad = external ? Promise.resolve([] as Draft[]) : request("draft.list", scope);
+    void draftsLoad
       .then((values) => {
         if (!mounted.current) return;
         drafts.current = new Map(values.map((draft) => [draft.path, draft]));
-        if (initialPath) void open(initialPath, initialView);
+        if (initialPath) void open(initialPath, externalInitialView);
       })
       .catch((error) => {
         if (mounted.current) setIssue(message(error));
@@ -389,7 +459,7 @@ function FileWorkspaceInstance({
       mounted.current = false;
       generation.current++;
     };
-  }, [projectId, worktreePath]);
+  }, [projectId, worktreePath, externalId]);
   useEffect(() => {
     const changed = controlledView !== previousControlledView.current;
     previousControlledView.current = controlledView;
@@ -409,10 +479,13 @@ function FileWorkspaceInstance({
     void open(initialPath, view);
   }, [initialPath]);
   useEffect(() => {
+    if (external && active && document && initialPath) void open(initialPath, view, true);
+  }, [active]);
+  useEffect(() => {
     if (document) onDocumentChange?.({ path: document.path, dirty });
   }, [document?.path, dirty, onDocumentChange]);
   useEffect(() => {
-    if (
+    if (external ||
       !document ||
       (text === document.content && !drafts.current.has(document.path))
     )
@@ -424,14 +497,14 @@ function FileWorkspaceInstance({
     );
     debounce.current = timer;
     return () => clearTimeout(timer);
-  }, [text, document]);
+  }, [text, document, external]);
   useEffect(
     () => () => {
       const doc = loaded.current;
-      if (doc && currentText.current !== doc.content)
+      if (!external && doc && currentText.current !== doc.content)
         void persistDraft(doc, currentText.current, base.current);
     },
-    [projectId, worktreePath],
+    [projectId, worktreePath, external],
   );
   useEffect(
     () =>
@@ -460,7 +533,7 @@ function FileWorkspaceInstance({
     [editorId, projectId, worktreePath, ownerSessionId],
   );
   useEffect(() => {
-    if (view !== "diff" || !document) return;
+    if (external || view !== "diff" || !document) return;
     let alive = true;
     void request("git.diff", { ...scope, path: document.path, staged })
       .then((value) => {
@@ -473,6 +546,7 @@ function FileWorkspaceInstance({
       alive = false;
     };
   }, [
+    external,
     view,
     staged,
     document?.path,
@@ -495,7 +569,7 @@ function FileWorkspaceInstance({
   }
   async function saveFile(): Promise<boolean> {
     const doc = loaded.current;
-    if (!doc || doc.readonly || busy) return false;
+    if (external || !doc || doc.readonly || busy) return false;
     const value = currentText.current;
     setBusy(true);
     setIssue(undefined);
@@ -653,7 +727,7 @@ function FileWorkspaceInstance({
   };
   // Index text for the editor's change gutter (null when untracked or not a repository).
   useEffect(() => {
-    if (!document || image || view !== "file") return;
+    if (external || !document || image || view !== "file") return;
     let alive = true;
     void request("git.diff", { ...scope, path: document.path, staged: false })
       .then((value) => {
@@ -665,9 +739,9 @@ function FileWorkspaceInstance({
     return () => {
       alive = false;
     };
-  }, [document?.path, document?.fingerprint, view, projectId, worktreePath, gitState.status]);
+  }, [external, document?.path, document?.fingerprint, view, projectId, worktreePath, gitState.status]);
   useEffect(() => {
-    if (!blameOn || !document || dirty) {
+    if (external || !blameOn || !document || dirty) {
       setBlame(undefined);
       return;
     }
@@ -685,7 +759,7 @@ function FileWorkspaceInstance({
     return () => {
       alive = false;
     };
-  }, [blameOn, document?.path, document?.fingerprint, dirty]);
+  }, [external, blameOn, document?.path, document?.fingerprint, dirty]);
   useEffect(() => setHunk((value) => Math.max(0, Math.min(value, hunkCount - 1))), [hunkCount]);
   const moveHunk = (step: number) => {
     if (!hunkCount) return;
@@ -774,10 +848,11 @@ function FileWorkspaceInstance({
         <Icon name="close" />
       </button>
     ) : null;
+  const externalBoundary = document && external ? <ExternalFileBoundary path={document.path} zh={zh} noticeOpen={externalNoticeOpen} onNoticeToggle={() => setExternalNoticeOpen((open) => !open)} onCopy={() => void navigator.clipboard.writeText(document.path)} onReload={() => void open(document.path, view, true)} /> : null;
 
   return (
     <section className={`file-workspace ${toolsOpen ? "tools-open" : ""} ${embedded ? "embedded" : ""}`}>
-      {toolsOpen && (
+      {toolsOpen && !external && (
         <aside className="file-list tt-file-tree wb-embedded-tools">
           {/* Same header shape as the session side bar; each view portals its actions into it. */}
           <div className="wb-tools-head">
@@ -824,9 +899,10 @@ function FileWorkspaceInstance({
       <div className="editor-area">
         {document ? (
           <>
+            {externalBoundary}
             {view !== "diff" && (
               <div className="tt-editor-tabs file-view-tabs">
-                {embedded ? (
+                {embedded ? external ? null : (
                   embeddedNavigation() ?? (
                     <span className="embedded-file-breadcrumb" title={document.path}>
                       {document.path.split(/[\\/]/).join(" › ")}
@@ -858,7 +934,7 @@ function FileWorkspaceInstance({
                       : copy.preview}
                   </button>
                 )}
-                {view === "file" && !image && gitState.status && (
+                {view === "file" && !external && !image && gitState.status && (
                   <button
                     type="button"
                     className="btn btn-sm editor-toolbar-toggle"
@@ -870,17 +946,17 @@ function FileWorkspaceInstance({
                     {zh ? "逐行追溯" : "Blame"}
                   </button>
                 )}
-                {onOpenHistory && !image && (
+                {!external && onOpenHistory && !image && (
                   <button type="button" className="icon-btn icon-btn-sm" title={zh ? "文件历史" : "File history"} aria-label={zh ? "文件历史" : "File history"} onClick={() => onOpenHistory({ path: document.path })}>
                     <Icon name="clock" />
                   </button>
                 )}
-                {onSendToAgent && !image && (
+                {onSendToAgent && (!image || external) && (
                   <button type="button" className="icon-btn icon-btn-sm" title={zh ? "发送给 Agent（Ctrl+L 发送选中行）" : "Send to agent (Ctrl+L sends the selected lines)"} aria-label={zh ? "发送给 Agent" : "Send to agent"} onClick={() => onSendToAgent({ path: document.path })}>
                     <Icon name="spark" />
                   </button>
                 )}
-                {sessionDocuments && !image && (
+                {!external && sessionDocuments && !image && (
                   <button
                     type="button"
                     className="icon-btn icon-btn-sm"
@@ -896,7 +972,7 @@ function FileWorkspaceInstance({
                 {view === "file" && commentScope && commentsHost && !image && (
                   <button type="button" className="btn btn-sm" disabled={dirty || !commentSelection || Boolean(commentDraft)} title={dirty ? (zh ? "请先保存或放弃修改：修改会让行号变化。" : "Save or discard your edits first: they move the lines.") : !commentSelection ? (zh ? "请先选中行（或将光标放在某行）" : "Select lines (or put the cursor on a line) first") : commentDraft ? (zh ? "请先完成当前评论" : "Finish the current comment first") : zh ? `评论 ${fileCommentPlace({path:document.path, version:plainCommentVersion, ...commentSelection}, {fileRoot:commentScope.root, sessionRoot:commentScope.root}, zh)}` : `Comment on ${fileCommentPlace({path:document.path, version:plainCommentVersion, ...commentSelection}, {fileRoot:commentScope.root, sessionRoot:commentScope.root}, zh)}`} onClick={() => commentSelection && setCommentDraft(commentSelection)}>{zh ? "评论" : "Comment"}</button>
                 )}
-                {embedded && (
+                {embedded && !external && (
                   <button
                     className="btn btn-sm"
                     onClick={() => void saveFile()}
@@ -905,7 +981,7 @@ function FileWorkspaceInstance({
                     {copy.save}
                   </button>
                 )}
-                {!embedded && (
+                {!embedded && !external && (
                   <button
                     className="icon-btn icon-btn-sm file-tools-button"
                     title={zh ? "文件与 Git" : "Files & Git"}
@@ -1071,6 +1147,7 @@ function FileWorkspaceInstance({
             ) : view === "preview" ? (
               <FilePreview
                 {...scope}
+                external={external}
                 path={document.path}
                 savedContent={document.content}
                 content={text}
@@ -1084,9 +1161,9 @@ function FileWorkspaceInstance({
             ) : (
               <>
                 {!embedded && <div className="file-bar">
-                  <span className="path" title={document.path}>
+                  {!external && <span className="path" title={document.path}>
                     {document.path}
-                  </span>
+                  </span>}
                   <span className="file-dirty" data-testid="editor-dirty" hidden={!dirty}>
                     {zh ? "未保存" : "Unsaved"}
                   </span>
@@ -1095,13 +1172,13 @@ function FileWorkspaceInstance({
                     {document.readonly ? ` · ${copy.readOnly}` : ""}
                   </span>
                   <span className="grow" />
-                  <button
+                  {!external && <button
                     className="btn"
                     onClick={() => void saveFile()}
                     disabled={busy || document.readonly || !dirty}
                   >
                     {copy.save}
-                  </button>
+                  </button>}
                   {/\.(md|mdx|html?)$/i.test(document.path) && (
                     <button className="btn" onClick={() => setView("preview")}>
                       {copy.preview}
@@ -1136,20 +1213,20 @@ function FileWorkspaceInstance({
                   )}
                 </div>
                 }
-                <section className="tt-editor-shell" data-testid="file-editor-surface">
+                <section ref={sourceEditorHost} className="tt-editor-shell" data-testid="file-editor-surface">
                   <CodeEditor
                     path={document.path}
                     value={text}
                     onChange={setText}
                     onSave={() => void saveFile()}
-                    readOnly={document.readonly}
+                    readOnly={external || document.readonly}
                     reveal={editorReveal}
                     resetKey={editorResetKey}
                     gitBaseText={gitBaseText}
                     blame={blameOn && !dirty ? blame : undefined}
                     onBlameCommit={onOpenHistory ? (commit) => onOpenHistory({ path: document.path, commit }) : undefined}
-                    onSendToAgent={onSendToAgent ? (lines) => onSendToAgent({ path: document.path, ...lines }) : undefined}
-                    onSelection={commentScope ? (selection) => setCommentSelection({ side: "new", ...selection }) : undefined}
+                    onSendToAgent={onSendToAgent ? (lines) => onSendToAgent({ path: document.path, ...lines, ...(external ? { selection: selectedExternalText() } : {}) }) : undefined}
+                    onSelection={external || commentScope ? (selection) => { if (commentScope) setCommentSelection({ side: "new", ...selection }); } : undefined}
                     onContextMenu={(menu) => openEditorContextMenu(menu, "file")}
                     marks={commentScope ? plainCommentMarks : undefined}
                   />
@@ -1168,12 +1245,14 @@ function FileWorkspaceInstance({
             )}
             {/* An embedded tab always has a path: until it is read, say so instead of offering the
                 standalone browser (its Files panel is hidden in tabs; the session side bar replaces it). */}
-            <div className="empty tt-editor-state">
+            <div className={`empty tt-editor-state${external ? " external-file-error" : ""}`}>
               {embedded && initialPath && !issue ? (
                 <span>{zh ? "正在读取…" : "Loading…"}</span>
               ) : (
                 <>
-                  <strong>{copy.empty}</strong>
+                  <strong>{issueText ?? copy.empty}</strong>
+                  {external && initialPath && <span className="external-file-error-path" title={initialPath}>{initialPath}</span>}
+                  {external && initialPath && <button className="btn btn-sm" onClick={() => void open(initialPath, externalInitialView, true)}>{zh ? "重试" : "Retry"}</button>}
                   {!embedded && !toolsOpen && (
                     <button className="btn" onClick={() => setToolsOpen(true)}>
                       {zh ? "浏览文件" : "Browse files"}
@@ -1184,9 +1263,9 @@ function FileWorkspaceInstance({
             </div>
           </>
         )}
-        {(issue ?? sessionDocumentIssue) && (
+        {(issueText ?? sessionDocumentIssue) && (
           <div role="alert" className="tt-editor-conflict">
-            {issue ?? sessionDocumentIssue}
+            {issueText ?? sessionDocumentIssue}
             {document && (
               <button
                 onClick={() =>

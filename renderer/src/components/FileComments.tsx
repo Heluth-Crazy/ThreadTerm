@@ -156,7 +156,7 @@ export function PendingComments({scope, host, comments:providedComments, zh, pre
   <ul>{comments.map(item => <li key={item.id}>
    {isPageComment(item)?<button type="button" className="wb-page-comment-row" onClick={()=>void flashPageComment(item).catch(()=>{setIssueCode(undefined);setIssue(copy('Could not highlight this page target.', '无法高亮此页面目标。'));})} title={item.url} aria-label={copy(`Highlight ${pageCommentLabel(item.target,zh)}`, `高亮 ${pageCommentLabel(item.target,zh)}`)}>
     {item.shot&&<img src={item.shot.thumbnail} alt={copy('Page screenshot', '页面截图')}/>}<span><b>{pageCommentLabel(item.target,zh)}</b><small>{pageCommentLocation(item.url)}</small></span>
-   </button>:<span className="wb-review-comment-where" title={`${fileCommentPlace(item, roots, zh)}\n${item.excerpt}`}>{fileCommentShortPlace(item, zh)}</span>}
+   </button>:host.openFile?<button type="button" className="wb-review-comment-where wb-review-comment-open" title={`${fileCommentPlace(item, roots, zh)}\n${item.excerpt}`} onClick={()=>host.openFile?.({projectId:scope.projectId,root:scope.root,path:item.path,line:item.startLine})}>{/^(?:[a-z]:[\\/]|\\\\|\/)/i.test(item.path)?fileCommentPlace(item, roots, zh):fileCommentShortPlace(item, zh)}</button>:<span className="wb-review-comment-where" title={`${fileCommentPlace(item, roots, zh)}\n${item.excerpt}`}>{fileCommentShortPlace(item, zh)}</span>}
    <span className="body" title={item.body}>{item.body}</span>
    <button type="button" className="icon-btn" disabled={busy} aria-label={copy('Remove comment', '删除评论')} title={copy('Remove comment', '删除评论')} onClick={() => void removeComments([item.id])}><Icon name="close"/></button>
   </li>)}</ul>

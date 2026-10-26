@@ -249,6 +249,7 @@ export function ExplorerView({scope, actions, git, zh, activePath, focusKey, too
 
  const focusable = selected && rows.some(row => row.entry.path === selected) ? selected : rows[0]?.entry.path;
  const tools = <>
+   {actions.openExternalFiles&&<button type="button" className="icon-btn" disabled={!!actions.externalDisabledReason} title={actions.externalDisabledReason??text('Open file outside workspace… (Ctrl+O)', '打开工作区外的文件… (Ctrl+O)')} aria-label={text('Open file outside workspace…', '打开工作区外的文件…')} onClick={()=>void actions.openExternalFiles?.()}><Icon name="popout"/></button>}
    <button type="button" className="icon-btn" title={text('New file', '新建文件')} aria-label={text('New file', '新建文件')} onClick={() => beginCreate('file', rows.find(row => row.entry.path === selected)?.entry)}><WbIcon name="file-plus"/></button>
    <button type="button" className="icon-btn" title={text('New folder', '新建文件夹')} aria-label={text('New folder', '新建文件夹')} onClick={() => beginCreate('directory', rows.find(row => row.entry.path === selected)?.entry)}><WbIcon name="folder-plus"/></button>
    <button type="button" className="icon-btn" title={text('Refresh', '刷新')} aria-label={text('Refresh', '刷新')} onClick={() => { void refresh().catch(error => setIssue(workbenchError(error, zh))); void git.refresh(); }}><WbIcon name="refresh"/></button>

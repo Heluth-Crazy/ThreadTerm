@@ -55,6 +55,9 @@ test('agent references are one line, quoted when needed and relative only within
  assert.equal(formatAgentReference({path:'my dir\\a.ts'}), '"my dir/a.ts"');
  assert.equal(referencePath('src/a.ts', 'D:\\repo', 'd:/repo/'), 'src/a.ts');
  assert.equal(referencePath('src/a.ts', 'D:\\repo', 'D:\\other'), 'D:\\repo\\src\\a.ts');
+ assert.equal(referencePath('D:\\outside\\a.ts', 'D:\\repo', 'D:\\repo'), 'D:\\outside\\a.ts');
+ assert.equal(referencePath('\\\\server\\share\\a.ts', 'D:\\repo', 'D:\\repo'), '\\\\server\\share\\a.ts');
+ assert.equal(referencePath('/outside/a.ts', 'D:\\repo', 'D:\\repo'), '/outside/a.ts');
  assert.deepEqual(insertAtCaret('fix this', 8, 'src/a.ts:3'), {text:'fix this src/a.ts:3 ', caret:20});
  assert.deepEqual(insertAtCaret('see  please', 4, 'x.ts'), {text:'see x.ts please', caret:8});
  assert.ok(!/\n/.test(formatAgentReference({path:'a.ts', startLine:1, endLine:9})));

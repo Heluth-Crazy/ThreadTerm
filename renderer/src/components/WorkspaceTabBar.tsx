@@ -5,6 +5,7 @@ import { isFileTab, type FileTab } from '../workspaceTabs';
 import { useTranslation } from '../i18n';
 import { AgentIcon, Icon } from './PrototypeIcon';
 import { showContextMenu, type ContextMenuItem } from './ContextMenu';
+import { FILE_DRAG_TYPE, fileDragData } from '../fileDrag';
 
 /** Width of the overflow fade at each strip edge (matches `.workspace-tabs.fade-*`). */
 const TAB_FADE=24;
@@ -73,7 +74,7 @@ export function WorkspaceTabBar({layout,sessions,active,busy,onActivate,onClose,
       title={title} aria-label={title} draggable
       onClick={()=>{onActivate(target);if(selected)revealActive.current?.();}}
       onKeyDown={event=>onTabKey(event,target)}
-      onDragStart={event=>event.dataTransfer.setData('application/x-threadterm-tab',JSON.stringify(target))}
+      onDragStart={event=>{event.dataTransfer.setData('application/x-threadterm-tab',JSON.stringify(target));if(isFileTab(tab))event.dataTransfer.setData(FILE_DRAG_TYPE,fileDragData(tab));}}
       onDragOver={event=>{if(event.dataTransfer.types.includes('application/x-threadterm-tab'))event.preventDefault();}}
       onDrop={event=>{
        event.preventDefault();try{const value=JSON.parse(event.dataTransfer.getData('application/x-threadterm-tab')) as WorkspaceTabTarget;

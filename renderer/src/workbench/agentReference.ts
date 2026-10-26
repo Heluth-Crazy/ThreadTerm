@@ -11,6 +11,7 @@ export function formatAgentReference({path, startLine, endLine}:AgentReference):
 
 /** Relative to the file's root when the session works in that same root, otherwise absolute. */
 export function referencePath(relative:string, fileRoot:string, sessionRoot?:string):string {
+ if (/^(?:[a-z]:[\\/]|\\\\|\/)/i.test(relative)) return relative;
  const same = sessionRoot !== undefined && canonical(sessionRoot) === canonical(fileRoot);
  if(same) return relative;
  const separator = fileRoot.includes('\\') ? '\\' : '/';

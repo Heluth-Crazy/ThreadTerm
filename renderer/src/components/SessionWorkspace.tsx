@@ -1,7 +1,8 @@
 import { Select } from "./ui/Select";
 import { useEffect, useRef, useState } from 'react';
 import type { ContentRef, Draft, FileReference, GitStatus, PaneLayout, PreviewAssociation, PreviewPresentation, Session, Snapshot, Worktree } from '@threadterm/protocol';
-import { operationId, request, subscribeEvents } from '../bridge';
+import { openExternalFiles, operationId, request, subscribeEvents } from '../bridge';
+import { externalFileError, externalFileErrorCode, externalSelectionQuote, isAbsoluteFilePath, openExternalPaths, type ExternalFileSource } from '../externalFiles';
 import { attachChatImages, insertChatText, insertSessionText } from '../terminalInputTargets';
 import { useTranslation } from '../i18n';
 import { addSessionTab } from '../presentation';
@@ -26,6 +27,7 @@ import { QuickLaunchMenu, QuickLaunchRunChip } from './QuickLaunch';
 import { SessionConfigDialog } from './SessionConfigDialog';
 import { SurfaceDialog } from './SurfaceDialog';
 import './session-workspace.css';
+import './external-files.css';
 import type { FileCommentsHost } from '../fileCommentsHost';
 import { agentName } from '../agents';
 import { attachChatContext } from '../terminalInputTargets';
@@ -91,7 +93,7 @@ export function SessionWorkspace({session,data,theme,onBack,onSelect,onProject,o
  const openedFrom=useRef<{source:PaneLayout;stripped:PaneLayout}|undefined>(undefined);
  const [layout,setLayout]=useState<PaneLayout>(()=>{
   if(!restored)return initialFor(session);
-  const stripped=reconcileSessionLayout(sessionOnlyLayout(restored.layout,tab=>tab.kind==='web'||tab.kind==='group'||tab.kind==='roundtable'),new Set(data.sessions.map(item=>item.id)),session.id);
+  const stripped=reconcileSessionLayout(sessionOnlyLayout(restored.layout,tab=>tab.kind==='web'||tab.kind==='group'||tab.kind==='roundtable'||(isFileTab(tab)&&Boolean(tab.externalId))),new Set(data.sessions.map(item=>item.id)),session.id);
   openedFrom.current={source:restored.layout,stripped};
   return stripped;
  });
@@ -282,15 +284,15 @@ export function SessionWorkspace({session,data,theme,onBack,onSelect,onProject,o
  const fillPane=(s:Session)=>{if(picker?.mode!=='fill'||!picker.paneId)return;save(addTabToPane(layout,picker.paneId,tabFor(s)));setPicker(undefined);};
  const cancelPicker=()=>{if(picker?.mode==='fill'&&picker.paneId&&!workspaceTabs(latestLayout.current).some(item=>item.paneId===picker.paneId)){const next=closePane(latestLayout.current,picker.paneId);if(next)save(next);}setPicker(undefined);};
  const available=picker&&picker.mode!=='switch'?treeSessions.filter(s=>!sessionIdsIn(layout).includes(s.id)):allProjects?data.sessions.filter(s=>!s.archived):treeSessions;
- const openScopedFile=async(next:{projectId:string;worktreePath?:string;path:string;kind:'file'|'diff'|'preview';assetKind?:'text'|'image';line?:number;column?:number;sourcePaneId?:string;ownerSessionId?:string;staged?:boolean},generation=++fileOpenGeneration.current)=>{
+ const openScopedFile=async(next:{projectId:string;worktreePath?:string;path:string;kind:'file'|'diff'|'preview';assetKind?:'text'|'image';externalId?:string;line?:number;column?:number;sourcePaneId?:string;ownerSessionId?:string;staged?:boolean},generation=++fileOpenGeneration.current)=>{
   const ownerSessionId=next.ownerSessionId;
   const opened=workspaceTabs(latestLayout.current);
-  const existing=opened.find(item=>item.tab.kind!=='session'&&item.tab.ownerSessionId===ownerSessionId&&item.tab.kind===next.kind&&item.tab.projectId===next.projectId&&sameCanonicalScope(item.tab.worktreePath??project?.path,next.worktreePath??project?.path)&&item.tab.path===next.path&&(next.kind!=='diff'||(item.tab.kind==='diff'&&Boolean(item.tab.staged)===Boolean(next.staged))));
+  const existing=opened.find(item=>isFileTab(item.tab)&&item.tab.ownerSessionId===ownerSessionId&&(next.externalId?item.tab.externalId===next.externalId:!item.tab.externalId&&item.tab.kind===next.kind&&item.tab.projectId===next.projectId&&sameCanonicalScope(item.tab.worktreePath??project?.path,next.worktreePath??project?.path)&&item.tab.path===next.path&&(next.kind!=='diff'||(item.tab.kind==='diff'&&Boolean(item.tab.staged)===Boolean(next.staged)))));
   let target=existing;
   if(!target){
    const placement=fileViewPlacement(latestLayout.current,ownerSessionId,next.sourcePaneId,wideForSplit());
    if(!live.current||generation!==fileOpenGeneration.current)return;
-   const tab:ContentRef={id:crypto.randomUUID(),kind:next.kind,projectId:next.projectId,worktreePath:next.worktreePath,path:next.path,assetKind:next.assetKind,ownerSessionId,...(next.kind==='diff'&&next.staged?{staged:true}:{})};
+   const tab:ContentRef={id:crypto.randomUUID(),kind:next.kind,projectId:next.projectId,worktreePath:next.worktreePath,path:next.path,assetKind:next.assetKind,ownerSessionId,...(next.externalId?{externalId:next.externalId}:{}),...(next.kind==='diff'&&next.staged?{staged:true}:{})};
    const updated=placement.split?addPane(latestLayout.current,tab):addTabToPane(latestLayout.current,placement.paneId,tab);
    target=workspaceTabs(updated).find(item=>item.tab.id===tab.id);if(!target)return;
    save(updated);
@@ -304,6 +306,16 @@ export function SessionWorkspace({session,data,theme,onBack,onSelect,onProject,o
   if(next.line||next.column)setFileReveal({tabId:target.tab.id,line:next.line??1,column:next.column,key});
  };
  const openPaneFile=(file:Parameters<typeof openScopedFile>[0])=>void openScopedFile({...file,kind:file.kind==='file'&&(file.assetKind==='image'||/\.(md|png|jpe?g|gif|webp)$/i.test(file.path))?'preview':file.kind}).catch(fail);
+ const externalOwner=data.sessions.find(candidate=>candidate.id===previewSessionId)??session;
+ const externalDisabledReason=externalOwner.mode!=='chat'?(zh?'请从聊天会话打开工作区外的文件。':'Open outside files from a Chat session.'):!data.projects.some(candidate=>candidate.id===externalOwner.projectId)?externalFileError({code:'file_reference_project_missing'},zh):undefined;
+ const openOutside=async(paths:readonly string[],source:ExternalFileSource,ownerId=previewSessionId,position?:{line?:number;column?:number})=>{
+  const owner=latestData.current.sessions.find(candidate=>candidate.id===ownerId),ownerProject=latestData.current.projects.find(candidate=>candidate.id===owner?.projectId);
+  if(!owner||!ownerProject){setIssue(externalFileError({code:'file_reference_project_missing'},zh));return;}
+  const generation=++fileOpenGeneration.current;
+  await openExternalPaths({paths,source,sessionId:owner.id,projectId:ownerProject.id,projectPath:ownerProject.path,worktreePath:owner.worktreePath,zh,...position,onNotice:setIssue,onOpen:target=>openScopedFile(target,generation)});
+ };
+ const chooseOutside=async()=>{if(externalDisabledReason){setIssue(externalDisabledReason);return;}const ownerId=previewSessionId;try{const paths=await openExternalFiles();if(paths.length)await openOutside(paths,'dialog',ownerId);}catch(error){setIssue(externalFileError(error,zh));}};
+ const chooseOutsideRef=useRef(chooseOutside);chooseOutsideRef.current=chooseOutside;
  const openReference=async(sessionId:string,reference:FileReference,independent=false)=>{
   const generation=++fileOpenGeneration.current;setFileIssue(undefined);
   try{
@@ -312,6 +324,7 @@ export function SessionWorkspace({session,data,theme,onBack,onSelect,onProject,o
    const sourcePaneId=workspaceTabs(latestLayout.current).find(item=>item.tab.kind==='session'&&item.tab.sessionId===sessionId)?.paneId;
    await openScopedFile({...resolved,sourcePaneId,...(independent?{}:{ownerSessionId:sessionId}),assetKind:resolved.kind,kind:resolved.kind==='image'||/\.md$/i.test(resolved.path)?'preview':'file'},generation);
   }catch(error){if(live.current&&generation===fileOpenGeneration.current){
+   if(externalFileErrorCode(error)==='file_reference_outside_scope'||String(error).includes('file_reference_outside_scope')){await openOutside([reference.path],'link',sessionId,reference);return;}
    const reason=error instanceof Error?error.message:String(error);
    const known:Record<string,[string,string]>={file_reference_not_found:['文件不存在或已移动。','The file is missing or has moved.'],file_reference_not_file:['这是目录，不是可打开的文件。','This is a directory, not a file.'],file_reference_outside_scope:['文件不在此会话的工作目录范围内。','This file is outside the session workspace.'],file_reference_relative_requires_absolute:['Shell 的当前目录可能已改变，请使用完整路径。','The shell directory may have changed. Use an absolute path.'],file_too_large:['文件太大，暂时无法在应用内打开。','The file is too large to open here.'],image_too_large:['图片太大，暂时无法预览。','The image is too large to preview.']};
    const match=Object.entries(known).find(([code])=>reason.includes(code));
@@ -383,14 +396,14 @@ export function SessionWorkspace({session,data,theme,onBack,onSelect,onProject,o
    candidate=>candidate.kind==='history'&&candidate.projectId===target.projectId&&sameCanonicalScope(candidate.worktreePath??project?.path,target.worktreePath??project?.path)&&(candidate.path??'')===(target.path??''));
   if(tabId&&target.commit)setHistoryFocus({tabId,commit:target.commit,key:crypto.randomUUID()});
  };
- const sendToAgent=(target:{projectId:string;worktreePath?:string;path:string;startLine?:number;endLine?:number;sessionId?:string})=>{
+ const sendToAgent=(target:{projectId:string;worktreePath?:string;path:string;startLine?:number;endLine?:number;sessionId?:string;externalId?:string;selection?:string})=>{
   const receiver=data.sessions.find(candidate=>candidate.id===(target.sessionId??previewSessionId));
   if(!receiver||!working(receiver)){setIssue(zh?'请先在此工作区打开一个运行中的 Agent 会话，再发送文件引用。':'Open a running agent session in this workspace to send file references.');return;}
   const fileRoot=target.worktreePath??data.projects.find(candidate=>candidate.id===target.projectId)?.path??'';
   const sessionRoot=receiver.worktreePath??data.projects.find(candidate=>candidate.id===receiver.projectId)?.path;
   const reference=formatAgentReference({path:referencePath(target.path,fileRoot,sessionRoot),startLine:target.startLine,endLine:target.endLine});
   if(receiver.mode==='chat'){
-   void insertIntoSession(receiver.id,'',undefined,{kind:'file',id:crypto.randomUUID(),path:referencePath(target.path,fileRoot,sessionRoot),startLine:target.startLine,endLine:target.endLine}).then(()=>setIssue(undefined)).catch(error=>setIssue(String(error)));
+   void insertIntoSession(receiver.id,'',undefined,{kind:'file',id:crypto.randomUUID(),path:referencePath(target.path,fileRoot,sessionRoot),startLine:target.startLine,endLine:target.endLine}).then(async()=>{if(target.externalId&&target.selection)await insertIntoSession(receiver.id,'',undefined,externalSelectionQuote(target.path,target.selection,target.startLine,target.endLine,zh));setIssue(undefined);}).catch(error=>setIssue(String(error)));
    return;
   }
   // Show the receiving session first: only a visible Chat composer or terminal accepts input.
@@ -452,10 +465,12 @@ export function SessionWorkspace({session,data,theme,onBack,onSelect,onProject,o
   projectRoot:projectRootOf,
   receivers:commentReceivers.map(candidate=>({id:candidate.id,title:candidate.group&&groupTitles[candidate.group.id]?`@${candidate.group.handle} · ${groupTitles[candidate.group.id]}`:candidate.title,provider:candidate.provider,root:candidate.worktreePath??projectRootOf(candidate.projectId??'')??''})),
   defaultReceiverId:commentReceivers.some(candidate=>candidate.id===previewSessionId)?previewSessionId:undefined,
+  openFile:target=>{if(isAbsoluteFilePath(target.path)){void openOutside([target.path],'recent',previewSessionId,{line:target.line});return;}void openScopedFile({projectId:target.projectId,worktreePath:sameCanonicalScope(target.root,projectRootOf(target.projectId))?undefined:target.root,path:target.path,kind:previewKind(target.path),line:target.line,ownerSessionId:previewSessionId}).catch(fail);},
   insert:insertIntoSession,notice:setCommentNotice,
   attachContext:async(sessionId,item)=>{await insertIntoSession(sessionId,'',undefined,item);},
  };
  const workbenchActions:WorkbenchActions|undefined=workbenchScope&&project?{
+  openExternalFiles:chooseOutside,externalDisabledReason,
   comments:commentsHost,
   sessionDocuments:canPin?documents:undefined,
   openFile:(file,position)=>void openScopedFile({projectId:project.id,worktreePath:path,path:file,kind:previewKind(file),line:position?.line,column:position?.column}).catch(fail),
@@ -480,6 +495,7 @@ export function SessionWorkspace({session,data,theme,onBack,onSelect,onProject,o
   },
  }:undefined;
  const paneWorkbench:PaneWorkbench={
+  openExternalFiles:(paths,source,ownerId)=>{if(!externalDisabledReason)void openOutside(paths,source,ownerId);},externalDisabledReason,
   openTaskMap,taskMapFocus,
   openSessionReview:target=>{
    const source=data.sessions.find(candidate=>candidate.id===target.sessionId),sourceProject=data.projects.find(candidate=>candidate.id===source?.projectId);
@@ -490,6 +506,7 @@ export function SessionWorkspace({session,data,theme,onBack,onSelect,onProject,o
   openSessionFile:target=>{
    const source=data.sessions.find(candidate=>candidate.id===target.sessionId),sourceProject=data.projects.find(candidate=>candidate.id===source?.projectId);
    if(!source||!sourceProject)return;
+   if(isAbsoluteFilePath(target.path)){void openOutside([target.path],'recent',target.sessionId);return;}
    void openScopedFile({projectId:sourceProject.id,worktreePath:source.worktreePath??sourceProject.path,path:target.path,kind:previewKind(target.path)}).catch(fail);
   },
   openGroupFile:target=>void openReference(target.sessionId,{path:target.path},true),
@@ -501,7 +518,7 @@ export function SessionWorkspace({session,data,theme,onBack,onSelect,onProject,o
   sendToAgent,openHistory,comments:commentsHost,commentScope:project&&path?{projectId:project.id,root:path}:undefined,
   // Like review/history tabs: an independent tab placed beside the sessions, one per address.
   openWeb:url=>{if(isWebTabUrl(url))openWorkbenchTab({id:crypto.randomUUID(),kind:'web',url},candidate=>candidate.kind==='web'&&candidate.url===url);},
-  openFile:target=>void openScopedFile({...target,kind:previewKind(target.path)}).catch(fail),
+  openFile:target=>{if(isAbsoluteFilePath(target.path)){void openOutside([target.path],'recent');return;}void openScopedFile({...target,kind:previewKind(target.path)}).catch(fail);},
   historyFocus,
  };
  const closeRuntimePreview=(tabId:string)=>{
@@ -539,16 +556,17 @@ export function SessionWorkspace({session,data,theme,onBack,onSelect,onProject,o
    const letter=event.key.toLowerCase();
    const view:WorkbenchView|'toggle'|undefined=event.shiftKey?({e:'files',f:'search',g:'scm'} as Record<string,WorkbenchView>)[letter]:letter==='b'?'toggle':undefined;
    if(!event.shiftKey&&letter==='p'){event.preventDefault();setQuickOpen(true);return;}
+   if(!event.shiftKey&&letter==='o'){event.preventDefault();void chooseOutsideRef.current();return;}
    if(view){event.preventDefault();setWorkbenchCommand({view,key:crypto.randomUUID()});}
   };
-  const palette=(event:Event)=>{const view=(event as CustomEvent<{view:WorkbenchView|'quick-open'}>).detail?.view;if(view==='quick-open')setQuickOpen(true);else if(view)setWorkbenchCommand({view,key:crypto.randomUUID()});};
+  const palette=(event:Event)=>{const view=(event as CustomEvent<{view:WorkbenchView|'quick-open'|'external-files'}>).detail?.view;if(view==='external-files')void chooseOutsideRef.current();else if(view==='quick-open')setQuickOpen(true);else if(view)setWorkbenchCommand({view,key:crypto.randomUUID()});};
   addEventListener('keydown',key);addEventListener('threadterm:workbench',palette);
   return()=>{removeEventListener('keydown',key);removeEventListener('threadterm:workbench',palette);};
  },[]);
  // Back goes to this session's branch home page (App.sessionHome); name it, since the label is just "Back".
  const home=project?(currentTree?.branch??git?.branch??project.name):undefined;
  const backTitle=home?(zh?`返回 ${home}`:`Back to ${home}`):(zh?'返回所有终端':'Back to all terminals');
- return <section className={`ws session-screen runtime-workspace${fullscreen?' terminal-fullscreen':''}`} data-navigation-open={navigationOpen||undefined} aria-label={zh?'终端工作区':'Terminal workspace'}>
+ return <section className={`ws session-screen runtime-workspace${fullscreen?' terminal-fullscreen':''}`} data-external-files data-external-disabled-reason={externalDisabledReason} data-navigation-open={navigationOpen||undefined} aria-label={zh?'终端工作区':'Terminal workspace'}>
   {navigationOpen&&<button type="button" className="runtime-nav-scrim" aria-label={zh?'关闭导航':'Close navigation'} onClick={()=>closeNavigation()}/>}
   <header className="ws-top">
    <button className="ws-back" onClick={onBack} title={backTitle} aria-label={backTitle}><Icon name="back"/><span>{zh?'返回':'Back'}</span></button>
@@ -590,7 +608,7 @@ export function SessionWorkspace({session,data,theme,onBack,onSelect,onProject,o
   </div></div>
   {picker&&<SurfaceDialog title={zh?(picker.mode==='switch'?'切换会话':picker.mode==='add'?'选择并排会话':'选择会话'):(picker.mode==='switch'?'Switch session':picker.mode==='add'?'Choose session for split':'Choose session')} onClose={cancelPicker} size="sm"><div className="switcher"><div className="tools"><div className="input-wrap"><Icon name="search"/><input type="search" autoFocus value={query} onChange={event=>setQuery(event.target.value)} placeholder={zh?'搜索会话':'Search sessions'}/></div>{picker.mode==='switch'&&<Select value={allProjects?'all':'tree'} onChange={event=>setAllProjects(event.target.value==='all')}><option value="tree">{zh?'当前工作树':'Current worktree'}</option><option value="all">{zh?'全部项目':'All projects'}</option></Select>}</div><div className="switcher-list">{available.filter(s=>`${s.title} ${s.provider}`.toLowerCase().includes(query.toLowerCase())).map(s=><button className="switcher-row" key={s.id} onClick={()=>{if(picker.mode==='switch'){setPicker(undefined);onSelect(s.id);}else if(picker.mode==='add')addSessionPane(s);else fillPane(s);}}><AgentIcon provider={s.provider}/>{s.title}<small>{providerName(s.provider)}</small></button>)}</div>{!available.length&&<p className="note">{zh?'没有其他可选会话。':'No other sessions are available.'}</p>}</div></SurfaceDialog>}
   {configOpen&&<SessionConfigDialog session={session} data={data} onClose={()=>setConfigOpen(false)} onRerun={onSelect}/>}
-  {quickOpen&&workbenchScope&&workbenchActions&&<QuickOpen scope={workbenchScope} zh={zh} onClose={()=>setQuickOpen(false)} onOpen={(file,position)=>workbenchActions.openFile(file,position)}/>}
+  {quickOpen&&workbenchScope&&workbenchActions&&<QuickOpen scope={workbenchScope} zh={zh} onClose={()=>setQuickOpen(false)} onOpen={(file,position)=>workbenchActions.openFile(file,position)} onOpenExternal={(paths,source,position)=>openOutside(paths,source,previewSessionId,position)} externalDisabledReason={externalDisabledReason}/>}
   {pinPicker&&canPin&&workbenchScope&&<QuickOpen mode="pick" scope={workbenchScope} zh={zh} onClose={()=>setPinPicker(false)} onOpen={file=>{void documents.pin(file).catch(error=>setIssue(sessionDocumentError(error,zh)));}}/>}
  </section>;
 }
