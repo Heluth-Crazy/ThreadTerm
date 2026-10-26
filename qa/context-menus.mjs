@@ -17,8 +17,8 @@ const root = resolve(fileURLToPath(new URL('..', import.meta.url)));
 const runtime = process.env.THREADTERM_V3_RUNTIME_BIN ?? join(root, 'runtime/target-qa/debug/threadterm-v3-runtime.exe');
 const fixture = join(root, 'qa/fixtures/context-menus-echo-acp');
 const scratchBase = process.env.TEMP; assert.ok(scratchBase, 'TEMP must name the isolated QA scratch root');
-const out = join(resolve(scratchBase), 'context-menus-results');
-const scratch = await mkdtemp(join(resolve(scratchBase), 'tt-context-menus-'));
+const out = join(resolve(scratchBase), 'x1c-context-menus-results');
+const scratch = await mkdtemp(join(resolve(scratchBase), 'tt-x1c-context-menus-'));
 assert.equal(resolve(scratch).startsWith(resolve(scratchBase)), true, 'scratch remains under TEMP');
 const appDir = join(scratch, 'app');
 const report = { passed: false, scratch, checks: [], screenshots: [], errors: [] };
@@ -93,6 +93,17 @@ try {
 
  // Saved HTML is a desktop-routed iframe surface, with the same static preview actions as rendered Markdown.
  await openView('Files'); const savedHtml = page.locator('.wb-tree-row[data-path="saved-preview.html"]'); await savedHtml.click(); const htmlWorkspace = page.locator('.file-workspace:visible'); await htmlWorkspace.getByRole('button', { name: 'Preview', exact: true }).click(); const savedFrame = page.frameLocator('iframe[title="Saved HTML preview"]').locator('body'); await savedFrame.waitFor(); await savedFrame.click({ button: 'right' }); await expectMenu(/^Copy$/, /Send file to agent/, /Show source/); assert.equal(await menu().getByTestId('file-preview-context-select-all').count(), 1, 'the sandbox preload exposes the scoped Select all action'); await shot('09-saved-html-preview-menu.png'); await closeMenu(); const savedText = page.frameLocator('iframe[title="Saved HTML preview"]').locator('p'); await savedText.click({ clickCount: 3 }); await savedText.click({ button: 'right' }); await menu().getByTestId('file-preview-context-copy').click(); assert.match(await clipboardText(), /^Saved HTML preview text\s*$/, 'a mouse selection in the saved-HTML preview feeds Copy'); await savedFrame.click({ button: 'right' }); await menu().getByTestId('file-preview-context-show-source').click(); await page.getByTestId('file-editor-surface').filter({ hasText: 'Saved HTML preview text' }).waitFor(); check('saved HTML preview desktop menu selects/copies static text and returns to source');
+
+ // A short pane must reserve the address row instead of painting it over the saved page.
+ await htmlWorkspace.getByRole('button', { name: 'Preview', exact: true }).click(); await savedFrame.waitFor();
+ const originalSize = await app.evaluate(({ BrowserWindow }) => { const win=BrowserWindow.getAllWindows()[0], size=win.getContentSize(); win.setContentSize(1280, 440); return size; });
+ await delay(150);
+ const shortPreview = await page.locator('.file-workspace:visible .file-preview').evaluate(node => { const frame=node.querySelector('iframe[title="Saved HTML preview"]').getBoundingClientRect(), address=node.querySelector('.preview-address').getBoundingClientRect(), pane=node.getBoundingClientRect(); return { frame:frame.toJSON(), address:address.toJSON(), pane:pane.toJSON() }; });
+ assert.ok(shortPreview.frame.height > 20 && shortPreview.frame.bottom <= shortPreview.address.top + 1 && shortPreview.address.bottom <= shortPreview.pane.bottom + 1, `short workspace HTML preview keeps its address bar outside the page ${JSON.stringify(shortPreview)}`);
+ await shot('09-workspace-html-short-pane.png');
+ await app.evaluate(({ BrowserWindow }, size) => BrowserWindow.getAllWindows()[0].setContentSize(...size), originalSize);
+ await htmlWorkspace.getByRole('button', { name: 'Source code', exact: true }).click();
+ check('short workspace HTML preview reserves the address row without overlapping its page');
 
  // Markdown preview: copy selection and source navigation stay available from the rendered document.
  await file.click(); const workspace = page.locator('.file-workspace:visible'); const previewToggle = workspace.getByRole('button', { name: 'Preview', exact: true }); await delay(500); if (await previewToggle.count()) await previewToggle.click(); /* Markdown opens rendered by default */ const preview = page.getByTestId('file-preview-rendered'); await preview.waitFor(); await preview.click({ button: 'right' }); await expectMenu(/Select all/, /Send file to agent/, /Show source/); await menu().getByTestId('file-preview-context-send-file').waitFor(); await menu().getByTestId('file-preview-context-show-source').waitFor(); await shot('10-markdown-preview-menu.png'); await menuitem(/Show source/).click(); const readmeSource = page.getByTestId('file-editor-surface').filter({ hasText: 'Context menu' }); await readmeSource.waitFor(); assert.match(await readmeSource.innerText(), /Context menu/, 'Show source opens README.md source rather than another editor'); check('rendered Markdown menu exposes preview actions and returns to source');

@@ -4,6 +4,7 @@ import { readPageShot } from '../bridge';
 import { MAX_CHAT_IMAGES } from '../chatImages';
 import { flashPageComment } from '../pageComments';
 import { canonicalScopePath } from '../projectScope';
+import { displayPath } from '../displayPath';
 import { addFileComment, fileCommentPlace, fileCommentShortPlace, formatReviewComments, isPageComment, loadReviewComments, pageCommentLabel, pageCommentLocation, releaseReviewComments, removeReviewComments, type ReviewComment, loadFileComments, MAX_FILE_COMMENTS, MAX_REVIEW_COMMENT_BODY, subscribeFileComments, type CommentScope, type CommentVersion, type FileComment } from '../reviewComments';
 import { Icon } from './PrototypeIcon';
 import { SurfaceDialog } from './SurfaceDialog';
@@ -51,7 +52,7 @@ export function CommentForm({scope, path, version, selection, zh, onCancel, onAd
  const [saving, setSaving] = useState(false);
  const [issue, setIssue] = useState<string>();
  const copy = (en:string, cn:string) => zh ? cn : en;
- const place = fileCommentPlace({path, version, ...selection}, {fileRoot:scope.root, sessionRoot:scope.root}, zh);
+ const place = displayPath(fileCommentPlace({path, version, ...selection}, {fileRoot:scope.root, sessionRoot:scope.root}, zh));
  const addComment = async () => {
   if(saving || !body.trim()) return;
   setSaving(true);
@@ -156,7 +157,7 @@ export function PendingComments({scope, host, comments:providedComments, zh, pre
   <ul>{comments.map(item => <li key={item.id}>
    {isPageComment(item)?<button type="button" className="wb-page-comment-row" onClick={()=>void flashPageComment(item).catch(()=>{setIssueCode(undefined);setIssue(copy('Could not highlight this page target.', '无法高亮此页面目标。'));})} title={item.url} aria-label={copy(`Highlight ${pageCommentLabel(item.target,zh)}`, `高亮 ${pageCommentLabel(item.target,zh)}`)}>
     {item.shot&&<img src={item.shot.thumbnail} alt={copy('Page screenshot', '页面截图')}/>}<span><b>{pageCommentLabel(item.target,zh)}</b><small>{pageCommentLocation(item.url)}</small></span>
-   </button>:host.openFile?<button type="button" className="wb-review-comment-where wb-review-comment-open" title={`${fileCommentPlace(item, roots, zh)}\n${item.excerpt}`} onClick={()=>host.openFile?.({projectId:scope.projectId,root:scope.root,path:item.path,line:item.startLine})}>{/^(?:[a-z]:[\\/]|\\\\|\/)/i.test(item.path)?fileCommentPlace(item, roots, zh):fileCommentShortPlace(item, zh)}</button>:<span className="wb-review-comment-where" title={`${fileCommentPlace(item, roots, zh)}\n${item.excerpt}`}>{fileCommentShortPlace(item, zh)}</span>}
+   </button>:host.openFile?<button type="button" className="wb-review-comment-where wb-review-comment-open" title={`${displayPath(fileCommentPlace(item, roots, zh))}\n${item.excerpt}`} onClick={()=>host.openFile?.({projectId:scope.projectId,root:scope.root,path:item.path,line:item.startLine})}>{/^(?:[a-z]:[\\/]|\\\\|\/)/i.test(item.path)?displayPath(fileCommentPlace(item, roots, zh)):fileCommentShortPlace(item, zh)}</button>:<span className="wb-review-comment-where" title={`${displayPath(fileCommentPlace(item, roots, zh))}\n${item.excerpt}`}>{displayPath(fileCommentShortPlace(item, zh))}</span>}
    <span className="body" title={item.body}>{item.body}</span>
    <button type="button" className="icon-btn" disabled={busy} aria-label={copy('Remove comment', '删除评论')} title={copy('Remove comment', '删除评论')} onClick={() => void removeComments([item.id])}><Icon name="close"/></button>
   </li>)}</ul>

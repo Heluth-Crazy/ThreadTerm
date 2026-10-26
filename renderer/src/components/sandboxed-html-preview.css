@@ -1,4 +1,5 @@
 .sandboxed-html-preview { display:flex; flex:1; min-height:0; flex-direction:column; }
+.sandboxed-html-preview > .tt-preview-frame,.file-preview > .tt-preview-frame { flex:1; height:0; min-height:0; }
 .sandboxed-html-preview-toolbar { display:flex; flex:0 0 auto; flex-wrap:nowrap; align-items:center; min-width:0; height:38px; box-sizing:border-box; gap:6px; padding:5px 8px 5px 12px; overflow:hidden; border-bottom:1px solid var(--border); background:var(--surface); color:var(--muted); font-size:12px; }
 .sandboxed-html-preview-toolbar.is-compact { gap:3px; }
 .sandboxed-html-preview-status { display:flex; align-items:center; gap:5px; flex:1 1 auto; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }

@@ -9,6 +9,8 @@ import { FILE_DRAG_TYPE, fileDragData } from '../fileDrag';
 
 /** Width of the overflow fade at each strip edge (matches `.workspace-tabs.fade-*`). */
 const TAB_FADE=24;
+// 90px leaves 14px icon + 7px gap + ~30px label + 28px close and 11px padding.
+const TAB_COMPACT=90;
 export type WorkspaceTabPresentation={label?:string;title?:string;favicon?:string;loading?:boolean;provider?:string;onFaviconError?:()=>void;marker?:{icon:ReactNode;tooltip:string;description:string}};
 type Props={layout:PaneLayout;sessions:Session[];active?:WorkspaceTabTarget;busy?:boolean;
  onActivate:(target:WorkspaceTabTarget)=>void;
@@ -38,7 +40,7 @@ export function WorkspaceTabBar({layout,sessions,active,busy,onActivate,onClose,
   const sync=()=>{
    const start=element.scrollLeft>1,end=element.scrollLeft+element.clientWidth<element.scrollWidth-1;setFade(`${start?' fade-start':''}${end?' fade-end':''}`);
    const box=element.getBoundingClientRect();
-   element.querySelectorAll<HTMLElement>('.workspace-tab').forEach(tab=>{const rect=tab.getBoundingClientRect();tab.toggleAttribute('data-clipped',rect.left<box.left-1||rect.right>box.right+1);});
+   element.querySelectorAll<HTMLElement>('.workspace-tab').forEach(tab=>{const rect=tab.getBoundingClientRect();tab.toggleAttribute('data-clipped',rect.left<box.left-1||rect.right>box.right+1);tab.toggleAttribute('data-compact',rect.width<TAB_COMPACT&&!tab.classList.contains('active'));});
   };
   const reveal=()=>{
    const tab=element.querySelector<HTMLElement>('.workspace-tab.active');
@@ -83,7 +85,7 @@ export function WorkspaceTabBar({layout,sessions,active,busy,onActivate,onClose,
         if(from>=0&&to>=0)onReorder(paneId,from,to);
        }catch{/* Ignore foreign drag data. */}
       }}>
-      {details?.loading?<span className="browser-page-loading" aria-hidden="true"/>:details?.favicon?<img className="browser-page-favicon" src={details.favicon} width={16} height={16} alt="" aria-hidden="true" onError={details.onFaviconError}/>:session?<AgentIcon provider={session.provider}/>:<Icon name={tab.kind==='map'?'flow':tab.kind==='usage'?'layers':tab.kind==='group'||tab.kind==='roundtable'?'agents':browser?'globe':'file'}/>}<span className={browser?'browser-page-tab-title':undefined}>{label}</span>{details?.provider&&<small>{details.provider}</small>}{details?.marker&&<><span className="workspace-tab-marker" title={details.marker.tooltip} aria-hidden="true">{details.marker.icon}</span><span id={markerId} className="workspace-tab-marker-description">{details.marker.description}</span></>}
+      <span className="workspace-tab-icon">{details?.loading?<span className="browser-page-loading" aria-hidden="true"/>:details?.favicon?<img className="browser-page-favicon" src={details.favicon} width={16} height={16} alt="" aria-hidden="true" onError={details.onFaviconError}/>:session?<AgentIcon provider={session.provider}/>:<Icon name={tab.kind==='map'?'flow':tab.kind==='usage'?'layers':tab.kind==='group'||tab.kind==='roundtable'?'agents':browser?'globe':'file'}/>} {details?.marker&&<span className="workspace-tab-marker" title={details.marker.tooltip} aria-hidden="true">{details.marker.icon}</span>}</span><span className={`workspace-tab-label${browser?' browser-page-tab-title':''}`}>{label}</span>{details?.provider&&<small>{details.provider}</small>}{details?.marker&&<span id={markerId} className="workspace-tab-marker-description">{details.marker.description}</span>}
      </button>
      <button type="button" className={`workspace-tab-close${browser?' browser-page-tab-close':''}`} disabled={busy} title={browser?(zh?'关闭页面':'Close page'):(zh?'关闭标签':'Close tab')} aria-label={closeLabel} onPointerDown={event=>event.stopPropagation()} onClick={event=>{event.stopPropagation();onClose(target,'current');}}><Icon name="close"/></button>
     </div>;

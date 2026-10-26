@@ -1,6 +1,7 @@
 import { type CSSProperties, type DragEvent as ReactDragEvent, lazy, Suspense, useEffect, useRef, useState } from "react";
 import type { ContentRef, FileReference, PaneLayout, PreviewAssociation, ProviderCapability, Session, Snapshot } from "@threadterm/protocol";
 import { confirmCloseEditors } from "../dirtyEditors";
+import { displayPath } from '../displayPath';
 import { useTranslation } from "../i18n";
 import {
   splitPane,
@@ -544,7 +545,7 @@ function Pane({
    return `${item.url}${owner?` — ${owner.title} (${owner.provider})`:''}`;
   };
   const presentation=new Map<string,WorkspaceTabPresentation>(browserTabs.map(item=>[item.id,{label:browserLabel(item),title:browserTitle(item),...browserIcons.get(item.id),provider:previewLabels?.get(item.id)?.sessionId?sessions.find(candidate=>candidate.id===previewLabels.get(item.id)?.sessionId)?.provider:undefined,onFaviconError:()=>{const failed=browserIcons.get(item.id)?.favicon;setBrowserIcons(current=>{const icon=current.get(item.id);return icon?.favicon===failed?new Map(current).set(item.id,{loading:icon?.loading??false}):current;});}}]));
-  for(const item of node.tabs)if(isFileTab(item)&&item.externalId){const description=`${zh?'工作区外 · 只读':'Outside workspace · Read-only'} · ${item.path}`;presentation.set(item.id,{label:item.path.split(/[\\/]/).at(-1),title:item.path,marker:{icon:<Icon name="popout"/>,tooltip:description,description}});}
+  for(const item of node.tabs)if(isFileTab(item)&&item.externalId){const path=displayPath(item.path),description=`${zh?'工作区外 · 只读':'Outside workspace · Read-only'} · ${path}`;presentation.set(item.id,{label:path.split(/[\\/]/).at(-1),title:path,marker:{icon:<Icon name="popout"/>,tooltip:description,description}});}
   const companionOwner=session?.id??(tab&&tab.kind!=='session'?tab.ownerSessionId:undefined);
   const hasCompanions=Boolean(companionOwner&&workspaceTabs(layout).some(item=>item.tab.kind!=='session'&&item.tab.ownerSessionId===companionOwner));
   const browserMode=tab?.kind==='web';

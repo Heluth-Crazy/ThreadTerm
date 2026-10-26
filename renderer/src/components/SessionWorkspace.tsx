@@ -6,7 +6,8 @@ import { externalFileError, externalFileErrorCode, externalSelectionQuote, isAbs
 import { attachChatImages, insertChatText, insertSessionText } from '../terminalInputTargets';
 import { useTranslation } from '../i18n';
 import { addSessionTab } from '../presentation';
-import { displayPath, sameCanonicalScope } from '../projectScope';
+import { sameCanonicalScope } from '../projectScope';
+import { displayPath } from '../displayPath';
 import { activate, addPane, addTabToPane, closePane, placeWebTabBesideSession, reconcileSessionLayout, selectWebTabBesideSession, sessionIdsIn, sessionOnlyLayout } from '../workspaceLayout';
 import { taskMapRoot } from '../taskMapRoot';
 import { focusedWorkspaceTab, isFileTab, isWebTabUrl, removeWorkspaceTabs, workspaceTabs, type FileTab } from '../workspaceTabs';
@@ -572,7 +573,7 @@ export function SessionWorkspace({session,data,theme,onBack,onSelect,onProject,o
    <button className="ws-back" onClick={onBack} title={backTitle} aria-label={backTitle}><Icon name="back"/><span>{zh?'返回':'Back'}</span></button>
    <button ref={navigationToggle} type="button" className="runtime-nav-toggle icon-btn" aria-label={zh?'打开导航':'Open navigation'} aria-expanded={navigationOpen} aria-controls="runtime-navigation" onClick={()=>navigationOpen?closeNavigation(false):setNavigationOpen(true)}><Icon name="panel"/></button>
    {project&&<button className="ws-chip" title={project.name} onClick={()=>onProject(project.id)}><span className="dot primary"/><span className="ws-chip-label">{project.name}</span></button>}
-   {project&&<button className="ws-chip branch" title={displayPath(path)} onClick={()=>onProject(project.id,path)}><Icon name="branch"/><span className="ws-chip-label">{currentTree?.branch??git?.branch??displayPath(path)?.split(/[\\/]/).at(-1)}</span></button>}
+   {project&&<button className="ws-chip branch" title={displayPath(path??'')} onClick={()=>onProject(project.id,path)}><Icon name="branch"/><span className="ws-chip-label">{currentTree?.branch??git?.branch??displayPath(path??'').split(/[\\/]/).at(-1)}</span></button>}
    {project&&path&&<QuickLaunchMenu key={`${project.id}:${path}`} projectId={project.id} root={path} data={data} onOpenSession={onSelect} onOpenPreview={paneWorkbench.openWeb}/>}
    {session.run&&<QuickLaunchRunChip session={session} onOpenPreview={paneWorkbench.openWeb}/>}
    <div className="top-spacer"/>
@@ -581,7 +582,7 @@ export function SessionWorkspace({session,data,theme,onBack,onSelect,onProject,o
   <div className="ws-body"><div className="ws-center">
    {issue&&<p className="surface-error" role="alert">{issue}</p>}
    {commentNotice&&<div className="ws-notice-anchor"><p role="status">{commentNotice}</p></div>}
-   {fileIssue&&<div className="workspace-file-error" role="alert"><span>{fileIssue.message} <code>{fileIssue.path}</code></span><button type="button" className="btn" onClick={()=>void navigator.clipboard.writeText(fileIssue.path).catch(fail)}>{zh?'复制路径':'Copy path'}</button><button type="button" className="icon-btn" aria-label={zh?'关闭提示':'Dismiss notice'} onClick={()=>setFileIssue(undefined)}><Icon name="close"/></button></div>}
+   {fileIssue&&<div className="workspace-file-error" role="alert"><span>{fileIssue.message} <code title={displayPath(fileIssue.path)}>{displayPath(fileIssue.path)}</code></span><button type="button" className="btn" onClick={()=>void navigator.clipboard.writeText(fileIssue.path).catch(fail)}>{zh?'复制路径':'Copy path'}</button><button type="button" className="icon-btn" aria-label={zh?'关闭提示':'Dismiss notice'} onClick={()=>setFileIssue(undefined)}><Icon name="close"/></button></div>}
    <div className={`ws-content${inspector?' with-drawer':''}`}>{workbenchScope&&workbenchActions&&<WorkbenchSideBar scope={workbenchScope} actions={workbenchActions} sessions={workspaceSessions} activeSessionId={previewSessionId} activePath={activeFilePath} command={workbenchCommand} switcherHost={switcherHost} zh={zh}/>}<div className="ws-pane" ref={paneArea}>
     <div className="workspace-content-host">
      <ContextHost.Provider value={commentsHost}><PaneWorkspace
@@ -600,7 +601,7 @@ export function SessionWorkspace({session,data,theme,onBack,onSelect,onProject,o
      /></ContextHost.Provider><ContextSendDialogHost/>
     </div>
    </div>{inspector&&<div className="inspector-slot"><aside className="inspector" aria-label={zh?'会话详情面板':'Session details'}><div className="ins-head"><span>{zh?'会话详情':'Session details'}</span><button type="button" className="icon-btn icon-btn-sm" aria-label={zh?'关闭会话详情':'Close session details'} onClick={()=>setInspector(false)}><Icon name="close"/></button></div><div className="ins-scroll">
-    <div className="ins-block"><h3>{zh?'会话信息':'Session information'}</h3><span className={`chip st-${state}`}>{stateLabel}</span><p>{session.title}</p><p className="mono dim-s">{displayPath(path)}</p><button className="btn" onClick={()=>setConfigOpen(true)}>{zh?'配置':'Configure'}</button>{session.mode==='chat'&&<button type="button" className="btn" onClick={()=>openTaskMap(session.id)}>{zh?'任务图':'Task map'}</button>}</div>
+    <div className="ins-block"><h3>{zh?'会话信息':'Session information'}</h3><span className={`chip st-${state}`}>{stateLabel}</span><p>{session.title}</p><p className="mono dim-s">{displayPath(path??'')}</p><button className="btn" onClick={()=>setConfigOpen(true)}>{zh?'配置':'Configure'}</button>{session.mode==='chat'&&<button type="button" className="btn" onClick={()=>openTaskMap(session.id)}>{zh?'任务图':'Task map'}</button>}</div>
     {canPin&&project&&<SessionDocuments key={documentsSession.id} sessionId={documentsSession.id} zh={zh} state={documents} onPick={()=>setPinPicker(true)} openFile={file=>void openScopedFile({projectId:project.id,worktreePath:path,path:file,kind:'file'}).catch(fail)}/>}
     <div className="ins-block"><h3>{zh?'重点关注':'Following'}</h3><button className="btn" onClick={follow} aria-pressed={session.followed}><Icon name="star"/>{zh?(session.followed?'已关注 · 点击取消':'关注此会话'):(session.followed?'Following · Unfollow':'Follow session')}</button></div>
     <div className="ins-block runtime-session-actions"><SessionActions session={session}/></div><div className="ins-block session-fullscreen-row"><button className="btn" title={zh?'隐藏工作区界面，按 Esc 退出':'Hide workspace chrome; press Esc to leave'} onClick={()=>setFullscreen(value=>!value)}>{session.mode==='chat'?(zh?'全屏':'Fullscreen'):(zh?'全屏终端':'Fullscreen terminal')}</button></div>

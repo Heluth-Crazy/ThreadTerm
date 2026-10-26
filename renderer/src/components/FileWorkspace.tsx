@@ -32,6 +32,7 @@ import { changedFileContext } from "./GitContextActions";
 import { sendContextToAgent } from "./ContextSendAction";
 import { readDiffDocument } from '../fileDiffDocument';
 import { externalFileError, externalFileErrorCode, externalSelectionText } from '../externalFiles';
+import { displayPath } from '../displayPath';
 import { EditorView } from '@codemirror/view';
 
 type View = "file" | "diff" | "preview";
@@ -77,6 +78,7 @@ const message = (error: unknown) =>
 const imagePath = (path: string) => /\.(?:png|jpe?g|gif|webp)$/i.test(path);
 
 export function ExternalFileBoundary({ path, zh, noticeOpen, onNoticeToggle, onCopy, onReload }: { path: string; zh: boolean; noticeOpen: boolean; onNoticeToggle: () => void; onCopy: () => void; onReload: () => void }) {
+  path = displayPath(path);
   const notice = zh ? "ThreadTerm 以只读方式打开此文件。发送它只会让 Agent 按自身权限读取，不会授予写入权限。" : "ThreadTerm opens this file read-only. Sending it lets the agent read it under its own permissions and never grants write access.";
   return <div className="external-file-boundary" data-testid="external-file-boundary">
     <button type="button" className="ws-chip external-file-boundary-chip" aria-expanded={noticeOpen} title={notice} onClick={onNoticeToggle}>
@@ -84,8 +86,8 @@ export function ExternalFileBoundary({ path, zh, noticeOpen, onNoticeToggle, onC
     </button>
     {noticeOpen && <span className="external-file-boundary-notice" role="note">{notice}</span>}
     <span className="path external-file-boundary-path" title={path} aria-label={path}><span className="external-file-path-prefix">{path.slice(0,Math.max(path.lastIndexOf('/'),path.lastIndexOf('\\'))+1)}</span><span className="external-file-path-name">{path.split(/[\\/]/).at(-1)}</span></span>
-    <button type="button" className="btn btn-sm" title={zh ? "复制路径" : "Copy path"} onClick={onCopy}>{zh ? "复制路径" : "Copy path"}</button>
-    <button type="button" className="btn btn-sm" title={zh ? "从磁盘重新载入" : "Reload from disk"} onClick={onReload}>{zh ? "从磁盘重新载入" : "Reload from disk"}</button>
+    <button type="button" className="icon-btn external-file-boundary-action" title={zh ? "复制路径" : "Copy path"} aria-label={zh ? "复制路径" : "Copy path"} onClick={onCopy}><WbIcon name="copy"/><span>{zh ? "复制路径" : "Copy path"}</span></button>
+    <button type="button" className="icon-btn external-file-boundary-action" title={zh ? "从磁盘重新载入" : "Reload from disk"} aria-label={zh ? "从磁盘重新载入" : "Reload from disk"} onClick={onReload}><WbIcon name="refresh"/><span>{zh ? "从磁盘重新载入" : "Reload from disk"}</span></button>
   </div>;
 }
 
@@ -851,7 +853,7 @@ function FileWorkspaceInstance({
   const externalBoundary = document && external ? <ExternalFileBoundary path={document.path} zh={zh} noticeOpen={externalNoticeOpen} onNoticeToggle={() => setExternalNoticeOpen((open) => !open)} onCopy={() => void navigator.clipboard.writeText(document.path)} onReload={() => void open(document.path, view, true)} /> : null;
 
   return (
-    <section className={`file-workspace ${toolsOpen ? "tools-open" : ""} ${embedded ? "embedded" : ""}`}>
+    <section className={`file-workspace ${toolsOpen ? "tools-open" : ""} ${embedded ? "embedded" : ""}${external ? " external-file-workspace" : ""}`}>
       {toolsOpen && !external && (
         <aside className="file-list tt-file-tree wb-embedded-tools">
           {/* Same header shape as the session side bar; each view portals its actions into it. */}
@@ -899,10 +901,9 @@ function FileWorkspaceInstance({
       <div className="editor-area">
         {document ? (
           <>
-            {externalBoundary}
             {view !== "diff" && (
-              <div className="tt-editor-tabs file-view-tabs">
-                {embedded ? external ? null : (
+              <div className={`tt-editor-tabs file-view-tabs${external ? " external-file-toolbar" : ""}`}>
+                {external ? externalBoundary : embedded ? (
                   embeddedNavigation() ?? (
                     <span className="embedded-file-breadcrumb" title={document.path}>
                       {document.path.split(/[\\/]/).join(" › ")}
@@ -970,7 +971,7 @@ function FileWorkspaceInstance({
                   </button>
                 )}
                 {view === "file" && commentScope && commentsHost && !image && (
-                  <button type="button" className="btn btn-sm" disabled={dirty || !commentSelection || Boolean(commentDraft)} title={dirty ? (zh ? "请先保存或放弃修改：修改会让行号变化。" : "Save or discard your edits first: they move the lines.") : !commentSelection ? (zh ? "请先选中行（或将光标放在某行）" : "Select lines (or put the cursor on a line) first") : commentDraft ? (zh ? "请先完成当前评论" : "Finish the current comment first") : zh ? `评论 ${fileCommentPlace({path:document.path, version:plainCommentVersion, ...commentSelection}, {fileRoot:commentScope.root, sessionRoot:commentScope.root}, zh)}` : `Comment on ${fileCommentPlace({path:document.path, version:plainCommentVersion, ...commentSelection}, {fileRoot:commentScope.root, sessionRoot:commentScope.root}, zh)}`} onClick={() => commentSelection && setCommentDraft(commentSelection)}>{zh ? "评论" : "Comment"}</button>
+                  <button type="button" className="btn btn-sm" disabled={dirty || !commentSelection || Boolean(commentDraft)} title={dirty ? (zh ? "请先保存或放弃修改：修改会让行号变化。" : "Save or discard your edits first: they move the lines.") : !commentSelection ? (zh ? "请先选中行（或将光标放在某行）" : "Select lines (or put the cursor on a line) first") : commentDraft ? (zh ? "请先完成当前评论" : "Finish the current comment first") : zh ? `评论 ${displayPath(fileCommentPlace({path:document.path, version:plainCommentVersion, ...commentSelection}, {fileRoot:commentScope.root, sessionRoot:commentScope.root}, zh))}` : `Comment on ${displayPath(fileCommentPlace({path:document.path, version:plainCommentVersion, ...commentSelection}, {fileRoot:commentScope.root, sessionRoot:commentScope.root}, zh))}`} onClick={() => commentSelection && setCommentDraft(commentSelection)}>{zh ? "评论" : "Comment"}</button>
                 )}
                 {embedded && !external && (
                   <button
@@ -1110,7 +1111,7 @@ function FileWorkspaceInstance({
                     </>
                   )}
                   {commentScope && commentsHost && diff && !diff.binary && (
-                    <button type="button" className="btn btn-sm" disabled={dirty || !commentSelection || Boolean(commentDraft)} title={dirty ? (zh ? "请先保存或放弃修改：修改会让行号变化。" : "Save or discard your edits first: they move the lines.") : !commentSelection ? (zh ? "请先在任一侧选中行（或将光标放在某行）" : "Select lines (or put the cursor on a line) on either side first") : commentDraft ? (zh ? "请先完成当前评论" : "Finish the current comment first") : zh ? `评论 ${fileCommentPlace({path:document.path, version:diffCommentVersion, ...commentSelection}, {fileRoot:commentScope.root, sessionRoot:commentScope.root}, zh)}` : `Comment on ${fileCommentPlace({path:document.path, version:diffCommentVersion, ...commentSelection}, {fileRoot:commentScope.root, sessionRoot:commentScope.root}, zh)}`} onClick={() => commentSelection && setCommentDraft(commentSelection)}>{zh ? "评论" : "Comment"}</button>
+                    <button type="button" className="btn btn-sm" disabled={dirty || !commentSelection || Boolean(commentDraft)} title={dirty ? (zh ? "请先保存或放弃修改：修改会让行号变化。" : "Save or discard your edits first: they move the lines.") : !commentSelection ? (zh ? "请先在任一侧选中行（或将光标放在某行）" : "Select lines (or put the cursor on a line) on either side first") : commentDraft ? (zh ? "请先完成当前评论" : "Finish the current comment first") : zh ? `评论 ${displayPath(fileCommentPlace({path:document.path, version:diffCommentVersion, ...commentSelection}, {fileRoot:commentScope.root, sessionRoot:commentScope.root}, zh))}` : `Comment on ${displayPath(fileCommentPlace({path:document.path, version:diffCommentVersion, ...commentSelection}, {fileRoot:commentScope.root, sessionRoot:commentScope.root}, zh))}`} onClick={() => commentSelection && setCommentDraft(commentSelection)}>{zh ? "评论" : "Comment"}</button>
                   )}
                   {embeddedClose()}
                 </div>
@@ -1251,7 +1252,7 @@ function FileWorkspaceInstance({
               ) : (
                 <>
                   <strong>{issueText ?? copy.empty}</strong>
-                  {external && initialPath && <span className="external-file-error-path" title={initialPath}>{initialPath}</span>}
+                  {external && initialPath && <span className="external-file-error-path" title={displayPath(initialPath)}>{displayPath(initialPath)}</span>}
                   {external && initialPath && <button className="btn btn-sm" onClick={() => void open(initialPath, externalInitialView, true)}>{zh ? "重试" : "Retry"}</button>}
                   {!embedded && !toolsOpen && (
                     <button className="btn" onClick={() => setToolsOpen(true)}>

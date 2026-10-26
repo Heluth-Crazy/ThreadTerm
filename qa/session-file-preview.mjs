@@ -9,9 +9,9 @@ import {mkdtemp,mkdir,writeFile} from 'node:fs/promises';
 import {dirname,join,resolve} from 'node:path';
 
 const scratchBase=process.env.TEMP;assert.ok(scratchBase,'TEMP must name the isolated QA scratch root');
-const scratch=await mkdtemp(join(resolve(scratchBase),'threadterm-session-file-preview-'));
+const scratch=await mkdtemp(join(resolve(scratchBase),'threadterm-x1c-session-file-preview-'));
 assert.equal(resolve(scratch).startsWith(resolve(scratchBase)),true,'scratch remains under TEMP');
-const out=join(resolve(scratchBase),'session-file-preview-results');
+const out=join(resolve(scratchBase),'x1c-session-file-preview-results');
 await mkdir(out,{recursive:true});
 const entry=`
 import React,{useState} from 'react';

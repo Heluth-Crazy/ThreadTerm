@@ -2,6 +2,7 @@ import { useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'reac
 import { contextDisplayMetadata, contextSerializedBlocks, parseContext, serializeMentionedContext, type ContextItem } from '../chatContext';
 import { contextIdentityBudget, type MentionEntry } from '../inlineMentions';
 import { createMessageMentionsMemo, type MessageMentionBadge } from '../messageMentions';
+import { displayPath } from '../displayPath';
 import { SurfaceDialog } from './SurfaceDialog';
 import { Icon } from './PrototypeIcon';
 import './context-tray.css';
@@ -16,6 +17,7 @@ function readableCopiedAt(label: string, zh: boolean) {
   });
 }
 function localized(chip: Chip, zh: boolean) {
+  if (chip.kind === 'quote') chip = {...chip, label:chip.label.replace(/^Quote: (.*)$/, (_, path:string) => `Quote: ${displayPath(path)}`)};
   if (chip.kind === 'file') return chip.label.replace(/:(\d+)-(\d+)$/, ':$1–$2');
   if (chip.kind === 'conversation') return readableCopiedAt(zh ? fullTitle(chip, true) : chip.label, zh);
   if (!zh) return chip.label;
@@ -30,6 +32,7 @@ function localized(chip: Chip, zh: boolean) {
 }
 
 export function fullTitle(chip: { kind: ContextItem['kind']; title: string }, zh: boolean) {
+  if (chip.kind === 'file' || chip.kind === 'quote') chip = {...chip, title:chip.title.replace(/^(File|Quote): (.*)$/, (_, kind:string, path:string) => `${kind}: ${displayPath(path)}`)};
   if (!zh) return chip.title;
   if (chip.kind === 'file') return chip.title.replace(/^File:/, '文件：');
   if (chip.kind === 'commit') return chip.title.replace(/^Commit/, '提交');

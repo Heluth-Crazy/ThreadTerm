@@ -19,7 +19,7 @@ import { acquireElectronQaLock } from './lib/electron-lock.mjs';
 import { buildQaApp } from './lib/qa-app.mjs';
 
 const root = resolve(fileURLToPath(new URL('..', import.meta.url)));
-const runtime = join(root, 'runtime/target-qa/debug/threadterm-v3-runtime.exe');
+const runtime = process.env.THREADTERM_V3_RUNTIME_BIN ?? join(root, 'runtime/target-qa/debug/threadterm-v3-runtime.exe');
 assert.ok(existsSync(runtime), `missing ${runtime}`);
 const keep = process.argv.includes('--keep');
 const gitDir = (() => {
@@ -31,7 +31,7 @@ const gitDir = (() => {
 const delay = ms => new Promise(done => setTimeout(done, ms));
 const scratchBase = resolve(process.env.TEMP ?? (() => { throw Error('TEMP must point to tt-qa-temp'); })());
 assert.match(scratchBase.replaceAll('\\', '/').toLowerCase(), /\/tt-qa-temp$/, 'TEMP must be tt-qa-temp');
-const scratch = await mkdtemp(join(scratchBase, 'tt-file-comments-'));
+const scratch = await mkdtemp(join(scratchBase, 'tt-x1c-file-comments-'));
 const workspace = join(scratch, 'shop app');
 const bin = join(scratch, 'bin'), appDir = join(scratch, 'app');
 const out = join(root, 'qa/results/file-comments');

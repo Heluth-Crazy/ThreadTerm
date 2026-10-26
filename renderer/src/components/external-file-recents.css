@@ -1,0 +1,15 @@
+.external-file-section-label{margin:10px 12px 4px;font-size:11px;font-weight:600;color:var(--muted)}
+.external-file-open>span{margin-left:auto}
+.wb-quick-open .external-file-recent{position:relative;box-sizing:border-box;padding-right:44px}
+.external-file-recent .external-file-open-row{display:flex;align-items:center;gap:10px;flex:1;min-width:0;padding:0;border:0;background:transparent;color:inherit;font:inherit;line-height:normal;text-align:left;cursor:pointer}
+.external-file-recent .external-file-open-row b,.external-file-recent .external-file-open-row span{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.external-file-recent .external-file-open-row b{flex:none;max-width:48%}
+.external-file-recent .external-file-open-row>span{flex:1;margin-left:0;color:var(--muted)}
+.external-file-recent .external-file-open-row>.external-file-parent{direction:rtl;text-align:left}
+.external-file-parent>bdi{direction:ltr}
+.external-file-recent .external-file-open-row .ico,.external-file-recent .external-file-open-row small{flex:none}
+.external-file-recent .external-file-open-row:focus-visible{outline:2px solid var(--primary);outline-offset:2px}
+.external-file-recent .external-file-forget{position:absolute;right:8px;top:50%;transform:translateY(-50%);width:28px;height:28px;opacity:0}
+.external-file-recent:hover .external-file-forget,.external-file-recent.active .external-file-forget,.external-file-recent:focus-within .external-file-forget{opacity:1}
+.external-file-missing .external-file-open-row{color:var(--muted);opacity:.65}
+.external-file-recent small{color:var(--muted);white-space:nowrap}

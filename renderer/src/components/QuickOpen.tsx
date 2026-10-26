@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { openExternalFiles, operationId, request, subscribeEvents } from '../bridge';
 import { externalFileError as externalFilesError } from '../externalFiles';
+import { displayPath } from '../displayPath';
 import { Icon } from './PrototypeIcon';
 import { fuzzyFilter, splitQuickOpenQuery } from '../workbench/fuzzy';
 import { workbenchError } from '../workbench/errors';
@@ -8,14 +9,17 @@ import { scopeParams, type WorkbenchScope } from '../workbench/types';
 import './command-palette.css';
 import { useModalFocus } from '../useModalFocus';
 import { useBrowserOcclusion } from '../browserOcclusion';
+import './external-file-recents.css';
 
 const cache = new Map<string,{at:number;paths:string[];truncated:boolean}>();
 const CACHE_MS = 30_000;
 
-function Highlighted({path, positions}:{path:string;positions:number[]}) {
- const nameStart = Math.max(path.lastIndexOf('/'),path.lastIndexOf('\\')) + 1, marks = new Set(positions);
- const render = (from:number, to:number) => Array.from(path.slice(from, to)).map((char, index) => marks.has(from + index) ? <mark key={from + index}>{char}</mark> : char);
- return <><b>{render(nameStart, path.length)}</b><span>{nameStart ? render(0, nameStart - 1) : ''}</span></>;
+function Highlighted({path, positions, compactParent=false}:{path:string;positions:number[];compactParent?:boolean}) {
+ const visiblePath=displayPath(path), nameStart = Math.max(visiblePath.lastIndexOf('/'),visiblePath.lastIndexOf('\\')) + 1, marks = new Set(positions);
+ const render = (from:number, to:number) => Array.from(visiblePath.slice(from, to)).map((char, index) => marks.has(from + index) ? <mark key={from + index}>{char}</mark> : char);
+ const parent=visiblePath.slice(0,Math.max(0,nameStart-1));
+ const parentTail=compactParent&&parent ? `…${visiblePath.includes('\\')?'\\':'/'}${parent.split(/[\\/]+/).filter(Boolean).slice(-2).join(visiblePath.includes('\\')?'\\':'/')}` : undefined;
+ return <><b>{render(nameStart, visiblePath.length)}</b>{compactParent?<span className="external-file-parent"><bdi dir="ltr">{parentTail}</bdi></span>:<span>{nameStart ? render(0, nameStart - 1) : ''}</span>}</>;
 }
 
 type ExternalFile = Awaited<ReturnType<typeof request<'filesystem.external.list'>>>['files'][number];
@@ -130,8 +134,8 @@ export function QuickOpen({scope, zh, onOpen, onClose, mode='open', onOpenExtern
     </button>; })}
     {externalEnabled && <><p className="external-file-section-label">{text('Outside workspace', '工作区外')}</p>{externalMatches.map((match, index) => { const itemIndex = 1 + matches.length + index; return <div role="option" aria-selected={itemIndex === active} id={`wb-qo-${itemIndex}`} key={match.file.id}
      className={`cmd-row external-file-recent${!match.file.exists ? ' external-file-missing' : ''}${itemIndex === active ? ' active' : ''}`} onMouseEnter={() => setActive(itemIndex)}>
-     <button type="button" className="external-file-open-row" disabled={!!externalDisabledReason} onClick={() => chooseExternal([match.file.path], 'recent', parsed.line ? {line:parsed.line, column:parsed.column} : undefined)} title={externalDisabledReason ?? match.file.path}>
-      <Icon name="file"/><Highlighted path={match.file.path} positions={match.positions}/>{!match.file.exists && <small>{text('Missing', '缺失')}</small>}
+     <button type="button" className="external-file-open-row" disabled={!!externalDisabledReason} onClick={() => chooseExternal([match.file.path], 'recent', parsed.line ? {line:parsed.line, column:parsed.column} : undefined)} title={externalDisabledReason ?? displayPath(match.file.path)}>
+      <Icon name="file"/><Highlighted path={match.file.path} positions={match.positions} compactParent/>{!match.file.exists && <small>{text('Missing', '缺失')}</small>}
      </button><button type="button" className="icon-btn external-file-forget" aria-label={text('Remove from recent external files', '从最近工作区外文件中移除')} title={text('Remove from recent external files', '从最近工作区外文件中移除')} onClick={() => forgetExternal(match.file)}><Icon name="close"/></button>
     </div>; })}</>}
     {files && !matches.length && !externalMatches.length && <p className="palette-empty">{text('No matching files.', '没有匹配的文件。')}</p>}

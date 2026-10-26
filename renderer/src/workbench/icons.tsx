@@ -20,6 +20,7 @@ const glyphs: Record<string, string> = {
  'file-plus': '<path d="M12 21H6V3h8l4 4v4"/><path d="M14 3v4h4"/><path d="M18 14v7M14.5 17.5h7"/>',
  'folder-plus': '<path d="M11 20H3V4h7l2 2h9v5"/><path d="M18 14v7M14.5 17.5h7"/>',
  refresh: '<path d="M19.5 12a7.5 7.5 0 1 1-2.2-5.3l2.2 2.2"/><path d="M19.5 4v4.9h-4.9"/>',
+ copy: '<rect x="8" y="8" width="12" height="13" rx="2"/><path d="M16 8V5a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h3"/>',
  // Chevrons folding onto a line; a boxed minus read as "minimize" and bare chevrons as an ×.
  'collapse-all': '<path d="m8 21 4-4 4 4M8 3l4 4 4-4M5 12h14"/>',
  undo: '<path d="M9 14 4 9l5-5"/><path d="M4 9h10.5a5.5 5.5 0 0 1 0 11H11"/>',

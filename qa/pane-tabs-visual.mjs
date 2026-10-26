@@ -24,7 +24,7 @@ const runtime = process.env.THREADTERM_V3_RUNTIME_BIN ?? join(root, 'runtime/tar
 await mkdir(scratchBase, { recursive: true });
 assert.match(scratchBase.replaceAll('\\', '/').toLowerCase(), /\/tt-qa-temp$/, 'TEMP must be the approved tt-qa-temp directory');
 assert.ok(!/\/runtime\/target\/(debug|release)\/threadterm-v3-runtime\.exe$/i.test(runtime.replaceAll('\\', '/')), 'never launch the user runtime build');
-const scratch = await mkdtemp(join(scratchBase, 'tt-pane-tabs-'));
+const scratch = await mkdtemp(join(scratchBase, 'tt-x1c-pane-tabs-'));
 assert.equal(dirname(scratch).toLowerCase(), scratchBase.toLowerCase(), 'scratch stays in tt-qa-temp');
 const bin = join(scratch, 'bin'), plugins = join(scratch, 'plugins'), work = join(scratch, 'work');
 const pipe = `\\\\.\\pipe\\tt-pane-tabs-${randomUUID()}`, lock = join(scratchBase, 'qa-electron.lock');
@@ -118,7 +118,7 @@ async function panePixelGeometry() {
    panes: [...document.querySelectorAll('.workspace-pane[data-pane-id]:not([hidden])')].flatMap(pane => {
     const strip = pane.querySelector(':scope > .workspace-tabbar.ws-strip'), card = pane.querySelector(':scope > .pane-card'), tabs = strip?.querySelector('.workspace-tabs'), selected = tabs?.querySelector('.workspace-tab.active');
     if (!strip || !card || !tabs || !selected) return [];
-    const title = selected.querySelector('.workspace-tab-select span, .browser-page-tab-title'), close = selected.querySelector('.workspace-tab-close'), prefix = strip.querySelector('.workspace-tab-prefix'), add = strip.querySelector('.workspace-tab-add-slot'), actions = strip.querySelector('.workspace-tab-actions');
+    const title = selected.querySelector('.workspace-tab-label'), close = selected.querySelector('.workspace-tab-close'), prefix = strip.querySelector('.workspace-tab-prefix'), add = strip.querySelector('.workspace-tab-add-slot'), actions = strip.querySelector('.workspace-tab-actions');
     const style = getComputedStyle(card), focused = document.activeElement?.closest?.('.workspace-tab');
     const titleStyle = title && getComputedStyle(title), measure = document.createElement('canvas').getContext('2d');
     if (measure && titleStyle) measure.font = titleStyle.font;
@@ -358,7 +358,7 @@ async function assertPaneTabContract() {
    if (tabStyle.backgroundColor !== cardStyle.backgroundColor) failures.push(`${pane.dataset.paneId}: selected/card background mismatch`);
    const inactive=[...lists[0].querySelectorAll('.workspace-tab:not(.active)')];
    if (inactive.length && inactive.every(tab=>getComputedStyle(tab).color===tabStyle.color && getComputedStyle(tab).backgroundColor===tabStyle.backgroundColor)) failures.push(`${pane.dataset.paneId}: inactive tabs indistinguishable`);
-   const activeTitle = selectedContainer.querySelector('.workspace-tab-select span');
+   const activeTitle = selectedContainer.querySelector('.workspace-tab-label');
    if (panes.length === 1 && !document.querySelector('.inspector') && !selectedContainer.classList.contains('browser-page-tab') && activeTitle && activeTitle.getBoundingClientRect().width < 12) failures.push(`${pane.dataset.paneId}: active title is collapsed`);
    const browserTitles = [...lists[0].querySelectorAll('.browser-page-tab-title')], browserOverflow = lists[0].scrollWidth > lists[0].clientWidth + 1;
    if (innerWidth >= 1200 && browserTitles.length >= 2 && !browserOverflow && browserTitles.some(title => getComputedStyle(title).display === 'none' || title.getBoundingClientRect().width < 12)) failures.push(`${pane.dataset.paneId}: fitting browser titles are collapsed`);
