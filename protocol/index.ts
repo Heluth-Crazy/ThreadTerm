@@ -1411,7 +1411,7 @@ export type WireSuccess = { [M in Method]: { v:1; id:string; method:M; result:Re
 
 export interface DataBackupVerification { verified:boolean; files:number; sizeBytes:number; checkedAt:string }
 export interface DataStatus { root:string;database:{path:string;sizeBytes:number};counts:{projects:number;sessions:number;workspaces:number;drafts:number;usageRecords:number} }
-export interface ThemeTokens { background:string;surface:string;text:string;muted:string;accent:string;border:string }
+export interface ThemeTokens { background:string;surface:string;text:string;muted:string;accent:string;border:string;sidebar?:string;editor?:string;base?:string }
 export interface SettingsBundle { marker:'threadterm-v3-settings';version:1;exportedAt:string;settings:{theme?:'light'|'dark'|'system';language?:'zh-CN'|'en';shortcuts?:Record<string,string>;notifications?:Record<string,boolean>;customThemes?:Record<string,ThemeTokens>;themeSelection?:string;terminalCompatibility?:{aiCompletionHints:boolean};quickMessages?:QuickMessage[];'chatTools.ask'?:boolean;'chatTools.sessionInfo'?:boolean;'chatTools.feedback'?:boolean;'chatTools.delegation'?:boolean} }
 export interface UsageRecord { source?:UsageSource;status?:SessionStatus;sessionId:string;provider:ProviderId;recordedAt:string;inputTokens?:number;outputTokens?:number;estimatedCost?:number;currency?:string;model?:string }
 export type UsageSource = 'created'|'native-history'|'rerun';

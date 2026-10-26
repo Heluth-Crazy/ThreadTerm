@@ -3315,6 +3315,15 @@
         },
         "border": {
           "type": "string"
+        },
+        "sidebar": {
+          "type": "string"
+        },
+        "editor": {
+          "type": "string"
+        },
+        "base": {
+          "type": "string"
         }
       },
       "required": [

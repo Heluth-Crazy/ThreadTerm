@@ -1,5 +1,5 @@
 import type { ITheme } from '@xterm/xterm';
-import { customPrimaryForeground, type ThemeTokens } from './themes';
+import { customPrimaryForeground, type ResolvedTheme, type ThemeTokens } from './themes';
 
 /** Terminal colors are independent of the application's accent color. The background equals the card it sits in
  * (`--term-bg`/`--surface` of the warm palette in styles.css); keep the two in step. */
@@ -16,5 +16,21 @@ export function terminalTheme(theme: 'light' | 'dark', customTokens?: ThemeToken
     blue: '#385f87', magenta: '#765078', cyan: '#444444', white: '#666666',
     brightBlack: '#666666', brightRed: '#a33a3a', brightGreen: '#35633e', brightYellow: '#806020',
     brightBlue: '#385f87', brightMagenta: '#765078', brightCyan: '#404040', brightWhite: '#404040',
+  };
+}
+
+/** xterm theme for a resolved palette: the terminal sits on the editor role and uses the preset's 16 ANSI colours. */
+export function xtermThemeFor(resolved: ResolvedTheme): ITheme {
+  const { colors } = resolved;
+  const [black, red, green, yellow, blue, magenta, cyan, white, brightBlack, brightRed, brightGreen, brightYellow, brightBlue, brightMagenta, brightCyan, brightWhite] = resolved.ansi;
+  return {
+    background: colors.editor,
+    foreground: colors.text,
+    cursor: colors.accent,
+    cursorAccent: colors.accentFg,
+    selectionBackground: `${colors.accent}59`,
+    selectionInactiveBackground: `${colors.accent}33`,
+    black, red, green, yellow, blue, magenta, cyan, white,
+    brightBlack, brightRed, brightGreen, brightYellow, brightBlue, brightMagenta, brightCyan, brightWhite,
   };
 }

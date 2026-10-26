@@ -512,6 +512,21 @@ test('portable settings export accepts custom themes while rejecting extra field
  assert.throws(()=>validateResult('settings.export',{...result,settings:{customThemes:{broken:{background:'#000000'}}}}));
 });
 
+test('custom themes and theme selections carry the appearance roles',()=>{
+ const base={marker:'threadterm-v3-settings',version:1,exportedAt:'2026-09-10T00:00:00Z'};
+ const theme={background:'#07111f',surface:'#10233c',text:'#ffffff',muted:'#91a4bf',accent:'#3b82f6',border:'#274768'};
+ // Old six-key packs keep validating unchanged.
+ validateResult('settings.export',{...base,settings:{customThemes:{ocean:theme}}});
+ // New optional role colours and base preset ids are part of the bundle.
+ validateResult('settings.export',{...base,settings:{customThemes:{ocean:{...theme,sidebar:'#050a13',editor:'#0b1a2b',base:'tokyo-night'}}}});
+ for(const themeSelection of ['light','dark','system','custom:ocean','preset:github-dark','system:rose-pine']){
+  validateResult('settings.export',{...base,settings:{themeSelection}});
+ }
+ // Unknown keys are still rejected: backgrounds arrive in a later phase.
+ assert.throws(()=>validateResult('settings.export',{...base,settings:{customThemes:{ocean:{...theme,backgrounds:{}}}}}));
+ assert.throws(()=>validateResult('settings.export',{...base,settings:{customThemes:{ocean:{...theme,sidebar:7}}}}));
+});
+
 test('handshake rejects old and mismatched Chat approval contracts without implying a runtime kill',()=>{
  assert.equal(protocolIncompatibleReason({kind:'challenge',nonce:'n',protocol:PROTOCOL_VERSION,contract:PROTOCOL_CONTRACT}),undefined);
  assert.match(protocolIncompatibleReason({kind:'challenge',nonce:'n',protocol:PROTOCOL_VERSION}),/older and was left running/);

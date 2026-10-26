@@ -803,21 +803,48 @@ fn parse_bundle(raw: &str) -> Result<Map<String, Value>> {
     }
     Ok(result)
 }
+/// Theme preset and family ids: `[a-z0-9-]{1,40}`. An unknown but well-formed id is valid; the renderer falls back.
+fn valid_theme_id(id: &str) -> bool {
+    !id.is_empty()
+        && id.len() <= 40
+        && id
+            .bytes()
+            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
+}
+
+fn valid_theme_colour(value: &Value) -> bool {
+    value.as_str().is_some_and(|text| {
+        text.len() == 7
+            && text.starts_with('#')
+            && text[1..].bytes().all(|byte| byte.is_ascii_hexdigit())
+    })
+}
+
 fn valid_custom_themes(value: &Value) -> bool {
-    const TOKENS: &[&str] = &["background", "surface", "text", "muted", "accent", "border"];
+    // `sidebar`/`editor` are optional role colours; `base` names the preset that supplies syntax/ANSI/status colours.
+    // Phase D backgrounds are not accepted yet, so an unknown key still rejects the pack.
+    const TOKENS: &[&str] = &[
+        "background",
+        "surface",
+        "text",
+        "muted",
+        "accent",
+        "border",
+        "sidebar",
+        "editor",
+    ];
     value.as_object().is_some_and(|themes| {
         themes.iter().all(|(name, tokens)| {
             !name.is_empty()
                 && name.len() <= 64
                 && tokens.as_object().is_some_and(|map| {
                     !map.is_empty()
-                        && map.iter().all(|(key, color)| {
-                            TOKENS.contains(&key.as_str())
-                                && color.as_str().is_some_and(|text| {
-                                    text.len() == 7
-                                        && text.starts_with('#')
-                                        && text[1..].bytes().all(|byte| byte.is_ascii_hexdigit())
-                                })
+                        && map.iter().all(|(key, token)| {
+                            if key == "base" {
+                                token.as_str().is_some_and(valid_theme_id)
+                            } else {
+                                TOKENS.contains(&key.as_str()) && valid_theme_colour(token)
+                            }
                         })
                 })
         })
@@ -914,7 +941,10 @@ fn valid_setting(key: &str, value: &Value) -> Result<()> {
         }
         "themeSelection"
             if value.as_str().is_some_and(|name| {
-                name == "light" || name == "dark" || name == "system" || name.starts_with("custom:")
+                matches!(name, "light" | "dark" | "system")
+                    || name.starts_with("custom:")
+                    || name.strip_prefix("preset:").is_some_and(valid_theme_id)
+                    || name.strip_prefix("system:").is_some_and(valid_theme_id)
             }) =>
         {
             Ok(())
@@ -1109,6 +1139,77 @@ mod tests {
             .get("browserEvalEnabled")
             .is_none());
     }
+    #[test]
+    fn theme_selection_accepts_presets_and_families_and_custom_role_keys() {
+        // Old values and old six-key packs stay valid.
+        for selection in ["light", "dark", "system", "custom:ocean", "custom:"] {
+            assert!(
+                valid_runtime_patch(&json!({ "themeSelection": selection })).is_ok(),
+                "{selection}"
+            );
+        }
+        let legacy = json!({ "background":"#07111f", "surface":"#10233c", "text":"#ffffff", "muted":"#91a4bf", "accent":"#3b82f6", "border":"#274768" });
+        assert!(valid_runtime_patch(&json!({ "customThemes": { "ocean": legacy } })).is_ok());
+        // New selection forms: any well-formed id is accepted, known or not (the renderer falls back).
+        for selection in [
+            "preset:github-dark",
+            "preset:threadterm-light",
+            "preset:unknown-but-well-formed",
+            "system:rose-pine",
+            "system:nord",
+            "system:nope",
+        ] {
+            assert!(
+                valid_runtime_patch(&json!({ "themeSelection": selection })).is_ok(),
+                "{selection}"
+            );
+        }
+        for selection in [
+            "preset:",
+            "preset:GitHub-Dark",
+            "preset:to_kyo",
+            "preset: spaced",
+            "preset:abcdefghijklmnopqrstuvwxyzabcdefghijklmnop",
+            "system:",
+            "presetx:github",
+            "purple",
+            "",
+        ] {
+            assert!(
+                valid_runtime_patch(&json!({ "themeSelection": selection })).is_err(),
+                "{selection}"
+            );
+        }
+        // Custom themes may add the sidebar/editor role colours and a base preset id.
+        let mut extended = legacy.clone();
+        extended["sidebar"] = json!("#050a13");
+        extended["editor"] = json!("#0b1a2b");
+        extended["base"] = json!("tokyo-night");
+        assert!(valid_runtime_patch(&json!({ "customThemes": { "ocean": extended } })).is_ok());
+        let mut partial = json!({ "background":"#07111f" });
+        partial["base"] = json!("unknown-but-well-formed");
+        assert!(valid_runtime_patch(&json!({ "customThemes": { "ocean": partial } })).is_ok());
+        for broken in [
+            json!({ "sidebar": "#12345" }),
+            json!({ "sidebar": "red" }),
+            json!({ "editor": "#1234567" }),
+            json!({ "base": "Tokyo Night" }),
+            json!({ "base": "" }),
+            json!({ "base": 7 }),
+            json!({ "backgrounds": {} }),
+            json!({ "extra": "#112233" }),
+        ] {
+            let mut token = legacy.clone();
+            for (key, value) in broken.as_object().unwrap() {
+                token[key] = value.clone();
+            }
+            assert!(
+                valid_runtime_patch(&json!({ "customThemes": { "ocean": token } })).is_err(),
+                "{broken}"
+            );
+        }
+    }
+
     #[test]
     fn cache_cleanup_settings_are_validated_and_not_portable() {
         for record in [
