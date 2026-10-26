@@ -1,0 +1,22 @@
+.settings-color-editor { min-width:0; }
+.color-editor-form { display:grid; gap:12px; min-width:0; outline:none; }
+.color-editor-form p { margin:0; font-size:12px; line-height:1.5; overflow-wrap:anywhere; }
+.color-editor-name { display:grid; grid-template-columns:minmax(0, 1fr) minmax(120px, 2fr); gap:12px; align-items:center; }
+.settings-drawer .settings-card.settings-color-editor .color-editor-form label[for] { margin:0; font-size:13px; }
+.color-editor-rows { display:grid; gap:8px; }
+.color-editor-row { display:grid; grid-template-columns:minmax(0, 1fr) 32px 100px auto; align-items:center; gap:8px; }
+.settings-drawer .settings-card.settings-color-editor .color-editor-form input, .color-editor-form .btn { box-sizing:border-box; height:32px; min-height:32px; border-radius:6px; }
+.settings-drawer .settings-card.settings-color-editor .color-editor-form input { min-width:0; width:100%; padding:0 8px; font-size:12px; }
+.settings-drawer .settings-card.settings-color-editor .color-editor-form input.color-editor-swatch { width:32px; padding:3px; cursor:pointer; background:var(--color-swatch); }
+.color-editor-swatch::-webkit-color-swatch-wrapper { padding:0; }
+.color-editor-swatch::-webkit-color-swatch { border:0; border-radius:3px; }
+.settings-drawer .settings-card.settings-color-editor .color-editor-hex { font-family:var(--mono); }
+.color-editor-form input[aria-invalid="true"] { border-color:var(--danger); }
+.color-editor-form input:focus-visible { outline:2px solid var(--focus-ring, var(--primary)); outline-offset:2px; }
+.color-editor-field-error { grid-column:2 / -1; font-size:12px; }
+.settings-drawer .color-editor-warnings p, .color-editor-warnings { color:var(--amber); }
+.color-editor-actions { display:flex; flex-wrap:wrap; align-items:center; gap:8px; padding-top:4px; }
+.color-editor-action-gap { flex:1; }
+.color-editor-delete { display:grid; gap:8px; border-top:1px solid var(--border); padding-top:12px; }
+.color-editor-pack-delete { display:flex; align-items:center; flex-wrap:wrap; justify-content:flex-end; gap:8px; font-size:12px; }
+@container app (max-width:720px) { .color-editor-row { grid-template-columns:minmax(0, 1fr) 32px 86px auto; } }

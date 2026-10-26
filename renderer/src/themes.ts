@@ -1,4 +1,5 @@
 import { useSyncExternalStore } from "react";
+import { captureSettingsPalette, clearSettingsPalette } from "./settingsPreviewPalette";
 import { familyPreset, presetById, THEME_PRESETS, type AnsiPalette, type SyntaxColors, type ThemePreset, type ThemeRoleColors } from "./themePresets";
 
 /** Custom theme colours. `sidebar`/`editor` are optional role overrides (default: background/surface), `base` is the
@@ -184,7 +185,45 @@ export function customTokens(value: unknown): ThemeTokens | undefined {
   if (backgrounds) result.backgrounds = backgrounds;
   return result;
 }
+let savedAppearance: ThemeState | undefined;
+let previewTokens: ThemeTokens | undefined;
+let settingsPaletteSource: ThemeState | undefined;
+/** Preview is transient: incoming settings still update the appearance restored when it ends. */
+export function setThemePreview(tokens: ThemeTokens | undefined): void {
+  previewTokens = tokens;
+  if (savedAppearance) paintThemeTokens(savedAppearance.tokens, savedAppearance.theme, savedAppearance.resolved!);
+}
 export function applyThemeTokens(tokens: ThemeTokens | undefined, theme: "light" | "dark", resolved = tokens ? customThemeResolved("current", tokens) : resolveTheme(theme, { systemDark: theme === "dark" })): void {
+  savedAppearance = { tokens, theme, resolved };
+  paintThemeTokens(tokens, theme, resolved);
+}
+function paintThemeTokens(tokens: ThemeTokens | undefined, theme: "light" | "dark", resolved: ResolvedTheme): void {
+  if (previewTokens) {
+    const saved = { tokens, theme, resolved };
+    if (!settingsPaletteSource || !sameThemeState(settingsPaletteSource, saved)) {
+      paintThemeRoot(tokens, theme, resolved);
+      captureSettingsPalette(theme);
+      settingsPaletteSource = saved;
+    }
+    tokens = previewTokens;
+    resolved = customThemeResolved("appearance-draft", tokens);
+    theme = resolved.mode;
+  } else {
+    clearSettingsPalette();
+    settingsPaletteSource = undefined;
+  }
+  paintThemeRoot(tokens, theme, resolved);
+  const next = { theme, tokens, resolved };
+  if (!sameThemeState(themeState, next)) {
+    themeState = next;
+    themeListeners.forEach(listener => listener());
+  }
+}
+function paintThemeRoot(tokens: ThemeTokens | undefined, theme: "light" | "dark", resolved: ResolvedTheme): void {
+  if (document.documentElement.dataset) {
+    document.documentElement.dataset.theme = theme;
+    document.documentElement.dataset.customTheme = tokens ? "true" : "false";
+  }
   const style = document.documentElement.style;
   for (const key of keys) style.removeProperty(`--custom-${key}`);
   style.removeProperty("--custom-primary-fg");
@@ -197,11 +236,6 @@ export function applyThemeTokens(tokens: ThemeTokens | undefined, theme: "light"
     style.setProperty("--custom-switch-off-fg", customSwitchOffForeground(tokens));
   }
   for (const [key, value] of Object.entries(themeCssVariables(resolved))) style.setProperty(key, value);
-  const next = { theme, tokens, resolved };
-  if (!sameThemeState(themeState, next)) {
-    themeState = next;
-    themeListeners.forEach(listener => listener());
-  }
 }
 
 /** A resolved theme: the concrete palette for the current selection, whatever form the selection took. */
