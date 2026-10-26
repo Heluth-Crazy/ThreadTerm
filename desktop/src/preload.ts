@@ -116,6 +116,8 @@ const bridge: ThreadTermBridge & BrowserBridge & BrowserHandoffBridge & Backgrou
 };
 
 Object.assign(bridge, {
+  // Theme packs carry their background images; the desktop validates and stores them (desktop/src/themePackCore.ts).
+  importThemePackImages: (images: unknown) => ipcRenderer.invoke('threadterm:theme-pack-import-images', images),
   htmlPreview: (command: unknown) => ipcRenderer.invoke('threadterm:html-preview', command),
   onHtmlPreviewLink: (listener: (value: { frameName: string; url: string; grantId: string }) => void) => {
     const handler = (_event: Electron.IpcRendererEvent, value: unknown) => {

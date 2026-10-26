@@ -522,8 +522,21 @@ test('custom themes and theme selections carry the appearance roles',()=>{
  for(const themeSelection of ['light','dark','system','custom:ocean','preset:github-dark','system:rose-pine']){
   validateResult('settings.export',{...base,settings:{themeSelection}});
  }
- // Unknown keys are still rejected: backgrounds arrive in a later phase.
- assert.throws(()=>validateResult('settings.export',{...base,settings:{customThemes:{ocean:{...theme,backgrounds:{}}}}}));
+ // Unknown keys are still rejected: only the documented appearance keys are portable.
+ const image='a'.repeat(64);
+ const layer={image,opacity:100,blur:8,overlay:35,fit:'cover',focusX:50,focusY:50,scale:100};
+ // A theme may carry one picture layer per region; an empty map means no backgrounds.
+ validateResult('settings.export',{...base,settings:{customThemes:{ocean:{...theme,backgrounds:{window:layer,chat:{...layer,fit:'tile',blur:0,scale:200}}}}}});
+ // A layer may show the window picture (`inherit`); the wire schema only checks the type, the runtime rejects a window
+ // layer that inherits from itself.
+ validateResult('settings.export',{...base,settings:{customThemes:{ocean:{...theme,backgrounds:{window:layer,chat:{...layer,image:'inherit',overlay:20}}}}}});
+ validateResult('settings.export',{...base,settings:{customThemes:{ocean:{...theme,backgrounds:{}}}}});
+ assert.throws(()=>validateResult('settings.export',{...base,settings:{customThemes:{ocean:{...theme,backgrounds:{inspector:layer}}}}}));
+ assert.throws(()=>validateResult('settings.export',{...base,settings:{customThemes:{ocean:{...theme,backgrounds:{window:{...layer,opacity:'40'}}}}}}));
+ assert.throws(()=>validateResult('settings.export',{...base,settings:{customThemes:{ocean:{...theme,backgrounds:{window:{...layer,fit:'fill'}}}}}}));
+ assert.throws(()=>validateResult('settings.export',{...base,settings:{customThemes:{ocean:{...theme,backgrounds:{window:{...layer,image:7}}}}}}));
+ assert.throws(()=>validateResult('settings.export',{...base,settings:{customThemes:{ocean:{...theme,backgrounds:{window:{...layer,scale:100,extra:1}}}}}}));
+ assert.throws(()=>validateResult('settings.export',{...base,settings:{customThemes:{ocean:{...theme,extra:'#112233'}}}}));
  assert.throws(()=>validateResult('settings.export',{...base,settings:{customThemes:{ocean:{...theme,sidebar:7}}}}));
 });
 

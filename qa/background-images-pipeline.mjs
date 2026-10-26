@@ -10,7 +10,7 @@ import { existsSync } from 'node:fs';
 import { mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { build as esbuild } from 'esbuild';
 import { electron } from './lib/desktop1.mjs';
@@ -26,12 +26,16 @@ const appDir = join(scratch, 'app'), sources = join(scratch, 'sources'), work = 
 const profile = join(scratch, 'profile'), data = join(scratch, 'data'), fakeBin = join(scratch, 'bin');
 const backgrounds = join(profile, 'backgrounds'), cache = join(backgrounds, 'Cache');
 const pickTarget = join(sources, 'big.png');
+// The theme pack round trip: one exported file, then a second profile that has never seen a picture.
+const exportPath = join(scratch, 'exported-themes.json');
+const profile2 = join(scratch, 'profile-fresh'), data2 = join(scratch, 'data-fresh');
+const backgrounds2 = join(profile2, 'backgrounds');
 const report = { passed: false, checks: [], errors: [], limitations: [] };
 const check = (value) => { report.checks.push(value); console.log(`PASS ${value}`); };
 let app, page, releaseLock;
 
-function env() {
-  const value = Object.fromEntries(Object.entries(process.env).filter(([key]) => !['path', 'temp', 'tmp', 'home', 'userprofile', 'codex_home', 'threadterm_v3_data', 'threadterm_v3_user_data', 'threadterm_v3_pipe', 'threadterm_v3_runtime'].includes(key.toLowerCase())));
+function env(overrides = {}) {
+  const value = Object.fromEntries(Object.entries(process.env).filter(([key]) => !['path', 'temp', 'tmp', 'home', 'userprofile', 'codex_home', 'threadterm_v3_data', 'threadterm_v3_user_data', 'threadterm_v3_pipe', 'threadterm_v3_runtime', 'threadterm_v3_export_theme_qa'].includes(key.toLowerCase())));
   Object.assign(value, {
     TEMP: base, TMP: base,
     // Only fake providers, node and System32: no real agent CLI can be started by accident.
@@ -40,9 +44,25 @@ function env() {
     THREADTERM_V3_DATA: data, THREADTERM_V3_USER_DATA: profile, THREADTERM_V3_PIPE: `\\\\.\\pipe\\tt-bg-${randomUUID()}`,
     THREADTERM_V3_RUNTIME: runtime,
     THREADTERM_V3_PICK_BACKGROUND_QA: pickTarget,
-  });
+    // The theme export writes here instead of opening a native save dialog.
+    THREADTERM_V3_EXPORT_THEME_QA: exportPath,
+  }, overrides);
   assert.equal(Object.keys(value).filter(key => key.toLowerCase() === 'path').length, 1, 'PATH isolation keeps exactly one spelling');
   return value;
+}
+
+/** Patches a setting through the runtime's own revision-fenced method, like the app does. */
+const patchSettings = (patch) => page.evaluate(async (payload) => {
+  const snapshot = await window.threadterm.request('runtime.snapshot', {});
+  return window.threadterm.request('settings.update', { patch: payload, expectedRevision: snapshot.settings.revision, operationId: `qa-theme-pack-${Date.now()}` });
+}, patch);
+const currentSettings = () => page.evaluate(async () => (await window.threadterm.request('runtime.snapshot', {})).settings);
+
+/** Injects the bundled renderer modules (background pipeline, theme pack, background maths) into the app page. */
+async function loadBundle() {
+  const bundle = await esbuild({ entryPoints: [join(root, 'qa/fixtures/background-pipeline-qa.ts')], bundle: true, platform: 'browser', format: 'iife', write: false, logLevel: 'error' });
+  await page.evaluate(bundle.outputFiles[0].text);
+  await page.waitForFunction(() => Boolean(window.__ttBackground));
 }
 
 const manifestPath = join(backgrounds, 'manifest.json');
@@ -114,9 +134,7 @@ try {
   await page.waitForFunction(() => Boolean(window.threadterm));
   check('the app started with an isolated profile and the desktop bridge');
 
-  const bundle = await esbuild({ entryPoints: [join(root, 'qa/fixtures/background-pipeline-qa.ts')], bundle: true, platform: 'browser', format: 'iife', write: false, logLevel: 'error' });
-  await page.evaluate(bundle.outputFiles[0].text);
-  await page.waitForFunction(() => Boolean(window.__ttBackground));
+  await loadBundle();
   check('the renderer background pipeline loaded in the app page');
 
   const fixtures = await makeFixtures();
@@ -170,6 +188,32 @@ try {
   assert.deepEqual(again.variants['8'], baked.variants['8'], 'a baked variant is reused, not baked twice');
   assert.deepEqual((await readdir(cache)).filter(name => name.includes(first.id)), [`${first.id}-b8.webp`]);
   check('blur 8 baked once into Cache/<id>-b8.webp at 1920x1152 and is served by the protocol');
+
+  // --- theme export: palette-only stays plain JSON, a theme with pictures becomes a pack --------------------
+  const palette = { background: '#1a1b26', surface: '#1f2335', text: '#c0caf5', muted: '#7aa2f7', accent: '#7aa2f7', border: '#1f2335' };
+  const layer = (image) => ({ image, opacity: 100, blur: 0, overlay: 35, fit: 'cover', focusX: 50, focusY: 50, scale: 100 });
+  await patchSettings({ customThemes: { 'QA Palette': palette }, themeSelection: 'custom:QA Palette' });
+  const plainExport = await page.evaluate(() => window.threadterm.exportFile('theme'));
+  assert.equal(plainExport.path, exportPath, 'the QA override replaced the native save dialog');
+  const plainPack = JSON.parse(await readFile(exportPath, 'utf8'));
+  assert.deepEqual(plainPack, { 'QA Palette': palette }, 'a palette-only export is still the plain customThemes object');
+  check('a palette-only theme export is still the plain customThemes JSON');
+
+  const themeName = 'QA Pack (custom)';
+  const themes = { [themeName]: { ...palette, base: 'tokyo-night', backgrounds: { window: layer(first.id), chat: layer(alpha.id) } } };
+  await patchSettings({ customThemes: themes, themeSelection: `custom:${themeName}` });
+  const packExport = await page.evaluate(() => window.threadterm.exportFile('theme'));
+  const packText = await readFile(packExport.path, 'utf8');
+  const pack = JSON.parse(packText);
+  assert.equal(pack.threadtermThemePack, 2, 'a theme with pictures exports as a version 2 pack');
+  assert.deepEqual(pack.themes, themes, 'the pack carries the theme with its two background layers');
+  assert.deepEqual(Object.keys(pack.images).sort(), [first.id, alpha.id].sort(), 'the pack embeds exactly the referenced pictures');
+  for (const id of [first.id, alpha.id]) {
+    const bytes = Buffer.from(pack.images[id].webp, 'base64');
+    assert.equal(createHash('sha256').update(bytes).digest('hex'), id, 'an embedded picture hashes to its own id');
+    assert.deepEqual(bytes, await readFile(recordPath(id)), 'an embedded picture is the stored file, byte for byte');
+  }
+  check(`theme export embedded 2 pictures in a version 2 pack (${Math.round(packText.length / 1024)} KiB of JSON)`);
 
   // --- rejected sources --------------------------------------------------------------------------------------
   const rejected = await page.evaluate(async paths => {
@@ -230,6 +274,45 @@ try {
   const listed = await call('listBackgroundImages');
   assert.deepEqual(listed.map(record => record.id), [alpha.id]);
   check('listBackgroundImages reads the manifest the desktop wrote');
+
+  // --- import into a fresh profile ---------------------------------------------------------------------------
+  await app.close();
+  app = undefined;
+  assert.equal(await exists(backgrounds2), false, 'the second profile has never imported a picture');
+  app = await electron.launch({ args: [appDir], cwd: root, env: env({ THREADTERM_V3_DATA: data2, THREADTERM_V3_USER_DATA: profile2, THREADTERM_V3_PIPE: `\\\\.\\pipe\\tt-bg2-${randomUUID()}` }), timeout: 60000 });
+  page = await app.firstWindow({ timeout: 45000 });
+  page.setDefaultTimeout(30000);
+  page.on('pageerror', error => report.errors.push(error.message));
+  await page.waitForFunction(() => Boolean(window.threadterm));
+  await loadBundle();
+  check('the app restarted with a fresh profile and no background store');
+
+  const imported = await page.evaluate(text => window.__ttBackground.importThemePack(text), packText);
+  assert.equal(imported.version, 2);
+  assert.deepEqual(imported.themes, themes, 'the imported theme keeps its palette, base and backgrounds');
+  assert.deepEqual(imported.rejected, [], 'both pictures were accepted');
+  assert.deepEqual(imported.missing, []);
+  assert.deepEqual(imported.records.map(record => record.id).sort(), [first.id, alpha.id].sort(), 'both pictures were stored under their pack ids');
+  for (const record of imported.records) {
+    assert.ok(record.stats.dark.length > 0 && record.stats.bright.length > 0, 'the import recomputed the readability statistics');
+    assert.deepEqual(await readFile(join(backgrounds2, `${record.id}.webp`)), Buffer.from(pack.images[record.id].webp, 'base64'), 'the stored picture equals the one the pack exported');
+  }
+  assert.deepEqual(await imageSize(`threadterm-bg://image/${first.id}`), { width: 3840, height: 2304 }, 'the imported picture is served by the fresh profile');
+  check(`a fresh profile imported the pack: ${imported.records.length} pictures stored with statistics, served by the protocol`);
+
+  // The imported theme is accepted by the runtime's settings validation and comes back unchanged.
+  await patchSettings({ customThemes: imported.themes });
+  const storedSettings = await currentSettings();
+  assert.deepEqual(storedSettings.customThemes, themes, 'the imported theme survives the settings round trip');
+  check('the runtime accepted the imported theme with its backgrounds');
+
+  // A pack whose picture does not hash to its id is refused, and the rest of the import still lands.
+  const tampered = JSON.parse(packText);
+  tampered.images = { [alpha.id]: tampered.images[first.id] };
+  const refused = await page.evaluate(text => window.__ttBackground.importThemePack(text), JSON.stringify(tampered));
+  assert.deepEqual(refused.rejected, [alpha.id], 'the tampered picture is refused');
+  assert.deepEqual(refused.records, []);
+  check('a pack picture whose bytes do not hash to its id is refused');
 
   report.passed = true;
 } catch (error) {

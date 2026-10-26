@@ -3324,6 +3324,9 @@
         },
         "base": {
           "type": "string"
+        },
+        "backgrounds": {
+          "$ref": "#/definitions/ThemeBackgrounds"
         }
       },
       "required": [
@@ -3333,6 +3336,78 @@
         "muted",
         "accent",
         "border"
+      ],
+      "additionalProperties": false
+    },
+    "ThemeBackgrounds": {
+      "type": "object",
+      "properties": {
+        "window": {
+          "$ref": "#/definitions/ThemeBackgroundLayer"
+        },
+        "sidebar": {
+          "$ref": "#/definitions/ThemeBackgroundLayer"
+        },
+        "sidebar2": {
+          "$ref": "#/definitions/ThemeBackgroundLayer"
+        },
+        "chat": {
+          "$ref": "#/definitions/ThemeBackgroundLayer"
+        },
+        "editor": {
+          "$ref": "#/definitions/ThemeBackgroundLayer"
+        },
+        "terminal": {
+          "$ref": "#/definitions/ThemeBackgroundLayer"
+        },
+        "browser": {
+          "$ref": "#/definitions/ThemeBackgroundLayer"
+        }
+      },
+      "additionalProperties": false
+    },
+    "ThemeBackgroundLayer": {
+      "type": "object",
+      "properties": {
+        "image": {
+          "type": "string"
+        },
+        "opacity": {
+          "type": "number"
+        },
+        "blur": {
+          "type": "number"
+        },
+        "overlay": {
+          "type": "number"
+        },
+        "fit": {
+          "type": "string",
+          "enum": [
+            "cover",
+            "contain",
+            "tile"
+          ]
+        },
+        "focusX": {
+          "type": "number"
+        },
+        "focusY": {
+          "type": "number"
+        },
+        "scale": {
+          "type": "number"
+        }
+      },
+      "required": [
+        "image",
+        "opacity",
+        "blur",
+        "overlay",
+        "fit",
+        "focusX",
+        "focusY",
+        "scale"
       ],
       "additionalProperties": false
     },

@@ -19,7 +19,7 @@ target/
 /runtime/target-send-trace/
 /runtime/target-ua/
 /runtime/target-check/
-/runtime/target-d1/
+/runtime/target-*/
 # Pinned Microsoft ConPTY pair, fetched and verified by `npm run prepare:conpty`
 /runtime/vendor/
 /providers/claude-sdk/dist/

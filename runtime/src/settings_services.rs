@@ -820,9 +820,71 @@ fn valid_theme_colour(value: &Value) -> bool {
     })
 }
 
+/// Theme background regions and the integer range of each layer number (phase D: one picture per region).
+fn valid_theme_background_layer(region: &str, layer: &Value) -> bool {
+    const REGIONS: &[&str] = &[
+        "window",
+        "sidebar",
+        "sidebar2",
+        "chat",
+        "editor",
+        "terminal",
+        "browser",
+    ];
+    const KEYS: &[&str] = &[
+        "image",
+        "opacity",
+        "blur",
+        "overlay",
+        "fit",
+        "focusX",
+        "focusY",
+        "scale",
+    ];
+    if !REGIONS.contains(&region) {
+        return false;
+    }
+    let Some(map) = layer.as_object() else {
+        return false;
+    };
+    // Exactly the eight keys: an unknown key or a missing one rejects the theme.
+    if map.len() != KEYS.len() || !KEYS.iter().all(|key| map.contains_key(*key)) {
+        return false;
+    }
+    let integer = |key: &str, low: u64, high: u64| {
+        map.get(key)
+            .and_then(Value::as_u64)
+            .is_some_and(|value| value >= low && value <= high)
+    };
+    map.get("image").and_then(Value::as_str).is_some_and(|id| {
+        // `inherit` shows the window picture; it is meaningless for the window region itself.
+        (id == "inherit" && region != "window")
+            || (id.len() == 64
+                && id
+                    .bytes()
+                    .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte)))
+    }) && matches!(
+        map.get("fit").and_then(Value::as_str),
+        Some("cover" | "contain" | "tile")
+    ) && integer("opacity", 0, 100)
+        && integer("blur", 0, 40)
+        && integer("overlay", 0, 100)
+        && integer("focusX", 0, 100)
+        && integer("focusY", 0, 100)
+        && integer("scale", 50, 200)
+}
+
+fn valid_theme_backgrounds(value: &Value) -> bool {
+    value.as_object().is_some_and(|regions| {
+        regions
+            .iter()
+            .all(|(region, layer)| valid_theme_background_layer(region, layer))
+    })
+}
+
 fn valid_custom_themes(value: &Value) -> bool {
-    // `sidebar`/`editor` are optional role colours; `base` names the preset that supplies syntax/ANSI/status colours.
-    // Phase D backgrounds are not accepted yet, so an unknown key still rejects the pack.
+    // `sidebar`/`editor` are optional role colours; `base` names the preset that supplies syntax/ANSI/status colours;
+    // `backgrounds` holds one image layer per region. An unknown key still rejects the pack.
     const TOKENS: &[&str] = &[
         "background",
         "surface",
@@ -842,6 +904,8 @@ fn valid_custom_themes(value: &Value) -> bool {
                         && map.iter().all(|(key, token)| {
                             if key == "base" {
                                 token.as_str().is_some_and(valid_theme_id)
+                            } else if key == "backgrounds" {
+                                valid_theme_backgrounds(token)
                             } else {
                                 TOKENS.contains(&key.as_str()) && valid_theme_colour(token)
                             }
@@ -1196,7 +1260,9 @@ mod tests {
             json!({ "base": "Tokyo Night" }),
             json!({ "base": "" }),
             json!({ "base": 7 }),
-            json!({ "backgrounds": {} }),
+            json!({ "backgrounds": "none" }),
+            json!({ "backgrounds": [] }),
+            json!({ "backgrounds": { "window": null } }),
             json!({ "extra": "#112233" }),
         ] {
             let mut token = legacy.clone();
@@ -1208,6 +1274,122 @@ mod tests {
                 "{broken}"
             );
         }
+    }
+
+    #[test]
+    fn theme_backgrounds_accept_exact_layers_and_reject_anything_else() {
+        let legacy = json!({ "background":"#07111f", "surface":"#10233c", "text":"#ffffff", "muted":"#91a4bf", "accent":"#3b82f6", "border":"#274768" });
+        let id = "a".repeat(64);
+        let layer = |image: &str| {
+            json!({
+                "image": image,
+                "opacity": 100,
+                "blur": 8,
+                "overlay": 35,
+                "fit": "cover",
+                "focusX": 50,
+                "focusY": 50,
+                "scale": 100
+            })
+        };
+        let patch = |backgrounds: Value| {
+            let mut token = legacy.clone();
+            token["backgrounds"] = backgrounds;
+            json!({ "customThemes": { "ocean (custom)": token } })
+        };
+        // An empty map means "no backgrounds" and every region may be used at the edges of its range.
+        assert!(valid_runtime_patch(&patch(json!({}))).is_ok());
+        for region in [
+            "window",
+            "sidebar",
+            "sidebar2",
+            "chat",
+            "editor",
+            "terminal",
+            "browser",
+        ] {
+            let mut token = legacy.clone();
+            token["backgrounds"] = json!({});
+            token["backgrounds"][region] = layer(&id);
+            assert!(
+                valid_runtime_patch(&json!({ "customThemes": { "ocean": token } })).is_ok(),
+                "{region}"
+            );
+        }
+        // A layer may show the window picture (`inherit`) on every region except the window itself.
+        for region in ["sidebar", "sidebar2", "chat", "editor", "terminal", "browser"] {
+            let mut token = legacy.clone();
+            token["backgrounds"] = json!({});
+            token["backgrounds"][region] = {
+                let mut inherit = layer(&id);
+                inherit["image"] = json!("inherit");
+                inherit
+            };
+            assert!(
+                valid_runtime_patch(&json!({ "customThemes": { "ocean": token } })).is_ok(),
+                "{region}"
+            );
+        }
+        // The window region has nothing to inherit from.
+        {
+            let mut token = legacy.clone();
+            let mut inherit = layer(&id);
+            inherit["image"] = json!("inherit");
+            token["backgrounds"] = json!({ "window": inherit });
+            assert!(valid_runtime_patch(&json!({ "customThemes": { "ocean": token } })).is_err());
+        }
+        let all = json!({
+            "window": layer(&id),
+            "sidebar": {"image": id.clone(), "opacity": 0, "blur": 0, "overlay": 0, "fit": "contain", "focusX": 0, "focusY": 100, "scale": 50},
+            "editor": {"image": id.clone(), "opacity": 100, "blur": 40, "overlay": 100, "fit": "tile", "focusX": 100, "focusY": 0, "scale": 200}
+        });
+        assert!(valid_runtime_patch(&patch(all)).is_ok());
+
+        let mut broken_layers = Vec::new();
+        for (key, value) in [
+            ("image", json!("Inherit")),
+            ("image", json!("inherit ")),
+            ("image", json!("inherited")),
+            ("image", json!("A".repeat(64))),
+            ("image", json!("a".repeat(63))),
+            ("image", json!("g".repeat(64))),
+            ("image", json!("a".repeat(65))),
+            ("image", json!(7)),
+            ("opacity", json!(101)),
+            ("opacity", json!(-1)),
+            ("opacity", json!(50.5)),
+            ("blur", json!(41)),
+            ("blur", json!(-1)),
+            ("overlay", json!(101)),
+            ("overlay", json!("40")),
+            ("fit", json!("fill")),
+            ("fit", json!("COVER")),
+            ("focusX", json!(101)),
+            ("focusY", json!(-1)),
+            ("scale", json!(49)),
+            ("scale", json!(201)),
+            ("scale", json!(true)),
+            ("extra", json!(1)),
+        ] {
+            let mut broken = layer(&id);
+            broken[key] = value.clone();
+            broken_layers.push(json!({ "window": broken }));
+        }
+        let mut missing_key = layer(&id);
+        missing_key.as_object_mut().unwrap().remove("blur");
+        broken_layers.push(json!({ "window": missing_key }));
+        let mut extra_key = layer(&id);
+        extra_key["extra"] = json!(1);
+        broken_layers.push(json!({ "window": extra_key }));
+        // Unknown regions, non-object layers and a layer that is not a map at all.
+        broken_layers.push(json!({ "inspector": layer(&id) }));
+        broken_layers.push(json!({ "window": [layer(&id)] }));
+        broken_layers.push(json!({ "window": { "image": id } }));
+        broken_layers.push(json!({ "window": layer(&id), "chat": layer("short") }));
+        for backgrounds in broken_layers {
+            assert!(valid_runtime_patch(&patch(backgrounds.clone())).is_err(), "{backgrounds}");
+        }
+        assert!(valid_runtime_patch(&patch(json!({ "window": layer(&id) }))).is_ok());
     }
 
     #[test]

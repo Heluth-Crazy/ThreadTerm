@@ -25,6 +25,7 @@ import { qaOpenExternalPathsOverride } from './externalFiles.js';
 import { HtmlPreviewGrantManager, registerHtmlPreviewScheme, mergePreviewIsolationFeatures, installHtmlPreviewSession, attachHtmlPreviewWindow } from './htmlPreview.js';
 import { registerHtmlPreviewIpc } from './htmlPreviewIpc.js';
 import { backgroundImagesFolder, installBackgroundImageSession, registerBackgroundImageIpc, registerBackgroundImageScheme } from './backgroundImages.js';
+import { buildThemeExport, importThemePackImages, qaThemeExportOverride } from './themePackCore.js';
 import { appCspForHtml, buildAppCsp } from './appCsp.js';
 
 registerHtmlPreviewScheme(protocol);
@@ -433,16 +434,25 @@ function registerIpc(): void {
     if (kind !== 'settings' && kind !== 'theme') throw new Error('Unsupported export kind');
     const content = kind === 'settings' ? await adminRuntime.request('settings.export', {}) : (await adminRuntime.request('runtime.snapshot', {})).settings.customThemes;
     if (kind === 'theme' && (!content || typeof content !== 'object' || Array.isArray(content) || Object.keys(content).length === 0)) throw new Error('There are no custom themes to export');
+    // A theme that carries background images exports them inside the pack; a palette-only export stays plain JSON.
+    const exported = kind === 'theme' ? await buildThemeExport(backgroundImagesFolder(), content) : undefined;
+    if (exported?.missing.length) console.warn(`Theme export skipped ${exported.missing.length} background image(s) missing from the store`);
     const owner = BrowserWindow.fromWebContents(event.sender);
     const options = {
       title: kind === 'settings' ? 'Save ThreadTerm settings' : 'Export ThreadTerm themes',
       defaultPath: kind === 'settings' ? 'threadterm-v3-settings.json' : 'threadterm-v3-themes.json',
       filters: [{ name: 'JSON', extensions: ['json'] }],
     } satisfies Electron.SaveDialogOptions;
-    const saved = owner ? await dialog.showSaveDialog(owner, options) : await dialog.showSaveDialog(options);
+    // QA points the theme export at a fixture path so the real app never opens a native save dialog.
+    const qaPath = kind === 'theme' ? qaThemeExportOverride(process.env.THREADTERM_V3_EXPORT_THEME_QA, app.isPackaged) : undefined;
+    const saved = qaPath ? { canceled: false, filePath: qaPath } : owner ? await dialog.showSaveDialog(owner, options) : await dialog.showSaveDialog(options);
     if (saved.canceled || !saved.filePath) return null;
-    writeFileSync(saved.filePath, JSON.stringify(content, null, 2) + '\n');
+    writeFileSync(saved.filePath, JSON.stringify(exported ? exported.pack : content, null, 2) + '\n');
     return { path: saved.filePath };
+  });
+  ipcMain.handle('threadterm:theme-pack-import-images', async (event, images: unknown) => {
+    assertTrustedRenderer(event);
+    return importThemePackImages(backgroundImagesFolder(), images);
   });
   ipcMain.handle('threadterm:window-action', async (event, action: unknown) => { assertTrustedRenderer(event); return windowAction(event, action); });
   ipcMain.handle('threadterm:window-state', (event) => { assertTrustedRenderer(event); return { maximized: BrowserWindow.fromWebContents(event.sender)?.isMaximized() ?? false }; });
