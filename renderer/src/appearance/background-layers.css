@@ -1,0 +1,34 @@
+/* Only image-backed regions opt in. Solid tokens remain unchanged for dense content and overlays. */
+.app-shell[data-has-backgrounds] { isolation:isolate; }
+.appearance-backgrounds { position:absolute; inset:0; z-index:-1; pointer-events:none; overflow:hidden; }
+.app-shell[data-window-background] > .titlebar,
+.app-shell[data-window-background] .runtime-workspace .ws-content:not(.pane-workspace),
+.app-shell[data-window-background] .runtime-workspace .ws-top { background:transparent; }
+.app-shell > .sidebar[data-background-region],
+.wb-panel[data-background-region],
+.wb-panel[data-background-region] .file-list.wb-embedded-tools,
+.wb-panel[data-background-region] .wb-tools-head { background:transparent; }
+.workspace-pane[data-background-region] > .pane-card { position:relative; background:transparent; border-color:transparent; }
+.workspace-pane[data-background-region] .workspace-tab.active { background:transparent; border-color:transparent; box-shadow:none; }
+.workspace-pane[data-background-region] .workspace-tab.active::before,
+.workspace-pane[data-background-region] .workspace-tab.active::after { display:none; }
+.workspace-pane[data-background-region="chat"] :is(.chat-view,.v3-chat-log,.chat-log-shell),
+.workspace-pane[data-background-region="terminal"] :is(.terminal-wrap,.term,.term-modebar),
+.workspace-pane[data-background-region="editor"] :is(.file-workspace,.editor-area,.tt-editor-shell,.file-preview,.file-bar,.tt-preview-markdown,.file-image-preview),
+.workspace-pane[data-background-region="editor"] .tt-editor-shell :is(.cm-editor,.cm-scroller,.cm-gutters),
+.workspace-pane[data-background-region="browser"] :is(.wb-web-preview,.file-bar.wb-browser-toolbar,.wb-browser-newtab) { background:transparent; }
+.workspace-pane[data-background-region="browser"] .tt-browser-view[style] { background:transparent !important; }
+/* Inputs, cards, diffs and code always have an opaque base, including otherwise tinted fills. */
+.app-shell[data-has-backgrounds] :is(.chat-compose-shell,.chat-tool-card,.tool-diff,.chat-tool-activity,.chat-part.tool,.chat-question-wrapper) { background:var(--surface); }
+.app-shell[data-has-backgrounds] :is(.codex-markdown,.tt-preview-markdown,.markdown-preview) :is(pre,code) { background:linear-gradient(var(--soft),var(--soft)),var(--surface); }
+.app-shell[data-has-backgrounds] :is(.codex-markdown,.tt-preview-markdown,.markdown-preview) pre code { background:transparent; }
+.app-shell[data-has-backgrounds] :is(.wb-browser-address,.wb-browser-share) { background:var(--surface); }
+.app-shell[data-has-backgrounds] :is(.chip,.badge) { --soft:color-mix(in srgb,var(--text) 5.5%,var(--surface)); --primary-tint:color-mix(in srgb,var(--primary) 12%,var(--surface)); }
+.app-shell[data-has-backgrounds] .chip.st-needs { background:color-mix(in srgb,var(--st-needs) 11%,var(--surface)); }
+.app-shell[data-has-backgrounds] .chip.st-running { background:color-mix(in srgb,var(--st-running) 11%,var(--surface)); }
+.app-shell[data-has-backgrounds] .chip.st-failed { background:color-mix(in srgb,var(--st-failed) 11%,var(--surface)); }
+.app-shell[data-has-backgrounds] .chip.st-ended { background:color-mix(in srgb,var(--st-ended) 12%,var(--surface)); }
+.app-shell[data-has-backgrounds] .chip.st-stalled { background:color-mix(in srgb,var(--st-stalled) 11%,var(--surface)); }
+.app-shell[data-has-backgrounds] :is(.chip.is-accent,.chat-menu-badge) { background:color-mix(in srgb,var(--primary) 11%,var(--surface)); }
+.app-shell[data-has-backgrounds] .badge.amber { background:color-mix(in srgb,var(--amber) 18%,var(--surface)); }
+.workspace-pane[data-background-region="editor"] :is(.tt-diff-shell,.tt-diff-host,.merge-editor,.wb-review-diff) { background:var(--editor); }

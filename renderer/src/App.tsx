@@ -91,6 +91,7 @@ const TerminalSurface = lazy(async () => ({
 const ChatView = lazy(async () => ({
   default: (await import("./components/ChatView")).ChatView,
 }));
+const BackgroundLayers = lazy(() => import("./appearance/BackgroundLayers"));
 
 type Route = {
   kind: "all" | "inbox" | "project" | "session" | "workspace" | "workbench" | "usage";
@@ -208,11 +209,11 @@ export function App() {
       : undefined;
   const systemDark = useSystemDark();
   const selection = String(data?.settings.themeSelection ?? data?.settings.theme ?? "system");
-  const resolvedTheme = useMemo(() => resolveTheme(selection, { systemDark, customThemes: data?.settings.customThemes as Record<string, ThemeTokens> | undefined }), [selection, systemDark, data?.settings.customThemes]);
+  const resolvedTheme = useMemo(() => resolveTheme(selection, { systemDark, customThemes: data?.settings.customThemes as Record<string, ThemeTokens> | undefined }), [selection, systemDark, data?.settings.revision]);
   const theme = resolvedTheme.mode;
   const locale: Locale = localeFromSettings(data?.settings);
   const t = (key: Parameters<typeof translate>[1]) => translate(locale, key);
-  const themeTokens = useMemo(() => data ? customTheme(data.settings) : undefined, [selection, data?.settings.customThemes]);
+  const themeTokens = useMemo(() => data ? customTheme(data.settings) : undefined, [selection, data?.settings.revision]);
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
     document.documentElement.dataset.customTheme = themeTokens
@@ -379,6 +380,7 @@ export function App() {
       <AgentIconsProvider providers={data?.providers ?? []}>
       <AppSettingsProvider settings={data?.settings}>
       <div className={`${floatingWindow ? "app-shell floating-shell" : "app-shell"}${windowMaximized ? " is-maximized" : ""}${nativeChrome ? " native-chrome" : ""}`}>
+        {themeTokens?.backgrounds && <Suspense fallback={null}><BackgroundLayers theme={resolvedTheme} backgrounds={themeTokens.backgrounds} layoutKey={`${route.kind}:${route.id ?? ""}`}/></Suspense>}
         <header className="titlebar app-chrome">
           <div className="drag-region"><span className="chrome-title">ThreadTerm</span></div>
           <div className="window-controls">

@@ -10,6 +10,7 @@ import { registerTerminalInputTarget } from '../terminalInputTargets';
 import { useTranslation } from '../i18n';
 import { xtermThemeFor } from '../terminalTheme';
 import { resolveTheme, useThemeState } from '../themes';
+import { useTerminalBackground } from '../appearance/backgroundState';
 import { shiftEnterBytes } from '../terminalKeys';
 import { createResizeScheduler, RESIZE_QUIET_MS } from '../terminalResize';
 import { conptyHost, windowsPtyFor } from '../terminalHost';
@@ -106,6 +107,7 @@ export function TerminalSurface({ sessionId, provider, theme, terminalCompatibil
   const {locale} = useTranslation();
   const { resolved } = useThemeState();
   const terminalPalette = resolved ?? resolveTheme(theme, { systemDark: theme === 'dark' });
+  const transparentBackground = useTerminalBackground();
   const surface = useContext(SessionSurfaceContext);
   const openFileRef = useRef(surface?.openFile);
   openFileRef.current = surface?.openFile;
@@ -216,7 +218,8 @@ export function TerminalSurface({ sessionId, provider, theme, terminalCompatibil
     }
     startupGenerationRef.current = { sessionId, attempt: launchAttempt, status: session?.status };
   }, [session?.status, sessionId, launchAttempt]);
-  useEffect(() => { if (terminalRef.current) terminalRef.current.options.theme = xtermThemeFor(terminalPalette); }, [terminalPalette]);
+  // xterm checks transparent black instead of the composited image; its correction would dim light-theme text.
+  useEffect(() => { const terminal=terminalRef.current; if (terminal) { terminal.options.allowTransparency=transparentBackground; terminal.options.minimumContrastRatio=transparentBackground?1:4.5; terminal.options.theme={...xtermThemeFor(terminalPalette),...(transparentBackground?{background:'#00000000'}:{})}; } }, [terminalPalette,transparentBackground]);
   useEffect(() => {
     const element = host.current; if (!element) return;
     let disposed = false; let unsubscribeOutput: (() => void) | undefined; let leaseEpoch: number | undefined;
@@ -237,7 +240,7 @@ export function TerminalSurface({ sessionId, provider, theme, terminalCompatibil
     const pendingWrites = new Set<() => void>();
     let resizeRetried: string | undefined;
     const resizeFailureNote = "Terminal resize was rejected; the provider may keep using the previous size until the next successful resize.";
-    const terminal = new Terminal({ ...(fixedSize ? { cols: fixedSize.cols, rows: fixedSize.rows } : {}), cursorBlink: true, fontFamily: '"Cascadia Code", Consolas, monospace', fontSize: 13, lineHeight: 1.35, minimumContrastRatio: 4.5, scrollback: 10000, scrollOnEraseInDisplay: false, windowsPty: window.threadterm.windowsPty, theme: xtermThemeFor(terminalPalette) });
+    const terminal = new Terminal({ ...(fixedSize ? { cols: fixedSize.cols, rows: fixedSize.rows } : {}), allowTransparency: transparentBackground, cursorBlink: true, fontFamily: '"Cascadia Code", Consolas, monospace', fontSize: 13, lineHeight: 1.35, minimumContrastRatio: transparentBackground ? 1 : 4.5, scrollback: 10000, scrollOnEraseInDisplay: false, windowsPty: window.threadterm.windowsPty, theme: {...xtermThemeFor(terminalPalette),...(transparentBackground?{background:'#00000000'}:{})} });
     terminalRef.current = terminal;
     // xterm's Windows heuristics must match the console host the runtime really uses (terminalHost.ts).
     void conptyHost().then(host => { if (!disposed) terminal.options.windowsPty = windowsPtyFor(window.threadterm.windowsPty, host); });

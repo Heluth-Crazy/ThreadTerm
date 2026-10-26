@@ -1,4 +1,4 @@
-import { type CSSProperties, type DragEvent as ReactDragEvent, lazy, Suspense, useEffect, useRef, useState } from "react";
+import { type CSSProperties, type DragEvent as ReactDragEvent, lazy, Suspense, useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { ContentRef, FileReference, PaneLayout, PreviewAssociation, ProviderCapability, Session, Snapshot } from "@threadterm/protocol";
 import { confirmCloseEditors } from "../dirtyEditors";
 import { displayPath } from '../displayPath';
@@ -44,6 +44,7 @@ import { openForkInPane } from '../chatFork';
 import { isDocumentPinned, sessionDocumentError } from '../sessionDocuments';
 import { fileTabMenuItems } from '../contextMenuSurfaceItems';
 import type { ContextMenuItem } from './ContextMenu';
+import { backgroundLayoutEvent } from '../appearance/backgroundState';
 
 const TaskMapView = lazy(() => import('./TaskMapView'));
 const GroupChatView = lazy(async () => ({ default: (await import('./GroupChatView')).GroupChatView }));
@@ -549,9 +550,11 @@ function Pane({
   const companionOwner=session?.id??(tab&&tab.kind!=='session'?tab.ownerSessionId:undefined);
   const hasCompanions=Boolean(companionOwner&&workspaceTabs(layout).some(item=>item.tab.kind!=='session'&&item.tab.ownerSessionId===companionOwner));
   const browserMode=tab?.kind==='web';
+  const appearanceRegion=tab?.kind==='web'?'browser':session?(session.mode==='terminal'?'terminal':'chat'):tab&&['file','diff','preview','review'].includes(tab.kind)?'editor':undefined;
+  useLayoutEffect(()=>{document.dispatchEvent(new Event(backgroundLayoutEvent));},[tab?.id,appearanceRegion,Boolean(visibleNode),actionsVisible,style?.left,style?.top,style?.width,style?.height]);
   return (
     <SessionSurfaceContext.Provider value={{primaryHost,menuHost,focused:selected&&actionsVisible,actionsVisible,openFile:session&&onFileReference?reference=>onFileReference(session.id,reference):undefined,...sessionDiffActions(session,projectPath,onOpenPath),openWeb:workbench?.openWeb?openWeb:undefined}}>
-    <section data-pane-id={node.id} hidden={!visibleNode} inert={!visibleNode} style={style} className={`workspace-pane ws-pane ${fullscreen ? "fullscreen" : ""}${selected ? " selected" : ""}`} onPointerDown={event=>{if(event.currentTarget.contains(event.target as Node))onFocus();}} onKeyDown={event=>{if(!event.defaultPrevented&&browserMode&&(event.ctrlKey||event.metaKey)&&!event.shiftKey&&!event.altKey&&event.key.toLowerCase()==='t'){event.preventDefault();event.stopPropagation();addBrowserTab();}}}
+    <section data-pane-id={node.id} data-appearance-region={appearanceRegion} hidden={!visibleNode} inert={!visibleNode} style={style} className={`workspace-pane ws-pane ${fullscreen ? "fullscreen" : ""}${selected ? " selected" : ""}`} onPointerDown={event=>{if(event.currentTarget.contains(event.target as Node))onFocus();}} onKeyDown={event=>{if(!event.defaultPrevented&&browserMode&&(event.ctrlKey||event.metaKey)&&!event.shiftKey&&!event.altKey&&event.key.toLowerCase()==='t'){event.preventDefault();event.stopPropagation();addBrowserTab();}}}
       onDragOver={event=>{if(!workbench?.openExternalFiles||workbench.externalDisabledReason||!acceptsExternalFileDrop(event.dataTransfer.types,Boolean((event.target as Element).closest('.chat-compose'))))return;event.preventDefault();event.dataTransfer.dropEffect='copy';setNativeFileDrop(true);setFileDropTarget(tab?.id);}}
       onDragLeave={event=>{if(!event.currentTarget.contains(event.relatedTarget as Node|null))setFileDropTarget(undefined);}}
       onDrop={event=>{if(!workbench?.openExternalFiles||workbench.externalDisabledReason)return;const native=window.threadterm as typeof window.threadterm&{getPathForFile?:(file:File)=>string};const handled=externalFileDrop(event.dataTransfer,Boolean((event.target as Element).closest('.chat-compose')),native.getPathForFile,(paths,source)=>workbench.openExternalFiles?.(paths,source,session?.mode==='chat'?session.id:tab&&tab.kind!=='session'?tab.ownerSessionId:undefined));if(handled){event.preventDefault();event.stopPropagation();setFileDropTarget(undefined);}}}>
