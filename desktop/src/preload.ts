@@ -77,6 +77,7 @@ const bridge: ThreadTermBridge & BrowserBridge & BrowserHandoffBridge & FilePath
   },
   chooseDirectory: (): Promise<string | null> => ipcRenderer.invoke('threadterm:choose-directory') as Promise<string | null>,
   attachFiles: () => ipcRenderer.invoke('threadterm:attach-files') as Promise<AttachedFile[]>,
+  openExternalFiles: () => ipcRenderer.invoke('threadterm:open-external-files') as Promise<string[]>,
   getPathForFile: file => webUtils.getPathForFile(file),
   chooseSavePath: (kind): Promise<string | null> => ipcRenderer.invoke('threadterm:choose-save-path', kind) as Promise<string | null>,
   exportFile: (kind) => ipcRenderer.invoke('threadterm:export-file', kind) as Promise<{ path: string } | null>,

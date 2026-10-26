@@ -32,6 +32,9 @@ pub mod domain;
 pub mod environment;
 pub mod file_ops;
 pub mod file_references;
+pub(crate) mod external_files;
+#[cfg(test)]
+mod external_files_boundary_tests;
 pub mod git_actions;
 pub mod git_read;
 pub(crate) mod git_selected_commit;

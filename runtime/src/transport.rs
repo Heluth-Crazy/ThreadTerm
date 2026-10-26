@@ -254,6 +254,9 @@ fn request_lane(method: &str) -> Lane {
         | "git.blame"
         | "filesystem.list"
         | "filesystem.read"
+        | "filesystem.external.read"
+        | "filesystem.external.image"
+        | "filesystem.external.list"
         | "filesystem.files"
         | "filesystem.search"
         | "review.list"
@@ -1017,6 +1020,9 @@ mod decoder_tests {
             "git.log",
             "review.changes",
             "filesystem.search",
+            "filesystem.external.read",
+            "filesystem.external.image",
+            "filesystem.external.list",
             "usage.query",
         ] {
             assert_eq!(request_lane(read), Lane::Concurrent, "{read}");
@@ -1033,6 +1039,8 @@ mod decoder_tests {
         // Mutations and anything unlisted stay one at a time in arrival order.
         for method in [
             "git.fetch",
+            "filesystem.external.open",
+            "filesystem.external.forget",
             "git.push",
             "git.commit",
             "git.commit.selected",

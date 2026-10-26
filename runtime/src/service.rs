@@ -1358,6 +1358,18 @@ impl RuntimeService {
             )
             .map_err(file_reference_rpc_error);
         }
+        if request.method.starts_with("filesystem.external.") {
+            return crate::external_files::dispatch(&self.db, &request.method, &request.params)
+                .and_then(|value| value.ok_or_else(|| anyhow::anyhow!("unknown_method")))
+                .map_err(|failure| {
+                    let message = failure.to_string();
+                    if crate::external_files::ERROR_CODES.contains(&message.as_str()) {
+                        error(&message, &message)
+                    } else {
+                        map_error(&message)
+                    }
+                });
+        }
         let outcome = (|| -> Result<Value> {
             if let Some(value) = crate::usage_ledger::dispatch(&self.db, &request.method, &request.params)? { return Ok(value); }
             if request.method == "browser.approval.read" {

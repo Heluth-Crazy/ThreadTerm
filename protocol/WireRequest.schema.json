@@ -3043,6 +3043,78 @@
         "sessionId"
       ]
     },
+    "RequestParams<\"filesystem.external.open\">": {
+      "type": "object",
+      "properties": {
+        "path": {
+          "type": "string"
+        },
+        "source": {
+          "$ref": "#/definitions/ExternalFileSource"
+        },
+        "sessionId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "path",
+        "source"
+      ],
+      "additionalProperties": false
+    },
+    "ExternalFileSource": {
+      "type": "string",
+      "enum": [
+        "dialog",
+        "drop",
+        "link",
+        "recent"
+      ]
+    },
+    "RequestParams<\"filesystem.external.read\">": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id"
+      ],
+      "additionalProperties": false
+    },
+    "RequestParams<\"filesystem.external.image\">": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id"
+      ],
+      "additionalProperties": false
+    },
+    "RequestParams<\"filesystem.external.list\">": {
+      "type": "object",
+      "additionalProperties": false
+    },
+    "RequestParams<\"filesystem.external.forget\">": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "operationId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "operationId"
+      ],
+      "additionalProperties": false
+    },
     "RequestParams<\"filesystem.read\">": {
       "type": "object",
       "additionalProperties": false,
@@ -4834,6 +4906,9 @@
               "type": "string"
             },
             "path": {
+              "type": "string"
+            },
+            "externalId": {
               "type": "string"
             },
             "assetKind": {
@@ -8330,6 +8405,136 @@
         },
         "params": {
           "$ref": "#/definitions/RequestParams%3C%22filesystem.resolve%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "params"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "filesystem.external.open"
+        },
+        "params": {
+          "$ref": "#/definitions/RequestParams%3C%22filesystem.external.open%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "params"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "filesystem.external.read"
+        },
+        "params": {
+          "$ref": "#/definitions/RequestParams%3C%22filesystem.external.read%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "params"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "filesystem.external.image"
+        },
+        "params": {
+          "$ref": "#/definitions/RequestParams%3C%22filesystem.external.image%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "params"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "filesystem.external.list"
+        },
+        "params": {
+          "$ref": "#/definitions/RequestParams%3C%22filesystem.external.list%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "params"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "filesystem.external.forget"
+        },
+        "params": {
+          "$ref": "#/definitions/RequestParams%3C%22filesystem.external.forget%22%3E"
         }
       },
       "required": [

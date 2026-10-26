@@ -2109,6 +2109,50 @@ mod tests {
         assert!(names.iter().all(|name| !name.starts_with("terminal_")));
     }
 
+    #[tokio::test]
+    async fn external_file_tools_are_not_advertised_or_forwarded_by_delegation() {
+        let config = browser_test_config();
+        let caller = Caller {
+            session_id: "runtime-owned-session".into(),
+            token: "runtime-owned-token".into(),
+        };
+        let names = composed_tools(true, true, None, true)
+            .into_iter()
+            .filter_map(|tool| tool["name"].as_str().map(str::to_owned))
+            .collect::<Vec<_>>();
+        for name in [
+            "filesystem.external.open",
+            "filesystem.external.read",
+            "filesystem.external.image",
+            "filesystem.external.list",
+            "filesystem.external.forget",
+        ] {
+            assert!(!names.contains(&name.to_owned()));
+            let error = call_tool(
+                &config,
+                Some(&caller),
+                name,
+                &json!({}),
+                &AtomicBool::new(false),
+            )
+            .await
+            .unwrap_err();
+            assert_eq!(error["error"]["code"], "unknown_tool");
+            let error = call_chat_tool(
+                &config,
+                Some(&caller),
+                None,
+                None,
+                name,
+                &json!({}),
+                &AtomicBool::new(false),
+            )
+            .await
+            .unwrap_err();
+            assert_eq!(error["error"]["code"], "unknown_tool");
+        }
+    }
+
     #[test]
     fn composed_catalogs_keep_preview_and_delegation_authorities_separate() {
         let names = |delegation, preview| {

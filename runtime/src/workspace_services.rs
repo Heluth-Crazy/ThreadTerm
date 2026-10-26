@@ -19,7 +19,7 @@ use std::{
 };
 
 pub const MAX_DOCUMENT_BYTES: usize = 1024 * 1024;
-const MAX_IMAGE_BYTES: u64 = 4 * 1024 * 1024;
+pub(crate) const MAX_IMAGE_BYTES: u64 = 4 * 1024 * 1024;
 const MAX_FILE_REFERENCE_PATH_BYTES: usize = 16 * 1024;
 const MAX_FILE_REFERENCE_POSITION: u32 = 1_000_000;
 /// Worktree Git work runs outside the database lock under this deadline; a
@@ -30,6 +30,7 @@ const REMOVE_WORKTREE: &str = "worktree.remove";
 const RELOCATE_WORKTREE: &str = "worktree.relocate";
 
 pub fn initialize(db: &Database) -> Result<()> {
+    crate::external_files::initialize(db)?;
     db.transaction(|tx| { tx.execute_batch("CREATE TABLE IF NOT EXISTS drafts (id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE, worktree_path TEXT NOT NULL DEFAULT '', path TEXT NOT NULL, content TEXT NOT NULL, base_fingerprint TEXT NOT NULL, revision INTEGER NOT NULL, updated_at TEXT NOT NULL, UNIQUE(project_id,worktree_path,path)); CREATE TABLE IF NOT EXISTS workspaces (id TEXT PRIMARY KEY, name TEXT NOT NULL, project_id TEXT REFERENCES projects(id) ON DELETE SET NULL, worktree_path TEXT, revision INTEGER NOT NULL, layout TEXT NOT NULL, updated_at TEXT NOT NULL); CREATE TABLE IF NOT EXISTS worktrees (id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE, path TEXT NOT NULL UNIQUE, branch TEXT, head TEXT NOT NULL, is_main INTEGER NOT NULL, locked INTEGER NOT NULL DEFAULT 0); CREATE TABLE IF NOT EXISTS worktree_intents (operation_id TEXT PRIMARY KEY, method TEXT NOT NULL, project_id TEXT NOT NULL, path TEXT NOT NULL, branch TEXT, created_at TEXT NOT NULL);")?; let columns:Vec<String>={let mut s=tx.prepare("PRAGMA table_info(drafts)")?;let values=s.query_map([],|r|r.get(1))?.collect::<rusqlite::Result<_>>()?;values};if !columns.iter().any(|x|x=="worktree_path"){tx.execute_batch("ALTER TABLE drafts RENAME TO drafts_legacy; CREATE TABLE drafts (id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE, worktree_path TEXT NOT NULL DEFAULT '', path TEXT NOT NULL, content TEXT NOT NULL, base_fingerprint TEXT NOT NULL, revision INTEGER NOT NULL, updated_at TEXT NOT NULL, UNIQUE(project_id,worktree_path,path)); INSERT INTO drafts(id,project_id,worktree_path,path,content,base_fingerprint,revision,updated_at) SELECT id,project_id,'',path,content,base_fingerprint,revision,updated_at FROM drafts_legacy; DROP TABLE drafts_legacy;")?;} Ok(()) })?;
     // A worktree intent left by a crash is reconciled against the filesystem
     // once at startup, never by repeating the Git effect. A failure here must
@@ -157,7 +158,7 @@ fn closest_roots_for_cwd(
     let cwd = Path::new(cwd)
         .canonicalize()
         .map_err(|_| anyhow!("invalid_cwd"))?;
-    db.transaction(|tx| {
+    let roots = db.transaction(|tx| {
         let mut statement = tx.prepare(
             "SELECT id,path,'project' FROM projects UNION ALL SELECT project_id,path,'worktree' FROM worktrees",
         )?;
@@ -170,29 +171,30 @@ fn closest_roots_for_cwd(
                 ))
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
-        let mut closest_depth = 0usize;
-        let mut closest: Vec<(String, PathBuf, String)> = Vec::new();
-        for (candidate_project, candidate_path, kind) in roots {
-            let Ok(candidate) = Path::new(&candidate_path).canonicalize() else {
-                continue;
-            };
-            if !path_is_within(&cwd, &candidate)? {
-                continue;
-            }
-            let depth = lexical_components(&candidate)?.len();
-            if depth > closest_depth {
-                closest_depth = depth;
-                closest.clear();
-                closest.push((candidate_project, candidate, kind));
-            } else if depth == closest_depth {
-                closest.push((candidate_project, candidate, kind));
-            }
+        Ok(roots)
+    })?;
+    let mut closest_depth = 0usize;
+    let mut closest: Vec<(String, PathBuf, String)> = Vec::new();
+    for (candidate_project, candidate_path, kind) in roots {
+        let Ok(candidate) = Path::new(&candidate_path).canonicalize() else {
+            continue;
+        };
+        if !path_is_within(&cwd, &candidate)? {
+            continue;
         }
-        if closest.is_empty() {
-            return Err(anyhow!("cwd_not_in_registered_project"));
+        let depth = lexical_components(&candidate)?.len();
+        if depth > closest_depth {
+            closest_depth = depth;
+            closest.clear();
+            closest.push((candidate_project, candidate, kind));
+        } else if depth == closest_depth {
+            closest.push((candidate_project, candidate, kind));
         }
-        Ok(closest)
-    })
+    }
+    if closest.is_empty() {
+        return Err(anyhow!("cwd_not_in_registered_project"));
+    }
+    Ok(closest)
 }
 
 fn closest_project_roots(closest: &[(String, PathBuf, String)]) -> Vec<(String, PathBuf)> {
@@ -254,65 +256,21 @@ pub fn resolve_file_reference(
     column: Option<u32>,
 ) -> Result<Value> {
     validate_file_reference_input(path, line, column)?;
-    let session = db
-        .session_by_id(session_id)?
-        .ok_or_else(|| anyhow!("file_reference_session_not_found"))?;
-    let config = crate::session_configs::read(db, session_id)?
-        .ok_or_else(|| anyhow!("file_reference_config_missing"))?;
-    let project_id = session
-        .project_id
-        .as_deref()
-        .ok_or_else(|| anyhow!("file_reference_project_missing"))?;
-    if config.launch.project_id.as_deref() != Some(project_id)
-        || config.launch.provider != session.provider
-        || config.launch.mode != session.mode
-    {
-        return Err(anyhow!("file_reference_scope_mismatch"));
-    }
-    let cwd = Path::new(&config.launch.cwd);
-    if !cwd.is_absolute() || !cwd.is_dir() {
-        return Err(anyhow!("file_reference_cwd_unavailable"));
-    }
-    let root = workspace_root_for_cwd(db, project_id, &config.launch.cwd)
-        .map_err(|_| anyhow!("file_reference_scope_mismatch"))?
-        .canonicalize()
-        .map_err(|_| anyhow!("file_reference_scope_mismatch"))?;
-    if let Some(session_root) = session.worktree_path.as_deref() {
-        let session_root = Path::new(session_root)
-            .canonicalize()
-            .map_err(|_| anyhow!("file_reference_scope_mismatch"))?;
-        if !same_lexical_path(&session_root, &root)? {
-            return Err(anyhow!("file_reference_scope_mismatch"));
-        }
-    }
-
-    let requested = Path::new(path);
-    if !requested.is_absolute()
-        && requested
-            .components()
-            .any(|component| matches!(component, Component::Prefix(_) | Component::RootDir))
-    {
-        return Err(anyhow!("file_reference_invalid_path"));
-    }
-    if !requested.is_absolute() && matches!(session.provider.as_str(), "shell" | "custom") {
-        return Err(anyhow!("file_reference_relative_requires_absolute"));
-    }
-    let candidate = if requested.is_absolute() {
-        requested.to_path_buf()
-    } else {
-        cwd.join(requested)
-    };
-    let candidate = candidate
+    let scope = session_file_scope(db, session_id)?;
+    let project_id = &scope.project_id;
+    let root = &scope.root;
+    let candidate = scope
+        .candidate(path)?
         .canonicalize()
         .map_err(|_| anyhow!("file_reference_not_found"))?;
-    if !path_is_within(&candidate, &root)? {
+    if !path_is_within(&candidate, root)? {
         return Err(anyhow!("file_reference_outside_scope"));
     }
     let metadata = fs::metadata(&candidate).map_err(|_| anyhow!("file_reference_not_found"))?;
     if !metadata.is_file() {
         return Err(anyhow!("file_reference_not_file"));
     }
-    let relative = relative_path_string(&root, &candidate)?;
+    let relative = relative_path_string(root, &candidate)?;
     let extension = candidate
         .extension()
         .and_then(|extension| extension.to_str())
@@ -367,6 +325,75 @@ pub fn resolve_file_reference(
     Ok(Value::Object(value))
 }
 
+pub(crate) struct SessionFileScope {
+    pub project_id: String,
+    pub root: PathBuf,
+    cwd: PathBuf,
+    relative_requires_absolute: bool,
+}
+
+pub(crate) fn session_file_scope(db: &Database, session_id: &str) -> Result<SessionFileScope> {
+    let session = db
+        .session_by_id(session_id)?
+        .ok_or_else(|| anyhow!("file_reference_session_not_found"))?;
+    let config = crate::session_configs::read(db, session_id)?
+        .ok_or_else(|| anyhow!("file_reference_config_missing"))?;
+    let project_id = session
+        .project_id
+        .as_deref()
+        .ok_or_else(|| anyhow!("file_reference_project_missing"))?;
+    if config.launch.project_id.as_deref() != Some(project_id)
+        || config.launch.provider != session.provider
+        || config.launch.mode != session.mode
+    {
+        return Err(anyhow!("file_reference_scope_mismatch"));
+    }
+    let cwd = Path::new(&config.launch.cwd);
+    if !cwd.is_absolute() || !cwd.is_dir() {
+        return Err(anyhow!("file_reference_cwd_unavailable"));
+    }
+    let root = workspace_root_for_cwd(db, project_id, &config.launch.cwd)
+        .map_err(|_| anyhow!("file_reference_scope_mismatch"))?
+        .canonicalize()
+        .map_err(|_| anyhow!("file_reference_scope_mismatch"))?;
+    if let Some(session_root) = session.worktree_path.as_deref() {
+        let session_root = Path::new(session_root)
+            .canonicalize()
+            .map_err(|_| anyhow!("file_reference_scope_mismatch"))?;
+        if !same_lexical_path(&session_root, &root)? {
+            return Err(anyhow!("file_reference_scope_mismatch"));
+        }
+    }
+
+    Ok(SessionFileScope {
+        project_id: project_id.to_owned(),
+        root,
+        cwd: cwd.to_path_buf(),
+        relative_requires_absolute: matches!(session.provider.as_str(), "shell" | "custom"),
+    })
+}
+
+impl SessionFileScope {
+    pub(crate) fn candidate(&self, path: &str) -> Result<PathBuf> {
+        let requested = Path::new(path);
+        if !requested.is_absolute()
+            && requested
+                .components()
+                .any(|component| matches!(component, Component::Prefix(_) | Component::RootDir))
+        {
+            return Err(anyhow!("file_reference_invalid_path"));
+        }
+        if !requested.is_absolute() && self.relative_requires_absolute {
+            return Err(anyhow!("file_reference_relative_requires_absolute"));
+        }
+        Ok(if requested.is_absolute() {
+            requested.to_path_buf()
+        } else {
+            self.cwd.join(requested)
+        })
+    }
+}
+
 fn validate_file_reference_input(path: &str, line: Option<u32>, column: Option<u32>) -> Result<()> {
     if path.is_empty()
         || path.len() > MAX_FILE_REFERENCE_PATH_BYTES
@@ -416,7 +443,7 @@ fn looks_like_uri(path: &str) -> bool {
         })
 }
 
-fn relative_path_string(root: &Path, path: &Path) -> Result<String> {
+pub(crate) fn relative_path_string(root: &Path, path: &Path) -> Result<String> {
     let root = lexical_components(root)?;
     let path = lexical_components(path)?;
     if path.len() <= root.len()
@@ -1136,7 +1163,7 @@ fn stored_scope_is_within(path: &Path, root: &Path) -> Result<bool> {
     path_is_within(path, root)
 }
 
-fn path_is_within(path: &Path, root: &Path) -> Result<bool> {
+pub(crate) fn path_is_within(path: &Path, root: &Path) -> Result<bool> {
     let path = lexical_components(path)?;
     let root = lexical_components(root)?;
     Ok(path.len() >= root.len()
@@ -1228,6 +1255,21 @@ pub(crate) fn root_for(
 /// Validates the persisted workspace-pane tree used by both saved workspaces
 /// and workspace layouts.
 pub fn validate_layout(layout: &Value) -> Result<()> {
+    fn valid_external_path(path: &str) -> bool {
+        if path.len() > 16 * 1024 || path.chars().any(char::is_control) {
+            return false;
+        }
+        let bytes = path.as_bytes();
+        let drive = bytes.first().is_some_and(u8::is_ascii_alphabetic)
+            && bytes.get(1) == Some(&b':')
+            && bytes.get(2).is_some_and(|c| matches!(c, b'\\' | b'/'));
+        let unc = path.strip_prefix(r"\\").is_some_and(|rest| {
+            let mut parts = rest.split(['\\', '/']);
+            parts.next().is_some_and(|part| !part.is_empty())
+                && parts.next().is_some_and(|part| !part.is_empty())
+        });
+        path.starts_with('/') || drive || unc
+    }
     /// Same rule as the protocol's `isWebPreviewUrl`: absolute http(s) with a host, at most 2048 characters.
     fn valid_web_url(url: &str) -> bool {
         !url.is_empty()
@@ -1307,6 +1349,19 @@ pub fn validate_layout(layout: &Value) -> Result<()> {
                         .ok_or_else(|| anyhow!("invalid_workspace_layout"))?;
                     if !tab_ids.insert(tab_id) {
                         return Err(anyhow!("invalid_workspace_layout"));
+                    }
+                    if let Some(external_id) = tab.get("externalId") {
+                        let valid = external_id.as_str().is_some_and(|id| {
+                            !id.is_empty() && id.encode_utf16().count() <= 256
+                                && !id.chars().any(char::is_control)
+                        });
+                        if !valid
+                            || !matches!(tab.get("kind").and_then(Value::as_str), Some("file" | "preview"))
+                            || tab.contains_key("staged")
+                            || !tab.get("path").and_then(Value::as_str).is_some_and(valid_external_path)
+                        {
+                            return Err(anyhow!("invalid_workspace_layout"));
+                        }
                     }
                     match tab.get("kind").and_then(Value::as_str) {
                         Some("session")
@@ -1590,7 +1645,7 @@ pub fn read_image(root: &Path, relative: &str) -> Result<(&'static str, Vec<u8>)
     Ok((mime, bytes))
 }
 
-fn image_mime(bytes: &[u8]) -> Option<&'static str> {
+pub(crate) fn image_mime(bytes: &[u8]) -> Option<&'static str> {
     if bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
         Some("image/png")
     } else if bytes.starts_with(&[0xff, 0xd8, 0xff]) {
@@ -2920,6 +2975,75 @@ mod tests {
             assert!(validate_layout(&layout).is_err());
         }
     }
+    #[test]
+    fn validate_layout_external_file_tabs_round_trip_without_changing_legacy_tabs() {
+        let temp = tempfile::tempdir().unwrap();
+        let native = temp.path().join("external-file.md").to_string_lossy().into_owned();
+        let paths = [native, "/external/notes.md".into(), r"C:\external\notes.md".into(),
+            "C:/external/notes.md".into(), r"\\server\share\notes.md".into(),
+            format!("/{}", "x".repeat(16383)), format!("/{}abc", "😀".repeat(4095))];
+        let layout = |tab: Value| json!({"kind":"pane","id":"p","tabs":[tab],"activeTabId":"f"});
+        for kind in ["file", "preview"] {
+            for path in &paths {
+                for external_id in ["registered".into(), "x".repeat(256), "😀".repeat(128)] {
+                    let tab = json!({"id":"f","kind":kind,"projectId":"p","ownerSessionId":"chat",
+                        "externalId":external_id,"path":path});
+                    assert!(validate_layout(&layout(tab)).is_ok());
+                }
+            }
+        }
+        let legacy = json!({"id":"f","kind":"diff","projectId":"p","path":"src/main.ts","staged":true});
+        assert!(validate_layout(&layout(legacy.clone())).is_ok());
+        let mut saved_layout = layout(legacy);
+        saved_layout["tabs"].as_array_mut().unwrap().extend([
+            json!({"id":"external-file","kind":"file","projectId":"p","ownerSessionId":"chat",
+                "externalId":"registered-file","path":paths[0]}),
+            json!({"id":"external-preview","kind":"preview","projectId":"p","ownerSessionId":"chat",
+                "externalId":"registered-preview","path":paths[0]}),
+        ]);
+        let path = temp.path().join("external-layout.sqlite");
+        let saved_id = {
+            let db = Database::open(&path).unwrap();
+            initialize(&db).unwrap();
+            let saved = dispatch(&db, "workspace.save", &json!({"name":"external","layout":saved_layout,
+                "expectedRevision":0,"operationId":"external-layout-save"})).unwrap().unwrap();
+            assert_eq!(saved["layout"], saved_layout);
+            saved["id"].as_str().unwrap().to_owned()
+        };
+        let db = Database::open(&path).unwrap();
+        initialize(&db).unwrap();
+        let saved = db.snapshot().unwrap().workspaces.into_iter().find(|item| item["id"] == saved_id).unwrap();
+        assert_eq!(saved["layout"], saved_layout);
+        assert!(validate_layout(&saved["layout"]).is_ok());
+    }
+
+    #[test]
+    fn validate_layout_external_files_reject_invalid_identity_path_kind_and_staged() {
+        let temp = tempfile::tempdir().unwrap();
+        let base = json!({"id":"f","kind":"file","projectId":"p","externalId":"registered",
+            "path":temp.path().join("external-file.md")});
+        let mut patches = Vec::new();
+        for external_id in [json!(""), Value::Null, json!(4), json!("x".repeat(257)), json!("😀".repeat(129)),
+            json!("a\nb"), json!("a\u{7f}b"), json!("a\u{85}b")] {
+            patches.push(json!({"externalId":external_id}));
+        }
+        for path in ["notes.md".to_owned(), "C:notes.md".into(), r"\notes.md".into(), r"\\server".into(),
+            format!("/{}", "x".repeat(16384)), format!("/{}", "😀".repeat(4096)),
+            "/a\nb".into(), "/a\u{7f}b".into(), "/a\u{85}b".into()] {
+            patches.push(json!({"path":path}));
+        }
+        patches.extend([json!({"kind":"diff"}), json!({"kind":"session","sessionId":"chat"}),
+            json!({"kind":"web","url":"https://example.test/"}), json!({"staged":false}),
+            json!({"staged":true}), json!({"staged":null}), json!({"projectId":""}),
+            json!({"projectId":null}), json!({"ownerSessionId":""})]);
+        for patch in patches {
+            let mut tab = base.clone();
+            tab.as_object_mut().unwrap().extend(patch.as_object().unwrap().clone());
+            let layout = json!({"kind":"pane","id":"p","tabs":[tab],"activeTabId":"f"});
+            assert!(validate_layout(&layout).is_err(), "invalid patch: {patch}");
+        }
+    }
+
     /// A repository with one commit, configured for throwaway test commits.
     fn initialized_repository(repo: &Path) {
         fs::create_dir(repo).unwrap();

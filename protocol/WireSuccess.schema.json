@@ -4001,6 +4001,9 @@
             "path": {
               "type": "string"
             },
+            "externalId": {
+              "type": "string"
+            },
             "assetKind": {
               "type": "string",
               "enum": [
@@ -5866,7 +5869,91 @@
       ],
       "additionalProperties": false
     },
-    "RequestResult<\"filesystem.read\">": {
+    "RequestResult<\"filesystem.external.open\">": {
+      "$ref": "#/definitions/ExternalFileOpenResult"
+    },
+    "ExternalFileOpenResult": {
+      "anyOf": [
+        {
+          "type": "object",
+          "properties": {
+            "file": {
+              "$ref": "#/definitions/ExternalFile"
+            }
+          },
+          "required": [
+            "file"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "inWorkspace": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "path": {
+                  "type": "string"
+                },
+                "projectId": {
+                  "type": "string"
+                },
+                "worktreePath": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "path",
+                "projectId"
+              ]
+            }
+          },
+          "required": [
+            "inWorkspace"
+          ],
+          "additionalProperties": false
+        }
+      ]
+    },
+    "ExternalFile": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "path": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "size": {
+          "type": "number"
+        },
+        "modifiedAt": {
+          "type": "string"
+        },
+        "openedAt": {
+          "type": "string"
+        },
+        "image": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "id",
+        "path",
+        "name",
+        "size",
+        "modifiedAt",
+        "openedAt",
+        "image"
+      ],
+      "additionalProperties": false,
+      "description": "A locally user-registered file outside the active workspace. It remains read-only."
+    },
+    "RequestResult<\"filesystem.external.read\">": {
       "$ref": "#/definitions/FileDocument"
     },
     "FileDocument": {
@@ -5900,6 +5987,86 @@
         "modifiedAt"
       ],
       "additionalProperties": false
+    },
+    "RequestResult<\"filesystem.external.image\">": {
+      "type": "object",
+      "properties": {
+        "mime": {
+          "type": "string",
+          "enum": [
+            "image/png",
+            "image/jpeg",
+            "image/gif",
+            "image/webp"
+          ]
+        },
+        "data": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "mime",
+        "data"
+      ],
+      "additionalProperties": false
+    },
+    "RequestResult<\"filesystem.external.list\">": {
+      "type": "object",
+      "properties": {
+        "files": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "exists": {
+                "type": "boolean"
+              },
+              "id": {
+                "type": "string"
+              },
+              "path": {
+                "type": "string"
+              },
+              "name": {
+                "type": "string"
+              },
+              "size": {
+                "type": "number"
+              },
+              "modifiedAt": {
+                "type": "string"
+              },
+              "openedAt": {
+                "type": "string"
+              },
+              "image": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "exists",
+              "id",
+              "image",
+              "modifiedAt",
+              "name",
+              "openedAt",
+              "path",
+              "size"
+            ]
+          }
+        }
+      },
+      "required": [
+        "files"
+      ],
+      "additionalProperties": false
+    },
+    "RequestResult<\"filesystem.external.forget\">": {
+      "type": "null"
+    },
+    "RequestResult<\"filesystem.read\">": {
+      "$ref": "#/definitions/FileDocument"
     },
     "RequestResult<\"filesystem.image\">": {
       "type": "object",
@@ -11293,6 +11460,136 @@
         },
         "result": {
           "$ref": "#/definitions/RequestResult%3C%22filesystem.resolve%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "result"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "filesystem.external.open"
+        },
+        "result": {
+          "$ref": "#/definitions/RequestResult%3C%22filesystem.external.open%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "result"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "filesystem.external.read"
+        },
+        "result": {
+          "$ref": "#/definitions/RequestResult%3C%22filesystem.external.read%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "result"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "filesystem.external.image"
+        },
+        "result": {
+          "$ref": "#/definitions/RequestResult%3C%22filesystem.external.image%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "result"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "filesystem.external.list"
+        },
+        "result": {
+          "$ref": "#/definitions/RequestResult%3C%22filesystem.external.list%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "result"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "filesystem.external.forget"
+        },
+        "result": {
+          "$ref": "#/definitions/RequestResult%3C%22filesystem.external.forget%22%3E"
         }
       },
       "required": [

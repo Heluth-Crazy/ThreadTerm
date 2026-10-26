@@ -12,6 +12,7 @@ export const windowState = () => facade().windowState?.() ?? Promise.resolve({ m
 export const onWindowState = (listener: (state: { maximized: boolean }) => void) => facade().onWindowState?.(listener) ?? (() => {});
 export const chooseDirectory = () => facade().chooseDirectory();
 export const attachFiles = () => facade().attachFiles();
+export const openExternalFiles = () => facade().openExternalFiles();
 export const chooseSavePath = (kind: 'database' | 'settings' | 'theme') => facade().chooseSavePath(kind);
 export const exportFile = (kind: 'settings' | 'theme') => facade().exportFile(kind);
 export const activateDataRelocation = (prepared: Awaited<ReturnType<typeof request<'data.relocation.prepare'>>>) => facade().activateDataRelocation(prepared);

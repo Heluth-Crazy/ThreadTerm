@@ -446,4 +446,31 @@ mod tests {
             .iter()
             .any(|name| name.contains("input") || name.contains("exec")));
     }
+
+    #[tokio::test]
+    async fn external_file_tools_are_not_exposed_or_forwarded_to_the_runtime() {
+        let temp = tempfile::tempdir().unwrap();
+        let config = RuntimeConfig {
+            data_dir: temp.path().to_owned(),
+            database_path: temp.path().join("unused.sqlite"),
+            credential_path: temp.path().join("unused.credential"),
+            pipe_base: "unused-mcp-host".into(),
+        };
+        let names = tools()
+            .into_iter()
+            .filter_map(|tool| tool["name"].as_str().map(str::to_owned))
+            .collect::<Vec<_>>();
+        for name in [
+            "filesystem.external.open",
+            "filesystem.external.read",
+            "filesystem.external.image",
+            "filesystem.external.list",
+            "filesystem.external.forget",
+        ] {
+            assert!(!names.contains(&name.to_owned()));
+            let result = call(&config, json!({"name":name,"arguments":{}})).await;
+            assert_eq!(result["isError"], true);
+            assert_eq!(result["structuredContent"]["code"], "invalid_request");
+        }
+    }
 }

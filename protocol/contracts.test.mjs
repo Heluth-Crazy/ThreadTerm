@@ -1,5 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 test('runtime eval approval uses a separate leased, exact-hash decision contract',()=>{
  const read={sessionId:'session',turnId:'turn',approvalId:'approval',leaseEpoch:1};
  validateRequest('browser.approval.read',read);
@@ -50,6 +52,24 @@ test('all four tool switches remain optional boolean portable settings',()=>{
  for(const key of Object.keys(settings)) assert.throws(()=>validateResult('settings.export',{...bundle,settings:{[key]:'true'}}));
 });
 import {validateRequest,validateResult,validateLayout,METHODS,isRuntimeEvent,PROTOCOL_CONTRACT,PROTOCOL_VERSION,protocolIncompatibleReason} from './index.ts';
+
+test('external files have a small read-only registration contract',()=>{
+ const opened={id:'external-1',path:join(tmpdir(),'external-files','notes.md'),name:'notes.md',size:12,modifiedAt:'2026-10-26T00:00:00Z',openedAt:'2026-10-26T00:00:01Z',image:false};
+ validateRequest('filesystem.external.open',{path:opened.path,source:'dialog'});
+ validateRequest('filesystem.external.open',{path:'relative.md',source:'link',sessionId:'session'});
+ for(const patch of [{path:''},{source:'picker'},{sessionId:''},{operationId:'unexpected'}])assert.throws(()=>validateRequest('filesystem.external.open',{path:opened.path,source:'dialog',...patch}));
+ validateResult('filesystem.external.open',{file:opened});
+ validateResult('filesystem.external.open',{inWorkspace:{projectId:'project',path:'src/main.ts'}});
+ validateRequest('filesystem.external.read',{id:opened.id});
+ validateResult('filesystem.external.read',{path:opened.path,content:'notes',fingerprint:'a'.repeat(64),readonly:true,size:5,modifiedAt:opened.modifiedAt});
+ validateRequest('filesystem.external.image',{id:opened.id});
+ validateResult('filesystem.external.image',{mime:'image/png',data:'AA=='});
+ validateRequest('filesystem.external.list',{});
+ validateResult('filesystem.external.list',{files:[{...opened,exists:true}]});
+ validateRequest('filesystem.external.forget',{id:opened.id,operationId:'forget-1'});
+ for(const params of [{},{id:''},{id:opened.id},{id:opened.id,operationId:''},{id:opened.id,operationId:'forget-1',extra:true}])assert.throws(()=>validateRequest('filesystem.external.forget',params));
+ assert.ok(METHODS.includes('filesystem.external.open'));
+});
 
 test('context read preserves timestamp and all counters, with an empty-session null result',()=>{
  validateRequest('chat.context.read',{sessionId:'s'});
@@ -225,6 +245,39 @@ test('file preview owners are additive and validated without changing file scope
  validateRequest('workspace.save',{...params,layout:owned});
  validateResult('workspace.save',{id:'workspace',name:'Preview',revision:1,layout:owned});
  for(const ownerSessionId of ['',null,2,'a\nb','x'.repeat(257)])assert.throws(()=>validateRequest('workspace.save',{...params,layout:{...layout,tabs:[{...file,ownerSessionId}]}}));
+});
+
+test('external file and preview tabs persist with portable absolute paths and bounded identities',()=>{
+ const file={id:'external',kind:'file',projectId:'p',ownerSessionId:'chat',externalId:'registered',path:join(tmpdir(),'external-file.md')};
+ const layout=tab=>({kind:'pane',id:'pane',tabs:[tab],activeTabId:tab.id});
+ const params=tab=>({name:'External file',layout:layout(tab),expectedRevision:0,operationId:'external-layout'});
+ const paths=[file.path,'/external/notes.md','C:\\external\\notes.md','C:/external/notes.md','\\\\server\\share\\notes.md','/'+ 'x'.repeat(16383),'/'+'😀'.repeat(4095)+'abc'];
+ for(const kind of ['file','preview']) for(const path of paths) for(const externalId of ['registered','x'.repeat(256),'😀'.repeat(128)]) {
+  const tab={...file,kind,path,externalId};
+  validateLayout(layout(tab));
+  validateRequest('workspace.save',params(tab));
+  validateResult('workspace.save',{id:'workspace',name:'External file',revision:1,layout:layout(tab)});
+ }
+ const {externalId,...legacy}=file;
+ for(const tab of [{...legacy,path:'README.md'},{...legacy,kind:'diff',path:'src/main.ts',staged:true}]) {
+  validateLayout(layout(tab));
+  validateRequest('workspace.save',params(tab));
+  validateResult('workspace.save',{id:'workspace',name:'Legacy file',revision:1,layout:layout(tab)});
+ }
+});
+
+test('external layout fields reject invalid identities, paths, kinds and staged state',()=>{
+ const file={id:'external',kind:'file',projectId:'p',externalId:'registered',path:join(tmpdir(),'external-file.md')};
+ const layout=tab=>({kind:'pane',id:'pane',tabs:[tab],activeTabId:tab.id});
+ const patches=[...['',null,4,'x'.repeat(257),'😀'.repeat(129),'a\nb','a\u007fb','a\u0085b'].map(externalId=>({externalId})),
+  ...['notes.md','C:notes.md','\\notes.md','\\\\server','/'+ 'x'.repeat(16384),'/'+'😀'.repeat(4096),'/a\nb','/a\u007fb','/a\u0085b'].map(path=>({path})),
+  {kind:'diff'},{kind:'session',sessionId:'chat'},{kind:'web',url:'https://example.test/'},
+  ...[false,true,null].map(staged=>({staged})),{projectId:''},{projectId:null},{ownerSessionId:''}];
+ for(const patch of patches) {
+  const tab={...file,...patch};
+  assert.throws(()=>validateLayout(layout(tab)),undefined,JSON.stringify(patch).slice(0,100));
+  assert.throws(()=>validateRequest('workspace.save',{name:'External file',layout:layout(tab),expectedRevision:0,operationId:'external-layout'}));
+ }
 });
 
 test('task map tabs require a bounded session identity and no owner',()=>{

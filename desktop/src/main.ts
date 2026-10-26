@@ -20,6 +20,7 @@ import { applicationIconPng, trayIconPng } from '../assets/icon-data.js';
 import { quitConfirmationOptions, quitConfirmationPreapproved } from './quitConfirmation.js';
 import { deletedRevealScope, isWithinScope, revealTarget } from './revealFile.js';
 import { qaAttachPathsOverride, readAttachFiles } from './attachFiles.js';
+import { qaOpenExternalPathsOverride } from './externalFiles.js';
 
 import { HtmlPreviewGrantManager, registerHtmlPreviewScheme, mergePreviewIsolationFeatures, installHtmlPreviewSession, attachHtmlPreviewWindow } from './htmlPreview.js';
 import { registerHtmlPreviewIpc } from './htmlPreviewIpc.js';
@@ -400,6 +401,15 @@ function registerIpc(): void {
     const options = { title: 'Attach files', properties: ['openFile', 'multiSelections'] as Electron.OpenDialogOptions['properties'] };
     const result = owner ? await dialog.showOpenDialog(owner, options) : await dialog.showOpenDialog(options);
     return result.canceled ? [] : readAttachFiles(result.filePaths);
+  });
+  ipcMain.handle('threadterm:open-external-files', async (event) => {
+    assertTrustedRenderer(event);
+    const qaPaths = qaOpenExternalPathsOverride(process.env.THREADTERM_V3_OPEN_EXTERNAL_QA, app.isPackaged);
+    if (qaPaths) return qaPaths;
+    const owner = BrowserWindow.fromWebContents(event.sender);
+    const options = { title: 'Open file outside workspace', properties: ['openFile', 'multiSelections'] as Electron.OpenDialogOptions['properties'] };
+    const result = owner ? await dialog.showOpenDialog(owner, options) : await dialog.showOpenDialog(options);
+    return result.canceled ? [] : result.filePaths;
   });
   ipcMain.handle('threadterm:activate-data-relocation', async (event, prepared: unknown) => { assertTrustedRenderer(event); return activateDataRelocation(prepared); });
   ipcMain.handle('threadterm:choose-save-path', async (event, kind: unknown) => {
