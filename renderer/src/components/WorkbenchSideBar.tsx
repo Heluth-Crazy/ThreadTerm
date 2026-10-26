@@ -109,7 +109,7 @@ export function WorkbenchSideBar({scope, actions, sessions, activeSessionId, act
  }, [command?.key]);
  const resize = (event:ReactPointerEvent<HTMLDivElement>) => {
   event.preventDefault();
-  const start = event.clientX, width = stored.width, target = event.currentTarget;
+  const start = event.clientX, target = event.currentTarget, width = target.parentElement!.getBoundingClientRect().width;
   target.setPointerCapture(event.pointerId);
   const move = (next:PointerEvent) => update({width:Math.min(MAX_WIDTH, Math.max(MIN_WIDTH, width + next.clientX - start))});
   const end = () => { target.removeEventListener('pointermove', move); target.removeEventListener('pointerup', end); target.removeEventListener('pointercancel', end); };
@@ -145,7 +145,7 @@ export function WorkbenchSideBar({scope, actions, sessions, activeSessionId, act
     </div>
    </section>
    <div className="wb-resize" role="separator" aria-orientation="vertical" aria-label={text('Resize side bar', '调整侧栏宽度')} aria-valuenow={stored.width} aria-valuemin={MIN_WIDTH} aria-valuemax={MAX_WIDTH} tabIndex={0} onPointerDown={resize}
-    onKeyDown={event => { if(event.key === 'ArrowLeft' || event.key === 'ArrowRight') { event.preventDefault(); update({width:Math.min(MAX_WIDTH, Math.max(MIN_WIDTH, stored.width + (event.key === 'ArrowLeft' ? -16 : 16)))}); } }}/>
+    onKeyDown={event => { if(event.key === 'ArrowLeft' || event.key === 'ArrowRight') { event.preventDefault(); const width = event.currentTarget.parentElement!.getBoundingClientRect().width; update({width:Math.min(MAX_WIDTH, Math.max(MIN_WIDTH, width + (event.key === 'ArrowLeft' ? -16 : 16)))}); } }}/>
   </aside>}
  </>;
 }

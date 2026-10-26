@@ -186,6 +186,10 @@ html[data-theme="dark"] { color-scheme:dark; }
 .tt-select.create-input { width:100%; height:36px; min-height:36px; border-radius:var(--radius); background:var(--bg); font-size:13px; }
 .tt-select.create-input .tt-select-trigger { min-height:34px; padding:0 12px; }
 .tt-select.create-input-mono, .tt-select.create-input-mono .tt-select-trigger { font-family:var(--mono); font-size:12px; }
+textarea.create-input { height:88px; min-height:88px; max-height:240px; padding:8px 12px; font-family:inherit; line-height:1.5; resize:vertical; }
+.settings-browser-switch-row { flex-wrap:nowrap; align-items:center; }
+.settings-browser-switch-row > div { flex:1; min-width:0; }
+.settings-browser-switch-row > .setting-switch { flex:none; margin:0; }
 .tt-select.settings-select { height:40px; min-width:160px; border-radius:6px; background:var(--bg); font-size:13px; }
 .tt-select.settings-select .tt-select-trigger { min-height:38px; padding:0 12px; border-radius:6px; }
 .dialog-form .tt-select { min-width:0; }

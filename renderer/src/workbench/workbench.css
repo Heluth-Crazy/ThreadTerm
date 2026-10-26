@@ -44,6 +44,11 @@
 .wb-switch-badge { position:absolute; top:1px; right:0; min-width:14px; height:14px; padding:0 3px; border-radius:999px; background:var(--primary); box-shadow:0 0 0 2px var(--bg); color:var(--primary-fg); font-size:9px; font-weight:600; line-height:14px; text-align:center; font-variant-numeric:tabular-nums; }
 .wb-sidebar { position:relative; display:flex; flex:none; min-width:0; min-height:0; margin-right:12px; }
 .ws-content.with-drawer > .wb-sidebar { margin-right:0; } /* the drawer row already has a 12px gap */
+/* Cap docked panels only; keep the existing <=760px overlay geometry. */
+@media (min-width:761px) {
+ .wb-sidebar { min-width:220px; max-width:max(220px,calc(100% - 332px)); }
+ .ws-content.with-drawer > .wb-sidebar { max-width:max(220px,calc(100% - 664px)); } /* 320px pane + 320px inspector + two 12px gaps. */
+}
 .wb-panel { display:flex; flex:1; flex-direction:column; min-width:0; min-height:0; border:1px solid var(--border); border-radius:var(--radius-card); background:var(--surface); overflow:hidden; }
 .runtime-workspace.terminal-fullscreen .wb-tabrow, .runtime-workspace.terminal-fullscreen .wb-sidebar { display:none; }
 /* Same height as the file toolbar in the neighbouring card, so the header rules line up. */
