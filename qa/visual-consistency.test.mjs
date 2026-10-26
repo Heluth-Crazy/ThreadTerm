@@ -13,6 +13,9 @@ import {
   disabledHoverChanged,
   disabledRowHoverChanged,
   groupControls,
+  isPaneStrip,
+  paneStripViolations,
+  PANE_STRIP_HEIGHT,
   tokenLintDiff,
 } from './lib/visual-consistency.mjs';
 import { sendChatPrompt } from './lib/chat-send.mjs';
@@ -435,5 +438,91 @@ test('send rejects a disabled submit or a changed draft instead of forcing submi
     else options.composer.evaluate = async () => { state.committed = true; state.value = 'Changed prompt'; };
     await assert.rejects(sendChatPrompt(options), /Chat send not ready/);
     assert.equal(state.clicks, 0);
+  }
+});
+
+// --- Panel families: pane tab strips (T1) are not docked headers -------------------------------
+
+const stripRow = (overrides = {}) => ({
+  surface: 'Pane tabs',
+  family: 'pane',
+  rect: { x: 0, y: 0, width: 800, height: PANE_STRIP_HEIGHT, bottom: PANE_STRIP_HEIGHT, right: 800 },
+  padding: ['0px', '8px', '0px', '8px'],
+  gap: '4px',
+  background: 'rgba(0, 0, 0, 0)',
+  border: '0px none rgb(35, 34, 31)',
+  radius: ['0px', '0px'],
+  title: null,
+  controls: [
+    { label: 'Open session', height: 28, width: 28, radius: '6px', icons: [{}], inTab: false },
+    { label: 'Workspace actions', height: 28, width: 28, radius: '6px', icons: [{}], inTab: false },
+    { label: 'Close tab Panel QA', height: 28, width: 28, radius: '5px', icons: [{}], inTab: true },
+  ],
+  tabs: [
+    { active: true, height: 33, width: 140, bottom: PANE_STRIP_HEIGHT, radius: [8, 8, 0, 0], selectHeight: 30, closeHeight: 28 },
+    { active: false, height: 32, width: 120, bottom: PANE_STRIP_HEIGHT - 1, radius: [8, 8, 0, 0], selectHeight: 30, closeHeight: 28 },
+  ],
+  ...overrides,
+});
+
+test('a pane strip row and a docked header row never share one family rule set', () => {
+  assert.equal(isPaneStrip({ family: 'pane' }), true);
+  assert.equal(isPaneStrip({ family: 'browser-tabs' }), true);
+  assert.equal(isPaneStrip({ family: 'docked' }), false);
+  assert.equal(isPaneStrip({ family: 'sheet-dialog' }), false);
+  assert.deepEqual(paneStripViolations([{ surface: 'Workbench', family: 'docked', rect: { height: 38 } }]), [], 'docked rows are never measured with the strip rules');
+  assert.deepEqual(paneStripViolations([]), []);
+});
+
+test('a pane strip keeps the T1 geometry', () => {
+  assert.deepEqual(paneStripViolations([stripRow()]), []);
+  const browserStrip = stripRow({ surface: 'Browser tabs', family: 'browser-tabs' });
+  assert.deepEqual(paneStripViolations([stripRow(), browserStrip]), [], 'a browser pane strip follows the same rules');
+  assert.deepEqual(paneStripViolations([stripRow({ tabs: [] })]), [], 'an empty pane keeps the bare strip');
+});
+
+test('every pane strip is 43 px and panes agree on insets, surface, rule and row', () => {
+  const short = paneStripViolations([stripRow({ rect: { x: 0, y: 0, width: 800, height: 38, bottom: 38, right: 800 } })]);
+  assert.match(short.flatMap(entry => entry.errors).join(' '), /pane strip height 38 != 43/);
+  const insets = paneStripViolations([stripRow(), stripRow({ padding: ['0px', '6px', '0px', '14px'] })]);
+  assert.match(insets[0].errors.join(' '), /differ between panes/);
+  const row = paneStripViolations([stripRow(), stripRow({ rect: { x: 0, y: 12, width: 400, height: 43, bottom: 55, right: 400 } })]);
+  assert.match(row.map(entry => entry.errors.join(' ')).join(' '), /do not share one row/);
+});
+
+test('strip icon buttons share one size and radius while tab controls keep the tab shape', () => {
+  const tapped = stripRow({ controls: [...stripRow().controls, { label: 'Task map', height: 26, width: 26, radius: '6px', icons: [{}], inTab: false }] });
+  const errors = paneStripViolations([tapped]).flatMap(entry => entry.errors);
+  assert.deepEqual(errors, ['strip control height 26 != 28: Task map']);
+  const radii = stripRow({ controls: stripRow().controls.map((control, index) => index === 0 ? { ...control, radius: '5px' } : control) });
+  assert.match(paneStripViolations([radii]).flatMap(entry => entry.errors).join(' '), /disagree on radius/);
+  const tabScopedOnly = stripRow({ controls: [stripRow().controls[2]] });
+  assert.deepEqual(paneStripViolations([tabScopedOnly]), [], 'tab controls are judged by the tab geometry, not the strip row');
+});
+
+test('tabs keep the selected-tab geometry that merges into the panel', () => {
+  const report = (...tabs) => paneStripViolations([stripRow({ tabs })]).flatMap(entry => entry.errors);
+  const [active, idle] = stripRow().tabs;
+  assert.match(report({ ...active, height: 30 }).join(' '), /selected tab height 30 != 33/);
+  assert.match(report({ ...idle, height: 33 }).join(' '), /idle tab height 33 != 32/);
+  assert.match(report({ ...active, radius: [6, 6, 0, 0] }).join(' '), /selected tab shoulders 6 6 0 0 != 8px 8px 0 0/);
+  assert.match(report({ ...active, selectHeight: 28 }).join(' '), /selected tab target height 28 != 30/);
+  assert.match(report({ ...active, closeHeight: 30 }).join(' '), /selected tab close button height 30 != 28/);
+  assert.match(report({ ...active, width: 96 }).join(' '), /selected tab width 96 < 120/);
+  assert.match(report({ ...active, bottom: 30 }).join(' '), /selected tab does not merge into the panel edge/);
+  assert.match(report({ ...active, active: false }).join(' '), /2 selected tabs|0 selected tabs/);
+});
+
+test('collector addresses one repeated container by index', () => {
+  const savedDocument = globalThis.document;
+  const empty = { querySelectorAll: () => [] };
+  const broken = { querySelectorAll: () => { throw Error('the wrong container was measured'); } };
+  try {
+    globalThis.document = { body: { querySelectorAll: () => [] }, querySelectorAll: selector => selector === '.workspace-tabbar' ? [broken, empty] : [] };
+    assert.deepEqual(collectControlsInPage({ containerSelector: '.workspace-tabbar', containerIndex: 1 }).controls, []);
+    assert.throws(() => collectControlsInPage({ containerSelector: '.workspace-tabbar' }), /the wrong container was measured/, 'the default index measures the first container');
+    assert.match(collectControlsInPage({ containerSelector: '.workspace-tabbar', containerIndex: 2 }).error, /container not found: \.workspace-tabbar \[2\]/);
+  } finally {
+    if (savedDocument === undefined) delete globalThis.document; else globalThis.document = savedDocument;
   }
 });

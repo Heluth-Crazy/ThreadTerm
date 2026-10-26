@@ -13,6 +13,11 @@
 // companion CSS token lint: it fails on hex/rgb/hsl colour literals in lines
 // added by this task. The unit test runs it against
 // `git diff 846c272 -- '*.css'`.
+//
+// `paneStripViolations(rows)` is the companion family rule set: since T1 every
+// pane owns its own Chrome-style tab strip, which is a different family from the
+// 38 px docked panel headers, so a strip is never measured with the docked
+// header rules and the two are never compared with each other.
 
 /**
  * Default chip/control selector. Keep in sync with the shared .chip spec. Inline file links
@@ -156,9 +161,11 @@ export function analyzeControls(controls, options = {}) {
 }
 
 /** Collects the control geometry in the page. Serialized and run in Chromium. */
-export function collectControlsInPage({ containerSelector, controlSelector, checkStates = false, checkDisabledRows = false }) {
-  const root = containerSelector ? document.querySelector(containerSelector) : document.body;
-  if (!root) return { error: `container not found: ${containerSelector}` };
+export function collectControlsInPage({ containerSelector, containerIndex = 0, controlSelector, checkStates = false, checkDisabledRows = false }) {
+  // A repeated container (one pane strip per pane) is addressed by index, so several
+  // rows of the same surface can be measured without inventing a selector per row.
+  const root = containerSelector ? document.querySelectorAll(containerSelector)[containerIndex] : document.body;
+  if (!root) return { error: `container not found: ${containerSelector}${containerIndex ? ` [${containerIndex}]` : ''}` };
   const all = [...root.querySelectorAll(controlSelector || 'button:not(.file-reference-link), [role="button"], .chip')];
   const parentIds = new WeakMap();
   let nextParentId = 0;
@@ -304,7 +311,7 @@ export async function checkControlConsistency(page, containerSelector, options =
   // State paint is compared at rest, not with one sibling under the pointer.
   if (options.checkStates) await page.mouse.move(0, 0);
   const collected = await page
-    .evaluate(collectControlsInPage, { containerSelector: containerSelector ?? null, controlSelector, checkStates: options.checkStates === true, checkDisabledRows: options.checkDisabledRows === true })
+    .evaluate(collectControlsInPage, { containerSelector: containerSelector ?? null, containerIndex: options.index ?? 0, controlSelector, checkStates: options.checkStates === true, checkDisabledRows: options.checkDisabledRows === true })
     .catch(error => ({ error: String(error), controls: [] }));
   if (collected.error) return { violations: [], checked: 0, groups: [], error: collected.error };
   const controls = collected.controls ?? [];
@@ -371,6 +378,133 @@ export function assertNoControlViolations(result, label = 'surface') {
     throw new Error(`${label}: ${result.violations.length} control-consistency violation(s):\n${lines.join('\n')}`);
   }
   return result;
+}
+
+// ---------------------------------------------------------------------------
+// Panel families: docked headers (38 px, panel-headers.css) and pane tab strips
+// (43 px Chrome-style tabs, T1 / workspace-parity.css) are measured by different
+// rule sets. `qa/panel-consistency-visual.mjs` runs both.
+// ---------------------------------------------------------------------------
+
+/** Docked panel headers keep the shared 38 px header scale and 26 px icon actions
+ *  (`panel-headers.css`); `qa/panel-consistency-visual.mjs` asserts those directly. */
+
+/** Every pane owns a 43 px tab strip, whatever content the pane shows. */
+export const PANE_STRIP_HEIGHT = 43;
+/** Icon actions inside a pane strip (add, split, overflow, close) share 28 px. */
+export const PANE_STRIP_CONTROL_HEIGHT = 28;
+
+/**
+ * T1 tab geometry: idle tabs are 32 px tall with 8 px shoulders, the selected tab
+ * is 33 px and merges into the panel edge, its target is 30 px and the row's icon
+ * buttons are 28 px. The selected tab keeps room for a readable label.
+ */
+export const PANE_TAB_GEOMETRY = {
+  height: 32,
+  activeHeight: 33,
+  selectHeight: 30,
+  closeHeight: 28,
+  shoulder: 8,
+  activeMinWidth: 120,
+};
+
+/** Families whose rows are pane tab strips rather than docked panel headers. */
+export const PANE_STRIP_FAMILIES = ['pane', 'browser-tabs'];
+
+/**
+ * Control selector inside a pane strip. A button tucked into a tab (the tab
+ * target and its close) is part of the tab shape and follows the tab geometry, so
+ * it never joins a strip control row.
+ */
+export const PANE_STRIP_CONTROL_SELECTOR = 'button:not(.workspace-tab-select):not(.workspace-tab-close), [role="button"]';
+
+export const isPaneStrip = row => PANE_STRIP_FAMILIES.includes(row.family);
+
+const round = value => Math.round(Number(value) * 10) / 10;
+
+/** The geometry every pane strip of one theme must share. */
+export function paneStripSignature(row) {
+  return JSON.stringify({
+    height: round(row.rect.height),
+    padding: row.padding,
+    gap: row.gap,
+    background: row.background,
+    border: row.border,
+    radius: row.radius,
+  });
+}
+
+function stripControlErrors(row) {
+  const errors = [];
+  const controls = (row.controls ?? []).filter(control => control.inTab !== true);
+  for (const control of controls) {
+    if (Math.abs(control.height - PANE_STRIP_CONTROL_HEIGHT) > HEIGHT_TOLERANCE) {
+      errors.push(`strip control height ${round(control.height)} != ${PANE_STRIP_CONTROL_HEIGHT}: ${control.label}`);
+    }
+  }
+  const radii = [...new Set(controls.map(control => round(parseFloat(control.radius) || 0)))];
+  if (radii.length > 1) errors.push(`strip icon buttons disagree on radius: ${radii.join(', ')}`);
+  return errors;
+}
+
+function tabGeometryErrors(row) {
+  const errors = [];
+  const tabs = row.tabs ?? [];
+  const active = tabs.filter(tab => tab.active);
+  if (tabs.length && active.length !== 1) errors.push(`${active.length} selected tabs in one strip`);
+  for (const tab of tabs) {
+    const kind = tab.active ? 'selected' : 'idle';
+    const expected = tab.active ? PANE_TAB_GEOMETRY.activeHeight : PANE_TAB_GEOMETRY.height;
+    if (Math.abs(tab.height - expected) > HEIGHT_TOLERANCE) errors.push(`${kind} tab height ${round(tab.height)} != ${expected}`);
+    if (Math.abs(tab.radius[0] - PANE_TAB_GEOMETRY.shoulder) > HEIGHT_TOLERANCE
+      || Math.abs(tab.radius[1] - PANE_TAB_GEOMETRY.shoulder) > HEIGHT_TOLERANCE
+      || round(tab.radius[2]) !== 0 || round(tab.radius[3]) !== 0) {
+      errors.push(`${kind} tab shoulders ${tab.radius.join(' ')} != ${PANE_TAB_GEOMETRY.shoulder}px ${PANE_TAB_GEOMETRY.shoulder}px 0 0`);
+    }
+    if (Math.abs(tab.selectHeight - PANE_TAB_GEOMETRY.selectHeight) > HEIGHT_TOLERANCE) {
+      errors.push(`${kind} tab target height ${round(tab.selectHeight)} != ${PANE_TAB_GEOMETRY.selectHeight}`);
+    }
+    if (tab.closeHeight !== null && Math.abs(tab.closeHeight - PANE_TAB_GEOMETRY.closeHeight) > HEIGHT_TOLERANCE) {
+      errors.push(`${kind} tab close button height ${round(tab.closeHeight)} != ${PANE_TAB_GEOMETRY.closeHeight}`);
+    }
+    if (!tab.active) continue;
+    if (tab.width < PANE_TAB_GEOMETRY.activeMinWidth - HEIGHT_TOLERANCE) {
+      errors.push(`selected tab width ${round(tab.width)} < ${PANE_TAB_GEOMETRY.activeMinWidth}`);
+    }
+    if (Math.abs(tab.bottom - row.rect.bottom) > 1) {
+      errors.push(`selected tab does not merge into the panel edge: tab bottom ${round(tab.bottom)} vs strip bottom ${round(row.rect.bottom)}`);
+    }
+  }
+  return errors;
+}
+
+/**
+ * Pane tab strip rules for the rows of one capture. Returns `{ surface, errors }`
+ * entries: every strip is 43 px, all strips of one theme agree on insets, surface
+ * and rule (they sit on one row), strip controls share one size and radius, and the
+ * tabs keep the T1 geometry with exactly one selected tab merging into its panel.
+ */
+export function paneStripViolations(rows) {
+  const strips = rows.filter(isPaneStrip);
+  const violations = [];
+  if (!strips.length) return violations;
+  const signatures = new Set(strips.map(paneStripSignature));
+  if (signatures.size > 1) {
+    violations.push({ surface: 'pane strips', errors: [`strip insets, surface and rule differ between panes: ${[...signatures].join(' | ')}`] });
+  }
+  const tops = strips.map(row => row.rect.y);
+  if (Math.max(...tops) - Math.min(...tops) > 1) {
+    violations.push({ surface: 'pane strips', errors: [`strips do not share one row: tops ${tops.map(round).join(', ')}`] });
+  }
+  for (const row of strips) {
+    const errors = [];
+    if (Math.abs(row.rect.height - PANE_STRIP_HEIGHT) > HEIGHT_TOLERANCE) {
+      errors.push(`pane strip height ${round(row.rect.height)} != ${PANE_STRIP_HEIGHT}`);
+    }
+    errors.push(...stripControlErrors(row), ...tabGeometryErrors(row));
+    if (errors.length) violations.push({ surface: row.surface, errors });
+  }
+  return violations;
 }
 
 const COLOR_LITERAL = /#[0-9a-fA-F]{3,8}\b|\b(?:rgba?|hsla?)\(/g;

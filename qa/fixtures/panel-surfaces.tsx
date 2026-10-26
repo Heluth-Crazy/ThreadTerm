@@ -4,6 +4,7 @@ import React from 'react';
 import { createRoot } from 'react-dom/client';
 import { flushSync } from 'react-dom';
 import { I18nProvider, type Locale } from '../../renderer/src/i18n';
+import { applyThemeTokens } from '../../renderer/src/themes';
 import { BlockInspector } from '../../renderer/src/components/BlockInspector';
 import { WorktreeManager } from '../../renderer/src/components/WorktreeManager';
 import { TaskMapView } from '../../renderer/src/components/TaskMapView';
@@ -115,6 +116,9 @@ window.qaPanelSurfaces = {
   render(surface, locale = 'en', theme = 'light') {
     document.documentElement.lang = locale;
     document.documentElement.dataset.theme = theme;
+    // The app paints theme roles as inline tokens; without them the fixture falls back to the
+    // stylesheet defaults and hairline colours no longer serialize like the app's.
+    applyThemeTokens(undefined, theme);
     flushSync(() => root.render(<I18nProvider locale={locale}><SurfaceView surface={surface} locale={locale}/></I18nProvider>));
   },
 };

@@ -1,4 +1,6 @@
 // Real production surfaces on Desktop 1; isolated runtime and fake Codex only.
+// Docked panel headers (38 px) and pane tab strips (43 px Chrome-style tabs, T1) are two
+// families with their own rules: qa/lib/visual-consistency.mjs holds both rule sets.
 import assert from 'node:assert/strict';
 import {randomUUID} from 'node:crypto';
 import {execFileSync,spawn} from 'node:child_process';
@@ -11,13 +13,15 @@ import {build as viteBuild} from 'vite';
 import {electron} from './lib/desktop1.mjs';
 import {connectPeer} from './pipe-client.mjs';
 import {closeBrowserViewFixture} from './lib/browser-view-cleanup.mjs';
-import {checkControlConsistency} from './lib/visual-consistency.mjs';
+import {PANE_STRIP_CONTROL_SELECTOR,PANE_STRIP_HEIGHT,checkControlConsistency,isPaneStrip,paneStripViolations} from './lib/visual-consistency.mjs';
 
 const root=resolve(import.meta.dirname,'..'),scratchBase=resolve(process.env.TEMP??(()=>{throw Error('TEMP must point to the QA scratch directory');})());
 await mkdir(scratchBase,{recursive:true});
 const scratch=await mkdtemp(join(scratchBase,'tt-panel-consistency-'));
 assert.equal(dirname(scratch).toLowerCase(),scratchBase.toLowerCase());
 const label=process.argv[2]??'before';assert.match(label,/^[\w.-]+$/);
+// Every pane kind the strip must survive: the strip is identical whatever the pane shows.
+const PANE_KINDS=['chat','file','terminal','browser','map','empty'];
 const verify=process.argv.includes('--verify'),out=join(root,'qa/results/panel-consistency',label);
 const baseline=process.argv.includes('--baseline'),baselineSources=new Map();
 if(baseline){
@@ -30,7 +34,7 @@ if(baseline){
 const appDir=join(scratch,'app'),bin=join(scratch,'bin'),work=join(scratch,'work'),plugins=join(scratch,'plugins');
 const runtime=process.env.THREADTERM_V3_RUNTIME_BIN??join(root,'runtime/target-qa/debug/threadterm-v3-runtime.exe'),pipe=`\\\\.\\pipe\\tt-panel-${randomUUID()}`,lock=join(scratchBase,'qa-electron.lock');
 const report={passed:false,checks:[],measurements:[],screenshots:[],errors:[],violations:[],limitations:[]};
-let app,page,runtimeProcess,locked=false,chat,server,baseUrl;
+let app,page,runtimeProcess,locked=false,chat,terminal,server,baseUrl;
 const sleep=ms=>new Promise(done=>setTimeout(done,ms));
 const check=value=>{report.checks.push(value);console.log(`PASS ${value}`)};
 const request=(method,params={})=>page.evaluate(([method,params])=>window.threadterm.request(method,params),[method,params]);
@@ -42,11 +46,15 @@ function env(){
 }
 async function settings(language,theme){const snap=await request('runtime.snapshot');await request('settings.update',{patch:{language,theme,themeSelection:theme,notifications:{native:false,attention:false,completed:false,sound:false}},expectedRevision:snap.settings.revision,operationId:randomUUID()});await page.waitForFunction(({language,theme})=>document.documentElement.lang===(language==='zh-CN'?'zh-CN':'en')&&document.documentElement.dataset.theme===theme,{language,theme})}
 async function settled(){await page.evaluate(async()=>{await Promise.all(document.getAnimations().filter(animation=>animation.effect?.getTiming().iterations!==Infinity).map(animation=>animation.finished.catch(()=>{})));await new Promise(done=>requestAnimationFrame(()=>requestAnimationFrame(done)))})}
+// Session switches go through the desktop navigation channel the window already uses.
+const navigate=id=>app.evaluate(({BrowserWindow},id)=>BrowserWindow.getAllWindows()[0].webContents.send('threadterm:desktop-navigate',{sessionId:id}),id);
+const focusedPane=()=>page.locator('.workspace-pane.selected').first();
+async function workspaceAction(name,actionsLabel='Workspace actions'){await focusedPane().getByRole('button',{name:actionsLabel,exact:true}).click();await page.getByRole('button',{name,exact:true}).click()}
 async function capture(name){
  await page.mouse.move(0,0);await settled();
  const definitions=[
   ['Workbench','docked','.wb-panel-head','strong'],['Session details','docked','.inspector > .ins-head','span'],
-  ['Pane tabs','pane','.workspace-pane > .workspace-tabbar.ws-strip','.workspace-tab.active .workspace-tab-select'],['File editor/preview','file','.tt-editor-tabs.file-view-tabs','.embedded-file-breadcrumb, .tt-editor-tab.active'],
+  ['Pane tabs','pane','.workspace-pane > .workspace-tabbar.ws-strip','.workspace-tab.active .workspace-tab-label'],['File editor/preview','file','.tt-editor-tabs.file-view-tabs','.embedded-file-breadcrumb, .tt-editor-tab.active'],
   ['File/diff/review toolbar','file','.file-bar:not(.wb-browser-toolbar)','.path, .embedded-file-breadcrumb'],['Browser toolbar','browser-toolbar','.wb-browser-toolbar',null],['Files & Git','docked','.wb-tools-head','strong'],
   ['Git history','docked','.wb-history-title','strong'],['Task map','toolbar','.task-map-toolbar','.task-map-title strong'],
   ['Task map details','docked','.task-graph-details > header','strong'],['Block inspector','floating','.block-inspector-heading','h2'],
@@ -59,6 +67,9 @@ async function capture(name){
  ];
  const rows=await page.evaluate(definitions=>{
   const box=node=>{const r=node.getBoundingClientRect();return{x:r.x,y:r.y,width:r.width,height:r.height,bottom:r.bottom,right:r.right}};
+  // Text inside a clipped scroller (a tab label in a scrolling strip) keeps its unclipped geometry;
+  // intersect it with the clipping ancestors so overlap and bounds use what the user can see.
+  const visibleRect=node=>{let rect=box(node);for(let parent=node.parentElement;parent;parent=parent.parentElement){const style=getComputedStyle(parent);if(!/(auto|scroll|hidden|clip)/.test(style.overflowX)&&!/(auto|scroll|hidden|clip)/.test(style.overflowY))continue;const bounds=box(parent);rect={x:Math.max(rect.x,bounds.x),y:Math.max(rect.y,bounds.y),right:Math.min(rect.right,bounds.right),bottom:Math.min(rect.bottom,bounds.bottom)};rect.width=Math.max(0,rect.right-rect.x);rect.height=Math.max(0,rect.bottom-rect.y);}return rect;};
   const context=document.createElement('canvas').getContext('2d',{willReadFrequently:true});
   const rgba=value=>{context.clearRect(0,0,1,1);context.fillStyle=value;context.fillRect(0,0,1,1);const [r,g,b,a]=context.getImageData(0,0,1,1).data;return {r,g,b,a:a/255}};
   const over=(a,b)=>({r:a.r*a.a+b.r*(1-a.a),g:a.g*a.a+b.g*(1-a.a),b:a.b*a.a+b.b*(1-a.a),a:1});
@@ -69,26 +80,36 @@ async function capture(name){
    const r=box(node),s=getComputedStyle(node);if(!r.width||!r.height||s.visibility==='hidden'||!node.checkVisibility())continue;
    const candidate=titleSelector?node.querySelector(titleSelector):node,title=candidate?.checkVisibility()?candidate:null,ts=title&&getComputedStyle(title),bg=background(title??node),fg=ts&&over(rgba(ts.color),bg),lights=fg&&[luminance(bg),luminance(fg)].sort((a,b)=>b-a);
    const range=document.createRange();if(title)range.selectNodeContents(title);const tr=title&&range.getBoundingClientRect(),tb=title&&box(title);
-   const controls=[...node.querySelectorAll('button, [role=button]')].filter(n=>n.checkVisibility()).map(n=>({label:n.getAttribute('aria-label')??n.textContent,...box(n),fontSize:getComputedStyle(n).fontSize,radius:getComputedStyle(n).borderRadius,icons:[...n.querySelectorAll('.ico,.agent-icon,svg')].map(box)}));
-   rows.push({surface,family:node.matches('.create-head')?'create-dialog':family,selector,index,rect:r,padding:[s.paddingTop,s.paddingRight,s.paddingBottom,s.paddingLeft],gap:s.gap,background:s.backgroundColor,effectiveBackground:bg,border:s.borderBottom,radius:[s.borderTopLeftRadius,s.borderTopRightRadius],cardRadius:[getComputedStyle(node.parentElement).borderTopLeftRadius,getComputedStyle(node.parentElement).borderTopRightRadius],title:title?{text:title.textContent,fontSize:ts.fontSize,fontWeight:ts.fontWeight,color:ts.color,lineHeight:ts.lineHeight,contrast:(lights[0]+.05)/(lights[1]+.05),rect:tb,clipped:title.scrollWidth>title.clientWidth+1,ellipsis:ts.textOverflow==='ellipsis',inside:tr.left>=r.x-1&&tr.right<=r.right+1&&tr.top>=r.y-1&&tr.bottom<=r.bottom+1}:null,controls});
+   const controls=[...node.querySelectorAll('button, [role=button]')].filter(n=>n.checkVisibility()&&!(title&&(n===title||n.contains(title)||title.contains(n)))).map(n=>({label:n.getAttribute('aria-label')??n.textContent,...box(n),fontSize:getComputedStyle(n).fontSize,radius:getComputedStyle(n).borderRadius,inTab:Boolean(n.closest('.workspace-tab')),icons:[...n.querySelectorAll('.ico,.agent-icon,svg')].map(box)}));
+   // A pane strip carries its tab geometry and the kind of content the pane shows, so the
+   // strip family rules can compare panes with each other.
+   const strip=node.matches('.workspace-tabbar.ws-strip')?node:null,card=strip&&node.closest('.workspace-pane')?.querySelector('.pane-card');
+   const tabs=strip?[...strip.querySelectorAll('.workspace-tab')].map(tab=>{const rect=box(tab),style=getComputedStyle(tab),select=tab.querySelector('.workspace-tab-select'),close=tab.querySelector('.workspace-tab-close');return {active:tab.classList.contains('active'),height:rect.height,width:rect.width,bottom:rect.bottom,radius:[style.borderTopLeftRadius,style.borderTopRightRadius,style.borderBottomLeftRadius,style.borderBottomRightRadius].map(value=>parseFloat(value)||0),selectHeight:select?box(select).height:null,closeHeight:close?box(close).height:null};}):undefined;
+   const paneKind=card?(()=>{const kindOf=surface=>surface.querySelector('.xterm')?'terminal':surface.querySelector('.wb-web-preview')?'browser':surface.querySelector('.task-map')?'map':surface.querySelector('.file-workspace, .tt-editor-tabs')?'file':surface.querySelector('.chat-view, .chat-compose-shell')?'chat':'unknown';const visible=[...card.querySelectorAll('.pane-tab-surface')].find(surface=>!surface.hidden);return visible?kindOf(visible):card.querySelector('.pane-empty')?'empty':'unknown';})():undefined;
+   rows.push({surface,tabs,paneKind,family:node.matches('.create-head')?'create-dialog':family,selector,index,rect:r,padding:[s.paddingTop,s.paddingRight,s.paddingBottom,s.paddingLeft],gap:s.gap,background:s.backgroundColor,effectiveBackground:bg,border:s.borderBottom,radius:[s.borderTopLeftRadius,s.borderTopRightRadius],cardRadius:[getComputedStyle(node.parentElement).borderTopLeftRadius,getComputedStyle(node.parentElement).borderTopRightRadius],title:title?{text:title.textContent,fontSize:ts.fontSize,fontWeight:ts.fontWeight,color:ts.color,lineHeight:ts.lineHeight,contrast:(lights[0]+.05)/(lights[1]+.05),rect:tb,visibleRect:visibleRect(title),clipped:title.scrollWidth>title.clientWidth+1,ellipsis:ts.textOverflow==='ellipsis',inside:tr.left>=r.x-1&&tr.right<=r.right+1&&tr.top>=r.y-1&&tr.bottom<=r.bottom+1}:null,controls});
   }
   return rows;
  },definitions);
  for(const row of rows){
-  const controls=await checkControlConsistency(page,`${row.selector} >> nth=${row.index}`);
+  const controls=await checkControlConsistency(page,row.selector,{index:row.index,...(isPaneStrip(row)?{controlSelector:PANE_STRIP_CONTROL_SELECTOR}:{})});
   row.controlConsistency=controls;
+  // A selector the helper cannot resolve must fail loudly: a silent error would disable
+  // the shared-control rule for every row of that surface.
+  if(controls.error)throw Error(`${row.surface} (${row.selector} [${row.index}]): ${controls.error}`);
   const errors=[];
   if(row.title&&!['strip','splitter','browser-toolbar'].includes(row.family)){
    if(row.title.contrast<4.5)errors.push(`title contrast ${row.title.contrast.toFixed(2)}`);
    if(!row.title.inside&&!row.title.ellipsis)errors.push('title outside header');
   }
-  for(const control of row.controls)if(control.x<row.rect.x-1||control.right>row.rect.right+1||control.y<row.rect.y-1||control.bottom>row.rect.bottom+1)errors.push(`action outside header: ${control.label}`);
-  if(row.title&&['docked','pane','sheet-dialog','create-dialog','floating','settings','popover'].includes(row.family))for(const control of row.controls){const title=row.title.rect;if(title.x<control.right-.5&&title.right>control.x+.5&&title.y<control.bottom-.5&&title.bottom>control.y+.5)errors.push(`title overlaps action: ${control.label}`)}
+  // A tab is part of the strip shape: its own controls sit inside the tab, and tabs scrolled out of the
+  // strip are clipped by it (T1 overflow), so bounds are judged by the tab geometry rule instead.
+  for(const control of row.controls.filter(control=>!control.inTab))if(control.x<row.rect.x-1||control.right>row.rect.right+1||control.y<row.rect.y-1||control.bottom>row.rect.bottom+1)errors.push(`action outside header: ${control.label}`);
+  if(row.title&&['docked','pane','sheet-dialog','create-dialog','floating','settings','popover'].includes(row.family))for(const control of row.controls){const title=row.title.visibleRect;if(title.x<control.right-.5&&title.right>control.x+.5&&title.y<control.bottom-.5&&title.bottom>control.y+.5)errors.push(`title overlaps action: ${control.label}`)}
   if(controls.violations?.length)errors.push(...controls.violations.map(v=>v.message??JSON.stringify(v)));
   if(verify&&row.family==='docked'&&Math.abs(row.rect.height-38)>.5)errors.push(`docked header height ${row.rect.height} != 38`);
   if(errors.length)report.violations.push({name,surface:row.surface,errors});
  }
- const peers=rows.filter(row=>['Workbench','Session details','Pane tabs','Worktree list','Worktree details'].includes(row.surface));
+ const peers=rows.filter(row=>['Workbench','Session details','Worktree list','Worktree details'].includes(row.surface));
  const adjacent=peers.filter(row=>Math.abs(row.rect.y-peers[0].rect.y)<=1);
  if(adjacent.length>1){const delta=Math.max(...adjacent.map(row=>row.rect.bottom))-Math.min(...adjacent.map(row=>row.rect.bottom));if(delta>1)report.violations.push({name,surface:'adjacent headers',errors:[`bottom delta ${delta}`]})}
  report.measurements.push({name,rows});
@@ -101,7 +122,8 @@ try{
  cpSync(join(root,'qa/fixtures/browser-plugins'),join(plugins,'browser-preview-acp-qa'),{recursive:true});
  server=createServer((_,response)=>{response.writeHead(200,{'content-type':'text/html'});response.end('<!doctype html><title>Panel browser fixture</title><h1>Loopback browser panel</h1>')});
  await new Promise(done=>server.listen(0,'127.0.0.1',done));baseUrl=`http://127.0.0.1:${server.address().port}`;
- await writeFile(join(bin,'codex.cmd'),`@"${process.execPath}" "${join(root,'qa/fixtures/browser-plugins/fake-codex-browser.cjs')}" %*\r\n`);
+ await writeFile(join(bin,'fake-terminal.cjs'),"process.stdout.write('Terminal ready\\r\\nPane strip fixture output\\r\\n');process.stdin.resume();process.stdin.on('data',()=>{});process.stdin.on('end',()=>process.exit(0));\n");
+ await writeFile(join(bin,'codex.cmd'),`@echo off\r\nif "%~1"=="--help" (echo codex-browser-qa 1.0.0 --no-alt-screen& exit /b 0)\r\necho %*|findstr /C:"resume" >nul && (@"${process.execPath}" "%~dp0fake-terminal.cjs"& exit /b 0)\r\n@"${process.execPath}" "${join(root,'qa/fixtures/browser-plugins/fake-codex-browser.cjs')}" %*\r\n`);
  await writeFile(join(work,'plan.md'),'# Panel consistency QA\n\nA saved file preview.\n');
  for(const name of ['main','preload'])await esbuild({entryPoints:[join(root,`desktop/src/${name}.ts`)],bundle:true,platform:'node',target:'node22',format:'cjs',external:['electron'],outfile:join(appDir,`${name}.cjs`),logLevel:'error'});
  await viteBuild({configFile:join(root,'vite.config.ts'),plugins:baseline?[{name:'panel-before-source',enforce:'pre',load(id){return baselineSources.get(id.split('?')[0].replaceAll('\\','/').toLowerCase())??null}}]:[],logLevel:'warn',build:{outDir:join(appDir,'renderer'),emptyOutDir:true}});
@@ -116,8 +138,10 @@ try{
  await settings('en','light');
  const project=await request('project.add',{path:work,name:'Panel QA',operationId:randomUUID()});
  chat=await request('session.create',{projectId:project.id,cwd:work,provider:'codex',mode:'chat',title:'Panel QA',operationId:randomUUID()});
+ // A terminal pane is another pane kind whose strip must match every other pane's strip.
+ terminal=await request('session.create',{projectId:project.id,cwd:work,provider:'codex',mode:'terminal',title:'Panel QA Terminal',operationId:randomUUID()});
  await app.evaluate(({BrowserWindow})=>BrowserWindow.getAllWindows()[0].setContentSize(1920,1080));
- await app.evaluate(({BrowserWindow},id)=>BrowserWindow.getAllWindows()[0].webContents.send('threadterm:desktop-navigate',{sessionId:id}),chat.id);
+ await navigate(chat.id);
  await page.locator('.chat-compose-shell textarea').waitFor();
  await page.getByRole('button',{name:'Session details',exact:true}).click();
  for(const language of ['en','zh-CN'])for(const theme of ['light','dark']){
@@ -140,6 +164,23 @@ try{
    const tools=page.locator('.wb-web-preview:visible').getByRole('button',{name:zh?'开发者工具':'Developer tools',exact:true});
    await tools.click();await page.locator('.wb-browser-devtools-splitter:visible').waitFor();await capture(`${cell}-devtools`);await tools.click();
    await page.locator('.workspace-pane').filter({has:page.getByRole('tab',{name:'Panel QA',exact:true})}).getByRole('tab',{name:'Panel QA',exact:true}).click();
+  });
+  await optional('Terminal pane',async()=>{
+   try{
+    await navigate(terminal.id);await page.locator('.xterm:visible').waitFor({timeout:30000});
+    const printed=await page.getByText('Terminal ready',{exact:true}).waitFor({timeout:15000}).then(()=>true,()=>false);
+    if(!printed)report.limitations.push('Terminal pane: the fake terminal banner did not reach the xterm buffer; the strip was measured anyway');
+    await capture(`${cell}-terminal`);
+   }finally{await navigate(chat.id);await page.locator('.chat-compose-shell textarea:visible').waitFor({timeout:30000})}
+  });
+  await optional('Empty pane',async()=>{
+   const panes=await page.locator('[data-pane-id]').count();
+   await workspaceAction(zh?'左右拆分':'Split right',zh?'工作区操作':'Workspace actions');
+   await until(async()=>(await page.locator('[data-pane-id]').count())===panes+1,'split pane');
+   await page.locator('.workspace-pane .pane-empty').waitFor({state:'visible'});
+   await capture(`${cell}-empty-pane`);
+   await workspaceAction(zh?'关闭窗格':'Close pane',zh?'工作区操作':'Workspace actions');
+   await until(async()=>(await page.locator('[data-pane-id]').count())===panes,'pane closed');
   });
   await optional('Account menu',async()=>{await page.getByRole('button',{name:zh?'本地用户':'Local user',exact:true}).click();await page.locator('.account-menu').waitFor();await capture(`${cell}-account`);await page.keyboard.press('Escape')});
   await optional('Settings',async()=>{await page.getByRole('button',{name:zh?'本地用户':'Local user',exact:true}).click();await page.getByRole('button',{name:zh?'设置':'Settings',exact:true}).click();await page.locator('.settings-panel').waitFor();await capture(`${cell}-settings`);await closeDialog()});
@@ -167,15 +208,24 @@ try{
  if(verify){
   for(const language of ['en','zh-CN'])for(const theme of ['light','dark']){
    const rows=report.measurements.filter(cell=>cell.name.startsWith(`${language}-${theme}-`)).flatMap(cell=>cell.rows);
-   const family=rows.filter(row=>['docked','pane'].includes(row.family));assert.ok(family.length>0);
+   // Docked panels keep the shared header scale (unchanged rules).
+   const docked=rows.filter(row=>row.family==='docked');assert.ok(docked.length>0);
    const signature=row=>JSON.stringify({padding:row.padding,gap:row.gap,background:row.background,border:row.border,radius:row.radius,font:row.title&&[row.title.fontSize,row.title.fontWeight,row.title.color,row.title.lineHeight]});
-   assert.equal(new Set(family.map(signature)).size,1,`${language}-${theme}: docked/pane heading typography, insets, gap, surface and rule match`);
-   assert.ok(family.every(row=>Math.abs(row.rect.height-38)<=.5),`${language}-${theme}: 38px family height`);
-   assert.ok(family.every(row=>row.controls.every(control=>Math.abs(control.height-26)<=.5&&(!control.icons.length||Math.abs(control.width-26)<=.5))),`${language}-${theme}: 26px icon actions and text control height`);
+   assert.equal(new Set(docked.map(signature)).size,1,`${language}-${theme}: docked heading typography, insets, gap, surface and rule match`);
+   assert.ok(docked.every(row=>Math.abs(row.rect.height-38)<=.5),`${language}-${theme}: 38px docked family height`);
+   assert.ok(docked.every(row=>row.controls.every(control=>Math.abs(control.height-26)<=.5&&(!control.icons.length||Math.abs(control.width-26)<=.5))),`${language}-${theme}: 26px docked icon actions and text control height`);
+   // Pane tab strips are a family of their own (T1): one 43 px strip per pane, one selected
+   // tab per strip, identical strip geometry in every pane kind.
+   const strips=rows.filter(isPaneStrip);assert.ok(strips.length>0,`${language}-${theme}: pane tab strips measured`);
+   const stripFailures=paneStripViolations(rows);
+   if(stripFailures.length)report.violations.push({name:`${language}-${theme}`,surface:'pane strips',errors:stripFailures.map(failure=>`${failure.surface}: ${failure.errors.join('; ')}`)});
+   assert.deepEqual(stripFailures,[],`${language}-${theme}: ${PANE_STRIP_HEIGHT}px pane tab strips with the T1 tab geometry\n${JSON.stringify(stripFailures,null,2)}`);
+   const kinds=[...new Set(strips.map(row=>row.paneKind))],missing=PANE_KINDS.filter(kind=>!kinds.includes(kind));
+   assert.deepEqual(missing,[],`${language}-${theme}: pane strip measured in every pane kind; missing ${missing.join(', ')}`);
    const sheets=rows.filter(row=>row.family==='sheet-dialog');assert.ok(sheets.length>=2);
    assert.ok(Math.max(...sheets.map(row=>row.rect.height))-Math.min(...sheets.map(row=>row.rect.height))<=.5,`${language}-${theme}: sheet/configure header height matches`);
    assert.equal(new Set(sheets.map(row=>JSON.stringify({padding:row.padding,gap:row.gap,font:row.title&&[row.title.fontSize,row.title.fontWeight,row.title.lineHeight]}))).size,1,`${language}-${theme}: sheet typography, insets and gap match`);
-   check(`${language}-${theme}: family styles equal within 0.5px; adjacent dividers within 1px; shared controls and title contrast pass`);
+   check(`${language}-${theme}: docked family styles equal within 0.5px; pane strips ${PANE_STRIP_HEIGHT}px in ${kinds.length} pane kinds (${kinds.join('/')}); adjacent dividers within 1px; shared controls and title contrast pass`);
   }
  }
  if(verify)assert.deepEqual(report.violations,[],JSON.stringify(report.violations,null,2));
