@@ -107,7 +107,7 @@ export function ReviewDiffView({projectId, worktreePath, path, sessionId, checkp
    {editable && <button type="button" className="btn btn-sm" disabled={busy || !dirty} onClick={() => void save()}>{copy('Save', '保存')}</button>}
    {live && diff && <button type="button" className="btn btn-sm" disabled={busy || dirty} onClick={() => setConfirm(true)}>{copy('Revert file…', '还原文件…')}</button>}
    {onOpenFile && diff?.exists && <button type="button" className="btn btn-sm" onClick={() => onOpenFile(path)}>{copy('Open file', '打开文件')}</button>}
-   <button type="button" className="icon-btn" title={copy('Refresh', '刷新')} aria-label={copy('Refresh', '刷新')} disabled={busy || dirty} onClick={() => void load()}><WbIcon name="refresh"/></button>
+   <button type="button" className="icon-btn icon-btn-sm" title={copy('Refresh', '刷新')} aria-label={copy('Refresh', '刷新')} disabled={busy || dirty} onClick={() => void load()}><WbIcon name="refresh"/></button>
   </div>
   {issue && <p className="wb-issue" role="alert">{issue}</p>}
   {scope && comments && <>
