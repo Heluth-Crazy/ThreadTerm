@@ -13,7 +13,7 @@ import { PNG } from 'pngjs';
 
 const root = resolve(import.meta.dirname, '..');
 const scratchBase = resolve(process.env.TEMP ?? (() => { throw Error('TEMP must be the approved tt-qa-temp directory'); })());
-const runtime = process.env.THREADTERM_V3_RUNTIME_BIN ?? join(root, 'runtime/target-ab2/debug/threadterm-v3-runtime.exe');
+const runtime = process.env.THREADTERM_V3_RUNTIME_BIN ?? join(root, 'runtime/target-qa/debug/threadterm-v3-runtime.exe');
 const out = join(root, 'qa/results/appearance-themes');
 const presets = ['threadterm-light', 'threadterm-dark', 'github-light', 'github-dark', 'solarized-light', 'solarized-dark', 'catppuccin-latte', 'catppuccin-mocha', 'rose-pine-dawn', 'rose-pine', 'gruvbox-light', 'gruvbox-dark', 'nord', 'tokyo-night', 'dracula'];
 const compactPresets = ['solarized-light', 'catppuccin-mocha', 'tokyo-night', 'dracula'];
