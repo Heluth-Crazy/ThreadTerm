@@ -38,7 +38,8 @@ test('the production policy is the reviewed one, with a hash for the app boot sc
   assert.match(script, /^'self' 'sha256-[A-Za-z0-9+/=]+'$/);
   assert.doesNotMatch(script, /unsafe-inline|unsafe-eval|http/, 'production never relaxes script-src');
   assert.equal(policy.get('style-src'), "'self' 'unsafe-inline'");
-  assert.equal(policy.get('img-src'), "'self' data: blob: http: https:");
+  assert.equal(policy.get('img-src'), "'self' data: blob: http: https: threadterm-bg:");
+  assert.match(policy.get('img-src') ?? '', /(?:^|\s)threadterm-bg:(?:\s|$)/, 'background images are served from the app scheme (desktop/src/backgroundImages.ts)');
   assert.equal(policy.get('font-src'), "'self' data:");
   assert.equal(policy.get('connect-src'), "'self'");
   assert.equal(policy.get('media-src'), "'self' data: blob:");

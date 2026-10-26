@@ -1,5 +1,6 @@
 import type { BrowserBridge, BrowserCommand, BrowserEvent, BrowserPreferences, BrowserState } from './browserTypes';
 import type { BrowserHandoffBridge, BrowserHandoffCommand, BrowserHandoffEvent, BrowserHandoffResult } from '../../desktop/src/browser/handoffTypes';
+import type { BackgroundBridge } from '../../desktop/src/backgroundImagesCore';
 import type { PagePick, PageRect, PageTargetRef, ChatItem, Method, NativeHistoryItem, OutputChunk, ProviderId, RequestParams, RequestResult, RuntimeEvent, Snapshot } from "@threadterm/protocol";
 export type { ChatItem, NativeHistoryItem, ProviderId, Snapshot } from "@threadterm/protocol";
 
@@ -49,3 +50,7 @@ export const browserHandoff = (command:BrowserHandoffCommand):Promise<BrowserHan
 export const onBrowserHandoffEvent = (listener:(event:BrowserHandoffEvent)=>void) => browserHandoffFacade().onBrowserHandoffEvent?.(listener) ?? (()=>{});
 export type { BrowserHandoffCommand, BrowserHandoffEvent, BrowserHandoffResult } from '../../desktop/src/browser/handoffTypes';
 export type { BrowserCommand, BrowserEvent, BrowserPreferences, BrowserState } from './browserTypes';
+
+/** Additive desktop capability; the browser build serves no background images. */
+export const backgroundBridge = (): Partial<BackgroundBridge> => facade() as typeof window.threadterm & Partial<BackgroundBridge>;
+export type { BackgroundRecord, ImageStats } from '../../desktop/src/backgroundImagesCore';

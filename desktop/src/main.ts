@@ -24,9 +24,11 @@ import { qaOpenExternalPathsOverride } from './externalFiles.js';
 
 import { HtmlPreviewGrantManager, registerHtmlPreviewScheme, mergePreviewIsolationFeatures, installHtmlPreviewSession, attachHtmlPreviewWindow } from './htmlPreview.js';
 import { registerHtmlPreviewIpc } from './htmlPreviewIpc.js';
+import { backgroundImagesFolder, installBackgroundImageSession, registerBackgroundImageIpc, registerBackgroundImageScheme } from './backgroundImages.js';
 import { appCspForHtml, buildAppCsp } from './appCsp.js';
 
 registerHtmlPreviewScheme(protocol);
+registerBackgroundImageScheme(protocol);
 app.commandLine.appendSwitch('enable-features', mergePreviewIsolationFeatures(app.commandLine.getSwitchValue('enable-features')));
 const htmlPreviewGrants = new HtmlPreviewGrantManager();
 let htmlPreviewPreloadReady = false;
@@ -69,6 +71,7 @@ app.on('will-quit', () => { adminRuntime.dispose(); for (const client of windowR
 void app.whenReady().then(async () => {
   installAppCspHeader(session.defaultSession);
   installHtmlPreviewSession(session.defaultSession, htmlPreviewGrants, { appFrameAncestor: process.env.THREADTERM_V3_DEV_SERVER_URL ? new URL(process.env.THREADTERM_V3_DEV_SERVER_URL).origin : 'file:' });
+  installBackgroundImageSession(session.defaultSession, backgroundImagesFolder());
   try {
     const preloadPath = join(__dirname, 'htmlPreviewSandboxPreload.cjs');
     if (!statSync(preloadPath).isFile()) throw new Error('Missing HTML preview safety preload');
@@ -321,6 +324,7 @@ function registerIpc(): void {
     return {browserRequest:(method,params)=>runtime.browserRequest(method,params),onBrowserFrame:listener=>runtime.onBrowserFrame(listener),onBrowserDisconnect:listener=>runtime.onBrowserDisconnect(listener),onEvent:listener=>runtime.onEvent(listener),snapshot:()=>runtime.request('runtime.snapshot',{})};
   });
   registerHtmlPreviewIpc(htmlPreviewGrants, assertTrustedRenderer, runtimeFor, () => htmlPreviewPreloadReady);
+  registerBackgroundImageIpc({ folder: backgroundImagesFolder(), assertTrusted: assertTrustedRenderer, isPackaged: app.isPackaged });
   registerPageComments(assertTrustedRenderer, async after => {
     const references = await adminRuntime.request('reviewDrafts.assetReferences', after ? { after, limit: 200 } : { limit: 200 });
     return { paths: references.paths, nextAfter: references.nextAfter, legacyImportComplete: references.legacyImportComplete };

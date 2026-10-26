@@ -3,6 +3,7 @@ import { terminalPtyFromArguments } from './terminalEnvironment.js';
 import type { BrowserBridge, BrowserEvent } from '../../renderer/src/browserTypes.js';
 import { isBrowserSharingState } from '../../renderer/src/browserTypes.js';
 import type { BrowserHandoffBridge, BrowserHandoffEvent } from './browser/handoffTypes.js';
+import type { BackgroundBridge } from './backgroundImagesCore.js';
 import {
   isRecord,
   isRuntimeEvent,
@@ -16,7 +17,7 @@ import {
 } from '@threadterm/protocol';
 
 type FilePathBridge = { getPathForFile: (file: File) => string };
-const bridge: ThreadTermBridge & BrowserBridge & BrowserHandoffBridge & FilePathBridge = {
+const bridge: ThreadTermBridge & BrowserBridge & BrowserHandoffBridge & BackgroundBridge & FilePathBridge = {
   browserCommand: command => ipcRenderer.invoke('threadterm:browser-command', command),
   onBrowserEvent: listener => {
     const handler = (_event: Electron.IpcRendererEvent, value: unknown) => { if (isBrowserEvent(value)) listener(value); };
@@ -105,6 +106,13 @@ const bridge: ThreadTermBridge & BrowserBridge & BrowserHandoffBridge & FilePath
   exportDiagnostics: () => ipcRenderer.invoke('threadterm:export-diagnostics') as Promise<string | null>,
   testNotification: () => ipcRenderer.invoke('threadterm:test-notification') as Promise<{ sent: boolean; reason?: string }>,
   scheduleElectronCacheCleanup: (schedule) => ipcRenderer.invoke('threadterm:schedule-electron-cache-cleanup', schedule) as Promise<{ scheduled: boolean; available: boolean; result?: string }>,
+  pickBackgroundImage: () => ipcRenderer.invoke('threadterm:background-pick') as Promise<{ name: string; mime: string; bytes: Uint8Array } | null>,
+  readBackgroundSource: (path) => ipcRenderer.invoke('threadterm:background-read-source', path) as Promise<{ name: string; mime: string; bytes: Uint8Array }>,
+  storeBackgroundImage: (input) => ipcRenderer.invoke('threadterm:background-store', input),
+  storeBackgroundVariant: (input) => ipcRenderer.invoke('threadterm:background-store-variant', input),
+  listBackgroundImages: () => ipcRenderer.invoke('threadterm:background-list'),
+  removeBackgroundImage: (id) => ipcRenderer.invoke('threadterm:background-remove', id) as Promise<void>,
+  pruneBackgroundImages: (keepIds) => ipcRenderer.invoke('threadterm:background-prune', keepIds) as Promise<void>,
 };
 
 Object.assign(bridge, {

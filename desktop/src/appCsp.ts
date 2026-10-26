@@ -50,7 +50,7 @@ export function appCspDirectives(hashes: readonly string[], options: AppCspOptio
   return [
     `script-src ${script.join(' ')}`,
     "style-src 'self' 'unsafe-inline'",
-    "img-src 'self' data: blob: http: https:",
+    "img-src 'self' data: blob: http: https: threadterm-bg:",
     "font-src 'self' data:",
     `connect-src ${connect.join(' ')}`,
     "media-src 'self' data: blob:",
