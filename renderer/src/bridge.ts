@@ -15,7 +15,7 @@ export const chooseDirectory = () => facade().chooseDirectory();
 export const attachFiles = () => facade().attachFiles();
 export const openExternalFiles = () => facade().openExternalFiles();
 export const chooseSavePath = (kind: 'database' | 'settings' | 'theme') => facade().chooseSavePath(kind);
-export const exportFile = (kind: 'settings' | 'theme') => facade().exportFile(kind);
+export const exportFile = (kind: 'settings' | 'theme') => facade().exportFile(kind) as Promise<{ path: string; missingImages?: string[] } | null>;
 export const activateDataRelocation = (prepared: Awaited<ReturnType<typeof request<'data.relocation.prepare'>>>) => facade().activateDataRelocation(prepared);
 export const desktopPreferences = () => facade().desktopPreferences();
 export const exportDiagnostics = () => facade().exportDiagnostics();

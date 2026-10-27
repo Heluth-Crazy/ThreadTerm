@@ -1,4 +1,5 @@
 import { Select } from "./components/ui/Select";
+import { useBackgroundPreview } from './appearance/backgroundPreview';
 import {
   lazy,
   Suspense,
@@ -214,6 +215,8 @@ export function App() {
   const locale: Locale = localeFromSettings(data?.settings);
   const t = (key: Parameters<typeof translate>[1]) => translate(locale, key);
   const themeTokens = useMemo(() => data ? customTheme(data.settings) : undefined, [selection, data?.settings.revision]);
+  const backgroundPreview = useBackgroundPreview();
+  const themeBackgrounds = backgroundPreview?.backgrounds ?? themeTokens?.backgrounds;
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
     document.documentElement.dataset.customTheme = themeTokens
@@ -380,7 +383,7 @@ export function App() {
       <AgentIconsProvider providers={data?.providers ?? []}>
       <AppSettingsProvider settings={data?.settings}>
       <div className={`${floatingWindow ? "app-shell floating-shell" : "app-shell"}${windowMaximized ? " is-maximized" : ""}${nativeChrome ? " native-chrome" : ""}`}>
-        {themeTokens?.backgrounds && <Suspense fallback={null}><BackgroundLayers theme={resolvedTheme} backgrounds={themeTokens.backgrounds} layoutKey={`${route.kind}:${route.id ?? ""}`}/></Suspense>}
+        {themeBackgrounds && <Suspense fallback={null}><BackgroundLayers theme={resolvedTheme} backgrounds={themeBackgrounds} layoutKey={`${route.kind}:${route.id ?? ""}`}/></Suspense>}
         <header className="titlebar app-chrome">
           <div className="drag-region"><span className="chrome-title">ThreadTerm</span></div>
           <div className="window-controls">

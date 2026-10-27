@@ -448,7 +448,7 @@ function registerIpc(): void {
     const saved = qaPath ? { canceled: false, filePath: qaPath } : owner ? await dialog.showSaveDialog(owner, options) : await dialog.showSaveDialog(options);
     if (saved.canceled || !saved.filePath) return null;
     writeFileSync(saved.filePath, JSON.stringify(exported ? exported.pack : content, null, 2) + '\n');
-    return { path: saved.filePath };
+    return { path: saved.filePath, missingImages: exported?.missing ?? [] };
   });
   ipcMain.handle('threadterm:theme-pack-import-images', async (event, images: unknown) => {
     assertTrustedRenderer(event);
