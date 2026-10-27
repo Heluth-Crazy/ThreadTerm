@@ -15,6 +15,7 @@ target/
 
 # Application outputs (the application now lives at the repository root)
 /desktop-dist/
+/renderer-dist/
 /runtime/target-qa/
 /runtime/target-send-trace/
 /runtime/target-ua/

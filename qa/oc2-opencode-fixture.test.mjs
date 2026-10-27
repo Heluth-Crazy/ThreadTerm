@@ -1,12 +1,13 @@
 // OC2 root-route fixture contract. This starts only the local mock HTTP server.
 import assert from 'node:assert/strict';
+import { tmpdir } from 'node:os';
 import test from 'node:test';
 import {once} from 'node:events';
 import { mkdtemp, readFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
-const scratch = await mkdtemp('D:/project/ThreadTerm/tt-qa-temp/oc2-opencode-fixture-');
+const scratch = await mkdtemp(join(resolve(process.env.THREADTERM_QA_SCRATCH ?? tmpdir()), 'oc2-opencode-fixture-'));
 const stateFile = join(scratch, 'state.json'), requestsFile = join(scratch, 'requests.jsonl');
 let port = 0;
 const directory = 'D:/fixture';

@@ -1,6 +1,7 @@
 // Desktop-1 visual QA for the Chrome-style browser pane (task 10-22-browser-chrome-ui). It uses only a
 // loopback server and a Node fake provider; no real agent or user profile.
 import assert from 'node:assert/strict';
+import { tmpdir } from 'node:os';
 import { randomUUID } from 'node:crypto';
 import { spawn } from 'node:child_process';
 import { cpSync, existsSync } from 'node:fs';
@@ -17,7 +18,7 @@ import { writeBrowserViewDiagnostics } from './lib/browser-view-diagnostics.mjs'
 import { closeBrowserViewFixture, within } from './lib/browser-view-cleanup.mjs';
 import { assertNoControlViolations, checkControlConsistency } from './lib/visual-consistency.mjs';
 
-const scratchBase=resolve('D:/project/ThreadTerm/tt-qa-temp');await mkdir(scratchBase,{recursive:true});
+const scratchBase=resolve(process.env.THREADTERM_QA_SCRATCH ?? tmpdir());await mkdir(scratchBase,{recursive:true});
 const root=resolve(dirname(fileURLToPath(import.meta.url)),'..'),runtime=process.env.THREADTERM_V3_RUNTIME_BIN??join(root,'runtime/target-qa/debug/threadterm-v3-runtime.exe'),fixture=join(root,'qa/fixtures/browser-plugins'),out=join(root,'qa/results/browser-chrome-ui',/^[A-Za-z0-9._-]+$/.test(process.argv[2]??'')?process.argv[2]:'current'),scratch=await mkdtemp(join(scratchBase,'tt-browser-chrome-')),appDir=join(scratch,'app'),plugins=join(scratch,'plugins'),bin=join(scratch,'bin'),work=join(scratch,'work'),downloads=join(scratch,'downloads'),events=join(out,'provider-events.jsonl'),pipe=`\\\\.\\pipe\\tt-browser-chrome-${randomUUID()}`;
 assert.equal(dirname(resolve(scratch )).toLowerCase(),scratchBase.toLowerCase(),'scratch remains inside the approved QA root');
 const report={passed:false,fixtureEventLog:join(out,'provider-events.jsonl'),checks:[],screenshots:[],themes:[],errors:[],limitations:[]}; let app,page,server,baseUrl,runtimeProcess;

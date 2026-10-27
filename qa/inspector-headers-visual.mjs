@@ -1,5 +1,6 @@
 // Real Electron inspector regression on Desktop 1, with an isolated fake provider.
 import assert from 'node:assert/strict';
+import { tmpdir } from 'node:os';
 import {randomUUID} from 'node:crypto';
 import {spawn} from 'node:child_process';
 import {mkdir,mkdtemp,readFile,rm,writeFile} from 'node:fs/promises';
@@ -13,7 +14,7 @@ import {closeBrowserViewFixture} from './lib/browser-view-cleanup.mjs';
 import {checkControlConsistency,assertNoControlViolations} from './lib/visual-consistency.mjs';
 
 const root=resolve(dirname(fileURLToPath(import.meta.url)),'..');
-const scratchBase=resolve('D:/project/ThreadTerm/tt-qa-temp');
+const scratchBase=resolve(process.env.THREADTERM_QA_SCRATCH ?? tmpdir());
 await mkdir(scratchBase,{recursive:true});
 const scratch=await mkdtemp(join(scratchBase,'tt-inspector-headers-'));
 assert.equal(dirname(scratch).toLowerCase(),scratchBase.toLowerCase());

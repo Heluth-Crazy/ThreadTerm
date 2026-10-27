@@ -1048,7 +1048,7 @@ mod tests {
     }
 
     fn fork_tempdir() -> tempfile::TempDir {
-        tempfile::tempdir_in(r"D:\project\ThreadTerm\tt-qa-temp").unwrap()
+        tempfile::tempdir().unwrap()
     }
 
     #[test]

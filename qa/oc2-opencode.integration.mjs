@@ -1,5 +1,6 @@
 // OC2 isolated runtime integration: the only provider executable is the mock.
 import assert from 'node:assert/strict';
+import { tmpdir } from 'node:os';
 import { spawn, spawnSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { copyFile, mkdtemp, mkdir, readFile, writeFile } from 'node:fs/promises';
@@ -10,7 +11,7 @@ import { bindOc2Mock } from './oc2-opencode-harness.mjs';
 
 const pause = ms => new Promise(done => setTimeout(done, ms));
 const unique = () => randomUUID();
-const root = await mkdtemp('D:/project/ThreadTerm/tt-qa-temp/oc2-opencode-');
+const root = await mkdtemp(join(resolve(process.env.THREADTERM_QA_SCRATCH ?? tmpdir()), 'oc2-opencode-'));
 const bin = join(root, 'bin'), data = join(root, 'data'), cwd = join(root, 'workspace');
 const stateFile = join(root, 'state.json'), portFile = join(root, 'port.txt'), requestsFile = join(root, 'requests.jsonl');
 const pipe = `\\\\.\\pipe\\threadterm-oc2-${unique()}`;

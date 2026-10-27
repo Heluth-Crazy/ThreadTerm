@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { tmpdir } from 'node:os';
 import { once } from 'node:events';
 import { mkdtemp, writeFile } from 'node:fs/promises';
 import http from 'node:http';
@@ -7,7 +8,7 @@ import test from 'node:test';
 import { bindOc2Mock } from './oc2-opencode-harness.mjs';
 
 test('OC2 mock binding survives a stopped fork helper overwriting the port hint; mutations never retry', async () => {
-  const scratch = await mkdtemp('D:/project/ThreadTerm/tt-qa-temp/oc2-mock-binding-'), portFile = join(scratch, 'port.txt');
+  const scratch = await mkdtemp(join(resolve(process.env.THREADTERM_QA_SCRATCH ?? tmpdir()), 'oc2-mock-binding-')), portFile = join(scratch, 'port.txt');
   const requests = [];
   const source = http.createServer((request, response) => {
     let body = '';

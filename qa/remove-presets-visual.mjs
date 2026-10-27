@@ -1,5 +1,6 @@
 // Desktop 1 regression for removing saved work layouts; fake provider and isolated data only.
 import assert from 'node:assert/strict';
+import { tmpdir } from 'node:os';
 import {randomUUID} from 'node:crypto';
 import {spawn} from 'node:child_process';
 import {mkdir,mkdtemp,readFile,rm,writeFile} from 'node:fs/promises';
@@ -10,7 +11,7 @@ import {electron} from './lib/desktop1.mjs';
 import {connectPeer} from './pipe-client.mjs';
 import {closeBrowserViewFixture,within} from './lib/browser-view-cleanup.mjs';
 
-const root=resolve(import.meta.dirname,'..'),scratchBase=resolve('D:/project/ThreadTerm/tt-qa-temp');
+const root=resolve(import.meta.dirname,'..'),scratchBase=resolve(process.env.THREADTERM_QA_SCRATCH ?? tmpdir());
 await mkdir(scratchBase,{recursive:true});
 const scratch=await mkdtemp(join(scratchBase,'tt-remove-presets-'));
 assert.equal(dirname(scratch).toLowerCase(),scratchBase.toLowerCase());

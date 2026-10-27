@@ -1,6 +1,7 @@
 // Actual Electron/runtime acceptance QA for browser bindings. Run only after
 // runtime and renderer builds are current: node qa/agent-browser-plugins.mjs
 import assert from 'node:assert/strict';
+import { tmpdir } from 'node:os';
 import { randomUUID } from 'node:crypto';
 import { cpSync, existsSync } from 'node:fs';
 import { mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises';
@@ -11,7 +12,7 @@ import { build as esbuild } from 'esbuild'; import { build as viteBuild } from '
 import { electron } from './lib/desktop1.mjs';
 import { attachedBrowserPages, writeBrowserViewDiagnostics } from './lib/browser-view-diagnostics.mjs';
 const packagedExecutable=process.argv[2]?resolve(process.argv[2]):undefined;
-const scratchRoot='D:/project/ThreadTerm/tt-qa-temp';await mkdir(scratchRoot,{recursive:true});
+const scratchRoot=resolve(process.env.THREADTERM_QA_SCRATCH ?? tmpdir());await mkdir(scratchRoot,{recursive:true});
 const root=resolve(fileURLToPath(new URL('..',import.meta.url))), runtime=packagedExecutable?join(dirname(packagedExecutable),'resources/runtime/threadterm-v3-runtime.exe'):process.env.THREADTERM_V3_RUNTIME_BIN??join(root,'runtime/target-qa/debug/threadterm-v3-runtime.exe'), fixture=join(root,'qa/fixtures/browser-plugins'), out=join(root,packagedExecutable?'qa/results/agent-browser-plugins/package':'qa/results/agent-browser-plugins'), scratch=await mkdtemp(join(scratchRoot,'tt-browser-plugins-'));
 assert.equal(dirname(resolve(scratch)).toLowerCase(),resolve(scratchRoot).toLowerCase(),'scratch remains inside the approved QA root');
 const http=createServer((_,response)=>{response.writeHead(200,{'content-type':'text/html'});response.end('<button id="browser-qa-target">Browser QA target</button>')});

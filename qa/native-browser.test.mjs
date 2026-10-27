@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { tmpdir } from 'node:os';
 import test from 'node:test';
 import { runInNewContext } from 'node:vm';
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
@@ -65,7 +66,7 @@ test('input failures release the helper debugger',async()=>{
 });
 
 test('native capture writes Electron PNG bytes using only approved D-drive scratch',async()=>{
- const scratch=await mkdtemp('D:/project/ThreadTerm/tt-qa-temp/b1-native-helper-');
+ const scratch=await mkdtemp(join(resolve(process.env.THREADTERM_QA_SCRATCH ?? tmpdir()), 'b1-native-helper-'));
  try{const f=fixture(),[page]=await attachedNativeBrowserPages(f.app,{}),path=join(scratch,'page.png');await page.screenshot({path});assert.equal(await readFile(path,'utf8'),'native PNG');}finally{await rm(scratch,{recursive:true,force:true});}
 });
 

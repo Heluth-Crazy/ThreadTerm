@@ -1,10 +1,10 @@
 // Desktop-1 production-app QA. Fake native protocols only; no real agent CLI.
 // Run after job F lands: node qa/token-speed-visual.mjs [--stress-follow]
 import assert from 'node:assert/strict';
+import { tmpdir } from 'node:os';
 import { randomUUID } from 'node:crypto';
 import { cpSync, existsSync } from 'node:fs';
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
 import { basename, dirname, join, resolve } from 'node:path';
 import { build as esbuild } from 'esbuild';
 import { build as viteBuild } from 'vite';
@@ -20,7 +20,7 @@ const root = resolve(import.meta.dirname, '..');
 const out = join(root, 'qa/results/token-speed');
 const runtime = join(root, 'runtime/target-qa/debug/threadterm-v3-runtime.exe');
 const followStress = process.argv.includes('--stress-follow') ? Object.freeze({ repeats: 3, offsetPx: 173, loadMs: 32, layoutGrowthPx: 49 }) : null;
-const scratchParent = followStress ? resolve('D:/project/ThreadTerm/tt-qa-temp') : tmpdir();
+const scratchParent = followStress ? resolve(process.env.THREADTERM_QA_SCRATCH ?? tmpdir()) : tmpdir();
 if (followStress) await mkdir(scratchParent, { recursive: true });
 const scratch = await mkdtemp(join(scratchParent, 'tt-token-speed-'));
 const appDir = join(scratch, 'app'), bin = join(scratch, 'bin'), work = join(scratch, 'work'), plugins = join(scratch, 'plugins');

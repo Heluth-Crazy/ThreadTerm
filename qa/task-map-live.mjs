@@ -2,6 +2,7 @@
 // Usage: node qa/task-map-live.mjs [label] [--keep]
 // Requires the QA runtime/MCP pair, Kimi authentication, Git, and two virtual desktops.
 import assert from 'node:assert/strict';
+import { tmpdir } from 'node:os';
 import { spawn, spawnSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { closeSync, existsSync, openSync, writeFileSync } from 'node:fs';
@@ -20,7 +21,7 @@ const label = args.find(arg => !arg.startsWith('--')) || 'current';
 assert.match(label, /^[A-Za-z0-9][A-Za-z0-9._-]*$/, 'label must be a single safe directory name');
 const keep = args.includes('--keep');
 const root = resolve(import.meta.dirname, '..');
-const qaTemp = resolve('D:/project/ThreadTerm/tt-qa-temp');
+const qaTemp = resolve(process.env.THREADTERM_QA_SCRATCH ?? tmpdir());
 const out = join(root, 'qa/results/task-map-live', label);
 const expectedRuntime = join(root, 'runtime/target-qa/debug/threadterm-v3-runtime.exe');
 const runtime = resolve(process.env.THREADTERM_V3_RUNTIME_BIN ?? expectedRuntime);

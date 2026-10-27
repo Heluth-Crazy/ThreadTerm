@@ -2,6 +2,7 @@
 // It starts only the isolated runtime and qa/fixtures/mock-opencode.mjs; PATH
 // isolation prevents the adapter from discovering a real provider CLI.
 import assert from 'node:assert/strict';
+import { tmpdir } from 'node:os';
 import { randomUUID } from 'node:crypto';
 import { existsSync } from 'node:fs';
 import { copyFile, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
@@ -17,7 +18,7 @@ import { assertNoControlViolations, checkControlConsistency } from './lib/visual
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const runtime = process.env.THREADTERM_QA_RUNTIME_EXE ?? join(root, 'runtime/target-qa/debug/threadterm-v3-runtime.exe');
 const out = join(root, 'qa/results/browser-chat-followups/OC1/opencode-options-visual');
-const scratchRoot = resolve(process.env.THREADTERM_QA_SCRATCH ?? 'D:/project/ThreadTerm/tt-qa-temp');
+const scratchRoot = resolve(process.env.THREADTERM_QA_SCRATCH ?? resolve(process.env.THREADTERM_QA_SCRATCH ?? tmpdir()));
 await mkdir(scratchRoot, { recursive: true });
 process.env.TMP = scratchRoot; process.env.TEMP = scratchRoot;
 const scratch = await mkdtemp(join(scratchRoot, 'threadterm-opencode-options-'));

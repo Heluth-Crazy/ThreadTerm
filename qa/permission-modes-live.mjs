@@ -7,6 +7,7 @@
 // Each run uses a D: throwaway workspace, starts an isolated runtime, restarts it
 // with surgical cleanup of only native history keyed to this scratch slug.
 import assert from 'node:assert/strict';
+import { tmpdir } from 'node:os';
 import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { closeSync, existsSync, openSync } from 'node:fs';
@@ -32,7 +33,7 @@ if (process.argv.includes('--dry')) {
 }
 
 const root = resolve(new URL('..', import.meta.url).pathname.replace(/^\/(.:\/)/, '$1'));
-const qaTemp = 'D:/project/ThreadTerm/tt-qa-temp';
+const qaTemp = resolve(process.env.THREADTERM_QA_SCRATCH ?? tmpdir());
 if (!existsSync(qaTemp)) throw Error(`QA temp directory is unavailable: ${qaTemp}`);
 const runtime = process.env.THREADTERM_V3_RUNTIME_BIN ?? join(root, 'runtime/target-qa/debug/threadterm-v3-runtime.exe');
 if (!/runtime[\\/]target-qa[\\/]debug[\\/]threadterm-v3-runtime\.exe$/iu.test(runtime)) throw Error(`Refusing non-QA runtime: ${runtime}`);

@@ -1,5 +1,6 @@
 // Isolated OpenCode option persistence QA. Uses only the fake HTTP/SSE server.
 import assert from 'node:assert/strict';
+import { tmpdir } from 'node:os';
 import { spawn, spawnSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { copyFile, mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises';
@@ -8,7 +9,7 @@ import { dirname, join, resolve } from 'node:path';
 import { connectSubagentPeer as connectPeer } from './lib/subagent-peer.mjs';
 
 const delay = ms => new Promise(done => setTimeout(done, ms));
-const scratchRoot = resolve(process.env.THREADTERM_QA_SCRATCH ?? 'D:/project/ThreadTerm/tt-qa-temp');
+const scratchRoot = resolve(process.env.THREADTERM_QA_SCRATCH ?? resolve(process.env.THREADTERM_QA_SCRATCH ?? tmpdir()));
 await mkdir(scratchRoot, { recursive: true });
 process.env.TMP = scratchRoot; process.env.TEMP = scratchRoot;
 const root = await mkdtemp(join(scratchRoot, 'threadterm-opencode-options-persistence-'));

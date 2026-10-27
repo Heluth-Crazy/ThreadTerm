@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { tmpdir } from 'node:os';
 import { execFileSync } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { mkdtemp, rm } from 'node:fs/promises';
@@ -7,7 +8,7 @@ import test from 'node:test';
 import { DatabaseSync } from 'node:sqlite';
 import { removeAgentHistory } from './agent-history.mjs';
 
-const tempRoot = 'D:/project/ThreadTerm/tt-qa-temp';
+const tempRoot = resolve(process.env.THREADTERM_QA_SCRATCH ?? tmpdir());
 const slug = 'tt-history-fixture-4d2c';
 
 function db(path, sql) {

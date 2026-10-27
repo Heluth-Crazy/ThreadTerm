@@ -8,6 +8,7 @@
 // unpriced-only range → no $0), the paged sessions list with search/sort and the drawer, the Sources panel and its
 // rebuild confirmation, Settings → Usage (price override, outside switch) and a two-year month axis that names the year.
 import assert from 'node:assert/strict';
+import { tmpdir } from 'node:os';
 import { randomUUID } from 'node:crypto';
 import { mkdir, mkdtemp, writeFile } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
@@ -20,7 +21,7 @@ const root = resolve(import.meta.dirname, '..');
 const runtime = process.env.THREADTERM_V3_RUNTIME_BIN ?? join(root, 'runtime/target-ub/debug/threadterm-v3-runtime.exe');
 const rendererRoot = process.env.THREADTERM_QA_RENDERER_ROOT ?? join(root, 'renderer');
 const out = resolve(process.env.THREADTERM_QA_OUTPUT_DIR ?? join(root, 'qa/results/usage-page'));
-const scratchBase = resolve('D:/project/ThreadTerm/tt-qa-temp');
+const scratchBase = resolve(process.env.THREADTERM_QA_SCRATCH ?? tmpdir());
 await mkdir(scratchBase, { recursive: true });
 const scratch = await mkdtemp(join(scratchBase, 'tt-usage-page-'));
 const appDir = join(scratch, 'app'), work = join(scratch, 'work'), bin = join(scratch, 'bin');

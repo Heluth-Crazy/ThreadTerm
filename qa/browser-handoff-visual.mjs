@@ -1,6 +1,7 @@
 // Desktop-1 acceptance QA for browser-to-Chat handoffs. It uses a loopback page
 // and the browser fixture's fake Codex executable; never a user profile or CLI.
 import assert from 'node:assert/strict';
+import { tmpdir } from 'node:os';
 import { randomUUID } from 'node:crypto';
 import { spawn } from 'node:child_process';
 import { cpSync, existsSync } from 'node:fs';
@@ -18,7 +19,7 @@ import { assertNoControlViolations, checkControlConsistency } from './lib/visual
 import { assertBrowserButtonClick, beginBrowserInputTrace, endBrowserInputTrace, readBrowserInputGeometry, chromeDividerPoints } from './lib/browser-handoff-input.mjs';
 
 const midpointDrag=process.env.THREADTERM_QA_HANDOFF_MIDPOINT_DRAG==='1';
-const root=resolve('.'),scratchBase=resolve('D:/project/ThreadTerm/tt-qa-temp');await mkdir(scratchBase,{recursive:true});
+const root=resolve('.'),scratchBase=resolve(process.env.THREADTERM_QA_SCRATCH ?? tmpdir());await mkdir(scratchBase,{recursive:true});
 const runtime=process.env.THREADTERM_V3_RUNTIME_BIN??join(root,'runtime/target-qa/debug/threadterm-v3-runtime.exe'),fixture=join(root,'qa/fixtures/browser-plugins'),terminalFixture=join(root,'qa/fixtures/browser-handoff-terminal.mjs'),out=join(root,midpointDrag?'qa/results/browser-handoff-visual-midpoint':'qa/results/browser-handoff-visual'),scratch=await mkdtemp(join(scratchBase,'tt-browser-handoff-')),appDir=join(scratch,'app'),plugins=join(scratch,'plugins'),bin=join(scratch,'bin'),work=join(scratch,'work'),pipe=`\\\\.\\pipe\\tt-browser-handoff-${randomUUID()}`;
 assert.equal(dirname(resolve(scratch)).toLowerCase(),scratchBase.toLowerCase(),'scratch remains inside the approved QA root');
 const report={passed:false,checks:[],screenshots:[],themes:[],errors:[],limitations:[],midpointDrag,handoffActions:[],toolbarLayouts:[],dividerActions:[],toolbarPresses:[],inactiveIconPresses:[]};let app,page,server,runtimeProcess,baseUrl;

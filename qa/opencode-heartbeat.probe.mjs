@@ -2,13 +2,11 @@
 // Starts and stops only its own isolated --pure server process.
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
-import { existsSync } from 'node:fs';
 import { mkdtemp, mkdir } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-const executable = process.env.TT_QA_OPENCODE_EXE || 'C:\\Users\\demo\\AppData\\Roaming\\npm\\node_modules\\opencode-ai\\bin\\opencode.exe';
-assert.ok(existsSync(executable), `OpenCode executable not found: ${executable}`);
+const executable = process.env.TT_QA_OPENCODE_EXE || 'opencode';
 const root = await mkdtemp(join(tmpdir(), 'threadterm-opencode-heartbeat-'));
 const dirs = Object.fromEntries(await Promise.all(['config', 'data', 'cache', 'appdata', 'localappdata'].map(async name => {
   const path = join(root, name);

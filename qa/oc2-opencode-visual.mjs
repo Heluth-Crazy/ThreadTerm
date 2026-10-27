@@ -1,12 +1,13 @@
 // Desktop-1 component visual. No runtime or provider process is launched.
 import assert from 'node:assert/strict';
+import { tmpdir } from 'node:os';
 import {build} from 'esbuild';
 import {mkdtemp,mkdir,writeFile} from 'node:fs/promises';
 import {dirname,join,resolve} from 'node:path';
 import {electron} from './lib/desktop1.mjs';
 import {oc2VisualEntry} from './oc2-opencode-visual-fixture.mjs';
 import {assertNoControlViolations,checkControlConsistency} from './lib/visual-consistency.mjs';
-const root=resolve('.'),scratch=await mkdtemp('D:/project/ThreadTerm/tt-qa-temp/oc2-visual-'),out=join(scratch,'captures');
+const root=resolve('.'),scratch=await mkdtemp(join(resolve(process.env.THREADTERM_QA_SCRATCH ?? tmpdir()), 'oc2-visual-')),out=join(scratch,'captures');
 const report={passed:false,scratch,checks:[],cells:['light','dark','custom'].flatMap(theme=>[1280,400].map(width=>({theme,width,status:'pending',step:'not started',controls:[]}))),errors:[]};let app,page,current;
 const step=label=>{report.stage=label;if(current)current.step=label;console.log(`[OC2 visual] ${current?`${current.theme}/${current.width} `:''}${label}`);};
 try{

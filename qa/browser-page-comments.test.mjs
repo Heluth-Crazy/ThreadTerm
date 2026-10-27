@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { tmpdir } from 'node:os';
 import test from 'node:test';
 import { EventEmitter } from 'node:events';
 import { createRequire } from 'node:module';
@@ -7,7 +8,7 @@ import { mkdir, mkdtemp, readdir, rm } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
 import vm from 'node:vm';
 
-const scratchBase=resolve('D:/project/ThreadTerm/tt-qa-temp');await mkdir(scratchBase,{recursive:true});
+const scratchBase=resolve(process.env.THREADTERM_QA_SCRATCH ?? tmpdir());await mkdir(scratchBase,{recursive:true});
 const require=createRequire(import.meta.url),root=await mkdtemp(join(scratchBase,'tt-browser-comments-unit-'));
 assert.equal(dirname(resolve(root )).toLowerCase(),scratchBase.toLowerCase(),'scratch remains inside the approved QA root');
 test.after(()=>rm(root,{recursive:true,force:true}));

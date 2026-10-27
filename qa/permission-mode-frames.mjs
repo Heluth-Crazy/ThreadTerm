@@ -1,14 +1,14 @@
 // No model turns: capture native ACP mode acknowledgements and resume frames.
 import { spawn } from 'node:child_process';
 import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
-import { homedir } from 'node:os';
-import { join } from 'node:path';
+import { homedir, tmpdir } from 'node:os';
+import { join, resolve } from 'node:path';
 import { createInterface } from 'node:readline';
 import { removeAgentHistory } from './agent-history.mjs';
 
 const provider = process.argv[2];
 if (!['grok', 'kimi'].includes(provider)) throw Error('Expected grok or kimi');
-const scratch = await mkdtemp('D:/project/ThreadTerm/tt-qa-temp/tt-permission-frames-');
+const scratch = await mkdtemp(join(resolve(process.env.THREADTERM_QA_SCRATCH ?? tmpdir()), 'tt-permission-frames-'));
 const slug = scratch.split(/[\\/]/).at(-1).toLowerCase();
 const cwd = join(scratch, 'workspace');
 await mkdir(cwd);
@@ -26,7 +26,7 @@ function start() {
   const executable = join(homedir(), provider === 'grok' ? '.grok/bin/grok.exe' : '.kimi-code/bin/kimi.exe');
   child = spawn(executable, provider === 'grok' ? ['agent', '--no-leader', 'stdio'] : ['acp'], {
     cwd, windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'],
-    env: { ...process.env, TEMP: 'D:/project/ThreadTerm/tt-qa-temp', TMP: 'D:/project/ThreadTerm/tt-qa-temp' },
+    env: { ...process.env, TEMP: resolve(process.env.THREADTERM_QA_SCRATCH ?? tmpdir()), TMP: resolve(process.env.THREADTERM_QA_SCRATCH ?? tmpdir()) },
   });
   record('process', { pid: child.pid });
   createInterface({ input: child.stdout }).on('line', line => {

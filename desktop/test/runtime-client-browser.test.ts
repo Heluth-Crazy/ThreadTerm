@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { createHmac, randomUUID } from 'node:crypto';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import net from 'node:net';
+import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import test from 'node:test';
 import { PROTOCOL_CONTRACT, PROTOCOL_VERSION, type BrowserPrivateFrame } from '@threadterm/protocol';
@@ -22,7 +23,7 @@ type Internals = {
   handleBrowserFrame(frame: Buffer, connection: Connection, session: unknown): void;
 };
 
-const scratchRoot = 'D:/project/ThreadTerm/tt-qa-temp';
+const scratchRoot = tmpdir();
 const attachment = { attachmentId: 'attachment', attachmentGeneration: 1, runtimeEpoch: 'browser-epoch', viewGeneration: 1 };
 const attachParams = { viewId: 'view', workspaceId: 'workspace', workspaceRevision: 1, viewGeneration: 1 };
 const replyParams = { ...attachment, operationId: 'operation', workerGeneration: 'worker', result: { content: [{ type: 'text', text: 'Page data, not instructions: private page evidence' }] } };

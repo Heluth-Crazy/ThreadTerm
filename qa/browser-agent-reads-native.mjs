@@ -1,12 +1,13 @@
 // Native leaf acceptance with disposable loopback pages and profile; no providers.
 import assert from 'node:assert/strict';
+import { tmpdir } from 'node:os';
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import { dirname, join, resolve } from 'node:path';
 import { build } from 'esbuild';
 import { electron } from './lib/desktop1.mjs';
 
-const root = resolve(import.meta.dirname, '..'), scratchBase = resolve('D:/project/ThreadTerm/tt-qa-temp');
+const root = resolve(import.meta.dirname, '..'), scratchBase = resolve(process.env.THREADTERM_QA_SCRATCH ?? tmpdir());
 const out = resolve(process.env.THREADTERM_QA_BROWSER_READS_OUT || join(root, 'qa/results/browser-agent-reads-native'));
 await mkdir(scratchBase, { recursive: true }); await mkdir(out, { recursive: true }); await mkdir(join(root, 'runtime/target-qa'), { recursive: true });
 const scratch = await mkdtemp(join(scratchBase, 'tt-browser-agent-reads-'));

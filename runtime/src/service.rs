@@ -5414,7 +5414,7 @@ mod oc2_checkpoint_tests {
         fn stop(&mut self) -> Result<(), ProviderError> { Ok(()) }
     }
     fn fixture() -> (tempfile::TempDir, Arc<Database>, Providers, String, Arc<AtomicUsize>) {
-        let temp = tempfile::tempdir_in("D:/project/ThreadTerm/tt-qa-temp").unwrap();
+        let temp = tempfile::tempdir().unwrap();
         let root = temp.path().join("repo");
         // Minimal empty Git repository; no git init/add/commit or public index writes.
         std::fs::create_dir_all(root.join(".git/objects")).unwrap();
