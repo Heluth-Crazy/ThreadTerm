@@ -29,16 +29,9 @@ export function tabShape({ panel, tab }: BackgroundShape): string {
   return `M ${l - 8} ${b} A 8 8 0 0 0 ${l} ${b - 8} V ${t + 8} Q ${l} ${t} ${l + 8} ${t} H ${r - 8} Q ${r} ${t} ${r} ${t + 8} V ${b - 8} A 8 8 0 0 0 ${r + 8} ${b} Z`;
 }
 
-/** Segmented top edge: the translucent tab never has a border underneath it. */
-export function panelBorder({ panel, tab, cutLeft, cutRight }: BackgroundShape): string {
+/** Tabbed panels keep only the side and bottom hairlines; their top joins the selected tab by fill. */
+export function panelBorder({ panel, tab }: BackgroundShape): string {
   const l = panel.x + .5, r = panel.x + panel.w - .5, t = panel.y + .5, b = panel.y + panel.h - .5, radius = 7.5;
-  const start = tab ? Math.min(r - radius, panel.x + cutRight) : l + radius;
-  const end = tab ? Math.max(l + radius, panel.x + cutLeft) : l + radius;
-  return `M ${start} ${t} H ${r - radius} Q ${r} ${t} ${r} ${t + radius} V ${b - radius} Q ${r} ${b} ${r - radius} ${b} H ${l + radius} Q ${l} ${b} ${l} ${b - radius} V ${t + radius} Q ${l} ${t} ${l + radius} ${t} H ${end}`;
-}
-
-export function tabBorder({ panel, tab }: BackgroundShape): string {
-  if (!tab) return '';
-  const l = tab.x + .5, r = tab.x + tab.w - .5, t = tab.y + .5, b = panel.y + .5;
-  return `M ${l - 8} ${b} A 8 8 0 0 0 ${l} ${b - 8} V ${t + 7.5} Q ${l} ${t} ${l + 7.5} ${t} H ${r - 7.5} Q ${r} ${t} ${r} ${t + 7.5} V ${b - 8} A 8 8 0 0 0 ${r + 8} ${b}`;
+  if (tab) return `M ${r} ${t + radius} V ${b - radius} Q ${r} ${b} ${r - radius} ${b} H ${l + radius} Q ${l} ${b} ${l} ${b - radius} V ${t + radius}`;
+  return `M ${l + radius} ${t} H ${r - radius} Q ${r} ${t} ${r} ${t + radius} V ${b - radius} Q ${r} ${b} ${r - radius} ${b} H ${l + radius} Q ${l} ${b} ${l} ${b - radius} V ${t + radius} Q ${l} ${t} ${l + radius} ${t}`;
 }

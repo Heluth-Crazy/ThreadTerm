@@ -77,7 +77,7 @@ async function domCorners(label,required='.pane-card'){await layoutSettled(label
   const workspaceSurface=node.matches('.pane-card,.inspector,.wb-panel');
   const rounded=workspaceSurface||node.matches('.settings-panel,.delegate-card,.dialog.sheet')||node.matches('.history-rail:not(.history-rail-native)');
   return{index,selector:node.className,required:node.matches(required),visible:style.visibility!=='hidden'&&style.display!=='none'&&rect.width>0&&rect.height>0&&rect.x>=0&&rect.y>=0&&rect.right<=innerWidth+.5&&rect.bottom<=innerHeight+.5&&Boolean(hit&&node.contains(hit)),rounded,workspaceSurface,outerRight:rect.right>=innerWidth-.5,
-   rect:{x:rect.x,y:rect.y,width:rect.width,height:rect.height,right:rect.right,bottom:rect.bottom},radii:[style.borderTopLeftRadius,style.borderTopRightRadius,style.borderBottomLeftRadius,style.borderBottomRightRadius].map(value=>parseFloat(value)||0),overflow:[style.overflowX,style.overflowY],border:parseFloat(style.borderBottomWidth)||0,borderColors:[style.borderTopColor,style.borderBottomColor],boxShadow:style.boxShadow};
+   rect:{x:rect.x,y:rect.y,width:rect.width,height:rect.height,right:rect.right,bottom:rect.bottom},radii:[style.borderTopLeftRadius,style.borderTopRightRadius,style.borderBottomLeftRadius,style.borderBottomRightRadius].map(value=>parseFloat(value)||0),overflow:[style.overflowX,style.overflowY],borders:{top:parseFloat(style.borderTopWidth)||0,right:parseFloat(style.borderRightWidth)||0,bottom:parseFloat(style.borderBottomWidth)||0,left:parseFloat(style.borderLeftWidth)||0},hasTabStrip:Boolean(node.previousElementSibling?.matches('.workspace-tabbar.ws-strip')),borderColors:[style.borderTopColor,style.borderBottomColor],boxShadow:style.boxShadow};
  }),{selectors,required});
  assert.ok(records.some(record=>record.visible&&record.required),`${label}: required ${required} is unobscured`);
  let tested=0;
@@ -86,11 +86,13 @@ async function domCorners(label,required='.pane-card'){await layoutSettled(label
   const result={label,...record};report.domCorners.push(result);
   if(!record.rounded)continue;
    if(record.workspaceSurface){
-    // At the app's fractional Electron zoom a declared 1 CSS-px hairline paints as
-    // 0.8 CSS px.  Require a positive, single-device-pixel-equivalent edge rather
-    // than mistaking the renderer's quantization for a missing border.
-    const physicalHairline=record.border*await page.evaluate(()=>devicePixelRatio);
-    assert.ok(record.border>0&&physicalHairline>=.5&&physicalHairline<=1.5,`${label}: ${record.selector} keeps one quantized theme hairline edge`);
+    // Tabbed pane cards deliberately have no top hairline: the selected tab and
+    // panel merge by fill. Their remaining edges stay single-device-pixel borders.
+    const scale=await page.evaluate(()=>devicePixelRatio),hairline=value=>value>0&&value*scale>=.5&&value*scale<=1.5;
+    if(record.selector.includes('pane-card')&&record.hasTabStrip){
+     assert.equal(record.borders.top,0,`${label}: tabbed ${record.selector} has no top hairline below the strip`);
+     assert.ok([record.borders.right,record.borders.bottom,record.borders.left].every(hairline),`${label}: tabbed ${record.selector} keeps quantized side and bottom hairlines`);
+    }else assert.ok(Object.values(record.borders).every(hairline),`${label}: ${record.selector} keeps quantized theme hairlines`);
    assert.equal(record.boxShadow,'none',`${label}: ${record.selector} has no outer shadow`);
    assert.ok(record.radii.every(radius=>radius>0),`${label}: ${record.selector} keeps four rounded floating-panel corners`);
   }else assert.ok(record.radii.every(radius=>radius>0),`${label}: ${record.selector} retains four rounded corners`);
@@ -110,14 +112,16 @@ async function domCorners(label,required='.pane-card'){await layoutSettled(label
   const pixel=(image,point)=>{const [px,py]=bounded(image,point),at=(py*image.width+px)*4;return [...image.data.slice(at,at+4)]};
   const same=(a,b)=>a.every((value,index)=>Math.abs(value-b[index])<=12);
   const r=record.radii.map(radius=>Math.ceil(radius*scale)+2);
-  // A pane's selected tab merges into the middle of its top edge (no border under it), so top corners compare
-  // against the bottom edge's straight border instead.
-  const corners=[['top-left',[x,y],[x+r[0],y],[x+Math.floor(w/2),y+h-1],record.radii[0]],['top-right',[x+w-1,y],[x+w-r[1]-1,y],[x+Math.floor(w/2),y+h-1],record.radii[1]],['bottom-left',[x,y+h-1],[x+r[2],y+h-1],[x+Math.floor(w/2),y+h-1],record.radii[2]],['bottom-right',[x+w-1,y+h-1],[x+w-r[3]-1,y+h-1],[x+Math.floor(w/2),y+h-1],record.radii[3]]];
+  // Tabbed cards have no top border: their top-corner interiors must match the
+  // straight panel fill, while every other corner still compares to its border.
+  const topEdge=record.selector.includes('pane-card')&&record.hasTabStrip?[x+Math.floor(w/2),y]:[x+Math.floor(w/2),y+h-1];
+  const bottomEdge=[x+Math.floor(w/2),y+h-1];
+  const corners=[['top-left',[x,y],[x+r[0],y],topEdge,record.radii[0]],['top-right',[x+w-1,y],[x+w-r[1]-1,y],topEdge,record.radii[1]],['bottom-left',[x,y+h-1],[x+r[2],y+h-1],bottomEdge,record.radii[2]],['bottom-right',[x+w-1,y+h-1],[x+w-r[3]-1,y+h-1],bottomEdge,record.radii[3]]];
   for(const [corner,outerPoint,innerPoint,edgePoint,radius] of corners){
    const outer=pixel(original,outerPoint),behind=pixel(underlay,outerPoint),inside=pixel(original,innerPoint),borderOrSurface=pixel(original,edgePoint);
    if(radius>0)assert.ok(same(outer,behind),`${label}: ${record.selector} ${corner} rounded outside pixel equals the background behind the surface`);
    else assert.ok(same(outer,inside),`${label}: ${record.selector} ${corner} square corner reaches its surface fill`);
-   assert.ok(same(inside,borderOrSurface),`${label}: ${record.selector} ${corner} inside pixel equals the straight card border/surface`);
+   assert.ok(same(inside,borderOrSurface),`${label}: ${record.selector} ${corner} inside pixel equals its straight card edge`);
    (result.corners??=[]).push({corner,radius,outer,behind,inside,borderOrSurface});
   }
   tested++;

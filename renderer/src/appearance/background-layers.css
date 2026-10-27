@@ -13,6 +13,7 @@
 .workspace-pane[data-background-region] .workspace-tab.active::before,
 .workspace-pane[data-background-region] .workspace-tab.active::after { display:none; }
 .workspace-pane[data-background-region="chat"] :is(.chat-view,.v3-chat-log,.chat-log-shell),
+.workspace-pane[data-background-region="chat"] .chat-view.is-connecting .chat-connect-mask,
 .workspace-pane[data-background-region="terminal"] :is(.terminal-wrap,.term,.term-modebar),
 .workspace-pane[data-background-region="editor"] :is(.file-workspace,.editor-area,.tt-editor-shell,.file-preview,.file-bar,.tt-preview-markdown,.file-image-preview),
 .workspace-pane[data-background-region="editor"] .tt-editor-shell :is(.cm-editor,.cm-scroller,.cm-gutters),

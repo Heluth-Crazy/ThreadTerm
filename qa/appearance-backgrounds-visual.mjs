@@ -182,22 +182,55 @@ async function assertContrastMatrix(scenario, mode) {
 
 async function assertTabJoin() {
   const geometry = await page.evaluate(() => {
-    const pane = document.querySelector('.workspace-pane[data-background-region="editor"]') ?? document.querySelector('.workspace-pane[data-background-region]'); const tab = pane?.querySelector('.workspace-tab.active'); const card = pane?.querySelector(':scope > .pane-card'); const r = node => { const x = node?.getBoundingClientRect(); return x && { left: x.left, right: x.right, top: x.top, bottom: x.bottom }; }; return { tab: r(tab), card: r(card), border: getComputedStyle(document.documentElement).getPropertyValue('--border') };
+    const pane = document.querySelector('.workspace-pane[data-background-region="editor"]') ?? document.querySelector('.workspace-pane[data-background-region]'); const tab = pane?.querySelector('.workspace-tab.active'); const card = pane?.querySelector(':scope > .pane-card'); const r = node => { const x = node?.getBoundingClientRect(); return x && { left: x.left, right: x.right, top: x.top, bottom: x.bottom }; }; const group = document.querySelector('g[data-background-layer="editor"]') ?? document.querySelector('g[data-background-layer]'); return { tab: r(tab), card: r(card), border: getComputedStyle(document.documentElement).getPropertyValue('--border'), hasTabStroke: Boolean(group?.querySelector('path[data-background-tab-border]')), panelStroke: group?.querySelector('path[data-background-border]')?.getAttribute('d') ?? '' };
   });
   assert.ok(geometry.tab && geometry.card, 'selected workspace tab and pane card exist');
+  assert.equal(geometry.hasTabStroke, false, 'selected-tab background has no SVG outline path');
+  assert.match(geometry.panelStroke, /^M /, 'pane background retains its side-and-bottom border path');
   const png = PNG.sync.read(await page.screenshot({ animations: 'disabled' })), border = rgba(geometry.border); assert.ok(border, 'parses border token');
   const sx = png.width / (await page.evaluate(() => innerWidth)), sy = png.height / (await page.evaluate(() => innerHeight));
   const at = (x, y) => { const o = (Math.round(y * sy) * png.width + Math.round(x * sx)) * 4; return [png.data[o], png.data[o + 1], png.data[o + 2]]; };
-  const borderLike = pixel => Math.max(...pixel.map((v, i) => Math.abs(v - border[i]))) < 12;
-  const row = geometry.card.top + 0.5;
-  for (let x = geometry.tab.left + 12; x < geometry.tab.right - 12; x += 5) assert.equal(borderLike(at(x, row)), false, 'panel border is cut beneath selected tab');
-  const feet = await page.evaluate(() => {
-    const group = document.querySelector('g[data-background-layer="editor"]') ?? document.querySelector('g[data-background-layer]'); const path = group?.querySelector('path[data-background-tab-border]');
-    if (!path) return []; const matrix = path.getScreenCTM(), length = path.getTotalLength(); if (!matrix || !length) return [];
-    return [2, 6, 10, length - 10, length - 6, length - 2].map(distance => { const point = path.getPointAtLength(distance); const screen = new DOMPoint(point.x, point.y).matrixTransform(matrix); return { x: screen.x, y: screen.y }; });
+  // A half-device-pixel SVG hairline blends with the image beneath it; 12 is
+  // inclusive so a channel that lands exactly on the tolerance remains a hit.
+  const borderLike = pixel => Math.max(...pixel.map((v, i) => Math.abs(v - border[i]))) <= 12;
+  const near = (x, y) => { for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) if (borderLike(at(x + dx, y + dy))) return true; return false; };
+  const top = geometry.card.top + .5;
+  const fillOnly = [geometry.tab.left + 12, (geometry.tab.left + geometry.tab.right) / 2, geometry.tab.right - 12, geometry.card.left + 14, geometry.card.right - 14];
+  for (const x of fillOnly) assert.equal(near(x, top), false, 'tabbed pane top has no border band, including beside the selected tab');
+  const borderPoints = await page.evaluate(() => {
+    const path = document.querySelector('g[data-background-layer="editor"] path[data-background-border]') ?? document.querySelector('path[data-background-border]');
+    const card = path?.closest('svg')?.parentElement?.querySelector('.workspace-pane[data-background-region="editor"] > .pane-card') ?? document.querySelector('.workspace-pane[data-background-region] > .pane-card');
+    const matrix = path?.getScreenCTM(), length = path?.getTotalLength(), rect = card?.getBoundingClientRect();
+    if (!path || !matrix || !length || !rect) return [];
+    const points = [];
+    for (let distance = 4; distance < length - 4; distance += 4) {
+      const point = path.getPointAtLength(distance), screen = new DOMPoint(point.x, point.y).matrixTransform(matrix);
+      const edge = Math.abs(screen.x - rect.left) < 2 ? 'left' : Math.abs(screen.x - rect.right) < 2 ? 'right' : Math.abs(screen.y - rect.bottom) < 2 ? 'bottom' : undefined;
+      if (edge) points.push({ x: screen.x, y: screen.y, edge });
+    }
+    path.dataset.qaBorderStroke = 'hidden';
+    path.style.stroke = 'transparent';
+    return points;
   });
-  assert.equal(feet.length, 6, 'selected-tab SVG supplies both concave feet');
-  for (const foot of feet) { let found = false; for (let y = foot.y - 2; y <= foot.y + 2; y++) for (let x = foot.x - 2; x <= foot.x + 2; x++) found ||= borderLike(at(x, y)); assert.ok(found, 'a small neighborhood on each concave foot contains the border stroke'); }
+  let withoutBorder;
+  try {
+    assert.ok(borderPoints.length > 0, 'tabbed pane border path supplies side-and-bottom sample points');
+    await settle();
+    withoutBorder = PNG.sync.read(await page.screenshot({ animations: 'disabled' }));
+  } finally {
+    await page.evaluate(() => { const path = document.querySelector('path[data-qa-border-stroke="hidden"]'); path?.style.removeProperty('stroke'); delete path?.dataset.qaBorderStroke; });
+    await settle();
+  }
+  const pixelDelta = (point, image) => {
+    let delta = 0;
+    for (let y = Math.round(point.y * sy) - 1; y <= Math.round(point.y * sy) + 1; y++) for (let x = Math.round(point.x * sx) - 1; x <= Math.round(point.x * sx) + 1; x++) {
+      if (x < 0 || y < 0 || x >= png.width || y >= png.height) continue;
+      const offset = (y * png.width + x) * 4;
+      for (let channel = 0; channel < 3; channel++) delta = Math.max(delta, Math.abs(png.data[offset + channel] - image.data[offset + channel]));
+    }
+    return delta;
+  };
+  for (const edge of ['left', 'right', 'bottom']) assert.ok(borderPoints.filter(point => point.edge === edge).some(point => pixelDelta(point, withoutBorder) >= 3), `tabbed pane retains its ${edge} hairline`);
   await page.screenshot({ path: join(out, 'tab-join-crop.png'), clip: { x: Math.max(0, geometry.tab.left - 14), y: Math.max(0, geometry.tab.top - 3), width: Math.min((await page.evaluate(() => innerWidth)) - Math.max(0, geometry.tab.left - 14), geometry.tab.right - geometry.tab.left + 28), height: Math.max(1, geometry.card.top - geometry.tab.top + 22) }, animations: 'disabled' }); report.screenshots.push('tab-join-crop.png');
 }
 

@@ -3,7 +3,7 @@ import type { BackgroundRecord } from '../../../desktop/src/backgroundImagesCore
 import type { ResolvedTheme, ThemeBackgrounds } from '../themes';
 import { ensureBlurVariant, listBackgroundImages } from './backgroundPipeline';
 import { placement, regionColor, resolveBackgrounds, type BackgroundRegion, type PlacementBox } from './backgrounds';
-import { backgroundShape, panelBorder, tabBorder, tabShape, type BackgroundShape } from './backgroundGeometry';
+import { backgroundShape, panelBorder, tabShape, type BackgroundShape } from './backgroundGeometry';
 import { backgroundLayoutEvent, setTerminalBackground } from './backgroundState';
 import './background-layers.css';
 
@@ -129,6 +129,7 @@ export default function BackgroundLayers({ theme, backgrounds, layoutKey }: { th
     const picture = value.layer.blur > 0 ? record.variants[String(value.layer.blur)] ?? record : record;
     const p = placement(value.layer, shape.box, picture), [width, height] = p.size.split(' ').map(parseFloat);
     const clip = `${id}-${key}`, tile = `${clip}-tile`, color = regionColor(theme, region);
+    const pane = !['window','sidebar','sidebar2'].includes(region);
     return <g key={key} data-background-layer={region} data-overlay={value.overlay} data-floor={value.floor} data-source={value.source}>
       <defs><clipPath id={clip}><rect x={shape.panel.x} y={shape.panel.y} width={shape.panel.w} height={shape.panel.h} rx={radius}/>{shape.tab && <path d={tabShape(shape)}/>}</clipPath>
         {own && p.repeat === 'repeat' && <pattern id={tile} patternUnits="userSpaceOnUse" x={p.x} y={p.y} width={width} height={height}><image href={value.imageUrl} width={width} height={height} preserveAspectRatio="none"/></pattern>}
@@ -136,9 +137,9 @@ export default function BackgroundLayers({ theme, backgrounds, layoutKey }: { th
       <g clipPath={`url(#${clip})`}>
         {own && <><rect width="100%" height="100%" fill={color}/>{p.repeat === 'repeat' ? <rect width="100%" height="100%" fill={`url(#${tile})`} opacity={value.layer.opacity / 100}/> : <image href={value.imageUrl} x={p.x} y={p.y} width={width} height={height} opacity={value.layer.opacity / 100} preserveAspectRatio="none"/>}</>}
         <rect width="100%" height="100%" fill={color} opacity={value.overlay}/>
+        {pane && <rect data-background-lift="" width="100%" height="100%" fill={color} opacity={theme.mode === 'dark' ? 0.75 : 0.5}/>}
       </g>
-      {!['window','sidebar','sidebar2'].includes(region) && <path data-background-border="" d={panelBorder(shape)} fill="none" stroke="var(--border)" strokeWidth="1"/>}
-      {shape.tab && <path data-background-tab-border="" d={tabBorder(shape)} fill="none" stroke="var(--border)" strokeWidth="1"/>}
+      {pane && <path data-background-border="" d={panelBorder(shape)} fill="none" stroke="var(--border)" strokeWidth="1"/>}
     </g>;
   };
   return <svg ref={host} className="appearance-backgrounds" aria-hidden="true" data-ready={records.length > 0} width="100%" height="100%">

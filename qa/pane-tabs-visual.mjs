@@ -138,13 +138,10 @@ function referencePixel(image, target, candidates) {
  assert.ok(best && best.delta <= 3, `screenshot reference pixel differs from its computed baseline: ${JSON.stringify(best)}`);
  return best;
 }
-// A translucent CSS hairline is anti-aliased against the rendered backing
-// layer. Use the horizontal top-edge raster as the reference for its matching
-// horizontal continuation beside a tab foot. This deliberately does not
-// compare a vertical edge's anti-aliasing to the horizontal edge.
+// Use the most common raster colour away from the feet as the strip reference.
 function horizontalBorderReference(image, candidates, surface) {
  const samples = candidates.map(([x, y]) => ({ x, y, value: pixel(image, x, y) }));
- assert.ok(samples.length > 0, 'a pane has a horizontal top-border reference outside its tab feet');
+ assert.ok(samples.length > 0, 'a pane has a strip reference outside its tab feet');
  const groups = new Map();
  for (const sample of samples) { const key = sample.value.join(','); const group = groups.get(key) ?? []; group.push(sample); groups.set(key, group); }
  const flat = [...groups.values()].sort((left, right) => right.length - left.length)[0];
@@ -244,7 +241,7 @@ async function assertScreenshotPixels(name, screenshot, keyboardFocus = false) {
    ...Array.from({ length: Math.max(0, device(pane.selected.left - 12, scale.x, image.width) - horizontalLeft + 1) }, (_, index) => horizontalLeft + index),
    ...Array.from({ length: Math.max(0, horizontalRight - device(pane.selected.right + 12, scale.x, image.width) + 1) }, (_, index) => device(pane.selected.right + 12, scale.x, image.width) + index)
   ];
-  const border = horizontalBorderReference(image, referenceXs.map(x => [x, seamY]), surface.value);
+  const strip = horizontalBorderReference(image, referenceXs.map(x => [x, seamY - 2]), surface.value);
   assert.ok(insideRight - insideLeft >= 16, `selected tab has room for a continuous seam column for pane ${pane.id}`);
   const seamX = device(pane.selected.left + 10, scale.x, image.width), seamValue = pixel(image, seamX, seamY), seamSamples = [{ x: seamX, y: seamY, value: seamValue, delta: distance(seamValue, surface.value) }];
   assert.ok(distance(seamValue, surface.value) <= 3, `selected tab surface continues across the panel border at x=${seamX}, y=${seamY} for ${pane.id}`);
@@ -257,19 +254,34 @@ async function assertScreenshotPixels(name, screenshot, keyboardFocus = false) {
   if (!keyboardFocus && !panelSurfaceSkip) assert.ok(blankColumn, `an empty selected-tab column continues from its seam into the panel for eight pixels for ${pane.id}`);
   if (panelSurfaceSkip) report.limitations.push(`Eight-pixel interior column omitted for ${name} / ${pane.id}: the existing 960px four-pane compact projection leaves less than 90px of card height, so child controls overlap every candidate column. The seam row and outside feet remain pixel-checked.`);
   const outside = [{ side: 'left', x: device(pane.selected.left - 10, scale.x, image.width) }, { side: 'right', x: device(pane.selected.right + 10, scale.x, image.width) }];
-  const outsideSamples = outside.map(sample => ({ ...sample, y: seamY, value: pixel(image, sample.x, seamY), delta: distance(pixel(image, sample.x, seamY), border.value) }));
+  const outsideSamples = outside.map(sample => ({ ...sample, y: seamY, value: pixel(image, sample.x, seamY), below: pixel(image, sample.x, seamY + 1), above: pixel(image, sample.x, seamY - 2), delta: distance(pixel(image, sample.x, seamY + 1), surface.value), aboveDelta: distance(pixel(image, sample.x, seamY - 2), strip.value) }));
   assert.ok(outsideSamples.every(sample => sample.x >= horizontalLeft && sample.x <= horizontalRight), `both tab feet have horizontal top-border paint room for ${pane.id}: ${JSON.stringify({ outsideSamples, horizontalLeft, horizontalRight })}`);
-  assert.ok(outsideSamples.every(sample => sample.delta <= 3), `card border continues outside both tab feet at device row ${seamY} for ${pane.id}: ${JSON.stringify(outsideSamples)}`);
+  assert.ok(outsideSamples.every(sample => sample.delta <= 3 && sample.aboveDelta <= 3), `panel surface meets the strip without a third-colour band outside both feet for ${pane.id}: ${JSON.stringify(outsideSamples)}`);
+  for (const sample of outsideSamples) {
+   const delta = strip.value.map((channel, index) => surface.value[index] - channel), denominator = delta.reduce((sum, channel) => sum + channel * channel, 0);
+   const alpha = denominator ? Math.max(0, Math.min(1, delta.reduce((sum, channel, index) => sum + channel * (sample.value[index] - strip.value[index]), 0) / denominator)) : 0;
+   assert.ok(distance(sample.value, strip.value.map((channel, index) => Math.round(channel + alpha * delta[index]))) <= 3, `fractional top row contains only the strip/surface transition for ${pane.id}`);
+  }
   const seams = [];
   for (const [side, x] of [['left', pane.selected.left - 10], ['right', pane.selected.right - 10]]) {
    const left = device(x, scale.x, image.width), top = device(pane.card.top - 9, scale.y, image.height), filename = `${name}-${pane.id}-${side}-foot.png`;
    const arc = crop(image, left, top, 20, 18), values = [];
    for (let row = 0; row < arc.height; row++) for (let column = 0; column < arc.width; column++) values.push(pixel(arc, column, row));
-   const surfacePixels = values.filter(value => distance(value, surface.value) <= 3).length, borderPixels = values.filter(value => distance(value, border.value) <= 3).length;
-   assert.ok(surfacePixels > 0 && borderPixels > 0, `${side} foot crop has both surface and border pixels for ${pane.id}`);
-   await writeFile(join(pixelEvidenceDir, filename), PNG.sync.write(arc)); seams.push({ side, crop: `pixel-evidence/${filename}`, surfacePixels, borderPixels });
+   const surfacePixels = values.filter(value => distance(value, surface.value) <= 3).length, stripPixels = values.filter(value => distance(value, strip.value) <= 3).length;
+   assert.ok(surfacePixels > 0 && stripPixels > 0, `${side} foot crop has both panel surface and strip pixels for ${pane.id}`);
+   const footLeft = side === 'left' ? pane.selected.left - 7 : pane.selected.right;
+   const mixed = [];
+   for (let y = device(pane.card.top - 8, scale.y, image.height); y < seamY; y++) for (let px = device(footLeft, scale.x, image.width); px < device(footLeft + 7, scale.x, image.width); px++) {
+    const value = pixel(image, px, y), delta = strip.value.map((channel, index) => surface.value[index] - channel);
+    const denominator = delta.reduce((sum, channel) => sum + channel * channel, 0);
+    const alpha = denominator ? Math.max(0, Math.min(1, delta.reduce((sum, channel, index) => sum + channel * (value[index] - strip.value[index]), 0) / denominator)) : 0;
+    const expected = strip.value.map((channel, index) => Math.round(channel + alpha * delta[index]));
+    if (distance(value, expected) > 6) mixed.push({ x: px, y, value, expected });
+   }
+   assert.deepEqual(mixed, [], `${side} foot contains only surface/strip blends, with no differently coloured border band for ${pane.id}`);
+   await writeFile(join(pixelEvidenceDir, filename), PNG.sync.write(arc)); seams.push({ side, crop: `pixel-evidence/${filename}`, surfacePixels, stripPixels });
   }
-  const joinCropName = name === 'chat-sidebar-closed-en-light-1440' ? 'selected-tab-join-light.png' : name === 'chat-sidebar-closed-en-dark-1440' ? 'selected-tab-join-dark.png' : name === 'chat-custom-theme-en' ? 'selected-tab-join-custom.png' : name === 'chat-125-en-light' ? 'selected-tab-join-125.png' : undefined;
+  const joinCropName = name === 'chat-sidebar-closed-en-light-1440' ? 'selected-tab-join-light.png' : name === 'chat-sidebar-closed-en-dark-1440' ? 'selected-tab-join-dark.png' : name === 'chat-custom-theme-en' ? 'selected-tab-join-custom.png' : name === 'chat-125-en-light' ? 'selected-tab-join-125.png' : name === 'chat-125-en-dark' ? 'selected-tab-join-125-dark.png' : undefined;
   let joinCrop;
   if (joinCropName && pane === geometry.panes[0]) {
    const left = device(pane.selected.left - 14, scale.x, image.width), top = device(pane.selected.top - 3, scale.y, image.height), right = device(pane.selected.right + 14, scale.x, image.width), bottom = device(pane.card.top + 8, scale.y, image.height);
@@ -290,7 +302,7 @@ async function assertScreenshotPixels(name, screenshot, keyboardFocus = false) {
    assert.ok(pane.selected.width >= minimumWidth - 1, `selected tab remains at its 120 CSS-pixel readable width (${Math.round(minimumWidth)} rendered px) when available (${Math.round(available)}px) in ${pane.id}`);
    if (pane.title) assert.ok(pane.title.width + 1 >= Math.min(pane.title.sixCharacterWidth, pane.title.scrollWidth), `selected tab shows six readable title characters in ${pane.id}: ${JSON.stringify(pane.title)}`);
   }
-  const paneEvidence = { id: pane.id, seamY, expected: { surfaceRaw, borderRaw, surface: surfaceTarget, border: borderTarget }, references: { surface, border }, seamSamples, panelSurfaceColumn: blankColumn, panelSurfaceSkip, blankColumnFocusException: keyboardFocus, outsideSamples, footCrops: seams, joinCrop, verticalOverflow: overflowFailures, scrollThumbs, active: { width: pane.selected.width, offsetWidth: pane.selected.offsetWidth, effectiveZoom, minimumWidth, available, title: pane.title } };
+  const paneEvidence = { id: pane.id, seamY, expected: { surfaceRaw, borderRaw, surface: surfaceTarget, border: borderTarget }, references: { surface, strip }, seamSamples, panelSurfaceColumn: blankColumn, panelSurfaceSkip, blankColumnFocusException: keyboardFocus, outsideSamples, footCrops: seams, joinCrop, verticalOverflow: overflowFailures, scrollThumbs, active: { width: pane.selected.width, offsetWidth: pane.selected.offsetWidth, effectiveZoom, minimumWidth, available, title: pane.title } };
   if (keyboardFocus && pane.focused) {
    const primary = rgba(await page.evaluate(() => getComputedStyle(document.documentElement).getPropertyValue('--primary')))?.slice(0, 3);
    assert.ok(primary, `primary is RGB for focused pane ${pane.id}`);
@@ -397,7 +409,7 @@ async function afterAcceptance(chat, browser) {
  assert.ok(placement.ok,`strip/card/switcher/control geometry ${JSON.stringify(placement)}`);
  await page.locator('.workspace-pane.selected .workspace-tab-prefix button').first().focus(); for(let step=0;step<8&&await page.evaluate(()=>document.activeElement?.getAttribute('role')!=='tab');step++) await page.keyboard.press('Tab'); const entered=await page.evaluate(()=>({role:document.activeElement?.getAttribute('role'),id:document.activeElement?.id})); assert.equal(entered.role,'tab','Tab enters the pane tab strip');
  await captureAuxiliary('tab-keyboard-focus-en-light',{scenario:'keyboard focus follows selected tab wrapper including close control',keyboardFocus:true});
- await app.evaluate(({BrowserWindow})=>BrowserWindow.getAllWindows()[0].webContents.setZoomFactor(1.25)); await captureAuxiliary('chat-125-en-light',{scenario:'single chat at 125% zoom'}); await app.evaluate(({BrowserWindow})=>BrowserWindow.getAllWindows()[0].webContents.setZoomFactor(1));
+ await app.evaluate(({BrowserWindow})=>BrowserWindow.getAllWindows()[0].webContents.setZoomFactor(1.25)); await captureAuxiliary('chat-125-en-light',{scenario:'single chat at 125% zoom'}); await settings('en','dark'); await captureAuxiliary('chat-125-en-dark',{scenario:'single dark chat at 125% zoom'}); await app.evaluate(({BrowserWindow})=>BrowserWindow.getAllWindows()[0].webContents.setZoomFactor(1)); await settings('en','light');
  const snapshot=await request('runtime.snapshot'); await request('settings.update',{patch:{themeSelection:'custom:qa',customThemes:{qa:{background:'#101820',sidebar:'#0d151c',surface:'#172a36',editor:'#14212e',text:'#f1f7fb',muted:'#a9c0cd',accent:'#40c4ff',border:'#33586a'},qaNoEdge:{background:'#101820',sidebar:'#0d151c',surface:'#172a36',editor:'#14212e',text:'#f1f7fb',muted:'#a9c0cd',accent:'#40c4ff',border:'#172a36'}}},expectedRevision:snapshot.settings.revision,operationId:randomUUID()}); await page.waitForFunction(()=>document.documentElement.dataset.customTheme==='true'); await captureAuxiliary('chat-custom-theme-en',{scenario:'single chat ordinary custom theme'}); const noEdge=await request('runtime.snapshot'); await request('settings.update',{patch:{themeSelection:'custom:qaNoEdge'},expectedRevision:noEdge.settings.revision,operationId:randomUUID()}); await page.waitForFunction(()=>document.documentElement.dataset.customTheme==='true'); await captureAuxiliary('chat-custom-no-edges-en',{scenario:'single chat custom theme with border equal to surface'}); await settings('en','light');
  await show(browser.id); await resize(1440,900);
  if(!await page.locator('.wb-web-preview:visible').count()){const composer=page.locator('.chat-compose-shell textarea:visible');await composer.fill('open preview');await page.locator('.chat-compose-send[type=submit]:visible').click();await page.locator('.wb-web-preview:visible').waitFor({timeout:30_000});}

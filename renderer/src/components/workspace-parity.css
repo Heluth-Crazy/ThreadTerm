@@ -17,6 +17,9 @@
 .workspace-pane.ws-pane { --pane-surface:var(--surface); }
 .workspace-pane.ws-pane:has(> .pane-card > .pane-body > .pane-tab-surface:not([hidden]) > :is(.file-workspace,.terminal-wrap,.wb-review-diff)) { --pane-surface:var(--editor); }
 .workspace-pane.ws-pane > .pane-card { display:flex; flex:1; flex-direction:column; min-width:0; min-height:0; overflow:hidden; border:1px solid var(--border); border-radius:8px; background:var(--pane-surface); box-shadow:none; }
+/* Under a tab strip the card has no top hairline (Chrome: strip and panel meet by fill only); the side borders taper
+   off around the top corners and the 1 px padding keeps every child where the top border used to put it. */
+.workspace-tabbar.ws-strip + .pane-card { border-top-width:0; padding-top:1px; }
 .workspace-pane.ws-pane.fullscreen { position:absolute; inset:2px; z-index:8; }
 .workspace-pane .ws-pane-tab { display:flex; align-items:center; gap:5px; min-width:0; max-width:220px; height:24px; padding:0 4px; border:0; background:transparent; color:inherit; font-size:12px; }
 .workspace-pane .ws-pane-tab.active { font-weight:600; }
@@ -40,6 +43,7 @@
 .pane-body > .terminal-wrap,.pane-body > .chat-view,.pane-body > .file-workspace { flex:1; min-width:0; min-height:0; }
 .pane-tab-surface { display:flex; flex:1; min-width:0; min-height:0; overflow:hidden; }
 .pane-tab-surface > * { flex:1; min-width:0; min-height:0; }
+.pane-tab-surface > .terminal-wrap.term { border:0; border-radius:0; }
 .workspace-pane[hidden],.pane-tab-surface[hidden] { display:none !important; }
 .terminal-link-actions { flex:0 0 auto; }
 .pane-focused .workspace-pane:not(.fullscreen) { visibility:hidden; }
@@ -58,10 +62,12 @@
 .workspace-tab { position:relative; display:flex; flex:0 1 240px; align-items:center; max-width:240px; min-width:48px; height:32px; margin-bottom:1px; border-radius:8px 8px 0 0; color:var(--muted); }
 .workspace-tab:not(.active):not(:hover):has(+ .workspace-tab:not(.active):not(:hover))::after { content:""; position:absolute; top:8px; right:0; bottom:8px; width:1px; background:var(--border); pointer-events:none; }
 .workspace-tab:hover { background:var(--soft); color:var(--text); }
-.workspace-tab.active { z-index:1; min-width:120px; height:33px; margin-bottom:0; border:1px solid var(--border); border-bottom:1px solid var(--pane-surface,var(--surface)); background:var(--pane-surface,var(--surface)); box-shadow:0 2px 0 var(--pane-surface,var(--surface)); color:color-mix(in srgb,var(--text) 82%,var(--muted)); }
+.workspace-tab.active { z-index:1; min-width:120px; height:33px; margin-bottom:0; border:1px solid transparent; background:var(--pane-surface,var(--surface)); box-shadow:0 2px 0 var(--pane-surface,var(--surface)); color:color-mix(in srgb,var(--text) 82%,var(--muted)); }
 .workspace-tab.active::before,.workspace-tab.active::after { content:""; position:absolute; bottom:0; width:8px; height:9px; pointer-events:none; }
-.workspace-tab.active::before { left:-8px; background:radial-gradient(circle at 0 0,var(--bg) 7.5px,var(--border) 7.5px 8.5px,transparent 8.5px) 0 0 / 8px 8px no-repeat,linear-gradient(var(--pane-surface,var(--surface)),var(--pane-surface,var(--surface))); }
-.workspace-tab.active::after { right:-8px; background:radial-gradient(circle at 100% 0,var(--bg) 7.5px,var(--border) 7.5px 8.5px,transparent 8.5px) 0 0 / 8px 8px no-repeat,linear-gradient(var(--pane-surface,var(--surface)),var(--pane-surface,var(--surface))); }
+/* Fill-only concave feet: the curve is cut out with a mask instead of painted in the frame colour, so whatever is
+   behind the strip (frame colour or a window picture) shows through it. */
+.workspace-tab.active::before { left:-8px; background:var(--pane-surface,var(--surface)); -webkit-mask:radial-gradient(circle at 0 0,transparent 7.5px,currentColor 8.5px); mask:radial-gradient(circle at 0 0,transparent 7.5px,currentColor 8.5px); }
+.workspace-tab.active::after { right:-8px; background:var(--pane-surface,var(--surface)); -webkit-mask:radial-gradient(circle at 100% 0,transparent 7.5px,currentColor 8.5px); mask:radial-gradient(circle at 100% 0,transparent 7.5px,currentColor 8.5px); }
 .workspace-pane.selected .workspace-tab.active { color:var(--text); font-weight:600; }
 .workspace-tab-select { display:flex; align-items:center; gap:7px; flex:1; height:30px; min-width:0; padding:0 4px 0 9px; border:0; background:transparent; color:inherit; font:inherit; font-size:12px; text-align:left; }
 .workspace-tab-select span { overflow:hidden; white-space:nowrap; text-overflow:ellipsis; }
