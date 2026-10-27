@@ -40,7 +40,7 @@ export function WorkspaceTabBar({layout,sessions,active,busy,onActivate,onClose,
   const sync=()=>{
    const start=element.scrollLeft>1,end=element.scrollLeft+element.clientWidth<element.scrollWidth-1;setFade(`${start?' fade-start':''}${end?' fade-end':''}`);
    const box=element.getBoundingClientRect();
-   element.querySelectorAll<HTMLElement>('.workspace-tab').forEach(tab=>{const rect=tab.getBoundingClientRect();tab.toggleAttribute('data-clipped',rect.left<box.left-1||rect.right>box.right+1);tab.toggleAttribute('data-compact',rect.width<TAB_COMPACT&&!tab.classList.contains('active'));});
+   element.querySelectorAll<HTMLElement>('.workspace-tab').forEach(tab=>{const rect=tab.getBoundingClientRect();tab.toggleAttribute('data-clipped',rect.left<box.left-1||rect.right>box.right+1);tab.toggleAttribute('data-compact',rect.width<TAB_COMPACT&&!tab.classList.contains('browser-page-tab')&&!tab.classList.contains('active'));});
   };
   const reveal=()=>{
    const tab=element.querySelector<HTMLElement>('.workspace-tab.active');
