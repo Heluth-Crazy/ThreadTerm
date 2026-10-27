@@ -954,7 +954,7 @@ function FileWorkspaceInstance({
                 )}
                 {onSendToAgent && (!image || external) && (
                   <button type="button" className="icon-btn icon-btn-sm" title={zh ? "发送给 Agent（Ctrl+L 发送选中行）" : "Send to agent (Ctrl+L sends the selected lines)"} aria-label={zh ? "发送给 Agent" : "Send to agent"} onClick={() => onSendToAgent({ path: document.path })}>
-                    <Icon name="spark" />
+                    <Icon name="send" />
                   </button>
                 )}
                 {!external && sessionDocuments && !image && (

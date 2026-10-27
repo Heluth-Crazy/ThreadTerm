@@ -48,7 +48,7 @@ export function ContextSendAction({ host, item, zh, label, iconOnly = false, tes
     } catch (error) { host.notice?.(contextError(error, zh)); }
     finally { pending.current = false; }
   };
-  return <button type="button" className={iconOnly ? 'icon-btn' : 'btn btn-sm'} title={title} aria-label={title} data-testid={testId} onClick={() => void start()}><Icon name="spark"/>{!iconOnly && title}</button>;
+  return <button type="button" className={iconOnly ? 'icon-btn' : 'btn btn-sm'} title={title} aria-label={title} data-testid={testId} onClick={() => void start()}><Icon name="send"/>{!iconOnly && title}</button>;
 }
 
 /** Mounted once beside the workspace's context provider; owns the receiver dialog for every Send to agent action. */
