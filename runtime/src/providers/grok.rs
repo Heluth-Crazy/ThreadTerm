@@ -3695,9 +3695,9 @@ mod tests {
         );
     }
 
-    const GROK_PROBE_PARENT: &str = "01a116d7-5d4a-7051-a77a-012ab1f9e5bd";
-    const GROK_PROBE_CHILD: &str = "01a116d7-a2bc-7cd2-9b24-6460dc1f32df";
-    const GROK_PROBE_SPAWN: &str = "call-3656ca5d-0fff-4f26-918c-7d2207728185-0";
+    const GROK_PROBE_PARENT: &str = "11111111-1111-4111-8111-111111111111";
+    const GROK_PROBE_CHILD: &str = "22222222-2222-4222-8222-222222222222";
+    const GROK_PROBE_SPAWN: &str = "call-33333333-3333-4333-8333-333333333333-0";
 
     #[test]
     fn grok_preapproval_args_are_exact_and_precede_agent() {
