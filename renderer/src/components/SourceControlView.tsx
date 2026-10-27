@@ -287,7 +287,7 @@ export function SourceControlView({scope, actions, git, zh, compact = false, too
    <button type="button" role="menuitem" className="menu-item" disabled={!groups.staged.length} onClick={() => { setCommitMenu(undefined); void commit('push'); }}><Icon name="export"/>{status.upstream ? text('Commit & push', '提交并推送') : text('Commit & publish', '提交并发布')}</button>
    <button type="button" role="menuitem" className="menu-item" onClick={() => { setCommitMenu(undefined); void commit('amend'); }}><Icon name="clock"/>{text('Amend last commit…', '修改上次提交…')}</button>
   </CatalogPopover>}
-  {branchMenu && <CatalogPopover anchor={branchMenu} label={text('Branches', '分支')} onClose={() => setBranchMenu(undefined)}>
+  {branchMenu && <CatalogPopover anchor={branchMenu} align="start" label={text('Branches', '分支')} onClose={() => setBranchMenu(undefined)}>
    <div className="wb-branch-menu">
     <input autoFocus className="wb-branch-filter" value={branchQuery} onChange={event => setBranchQuery(event.target.value)} placeholder={creating ? text('New branch name', '新分支名称') : text('Filter or create a branch', '筛选或新建分支')} aria-label={text('Branch name', '分支名称')}
      onKeyDown={event => { if(event.key === 'Enter' && creating && branchQuery.trim()) { event.preventDefault(); void checkout(branchQuery.trim(), true); } }}/>
@@ -301,7 +301,7 @@ export function SourceControlView({scope, actions, git, zh, compact = false, too
        <div className="menu-label">{kind === 'local' ? text('Local branches', '本地分支') : text('Remote branches', '远程分支')}</div>
        {list.map(branch => <div key={`${kind}:${branch.name}`} className="wb-branch-item">
         <button type="button" role="menuitem" className="menu-item" disabled={branch.current || !!busy} onClick={() => void checkout(branch.name)} title={branch.lastCommit?.subject}>
-         <Icon name={branch.current ? 'check' : 'branch'}/><span className="wb-name">{branch.name}</span>
+         <Icon name={branch.current ? 'check' : 'branch'}/><span className="wb-name" title={branch.name}>{branch.name}</span>
          {(branch.ahead || branch.behind) ? <span className="wb-sync">↑{branch.ahead ?? 0} ↓{branch.behind ?? 0}</span> : branch.gone ? <span className="wb-sync muted">{text('gone', '已删除')}</span> : null}
         </button>
         {kind === 'local' && !branch.current && <button type="button" className="icon-btn" title={text('Delete branch', '删除分支')} aria-label={text(`Delete ${branch.name}`, `删除 ${branch.name}`)} onClick={() => { setBranchMenu(undefined); setConfirm({kind:'delete-branch', branch:branch.name, force:false}); }}><Icon name="trash"/></button>}

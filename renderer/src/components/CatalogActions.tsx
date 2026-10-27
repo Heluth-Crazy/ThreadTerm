@@ -132,18 +132,20 @@ export function CatalogActions({target,projects,trees,sessions,visibility,onChan
   </>;
 }
 
-export function CatalogPopover({anchor,onClose,label,children}:{anchor:HTMLElement;onClose:()=>void;label:string;children:ReactNode}){
+export function CatalogPopover({anchor,onClose,label,children,align='side'}:{anchor:HTMLElement;onClose:()=>void;label:string;children:ReactNode;align?:'side'|'start'}){
   const panel=useRef<HTMLDivElement>(null),callback=useRef(onClose);callback.current=onClose;
-  const [position,setPosition]=useState<{left:number;top:number;maxHeight:number}>();
+  const [position,setPosition]=useState<{left:number;top:number;maxHeight:number;width?:number}>();
   const mounted=position!==undefined;
   useLayoutEffect(()=>{
     const place=()=>{
       const box=anchor.getBoundingClientRect(),element=panel.current;
       // Client rects include CSS zoom; fixed-position CSS offsets do not.
       const scale=element?.offsetWidth?element.getBoundingClientRect().width/element.offsetWidth:Number(getComputedStyle(document.documentElement).zoom)||1;
-      const maxHeight=Math.max(0,(innerHeight-16)/scale),height=Math.min(element?.offsetHeight??0,maxHeight),width=element?.offsetWidth??280;
-      const next={left:Math.max(8/scale,Math.min((innerWidth-8)/scale-width,(box.right+6)/scale)),top:Math.max(8/scale,Math.min((innerHeight-8)/scale-height,box.top/scale)),maxHeight};
-      setPosition(current=>current&&current.left===next.left&&current.top===next.top&&current.maxHeight===next.maxHeight?current:next);
+      const maxHeight=Math.max(0,Math.min((innerHeight-16)/scale,align==='start'?Math.min(420,innerHeight*.7/scale):Infinity)),height=Math.min(element?.offsetHeight??0,maxHeight);
+      const width=align==='start'?Math.min(340,Math.max(200,((anchor.closest('.wb-panel')?.getBoundingClientRect().width??box.width)-20)/scale),(innerWidth-16)/scale):undefined;
+      const panelWidth=width??element?.offsetWidth??280;
+      const next={left:Math.max(8/scale,Math.min((innerWidth-8)/scale-panelWidth,(align==='start'?box.left:box.right+6)/scale)),top:Math.max(8/scale,Math.min((innerHeight-8)/scale-height,box.top/scale)),maxHeight,width};
+      setPosition(current=>current&&current.left===next.left&&current.top===next.top&&current.maxHeight===next.maxHeight&&current.width===next.width?current:next);
     };
     place();
     if(!mounted)return;
@@ -151,7 +153,7 @@ export function CatalogPopover({anchor,onClose,label,children}:{anchor:HTMLEleme
     addEventListener('resize',place);
     const observer=new ResizeObserver(place);if(panel.current)observer.observe(panel.current);
     return()=>{removeEventListener('resize',place);observer.disconnect();};
-  },[anchor,mounted]);
+  },[anchor,mounted,align]);
   useEffect(()=>{
     const pointer=(event:PointerEvent)=>{if(!panel.current?.contains(event.target as Node)&&!anchor.contains(event.target as Node))callback.current();};
     const key=(event:KeyboardEvent)=>{if(event.key==='Escape'){event.preventDefault();event.stopPropagation();callback.current();}if(event.key==='ArrowDown'||event.key==='ArrowUp'){event.preventDefault();const buttons=Array.from(panel.current?.querySelectorAll<HTMLButtonElement>('button:not(:disabled)')??[]),index=buttons.indexOf(document.activeElement as HTMLButtonElement);buttons[(index+(event.key==='ArrowDown'?1:-1)+buttons.length)%buttons.length]?.focus();}};

@@ -17,7 +17,7 @@ const root = resolve(fileURLToPath(new URL('..', import.meta.url)));
 const runtime = process.env.THREADTERM_V3_RUNTIME_BIN ?? join(root, 'runtime/target-qa/debug/threadterm-v3-runtime.exe');
 const fixture = join(root, 'qa/fixtures/context-menus-echo-acp');
 const scratchBase = process.env.TEMP; assert.ok(scratchBase, 'TEMP must name the isolated QA scratch root');
-const out = join(resolve(scratchBase), 'x1c-context-menus-results');
+const out = process.env.TT_CONTEXT_MENUS_OUT ? resolve(process.env.TT_CONTEXT_MENUS_OUT) : join(resolve(scratchBase), 'x1c-context-menus-results');
 const scratch = await mkdtemp(join(resolve(scratchBase), 'tt-x1c-context-menus-'));
 assert.equal(resolve(scratch).startsWith(resolve(scratchBase)), true, 'scratch remains under TEMP');
 const appDir = join(scratch, 'app');

@@ -210,10 +210,11 @@ button.wb-change-row { width:100%; border:0; background:transparent; color:var(-
 .wb-change-row .wb-row-actions, .wb-group-head .wb-row-actions { opacity:0; }
 .wb-change-row:hover .wb-row-actions, .wb-change-row:focus-within .wb-row-actions,
 .wb-group-head:hover .wb-row-actions, .wb-group-head:focus-within .wb-row-actions { opacity:1; }
-.wb-branch-menu { display:grid; gap:1px; width:min(340px,80vw); max-height:min(420px,70vh); overflow:auto; }
+.catalogue-popover:has(.wb-branch-menu) { max-height:min(420px,70vh); overflow-x:hidden; overflow-y:auto; }
+.wb-branch-menu { display:grid; grid-template-columns:minmax(0,1fr); gap:1px; min-width:0; }
 .wb-branch-menu .wb-branch-filter { height:30px; margin:2px 2px 4px; padding:0 10px; border:1px solid var(--border); border-radius:9px; background:var(--surface); color:var(--text); font:inherit; font-size:12.5px; }
 .wb-branch-menu .wb-branch-filter:focus { border-color:var(--primary); box-shadow:var(--wb-ring); outline:none; }
-.wb-branch-item { display:flex; align-items:center; }
+.wb-branch-item { display:flex; align-items:center; min-width:0; }
 .wb-branch-item .menu-item { flex:1; min-width:0; }
 .wb-branch-item .menu-item .wb-name { flex:1; font-family:var(--mono); font-size:12px; }
 .wb-branch-item .icon-btn { flex:none; width:26px; height:26px; }
