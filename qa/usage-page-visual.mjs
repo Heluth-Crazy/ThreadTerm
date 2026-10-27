@@ -440,7 +440,9 @@ try {
     };
   });
   const intersects = (a, b) => b && a.left < b.right && a.right > b.left && a.top < b.bottom && a.bottom > b.top;
-  assert.ok(trendTipGeometry.tip.left >= trendTipGeometry.plot.left && trendTipGeometry.tip.right <= trendTipGeometry.plot.right && trendTipGeometry.tip.top >= trendTipGeometry.plot.top && trendTipGeometry.tip.bottom <= trendTipGeometry.plot.bottom, `trend tooltip stays wholly inside the plot: ${JSON.stringify(trendTipGeometry)}`);
+  // Half a pixel of slack: a tooltip clamped to the plot edge can land 1/64 px (layout rounding) past a fractional edge.
+  const slack = 0.5;
+  assert.ok(trendTipGeometry.tip.left >= trendTipGeometry.plot.left - slack && trendTipGeometry.tip.right <= trendTipGeometry.plot.right + slack && trendTipGeometry.tip.top >= trendTipGeometry.plot.top - slack && trendTipGeometry.tip.bottom <= trendTipGeometry.plot.bottom + slack, `trend tooltip stays wholly inside the plot: ${JSON.stringify(trendTipGeometry)}`);
   assert.equal(trendTipGeometry.columns, 2, `trend tooltip uses compact two-column layout (${trendTipGeometry.columns} columns)`);
   assert.ok(!intersects(trendTipGeometry.tip, trendTipGeometry.header), `trend tooltip clears the header: ${JSON.stringify(trendTipGeometry)}`);
   assert.ok(!intersects(trendTipGeometry.tip, trendTipGeometry.legend), `trend tooltip clears the legend: ${JSON.stringify(trendTipGeometry)}`);

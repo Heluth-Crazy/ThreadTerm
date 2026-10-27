@@ -175,7 +175,7 @@ try {
   const policy = await page.evaluate(() => document.querySelector('meta[http-equiv="Content-Security-Policy"]')?.getAttribute('content') ?? '');
   report.meta = policy;
   const directives = policy.split('; ');
-  for (const directive of ["style-src 'self' 'unsafe-inline'", "img-src 'self' data: blob: http: https:", "font-src 'self' data:", "connect-src 'self'", "media-src 'self' data: blob:", "worker-src 'self' blob:", "object-src 'none'", "base-uri 'none'", "form-action 'none'"]) {
+  for (const directive of ["style-src 'self' 'unsafe-inline'", "img-src 'self' data: blob: http: https: threadterm-bg:", "font-src 'self' data:", "connect-src 'self'", "media-src 'self' data: blob:", "worker-src 'self' blob:", "object-src 'none'", "base-uri 'none'", "form-action 'none'"]) {
     assert.ok(directives.includes(directive), `the built document carries ${directive}`);
   }
   // R3d2: no frame governance here — a frame list in the embedding document also governs the sandboxed HTTP/HTML

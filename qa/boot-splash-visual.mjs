@@ -151,7 +151,10 @@ try {
   await page.evaluate(([revision, id]) => window.threadterm.request('settings.update', { patch: { theme: 'dark', language: 'zh-CN' }, expectedRevision: revision, operationId: id }), [settings.revision, randomUUID()]);
   await page.waitForFunction(() => JSON.parse(localStorage.getItem('threadterm.v3.boot-appearance') || '{}').theme === 'dark', null, { timeout: 10000 });
   const saved = await page.evaluate(() => localStorage.getItem('threadterm.v3.boot-appearance'));
-  assert.deepEqual(JSON.parse(saved), { theme: 'dark', locale: 'zh-CN' });
+  const remembered = JSON.parse(saved);
+  assert.deepEqual({ theme: remembered.theme, locale: remembered.locale }, { theme: 'dark', locale: 'zh-CN' });
+  // Since AB2 every theme is a palette: the launch screen also remembers the resolved one (default dark = ThreadTerm Dark).
+  assert.deepEqual(remembered.tokens, { background: '#262624', surface: '#2c2c2a', text: '#ecebe5', muted: '#a8a59c', border: '#3b3a37' });
   check(`the app saves the appearance for the next launch: ${saved}`);
   await page.reload({ waitUntil: 'commit' });
   await recordTimeline();
