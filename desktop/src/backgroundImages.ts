@@ -1,7 +1,7 @@
 // Electron glue for background images (task 10-26 phase D): the privileged `threadterm-bg:` scheme, its protocol
 // handler and the IPC the renderer calls. Every rule lives in backgroundImagesCore.ts; this file only wires Electron
 // to it, so the storage rules stay unit-testable without an Electron process.
-import { app, BrowserWindow, dialog, ipcMain, protocol, type IpcMainInvokeEvent } from 'electron';
+import { app, BrowserWindow, dialog, ipcMain, type CustomScheme, type IpcMainInvokeEvent } from 'electron';
 import { promises as fs } from 'node:fs';
 import { join } from 'node:path';
 import {
@@ -24,15 +24,14 @@ export function backgroundImagesFolder(profileDir: string = app.getPath('userDat
   return join(profileDir, 'backgrounds');
 }
 
-/** Must run before `app.whenReady()` finishes, like the HTML preview scheme. */
-export function registerBackgroundImageScheme(protocolApi: Pick<typeof protocol, 'registerSchemesAsPrivileged'>): void {
-  protocolApi.registerSchemesAsPrivileged([{
-    scheme: BACKGROUND_IMAGE_SCHEME,
-    // `corsEnabled` + an ACAO header keep a canvas untainted, so the renderer can bake a blur variant from the served
-    // original without a second copy of the bytes crossing IPC.
-    privileges: { standard: true, secure: true, supportFetchAPI: true, corsEnabled: true, stream: true },
-  }]);
-}
+/** Registered by main.ts in the same `registerSchemesAsPrivileged` call as the HTML preview scheme (Electron keeps
+ * only the last call), before `app.whenReady()` finishes. */
+export const BACKGROUND_IMAGE_PRIVILEGED_SCHEME: CustomScheme = {
+  scheme: BACKGROUND_IMAGE_SCHEME,
+  // `corsEnabled` + an ACAO header keep a canvas untainted, so the renderer can bake a blur variant from the served
+  // original without a second copy of the bytes crossing IPC.
+  privileges: { standard: true, secure: true, supportFetchAPI: true, corsEnabled: true, stream: true },
+};
 
 const responseHeaders = {
   'Content-Type': 'image/webp',

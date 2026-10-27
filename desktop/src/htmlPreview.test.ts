@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { readdirSync, readFileSync } from 'node:fs';
 import { mkdir, mkdtemp, rm, symlink, truncate, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -18,6 +19,7 @@ import {
   parsePreviewUrl,
   previewProcessIsolation,
   shouldDisableHtmlPreviewWebRtc,
+  HTML_PREVIEW_PRIVILEGED_SCHEME,
 } from './htmlPreview.js';
 
 function ids() {
@@ -337,4 +339,15 @@ test('WebRTC policy covers preview frames and descendants without affecting unre
     assert.equal(shouldDisableHtmlPreviewWebRtc(appChild, 9, manager), false);
     assert.equal(shouldDisableHtmlPreviewWebRtc(initial, 10, manager), false);
   } finally { await item.cleanup(); }
+});
+
+// Electron keeps only the last registerSchemesAsPrivileged call: a second one (D1 added one for threadterm-bg) stripped
+// tt-preview of supportFetchAPI, so fetch() inside HTML previews failed. Every privileged scheme goes through one call.
+test('every privileged scheme is registered in a single registerSchemesAsPrivileged call', () => {
+  const desktop = join(process.cwd(), 'desktop', 'src');
+  const calls = readdirSync(desktop).filter(name => name.endsWith('.ts') && !name.endsWith('.test.ts'))
+    .flatMap(name => (readFileSync(join(desktop, name), 'utf8').match(/\.registerSchemesAsPrivileged\(\[[^\]]*\]/g) ?? []).map(call => `${name}: ${call}`));
+  assert.equal(calls.length, 1, calls.join('\n'));
+  assert.match(calls[0], /^main\.ts: .*HTML_PREVIEW_PRIVILEGED_SCHEME.*BACKGROUND_IMAGE_PRIVILEGED_SCHEME/);
+  assert.deepEqual(HTML_PREVIEW_PRIVILEGED_SCHEME.privileges, { standard: true, secure: true, supportFetchAPI: true, corsEnabled: true, stream: true });
 });

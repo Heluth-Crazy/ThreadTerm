@@ -3,10 +3,10 @@ import { open, realpath, stat } from 'node:fs/promises';
 import { extname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import type {
   BrowserWindow,
+  CustomScheme,
   Event,
   HandlerDetails,
   OnBeforeRequestListenerDetails,
-  Protocol,
   Session,
   WebContentsWillFrameNavigateEventParams,
   WebContentsWillRedirectEventParams,
@@ -201,12 +201,12 @@ export function shouldDisableHtmlPreviewWebRtc(frame: WebFrameMain | null | unde
   return manager.listForOwner(ownerWebContentsId).some(grant => grant.frameName === frame.name && grant.frameTreeNodeId === undefined);
 }
 
-export function registerHtmlPreviewScheme(protocolApi: Pick<Protocol, 'registerSchemesAsPrivileged'>): void {
-  protocolApi.registerSchemesAsPrivileged([{
-    scheme: HTML_PREVIEW_SCHEME,
-    privileges: { standard: true, secure: true, supportFetchAPI: true, corsEnabled: true, stream: true },
-  }]);
-}
+/** Registered by main.ts together with every other privileged scheme: Electron keeps only the last
+ * `registerSchemesAsPrivileged` call, so a second call would strip these privileges (fetch() in previews fails). */
+export const HTML_PREVIEW_PRIVILEGED_SCHEME: CustomScheme = {
+  scheme: HTML_PREVIEW_SCHEME,
+  privileges: { standard: true, secure: true, supportFetchAPI: true, corsEnabled: true, stream: true },
+};
 
 export class HtmlPreviewGrantManager {
   readonly capacity: number;

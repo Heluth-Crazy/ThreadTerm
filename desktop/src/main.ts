@@ -22,14 +22,14 @@ import { deletedRevealScope, isWithinScope, revealTarget } from './revealFile.js
 import { qaAttachPathsOverride, readAttachFiles } from './attachFiles.js';
 import { qaOpenExternalPathsOverride } from './externalFiles.js';
 
-import { HtmlPreviewGrantManager, registerHtmlPreviewScheme, mergePreviewIsolationFeatures, installHtmlPreviewSession, attachHtmlPreviewWindow } from './htmlPreview.js';
+import { HtmlPreviewGrantManager, HTML_PREVIEW_PRIVILEGED_SCHEME, mergePreviewIsolationFeatures, installHtmlPreviewSession, attachHtmlPreviewWindow } from './htmlPreview.js';
 import { registerHtmlPreviewIpc } from './htmlPreviewIpc.js';
-import { backgroundImagesFolder, installBackgroundImageSession, registerBackgroundImageIpc, registerBackgroundImageScheme } from './backgroundImages.js';
+import { BACKGROUND_IMAGE_PRIVILEGED_SCHEME, backgroundImagesFolder, installBackgroundImageSession, registerBackgroundImageIpc } from './backgroundImages.js';
 import { buildThemeExport, importThemePackImages, qaThemeExportOverride } from './themePackCore.js';
 import { appCspForHtml, buildAppCsp } from './appCsp.js';
 
-registerHtmlPreviewScheme(protocol);
-registerBackgroundImageScheme(protocol);
+// One call for every privileged scheme: Electron keeps only the last registerSchemesAsPrivileged call.
+protocol.registerSchemesAsPrivileged([HTML_PREVIEW_PRIVILEGED_SCHEME, BACKGROUND_IMAGE_PRIVILEGED_SCHEME]);
 app.commandLine.appendSwitch('enable-features', mergePreviewIsolationFeatures(app.commandLine.getSwitchValue('enable-features')));
 const htmlPreviewGrants = new HtmlPreviewGrantManager();
 let htmlPreviewPreloadReady = false;
