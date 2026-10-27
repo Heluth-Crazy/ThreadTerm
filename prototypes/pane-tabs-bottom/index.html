@@ -1,0 +1,201 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>ThreadTerm — pane tabs, no status row (mockup v2)</title>
+<style>
+/* Real ThreadTerm tokens (renderer/src/styles.css). */
+:root, [data-theme="light"] {
+  --bg:#f5f4ef; --side:#eeede6; --surface:#fefdfb;
+  --soft:rgba(64,52,28,.055); --border:rgba(64,52,28,.115);
+  --text:#23221f; --muted:#6c6961; --faint:#9a968d;
+  --primary:#4f59c8; --primary-tint:rgba(79,89,200,.1);
+  --ok:#1a7f37; --warn:#9a6700; --danger:#cf222e;
+}
+[data-theme="dark"] {
+  --bg:#262624; --side:#1f1e1d; --surface:#2c2c2a;
+  --soft:rgba(250,244,228,.055); --border:rgba(250,244,228,.10);
+  --text:#ecebe5; --muted:#a8a59c; --faint:#77746c;
+  --primary:#8b93f0; --primary-tint:rgba(139,147,240,.16);
+  --ok:#3fb950; --warn:#d29922; --danger:#f85149;
+}
+/* Panel edge: a hairline that runs around the selected tab, or none at all (fill only). */
+[data-edge="hairline"] { --edge:var(--border); }
+[data-edge="none"] { --edge:transparent; }
+
+* { box-sizing:border-box; }
+body { margin:0; padding:20px; font:13px/1.4 "Segoe UI", system-ui, sans-serif; background:#8a8a8a; color:var(--text); }
+.controls { display:flex; flex-wrap:wrap; gap:16px; align-items:center; margin:0 auto 10px; max-width:1280px; color:#fff; }
+.controls fieldset { display:flex; gap:4px; border:0; padding:0; margin:0; align-items:center; }
+.controls legend { float:left; margin-right:6px; font-weight:600; }
+.controls button { font:inherit; padding:4px 10px; border-radius:6px; border:1px solid rgba(255,255,255,.5); background:transparent; color:#fff; cursor:pointer; }
+.controls button[aria-pressed="true"] { background:#fff; color:#222; }
+.note { max-width:1280px; margin:0 auto 12px; color:#fff; font-size:12.5px; }
+
+/* ---------- window ---------- */
+.window { position:relative; max-width:1280px; height:720px; margin:0 auto; display:grid; grid-template-columns:220px 1fr; grid-template-rows:34px 1fr;
+  border-radius:10px; overflow:hidden; background:var(--bg); box-shadow:0 20px 60px rgba(0,0,0,.35); }
+.titlebar { grid-column:1 / -1; display:flex; align-items:center; padding:0 14px; font-size:12px; color:var(--muted); }
+.titlebar .win { margin-left:auto; letter-spacing:18px; }
+.appnav { background:var(--side); display:flex; flex-direction:column; padding:10px 10px 0; gap:2px; }
+.appnav .brand { font-weight:600; padding:4px 6px 12px; }
+.appnav .item { padding:5px 8px; border-radius:6px; }
+.appnav .label { margin:14px 8px 4px; font-size:10.5px; letter-spacing:.06em; color:var(--muted); text-transform:uppercase; }
+.appnav .item.sel { background:var(--soft); }
+.account { margin-top:auto; display:flex; align-items:center; gap:9px; padding:10px 8px 12px; border-top:1px solid var(--border); cursor:pointer; }
+.account:hover { background:var(--soft); }
+.avatar { position:relative; width:28px; height:28px; border-radius:50%; background:var(--soft); display:grid; place-items:center; color:var(--muted); flex:none; }
+.avatar .badge { position:absolute; right:-1px; bottom:-1px; width:9px; height:9px; border-radius:50%; box-shadow:0 0 0 2px var(--side); display:none; }
+[data-runtime="reconnecting"] .avatar .badge { display:block; background:var(--warn); }
+[data-runtime="unavailable"] .avatar .badge { display:block; background:var(--danger); }
+.account small { display:block; color:var(--muted); font-size:11.5px; }
+
+.main { display:grid; grid-template-rows:44px 1fr; min-width:0; min-height:0; }
+.header { display:flex; align-items:center; gap:8px; padding:0 14px; }
+.chip { padding:4px 10px; border-radius:7px; border:1px solid var(--border); background:var(--surface); font-weight:600; font-size:12.5px; white-space:nowrap; }
+.ghost { padding:4px 8px; color:var(--muted); }
+/* Only shown when something is wrong. */
+.rt-chip { margin-left:auto; display:none; align-items:center; gap:7px; padding:3px 4px 3px 10px; border-radius:7px; font-size:12px; font-weight:600; background:var(--surface); border:1px solid var(--border); }
+.rt-chip .dot { width:7px; height:7px; border-radius:50%; }
+.rt-chip .retry { border:1px solid var(--border); border-radius:5px; padding:1px 8px; font-weight:500; }
+[data-runtime="reconnecting"] .rt-chip, [data-runtime="unavailable"] .rt-chip { display:flex; }
+[data-runtime="reconnecting"] .rt-chip { padding-right:10px; }
+[data-runtime="reconnecting"] .rt-chip .dot { background:var(--warn); }
+[data-runtime="unavailable"] .rt-chip .dot { background:var(--danger); }
+[data-runtime="reconnecting"] .rt-chip .retry { display:none; }
+
+/* ---------- workspace: floating panels, one 12 px gap on every side, no bottom row ---------- */
+.ws { display:grid; min-height:0; min-width:0; grid-template-rows:40px 1fr; padding:0 12px 12px; column-gap:12px; }
+.ws.single { grid-template-columns:250px 1fr; }
+.ws.split  { grid-template-columns:250px 1fr 1fr; }
+.strip { display:flex; align-items:flex-end; min-width:0; padding:0 4px 0 16px; }
+.strip .end { margin-left:auto; display:flex; gap:2px; align-self:center; color:var(--muted); }
+.switcher { display:flex; gap:2px; align-items:center; align-self:center; color:var(--muted); }
+.switcher .on { background:var(--primary-tint); color:var(--primary); }
+.ib { width:28px; height:28px; display:grid; place-items:center; border-radius:6px; }
+.ib svg { width:16px; height:16px; stroke:currentColor; fill:none; stroke-width:1.6; stroke-linecap:round; stroke-linejoin:round; }
+
+.tab { position:relative; display:flex; align-items:center; gap:7px; height:32px; padding:0 8px 0 12px; max-width:220px;
+  color:var(--muted); font-size:12px; border-radius:8px 8px 0 0; white-space:nowrap; }
+.tab .x { width:20px; height:20px; display:grid; place-items:center; border-radius:5px; color:var(--faint); }
+.tab .x svg { width:12px; height:12px; stroke:currentColor; fill:none; stroke-width:1.8; stroke-linecap:round; }
+.tab .ico { width:14px; height:14px; border-radius:50%; background:var(--primary); opacity:.85; flex:none; }
+.tab .ico.file { border-radius:2px; background:none; border:1.5px solid currentColor; opacity:.7; }
+.tab:not(.active):hover { background:color-mix(in srgb, var(--surface) 55%, var(--bg)); }
+.tab:not(.active) + .tab:not(.active)::before { content:""; position:absolute; left:0; top:9px; width:1px; height:16px; background:var(--border); }
+/* Selected tab: same fill as its panel; it covers the panel's top edge, and its concave feet continue the edge. */
+.tab.active { background:var(--surface); color:var(--text); font-weight:600; z-index:2; margin-bottom:-1px; height:33px;
+  box-shadow:inset 1px 0 0 var(--edge), inset -1px 0 0 var(--edge), inset 0 1px 0 var(--edge); }
+.tab.active::before, .tab.active::after { content:""; position:absolute; bottom:0; width:8px; height:9px; }
+.tab.active::before { left:-8px;
+  background:radial-gradient(circle at 0 0, transparent 7.5px, var(--edge) 7.5px, var(--edge) 8.5px, var(--surface) 8.5px) 0 0 / 8px 8px no-repeat,
+             linear-gradient(var(--surface), var(--surface)) 0 8px / 8px 1px no-repeat; }
+.tab.active::after { right:-8px;
+  background:radial-gradient(circle at 100% 0, transparent 7.5px, var(--edge) 7.5px, var(--edge) 8.5px, var(--surface) 8.5px) 0 0 / 8px 8px no-repeat,
+             linear-gradient(var(--surface), var(--surface)) 0 8px / 8px 1px no-repeat; }
+.plus { align-self:center; margin-left:6px; color:var(--muted); }
+
+.panel { position:relative; background:var(--surface); border:1px solid var(--edge); border-radius:10px; min-width:0; min-height:0; display:flex; flex-direction:column; overflow:hidden; }
+.panel-head { height:38px; display:flex; align-items:center; padding:0 10px 0 14px; font-weight:600; font-size:12.5px; border-bottom:1px solid var(--border); }
+.panel-head .end { margin-left:auto; display:flex; gap:2px; color:var(--muted); }
+.tree { padding:8px 10px; } .tree div { padding:3px 6px; border-radius:5px; } .tree .sel { background:var(--soft); }
+.chat { flex:1; display:flex; flex-direction:column; align-items:center; padding:40px 24px 18px; }
+.chat .empty { text-align:center; color:var(--muted); } .chat .empty b { color:var(--text); display:block; }
+.composer { margin-top:auto; width:min(100%,720px); border:1px solid var(--border); border-radius:14px; padding:12px 14px; color:var(--faint); background:var(--surface); }
+.composer .row { display:flex; gap:6px; margin-top:14px; } .composer .pill { border:1px solid var(--border); border-radius:999px; padding:2px 9px; color:var(--text); font-size:12px; }
+.filebar { height:38px; display:flex; align-items:center; gap:8px; padding:0 10px 0 14px; border-bottom:1px solid var(--border); font-size:12.5px; }
+.filebar .btn { margin-left:auto; border:1px solid var(--border); border-radius:6px; padding:2px 8px; font-size:12px; }
+.doc { padding:20px 24px; } .doc h1 { margin:0 0 10px; font-size:24px; }
+
+/* Account menu (where runtime details live now). */
+.menu { position:absolute; left:12px; bottom:64px; width:270px; background:var(--surface); border:1px solid var(--border); border-radius:10px;
+  box-shadow:0 12px 32px rgba(0,0,0,.18); padding:6px; display:none; z-index:5; }
+[data-menu="open"] .menu { display:block; }
+.menu .row { display:flex; align-items:center; gap:9px; padding:7px 8px; border-radius:6px; }
+.menu .row:hover { background:var(--soft); }
+.menu .sep { height:1px; background:var(--border); margin:5px 2px; }
+.menu .rt { flex-direction:column; align-items:flex-start; gap:2px; cursor:default; }
+.menu .rt:hover { background:none; }
+.menu .rt .line { display:flex; align-items:center; gap:7px; font-weight:600; }
+.menu .rt small { color:var(--muted); padding-left:14px; }
+.menu .dot { width:7px; height:7px; border-radius:50%; background:var(--ok); }
+[data-runtime="reconnecting"] .menu .dot { background:var(--warn); }
+[data-runtime="unavailable"] .menu .dot { background:var(--danger); }
+</style>
+</head>
+<body data-theme="light" data-edge="hairline" data-runtime="connected" data-menu="closed" data-layout="single">
+<div class="controls">
+  <fieldset><legend>Theme</legend><button data-set="theme" data-v="light" aria-pressed="true">Light</button><button data-set="theme" data-v="dark">Dark</button></fieldset>
+  <fieldset><legend>Layout</legend><button data-set="layout" data-v="single" aria-pressed="true">Chat</button><button data-set="layout" data-v="split">Chat | file</button></fieldset>
+  <fieldset><legend>Panel edge</legend><button data-set="edge" data-v="hairline" aria-pressed="true">Hairline</button><button data-set="edge" data-v="none">None</button></fieldset>
+  <fieldset><legend>Runtime</legend><button data-set="runtime" data-v="connected" aria-pressed="true">Connected</button><button data-set="runtime" data-v="reconnecting">Reconnecting</button><button data-set="runtime" data-v="unavailable">Unavailable</button></fieldset>
+  <fieldset><legend>Account menu</legend><button data-set="menu" data-v="closed" aria-pressed="true">Closed</button><button data-set="menu" data-v="open">Open</button></fieldset>
+</div>
+<p class="note">No status row: the panels end with the same 12 px gap as everywhere else. Runtime status is silent while connected; the details live in the account menu (bottom-left). Only a problem shows up — a dot on the account avatar and a chip in the header.</p>
+
+<div class="window">
+  <div class="titlebar">ThreadTerm<span class="win">–▢✕</span></div>
+  <nav class="appnav">
+    <div class="brand">ThreadTerm</div>
+    <div class="item">＋ New terminal</div><div class="item">Inbox</div><div class="item">All terminals</div>
+    <div class="label">Projects</div>
+    <div class="item">ThreadTerm</div><div class="item sel">&nbsp;&nbsp;● Codex-chat-test6</div><div class="item">&nbsp;&nbsp;● Group chat</div>
+    <div class="account" data-set="menu" data-v="toggle"><span class="avatar">●<span class="badge"></span></span><span>Local user<small>Local profile</small></span></div>
+  </nav>
+  <div class="main">
+    <div class="header"><span class="ghost">‹ Back</span><span class="chip">● ThreadTerm</span><span class="chip">⑂ main</span><span class="chip">▷ Run ⌄</span>
+      <span class="rt-chip"><span class="dot"></span><span class="rt-text"></span><span class="retry">Retry</span></span></div>
+    <div class="ws single" id="ws"></div>
+  </div>
+  <div class="menu">
+    <div class="row"><span class="avatar">●</span><span><b>Local user</b><br><small style="color:var(--muted)">Local profile</small></span></div>
+    <div class="sep"></div>
+    <div class="row rt"><span class="line"><span class="dot"></span><span class="rt-menu-text"></span></span><small>Local runtime · this computer</small></div>
+    <div class="sep"></div>
+    <div class="row">Usage</div><div class="row">Settings</div>
+  </div>
+</div>
+
+<script>
+const svg = {
+  file:'<svg viewBox="0 0 16 16"><path d="M4 1.5h5l3 3v10H4z"/><path d="M9 1.5v3h3"/></svg>',
+  search:'<svg viewBox="0 0 16 16"><circle cx="7" cy="7" r="4.5"/><path d="M10.5 10.5 14 14"/></svg>',
+  git:'<svg viewBox="0 0 16 16"><circle cx="4" cy="3.5" r="1.6"/><circle cx="4" cy="12.5" r="1.6"/><circle cx="12" cy="6" r="1.6"/><path d="M4 5v6M12 7.6c0 3-4 2.5-6.6 4"/></svg>',
+  spark:'<svg viewBox="0 0 16 16"><path d="M8 1.5l1.6 4.9L14.5 8l-4.9 1.6L8 14.5l-1.6-4.9L1.5 8l4.9-1.6z"/></svg>',
+  plus:'<svg viewBox="0 0 16 16"><path d="M8 3v10M3 8h10"/></svg>',
+  more:'<svg viewBox="0 0 16 16"><circle cx="3.5" cy="8" r=".9"/><circle cx="8" cy="8" r=".9"/><circle cx="12.5" cy="8" r=".9"/></svg>',
+  map:'<svg viewBox="0 0 16 16"><rect x="1.5" y="2" width="5" height="4" rx="1"/><rect x="9.5" y="10" width="5" height="4" rx="1"/><path d="M4 6v4h5.5"/></svg>',
+  x:'<svg viewBox="0 0 16 16"><path d="M4 4l8 8M12 4l-8 8"/></svg>',
+};
+const ib = (name, cls='') => `<span class="ib ${cls}">${svg[name]}</span>`;
+const tab = (label, {active=false, file=false}={}) =>
+  `<span class="tab${active?' active':''}"><span class="ico${file?' file':''}"></span>${label}<span class="x">${svg.x}</span></span>`;
+const runtimeText = { connected:'Runtime connected', reconnecting:'Reconnecting to runtime…', unavailable:'Runtime unavailable' };
+
+function render() {
+  const s = document.body.dataset, ws = document.getElementById('ws'), split = s.layout === 'split';
+  ws.className = `ws ${split ? 'split' : 'single'}`;
+  const switcher = `<div class="strip" style="padding-left:0"><div class="switcher">${ib('file','on')}${ib('search')}${ib('git')}${ib('spark')}</div></div>`;
+  const chatStrip = `<div class="strip">${tab('Group chat · @pi')}${tab('Codex-chat-test6',{active:true})}<span class="plus">${ib('plus')}</span><span class="end">${split?'':ib('map')}${ib('more')}</span></div>`;
+  const fileStrip = `<div class="strip">${tab('plan.md',{active:true,file:true})}${tab('notes.ts',{file:true})}<span class="plus">${ib('plus')}</span><span class="end">${ib('more')}</span></div>`;
+  const files = `<section class="panel"><div class="panel-head">Files<span class="end">${ib('plus')}${ib('more')}</span></div>
+     <div class="tree"><div>› .agents</div><div>› .claude</div><div>› desktop</div><div>› renderer</div><div>› runtime</div><div class="sel">&nbsp;&nbsp;plan.md</div><div>&nbsp;&nbsp;notes.ts</div></div></section>`;
+  const chat = `<section class="panel"><div class="chat"><div class="empty"><b>No messages yet.</b>Send a message to start working with this provider.</div>
+     <div class="composer">Message, or type / for commands<div class="row"><span class="pill">Ask as needed</span><span class="pill">Default</span><span class="pill">Workspace write</span></div></div></div></section>`;
+  const file = `<section class="panel"><div class="filebar">plan.md<span class="btn">Source code</span></div>
+     <div class="doc"><h1>Pane tabs</h1><p style="color:var(--muted)">A companion file preview.</p></div></section>`;
+  ws.innerHTML = switcher + chatStrip + (split ? fileStrip : '') + files + chat + (split ? file : '');
+  document.querySelector('.rt-text').textContent = runtimeText[s.runtime];
+  document.querySelector('.rt-menu-text').textContent = runtimeText[s.runtime];
+}
+document.querySelectorAll('[data-set]').forEach(element => element.addEventListener('click', () => {
+  const key = element.dataset.set;
+  const value = element.dataset.v === 'toggle' ? (document.body.dataset[key] === 'open' ? 'closed' : 'open') : element.dataset.v;
+  document.body.dataset[key] = value;
+  document.querySelectorAll(`.controls [data-set="${key}"]`).forEach(other => other.setAttribute('aria-pressed', String(other.dataset.v === value)));
+  render();
+}));
+render();
+</script>
+</body>
+</html>

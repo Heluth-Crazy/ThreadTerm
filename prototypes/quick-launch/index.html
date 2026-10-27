@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ThreadTerm · Quick Launch prototype</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<main class="app" aria-label="ThreadTerm Quick Launch interactive prototype">
+  <header class="titlebar"><strong>ThreadTerm</strong><span>ThreadTerm-v3</span><span class="prototype-badge">Interactive prototype · No real commands</span><div class="head-actions"><button id="theme" aria-pressed="false">Dark</button><label class="scenario-label">Demo scenario <select id="scenario"><option value="node">Node service available</option><option value="script">Node: missing dev script</option><option value="java">Java not found (PATH / JAVA_HOME)</option></select></label></div></header>
+  <aside class="sidebar" aria-label="Projects and worktrees">
+    <div class="side-title">Projects</div>
+    <button class="project active"><span class="project-mark">T</span><span><b>ThreadTerm-v3</b><small>D:\project\ThreadTerm</small></span></button>
+    <div class="side-title worktree-title">Worktrees</div>
+    <button class="worktree active" data-worktree="main"><span class="branch-dot"></span><span>main</span><small>Current</small></button>
+    <button class="worktree" data-worktree="feature"><span class="branch-dot"></span><span>feature/api</span><small>Separate terminals</small></button>
+    <div class="side-title">Terminal</div>
+    <button class="terminal-nav active" id="terminalNav"><span class="status-dot" id="navDot"></span><span id="navTerminalName">Web development service</span><small id="navTerminalMeta">Running</small></button>
+    <button class="new-terminal" id="openTerminal">＋ New terminal</button>
+  </aside>
+  <section class="workspace">
+    <div class="toolbar">
+      <div class="crumb"><strong id="treeLabel">main</strong><span>·</span><span id="cwdLabel">D:\project\ThreadTerm\ThreadTerm-v3</span></div>
+      <div class="quick-wrap">
+        <button class="quick-button" id="quickToggle" aria-haspopup="dialog" aria-expanded="false">Quick Launch <span aria-hidden="true">⌄</span></button>
+        <section class="quick-menu hidden" id="quickMenu" role="dialog" aria-label="Quick Launch commands">
+          <div class="quick-top"><label><span class="sr-only">Search commands</span><input id="commandSearch" autocomplete="off" placeholder="Search commands or names…" /></label><button id="newCommand">＋ New</button></div>
+          <p class="menu-context">Run in the terminal for <b id="menuTree">main</b></p>
+          <div id="commandList" class="command-list"></div>
+          <div class="menu-foot"><span>Templates are editable commands</span><button id="manageCommand">Manage commands</button></div>
+        </section>
+      </div>
+    </div>
+    <section class="activity-strip" aria-live="polite"><span class="status-dot running" id="stripDot"></span><strong id="stripTitle">Web development service is running</strong><span id="stripText">Started in the Web development service terminal</span><button id="mockFix" class="hidden">Repair demo environment</button><button id="stripOpen">Open terminal</button></section>
+    <div class="main-grid">
+      <section class="terminal-panel" aria-label="Simulated terminal">
+        <div class="panel-head"><div><span class="terminal-icon">›_</span><strong id="terminalTitle">Web development service</strong><span class="plain-status" id="terminalStatus">Running · Port not ready</span></div><div class="panel-actions"><button id="stopRun" class="danger-button">Stop</button><button id="closeTerminal" title="Close terminal view">×</button></div></div>
+        <div class="terminal-tabs"><button class="tab active"><span id="tabName">Terminal</span> <span id="tabDot">○</span></button><button class="tab-add" id="tabAdd">＋</button></div>
+        <pre id="terminalOutput" class="terminal-output" tabindex="0" aria-label="Terminal output"></pre>
+        <div class="terminal-input"><span id="promptShell">PS</span> <span id="promptCwd">D:\project\ThreadTerm\ThreadTerm-v3</span>&gt; <span class="cursor"></span></div>
+      </section>
+      <section class="closed-terminal hidden" id="closedTerminal" aria-label="Closed terminal view"><div class="preview-icon">›_</div><h2>Terminal view closed</h2><p id="closedTerminalText">The run remains associated with this worktree.</p><button id="reopenTerminal">Reopen terminal</button></section>
+      <aside class="preview-panel" aria-label="Preview status">
+        <div class="preview-head"><div><strong>Preview</strong><span class="plain-status" id="previewStatus">Waiting for port evidence</span></div><button id="openPreview" disabled>Open preview ↗</button></div>
+        <div class="preview-body" id="previewBody"><div class="preview-icon">◌</div><h2 id="previewTitle">Preview unavailable</h2><p id="previewText">A running process does not confirm an accessible service. Preview becomes available after port evidence.</p><div class="port-proof" id="portProof">No listening port detected</div><div id="previewFrame" class="preview-frame hidden"><div class="mock-browser-bar"><i></i><i></i><i></i><span id="previewUrl">http://localhost:5173/</span></div><div class="mock-page"><b>ThreadTerm demo</b><p>Simulated preview · For launch-state review only</p></div></div></div>
+      </aside>
+    </div>
+  </section>
+</main>
+<dialog id="commandDialog" aria-labelledby="dialogTitle">
+  <form method="dialog" id="commandForm">
+    <header><div><h1 id="dialogTitle">New Quick Launch command</h1><p>Save command text to run in a terminal.</p></div><button id="dialogClose" type="button" aria-label="Close">×</button></header>
+    <div class="form-grid">
+      <label>Name<input id="fName" required value="Web development service"></label>
+      <label>Scope<select id="fScope"><option value="project">This project</option><option value="global">Global</option></select></label>
+      <label>Run type<select id="fType"><option value="custom">Service</option><option value="oneshot">One-shot task</option></select></label>
+      <label class="wide">Command<textarea id="fCommand" required rows="2">npm run dev</textarea></label>
+      <label>Shell<select id="fShell"><option>PowerShell</option><option>CMD</option><option disabled>PowerShell 7 (not installed)</option></select></label>
+      <label>Working directory<input id="fCwd" value="." placeholder="Relative to the worktree root"></label>
+      <label><input id="fFavorite" type="checkbox"> Add to favorites</label>
+      <details class="wide"><summary>Advanced environment</summary><p>Each launch inherits the current Windows environment. Commands run in the foreground. Tools, Shell choices, and secrets remain under your control.</p><label><input id="fInherit" type="checkbox" checked> Inherit the current environment</label><div class="env-grid"><label>JAVA_HOME (optional override)<input id="fJavaHome" placeholder="C:\Program Files\Java\jdk-21"></label><label>Extra PATH entries (optional)<input id="fExtraPath" placeholder="Added on launch; inherited values stay separate"></label></div></details>
+      <p class="form-note wide">Node, Java, and other tools use the saved command and environment. Active runs keep their launch snapshot; restart to apply edits.</p>
+    </div>
+    <footer><button id="dialogCancel" type="button">Cancel</button><button id="saveAndRun" type="button">Save and run</button><button class="primary" value="default">Save command</button></footer>
+  </form>
+</dialog>
+<script src="app.js"></script>
+</body>
+</html>

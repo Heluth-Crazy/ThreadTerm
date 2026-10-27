@@ -1,0 +1,181 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>ThreadTerm — pane tabs + bottom edge mockup</title>
+<style>
+/* Real ThreadTerm tokens (renderer/src/styles.css). */
+:root, [data-theme="light"] {
+  --bg:#f5f4ef; --side:#eeede6; --surface:#fefdfb;
+  --soft:rgba(64,52,28,.055); --border:rgba(64,52,28,.115);
+  --text:#23221f; --muted:#6c6961; --faint:#9a968d;
+  --primary:#4f59c8; --primary-tint:rgba(79,89,200,.1); --ok:#1a7f37;
+}
+[data-theme="dark"] {
+  --bg:#262624; --side:#1f1e1d; --surface:#2c2c2a;
+  --soft:rgba(250,244,228,.055); --border:rgba(250,244,228,.10);
+  --text:#ecebe5; --muted:#a8a59c; --faint:#77746c;
+  --primary:#8b93f0; --primary-tint:rgba(139,147,240,.16); --ok:#3fb950;
+}
+/* "Deeper frame" option: the workspace frame uses the sidebar tone, so fills read with more contrast. */
+[data-frame="deep"] { --frame:var(--side); }
+[data-frame="current"] { --frame:var(--bg); }
+
+* { box-sizing:border-box; }
+body { margin:0; padding:20px; font:13px/1.4 "Segoe UI", system-ui, sans-serif; background:#8a8a8a; color:var(--text); }
+.controls { display:flex; flex-wrap:wrap; gap:16px; align-items:center; margin:0 auto 14px; max-width:1280px; color:#fff; }
+.controls fieldset { display:flex; gap:4px; border:0; padding:0; margin:0; align-items:center; }
+.controls legend { float:left; margin-right:6px; font-weight:600; }
+.controls button { font:inherit; padding:4px 10px; border-radius:6px; border:1px solid rgba(255,255,255,.5); background:transparent; color:#fff; cursor:pointer; }
+.controls button[aria-pressed="true"] { background:#fff; color:#222; }
+.note { max-width:1280px; margin:0 auto 12px; color:#fff; font-size:12.5px; }
+
+/* ---------- window ---------- */
+.window { max-width:1280px; height:720px; margin:0 auto; display:grid; grid-template-columns:220px 1fr; grid-template-rows:34px 1fr;
+  border-radius:10px; overflow:hidden; background:var(--frame); box-shadow:0 20px 60px rgba(0,0,0,.35); }
+.titlebar { grid-column:1 / -1; display:flex; align-items:center; padding:0 14px; font-size:12px; color:var(--muted); background:var(--frame); }
+.titlebar .win { margin-left:auto; letter-spacing:18px; }
+.appnav { background:var(--side); display:flex; flex-direction:column; padding:10px 10px 0; gap:2px; }
+.appnav .brand { font-weight:600; padding:4px 6px 12px; }
+.appnav .item { padding:5px 8px; border-radius:6px; color:var(--text); }
+.appnav .label { margin:14px 8px 4px; font-size:10.5px; letter-spacing:.06em; color:var(--muted); text-transform:uppercase; }
+.appnav .item.sel { background:var(--soft); }
+.appnav .account { margin-top:auto; padding:10px 8px 12px; border-top:1px solid var(--border); color:var(--muted); }
+
+.main { display:grid; grid-template-rows:44px 1fr; min-width:0; min-height:0; background:var(--frame); }
+.header { display:flex; align-items:center; gap:8px; padding:0 14px; }
+.chip { padding:4px 10px; border-radius:7px; border:1px solid var(--border); background:var(--surface); font-weight:600; font-size:12.5px; }
+.ghost { padding:4px 8px; color:var(--muted); }
+
+/* ---------- workspace (proposed) ---------- */
+.ws { --gap:10px; --strip:40px; --foot:26px; display:grid; min-height:0; min-width:0;
+  grid-template-rows:var(--strip) 1fr var(--foot); padding-left:12px; }
+.ws.single { grid-template-columns:250px var(--gap) 1fr; }
+.ws.split  { grid-template-columns:250px var(--gap) 1fr var(--gap) 1fr; }
+.strip { display:flex; align-items:flex-end; min-width:0; padding:0 8px 0 16px; gap:0; }
+.strip .end { margin-left:auto; display:flex; gap:2px; align-self:center; color:var(--muted); }
+.switcher { display:flex; gap:2px; align-items:center; align-self:center; padding-left:2px; color:var(--muted); }
+.switcher .on { background:var(--primary-tint); color:var(--primary); }
+.ib { width:28px; height:28px; display:grid; place-items:center; border-radius:6px; }
+.ib svg { width:16px; height:16px; stroke:currentColor; fill:none; stroke-width:1.6; stroke-linecap:round; stroke-linejoin:round; }
+
+.tab { position:relative; display:flex; align-items:center; gap:7px; height:32px; padding:0 8px 0 12px; max-width:220px;
+  color:var(--muted); font-size:12px; border-radius:8px 8px 0 0; white-space:nowrap; }
+.tab .x { width:20px; height:20px; display:grid; place-items:center; border-radius:5px; color:var(--faint); }
+.tab .x svg { stroke:currentColor; fill:none; stroke-width:1.8; stroke-linecap:round; }
+.tab .ico { width:14px; height:14px; border-radius:50%; background:var(--primary); opacity:.85; flex:none; }
+.tab .ico.file { border-radius:2px; background:none; border:1.5px solid currentColor; opacity:.7; }
+/* Inactive: no fill; hover fill between frame and surface; short separators between inactive neighbours. */
+.tab:not(.active):hover { background:color-mix(in srgb, var(--surface) 55%, var(--frame)); }
+.tab:not(.active) + .tab:not(.active)::before { content:""; position:absolute; left:0; top:9px; width:1px; height:16px; background:var(--border); }
+.tab:not(.active):hover::before, .tab:not(.active):hover + .tab::before { display:none; }
+/* Active: one filled surface with the pane below; concave feet are fills, not strokes. */
+.tab.active { background:var(--surface); color:var(--text); font-weight:600; z-index:1; }
+.tab.active::before, .tab.active::after { content:""; position:absolute; bottom:0; width:8px; height:8px; }
+.tab.active::before { left:-8px; background:radial-gradient(circle at 0 0, transparent 7.6px, var(--surface) 8.2px); }
+.tab.active::after { right:-8px; background:radial-gradient(circle at 100% 0, transparent 7.6px, var(--surface) 8.2px); }
+.plus { align-self:center; margin-left:6px; color:var(--muted); }
+
+.surface { background:var(--surface); min-width:0; min-height:0; display:flex; flex-direction:column; }
+.surface.r-tl { border-top-left-radius:8px; } .surface.r-tr { border-top-right-radius:8px; }
+.panel-head { height:38px; display:flex; align-items:center; padding:0 10px 0 14px; font-weight:600; font-size:12.5px; border-bottom:1px solid var(--border); }
+.panel-head .end { margin-left:auto; display:flex; gap:2px; color:var(--muted); }
+.tree { padding:8px 10px; color:var(--text); }
+.tree div { padding:3px 6px; border-radius:5px; } .tree .sel { background:var(--soft); }
+.chat { flex:1; display:flex; flex-direction:column; align-items:center; padding:40px 24px 18px; }
+.chat .empty { text-align:center; color:var(--muted); } .chat .empty b { color:var(--text); display:block; }
+.composer { margin-top:auto; width:min(100%,720px); border:1px solid var(--border); border-radius:14px; padding:12px 14px; color:var(--faint); background:var(--surface); box-shadow:0 1px 2px rgba(0,0,0,.04); }
+.composer .row { display:flex; gap:6px; margin-top:14px; } .composer .pill { border:1px solid var(--border); border-radius:999px; padding:2px 9px; color:var(--text); font-size:12px; }
+.filebar { height:38px; display:flex; align-items:center; gap:8px; padding:0 10px 0 14px; border-bottom:1px solid var(--border); font-size:12.5px; }
+.filebar .btn { margin-left:auto; border:1px solid var(--border); border-radius:6px; padding:2px 8px; font-size:12px; }
+.doc { padding:20px 24px; } .doc h1 { margin:0 0 10px; font-size:24px; }
+
+/* Gutters end at the footer with a soft rounded end, so the columns merge into one bottom surface. */
+.gutter { background:var(--surface); }
+.gutter > i { display:block; height:100%; background:var(--frame); border-radius:0 0 8px 8px; }
+/* The footer is part of the surface: same fill, a hairline only inside it. */
+.foot { grid-column:1 / -1; grid-row:3; background:var(--surface); display:flex; align-items:center; gap:7px; padding:0 14px;
+  font-size:11.5px; color:var(--muted); border-top:1px solid var(--border); }
+.foot .dot { width:7px; height:7px; border-radius:50%; background:var(--ok); }
+.foot .r { margin-left:auto; }
+
+/* ---------- workspace (current T1 build, for comparison) ---------- */
+.ws.before { padding:0 12px; grid-template-rows:40px 1fr 30px; }
+.ws.before .surface { border:1px solid var(--border); border-radius:10px; margin-bottom:0; }
+.ws.before .gutter { background:transparent; } .ws.before .gutter > i { background:transparent; }
+.ws.before .tab.active { background:var(--surface); border:1px solid var(--border); border-bottom:0; margin-bottom:-1px; }
+.ws.before .tab.active::before, .ws.before .tab.active::after { display:none; }
+.ws.before .foot { background:transparent; border-top:0; padding:0 4px; }
+.ws.before .strip { padding-bottom:0; }
+</style>
+</head>
+<body data-theme="light" data-frame="current">
+<div class="controls">
+  <fieldset><legend>View</legend><button data-set="view" data-v="after" aria-pressed="true">Proposed</button><button data-set="view" data-v="before">Current build</button></fieldset>
+  <fieldset><legend>Theme</legend><button data-set="theme" data-v="light" aria-pressed="true">Light</button><button data-set="theme" data-v="dark">Dark</button></fieldset>
+  <fieldset><legend>Layout</legend><button data-set="layout" data-v="single" aria-pressed="true">Chat</button><button data-set="layout" data-v="split">Chat | file</button></fieldset>
+  <fieldset><legend>Frame</legend><button data-set="frame" data-v="current" aria-pressed="true">Current tone</button><button data-set="frame" data-v="deep">Deeper tone</button></fieldset>
+</div>
+<p class="note" id="note"></p>
+
+<div class="window">
+  <div class="titlebar">ThreadTerm<span class="win">–▢✕</span></div>
+  <nav class="appnav">
+    <div class="brand">ThreadTerm</div>
+    <div class="item">＋ New terminal</div><div class="item">Inbox</div><div class="item">All terminals</div>
+    <div class="label">Projects</div>
+    <div class="item">ThreadTerm</div><div class="item sel">&nbsp;&nbsp;● Codex-chat-test6</div><div class="item">&nbsp;&nbsp;● Group chat</div>
+    <div class="account">Local user<br><small>Local profile</small></div>
+  </nav>
+  <div class="main">
+    <div class="header"><span class="ghost">‹ Back</span><span class="chip">● ThreadTerm</span><span class="chip">⑂ main</span><span class="chip">▷ Run ⌄</span></div>
+    <div class="ws single" id="ws"></div>
+  </div>
+</div>
+
+<script>
+const svg = {
+  file:'<svg viewBox="0 0 16 16"><path d="M4 1.5h5l3 3v10H4z"/><path d="M9 1.5v3h3"/></svg>',
+  search:'<svg viewBox="0 0 16 16"><circle cx="7" cy="7" r="4.5"/><path d="M10.5 10.5 14 14"/></svg>',
+  git:'<svg viewBox="0 0 16 16"><circle cx="4" cy="3.5" r="1.6"/><circle cx="4" cy="12.5" r="1.6"/><circle cx="12" cy="6" r="1.6"/><path d="M4 5v6M12 7.6c0 3-4 2.5-6.6 4"/></svg>',
+  spark:'<svg viewBox="0 0 16 16"><path d="M8 1.5l1.6 4.9L14.5 8l-4.9 1.6L8 14.5l-1.6-4.9L1.5 8l4.9-1.6z"/></svg>',
+  plus:'<svg viewBox="0 0 16 16"><path d="M8 3v10M3 8h10"/></svg>',
+  more:'<svg viewBox="0 0 16 16"><circle cx="3.5" cy="8" r=".9"/><circle cx="8" cy="8" r=".9"/><circle cx="12.5" cy="8" r=".9"/></svg>',
+  map:'<svg viewBox="0 0 16 16"><rect x="1.5" y="2" width="5" height="4" rx="1"/><rect x="9.5" y="10" width="5" height="4" rx="1"/><path d="M4 6v4h5.5"/></svg>',
+  x:'<svg viewBox="0 0 16 16" style="width:12px;height:12px"><path d="M4 4l8 8M12 4l-8 8"/></svg>',
+};
+const ib = (name, cls='') => `<span class="ib ${cls}">${svg[name]}</span>`;
+const tab = (label, {active=false, file=false}={}) =>
+  `<span class="tab${active?' active':''}"><span class="ico${file?' file':''}"></span>${label}<span class="x">${svg.x}</span></span>`;
+
+function render() {
+  const s = document.body.dataset, ws = document.getElementById('ws');
+  const before = s.view === 'before', split = s.layout === 'split';
+  ws.className = `ws ${split ? 'split' : 'single'}${before ? ' before' : ''}`;
+  const switcher = `<div class="strip"><div class="switcher">${ib('file','on')}${ib('search')}${ib('git')}${ib('spark')}</div></div>`;
+  const chatStrip = `<div class="strip">${tab('Group chat · @pi')}${tab('Codex-chat-test6',{active:true})}<span class="plus">${ib('plus')}</span><span class="end">${split?'':ib('map')}${ib('more')}</span></div>`;
+  const fileStrip = `<div class="strip">${tab('plan.md',{active:true,file:true})}${tab('notes.ts',{file:true})}<span class="plus">${ib('plus')}</span><span class="end">${ib('more')}</span></div>`;
+  const files = `<section class="surface r-tl r-tr"><div class="panel-head">Files<span class="end">${ib('plus')}${ib('more')}</span></div>
+     <div class="tree"><div>› .agents</div><div>› .claude</div><div>› desktop</div><div>› renderer</div><div>› runtime</div><div class="sel">&nbsp;&nbsp;plan.md</div><div>&nbsp;&nbsp;notes.ts</div></div></section>`;
+  const chat = (last) => `<section class="surface r-tl${last && !before ? '' : ' r-tr'}"><div class="chat"><div class="empty"><b>No messages yet.</b>Send a message to start working with this provider.</div>
+     <div class="composer">Message, or type / for commands<div class="row"><span class="pill">Ask as needed</span><span class="pill">Default</span><span class="pill">Workspace write</span></div></div></div></section>`;
+  const file = `<section class="surface r-tl${before ? ' r-tr' : ''}"><div class="filebar">plan.md<span class="btn">Source code</span></div>
+     <div class="doc"><h1>Pane tabs</h1><p style="color:var(--muted)">A companion file preview.</p></div></section>`;
+  const gutter = '<div class="gutter"><i></i></div>';
+  const foot = `<div class="foot"><span class="dot"></span>Runtime connected<span class="r">Local runtime</span></div>`;
+  ws.innerHTML = switcher + '<div></div>' + chatStrip + (split ? '<div></div>' + fileStrip : '')
+    + files + gutter + chat(!split) + (split ? gutter + file : '') + foot;
+  document.getElementById('note').textContent = before
+    ? 'Current build: outlined tab sitting on a bordered card; cards float above the canvas with rounded bottoms; status line on the canvas below.'
+    : 'Proposed: no outlines. The selected tab and its pane are one filled surface on the frame; surfaces run to the bottom and right window edges; the gaps between columns end in one bottom surface that holds the status line.';
+}
+document.querySelectorAll('[data-set]').forEach(button => button.addEventListener('click', () => {
+  document.body.dataset[button.dataset.set] = button.dataset.v;
+  document.querySelectorAll(`[data-set="${button.dataset.set}"]`).forEach(other => other.setAttribute('aria-pressed', String(other === button)));
+  render();
+}));
+document.body.dataset.view = 'after'; document.body.dataset.layout = 'single';
+render();
+</script>
+</body>
+</html>
