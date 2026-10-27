@@ -33,10 +33,10 @@ const fixtures = {
   // Screenshot 2: three Codex commands failed in the sandbox, plus two MCP calls.
   codexFailures: { provider: 'codex', active: false, entries: [
     pwsh('c1', "Get-Content -Raw .agents/skills/gitnexus-exploring/SKILL.md; Get-Command pi -ErrorAction SilentlyContinue | Select-Object Source", '"C:\\\\Program Files\\\\PowerShell\\\\7\\\\pwsh.exe" -NoProfile -Command \'Get-Content -Raw .agents/skills/gitnexus-exploring/SKILL.md; Get-Command pi -ErrorAction SilentlyContinue | Select-Object Source\''),
-    pwsh('c2', 'Get-ChildItem -Force C:/Users/27968/.pi -ErrorAction SilentlyContinue | Select-Object Name,Mode', '"C:\\\\Program Files\\\\PowerShell\\\\7\\\\pwsh.exe" -NoProfile -Command \'Get-ChildItem -Force C:/Users/27968/.pi -ErrorAction SilentlyContinue | Select-Object Name,Mode\''),
+    pwsh('c2', 'Get-ChildItem -Force C:/Users/demo/.pi -ErrorAction SilentlyContinue | Select-Object Name,Mode', '"C:\\\\Program Files\\\\PowerShell\\\\7\\\\pwsh.exe" -NoProfile -Command \'Get-ChildItem -Force C:/Users/demo/.pi -ErrorAction SilentlyContinue | Select-Object Name,Mode\''),
     mcp('m1', 'threadterm', 'session_info', { session: 'face82d9' }, JSON.stringify({ id: 'face82d9', provider: 'pi', status: 'idle', cwd: '\\\\?\\D:\\project\\ThreadTerm\\ThreadTerm-v3' }, null, 2)),
     mcp('m2', 'codegraph', 'codegraph_explore', { query: 'pi provider command-code' }, '**Exploration: pi provider command-code**\n\nFound 21 symbols across 3 files.'),
-    pwsh('c3', 'Get-ChildItem -Force C:\\Users\\27968\\.pi -ErrorAction SilentlyContinue | Select-Object Name,Mode', '"C:\\\\Program Files\\\\PowerShell\\\\7\\\\pwsh.exe" -NoProfile -Command "Get-ChildItem -Force C:\\\\Users\\\\27968\\\\.pi -ErrorAction SilentlyContinue | Select-Object Name,Mode"'),
+    pwsh('c3', 'Get-ChildItem -Force C:\\Users\\demo\\.pi -ErrorAction SilentlyContinue | Select-Object Name,Mode', '"C:\\\\Program Files\\\\PowerShell\\\\7\\\\pwsh.exe" -NoProfile -Command "Get-ChildItem -Force C:\\\\Users\\\\demo\\\\.pi -ErrorAction SilentlyContinue | Select-Object Name,Mode"'),
   ] },
   // Screenshot 1: a finished delegation round (and a second delegation system's call).
   delegation: { provider: 'codex', active: false, entries: [

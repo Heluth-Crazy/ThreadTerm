@@ -80,12 +80,12 @@ test('command display unwraps real Codex shell wrappers while retaining the raw 
       display: 'Get-Content -Raw .agents/skills/gitnexus-exploring/SKILL.md; Get-Command pi -ErrorAction SilentlyContinue | Select-Object Source', shell: 'pwsh',
     },
     {
-      command: '"C:\\\\Program Files\\\\PowerShell\\\\7\\\\pwsh.exe" -NoProfile -Command \'Get-ChildItem -Force C:/Users/27968/.pi -ErrorAction SilentlyContinue | Select-Object Name,Mode\'',
-      display: 'Get-ChildItem -Force C:/Users/27968/.pi -ErrorAction SilentlyContinue | Select-Object Name,Mode', shell: 'pwsh',
+      command: '"C:\\\\Program Files\\\\PowerShell\\\\7\\\\pwsh.exe" -NoProfile -Command \'Get-ChildItem -Force C:/Users/demo/.pi -ErrorAction SilentlyContinue | Select-Object Name,Mode\'',
+      display: 'Get-ChildItem -Force C:/Users/demo/.pi -ErrorAction SilentlyContinue | Select-Object Name,Mode', shell: 'pwsh',
     },
     {
-      command: '"C:\\\\Program Files\\\\PowerShell\\\\7\\\\pwsh.exe" -NoProfile -Command "Get-ChildItem -Force C:\\\\Users\\\\27968\\\\.pi -ErrorAction SilentlyContinue | Select-Object Name,Mode"',
-      display: 'Get-ChildItem -Force C:\\Users\\27968\\.pi -ErrorAction SilentlyContinue | Select-Object Name,Mode', shell: 'pwsh',
+      command: '"C:\\\\Program Files\\\\PowerShell\\\\7\\\\pwsh.exe" -NoProfile -Command "Get-ChildItem -Force C:\\\\Users\\\\demo\\\\.pi -ErrorAction SilentlyContinue | Select-Object Name,Mode"',
+      display: 'Get-ChildItem -Force C:\\Users\\demo\\.pi -ErrorAction SilentlyContinue | Select-Object Name,Mode', shell: 'pwsh',
     },
   ];
   for (const { command, display, shell } of cases) {
