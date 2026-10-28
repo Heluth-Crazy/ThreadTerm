@@ -755,3 +755,21 @@ test('group prerequisites preserve duplicate providers and explicit degradation'
  validateResult('group.prerequisites',{providers:[row,row],git:{found:false},folder:{repository:false,reason:'no_git'}});
  assert.throws(()=>validateResult('group.prerequisites',{providers:[{...row,readOnly:'assumed'}],git:{found:true}}));
 });
+
+test('git fingerprints snapshots and discard require exact nullable maps',()=>{
+ const paths=['tracked.txt','deleted.txt','untracked.txt'];
+ validateRequest('git.fingerprints',{projectId:'p',paths});
+ validateResult('git.fingerprints',{fingerprints:{'tracked.txt':'a'.repeat(64),'deleted.txt':null,'untracked.txt':'b'.repeat(64)},indexFingerprints:{'tracked.txt':'c'.repeat(64),'deleted.txt':'d'.repeat(64),'untracked.txt':null}});
+ const discard={projectId:'p',paths,expectedFingerprints:{'tracked.txt':'a'.repeat(64),'deleted.txt':null,'untracked.txt':'b'.repeat(64)},expectedIndexFingerprints:{'tracked.txt':'c'.repeat(64),'deleted.txt':'d'.repeat(64),'untracked.txt':null},operationId:'discard-1'};
+ validateRequest('git.discard',discard);
+ assert.ok(METHODS.includes('git.fingerprints'));
+ for(const patch of [
+  {paths:[]},{expectedFingerprints:undefined},{expectedIndexFingerprints:undefined},
+  {expectedFingerprints:{'tracked.txt':'a'.repeat(64),'deleted.txt':null}},{expectedIndexFingerprints:{'tracked.txt':'c'.repeat(64),'deleted.txt':'d'.repeat(64),'untracked.txt':null,extra:null}},
+  {expectedFingerprints:{...discard.expectedFingerprints,'untracked.txt':undefined}},{expectedIndexFingerprints:{...discard.expectedIndexFingerprints,'untracked.txt':0}},
+ ]) assert.throws(()=>validateRequest('git.discard',{...discard,...patch}));
+ for(const path of ['toString','constructor','__proto__']) assert.throws(()=>validateRequest('git.discard',{projectId:'p',paths:[path],expectedFingerprints:{},expectedIndexFingerprints:{},operationId:'discard-inherited'}));
+ const ownProto=JSON.parse('{\"__proto__\":null}');
+ validateRequest('git.discard',{projectId:'p',paths:['__proto__'],expectedFingerprints:ownProto,expectedIndexFingerprints:ownProto,operationId:'discard-own-proto'});
+ for(const params of [{projectId:'p',paths:[]},{projectId:'p',paths:Array.from({length:501},(_,i)=>'f'+i)}]) assert.throws(()=>validateRequest('git.fingerprints',params));
+});

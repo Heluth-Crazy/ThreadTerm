@@ -6383,6 +6383,37 @@
         }
       ]
     },
+    "RequestResult<\"git.fingerprints\">": {
+      "$ref": "#/definitions/GitFingerprints"
+    },
+    "GitFingerprints": {
+      "type": "object",
+      "properties": {
+        "fingerprints": {
+          "type": "object",
+          "additionalProperties": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "indexFingerprints": {
+          "type": "object",
+          "additionalProperties": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "required": [
+        "fingerprints",
+        "indexFingerprints"
+      ],
+      "additionalProperties": false
+    },
     "RequestResult<\"git.stage\">": {
       "type": "object",
       "properties": {
@@ -11856,6 +11887,32 @@
         },
         "result": {
           "$ref": "#/definitions/RequestResult%3C%22git.status%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "result"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "git.fingerprints"
+        },
+        "result": {
+          "$ref": "#/definitions/RequestResult%3C%22git.fingerprints%22%3E"
         }
       },
       "required": [

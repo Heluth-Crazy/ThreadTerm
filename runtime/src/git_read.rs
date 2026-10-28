@@ -8,12 +8,14 @@ use crate::{db::Database, workspace_services::root_for};
 use anyhow::{anyhow, Context, Result};
 use chrono::{TimeZone, Utc};
 use serde_json::{json, Map, Value};
+use sha2::{Digest, Sha256};
 use std::{
     collections::HashMap,
     ffi::OsStr,
     io::{Read, Write},
     path::{Component, Path, PathBuf},
-    process::{Command, Stdio},
+    process::{Child, Command, ExitStatus, Stdio},
+    sync::mpsc,
     time::{Duration, Instant},
 };
 
@@ -21,6 +23,7 @@ pub(crate) const LOCAL_TIMEOUT: Duration = Duration::from_secs(30);
 pub(crate) const NETWORK_TIMEOUT: Duration = Duration::from_secs(120);
 pub(crate) const MAX_TEXT_BYTES: usize = 1024 * 1024;
 const MAX_LOG_PAGE: usize = 200;
+const MAX_GIT_STDERR_BYTES: usize = 64 * 1024;
 const ZERO_COMMIT: &str = "0000000000000000000000000000000000000000";
 
 fn send_trace_git_step(args: &[&str]) -> &'static str {
@@ -337,6 +340,194 @@ pub(crate) fn read_blob(root: &Path, revision: &str, path: &str) -> Result<Optio
         return Err(anyhow!("file_too_large"));
     }
     run_git(root, &["cat-file", "blob", &spec], &[], None, LOCAL_TIMEOUT).map(Some)
+}
+
+/// Hashes bytes without materializing the complete value in memory.
+pub(crate) fn fingerprint_reader(mut reader: impl Read) -> Result<String> {
+    let mut digest = Sha256::new();
+    let mut buffer = [0; 64 * 1024];
+    loop {
+        let read = reader.read(&mut buffer)?;
+        if read == 0 {
+            return Ok(hex::encode(digest.finalize()));
+        }
+        digest.update(&buffer[..read]);
+    }
+}
+
+fn bounded_stderr(mut reader: impl Read) -> Vec<u8> {
+    let mut kept = Vec::new();
+    let mut buffer = [0; 8 * 1024];
+    loop {
+        let Ok(read) = reader.read(&mut buffer) else {
+            break;
+        };
+        if read == 0 {
+            break;
+        }
+        let remaining = MAX_GIT_STDERR_BYTES.saturating_sub(kept.len());
+        kept.extend_from_slice(&buffer[..read.min(remaining)]);
+    }
+    kept
+}
+
+fn stop_blob_child(child: &mut Child) {
+    if !matches!(child.try_wait(), Ok(Some(_))) {
+        let _ = child.kill();
+        let _ = child.wait();
+    }
+}
+
+fn blob_fingerprint_readers(
+    child: &mut Child,
+    stdout: impl Read + Send + 'static,
+    stderr: impl Read + Send + 'static,
+    deadline: Instant,
+) -> Result<(ExitStatus, String, Vec<u8>)> {
+    let (out_tx, out_rx) = mpsc::sync_channel(1);
+    let (err_tx, err_rx) = mpsc::sync_channel(1);
+    std::thread::spawn(move || {
+        let _ = out_tx.send(fingerprint_reader(stdout));
+    });
+    std::thread::spawn(move || {
+        let _ = err_tx.send(bounded_stderr(stderr));
+    });
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) => {}
+            Err(error) => {
+                stop_blob_child(child);
+                return Err(error.into());
+            }
+        }
+        if Instant::now() >= deadline {
+            stop_blob_child(child);
+            return Err(anyhow!("git_timeout"));
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    };
+    let fingerprint = match out_rx.recv_timeout(deadline.saturating_duration_since(Instant::now()))
+    {
+        Ok(result) => result?,
+        Err(mpsc::RecvTimeoutError::Timeout) => {
+            stop_blob_child(child);
+            return Err(anyhow!("git_timeout"));
+        }
+        Err(mpsc::RecvTimeoutError::Disconnected) => return Err(anyhow!("git_failed")),
+    };
+    let stderr = match err_rx.recv_timeout(deadline.saturating_duration_since(Instant::now()))
+    {
+        Ok(stderr) => stderr,
+        Err(mpsc::RecvTimeoutError::Timeout) => {
+            stop_blob_child(child);
+            return Err(anyhow!("git_timeout"));
+        }
+        Err(mpsc::RecvTimeoutError::Disconnected) => return Err(anyhow!("git_failed")),
+    };
+    Ok((status, fingerprint, stderr))
+}
+
+/// Returns the SHA-256 fingerprint of an object without applying text-size limits.
+pub(crate) fn blob_fingerprint(root: &Path, oid: &str) -> Result<String> {
+    let mut command = Command::new("git");
+    command
+        .arg("-C")
+        .arg(root)
+        .args(["-c", "core.quotepath=off"])
+        .args(["cat-file", "blob", oid])
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .env("GIT_OPTIONAL_LOCKS", "0")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        command.creation_flags(0x0800_0000);
+    }
+    let trace_timer = crate::send_trace::Timer::start();
+    crate::send_trace::emit(
+        crate::send_trace::Event::new("review.git.spawn")
+            .method("chat.send")
+            .step("cat-file"),
+    );
+    #[cfg(test)]
+    git_barrier::pass(root);
+    let mut child = match command.spawn().context("launching git") {
+        Ok(child) => child,
+        Err(error) => {
+            crate::send_trace::emit(
+                crate::send_trace::Event::new("review.git.exit")
+                    .method("chat.send")
+                    .step("cat-file")
+                    .outcome("launch_error")
+                    .duration_us(trace_timer.elapsed_us()),
+            );
+            return Err(error);
+        }
+    };
+    let stdout = match child.stdout.take() {
+        Some(stdout) => stdout,
+        None => {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(anyhow!("git_failed"));
+        }
+    };
+    let stderr = match child.stderr.take() {
+        Some(stderr) => stderr,
+        None => {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(anyhow!("git_failed"));
+        }
+    };
+    let deadline = Instant::now() + LOCAL_TIMEOUT;
+    // A grandchild can retain these pipes after Git exits; readers share Git's deadline.
+    let (status, fingerprint, stderr) = match blob_fingerprint_readers(
+        &mut child,
+        stdout,
+        stderr,
+        deadline,
+    ) {
+        Ok(result) => result,
+        Err(error) => {
+            crate::send_trace::emit(
+                crate::send_trace::Event::new("review.git.exit")
+                    .method("chat.send")
+                    .step("cat-file")
+                    .outcome(if error.to_string() == "git_timeout" {
+                        "timeout"
+                    } else {
+                        "error"
+                    })
+                    .duration_us(trace_timer.elapsed_us()),
+            );
+            return Err(error);
+        }
+    };
+    if !status.success() {
+        crate::send_trace::emit(
+            crate::send_trace::Event::new("review.git.exit")
+                .method("chat.send")
+                .step("cat-file")
+                .outcome("error")
+                .duration_us(trace_timer.elapsed_us()),
+        );
+        return Err(anyhow!(
+            "git_failed: {}",
+            String::from_utf8_lossy(&stderr).trim()
+        ));
+    }
+    crate::send_trace::emit(
+        crate::send_trace::Event::new("review.git.exit")
+            .method("chat.send")
+            .step("cat-file")
+            .outcome("ok")
+            .duration_us(trace_timer.elapsed_us()),
+    );
+    Ok(fingerprint)
 }
 
 /// Text for a diff side; None marks binary content.
@@ -872,6 +1063,59 @@ mod tests {
         let error = git_text_until(missing, &["rev-parse", "--show-toplevel"], Instant::now())
             .unwrap_err();
         assert_eq!(error.to_string(), "git_timeout");
+    }
+
+    #[test]
+    fn blob_fingerprint_reader_deadline_survives_exited_git_with_held_stderr() {
+        struct HeldStderr {
+            started: std::sync::mpsc::Sender<()>,
+            release: std::sync::mpsc::Receiver<()>,
+        }
+
+        impl Read for HeldStderr {
+            fn read(&mut self, _: &mut [u8]) -> std::io::Result<usize> {
+                let _ = self.started.send(());
+                let _ = self.release.recv_timeout(Duration::from_secs(2));
+                Ok(0)
+            }
+        }
+
+        #[cfg(windows)]
+        let mut command = {
+            let mut command = Command::new("cmd");
+            command.args(["/C", "exit 0"]);
+            command
+        };
+        #[cfg(not(windows))]
+        let mut command = {
+            let mut command = Command::new("sh");
+            command.args(["-c", "exit 0"]);
+            command
+        };
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            command.creation_flags(0x0800_0000);
+        }
+        let mut child = command.spawn().unwrap();
+        child.wait().unwrap();
+        let (started_tx, started_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let started = Instant::now();
+        let error = blob_fingerprint_readers(
+            &mut child,
+            std::io::Cursor::new(Vec::new()),
+            HeldStderr {
+                started: started_tx,
+                release: release_rx,
+            },
+            Instant::now() + Duration::from_millis(100),
+        )
+        .unwrap_err();
+        assert_eq!(error.to_string(), "git_timeout");
+        assert!(started_rx.recv_timeout(Duration::from_secs(1)).is_ok());
+        assert!(started.elapsed() < Duration::from_secs(1));
+        let _ = release_tx.send(());
     }
 
     #[test]

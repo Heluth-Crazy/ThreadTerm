@@ -310,6 +310,18 @@ impl Database {
         raw.map(|value| serde_json::from_str(&value).map_err(Into::into))
             .transpose()
     }
+    /// Whether an external effect was claimed without a completed operation receipt.
+    pub fn external_operation_pending(&self, operation_id: &str) -> Result<bool> {
+        let conn = self
+            .connection
+            .lock()
+            .map_err(|_| anyhow!("database lock poisoned"))?;
+        Ok(conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM external_operations e WHERE e.id=? AND NOT EXISTS(SELECT 1 FROM operations o WHERE o.id=e.id))",
+            [operation_id],
+            |row| row.get(0),
+        )?)
+    }
     pub fn claim_external_operation(&self, operation_id: &str) -> Result<bool> {
         self.transaction(|tx| {
             Ok(tx.execute(

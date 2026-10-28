@@ -3260,6 +3260,28 @@
     "RequestParams<\"git.status\">": {
       "$ref": "#/definitions/FileScope"
     },
+    "RequestParams<\"git.fingerprints\">": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "paths": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "projectId": {
+          "type": "string"
+        },
+        "worktreePath": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "paths",
+        "projectId"
+      ]
+    },
     "RequestParams<\"git.stage\">": {
       "type": "object",
       "additionalProperties": false,
@@ -3638,7 +3660,19 @@
         "expectedFingerprints": {
           "type": "object",
           "additionalProperties": {
-            "type": "string"
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "expectedIndexFingerprints": {
+          "type": "object",
+          "additionalProperties": {
+            "type": [
+              "string",
+              "null"
+            ]
           }
         },
         "operationId": {
@@ -3652,6 +3686,8 @@
         }
       },
       "required": [
+        "expectedFingerprints",
+        "expectedIndexFingerprints",
         "operationId",
         "paths",
         "projectId"
@@ -8717,6 +8753,32 @@
         },
         "params": {
           "$ref": "#/definitions/RequestParams%3C%22git.status%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "params"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "git.fingerprints"
+        },
+        "params": {
+          "$ref": "#/definitions/RequestParams%3C%22git.fingerprints%22%3E"
         }
       },
       "required": [

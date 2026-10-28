@@ -247,6 +247,7 @@ fn request_lane(method: &str) -> Lane {
         | "session.launch.read"
         | "git.status"
         | "git.diff"
+        | "git.fingerprints"
         | "git.log"
         | "git.branches"
         | "git.commit.show"
@@ -1017,6 +1018,7 @@ mod decoder_tests {
             "project.catalog.list",
             "git.status",
             "git.diff",
+            "git.fingerprints",
             "git.log",
             "review.changes",
             "filesystem.search",

@@ -1297,6 +1297,7 @@ mod tests {
             "git.status",
             "git.index.write",
             "git.discard",
+            "git.fingerprints",
             "git.log",
             "filesystem.delete",
             "filesystem.search",

@@ -25,6 +25,7 @@ const known:Record<string,[string,string]> = {
  checkpoint_unavailable:['检查点对象已丢失或存储不可用，未显示对比，也未更改任何文件。','The checkpoint objects are missing or their store is unavailable. No diff was shown and no files were changed.'],
  file_too_large:['文件太大（超过 1 MB）。','The file is too large (over 1 MB).'],
  binary_file:['二进制文件无法以文本显示。','Binary files cannot be shown as text.'],
+ invalid_file_type:['目标不是普通文件，无法执行此操作。','The target is not a regular file and cannot be used for this operation.'],
  invalid_search_pattern:['搜索表达式无效。','Invalid search expression.'],
  invalid_glob:['包含/排除规则无效。','Invalid include/exclude pattern.'],
  operation_outcome_unknown:['上一次操作结果未知，请刷新确认状态。','The previous attempt has an unknown outcome. Refresh to check the current state.'],
@@ -41,14 +42,17 @@ const known:Record<string,[string,string]> = {
  git_selected_commit_signing_failed:['提交签名失败，未创建提交。','Commit signing failed; no commit was created.'],
  git_selected_commit_ref_conflict:['提交引用已变化，未创建提交。请刷新后重试。','The commit reference changed; no commit was created. Refresh and try again.'],
  git_selected_commit_cleanup_failed:['提交已发布，但清理报告错误。请刷新确认状态。','The commit was published, but cleanup reported an error. Refresh to confirm the state.'],
+ discard_incomplete:['操作因错误中止前已丢弃部分更改。列表已刷新，请检查剩余内容。','Some changes were discarded before an error stopped the operation. The list has been refreshed; check what remains.'],
 };
 
-export function workbenchError(error:unknown, zh:boolean):string {
+export function workbenchError(error:unknown, zh:boolean, context?:'discard'):string {
  const raw = error instanceof Error ? error.message : String(error);
  // An older desktop preload rejects new methods before they reach the runtime.
- const text = /Unsupported runtime method/.test(raw) ? 'unknown_method' : raw;
- const code = Object.keys(known).find(key => text === key || text.startsWith(`${key}:`) || text.includes(`${key}`));
+ const discardIncomplete = raw === 'discard_incomplete' || raw.startsWith('discard_incomplete:') || raw.includes('discard_incomplete');
+ const text = !discardIncomplete && /Unsupported runtime method/.test(raw) ? 'unknown_method' : raw;
+ const code = discardIncomplete ? 'discard_incomplete' : Object.keys(known).find(key => text === key || text.startsWith(key + ':') || text.includes(key));
  if(code) {
+  if(context === 'discard' && (code === 'file_conflict' || code === 'index_conflict')) return zh ? '自打开此对话框后文件已发生更改。未丢弃任何更改。请检查更改后重试。' : 'Files changed since you opened this dialog. Nothing was discarded. Review the changes and try again.';
   const marker = text.indexOf(`${code}:`);
   const detail = marker >= 0 ? text.slice(marker + code.length + 1).trim() : '';
   return known[code][zh ? 0 : 1] + (detail && code !== 'recycle_failed' ? ` ${detail}` : '');

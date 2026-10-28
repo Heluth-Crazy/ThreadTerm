@@ -4,8 +4,8 @@
 use crate::{
     db::Database,
     git_read::{
-        read_blob, repo_prefix, run_git, validate_relative, LOCAL_TIMEOUT, MAX_TEXT_BYTES,
-        NETWORK_TIMEOUT,
+        blob_fingerprint, fingerprint_reader, repo_prefix, run_git, validate_relative,
+        LOCAL_TIMEOUT, MAX_TEXT_BYTES, NETWORK_TIMEOUT,
     },
     workspace_services::{fingerprint, git, root_for, scoped_path},
 };
@@ -21,6 +21,17 @@ const MAX_MESSAGE_BYTES: usize = 64 * 1024;
 const HOOK_TIMEOUT: Duration = Duration::from_secs(300);
 
 pub fn dispatch(db: &Database, method: &str, params_value: &Value) -> Result<Option<Value>> {
+    // This read shares the exact worktree/index snapshot logic with discard, but never
+    // binds, claims or completes an operation.
+    if method == "git.fingerprints" {
+        let params = params_value
+            .as_object()
+            .ok_or_else(|| anyhow!("invalid_request"))?;
+        let project_id = required_string(params, "projectId")?;
+        let worktree = params.get("worktreePath").and_then(Value::as_str);
+        let root = db.transaction(|tx| root_for(tx, project_id, worktree))?;
+        return discard_fingerprints(&root, &paths(params)?).map(Some);
+    }
     if !matches!(
         method,
         "git.stage"
@@ -44,6 +55,16 @@ pub fn dispatch(db: &Database, method: &str, params_value: &Value) -> Result<Opt
     let operation_id = required_string(params, "operationId")?;
     let project_id = required_string(params, "projectId")?;
     let worktree = params.get("worktreePath").and_then(Value::as_str);
+    if method == "git.discard" {
+        if let Some(result) = db.operation(operation_id)? {
+            db.bind_operation(operation_id, method, params_value)?;
+            return Ok(Some(result));
+        }
+        if db.external_operation_pending(operation_id)? {
+            db.bind_operation(operation_id, method, params_value)?;
+            return Err(anyhow!("operation_outcome_unknown"));
+        }
+    }
     let root = db.transaction(|tx| root_for(tx, project_id, worktree))?;
     // A completed receipt is replayed before any preflight that reads mutable state:
     // a retry after a lost response is the same operation even when the index or
@@ -98,11 +119,9 @@ pub fn dispatch(db: &Database, method: &str, params_value: &Value) -> Result<Opt
             validate_branch_name(&root, required_string(params, "branch")?)?;
         }
         "git.discard" => {
-            let paths = paths(params)?;
-            for path in &paths {
-                validate_relative(path)?;
+            if let Some(result) = discard_preflight(db, &root, params_value)? {
+                return Ok(Some(result));
             }
-            verify_fingerprints(&root, &paths, params.get("expectedFingerprints"))?;
         }
         // `diff --cached --quiet` exits 1 (an error here) when something is staged.
         "git.commit"
@@ -197,27 +216,14 @@ pub fn dispatch(db: &Database, method: &str, params_value: &Value) -> Result<Opt
             let stored = index_entry(&root, path)?.ok_or_else(|| anyhow!("git_failed"))?;
             json!({"path":path,"indexFingerprint":stored.fingerprint})
         }
-        "git.discard" => {
-            let paths = paths(params)?;
-            let mut tracked = Vec::new();
-            let mut untracked = Vec::new();
-            for path in &paths {
-                if git(&root, &["ls-files", "-z", "--", path])?.is_empty() {
-                    untracked.push(path.clone());
-                } else {
-                    tracked.push(path.clone());
-                }
-            }
-            if !tracked.is_empty() {
-                let mut args = vec!["restore", "--worktree", "--"];
-                args.extend(tracked.iter().map(String::as_str));
-                git(&root, &args)?;
-            }
-            for path in &untracked {
-                crate::file_ops::recycle(&scoped_path(&root, path, true)?)?;
-            }
-            json!({"paths":paths,"recycled":untracked})
-        }
+        "git.discard" => discard_paths(
+            db,
+            operation_id,
+            &root,
+            &paths(params)?,
+            params,
+            (project_id, worktree),
+        )?,
         "git.checkout" => {
             let branch = required_string(params, "branch")?;
             let create = params.get("create").and_then(Value::as_bool) == Some(true);
@@ -265,7 +271,7 @@ pub fn dispatch(db: &Database, method: &str, params_value: &Value) -> Result<Opt
     };
     // Do not hide an uncertain external outcome: failure to persist completion is returned
     // to the caller; the reserved operation remains distinguishable from a successful one.
-    db.transaction(|tx| {
+    if let Err(error) = db.transaction(|tx| {
         complete(
             tx,
             operation_id,
@@ -273,8 +279,368 @@ pub fn dispatch(db: &Database, method: &str, params_value: &Value) -> Result<Opt
             &result,
             Some((project_id, worktree)),
         )
-    })?;
+    }) {
+        if method == "git.discard" {
+            return Err(discard_incomplete(
+                db,
+                (project_id, worktree),
+                &paths(params)?,
+                &[],
+                error,
+            ));
+        }
+        return Err(error);
+    }
     Ok(Some(result))
+}
+
+fn discard_recycle_available(root: &Path) -> bool {
+    #[cfg(test)]
+    if let Some(available) = discard_test_hooks::available() {
+        return available;
+    }
+    crate::file_ops::recycle_available(root)
+}
+
+fn discard_recycle(path: &Path) -> Result<()> {
+    #[cfg(test)]
+    if let Some(result) = discard_test_hooks::recycle(path) {
+        return result;
+    }
+    crate::file_ops::recycle(path)
+}
+
+fn discard_path_summary(paths: &[String]) -> String {
+    let mut summary = paths
+        .iter()
+        .take(3)
+        .map(|path| {
+            path.chars()
+                .take(48)
+                .map(|c| if c.is_control() { ' ' } else { c })
+                .collect::<String>()
+        })
+        .collect::<Vec<_>>()
+        .join(", ");
+    if paths.len() > 3 {
+        summary.push_str(&format!(", +{}", paths.len() - 3));
+    }
+    format!("[{summary}]")
+}
+
+fn discard_incomplete(
+    db: &Database,
+    scope: (&str, Option<&str>),
+    completed: &[String],
+    failed: &[String],
+    error: anyhow::Error,
+) -> anyhow::Error {
+    // Publish refresh without a completion receipt; the external claim remains uncertain.
+    let publication = db.transaction(|tx| {
+        let data = json!({"kind":"git","projectId":scope.0,"worktreePath":scope.1});
+        tx.execute(
+            "INSERT INTO outbox(event,data,created_at) VALUES('state.changed',?,?)",
+            params![serde_json::to_string(&data)?, Utc::now().to_rfc3339()],
+        )?;
+        Ok(())
+    });
+    let detail: String = error
+        .to_string()
+        .chars()
+        .take(96)
+        .map(|c| if c.is_control() { ' ' } else { c })
+        .collect();
+    let refresh = if publication.is_err() {
+        "; refresh event unavailable"
+    } else {
+        ""
+    };
+    anyhow!(
+        "discard_incomplete: completed: {}; failed: {}; {detail}{refresh}",
+        discard_path_summary(completed),
+        discard_path_summary(failed)
+    )
+}
+
+fn discard_paths(
+    db: &Database,
+    operation_id: &str,
+    root: &Path,
+    paths: &[String],
+    params: &serde_json::Map<String, Value>,
+    scope: (&str, Option<&str>),
+) -> Result<Value> {
+    // Prepare logical paths and arguments before the last fence. Resolve each
+    // recycle target inside the effect, so no pre-fence canonical target is cached.
+    let mut tracked = Vec::new();
+    let mut untracked = Vec::new();
+    for path in paths {
+        if params["expectedIndexFingerprints"][path].is_null() {
+            untracked.push(path.clone());
+        } else {
+            tracked.push((path.clone(), format!(":(literal){path}")));
+        }
+    }
+    let mut completed = Vec::new();
+    let mut recycled = Vec::new();
+    // A write in the milliseconds between this final verification and an effect
+    // is not detected. Keep git restore so eol/smudge/LFS filters still apply.
+    verify_claimed_discard(db, operation_id, root, paths, params)?;
+    for path in untracked {
+        let resolved = match scoped_path(root, &path, true) {
+            Ok(resolved) => resolved,
+            Err(error) => {
+                if !completed.is_empty() {
+                    return Err(discard_incomplete(db, scope, &completed, &[path], error));
+                }
+                release_discard_claim(db, operation_id)?;
+                return Err(error);
+            }
+        };
+        if let Err(error) = discard_recycle(&resolved) {
+            let changed = discard_worktree_fingerprint(root, &path)
+                .map(|current| json!(current) != params["expectedFingerprints"][&path])
+                .unwrap_or(true);
+            if !completed.is_empty() || changed {
+                return Err(discard_incomplete(db, scope, &completed, &[path], error));
+            }
+            return Err(error);
+        }
+        completed.push(path.clone());
+        recycled.push(path);
+    }
+    for (path, literal) in tracked {
+        // One path per command lets failures report which restores completed.
+        if let Err(error) = git(root, &["restore", "--worktree", "--", &literal]) {
+            let changed = discard_worktree_fingerprint(root, &path)
+                .map(|current| json!(current) != params["expectedFingerprints"][&path])
+                .unwrap_or(true);
+            if !completed.is_empty() || changed {
+                return Err(discard_incomplete(db, scope, &completed, &[path], error));
+            }
+            return Err(error);
+        }
+        completed.push(path);
+    }
+    Ok(json!({"paths":paths,"recycled":recycled}))
+}
+
+#[cfg(test)]
+mod discard_test_hooks {
+    use super::*;
+    use std::{cell::RefCell, path::PathBuf};
+
+    struct State {
+        available: bool,
+        fail_at: Option<usize>,
+        attempts: usize,
+        recycled: Vec<PathBuf>,
+    }
+    thread_local! { static STATE: RefCell<Option<State>> = const { RefCell::new(None) }; }
+    pub struct Guard;
+    impl Drop for Guard {
+        fn drop(&mut self) {
+            STATE.with(|state| *state.borrow_mut() = None);
+        }
+    }
+    pub fn install(available: bool, fail_at: Option<usize>) -> Guard {
+        STATE.with(|state| {
+            *state.borrow_mut() = Some(State {
+                available,
+                fail_at,
+                attempts: 0,
+                recycled: Vec::new(),
+            })
+        });
+        Guard
+    }
+    pub fn available() -> Option<bool> {
+        STATE.with(|state| state.borrow().as_ref().map(|state| state.available))
+    }
+    pub fn recycle(path: &Path) -> Option<Result<()>> {
+        STATE.with(|state| {
+            let mut state = state.borrow_mut();
+            let state = state.as_mut()?;
+            state.attempts += 1;
+            if state.fail_at == Some(state.attempts) {
+                return Some(Err(anyhow!("recycle_failed: injected")));
+            }
+            let destination = path.with_extension("discard-test-recycled");
+            let result = fs::rename(path, &destination).map_err(Into::into);
+            if result.is_ok() {
+                state.recycled.push(destination);
+            }
+            Some(result)
+        })
+    }
+}
+
+/// Resolve existing files through the registered-root guard. For an absent path,
+/// check its nearest existing ancestor as well (including junction/symlink parents).
+fn discard_worktree_fingerprint(root: &Path, path: &str) -> Result<Option<String>> {
+    validate_relative(path)?;
+    let candidate = root.join(path);
+    match fs::symlink_metadata(&candidate) {
+        Ok(metadata) => {
+            let resolved = scoped_path(root, path, true).map_err(|error| {
+                if error.to_string() == "path_escape" {
+                    anyhow!("invalid_path")
+                } else {
+                    error
+                }
+            })?;
+            if !metadata.is_file() {
+                return Err(anyhow!("invalid_file_type"));
+            }
+            Ok(Some(fingerprint_reader(fs::File::open(resolved)?)?))
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            let canonical_root = root.canonicalize()?;
+            let mut ancestor = candidate.parent().ok_or_else(|| anyhow!("invalid_path"))?;
+            loop {
+                match fs::symlink_metadata(ancestor) {
+                    Ok(_) => {
+                        let canonical = ancestor
+                            .canonicalize()
+                            .map_err(|_| anyhow!("invalid_path"))?;
+                        if !canonical.starts_with(&canonical_root) {
+                            return Err(anyhow!("invalid_path"));
+                        }
+                        if !fs::metadata(&canonical)?.is_dir() {
+                            return Err(anyhow!("invalid_file_type"));
+                        }
+                        break;
+                    }
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                        ancestor = ancestor.parent().ok_or_else(|| anyhow!("invalid_path"))?;
+                    }
+                    Err(error) => return Err(error.into()),
+                }
+            }
+            Ok(None)
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotADirectory => {
+            Err(anyhow!("invalid_file_type"))
+        }
+        Err(error) => Err(error.into()),
+    }
+}
+
+fn discard_fingerprints(root: &Path, paths: &[String]) -> Result<Value> {
+    let mut files = serde_json::Map::new();
+    let mut index = serde_json::Map::new();
+    for path in paths {
+        files.insert(
+            path.clone(),
+            json!(discard_worktree_fingerprint(root, path)?),
+        );
+        index.insert(
+            path.clone(),
+            json!(index_entry(root, path)?.map(|entry| entry.fingerprint)),
+        );
+    }
+    Ok(json!({"fingerprints":files,"indexFingerprints":index}))
+}
+
+fn discard_expected_map<'a>(
+    params: &'a serde_json::Map<String, Value>,
+    key: &str,
+    paths: &[String],
+) -> Result<&'a serde_json::Map<String, Value>> {
+    let map = params
+        .get(key)
+        .and_then(Value::as_object)
+        .ok_or_else(|| anyhow!("invalid_fingerprints"))?;
+    let unique: std::collections::HashSet<_> = paths.iter().collect();
+    if map.len() != unique.len()
+        || paths.iter().any(|path| !map.contains_key(path))
+        || map
+            .values()
+            .any(|value| !value.is_null() && !value.is_string())
+    {
+        return Err(anyhow!("invalid_fingerprints"));
+    }
+    Ok(map)
+}
+
+fn verify_discard_fingerprints(
+    root: &Path,
+    paths: &[String],
+    params: &serde_json::Map<String, Value>,
+) -> Result<()> {
+    let files = discard_expected_map(params, "expectedFingerprints", paths)?;
+    let index = discard_expected_map(params, "expectedIndexFingerprints", paths)?;
+    let snapshot = discard_fingerprints(root, paths)?;
+    if snapshot["fingerprints"].as_object() != Some(files) {
+        return Err(anyhow!("file_conflict"));
+    }
+    if snapshot["indexFingerprints"].as_object() != Some(index) {
+        return Err(anyhow!("index_conflict"));
+    }
+    Ok(())
+}
+
+fn discard_preflight(db: &Database, root: &Path, params_value: &Value) -> Result<Option<Value>> {
+    let params = params_value
+        .as_object()
+        .ok_or_else(|| anyhow!("invalid_request"))?;
+    let operation_id = required_string(params, "operationId")?;
+    let paths = paths(params)?;
+    let preflight = (|| {
+        verify_discard_fingerprints(root, &paths, params)?;
+        if paths
+            .iter()
+            .any(|path| params["expectedIndexFingerprints"][path].is_null())
+            && !discard_recycle_available(root)
+        {
+            return Err(anyhow!("recycle_unavailable"));
+        }
+        Ok(())
+    })();
+    if let Err(error) = preflight {
+        // Read receipt and claim together: completion may race with this preflight.
+        let (receipt, pending): (Option<String>, bool) = db.transaction(|tx| {
+            Ok(tx.query_row(
+                "SELECT (SELECT result FROM operations WHERE id=?1), EXISTS(SELECT 1 FROM external_operations WHERE id=?1)",
+                [operation_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )?)
+        })?;
+        if let Some(receipt) = receipt {
+            db.bind_operation(operation_id, "git.discard", params_value)?;
+            return Ok(Some(serde_json::from_str(&receipt)?));
+        }
+        if pending {
+            db.bind_operation(operation_id, "git.discard", params_value)?;
+            return Err(anyhow!("operation_outcome_unknown"));
+        }
+        return Err(error);
+    }
+    Ok(None)
+}
+
+fn release_discard_claim(db: &Database, operation_id: &str) -> Result<()> {
+    db.transaction(|tx| {
+        tx.execute(
+            "DELETE FROM external_operations WHERE id=? AND NOT EXISTS (SELECT 1 FROM operations WHERE id=?)",
+            params![operation_id, operation_id],
+        )?;
+        Ok(())
+    })
+}
+
+fn verify_claimed_discard(
+    db: &Database,
+    operation_id: &str,
+    root: &Path,
+    paths: &[String],
+    params: &serde_json::Map<String, Value>,
+) -> Result<()> {
+    if let Err(error) = verify_discard_fingerprints(root, paths, params) {
+        release_discard_claim(db, operation_id)?;
+        return Err(error);
+    }
+    Ok(())
 }
 
 struct IndexEntry {
@@ -284,12 +650,23 @@ struct IndexEntry {
 
 /// The stage-0 index entry of `path`; unmerged paths are refused.
 fn index_entry(root: &Path, path: &str) -> Result<Option<IndexEntry>> {
-    let listing = git(root, &["ls-files", "-s", "-z", "--", path])?;
+    let listing = git(
+        root,
+        &["ls-files", "-s", "-z", "--", &format!(":(literal){path}")],
+    )?;
     let mut entry = None;
     for record in listing.split('\0').filter(|record| !record.is_empty()) {
-        let (meta, _) = record
+        let (meta, entry_path) = record
             .split_once('\t')
             .ok_or_else(|| anyhow!("git_failed"))?;
+        let normalized = Path::new(path)
+            .components()
+            .map(|part| part.as_os_str().to_string_lossy())
+            .collect::<Vec<_>>()
+            .join("/");
+        if entry_path != normalized {
+            return Err(anyhow!("invalid_file_type"));
+        }
         let fields: Vec<&str> = meta.split(' ').collect();
         if fields.len() != 3 {
             return Err(anyhow!("git_failed"));
@@ -297,15 +674,17 @@ fn index_entry(root: &Path, path: &str) -> Result<Option<IndexEntry>> {
         if fields[2] != "0" {
             return Err(anyhow!("index_unmerged"));
         }
-        entry = Some(fields[0].to_owned());
+        if !matches!(fields[0], "100644" | "100755" | "120000") {
+            return Err(anyhow!("invalid_file_type"));
+        }
+        entry = Some((fields[0].to_owned(), fields[1].to_owned()));
     }
-    let Some(mode) = entry else {
+    let Some((mode, oid)) = entry else {
         return Ok(None);
     };
-    let bytes = read_blob(root, "", path)?.ok_or_else(|| anyhow!("git_failed"))?;
     Ok(Some(IndexEntry {
         mode,
-        fingerprint: fingerprint(&bytes),
+        fingerprint: blob_fingerprint(root, &oid)?,
     }))
 }
 
@@ -668,6 +1047,585 @@ mod tests {
         dispatch(db, method, &params).map(Option::unwrap)
     }
 
+    fn discard_request(db: &Database, project: &str, paths: &[&str], operation: &str) -> Value {
+        let snapshot = call(
+            db,
+            "git.fingerprints",
+            json!({"projectId":project,"paths":paths}),
+        )
+        .unwrap();
+        json!({"projectId":project,"paths":paths,"expectedFingerprints":snapshot["fingerprints"],"expectedIndexFingerprints":snapshot["indexFingerprints"],"operationId":operation})
+    }
+
+    #[test]
+    fn fingerprints_cover_modified_deleted_untracked_staged_new_and_absent() {
+        let (temp, db, project) = setup();
+        fs::write(temp.path().join("a.txt"), "modified").unwrap();
+        fs::write(temp.path().join("new.txt"), "untracked").unwrap();
+        fs::write(temp.path().join("staged.txt"), "staged").unwrap();
+        git(temp.path(), &["add", "staged.txt"]).unwrap();
+        let snapshot = call(&db, "git.fingerprints", json!({"projectId":project,"paths":["a.txt","new.txt","staged.txt","missing/nested.txt"]})).unwrap();
+        assert_eq!(
+            snapshot["fingerprints"],
+            json!({"a.txt":fingerprint(b"modified"),"new.txt":fingerprint(b"untracked"),"staged.txt":fingerprint(b"staged"),"missing/nested.txt":null})
+        );
+        assert_eq!(
+            snapshot["indexFingerprints"],
+            json!({"a.txt":fingerprint(b"base"),"new.txt":null,"staged.txt":fingerprint(b"staged"),"missing/nested.txt":null})
+        );
+        fs::remove_file(temp.path().join("a.txt")).unwrap();
+        let deleted = call(
+            &db,
+            "git.fingerprints",
+            json!({"projectId":project,"paths":["a.txt"]}),
+        )
+        .unwrap();
+        assert_eq!(deleted["fingerprints"]["a.txt"], Value::Null);
+        assert_eq!(deleted["indexFingerprints"]["a.txt"], fingerprint(b"base"));
+        assert!(db.operation("fingerprints").unwrap().is_none());
+    }
+
+    #[test]
+    fn fingerprints_reject_unmerged_escaping_and_non_file_paths() {
+        let (temp, db, project) = setup();
+        for path in ["../outside", temp.path().to_str().unwrap()] {
+            assert_eq!(
+                call(
+                    &db,
+                    "git.fingerprints",
+                    json!({"projectId":project,"paths":[path]})
+                )
+                .unwrap_err()
+                .to_string(),
+                "invalid_path"
+            );
+        }
+        assert_eq!(
+            call(
+                &db,
+                "git.fingerprints",
+                json!({"projectId":project,"paths":["a.txt/child"]})
+            )
+            .unwrap_err()
+            .to_string(),
+            "invalid_file_type"
+        );
+        fs::create_dir(temp.path().join("folder")).unwrap();
+        assert_eq!(
+            call(
+                &db,
+                "git.fingerprints",
+                json!({"projectId":project,"paths":["folder"]})
+            )
+            .unwrap_err()
+            .to_string(),
+            "invalid_file_type"
+        );
+        let oid = git(temp.path(), &["rev-parse", "HEAD:a.txt"]).unwrap();
+        let info = format!(
+            "0 {}\ta.txt\n100644 {} 1\ta.txt\n100644 {} 2\ta.txt\n",
+            "0".repeat(40),
+            oid.trim(),
+            oid.trim()
+        );
+        run_git(
+            temp.path(),
+            &["update-index", "--index-info"],
+            &[],
+            Some(info.as_bytes()),
+            LOCAL_TIMEOUT,
+        )
+        .unwrap();
+        assert_eq!(
+            call(
+                &db,
+                "git.fingerprints",
+                json!({"projectId":project,"paths":["a.txt"]})
+            )
+            .unwrap_err()
+            .to_string(),
+            "index_unmerged"
+        );
+        for paths in [json!([]), json!(vec!["a.txt"; 501])] {
+            assert_eq!(
+                call(
+                    &db,
+                    "git.fingerprints",
+                    json!({"projectId":project,"paths":paths})
+                )
+                .unwrap_err()
+                .to_string(),
+                "invalid_paths"
+            );
+        }
+    }
+
+    #[test]
+    fn discard_requires_exact_nullable_maps_before_claiming() {
+        let (_temp, db, project) = setup();
+        let valid = discard_request(&db, &project, &["a.txt"], "shape");
+        for key in ["expectedFingerprints", "expectedIndexFingerprints"] {
+            for invalid in [
+                None,
+                Some(json!({})),
+                Some(json!({"a.txt":valid[key]["a.txt"],"extra":null})),
+                Some(json!({"a.txt":17})),
+            ] {
+                let mut request = valid.clone();
+                if let Some(value) = invalid {
+                    request[key] = value;
+                } else {
+                    request.as_object_mut().unwrap().remove(key);
+                }
+                assert_eq!(
+                    call(&db, "git.discard", request).unwrap_err().to_string(),
+                    "invalid_fingerprints"
+                );
+            }
+        }
+        assert!(db.claim_external_operation("shape").unwrap());
+    }
+
+    #[test]
+    fn discard_restores_tracked_and_deleted_files_and_replays_completed_receipts() {
+        let (temp, db, project) = setup();
+        fs::write(temp.path().join("a.txt"), "changed").unwrap();
+        let request = discard_request(&db, &project, &["a.txt"], "restore");
+        let result = call(&db, "git.discard", request.clone()).unwrap();
+        assert_eq!(fs::read(temp.path().join("a.txt")).unwrap(), b"base");
+        fs::write(temp.path().join("a.txt"), "later").unwrap();
+        assert_eq!(call(&db, "git.discard", request).unwrap(), result);
+        assert_eq!(fs::read(temp.path().join("a.txt")).unwrap(), b"later");
+        // Claim release must never erase a completed operation's claim.
+        release_discard_claim(&db, "restore").unwrap();
+        assert!(!db.claim_external_operation("restore").unwrap());
+        fs::remove_file(temp.path().join("a.txt")).unwrap();
+        let deleted = discard_request(&db, &project, &["a.txt"], "deleted");
+        assert_eq!(deleted["expectedFingerprints"]["a.txt"], Value::Null);
+        call(&db, "git.discard", deleted).unwrap();
+        assert_eq!(fs::read(temp.path().join("a.txt")).unwrap(), b"base");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn discard_recycles_matching_untracked_files() {
+        let (temp, db, project) = setup();
+        fs::write(temp.path().join("untracked.txt"), "keep in recycle bin").unwrap();
+        let request = discard_request(&db, &project, &["untracked.txt"], "untracked");
+        assert_eq!(
+            request["expectedIndexFingerprints"]["untracked.txt"],
+            Value::Null
+        );
+        match call(&db, "git.discard", request) {
+            Ok(result) => {
+                assert_eq!(result["recycled"], json!(["untracked.txt"]));
+                assert!(!temp.path().join("untracked.txt").exists());
+            }
+            Err(error) => {
+                assert_eq!(error.to_string(), "recycle_unavailable");
+                assert_eq!(
+                    fs::read(temp.path().join("untracked.txt")).unwrap(),
+                    b"keep in recycle bin"
+                );
+                assert!(db.operation("untracked").unwrap().is_none());
+                eprintln!(
+                    "Recycle Bin unavailable in this environment; verified safe refusal instead"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn discard_worktree_and_index_conflicts_leave_files_intact_and_retryable() {
+        let (temp, db, project) = setup();
+        let request = discard_request(&db, &project, &["a.txt"], "file-conflict");
+        fs::write(temp.path().join("a.txt"), "later edit").unwrap();
+        for _ in 0..2 {
+            assert_eq!(
+                call(&db, "git.discard", request.clone())
+                    .unwrap_err()
+                    .to_string(),
+                "file_conflict"
+            );
+        }
+        assert_eq!(fs::read(temp.path().join("a.txt")).unwrap(), b"later edit");
+        fs::write(temp.path().join("a.txt"), "partial staged").unwrap();
+        git(temp.path(), &["add", "a.txt"]).unwrap();
+        fs::write(temp.path().join("a.txt"), "partial staged plus unstaged").unwrap();
+        let request = discard_request(&db, &project, &["a.txt"], "index-conflict");
+        git(temp.path(), &["restore", "--staged", "a.txt"]).unwrap();
+        for _ in 0..2 {
+            assert_eq!(
+                call(&db, "git.discard", request.clone())
+                    .unwrap_err()
+                    .to_string(),
+                "index_conflict"
+            );
+        }
+        assert_eq!(
+            fs::read(temp.path().join("a.txt")).unwrap(),
+            b"partial staged plus unstaged"
+        );
+    }
+
+    #[test]
+    fn discard_post_claim_conflicts_release_only_uncompleted_claims() {
+        for index_changed in [false, true] {
+            let (temp, db, project) = setup();
+            let request = discard_request(&db, &project, &["a.txt"], "claimed");
+            let params = request.as_object().unwrap();
+            verify_discard_fingerprints(temp.path(), &paths(params).unwrap(), params).unwrap();
+            db.bind_operation("claimed", "git.discard", &request)
+                .unwrap();
+            assert!(db.claim_external_operation("claimed").unwrap());
+            fs::write(temp.path().join("a.txt"), "later").unwrap();
+            if index_changed {
+                git(temp.path(), &["add", "a.txt"]).unwrap();
+                fs::write(temp.path().join("a.txt"), "base").unwrap();
+            }
+            let expected = if index_changed {
+                "index_conflict"
+            } else {
+                "file_conflict"
+            };
+            assert_eq!(
+                verify_claimed_discard(
+                    &db,
+                    "claimed",
+                    temp.path(),
+                    &paths(params).unwrap(),
+                    params
+                )
+                .unwrap_err()
+                .to_string(),
+                expected
+            );
+            let claims: i64 = db
+                .transaction(|tx| {
+                    Ok(tx.query_row(
+                        "SELECT COUNT(*) FROM external_operations WHERE id='claimed'",
+                        [],
+                        |row| row.get(0),
+                    )?)
+                })
+                .unwrap();
+            assert_eq!(claims, 0);
+            assert_eq!(
+                call(&db, "git.discard", request).unwrap_err().to_string(),
+                expected
+            );
+            assert_eq!(
+                fs::read(temp.path().join("a.txt")).unwrap(),
+                if index_changed {
+                    b"base".as_slice()
+                } else {
+                    b"later".as_slice()
+                }
+            );
+        }
+    }
+
+    #[test]
+    fn discard_paths_are_literal_and_relative_to_registered_subdirectory() {
+        let (temp, db, _project) = setup();
+        let nested = temp.path().join("pkg");
+        fs::create_dir(&nested).unwrap();
+        for name in ["a[1].txt", "a1.txt"] {
+            fs::write(nested.join(name), "base").unwrap();
+        }
+        git(temp.path(), &["add", "pkg"]).unwrap();
+        let project = db
+            .add_project(nested.to_str().unwrap(), Some("nested"), "nested-project")
+            .unwrap();
+        for name in ["a[1].txt", "a1.txt"] {
+            fs::write(nested.join(name), "changed").unwrap();
+        }
+        let request = discard_request(&db, &project.id, &["a[1].txt"], "literal");
+        call(&db, "git.discard", request).unwrap();
+        assert_eq!(fs::read(nested.join("a[1].txt")).unwrap(), b"base");
+        assert_eq!(fs::read(nested.join("a1.txt")).unwrap(), b"changed");
+        // An absent directory still must not be treated as one index file.
+        fs::remove_file(nested.join("a[1].txt")).unwrap();
+        fs::remove_file(nested.join("a1.txt")).unwrap();
+        fs::remove_dir(&nested).unwrap();
+        assert_eq!(
+            discard_fingerprints(temp.path(), &["pkg".to_owned()])
+                .unwrap_err()
+                .to_string(),
+            "invalid_file_type"
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn fingerprints_reject_junction_escapes_for_existing_and_absent_files() {
+        use std::os::windows::process::CommandExt;
+        let (temp, db, project) = setup();
+        let outside = tempfile::tempdir().unwrap();
+        fs::write(outside.path().join("outside.txt"), "untouched").unwrap();
+        let junction = temp.path().join("escape");
+        assert!(Command::new("cmd")
+            .args(["/c", "mklink", "/J"])
+            .arg(&junction)
+            .arg(outside.path())
+            .creation_flags(0x0800_0000)
+            .output()
+            .unwrap()
+            .status
+            .success());
+        for path in [
+            "escape/outside.txt",
+            "escape/missing.txt",
+            "escape/missing/nested.txt",
+        ] {
+            assert_eq!(
+                call(
+                    &db,
+                    "git.fingerprints",
+                    json!({"projectId":project,"paths":[path]})
+                )
+                .unwrap_err()
+                .to_string(),
+                "invalid_path"
+            );
+        }
+        fs::remove_dir(junction).unwrap();
+        assert_eq!(
+            fs::read(outside.path().join("outside.txt")).unwrap(),
+            b"untouched"
+        );
+    }
+
+    #[test]
+    fn discard_streams_large_binary_modified_and_deleted_tracked_files() {
+        let (temp, db, project) = setup();
+        let original: Vec<u8> = (0..3 * 1024 * 1024)
+            .map(|index| (index % 251) as u8)
+            .collect();
+        let modified: Vec<u8> = original.iter().map(|byte| byte.wrapping_add(1)).collect();
+        for path in ["modified.bin", "deleted.bin"] {
+            fs::write(temp.path().join(path), &original).unwrap();
+        }
+        git(temp.path(), &["add", "modified.bin", "deleted.bin"]).unwrap();
+        git(temp.path(), &["commit", "-m", "large binaries"]).unwrap();
+        fs::write(temp.path().join("modified.bin"), &modified).unwrap();
+        fs::remove_file(temp.path().join("deleted.bin")).unwrap();
+        let request = discard_request(
+            &db,
+            &project,
+            &["modified.bin", "deleted.bin"],
+            "large-discard",
+        );
+        assert_eq!(
+            request["expectedFingerprints"]["modified.bin"],
+            fingerprint(&modified)
+        );
+        assert_eq!(request["expectedFingerprints"]["deleted.bin"], Value::Null);
+        for path in ["modified.bin", "deleted.bin"] {
+            assert_eq!(
+                request["expectedIndexFingerprints"][path],
+                fingerprint(&original)
+            );
+        }
+        call(&db, "git.discard", request).unwrap();
+        for path in ["modified.bin", "deleted.bin"] {
+            assert_eq!(fs::read(temp.path().join(path)).unwrap(), original);
+        }
+        assert_eq!(call(&db, "git.index.write", json!({"projectId":project,"path":"modified.bin","content":"x".repeat(3 * 1024 * 1024),"expectedIndexFingerprint":fingerprint(&original),"operationId":"large-write"})).unwrap_err().to_string(), "invalid_content");
+        assert!(!db.external_operation_pending("large-write").unwrap());
+    }
+
+    #[test]
+    fn discard_outstanding_claim_precedes_preflight_and_receipt_replays_first() {
+        let (temp, db, project) = setup();
+        let request = discard_request(&db, &project, &["a.txt"], "lost-response");
+        db.bind_operation("lost-response", "git.discard", &request)
+            .unwrap();
+        assert!(db.claim_external_operation("lost-response").unwrap());
+        fs::write(temp.path().join("a.txt"), "partially changed").unwrap();
+        assert_eq!(
+            call(&db, "git.discard", request.clone())
+                .unwrap_err()
+                .to_string(),
+            "operation_outcome_unknown"
+        );
+        assert_eq!(
+            fs::read(temp.path().join("a.txt")).unwrap(),
+            b"partially changed"
+        );
+        assert!(db.external_operation_pending("lost-response").unwrap());
+        let mut different = request.clone();
+        different["paths"] = json!(["other.txt"]);
+        assert!(call(&db, "git.discard", different)
+            .unwrap_err()
+            .to_string()
+            .starts_with("operation_conflict:"));
+        let receipt = json!({"paths":["a.txt"],"recycled":[]});
+        db.transaction(|tx| {
+            complete(
+                tx,
+                "lost-response",
+                "git.discard",
+                &receipt,
+                Some((&project, None)),
+            )
+        })
+        .unwrap();
+        assert!(!db.external_operation_pending("lost-response").unwrap());
+        assert_eq!(call(&db, "git.discard", request).unwrap(), receipt);
+    }
+
+    #[test]
+    fn discard_failed_preflight_rechecks_concurrent_claims_and_receipts() {
+        for recycle_unavailable in [false, true] {
+            let (temp, db, project) = setup();
+            let path = if recycle_unavailable { "new.txt" } else { "a.txt" };
+            fs::write(temp.path().join(path), "reviewed edit").unwrap();
+            let request = discard_request(&db, &project, &[path], "concurrent");
+            let _hooks = discard_test_hooks::install(false, None);
+            // Simulate dispatch passing its initial pending check, then another
+            // caller claiming and applying an effect before this preflight runs.
+            assert!(!db.external_operation_pending("concurrent").unwrap());
+            db.bind_operation("concurrent", "git.discard", &request)
+                .unwrap();
+            assert!(db.claim_external_operation("concurrent").unwrap());
+            if !recycle_unavailable {
+                git(temp.path(), &["restore", "--worktree", "--", path]).unwrap();
+            }
+            assert_eq!(
+                discard_preflight(&db, temp.path(), &request)
+                    .unwrap_err()
+                    .to_string(),
+                "operation_outcome_unknown"
+            );
+            assert!(db.external_operation_pending("concurrent").unwrap());
+            let receipt = json!({"paths":[path],"recycled":[]});
+            db.transaction(|tx| {
+                complete(
+                    tx,
+                    "concurrent",
+                    "git.discard",
+                    &receipt,
+                    Some((&project, None)),
+                )
+            })
+            .unwrap();
+            assert_eq!(
+                discard_preflight(&db, temp.path(), &request).unwrap(),
+                Some(receipt)
+            );
+        }
+    }
+
+    #[test]
+    fn discard_recycle_unavailable_preflight_has_no_effects_or_claim() {
+        let (temp, db, project) = setup();
+        fs::write(temp.path().join("a.txt"), "tracked edit").unwrap();
+        fs::write(temp.path().join("new.txt"), "untracked edit").unwrap();
+        let request = discard_request(&db, &project, &["a.txt", "new.txt"], "unavailable");
+        let _hooks = discard_test_hooks::install(false, None);
+        let before: i64 = db
+            .transaction(
+                |tx| Ok(tx.query_row("SELECT COUNT(*) FROM outbox", [], |row| row.get(0))?),
+            )
+            .unwrap();
+        assert_eq!(
+            call(&db, "git.discard", request).unwrap_err().to_string(),
+            "recycle_unavailable"
+        );
+        assert_eq!(
+            fs::read(temp.path().join("a.txt")).unwrap(),
+            b"tracked edit"
+        );
+        assert_eq!(
+            fs::read(temp.path().join("new.txt")).unwrap(),
+            b"untracked edit"
+        );
+        assert!(!db.external_operation_pending("unavailable").unwrap());
+        assert!(db.operation("unavailable").unwrap().is_none());
+        let after: i64 = db
+            .transaction(
+                |tx| Ok(tx.query_row("SELECT COUNT(*) FROM outbox", [], |row| row.get(0))?),
+            )
+            .unwrap();
+        assert_eq!(before, after);
+        assert!(
+            db.claim_external_operation("unavailable").unwrap(),
+            "preflight leaves no claim"
+        );
+    }
+
+    #[test]
+    fn discard_partial_recycle_publishes_refresh_and_keeps_an_unknown_claim() {
+        let (temp, db, project) = setup();
+        fs::write(temp.path().join("a.txt"), "tracked edit").unwrap();
+        fs::write(temp.path().join("one.txt"), "recoverable one").unwrap();
+        fs::write(temp.path().join("two.txt"), "recoverable two").unwrap();
+        let request = discard_request(&db, &project, &["a.txt", "one.txt", "two.txt"], "partial");
+        let _hooks = discard_test_hooks::install(true, Some(2));
+        let before: i64 = db
+            .transaction(
+                |tx| Ok(tx.query_row("SELECT COUNT(*) FROM outbox", [], |row| row.get(0))?),
+            )
+            .unwrap();
+        let error = call(&db, "git.discard", request.clone())
+            .unwrap_err()
+            .to_string();
+        assert!(error.starts_with("discard_incomplete:"), "{error}");
+        assert!(error.contains("completed: [one.txt]"), "{error}");
+        assert!(error.contains("failed: [two.txt]"), "{error}");
+        assert!(error.len() < 1024);
+        assert_eq!(
+            fs::read(temp.path().join("one.discard-test-recycled")).unwrap(),
+            b"recoverable one"
+        );
+        assert!(!temp.path().join("one.txt").exists());
+        assert_eq!(
+            fs::read(temp.path().join("two.txt")).unwrap(),
+            b"recoverable two"
+        );
+        assert_eq!(
+            fs::read(temp.path().join("a.txt")).unwrap(),
+            b"tracked edit",
+            "recycle runs before restore"
+        );
+        assert_eq!(
+            last_event(&db),
+            json!({"kind":"git","projectId":project,"worktreePath":null})
+        );
+        let after: i64 = db
+            .transaction(
+                |tx| Ok(tx.query_row("SELECT COUNT(*) FROM outbox", [], |row| row.get(0))?),
+            )
+            .unwrap();
+        assert_eq!(after, before + 1);
+        assert!(db.operation("partial").unwrap().is_none());
+        assert!(db.external_operation_pending("partial").unwrap());
+        assert_eq!(
+            call(&db, "git.discard", request).unwrap_err().to_string(),
+            "operation_outcome_unknown"
+        );
+    }
+
+    #[test]
+    fn discard_recycles_before_restoring_on_a_successful_mixed_batch() {
+        let (temp, db, project) = setup();
+        fs::write(temp.path().join("a.txt"), "tracked edit").unwrap();
+        fs::write(temp.path().join("new.txt"), "untracked edit").unwrap();
+        let request = discard_request(&db, &project, &["a.txt", "new.txt"], "mixed");
+        let _hooks = discard_test_hooks::install(true, None);
+        assert_eq!(
+            call(&db, "git.discard", request).unwrap()["recycled"],
+            json!(["new.txt"])
+        );
+        assert_eq!(fs::read(temp.path().join("a.txt")).unwrap(), b"base");
+        assert_eq!(
+            fs::read(temp.path().join("new.discard-test-recycled")).unwrap(),
+            b"untracked edit"
+        );
+        assert!(!db.external_operation_pending("mixed").unwrap());
+    }
+
     fn last_event(db: &Database) -> Value {
         let data = db
             .transaction(|tx| {
@@ -774,7 +1732,7 @@ mod tests {
         call(
             &db,
             "git.discard",
-            json!({"projectId":project,"paths":["b.txt"],"operationId":"dc1"}),
+            discard_request(&db, &project, &["b.txt"], "dc1"),
         )
         .unwrap();
         // Checkout applies the user's core.autocrlf, so compare line content only.
@@ -844,7 +1802,8 @@ mod tests {
             json!({"projectId":project,"paths":["a.txt"],"operationId":"r-stage"}),
         )
         .unwrap();
-        let request = json!({"projectId":project,"message":"lost response","operationId":"r-commit"});
+        let request =
+            json!({"projectId":project,"message":"lost response","operationId":"r-commit"});
         let committed = call(&db, "git.commit", request.clone()).unwrap();
         let head = git(temp.path(), &["rev-parse", "HEAD"]).unwrap();
         assert_eq!(committed["commit"].as_str().unwrap(), head.trim());

@@ -17,7 +17,7 @@ import { sourceControlMenuItems } from '../contextMenuSurfaceItems';
 import { clearSelectedChanges, selectedChanges, selectedCommitKey, setGroupSelection, toggleSelectedChange, type SelectedCommitGroup } from '../workbench/selectedCommitSelection';
 
 type Confirm =
- | {kind:'discard';paths:string[];untracked:number}
+ | {kind:'discard';paths:string[];untracked:number;token:number;fingerprints?:Record<string,string|null>;indexFingerprints?:Record<string,string|null>;snapshotError?:string}
  | {kind:'amend';subject:string}
  | {kind:'delete-branch';branch:string;force:boolean};
 function GroupSelectionToggle({checked,mixed,label,onChange}:{checked:boolean;mixed:boolean;label:string;onChange:()=>void}) {
@@ -42,6 +42,7 @@ export function SourceControlView({scope, actions, git, zh, compact = false, too
  const [selection, setSelection] = useState<Set<string>>(() => new Set());
  const messageRef = useRef<HTMLTextAreaElement>(null);
  const scopeEpoch=useRef(0);
+ const discardEpoch=useRef(0);
  const renderedScope=useRef(`${scope.projectId}\u0000${scope.worktreePath ?? ''}\u0000${scope.rootPath}`);
  const text = (en:string, cn:string) => zh ? cn : en;
  const params = scopeParams(scope);
@@ -63,7 +64,7 @@ export function SourceControlView({scope, actions, git, zh, compact = false, too
   const items=groups[group], all=items.length>0&&items.every(change=>selection.has(selectedCommitKey(rootKey,group,change.path)));
   setSelection(current=>setGroupSelection(current,rootKey,group,items,!all));
  };
- useEffect(() => { setBusy(undefined); setIssue(undefined); setNotice(undefined); setCommittedWarning(undefined); setConfirm(undefined); setCommitMenu(undefined); setBranchMenu(undefined); setBranches(undefined); setBranchQuery(''); setCreating(false); }, [scope.projectId, scope.worktreePath, scope.rootPath]);
+ useEffect(() => { discardEpoch.current++; setBusy(undefined); setIssue(undefined); setNotice(undefined); setCommittedWarning(undefined); setConfirm(undefined); setCommitMenu(undefined); setBranchMenu(undefined); setBranches(undefined); setBranchQuery(''); setCreating(false); }, [scope.projectId, scope.worktreePath, scope.rootPath]);
  // Success notices are transient; errors stay until dismissed.
  useEffect(() => { if(!notice) return; const timer = setTimeout(() => setNotice(undefined), 4000); return () => clearTimeout(timer); }, [notice]);
 
@@ -100,7 +101,17 @@ export function SourceControlView({scope, actions, git, zh, compact = false, too
   const selected=selectedStaged; if(!selected.length)return;
   await runSelected('unstage-selected',()=>request('git.unstage',{...params,paths:selected.map(change=>change.path),operationId:operationId()}),[['staged',selected]],text('Selected files unstaged.','已取消暂存所选文件。'));
  };
- const discard = (changes:GitChange[]) => setConfirm({kind:'discard', paths:changes.map(change => change.path), untracked:changes.filter(change => change.untracked).length});
+ const discard = (changes:GitChange[]) => {
+  const paths=changes.map(change => change.path), token=++discardEpoch.current, epoch=scopeEpoch.current;
+  setConfirm({kind:'discard', paths, untracked:changes.filter(change => change.untracked).length, token});
+  void request('git.fingerprints', {...params, paths}).then(snapshot => {
+   if(epoch!==scopeEpoch.current || token!==discardEpoch.current) return;
+   setConfirm(current => current?.kind === 'discard' && current.token === token ? {...current, fingerprints:snapshot.fingerprints, indexFingerprints:snapshot.indexFingerprints} : current);
+  }, error => {
+   if(epoch!==scopeEpoch.current || token!==discardEpoch.current) return;
+   setConfirm(current => current?.kind === 'discard' && current.token === token ? {...current, snapshotError:workbenchError(error,zh)} : current);
+  });
+ };
  const openChange = (change:GitChange, group:ChangeGroup) => group === 'conflicts' ? actions.openFile(change.path) : actions.openDiff(change.path, group === 'staged');
  const changeMenu = (change:GitChange, group:ChangeGroup, event:{clientX:number;clientY:number;currentTarget:HTMLElement}) => {
   const staged = group === 'staged';
@@ -163,10 +174,20 @@ export function SourceControlView({scope, actions, git, zh, compact = false, too
   if(!confirm) return;
   const current = confirm, epoch=scopeEpoch.current;
   if(current.kind === 'discard') {
+   if(!current.fingerprints || !current.indexFingerprints || current.snapshotError) return;
    setConfirm(undefined);
    const dirty = actions.dirtyPaths().filter(path => current.paths.includes(path));
    if(dirty.length) { setIssue(text(`Save or close unsaved editors first: ${dirty.join(', ')}`, `请先保存或关闭未保存的编辑器：${dirty.join('、')}`)); return; }
-   await run('discard', () => request('git.discard', {...params, paths:current.paths, operationId:operationId()}), text('Changes discarded.', '更改已丢弃。'));
+   setBusy('discard'); setIssue(undefined); setNotice(undefined); setCommittedWarning(undefined);
+   try {
+    await request('git.discard', {...params, paths:current.paths, expectedFingerprints:current.fingerprints, expectedIndexFingerprints:current.indexFingerprints, operationId:operationId()});
+    if(epoch===scopeEpoch.current)setNotice(text('Changes discarded.', '更改已丢弃。'));
+   } catch(error) {
+    if(epoch===scopeEpoch.current) {
+     if(/(?:file_conflict|index_conflict|discard_incomplete)/.test(String(error))) void git.refresh();
+     setIssue(workbenchError(error,zh,'discard'));
+    }
+   } finally { if(epoch===scopeEpoch.current)setBusy(undefined); }
   } else if(current.kind === 'amend') {
    setConfirm(undefined);
    const ok = await run('commit', () => request('git.commit', {...params, message:message.trim(), amend:true, operationId:operationId()}), text('Last commit amended.', '已修改上次提交。'));
@@ -314,13 +335,14 @@ export function SourceControlView({scope, actions, git, zh, compact = false, too
   {confirm && <SurfaceDialog size="sm" icon={confirm.kind === 'amend' ? 'clock' : 'trash'}
    title={confirm.kind === 'discard' ? text('Discard changes?', '丢弃更改？') : confirm.kind === 'amend' ? text('Amend the last commit?', '修改上次提交？') : confirm.force ? text('Force delete unmerged branch?', '强制删除未合并的分支？') : text('Delete branch?', '删除分支？')}
    subtitle={confirm.kind === 'discard' ? confirm.paths.join(', ') : confirm.kind === 'amend' ? confirm.subject : confirm.branch}
-   onClose={() => { if(!busy) setConfirm(undefined); }}
+   onClose={() => { if(!busy) { if(confirm.kind === 'discard') discardEpoch.current++; setConfirm(undefined); } }}
    footer={<>
-    <button type="button" className="btn" disabled={!!busy} onClick={() => setConfirm(undefined)}>{text('Cancel', '取消')}</button>
-    <button type="button" className={`btn ${confirm.kind === 'amend' ? 'btn-primary' : 'btn-danger'}`} disabled={!!busy} onClick={() => void confirmAction()}>
+    <button type="button" className="btn" disabled={!!busy} onClick={() => { if(confirm.kind === 'discard') discardEpoch.current++; setConfirm(undefined); }}>{text('Cancel', '取消')}</button>
+    <button type="button" className={`btn ${confirm.kind === 'amend' ? 'btn-primary' : 'btn-danger'}`} disabled={!!busy || (confirm.kind === 'discard' && (!confirm.fingerprints || !confirm.indexFingerprints || !!confirm.snapshotError))} onClick={() => void confirmAction()}>
      {confirm.kind === 'discard' ? text('Discard', '丢弃') : confirm.kind === 'amend' ? text('Amend commit', '修改提交') : confirm.force ? text('Force delete', '强制删除') : text('Delete', '删除')}
     </button>
    </>}>
+   {confirm.kind === 'discard' && (!confirm.fingerprints || !confirm.indexFingerprints || confirm.snapshotError) && <p className="wb-summary" role={confirm.snapshotError ? 'alert' : 'status'}>{confirm.snapshotError ?? text('Checking files before discard…', '正在检查丢弃前的文件…')}</p>}
    <p>{confirm.kind === 'discard'
     ? text(`Tracked files return to their staged version.${confirm.untracked ? ` ${confirm.untracked} untracked file(s) will be moved to the Recycle Bin.` : ''}`, `已跟踪文件将恢复为暂存区版本。${confirm.untracked ? `${confirm.untracked} 个未跟踪文件将移到回收站。` : ''}`)
     : confirm.kind === 'amend'
