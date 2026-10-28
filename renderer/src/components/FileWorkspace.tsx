@@ -9,6 +9,13 @@ import type {
 } from "@threadterm/protocol";
 import { operationId, request } from "../bridge";
 import { CodeEditor } from "./CodeEditor";
+import { ConflictStageAction } from "./ConflictStageAction";
+import { useConflictStageGuard } from "./useConflictStageGuard";
+import { useConflictStates } from "./useConflictStates";
+import { conflictStageReason } from "../workbench/conflictStage";
+import { conflictBlocks } from "../workbench/conflictBlocks";
+import { isConflict } from "../workbench/gitDecorations";
+import { notifyFilesChanged } from "../workbench/types";
 import { MergeEditor, type MergeEditorHandle, type MergeSelection } from "./MergeEditor";
 import { CommentForm, PendingComments, useFileComments } from "./FileComments";
 import type { FileCommentsHost } from "../fileCommentsHost";
@@ -138,6 +145,8 @@ function FileWorkspaceInstance({
   const [document, setDocument] = useState<FileDocument>();
   const [image, setImage] = useState<{ mime: string; data: string }>();
   const [text, setText] = useState("");
+  const [resolvedNotice, setResolvedNotice] = useState<string>();
+  useEffect(() => { if (!resolvedNotice) return; const timer = setTimeout(() => setResolvedNotice(undefined), 4000); return () => clearTimeout(timer); }, [resolvedNotice]);
   const externalInitialView: View = external && initialView === "diff" ? "file" : initialView;
   const [internalView, setInternalView] = useState<View>(externalInitialView);
   const previousControlledView = useRef<View | undefined>(controlledView);
@@ -268,7 +277,11 @@ function FileWorkspaceInstance({
         noGit: "Git status is unavailable for this directory.",
       };
 
-  const gitState = useGitStatus(scope, (toolsOpen || view === "diff") && !external, zh);
+  const gitState = useGitStatus(scope, (toolsOpen || view === "diff" || view === "file") && !external, zh);
+  const conflictedFile = Boolean(document && gitState.status?.changes.some(change => change.path === document.path && isConflict(change)));
+  const conflictStates = useConflictStates(scope, conflictedFile && document ? [document.path] : [], document?.fingerprint);
+  const stageReason = conflictedFile && document ? conflictStageReason(conflictStates[document.path], zh) : undefined;
+  const stageGuard = useConflictStageGuard(scope, zh);
   const plainCommentVersion: CommentVersion = { kind: "file" };
   const diffCommentVersion: CommentVersion = { kind: "git", staged };
   const plainCommentMarks = useMemo(
@@ -598,6 +611,10 @@ function FileWorkspaceInstance({
         expectedFingerprint: base.current,
         operationId: operationId(),
       });
+      const before = conflictBlocks(doc.content), after = conflictBlocks(saved.content);
+      if (before.blocks.length && !after.blocks.length && !after.unparseable)
+        setResolvedNotice(doc.path);
+      notifyFilesChanged();
       loaded.current = saved;
       base.current = saved.fingerprint;
       setDocument(saved);
@@ -695,12 +712,14 @@ function FileWorkspaceInstance({
     if (!document || dirty) return;
     setBusy(true);
     try {
+      const expectedFingerprints = unstage ? undefined : await stageGuard.check([document.path], conflictedFile ? [document.path] : []);
+      if (!unstage && !expectedFingerprints) return;
       await request(unstage ? "git.unstage" : "git.stage", {
         ...scope,
         paths: [document.path],
         expectedFingerprints: unstage
           ? undefined
-          : { [document.path]: document.fingerprint },
+          : { [document.path]: document.fingerprint, ...expectedFingerprints },
         operationId: operationId(),
       });
       await refreshGit();
@@ -798,6 +817,11 @@ function FileWorkspaceInstance({
     setBusy(true);
     setIssue(undefined);
     try {
+      if (!staged) {
+        const checked = await stageGuard.check([document.path], conflictedFile ? [document.path] : []);
+        if (!checked) return;
+        if (Object.hasOwn(checked, document.path) && checked[document.path] !== document.fingerprint) throw Error('file_conflict');
+      }
       await request("git.index.write", {
         ...scope,
         path: document.path,
@@ -939,6 +963,9 @@ function FileWorkspaceInstance({
                   ))
                 )}
                 <span className="grow" />
+                {view === "file" && !external && !image && gitState.status?.changes.some(change => change.path === document.path && isConflict(change)) && (
+                  <ConflictStageAction key={document.path} scope={scope} path={document.path} revision={document.fingerprint} disabled={busy || dirty || document.readonly} zh={zh} onStaged={() => void refreshGit()} />
+                )}
                 {embedded && /\.(md|mdx|html?)$/i.test(document.path) && (
                   <button
                     className="btn btn-sm"
@@ -1073,8 +1100,8 @@ function FileWorkspaceInstance({
                       <button
                         type="button"
                         className="btn btn-sm"
-                        disabled={busy || dirty}
-                        title={dirty ? (zh ? "请先保存文件" : "Save the file first") : undefined}
+                        disabled={busy || dirty || (!staged && !!stageReason)}
+                        title={!staged && stageReason ? stageReason : dirty ? (zh ? "请先保存文件" : "Save the file first") : undefined}
                         onClick={() => void applyHunk()}
                       >
                         {staged ? (zh ? "取消暂存此块" : "Unstage hunk") : (zh ? "暂存此块" : "Stage hunk")}
@@ -1083,7 +1110,8 @@ function FileWorkspaceInstance({
                   )}
                   <button
                     className="btn btn-sm"
-                    disabled={busy || dirty}
+                    disabled={busy || dirty || (!staged && !!stageReason)}
+                    title={!staged ? stageReason : undefined}
                     onClick={() => void changeIndex(staged)}
                   >
                     {staged
@@ -1231,6 +1259,7 @@ function FileWorkspaceInstance({
                   )}
                 </div>
                 }
+                {resolvedNotice === document.path && <p className="wb-summary" role="status">{zh ? "此文件中的所有冲突已解决。请暂存以标记为已解决。" : "All conflicts resolved in this file. Stage it to mark it resolved."}</p>}
                 <section ref={sourceEditorHost} className="tt-editor-shell" data-testid="file-editor-surface">
                   <CodeEditor
                     path={document.path}
@@ -1296,6 +1325,7 @@ function FileWorkspaceInstance({
           </div>
         )}
       </div>
+      {stageGuard.dialog}
       {(pending || closePrompt) && (
         <SurfaceDialog
           title={copy.question}

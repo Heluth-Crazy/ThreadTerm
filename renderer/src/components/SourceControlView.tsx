@@ -15,6 +15,9 @@ import { ContextSendAction, sendContextToAgent } from './ContextSendAction';
 import { changedFileContext } from './GitContextActions';
 import { showContextMenu } from './ContextMenu';
 import { sourceControlMenuItems } from '../contextMenuSurfaceItems';
+import { useConflictStates } from './useConflictStates';
+import { conflictStageReason } from '../workbench/conflictStage';
+import { useConflictStageGuard } from './useConflictStageGuard';
 import { clearSelectedChanges, selectedChanges, selectedCommitKey, setGroupSelection, toggleSelectedChange, type SelectedCommitGroup } from '../workbench/selectedCommitSelection';
 
 type Confirm =
@@ -70,6 +73,8 @@ export function SourceControlView({scope, actions, git, zh, compact = false, too
   for(const change of status?.changes ?? []) for(const group of changeGroups(change)) value[group].push(change);
   return value;
  }, [status]);
+ const conflictStates = useConflictStates(scope, groups.conflicts.map(change=>change.path), status);
+ const stageGuard = useConflictStageGuard(scope, zh);
  const selectedIn = (group:SelectedCommitGroup) => selectedChanges(selection, rootKey, group, groups[group]);
  const selectedStaged=selectedIn('staged');
  const toggleSelection = (group:SelectedCommitGroup, path:string) => setSelection(current => toggleSelectedChange(current,rootKey,group,path));
@@ -97,7 +102,18 @@ export function SourceControlView({scope, actions, git, zh, compact = false, too
   finally { if(epoch===scopeEpoch.current)setBusy(undefined); }
   return succeeded&&epoch===scopeEpoch.current;
  };
- const stage = (paths:string[]) => run('stage', () => request('git.stage', {...params, paths, operationId:operationId()}));
+ const stagePaths = async (paths:string[]) => {
+  const epoch=scopeEpoch.current;
+  const expectedFingerprints=await stageGuard.check(paths, groups.conflicts.map(change=>change.path));
+  if(!expectedFingerprints || epoch!==scopeEpoch.current) return false;
+  await request('git.stage', {...params, paths, ...(Object.keys(expectedFingerprints).length?{expectedFingerprints}:{}), operationId:operationId()});
+  return epoch===scopeEpoch.current;
+ };
+ const stage = async (paths:string[]) => {
+  let staged=false;
+  await run('stage', async()=>{staged=await stagePaths(paths);});
+  return staged;
+ };
  const unstage = (paths:string[]) => run('unstage', () => request('git.unstage', {...params, paths, operationId:operationId()}));
  const runSelected = async <T,>(label:string, action:()=>Promise<T>, clear:readonly [SelectedCommitGroup, GitChange[]][], done?:string):Promise<T|undefined> => {
   const epoch=scopeEpoch.current; let result:T|undefined, succeeded=false;
@@ -114,7 +130,7 @@ export function SourceControlView({scope, actions, git, zh, compact = false, too
  };
  const stageSelected = async (group:Extract<SelectedCommitGroup,'changes'|'untracked'>) => {
   const selected=selectedIn(group); if(!selected.length)return;
-  await runSelected('stage-selected',()=>request('git.stage',{...params,paths:selected.map(change=>change.path),operationId:operationId()}),[[group,selected]],text('Selected files staged.','已暂存所选文件。'));
+  if(await stage(selected.map(change=>change.path))) { setSelection(current=>clearSelectedChanges(current,rootKey,group,selected)); setNotice(text('Selected files staged.','已暂存所选文件。')); }
  };
  const unstageSelected = async () => {
   const selected=selectedStaged; if(!selected.length)return;
@@ -134,7 +150,7 @@ export function SourceControlView({scope, actions, git, zh, compact = false, too
  const openChange = (change:GitChange, group:ChangeGroup) => group === 'conflicts' ? actions.openFile(change.path) : actions.openDiff(change.path, group === 'staged');
  const changeMenu = (change:GitChange, group:ChangeGroup, event:{clientX:number;clientY:number;currentTarget:HTMLElement}) => {
   const staged = group === 'staged';
-  showContextMenu({x:event.clientX, y:event.clientY, restoreFocus:event.currentTarget, items:sourceControlMenuItems({zh, staged, conflict:group === 'conflicts', discardable:group === 'changes' || group === 'untracked', busy:Boolean(busy), canSend:Boolean(actions.comments?.attachContext)}).map(item => ({...item, testId:item.id, onSelect:item.id === 'source-control-send-diff' ? async () => actions.comments?.attachContext && sendContextToAgent({host:actions.comments, context:await changedFileContext(params, change.path, staged, zh), zh, sourceRoot:scope.rootPath}) : item.id === 'source-control-unstage' ? () => void unstage([change.path]) : item.id === 'source-control-stage' ? () => void stage([change.path]) : item.id === 'source-control-open-changes' ? () => openChange(change, group) : item.id === 'source-control-copy-path' ? () => navigator.clipboard.writeText(absolutePath(scope.rootPath, change.path)) : item.id === 'source-control-discard' ? () => discard([change]) : undefined}))});
+  showContextMenu({x:event.clientX, y:event.clientY, restoreFocus:event.currentTarget, items:sourceControlMenuItems({zh, staged, conflict:group === 'conflicts', discardable:group === 'changes' || group === 'untracked', busy:Boolean(busy), stageReason:group==='conflicts'?conflictStageReason(conflictStates[change.path],zh):undefined, canSend:Boolean(actions.comments?.attachContext)}).map(item => ({...item, testId:item.id, onSelect:item.id === 'source-control-send-diff' ? async () => actions.comments?.attachContext && sendContextToAgent({host:actions.comments, context:await changedFileContext(params, change.path, staged, zh), zh, sourceRoot:scope.rootPath}) : item.id === 'source-control-unstage' ? () => void unstage([change.path]) : item.id === 'source-control-stage' ? () => void stage([change.path]) : item.id === 'source-control-open-changes' ? () => openChange(change, group) : item.id === 'source-control-copy-path' ? () => navigator.clipboard.writeText(absolutePath(scope.rootPath, change.path)) : item.id === 'source-control-discard' ? () => discard([change]) : undefined}))});
  };
  const onChangeContext = (event:MouseEvent<HTMLDivElement>) => {
   const target = event.target as HTMLElement;
@@ -264,7 +280,7 @@ export function SourceControlView({scope, actions, git, zh, compact = false, too
     {(group === 'changes' || group === 'untracked') && <button type="button" className="icon-btn" title={text('Discard changes', '丢弃更改')} aria-label={text('Discard changes', '丢弃更改')} disabled={!!busy} onClick={() => discard([change])}><WbIcon name="undo"/></button>}
     {staged
      ? <button type="button" className="icon-btn" title={text('Unstage', '取消暂存')} aria-label={text('Unstage', '取消暂存')} disabled={!!busy} onClick={() => void unstage([change.path])}><WbIcon name="minus"/></button>
-     : <button type="button" className="icon-btn" title={group === 'conflicts' ? text('Mark resolved (stage)', '标记已解决（暂存）') : text('Stage', '暂存')} aria-label={text('Stage', '暂存')} disabled={!!busy} onClick={() => void stage([change.path])}><Icon name="plus"/></button>}
+     : <button type="button" className="icon-btn" title={group === 'conflicts' ? conflictStageReason(conflictStates[change.path],zh) ?? text('Mark resolved (stage)', '标记已解决（暂存）') : text('Stage', '暂存')} aria-label={group==='conflicts'?text('Mark resolved (stage)','标记已解决（暂存）'):text('Stage', '暂存')} disabled={!!busy || (group==='conflicts' && !!conflictStageReason(conflictStates[change.path],zh))} onClick={() => void stage([change.path])}><Icon name="plus"/></button>}
    </span>
    <span className="wb-deco" aria-label={decoration.tone}>{decoration.letter}</span>
   </div>;
@@ -372,6 +388,7 @@ export function SourceControlView({scope, actions, git, zh, compact = false, too
     </>}
    </div>
   </CatalogPopover>}
+  {stageGuard.dialog}
   {diverged && <SurfaceDialog size="sm" icon="branch" title={text('Branches have diverged','分支已分叉')} onClose={()=>{if(!busy)setDiverged(undefined);}}
    footer={<><button type="button" className="btn" disabled={!!busy} onClick={()=>setDiverged(undefined)}>{text('Cancel','取消')}</button><button type="button" className="btn btn-primary" disabled={!!busy} onClick={()=>{setDiverged(undefined);void mergeUpstream();}}>{text(`Merge ${diverged.upstream} into ${diverged.branch}`,`将 ${diverged.upstream} 合并到 ${diverged.branch}`)}</button></>}>
    <p>{text(`${diverged.branch} and ${diverged.upstream} have diverged (${diverged.ahead} ahead, ${diverged.behind} behind)`,`${diverged.branch} 与 ${diverged.upstream} 已分叉（领先 ${diverged.ahead}，落后 ${diverged.behind}）`)}</p>

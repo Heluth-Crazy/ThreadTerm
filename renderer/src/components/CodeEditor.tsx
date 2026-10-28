@@ -3,6 +3,8 @@ import { history, historyKeymap, indentWithTab } from "@codemirror/commands";
 import { foldGutter, indentOnInput, language as languageFacet, syntaxTree } from "@codemirror/language";
 import { Chunk } from "@codemirror/merge";
 import { gotoLine, searchKeymap } from "@codemirror/search";
+import { conflictResolver } from "./conflictEditor";
+import { dominantLineSeparator, normalizeEditorText, serializeEditorText, type EditorLineSeparator } from "./editorTextSerialization";
 import {
   Compartment,
   EditorSelection,
@@ -322,10 +324,12 @@ export function CodeEditor({
     base: new Compartment(),
     blame: new Compartment(),
   });
+  const textFormat = useRef<{separator: EditorLineSeparator; emitted?: string}>({separator: dominantLineSeparator(value)});
   const zh = globalThis.document.documentElement.lang === "zh-CN";
   useEffect(() => {
     if (!host.current) return;
     const { language, base, blame: blameSlot } = compartments.current;
+    textFormat.current = {separator: dominantLineSeparator(value)};
     const comments = Boolean(selected.current);
     const state = EditorState.create({
       doc: value,
@@ -336,6 +340,7 @@ export function CodeEditor({
         base.of(gitBase.of(gitBaseText ?? null)),
         foldGutter(),
         history(),
+        conflictResolver(zh),
         indentOnInput(),
         language.of([]),
         editorHighlight,
@@ -428,7 +433,11 @@ export function CodeEditor({
           { key: "ContextMenu", run: (editor) => { editor.contentDOM.dispatchEvent(new KeyboardEvent("keydown", { key: "F10", shiftKey: true, bubbles: true, cancelable: true })); return true; }, preventDefault: true },
         ]),
         EditorView.updateListener.of((update) => {
-          if (update.docChanged) changed.current(update.state.doc.toString());
+          if (update.docChanged) {
+            const serialized = serializeEditorText(update.state.doc.toString(), textFormat.current.separator);
+            textFormat.current.emitted = serialized;
+            changed.current(serialized);
+          }
         }),
       ],
     });
@@ -443,10 +452,12 @@ export function CodeEditor({
   }, [path, readOnly, resetKey]);
   useEffect(() => {
     const current = view.current;
-    if (current && current.state.doc.toString() !== value)
-      current.dispatch({
-        changes: { from: 0, to: current.state.doc.length, insert: value },
-      });
+    if (!current) return;
+    // Echoes of our own edits retain the loaded format even after all line breaks are deleted.
+    if (value !== textFormat.current.emitted) textFormat.current.separator = dominantLineSeparator(value);
+    const normalized = normalizeEditorText(value);
+    if (current.state.doc.toString() !== normalized)
+      current.dispatch({ changes: { from: 0, to: current.state.doc.length, insert: normalized } });
   }, [value]);
   useEffect(() => {
     const current = view.current;
