@@ -881,7 +881,7 @@ export interface RequestMap {
  'git.fetch': [FileScope&{operationId:string},{output:string}];
  'git.pull': [FileScope&{operationId:string},{output:string}];
  'git.push': [FileScope&{setUpstream?:boolean;operationId:string},{output:string}];
- 'git.merge': [FileScope&{branch:string;operationId:string},{output:string;conflicted:boolean}];
+ 'git.merge': [FileScope&({branch:string;upstream?:never}|{branch?:never;upstream:true})&{operationId:string},{output:string;conflicted:boolean;warning?:'merge_completed_after_error'}];
  'git.merge.abort': [FileScope&{operationId:string},{output:string}];
  'git.diff': [FileScope&{path:string;staged:boolean},GitDiff];
  'git.index.write': [FileScope&{path:string;content:string;expectedIndexFingerprint:string|null;operationId:string},{path:string;indexFingerprint:string}];
@@ -1021,7 +1021,7 @@ const stringFields: Partial<Record<Method,readonly string[]>> = {
  'session.launch.read':['sessionId'],
  'catalog.visibility.update':['kind','id','visibility','operationId'],
  'session.resume':['sessionId','operationId'],
- 'session.organize':['sessionId','operationId'],'git.merge':['projectId','branch','operationId'],'git.merge.abort':['projectId','operationId'],
+ 'session.organize':['sessionId','operationId'],'git.merge':['projectId','operationId'],'git.merge.abort':['projectId','operationId'],
  'project.update':['id','operationId'],'worktree.branches':['projectId'],'worktree.relocate':['id','path','operationId'],
  'device.enable':['operationId'],'device.disable':['operationId'],'device.identity.reset':['operationId'],'device.pairing.create':['permission','operationId'],'device.pairing.cancel':['pairingId','operationId'],'device.rename':['deviceId','name','operationId'],'device.renew':['deviceId','operationId'],'device.revoke':['deviceId','operationId'],
  'terminal.read':['sessionId'],'session.lookup':['operationId'],'session.present':['sessionId','placement','presentation','operationId'],
@@ -1067,6 +1067,10 @@ export function validateRequest(method:unknown,params:unknown):asserts method is
  if(!isRecord(params)) throw new Error('Request parameters must be an object');
  if(!validateWireRequest({v:1,id:'boundary',method,params})) throw new Error('Request does not match the protocol schema');
  const m=method as Method;
+ if(m==='git.merge') {
+  const hasBranch=Object.hasOwn(params,'branch'),hasUpstream=params.upstream===true;
+  if(hasBranch===hasUpstream||hasBranch&&(typeof params.branch!=='string'||!params.branch)) throw new Error('Invalid merge target');
+ }
  if(m.startsWith('usage.ledger.')) {
   const ledger=params as Record<string,unknown>,filters=isRecord(ledger.filters)?ledger.filters:ledger;
   for(const key of ['from','to']) if(filters[key]!==undefined&&(typeof filters[key]!=='string'||!/^\d{4}-\d{2}-\d{2}$/.test(filters[key] as string))) throw new Error('Invalid usage date');
@@ -1339,7 +1343,8 @@ export type GitHeadSnapshot = {kind:'branch';oid:string;target:string}|{kind:'de
 export interface GitSelectedCommitSnapshot { head:GitHeadSnapshot; indexFingerprint:string; supported:boolean; unsupportedReason?:string; gitVersion?:string }
 export interface GitSelectedCommitEntry { path:string; indexStatus:string; originalPath?:string }
 export interface GitSelectedCommitResult { commit:string; tree:string; parent:string|null; refTarget:string|null; committedPaths:string[]; retainedStagedPaths:string[]; retainedStagedPathsTruncated?:boolean; postCommitError?:string; cleanupError?:string }
-export interface GitStatus { branch:string|null; upstream:string|null; ahead:number; behind:number; changes:GitChange[]; selectedCommit?:GitSelectedCommitSnapshot }
+export interface GitOperation { kind:'merge'|'rebase'|'cherry-pick'|'revert'; head?:string; message?:string }
+export interface GitStatus { branch:string|null; upstream:string|null; ahead:number; behind:number; changes:GitChange[]; operation?:GitOperation; selectedCommit?:GitSelectedCommitSnapshot }
 export interface GitFingerprints { fingerprints:Record<string,string|null>; indexFingerprints:Record<string,string|null> }
 /** staged=false: index → working tree (fingerprint is the working file); staged=true: HEAD → index. indexFingerprint is null when the path has no stage-0 index entry. */
 export interface GitDiff { path:string; staged:boolean; oldText:string; newText:string; binary:boolean; fingerprint:string; indexFingerprint?:string|null; deleted?:boolean }

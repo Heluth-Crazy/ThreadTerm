@@ -7,6 +7,7 @@ import { Icon } from './PrototypeIcon';
 import { CatalogPopover } from './CatalogActions';
 import { SurfaceDialog } from './SurfaceDialog';
 import { changeGroups, decorationFor, type ChangeGroup } from '../workbench/gitDecorations';
+import { gitOperationState, mergeResultMessage, pullDivergence } from '../workbench/gitOperation';
 import { workbenchError } from '../workbench/errors';
 import { selectedCommitUnsupportedText } from '../workbench/selectedCommitSupport';
 import { absolutePath, baseName, parentPath, scopeParams, type GitState, type WorkbenchActions, type WorkbenchScope } from '../workbench/types';
@@ -18,6 +19,7 @@ import { clearSelectedChanges, selectedChanges, selectedCommitKey, setGroupSelec
 
 type Confirm =
  | {kind:'discard';paths:string[];untracked:number;token:number;fingerprints?:Record<string,string|null>;indexFingerprints?:Record<string,string|null>;snapshotError?:string}
+ | {kind:'abort-merge'}
  | {kind:'amend';subject:string}
  | {kind:'delete-branch';branch:string;force:boolean};
 function GroupSelectionToggle({checked,mixed,label,onChange}:{checked:boolean;mixed:boolean;label:string;onChange:()=>void}) {
@@ -28,6 +30,8 @@ function GroupSelectionToggle({checked,mixed,label,onChange}:{checked:boolean;mi
 
 export function SourceControlView({scope, actions, git, zh, compact = false, toolbarHost}:{scope:WorkbenchScope;actions:WorkbenchActions;git:GitState;zh:boolean;compact?:boolean;toolbarHost?:HTMLElement|null}) {
  const [message, setMessage] = useState('');
+ const [diverged, setDiverged] = useState<{ahead:number;behind:number;branch:string;upstream:string}>();
+ const prefilledMerge=useRef<string|undefined>(undefined);
  const [busy, setBusy] = useState<string>();
  const [issue, setIssue] = useState<string>();
  const [notice, setNotice] = useState<string>();
@@ -50,6 +54,15 @@ export function SourceControlView({scope, actions, git, zh, compact = false, too
  const rootKey=scope.rootPath;
  const scopeKey=`${scope.projectId}\u0000${scope.worktreePath ?? ''}\u0000${scope.rootPath}`;
  if(renderedScope.current!==scopeKey) { renderedScope.current=scopeKey; scopeEpoch.current++; }
+ const operation=status && gitOperationState(status,zh);
+ useEffect(() => {
+  if(!status) return;
+  if(status.operation?.kind!=='merge') { prefilledMerge.current=undefined; return; }
+  const key=`${scopeKey}\0${status.operation.head ?? ''}`;
+  if(prefilledMerge.current===key) return;
+  prefilledMerge.current=key;
+  setMessage(current=>current || status.operation?.message || '');
+ }, [scopeKey,status?.operation?.kind,status?.operation?.head,status?.operation?.message]);
  const selectedCommit=status?.selectedCommit;
  const selectedCommitReason=selectedCommitUnsupportedText(selectedCommit?.unsupportedReason,zh);
  const groups = useMemo(() => {
@@ -64,17 +77,23 @@ export function SourceControlView({scope, actions, git, zh, compact = false, too
   const items=groups[group], all=items.length>0&&items.every(change=>selection.has(selectedCommitKey(rootKey,group,change.path)));
   setSelection(current=>setGroupSelection(current,rootKey,group,items,!all));
  };
- useEffect(() => { discardEpoch.current++; setBusy(undefined); setIssue(undefined); setNotice(undefined); setCommittedWarning(undefined); setConfirm(undefined); setCommitMenu(undefined); setBranchMenu(undefined); setBranches(undefined); setBranchQuery(''); setCreating(false); }, [scope.projectId, scope.worktreePath, scope.rootPath]);
+ useEffect(() => { discardEpoch.current++; setDiverged(undefined); setBusy(undefined); setIssue(undefined); setNotice(undefined); setCommittedWarning(undefined); setConfirm(undefined); setCommitMenu(undefined); setBranchMenu(undefined); setBranches(undefined); setBranchQuery(''); setCreating(false); }, [scope.projectId, scope.worktreePath, scope.rootPath]);
  // Success notices are transient; errors stay until dismissed.
  useEffect(() => { if(!notice) return; const timer = setTimeout(() => setNotice(undefined), 4000); return () => clearTimeout(timer); }, [notice]);
 
- const run = async (label:string, action:() => Promise<unknown>, done?:string) => {
+ const run = async <T,>(label:string, action:() => Promise<T>, done?:string|((result:T)=>string|undefined)) => {
   const epoch=scopeEpoch.current; let succeeded=false;
   setBusy(label); setIssue(undefined); setNotice(undefined); setCommittedWarning(undefined);
-  try { await action(); succeeded=true; if(epoch===scopeEpoch.current&&done)setNotice(done); }
-  catch(error) { if(epoch===scopeEpoch.current)setIssue(workbenchError(error, zh)); }
-  // The shared Git status refreshes from the runtime's scoped `state.changed` for this operation, so
-  // a successful action costs exactly one `git.status`; this panel never polls and never doubles it.
+  try { const result=await action(); succeeded=true; const text=typeof done==='function'?done(result):done; if(epoch===scopeEpoch.current&&text)setNotice(text); }
+  catch(error) {
+   if(epoch===scopeEpoch.current) {
+    const counts=label==='pull' ? pullDivergence(error) : undefined;
+    if(counts && status?.upstream) setDiverged({...counts,branch:status.branch ?? 'HEAD',upstream:status.upstream});
+    else setIssue(workbenchError(error, zh));
+   }
+  }
+  // Most actions refresh through the runtime's scoped state.changed event.
+  // Upstream merge also refreshes explicitly to reveal its operation banner immediately.
   finally { if(epoch===scopeEpoch.current)setBusy(undefined); }
   return succeeded&&epoch===scopeEpoch.current;
  };
@@ -164,6 +183,17 @@ export function SourceControlView({scope, actions, git, zh, compact = false, too
   if(result.postCommitError||result.cleanupError) setCommittedWarning([result.postCommitError&&text(`Committed, but the post-commit hook reported: ${result.postCommitError}`, `已提交，但提交后钩子报告：${result.postCommitError}`),result.cleanupError&&text('Committed, but cleanup after publication reported an error.', '已提交，但发布后的清理报告错误。')].filter(Boolean).join(' '));
  };
  const push = () => run('push', () => request('git.push', {...params, ...(status?.upstream ? {} : {setUpstream:true}), operationId:operationId()}), status?.upstream ? text('Pushed.', '已推送。') : text('Branch published.', '分支已发布。'));
+ const mergeUpstream = () => {
+  const epoch=scopeEpoch.current;
+  return run('merge',async()=>{
+   const result=await request('git.merge',{...params,upstream:true,operationId:operationId()});
+   if(epoch!==scopeEpoch.current) return;
+   const feedback=mergeResultMessage(result,zh);
+   if(result.conflicted) setIssue(feedback);
+   else setNotice(feedback);
+   await git.refresh();
+  });
+ };
  const loadBranches = async () => { const epoch=scopeEpoch.current; try { const next=await request('git.branches', params); if(epoch===scopeEpoch.current)setBranches(next); } catch(error) { if(epoch===scopeEpoch.current)setIssue(workbenchError(error, zh)); } };
  const openBranches = (anchor:HTMLElement) => { setBranchMenu(anchor); setBranchQuery(''); setCreating(false); void loadBranches(); };
  const checkout = async (branch:string, create = false) => {
@@ -188,6 +218,9 @@ export function SourceControlView({scope, actions, git, zh, compact = false, too
      setIssue(workbenchError(error,zh,'discard'));
     }
    } finally { if(epoch===scopeEpoch.current)setBusy(undefined); }
+  } else if(current.kind === 'abort-merge') {
+   setConfirm(undefined);
+   await run('abort-merge',()=>request('git.merge.abort',{...params,operationId:operationId()}),text('Merge aborted.','合并已中止。'));
   } else if(current.kind === 'amend') {
    setConfirm(undefined);
    const ok = await run('commit', () => request('git.commit', {...params, message:message.trim(), amend:true, operationId:operationId()}), text('Last commit amended.', '已修改上次提交。'));
@@ -259,6 +292,13 @@ export function SourceControlView({scope, actions, git, zh, compact = false, too
  const filteredBranches = (branches?.branches ?? []).filter(branch => branch.name.toLowerCase().includes(branchQuery.trim().toLowerCase()));
  return <div className={`wb-scm${compact ? ' compact' : ''}`}>
   {toolbar}
+  {operation && <div className="wb-operation" role="status" data-testid="git-operation-banner">
+   <p>{operation.label}</p>
+   {status.operation?.kind==='merge' && <div className="wb-operation-actions">
+    <button type="button" className="btn" disabled={!!busy} onClick={()=>setConfirm({kind:'abort-merge'})}>{text('Abort merge','中止合并')}</button>
+    <button type="button" className="btn btn-primary" disabled={!!busy || !operation.canConclude} onClick={()=>void commit('commit')}>{text('Conclude merge','完成合并')}</button>
+   </div>}
+  </div>}
   <div className="wb-scm-bar">
    <button type="button" className="wb-branch-chip" title={status.upstream ? text(`Switch branch · tracking ${status.upstream}`, `切换分支 · 跟踪 ${status.upstream}`) : text('Switch branch · no upstream yet', '切换分支 · 尚无上游')} onClick={event => openBranches(event.currentTarget)}>
     <Icon name="branch"/><span className="wb-name">{status.branch ?? text('Detached HEAD', '分离的 HEAD')}</span><Icon name="chevron" className="wb-chip-caret"/>
@@ -332,18 +372,22 @@ export function SourceControlView({scope, actions, git, zh, compact = false, too
     </>}
    </div>
   </CatalogPopover>}
+  {diverged && <SurfaceDialog size="sm" icon="branch" title={text('Branches have diverged','分支已分叉')} onClose={()=>{if(!busy)setDiverged(undefined);}}
+   footer={<><button type="button" className="btn" disabled={!!busy} onClick={()=>setDiverged(undefined)}>{text('Cancel','取消')}</button><button type="button" className="btn btn-primary" disabled={!!busy} onClick={()=>{setDiverged(undefined);void mergeUpstream();}}>{text(`Merge ${diverged.upstream} into ${diverged.branch}`,`将 ${diverged.upstream} 合并到 ${diverged.branch}`)}</button></>}>
+   <p>{text(`${diverged.branch} and ${diverged.upstream} have diverged (${diverged.ahead} ahead, ${diverged.behind} behind)`,`${diverged.branch} 与 ${diverged.upstream} 已分叉（领先 ${diverged.ahead}，落后 ${diverged.behind}）`)}</p>
+  </SurfaceDialog>}
   {confirm && <SurfaceDialog size="sm" icon={confirm.kind === 'amend' ? 'clock' : 'trash'}
-   title={confirm.kind === 'discard' ? text('Discard changes?', '丢弃更改？') : confirm.kind === 'amend' ? text('Amend the last commit?', '修改上次提交？') : confirm.force ? text('Force delete unmerged branch?', '强制删除未合并的分支？') : text('Delete branch?', '删除分支？')}
-   subtitle={confirm.kind === 'discard' ? confirm.paths.join(', ') : confirm.kind === 'amend' ? confirm.subject : confirm.branch}
+   title={confirm.kind === 'abort-merge' ? text('Abort merge?','中止合并？') : confirm.kind === 'discard' ? text('Discard changes?', '丢弃更改？') : confirm.kind === 'amend' ? text('Amend the last commit?', '修改上次提交？') : confirm.force ? text('Force delete unmerged branch?', '强制删除未合并的分支？') : text('Delete branch?', '删除分支？')}
+   subtitle={confirm.kind === 'abort-merge' ? undefined : confirm.kind === 'discard' ? confirm.paths.join(', ') : confirm.kind === 'amend' ? confirm.subject : confirm.branch}
    onClose={() => { if(!busy) { if(confirm.kind === 'discard') discardEpoch.current++; setConfirm(undefined); } }}
    footer={<>
     <button type="button" className="btn" disabled={!!busy} onClick={() => { if(confirm.kind === 'discard') discardEpoch.current++; setConfirm(undefined); }}>{text('Cancel', '取消')}</button>
     <button type="button" className={`btn ${confirm.kind === 'amend' ? 'btn-primary' : 'btn-danger'}`} disabled={!!busy || (confirm.kind === 'discard' && (!confirm.fingerprints || !confirm.indexFingerprints || !!confirm.snapshotError))} onClick={() => void confirmAction()}>
-     {confirm.kind === 'discard' ? text('Discard', '丢弃') : confirm.kind === 'amend' ? text('Amend commit', '修改提交') : confirm.force ? text('Force delete', '强制删除') : text('Delete', '删除')}
+     {confirm.kind === 'abort-merge' ? text('Abort merge','中止合并') : confirm.kind === 'discard' ? text('Discard', '丢弃') : confirm.kind === 'amend' ? text('Amend commit', '修改提交') : confirm.force ? text('Force delete', '强制删除') : text('Delete', '删除')}
     </button>
    </>}>
    {confirm.kind === 'discard' && (!confirm.fingerprints || !confirm.indexFingerprints || confirm.snapshotError) && <p className="wb-summary" role={confirm.snapshotError ? 'alert' : 'status'}>{confirm.snapshotError ?? text('Checking files before discard…', '正在检查丢弃前的文件…')}</p>}
-   <p>{confirm.kind === 'discard'
+   <p>{confirm.kind === 'abort-merge' ? text('Abort this merge and restore the state before the merge?','中止当前合并并还原合并开始前的状态？') : confirm.kind === 'discard'
     ? text(`Tracked files return to their staged version.${confirm.untracked ? ` ${confirm.untracked} untracked file(s) will be moved to the Recycle Bin.` : ''}`, `已跟踪文件将恢复为暂存区版本。${confirm.untracked ? `${confirm.untracked} 个未跟踪文件将移到回收站。` : ''}`)
     : confirm.kind === 'amend'
      ? text('The staged changes and the new message replace this commit. Do not amend commits that were already pushed and shared.', '已暂存的更改和新的说明会替换此提交。已推送并共享的提交请不要修改。')

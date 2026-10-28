@@ -169,6 +169,10 @@
 /* ---- Source Control ---- */
 .wb-scm { display:flex; flex-direction:column; min-height:100%; }
 .wb-scm-bar { display:flex; align-items:center; gap:6px; padding:10px 8px 6px 10px; }
+.wb-operation { margin:8px 10px; padding:10px; border:1px solid var(--border); border-radius:var(--radius); background:var(--primary-tint); color:var(--text); font-size:12px; line-height:1.45; overflow-wrap:anywhere; }
+.wb-operation p { margin:0 0 8px; }
+.wb-operation-actions { display:flex; flex-wrap:wrap; gap:8px; }
+.wb-operation .btn { min-height:32px; white-space:normal; }
 .wb-branch-chip { display:inline-flex; flex:1; align-items:center; gap:6px; min-width:0; height:32px; padding:0 8px 0 10px; border:1px solid var(--border); border-radius:9px; background:var(--surface); color:var(--text); font:inherit; font-family:var(--mono); font-size:12px; text-align:left; cursor:pointer; }
 .wb-branch-chip .wb-name { flex:1; }
 .wb-branch-chip > .ico { flex:none; width:15px; height:15px; color:var(--muted); }

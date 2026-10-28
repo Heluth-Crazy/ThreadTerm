@@ -6258,6 +6258,9 @@
             "$ref": "#/definitions/GitChange"
           }
         },
+        "operation": {
+          "$ref": "#/definitions/GitOperation"
+        },
         "selectedCommit": {
           "$ref": "#/definitions/GitSelectedCommitSnapshot"
         }
@@ -6295,6 +6298,30 @@
         "indexStatus",
         "worktreeStatus",
         "untracked"
+      ],
+      "additionalProperties": false
+    },
+    "GitOperation": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "type": "string",
+          "enum": [
+            "merge",
+            "rebase",
+            "cherry-pick",
+            "revert"
+          ]
+        },
+        "head": {
+          "type": "string"
+        },
+        "message": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind"
       ],
       "additionalProperties": false
     },
@@ -6556,6 +6583,10 @@
         },
         "conflicted": {
           "type": "boolean"
+        },
+        "warning": {
+          "type": "string",
+          "const": "merge_completed_after_error"
         }
       },
       "required": [

@@ -3549,26 +3549,54 @@
       ]
     },
     "RequestParams<\"git.merge\">": {
-      "type": "object",
-      "additionalProperties": false,
-      "properties": {
-        "branch": {
-          "type": "string"
+      "anyOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "operationId": {
+              "type": "string"
+            },
+            "branch": {
+              "type": "string"
+            },
+            "projectId": {
+              "type": "string"
+            },
+            "worktreePath": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "branch",
+            "operationId",
+            "projectId"
+          ]
         },
-        "operationId": {
-          "type": "string"
-        },
-        "projectId": {
-          "type": "string"
-        },
-        "worktreePath": {
-          "type": "string"
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "operationId": {
+              "type": "string"
+            },
+            "upstream": {
+              "type": "boolean",
+              "const": true
+            },
+            "projectId": {
+              "type": "string"
+            },
+            "worktreePath": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "operationId",
+            "projectId",
+            "upstream"
+          ]
         }
-      },
-      "required": [
-        "branch",
-        "operationId",
-        "projectId"
       ]
     },
     "RequestParams<\"git.merge.abort\">": {

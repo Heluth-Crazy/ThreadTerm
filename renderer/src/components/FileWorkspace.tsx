@@ -902,6 +902,7 @@ function FileWorkspaceInstance({
             </section>
             {gitState.status && (
               <GitMergeControls
+                operation={gitState.status.operation}
                 scope={scope}
                 disabled={busy || dirty}
                 onChanged={async () => {

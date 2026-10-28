@@ -1847,6 +1847,7 @@ pub fn git_status(root: &Path) -> Result<Value> {
     if inside.trim() != "true" {
         return Err(anyhow!("git_unavailable"));
     }
+    let operation = git_operation(&reader, root)?;
     for _ in 0..3 {
         let selected_snapshot = reader.snapshot()?;
         // symbolic-ref works for an unborn branch; detached HEAD has no branch name.
@@ -1917,11 +1918,64 @@ pub fn git_status(root: &Path) -> Result<Value> {
         {
             continue;
         }
-        return Ok(
-            json!({"branch":branch.as_deref().map(str::trim),"upstream":upstream.as_deref().map(str::trim),"ahead":ahead,"behind":behind,"changes":changes,"selectedCommit":selected_snapshot}),
-        );
+        let mut status = serde_json::Map::new();
+        status.insert("branch".into(), json!(branch.as_deref().map(str::trim)));
+        status.insert("upstream".into(), json!(upstream.as_deref().map(str::trim)));
+        status.insert("ahead".into(), json!(ahead));
+        status.insert("behind".into(), json!(behind));
+        status.insert("changes".into(), json!(changes));
+        status.insert("selectedCommit".into(), selected_snapshot);
+        if let Some(operation) = operation.clone() { status.insert("operation".into(), operation); }
+        return Ok(Value::Object(status));
     }
     Err(anyhow!("git_status_changed"))
+}
+
+fn git_operation(reader: &crate::git_selected_commit::GitStatusReader, root: &Path) -> Result<Option<Value>> {
+    let paths = reader.read(&["rev-parse", "--git-path", "MERGE_HEAD", "--git-path", "rebase-merge", "--git-path", "rebase-apply", "--git-path", "CHERRY_PICK_HEAD", "--git-path", "REVERT_HEAD"])?
+        .lines().map(PathBuf::from).map(|path| if path.is_absolute() { path } else { root.join(path) }).collect::<Vec<_>>();
+    if paths.len() != 5 { return Err(anyhow!("git_failed")); }
+    let present = |index: usize| paths[index].exists();
+    let head = |index: usize| fs::read_to_string(&paths[index]).ok().and_then(|value| value.lines().next().map(str::to_owned)).filter(|value| !value.is_empty());
+    if present(0) {
+        let mut operation = serde_json::Map::new();
+        operation.insert("kind".into(), json!("merge"));
+        if let Some(head) = head(0) { operation.insert("head".into(), json!(head)); }
+        if let Ok(file) = fs::File::open(paths[0].parent().unwrap_or(root).join("MERGE_MSG")) {
+            let mut message = Vec::with_capacity(4096);
+            let _ = file.take(4096).read_to_end(&mut message);
+            if let Some(message) = merge_message(&message) {
+                operation.insert("message".into(), json!(message));
+            }
+        }
+        return Ok(Some(Value::Object(operation)));
+    }
+    if present(1) || present(2) { return Ok(Some(json!({"kind":"rebase"}))); }
+    for (index, kind) in [(3, "cherry-pick"), (4, "revert")] {
+        if present(index) {
+            let mut operation = serde_json::Map::new();
+            operation.insert("kind".into(), json!(kind));
+            if let Some(head) = head(index) { operation.insert("head".into(), json!(head)); }
+            return Ok(Some(Value::Object(operation)));
+        }
+    }
+    Ok(None)
+}
+
+/// The 4 KiB read may end inside a UTF-8 code point. Trim only that incomplete
+/// suffix; malformed bytes elsewhere are not silently replaced in the commit box.
+fn merge_message(bytes: &[u8]) -> Option<String> {
+    match std::str::from_utf8(bytes) {
+        Ok(message) => Some(message.to_owned()),
+        Err(error)
+            if error.error_len().is_none()
+                && bytes.len().saturating_sub(error.valid_up_to()) <= 3 => {
+            std::str::from_utf8(&bytes[..error.valid_up_to()])
+                .ok()
+                .map(str::to_owned)
+        }
+        Err(_) => None,
+    }
 }
 
 /// staged=false compares the index with the working file (editable side);
@@ -2590,6 +2644,27 @@ mod tests {
         assert_eq!(status["selectedCommit"]["indexFingerprint"], hex::encode(Sha256::digest(staged_entries.as_bytes())));
         assert!(status["selectedCommit"]["supported"].is_boolean());
         assert_eq!(fs::read(root.join(".git/index")).unwrap(), before);
+    }
+    #[test]
+    fn git_status_reports_and_clears_a_bounded_merge_operation_in_a_linked_worktree() {
+        let temp = tempfile::tempdir().unwrap(); let root = temp.path().join("main"); fs::create_dir(&root).unwrap();
+        git(&root, &["init"]).unwrap(); git(&root, &["config", "user.email", "tests@threadterm.invalid"]).unwrap(); git(&root, &["config", "user.name", "ThreadTerm Tests"]).unwrap();
+        fs::write(root.join("a.txt"), "base\n").unwrap(); git(&root, &["add", "a.txt"]).unwrap(); git(&root, &["commit", "-m", "base"]).unwrap();
+        git(&root, &["checkout", "-b", "topic"]).unwrap(); fs::write(root.join("a.txt"), "topic\n").unwrap(); git(&root, &["commit", "-am", "topic"]).unwrap();
+        git(&root, &["checkout", "master"]).unwrap(); fs::write(root.join("a.txt"), "main\n").unwrap(); git(&root, &["commit", "-am", "main"]).unwrap();
+        let linked = temp.path().join("linked"); git(&root, &["worktree", "add", linked.to_str().unwrap(), "topic"]).unwrap(); assert!(git(&linked, &["merge", "master"]).is_err());
+        let message = git(&linked, &["rev-parse", "--git-path", "MERGE_MSG"]).unwrap(); let message = PathBuf::from(message.trim()); let message = if message.is_absolute() { message } else { linked.join(message) }; fs::write(&message, "x".repeat(5000)).unwrap();
+        let status = git_status(&linked).unwrap(); assert_eq!(status["operation"]["kind"], "merge"); assert!(status["operation"]["head"].is_string()); assert_eq!(status["operation"]["message"].as_str().unwrap().len(), 4096);
+        fs::write(&message, format!("{}é", "x".repeat(4095))).unwrap();
+        assert_eq!(git_status(&linked).unwrap()["operation"]["message"], "x".repeat(4095));
+        git(&linked, &["merge", "--abort"]).unwrap(); assert!(git_status(&linked).unwrap().get("operation").is_none());
+        for (marker, kind, directory) in [("rebase-merge", "rebase", true), ("CHERRY_PICK_HEAD", "cherry-pick", false), ("REVERT_HEAD", "revert", false)] {
+            let marker_path = git(&linked, &["rev-parse", "--git-path", marker]).unwrap();
+            let marker_path = PathBuf::from(marker_path.trim()); let marker_path = if marker_path.is_absolute() { marker_path } else { linked.join(marker_path) };
+            if directory { fs::create_dir(&marker_path).unwrap(); } else { fs::write(&marker_path, "deadbeef\n").unwrap(); }
+            assert_eq!(git_status(&linked).unwrap()["operation"]["kind"], kind);
+            if directory { fs::remove_dir(&marker_path).unwrap(); } else { fs::remove_file(&marker_path).unwrap(); }
+        }
     }
     #[test]
     fn worktree_and_branch_payloads_preserve_nullable_and_optional_fields() {

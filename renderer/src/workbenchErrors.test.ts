@@ -2,6 +2,17 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { workbenchError } from './workbench/errors';
 
+test('merge and divergent pull outcomes have bilingual explanations',()=>{
+ for(const code of ['pull_diverged','no_upstream','git_merge_failed','merge_incomplete','merge_interrupted','merge_completed_after_error']) for(const zh of [true,false]) {
+  const message=workbenchError(new Error(code),zh);
+  assert.notEqual(message,code);
+  assert.match(message,zh?/[\u4e00-\u9fff]/:/[a-z]/i);
+ }
+ assert.equal(workbenchError(new Error('merge_interrupted: git_timeout'),false),'The merge was interrupted before Git recorded it, so your working tree may contain partial merge changes. Review them in Source Control before committing; to retry, discard those changes and run the merge again.');
+ assert.equal(workbenchError(new Error('merge_interrupted: git_timeout'),true),'合并在 Git 记录之前被中断，工作区可能包含部分合并结果。提交前请在源代码管理中检查这些更改；如需重试，请先丢弃这些更改再重新合并。');
+ assert.match(workbenchError(new Error('git_merge_failed: hook refused'),false),/hook refused/);
+});
+
 test('an unavailable checkpoint is explained without hiding the detail', () => {
  const error = new Error('checkpoint_unavailable: git_failed: fatal: Not a valid object name');
  assert.match(workbenchError(error, false), /^The checkpoint objects are missing or their store is unavailable/);

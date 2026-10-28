@@ -114,7 +114,16 @@ test('selected commits carry an exact staged snapshot and reject ambiguous or un
  validateResult('git.commit.selected',{...result,cleanupError:'git_selected_commit_cleanup_failed'});
  assert.throws(()=>validateResult('git.commit.selected',{...result,cleanupError:true}));
  assert.throws(()=>validateResult('git.commit.selected',{...result,retainedStagedPathsTruncated:'yes'}));
- validateResult('git.status',{branch:'main',upstream:null,ahead:0,behind:0,changes:[],selectedCommit:{head,indexFingerprint:fingerprint,supported:false,unsupportedReason:'Git cannot guard symbolic HEAD',gitVersion:'test'}});
+ validateRequest('git.merge',{projectId:'p',branch:'feature/merge',operationId:'merge-branch'});
+ validateRequest('git.merge',{projectId:'p',upstream:true,operationId:'merge-upstream'});
+ for(const target of [{},{branch:'feature/merge',upstream:true},{branch:'feature/merge',upstream:false},{branch:'',upstream:undefined},{upstream:false}]) assert.throws(()=>validateRequest('git.merge',{projectId:'p',operationId:'invalid-merge',...target}));
+ validateResult('git.merge',{output:'Already up to date.',conflicted:false});
+ validateResult('git.merge',{output:'Merge made by the recursive strategy.',conflicted:false,warning:'merge_completed_after_error'});
+ assert.throws(()=>validateResult('git.merge',{output:'',conflicted:false,warning:'merge_incomplete'}));
+ validateResult('git.status',{branch:'main',upstream:null,ahead:0,behind:0,changes:[],operation:{kind:'merge',head:'abc123',message:'Merge upstream'},selectedCommit:{head,indexFingerprint:fingerprint,supported:false,unsupportedReason:'Git cannot guard symbolic HEAD',gitVersion:'test'}});
+ assert.throws(()=>validateResult('git.status',{branch:'main',upstream:null,ahead:0,behind:0,changes:[],operation:{kind:'squash'}}));
+ assert.throws(()=>validateResult('git.status',{branch:'main',upstream:null,ahead:0,behind:0,changes:[],operation:{kind:'merge',head:7}}));
+ assert.throws(()=>validateResult('git.status',{branch:'main',upstream:null,ahead:0,behind:0,changes:[],operation:{kind:'merge',message:false}}));
  assert.throws(()=>validateResult('git.status',{branch:'main',upstream:null,ahead:0,behind:0,changes:[],selectedCommit:{head,indexFingerprint:fingerprint,supported:'yes'}}));
 });
 

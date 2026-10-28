@@ -3,6 +3,12 @@
 const known:Record<string,[string,string]> = {
  unknown_method:['需要重启 ThreadTerm 后台才能使用此功能（当前后台版本较旧）。','Restart the ThreadTerm runtime to use this feature (the running runtime is older).'],
  git_unavailable:['此目录不是 Git 仓库，或未找到 git。','This folder is not a Git repository, or git is not installed.'],
+ pull_diverged:['本地与上游分支已分叉。可合并上游分支以继续。','The local and upstream branches have diverged. Merge the upstream branch to continue.'],
+ no_upstream:['当前分支尚未配置上游。','This branch has no configured upstream.'],
+ git_merge_failed:['Git 合并失败。','The Git merge failed.'],
+ merge_incomplete:['合并尚未完成，仍处于合并状态。请检查合并提示并完成或中止合并。','The merge did not finish and is still in progress. Review the merge banner, then conclude or abort it.'],
+ merge_interrupted:['合并在 Git 记录之前被中断，工作区可能包含部分合并结果。提交前请在源代码管理中检查这些更改；如需重试，请先丢弃这些更改再重新合并。','The merge was interrupted before Git recorded it, so your working tree may contain partial merge changes. Review them in Source Control before committing; to retry, discard those changes and run the merge again.'],
+ merge_completed_after_error:['合并已完成，但 Git 随后报告了错误。请检查结果。','The merge completed, but Git reported an error afterward. Review the result.'],
  git_timeout:['Git 操作超时。','The Git command timed out.'],
  file_exists:['同名文件或文件夹已存在。','A file or folder with that name already exists.'],
  file_not_found:['文件不存在或已被移动。','The file no longer exists.'],
@@ -57,7 +63,7 @@ export function workbenchError(error:unknown, zh:boolean, context?:'discard'):st
   if(context === 'discard' && (code === 'file_conflict' || code === 'index_conflict')) return zh ? '自打开此对话框后文件已发生更改。未丢弃任何更改。请检查更改后重试。' : 'Files changed since you opened this dialog. Nothing was discarded. Review the changes and try again.';
   const marker = text.indexOf(`${code}:`);
   const detail = marker >= 0 ? text.slice(marker + code.length + 1).trim() : '';
-  return known[code][zh ? 0 : 1] + (detail && code !== 'recycle_failed' ? ` ${detail}` : '');
+  return known[code][zh ? 0 : 1] + (detail && code !== 'recycle_failed' && code !== 'merge_interrupted' ? ` ${detail}` : '');
  }
  const git = /git_failed:\s*([\s\S]*)/.exec(text);
  if(git) return git[1].trim() || (zh ? 'Git 命令失败。' : 'The Git command failed.');

@@ -13,12 +13,17 @@ use anyhow::{anyhow, Result};
 use chrono::Utc;
 use rusqlite::{params, OptionalExtension, Transaction};
 use serde_json::{json, Value};
-use std::{fs, path::Path, process::Command, time::Duration};
+use std::{fs, path::Path, time::Duration};
 
 const MAX_PATHS: usize = 500;
 const MAX_MESSAGE_BYTES: usize = 64 * 1024;
 /// Commit and branch switches may run user hooks (lint, post-checkout).
 const HOOK_TIMEOUT: Duration = Duration::from_secs(300);
+
+#[cfg(test)]
+thread_local! {
+    static MERGE_TIMEOUT_OVERRIDE: std::cell::Cell<Option<Duration>> = const { std::cell::Cell::new(None) };
+}
 
 pub fn dispatch(db: &Database, method: &str, params_value: &Value) -> Result<Option<Value>> {
     // This read shares the exact worktree/index snapshot logic with discard, but never
@@ -73,11 +78,13 @@ pub fn dispatch(db: &Database, method: &str, params_value: &Value) -> Result<Opt
         db.bind_operation(operation_id, method, params_value)?;
         return Ok(Some(result));
     }
-    if method == "git.merge" {
-        let branch = required_string(params, "branch")?;
-        validate_merge_target(&root, branch)?;
+    let merge_target = if method == "git.merge" {
+        let target = merge_target(&root, params)?;
         ensure_clean(&root)?;
-    }
+        Some(target)
+    } else {
+        None
+    };
     // Validation and fences run before the claim so a rejected request stays retryable.
     match method {
         "git.index.write" => {
@@ -183,7 +190,7 @@ pub fn dispatch(db: &Database, method: &str, params_value: &Value) -> Result<Opt
             json!({"commit":commit.trim()})
         }
         "git.fetch" => json!({"output":network(&root, &["fetch", "--prune"])?}),
-        "git.pull" => json!({"output":network(&root, &["pull", "--ff-only"])?}),
+        "git.pull" => json!({"output":pull(&root)?}),
         "git.push" => {
             if params.get("setUpstream").and_then(Value::as_bool) == Some(true) {
                 let remote = default_remote(&root)?;
@@ -265,7 +272,21 @@ pub fn dispatch(db: &Database, method: &str, params_value: &Value) -> Result<Opt
             })?;
             json!({"branch":branch})
         }
-        "git.merge" => merge(&root, required_string(params, "branch")?)?,
+        "git.merge" => match merge(&root, merge_target.as_deref().ok_or_else(|| anyhow!("invalid_request"))?) {
+            Ok(result) => result,
+            Err(error) => {
+                // Even a failed or restored merge changes the externally observed Git
+                // state. Keep its claim uncertain, but always invalidate scoped readers.
+                db.transaction(|tx| {
+                    tx.execute(
+                        "INSERT INTO outbox(event,data,created_at) VALUES('state.changed',?,?)",
+                        params![serde_json::to_string(&json!({"kind":"git","projectId":project_id,"worktreePath":worktree}))?, Utc::now().to_rfc3339()],
+                    )?;
+                    Ok(())
+                })?;
+                return Err(error);
+            }
+        },
         "git.merge.abort" => json!({"output":git(&root, &["merge", "--abort"])?}),
         _ => unreachable!(),
     };
@@ -697,6 +718,30 @@ fn network(root: &Path, args: &[&str]) -> Result<String> {
     Ok(String::from_utf8_lossy(&output).into_owned())
 }
 
+fn pull(root: &Path) -> Result<String> {
+    // No remote/refspec override: Git honors the current branch's configured
+    // fetch remote. Network failures must never be relabeled as divergence.
+    let fetched = network(root, &["fetch"])?;
+    match run_git(root, &["merge", "--ff-only", "@{upstream}"], &[], None, HOOK_TIMEOUT) {
+        Ok(output) => Ok(format!("{fetched}{}", String::from_utf8_lossy(&output))),
+        Err(error) => {
+            let upstream = git(root, &["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"]);
+            let counts = git(root, &["rev-list", "--left-right", "--count", "@{upstream}...HEAD"]);
+            if upstream.is_ok() {
+                if let Ok(counts) = counts {
+                    let values = counts.split_whitespace().map(str::parse::<u64>).collect::<std::result::Result<Vec<_>, _>>();
+                    if let Ok(values) = values {
+                        if let [behind, ahead] = values.as_slice() {
+                            if *ahead > 0 && *behind > 0 { return Err(anyhow!("pull_diverged: {ahead} {behind}")); }
+                        }
+                    }
+                }
+            }
+            Err(error)
+        }
+    }
+}
+
 fn default_remote(root: &Path) -> Result<String> {
     let remotes: Vec<String> = git(root, &["remote"])?
         .lines()
@@ -738,32 +783,58 @@ fn validate_merge_target(root: &std::path::Path, branch: &str) -> Result<()> {
         .map(|_| ())
         .map_err(|_| anyhow!("branch_not_found"))
 }
+fn merge_target(root: &Path, params: &serde_json::Map<String, Value>) -> Result<String> {
+    match (params.get("branch"), params.get("upstream")) {
+        (Some(Value::String(branch)), None) if !branch.is_empty() => {
+            validate_merge_target(root, branch)?;
+            Ok(branch.to_owned())
+        }
+        (None, Some(Value::Bool(true))) => git(root, &["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"])
+            .and_then(|upstream| {
+                let upstream = upstream.trim().to_owned();
+                if upstream.is_empty() { Err(anyhow!("no_upstream")) } else { Ok(upstream) }
+            })
+            .map_err(|_| anyhow!("no_upstream")),
+        _ => Err(anyhow!("invalid_request")),
+    }
+}
 fn merge(root: &std::path::Path, branch: &str) -> Result<Value> {
-    let mut command = Command::new("git");
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        command.creation_flags(0x0800_0000);
-    }
-    let output = command
-        .args(["merge", "--no-edit", "--", branch])
-        .current_dir(root)
-        .output()?;
-    let text = format!(
-        "{}{}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    );
-    if output.status.success() {
-        return Ok(json!({"output":text,"conflicted":false}));
-    }
-    let conflicted = !git(root, &["diff", "--name-only", "--diff-filter=U"])?
-        .trim()
-        .is_empty();
-    if conflicted {
-        Ok(json!({"output":text,"conflicted":true}))
-    } else {
-        Err(anyhow!("git_merge_failed: {text}"))
+    #[cfg(test)]
+    let timeout = MERGE_TIMEOUT_OVERRIDE.with(|value| value.get()).unwrap_or(HOOK_TIMEOUT);
+    #[cfg(not(test))]
+    let timeout = HOOK_TIMEOUT;
+    merge_with_timeout(root, branch, timeout)
+}
+fn merge_with_timeout(root: &std::path::Path, branch: &str, timeout: Duration) -> Result<Value> {
+    // Preflight cleanliness is not exclusive ownership: another writer can
+    // change the index/worktree while Git or a hook is running.
+    let before = git(root, &["rev-parse", "HEAD"])?;
+    match run_git(root, &["merge", "--no-edit", "--", branch], &[], None, timeout) {
+        Ok(output) => Ok(json!({"output":String::from_utf8_lossy(&output),"conflicted":false})),
+        Err(error) => {
+            let text = error.to_string();
+            let after = git(root, &["rev-parse", "HEAD"])?;
+            if before.trim() != after.trim() {
+                return Ok(json!({"output":text,"conflicted":false,"warning":"merge_completed_after_error"}));
+            }
+            let merge_head = git(root, &["rev-parse", "--git-path", "MERGE_HEAD"])?;
+            let merge_head = Path::new(merge_head.trim());
+            let merge_head = if merge_head.is_absolute() { merge_head.to_owned() } else { root.join(merge_head) };
+            if merge_head.exists() {
+                let conflicted = !git(root, &["diff", "--name-only", "--diff-filter=U"])?.trim().is_empty();
+                return if conflicted {
+                    Ok(json!({"output":text,"conflicted":true}))
+                } else {
+                    Err(anyhow!("merge_incomplete: {text}"))
+                };
+            }
+            let staged = git(root, &["diff", "--cached", "--name-only", "HEAD"])?;
+            let unstaged = git(root, &["diff", "--name-only", "HEAD"])?;
+            if !staged.trim().is_empty() || !unstaged.trim().is_empty() {
+                return Err(anyhow!("merge_interrupted: {text}"));
+            }
+            Err(anyhow!("git_merge_failed: {text}"))
+        }
     }
 }
 fn required_string<'a>(object: &'a serde_json::Map<String, Value>, key: &str) -> Result<&'a str> {
@@ -869,7 +940,7 @@ pub(crate) fn complete(
 mod tests {
     use super::*;
     use crate::workspace_services::initialize;
-    use std::fs;
+    use std::{fs, process::Command};
 
     fn setup() -> (tempfile::TempDir, Database, String) {
         let temp = tempfile::tempdir().unwrap();
@@ -1042,6 +1113,162 @@ mod tests {
             "main"
         );
     }
+    #[test]
+    fn merge_upstream_and_divergent_pull_use_configured_tracking() {
+        let (temp, db, project_id) = setup();
+        assert_eq!(
+            dispatch(&db, "git.merge", &json!({"projectId":project_id,"upstream":true,"operationId":"missing"}))
+                .unwrap_err()
+                .to_string(),
+            "no_upstream"
+        );
+        assert_eq!(
+            dispatch(&db, "git.merge", &json!({"projectId":project_id,"branch":"feature","upstream":true,"operationId":"xor"}))
+                .unwrap_err()
+                .to_string(),
+            "invalid_request"
+        );
+        assert_eq!(
+            dispatch(&db, "git.merge", &json!({"projectId":project_id,"branch":"origin/main","operationId":"remote-branch"}))
+                .unwrap_err()
+                .to_string(),
+            "branch_not_found"
+        );
+        git(temp.path(), &["branch", "-m", "main"]).unwrap();
+        let remote = tempfile::tempdir().unwrap();
+        git(remote.path(), &["init", "--bare"]).unwrap();
+        git(temp.path(), &["remote", "add", "origin", remote.path().to_str().unwrap()])
+            .unwrap();
+        git(temp.path(), &["push", "-u", "origin", "main"]).unwrap();
+        let other_parent = tempfile::tempdir().unwrap();
+        let other = other_parent.path().join("other");
+        assert!(Command::new("git")
+            .args(["clone", "-b", "main", remote.path().to_str().unwrap(), other.to_str().unwrap()])
+            .output()
+            .unwrap()
+            .status
+            .success());
+        git(&other, &["config", "user.email", "tests@threadterm.invalid"]).unwrap();
+        git(&other, &["config", "user.name", "ThreadTerm Tests"]).unwrap();
+        fs::write(other.join("upstream.txt"), "upstream\n").unwrap();
+        git(&other, &["add", "upstream.txt"]).unwrap();
+        git(&other, &["commit", "-m", "upstream"]).unwrap();
+        git(&other, &["push"]).unwrap();
+        git(temp.path(), &["fetch", "origin"]).unwrap();
+        assert_eq!(
+            dispatch(&db, "git.merge", &json!({"projectId":project_id,"upstream":true,"operationId":"upstream"}))
+                .unwrap()
+                .unwrap()["conflicted"],
+            false
+        );
+        assert_eq!(
+            fs::read_to_string(temp.path().join("upstream.txt")).unwrap().lines().collect::<Vec<_>>(),
+            ["upstream"]
+        );
+
+        fs::write(temp.path().join("local.txt"), "local\n").unwrap();
+        git(temp.path(), &["add", "local.txt"]).unwrap();
+        git(temp.path(), &["commit", "-m", "local"]).unwrap();
+        fs::write(other.join("second.txt"), "second\n").unwrap();
+        git(&other, &["add", "second.txt"]).unwrap();
+        git(&other, &["commit", "-m", "second"]).unwrap();
+        git(&other, &["push"]).unwrap();
+        git(temp.path(), &["fetch", "origin"]).unwrap();
+        let before = git(temp.path(), &["rev-parse", "HEAD"]).unwrap();
+        assert_eq!(
+            dispatch(&db, "git.pull", &json!({"projectId":project_id,"operationId":"diverged"}))
+                .unwrap_err()
+                .to_string(),
+            "pull_diverged: 1 1"
+        );
+        assert_eq!(git(temp.path(), &["rev-parse", "HEAD"]).unwrap(), before);
+        assert!(git(temp.path(), &["status", "--porcelain"]).unwrap().trim().is_empty());
+        git(temp.path(), &["remote", "set-url", "origin", temp.path().join("missing-remote").to_str().unwrap()]).unwrap();
+        let error = dispatch(&db, "git.pull", &json!({"projectId":project_id,"operationId":"unreachable"})).unwrap_err().to_string();
+        assert!(error.starts_with("git_failed:"), "{error}");
+    }
+    struct MergeTimeout;
+    impl MergeTimeout {
+        fn install(timeout: Duration) -> Self { MERGE_TIMEOUT_OVERRIDE.with(|value| value.set(Some(timeout))); Self }
+    }
+    impl Drop for MergeTimeout { fn drop(&mut self) { MERGE_TIMEOUT_OVERRIDE.with(|value| value.set(None)); } }
+
+    struct HookProcess { pid: std::path::PathBuf }
+    impl Drop for HookProcess {
+        fn drop(&mut self) {
+            let Ok(pid) = fs::read_to_string(&self.pid) else { return; };
+            #[cfg(windows)]
+            { use std::os::windows::process::CommandExt; let mut command = Command::new("taskkill"); command.creation_flags(0x0800_0000).args(["/PID", pid.trim(), "/T", "/F"]); let _ = command.output(); }
+            #[cfg(not(windows))]
+            { let _ = Command::new("kill").args(["-KILL", pid.trim()]).output(); }
+        }
+    }
+    fn divergent_merge_fixture(root: &Path) {
+        git(root, &["checkout", "-b", "feature"]).unwrap();
+        fs::write(root.join("feature.txt"), "feature\n").unwrap(); git(root, &["add", "feature.txt"]).unwrap(); git(root, &["commit", "-m", "feature"]).unwrap();
+        git(root, &["checkout", "master"]).unwrap();
+        fs::write(root.join("main.txt"), "main\n").unwrap(); git(root, &["add", "main.txt"]).unwrap(); git(root, &["commit", "-m", "main"]).unwrap();
+    }
+    fn sleeping_hook(root: &Path, name: &str) -> HookProcess {
+        let pid = root.join(".git/hooks/hook.pid");
+        #[cfg(windows)] let source = "#!/bin/sh\nexec powershell -NoProfile -Command \"\\$PID | Out-File -Encoding ascii .git/hooks/hook.pid; Start-Sleep -Seconds 30\"\n";
+        #[cfg(not(windows))] let source = "#!/bin/sh\necho $$ > .git/hooks/hook.pid\nexec sleep 30\n";
+        fs::write(root.join(".git/hooks").join(name), source).unwrap();
+        #[cfg(unix)] { use std::os::unix::fs::PermissionsExt; let path = root.join(".git/hooks").join(name); let mut permissions = fs::metadata(&path).unwrap().permissions(); permissions.set_mode(0o755); fs::set_permissions(path, permissions).unwrap(); }
+        HookProcess { pid }
+    }
+    #[test]
+    fn merge_hook_timeouts_preserve_concurrent_work_or_publish_warning() {
+        let (temp, db, project) = setup(); divergent_merge_fixture(temp.path());
+        let timeout = MergeTimeout::install(Duration::from_secs(3)); let hook = sleeping_hook(temp.path(), "pre-merge-commit");
+        let before = git(temp.path(), &["rev-parse", "HEAD"]).unwrap(); let events = outbox_count(&db);
+        let error = std::thread::scope(|scope| {
+            // Wait until Git has changed the tree and entered the hook, so this
+            // edit is definitely after ensure_clean and during the merge.
+            let writer = scope.spawn(|| {
+                let deadline = std::time::Instant::now() + Duration::from_secs(5);
+                while !hook.pid.exists() {
+                    assert!(std::time::Instant::now() < deadline, "merge hook did not start");
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+                fs::write(temp.path().join("concurrent.txt"), "concurrent user work\n").unwrap();
+                git(temp.path(), &["add", "concurrent.txt"]).unwrap();
+            });
+            let result = dispatch(&db, "git.merge", &json!({"projectId":project,"branch":"feature","operationId":"pre-timeout"}));
+            writer.join().unwrap();
+            result.unwrap_err().to_string()
+        });
+        assert!(error.starts_with("merge_interrupted:") && error.contains("git_timeout"), "{error}");
+        assert_eq!(git(temp.path(), &["rev-parse", "HEAD"]).unwrap(), before);
+        assert!(!temp.path().join(".git/MERGE_HEAD").exists());
+        assert!(!git(temp.path(), &["status", "--porcelain"]).unwrap().trim().is_empty());
+        assert_eq!(git(temp.path(), &["show", ":feature.txt"]).unwrap().trim(), "feature");
+        assert_eq!(git(temp.path(), &["show", ":concurrent.txt"]).unwrap().trim(), "concurrent user work");
+        assert_eq!(fs::read_to_string(temp.path().join("concurrent.txt")).unwrap(), "concurrent user work\n");
+        assert!(hook.pid.exists()); assert_eq!(outbox_count(&db), events + 1);
+        assert_eq!(last_event(&db), json!({"kind":"git","projectId":project,"worktreePath":null}));
+        drop(hook); drop(timeout);
+
+        let (temp, db, project) = setup(); divergent_merge_fixture(temp.path());
+        let timeout = MergeTimeout::install(Duration::from_secs(2)); let hook = sleeping_hook(temp.path(), "post-merge"); let events = outbox_count(&db);
+        let result = dispatch(&db, "git.merge", &json!({"projectId":project,"branch":"feature","operationId":"post-timeout"})).unwrap().unwrap();
+        assert_eq!(result["conflicted"], false); assert_eq!(result["warning"], "merge_completed_after_error");
+        assert!(result["output"].as_str().unwrap().contains("git_timeout"));
+        assert!(hook.pid.exists()); assert_eq!(outbox_count(&db), events + 1); assert_eq!(last_event(&db), json!({"kind":"git","projectId":project,"worktreePath":null}));
+        drop(hook); drop(timeout);
+    }
+    #[test]
+    fn pre_merge_hook_failure_is_incomplete_when_git_leaves_merge_head() {
+        let (temp, db, project) = setup(); divergent_merge_fixture(temp.path());
+        let hook = temp.path().join(".git/hooks/pre-merge-commit"); fs::write(&hook, "#!/bin/sh\nexit 1\n").unwrap();
+        #[cfg(unix)] { use std::os::unix::fs::PermissionsExt; let mut permissions = fs::metadata(&hook).unwrap().permissions(); permissions.set_mode(0o755); fs::set_permissions(&hook, permissions).unwrap(); }
+        let events = outbox_count(&db); let error = dispatch(&db, "git.merge", &json!({"projectId":project,"branch":"feature","operationId":"pre-fail"})).unwrap_err().to_string();
+        assert!(error.contains("merge_incomplete")); assert!(temp.path().join(".git/MERGE_HEAD").exists());
+        assert!(git(temp.path(), &["diff", "--name-only", "--diff-filter=U"]).unwrap().trim().is_empty());
+        assert_eq!(outbox_count(&db), events + 1); assert_eq!(last_event(&db), json!({"kind":"git","projectId":project,"worktreePath":null}));
+    }
+
+    fn outbox_count(db: &Database) -> i64 { db.transaction(|tx| Ok(tx.query_row("SELECT COUNT(*) FROM outbox", [], |row| row.get(0))?)).unwrap() }
 
     fn call(db: &Database, method: &str, params: Value) -> Result<Value> {
         dispatch(db, method, &params).map(Option::unwrap)
