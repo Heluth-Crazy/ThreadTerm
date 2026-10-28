@@ -18,6 +18,8 @@ const known:Record<string,[string,string]> = {
  branch_not_merged:['该分支尚未合并。','This branch is not fully merged.'],
  branch_not_found:['找不到该分支。','Branch not found.'],
  invalid_branch:['分支名称无效。','Invalid branch name.'],
+ invalid_request:['请求无效。请检查工作树选项后重试。','The request is invalid. Check the worktree options and try again.'],
+ start_point_not_found:['找不到所选基准提交或分支。请刷新分支后重试。','The selected base commit or branch could not be found. Refresh branches and try again.'],
  no_remote:['没有可推送的远程仓库。','No remote is configured to publish to.'],
  review_unavailable:['此会话没有可审查的 Git 工作区。','This session has no Git workspace to review.'],
  checkpoint_missing:['检查点不存在。','The checkpoint no longer exists.'],

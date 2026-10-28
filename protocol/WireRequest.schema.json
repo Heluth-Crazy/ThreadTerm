@@ -4613,6 +4613,9 @@
         "createBranch": {
           "type": "boolean"
         },
+        "startPoint": {
+          "type": "string"
+        },
         "operationId": {
           "type": "string"
         }

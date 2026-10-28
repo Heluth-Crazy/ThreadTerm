@@ -27,3 +27,9 @@ test('fingerprint rejects non-file targets with a readable error', () => {
  assert.equal(workbenchError(new Error('invalid_file_type'), false), 'The target is not a regular file and cannot be used for this operation.');
  assert.equal(workbenchError(new Error('invalid_file_type'), true), '目标不是普通文件，无法执行此操作。');
 });
+
+test('worktree base errors explain how to recover', () => {
+ assert.equal(workbenchError(new Error('start_point_not_found'), false), 'The selected base commit or branch could not be found. Refresh branches and try again.');
+ assert.equal(workbenchError(new Error('start_point_not_found'), true), '找不到所选基准提交或分支。请刷新分支后重试。');
+ assert.equal(workbenchError(new Error('invalid_request'), false), 'The request is invalid. Check the worktree options and try again.');
+});

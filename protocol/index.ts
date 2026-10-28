@@ -941,7 +941,7 @@ export interface RequestMap {
  'session.documents.pin': [{sessionId:string;path:string;operationId:string},SessionDocument[]];
  'session.documents.unpin': [{sessionId:string;path:string;operationId:string},SessionDocument[]];
  'worktree.list': [{projectId:string},Worktree[]];
- 'worktree.create': [{projectId:string;path:string;branch:string;createBranch:boolean;operationId:string},Worktree];
+ 'worktree.create': [{projectId:string;path:string;branch:string;createBranch:boolean;startPoint?:string;operationId:string},Worktree];
  'worktree.remove': [{id:string;operationId:string},null];
  'worktree.branches': [{projectId:string},LocalBranch[]];
  'worktree.relocate': [{id:string;path:string;operationId:string},Worktree];
@@ -1190,6 +1190,7 @@ export function validateRequest(method:unknown,params:unknown):asserts method is
  if(['git.commit.show','git.commit.diff'].includes(m)&&!/^[0-9a-f]{4,64}$/i.test(String(params.commit))) throw new Error('Invalid commit');
  if(m==='session.retry.update' && (typeof params.enabled!=='boolean'||(params.maxRetries!==undefined&&(!Number.isInteger(params.maxRetries)||Number(params.maxRetries)<1||Number(params.maxRetries)>10))||(params.delaySeconds!==undefined&&(!Number.isInteger(params.delaySeconds)||Number(params.delaySeconds)<1||Number(params.delaySeconds)>3600)))) throw new Error('Invalid retry policy');
  if(m==='worktree.create'&&typeof params.createBranch!=='boolean') throw new Error('Invalid branch mode');
+ if(m==='worktree.create'&&params.startPoint!==undefined&&(params.createBranch!==true||typeof params.startPoint!=='string'||!params.startPoint||params.startPoint.length>255||params.startPoint.startsWith('-'))) throw new Error('Invalid start point');
  if(m==='inbox.read'&&(!Array.isArray(params.ids)||params.ids.length>500||params.ids.some(id=>typeof id!=='string'||!id))) throw new Error('Invalid inbox ids');
  if(m==='workspace.save') validateLayout(params.layout);
  if(m==='terminal.read') {

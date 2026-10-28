@@ -773,3 +773,20 @@ test('git fingerprints snapshots and discard require exact nullable maps',()=>{
  validateRequest('git.discard',{projectId:'p',paths:['__proto__'],expectedFingerprints:ownProto,expectedIndexFingerprints:ownProto,operationId:'discard-own-proto'});
  for(const params of [{projectId:'p',paths:[]},{projectId:'p',paths:Array.from({length:501},(_,i)=>'f'+i)}]) assert.throws(()=>validateRequest('git.fingerprints',params));
 });
+
+
+test('worktree creation accepts a bounded base only for new branches',()=>{
+ const request={projectId:'p',path:'C:/worktree',branch:'feature/base',createBranch:true,operationId:'worktree-base'};
+ validateRequest('worktree.create',request);
+ for(const startPoint of ['main','origin/main','a'.repeat(40),'x'.repeat(255)]) validateRequest('worktree.create',{...request,startPoint});
+ validateRequest('worktree.create',{...request,createBranch:false});
+ for(const startPoint of ['', '-main', 'x'.repeat(256), 1, null]) assert.throws(()=>validateRequest('worktree.create',{...request,startPoint}));
+ assert.throws(()=>validateRequest('worktree.create',{...request,createBranch:false,startPoint:'main'}));
+});
+
+
+test('worktree bases accept multibyte refs within the character limit',()=>{
+ const request={projectId:'p',path:'C:/worktree',branch:'feature/base',createBranch:true,operationId:'worktree-multibyte-base'};
+ for(const startPoint of ['基'.repeat(43)+'/'+'准'.repeat(42),'基'.repeat(255)]) validateRequest('worktree.create',{...request,startPoint});
+ assert.throws(()=>validateRequest('worktree.create',{...request,startPoint:'基'.repeat(256)}));
+});
