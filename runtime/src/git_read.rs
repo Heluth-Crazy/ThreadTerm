@@ -15,7 +15,7 @@ use std::{
     io::{Read, Write},
     path::{Component, Path, PathBuf},
     process::{Child, Command, ExitStatus, Stdio},
-    sync::mpsc,
+    sync::{mpsc, Arc, Mutex},
     time::{Duration, Instant},
 };
 
@@ -24,6 +24,7 @@ pub(crate) const NETWORK_TIMEOUT: Duration = Duration::from_secs(120);
 pub(crate) const MAX_TEXT_BYTES: usize = 1024 * 1024;
 const MAX_LOG_PAGE: usize = 200;
 const MAX_GIT_STDERR_BYTES: usize = 64 * 1024;
+const POST_EXIT_STDERR_GRACE: Duration = Duration::from_secs(2);
 const ZERO_COMMIT: &str = "0000000000000000000000000000000000000000";
 
 fn send_trace_git_step(args: &[&str]) -> &'static str {
@@ -77,16 +78,23 @@ pub(crate) fn run_git(
     }
     let trace_step = send_trace_git_step(args);
     let trace_timer = crate::send_trace::Timer::start();
-    crate::send_trace::emit(crate::send_trace::Event::new("review.git.spawn")
-        .method("chat.send").step(trace_step));
+    crate::send_trace::emit(
+        crate::send_trace::Event::new("review.git.spawn")
+            .method("chat.send")
+            .step(trace_step),
+    );
     #[cfg(test)]
     git_barrier::pass(root);
     let mut child = match command.spawn().context("launching git") {
         Ok(child) => child,
         Err(error) => {
-            crate::send_trace::emit(crate::send_trace::Event::new("review.git.exit")
-                .method("chat.send").step(trace_step).outcome("launch_error")
-                .duration_us(trace_timer.elapsed_us()));
+            crate::send_trace::emit(
+                crate::send_trace::Event::new("review.git.exit")
+                    .method("chat.send")
+                    .step(trace_step)
+                    .outcome("launch_error")
+                    .duration_us(trace_timer.elapsed_us()),
+            );
             return Err(error);
         }
     };
@@ -97,56 +105,55 @@ pub(crate) fn run_git(
             let _ = pipe.write_all(&data);
         });
     }
-    let mut stdout = child.stdout.take().ok_or_else(|| anyhow!("git_failed"))?;
-    let mut stderr = child.stderr.take().ok_or_else(|| anyhow!("git_failed"))?;
-    let out = std::thread::spawn(move || {
-        let mut bytes = Vec::new();
-        let _ = stdout.read_to_end(&mut bytes);
-        bytes
-    });
-    let err = std::thread::spawn(move || {
-        let mut bytes = Vec::new();
-        let _ = stderr.read_to_end(&mut bytes);
-        bytes
-    });
+    let stdout = child.stdout.take().ok_or_else(|| anyhow!("git_failed"))?;
+    let stderr = child.stderr.take().ok_or_else(|| anyhow!("git_failed"))?;
     let deadline = Instant::now() + timeout;
-    let status = loop {
-        match child.try_wait() {
-            Ok(Some(status)) => break status,
-            Ok(None) => {}
-            Err(error) => {
-                crate::send_trace::emit(crate::send_trace::Event::new("review.git.exit")
-                    .method("chat.send").step(trace_step).outcome("error")
-                    .duration_us(trace_timer.elapsed_us()));
-                return Err(error.into());
-            }
+    let (status, stdout, stderr) = match git_readers(
+        &mut child,
+        move || read_git_output(stdout),
+        stderr,
+        usize::MAX,
+        deadline,
+    ) {
+        Ok(result) => result,
+        Err(error) => {
+            crate::send_trace::emit(
+                crate::send_trace::Event::new("review.git.exit")
+                    .method("chat.send")
+                    .step(trace_step)
+                    .outcome(if error.to_string() == "git_timeout" {
+                        "timeout"
+                    } else {
+                        "error"
+                    })
+                    .duration_us(trace_timer.elapsed_us()),
+            );
+            return Err(error);
         }
-        if Instant::now() >= deadline {
-            let _ = child.kill();
-            let _ = child.wait();
-            // Reader threads are detached: a grandchild (ssh, credential helper)
-            // may keep the pipes open after Git itself is gone.
-            crate::send_trace::emit(crate::send_trace::Event::new("review.git.exit")
-                .method("chat.send").step(trace_step).outcome("timeout")
-                .duration_us(trace_timer.elapsed_us()));
-            return Err(anyhow!("git_timeout"));
-        }
-        std::thread::sleep(Duration::from_millis(5));
     };
-    let stdout = out.join().unwrap_or_default();
-    let stderr = err.join().unwrap_or_default();
+    // Match the former join().unwrap_or_default() if a reader panics.
+    let stdout = stdout.unwrap_or_default();
+    let stderr = stderr.unwrap_or_default();
     if !status.success() {
-        crate::send_trace::emit(crate::send_trace::Event::new("review.git.exit")
-            .method("chat.send").step(trace_step).outcome("error")
-            .duration_us(trace_timer.elapsed_us()));
+        crate::send_trace::emit(
+            crate::send_trace::Event::new("review.git.exit")
+                .method("chat.send")
+                .step(trace_step)
+                .outcome("error")
+                .duration_us(trace_timer.elapsed_us()),
+        );
         return Err(anyhow!(
             "git_failed: {}",
             String::from_utf8_lossy(&stderr).trim()
         ));
     }
-    crate::send_trace::emit(crate::send_trace::Event::new("review.git.exit")
-        .method("chat.send").step(trace_step).outcome("ok")
-        .duration_us(trace_timer.elapsed_us()));
+    crate::send_trace::emit(
+        crate::send_trace::Event::new("review.git.exit")
+            .method("chat.send")
+            .step(trace_step)
+            .outcome("ok")
+            .duration_us(trace_timer.elapsed_us()),
+    );
     Ok(stdout)
 }
 
@@ -355,20 +362,47 @@ pub(crate) fn fingerprint_reader(mut reader: impl Read) -> Result<String> {
     }
 }
 
-fn bounded_stderr(mut reader: impl Read) -> Vec<u8> {
-    let mut kept = Vec::new();
+/// Owns retained stderr while a reader may outlive its caller. Taking a snapshot
+/// disables further retention; the detached thread keeps draining the pipe.
+struct GitStderrCapture(Arc<Mutex<Option<Vec<u8>>>>);
+
+impl GitStderrCapture {
+    fn new() -> Self {
+        Self(Arc::new(Mutex::new(Some(Vec::new()))))
+    }
+
+    fn take(&self) -> Vec<u8> {
+        self.0
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .take()
+            .unwrap_or_default()
+    }
+}
+
+impl Drop for GitStderrCapture {
+    fn drop(&mut self) {
+        let _ = self.take();
+    }
+}
+
+fn capture_git_stderr(mut reader: impl Read, retained: Arc<Mutex<Option<Vec<u8>>>>, limit: usize) {
     let mut buffer = [0; 8 * 1024];
     loop {
-        let Ok(read) = reader.read(&mut buffer) else {
-            break;
+        let read = match reader.read(&mut buffer) {
+            Ok(0) => break,
+            Ok(read) => read,
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(_) => break,
         };
-        if read == 0 {
-            break;
+        let mut retained = retained
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if let Some(kept) = retained.as_mut() {
+            let remaining = limit.saturating_sub(kept.len());
+            kept.extend_from_slice(&buffer[..read.min(remaining)]);
         }
-        let remaining = MAX_GIT_STDERR_BYTES.saturating_sub(kept.len());
-        kept.extend_from_slice(&buffer[..read.min(remaining)]);
     }
-    kept
 }
 
 fn stop_blob_child(child: &mut Child) {
@@ -378,19 +412,33 @@ fn stop_blob_child(child: &mut Child) {
     }
 }
 
-fn blob_fingerprint_readers(
+fn read_git_output(mut reader: impl Read) -> Vec<u8> {
+    let mut bytes = Vec::new();
+    let _ = reader.read_to_end(&mut bytes);
+    bytes
+}
+
+/// Waits for Git and stdout within one deadline. After Git exits, stderr gets
+/// only a short grace before returning its snapshot with the real exit status.
+/// Disconnected readers retain each caller's existing panic policy.
+fn git_readers<O: Send + 'static>(
     child: &mut Child,
-    stdout: impl Read + Send + 'static,
+    stdout: impl FnOnce() -> O + Send + 'static,
     stderr: impl Read + Send + 'static,
+    stderr_limit: usize,
     deadline: Instant,
-) -> Result<(ExitStatus, String, Vec<u8>)> {
+) -> Result<(ExitStatus, Option<O>, Option<Vec<u8>>)> {
     let (out_tx, out_rx) = mpsc::sync_channel(1);
     let (err_tx, err_rx) = mpsc::sync_channel(1);
+    let stderr_capture = GitStderrCapture::new();
+    let retained = Arc::clone(&stderr_capture.0);
+    // Detached readers may outlive Git when a descendant retains a pipe.
     std::thread::spawn(move || {
-        let _ = out_tx.send(fingerprint_reader(stdout));
+        let _ = out_tx.send(stdout());
     });
     std::thread::spawn(move || {
-        let _ = err_tx.send(bounded_stderr(stderr));
+        capture_git_stderr(stderr, retained, stderr_limit);
+        let _ = err_tx.send(());
     });
     let status = loop {
         match child.try_wait() {
@@ -407,25 +455,41 @@ fn blob_fingerprint_readers(
         }
         std::thread::sleep(Duration::from_millis(5));
     };
-    let fingerprint = match out_rx.recv_timeout(deadline.saturating_duration_since(Instant::now()))
-    {
-        Ok(result) => result?,
+    let stderr_deadline = deadline.min(Instant::now() + POST_EXIT_STDERR_GRACE);
+    let stdout = match out_rx.recv_timeout(deadline.saturating_duration_since(Instant::now())) {
+        Ok(value) => Some(value),
+        Err(mpsc::RecvTimeoutError::Disconnected) => None,
         Err(mpsc::RecvTimeoutError::Timeout) => {
             stop_blob_child(child);
             return Err(anyhow!("git_timeout"));
         }
-        Err(mpsc::RecvTimeoutError::Disconnected) => return Err(anyhow!("git_failed")),
     };
-    let stderr = match err_rx.recv_timeout(deadline.saturating_duration_since(Instant::now()))
-    {
-        Ok(stderr) => stderr,
-        Err(mpsc::RecvTimeoutError::Timeout) => {
-            stop_blob_child(child);
-            return Err(anyhow!("git_timeout"));
-        }
-        Err(mpsc::RecvTimeoutError::Disconnected) => return Err(anyhow!("git_failed")),
-    };
-    Ok((status, fingerprint, stderr))
+    let stderr =
+        match err_rx.recv_timeout(stderr_deadline.saturating_duration_since(Instant::now())) {
+            Ok(()) | Err(mpsc::RecvTimeoutError::Timeout) => Some(stderr_capture.take()),
+            Err(mpsc::RecvTimeoutError::Disconnected) => None,
+        };
+    Ok((status, stdout, stderr))
+}
+
+fn blob_fingerprint_readers(
+    child: &mut Child,
+    stdout: impl Read + Send + 'static,
+    stderr: impl Read + Send + 'static,
+    deadline: Instant,
+) -> Result<(ExitStatus, String, Vec<u8>)> {
+    let (status, fingerprint, stderr) = git_readers(
+        child,
+        move || fingerprint_reader(stdout),
+        stderr,
+        MAX_GIT_STDERR_BYTES,
+        deadline,
+    )?;
+    Ok((
+        status,
+        fingerprint.ok_or_else(|| anyhow!("git_failed"))??,
+        stderr.ok_or_else(|| anyhow!("git_failed"))?,
+    ))
 }
 
 /// Returns the SHA-256 fingerprint of an object without applying text-size limits.
@@ -1065,17 +1129,102 @@ mod tests {
         assert_eq!(error.to_string(), "git_timeout");
     }
 
+    // Use Git's shell to kill its background PID, including the MSYS PID on Windows.
+    struct HeldGitPipe(tempfile::TempDir);
+
+    impl HeldGitPipe {
+        fn new() -> Self {
+            Self(tempfile::tempdir().unwrap())
+        }
+    }
+
+    impl Drop for HeldGitPipe {
+        fn drop(&mut self) {
+            let mut command = Command::new("git");
+            command
+                .arg("-C")
+                .arg(self.0.path())
+                .args(["-c", "alias.release=!kill $(cat held.pid)", "release"])
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null());
+            #[cfg(windows)]
+            {
+                use std::os::windows::process::CommandExt;
+                command.creation_flags(0x0800_0000);
+            }
+            let _ = command.status();
+        }
+    }
+
+    #[test]
+    fn run_git_deadline_survives_exited_git_with_held_stderr() {
+        let held = HeldGitPipe::new();
+        let started = Instant::now();
+        let stdout = run_git(
+            held.0.path(),
+            &["-c", "alias.hold=!sleep 30 </dev/null >/dev/null & echo $! > held.pid; printf 'git stdout'; printf 'before exit' >&2", "hold"],
+            &[], None, Duration::from_secs(10),
+        ).unwrap();
+        assert_eq!(stdout, b"git stdout");
+        assert!(held.0.path().join("held.pid").is_file());
+        assert!(started.elapsed() < Duration::from_millis(2750));
+    }
+
+    #[test]
+    fn run_git_preserves_failed_exit_and_partial_held_stderr() {
+        let held = HeldGitPipe::new();
+        let started = Instant::now();
+        let error = run_git(
+            held.0.path(),
+            &["-c", "alias.hold=!sleep 30 </dev/null >/dev/null & echo $! > held.pid; printf '%070000d' 0 >&2; printf 'before exit' >&2; exit 7", "hold"],
+            &[], None, Duration::from_secs(10),
+        ).unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            format!("git_failed: {}before exit", "0".repeat(70_000))
+        );
+        assert!(held.0.path().join("held.pid").is_file());
+        assert!(started.elapsed() < Duration::from_millis(2750));
+    }
+
+    #[test]
+    fn run_git_still_times_out_when_exited_git_has_held_stdout() {
+        let held = HeldGitPipe::new();
+        let started = Instant::now();
+        let error = run_git(
+            held.0.path(),
+            &[
+                "-c",
+                "alias.hold=!sleep 30 </dev/null 2>/dev/null & echo $! > held.pid",
+                "hold",
+            ],
+            &[],
+            None,
+            Duration::from_millis(500),
+        )
+        .unwrap_err();
+        assert_eq!(error.to_string(), "git_timeout");
+        assert!(held.0.path().join("held.pid").is_file());
+        assert!(started.elapsed() < Duration::from_secs(3));
+    }
+
     #[test]
     fn blob_fingerprint_reader_deadline_survives_exited_git_with_held_stderr() {
         struct HeldStderr {
+            prefix: std::io::Cursor<Vec<u8>>,
             started: std::sync::mpsc::Sender<()>,
             release: std::sync::mpsc::Receiver<()>,
         }
 
         impl Read for HeldStderr {
-            fn read(&mut self, _: &mut [u8]) -> std::io::Result<usize> {
+            fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+                let read = self.prefix.read(buffer)?;
+                if read != 0 {
+                    return Ok(read);
+                }
                 let _ = self.started.send(());
-                let _ = self.release.recv_timeout(Duration::from_secs(2));
+                let _ = self.release.recv_timeout(Duration::from_secs(10));
                 Ok(0)
             }
         }
@@ -1102,17 +1251,20 @@ mod tests {
         let (started_tx, started_rx) = std::sync::mpsc::channel();
         let (release_tx, release_rx) = std::sync::mpsc::channel();
         let started = Instant::now();
-        let error = blob_fingerprint_readers(
+        let (status, fingerprint, stderr) = blob_fingerprint_readers(
             &mut child,
-            std::io::Cursor::new(Vec::new()),
+            std::io::Cursor::new(b"blob stdout".to_vec()),
             HeldStderr {
+                prefix: std::io::Cursor::new(vec![b'e'; MAX_GIT_STDERR_BYTES + 1024]),
                 started: started_tx,
                 release: release_rx,
             },
             Instant::now() + Duration::from_millis(100),
         )
-        .unwrap_err();
-        assert_eq!(error.to_string(), "git_timeout");
+        .unwrap();
+        assert!(status.success());
+        assert_eq!(fingerprint, hex::encode(Sha256::digest(b"blob stdout")));
+        assert_eq!(stderr, vec![b'e'; MAX_GIT_STDERR_BYTES]);
         assert!(started_rx.recv_timeout(Duration::from_secs(1)).is_ok());
         assert!(started.elapsed() < Duration::from_secs(1));
         let _ = release_tx.send(());
