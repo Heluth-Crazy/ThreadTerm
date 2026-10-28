@@ -8,6 +8,7 @@ import { CommentForm, PendingComments, useFileComments } from './FileComments';
 import { SurfaceDialog } from './SurfaceDialog';
 import { workbenchError } from '../workbench/errors';
 import { registerDirtyEditor } from '../dirtyEditors';
+import { DiffFileNavigation } from './DiffFileNavigation';
 import { FILES_CHANGED_EVENT, notifyFilesChanged } from '../workbench/types';
 import { createRefreshQueue } from '../workbench/refreshQueue';
 import { eventTouchesWorktree } from '../workbench/refreshTriggers';
@@ -21,17 +22,20 @@ import '../workbench/workbench.css';
 
 /** Checkpoint → current file (editable, hunk revert + fenced save) or checkpoint → next checkpoint (read-only).
  * Lines can be commented on; pending comments can be inserted, unsent, into a chosen session's message box. */
-export function ReviewDiffView({projectId, worktreePath, path, sessionId, checkpointId, toCheckpointId, editorId, zh, onOpenFile, comments, worktreeSessionIds}:{
+export function ReviewDiffView({projectId, worktreePath, path, sessionId, checkpointId, toCheckpointId, editorId, zh, onOpenFile, comments, worktreeSessionIds, onNavigate, navigationDisabled}:{
  projectId:string;worktreePath?:string;path:string;sessionId:string;checkpointId:string;toCheckpointId?:string;editorId:string;zh:boolean;onOpenFile?:(path:string)=>void;
  comments?:FileCommentsHost;worktreeSessionIds?:readonly string[];
+ onNavigate?:(path:string)=>void;navigationDisabled?:boolean;
 }) {
  const identity = JSON.stringify([projectId, worktreePath, sessionId, checkpointId, toCheckpointId, path]);
+ const [fileList,setFileList]=useState<{scope:string;paths:string[]}>();
+ const paths=fileList?.scope===identity?fileList.paths:[];
  const [, setState] = useState<ReviewDiffRefresh>();
  const current = useRef<ReviewDiffRefresh>({scope:identity,ticket:0,text:''});
  if(current.current.scope!==identity) current.current={scope:identity,ticket:current.current.ticket+1,text:''};
  const {diff, text, conflict} = current.current;
  const publish = (value:ReviewDiffRefresh) => { current.current=value; setState(value); };
- const setText = (value:string) => publish({...current.current,text:value});
+ const setText = (value:string) => { if(current.current.scope===identity) publish({...current.current,text:value}); };
  const [issue, setIssue] = useState<string>();
  const [busy, setBusy] = useState(false);
  const [confirm, setConfirm] = useState(false);
@@ -67,7 +71,14 @@ export function ReviewDiffView({projectId, worktreePath, path, sessionId, checkp
   if(current.current.scope!==identity) return;
   const ticket = ++current.current.ticket;
   try {
-   const value = await request('review.diff', {sessionId, from:checkpointId, ...(toCheckpointId ? {to:toCheckpointId} : {}), path});
+   const window={sessionId, from:checkpointId, ...(toCheckpointId ? {to:toCheckpointId} : {})};
+   const [diffResult,filesResult]=await Promise.allSettled([
+    request('review.diff', {...window,path}), request('review.changes',window),
+   ]);
+   if(current.current.scope!==identity || current.current.ticket!==ticket)return;
+   setFileList({scope:identity,paths:filesResult.status==='fulfilled'?filesResult.value.files?.map(file=>file.path) ?? []:[]});
+   if(diffResult.status==='rejected')throw diffResult.reason;
+   const value=diffResult.value;
    const before=current.current;
    if(before.scope!==identity || before.ticket!==ticket) return;
    // Keep a current-file comment's body and anchor together until it is finished or cancelled.
@@ -172,6 +183,7 @@ export function ReviewDiffView({projectId, worktreePath, path, sessionId, checkp
    <span className="path" title={path}>{path}</span>
    <span className="dim">{live ? copy('Checkpoint → current file', '检查点 → 当前文件') : copy('Checkpoint → next checkpoint (read-only)', '检查点 → 下一个检查点（只读）')}</span>
    <span className="grow"/>
+   <DiffFileNavigation paths={paths} path={path} zh={zh} disabled={busy||navigationDisabled} onNavigate={onNavigate}/>
    {scope && diff && !diff.binary && <button type="button" className="btn btn-sm" disabled={busy || dirty || !selection || Boolean(draft)}
     title={dirty ? copy('Save or discard your edits first: they move the lines.', '请先保存或放弃修改：修改会让行号变化。') : selection ? copy(`Comment on ${place(selection)}`, `评论 ${place(selection)}`) : copy('Select lines (or put the cursor on a line) on either side first', '请先在任一侧选中行（或将光标放在某行）')}
     onClick={() => selection && setDraft(selection)}>{copy('Comment', '评论')}</button>}
@@ -197,7 +209,7 @@ export function ReviewDiffView({projectId, worktreePath, path, sessionId, checkp
     {!diff.exists && live && <p className="wb-notice">{copy('This file was deleted after the checkpoint.', '此文件在检查点之后被删除。')}</p>}
     {!diff.oldText && diff.exists && <p className="wb-notice">{copy('This file was created after the checkpoint.', '此文件在检查点之后创建。')}</p>}
     {diff.exists && diff.oldText === diff.newText && !dirty && <p className="wb-notice">{copy('No differences: the file matches the checkpoint.', '没有差异：文件与检查点一致。')}</p>}
-    <MergeEditor ref={editor} path={path} oldText={diff.oldText} newText={editable ? text : diff.newText} readOnly={!editable} onChange={setText} onSave={() => void save()} onChunks={setChunks} onSelection={scope ? setSelection : undefined} onContextMenu={openContextMenu} marks={scope ? marks : undefined}/>
+    <MergeEditor ref={editor} path={path} oldText={diff.oldText} newText={editable ? text : diff.newText} readOnly={!editable || Boolean(navigationDisabled)} onChange={setText} onSave={() => void save()} onChunks={setChunks} onSelection={scope ? setSelection : undefined} onContextMenu={openContextMenu} marks={scope ? marks : undefined}/>
    </> : !issue && <p className="tt-editor-state">{copy('Loading…', '正在读取…')}</p>}
   {closePrompt && <SurfaceDialog size="sm" icon="file" title={copy('Save changes to this file?', '保存此文件的更改？')} subtitle={path} onClose={() => void settleClose('cancel')}
    footer={<><button type="button" className="btn" onClick={() => void settleClose('cancel')}>{copy('Cancel', '取消')}</button><button type="button" className="btn" onClick={() => void settleClose('discard')}>{copy('Discard', '放弃更改')}</button><button type="button" className="btn btn-primary" disabled={busy} onClick={() => void settleClose('save')}>{copy('Save', '保存')}</button></>}>

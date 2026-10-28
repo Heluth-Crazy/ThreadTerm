@@ -86,7 +86,11 @@ button.ov-metric:focus-visible { outline:2px solid var(--primary); outline-offse
 .ov-git-sync { display:flex; flex-wrap:wrap; align-items:center; gap:4px 12px; min-height:32px; margin:0 0 6px; padding:6px 10px; border-radius:var(--radius); background:var(--soft); color:var(--muted); font-size:12px; line-height:18px; }
 .ov-git-sync > .ico { flex:none; width:14px; height:14px; margin-right:-4px; }
 .ov-git-sync .mono { color:var(--text); font-size:12px; }
-.ov-git-chip { display:inline-flex; align-items:center; gap:4px; color:var(--text); font-weight:500; white-space:nowrap; }
+.ov-git-chip, .ov-git-sync-link { border:0; background:transparent; color:var(--text); font:inherit; font-weight:500; cursor:pointer; }
+.ov-git-chip { display:inline-flex; align-items:center; gap:4px; padding:0; white-space:nowrap; }
+.ov-git-sync-link { min-width:0; padding:0; text-align:left; }
+.ov-git-chip:hover, .ov-git-sync-link:hover { text-decoration:underline; }
+.ov-git-chip:focus-visible, .ov-git-sync-link:focus-visible { outline:2px solid var(--primary); outline-offset:2px; }
 .ov-git-chip .ico { width:14px; height:14px; color:var(--muted); }
 .ov-git-sync .ico.ov-git-ok, .ov-git-clean .ico.ov-git-ok { color:var(--st-running); }
 .ov-git-cols { display:grid; grid-template-columns:minmax(0,1fr) minmax(0,1fr); gap:4px 24px; }
@@ -104,9 +108,10 @@ button.ov-metric:focus-visible { outline:2px solid var(--primary); outline-offse
 .ov-git-more { width:100%; min-height:28px; margin:0; padding:4px 8px 4px 32px; border:0; border-radius:var(--radius); background:transparent; color:var(--muted); font:inherit; font-size:12px; text-align:left; cursor:pointer; }
 .ov-git-more:hover { background:var(--soft); color:var(--text); }
 .ov-git-more:focus-visible { outline:2px solid var(--primary); outline-offset:-2px; }
-/* Commit rows are information, not links: no hover fill or pointer. */
-.ov-row.ov-git-commit { min-height:44px; cursor:default; }
-.ov-row.ov-git-commit:hover { background:transparent; }
+/* Commit rows open the matching read-only History entry. */
+.ov-row.ov-git-commit { min-height:44px; }
+div.ov-row.ov-git-commit { cursor:default; }
+div.ov-row.ov-git-commit:hover { background:transparent; }
 .ov-git-commit > .ico:first-child { flex:0 0 auto; width:16px; height:16px; color:var(--muted); }
 .ov-git-commit .ov-row-ctx .mono { font-size:11.5px; }
 .ov-git-clean { display:flex; align-items:center; gap:6px; }

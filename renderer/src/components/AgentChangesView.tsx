@@ -10,6 +10,7 @@ import { relativeTime } from './CodeEditor';
 import { workbenchError } from '../workbench/errors';
 import { baseName, FILES_CHANGED_EVENT, notifyFilesChanged, parentPath, type WorkbenchActions } from '../workbench/types';
 import { agentReviewError, defaultReviewAgent } from '../agentReview';
+import { reviewChangeSummary, reviewChangeTotals, reviewFileLineCounts } from '../agentChangeCounts';
 import { createRefreshQueue } from '../workbench/refreshQueue';
 import { eventTouchesWorktree } from '../workbench/refreshTriggers';
 import { AgentReviewSection } from './AgentReview';
@@ -26,6 +27,7 @@ function FileRows({files, zh, onOpen, onRevert}:{files:ReviewFile[];zh:boolean;o
  if(!files.length) return <p className="wb-empty">{zh ? '没有文件更改。' : 'No file changes.'}</p>;
  return <div role="list">{files.map(file => <div key={file.path} role="listitem" className={`wb-change-row tone-${file.status === 'A' ? 'added' : file.status === 'D' ? 'deleted' : 'modified'}`}>
   <button type="button" className="wb-change-open" title={file.path} onClick={() => onOpen(file.path)}><Icon name="file"/><span className="wb-name">{baseName(file.path)}</span><span className="wb-dir">{parentPath(file.path)}</span></button>
+  {(() => { const counts=reviewFileLineCounts(file); return <span className="wb-change-counts">{counts.binary ? <span className="wb-change-binary">{zh ? '二进制' : 'Binary'}</span> : <><span className="wb-change-added">+{counts.added}</span><span className="wb-change-removed">−{counts.removed}</span></>}</span>; })()}
   {onRevert && <span className="wb-row-actions"><button type="button" className="icon-btn" title={zh ? '还原到检查点' : 'Revert to checkpoint'} aria-label={zh ? '还原到检查点' : 'Revert to checkpoint'} onClick={() => onRevert(file)}><WbIcon name="undo"/></button></span>}
   <span className="wb-deco">{file.status}</span>
  </div>)}</div>;
@@ -35,6 +37,7 @@ export function AgentChangesView({sessions, activeSessionId, actions, zh, visibl
  const [sessionId, setSessionId] = useState(activeSessionId ?? sessions[0]?.id);
  const [state, setState] = useState<ReviewState>();
  const [latest, setLatest] = useState<ReviewFile[]>();
+ const latestTotals = reviewChangeTotals(latest ?? []);
  const [turns, setTurns] = useState(() => createAgentChangesCache(sessionId));
  const turnCache = useRef(turns);
  if(turnCache.current.sessionId !== sessionId) turnCache.current = createAgentChangesCache(sessionId);
@@ -204,6 +207,7 @@ export function AgentChangesView({sessions, activeSessionId, actions, zh, visibl
     <div className="wb-review-title">
      <span className="wb-section-label">{newest ? text('Since latest checkpoint', '最新检查点以来') : text('No checkpoint yet', '暂无检查点')}</span>
      {newest && <span className="wb-time">{kindLabel(newest, zh)} · {relativeTime(newest.createdAt, zh)}</span>}
+     {newest && latest && <span className="wb-review-counts" aria-label={reviewChangeSummary(latest, zh)}>{zh ? `${latest.length} 个文件` : `${latest.length} ${latest.length === 1 ? 'file' : 'files'}`} · <span className="wb-change-added">+{latestTotals.added}</span>{' '}<span className="wb-change-removed">−{latestTotals.removed}</span></span>}
     </div>
     <button type="button" className="btn btn-sm" disabled={busy} onClick={() => void checkpointNow('manual')} title={text('Snapshot the working tree now', '立即为工作区拍快照')}><WbIcon name="checkpoint"/>{text('Checkpoint', '检查点')}</button>
    </div>

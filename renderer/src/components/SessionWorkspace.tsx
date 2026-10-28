@@ -80,8 +80,8 @@ const waitForPreviewMount=(sessionId:string,previewId:string,documentId:string,t
 });
 const previewOperationKey=(value:Pick<PreviewPresentation,'sessionId'|'attachmentId'|'requestId'|'previewId'|'documentId'>)=>[value.sessionId,value.attachmentId,value.requestId,value.previewId,value.documentId].join('\0');
 
-type Props={session:Session;data:Snapshot;theme:'light'|'dark';onBack:()=>void;onSelect:(id:string)=>void;onProject:(id:string,path?:string)=>void;onChanged:()=>void;backgroundPresentation?:string;onBackgroundPresented:()=>void;navigationKey?:unknown;onActiveSession?:(id:string)=>void;groupToOpen?:{id:string;title:string;members:{sessionId:string}[]};onGroupOpened?:(id:string)=>void;usageToOpen?:{key:string;projectId?:string};onUsageOpened?:(key:string)=>void};
-export function SessionWorkspace({session,data,theme,onBack,onSelect,onProject,onChanged,backgroundPresentation,onBackgroundPresented,navigationKey,onActiveSession,groupToOpen,onGroupOpened,usageToOpen,onUsageOpened}:Props){
+type Props={session:Session;data:Snapshot;theme:'light'|'dark';onBack:()=>void;onSelect:(id:string)=>void;onProject:(id:string,path?:string)=>void;onChanged:()=>void;backgroundPresentation?:string;onBackgroundPresented:()=>void;navigationKey?:unknown;onActiveSession?:(id:string)=>void;groupToOpen?:{id:string;title:string;members:{sessionId:string}[]};onGroupOpened?:(id:string)=>void;usageToOpen?:{key:string;projectId?:string};onUsageOpened?:(key:string)=>void;historyToOpen?:{key:string;projectId:string;worktreePath:string;commit:string};onHistoryOpened?:(key:string)=>void};
+export function SessionWorkspace({session,data,theme,onBack,onSelect,onProject,onChanged,backgroundPresentation,onBackgroundPresented,navigationKey,onActiveSession,groupToOpen,onGroupOpened,usageToOpen,onUsageOpened,historyToOpen,onHistoryOpened}:Props){
  const latestData=useRef(data);latestData.current=data;
  const providerName=(id:string)=>agentName(id,data.providers);
  const {locale}=useTranslation(),zh=locale==='zh-CN';
@@ -397,6 +397,10 @@ export function SessionWorkspace({session,data,theme,onBack,onSelect,onProject,o
    candidate=>candidate.kind==='history'&&candidate.projectId===target.projectId&&sameCanonicalScope(candidate.worktreePath??project?.path,target.worktreePath??project?.path)&&(candidate.path??'')===(target.path??''));
   if(tabId&&target.commit)setHistoryFocus({tabId,commit:target.commit,key:crypto.randomUUID()});
  };
+ useEffect(()=>{
+  if(!historyToOpen||historyToOpen.projectId!==session.projectId||!sameCanonicalScope(historyToOpen.worktreePath,path))return;
+  openHistory(historyToOpen); onHistoryOpened?.(historyToOpen.key);
+ },[historyToOpen]);
  const sendToAgent=(target:{projectId:string;worktreePath?:string;path:string;startLine?:number;endLine?:number;sessionId?:string;externalId?:string;selection?:string})=>{
   const receiver=data.sessions.find(candidate=>candidate.id===(target.sessionId??previewSessionId));
   if(!receiver||!working(receiver)){setIssue(zh?'请先在此工作区打开一个运行中的 Agent 会话，再发送文件引用。':'Open a running agent session in this workspace to send file references.');return;}

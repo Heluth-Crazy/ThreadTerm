@@ -15,6 +15,8 @@ type Props = {
  projectId:string; worktreePath:string; revision:number; zh:boolean;
  /** Opens the Changes page, on one file's diff when a target is given. */
  onOpenChanges:(target?:{path:string;staged:boolean}) => void;
+ /** Opens the read-only History tab focused on this commit. */
+ onOpenHistory?:(commit:string) => void;
 };
 type State = { loaded:boolean; status?:GitStatus; commits?:GitCommitInfo[]; error?:string; unavailable?:boolean };
 
@@ -23,7 +25,7 @@ type State = { loaded:boolean; status?:GitStatus; commits?:GitCommitInfo[]; erro
  * Refreshed when opened, on window focus, after in-app file writes and on snapshot revisions; no background poll.
  * Hidden when the folder is not a Git repository.
  */
-export function BranchGitCard({projectId, worktreePath, revision, zh, onOpenChanges}:Props) {
+export function BranchGitCard({projectId, worktreePath, revision, zh, onOpenChanges, onOpenHistory}:Props) {
  const [state, setState] = useState<State>({loaded:false});
  const scopeKey = `${projectId}\0${worktreePath}`;
  const latest = useRef(0);
@@ -53,11 +55,11 @@ export function BranchGitCard({projectId, worktreePath, revision, zh, onOpenChan
  const sync = status && branchSync(status);
  const syncLine = !sync ? null
   : sync.kind === 'detached' ? <><Icon name="branch"/><span>{zh ? '游离 HEAD：当前不在任何分支上' : 'Detached HEAD — not on a branch'}</span></>
-  : sync.kind === 'unpublished' ? <><Icon name="branch"/><span>{zh ? '尚未发布：此分支没有上游分支' : 'Not published — this branch has no upstream'}</span></>
+  : sync.kind === 'unpublished' ? <><Icon name="branch"/><button type="button" className="ov-git-sync-link" onClick={() => onOpenChanges()} aria-label={zh ? '在更改中打开未发布分支' : 'Open unpublished branch in Changes'}>{zh ? '尚未发布：此分支没有上游分支' : 'Not published — this branch has no upstream'}</button></>
   : sync.kind === 'synced' ? <><Icon name="check" className="ov-git-ok"/><span>{zh ? '已与' : 'Up to date with'} <span className="mono">{sync.upstream}</span>{zh ? ' 同步' : ''}</span></>
   : <><Icon name="branch"/><span className="mono">{sync.upstream}</span>
-    {sync.ahead > 0 && <span className="ov-git-chip" title={zh ? `${sync.ahead} 个提交待推送` : `${sync.ahead} ${sync.ahead === 1 ? 'commit' : 'commits'} to push`}><WbIcon name="push"/>{zh ? `${sync.ahead} 个待推送` : `${sync.ahead} to push`}</span>}
-    {sync.behind > 0 && <span className="ov-git-chip" title={zh ? `${sync.behind} 个提交待拉取` : `${sync.behind} ${sync.behind === 1 ? 'commit' : 'commits'} to pull`}><WbIcon name="pull"/>{zh ? `${sync.behind} 个待拉取` : `${sync.behind} to pull`}</span>}</>;
+    {sync.ahead > 0 && <button type="button" className="ov-git-chip" onClick={() => onOpenChanges()} aria-label={zh ? `在更改中打开 ${sync.ahead} 个待推送提交` : `Open ${sync.ahead} ${sync.ahead === 1 ? 'commit' : 'commits'} to push in Changes`}><WbIcon name="push"/>{zh ? `${sync.ahead} 个待推送` : `${sync.ahead} to push`}</button>}
+    {sync.behind > 0 && <button type="button" className="ov-git-chip" onClick={() => onOpenChanges()} aria-label={zh ? `在更改中打开 ${sync.behind} 个待拉取提交` : `Open ${sync.behind} ${sync.behind === 1 ? 'commit' : 'commits'} to pull in Changes`}><WbIcon name="pull"/>{zh ? `${sync.behind} 个待拉取` : `${sync.behind} to pull`}</button>}</>;
 
  return <section className="ov-sec ov-sec-git" data-testid="home-git">
   <header className="ov-sec-head"><h2>Git</h2><button className="btn btn-ghost ov-head-btn" onClick={() => onOpenChanges()}>{zh ? '查看更改' : 'Changes'}</button></header>
@@ -84,10 +86,15 @@ export function BranchGitCard({projectId, worktreePath, revision, zh, onOpenChan
      {commits && <div className="ov-git-col" data-testid="home-git-commits">
       <h3 className="ov-git-label"><span>{zh ? '最近提交' : 'Recent commits'}</span></h3>
       {commits.length
-       ? <div className="ov-list">{commits.map(commit => <div key={commit.hash} className="ov-row ov-git-commit" title={commit.subject}>
+       ? <div className="ov-list">{commits.map(commit => {
+        const content = <>
          <WbIcon name="checkpoint"/>
          <span className="ov-row-main"><span className="ov-row-title">{commit.subject}</span><span className="ov-row-ctx"><span className="mono">{commit.hash.slice(0, 7)}</span> · {commit.authorName} · {relativeTime(commit.authoredAt, zh)}</span></span>
-        </div>)}</div>
+        </>;
+        return onOpenHistory
+         ? <button type="button" key={commit.hash} className="ov-row ov-git-commit" title={commit.subject} onClick={() => onOpenHistory(commit.hash)} aria-label={zh ? `在历史中打开提交：${commit.subject}` : `Open commit in History: ${commit.subject}`}>{content}</button>
+         : <div key={commit.hash} className="ov-row ov-git-commit" title={commit.subject}>{content}</div>;
+       })}</div>
        : <p className="ov-empty">{zh ? '还没有提交。' : 'No commits yet.'}</p>}
      </div>}
     </div>

@@ -64,7 +64,7 @@ import {
   type SessionSort,
 } from "./navigation";
 import { isActionableInboxItem } from "./inboxVisibility";
-import { sessionsInProjectScope, unreadInboxInScope } from "./projectScope";
+import { sameCanonicalScope, sessionsInProjectScope, unreadInboxInScope } from "./projectScope";
 import { AgentIconsProvider, AgentIcon, Icon } from "./components/PrototypeIcon";
 import { UsagePage } from "./components/UsagePage";
 import { ProjectOverview } from "./components/ProjectOverview";
@@ -138,6 +138,7 @@ export function App() {
   const [historyOpen, setHistoryOpen] = useState(false);
   const [sessionHistoryOpen, setSessionHistoryOpen] = useState(false);
   const [historyTargetId, setHistoryTargetId] = useState<string>();
+  const [historyToOpen,setHistoryToOpen]=useState<{key:string;projectId:string;worktreePath:string;commit:string}>();
   const [companionOpen, setCompanionOpen] = useState(true);
   const [backgroundPresentation, setBackgroundPresentation] = useState<{
     sessionId: string;
@@ -268,13 +269,14 @@ export function App() {
     const destination = next.kind === 'session' ? current.data?.sessions.find(item => item.id === next.id) : undefined;
     const retained = current.route.kind === 'session' && current.session && destination && current.data
       && sessionWorkspaceKey(current.session, current.data.projects) === sessionWorkspaceKey(destination, current.data.projects);
-    if (!retained && !(await confirmCloseEditors())) return;
+    if (!retained && !(await confirmCloseEditors())) return false;
     setRoute(next);
     setNavigationEpoch(value=>value+1);
     if (next.kind === "session" && next.id)
       setRecentIds((current) =>
         [next.id!, ...current.filter((id) => id !== next.id)].slice(0, 8),
       );
+    return true;
   }, []);
   const openCreatedSession = useCallback((created: Session) => {
     setData((current) => (current ? upsertSession(current, created) : current));
@@ -292,6 +294,17 @@ export function App() {
     setUsageToOpen({ key: crypto.randomUUID(), projectId });
     if (current.route.kind !== 'session' || current.route.id !== hostId) void navigate({ kind: 'session', id: hostId });
   }, [navigate, recentIds]);
+  const openBranchHistory = useCallback(async (target:{projectId:string;worktreePath:string;commit:string}) => {
+    const current=navigationState.current, sessions=current.data?.sessions??[];
+    const inScope=(candidate:Session)=>candidate.projectId===target.projectId&&!candidate.archived&&sameCanonicalScope(candidate.worktreePath??current.data?.projects.find(project=>project.id===target.projectId)?.path,target.worktreePath);
+    const hostId=(current.route.kind==='session'&&current.session&&inScope(current.session)?current.session.id:undefined)
+      ?? recentIds.find(id=>sessions.some(candidate=>candidate.id===id&&inScope(candidate)))
+      ?? sessions.find(inScope)?.id;
+    if(!hostId)return;
+    const pending={...target,key:crypto.randomUUID()};
+    if(current.route.kind==='session'&&current.route.id===hostId){setHistoryToOpen(pending);return;}
+    if(await navigate({kind:'session',id:hostId}))setHistoryToOpen(pending);
+  },[navigate,recentIds]);
   useEffect(()=>observeGroupNavigation((navigation:GroupNavigation)=>{
     if(navigation.kind==='start'){
       const source=navigation.context?.sessionId?navigationState.current.data?.sessions.find(session=>session.id===navigation.context?.sessionId):undefined;
@@ -515,6 +528,8 @@ export function App() {
               onGroupOpened={id=>setGroupToOpen(current=>current?.id===id?undefined:current)}
               usageToOpen={usageToOpen}
               onUsageOpened={key=>setUsageToOpen(current=>current?.key===key?undefined:current)}
+              historyToOpen={historyToOpen}
+              onHistoryOpened={key=>setHistoryToOpen(current=>current?.key===key?undefined:current)}
               backgroundPresentation={backgroundPresentation && sameWorkspace(session,backgroundPresentation.workspacePath) ? backgroundPresentation.sessionId : undefined}
               onBackgroundPresented={() => setBackgroundPresentation(undefined)}
             />
@@ -532,6 +547,7 @@ export function App() {
               onInbox={() => void navigate({kind:"inbox"})}
               onChanged={() => void refresh()}
               onUsage={openUsage}
+              onOpenHistory={target=>void openBranchHistory(target)}
               onRemoved={() => {
                 void navigate({ kind: "all" });
                 void refresh();

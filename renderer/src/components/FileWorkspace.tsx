@@ -31,6 +31,8 @@ import { diffSurfaceMenuItems, sourceEditorMenuItems } from "../fileSurfaceConte
 import { changedFileContext } from "./GitContextActions";
 import { sendContextToAgent } from "./ContextSendAction";
 import { readDiffDocument } from '../fileDiffDocument';
+import { gitDiffFiles } from '../diffFileNavigation';
+import { DiffFileNavigation } from './DiffFileNavigation';
 import { externalFileError, externalFileErrorCode, externalSelectionText } from '../externalFiles';
 import { displayPath } from '../displayPath';
 import { EditorView } from '@codemirror/view';
@@ -69,6 +71,9 @@ type Props = {
   active?: boolean;
   onSendToAgent?: (target: { path: string; startLine?: number; endLine?: number; selection?: string }) => void;
   onOpenHistory?: (target: { path?: string; commit?: string }) => void;
+  /** Host confirms dirty edits, awaits load(), then retargets the same tab only on success. */
+  onNavigateDiff?: (path: string, load: () => Promise<boolean>) => void;
+  navigationDisabled?: boolean;
   /** Present only for file tabs in the active session's worktree. */
   sessionDocuments?: WorkbenchActions["sessionDocuments"];
   comments?: FileCommentsHost;
@@ -117,6 +122,8 @@ function FileWorkspaceInstance({
   active,
   onSendToAgent,
   onOpenHistory,
+  onNavigateDiff,
+  navigationDisabled,
   sessionDocuments,
   comments: commentsHost,
 }: Props) {
@@ -150,6 +157,7 @@ function FileWorkspaceInstance({
   const mergeEditor = useRef<MergeEditorHandle>(null);
   const [issue, setIssue] = useState<string | { externalError: unknown }>();
   const [busy, setBusy] = useState(false);
+  const [fileNavigation, setFileNavigation] = useState(false);
   const [documentPinning, setDocumentPinning] = useState(false);
   const [draftStatus, setDraftStatus] = useState<
     "saved" | "saving" | "unsaved" | "conflict"
@@ -260,7 +268,7 @@ function FileWorkspaceInstance({
         noGit: "Git status is unavailable for this directory.",
       };
 
-  const gitState = useGitStatus(scope, toolsOpen && !external, zh);
+  const gitState = useGitStatus(scope, (toolsOpen || view === "diff") && !external, zh);
   const plainCommentVersion: CommentVersion = { kind: "file" };
   const diffCommentVersion: CommentVersion = { kind: "git", staged };
   const plainCommentMarks = useMemo(
@@ -320,6 +328,11 @@ function FileWorkspaceInstance({
     ignoreDraft = false,
   ) {
     const ticket = ++generation.current;
+    const source = loaded.current;
+    const changingFile = Boolean(source && source.path !== path);
+    setFileNavigation(changingFile);
+    // Recheck live text, including edits dispatched before React applies the read-only state.
+    const canApply = () => !changingFile || (loaded.current === source && currentText.current === source?.content);
     try {
       const externalRead = async (id: string, registeredPath: string, image: boolean, recovered = false): Promise<FileDocument | { mime: string; data: string }> => {
         try {
@@ -353,7 +366,7 @@ function FileWorkspaceInstance({
         const asset = externalId
           ? await externalRead(externalId, path, true) as { mime: string; data: string }
           : await request("filesystem.image", { ...scope, path });
-        if (!mounted.current || ticket !== generation.current) return false;
+        if (!mounted.current || ticket !== generation.current || !canApply()) return false;
         const imageDocument = {
           path: externalPath.current ?? path,
           content: "",
@@ -382,7 +395,7 @@ function FileWorkspaceInstance({
       const value: FileDocument & { diffOnly?: true } = nextView === "diff"
         ? await readDiffDocument(path, read, () => request("git.diff", { ...scope, path, staged }))
         : await read();
-      if (!mounted.current || ticket !== generation.current) return false;
+      if (!mounted.current || ticket !== generation.current || !canApply()) return false;
       const saved = ignoreDraft || value.diffOnly ? undefined : drafts.current.get(path);
       loaded.current = value;
       base.current = saved?.baseFingerprint ?? value.fingerprint;
@@ -413,6 +426,8 @@ function FileWorkspaceInstance({
         setIssue(external ? { externalError: error } : message(error));
       }
       return false;
+    } finally {
+      if (mounted.current && ticket === generation.current) setFileNavigation(false);
     }
   }
   function persistDraft(doc: FileDocument, value: string, fingerprint: string) {
@@ -1035,6 +1050,7 @@ function FileWorkspaceInstance({
                         : "Baseline is read-only; current file is editable"}
                   </span>
                   <span className="grow" />
+                  <DiffFileNavigation paths={gitDiffFiles(gitState.status?.changes ?? [], staged)} path={document.path} zh={zh} disabled={busy || navigationDisabled || fileNavigation} onNavigate={onNavigateDiff ? path => onNavigateDiff(path, () => open(path, "diff")) : path => choose(path, "diff")}/>
                   {sessionDocuments && !image && (
                     <button
                       type="button"
@@ -1131,8 +1147,8 @@ function FileWorkspaceInstance({
                     path={document.path}
                     oldText={diff.oldText}
                     newText={staged ? diff.newText : text}
-                    readOnly={staged || document.readonly}
-                    onChange={setText}
+                    readOnly={staged || document.readonly || fileNavigation || Boolean(navigationDisabled)}
+                    onChange={value => { currentText.current = value; setText(value); }}
                     onSave={() => void saveFile()}
                     onChunks={setHunkCount}
                     onSelection={commentScope ? setCommentSelection : undefined}
@@ -1218,9 +1234,9 @@ function FileWorkspaceInstance({
                   <CodeEditor
                     path={document.path}
                     value={text}
-                    onChange={setText}
+                    onChange={value => { currentText.current = value; setText(value); }}
                     onSave={() => void saveFile()}
-                    readOnly={external || document.readonly}
+                    readOnly={external || document.readonly || fileNavigation || Boolean(navigationDisabled)}
                     reveal={editorReveal}
                     resetKey={editorResetKey}
                     gitBaseText={gitBaseText}

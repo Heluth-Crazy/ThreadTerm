@@ -293,7 +293,7 @@ npmRun('claude sidecar tests', root, ['--workspace', '@threadterm/v3-claude-sdk'
 // Pure qa/*.test.mjs suites: no Electron window, no network, no runtime executable, no user profile. Everything else
 // under qa/ is an environment-only harness (Electron views, real providers or loopback servers).
 const QA = [
-  'agent-history', 'browser-activity-card', 'browser-agent-controller', 'browser-agent-reads', 'browser-dev-server', 'browser-eval-approval',
+  'agent-history', 'branch-git-card', 'browser-activity-card', 'browser-agent-controller', 'browser-agent-reads', 'browser-dev-server', 'browser-eval-approval',
   'browser-fixture', 'browser-handoff-core', 'browser-handoff-input', 'browser-handoff-native', 'browser-handoff-terminal',
   'browser-markup-mount', 'browser-markup', 'browser-new-tab', 'browser-occlusion', 'browser-page-comments',
   'browser-preview-mount', 'browser-shot-draft', 'browser-tab-activity', 'browser-tab-title', 'browser-view-cleanup',
