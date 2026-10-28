@@ -1362,7 +1362,7 @@ export interface GitCommitDetail { commit:GitCommitInfo; body:string; files:GitC
 export interface GitTextPair { path:string; oldText:string; newText:string; binary:boolean }
 /** Uncommitted lines use commit ''. Ranges are 1-based and cover the working file. */
 export interface GitBlame { path:string; ranges:{start:number;count:number;commit:string}[]; commits:Record<string,{authorName:string;authoredAt:string;summary:string}> }
-export interface GitBranch { name:string; remote:boolean; current:boolean; upstream?:string; ahead?:number; behind?:number; gone?:boolean; lastCommit?:{hash:string;subject:string;committedAt:string} }
+export interface GitBranch { name:string; remote:boolean; current:boolean; upstream?:string; ahead?:number; behind?:number; gone?:boolean; lastCommit?:{hash:string;subject:string;committedAt:string}; worktreePath?:string; worktreeMissing?:boolean }
 export interface GitBranches { current:string|null; detached:boolean; branches:GitBranch[] }
 export interface ReviewCheckpoint { id:string; sessionId:string; kind:'turn'|'launch'|'manual'|'baseline'; turnId?:string; label?:string; createdAt:string; status:'ready'|'failed'; error?:string; skipped:string[] }
 export interface ReviewState { available:boolean; reason?:string; projectId?:string; worktreePath?:string; checkpoints:ReviewCheckpoint[] }

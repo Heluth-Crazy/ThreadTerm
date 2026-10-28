@@ -19,12 +19,14 @@ import { useConflictStates } from './useConflictStates';
 import { conflictStageReason } from '../workbench/conflictStage';
 import { useConflictStageGuard } from './useConflictStageGuard';
 import { clearSelectedChanges, selectedChanges, selectedCommitKey, setGroupSelection, toggleSelectedChange, type SelectedCommitGroup } from '../workbench/selectedCommitSelection';
+import { branchRowState, checkoutLocalPaths, sortBranches, worktreeName } from '../workbench/branchMenu';
 
 type Confirm =
  | {kind:'discard';paths:string[];untracked:number;token:number;fingerprints?:Record<string,string|null>;indexFingerprints?:Record<string,string|null>;snapshotError?:string}
  | {kind:'abort-merge'}
  | {kind:'amend';subject:string}
- | {kind:'delete-branch';branch:string;force:boolean};
+ | {kind:'delete-branch';branch:string;force:boolean}
+ | {kind:'checkout-overwrite';branch:string;paths:string[]};
 function GroupSelectionToggle({checked,mixed,label,onChange}:{checked:boolean;mixed:boolean;label:string;onChange:()=>void}) {
  const input=useRef<HTMLInputElement>(null);
  useEffect(()=>{if(input.current)input.current.indeterminate=mixed;},[mixed]);
@@ -46,8 +48,10 @@ export function SourceControlView({scope, actions, git, zh, compact = false, too
  const [branches, setBranches] = useState<GitBranches>();
  const [branchQuery, setBranchQuery] = useState('');
  const [creating, setCreating] = useState(false);
+ const [branchBase, setBranchBase] = useState('HEAD');
  const [selection, setSelection] = useState<Set<string>>(() => new Set());
  const messageRef = useRef<HTMLTextAreaElement>(null);
+ const changesRef=useRef<HTMLDivElement>(null);
  const scopeEpoch=useRef(0);
  const discardEpoch=useRef(0);
  const renderedScope=useRef(`${scope.projectId}\u0000${scope.worktreePath ?? ''}\u0000${scope.rootPath}`);
@@ -211,10 +215,26 @@ export function SourceControlView({scope, actions, git, zh, compact = false, too
   });
  };
  const loadBranches = async () => { const epoch=scopeEpoch.current; try { const next=await request('git.branches', params); if(epoch===scopeEpoch.current)setBranches(next); } catch(error) { if(epoch===scopeEpoch.current)setIssue(workbenchError(error, zh)); } };
- const openBranches = (anchor:HTMLElement) => { setBranchMenu(anchor); setBranchQuery(''); setCreating(false); void loadBranches(); };
+ const openBranches = (anchor:HTMLElement) => { setBranchMenu(anchor); setBranchQuery(''); setCreating(false); setBranchBase('HEAD'); void loadBranches(); };
  const checkout = async (branch:string, create = false) => {
   setBranchMenu(undefined);
-  await run('checkout', () => request('git.checkout', {...params, branch, ...(create ? {create:true} : {}), operationId:operationId()}), text(`Switched to ${branch}.`, `已切换到 ${branch}。`));
+  const epoch=scopeEpoch.current;
+  setBusy('checkout'); setIssue(undefined); setNotice(undefined); setCommittedWarning(undefined);
+  try {
+   await request('git.checkout', {...params, branch, ...(create ? {create:true,...(branchBase==='HEAD'?{}:{startPoint:branchBase})} : {}), operationId:operationId()});
+   if(epoch===scopeEpoch.current)setNotice(text(`Switched to ${branch}.`, `已切换到 ${branch}。`));
+  } catch(error) {
+   if(epoch!==scopeEpoch.current)return;
+   const raw=error instanceof Error?error.message:String(error);
+   const marker=raw.indexOf('checkout_would_overwrite:');
+   if(marker>=0) {
+    try {
+     const paths=JSON.parse(raw.slice(marker+'checkout_would_overwrite:'.length).trim());
+     if(Array.isArray(paths)) { setConfirm({kind:'checkout-overwrite',branch,paths:paths.filter((path):path is string=>typeof path==='string')}); return; }
+    } catch { /* The mapped error below preserves malformed runtime details. */ }
+   }
+   setIssue(workbenchError(error,zh));
+  } finally { if(epoch===scopeEpoch.current)setBusy(undefined); }
  };
  const confirmAction = async () => {
   if(!confirm) return;
@@ -241,6 +261,9 @@ export function SourceControlView({scope, actions, git, zh, compact = false, too
    setConfirm(undefined);
    const ok = await run('commit', () => request('git.commit', {...params, message:message.trim(), amend:true, operationId:operationId()}), text('Last commit amended.', '已修改上次提交。'));
    if(ok) setMessage('');
+  } else if(current.kind === 'checkout-overwrite') {
+   setConfirm(undefined);
+   requestAnimationFrame(()=>changesRef.current?.focus());
   } else {
    setBusy('branch'); setIssue(undefined);
    try {
@@ -305,7 +328,10 @@ export function SourceControlView({scope, actions, git, zh, compact = false, too
  const nothing = !(status.changes.length);
  const selectedForStage=selectedIn('changes').length+selectedIn('untracked').length;
  const commitSelectedActive=selectedStaged.length>0;
- const filteredBranches = (branches?.branches ?? []).filter(branch => branch.name.toLowerCase().includes(branchQuery.trim().toLowerCase()));
+ const sortedBranches=sortBranches(branches?.branches ?? []);
+ const filteredBranches = sortedBranches.filter(branch => branch.name.toLowerCase().includes(branchQuery.trim().toLowerCase()));
+ const branchBases=Array.from(new Set(['HEAD', ...sortedBranches.filter(branch=>!branch.remote).flatMap(branch=>[branch.name,...(branch.upstream?[branch.upstream]:[])])]));
+ const localChangePaths=checkoutLocalPaths(status);
  return <div className={`wb-scm${compact ? ' compact' : ''}`}>
   {toolbar}
   {operation && <div className="wb-operation" role="status" data-testid="git-operation-banner">
@@ -342,7 +368,7 @@ export function SourceControlView({scope, actions, git, zh, compact = false, too
   {issue && <p className="wb-issue" role="alert">{issue}<button type="button" className="icon-btn" aria-label={text('Dismiss', '关闭提示')} onClick={() => setIssue(undefined)}><Icon name="close"/></button></p>}
   {notice && !issue && <p className="wb-notice" aria-live="polite">{notice}</p>}
   {committedWarning && <p className="wb-notice wb-commit-warning" role="status">{committedWarning}</p>}
-  <div className="wb-changes" onContextMenu={onChangeContext} onKeyDown={onChangeKey}>
+  <div ref={changesRef} tabIndex={-1} className="wb-changes" onContextMenu={onChangeContext} onKeyDown={onChangeKey}>
    {section('conflicts', text('Merge conflicts', '合并冲突'), null)}
    {section('staged', text('Staged changes', '已暂存的更改'), <>
     <button type="button" className="icon-btn" title={text('Unstage selected files (whole file)', '取消暂存所选文件（整个文件）')} aria-label={text('Unstage selected files (whole file)', '取消暂存所选文件（整个文件）')} disabled={!!busy || !selectedStaged.length} onClick={() => void unstageSelected()}><WbIcon name="minus"/></button>
@@ -368,7 +394,8 @@ export function SourceControlView({scope, actions, git, zh, compact = false, too
    <div className="wb-branch-menu">
     <input autoFocus className="wb-branch-filter" value={branchQuery} onChange={event => setBranchQuery(event.target.value)} placeholder={creating ? text('New branch name', '新分支名称') : text('Filter or create a branch', '筛选或新建分支')} aria-label={text('Branch name', '分支名称')}
      onKeyDown={event => { if(event.key === 'Enter' && creating && branchQuery.trim()) { event.preventDefault(); void checkout(branchQuery.trim(), true); } }}/>
-    <button type="button" role="menuitem" className="menu-item" disabled={!!busy} onClick={() => { if(creating && branchQuery.trim()) void checkout(branchQuery.trim(), true); else setCreating(true); }}><Icon name="plus"/>{creating && branchQuery.trim() ? text(`Create "${branchQuery.trim()}" from current`, `从当前位置新建“${branchQuery.trim()}”`) : text('Create new branch…', '新建分支…')}</button>
+    {creating && <label className="wb-branch-base">{text('Base branch', '基准分支')}<select value={branchBase} onChange={event=>setBranchBase(event.target.value)} aria-label={text('Base branch', '基准分支')}>{branchBases.map(base=><option key={base} value={base}>{base==='HEAD'?text('Current HEAD','当前 HEAD'):base}</option>)}</select></label>}
+    <button type="button" role="menuitem" className="menu-item" disabled={!!busy} onClick={() => { if(creating && branchQuery.trim()) void checkout(branchQuery.trim(), true); else setCreating(true); }}><Icon name="plus"/>{creating && branchQuery.trim() ? text(`Create "${branchQuery.trim()}" from ${branchBase==='HEAD'?'current HEAD':branchBase}`, `从${branchBase==='HEAD'?'当前 HEAD':branchBase}新建“${branchQuery.trim()}”`) : text('New branch from…', '从…新建分支')}</button>
     {!branches && <p className="wb-summary">{text('Loading branches…', '正在读取分支…')}</p>}
     {branches && !creating && <>
      {(['local', 'remote'] as const).map(kind => {
@@ -376,13 +403,13 @@ export function SourceControlView({scope, actions, git, zh, compact = false, too
       if(!list.length) return null;
       return <div key={kind}>
        <div className="menu-label">{kind === 'local' ? text('Local branches', '本地分支') : text('Remote branches', '远程分支')}</div>
-       {list.map(branch => <div key={`${kind}:${branch.name}`} className="wb-branch-item">
-        <button type="button" role="menuitem" className="menu-item" disabled={branch.current || !!busy} onClick={() => void checkout(branch.name)} title={branch.lastCommit?.subject}>
+       {list.map(branch => { const state=branchRowState(branch,Boolean(actions.openWorktree)); const worktree=branch.worktreePath; return <div key={`${kind}:${branch.name}`} className="wb-branch-item">
+        <button type="button" role="menuitem" className="menu-item" disabled={state==='current'||state==='worktree-unavailable'||state==='worktree-missing'||!!busy} onClick={() => { if(state==='open-worktree'&&worktree) { setBranchMenu(undefined); actions.openWorktree?.(worktree); } else void checkout(branch.name); }} title={(state==='worktree-unavailable'||state==='worktree-missing')&&worktree ? worktree : branch.lastCommit?.subject}>
          <Icon name={branch.current ? 'check' : 'branch'}/><span className="wb-name" title={branch.name}>{branch.name}</span>
-         {(branch.ahead || branch.behind) ? <span className="wb-sync">↑{branch.ahead ?? 0} ↓{branch.behind ?? 0}</span> : branch.gone ? <span className="wb-sync muted">{text('gone', '已删除')}</span> : null}
+         {worktree ? <span className="wb-sync" title={worktree}>{state==='open-worktree' ? text(`in ${worktreeName(worktree)} · Open worktree…`, `在 ${worktreeName(worktree)} 中 · 打开工作树…`) : state==='worktree-missing' ? text(`in ${worktreeName(worktree)} · Worktree folder is missing — run git worktree prune`, `在 ${worktreeName(worktree)} 中 · 工作树文件夹缺失，请运行 git worktree prune`) : text(`in ${worktreeName(worktree)}`, `在 ${worktreeName(worktree)} 中`)}</span> : (branch.ahead || branch.behind) ? <span className="wb-sync">↑{branch.ahead ?? 0} ↓{branch.behind ?? 0}</span> : branch.gone ? <span className="wb-sync muted">{text('gone', '已删除')}</span> : null}
         </button>
-        {kind === 'local' && !branch.current && <button type="button" className="icon-btn" title={text('Delete branch', '删除分支')} aria-label={text(`Delete ${branch.name}`, `删除 ${branch.name}`)} onClick={() => { setBranchMenu(undefined); setConfirm({kind:'delete-branch', branch:branch.name, force:false}); }}><Icon name="trash"/></button>}
-       </div>)}
+        {kind === 'local' && state==='checkout' && <button type="button" className="icon-btn" title={text('Delete branch', '删除分支')} aria-label={text(`Delete ${branch.name}`, `删除 ${branch.name}`)} onClick={() => { setBranchMenu(undefined); setConfirm({kind:'delete-branch', branch:branch.name, force:false}); }}><Icon name="trash"/></button>}
+       </div>; })}
       </div>;
      })}
     </>}
@@ -393,22 +420,23 @@ export function SourceControlView({scope, actions, git, zh, compact = false, too
    footer={<><button type="button" className="btn" disabled={!!busy} onClick={()=>setDiverged(undefined)}>{text('Cancel','取消')}</button><button type="button" className="btn btn-primary" disabled={!!busy} onClick={()=>{setDiverged(undefined);void mergeUpstream();}}>{text(`Merge ${diverged.upstream} into ${diverged.branch}`,`将 ${diverged.upstream} 合并到 ${diverged.branch}`)}</button></>}>
    <p>{text(`${diverged.branch} and ${diverged.upstream} have diverged (${diverged.ahead} ahead, ${diverged.behind} behind)`,`${diverged.branch} 与 ${diverged.upstream} 已分叉（领先 ${diverged.ahead}，落后 ${diverged.behind}）`)}</p>
   </SurfaceDialog>}
-  {confirm && <SurfaceDialog size="sm" icon={confirm.kind === 'amend' ? 'clock' : 'trash'}
-   title={confirm.kind === 'abort-merge' ? text('Abort merge?','中止合并？') : confirm.kind === 'discard' ? text('Discard changes?', '丢弃更改？') : confirm.kind === 'amend' ? text('Amend the last commit?', '修改上次提交？') : confirm.force ? text('Force delete unmerged branch?', '强制删除未合并的分支？') : text('Delete branch?', '删除分支？')}
-   subtitle={confirm.kind === 'abort-merge' ? undefined : confirm.kind === 'discard' ? confirm.paths.join(', ') : confirm.kind === 'amend' ? confirm.subject : confirm.branch}
+  {confirm && <SurfaceDialog size="sm" icon={confirm.kind === 'amend' ? 'clock' : confirm.kind === 'checkout-overwrite' ? 'branch' : 'trash'}
+   title={confirm.kind === 'abort-merge' ? text('Abort merge?','中止合并？') : confirm.kind === 'discard' ? text('Discard changes?', '丢弃更改？') : confirm.kind === 'amend' ? text('Amend the last commit?', '修改上次提交？') : confirm.kind === 'checkout-overwrite' ? text(`Switching to ${confirm.branch} would overwrite local changes`, `切换到 ${confirm.branch} 会覆盖本地更改`) : confirm.force ? text('Force delete unmerged branch?', '强制删除未合并的分支？') : text('Delete branch?', '删除分支？')}
+   subtitle={confirm.kind === 'abort-merge' ? undefined : confirm.kind === 'discard' ? confirm.paths.join(', ') : confirm.kind === 'amend' ? confirm.subject : confirm.kind === 'checkout-overwrite' ? undefined : confirm.branch}
    onClose={() => { if(!busy) { if(confirm.kind === 'discard') discardEpoch.current++; setConfirm(undefined); } }}
    footer={<>
     <button type="button" className="btn" disabled={!!busy} onClick={() => { if(confirm.kind === 'discard') discardEpoch.current++; setConfirm(undefined); }}>{text('Cancel', '取消')}</button>
-    <button type="button" className={`btn ${confirm.kind === 'amend' ? 'btn-primary' : 'btn-danger'}`} disabled={!!busy || (confirm.kind === 'discard' && (!confirm.fingerprints || !confirm.indexFingerprints || !!confirm.snapshotError))} onClick={() => void confirmAction()}>
+    {confirm.kind === 'checkout-overwrite' ? <button type="button" className="btn btn-primary" onClick={() => void confirmAction()}>{text('Open Source Control', '打开源代码管理')}</button> : <button type="button" className={`btn ${confirm.kind === 'amend' ? 'btn-primary' : 'btn-danger'}`} disabled={!!busy || (confirm.kind === 'discard' && (!confirm.fingerprints || !confirm.indexFingerprints || !!confirm.snapshotError))} onClick={() => void confirmAction()}>
      {confirm.kind === 'abort-merge' ? text('Abort merge','中止合并') : confirm.kind === 'discard' ? text('Discard', '丢弃') : confirm.kind === 'amend' ? text('Amend commit', '修改提交') : confirm.force ? text('Force delete', '强制删除') : text('Delete', '删除')}
-    </button>
+    </button>}
    </>}>
    {confirm.kind === 'discard' && (!confirm.fingerprints || !confirm.indexFingerprints || confirm.snapshotError) && <p className="wb-summary" role={confirm.snapshotError ? 'alert' : 'status'}>{confirm.snapshotError ?? text('Checking files before discard…', '正在检查丢弃前的文件…')}</p>}
-   <p>{confirm.kind === 'abort-merge' ? text('Abort this merge and restore the state before the merge?','中止当前合并并还原合并开始前的状态？') : confirm.kind === 'discard'
+   {confirm.kind === 'checkout-overwrite' ? <><p>{text("Files Git won't overwrite:", 'Git 不会覆盖的文件：')}</p>{confirm.paths.slice(0,10).map(path=><span key={path} className="wb-path-line">{path}</span>)}{confirm.paths.length>10&&<span className="wb-path-line">{text(`and ${confirm.paths.length-10} more`, `以及另外 ${confirm.paths.length-10} 个`)}</span>}{localChangePaths&&<><p>{text(`Your local changes (${localChangePaths.length})`, `你的本地更改（${localChangePaths.length}）`)}</p>{localChangePaths.slice(0,10).map(path=><span key={path} className="wb-path-line">{path}</span>)}{localChangePaths.length>10&&<span className="wb-path-line">{text(`and ${localChangePaths.length-10} more`, `以及另外 ${localChangePaths.length-10} 个`)}</span>}</>}</> : <p>{confirm.kind === 'abort-merge' ? text('Abort this merge and restore the state before the merge?','中止当前合并并还原合并开始前的状态？') : confirm.kind === 'discard'
     ? text(`Tracked files return to their staged version.${confirm.untracked ? ` ${confirm.untracked} untracked file(s) will be moved to the Recycle Bin.` : ''}`, `已跟踪文件将恢复为暂存区版本。${confirm.untracked ? `${confirm.untracked} 个未跟踪文件将移到回收站。` : ''}`)
     : confirm.kind === 'amend'
      ? text('The staged changes and the new message replace this commit. Do not amend commits that were already pushed and shared.', '已暂存的更改和新的说明会替换此提交。已推送并共享的提交请不要修改。')
      : confirm.force ? text('This branch has commits that are not merged anywhere. Deleting it may lose them.', '此分支有尚未合并的提交，删除后这些提交可能丢失。') : text('The local branch will be deleted. Remote branches are not affected.', '将删除本地分支，不影响远程分支。')}</p>
+   }
   </SurfaceDialog>}
  </div>;
 }

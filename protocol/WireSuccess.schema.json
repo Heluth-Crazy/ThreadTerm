@@ -6786,6 +6786,12 @@
             "committedAt"
           ],
           "additionalProperties": false
+        },
+        "worktreePath": {
+          "type": "string"
+        },
+        "worktreeMissing": {
+          "type": "boolean"
         }
       },
       "required": [

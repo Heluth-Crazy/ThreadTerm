@@ -26,6 +26,9 @@ const known:Record<string,[string,string]> = {
  invalid_branch:['分支名称无效。','Invalid branch name.'],
  invalid_request:['请求无效。请检查工作树选项后重试。','The request is invalid. Check the worktree options and try again.'],
  start_point_not_found:['找不到所选基准提交或分支。请刷新分支后重试。','The selected base commit or branch could not be found. Refresh branches and try again.'],
+ branch_checked_out_elsewhere:['该分支已在另一个工作树中检出。','This branch is already checked out in another worktree.'],
+ checkout_would_overwrite:['切换分支会覆盖本地更改。请在源代码管理中检查这些文件。','Switching branches would overwrite local changes. Review the files in Source Control.'],
+ checkout_blocked:['Git 阻止了分支切换。请检查工作区状态后重试。','Git blocked the branch switch. Review the worktree state and try again.'],
  no_remote:['没有可推送的远程仓库。','No remote is configured to publish to.'],
  review_unavailable:['此会话没有可审查的 Git 工作区。','This session has no Git workspace to review.'],
  checkpoint_missing:['检查点不存在。','The checkpoint no longer exists.'],
@@ -63,6 +66,14 @@ export function workbenchError(error:unknown, zh:boolean, context?:'discard'):st
   if(context === 'discard' && (code === 'file_conflict' || code === 'index_conflict')) return zh ? '自打开此对话框后文件已发生更改。未丢弃任何更改。请检查更改后重试。' : 'Files changed since you opened this dialog. Nothing was discarded. Review the changes and try again.';
   const marker = text.indexOf(`${code}:`);
   const detail = marker >= 0 ? text.slice(marker + code.length + 1).trim() : '';
+  if(code === 'branch_checked_out_elsewhere' && detail) {
+   try {
+    const owner=JSON.parse(detail) as {path?:unknown;missing?:unknown};
+    if(typeof owner.path === 'string') return zh
+     ? `该分支已在另一个工作树中检出：${owner.path}${owner.missing === true ? '。该工作树文件夹缺失；请运行 git worktree prune 后重试。' : ''}`
+     : `This branch is already checked out in another worktree: ${owner.path}${owner.missing === true ? '. The worktree folder is missing; run git worktree prune and try again.' : ''}`;
+   } catch { /* Older runtimes return the path as plain text below. */ }
+  }
   return known[code][zh ? 0 : 1] + (detail && code !== 'recycle_failed' && code !== 'merge_interrupted' ? ` ${detail}` : '');
  }
  const git = /git_failed:\s*([\s\S]*)/.exec(text);

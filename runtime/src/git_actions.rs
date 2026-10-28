@@ -111,17 +111,6 @@ pub fn dispatch(db: &Database, method: &str, params_value: &Value) -> Result<Opt
                 return Err(anyhow!("index_conflict"));
             }
         }
-        "git.checkout" => {
-            validate_branch_name(&root, required_string(params, "branch")?)?;
-            if let Some(start) = params.get("startPoint").and_then(Value::as_str) {
-                if start.is_empty() || start.starts_with('-') || start.len() > 255 {
-                    return Err(anyhow!("invalid_start_point"));
-                }
-                let spec = format!("{start}^{{commit}}");
-                git(&root, &["rev-parse", "--verify", "--quiet", &spec])
-                    .map_err(|_| anyhow!("start_point_not_found"))?;
-            }
-        }
         "git.branch.delete" => {
             validate_branch_name(&root, required_string(params, "branch")?)?;
         }
@@ -150,6 +139,14 @@ pub fn dispatch(db: &Database, method: &str, params_value: &Value) -> Result<Opt
     if let Some(result) = db.operation(operation_id)? {
         return Ok(Some(result));
     }
+    let checkout = if method == "git.checkout" {
+        if db.external_operation_pending(operation_id)? {
+            return Err(anyhow!("operation_outcome_unknown"));
+        }
+        Some(checkout_preflight(&root, params)?)
+    } else {
+        None
+    };
     // This insert is an atomic execution claim. A caller that finds a claim without
     // completion cannot know whether Git already applied the external side effect.
     if !db.claim_external_operation(operation_id)? {
@@ -232,27 +229,23 @@ pub fn dispatch(db: &Database, method: &str, params_value: &Value) -> Result<Opt
             (project_id, worktree),
         )?,
         "git.checkout" => {
-            let branch = required_string(params, "branch")?;
-            let create = params.get("create").and_then(Value::as_bool) == Some(true);
-            let local = format!("refs/heads/{branch}");
-            let remote = format!("refs/remotes/{branch}");
-            let exists = |reference: &str| {
-                git(&root, &["rev-parse", "--verify", "--quiet", reference]).is_ok()
-            };
-            let args: Vec<&str> = if create {
-                let mut args = vec!["switch", "-c", branch];
-                if let Some(start) = params.get("startPoint").and_then(Value::as_str) {
-                    args.push(start);
+            let plan = checkout.as_ref().unwrap();
+            let args: Vec<&str> = plan.args.iter().map(String::as_str).collect();
+            let before = checkout_head(&root).ok();
+            let new_ref_absent = !plan.creating || plan.branch_ref.as_deref()
+                .is_some_and(|reference| matches!(checkout_optional_ref(&root, reference), Ok(None)));
+            if let Err(failure) = run_git(&root, &args, &[("LANGUAGE", std::ffi::OsStr::new("C"))], None, HOOK_TIMEOUT) {
+                if let Some(paths) = failure.to_string().strip_prefix("git_failed: ").and_then(checkout_refusal_paths) {
+                    let after = checkout_head(&root).ok();
+                    let still_absent = !plan.creating || plan.branch_ref.as_deref()
+                        .is_some_and(|reference| matches!(checkout_optional_ref(&root, reference), Ok(None)));
+                    if checkout_can_release(before.as_ref(), after.as_ref(), new_ref_absent, still_absent) {
+                        release_discard_claim(db, operation_id)?;
+                        return Err(anyhow!("checkout_would_overwrite: {}", json!(paths)));
+                    }
                 }
-                args
-            } else if exists(&local) {
-                vec!["switch", branch]
-            } else if exists(&remote) {
-                vec!["switch", "--track", branch]
-            } else {
-                return Err(anyhow!("branch_not_found"));
-            };
-            run_git(&root, &args, &[], None, HOOK_TIMEOUT)?;
+                return Err(failure);
+            }
             let current = git(&root, &["symbolic-ref", "--quiet", "--short", "HEAD"])?;
             json!({"branch":current.trim()})
         }
@@ -329,6 +322,122 @@ fn discard_recycle(path: &Path) -> Result<()> {
         return result;
     }
     crate::file_ops::recycle(path)
+}
+
+/// Resolve the switch once, then reject read-only conflicts before the claim.
+#[derive(Debug)]
+struct CheckoutPlan {
+    args: Vec<String>,
+    creating: bool,
+    branch_ref: Option<String>,
+}
+
+fn checkout_preflight(root: &Path, params: &serde_json::Map<String, Value>) -> Result<CheckoutPlan> {
+    let branch = required_string(params, "branch")?;
+    validate_branch_name(root, branch)?;
+    let create = params.get("create").and_then(Value::as_bool) == Some(true);
+    let start = params.get("startPoint").and_then(Value::as_str);
+    if let Some(start) = start {
+        if start.is_empty() || start.starts_with('-') || start.len() > 255 { return Err(anyhow!("invalid_start_point")); }
+        if checkout_optional_ref(root, &format!("{start}^{{commit}}"))?.is_none() { return Err(anyhow!("start_point_not_found")); }
+    }
+    let local = format!("refs/heads/{branch}");
+    let remote = format!("refs/remotes/{branch}");
+    if create {
+        let mut args = vec!["switch".to_owned(), "-c".to_owned(), branch.to_owned()];
+        if let Some(start) = start { args.push(start.to_owned()); }
+        return Ok(CheckoutPlan { args, creating:true, branch_ref:Some(local) });
+    }
+    if checkout_optional_ref(root, &local)?.is_some() {
+        if let Some(owner) = crate::git_read::branch_worktrees(root)?.get(&local) {
+            let top = git(root, &["rev-parse", "--show-toplevel"])?;
+            let canonical_top = Path::new(top.trim()).canonicalize()?;
+            if crate::git_read::worktree_identity(&canonical_top.to_string_lossy()) != crate::git_read::worktree_identity(&owner.path) {
+                return Err(anyhow!("branch_checked_out_elsewhere: {}", json!({"path":owner.path,"missing":owner.missing})));
+            }
+        }
+        return Ok(CheckoutPlan { args:vec!["switch".into(), branch.into()], creating:false, branch_ref:None });
+    }
+    if checkout_optional_ref(root, &remote)?.is_none() { return Err(anyhow!("branch_not_found")); }
+    // Git infers the local name by dropping the configured remote prefix.
+    // If that cannot be resolved, retain any failed claim conservatively.
+    let remotes = git(root, &["remote"])?;
+    let prefix = remotes.lines().filter(|name| branch.starts_with(&format!("{name}/"))).max_by_key(|name| name.len());
+    let branch_ref = prefix.map(|name| format!("refs/heads/{}", &branch[name.len()+1..]));
+    Ok(CheckoutPlan { args:vec!["switch".into(), "--track".into(), branch.into()], creating:true, branch_ref })
+}
+
+fn checkout_optional_ref(root: &Path, reference: &str) -> Result<Option<String>> {
+    match git(root, &["rev-parse", "--verify", "--quiet", reference]) {
+        Ok(value) => Ok(Some(value.trim().to_owned())),
+        Err(error) if error.to_string().strip_prefix("git_failed:").is_some_and(|stderr| stderr.trim().is_empty()) => Ok(None),
+        Err(error) => Err(error),
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct CheckoutHead {
+    reference: Option<String>,
+    oid: String,
+}
+
+fn checkout_head(root: &Path) -> Result<CheckoutHead> {
+    // One local call reads both the OID and the symbolic identity. An unborn or
+    // unreadable HEAD cannot prove an unchanged checkout and keeps the claim.
+    let output = git(root, &["rev-parse", "HEAD", "--symbolic-full-name", "HEAD"])?;
+    let mut lines = output.lines();
+    let oid = lines.next().filter(|value| !value.is_empty()).ok_or_else(|| anyhow!("checkout_head_unknown"))?;
+    let reference = match lines.next() {
+        Some("HEAD") => None,
+        Some(value) if value.starts_with("refs/") => Some(value.to_owned()),
+        _ => return Err(anyhow!("checkout_head_unknown")),
+    };
+    if lines.next().is_some() { return Err(anyhow!("checkout_head_unknown")); }
+    Ok(CheckoutHead { reference, oid:oid.to_owned() })
+}
+
+fn checkout_can_release(before: Option<&CheckoutHead>, after: Option<&CheckoutHead>, absent_before: bool, absent_after: bool) -> bool {
+    before.is_some() && before == after && absent_before && absent_after
+}
+
+/// Only complete, known unpack-trees porcelain refusals prove switch did no work.
+fn checkout_refusal_paths(stderr: &str) -> Option<Vec<String>> {
+    const HEADERS: [(&str, Option<&str>); 4] = [
+        ("error: Your local changes to the following files would be overwritten by checkout:", Some("Please commit your changes or stash them before you switch branches.")),
+        ("error: The following untracked working tree files would be overwritten by checkout:", Some("Please move or remove them before you switch branches.")),
+        ("error: The following untracked working tree files would be removed by checkout:", Some("Please move or remove them before you switch branches.")),
+        ("error: Updating the following directories would lose untracked files in them:", None),
+    ];
+    let mut block: Option<(Option<&str>, usize)> = None;
+    let mut aborted = false;
+    let mut paths = Vec::new();
+    for line in stderr.lines().map(|line| line.trim_end_matches('\r')).filter(|line| !line.is_empty()) {
+        if aborted { return None; }
+        if let Some(path) = line.strip_prefix('\t') {
+            if path.is_empty() { return None; }
+            block.as_mut()?.1 += 1;
+            if paths.len() < 50 && !paths.iter().any(|value| value == path) { paths.push(path.to_owned()); }
+            continue;
+        }
+        if let Some((trailer, count)) = block {
+            if count == 0 { return None; }
+            if let Some(trailer) = trailer {
+                if line == trailer {
+                    block = None;
+                    continue;
+                }
+            }
+            block = None;
+        }
+        if line == "Aborting" {
+            if paths.is_empty() { return None; }
+            aborted = true;
+        } else {
+            let (_, trailer) = HEADERS.iter().find(|(header, _)| *header == line)?;
+            block = Some((*trailer, 0));
+        }
+    }
+    if aborted && block.is_none() && !paths.is_empty() { Some(paths) } else { None }
 }
 
 fn discard_path_summary(paths: &[String]) -> String {
@@ -2095,6 +2204,305 @@ mod tests {
         .unwrap_err()
         .to_string()
         .contains("branch_not_found"));
+    }
+
+    #[test]
+    fn checkout_preflight_preserves_work_and_retries_rejected_operations() {
+        let (temp, db, project) = setup();
+        let root = temp.path();
+        let original = git(root, &["branch", "--show-current"]).unwrap();
+        let original = original.trim();
+        fs::write(root.join("same.txt"), "same").unwrap();
+        git(root, &["add", "same.txt"]).unwrap();
+        git(root, &["commit", "-m", "shared file"]).unwrap();
+        git(root, &["switch", "-c", "target"]).unwrap();
+        fs::write(root.join("a.txt"), "target").unwrap();
+        fs::write(root.join("new 文件.txt"), "target new").unwrap();
+        git(root, &["add", "."]).unwrap();
+        git(root, &["commit", "-m", "target changes"]).unwrap();
+        git(root, &["switch", original]).unwrap();
+        let before = git(root, &["rev-parse", "HEAD"]).unwrap();
+        for (index, state) in ["modified", "staged", "untracked"].iter().enumerate() {
+            let path = if *state == "untracked" { "new 文件.txt" } else { "a.txt" };
+            fs::write(root.join(path), "local").unwrap();
+            if *state == "staged" { git(root, &["add", path]).unwrap(); }
+            let operation = format!("reject-{index}");
+            let request = json!({"projectId":project,"branch":"target","operationId":operation});
+            for _ in 0..2 {
+                let error = call(&db, "git.checkout", request.clone()).unwrap_err().to_string();
+                assert_eq!(error, format!("checkout_would_overwrite: {}", json!([path])));
+                assert_eq!(git(root, &["rev-parse", "HEAD"]).unwrap(), before);
+                assert!(!db.external_operation_pending(&operation).unwrap());
+            }
+            if *state == "untracked" { fs::remove_file(root.join(path)).unwrap(); }
+            else { git(root, &["restore", "--source=HEAD", "--staged", "--worktree", "--", path]).unwrap(); }
+        }
+        fs::write(root.join("same.txt"), "carry this edit").unwrap();
+        let request = json!({"projectId":project,"branch":"target","operationId":"reject-0"});
+        assert_eq!(call(&db, "git.checkout", request.clone()).unwrap()["branch"], "target");
+        assert_eq!(fs::read_to_string(root.join("same.txt")).unwrap(), "carry this edit");
+        // Replay remains first even if the newly dirty tree would fail a fresh request.
+        git(root, &["switch", original]).unwrap();
+        fs::write(root.join("a.txt"), "another edit on the old branch").unwrap();
+        assert_eq!(call(&db, "git.checkout", request).unwrap()["branch"], "target");
+        assert_eq!(git(root, &["branch", "--show-current"]).unwrap().trim(), original);
+        assert_eq!(fs::read(root.join("a.txt")).unwrap(), b"another edit on the old branch");
+    }
+
+    #[test]
+    fn checkout_worktree_ownership_and_remote_tracking_are_preserved() {
+        let (temp, db, project) = setup();
+        let remote = tempfile::tempdir().unwrap();
+        git(remote.path(), &["init", "--bare"]).unwrap();
+        git(temp.path(), &["remote", "add", "origin", remote.path().to_str().unwrap()]).unwrap();
+        git(temp.path(), &["push", "origin", "HEAD:remote-target"]).unwrap();
+        let request = json!({"projectId":project,"branch":"origin/remote-target","operationId":"remote-switch"});
+        assert_eq!(call(&db, "git.checkout", request).unwrap()["branch"], "remote-target");
+        assert_eq!(git(temp.path(), &["rev-parse", "--abbrev-ref", "@{upstream}"]).unwrap().trim(), "origin/remote-target");
+        let linked = tempfile::tempdir().unwrap();
+        let path = linked.path().join("other worktree 新");
+        git(temp.path(), &["worktree", "add", "-b", "occupied", path.to_str().unwrap()]).unwrap();
+        let request = json!({"projectId":project,"branch":"occupied","operationId":"occupied-switch"});
+        for _ in 0..2 {
+            let error = call(&db, "git.checkout", request.clone()).unwrap_err().to_string();
+            assert!(error.starts_with("branch_checked_out_elsewhere: "), "{error}");
+            let detail: Value = serde_json::from_str(error.strip_prefix("branch_checked_out_elsewhere: ").unwrap()).unwrap();
+            assert!(detail["path"].as_str().unwrap().ends_with("other worktree 新"));
+            assert_eq!(detail["missing"], false);
+            assert!(!db.external_operation_pending("occupied-switch").unwrap());
+        }
+        let branches = crate::git_read::dispatch(&db, "git.branches", &json!({"projectId":project})).unwrap().unwrap();
+        let occupied = branches["branches"].as_array().unwrap().iter().find(|row| row["name"] == "occupied").unwrap();
+        assert!(occupied["worktreePath"].as_str().unwrap().ends_with("other worktree 新"));
+        let current = branches["branches"].as_array().unwrap().iter().find(|row| row["current"] == true).unwrap();
+        assert!(current.get("worktreePath").is_none());
+    }
+
+    #[test]
+    fn checkout_refusals_require_complete_known_blocks_and_no_other_output() {
+        let headers = [
+            ("error: Your local changes to the following files would be overwritten by checkout:", Some("Please commit your changes or stash them before you switch branches.")),
+            ("error: The following untracked working tree files would be overwritten by checkout:", Some("Please move or remove them before you switch branches.")),
+            ("error: The following untracked working tree files would be removed by checkout:", Some("Please move or remove them before you switch branches.")),
+            ("error: Updating the following directories would lose untracked files in them:", None),
+        ];
+        let mut mixed = String::new();
+        for (index, (header, trailer)) in headers.iter().enumerate() {
+            let block = format!("{header}\r\n\tpath'{index}\r\n{}", trailer.map(|text| format!("{text}\r\n")).unwrap_or_default());
+            assert_eq!(checkout_refusal_paths(&format!("\n{block}\nAborting\r\n")), Some(vec![format!("path'{index}")]));
+            assert_eq!(checkout_refusal_paths(&format!("{header}\n\tpath'{index}\nAborting")), Some(vec![format!("path'{index}")]));
+            assert_eq!(checkout_refusal_paths(&format!("{block}unknown hook output\nAborting")), None);
+            assert_eq!(checkout_refusal_paths(&format!("fatal: refused\n{block}Aborting")), None);
+            assert_eq!(checkout_refusal_paths(&format!("{block}Aborting\nwarning: extra")), None);
+            assert_eq!(checkout_refusal_paths(&format!("{header}\nAborting")), None);
+            mixed.push_str(&block);
+        }
+        let advice_free = format!("{}\n\ttracked.txt\n{}\n\tuntracked.txt\nAborting", headers[0].0, headers[1].0);
+        assert_eq!(checkout_refusal_paths(&advice_free), Some(vec!["tracked.txt".into(), "untracked.txt".into()]));
+        assert_eq!(checkout_refusal_paths(&advice_free.replace("Aborting", "unknown\nAborting")), None);
+        assert_eq!(checkout_refusal_paths(&advice_free.replace("Aborting", "")), None);
+        mixed.push_str("Aborting\n");
+        assert_eq!(checkout_refusal_paths(&mixed), Some((0..4).map(|index| format!("path'{index}")).collect()));
+        let mut capped = format!("{}\n", headers[1].0);
+        for index in 0..60 { capped.push_str(&format!("\tnew{index}.txt\n\tnew{index}.txt\n")); }
+        capped.push_str("Please move or remove them before you switch branches.\nAborting");
+        assert_eq!(checkout_refusal_paths(&capped), Some((0..50).map(|index| format!("new{index}.txt")).collect()));
+        assert_eq!(checkout_refusal_paths(&(capped + "\nfatal: after cap")), None);
+        assert_eq!(checkout_refusal_paths("fatal: unknown"), None);
+        assert_eq!(checkout_refusal_paths("\tstray path\nAborting"), None);
+    }
+
+    #[test]
+    fn checkout_advice_free_refusals_release_the_claim_and_retry() {
+        let (temp, db, project) = setup(); let root = temp.path();
+        git(root, &["config", "advice.commitBeforeMerge", "false"]).unwrap();
+        git(root, &["branch", "before"]).unwrap();
+        fs::write(root.join("a.txt"), "target").unwrap(); fs::write(root.join("New"), "target untracked").unwrap();
+        git(root, &["add", "a.txt", "New"]).unwrap(); git(root, &["commit", "-m", "target"]).unwrap();
+        git(root, &["branch", "target"]).unwrap(); git(root, &["switch", "before"]).unwrap();
+        fs::write(root.join("a.txt"), "local tracked").unwrap(); fs::write(root.join("New"), "local untracked").unwrap();
+        let head = checkout_head(root).unwrap(); let index = fs::read(root.join(".git/index")).unwrap();
+        let native = run_git(root, &["switch", "target"], &[("LANGUAGE", std::ffi::OsStr::new("C"))], None, HOOK_TIMEOUT).unwrap_err().to_string();
+        assert!(!native.contains("Please commit") && !native.contains("Please move"), "{native}");
+        assert!(native.contains("Your local changes") && native.contains("untracked working tree files"), "{native}");
+        let request = json!({"projectId":project,"branch":"target","operationId":"advice-free-switch"});
+        for _ in 0..2 {
+            assert_eq!(call(&db,"git.checkout",request.clone()).unwrap_err().to_string(), format!("checkout_would_overwrite: {}",json!(["a.txt", "New"])));
+            assert!(!db.external_operation_pending("advice-free-switch").unwrap());
+            assert_eq!(checkout_head(root).unwrap(), head); assert_eq!(fs::read(root.join(".git/index")).unwrap(), index);
+            assert_eq!(fs::read(root.join("a.txt")).unwrap(), b"local tracked"); assert_eq!(fs::read(root.join("New")).unwrap(), b"local untracked");
+            assert!(!root.join(".git/index.lock").exists());
+        }
+        git(root, &["restore", "--worktree", "--", "a.txt"]).unwrap(); fs::remove_file(root.join("New")).unwrap();
+        assert_eq!(call(&db,"git.checkout",request).unwrap()["branch"], "target");
+    }
+
+    #[test]
+    fn checkout_release_requires_known_unchanged_head_and_absent_new_refs() {
+        let a = CheckoutHead { reference:Some("refs/heads/main".into()), oid:"a".repeat(40) };
+        let other_ref = CheckoutHead { reference:Some("refs/heads/other".into()), oid:a.oid.clone() };
+        let other_oid = CheckoutHead { reference:a.reference.clone(), oid:"b".repeat(40) };
+        let detached = CheckoutHead { reference:None, oid:a.oid.clone() };
+        assert!(checkout_can_release(Some(&a), Some(&a), true, true));
+        assert!(checkout_can_release(Some(&detached), Some(&detached), true, true));
+        for other in [&other_ref, &other_oid, &detached] { assert!(!checkout_can_release(Some(&a), Some(other), true, true)); }
+        assert!(!checkout_can_release(None, None, true, true));
+        assert!(!checkout_can_release(Some(&a), None, true, true));
+        assert!(!checkout_can_release(Some(&a), Some(&a), false, true));
+        assert!(!checkout_can_release(Some(&a), Some(&a), true, false));
+        let (_temp, db, project) = setup();
+        assert!(db.claim_external_operation("completed-during-release").unwrap());
+        let receipt = json!({"branch":"original"});
+        db.transaction(|tx| complete(tx,"completed-during-release","git.checkout",&receipt,Some((&project,None)))).unwrap();
+        release_discard_claim(&db, "completed-during-release").unwrap();
+        assert_eq!(db.operation("completed-during-release").unwrap(), Some(receipt));
+    }
+
+    #[test]
+    fn checkout_reports_all_real_obstructions_and_releases_only_the_safe_claim() {
+        let (temp, db, project) = setup();
+        let root = temp.path();
+        fs::write(root.join("staged.txt"), "base").unwrap();
+        git(root, &["add", "staged.txt"]).unwrap();
+        git(root, &["commit", "-m", "base staged path"]).unwrap();
+        git(root, &["branch", "before"]).unwrap();
+        for path in ["a.txt", "staged.txt", "New", "obstruction", "quote's.txt", "Case.txt"] { fs::write(root.join(path), "target").unwrap(); }
+        git(root, &["add", "."]).unwrap(); git(root, &["commit", "-m", "target files"]).unwrap();
+        git(root, &["branch", "target"]).unwrap(); git(root, &["switch", "before"]).unwrap();
+        fs::write(root.join("a.txt"), "local tracked").unwrap();
+        fs::write(root.join("staged.txt"), "local staged").unwrap(); git(root, &["add", "staged.txt"]).unwrap();
+        fs::write(root.join("New"), "local untracked").unwrap();
+        fs::write(root.join("quote's.txt"), "local quote").unwrap();
+        fs::create_dir(root.join("obstruction")).unwrap(); fs::write(root.join("obstruction/local.txt"), "local directory file").unwrap();
+        fs::write(root.join("case-probe"), "probe").unwrap();
+        let insensitive = root.join("CASE-PROBE").exists(); fs::remove_file(root.join("case-probe")).unwrap();
+        if insensitive { fs::write(root.join("case.txt"), "local case").unwrap(); }
+        else { eprintln!("case-only collision skipped on case-sensitive filesystem"); }
+        let snapshot_paths = ["a.txt", "staged.txt", "New", "obstruction/local.txt", "quote's.txt", "case.txt"];
+        let snapshot: Vec<_> = snapshot_paths.iter().map(|path| fs::read(root.join(path)).ok()).collect();
+        let index = fs::read(root.join(".git/index")).unwrap(); let head = checkout_head(root).unwrap();
+        let request = json!({"projectId":project,"branch":"target","operationId":"all-obstructions"});
+        let mut expected = vec!["a.txt", "staged.txt", "New", "obstruction", "quote's.txt"];
+        if insensitive { expected.push("Case.txt"); } expected.sort();
+        for _ in 0..2 {
+            let failure = call(&db,"git.checkout",request.clone()).unwrap_err().to_string();
+            let mut paths: Vec<String> = serde_json::from_str(failure.strip_prefix("checkout_would_overwrite: ").expect(&failure)).unwrap();
+            paths.sort(); assert_eq!(paths, expected);
+            assert_eq!(checkout_head(root).unwrap(), head); assert_eq!(fs::read(root.join(".git/index")).unwrap(), index);
+            assert_eq!(snapshot_paths.iter().map(|path| fs::read(root.join(path)).ok()).collect::<Vec<_>>(), snapshot);
+            assert!(!root.join(".git/index.lock").exists()); assert!(!db.external_operation_pending("all-obstructions").unwrap());
+        }
+        git(root, &["restore", "--source=HEAD", "--staged", "--worktree", "--", "a.txt", "staged.txt"]).unwrap();
+        for path in ["New", "quote's.txt", "obstruction/local.txt"] { fs::remove_file(root.join(path)).unwrap(); }
+        fs::remove_dir(root.join("obstruction")).unwrap(); if insensitive { fs::remove_file(root.join("case.txt")).unwrap(); }
+        assert_eq!(call(&db,"git.checkout",request).unwrap()["branch"], "target");
+    }
+
+    #[test]
+    fn checkout_create_and_track_refusals_release_only_absent_new_branches() {
+        for create in [false, true] {
+            let (temp, db, project) = setup(); let root = temp.path();
+            let remote = tempfile::tempdir().unwrap();
+            git(remote.path(), &["init", "--bare"]).unwrap();
+            git(root, &["remote", "add", "origin", remote.path().to_str().unwrap()]).unwrap();
+            git(root, &["branch", "before"]).unwrap(); fs::write(root.join("a.txt"), "target").unwrap(); git(root, &["commit", "-am", "target"]).unwrap();
+            git(root, &["branch", "target"]).unwrap(); git(root, &["push", "origin", "HEAD:tracked"]).unwrap(); git(root, &["switch", "before"]).unwrap();
+            if !create { git(root, &["switch", "--detach", "before"]).unwrap(); assert!(checkout_head(root).unwrap().reference.is_none()); }
+            fs::write(root.join("a.txt"), "local").unwrap();
+            let request = if create { json!({"projectId":project,"branch":"created","create":true,"startPoint":"target","operationId":"new-ref-refusal"}) }
+                else { json!({"projectId":project,"branch":"origin/tracked","operationId":"new-ref-refusal"}) };
+            let name = if create { "created" } else { "tracked" }; let reference = format!("refs/heads/{name}");
+            let before = checkout_head(root).unwrap(); let index = fs::read(root.join(".git/index")).unwrap();
+            for _ in 0..2 {
+                assert_eq!(call(&db,"git.checkout",request.clone()).unwrap_err().to_string(), format!("checkout_would_overwrite: {}",json!(["a.txt"])));
+                assert!(!db.external_operation_pending("new-ref-refusal").unwrap());
+                assert_eq!(checkout_optional_ref(root,&reference).unwrap(),None);
+                assert_eq!(checkout_head(root).unwrap(),before); assert_eq!(fs::read(root.join(".git/index")).unwrap(),index);
+                assert_eq!(fs::read(root.join("a.txt")).unwrap(),b"local"); assert!(!root.join(".git/index.lock").exists());
+            }
+            git(root,&["restore","--worktree","--","a.txt"]).unwrap();
+            assert_eq!(call(&db,"git.checkout",request).unwrap()["branch"],name);
+            assert!(checkout_optional_ref(root,&reference).unwrap().is_some());
+        }
+    }
+
+    #[test]
+    fn checkout_refreshes_timestamp_only_changes_and_keeps_hook_failures_uncertain() {
+        let (temp, db, project) = setup(); let root = temp.path();
+        git(root, &["branch", "before"]).unwrap(); fs::write(root.join("a.txt"), "target").unwrap();
+        git(root, &["commit", "-am", "target"]).unwrap(); git(root, &["branch", "target"]).unwrap(); git(root, &["switch", "before"]).unwrap();
+        let file = fs::OpenOptions::new().write(true).open(root.join("a.txt")).unwrap();
+        file.set_times(fs::FileTimes::new().set_modified(std::time::SystemTime::now()+Duration::from_secs(10))).unwrap(); drop(file);
+        assert_eq!(call(&db,"git.checkout",json!({"projectId":project,"branch":"target","operationId":"timestamp-only"})).unwrap()["branch"], "target");
+        assert_eq!(fs::read(root.join("a.txt")).unwrap(), b"target");
+        let hook = root.join(".git/hooks/post-checkout");
+        fs::write(&hook, "#!/bin/sh\nprintf '%s|%s' \"$LANGUAGE\" \"${LC_ALL-}\" > .git/checkout-hook-env\necho 'fatal: post-checkout hook failed' >&2\nexit 1\n").unwrap();
+        #[cfg(unix)] { use std::os::unix::fs::PermissionsExt; fs::set_permissions(&hook, fs::Permissions::from_mode(0o755)).unwrap(); }
+        let request = json!({"projectId":project,"branch":"hook-created","create":true,"operationId":"hook-uncertain"});
+        let error = call(&db,"git.checkout",request.clone()).unwrap_err().to_string(); assert!(error.starts_with("git_failed:"), "{error}");
+        assert!(db.external_operation_pending("hook-uncertain").unwrap());
+        assert!(checkout_optional_ref(root,"refs/heads/hook-created").unwrap().is_some());
+        assert_eq!(fs::read_to_string(root.join(".git/checkout-hook-env")).unwrap(), format!("C|{}",std::env::var("LC_ALL").unwrap_or_default()));
+        assert_eq!(call(&db,"git.checkout",request).unwrap_err().to_string(), "operation_outcome_unknown");
+    }
+
+    #[test]
+    fn checkout_honors_all_native_ignore_sources() {
+        for source in ["gitignore", "info-exclude", "global-exclude"] {
+            let (temp, db, project) = setup(); let root = temp.path();
+            match source {
+                "gitignore" => { fs::write(root.join(".gitignore"), "dist/\n").unwrap(); git(root,&["add",".gitignore"]).unwrap(); git(root,&["commit","-m","ignore output"]).unwrap(); }
+                "info-exclude" => { use std::io::Write; let mut file = fs::OpenOptions::new().append(true).open(root.join(".git/info/exclude")).unwrap(); writeln!(file,"dist/").unwrap(); }
+                "global-exclude" => { let path=root.join(".git/global-ignore"); fs::write(&path,"dist/\n").unwrap(); git(root,&["config","core.excludesFile",path.to_str().unwrap()]).unwrap(); }
+                _ => unreachable!(),
+            }
+            git(root,&["branch","before"]).unwrap(); fs::create_dir(root.join("dist")).unwrap(); fs::write(root.join("dist/output.js"),"tracked target").unwrap();
+            git(root,&["add","-f","dist/output.js"]).unwrap(); git(root,&["commit","-m","target output"]).unwrap(); git(root,&["branch","target"]).unwrap(); git(root,&["switch","before"]).unwrap();
+            fs::create_dir_all(root.join("dist")).unwrap(); fs::write(root.join("dist/output.js"),"ignored local").unwrap();
+            git(root,&["switch","target"]).unwrap(); assert_eq!(fs::read(root.join("dist/output.js")).unwrap(),b"tracked target"); git(root,&["switch","before"]).unwrap();
+            fs::create_dir_all(root.join("dist")).unwrap(); fs::write(root.join("dist/output.js"),"ignored local").unwrap();
+            assert_eq!(call(&db,"git.checkout",json!({"projectId":project,"branch":"target","operationId":"ignored-switch"})).unwrap()["branch"],"target", "{source}");
+            assert_eq!(fs::read(root.join("dist/output.js")).unwrap(),b"tracked target");
+        }
+    }
+
+    #[test]
+    fn checkout_nested_missing_worktrees_and_unborn_creation() {
+        let (temp, db, project) = setup();
+        let root = temp.path();
+        let nested = root.join("nested-linked");
+        git(root, &["worktree", "add", "-b", "nested-owner", nested.to_str().unwrap()]).unwrap();
+        checkout_preflight(&nested, json!({"branch":"nested-owner"}).as_object().unwrap()).unwrap();
+        // The main folder is an ancestor, but a distinct worktree identity.
+        let original = git(root, &["branch", "--show-current"]).unwrap();
+        let error = checkout_preflight(&nested, json!({"branch":original.trim()}).as_object().unwrap()).unwrap_err().to_string();
+        assert!(error.starts_with("branch_checked_out_elsewhere:"), "{error}");
+        let request = json!({"projectId":project,"branch":"nested-owner","operationId":"nested-switch"});
+        assert!(call(&db, "git.checkout", request.clone()).unwrap_err().to_string().contains("branch_checked_out_elsewhere:"));
+        assert!(!db.external_operation_pending("nested-switch").unwrap());
+        fs::remove_dir_all(&nested).unwrap();
+        for _ in 0..2 {
+            let error = call(&db, "git.checkout", request.clone()).unwrap_err().to_string();
+            let detail: Value = serde_json::from_str(error.strip_prefix("branch_checked_out_elsewhere: ").unwrap()).unwrap();
+            assert_eq!(detail["missing"], true);
+            assert!(detail["path"].as_str().unwrap().ends_with("nested-linked"));
+            assert!(!db.external_operation_pending("nested-switch").unwrap());
+        }
+        let rows = crate::git_read::dispatch(&db, "git.branches", &json!({"projectId":project})).unwrap().unwrap();
+        assert_eq!(rows["branches"].as_array().unwrap().iter().find(|row| row["name"] == "nested-owner").unwrap()["worktreeMissing"], true);
+        git(root, &["worktree", "prune"]).unwrap();
+        call(&db, "git.checkout", request).unwrap();
+
+        let unborn = tempfile::tempdir().unwrap();
+        git(unborn.path(), &["init"]).unwrap();
+        let unborn_db = Database::open(&unborn.path().join("runtime.sqlite")).unwrap();
+        initialize(&unborn_db).unwrap();
+        let project = unborn_db.add_project(unborn.path().to_str().unwrap(), Some("unborn"), "unborn-add").unwrap();
+        fs::write(unborn.path().join("local.txt"), "keep").unwrap();
+        let result = call(&unborn_db, "git.checkout", json!({"projectId":project.id,"branch":"new-unborn","create":true,"operationId":"unborn-create"})).unwrap();
+        assert_eq!(result["branch"], "new-unborn");
+        assert_eq!(fs::read(unborn.path().join("local.txt")).unwrap(), b"keep");
+        assert!(!unborn.path().join(".git/index.lock").exists());
     }
 
     #[test]

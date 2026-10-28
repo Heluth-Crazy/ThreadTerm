@@ -16,6 +16,8 @@ export type WorkbenchActions = {
  /** Opens the file as a preview owned by the active session (hidden when switching sessions). */
  openBeside?:(path:string) => void;
  openDiff:(path:string, staged:boolean) => void;
+ /** Opens a materialized worktree through the host's project navigation rules. */
+ openWorktree?:(path:string) => void;
  /** Absent when the host has no history tab (standalone Files page). */
  openHistory?:(path?:string) => void;
  openReview?:(target:{sessionId:string;checkpointId:string;toCheckpointId?:string;path:string}) => void;

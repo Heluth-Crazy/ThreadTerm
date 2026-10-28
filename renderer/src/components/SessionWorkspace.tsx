@@ -482,6 +482,7 @@ export function SessionWorkspace({session,data,theme,onBack,onSelect,onProject,o
   openSession:onSelect,
   openBeside:file=>void openScopedFile({projectId:project.id,worktreePath:path,path:file,kind:previewKind(file),ownerSessionId:previewSessionId}).catch(fail),
   openDiff:(file,staged)=>void openScopedFile({projectId:project.id,worktreePath:path,path:file,kind:'diff',staged}).catch(fail),
+  openWorktree:worktreePath=>onProject(project.id,worktreePath),
   openHistory:file=>openHistory({projectId:project.id,worktreePath:path,path:file}),
   openReview:target=>void openWorkbenchTab({id:crypto.randomUUID(),kind:'review',projectId:project.id,worktreePath:path,...target},
    candidate=>candidate.kind==='review'&&candidate.sessionId===target.sessionId&&candidate.checkpointId===target.checkpointId&&(candidate.toCheckpointId??'')===(target.toCheckpointId??'')&&candidate.path===target.path),

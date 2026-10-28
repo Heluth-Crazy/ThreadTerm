@@ -783,6 +783,15 @@ test('git fingerprints snapshots and discard require exact nullable maps',()=>{
  for(const params of [{projectId:'p',paths:[]},{projectId:'p',paths:Array.from({length:501},(_,i)=>'f'+i)}]) assert.throws(()=>validateRequest('git.fingerprints',params));
 });
 
+test('git branches add the optional checked-out worktree path',()=>{
+ const branch={name:'feature/elsewhere',remote:false,current:false,lastCommit:{hash:'a'.repeat(40),subject:'Elsewhere',committedAt:'2026-10-28T00:00:00Z'},worktreePath:'C:/repo/elsewhere'};
+ validateResult('git.branches',{current:'main',detached:false,branches:[branch]});
+ validateResult('git.branches',{current:'main',detached:false,branches:[{...branch,worktreeMissing:true}]});
+ validateResult('git.branches',{current:null,detached:true,branches:[{...branch,worktreePath:undefined}]});
+ assert.throws(()=>validateResult('git.branches',{current:'main',detached:false,branches:[{...branch,worktreePath:7}]}));
+ assert.throws(()=>validateResult('git.branches',{current:'main',detached:false,branches:[{...branch,worktreeMissing:'yes'}]}));
+});
+
 
 test('worktree creation accepts a bounded base only for new branches',()=>{
  const request={projectId:'p',path:'C:/worktree',branch:'feature/base',createBranch:true,operationId:'worktree-base'};

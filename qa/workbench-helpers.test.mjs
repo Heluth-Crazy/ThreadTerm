@@ -5,6 +5,7 @@ import { changeGroups, decorationFor, decorationIndex } from '../renderer/src/wo
 import { stageChunk, unstageChunk, withLineBreaks } from '../renderer/src/workbench/indexEdit.ts';
 import { formatAgentReference, insertAtCaret, referencePath } from '../renderer/src/workbench/agentReference.ts';
 import { workbenchError } from '../renderer/src/workbench/errors.ts';
+import { branchRowState, checkoutLocalPaths, sortBranches, worktreeName } from '../renderer/src/workbench/branchMenu.ts';
 
 test('quick open prefers file-name matches, contiguous runs and shallow paths', () => {
  const paths = ['src/components/FileWorkspace.tsx', 'src/workbench/fuzzy.ts', 'node_modules/pkg/lib/fuzzy.ts', 'docs/fw-notes.md', 'src/components/Framework.tsx'];
@@ -68,4 +69,40 @@ test('runtime errors map to readable text without hiding Git output', () => {
  assert.match(workbenchError(new Error('Unsupported runtime method'), true), /重启/);
  assert.equal(workbenchError(new Error('git_failed: fatal: not a git repository'), false), 'fatal: not a git repository');
  assert.equal(workbenchError(new Error('something unexpected'), false), 'something unexpected');
+ assert.match(workbenchError(new Error('branch_checked_out_elsewhere: D:/repo/other'), false), /already checked out/);
+ assert.match(workbenchError(new Error('branch_checked_out_elsewhere: {"path":"D:/repo/missing","missing":true}'), false), /D:\/repo\/missing.*worktree prune/);
+ assert.match(workbenchError(new Error('checkout_blocked: would overwrite local changes'), true), /阻止/);
+ assert.match(workbenchError(new Error('checkout_would_overwrite: ["a.ts"]'), true), /覆盖/);
+});
+
+test('branch menu keeps current and recent local branches before remotes, with explicit worktree row states', () => {
+ const branches=sortBranches([
+  {name:'origin/main',remote:true,current:false,lastCommit:{hash:'3',subject:'remote',committedAt:'2026-01-03T00:00:00Z'}},
+  {name:'older',remote:false,current:false,lastCommit:{hash:'1',subject:'old',committedAt:'2026-01-01T00:00:00Z'}},
+  {name:'main',remote:false,current:true,lastCommit:{hash:'2',subject:'current',committedAt:'2026-01-02T00:00:00Z'}},
+  {name:'recent',remote:false,current:false,lastCommit:{hash:'4',subject:'recent',committedAt:'2026-01-04T00:00:00Z'}},
+ ]);
+ assert.deepEqual(branches.map(branch=>branch.name),['main','recent','older','origin/main']);
+ assert.equal(branchRowState({name:'main',remote:false,current:true},true),'current');
+ assert.equal(branchRowState({name:'topic',remote:false,current:false,worktreePath:'D:\\repo\\topic'},true),'open-worktree');
+ assert.equal(branchRowState({name:'topic',remote:false,current:false,worktreePath:'D:\\repo\\topic'},false),'worktree-unavailable');
+ assert.equal(branchRowState({name:'missing',remote:false,current:false,worktreePath:'D:\\repo\\missing',worktreeMissing:true},true),'worktree-missing');
+ assert.equal(branchRowState({name:'topic',remote:false,current:false},false),'checkout');
+ assert.equal(worktreeName('D:\\repo\\topic'),'topic');
+});
+
+test('checkout warnings deduplicate local paths across Git status groups and distinguish unloaded status', () => {
+ assert.equal(checkoutLocalPaths(undefined),undefined);
+ assert.deepEqual(checkoutLocalPaths({changes:[]}),[]);
+ assert.deepEqual(checkoutLocalPaths({changes:[
+  {path:'staged-and-unstaged.ts',indexStatus:'M',worktreeStatus:'M'},
+  {path:'staged-and-unstaged.ts',indexStatus:'M',worktreeStatus:'M'},
+  {path:'untracked.ts',indexStatus:'?',worktreeStatus:'?',untracked:true},
+  {path:'conflict.ts',indexStatus:'U',worktreeStatus:'U'},
+ ]}),['staged-and-unstaged.ts','untracked.ts','conflict.ts']);
+ assert.deepEqual(checkoutLocalPaths({changes:[
+  {path:'obstruction.txt',indexStatus:'?',worktreeStatus:'?',untracked:true},
+  {path:'other-obstruction.txt',indexStatus:'?',worktreeStatus:'?',untracked:true},
+  {path:'obstruction.txt',indexStatus:'?',worktreeStatus:'?',untracked:true},
+ ]}),['obstruction.txt','other-obstruction.txt']);
 });

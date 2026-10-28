@@ -934,6 +934,7 @@ fn blame(root: &Path, path: &str) -> Result<Value> {
 }
 
 fn branches(root: &Path) -> Result<Value> {
+    let worktrees = branch_worktrees(root)?;
     let current = git_text(root, &["symbolic-ref", "--quiet", "--short", "HEAD"])
         .ok()
         .map(|value| value.trim().to_owned())
@@ -959,6 +960,12 @@ fn branches(root: &Path) -> Result<Value> {
         branch.insert("name".into(), json!(fields[1]));
         branch.insert("remote".into(), json!(remote));
         branch.insert("current".into(), json!(fields[2] == "*"));
+        if !remote && fields[2] != "*" {
+            if let Some(owner) = worktrees.get(full) {
+                branch.insert("worktreePath".into(), json!(owner.path));
+                if owner.missing { branch.insert("worktreeMissing".into(), json!(true)); }
+            }
+        }
         if !fields[3].is_empty() {
             branch.insert("upstream".into(), json!(fields[3]));
         }
@@ -981,6 +988,37 @@ fn branches(root: &Path) -> Result<Value> {
         branches.push(Value::Object(branch));
     }
     Ok(json!({"current":current,"detached":detached,"branches":branches}))
+}
+
+pub(crate) struct BranchWorktree {
+    pub path: String,
+    pub missing: bool,
+}
+
+pub(crate) fn worktree_identity(path: &str) -> String {
+    let path = plain_path(Path::new(path)).to_string_lossy().replace('\\', "/");
+    let path = path.trim_end_matches('/');
+    if cfg!(windows) { path.to_lowercase() } else { path.to_owned() }
+}
+
+/// Listed paths may be missing; never canonicalize them to identify an owner.
+pub(crate) fn branch_worktrees(root: &Path) -> Result<HashMap<String, BranchWorktree>> {
+    let raw = git_text(root, &["-c", "core.quotePath=false", "worktree", "list", "--porcelain"])?;
+    let mut branches = HashMap::new();
+    for record in raw.split("\n\n") {
+        let mut path = None;
+        let mut branch = None;
+        let mut prunable = false;
+        for field in record.lines() {
+            if let Some(value) = field.strip_prefix("worktree ") { path = Some(value); }
+            else if let Some(value) = field.strip_prefix("branch ") { branch = Some(value); }
+            else if field == "prunable" || field.starts_with("prunable ") { prunable = true; }
+        }
+        if let (Some(path), Some(branch)) = (path, branch) {
+            branches.insert(branch.to_owned(), BranchWorktree { path:path.to_owned(), missing:prunable || !Path::new(path).is_dir() });
+        }
+    }
+    Ok(branches)
 }
 
 /// Removes the Windows verbatim prefix that `canonicalize` adds; Git and Shell
