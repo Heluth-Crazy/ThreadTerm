@@ -504,6 +504,7 @@ function Pane({
       comments={workbench?.comments}/>
   ) : item.kind === "review" ? (
     <ReviewDiffView projectId={item.projectId} worktreePath={item.worktreePath} path={item.path} sessionId={item.sessionId}
+      worktreeSessionIds={sessions.filter(session=>session.projectId===item.projectId && (session.worktreePath ?? '')===(item.worktreePath ?? '')).map(session=>session.id)}
       checkpointId={item.checkpointId} toCheckpointId={item.toCheckpointId} editorId={editorId(node.id, item)} zh={zh}
       onOpenFile={workbench?.openFile?path=>workbench.openFile?.({projectId:item.projectId,worktreePath:item.worktreePath,path}):undefined}
       comments={workbench?.comments}/>
