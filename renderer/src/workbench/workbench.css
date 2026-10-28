@@ -94,6 +94,8 @@
 .wb-issue { display:flex; align-items:flex-start; gap:6px; margin:8px 10px; padding:7px 8px 7px 10px; border:1px solid color-mix(in srgb,var(--danger) 22%,transparent); border-radius:var(--radius); background:color-mix(in srgb,var(--danger) 7%,var(--surface)); color:var(--danger); font-size:12px; line-height:1.45; overflow-wrap:anywhere; }
 .wb-issue .icon-btn { flex:none; width:20px; height:20px; margin:-2px -2px 0 auto; color:inherit; }
 .wb-issue .icon-btn .ico { width:13px; height:13px; }
+.wb-interference-list { display:block; margin-top:4px; }
+.wb-interference-entry { display:block; max-width:100%; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-family:var(--mono); }
 .wb-notice { margin:8px 10px; padding:7px 10px; border-radius:var(--radius); background:var(--primary-tint); color:var(--text); font-size:12px; line-height:1.45; }
 .wb-summary { margin:6px 14px; color:var(--muted); font-size:12px; }
 .wb-empty { margin:10px 14px; color:var(--muted); font-size:12px; line-height:1.5; }
@@ -232,6 +234,25 @@ button.wb-change-row { width:100%; border:0; background:transparent; color:var(-
 .wb-branch-item .menu-item .wb-name { flex:1; font-family:var(--mono); font-size:12px; }
 .wb-branch-item .icon-btn { flex:none; width:26px; height:26px; }
 .wb-path-line { display:block; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-family:var(--mono); font-size:12px; }
+.wb-stash-row { display:flex; flex-wrap:wrap; align-items:center; gap:4px; min-height:var(--wb-row); padding:2px 4px 2px 22px; border-radius:var(--radius); font-size:13px; }
+.wb-stash-row:hover { background:var(--soft); }
+.wb-stash-summary { display:flex; flex:1 1 140px; flex-wrap:wrap; align-items:center; gap:2px 6px; min-width:0; }
+.wb-stash-summary .wb-name { flex:1 1 100%; }
+.wb-stash-branch, .wb-stash-untracked { flex:none; max-width:90px; overflow:hidden; padding:1px 5px; border:1px solid var(--border); border-radius:999px; color:var(--muted); font-size:10.5px; line-height:15px; text-overflow:ellipsis; white-space:nowrap; }
+.wb-stash-untracked { border-color:color-mix(in srgb,var(--wb-added) 35%,transparent); color:var(--wb-added); }
+.wb-stash-summary .wb-time { max-width:90px; overflow:hidden; text-overflow:ellipsis; }
+.wb-stash-row .wb-row-actions { opacity:0; }
+.wb-stash-row:hover .wb-row-actions, .wb-stash-row:focus-within .wb-row-actions { opacity:1; }
+.wb-stash-files { flex-basis:100%; display:grid; gap:2px; margin:2px 0 4px 18px; }
+.wb-stash-files.wb-summary { display:block; }
+.wb-stash-file { display:flex; align-items:center; gap:6px; min-width:0; min-height:22px; color:var(--muted); font:11.5px var(--mono); }
+.wb-stash-file .wb-name { flex:1; }
+.wb-stash-dialog { display:grid; gap:12px; }
+.wb-stash-dialog label { display:grid; gap:5px; color:var(--muted); font-size:12px; }
+.wb-stash-dialog input[type="text"], .wb-stash-dialog input:not([type]) { width:100%; height:32px; box-sizing:border-box; padding:0 9px; border:1px solid var(--border); border-radius:7px; background:var(--surface); color:var(--text); font:inherit; }
+.wb-stash-dialog input:focus { border-color:var(--primary); box-shadow:var(--wb-ring); outline:none; }
+.wb-stash-dialog label.wb-stash-checkbox { display:flex; align-items:center; gap:7px; color:var(--text); }
+.wb-stash-checkbox input { width:15px; height:15px; margin:0; accent-color:var(--primary); }
 
 /* ---- Agent changes ---- */
 .wb-review { display:flex; flex-direction:column; min-height:100%; padding-bottom:16px; }

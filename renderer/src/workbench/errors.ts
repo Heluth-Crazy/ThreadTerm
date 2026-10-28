@@ -1,5 +1,28 @@
 /** Runtime error codes from file/Git/review commands → short user-facing text.
  * Unknown errors keep Git's own message so failures are never disguised. */
+export type StashDropInterference = {oid:string;ourEntryDropped:boolean;restored:{oid:string;message:string}[];restoreFailed:{oid:string;message:string;error:string}[];orderChanged:boolean;unknownEntryLost?:boolean};
+type StashEntry = {oid:string;message:string};
+const stashEntry = (value:unknown):StashEntry|undefined => value !== null && typeof value==='object' && typeof (value as StashEntry).oid==='string' && typeof (value as StashEntry).message==='string' ? value as StashEntry : undefined;
+export function stashDropInterference(value:unknown):StashDropInterference|undefined {
+ if(value===null || typeof value!=='object') return undefined;
+ const input=value as Partial<StashDropInterference>;
+ if(typeof input.oid!=='string'||typeof input.ourEntryDropped!=='boolean'||typeof input.orderChanged!=='boolean'||!Array.isArray(input.restored)||!Array.isArray(input.restoreFailed)) return undefined;
+ const restored=input.restored.map(stashEntry), restoreFailed=input.restoreFailed.map(value=>stashEntry(value)&&typeof (value as {error?:unknown}).error==='string' ? value as StashDropInterference['restoreFailed'][number] : undefined);
+ if(restored.some(value=>!value)||restoreFailed.some(value=>!value)) return undefined;
+ return {oid:input.oid,ourEntryDropped:input.ourEntryDropped,restored:restored as StashEntry[],restoreFailed:restoreFailed as StashDropInterference['restoreFailed'],orderChanged:input.orderChanged,...(input.unknownEntryLost===undefined?{}:{unknownEntryLost:input.unknownEntryLost})};
+}
+export function stashInterferenceError(value:unknown,zh:boolean,includeEntries=true) {
+ const interference=stashDropInterference(value);
+ if(!interference) return undefined;
+ const own=interference.ourEntryDropped
+  ? zh ? `暂存 ${interference.oid.slice(0,7)} 已删除，但其他暂存条目发生了变化。` : `Stash ${interference.oid.slice(0,7)} was dropped, but other stash entries changed.`
+  : zh ? `暂存 ${interference.oid.slice(0,7)} 未删除，因为其他暂存条目发生了变化。` : `Stash ${interference.oid.slice(0,7)} was not dropped because other stash entries changed.`;
+ const restored=interference.restored.length ? `${zh?'已恢复：':'Restored: '}${interference.restored.map(value=>`${value.oid.slice(0,7)} · ${value.message}`).join(zh?'、':', ')}。` : '';
+ const failed=interference.restoreFailed.length ? `${zh?'恢复失败：':'Could not restore: '}${interference.restoreFailed.map(value=>`${value.oid.slice(0,7)} · ${value.message}`).join(zh?'、':', ')}。` : '';
+ const order=interference.orderChanged ? (zh?'暂存顺序已变化。':'Stash order changed.') : '';
+ const unknown=interference.unknownEntryLost ? (zh?'可能丢失了一个未知暂存条目；请运行 git fsck --unreachable，然后使用 git stash store -m <msg> <oid> 恢复。':'An unknown stash entry may be lost; run git fsck --unreachable, then recover it with git stash store -m <msg> <oid>.') : '';
+ return [own,...(includeEntries?[restored,failed]:[]),order,unknown].filter(Boolean).join(' ');
+}
 const known:Record<string,[string,string]> = {
  unknown_method:['需要重启 ThreadTerm 后台才能使用此功能（当前后台版本较旧）。','Restart the ThreadTerm runtime to use this feature (the running runtime is older).'],
  git_unavailable:['此目录不是 Git 仓库，或未找到 git。','This folder is not a Git repository, or git is not installed.'],
@@ -29,6 +52,9 @@ const known:Record<string,[string,string]> = {
  branch_checked_out_elsewhere:['该分支已在另一个工作树中检出。','This branch is already checked out in another worktree.'],
  checkout_would_overwrite:['切换分支会覆盖本地更改。请在源代码管理中检查这些文件。','Switching branches would overwrite local changes. Review the files in Source Control.'],
  checkout_blocked:['Git 阻止了分支切换。请检查工作区状态后重试。','Git blocked the branch switch. Review the worktree state and try again.'],
+ nothing_to_stash:['没有可暂存的更改。','There are no changes to stash.'],
+ stash_not_found:['找不到该暂存条目。请刷新暂存列表后重试。','That stash entry was not found. Refresh the Stashes list and try again.'],
+ stash_apply_failed:['无法应用该暂存。暂存已保留，请检查工作区后重试。','The stash could not be applied. It was kept; review the worktree and try again.'],
  no_remote:['没有可推送的远程仓库。','No remote is configured to publish to.'],
  review_unavailable:['此会话没有可审查的 Git 工作区。','This session has no Git workspace to review.'],
  checkpoint_missing:['检查点不存在。','The checkpoint no longer exists.'],
@@ -61,6 +87,36 @@ export function workbenchError(error:unknown, zh:boolean, context?:'discard'):st
  // An older desktop preload rejects new methods before they reach the runtime.
  const discardIncomplete = raw === 'discard_incomplete' || raw.startsWith('discard_incomplete:') || raw.includes('discard_incomplete');
  const text = !discardIncomplete && /Unsupported runtime method/.test(raw) ? 'unknown_method' : raw;
+ if(text.includes('stash_drop_interfered:')) {
+  const marker=text.indexOf('stash_drop_interfered:')+'stash_drop_interfered:'.length;
+  try { const notice=stashInterferenceError(JSON.parse(text.slice(marker).trim()),zh); if(notice) return notice; } catch { /* Fall through to the original error. */ }
+ }
+ if(text.includes('stash_operation_failed:')) {
+  const marker=text.indexOf('stash_operation_failed:')+'stash_operation_failed:'.length;
+  try {
+   const result=JSON.parse(text.slice(marker).trim()) as {oid?:unknown;error?:unknown;interference?:unknown};
+   const oid=typeof result.oid==='string' ? result.oid : undefined;
+   const detail=typeof result.error==='string' ? workbenchError(result.error,zh) : undefined;
+   // Wrapped interference still names entries whose restore failed; Stashes cannot show those.
+   const interference=stashInterferenceError(result.interference,zh);
+   const base=zh
+    ? `无法确认暂存操作结果。请检查工作区和暂存列表。暂存 OID：${oid ?? '未知'}。${detail ? ` ${detail}` : ''}`
+    : `The stash operation could not be confirmed. Review the worktree and Stashes. Stash OID: ${oid ?? 'unknown'}.${detail ? ` ${detail}` : ''}`;
+   return interference ? `${base} ${interference}` : base;
+  } catch { /* Fall through to Git's original message for a malformed receipt. */ }
+ }
+ if(text.includes('stash_switch_failed:')) {
+  const marker=text.indexOf('stash_switch_failed:')+'stash_switch_failed:'.length;
+  try {
+   const result=JSON.parse(text.slice(marker).trim()) as {stash?:{oid?:unknown;restored?:unknown;interference?:unknown}};
+   const oid=typeof result.stash?.oid==='string' ? result.stash.oid : undefined;
+   const interference=stashInterferenceError(result.stash?.interference,zh);
+   const base=result.stash?.restored === true ? (zh ? '切换失败；你的更改已恢复。已暂存的更改会以未暂存状态恢复。' : 'Switch failed; your changes were restored. Staged changes were restored as unstaged.') : zh
+    ? `切换失败；你的更改无法恢复，暂存仍保留${oid ? `（${oid}）` : ''}。`
+    : `Switch failed; your changes could not be restored. The stash was kept${oid ? ` (${oid})` : ''}.`;
+   return interference ? `${base} ${interference}` : base;
+  } catch { /* Fall through to Git's original message for a malformed receipt. */ }
+ }
  const code = discardIncomplete ? 'discard_incomplete' : Object.keys(known).find(key => text === key || text.startsWith(key + ':') || text.includes(key));
  if(code) {
   if(context === 'discard' && (code === 'file_conflict' || code === 'index_conflict')) return zh ? '自打开此对话框后文件已发生更改。未丢弃任何更改。请检查更改后重试。' : 'Files changed since you opened this dialog. Nothing was discarded. Review the changes and try again.';

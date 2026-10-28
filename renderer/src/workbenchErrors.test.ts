@@ -44,3 +44,40 @@ test('worktree base errors explain how to recover', () => {
  assert.equal(workbenchError(new Error('start_point_not_found'), true), '找不到所选基准提交或分支。请刷新分支后重试。');
  assert.equal(workbenchError(new Error('invalid_request'), false), 'The request is invalid. Check the worktree options and try again.');
 });
+
+test('stash errors and a smart-switch receipt have bilingual explanations', () => {
+ for(const code of ['nothing_to_stash','stash_not_found','stash_apply_failed']) for(const zh of [true,false]) {
+  const message=workbenchError(new Error(code),zh);
+  assert.notEqual(message,code);
+  assert.match(message,zh?/[\u4e00-\u9fff]/:/[a-z]/i);
+ }
+ assert.equal(workbenchError(new Error('stash_switch_failed: {"error":"checkout_blocked","stash":{"oid":"abc123","restored":true,"dropped":true}}'),false),'Switch failed; your changes were restored. Staged changes were restored as unstaged.');
+ assert.equal(workbenchError(new Error('stash_switch_failed: {"error":"checkout_blocked","stash":{"oid":"abc123","restored":false,"dropped":false}}'),true),'切换失败；你的更改无法恢复，暂存仍保留（abc123）。');
+});
+
+test('stash operation receipts preserve the saved OID and translate their nested error', () => {
+ assert.equal(workbenchError(new Error('stash_operation_failed: {"oid":"abc123","error":"stash_not_found"}'),false),'The stash operation could not be confirmed. Review the worktree and Stashes. Stash OID: abc123. That stash entry was not found. Refresh the Stashes list and try again.');
+ assert.equal(workbenchError(new Error('stash_operation_failed: {"oid":"abc123","error":"stash_not_found"}'),true),'无法确认暂存操作结果。请检查工作区和暂存列表。暂存 OID：abc123。 找不到该暂存条目。请刷新暂存列表后重试。');
+ assert.equal(workbenchError(new Error('stash_switch_failed: {"error":"checkout_blocked","stash":{"oid":"abc123","restored":true,"dropped":true}}'),false),'Switch failed; your changes were restored. Staged changes were restored as unstaged.');
+});
+
+test('stash drop interference stays readable for standalone and nested switch failures', () => {
+ const interference={oid:'0123456789abcdef',ourEntryDropped:false,restored:[{oid:'abcdef0123456789',message:'other'}],restoreFailed:[{oid:'fedcba9876543210',message:'failed',error:'git_failed'}],orderChanged:true,unknownEntryLost:true};
+ const payload=JSON.stringify(interference);
+ const standalone=workbenchError(new Error(`stash_drop_interfered: ${payload}`),false);
+ assert.match(standalone,/Stash 0123456 was not dropped/);
+ assert.match(standalone,/Restored: abcdef0 · other/);
+ assert.match(standalone,/Could not restore: fedcba9 · failed/);
+ assert.match(standalone,/git stash store -m <msg> <oid>/);
+ const nested=workbenchError(new Error(`stash_switch_failed: ${JSON.stringify({error:'checkout_blocked',stash:{oid:'0123456789abcdef',restored:true,interference}})}`),true);
+ assert.match(nested,/你的更改已恢复/);
+ assert.match(nested,/暂存顺序已变化/);
+ const wrapped=JSON.stringify({oid:'0123456789abcdef',error:'receipt_failed',dropped:false,interference});
+ const wrappedEn=workbenchError(new Error(`stash_operation_failed: ${wrapped}`),false);
+ assert.match(wrappedEn,/Stash OID: 0123456789abcdef/);
+ assert.match(wrappedEn,/Could not restore: fedcba9 · failed/);
+ assert.match(wrappedEn,/git fsck --unreachable/);
+ const wrappedZh=workbenchError(new Error(`stash_operation_failed: ${wrapped}`),true);
+ assert.match(wrappedZh,/恢复失败：fedcba9 · failed/);
+ assert.match(wrappedZh,/git fsck --unreachable/);
+});

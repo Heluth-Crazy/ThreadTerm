@@ -792,6 +792,34 @@ test('git branches add the optional checked-out worktree path',()=>{
  assert.throws(()=>validateResult('git.branches',{current:'main',detached:false,branches:[{...branch,worktreeMissing:'yes'}]}));
 });
 
+test('git stashes use stable OIDs, distinguish untracked files, and keep failed applications',()=>{
+ const oid='a'.repeat(40), scope={projectId:'p'};
+ const entry={oid,index:0,message:'ThreadTerm: switch to feature',branch:'main',createdAt:1_793_000_000,untracked:true};
+ validateRequest('git.stash.list',scope);
+ validateResult('git.stash.list',{entries:[entry]});
+ validateRequest('git.stash.show',{...scope,oid});
+ validateResult('git.stash.show',{files:[{path:'src/renamed.ts',originalPath:'src/changed.ts',status:'R'},{path:'scratch.txt',status:'?',untracked:true}]});
+ validateRequest('git.stash.push',{...scope,message:'save point',includeUntracked:true,operationId:'stash-push'});
+ validateResult('git.stash.push',{oid});
+ validateRequest('git.stash.apply',{...scope,oid,pop:true,operationId:'stash-pop'});
+ validateResult('git.stash.apply',{oid,applied:true,dropped:true});
+ validateResult('git.stash.apply',{oid,applied:true,conflicted:true,dropped:false});
+ validateResult('git.stash.apply',{oid,applied:false,dropped:false,warning:'untracked restore refused'});
+ const interference={oid,ourEntryDropped:false,restored:[{oid:'b'.repeat(40),message:'foreign save'}],restoreFailed:[{oid:'c'.repeat(40),message:'other save',error:'store failed'}],orderChanged:true,unknownEntryLost:true};
+ validateResult('git.stash.apply',{oid,applied:true,dropped:false,interference});
+ validateRequest('git.stash.drop',{...scope,oid,operationId:'stash-drop'});
+ validateResult('git.stash.drop',{oid,dropped:true});
+ validateRequest('git.checkout',{...scope,branch:'feature',stash:true,operationId:'stash-switch'});
+ validateResult('git.checkout',{branch:'feature',stash:{oid,applied:true,dropped:true}});
+ validateResult('git.checkout',{branch:'feature',stash:{oid,message:'ThreadTerm: switch to feature',applied:true,conflicted:true,dropped:false},warning:'post-checkout hook failed'});
+ validateResult('git.checkout',{branch:'feature',stash:{oid,applied:true,dropped:false,interference}});
+ for(const params of [{...scope,oid,pop:true},{...scope,oid,pop:'yes',operationId:'o'},{...scope,oid,operationId:'o',extra:true}]) assert.throws(()=>validateRequest('git.stash.apply',params));
+ assert.throws(()=>validateResult('git.stash.list',{entries:[{...entry,createdAt:'now'}]}));
+ assert.throws(()=>validateResult('git.stash.apply',{oid,applied:false,dropped:false,warning:1}));
+ assert.throws(()=>validateResult('git.stash.apply',{oid,applied:true,dropped:false,interference:{...interference,restoreFailed:[{oid:'c'.repeat(40),message:'other',error:1}]}}));
+ assert.ok(METHODS.includes('git.stash.list'));
+});
+
 
 test('worktree creation accepts a bounded base only for new branches',()=>{
  const request={projectId:'p',path:'C:/worktree',branch:'feature/base',createBranch:true,operationId:'worktree-base'};

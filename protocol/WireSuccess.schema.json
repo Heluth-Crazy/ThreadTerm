@@ -6695,10 +6695,113 @@
       "properties": {
         "branch": {
           "type": "string"
+        },
+        "stash": {
+          "$ref": "#/definitions/GitStashCheckout"
+        },
+        "warning": {
+          "type": "string"
         }
       },
       "required": [
         "branch"
+      ],
+      "additionalProperties": false
+    },
+    "GitStashCheckout": {
+      "type": "object",
+      "properties": {
+        "oid": {
+          "type": "string"
+        },
+        "message": {
+          "type": "string"
+        },
+        "applied": {
+          "type": "boolean"
+        },
+        "conflicted": {
+          "type": "boolean"
+        },
+        "dropped": {
+          "type": "boolean"
+        },
+        "restored": {
+          "type": "boolean"
+        },
+        "interference": {
+          "$ref": "#/definitions/GitStashDropInterference"
+        }
+      },
+      "required": [
+        "oid"
+      ],
+      "additionalProperties": false
+    },
+    "GitStashDropInterference": {
+      "type": "object",
+      "properties": {
+        "oid": {
+          "type": "string"
+        },
+        "ourEntryDropped": {
+          "type": "boolean"
+        },
+        "restored": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "oid": {
+                "type": "string"
+              },
+              "message": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "oid",
+              "message"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "restoreFailed": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "oid": {
+                "type": "string"
+              },
+              "message": {
+                "type": "string"
+              },
+              "error": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "oid",
+              "message",
+              "error"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "orderChanged": {
+          "type": "boolean"
+        },
+        "unknownEntryLost": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "oid",
+        "ourEntryDropped",
+        "restored",
+        "restoreFailed",
+        "orderChanged"
       ],
       "additionalProperties": false
     },
@@ -6798,6 +6901,150 @@
         "name",
         "remote",
         "current"
+      ],
+      "additionalProperties": false
+    },
+    "RequestResult<\"git.stash.list\">": {
+      "type": "object",
+      "properties": {
+        "entries": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/GitStashEntry"
+          }
+        }
+      },
+      "required": [
+        "entries"
+      ],
+      "additionalProperties": false
+    },
+    "GitStashEntry": {
+      "type": "object",
+      "properties": {
+        "oid": {
+          "type": "string"
+        },
+        "index": {
+          "type": "number"
+        },
+        "message": {
+          "type": "string"
+        },
+        "branch": {
+          "type": "string"
+        },
+        "createdAt": {
+          "type": "number"
+        },
+        "untracked": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "oid",
+        "index",
+        "message",
+        "createdAt",
+        "untracked"
+      ],
+      "additionalProperties": false
+    },
+    "RequestResult<\"git.stash.show\">": {
+      "type": "object",
+      "properties": {
+        "files": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/GitStashFile"
+          }
+        }
+      },
+      "required": [
+        "files"
+      ],
+      "additionalProperties": false
+    },
+    "GitStashFile": {
+      "type": "object",
+      "properties": {
+        "path": {
+          "type": "string"
+        },
+        "originalPath": {
+          "type": "string"
+        },
+        "status": {
+          "type": "string"
+        },
+        "untracked": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "path",
+        "status"
+      ],
+      "additionalProperties": false
+    },
+    "RequestResult<\"git.stash.push\">": {
+      "type": "object",
+      "properties": {
+        "oid": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "oid"
+      ],
+      "additionalProperties": false
+    },
+    "RequestResult<\"git.stash.apply\">": {
+      "$ref": "#/definitions/GitStashApply"
+    },
+    "GitStashApply": {
+      "type": "object",
+      "properties": {
+        "oid": {
+          "type": "string"
+        },
+        "applied": {
+          "type": "boolean"
+        },
+        "conflicted": {
+          "type": "boolean"
+        },
+        "dropped": {
+          "type": "boolean"
+        },
+        "warning": {
+          "type": "string"
+        },
+        "interference": {
+          "$ref": "#/definitions/GitStashDropInterference"
+        }
+      },
+      "required": [
+        "oid",
+        "applied",
+        "dropped"
+      ],
+      "additionalProperties": false
+    },
+    "RequestResult<\"git.stash.drop\">": {
+      "type": "object",
+      "properties": {
+        "oid": {
+          "type": "string"
+        },
+        "dropped": {
+          "type": "boolean",
+          "const": true
+        }
+      },
+      "required": [
+        "oid",
+        "dropped"
       ],
       "additionalProperties": false
     },
@@ -12340,6 +12587,136 @@
         },
         "result": {
           "$ref": "#/definitions/RequestResult%3C%22git.branches%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "result"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "git.stash.list"
+        },
+        "result": {
+          "$ref": "#/definitions/RequestResult%3C%22git.stash.list%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "result"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "git.stash.show"
+        },
+        "result": {
+          "$ref": "#/definitions/RequestResult%3C%22git.stash.show%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "result"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "git.stash.push"
+        },
+        "result": {
+          "$ref": "#/definitions/RequestResult%3C%22git.stash.push%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "result"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "git.stash.apply"
+        },
+        "result": {
+          "$ref": "#/definitions/RequestResult%3C%22git.stash.apply%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "result"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "git.stash.drop"
+        },
+        "result": {
+          "$ref": "#/definitions/RequestResult%3C%22git.stash.drop%22%3E"
         }
       },
       "required": [

@@ -616,7 +616,13 @@ fn has_head(root: &Path) -> bool {
 pub fn dispatch(db: &Database, method: &str, params: &Value) -> Result<Option<Value>> {
     if !matches!(
         method,
-        "git.branches" | "git.log" | "git.commit.show" | "git.commit.diff" | "git.blame"
+        "git.branches"
+            | "git.log"
+            | "git.commit.show"
+            | "git.commit.diff"
+            | "git.blame"
+            | "git.stash.list"
+            | "git.stash.show"
     ) {
         return Ok(None);
     }
@@ -656,6 +662,8 @@ pub fn dispatch(db: &Database, method: &str, params: &Value) -> Result<Option<Va
             commit_diff(&root, string(object, "commit")?, path, original)?
         }
         "git.blame" => blame(&root, string(object, "path")?)?,
+        "git.stash.list" => json!({"entries": stash_entries(&root)?}),
+        "git.stash.show" => stash_show(&root, string(object, "oid")?)?,
         _ => unreachable!(),
     };
     Ok(Some(result))
@@ -751,6 +759,138 @@ fn first_parent(root: &Path, commit: &str) -> Option<String> {
         .ok()
         .map(|value| value.trim().to_owned())
         .filter(|value| !value.is_empty())
+}
+
+const STASH_FORMAT: &str = "--format=%H%x1f%P%x1f%s%x1f%ct";
+
+fn stash_subject(subject: &str) -> (String, Option<String>) {
+    if let Some(rest) = subject.strip_prefix("On ") {
+        if let Some((branch, message)) = rest.split_once(": ") {
+            return (message.to_owned(), Some(branch.to_owned()));
+        }
+    }
+    if let Some(rest) = subject.strip_prefix("WIP on ") {
+        if let Some((branch, message)) = rest.split_once(": ") {
+            return (message.to_owned(), Some(branch.to_owned()));
+        }
+    }
+    (subject.to_owned(), None)
+}
+
+fn full_oid(oid: &str) -> bool {
+    matches!(oid.len(), 40 | 64) && oid.chars().all(|value| value.is_ascii_hexdigit())
+}
+
+/// Lists stashes by immutable commit OID. Their display index is intentionally
+/// derived on every read because `stash@{n}` shifts when Git changes the stack.
+pub(crate) fn stash_entries(root: &Path) -> Result<Vec<Value>> {
+    let output = git_text(root, &["stash", "list", STASH_FORMAT])?;
+    let mut entries = output
+        .lines()
+        .enumerate()
+        .filter_map(|(index, line)| {
+            let (line, timestamp) = line.rsplit_once('\u{1f}')?;
+            let (oid, line) = line.split_once('\u{1f}')?;
+            let (parents, subject) = line.split_once('\u{1f}')?;
+            if !full_oid(oid) {
+                return None;
+            }
+            let untracked_parent = parents.split_whitespace().nth(2).map(str::to_owned);
+            let (message, branch) = stash_subject(subject);
+            let mut entry = Map::new();
+            entry.insert("oid".into(), json!(oid));
+            entry.insert("index".into(), json!(index));
+            entry.insert("message".into(), json!(message));
+            if let Some(branch) = branch {
+                entry.insert("branch".into(), json!(branch));
+            }
+            entry.insert(
+                "createdAt".into(),
+                json!(timestamp.parse::<i64>().unwrap_or(0)),
+            );
+            entry.insert("untracked".into(), json!(false));
+            Some((Value::Object(entry), untracked_parent))
+        })
+        .collect::<Vec<_>>();
+    let checks = entries
+        .iter()
+        .filter_map(|(_, parent)| parent.as_ref())
+        .map(|parent| format!("{parent}^{{tree}}\n"))
+        .collect::<String>();
+    if !checks.is_empty() {
+        let sizes = run_git(
+            root,
+            &["cat-file", "--batch-check=%(objecttype) %(objectsize)"],
+            &[],
+            Some(checks.as_bytes()),
+            LOCAL_TIMEOUT,
+        )?;
+        for ((entry, _), line) in entries
+            .iter_mut()
+            .filter(|(_, parent)| parent.is_some())
+            .zip(String::from_utf8_lossy(&sizes).lines())
+        {
+            let size = line
+                .split_whitespace()
+                .nth(1)
+                .and_then(|size| size.parse::<u64>().ok())
+                .unwrap_or(0);
+            entry["untracked"] = json!(size > 0);
+        }
+    }
+    Ok(entries.into_iter().map(|(entry, _)| entry).collect())
+}
+
+/// Resolves a stable stash OID to its current, unstable stack index immediately
+/// before a mutation. Git accepts abbreviated revisions, so reject them here.
+pub(crate) fn stash_resolve(root: &Path, oid: &str) -> Result<usize> {
+    if !full_oid(oid) {
+        return Err(anyhow!("stash_not_found"));
+    }
+    stash_entries(root)?
+        .into_iter()
+        .find_map(|entry| (entry["oid"] == oid).then(|| entry["index"].as_u64()))
+        .flatten()
+        .map(|index| index as usize)
+        .ok_or_else(|| anyhow!("stash_not_found"))
+}
+
+fn stash_show(root: &Path, oid: &str) -> Result<Value> {
+    stash_resolve(root, oid)?;
+    let parent = format!("{oid}^1");
+    let tracked = run_git(
+        root,
+        &["diff", "--name-status", "-z", &parent, oid, "--"],
+        &[],
+        None,
+        LOCAL_TIMEOUT,
+    )?;
+    let mut files = parse_name_status(&tracked);
+    let untracked_parent = format!("{oid}^3");
+    if run_git(
+        root,
+        &["rev-parse", "--verify", "--quiet", &untracked_parent],
+        &[],
+        None,
+        LOCAL_TIMEOUT,
+    )
+    .is_ok()
+    {
+        let untracked = run_git(
+            root,
+            &["ls-tree", "-r", "--name-only", "-z", &untracked_parent],
+            &[],
+            None,
+            LOCAL_TIMEOUT,
+        )?;
+        for path in String::from_utf8_lossy(&untracked)
+            .split('\0')
+            .filter(|path| !path.is_empty())
+        {
+            files.push(json!({"path":path,"status":"A","untracked":true}));
+        }
+    }
+    Ok(json!({"files":files}))
 }
 
 /// Parses `--name-status -z` output into root-relative entries. With
@@ -1371,6 +1511,92 @@ mod tests {
         git(temp.path(), &["config", "user.name", "QA"]).unwrap();
         git(temp.path(), &["config", "core.autocrlf", "false"]).unwrap();
         temp
+    }
+
+    #[test]
+    fn stash_reads_use_stable_oids_and_include_untracked_files() {
+        let temp = repo();
+        fs::write(temp.path().join("tracked.txt"), "base\n").unwrap();
+        git(temp.path(), &["add", "."]).unwrap();
+        git(temp.path(), &["commit", "-qm", "base"]).unwrap();
+
+        fs::write(temp.path().join("tracked.txt"), "first\n").unwrap();
+        fs::write(temp.path().join("untracked.txt"), "first\n").unwrap();
+        git(
+            temp.path(),
+            &["stash", "push", "--include-untracked", "-qm", "first stash"],
+        )
+        .unwrap();
+        let first = stash_entries(temp.path()).unwrap().remove(0);
+        let first_oid = first["oid"].as_str().unwrap().to_owned();
+        assert_eq!(first["message"], "first stash");
+        assert_eq!(first["branch"], "main");
+        assert_eq!(first["untracked"], true);
+        assert!(first["createdAt"].is_i64() || first["createdAt"].is_u64());
+
+        fs::write(temp.path().join("tracked.txt"), "second\n").unwrap();
+        git(
+            temp.path(),
+            &["stash", "push", "--include-untracked", "-qm", "second stash"],
+        )
+        .unwrap();
+        assert_eq!(stash_entries(temp.path()).unwrap()[0]["untracked"], false);
+        assert_eq!(stash_resolve(temp.path(), &first_oid).unwrap(), 1);
+        assert_eq!(
+            stash_resolve(temp.path(), "aabbccddeeff00112233445566778899aabbccdd")
+                .unwrap_err()
+                .to_string(),
+            "stash_not_found"
+        );
+        assert_eq!(
+            stash_resolve(temp.path(), &first_oid[..8])
+                .unwrap_err()
+                .to_string(),
+            "stash_not_found"
+        );
+
+        let shown = stash_show(temp.path(), &first_oid).unwrap();
+        assert!(shown["files"]
+            .as_array()
+            .unwrap()
+            .contains(&json!({"path":"tracked.txt","status":"M"})));
+        assert!(shown["files"]
+            .as_array()
+            .unwrap()
+            .contains(&json!({"path":"untracked.txt","status":"A","untracked":true})));
+
+        let external_message = format!("external{}stash", '\u{1f}');
+        fs::write(temp.path().join("tracked.txt"), "external\n").unwrap();
+        git(
+            temp.path(),
+            &["stash", "push", "-qm", external_message.as_str()],
+        )
+        .unwrap();
+        let external = stash_entries(temp.path()).unwrap().remove(0);
+        let external_oid = external["oid"].as_str().unwrap();
+        assert_eq!(external["message"], external_message);
+        assert_eq!(stash_resolve(temp.path(), external_oid).unwrap(), 0);
+        assert!(stash_show(temp.path(), external_oid).unwrap()["files"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|file| file["path"] == "tracked.txt"));
+    }
+
+    #[test]
+    fn stash_subject_separates_default_branch_prefixes() {
+        assert_eq!(
+            stash_subject("On main: work"),
+            ("work".into(), Some("main".into()))
+        );
+        assert_eq!(
+            stash_subject("WIP on feature: abc123 work"),
+            ("abc123 work".into(), Some("feature".into()))
+        );
+        assert_eq!(
+            stash_subject("saved externally"),
+            ("saved externally".into(), None)
+        );
     }
 
     #[test]

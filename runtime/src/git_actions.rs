@@ -13,6 +13,7 @@ use anyhow::{anyhow, Result};
 use chrono::Utc;
 use rusqlite::{params, OptionalExtension, Transaction};
 use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
 use std::{fs, path::Path, time::Duration};
 
 const MAX_PATHS: usize = 500;
@@ -51,6 +52,7 @@ pub fn dispatch(db: &Database, method: &str, params_value: &Value) -> Result<Opt
             | "git.discard"
             | "git.checkout"
             | "git.branch.delete"
+            | "git.stash.push" | "git.stash.apply" | "git.stash.drop"
     ) {
         return Ok(None);
     }
@@ -60,10 +62,10 @@ pub fn dispatch(db: &Database, method: &str, params_value: &Value) -> Result<Opt
     let operation_id = required_string(params, "operationId")?;
     let project_id = required_string(params, "projectId")?;
     let worktree = params.get("worktreePath").and_then(Value::as_str);
-    if method == "git.discard" {
+    if method == "git.discard" || method.starts_with("git.stash.") || method == "git.checkout" {
         if let Some(result) = db.operation(operation_id)? {
             db.bind_operation(operation_id, method, params_value)?;
-            return Ok(Some(result));
+            return stash_receipt(method, result).map(Some);
         }
         if db.external_operation_pending(operation_id)? {
             db.bind_operation(operation_id, method, params_value)?;
@@ -76,7 +78,7 @@ pub fn dispatch(db: &Database, method: &str, params_value: &Value) -> Result<Opt
     // working tree has changed since it succeeded.
     if let Some(result) = db.operation(operation_id)? {
         db.bind_operation(operation_id, method, params_value)?;
-        return Ok(Some(result));
+        return stash_receipt(method, result).map(Some);
     }
     let merge_target = if method == "git.merge" {
         let target = merge_target(&root, params)?;
@@ -116,7 +118,7 @@ pub fn dispatch(db: &Database, method: &str, params_value: &Value) -> Result<Opt
         }
         "git.discard" => {
             if let Some(result) = discard_preflight(db, &root, params_value)? {
-                return Ok(Some(result));
+                return stash_receipt(method, result).map(Some);
             }
         }
         // `diff --cached --quiet` exits 1 (an error here) when something is staged.
@@ -137,7 +139,7 @@ pub fn dispatch(db: &Database, method: &str, params_value: &Value) -> Result<Opt
     }
     db.bind_operation(operation_id, method, params_value)?;
     if let Some(result) = db.operation(operation_id)? {
-        return Ok(Some(result));
+        return stash_receipt(method, result).map(Some);
     }
     let checkout = if method == "git.checkout" {
         if db.external_operation_pending(operation_id)? {
@@ -147,6 +149,15 @@ pub fn dispatch(db: &Database, method: &str, params_value: &Value) -> Result<Opt
     } else {
         None
     };
+    // Stash preflight is read-only and follows receipt/pending-claim checks.
+    if method == "git.stash.push" {
+        stash_message(params)?;
+        let include = params.get("includeUntracked").and_then(Value::as_bool).ok_or_else(|| anyhow!("invalid_request"))?;
+        if !stash_has_changes(&root, include)? { return Err(anyhow!("nothing_to_stash")); }
+    }
+    if method == "git.stash.apply" || method == "git.stash.drop" {
+        crate::git_read::stash_resolve(&root, required_string(params, "oid")?)?;
+    }
     // This insert is an atomic execution claim. A caller that finds a claim without
     // completion cannot know whether Git already applied the external side effect.
     if !db.claim_external_operation(operation_id)? {
@@ -228,6 +239,24 @@ pub fn dispatch(db: &Database, method: &str, params_value: &Value) -> Result<Opt
             params,
             (project_id, worktree),
         )?,
+        "git.stash.push" => {
+            let message = stash_message(params)?;
+            let oid = stash_publish_failure(db, (project_id, worktree), stash_push(&root, &message, params["includeUntracked"].as_bool().unwrap()))?;
+            let Some(pushed) = oid else { release_discard_claim(db, operation_id)?; return Err(anyhow!("nothing_to_stash")); };
+            json!({"oid":pushed.oid})
+        }
+        "git.stash.apply" => stash_publish_failure(db, (project_id, worktree), stash_apply(&root, required_string(params, "oid")?, params.get("pop").and_then(Value::as_bool) == Some(true)))?,
+        "git.stash.drop" => {
+            let oid = required_string(params, "oid")?;
+            let interference = stash_publish_failure(db, (project_id, worktree), stash_drop(&root, oid))?;
+            match interference {
+                Some(detail) => json!({"oid":oid,"dropped":false,"interference":detail}),
+                None => json!({"oid":oid,"dropped":true}),
+            }
+        }
+        "git.checkout" if params.get("stash").and_then(Value::as_bool) == Some(true) => {
+            stash_publish_failure(db, (project_id, worktree), stash_switch(&root, checkout.as_ref().unwrap(), required_string(params, "branch")?, operation_id))?
+        }
         "git.checkout" => {
             let plan = checkout.as_ref().unwrap();
             let args: Vec<&str> = plan.args.iter().map(String::as_str).collect();
@@ -303,9 +332,311 @@ pub fn dispatch(db: &Database, method: &str, params_value: &Value) -> Result<Opt
                 error,
             ));
         }
+        if let Some(oid) = result.get("oid").or_else(|| result.get("stash").and_then(|stash| stash.get("oid"))) {
+            let outcome = result.get("stash").unwrap_or(&result);
+            let mut detail = json!({"oid":oid,"error":error.to_string()});
+            for key in ["applied", "dropped", "conflicted", "interference"] { if let Some(value) = outcome.get(key) { detail[key] = value.clone(); } }
+            return Err(anyhow!("stash_operation_failed: {}", detail));
+        }
         return Err(error);
     }
-    Ok(Some(result))
+    stash_receipt(method, result).map(Some)
+}
+
+fn stash_publish_failure<T>(db: &Database, scope: (&str, Option<&str>), result: Result<T>) -> Result<T> {
+    if let Err(original) = &result {
+        let published = db.transaction(|tx| {
+            tx.execute("INSERT INTO outbox(event,data,created_at) VALUES('state.changed',?,?)",
+                params![serde_json::to_string(&json!({"kind":"git","projectId":scope.0,"worktreePath":scope.1}))?, Utc::now().to_rfc3339()])?;
+            Ok(())
+        });
+        if let Err(publication) = published {
+            let raw = original.to_string();
+            if let Some(detail) = raw.strip_prefix("stash_operation_failed: ") {
+                if let Ok(mut detail) = serde_json::from_str::<Value>(detail) {
+                    detail["publicationError"] = json!(publication.to_string());
+                    return Err(anyhow!("stash_operation_failed: {}", detail));
+                }
+            }
+            return Err(anyhow!("{original}; state.changed publication failed: {publication}"));
+        }
+    }
+    result
+}
+
+// Failed smart switches are durable receipts too: retries must never stash twice.
+fn stash_receipt(method: &str, result: Value) -> Result<Value> {
+    if method == "git.stash.drop" {
+        if let Some(detail) = result.get("interference") { return Err(anyhow!("stash_drop_interfered: {}", detail)); }
+    }
+    if method == "git.checkout" && result.get("error").is_some() && result.get("stash").is_some() {
+        return Err(anyhow!("stash_switch_failed: {}", result));
+    }
+    Ok(result)
+}
+
+fn stash_message(params: &serde_json::Map<String, Value>) -> Result<String> {
+    let message = match params.get("message") {
+        None => "",
+        Some(Value::String(value)) => value,
+        _ => return Err(anyhow!("invalid_request")),
+    };
+    Ok(message.chars().filter(|ch| !ch.is_control()).take(200).collect())
+}
+
+fn stash_has_changes(root: &Path, include: bool) -> Result<bool> {
+    let flag = if include { "--untracked-files=all" } else { "--untracked-files=no" };
+    Ok(!git(root, &["status", "--porcelain", flag])?.trim().is_empty())
+}
+
+fn stash_stack(root: &Path) -> Result<Vec<(String, String)>> {
+    let output = run_git(root, &["stash", "list", "--format=%H%x00%gs"], &[], None, LOCAL_TIMEOUT)?;
+    Ok(String::from_utf8(output)?.lines().filter_map(|line| {
+        line.split_once('\0').map(|(oid, subject)| (oid.to_owned(), subject.to_owned()))
+    }).collect())
+}
+
+fn stash_push_snapshot(root: &Path) -> Result<Vec<(String, String)>> {
+    // %gs is the reflog subject; %s can differ after `stash store -m`.
+    let output = run_git(root, &["stash", "list", "--format=%H%x00%gs"], &[], None, LOCAL_TIMEOUT)?;
+    Ok(String::from_utf8(output)?.lines().filter_map(|line| {
+        line.split_once('\0').map(|(oid, subject)| (oid.to_owned(), subject.to_owned()))
+    }).collect())
+}
+
+struct StashPushed { oid: String, added_entry: bool }
+
+fn stash_push(root: &Path, message: &str, include: bool) -> Result<Option<StashPushed>> {
+    let before = stash_push_snapshot(root)?;
+    if !stash_has_changes(root, include)? { return Ok(None); }
+    let head = checkout_head(root)?;
+    let branch = head.reference.as_deref().and_then(|reference| reference.strip_prefix("refs/heads/")).unwrap_or("(no branch)");
+    let expected = if message.is_empty() {
+        format!("WIP on {branch}: {}", git(root, &["log", "-1", "--format=%h %s"])?.trim_end_matches(['\r', '\n']))
+    } else {
+        format!("On {branch}: {message}")
+    };
+    // Git copy_reflog_msg collapses ASCII whitespace and trims the subject.
+    let expected = expected.split_ascii_whitespace().collect::<Vec<_>>().join(" ");
+    let mut args = vec!["stash", "push"];
+    if include { args.push("--include-untracked"); }
+    if !message.is_empty() { args.extend(["-m", message]); }
+    #[cfg(test)]
+    let mut env = stash_test_hooks::push_env();
+    #[cfg(not(test))]
+    let mut env = Vec::new();
+    env.push(("LANGUAGE", std::ffi::OsStr::new("C")));
+    let pushed = run_git(root, &args, &env, None, HOOK_TIMEOUT);
+    #[cfg(test)]
+    let pushed = pushed.and_then(|output| { stash_test_hooks::after_push(root)?; Ok(output) });
+    let after = stash_push_snapshot(root).map_err(|error| anyhow!("stash_operation_failed: {}", json!({"candidateOids":[],"error":error.to_string()})))?;
+    // Subtract occurrences, rather than a set, to retain repeated same-OID
+    // entries when Git did append a reflog record. Never attribute the new top.
+    let mut remaining = before;
+    let candidates: Vec<_> = after.iter().filter(|entry| {
+        if let Some(index) = remaining.iter().position(|before| before == *entry) {
+            remaining.remove(index);
+            false
+        } else { true }
+    }).collect();
+    let candidate_oids: Vec<_> = candidates.iter().map(|(oid, _)| oid.as_str()).collect();
+    let matches: Vec<_> = candidates.iter().filter(|(_, subject)| subject == &expected).collect();
+    if let Err(error) = pushed {
+        let mut detail = json!({"candidateOids":candidate_oids,"error":error.to_string()});
+        if matches.len() == 1 { detail["oid"] = json!(matches[0].0); }
+        return Err(anyhow!("stash_operation_failed: {}", detail));
+    }
+    if matches.len() != 1 {
+        let retained_oids: Vec<_> = after.iter().map(|(oid, _)| oid.as_str()).collect();
+        return Err(anyhow!("stash_operation_failed: {}", json!({"candidateOids":candidate_oids,"retainedOids":retained_oids,"error":format!("Cannot uniquely attribute stash push; candidate OIDs: {}; retained OIDs: {}",json!(candidate_oids),json!(retained_oids))})));
+    }
+    Ok(Some(StashPushed { oid: matches[0].0.clone(), added_entry: true }))
+}
+
+fn stash_error_detail(oid: &str, error: anyhow::Error) -> Value {
+    let raw = error.to_string();
+    let mut detail = raw.strip_prefix("stash_operation_failed: ")
+        .and_then(|detail| serde_json::from_str::<Value>(detail).ok())
+        .filter(Value::is_object).unwrap_or_else(|| json!({"error":raw}));
+    detail["oid"] = json!(oid);
+    detail
+}
+
+fn stash_restore_foreign(root: &Path, oid: &str, message: &str) -> Result<()> {
+    run_git(root, &["stash", "store", "-m", message, oid], &[], None, HOOK_TIMEOUT)?;
+    Ok(())
+}
+
+fn stash_drop(root: &Path, oid: &str) -> Result<Option<Value>> {
+    let before = stash_stack(root)?;
+    let index = before.iter().position(|(entry, _)| entry == oid).ok_or_else(|| anyhow!("stash_not_found"))?;
+    let selector = format!("stash@{{{index}}}");
+    #[cfg(test)]
+    stash_test_hooks::before_drop(root)?;
+    // Porcelain stdout describes Git's earlier resolution, not what reflog delete
+    // removed under its lock. Only the observed stack transition can prove success.
+    let _dropped = run_git(root, &["stash", "drop", &selector], &[("LANGUAGE", std::ffi::OsStr::new("C"))], None, HOOK_TIMEOUT);
+    #[cfg(test)]
+    stash_test_hooks::after_drop(root)?;
+    let after = stash_stack(root).map_err(|error| anyhow!("stash_operation_failed: {}", json!({"oid":oid,"dropped":null,"error":error.to_string()})))?;
+    let ours_gone = !after.iter().any(|(entry, _)| entry == oid);
+    let missing: Vec<_> = before.iter().filter(|(entry, _)| entry != oid && !after.iter().any(|(present, _)| present == entry)).collect();
+    if ours_gone && missing.is_empty() { return Ok(None); }
+    let unknown = !ours_gone && missing.is_empty();
+    let mut restored = Vec::new();
+    let mut restore_failed = Vec::new();
+    for (entry, message) in missing {
+        match stash_restore_foreign(root, entry, message) {
+            Ok(()) => restored.push(json!({"oid":entry,"message":message})),
+            Err(error) => restore_failed.push(json!({"oid":entry,"message":message,"error":error.to_string()})),
+        }
+    }
+    let expected: Vec<_> = before.iter().filter(|(entry, _)| !ours_gone || entry != oid).collect();
+    let order_changed = !restored.is_empty() || stash_stack(root).map(|current| {
+        // Ignore newly pushed entries when comparing the order of known entries.
+        let known: Vec<_> = current.iter().filter(|(entry, _)| before.iter().any(|(old, _)| old == entry)).collect();
+        known != expected
+    }).unwrap_or(true);
+    let mut detail = json!({"oid":oid,"ourEntryDropped":ours_gone,"restored":restored,"restoreFailed":restore_failed,"orderChanged":order_changed});
+    if unknown { detail["unknownEntryLost"] = json!(true); }
+    Ok(Some(detail))
+}
+
+#[cfg(test)]
+mod stash_test_hooks {
+    use super::*;
+    type Hook = Box<dyn FnMut(&Path) -> Result<()>>;
+    #[derive(Default)]
+    struct State { before_drop: Option<Hook>, after_apply: Option<Hook>, fixed_dates: bool }
+    thread_local! { static STATE: std::cell::RefCell<State> = std::cell::RefCell::new(State::default()); }
+    pub struct Guard(State);
+    impl Drop for Guard { fn drop(&mut self) { STATE.with(|state| *state.borrow_mut() = std::mem::take(&mut self.0)); } }
+    pub fn install(before_drop: Option<Hook>, after_apply: Option<Hook>, fixed_dates: bool, _mask_output: bool) -> Guard {
+        STATE.with(|state| Guard(std::mem::replace(&mut *state.borrow_mut(), State { before_drop, after_apply, fixed_dates })))
+    }
+    pub fn before_drop(root: &Path) -> Result<()> { STATE.with(|state| match state.borrow_mut().before_drop.as_mut() { Some(hook) => hook(root), None => Ok(()) }) }
+    pub fn after_apply(root: &Path) -> Result<()> { let hook = STATE.with(|state| state.borrow_mut().after_apply.take()); match hook { Some(mut hook) => hook(root), None => Ok(()) } }
+    thread_local! { static AFTER_PUSH: std::cell::RefCell<Option<Hook>> = const { std::cell::RefCell::new(None) }; }
+    pub struct AfterPushGuard(Option<Hook>);
+    impl Drop for AfterPushGuard { fn drop(&mut self) { AFTER_PUSH.with(|state| *state.borrow_mut() = self.0.take()); } }
+    pub fn install_after_push(hook: Hook) -> AfterPushGuard {
+        AFTER_PUSH.with(|state| AfterPushGuard(state.replace(Some(hook))))
+    }
+    pub fn after_push(root: &Path) -> Result<()> {
+        let hook = AFTER_PUSH.with(|state| state.borrow_mut().take());
+        match hook { Some(mut hook) => hook(root), None => Ok(()) }
+    }
+    thread_local! { static AFTER_DROP: std::cell::RefCell<Option<Hook>> = const { std::cell::RefCell::new(None) }; }
+    pub struct AfterDropGuard(Option<Hook>);
+    impl Drop for AfterDropGuard { fn drop(&mut self) { AFTER_DROP.with(|state| *state.borrow_mut() = self.0.take()); } }
+    pub fn install_after_drop(hook: Hook) -> AfterDropGuard {
+        AFTER_DROP.with(|state| AfterDropGuard(state.replace(Some(hook))))
+    }
+    pub fn after_drop(root: &Path) -> Result<()> {
+        let hook = AFTER_DROP.with(|state| state.borrow_mut().take());
+        match hook { Some(mut hook) => hook(root), None => Ok(()) }
+    }
+    pub fn push_env() -> Vec<(&'static str, &'static std::ffi::OsStr)> {
+        if STATE.with(|state| state.borrow().fixed_dates) {
+            vec![("GIT_AUTHOR_DATE", std::ffi::OsStr::new("2001-01-01T00:00:00Z")), ("GIT_COMMITTER_DATE", std::ffi::OsStr::new("2001-01-01T00:00:00Z"))]
+        } else { Vec::new() }
+    }
+}
+
+fn stash_apply(root: &Path, oid: &str, pop: bool) -> Result<Value> {
+    crate::git_read::stash_resolve(root, oid)?;
+    match run_git(root, &["stash", "apply", oid], &[], None, HOOK_TIMEOUT) {
+        Ok(_) => {
+            let cleanup = (|| -> Result<Option<Value>> {
+                #[cfg(test)]
+                stash_test_hooks::after_apply(root)?;
+                if pop { stash_drop(root, oid) } else { Ok(None) }
+            })();
+            match cleanup {
+                Ok(Some(interference)) => Ok(json!({"oid":oid,"applied":true,"dropped":false,"interference":interference})),
+                Ok(None) => Ok(json!({"oid":oid,"applied":true,"dropped":pop})),
+                Err(error) => {
+                    let mut detail = stash_error_detail(oid, error);
+                    detail["applied"] = json!(true);
+                    if detail.get("dropped").is_none() { detail["dropped"] = Value::Null; }
+                    Err(anyhow!("stash_operation_failed: {}", detail))
+                }
+            }
+        }
+        Err(error) => {
+            let unmerged = run_git(root, &["ls-files", "-u", "-z"], &[], None, LOCAL_TIMEOUT)
+                .map_err(|read| anyhow!("stash_operation_failed: {}", json!({"oid":oid,"error":read.to_string()})))?;
+            if !unmerged.is_empty() {
+                Ok(json!({"oid":oid,"applied":true,"conflicted":true,"dropped":false}))
+            } else {
+                Ok(json!({"oid":oid,"applied":false,"dropped":false,"warning":error.to_string()}))
+            }
+        }
+    }
+}
+
+fn stash_switch_message(branch: &str, operation_id: &str) -> String {
+    let nonce = hex::encode(Sha256::digest(operation_id.as_bytes()));
+    let suffix = format!(" [op {}]", &nonce[..8]);
+    let prefix: String = format!("ThreadTerm: switch to {branch}").chars().filter(|ch| !ch.is_control()).take(200 - suffix.chars().count()).collect();
+    format!("{prefix}{suffix}")
+}
+
+fn stash_switch(root: &Path, plan: &CheckoutPlan, branch: &str, operation_id: &str) -> Result<Value> {
+    let before = checkout_head(root)?;
+    let message = stash_switch_message(branch, operation_id);
+    let pushed = stash_push(root, &message, true)?;
+    let args: Vec<&str> = plan.args.iter().map(String::as_str).collect();
+    let switched = run_git(root, &args, &[("LANGUAGE", std::ffi::OsStr::new("C"))], None, HOOK_TIMEOUT);
+    let Some(pushed) = pushed else {
+        let current = git(root, &["symbolic-ref", "--quiet", "--short", "HEAD"])?;
+        if let Err(error) = switched {
+            let target = plan.branch_ref.as_deref().unwrap_or("");
+            if checkout_head(root)? == before || (current.trim() != branch && format!("refs/heads/{}", current.trim()) != target) {
+                return Err(error);
+            }
+            return Ok(json!({"branch":current.trim(),"warning":error.to_string()}));
+        }
+        return Ok(json!({"branch":current.trim()}));
+    };
+    let oid = pushed.oid;
+    // Everything after push must retain the recovery OID, even an unexpected read failure.
+    let mut known_apply = None;
+    let outcome = (|| -> Result<Value> {
+        if let Err(error) = &switched {
+            let after = checkout_head(root)?;
+            if after == before {
+                let restored = stash_apply(root, &oid, pushed.added_entry)?;
+                known_apply = Some(restored.clone());
+                let clean = restored["applied"] == true && restored.get("conflicted") != Some(&Value::Bool(true));
+                let mut stash = restored;
+                stash["restored"] = json!(clean);
+                return Ok(json!({"error":error.to_string(),"stash":stash}));
+            }
+            // Only the requested target proves that a failed hook followed a real switch.
+            let current = git(root, &["symbolic-ref", "--quiet", "--short", "HEAD"])?;
+            let target = plan.branch_ref.as_deref().unwrap_or("");
+            if current.trim() != branch && after.reference.as_deref() != Some(target) {
+                return Ok(json!({"error":error.to_string(),"stash":{"oid":oid,"restored":false,"dropped":false}}));
+            }
+        }
+        let mut applied = stash_apply(root, &oid, pushed.added_entry)?;
+        known_apply = Some(applied.clone());
+        applied["message"] = json!(message);
+        let apply_warning = applied.as_object_mut().and_then(|value| value.remove("warning"));
+        let current = git(root, &["symbolic-ref", "--quiet", "--short", "HEAD"])?;
+        let mut result = json!({"branch":current.trim(),"stash":applied});
+        if let Err(error) = &switched { result["warning"] = json!(error.to_string()); }
+        else if let Some(warning) = apply_warning { result["warning"] = warning; }
+        Ok(result)
+    })();
+    outcome.map_err(|error| {
+        let mut detail = stash_error_detail(&oid, error);
+        if let Some(outcome) = known_apply {
+            for key in ["applied", "dropped", "conflicted", "interference"] { if let Some(value) = outcome.get(key) { detail[key] = value.clone(); } }
+        }
+        anyhow!("stash_operation_failed: {}", detail)
+    })
 }
 
 fn discard_recycle_available(root: &Path) -> bool {
@@ -2522,4 +2853,363 @@ mod tests {
         );
         let _ = db;
     }
+    #[test]
+    fn stash_oid_mutations_replay_and_indices_shift() {
+        let (temp, db, project) = setup(); let root = temp.path();
+        let push = json!({"projectId":project,"message":"first\nmessage","includeUntracked":true,"operationId":"stash-first"});
+        assert_eq!(call(&db,"git.stash.push",push.clone()).unwrap_err().to_string(),"nothing_to_stash");
+        assert!(!db.external_operation_pending("stash-first").unwrap());
+        fs::write(root.join("a.txt"), "local").unwrap();
+        fs::write(root.join("new.txt"), "untracked").unwrap();
+        let first = call(&db,"git.stash.push",push.clone()).unwrap();
+        let oid = first["oid"].as_str().unwrap();
+        assert_eq!(call(&db,"git.stash.push",push).unwrap(),first);
+        assert!(!root.join("new.txt").exists());
+        let list = crate::git_read::dispatch(&db,"git.stash.list",&json!({"projectId":project})).unwrap().unwrap();
+        assert_eq!(list["entries"][0]["oid"],oid); assert_eq!(list["entries"][0]["untracked"],true);
+        assert!(list["entries"][0]["message"].as_str().unwrap().contains("firstmessage"));
+        let shown = crate::git_read::dispatch(&db,"git.stash.show",&json!({"projectId":project,"oid":oid})).unwrap().unwrap();
+        assert!(shown["files"].as_array().unwrap().iter().any(|file|file["path"]=="new.txt" && file["untracked"]==true));
+        fs::write(root.join("a.txt"),"second").unwrap();
+        let second = call(&db,"git.stash.push",json!({"projectId":project,"includeUntracked":false,"operationId":"stash-second"})).unwrap();
+        assert_eq!(crate::git_read::stash_resolve(root,oid).unwrap(),1);
+        let apply = json!({"projectId":project,"oid":oid,"pop":false,"operationId":"stash-apply"});
+        assert_eq!(call(&db,"git.stash.apply",apply.clone()).unwrap()["applied"],true);
+        assert_eq!(call(&db,"git.stash.apply",apply).unwrap()["applied"],true);
+        assert_eq!(fs::read_to_string(root.join("a.txt")).unwrap(),"local");
+        let drop = json!({"projectId":project,"oid":oid,"operationId":"stash-drop"});
+        let dropped = call(&db,"git.stash.drop",drop.clone()).unwrap();
+        assert_eq!(call(&db,"git.stash.drop",drop).unwrap(),dropped);
+        assert_eq!(crate::git_read::stash_resolve(root,second["oid"].as_str().unwrap()).unwrap(),0);
+        let missing = json!({"projectId":project,"oid":oid,"pop":true,"operationId":"stash-missing"});
+        assert_eq!(call(&db,"git.stash.apply",missing).unwrap_err().to_string(),"stash_not_found");
+        assert!(!db.external_operation_pending("stash-missing").unwrap());
+        git(root,&["restore","a.txt"]).unwrap(); fs::remove_file(root.join("new.txt")).unwrap();
+        let pop = json!({"projectId":project,"oid":second["oid"],"pop":true,"operationId":"stash-pop"});
+        assert_eq!(call(&db,"git.stash.apply",pop.clone()).unwrap()["dropped"],true);
+        assert_eq!(call(&db,"git.stash.apply",pop).unwrap()["dropped"],true);
+    }
+
+    #[test]
+    fn stash_pop_conflicts_keeps_oid_and_receipt() {
+        let (temp,db,project)=setup(); let root=temp.path();
+        fs::write(root.join("a.txt"),"local").unwrap();
+        let saved=call(&db,"git.stash.push",json!({"projectId":project,"includeUntracked":false,"operationId":"save"})).unwrap();
+        fs::write(root.join("a.txt"),"other").unwrap();git(root,&["add","a.txt"]).unwrap();git(root,&["commit","-m","other"]).unwrap();
+        let request=json!({"projectId":project,"oid":saved["oid"],"pop":true,"operationId":"pop"});
+        let result=call(&db,"git.stash.apply",request.clone()).unwrap();
+        assert_eq!(result["conflicted"],true);assert_eq!(result["dropped"],false);
+        assert_eq!(call(&db,"git.stash.apply",request).unwrap(),result);
+        assert_eq!(crate::git_read::stash_resolve(root,saved["oid"].as_str().unwrap()).unwrap(),0);
+    }
+
+    #[test]
+    fn stash_smart_switch_clean_conflict_and_untracked_obstruction() {
+        for mode in ["clean","conflict","untracked"] {
+            let (temp,db,project)=setup();let root=temp.path();
+            let original=git(root,&["branch","--show-current"]).unwrap();
+            git(root,&["switch","-c","target"]).unwrap();
+            if mode=="conflict" {fs::write(root.join("a.txt"),"target").unwrap();git(root,&["add","a.txt"]).unwrap();git(root,&["commit","-m","target"]).unwrap();}
+            if mode=="untracked" {fs::write(root.join("collision"),"target tracked").unwrap();git(root,&["add","collision"]).unwrap();git(root,&["commit","-m","target"]).unwrap();}
+            git(root,&["switch",original.trim()]).unwrap();
+            fs::write(root.join("a.txt"),"local").unwrap();
+            fs::write(root.join("free"),"free local").unwrap();
+            if mode=="untracked" {fs::write(root.join("collision"),"untracked local").unwrap();}
+            let request=json!({"projectId":project,"branch":"target","stash":true,"operationId":"smart"});
+            let result=call(&db,"git.checkout",request.clone()).unwrap();
+            assert_eq!(result["branch"],"target");assert_eq!(call(&db,"git.checkout",request).unwrap(),result);
+            assert_eq!(fs::read_to_string(root.join("free")).unwrap(),"free local");
+            match mode {
+                "clean" => {assert_eq!(result["stash"]["dropped"],true);assert_eq!(fs::read_to_string(root.join("a.txt")).unwrap(),"local");}
+                "conflict" => {assert_eq!(result["stash"]["conflicted"],true);assert_eq!(result["stash"]["dropped"],false);}
+                _ => {
+                    assert_eq!(result["stash"]["applied"],false);assert_eq!(result["stash"]["dropped"],false);
+                    // Git 2.33 restores untracked files before the tracked merge, and can restore some before failing.
+                    assert_eq!(fs::read_to_string(root.join("a.txt")).unwrap(),"base");
+                    assert_eq!(fs::read_to_string(root.join("collision")).unwrap(),"target tracked");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn stash_smart_switch_failure_restores_and_hook_failure_warns() {
+        // Create-existing-branch fails after the stash push without moving HEAD.
+        let (temp,db,project)=setup();let root=temp.path();
+        git(root,&["branch","target"]).unwrap();
+        fs::write(root.join("a.txt"),"local").unwrap();fs::write(root.join("new.txt"),"new").unwrap();
+        let request=json!({"projectId":project,"branch":"target","create":true,"stash":true,"operationId":"fail"});
+        let error=call(&db,"git.checkout",request.clone()).unwrap_err().to_string();
+        let receipt:Value=serde_json::from_str(error.strip_prefix("stash_switch_failed: ").unwrap()).unwrap();
+        assert_eq!(receipt["stash"]["restored"],true);assert_eq!(receipt["stash"]["dropped"],true);
+        assert_eq!(call(&db,"git.checkout",request).unwrap_err().to_string(),error);
+        assert_eq!(fs::read_to_string(root.join("a.txt")).unwrap(),"local");assert_eq!(fs::read_to_string(root.join("new.txt")).unwrap(),"new");
+        fs::write(root.join(".git/hooks/post-checkout"),"#!/bin/sh\necho hook-failed >&2\nexit 1\n").unwrap();
+        #[cfg(unix)] {use std::os::unix::fs::PermissionsExt;fs::set_permissions(root.join(".git/hooks/post-checkout"),fs::Permissions::from_mode(0o755)).unwrap();}
+        let result=call(&db,"git.checkout",json!({"projectId":project,"branch":"target","stash":true,"operationId":"hook"})).unwrap();
+        assert_eq!(result["branch"],"target");assert_eq!(result["stash"]["dropped"],true);assert!(result["warning"].as_str().unwrap().contains("hook-failed"));
+    }
+
+    #[test]
+    fn stash_message_is_bounded_and_claims_are_never_reexecuted() {
+        let (temp,db,project)=setup();
+        let request=json!({"projectId":project,"message":"x".repeat(300)+"\n\0", "includeUntracked":true,"operationId":"pending"});
+        assert_eq!(stash_message(request.as_object().unwrap()).unwrap().chars().count(),200);
+        db.bind_operation("pending","git.stash.push",&request).unwrap();assert!(db.claim_external_operation("pending").unwrap());
+        fs::write(temp.path().join("a.txt"),"local").unwrap();
+        assert_eq!(call(&db,"git.stash.push",request).unwrap_err().to_string(),"operation_outcome_unknown");
+        assert_eq!(fs::read_to_string(temp.path().join("a.txt")).unwrap(),"local");
+    }
+
+    #[test]
+    fn stash_publication_failure_preserves_recovery_oid() {
+        let (_temp,db,project)=setup();
+        db.transaction(|tx| { tx.execute_batch("CREATE TRIGGER reject_stash_event BEFORE INSERT ON outbox BEGIN SELECT RAISE(ABORT, 'publication unavailable'); END;")?; Ok(()) }).unwrap();
+        let error=stash_publish_failure::<()>(&db,(&project,None),Err(anyhow!("stash_operation_failed: {}",json!({"oid":"abc","error":"apply failed"})))).unwrap_err().to_string();
+        let detail:Value=serde_json::from_str(error.strip_prefix("stash_operation_failed: ").unwrap()).unwrap();
+        assert_eq!(detail["oid"],"abc"); assert_eq!(detail["error"],"apply failed");assert!(detail["publicationError"].as_str().unwrap().contains("publication unavailable"));
+    }
+
+    #[test]
+    fn stash_smart_switch_no_changes_preserves_post_checkout_warning() {
+        let (temp,db,project)=setup();let root=temp.path();git(root,&["branch","target"]).unwrap();
+        fs::write(root.join(".git/hooks/post-checkout"),"#!/bin/sh\necho hook-failed >&2\nexit 1\n").unwrap();
+        #[cfg(unix)] {use std::os::unix::fs::PermissionsExt;fs::set_permissions(root.join(".git/hooks/post-checkout"),fs::Permissions::from_mode(0o755)).unwrap();}
+        let request=json!({"projectId":project,"branch":"target","stash":true,"operationId":"empty-hook"});
+        let result=call(&db,"git.checkout",request.clone()).unwrap();
+        assert_eq!(result["branch"],"target");assert!(result["warning"].as_str().unwrap().contains("hook-failed"));
+        assert!(result.get("stash").is_none());assert_eq!(call(&db,"git.checkout",request).unwrap(),result);
+    }
+
+    #[test]
+    fn stash_drop_reports_unknown_window_entry_loss_without_retrying() {
+        let (temp,db,project)=setup(); let root=temp.path();
+        fs::write(root.join("a.txt"),"ours").unwrap();
+        let ours=stash_push(root,"ours",false).unwrap().unwrap().oid;
+        let attempts=std::rc::Rc::new(std::cell::Cell::new(0)); let captured=attempts.clone();
+        let _hooks=stash_test_hooks::install(Some(Box::new(move |root| {
+            captured.set(captured.get()+1);
+            fs::write(root.join("a.txt"),"foreign contents")?;
+            git(root,&["stash","push","-m","foreign message"])?; Ok(())
+        })),None,false,false);
+        let request=json!({"projectId":project,"oid":ours,"operationId":"drop-race"});
+        let error=call(&db,"git.stash.drop",request.clone()).unwrap_err().to_string();
+        let detail:Value=serde_json::from_str(error.strip_prefix("stash_drop_interfered: ").unwrap()).unwrap();
+        assert_eq!(detail["oid"],ours); assert_eq!(detail["ourEntryDropped"],false);
+        assert_eq!(detail["unknownEntryLost"],true); assert_eq!(detail["restored"],json!([]));
+        assert_eq!(detail["restoreFailed"],json!([])); assert_eq!(detail["orderChanged"],false);
+        assert_eq!(call(&db,"git.stash.drop",request).unwrap_err().to_string(),error);
+        assert_eq!(attempts.get(),1); assert_eq!(stash_stack(root).unwrap().len(),1);
+        assert_eq!(stash_stack(root).unwrap()[0].0,ours);
+        assert_eq!(git(root,&["show",&format!("{ours}:a.txt")]).unwrap(),"ours");
+        assert_eq!(fs::read_to_string(root.join("a.txt")).unwrap(),"base");
+    }
+
+    #[test]
+    fn stash_drop_restores_missing_foreign_entry_with_exact_reflog_label() {
+        let (temp,db,project)=setup();let root=temp.path();fs::write(root.join("a.txt"),"ours").unwrap();
+        let ours=stash_push(root,"ours",false).unwrap().unwrap().oid;
+        fs::write(root.join("a.txt"),"foreign C contents").unwrap();
+        let foreign=stash_push(root,"commit subject differs",false).unwrap().unwrap().oid;
+        git(root,&["stash","drop","stash@{0}"]).unwrap();
+        git(root,&["stash","store","-m","custom label",&foreign]).unwrap();
+        assert_eq!(stash_stack(root).unwrap()[0],(foreign.clone(),"custom label".into()));
+        let _hooks=stash_test_hooks::install(Some(Box::new(|root| {
+            fs::write(root.join("a.txt"),"new E contents")?;
+            git(root,&["stash","push","-m","new E"])?; Ok(())
+        })),None,false,false);
+        let error=call(&db,"git.stash.drop",json!({"projectId":project,"oid":ours,"operationId":"drop-C"})).unwrap_err().to_string();
+        let detail:Value=serde_json::from_str(error.strip_prefix("stash_drop_interfered: ").unwrap()).unwrap();
+        assert_eq!(detail["oid"],ours);assert_eq!(detail["ourEntryDropped"],false);assert_eq!(detail["orderChanged"],true);
+        assert_eq!(detail["restored"],json!([{"oid":foreign,"message":"custom label"}]));assert_eq!(detail["restoreFailed"],json!([]));
+        assert_ne!(detail["unknownEntryLost"],true);
+        let stack=stash_stack(root).unwrap();assert_eq!(stack.len(),3);assert_eq!(stack[0],(foreign.clone(),"custom label".into()));
+        assert!(stack.iter().any(|(oid,_)|oid==&ours));
+        assert_eq!(git(root,&["show",&format!("{foreign}:a.txt")]).unwrap(),"foreign C contents");
+    }
+
+    #[test]
+    fn stash_drop_allows_a_new_foreign_push_after_our_drop() {
+        let (temp,db,project)=setup();let root=temp.path();fs::write(root.join("a.txt"),"ours").unwrap();
+        let ours=stash_push(root,"ours",false).unwrap().unwrap().oid;
+        let _race=stash_test_hooks::install_after_drop(Box::new(|root| {
+            fs::write(root.join("a.txt"),"foreign E contents")?;
+            git(root,&["stash","push","-m","new E"])?; Ok(())
+        }));
+        assert_eq!(call(&db,"git.stash.drop",json!({"projectId":project,"oid":ours,"operationId":"clean-drop"})).unwrap()["dropped"],true);
+        let stack=stash_stack(root).unwrap();assert_eq!(stack.len(),1);assert_ne!(stack[0].0,ours);
+        assert_eq!(git(root,&["show",&format!("{}:a.txt",stack[0].0)]).unwrap(),"foreign E contents");
+    }
+
+    #[test]
+    fn stash_drop_reports_failed_foreign_restore_and_target_deletion() {
+        let (temp,db,project)=setup();let root=temp.path();
+        fs::write(root.join("a.txt"),"foreign contents").unwrap();
+        let foreign=stash_push(root,"foreign",false).unwrap().unwrap().oid;
+        fs::write(root.join("a.txt"),"ours").unwrap();
+        let ours=stash_push(root,"ours",false).unwrap().unwrap().oid;
+        let _race=stash_test_hooks::install_after_drop(Box::new(|root| {
+            git(root,&["stash","drop","stash@{0}"])?;
+            // Fixture-owned ref lock makes repair fail; TempDir removes it even
+            // on assertion failure, without changing the process environment.
+            fs::write(root.join(".git/refs/stash.lock"),"fixture lock")?; Ok(())
+        }));
+        let error=call(&db,"git.stash.drop",json!({"projectId":project,"oid":ours,"operationId":"failed-repair"})).unwrap_err().to_string();
+        let detail:Value=serde_json::from_str(error.strip_prefix("stash_drop_interfered: ").unwrap()).unwrap();
+        assert_eq!(detail["ourEntryDropped"],true);assert_eq!(detail["restored"],json!([]));assert_eq!(detail["orderChanged"],true);
+        let failed=detail["restoreFailed"].as_array().unwrap();assert_eq!(failed.len(),1);assert_eq!(failed[0]["oid"],foreign);
+        assert!(failed[0]["message"].as_str().unwrap().ends_with("foreign"));
+        assert!(failed[0]["error"].as_str().unwrap().contains("lock"));assert_ne!(detail["unknownEntryLost"],true);
+        assert!(stash_stack(root).unwrap().is_empty());
+    }
+
+    #[test]
+    fn stash_pop_and_switch_interference_preserve_the_known_apply_outcome() {
+        for smart in [false,true] {
+            let (temp,db,project)=setup();let root=temp.path();git(root,&["branch","target"]).unwrap();
+            fs::write(root.join("a.txt"),"our applied contents").unwrap();
+            let saved=if smart {None} else {Some(stash_push(root,"ours",false).unwrap().unwrap().oid)};
+            let _hooks=stash_test_hooks::install(Some(Box::new(|root| {
+                // Do not disturb the already applied tracked content.
+                fs::write(root.join("foreign.txt"),"foreign window contents")?;
+                git(root,&["add","foreign.txt"])?;
+                git(root,&["stash","push","-m","foreign","--","foreign.txt"])?; Ok(())
+            })),None,false,false);
+            let (method,request)=if smart {("git.checkout",json!({"projectId":project,"branch":"target","stash":true,"operationId":"interfered-switch"}))}
+                else {("git.stash.apply",json!({"projectId":project,"oid":saved,"pop":true,"operationId":"interfered-pop"}))};
+            let result=call(&db,method,request.clone()).unwrap();let outcome=if smart {&result["stash"]} else {&result};
+            assert_eq!(outcome["applied"],true);assert_eq!(outcome["dropped"],false);
+            assert_eq!(outcome["interference"]["oid"],outcome["oid"]);assert_eq!(outcome["interference"]["unknownEntryLost"],true);
+            assert_eq!(outcome["interference"]["ourEntryDropped"],false);
+            assert_eq!(fs::read_to_string(root.join("a.txt")).unwrap(),"our applied contents");
+            assert_eq!(call(&db,method,request).unwrap(),result);
+        }
+    }
+
+    #[test]
+    fn stash_push_matches_git_reflog_whitespace_normalization() {
+        for message in ["two  spaces","  leading","trailing  ","two\tspaces"," \t repeated  spaces \t "] {
+            let (temp,_db,_project)=setup();let root=temp.path();
+            fs::write(root.join("a.txt"),"our saved contents").unwrap();
+            let oid=stash_push(root,message,false).unwrap().unwrap().oid;
+            let branch=git(root,&["branch","--show-current"]).unwrap();
+            let expected=format!("On {}: {message}",branch.trim()).split_ascii_whitespace().collect::<Vec<_>>().join(" ");
+            assert_eq!(stash_push_snapshot(root).unwrap(),vec![(oid,expected)]);
+        }
+    }
+
+    #[test]
+    fn identical_stash_oids_still_create_entries_and_smart_switch_restores() {
+        let (temp,db,project)=setup();let root=temp.path();git(root,&["branch","target"]).unwrap();
+        let _hooks=stash_test_hooks::install(None,None,true,false);
+        fs::write(root.join("a.txt"),"identical local content").unwrap();
+        let first=call(&db,"git.stash.push",json!({"projectId":project,"message":"identical","includeUntracked":true,"operationId":"first-identical"})).unwrap();
+        git(root,&["stash","apply",first["oid"].as_str().unwrap()]).unwrap();
+        let error=call(&db,"git.stash.push",json!({"projectId":project,"message":"identical","includeUntracked":true,"operationId":"second-identical"})).unwrap_err().to_string();
+        let detail:Value=serde_json::from_str(error.strip_prefix("stash_operation_failed: ").unwrap()).unwrap();
+        assert_eq!(detail["candidateOids"],json!([]));assert!(detail["retainedOids"].as_array().unwrap().contains(&first["oid"]));
+        assert_eq!(stash_stack(root).unwrap().len(),1);
+        git(root,&["stash","apply",first["oid"].as_str().unwrap()]).unwrap();
+        let result=call(&db,"git.checkout",json!({"projectId":project,"branch":"target","stash":true,"operationId":"smart-identical"})).unwrap();
+        assert_ne!(result["stash"]["oid"],first["oid"]);assert_eq!(result["stash"]["applied"],true);assert_eq!(result["stash"]["dropped"],true);
+        assert_eq!(fs::read_to_string(root.join("a.txt")).unwrap(),"identical local content");assert_eq!(stash_stack(root).unwrap().len(),1);
+    }
+
+    #[test]
+    fn stash_cleanup_errors_retain_known_apply_outcome_for_pop_and_switch() {
+        for smart in [false,true] {
+            let (temp,db,project)=setup();let root=temp.path();git(root,&["branch","target"]).unwrap();
+            fs::write(root.join("a.txt"),"local content").unwrap();
+            let saved=if smart {None} else {Some(call(&db,"git.stash.push",json!({"projectId":project,"includeUntracked":false,"operationId":"save-cleanup"})).unwrap())};
+            let dropped=std::rc::Rc::new(std::cell::RefCell::new(None));let captured=dropped.clone();
+            let _hooks=stash_test_hooks::install(None,Some(Box::new(move |root| {
+                *captured.borrow_mut()=Some(git(root,&["rev-parse","refs/stash"])?.trim().to_owned());
+                git(root,&["stash","drop","stash@{0}"])?;Ok(())
+            })),false,false);
+            let result=if smart {call(&db,"git.checkout",json!({"projectId":project,"branch":"target","stash":true,"operationId":"switch-cleanup"}))}
+                else {call(&db,"git.stash.apply",json!({"projectId":project,"oid":saved.as_ref().unwrap()["oid"],"pop":true,"operationId":"pop-cleanup"}))};
+            let error=result.unwrap_err().to_string();let detail:Value=serde_json::from_str(error.strip_prefix("stash_operation_failed: ").unwrap()).unwrap();
+            assert_eq!(detail["oid"],dropped.borrow().as_ref().unwrap().as_str());assert_eq!(detail["applied"],true);assert!(detail["dropped"].is_null()||detail["dropped"]==false);
+            assert_eq!(fs::read_to_string(root.join("a.txt")).unwrap(),"local content");
+        }
+    }
+
+    #[test]
+    fn stash_push_attributes_our_entry_below_a_concurrent_foreign_push() {
+        for mode in ["message","default","smart"] {
+            let (temp,db,project)=setup();let root=temp.path();git(root,&["branch","target"]).unwrap();
+            fs::write(root.join("a.txt"),"our saved contents").unwrap();
+            let observed=std::rc::Rc::new(std::cell::RefCell::new(None));let captured=observed.clone();
+            let _race=stash_test_hooks::install_after_push(Box::new(move |root| {
+                let ours=git(root,&["rev-parse","refs/stash"])?.trim().to_owned();
+                fs::write(root.join("a.txt"),"foreign saved contents")?;
+                git(root,&["stash","push","-m","ThreadTerm: switch to target [op deadbeef]"])?;
+                let foreign=git(root,&["rev-parse","refs/stash"])?.trim().to_owned();
+                *captured.borrow_mut()=Some((ours,foreign));Ok(())
+            }));
+            let result=if mode=="smart" {
+                call(&db,"git.checkout",json!({"projectId":project,"branch":"target","stash":true,"operationId":"ours-smart-race"})).unwrap()
+            } else {
+                let mut params=json!({"projectId":project,"includeUntracked":false,"operationId":"ours-push-race"});
+                if mode=="message" {params["message"]=json!("our explicit message");}
+                let saved=call(&db,"git.stash.push",params).unwrap();
+                let ours=observed.borrow().as_ref().unwrap().0.clone();assert_eq!(saved["oid"],ours);
+                call(&db,"git.stash.apply",json!({"projectId":project,"oid":saved["oid"],"pop":true,"operationId":"ours-pop-race"})).unwrap()
+            };
+            let (ours,foreign)=observed.borrow().clone().unwrap();assert_ne!(ours,foreign);
+            let outcome=if mode=="smart" {&result["stash"]} else {&result};
+            assert_eq!(outcome["oid"],ours);assert_eq!(outcome["applied"],true);assert_eq!(outcome["dropped"],true);
+            if mode=="smart" {assert_eq!(result["branch"],"target");assert_eq!(outcome["message"],stash_switch_message("target","ours-smart-race"));}
+            let stack=stash_stack(root).unwrap();assert_eq!(stack.len(),1);assert_eq!(stack[0].0,foreign);
+            assert_eq!(git(root,&["show",&format!("{foreign}:a.txt")]).unwrap(),"foreign saved contents");
+            assert_eq!(fs::read_to_string(root.join("a.txt")).unwrap(),"our saved contents");
+        }
+    }
+
+    #[test]
+    fn stash_push_unmatched_or_ambiguous_subjects_never_switch_or_apply() {
+        for ambiguous in [false,true] {
+            let (temp,db,project)=setup();let root=temp.path();git(root,&["branch","target"]).unwrap();
+            let before=checkout_head(root).unwrap();fs::write(root.join("a.txt"),"ours").unwrap();
+            let observed=std::rc::Rc::new(std::cell::RefCell::new(None));let captured=observed.clone();
+            let _race=stash_test_hooks::install_after_push(Box::new(move |root| {
+                let ours=git(root,&["rev-parse","refs/stash"])?.trim().to_owned();
+                if !ambiguous {git(root,&["stash","drop","stash@{0}"])?;}
+                fs::write(root.join("a.txt"),"foreign")?;
+                let message=if ambiguous {stash_switch_message("target","ambiguous-switch")} else {"foreign unrelated message".to_owned()};
+                git(root,&["stash","push","-m",&message])?;
+                let foreign=git(root,&["rev-parse","refs/stash"])?.trim().to_owned();
+                *captured.borrow_mut()=Some((ours,foreign));Ok(())
+            }));
+            let error=call(&db,"git.checkout",json!({"projectId":project,"branch":"target","stash":true,"operationId":"ambiguous-switch"})).unwrap_err().to_string();
+            let detail:Value=serde_json::from_str(error.strip_prefix("stash_operation_failed: ").unwrap()).unwrap();
+            let (ours,foreign)=observed.borrow().clone().unwrap();let candidates=detail["candidateOids"].as_array().unwrap();
+            assert!(candidates.contains(&json!(foreign)));assert_eq!(candidates.len(),if ambiguous {2} else {1});
+            if ambiguous {assert!(candidates.contains(&json!(ours)));}
+            assert_eq!(checkout_head(root).unwrap(),before);assert_eq!(fs::read_to_string(root.join("a.txt")).unwrap(),"base");
+            assert!(stash_stack(root).unwrap().iter().any(|(oid,_)|oid==&foreign));
+            assert!(db.external_operation_pending("ambiguous-switch").unwrap());
+        }
+    }
+
+    #[test]
+    fn stash_switch_nonce_is_operation_bound_and_survives_message_capping() {
+        let message=stash_switch_message(&"x".repeat(255),"operation-one");
+        assert_eq!(message.chars().count(),200);assert!(message.ends_with(&stash_switch_message("", "operation-one")["ThreadTerm: switch to ".len()..]));
+        assert_eq!(stash_switch_message("target","one"),stash_switch_message("target","one"));
+        assert_ne!(stash_switch_message("target","one"),stash_switch_message("target","two"));
+    }
+
+    #[test]
+    fn stash_push_failure_names_its_unique_candidate_without_switching() {
+        let (temp,db,project)=setup();let root=temp.path();git(root,&["branch","target"]).unwrap();
+        let before=checkout_head(root).unwrap();fs::write(root.join("a.txt"),"ours").unwrap();
+        let _race=stash_test_hooks::install_after_push(Box::new(|_|Err(anyhow!("injected post-push failure"))));
+        let error=call(&db,"git.checkout",json!({"projectId":project,"branch":"target","stash":true,"operationId":"failed-push"})).unwrap_err().to_string();
+        let detail:Value=serde_json::from_str(error.strip_prefix("stash_operation_failed: ").unwrap()).unwrap();
+        assert_eq!(detail["candidateOids"],json!([detail["oid"]]));assert!(detail["oid"].is_string());
+        assert_eq!(checkout_head(root).unwrap(),before);assert_eq!(fs::read_to_string(root.join("a.txt")).unwrap(),"base");
+        assert_eq!(stash_stack(root).unwrap()[0].0,detail["oid"].as_str().unwrap());
+    }
+
 }

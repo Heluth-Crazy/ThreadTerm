@@ -5,8 +5,9 @@ import {createHmac, randomUUID} from 'node:crypto';
 import {execFile} from 'node:child_process';
 import {promisify} from 'node:util';
 import {mkdir, mkdtemp, readFile, rm, writeFile} from 'node:fs/promises';
+import {existsSync, statSync} from 'node:fs';
 import {tmpdir} from 'node:os';
-import {dirname, join, resolve} from 'node:path';
+import {dirname, isAbsolute, join, resolve} from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {build} from 'esbuild';
 import {electron} from './lib/desktop1.mjs';
@@ -15,18 +16,24 @@ import {connectPeer} from './pipe-client.mjs';
 import {PROTOCOL_CONTRACT} from '../protocol/index.ts';
 
 const root=resolve(dirname(fileURLToPath(import.meta.url)),'..');
-const scratch=await mkdtemp(join(tmpdir(),'tt-git-branch-switch-'));
 const gitExe=process.env.THREADTERM_TEST_GIT;
 const runtime=process.env.THREADTERM_V3_RUNTIME_BIN ?? join(root,'runtime/target-qa/debug/threadterm-v3-runtime.exe');
+const isAbsoluteFile=path=>typeof path==='string'&&isAbsolute(path)&&existsSync(path)&&statSync(path).isFile();
+assert.ok(isAbsoluteFile(gitExe),'Set THREADTERM_TEST_GIT to an absolute existing Git executable');
+assert.ok(isAbsoluteFile(runtime),'Set THREADTERM_V3_RUNTIME_BIN to an absolute existing runtime executable');
+const scratch=await mkdtemp(join(tmpdir(),'tt-git-branch-switch-'));
 const work=join(scratch,'work'),appDir=join(scratch,'app'),renderer=join(appDir,'renderer');
 const run=promisify(execFile);
-const git=async(...args)=>(await run(gitExe,args,{cwd:work,windowsHide:true,timeout:20000,encoding:'utf8'})).stdout;
+const inheritedEnv={...process.env,GIT_DIR:process.env.GIT_DIR ?? join(scratch,'contaminating-git-dir')};
+const env=Object.fromEntries(Object.entries(inheritedEnv).filter(([key])=>!/^(path|home|userprofile|codex_home|appdata|localappdata|threadterm_v3_.*|threadterm_test_git|git_.*)$/i.test(key)));
+Object.assign(env,{Path:[dirname(gitExe),dirname(process.execPath),join(process.env.SystemRoot,'System32')].join(';'),HOME:join(scratch,'home'),USERPROFILE:join(scratch,'home'),CODEX_HOME:join(scratch,'home/.codex'),APPDATA:join(scratch,'appdata'),LOCALAPPDATA:join(scratch,'localappdata'),THREADTERM_V3_DATA:join(scratch,'data'),THREADTERM_V3_USER_DATA:join(scratch,'profile'),THREADTERM_V3_PIPE:`\\\\.\\pipe\\tt-git-branch-switch-${randomUUID()}`,THREADTERM_V3_RUNTIME:runtime});
+assert.equal(Object.keys(env).filter(key=>/^git_/i.test(key)).length,0,'fixture Git and runtime strip inherited GIT_* variables');
+const git=async(...args)=>(await run(gitExe,args,{cwd:work,windowsHide:true,timeout:20000,encoding:'utf8',env})).stdout;
 let app,page;
 let releaseLock;
 let cleanupCompleted=false;
 
 try {
-assert.ok(gitExe && resolve(gitExe)===gitExe,'Set THREADTERM_TEST_GIT to the absolute QA Git executable');
 await mkdir(work,{recursive:true}); await mkdir(renderer,{recursive:true});
 await git('init','-b','main'); await git('config','user.name','ThreadTerm QA'); await git('config','user.email','qa@threadterm.invalid');
 await writeFile(join(work,'base.txt'),'base\n'); await git('add','.'); await git('commit','-m','base');
@@ -40,8 +47,6 @@ function Probe(){const [scope,setScope]=useState(),[status,setStatus]=useState()
 await build({stdin:{contents:source,resolveDir:root,sourcefile:'git-branch-switch-probe.tsx',loader:'tsx'},bundle:true,platform:'browser',format:'iife',jsx:'automatic',outfile:join(renderer,'probe.js'),logLevel:'error',plugins:[{name:'qa-source-control-bridge',setup(build){build.onResolve({filter:/^\.\.\/bridge$/},args=>args.importer.endsWith('SourceControlView.tsx')?{path:'bridge',namespace:'qa'}:undefined);build.onLoad({filter:/^bridge$/,namespace:'qa'},()=>({contents:'export const operationId=()=>crypto.randomUUID();export const request=(method,params)=>window.__qaRequest(method,params);',loader:'js'}));}}]});
 await writeFile(join(renderer,'index.html'),'<!doctype html><html lang="en" data-theme="light"><link rel="stylesheet" href="probe.css"><style>html,body,#root{background:var(--bg);min-height:100%;color:var(--text)}main{background:var(--surface);border:1px solid var(--border);min-height:700px}</style><div id="root"></div><script src="probe.js"></script></html>');
 await writeFile(join(appDir,'package.json'),JSON.stringify({name:'threadterm-git-branch-switch-qa',version:'0.1.0',main:'main.cjs'}));
-const env=Object.fromEntries(Object.entries(process.env).filter(([key])=>!/^(path|home|userprofile|codex_home|appdata|localappdata|threadterm_v3_.*|threadterm_test_git)$/i.test(key)));
-Object.assign(env,{Path:[dirname(gitExe),dirname(process.execPath),join(process.env.SystemRoot,'System32')].join(';'),HOME:join(scratch,'home'),USERPROFILE:join(scratch,'home'),CODEX_HOME:join(scratch,'home/.codex'),APPDATA:join(scratch,'appdata'),LOCALAPPDATA:join(scratch,'localappdata'),THREADTERM_V3_DATA:join(scratch,'data'),THREADTERM_V3_USER_DATA:join(scratch,'profile'),THREADTERM_V3_PIPE:`\\\\.\\pipe\\tt-git-branch-switch-${randomUUID()}`,THREADTERM_V3_RUNTIME:runtime});
 const branchMenu=()=>page.locator('.wb-branch-menu');
 const openMenu=async()=>{await page.locator('.wb-branch-chip').click();await branchMenu().waitFor();};
 const closeDialog=async key=>{await page.keyboard.press(key);await page.locator('[role="dialog"]').waitFor({state:'detached'});};

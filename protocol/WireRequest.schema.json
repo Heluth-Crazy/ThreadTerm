@@ -3734,6 +3734,9 @@
         "startPoint": {
           "type": "string"
         },
+        "stash": {
+          "type": "boolean"
+        },
         "operationId": {
           "type": "string"
         },
@@ -3778,6 +3781,104 @@
     },
     "RequestParams<\"git.branches\">": {
       "$ref": "#/definitions/FileScope"
+    },
+    "RequestParams<\"git.stash.list\">": {
+      "$ref": "#/definitions/FileScope"
+    },
+    "RequestParams<\"git.stash.show\">": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "oid": {
+          "type": "string"
+        },
+        "projectId": {
+          "type": "string"
+        },
+        "worktreePath": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "oid",
+        "projectId"
+      ]
+    },
+    "RequestParams<\"git.stash.push\">": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "message": {
+          "type": "string"
+        },
+        "includeUntracked": {
+          "type": "boolean"
+        },
+        "operationId": {
+          "type": "string"
+        },
+        "projectId": {
+          "type": "string"
+        },
+        "worktreePath": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "includeUntracked",
+        "operationId",
+        "projectId"
+      ]
+    },
+    "RequestParams<\"git.stash.apply\">": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "oid": {
+          "type": "string"
+        },
+        "pop": {
+          "type": "boolean"
+        },
+        "operationId": {
+          "type": "string"
+        },
+        "projectId": {
+          "type": "string"
+        },
+        "worktreePath": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "oid",
+        "operationId",
+        "pop",
+        "projectId"
+      ]
+    },
+    "RequestParams<\"git.stash.drop\">": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "oid": {
+          "type": "string"
+        },
+        "operationId": {
+          "type": "string"
+        },
+        "projectId": {
+          "type": "string"
+        },
+        "worktreePath": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "oid",
+        "operationId",
+        "projectId"
+      ]
     },
     "RequestParams<\"git.log\">": {
       "type": "object",
@@ -9200,6 +9301,136 @@
         },
         "params": {
           "$ref": "#/definitions/RequestParams%3C%22git.branches%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "params"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "git.stash.list"
+        },
+        "params": {
+          "$ref": "#/definitions/RequestParams%3C%22git.stash.list%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "params"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "git.stash.show"
+        },
+        "params": {
+          "$ref": "#/definitions/RequestParams%3C%22git.stash.show%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "params"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "git.stash.push"
+        },
+        "params": {
+          "$ref": "#/definitions/RequestParams%3C%22git.stash.push%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "params"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "git.stash.apply"
+        },
+        "params": {
+          "$ref": "#/definitions/RequestParams%3C%22git.stash.apply%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "params"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "git.stash.drop"
+        },
+        "params": {
+          "$ref": "#/definitions/RequestParams%3C%22git.stash.drop%22%3E"
         }
       },
       "required": [

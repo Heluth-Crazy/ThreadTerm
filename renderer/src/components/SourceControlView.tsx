@@ -1,14 +1,14 @@
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent, type MouseEvent, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import { WbIcon } from '../workbench/icons';
-import type { GitBranches, GitChange, GitSelectedCommitResult } from '@threadterm/protocol';
+import type { GitBranches, GitChange, GitSelectedCommitResult, GitStashApply, GitStashEntry, GitStashFile } from '@threadterm/protocol';
 import { operationId, request } from '../bridge';
 import { Icon } from './PrototypeIcon';
 import { CatalogPopover } from './CatalogActions';
 import { SurfaceDialog } from './SurfaceDialog';
 import { changeGroups, decorationFor, type ChangeGroup } from '../workbench/gitDecorations';
 import { gitOperationState, mergeResultMessage, pullDivergence } from '../workbench/gitOperation';
-import { workbenchError } from '../workbench/errors';
+import { stashDropInterference, stashInterferenceError, workbenchError } from '../workbench/errors';
 import { selectedCommitUnsupportedText } from '../workbench/selectedCommitSupport';
 import { absolutePath, baseName, parentPath, scopeParams, type GitState, type WorkbenchActions, type WorkbenchScope } from '../workbench/types';
 import { ContextSendAction, sendContextToAgent } from './ContextSendAction';
@@ -20,13 +20,15 @@ import { conflictStageReason } from '../workbench/conflictStage';
 import { useConflictStageGuard } from './useConflictStageGuard';
 import { clearSelectedChanges, selectedChanges, selectedCommitKey, setGroupSelection, toggleSelectedChange, type SelectedCommitGroup } from '../workbench/selectedCommitSelection';
 import { branchRowState, checkoutLocalPaths, sortBranches, worktreeName } from '../workbench/branchMenu';
+import { stashConflictNotice } from '../workbench/stashNotice';
 
 type Confirm =
  | {kind:'discard';paths:string[];untracked:number;token:number;fingerprints?:Record<string,string|null>;indexFingerprints?:Record<string,string|null>;snapshotError?:string}
  | {kind:'abort-merge'}
  | {kind:'amend';subject:string}
  | {kind:'delete-branch';branch:string;force:boolean}
- | {kind:'checkout-overwrite';branch:string;paths:string[]};
+ | {kind:'checkout-overwrite';branch:string;paths:string[]}
+ | {kind:'stash-drop';entry:GitStashEntry};
 function GroupSelectionToggle({checked,mixed,label,onChange}:{checked:boolean;mixed:boolean;label:string;onChange:()=>void}) {
  const input=useRef<HTMLInputElement>(null);
  useEffect(()=>{if(input.current)input.current.indeterminate=mixed;},[mixed]);
@@ -38,9 +40,9 @@ export function SourceControlView({scope, actions, git, zh, compact = false, too
  const [diverged, setDiverged] = useState<{ahead:number;behind:number;branch:string;upstream:string}>();
  const prefilledMerge=useRef<string|undefined>(undefined);
  const [busy, setBusy] = useState<string>();
- const [issue, setIssue] = useState<string>();
- const [notice, setNotice] = useState<string>();
- const [committedWarning, setCommittedWarning] = useState<string>();
+ const [issue, setIssue] = useState<ReactNode>();
+ const [notice, setNotice] = useState<ReactNode>();
+ const [committedWarning, setCommittedWarning] = useState<ReactNode>();
  const [collapsed, setCollapsed] = useState<Set<ChangeGroup>>(new Set());
  const [confirm, setConfirm] = useState<Confirm>();
  const [commitMenu, setCommitMenu] = useState<HTMLElement>();
@@ -49,6 +51,13 @@ export function SourceControlView({scope, actions, git, zh, compact = false, too
  const [branchQuery, setBranchQuery] = useState('');
  const [creating, setCreating] = useState(false);
  const [branchBase, setBranchBase] = useState('HEAD');
+ const [stashes, setStashes] = useState<GitStashEntry[]>();
+ const [stashFiles, setStashFiles] = useState<Record<string,GitStashFile[]>>({});
+ const [stashLoading, setStashLoading] = useState<string>();
+ const [stashDialog, setStashDialog] = useState(false);
+ const [stashMessage, setStashMessage] = useState('');
+ const [stashUntracked, setStashUntracked] = useState(true);
+ const [stashesCollapsed, setStashesCollapsed] = useState(true);
  const [selection, setSelection] = useState<Set<string>>(() => new Set());
  const messageRef = useRef<HTMLTextAreaElement>(null);
  const changesRef=useRef<HTMLDivElement>(null);
@@ -86,7 +95,7 @@ export function SourceControlView({scope, actions, git, zh, compact = false, too
   const items=groups[group], all=items.length>0&&items.every(change=>selection.has(selectedCommitKey(rootKey,group,change.path)));
   setSelection(current=>setGroupSelection(current,rootKey,group,items,!all));
  };
- useEffect(() => { discardEpoch.current++; setDiverged(undefined); setBusy(undefined); setIssue(undefined); setNotice(undefined); setCommittedWarning(undefined); setConfirm(undefined); setCommitMenu(undefined); setBranchMenu(undefined); setBranches(undefined); setBranchQuery(''); setCreating(false); }, [scope.projectId, scope.worktreePath, scope.rootPath]);
+ useEffect(() => { discardEpoch.current++; setDiverged(undefined); setBusy(undefined); setIssue(undefined); setNotice(undefined); setCommittedWarning(undefined); setConfirm(undefined); setCommitMenu(undefined); setBranchMenu(undefined); setBranches(undefined); setBranchQuery(''); setCreating(false); setStashes(undefined); setStashFiles({}); setStashLoading(undefined); setStashDialog(false); setStashMessage(''); setStashUntracked(true); setStashesCollapsed(true); }, [scope.projectId, scope.worktreePath, scope.rootPath]);
  // Success notices are transient; errors stay until dismissed.
  useEffect(() => { if(!notice) return; const timer = setTimeout(() => setNotice(undefined), 4000); return () => clearTimeout(timer); }, [notice]);
 
@@ -215,14 +224,65 @@ export function SourceControlView({scope, actions, git, zh, compact = false, too
   });
  };
  const loadBranches = async () => { const epoch=scopeEpoch.current; try { const next=await request('git.branches', params); if(epoch===scopeEpoch.current)setBranches(next); } catch(error) { if(epoch===scopeEpoch.current)setIssue(workbenchError(error, zh)); } };
+ const loadStashes = async () => { const epoch=scopeEpoch.current; try { const result=await request('git.stash.list', params); if(epoch===scopeEpoch.current)setStashes(result.entries); } catch(error) { if(epoch===scopeEpoch.current)setIssue(workbenchError(error, zh)); } };
+ useEffect(() => { void loadStashes(); }, [scopeKey,status]);
+ const showStashFiles = async (entry:GitStashEntry) => {
+  if(stashFiles[entry.oid]) { setStashFiles(current => { const next={...current}; delete next[entry.oid]; return next; }); return; }
+  const epoch=scopeEpoch.current; setStashLoading(entry.oid);
+  try { const result=await request('git.stash.show', {...params,oid:entry.oid}); if(epoch===scopeEpoch.current)setStashFiles(current=>({...current,[entry.oid]:result.files})); }
+  catch(error) { if(epoch===scopeEpoch.current)setIssue(workbenchError(error,zh)); }
+  finally { if(epoch===scopeEpoch.current)setStashLoading(undefined); }
+ };
+ const interferencePayload = (value:unknown) => {
+  const raw=value instanceof Error ? value.message : typeof value==='string' ? value : undefined;
+  if(!raw) return stashDropInterference(value);
+  for(const marker of ['stash_drop_interfered:','stash_switch_failed:']) {
+   const offset=raw.indexOf(marker); if(offset<0) continue;
+   try { const parsed=JSON.parse(raw.slice(offset+marker.length).trim()) as {stash?:{interference?:unknown}}; return stashDropInterference(marker==='stash_switch_failed:' ? parsed.stash?.interference : parsed); } catch { return undefined; }
+  }
+  return undefined;
+ };
+ const interferenceNotice = (value:unknown):ReactNode|undefined => {
+  const interference=interferencePayload(value), summary=stashInterferenceError(interference,zh,false);
+  if(!interference||!summary) return undefined;
+  const entry=(item:{oid:string;message:string}, suffix?:string) => <span className="wb-interference-entry" title={item.oid}>{item.oid.slice(0,7)} · {item.message}{suffix}</span>;
+  return <><span title={interference.oid}>{summary}</span>{interference.restored.length>0&&<span className="wb-interference-list">{text('Restored:', '已恢复：')}{interference.restored.map(item=>entry(item))}</span>}{interference.restoreFailed.length>0&&<span className="wb-interference-list">{text('Could not restore:', '恢复失败：')}{interference.restoreFailed.map(item=>entry(item,` · ${item.error}`))}</span>}</>;
+ };
+ const stashResultNotice = (result:GitStashApply, entry:GitStashEntry, pop:boolean) => {
+  const limitation=text(' Staged changes were restored as unstaged.', ' 已暂存的更改会以未暂存状态恢复。');
+  if(!result.applied) return `${text(`The stash (${result.oid}) could not be applied. It was kept, and some files may already have been restored.`, `暂存（${result.oid}）无法应用，已保留；部分文件可能已经恢复。`)}${result.warning ? ` ${workbenchError(result.warning,zh)}` : ''}`;
+  if(result.conflicted) { const conflict=stashConflictNotice({oid:result.oid,message:entry.message,zh}); return <>{conflict.before}<span title={conflict.title}>{conflict.label}</span>{conflict.after}</>; }
+  return (pop ? result.interference ? text('Stash applied.', '暂存已应用。') : result.dropped ? text('Stash applied and removed.', '暂存已应用并移除。') : text('Stash applied and kept.', '暂存已应用并保留。') : text('Stash applied.', '暂存已应用。')) + limitation;
+ };
+ const applyStash = async (entry:GitStashEntry, pop:boolean) => {
+  const epoch=scopeEpoch.current; setBusy(pop?'stash-pop':'stash-apply'); setIssue(undefined); setNotice(undefined);
+  try { const result=await request('git.stash.apply',{...params,oid:entry.oid,pop,operationId:operationId()}); if(epoch===scopeEpoch.current) { setNotice(stashResultNotice(result,entry,pop)); const interference='interference' in result ? interferenceNotice(result.interference) : undefined; if(interference)setCommittedWarning(interference); void loadStashes(); } }
+  catch(error) { if(epoch===scopeEpoch.current) { const interference=interferenceNotice(error); setIssue(interference ?? workbenchError(error,zh)); if(interference) void loadStashes(); } }
+  finally { if(epoch===scopeEpoch.current)setBusy(undefined); }
+ };
+ const pushStash = async () => {
+  const epoch=scopeEpoch.current; setBusy('stash-push'); setIssue(undefined); setNotice(undefined);
+  try { const result=await request('git.stash.push',{...params,...(stashMessage.trim()?{message:stashMessage.trim()}:{}),includeUntracked:stashUntracked,operationId:operationId()}); if(epoch===scopeEpoch.current) { setStashDialog(false); setStashMessage(''); setNotice(text(`Stashed changes (${result.oid}).`, `更改已暂存（${result.oid}）。`)); void loadStashes(); } }
+  catch(error) { if(epoch===scopeEpoch.current)setIssue(workbenchError(error,zh)); }
+  finally { if(epoch===scopeEpoch.current)setBusy(undefined); }
+ };
  const openBranches = (anchor:HTMLElement) => { setBranchMenu(anchor); setBranchQuery(''); setCreating(false); setBranchBase('HEAD'); void loadBranches(); };
- const checkout = async (branch:string, create = false) => {
+ const checkout = async (branch:string, create = false, stash = false) => {
   setBranchMenu(undefined);
   const epoch=scopeEpoch.current;
   setBusy('checkout'); setIssue(undefined); setNotice(undefined); setCommittedWarning(undefined);
   try {
-   await request('git.checkout', {...params, branch, ...(create ? {create:true,...(branchBase==='HEAD'?{}:{startPoint:branchBase})} : {}), operationId:operationId()});
-   if(epoch===scopeEpoch.current)setNotice(text(`Switched to ${branch}.`, `已切换到 ${branch}。`));
+   const result=await request('git.checkout', {...params, branch, ...(create ? {create:true,...(branchBase==='HEAD'?{}:{startPoint:branchBase})} : {}), ...(stash?{stash:true}:{}), operationId:operationId()});
+   if(epoch===scopeEpoch.current) {
+    if(!stash || !result.stash) setNotice(text(`Switched to ${branch}.`, `已切换到 ${branch}。`));
+    else if(result.stash.conflicted) { const stashMessage='message' in result.stash&&typeof result.stash.message==='string' ? result.stash.message : undefined, conflict=stashConflictNotice({oid:result.stash.oid,message:stashMessage,branch,zh}); setNotice(<>{conflict.before}<span title={conflict.title}>{conflict.label}</span>{conflict.after}</>); }
+    else if(result.stash.applied === false) setNotice(text(`Switched to ${branch}; your changes stay in stash (${result.stash.oid}) because they could not be re-applied.`, `已切换到 ${branch}；由于无法重新应用，你的更改仍保留在暂存中（${result.stash.oid}）。`));
+    else setNotice(text(`Switched to ${branch}; your changes were re-applied. Staged changes were restored as unstaged.`, `已切换到 ${branch}；你的更改已重新应用。已暂存的更改会以未暂存状态恢复。`));
+    const interference=result.stash ? interferenceNotice(result.stash.interference) : undefined;
+    if(interference) setCommittedWarning(interference);
+    else if(result.warning) setCommittedWarning(workbenchError(result.warning,zh));
+    void loadStashes();
+   }
   } catch(error) {
    if(epoch!==scopeEpoch.current)return;
    const raw=error instanceof Error?error.message:String(error);
@@ -233,7 +293,8 @@ export function SourceControlView({scope, actions, git, zh, compact = false, too
      if(Array.isArray(paths)) { setConfirm({kind:'checkout-overwrite',branch,paths:paths.filter((path):path is string=>typeof path==='string')}); return; }
     } catch { /* The mapped error below preserves malformed runtime details. */ }
    }
-   setIssue(workbenchError(error,zh));
+   const interference=interferenceNotice(error); setIssue(interference ?? workbenchError(error,zh));
+   if(interference) void loadStashes();
   } finally { if(epoch===scopeEpoch.current)setBusy(undefined); }
  };
  const confirmAction = async () => {
@@ -263,7 +324,12 @@ export function SourceControlView({scope, actions, git, zh, compact = false, too
    if(ok) setMessage('');
   } else if(current.kind === 'checkout-overwrite') {
    setConfirm(undefined);
-   requestAnimationFrame(()=>changesRef.current?.focus());
+   void checkout(current.branch,false,true);
+  } else if(current.kind === 'stash-drop') {
+   setBusy('stash-drop'); setIssue(undefined);
+   try { await request('git.stash.drop',{...params,oid:current.entry.oid,operationId:operationId()}); if(epoch===scopeEpoch.current) { setConfirm(undefined); setNotice(text('Stash removed.', '暂存已移除。')); void loadStashes(); } }
+   catch(error) { if(epoch===scopeEpoch.current) { setConfirm(undefined); const interference=interferenceNotice(error); setIssue(interference ?? workbenchError(error,zh)); if(interference) void loadStashes(); } }
+   finally { if(epoch===scopeEpoch.current)setBusy(undefined); }
   } else {
    setBusy('branch'); setIssue(undefined);
    try {
@@ -280,6 +346,7 @@ export function SourceControlView({scope, actions, git, zh, compact = false, too
 
  const tools = <>
   {actions.openHistory && <button type="button" className="icon-btn" title={text('History', '提交历史')} aria-label={text('History', '提交历史')} onClick={() => actions.openHistory?.()}><Icon name="clock"/></button>}
+  <button type="button" className="icon-btn" title={text('Stash changes…', '暂存更改…')} aria-label={text('Stash changes…', '暂存更改…')} disabled={!!busy} onClick={() => setStashDialog(true)}><Icon name="archive"/></button>
   <button type="button" className="icon-btn" title={text('Refresh', '刷新')} aria-label={text('Refresh', '刷新')} onClick={() => void git.refresh()}><WbIcon name="refresh"/></button>
  </>;
  const toolbar = toolbarHost ? createPortal(tools, toolbarHost) : null;
@@ -326,6 +393,11 @@ export function SourceControlView({scope, actions, git, zh, compact = false, too
   </section>;
  };
  const nothing = !(status.changes.length);
+ const stashAge = (createdAt:number) => {
+  const seconds=Math.max(0,Math.floor(Date.now()/1000-createdAt));
+  const [amount,unit]=seconds<60?[seconds,text('second','秒')]:seconds<3600?[Math.floor(seconds/60),text('minute','分钟')]:seconds<86400?[Math.floor(seconds/3600),text('hour','小时')]:[Math.floor(seconds/86400),text('day','天')];
+  return zh ? `${amount} ${unit}前` : `${amount} ${unit}${amount===1?'':'s'} ago`;
+ };
  const selectedForStage=selectedIn('changes').length+selectedIn('untracked').length;
  const commitSelectedActive=selectedStaged.length>0;
  const sortedBranches=sortBranches(branches?.branches ?? []);
@@ -383,6 +455,15 @@ export function SourceControlView({scope, actions, git, zh, compact = false, too
     <button type="button" className="icon-btn" title={text('Stage selected files', '暂存所选文件')} aria-label={text('Stage selected files', '暂存所选文件')} disabled={!!busy || !selectedIn('untracked').length} onClick={() => void stageSelected('untracked')}><Icon name="plus"/></button>
     <button type="button" className="icon-btn" title={text('Stage all untracked', '暂存全部未跟踪文件')} aria-label={text('Stage all untracked', '暂存全部未跟踪文件')} disabled={!!busy} onClick={() => void stage(groups.untracked.map(change => change.path))}><Icon name="plus"/></button>
    </>)}
+   {!!stashes?.length && <section className="wb-change-group wb-stashes" aria-label={text('Stashes', '暂存')}>
+    <div className="wb-group-head"><button type="button" className="wb-group-toggle" aria-expanded={!stashesCollapsed} onClick={()=>setStashesCollapsed(current=>!current)}><span className={`wb-chevron${stashesCollapsed?'':' open'}`} aria-hidden="true"><Icon name="chevR"/></span>{text('Stashes', '暂存')}<span className="wb-count">{stashes.length}</span></button></div>
+    {!stashesCollapsed&&<div role="list">{stashes.map(entry=><div key={entry.oid} className="wb-stash-row" role="listitem">
+     <div className="wb-stash-summary"><span className="wb-name" title={entry.message}>{entry.message || text('WIP on stash', '暂存中的进行中更改')}</span>{entry.branch&&<span className="wb-stash-branch">{entry.branch}</span>}<span className="wb-time">{stashAge(entry.createdAt)}</span>{entry.untracked&&<span className="wb-stash-untracked">{text('untracked', '未跟踪')}</span>}</div>
+     <span className="wb-row-actions"><button type="button" className="icon-btn" aria-label={text(`Show files in ${entry.message}`, `显示 ${entry.message} 中的文件`)} title={text('Show files', '显示文件')} disabled={!!busy||stashLoading===entry.oid} onClick={()=>void showStashFiles(entry)}><Icon name="file"/></button><button type="button" className="icon-btn" aria-label={text(`Apply ${entry.message}`, `应用 ${entry.message}`)} title={text('Apply', '应用')} disabled={!!busy} onClick={()=>void applyStash(entry,false)}><Icon name="check"/></button><button type="button" className="icon-btn" aria-label={text(`Pop ${entry.message}`, `弹出 ${entry.message}`)} title={text('Pop', '弹出')} disabled={!!busy} onClick={()=>void applyStash(entry,true)}><Icon name="export"/></button><button type="button" className="icon-btn" aria-label={text(`Drop ${entry.message}`, `删除 ${entry.message}`)} title={text('Drop', '删除')} disabled={!!busy} onClick={()=>setConfirm({kind:'stash-drop',entry})}><Icon name="trash"/></button></span>
+     {stashLoading===entry.oid&&<p className="wb-stash-files wb-summary" role="status">{text('Loading files…', '正在读取文件…')}</p>}
+     {stashFiles[entry.oid]&&<div className="wb-stash-files" role="list">{stashFiles[entry.oid].map(file=><div key={`${file.status}:${file.path}`} className="wb-stash-file" role="listitem"><span className="wb-deco">{file.status}</span><span className="wb-name">{file.path}</span>{file.untracked&&<span className="wb-stash-untracked">{text('untracked', '未跟踪')}</span>}</div>)}</div>}
+    </div>)}</div>}
+   </section>}
    {nothing && <p className="wb-empty">{text('No changes in this worktree.', '此工作树没有更改。')}</p>}
   </div>
   {commitMenu && <CatalogPopover anchor={commitMenu} label={text('Commit actions', '提交操作')} onClose={() => setCommitMenu(undefined)}>
@@ -420,21 +501,27 @@ export function SourceControlView({scope, actions, git, zh, compact = false, too
    footer={<><button type="button" className="btn" disabled={!!busy} onClick={()=>setDiverged(undefined)}>{text('Cancel','取消')}</button><button type="button" className="btn btn-primary" disabled={!!busy} onClick={()=>{setDiverged(undefined);void mergeUpstream();}}>{text(`Merge ${diverged.upstream} into ${diverged.branch}`,`将 ${diverged.upstream} 合并到 ${diverged.branch}`)}</button></>}>
    <p>{text(`${diverged.branch} and ${diverged.upstream} have diverged (${diverged.ahead} ahead, ${diverged.behind} behind)`,`${diverged.branch} 与 ${diverged.upstream} 已分叉（领先 ${diverged.ahead}，落后 ${diverged.behind}）`)}</p>
   </SurfaceDialog>}
+  {stashDialog && <SurfaceDialog size="sm" icon="archive" title={text('Stash changes', '暂存更改')} subtitle={text('Save your current changes without committing them.', '保存当前更改但不提交。')} onClose={()=>{if(!busy)setStashDialog(false);}}
+   footer={<><button type="button" className="btn" disabled={!!busy} onClick={()=>setStashDialog(false)}>{text('Cancel','取消')}</button><button type="button" className="btn btn-primary" disabled={!!busy} onClick={()=>void pushStash()}>{busy==='stash-push'?text('Stashing…','正在暂存…'):text('Stash changes','暂存更改')}</button></>}>
+   <div className="wb-stash-dialog"><label>{text('Message (optional)', '说明（可选）')}<input autoFocus maxLength={200} value={stashMessage} onChange={event=>setStashMessage(event.target.value.replace(/[\r\n\t\u0000-\u001f]/g,''))} aria-label={text('Stash message', '暂存说明')}/></label><label className="wb-stash-checkbox"><input type="checkbox" checked={stashUntracked} onChange={event=>setStashUntracked(event.target.checked)}/>{text('Include untracked files', '包括未跟踪文件')}</label></div>
+  </SurfaceDialog>}
   {confirm && <SurfaceDialog size="sm" icon={confirm.kind === 'amend' ? 'clock' : confirm.kind === 'checkout-overwrite' ? 'branch' : 'trash'}
-   title={confirm.kind === 'abort-merge' ? text('Abort merge?','中止合并？') : confirm.kind === 'discard' ? text('Discard changes?', '丢弃更改？') : confirm.kind === 'amend' ? text('Amend the last commit?', '修改上次提交？') : confirm.kind === 'checkout-overwrite' ? text(`Switching to ${confirm.branch} would overwrite local changes`, `切换到 ${confirm.branch} 会覆盖本地更改`) : confirm.force ? text('Force delete unmerged branch?', '强制删除未合并的分支？') : text('Delete branch?', '删除分支？')}
-   subtitle={confirm.kind === 'abort-merge' ? undefined : confirm.kind === 'discard' ? confirm.paths.join(', ') : confirm.kind === 'amend' ? confirm.subject : confirm.kind === 'checkout-overwrite' ? undefined : confirm.branch}
+   title={confirm.kind === 'abort-merge' ? text('Abort merge?','中止合并？') : confirm.kind === 'discard' ? text('Discard changes?', '丢弃更改？') : confirm.kind === 'amend' ? text('Amend the last commit?', '修改上次提交？') : confirm.kind === 'checkout-overwrite' ? text(`Switching to ${confirm.branch} would overwrite local changes`, `切换到 ${confirm.branch} 会覆盖本地更改`) : confirm.kind === 'stash-drop' ? text('Drop stash?', '删除暂存？') : confirm.force ? text('Force delete unmerged branch?', '强制删除未合并的分支？') : text('Delete branch?', '删除分支？')}
+   subtitle={confirm.kind === 'abort-merge' ? undefined : confirm.kind === 'discard' ? confirm.paths.join(', ') : confirm.kind === 'amend' ? confirm.subject : confirm.kind === 'checkout-overwrite' ? undefined : confirm.kind === 'stash-drop' ? confirm.entry.message : confirm.branch}
    onClose={() => { if(!busy) { if(confirm.kind === 'discard') discardEpoch.current++; setConfirm(undefined); } }}
    footer={<>
     <button type="button" className="btn" disabled={!!busy} onClick={() => { if(confirm.kind === 'discard') discardEpoch.current++; setConfirm(undefined); }}>{text('Cancel', '取消')}</button>
-    {confirm.kind === 'checkout-overwrite' ? <button type="button" className="btn btn-primary" onClick={() => void confirmAction()}>{text('Open Source Control', '打开源代码管理')}</button> : <button type="button" className={`btn ${confirm.kind === 'amend' ? 'btn-primary' : 'btn-danger'}`} disabled={!!busy || (confirm.kind === 'discard' && (!confirm.fingerprints || !confirm.indexFingerprints || !!confirm.snapshotError))} onClick={() => void confirmAction()}>
-     {confirm.kind === 'abort-merge' ? text('Abort merge','中止合并') : confirm.kind === 'discard' ? text('Discard', '丢弃') : confirm.kind === 'amend' ? text('Amend commit', '修改提交') : confirm.force ? text('Force delete', '强制删除') : text('Delete', '删除')}
+    {confirm.kind === 'checkout-overwrite' ? <><button type="button" className="btn" onClick={() => { setConfirm(undefined); requestAnimationFrame(()=>changesRef.current?.focus()); }}>{text('Open Source Control', '打开源代码管理')}</button><button type="button" className="btn btn-primary" onClick={() => void confirmAction()}>{text('Stash and switch', '暂存并切换')}</button></> : <button type="button" className={`btn ${confirm.kind === 'amend' ? 'btn-primary' : 'btn-danger'}`} disabled={!!busy || (confirm.kind === 'discard' && (!confirm.fingerprints || !confirm.indexFingerprints || !!confirm.snapshotError))} onClick={() => void confirmAction()}>
+     {confirm.kind === 'abort-merge' ? text('Abort merge','中止合并') : confirm.kind === 'discard' ? text('Discard', '丢弃') : confirm.kind === 'amend' ? text('Amend commit', '修改提交') : confirm.kind === 'stash-drop' ? text('Drop stash', '删除暂存') : confirm.force ? text('Force delete', '强制删除') : text('Delete', '删除')}
     </button>}
    </>}>
    {confirm.kind === 'discard' && (!confirm.fingerprints || !confirm.indexFingerprints || confirm.snapshotError) && <p className="wb-summary" role={confirm.snapshotError ? 'alert' : 'status'}>{confirm.snapshotError ?? text('Checking files before discard…', '正在检查丢弃前的文件…')}</p>}
-   {confirm.kind === 'checkout-overwrite' ? <><p>{text("Files Git won't overwrite:", 'Git 不会覆盖的文件：')}</p>{confirm.paths.slice(0,10).map(path=><span key={path} className="wb-path-line">{path}</span>)}{confirm.paths.length>10&&<span className="wb-path-line">{text(`and ${confirm.paths.length-10} more`, `以及另外 ${confirm.paths.length-10} 个`)}</span>}{localChangePaths&&<><p>{text(`Your local changes (${localChangePaths.length})`, `你的本地更改（${localChangePaths.length}）`)}</p>{localChangePaths.slice(0,10).map(path=><span key={path} className="wb-path-line">{path}</span>)}{localChangePaths.length>10&&<span className="wb-path-line">{text(`and ${localChangePaths.length-10} more`, `以及另外 ${localChangePaths.length-10} 个`)}</span>}</>}</> : <p>{confirm.kind === 'abort-merge' ? text('Abort this merge and restore the state before the merge?','中止当前合并并还原合并开始前的状态？') : confirm.kind === 'discard'
+   {confirm.kind === 'checkout-overwrite' ? <><p>{text("Files Git won't overwrite:", 'Git 不会覆盖的文件：')}</p>{confirm.paths.slice(0,10).map(path=><span key={path} className="wb-path-line">{path}</span>)}{confirm.paths.length>10&&<span className="wb-path-line">{text(`and ${confirm.paths.length-10} more`, `以及另外 ${confirm.paths.length-10} 个`)}</span>}{localChangePaths&&<><p>{text(`Your local changes (${localChangePaths.length})`, `你的本地更改（${localChangePaths.length}）`)}</p>{localChangePaths.slice(0,10).map(path=><span key={path} className="wb-path-line">{path}</span>)}{localChangePaths.length>10&&<span className="wb-path-line">{text(`and ${localChangePaths.length-10} more`, `以及另外 ${localChangePaths.length-10} 个`)}</span>}</>}<p className="wb-hint">{text('Stash and switch includes untracked files. If Git cannot re-apply them, they stay listed in Stashes.', '“暂存并切换”会包括未跟踪文件；如果 Git 无法重新应用它们，它们会保留在暂存列表中。')}</p></> : <p>{confirm.kind === 'abort-merge' ? text('Abort this merge and restore the state before the merge?','中止当前合并并还原合并开始前的状态？') : confirm.kind === 'discard'
     ? text(`Tracked files return to their staged version.${confirm.untracked ? ` ${confirm.untracked} untracked file(s) will be moved to the Recycle Bin.` : ''}`, `已跟踪文件将恢复为暂存区版本。${confirm.untracked ? `${confirm.untracked} 个未跟踪文件将移到回收站。` : ''}`)
-    : confirm.kind === 'amend'
+     : confirm.kind === 'amend'
      ? text('The staged changes and the new message replace this commit. Do not amend commits that were already pushed and shared.', '已暂存的更改和新的说明会替换此提交。已推送并共享的提交请不要修改。')
+     : confirm.kind === 'stash-drop'
+     ? text('This removes the saved changes permanently.', '这会永久删除已保存的更改。')
      : confirm.force ? text('This branch has commits that are not merged anywhere. Deleting it may lose them.', '此分支有尚未合并的提交，删除后这些提交可能丢失。') : text('The local branch will be deleted. Remote branches are not affected.', '将删除本地分支，不影响远程分支。')}</p>
    }
   </SurfaceDialog>}
