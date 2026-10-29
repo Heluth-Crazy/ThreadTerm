@@ -28,8 +28,9 @@ test('the Agent changes panel refreshes from review, worktree and turn events', 
   assert.match(file, /addEventListener\('visibilitychange'/);
 });
 
-test('a Git mutation does not refresh the status a second time by hand', () => {
+test('only upstream merge explicitly refreshes mutation status to reveal its banner', () => {
   const file = source('renderer/src/components/SourceControlView.tsx');
-  assert.doesNotMatch(file, /await git\.refresh\(\)/, 'the runtime event is the only invalidation');
+  assert.equal((file.match(/await git\.refresh\(\)/g) ?? []).length, 1, 'ordinary mutations still rely on runtime events');
+  assert.match(file, /const mergeUpstream = [\s\S]*?await git\.refresh\(\)/, 'upstream merge refreshes its operation banner');
   assert.match(file, /onClick=\{\(\) => void git\.refresh\(\)\}/, 'the toolbar Refresh button stays');
 });

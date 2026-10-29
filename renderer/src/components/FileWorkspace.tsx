@@ -5,10 +5,20 @@ import type {
   Draft,
   FileDocument,
   GitBlame,
+  GitCompareDiff,
+  GitCompareFiles,
+  GitCompareRef,
   GitDiff,
 } from "@threadterm/protocol";
 import { operationId, request } from "../bridge";
 import { CodeEditor } from "./CodeEditor";
+import { ConflictStageAction } from "./ConflictStageAction";
+import { useConflictStageGuard } from "./useConflictStageGuard";
+import { useConflictStates } from "./useConflictStates";
+import { conflictStageReason } from "../workbench/conflictStage";
+import { conflictBlocks } from "../workbench/conflictBlocks";
+import { isConflict } from "../workbench/gitDecorations";
+import { notifyFilesChanged } from "../workbench/types";
 import { MergeEditor, type MergeEditorHandle, type MergeSelection } from "./MergeEditor";
 import { CommentForm, PendingComments, useFileComments } from "./FileComments";
 import type { FileCommentsHost } from "../fileCommentsHost";
@@ -22,7 +32,8 @@ import { ExplorerView } from "./ExplorerView";
 import { SourceControlView } from "./SourceControlView";
 import { useGitStatus } from "./WorkbenchSideBar";
 import { WbIcon } from "../workbench/icons";
-import { stageChunk, unstageChunk, withLineBreaks } from "../workbench/indexEdit";
+import type { ChunkRange } from "../workbench/indexEdit";
+import { indexChunkContent } from "../workbench/gutterHunk";
 import { workbenchError } from "../workbench/errors";
 import { coveredBy, type WorkbenchActions } from "../workbench/types";
 import { isDocumentPinned, sessionDocumentError } from "../sessionDocuments";
@@ -31,9 +42,13 @@ import { diffSurfaceMenuItems, sourceEditorMenuItems } from "../fileSurfaceConte
 import { changedFileContext } from "./GitContextActions";
 import { sendContextToAgent } from "./ContextSendAction";
 import { readDiffDocument } from '../fileDiffDocument';
+import { gitDiffFiles } from '../diffFileNavigation';
+import { compareDiffEditable, compareOriginalPath, comparePaths, compareReloadText, compareStaleText, compareTabSignature } from '../workbench/branchScope';
+import { DiffFileNavigation } from './DiffFileNavigation';
 import { externalFileError, externalFileErrorCode, externalSelectionText } from '../externalFiles';
 import { displayPath } from '../displayPath';
 import { EditorView } from '@codemirror/view';
+import type { GitWorkbenchAction, GitWorkbenchCommand } from '../workbench/gitKeyboardCommand';
 
 type View = "file" | "diff" | "preview";
 type Props = {
@@ -59,6 +74,8 @@ type Props = {
   };
   /** Opens a diff tab directly in its staged (HEAD → index) view. */
   initialStaged?: boolean;
+  /** Branch-versus-base diff (`git.compare.diff`) instead of the index diff. */
+  initialCompare?: GitCompareRef;
   /** Absolute root for "Copy path" in the standalone tools panel. */
   rootPath?: string;
   /** A registered external file is read through the explicit external-file API only. */
@@ -69,6 +86,9 @@ type Props = {
   active?: boolean;
   onSendToAgent?: (target: { path: string; startLine?: number; endLine?: number; selection?: string }) => void;
   onOpenHistory?: (target: { path?: string; commit?: string }) => void;
+  /** Host confirms dirty edits, awaits load(), then retargets the same tab only on success. */
+  onNavigateDiff?: (path: string, load: () => Promise<boolean>) => void;
+  navigationDisabled?: boolean;
   /** Present only for file tabs in the active session's worktree. */
   sessionDocuments?: WorkbenchActions["sessionDocuments"];
   comments?: FileCommentsHost;
@@ -111,12 +131,15 @@ function FileWorkspaceInstance({
   assetKind,
   previewNavigation,
   initialStaged,
+  initialCompare,
   rootPath,
   externalId,
   onExternalChange,
   active,
   onSendToAgent,
   onOpenHistory,
+  onNavigateDiff,
+  navigationDisabled,
   sessionDocuments,
   comments: commentsHost,
 }: Props) {
@@ -127,10 +150,14 @@ function FileWorkspaceInstance({
   const [toolsOpen, setToolsOpen] = useState(!embedded && !initialPath);
   const [filesToolsHost, setFilesToolsHost] = useState<HTMLDivElement | null>(null);
   const [scmToolsHost, setScmToolsHost] = useState<HTMLDivElement | null>(null);
+  const [gitCommand, setGitCommand] = useState<GitWorkbenchCommand>();
+  const gitWorkbenchHost=useRef(crypto.randomUUID());
   const [openPaths, setOpenPaths] = useState<string[]>([]);
   const [document, setDocument] = useState<FileDocument>();
   const [image, setImage] = useState<{ mime: string; data: string }>();
   const [text, setText] = useState("");
+  const [resolvedNotice, setResolvedNotice] = useState<string>();
+  useEffect(() => { if (!resolvedNotice) return; const timer = setTimeout(() => setResolvedNotice(undefined), 4000); return () => clearTimeout(timer); }, [resolvedNotice]);
   const externalInitialView: View = external && initialView === "diff" ? "file" : initialView;
   const [internalView, setInternalView] = useState<View>(externalInitialView);
   const previousControlledView = useRef<View | undefined>(controlledView);
@@ -141,15 +168,38 @@ function FileWorkspaceInstance({
     if (next !== "preview") onViewChange?.(next);
   };
   const [staged, setStaged] = useState(initialStaged ?? false);
+  // Branch-versus-base diffs reuse this surface: the old side is the merge base, the new side the
+  // working file (or HEAD with committedOnly). Base resolution and the file list stay in the side bar.
+  const [localCompare, setLocalCompare] = useState<GitCompareRef|undefined>(initialCompare);
+  const compare = localCompare;
+  const [compareStale, setCompareStale] = useState(false);
+  // The path this instance was opened with. Retargeting the tab (Alt+→) changes `initialPath`, but a
+  // compare tab's own `originalPath` only ever belongs to this first file.
+  const firstPath = useRef(initialPath);
+  // A tab that is re-pointed at another base (or another scope) re-syncs here instead of keeping the
+  // stale one; the Branch scope preference itself stays in memory only.
+  const [compareTabKey, setCompareTabKey] = useState(compareTabSignature(initialCompare));
+  const incomingCompareTabKey = compareTabSignature(initialCompare);
+  if(incomingCompareTabKey !== compareTabKey) {
+    setCompareTabKey(incomingCompareTabKey);
+    setLocalCompare(initialCompare);
+    setCompareStale(false);
+  }
+  const [compareFiles, setCompareFiles] = useState<GitCompareFiles>();
   const [hunk, setHunk] = useState(0);
   const [hunkCount, setHunkCount] = useState(0);
   const [gitBaseText, setGitBaseText] = useState<string | null>(null);
+  const gutterBase=useRef<{path:string;diff:GitDiff}|undefined>(undefined);
+  const [gutterRevision,setGutterRevision]=useState(0);
+  const gutterStagePending=useRef(false);
+  const [diffReveal,setDiffReveal]=useState<{path:string;line:number}>();
   const [blameOn, setBlameOn] = useState(false);
   const [blame, setBlame] = useState<GitBlame>();
   const [diff, setDiff] = useState<GitDiff>();
   const mergeEditor = useRef<MergeEditorHandle>(null);
   const [issue, setIssue] = useState<string | { externalError: unknown }>();
   const [busy, setBusy] = useState(false);
+  const [fileNavigation, setFileNavigation] = useState(false);
   const [documentPinning, setDocumentPinning] = useState(false);
   const [draftStatus, setDraftStatus] = useState<
     "saved" | "saving" | "unsaved" | "conflict"
@@ -260,7 +310,11 @@ function FileWorkspaceInstance({
         noGit: "Git status is unavailable for this directory.",
       };
 
-  const gitState = useGitStatus(scope, toolsOpen && !external, zh);
+  const gitState = useGitStatus(scope, (toolsOpen || view === "diff" || view === "file") && !external, zh);
+  const conflictedFile = Boolean(document && gitState.status?.changes.some(change => change.path === document.path && isConflict(change)));
+  const conflictStates = useConflictStates(scope, conflictedFile && document ? [document.path] : [], document?.fingerprint);
+  const stageReason = conflictedFile && document ? conflictStageReason(conflictStates[document.path], zh) : undefined;
+  const stageGuard = useConflictStageGuard(scope, zh);
   const plainCommentVersion: CommentVersion = { kind: "file" };
   const diffCommentVersion: CommentVersion = { kind: "git", staged };
   const plainCommentMarks = useMemo(
@@ -308,7 +362,7 @@ function FileWorkspaceInstance({
         ? (zh ? "请先完成当前评论。" : "Finish the current comment first.")
         : (zh ? "此工作区无法添加评论。" : "Comments are unavailable in this workspace.");
     const common = {zh,lines:selection,canComment,commentReason:reason,comment:()=>setCommentDraft(kind === "file" ? {side:"new",...selection} : selection as MergeSelection)};
-    const sourceItems = kind === "diff" ? diffSurfaceMenuItems({...common,prefix:"editor",hasSelection:Boolean(menu.hasSelection),sendDiff:commentsHost?.attachContext?async()=>sendContextToAgent({host:commentsHost,context:await changedFileContext(scope,document!.path,staged,zh),zh,sourceRoot:worktreePath??rootPath??commentsHost.projectRoot(projectId)}):undefined,copy:menu.copy ?? (()=>navigator.clipboard.writeText(selection.text)),copyPath:()=>navigator.clipboard.writeText(document!.path)}) : sourceEditorMenuItems({...common,hasSelection:Boolean(menu.hasSelection),readOnly:Boolean(external||document?.readonly),send:onSendToAgent?()=>onSendToAgent({path:document!.path,...(menu.hasSelection?{startLine:selection.startLine,endLine:selection.endLine, ...(external?{selection:selectedExternalText()}:{})}:{})}):undefined,plans:external?undefined:sessionDocuments?()=>void toggleSessionDocument():undefined,pinned:Boolean(pinnedDocument),plansDisabled:Boolean(external||sessionDocuments?.loading||documentPinning||sessionDocumentIssue),plansReason:external?(zh?"工作区外文件不能固定到计划与文档。":"Outside-workspace files cannot be pinned to Plans & docs."):sessionDocumentIssue?(zh?"计划与文档当前不可用。":"Plans & docs is unavailable."):undefined,history:external?undefined:onOpenHistory?()=>onOpenHistory({path:document!.path}):undefined,copy:menu.copy??(()=>navigator.clipboard.writeText(selection.text)),cut:menu.cut??(()=>{}),paste:menu.paste??(()=>{}),selectAll:menu.selectAll??(()=>{}),copyPath:()=>navigator.clipboard.writeText(document!.path),copyReference:()=>navigator.clipboard.writeText(`${document!.path}:${selection.startLine}-${selection.endLine}`)});
+    const sourceItems = kind === "diff" ? diffSurfaceMenuItems({...common,prefix:"editor",hasSelection:Boolean(menu.hasSelection),sendDiff:!compare&&commentsHost?.attachContext?async()=>sendContextToAgent({host:commentsHost,context:await changedFileContext(scope,document!.path,staged,zh),zh,sourceRoot:worktreePath??rootPath??commentsHost.projectRoot(projectId)}):undefined,copy:menu.copy ?? (()=>navigator.clipboard.writeText(selection.text)),copyPath:()=>navigator.clipboard.writeText(document!.path)}) : sourceEditorMenuItems({...common,hasSelection:Boolean(menu.hasSelection),readOnly:Boolean(external||document?.readonly),send:onSendToAgent?()=>onSendToAgent({path:document!.path,...(menu.hasSelection?{startLine:selection.startLine,endLine:selection.endLine, ...(external?{selection:selectedExternalText()}:{})}:{})}):undefined,plans:external?undefined:sessionDocuments?()=>void toggleSessionDocument():undefined,pinned:Boolean(pinnedDocument),plansDisabled:Boolean(external||sessionDocuments?.loading||documentPinning||sessionDocumentIssue),plansReason:external?(zh?"工作区外文件不能固定到计划与文档。":"Outside-workspace files cannot be pinned to Plans & docs."):sessionDocumentIssue?(zh?"计划与文档当前不可用。":"Plans & docs is unavailable."):undefined,history:external?undefined:onOpenHistory?()=>onOpenHistory({path:document!.path}):undefined,copy:menu.copy??(()=>navigator.clipboard.writeText(selection.text)),cut:menu.cut??(()=>{}),paste:menu.paste??(()=>{}),selectAll:menu.selectAll??(()=>{}),copyPath:()=>navigator.clipboard.writeText(document!.path),copyReference:()=>navigator.clipboard.writeText(`${document!.path}:${selection.startLine}-${selection.endLine}`)});
     showContextMenu({ x, y, restoreFocus: target, items: sourceItems });
   };
   async function refreshGit() {
@@ -320,6 +374,11 @@ function FileWorkspaceInstance({
     ignoreDraft = false,
   ) {
     const ticket = ++generation.current;
+    const source = loaded.current;
+    const changingFile = Boolean(source && source.path !== path);
+    setFileNavigation(changingFile);
+    // Recheck live text, including edits dispatched before React applies the read-only state.
+    const canApply = () => !changingFile || (loaded.current === source && currentText.current === source?.content);
     try {
       const externalRead = async (id: string, registeredPath: string, image: boolean, recovered = false): Promise<FileDocument | { mime: string; data: string }> => {
         try {
@@ -353,7 +412,7 @@ function FileWorkspaceInstance({
         const asset = externalId
           ? await externalRead(externalId, path, true) as { mime: string; data: string }
           : await request("filesystem.image", { ...scope, path });
-        if (!mounted.current || ticket !== generation.current) return false;
+        if (!mounted.current || ticket !== generation.current || !canApply()) return false;
         const imageDocument = {
           path: externalPath.current ?? path,
           content: "",
@@ -380,9 +439,9 @@ function FileWorkspaceInstance({
         ? externalRead(externalId, path, false) as Promise<FileDocument>
         : request("filesystem.read", { ...scope, path });
       const value: FileDocument & { diffOnly?: true } = nextView === "diff"
-        ? await readDiffDocument(path, read, () => request("git.diff", { ...scope, path, staged }))
+        ? await readDiffDocument(path, read, () => compare ? compareDiffRequest(path).then(asCompareDiff) : request("git.diff", { ...scope, path, staged }))
         : await read();
-      if (!mounted.current || ticket !== generation.current) return false;
+      if (!mounted.current || ticket !== generation.current || !canApply()) return false;
       const saved = ignoreDraft || value.diffOnly ? undefined : drafts.current.get(path);
       loaded.current = value;
       base.current = saved?.baseFingerprint ?? value.fingerprint;
@@ -413,6 +472,8 @@ function FileWorkspaceInstance({
         setIssue(external ? { externalError: error } : message(error));
       }
       return false;
+    } finally {
+      if (mounted.current && ticket === generation.current) setFileNavigation(false);
     }
   }
   function persistDraft(doc: FileDocument, value: string, fingerprint: string) {
@@ -535,14 +596,57 @@ function FileWorkspaceInstance({
     [editorId, projectId, worktreePath, ownerSessionId],
   );
   useEffect(() => {
+    if(!compare) { setCompareFiles(undefined); return; }
+    let alive = true;
+    void request("git.compare.files", {...scope, base:compare.base, ...(compare.committedOnly ? {committedOnly:true} : {})})
+      .then(value => { if(alive) setCompareFiles(value); })
+      .catch(() => { if(alive) setCompareFiles(undefined); });
+    return () => { alive = false; };
+  }, [compare?.base, compare?.mergeBase, compare?.committedOnly, projectId, worktreePath]);
+  // A rename's base side lives at its pre-rename path, resolved per path from the current list.
+  const compareOriginal = (path: string) => compareOriginalPath(path, firstPath.current, compare, compareFiles?.files);
+  const compareDiffRequest = (path: string): Promise<GitCompareDiff> => {
+    const original = compareOriginal(path);
+    return request("git.compare.diff", {...scope, base:{ref:compare!.base, oid:compare!.oid}, mergeBase:compare!.mergeBase, path, ...(original ? {originalPath:original} : {}), ...(compare!.committedOnly ? {committedOnly:true} : {})});
+  };
+  // A base that moved while this tab was open (or across a restart) is re-pointed at the current
+  // base instead of leaving a dead end: the list is recomputed and this tab adopts its merge base.
+  const reloadCompareBase = async () => {
+    if(!compare) return;
+    setBusy(true);
+    try {
+      const fresh = await request("git.compare.files", {...scope, base:compare.base, ...(compare.committedOnly ? {committedOnly:true} : {})});
+      setCompareFiles(fresh);
+      setLocalCompare({base:fresh.base.ref, oid:fresh.base.oid, mergeBase:fresh.mergeBase, ...(compare.committedOnly ? {committedOnly:true} : {})});
+      setCompareStale(false);
+      setIssue(undefined);
+    } catch (error) {
+      setIssue(workbenchError(error, zh));
+    } finally {
+      setBusy(false);
+    }
+  };
+  // The diff surface renders a GitDiff; a compare diff has no index fingerprint and no staged state.
+  const asCompareDiff = (value: GitCompareDiff): GitDiff => ({path:value.path, staged:false, oldText:value.oldText, newText:value.newText, binary:value.binary, fingerprint:"", ...(value.deleted ? {deleted:true} : {})});
+  useEffect(() => {
     if (external || view !== "diff" || !document) return;
     let alive = true;
-    void request("git.diff", { ...scope, path: document.path, staged })
+    const loading = compare
+      ? compareDiffRequest(document.path).then(value => asCompareDiff(value))
+      : request("git.diff", { ...scope, path: document.path, staged });
+    void loading
       .then((value) => {
-        if (alive) setDiff(value);
+        if (alive) { setDiff(value); setCompareStale(false); }
       })
       .catch((error) => {
-        if (alive) setIssue(message(error));
+        if (!alive) return;
+        // A moved base is recoverable from this tab; keep the message out of the error strip.
+        if (compare && /compare_stale/.test(error instanceof Error ? error.message : String(error))) {
+          setCompareStale(true);
+          setIssue(undefined);
+          return;
+        }
+        setIssue(workbenchError(error, zh));
       });
     return () => {
       alive = false;
@@ -555,6 +659,8 @@ function FileWorkspaceInstance({
     document?.fingerprint,
     projectId,
     worktreePath,
+    compare?.mergeBase,
+    compareFiles,
   ]);
   async function deleteDraft(path: string) {
     clearTimeout(debounce.current);
@@ -583,6 +689,10 @@ function FileWorkspaceInstance({
         expectedFingerprint: base.current,
         operationId: operationId(),
       });
+      const before = conflictBlocks(doc.content), after = conflictBlocks(saved.content);
+      if (before.blocks.length && !after.blocks.length && !after.unparseable)
+        setResolvedNotice(doc.path);
+      notifyFilesChanged();
       loaded.current = saved;
       base.current = saved.fingerprint;
       setDocument(saved);
@@ -680,12 +790,14 @@ function FileWorkspaceInstance({
     if (!document || dirty) return;
     setBusy(true);
     try {
+      const expectedFingerprints = unstage ? undefined : await stageGuard.check([document.path], conflictedFile ? [document.path] : []);
+      if (!unstage && !expectedFingerprints) return;
       await request(unstage ? "git.unstage" : "git.stage", {
         ...scope,
         paths: [document.path],
         expectedFingerprints: unstage
           ? undefined
-          : { [document.path]: document.fingerprint },
+          : { [document.path]: document.fingerprint, ...expectedFingerprints },
         operationId: operationId(),
       });
       await refreshGit();
@@ -708,10 +820,22 @@ function FileWorkspaceInstance({
     worktreePath,
     rootPath: rootPath ?? worktreePath ?? "",
   };
+  const workbenchScopeKey=`${workbenchScope.projectId}\0${workbenchScope.worktreePath??''}\0${workbenchScope.rootPath}`;
+  useEffect(() => {
+    const palette=(event:Event)=>{
+      if(external||embedded)return;
+      const detail=(event as CustomEvent<{view?:string;key?:string;action?:GitWorkbenchAction;hostKey?:string}>).detail;
+      if(detail?.view!=='scm'||!detail.action||detail.hostKey!==gitWorkbenchHost.current)return;
+      setToolsOpen(true);setGitCommand({view:'scm',key:detail.key??crypto.randomUUID(),action:detail.action,scopeKey:workbenchScopeKey});
+    };
+    addEventListener('threadterm:workbench',palette);
+    return()=>removeEventListener('threadterm:workbench',palette);
+  },[embedded,external,workbenchScopeKey]);
   const standaloneActions: WorkbenchActions = {
     openFile: (path) => choose(path, "file"),
-    openDiff: (path, nextStaged) => {
+    openDiff: (path, nextStaged, nextCompare) => {
       setStaged(nextStaged);
+      setLocalCompare(nextCompare);
       choose(path, "diff");
     },
     dirtyPaths: () => (dirty && document ? [document.path] : []),
@@ -729,19 +853,24 @@ function FileWorkspaceInstance({
   };
   // Index text for the editor's change gutter (null when untracked or not a repository).
   useEffect(() => {
+    if(gutterBase.current?.path!==document?.path||external||image||view!=='file') {gutterBase.current=undefined;setGitBaseText(null);}
     if (external || !document || image || view !== "file") return;
     let alive = true;
     void request("git.diff", { ...scope, path: document.path, staged: false })
       .then((value) => {
-        if (alive) setGitBaseText(value.binary || value.indexFingerprint == null ? null : value.oldText);
+        if (alive) {
+          const previous=gutterBase.current;
+          if(previous?.path!==document.path||previous.diff.indexFingerprint!==value.indexFingerprint||previous.diff.oldText!==value.oldText||previous.diff.binary!==value.binary)gutterBase.current={path:document.path,diff:value};
+          setGitBaseText(value.binary || value.indexFingerprint == null ? null : value.oldText);
+        }
       })
       .catch(() => {
-        if (alive) setGitBaseText(null);
+        if (alive) {gutterBase.current=undefined;setGitBaseText(null);}
       });
     return () => {
       alive = false;
     };
-  }, [external, document?.path, document?.fingerprint, view, projectId, worktreePath, gitState.status]);
+  }, [external, document?.path, document?.fingerprint, view, projectId, worktreePath, gitState.status,gutterRevision]);
   useEffect(() => {
     if (external || !blameOn || !document || dirty) {
       setBlame(undefined);
@@ -777,16 +906,19 @@ function FileWorkspaceInstance({
     const atCursor = editor.cursorChunk();
     const chunk = snapshot.chunks[atCursor >= 0 ? atCursor : hunk];
     if (!chunk) return;
-    const content = staged
-      ? unstageChunk(snapshot.a, snapshot.b, chunk)
-      : stageChunk(snapshot.a, snapshot.b, chunk);
+    const content = indexChunkContent(snapshot.a,snapshot.b,chunk,staged,staged?diff.newText:diff.oldText);
     setBusy(true);
     setIssue(undefined);
     try {
+      if (!staged) {
+        const checked = await stageGuard.check([document.path], conflictedFile ? [document.path] : []);
+        if (!checked) return;
+        if (Object.hasOwn(checked, document.path) && checked[document.path] !== document.fingerprint) throw Error('file_conflict');
+      }
       await request("git.index.write", {
         ...scope,
         path: document.path,
-        content: withLineBreaks(content, staged ? diff.newText : diff.oldText),
+        content,
         expectedIndexFingerprint: diff.indexFingerprint ?? null,
         operationId: operationId(),
       });
@@ -798,6 +930,33 @@ function FileWorkspaceInstance({
       setBusy(false);
     }
   }
+  async function stageGutterHunk(baseText:string,buffer:string,chunk:ChunkRange) {
+    const origin=gutterBase.current,source=loaded.current,ticket=generation.current;
+    const fresh=()=>mounted.current&&ticket===generation.current&&loaded.current===source&&gutterBase.current===origin;
+    if(!origin||!source||origin.path!==source.path||origin.diff.oldText!==baseText||origin.diff.indexFingerprint==null||dirty||conflictedFile||gutterStagePending.current||currentText.current!==source.content)return;
+    gutterStagePending.current=true;setBusy(true);setIssue(undefined);
+    try {
+      const checked=await stageGuard.check([source.path],[]);
+      if(!checked||!fresh()||currentText.current!==source.content)return;
+      if(Object.hasOwn(checked,source.path)&&checked[source.path]!==source.fingerprint)throw Error('file_conflict');
+      await request('git.index.write',{...scope,path:source.path,content:indexChunkContent(baseText,buffer,chunk,false,baseText),expectedIndexFingerprint:origin.diff.indexFingerprint,operationId:operationId()});
+      if(!fresh())return;
+      gutterBase.current=undefined;setGitBaseText(null);setGutterRevision(value=>value+1);
+      await refreshGit();
+    } catch(error) {
+      if(fresh()) {setIssue(workbenchError(error,zh));gutterBase.current=undefined;setGitBaseText(null);setGutterRevision(value=>value+1);}
+    } finally {
+      gutterStagePending.current=false;
+      if(mounted.current)setBusy(false);
+    }
+  }
+  useEffect(()=>{
+    if(view!=='diff'||!diff||!diffReveal||diffReveal.path!==document?.path)return;
+    const editor=mergeEditor.current,snapshot=editor?.snapshot();if(!editor||!snapshot)return;
+    const position=snapshot.b.split('\n').slice(0,diffReveal.line-1).reduce((offset,line)=>offset+line.length+1,0);
+    const index=snapshot.chunks.findIndex(chunk=>chunk.fromB<=position&&position<chunk.toB||chunk.fromB>=position);
+    if(index>=0) {setHunk(index);editor.focusChunk(index);}setDiffReveal(undefined);
+  },[view,diff,diffReveal,document?.path,hunkCount]);
   const editorReveal =
     document && document.path === initialPath && reveal
       ? { ...reveal, path: document.path }
@@ -851,9 +1010,15 @@ function FileWorkspaceInstance({
       </button>
     ) : null;
   const externalBoundary = document && external ? <ExternalFileBoundary path={document.path} zh={zh} noticeOpen={externalNoticeOpen} onNoticeToggle={() => setExternalNoticeOpen((open) => !open)} onCopy={() => void navigator.clipboard.writeText(document.path)} onReload={() => void open(document.path, view, true)} /> : null;
+  // In the Branch scope the diff walk follows the compared file list, not the working-tree groups.
+  const navigationPaths = compare
+    ? (compareFiles ? comparePaths(compareFiles.files) : document ? [document.path] : [])
+    : gitDiffFiles(gitState.status?.changes ?? [], staged);
+  // A compare diff is editable on the working side only in the working-tree scope, with a real disk file.
+  const compareEditable = compare ? compareDiffEditable(compare, !document?.readonly) : true;
 
   return (
-    <section className={`file-workspace ${toolsOpen ? "tools-open" : ""} ${embedded ? "embedded" : ""}${external ? " external-file-workspace" : ""}`}>
+    <section className={`file-workspace ${toolsOpen ? "tools-open" : ""} ${embedded ? "embedded" : ""}${external ? " external-file-workspace" : ""}`} data-git-workbench={!embedded&&!external||undefined} data-git-workbench-host={!embedded&&!external?gitWorkbenchHost.current:undefined} data-git-repository={!embedded&&!external&&gitState.status?'true':undefined}>
       {toolsOpen && !external && (
         <aside className="file-list tt-file-tree wb-embedded-tools">
           {/* Same header shape as the session side bar; each view portals its actions into it. */}
@@ -881,12 +1046,16 @@ function FileWorkspaceInstance({
                 actions={standaloneActions}
                 git={gitState}
                 zh={zh}
+                command={gitCommand}
+                visible={toolsOpen && active!==false}
+                onCommandHandled={key=>setGitCommand(current=>current?.key===key?undefined:current)}
                 compact
                 toolbarHost={scmToolsHost}
               />
             </section>
             {gitState.status && (
               <GitMergeControls
+                operation={gitState.status.operation}
                 scope={scope}
                 disabled={busy || dirty}
                 onChanged={async () => {
@@ -923,6 +1092,9 @@ function FileWorkspaceInstance({
                   ))
                 )}
                 <span className="grow" />
+                {view === "file" && !external && !image && gitState.status?.changes.some(change => change.path === document.path && isConflict(change)) && (
+                  <ConflictStageAction key={document.path} scope={scope} path={document.path} revision={document.fingerprint} disabled={busy || dirty || document.readonly} zh={zh} onStaged={() => void refreshGit()} />
+                )}
                 {embedded && /\.(md|mdx|html?)$/i.test(document.path) && (
                   <button
                     className="btn btn-sm"
@@ -1027,14 +1199,25 @@ function FileWorkspaceInstance({
                   )}
                   {!previewNavigation && <span className="path">{document.path}</span>}
                   <span className="dim">
+                    {compare
+                      ? `${compare.committedOnly
+                          ? zh ? "仅已提交的更改" : "Committed changes only"
+                          : zh ? "工作区" : "Working tree"} · ${zh ? `对比 ${compare.base}` : `vs ${compare.base}`} · ${compare.committedOnly || document.readonly
+                          ? copy.readOnly
+                          : zh
+                            ? "左侧基线只读，右侧可编辑"
+                            : "Baseline is read-only; current file is editable"}`
+                      : <>
                     {staged ? copy.staged : copy.unstaged} ·{" "}
                     {staged || document.readonly
                       ? copy.readOnly
                       : zh
                         ? "左侧基线只读，右侧可编辑"
                         : "Baseline is read-only; current file is editable"}
+                  </>}
                   </span>
                   <span className="grow" />
+                  <DiffFileNavigation paths={navigationPaths} path={document.path} zh={zh} disabled={busy || navigationDisabled || fileNavigation} onNavigate={onNavigateDiff ? path => onNavigateDiff(path, () => open(path, "diff")) : path => choose(path, "diff")}/>
                   {sessionDocuments && !image && (
                     <button
                       type="button"
@@ -1053,20 +1236,21 @@ function FileWorkspaceInstance({
                       <button type="button" className="icon-btn icon-btn-sm" aria-label={zh ? "上一个更改块" : "Previous hunk"} onClick={() => moveHunk(-1)}><WbIcon name="chev-up" /></button>
                       <span className="wb-hunk-count">{hunk + 1}/{hunkCount}</span>
                       <button type="button" className="icon-btn icon-btn-sm" aria-label={zh ? "下一个更改块" : "Next hunk"} onClick={() => moveHunk(1)}><Icon name="chevron" /></button>
-                      <button
+                      {!compare && <button
                         type="button"
                         className="btn btn-sm"
-                        disabled={busy || dirty}
-                        title={dirty ? (zh ? "请先保存文件" : "Save the file first") : undefined}
+                        disabled={busy || dirty || (!staged && !!stageReason)}
+                        title={!staged && stageReason ? stageReason : dirty ? (zh ? "请先保存文件" : "Save the file first") : undefined}
                         onClick={() => void applyHunk()}
                       >
                         {staged ? (zh ? "取消暂存此块" : "Unstage hunk") : (zh ? "暂存此块" : "Stage hunk")}
-                      </button>
+                      </button>}
                     </span>
                   )}
-                  <button
+                  {!compare && <button
                     className="btn btn-sm"
-                    disabled={busy || dirty}
+                    disabled={busy || dirty || (!staged && !!stageReason)}
+                    title={!staged ? stageReason : undefined}
                     onClick={() => void changeIndex(staged)}
                   >
                     {staged
@@ -1076,8 +1260,18 @@ function FileWorkspaceInstance({
                       : zh
                         ? "暂存文件"
                         : "Stage file"}
-                  </button>
-                  {!staged && diff && !diff.binary && (
+                  </button>}
+                  {compare && !compare.committedOnly && (
+                    <button
+                      type="button"
+                      className="btn btn-sm"
+                      disabled={busy || !compareEditable || !dirty}
+                      onClick={() => void saveFile()}
+                    >
+                      {zh ? "保存变更" : "Save changes"}
+                    </button>
+                  )}
+                  {!compare && !staged && diff && !diff.binary && (
                     <>
                       <button
                         className="btn btn-sm"
@@ -1119,7 +1313,12 @@ function FileWorkspaceInstance({
                   {commentDraft && !dirty && <CommentForm scope={commentScope} path={document.path} version={diffCommentVersion} selection={commentDraft} zh={zh} onCancel={() => setCommentDraft(undefined)} onAdded={() => setCommentDraft(undefined)} />}
                   <PendingComments scope={commentScope} host={commentsHost} comments={fileComments} zh={zh} />
                 </>}
-                {diff?.binary ? (
+                {compareStale ? (
+                  <p className="tt-editor-state" role="status" data-testid="compare-stale">
+                    <span>{compareStaleText(zh)}</span>
+                    <button type="button" className="btn btn-sm" disabled={busy} onClick={() => void reloadCompareBase()}>{compareReloadText(zh)}</button>
+                  </p>
+                ) : diff?.binary ? (
                   <p className="tt-editor-state">
                     {zh
                       ? "二进制文件无法显示文本对比。"
@@ -1130,9 +1329,9 @@ function FileWorkspaceInstance({
                     ref={mergeEditor}
                     path={document.path}
                     oldText={diff.oldText}
-                    newText={staged ? diff.newText : text}
-                    readOnly={staged || document.readonly}
-                    onChange={setText}
+                    newText={staged || compare?.committedOnly ? diff.newText : text}
+                    readOnly={staged || !compareEditable || document.readonly || fileNavigation || Boolean(navigationDisabled)}
+                    onChange={value => { currentText.current = value; setText(value); }}
                     onSave={() => void saveFile()}
                     onChunks={setHunkCount}
                     onSelection={commentScope ? setCommentSelection : undefined}
@@ -1214,16 +1413,18 @@ function FileWorkspaceInstance({
                   )}
                 </div>
                 }
+                {resolvedNotice === document.path && <p className="wb-summary" role="status">{zh ? "此文件中的所有冲突已解决。请暂存以标记为已解决。" : "All conflicts resolved in this file. Stage it to mark it resolved."}</p>}
                 <section ref={sourceEditorHost} className="tt-editor-shell" data-testid="file-editor-surface">
                   <CodeEditor
                     path={document.path}
                     value={text}
-                    onChange={setText}
+                    onChange={value => { currentText.current = value; setText(value); }}
                     onSave={() => void saveFile()}
-                    readOnly={external || document.readonly}
+                    readOnly={external || document.readonly || fileNavigation || Boolean(navigationDisabled)}
                     reveal={editorReveal}
                     resetKey={editorResetKey}
-                    gitBaseText={gitBaseText}
+                    gitBaseText={external?null:gitBaseText}
+                    gitHunkActions={external?undefined:{conflicted:conflictedFile,disabled:dirty?(zh?'请先保存文件以暂存此更改':'Save the file to stage this change'):conflictedFile?(zh?'无法暂存冲突文件的单个更改':'Cannot stage a change in a conflicted file'):busy?(zh?'正在处理…':'Working…'):undefined,stage:(base,buffer,chunk)=>void stageGutterHunk(base,buffer,chunk),openDiff:line=>{setStaged(false);setDiffReveal({path:document.path,line});setView('diff');}}}
                     blame={blameOn && !dirty ? blame : undefined}
                     onBlameCommit={onOpenHistory ? (commit) => onOpenHistory({ path: document.path, commit }) : undefined}
                     onSendToAgent={onSendToAgent ? (lines) => onSendToAgent({ path: document.path, ...lines, ...(external ? { selection: selectedExternalText() } : {}) }) : undefined}
@@ -1279,6 +1480,7 @@ function FileWorkspaceInstance({
           </div>
         )}
       </div>
+      {stageGuard.dialog}
       {(pending || closePrompt) && (
         <SurfaceDialog
           title={copy.question}

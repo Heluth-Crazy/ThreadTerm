@@ -4100,6 +4100,9 @@
             },
             "staged": {
               "type": "boolean"
+            },
+            "compare": {
+              "$ref": "#/definitions/GitCompareRef"
             }
           },
           "required": [
@@ -4248,6 +4251,33 @@
           "additionalProperties": false
         }
       ]
+    },
+    "GitCompareRef": {
+      "type": "object",
+      "properties": {
+        "base": {
+          "type": "string"
+        },
+        "oid": {
+          "type": "string"
+        },
+        "mergeBase": {
+          "type": "string"
+        },
+        "originalPath": {
+          "type": "string"
+        },
+        "committedOnly": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "base",
+        "oid",
+        "mergeBase"
+      ],
+      "additionalProperties": false,
+      "description": "What a compare diff tab compares against. `base` is the short ref the user picked (or the OID), `mergeBase` the commit the file list came from, so a moved base is detected instead of silently recomputed."
     },
     "InboxItem": {
       "type": "object",
@@ -6258,6 +6288,9 @@
             "$ref": "#/definitions/GitChange"
           }
         },
+        "operation": {
+          "$ref": "#/definitions/GitOperation"
+        },
         "selectedCommit": {
           "$ref": "#/definitions/GitSelectedCommitSnapshot"
         }
@@ -6295,6 +6328,30 @@
         "indexStatus",
         "worktreeStatus",
         "untracked"
+      ],
+      "additionalProperties": false
+    },
+    "GitOperation": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "type": "string",
+          "enum": [
+            "merge",
+            "rebase",
+            "cherry-pick",
+            "revert"
+          ]
+        },
+        "head": {
+          "type": "string"
+        },
+        "message": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind"
       ],
       "additionalProperties": false
     },
@@ -6382,6 +6439,37 @@
           "additionalProperties": false
         }
       ]
+    },
+    "RequestResult<\"git.fingerprints\">": {
+      "$ref": "#/definitions/GitFingerprints"
+    },
+    "GitFingerprints": {
+      "type": "object",
+      "properties": {
+        "fingerprints": {
+          "type": "object",
+          "additionalProperties": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "indexFingerprints": {
+          "type": "object",
+          "additionalProperties": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "required": [
+        "fingerprints",
+        "indexFingerprints"
+      ],
+      "additionalProperties": false
     },
     "RequestResult<\"git.stage\">": {
       "type": "object",
@@ -6517,6 +6605,109 @@
       ],
       "additionalProperties": false
     },
+    "RequestResult<\"git.push.preview\">": {
+      "$ref": "#/definitions/GitPushPreview"
+    },
+    "GitPushPreview": {
+      "type": "object",
+      "properties": {
+        "branch": {
+          "type": "string"
+        },
+        "localBranch": {
+          "type": "string"
+        },
+        "detached": {
+          "type": "boolean"
+        },
+        "remote": {
+          "type": "string"
+        },
+        "remoteBranch": {
+          "type": "string"
+        },
+        "upstream": {
+          "type": "string"
+        },
+        "setUpstream": {
+          "type": "boolean"
+        },
+        "ahead": {
+          "$ref": "#/definitions/GitPushRange"
+        },
+        "behind": {
+          "$ref": "#/definitions/GitPushRange"
+        },
+        "remoteOid": {
+          "type": "string"
+        },
+        "diverged": {
+          "type": "boolean"
+        },
+        "lastFetchedAt": {
+          "type": "string"
+        },
+        "remoteDefaultBranch": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "branch",
+        "localBranch",
+        "detached",
+        "remote",
+        "remoteBranch",
+        "setUpstream",
+        "ahead",
+        "behind",
+        "diverged"
+      ],
+      "additionalProperties": false,
+      "description": "Local remote-tracking information only; no network request is made."
+    },
+    "GitPushRange": {
+      "type": "object",
+      "properties": {
+        "count": {
+          "type": "number"
+        },
+        "commits": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/GitPushCommit"
+          }
+        }
+      },
+      "required": [
+        "count",
+        "commits"
+      ],
+      "additionalProperties": false
+    },
+    "GitPushCommit": {
+      "type": "object",
+      "properties": {
+        "hash": {
+          "type": "string"
+        },
+        "subject": {
+          "type": "string"
+        },
+        "author": {
+          "type": "string"
+        },
+        "committedAt": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "hash",
+        "subject",
+        "author",
+        "committedAt"
+      ],
+      "additionalProperties": false
+    },
     "RequestResult<\"git.merge\">": {
       "type": "object",
       "properties": {
@@ -6525,6 +6716,10 @@
         },
         "conflicted": {
           "type": "boolean"
+        },
+        "warning": {
+          "type": "string",
+          "const": "merge_completed_after_error"
         }
       },
       "required": [
@@ -6544,6 +6739,165 @@
         "output"
       ],
       "additionalProperties": false
+    },
+    "RequestResult<\"git.history.plan\">": {
+      "$ref": "#/definitions/GitHistoryPlan"
+    },
+    "GitHistoryPlan": {
+      "type": "object",
+      "properties": {
+        "hash": {
+          "type": "string"
+        },
+        "head": {
+          "type": "string"
+        },
+        "branch": {
+          "type": "string"
+        },
+        "detached": {
+          "type": "boolean"
+        },
+        "isAncestor": {
+          "type": "boolean"
+        },
+        "parents": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "hash": {
+                "type": "string"
+              },
+              "subject": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "hash",
+              "subject"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "reset": {
+          "type": "object",
+          "properties": {
+            "count": {
+              "type": "number"
+            },
+            "commits": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "hash": {
+                    "type": "string"
+                  },
+                  "subject": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "hash",
+                  "subject"
+                ],
+                "additionalProperties": false
+              }
+            },
+            "pushed": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "count",
+            "commits",
+            "pushed"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "required": [
+        "hash",
+        "head",
+        "branch",
+        "detached",
+        "isAncestor",
+        "parents",
+        "reset"
+      ],
+      "additionalProperties": false,
+      "description": "A read-only snapshot used to enable commit actions and fence reset confirmation."
+    },
+    "RequestResult<\"git.cherryPick\">": {
+      "$ref": "#/definitions/GitHistoryMutationResult"
+    },
+    "GitHistoryMutationResult": {
+      "type": "object",
+      "properties": {
+        "output": {
+          "type": "string"
+        },
+        "conflicted": {
+          "type": "boolean"
+        },
+        "head": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "output",
+        "conflicted"
+      ],
+      "additionalProperties": false
+    },
+    "RequestResult<\"git.revert\">": {
+      "$ref": "#/definitions/GitHistoryMutationResult"
+    },
+    "RequestResult<\"git.reset\">": {
+      "type": "object",
+      "properties": {
+        "output": {
+          "type": "string"
+        },
+        "previousHead": {
+          "type": "string"
+        },
+        "head": {
+          "type": "string"
+        },
+        "symbolicHead": {
+          "type": "string"
+        },
+        "undoId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "output",
+        "previousHead",
+        "head",
+        "symbolicHead"
+      ],
+      "additionalProperties": false
+    },
+    "RequestResult<\"git.operation.abort\">": {
+      "type": "object",
+      "properties": {
+        "output": {
+          "type": "string"
+        },
+        "head": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "output"
+      ],
+      "additionalProperties": false
+    },
+    "RequestResult<\"git.operation.continue\">": {
+      "$ref": "#/definitions/GitHistoryMutationResult"
     },
     "RequestResult<\"git.diff\">": {
       "$ref": "#/definitions/GitDiff"
@@ -6620,6 +6974,9 @@
           "items": {
             "type": "string"
           }
+        },
+        "undoId": {
+          "type": "string"
         }
       },
       "required": [
@@ -6633,6 +6990,12 @@
       "properties": {
         "branch": {
           "type": "string"
+        },
+        "stash": {
+          "$ref": "#/definitions/GitStashCheckout"
+        },
+        "warning": {
+          "type": "string"
         }
       },
       "required": [
@@ -6640,10 +7003,110 @@
       ],
       "additionalProperties": false
     },
+    "GitStashCheckout": {
+      "type": "object",
+      "properties": {
+        "oid": {
+          "type": "string"
+        },
+        "message": {
+          "type": "string"
+        },
+        "applied": {
+          "type": "boolean"
+        },
+        "conflicted": {
+          "type": "boolean"
+        },
+        "dropped": {
+          "type": "boolean"
+        },
+        "restored": {
+          "type": "boolean"
+        },
+        "interference": {
+          "$ref": "#/definitions/GitStashDropInterference"
+        }
+      },
+      "required": [
+        "oid"
+      ],
+      "additionalProperties": false
+    },
+    "GitStashDropInterference": {
+      "type": "object",
+      "properties": {
+        "oid": {
+          "type": "string"
+        },
+        "ourEntryDropped": {
+          "type": "boolean"
+        },
+        "restored": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "oid": {
+                "type": "string"
+              },
+              "message": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "oid",
+              "message"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "restoreFailed": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "oid": {
+                "type": "string"
+              },
+              "message": {
+                "type": "string"
+              },
+              "error": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "oid",
+              "message",
+              "error"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "orderChanged": {
+          "type": "boolean"
+        },
+        "unknownEntryLost": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "oid",
+        "ourEntryDropped",
+        "restored",
+        "restoreFailed",
+        "orderChanged"
+      ],
+      "additionalProperties": false
+    },
     "RequestResult<\"git.branch.delete\">": {
       "type": "object",
       "properties": {
         "branch": {
+          "type": "string"
+        },
+        "undoId": {
           "type": "string"
         }
       },
@@ -6724,6 +7187,12 @@
             "committedAt"
           ],
           "additionalProperties": false
+        },
+        "worktreePath": {
+          "type": "string"
+        },
+        "worktreeMissing": {
+          "type": "boolean"
         }
       },
       "required": [
@@ -6732,6 +7201,258 @@
         "current"
       ],
       "additionalProperties": false
+    },
+    "RequestResult<\"git.stash.list\">": {
+      "type": "object",
+      "properties": {
+        "entries": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/GitStashEntry"
+          }
+        }
+      },
+      "required": [
+        "entries"
+      ],
+      "additionalProperties": false
+    },
+    "GitStashEntry": {
+      "type": "object",
+      "properties": {
+        "oid": {
+          "type": "string"
+        },
+        "index": {
+          "type": "number"
+        },
+        "message": {
+          "type": "string"
+        },
+        "branch": {
+          "type": "string"
+        },
+        "createdAt": {
+          "type": "number"
+        },
+        "untracked": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "oid",
+        "index",
+        "message",
+        "createdAt",
+        "untracked"
+      ],
+      "additionalProperties": false
+    },
+    "RequestResult<\"git.stash.show\">": {
+      "type": "object",
+      "properties": {
+        "files": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/GitStashFile"
+          }
+        }
+      },
+      "required": [
+        "files"
+      ],
+      "additionalProperties": false
+    },
+    "GitStashFile": {
+      "type": "object",
+      "properties": {
+        "path": {
+          "type": "string"
+        },
+        "originalPath": {
+          "type": "string"
+        },
+        "status": {
+          "type": "string"
+        },
+        "untracked": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "path",
+        "status"
+      ],
+      "additionalProperties": false
+    },
+    "RequestResult<\"git.stash.push\">": {
+      "type": "object",
+      "properties": {
+        "oid": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "oid"
+      ],
+      "additionalProperties": false
+    },
+    "RequestResult<\"git.stash.apply\">": {
+      "$ref": "#/definitions/GitStashApply"
+    },
+    "GitStashApply": {
+      "type": "object",
+      "properties": {
+        "oid": {
+          "type": "string"
+        },
+        "applied": {
+          "type": "boolean"
+        },
+        "conflicted": {
+          "type": "boolean"
+        },
+        "dropped": {
+          "type": "boolean"
+        },
+        "warning": {
+          "type": "string"
+        },
+        "interference": {
+          "$ref": "#/definitions/GitStashDropInterference"
+        },
+        "undoId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "oid",
+        "applied",
+        "dropped"
+      ],
+      "additionalProperties": false
+    },
+    "RequestResult<\"git.stash.drop\">": {
+      "type": "object",
+      "properties": {
+        "oid": {
+          "type": "string"
+        },
+        "dropped": {
+          "type": "boolean",
+          "const": true
+        },
+        "undoId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "oid",
+        "dropped"
+      ],
+      "additionalProperties": false
+    },
+    "RequestResult<\"git.undo\">": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "undoneAt": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "undoneAt"
+      ],
+      "additionalProperties": false
+    },
+    "RequestResult<\"git.undo.list\">": {
+      "type": "object",
+      "properties": {
+        "entries": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/GitUndoEntry"
+          }
+        }
+      },
+      "required": [
+        "entries"
+      ],
+      "additionalProperties": false
+    },
+    "GitUndoEntry": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "kind": {
+          "type": "string",
+          "enum": [
+            "discard",
+            "branch",
+            "stash",
+            "reset"
+          ]
+        },
+        "label": {
+          "type": "string"
+        },
+        "createdAt": {
+          "type": "string"
+        },
+        "available": {
+          "type": "boolean"
+        },
+        "paths": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "pathCount": {
+          "type": "number"
+        },
+        "undoneAt": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "recycledCount": {
+          "type": "number"
+        },
+        "partial": {
+          "type": "boolean"
+        },
+        "applied": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "remaining": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "id",
+        "kind",
+        "label",
+        "createdAt",
+        "available",
+        "paths",
+        "pathCount",
+        "undoneAt"
+      ],
+      "additionalProperties": false,
+      "description": "Identifier-only recovery journal metadata. Paths are repository-relative and capped by the runtime; `paths`/`pathCount` cover only undoable paths, while `recycledCount` counts paths recoverable only through the Recycle Bin. A partial entry records an Undo that restored some paths and then failed."
     },
     "RequestResult<\"git.log\">": {
       "$ref": "#/definitions/GitLog"
@@ -6940,6 +7661,130 @@
       ],
       "additionalProperties": false,
       "description": "Uncommitted lines use commit ''. Ranges are 1-based and cover the working file."
+    },
+    "RequestResult<\"git.compare.files\">": {
+      "$ref": "#/definitions/GitCompareFiles"
+    },
+    "GitCompareFiles": {
+      "type": "object",
+      "properties": {
+        "base": {
+          "type": "object",
+          "properties": {
+            "ref": {
+              "type": "string"
+            },
+            "oid": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "ref",
+            "oid"
+          ],
+          "additionalProperties": false
+        },
+        "mergeBase": {
+          "type": "string"
+        },
+        "head": {
+          "type": "string"
+        },
+        "files": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/GitCompareFile"
+          }
+        },
+        "truncated": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "base",
+        "mergeBase",
+        "head",
+        "files",
+        "truncated"
+      ],
+      "additionalProperties": false,
+      "description": "The branch changes relative to `base`: `mergeBase` is the commit the list was computed from, `head` the current commit. `files` are capped at 1000, with `truncated` set when more were found."
+    },
+    "GitCompareFile": {
+      "type": "object",
+      "properties": {
+        "path": {
+          "type": "string"
+        },
+        "originalPath": {
+          "type": "string"
+        },
+        "status": {
+          "$ref": "#/definitions/GitCompareStatus"
+        },
+        "additions": {
+          "type": "number"
+        },
+        "deletions": {
+          "type": "number"
+        },
+        "binary": {
+          "type": "boolean"
+        },
+        "countsUnknown": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "path",
+        "status",
+        "additions",
+        "deletions",
+        "binary"
+      ],
+      "additionalProperties": false,
+      "description": "One file of a branch-vs-base comparison. `originalPath` is the pre-rename path in the base. `countsUnknown` marks an untracked file whose line counts were skipped by the read budget."
+    },
+    "GitCompareStatus": {
+      "type": "string",
+      "enum": [
+        "added",
+        "modified",
+        "deleted",
+        "renamed",
+        "typechange"
+      ]
+    },
+    "RequestResult<\"git.compare.diff\">": {
+      "$ref": "#/definitions/GitCompareDiff"
+    },
+    "GitCompareDiff": {
+      "type": "object",
+      "properties": {
+        "path": {
+          "type": "string"
+        },
+        "oldText": {
+          "type": "string"
+        },
+        "newText": {
+          "type": "string"
+        },
+        "binary": {
+          "type": "boolean"
+        },
+        "deleted": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "path",
+        "oldText",
+        "newText",
+        "binary"
+      ],
+      "additionalProperties": false,
+      "description": "`mergeBase` → working file (or `HEAD` with committedOnly); `deleted` when the new side does not exist."
     },
     "RequestResult<\"filesystem.create\">": {
       "$ref": "#/definitions/FileEntry"
@@ -11878,6 +12723,32 @@
         },
         "method": {
           "type": "string",
+          "const": "git.fingerprints"
+        },
+        "result": {
+          "$ref": "#/definitions/RequestResult%3C%22git.fingerprints%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "result"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
           "const": "git.stage"
         },
         "result": {
@@ -12060,6 +12931,32 @@
         },
         "method": {
           "type": "string",
+          "const": "git.push.preview"
+        },
+        "result": {
+          "$ref": "#/definitions/RequestResult%3C%22git.push.preview%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "result"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
           "const": "git.merge"
         },
         "result": {
@@ -12090,6 +12987,162 @@
         },
         "result": {
           "$ref": "#/definitions/RequestResult%3C%22git.merge.abort%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "result"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "git.history.plan"
+        },
+        "result": {
+          "$ref": "#/definitions/RequestResult%3C%22git.history.plan%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "result"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "git.cherryPick"
+        },
+        "result": {
+          "$ref": "#/definitions/RequestResult%3C%22git.cherryPick%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "result"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "git.revert"
+        },
+        "result": {
+          "$ref": "#/definitions/RequestResult%3C%22git.revert%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "result"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "git.reset"
+        },
+        "result": {
+          "$ref": "#/definitions/RequestResult%3C%22git.reset%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "result"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "git.operation.abort"
+        },
+        "result": {
+          "$ref": "#/definitions/RequestResult%3C%22git.operation.abort%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "result"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "git.operation.continue"
+        },
+        "result": {
+          "$ref": "#/definitions/RequestResult%3C%22git.operation.continue%22%3E"
         }
       },
       "required": [
@@ -12268,6 +13321,188 @@
         },
         "method": {
           "type": "string",
+          "const": "git.stash.list"
+        },
+        "result": {
+          "$ref": "#/definitions/RequestResult%3C%22git.stash.list%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "result"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "git.stash.show"
+        },
+        "result": {
+          "$ref": "#/definitions/RequestResult%3C%22git.stash.show%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "result"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "git.stash.push"
+        },
+        "result": {
+          "$ref": "#/definitions/RequestResult%3C%22git.stash.push%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "result"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "git.stash.apply"
+        },
+        "result": {
+          "$ref": "#/definitions/RequestResult%3C%22git.stash.apply%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "result"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "git.stash.drop"
+        },
+        "result": {
+          "$ref": "#/definitions/RequestResult%3C%22git.stash.drop%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "result"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "git.undo"
+        },
+        "result": {
+          "$ref": "#/definitions/RequestResult%3C%22git.undo%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "result"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "git.undo.list"
+        },
+        "result": {
+          "$ref": "#/definitions/RequestResult%3C%22git.undo.list%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "result"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
           "const": "git.log"
         },
         "result": {
@@ -12350,6 +13585,58 @@
         },
         "result": {
           "$ref": "#/definitions/RequestResult%3C%22git.blame%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "result"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "git.compare.files"
+        },
+        "result": {
+          "$ref": "#/definitions/RequestResult%3C%22git.compare.files%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "result"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "git.compare.diff"
+        },
+        "result": {
+          "$ref": "#/definitions/RequestResult%3C%22git.compare.diff%22%3E"
         }
       },
       "required": [

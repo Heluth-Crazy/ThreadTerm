@@ -8,12 +8,14 @@ use crate::{db::Database, workspace_services::root_for};
 use anyhow::{anyhow, Context, Result};
 use chrono::{TimeZone, Utc};
 use serde_json::{json, Map, Value};
+use sha2::{Digest, Sha256};
 use std::{
     collections::HashMap,
     ffi::OsStr,
     io::{Read, Write},
     path::{Component, Path, PathBuf},
-    process::{Command, Stdio},
+    process::{Child, Command, ExitStatus, Stdio},
+    sync::{mpsc, Arc, Mutex},
     time::{Duration, Instant},
 };
 
@@ -21,7 +23,25 @@ pub(crate) const LOCAL_TIMEOUT: Duration = Duration::from_secs(30);
 pub(crate) const NETWORK_TIMEOUT: Duration = Duration::from_secs(120);
 pub(crate) const MAX_TEXT_BYTES: usize = 1024 * 1024;
 const MAX_LOG_PAGE: usize = 200;
+const MAX_GIT_STDERR_BYTES: usize = 64 * 1024;
+const POST_EXIT_STDERR_GRACE: Duration = Duration::from_secs(2);
 const ZERO_COMMIT: &str = "0000000000000000000000000000000000000000";
+
+/// Failed porcelain pushes need their stdout for structured rejection handling,
+/// but their public error text remains Git's historical stderr text.
+#[derive(Debug)]
+pub(crate) struct PushPorcelainFailure {
+    pub stdout: String,
+    pub stderr: String,
+}
+
+impl std::fmt::Display for PushPorcelainFailure {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(formatter, "git_failed: {}", self.stderr)
+    }
+}
+
+impl std::error::Error for PushPorcelainFailure {}
 
 fn send_trace_git_step(args: &[&str]) -> &'static str {
     let mut command = 0;
@@ -38,6 +58,14 @@ fn send_trace_git_step(args: &[&str]) -> &'static str {
         Some("ls-files") => "ls-files",
         _ => "other",
     }
+}
+
+fn is_push_command(args: &[&str]) -> bool {
+    let mut command = 0;
+    while args.get(command) == Some(&"-c") && args.get(command + 1).is_some() {
+        command += 2;
+    }
+    args.get(command) == Some(&"push") && args.contains(&"--porcelain")
 }
 
 /// Runs Git with a hard timeout, no terminal prompt and no optional index locks.
@@ -74,16 +102,23 @@ pub(crate) fn run_git(
     }
     let trace_step = send_trace_git_step(args);
     let trace_timer = crate::send_trace::Timer::start();
-    crate::send_trace::emit(crate::send_trace::Event::new("review.git.spawn")
-        .method("chat.send").step(trace_step));
+    crate::send_trace::emit(
+        crate::send_trace::Event::new("review.git.spawn")
+            .method("chat.send")
+            .step(trace_step),
+    );
     #[cfg(test)]
     git_barrier::pass(root);
     let mut child = match command.spawn().context("launching git") {
         Ok(child) => child,
         Err(error) => {
-            crate::send_trace::emit(crate::send_trace::Event::new("review.git.exit")
-                .method("chat.send").step(trace_step).outcome("launch_error")
-                .duration_us(trace_timer.elapsed_us()));
+            crate::send_trace::emit(
+                crate::send_trace::Event::new("review.git.exit")
+                    .method("chat.send")
+                    .step(trace_step)
+                    .outcome("launch_error")
+                    .duration_us(trace_timer.elapsed_us()),
+            );
             return Err(error);
         }
     };
@@ -94,57 +129,118 @@ pub(crate) fn run_git(
             let _ = pipe.write_all(&data);
         });
     }
-    let mut stdout = child.stdout.take().ok_or_else(|| anyhow!("git_failed"))?;
-    let mut stderr = child.stderr.take().ok_or_else(|| anyhow!("git_failed"))?;
-    let out = std::thread::spawn(move || {
-        let mut bytes = Vec::new();
-        let _ = stdout.read_to_end(&mut bytes);
-        bytes
-    });
-    let err = std::thread::spawn(move || {
-        let mut bytes = Vec::new();
-        let _ = stderr.read_to_end(&mut bytes);
-        bytes
-    });
+    let stdout = child.stdout.take().ok_or_else(|| anyhow!("git_failed"))?;
+    let stderr = child.stderr.take().ok_or_else(|| anyhow!("git_failed"))?;
     let deadline = Instant::now() + timeout;
-    let status = loop {
-        match child.try_wait() {
-            Ok(Some(status)) => break status,
-            Ok(None) => {}
-            Err(error) => {
-                crate::send_trace::emit(crate::send_trace::Event::new("review.git.exit")
-                    .method("chat.send").step(trace_step).outcome("error")
-                    .duration_us(trace_timer.elapsed_us()));
-                return Err(error.into());
-            }
+    let (status, stdout, stderr) = match git_readers(
+        &mut child,
+        move || read_git_output(stdout),
+        stderr,
+        usize::MAX,
+        deadline,
+    ) {
+        Ok(result) => result,
+        Err(error) => {
+            crate::send_trace::emit(
+                crate::send_trace::Event::new("review.git.exit")
+                    .method("chat.send")
+                    .step(trace_step)
+                    .outcome(if error.to_string() == "git_timeout" {
+                        "timeout"
+                    } else {
+                        "error"
+                    })
+                    .duration_us(trace_timer.elapsed_us()),
+            );
+            return Err(error);
         }
-        if Instant::now() >= deadline {
-            let _ = child.kill();
-            let _ = child.wait();
-            // Reader threads are detached: a grandchild (ssh, credential helper)
-            // may keep the pipes open after Git itself is gone.
-            crate::send_trace::emit(crate::send_trace::Event::new("review.git.exit")
-                .method("chat.send").step(trace_step).outcome("timeout")
-                .duration_us(trace_timer.elapsed_us()));
-            return Err(anyhow!("git_timeout"));
-        }
-        std::thread::sleep(Duration::from_millis(5));
     };
-    let stdout = out.join().unwrap_or_default();
-    let stderr = err.join().unwrap_or_default();
+    // Match the former join().unwrap_or_default() if a reader panics.
+    let stdout = stdout.unwrap_or_default();
+    let stderr = stderr.unwrap_or_default();
     if !status.success() {
-        crate::send_trace::emit(crate::send_trace::Event::new("review.git.exit")
-            .method("chat.send").step(trace_step).outcome("error")
-            .duration_us(trace_timer.elapsed_us()));
+        crate::send_trace::emit(
+            crate::send_trace::Event::new("review.git.exit")
+                .method("chat.send")
+                .step(trace_step)
+                .outcome("error")
+                .duration_us(trace_timer.elapsed_us()),
+        );
+        // Push porcelain writes its rejection reason to stdout. Preserve it for
+        // the push classifier while retaining the historic stderr-only public
+        // error for every Git command and non-porcelain push.
+        if is_push_command(args) {
+            return Err(PushPorcelainFailure {
+                stdout: String::from_utf8_lossy(&stdout).into_owned(),
+                stderr: String::from_utf8_lossy(&stderr).trim().to_owned(),
+            }.into());
+        }
+        return Err(anyhow!("git_failed: {}", String::from_utf8_lossy(&stderr).trim()));
+    }
+    crate::send_trace::emit(
+        crate::send_trace::Event::new("review.git.exit")
+            .method("chat.send")
+            .step(trace_step)
+            .outcome("ok")
+            .duration_us(trace_timer.elapsed_us()),
+    );
+    Ok(stdout)
+}
+
+/// Streams one command's stdout into `file` instead of buffering it, so a
+/// recovery copy is bounded by disk rather than by memory. The file is flushed
+/// and synced before this returns; failures keep the `run_git` error shape.
+pub(crate) fn run_git_to_file(
+    root: &Path,
+    args: &[&str],
+    file: std::fs::File,
+    timeout: Duration,
+) -> Result<()> {
+    let mut command = Command::new("git");
+    command
+        .arg("-C")
+        .arg(root)
+        .args(["-c", "core.quotepath=off"])
+        .args(args)
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .env("GIT_OPTIONAL_LOCKS", "0")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        command.creation_flags(0x0800_0000);
+    }
+    #[cfg(test)]
+    git_barrier::pass(root);
+    let mut child = command.spawn().context("launching git")?;
+    let stdout = child.stdout.take().ok_or_else(|| anyhow!("git_failed"))?;
+    let stderr = child.stderr.take().ok_or_else(|| anyhow!("git_failed"))?;
+    let deadline = Instant::now() + timeout;
+    let (status, written, stderr) = git_readers(
+        &mut child,
+        move || {
+            let mut stdout = stdout;
+            let mut file = file;
+            std::io::copy(&mut stdout, &mut file).and_then(|written| {
+                file.flush()?;
+                file.sync_all()?;
+                Ok(written)
+            })
+        },
+        stderr,
+        MAX_GIT_STDERR_BYTES,
+        deadline,
+    )?;
+    written.ok_or_else(|| anyhow!("git_failed"))??;
+    if !status.success() {
         return Err(anyhow!(
             "git_failed: {}",
-            String::from_utf8_lossy(&stderr).trim()
+            String::from_utf8_lossy(&stderr.unwrap_or_default()).trim()
         ));
     }
-    crate::send_trace::emit(crate::send_trace::Event::new("review.git.exit")
-        .method("chat.send").step(trace_step).outcome("ok")
-        .duration_us(trace_timer.elapsed_us()));
-    Ok(stdout)
+    Ok(())
 }
 
 pub(crate) fn git_text(root: &Path, args: &[&str]) -> Result<String> {
@@ -339,6 +435,251 @@ pub(crate) fn read_blob(root: &Path, revision: &str, path: &str) -> Result<Optio
     run_git(root, &["cat-file", "blob", &spec], &[], None, LOCAL_TIMEOUT).map(Some)
 }
 
+/// Hashes bytes without materializing the complete value in memory.
+pub(crate) fn fingerprint_reader(mut reader: impl Read) -> Result<String> {
+    let mut digest = Sha256::new();
+    let mut buffer = [0; 64 * 1024];
+    loop {
+        let read = reader.read(&mut buffer)?;
+        if read == 0 {
+            return Ok(hex::encode(digest.finalize()));
+        }
+        digest.update(&buffer[..read]);
+    }
+}
+
+/// Owns retained stderr while a reader may outlive its caller. Taking a snapshot
+/// disables further retention; the detached thread keeps draining the pipe.
+struct GitStderrCapture(Arc<Mutex<Option<Vec<u8>>>>);
+
+impl GitStderrCapture {
+    fn new() -> Self {
+        Self(Arc::new(Mutex::new(Some(Vec::new()))))
+    }
+
+    fn take(&self) -> Vec<u8> {
+        self.0
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .take()
+            .unwrap_or_default()
+    }
+}
+
+impl Drop for GitStderrCapture {
+    fn drop(&mut self) {
+        let _ = self.take();
+    }
+}
+
+fn capture_git_stderr(mut reader: impl Read, retained: Arc<Mutex<Option<Vec<u8>>>>, limit: usize) {
+    let mut buffer = [0; 8 * 1024];
+    loop {
+        let read = match reader.read(&mut buffer) {
+            Ok(0) => break,
+            Ok(read) => read,
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(_) => break,
+        };
+        let mut retained = retained
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if let Some(kept) = retained.as_mut() {
+            let remaining = limit.saturating_sub(kept.len());
+            kept.extend_from_slice(&buffer[..read.min(remaining)]);
+        }
+    }
+}
+
+fn stop_blob_child(child: &mut Child) {
+    if !matches!(child.try_wait(), Ok(Some(_))) {
+        let _ = child.kill();
+        let _ = child.wait();
+    }
+}
+
+fn read_git_output(mut reader: impl Read) -> Vec<u8> {
+    let mut bytes = Vec::new();
+    let _ = reader.read_to_end(&mut bytes);
+    bytes
+}
+
+/// Waits for Git and stdout within one deadline. After Git exits, stderr gets
+/// only a short grace before returning its snapshot with the real exit status.
+/// Disconnected readers retain each caller's existing panic policy.
+fn git_readers<O: Send + 'static>(
+    child: &mut Child,
+    stdout: impl FnOnce() -> O + Send + 'static,
+    stderr: impl Read + Send + 'static,
+    stderr_limit: usize,
+    deadline: Instant,
+) -> Result<(ExitStatus, Option<O>, Option<Vec<u8>>)> {
+    let (out_tx, out_rx) = mpsc::sync_channel(1);
+    let (err_tx, err_rx) = mpsc::sync_channel(1);
+    let stderr_capture = GitStderrCapture::new();
+    let retained = Arc::clone(&stderr_capture.0);
+    // Detached readers may outlive Git when a descendant retains a pipe.
+    std::thread::spawn(move || {
+        let _ = out_tx.send(stdout());
+    });
+    std::thread::spawn(move || {
+        capture_git_stderr(stderr, retained, stderr_limit);
+        let _ = err_tx.send(());
+    });
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) => {}
+            Err(error) => {
+                stop_blob_child(child);
+                return Err(error.into());
+            }
+        }
+        if Instant::now() >= deadline {
+            stop_blob_child(child);
+            return Err(anyhow!("git_timeout"));
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    };
+    let stderr_deadline = deadline.min(Instant::now() + POST_EXIT_STDERR_GRACE);
+    let stdout = match out_rx.recv_timeout(deadline.saturating_duration_since(Instant::now())) {
+        Ok(value) => Some(value),
+        Err(mpsc::RecvTimeoutError::Disconnected) => None,
+        Err(mpsc::RecvTimeoutError::Timeout) => {
+            stop_blob_child(child);
+            return Err(anyhow!("git_timeout"));
+        }
+    };
+    let stderr =
+        match err_rx.recv_timeout(stderr_deadline.saturating_duration_since(Instant::now())) {
+            Ok(()) | Err(mpsc::RecvTimeoutError::Timeout) => Some(stderr_capture.take()),
+            Err(mpsc::RecvTimeoutError::Disconnected) => None,
+        };
+    Ok((status, stdout, stderr))
+}
+
+fn blob_fingerprint_readers(
+    child: &mut Child,
+    stdout: impl Read + Send + 'static,
+    stderr: impl Read + Send + 'static,
+    deadline: Instant,
+) -> Result<(ExitStatus, String, Vec<u8>)> {
+    let (status, fingerprint, stderr) = git_readers(
+        child,
+        move || fingerprint_reader(stdout),
+        stderr,
+        MAX_GIT_STDERR_BYTES,
+        deadline,
+    )?;
+    Ok((
+        status,
+        fingerprint.ok_or_else(|| anyhow!("git_failed"))??,
+        stderr.ok_or_else(|| anyhow!("git_failed"))?,
+    ))
+}
+
+/// Returns the SHA-256 fingerprint of an object without applying text-size limits.
+pub(crate) fn blob_fingerprint(root: &Path, oid: &str) -> Result<String> {
+    let mut command = Command::new("git");
+    command
+        .arg("-C")
+        .arg(root)
+        .args(["-c", "core.quotepath=off"])
+        .args(["cat-file", "blob", oid])
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .env("GIT_OPTIONAL_LOCKS", "0")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        command.creation_flags(0x0800_0000);
+    }
+    let trace_timer = crate::send_trace::Timer::start();
+    crate::send_trace::emit(
+        crate::send_trace::Event::new("review.git.spawn")
+            .method("chat.send")
+            .step("cat-file"),
+    );
+    #[cfg(test)]
+    git_barrier::pass(root);
+    let mut child = match command.spawn().context("launching git") {
+        Ok(child) => child,
+        Err(error) => {
+            crate::send_trace::emit(
+                crate::send_trace::Event::new("review.git.exit")
+                    .method("chat.send")
+                    .step("cat-file")
+                    .outcome("launch_error")
+                    .duration_us(trace_timer.elapsed_us()),
+            );
+            return Err(error);
+        }
+    };
+    let stdout = match child.stdout.take() {
+        Some(stdout) => stdout,
+        None => {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(anyhow!("git_failed"));
+        }
+    };
+    let stderr = match child.stderr.take() {
+        Some(stderr) => stderr,
+        None => {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(anyhow!("git_failed"));
+        }
+    };
+    let deadline = Instant::now() + LOCAL_TIMEOUT;
+    // A grandchild can retain these pipes after Git exits; readers share Git's deadline.
+    let (status, fingerprint, stderr) = match blob_fingerprint_readers(
+        &mut child,
+        stdout,
+        stderr,
+        deadline,
+    ) {
+        Ok(result) => result,
+        Err(error) => {
+            crate::send_trace::emit(
+                crate::send_trace::Event::new("review.git.exit")
+                    .method("chat.send")
+                    .step("cat-file")
+                    .outcome(if error.to_string() == "git_timeout" {
+                        "timeout"
+                    } else {
+                        "error"
+                    })
+                    .duration_us(trace_timer.elapsed_us()),
+            );
+            return Err(error);
+        }
+    };
+    if !status.success() {
+        crate::send_trace::emit(
+            crate::send_trace::Event::new("review.git.exit")
+                .method("chat.send")
+                .step("cat-file")
+                .outcome("error")
+                .duration_us(trace_timer.elapsed_us()),
+        );
+        return Err(anyhow!(
+            "git_failed: {}",
+            String::from_utf8_lossy(&stderr).trim()
+        ));
+    }
+    crate::send_trace::emit(
+        crate::send_trace::Event::new("review.git.exit")
+            .method("chat.send")
+            .step("cat-file")
+            .outcome("ok")
+            .duration_us(trace_timer.elapsed_us()),
+    );
+    Ok(fingerprint)
+}
+
 /// Text for a diff side; None marks binary content.
 pub(crate) fn text_of(bytes: &[u8]) -> Option<String> {
     if bytes.contains(&0) {
@@ -361,7 +702,17 @@ fn has_head(root: &Path) -> bool {
 pub fn dispatch(db: &Database, method: &str, params: &Value) -> Result<Option<Value>> {
     if !matches!(
         method,
-        "git.branches" | "git.log" | "git.commit.show" | "git.commit.diff" | "git.blame"
+        "git.history.plan"
+            | "git.branches"
+            | "git.log"
+            | "git.push.preview"
+            | "git.commit.show"
+            | "git.commit.diff"
+            | "git.blame"
+            | "git.stash.list"
+            | "git.stash.show"
+            | "git.compare.files"
+            | "git.compare.diff"
     ) {
         return Ok(None);
     }
@@ -373,7 +724,9 @@ pub fn dispatch(db: &Database, method: &str, params: &Value) -> Result<Option<Va
     let root = db.transaction(|tx| root_for(tx, project_id, worktree))?;
     repo_prefix(&root)?;
     let result = match method {
+        "git.history.plan" => history_plan(&root, string(object, "hash")?)?,
         "git.branches" => branches(&root)?,
+        "git.push.preview" => push_preview(&root)?,
         "git.log" => {
             let path = object.get("path").and_then(Value::as_str);
             if let Some(path) = path {
@@ -401,9 +754,298 @@ pub fn dispatch(db: &Database, method: &str, params: &Value) -> Result<Option<Va
             commit_diff(&root, string(object, "commit")?, path, original)?
         }
         "git.blame" => blame(&root, string(object, "path")?)?,
+        "git.stash.list" => json!({"entries": stash_entries(&root)?}),
+        "git.stash.show" => stash_show(&root, string(object, "oid")?)?,
+        "git.compare.files" => {
+            let base = match object.get("base") {
+                None | Some(Value::Null) => None,
+                Some(Value::String(value)) => Some(value.as_str()),
+                Some(_) => return Err(anyhow!("invalid_request")),
+            };
+            let committed_only = object
+                .get("committedOnly")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
+            compare_summary(&root, base, committed_only)?
+        }
+        "git.compare.diff" => {
+            let base = object
+                .get("base")
+                .and_then(Value::as_object)
+                .ok_or_else(|| anyhow!("invalid_request"))?;
+            let reference = base.get("ref").and_then(Value::as_str).unwrap_or_default();
+            let path = string(object, "path")?;
+            validate_relative(path)?;
+            let original = object.get("originalPath").and_then(Value::as_str);
+            if let Some(original) = original {
+                validate_relative(original)?;
+            }
+            let committed_only = object
+                .get("committedOnly")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
+            compare_diff(
+                &root,
+                reference,
+                string(base, "oid")?,
+                string(object, "mergeBase")?,
+                path,
+                original,
+                committed_only,
+            )?
+        }
         _ => unreachable!(),
     };
     Ok(Some(result))
+}
+
+const PUSH_PREVIEW_FORMAT: &str = "--format=%x1e%H%x1f%s%x1f%an%x1f%cI";
+
+/// Resolves the one local destination that an ordinary push would use without
+/// contacting the remote. Ambiguous push configuration deliberately fails
+/// closed so callers can retain the existing plain-push behavior.
+pub(crate) fn push_preview(root: &Path) -> Result<Value> {
+    let local_branch = git_text(root, &["symbolic-ref", "--quiet", "HEAD"])
+        .map_err(|_| anyhow!("push_preview_unavailable: detached HEAD"))?
+        .trim()
+        .to_owned();
+    let branch = branch_name(&local_branch)
+        .filter(|branch| !branch.is_empty())
+        .ok_or_else(|| anyhow!("push_preview_unavailable: detached HEAD"))?
+        .to_owned();
+
+    let remote = push_remote(root, &branch)?;
+    let configured_destination = reject_ambiguous_push_config(root, &remote, &branch)?;
+    let upstream = upstream(root, &branch)?;
+    let push_default = git_config(root, "push.default");
+    let remote_branch = if let Some(destination) = configured_destination {
+        if upstream.is_none() {
+            return Err(anyhow!("push_preview_unavailable: publish refspec is not compatible with legacy publish"));
+        }
+        destination
+    } else {
+        match push_default.as_deref() {
+            Some("current") => branch.clone(),
+            Some("upstream") => {
+                let Some((upstream_remote, upstream_branch)) = upstream.as_ref() else {
+                    return Err(anyhow!("push_preview_unavailable: push.default upstream has no upstream"));
+                };
+                if upstream_remote != &remote {
+                    return Err(anyhow!("push_preview_unavailable: upstream remote differs from push remote"));
+                }
+                branch_name(upstream_branch).expect("upstream is a branch").to_owned()
+            }
+            None | Some("simple") => match upstream.as_ref() {
+                Some((upstream_remote, upstream_branch)) if upstream_remote == &remote && upstream_branch == &format!("refs/heads/{branch}") => branch.clone(),
+                // A triangular setup pushes the current branch to its push remote.
+                Some((upstream_remote, _)) if upstream_remote != &remote => branch.clone(),
+                Some(_) => return Err(anyhow!("push_preview_unavailable: simple push does not map one branch")),
+                None => branch.clone(),
+            },
+            _ => unreachable!("unsupported push.default rejected above"),
+        }
+    };
+    let set_upstream = upstream.is_none();
+    if set_upstream && remote != legacy_default_remote(root)? {
+        return Err(anyhow!("push_preview_unavailable: configured push remote differs from legacy publish remote"));
+    }
+    let remote_ref = format!("refs/remotes/{remote}/{remote_branch}");
+    let remote_oid = git_text(root, &["rev-parse", "--verify", "--quiet", &remote_ref])
+        .ok()
+        .map(|value| value.trim().to_owned())
+        .filter(|value| full_oid(value));
+    let (ahead, behind) = if remote_oid.is_some() {
+        let ahead_range = format!("{remote_ref}..HEAD");
+        let behind_range = format!("HEAD..{remote_ref}");
+        (
+            push_preview_commits(root, &[&ahead_range])?,
+            push_preview_commits(root, &[&behind_range])?,
+        )
+    } else {
+        let not_remotes = format!("--remotes={remote}");
+        (push_preview_commits(root, &["HEAD", "--not", &not_remotes])?, empty_push_range())
+    };
+    let mut preview = json!({
+        "branch": branch,
+        "localBranch": local_branch,
+        "detached": false,
+        "remote": remote,
+        "remoteBranch": remote_branch,
+        "setUpstream": set_upstream,
+        "ahead": ahead,
+        "behind": behind,
+        "diverged": remote_oid.is_some() && ahead["count"].as_u64().unwrap_or(0) > 0 && behind["count"].as_u64().unwrap_or(0) > 0,
+    });
+    if let Some((upstream_remote, upstream_branch)) = upstream {
+        preview["upstream"] = json!(format!("{upstream_remote}/{}", branch_name(&upstream_branch).expect("upstream is a branch")));
+    }
+    if let Some(oid) = remote_oid {
+        preview["remoteOid"] = json!(oid);
+    }
+    if let Some(branch) = remote_default_branch(root, preview["remote"].as_str().unwrap()) {
+        preview["remoteDefaultBranch"] = json!(branch);
+    }
+    if let Some(last_fetched) = last_fetched_at(root, preview["remote"].as_str().unwrap(), preview["remoteBranch"].as_str().unwrap()) {
+        preview["lastFetchedAt"] = json!(last_fetched);
+    }
+    Ok(preview)
+}
+
+fn legacy_default_remote(root: &Path) -> Result<String> {
+    let remotes = git_text(root, &["remote"])?;
+    let remotes: Vec<_> = remotes.lines().map(str::trim).filter(|value| !value.is_empty()).collect();
+    if remotes.iter().any(|remote| *remote == "origin") {
+        Ok("origin".to_owned())
+    } else if remotes.len() == 1 {
+        Ok(remotes[0].to_owned())
+    } else {
+        Err(anyhow!("push_preview_unavailable: no unambiguous remote"))
+    }
+}
+
+fn push_remote(root: &Path, branch: &str) -> Result<String> {
+    for key in [
+        format!("branch.{branch}.pushRemote"),
+        "remote.pushDefault".to_owned(),
+        format!("branch.{branch}.remote"),
+    ] {
+        if let Some(remote) = git_config(root, &key) {
+            return Ok(remote);
+        }
+    }
+    let remotes = git_text(root, &["remote"])?;
+    let remotes: Vec<_> = remotes.lines().map(str::trim).filter(|value| !value.is_empty()).collect();
+    if remotes.iter().any(|remote| *remote == "origin") {
+        Ok("origin".to_owned())
+    } else if remotes.len() == 1 {
+        Ok(remotes[0].to_owned())
+    } else {
+        Err(anyhow!("push_preview_unavailable: no unambiguous remote"))
+    }
+}
+
+fn git_config(root: &Path, key: &str) -> Option<String> {
+    git_text(root, &["config", "--get", key])
+        .ok()
+        .map(|value| value.trim().to_owned())
+        .filter(|value| !value.is_empty())
+}
+
+fn upstream(root: &Path, branch: &str) -> Result<Option<(String, String)>> {
+    let Some(remote) = git_config(root, &format!("branch.{branch}.remote")) else { return Ok(None); };
+    let merges = git_text(root, &["config", "--get-all", &format!("branch.{branch}.merge")]).unwrap_or_default();
+    let merges: Vec<_> = merges.lines().map(str::trim).collect();
+    let merge = match merges.as_slice() {
+        [] => return Ok(None),
+        [merge] if !merge.is_empty() => (*merge).to_owned(),
+        _ => return Err(anyhow!("push_preview_unavailable: multiple or empty upstream branches")),
+    };
+    if branch_name(&merge).is_none() {
+        return Err(anyhow!("push_preview_unavailable: upstream is not a branch"));
+    }
+    Ok(Some((remote, merge)))
+}
+
+fn branch_name(reference: &str) -> Option<&str> {
+    reference.strip_prefix("refs/heads/")
+}
+
+fn reject_ambiguous_push_config(root: &Path, remote: &str, branch: &str) -> Result<Option<String>> {
+    let push_default = git_config(root, "push.default");
+    if !matches!(push_default.as_deref(), None | Some("simple" | "current" | "upstream")) {
+        return Err(anyhow!("push_preview_unavailable: push.default does not select one branch"));
+    }
+    if git_config_bool(root, &format!("remote.{remote}.mirror")) {
+        return Err(anyhow!("push_preview_unavailable: remote mirror is configured"));
+    }
+    if git_config_bool(root, "push.followTags") {
+        return Err(anyhow!("push_preview_unavailable: push.followTags is configured"));
+    }
+    let fetch_refspecs = git_text(root, &["config", "--get-all", &format!("remote.{remote}.fetch")]).unwrap_or_default();
+    let expected_fetch = format!("+refs/heads/*:refs/remotes/{remote}/*");
+    if fetch_refspecs.lines().map(str::trim).filter(|value| !value.is_empty()).collect::<Vec<_>>() != [expected_fetch.as_str()] {
+        return Err(anyhow!("push_preview_unavailable: remote fetch refspec is not standard"));
+    }
+    let refspecs = git_text(root, &["config", "--get-all", &format!("remote.{remote}.push")]).unwrap_or_default();
+    let refspecs: Vec<_> = refspecs.lines().map(str::trim).filter(|value| !value.is_empty()).collect();
+    let destination = match refspecs.as_slice() {
+        [] => None,
+        [refspec] => exact_push_refspec_destination(refspec, branch)
+            .ok_or_else(|| anyhow!("push_preview_unavailable: remote push refspec does not select one branch"))
+            .map(Some)?,
+        _ => return Err(anyhow!("push_preview_unavailable: multiple push refspecs")),
+    };
+    let urls = git_text(root, &["remote", "get-url", "--push", "--all", remote])
+        .map_err(|_| anyhow!("push_preview_unavailable: remote has no push URL"))?;
+    let mut urls: Vec<_> = urls.lines().map(str::trim).filter(|value| !value.is_empty()).collect();
+    urls.sort_unstable();
+    urls.dedup();
+    if urls.len() != 1 {
+        return Err(anyhow!("push_preview_unavailable: multiple push URLs"));
+    }
+    let fetch_urls = git_text(root, &["remote", "get-url", "--all", remote]).unwrap_or_default();
+    let mut fetch_urls: Vec<_> = fetch_urls.lines().map(str::trim).filter(|value| !value.is_empty()).collect();
+    fetch_urls.sort_unstable();
+    fetch_urls.dedup();
+    if fetch_urls.len() != 1 || fetch_urls[0] != urls[0] {
+        return Err(anyhow!("push_preview_unavailable: push URL differs from fetch URL"));
+    }
+    Ok(destination)
+}
+
+fn exact_push_refspec_destination(refspec: &str, branch: &str) -> Option<String> {
+    let (source, destination) = refspec.split_once(':')?;
+    (source == format!("refs/heads/{branch}") && destination.starts_with("refs/heads/")
+        && !destination.contains('*') && !destination.starts_with('+'))
+        .then(|| branch_name(destination).expect("destination is a branch").to_owned())
+}
+
+fn git_config_bool(root: &Path, key: &str) -> bool {
+    git_text(root, &["config", "--bool", "--get", key])
+        .ok()
+        .is_some_and(|value| value.trim() == "true")
+}
+
+fn push_preview_commits(root: &Path, revisions: &[&str]) -> Result<Value> {
+    let mut count_args = vec!["rev-list", "--count"];
+    count_args.extend_from_slice(revisions);
+    let count = git_text(root, &count_args)
+        .map_err(|_| anyhow!("push_preview_unavailable: cannot resolve commit range"))?
+        .trim()
+        .parse::<u64>()
+        .map_err(|_| anyhow!("push_preview_unavailable: cannot count commits"))?;
+    let mut log_args = vec!["log", PUSH_PREVIEW_FORMAT, "-n50"];
+    log_args.extend_from_slice(revisions);
+    let commits = parse_push_preview_commits(&git_text(root, &log_args)?);
+    Ok(json!({"count": count, "commits": commits}))
+}
+
+fn parse_push_preview_commits(output: &str) -> Vec<Value> {
+    output.split('\u{1e}').filter_map(|record| {
+        let fields: Vec<_> = record.trim_matches(['\r', '\n']).split('\u{1f}').collect();
+        (fields.len() == 4 && full_oid(fields[0])).then(|| json!({
+            "hash": fields[0], "subject": fields[1], "author": fields[2], "committedAt": fields[3],
+        }))
+    }).collect()
+}
+
+fn empty_push_range() -> Value { json!({"count": 0, "commits": []}) }
+
+fn remote_default_branch(root: &Path, remote: &str) -> Option<String> {
+    let head = format!("refs/remotes/{remote}/HEAD");
+    if let Ok(value) = git_text(root, &["symbolic-ref", "--quiet", &head]) {
+        return value.trim().strip_prefix(&format!("refs/remotes/{remote}/")).map(str::to_owned);
+    }
+    None
+}
+
+fn last_fetched_at(root: &Path, remote: &str, remote_branch: &str) -> Option<String> {
+    let reflog = format!("logs/refs/remotes/{remote}/{remote_branch}");
+    let path = git_text(root, &["rev-parse", "--git-path", &reflog]).ok()?;
+    let path = PathBuf::from(path.trim());
+    let path = if path.is_absolute() { path } else { root.join(path) };
+    let modified = std::fs::metadata(path).ok()?.modified().ok()?;
+    Some(chrono::DateTime::<Utc>::from(modified).to_rfc3339())
 }
 
 fn string<'a>(object: &'a Map<String, Value>, key: &str) -> Result<&'a str> {
@@ -490,12 +1132,201 @@ fn resolve_commit(root: &Path, commit: &str) -> Result<String> {
         .map_err(|_| anyhow!("commit_not_found"))
 }
 
+/// Read the current fences and bounded consequences for a History action.
+/// This does not reserve an operation: every mutator rechecks its own fence.
+fn history_plan(root: &Path, commit: &str) -> Result<Value> {
+    if !(7..=64).contains(&commit.len()) || !commit.chars().all(|value| value.is_ascii_hexdigit()) {
+        return Err(anyhow!("invalid_commit"));
+    }
+    let hash = resolve_commit(root, commit)?;
+    let head = git_text(root, &["rev-parse", "--verify", "--quiet", "HEAD^{commit}"])
+        .map(|value| value.trim().to_owned())
+        .map_err(|_| anyhow!("commit_not_found"))?;
+    if !full_oid(&head) { return Err(anyhow!("commit_not_found")); }
+    let branch = git_text(root, &["symbolic-ref", "--quiet", "--short", "HEAD"])
+        .ok()
+        .map(|value| value.trim().to_owned())
+        .filter(|value| !value.is_empty());
+    let detached = branch.is_none();
+    let is_ancestor = run_git(root, &["merge-base", "--is-ancestor", &hash, &head], &[], None, LOCAL_TIMEOUT).is_ok();
+    let parents = git_text(root, &["log", "-1", "--format=%P", &hash])?
+        .split_whitespace()
+        .map(|parent| {
+            let subject = git_text(root, &["log", "-1", "--format=%s", parent])?;
+            Ok(json!({"hash":parent,"subject":subject.trim_end()}))
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let range = format!("{hash}..{head}");
+    let count = git_text(root, &["rev-list", "--count", &range])?
+        .trim()
+        .parse::<u64>()
+        .map_err(|_| anyhow!("git_failed"))?;
+    let commits = git_text(root, &["log", "--format=%H%x1f%s", "-n20", &range])?
+        .lines()
+        .filter_map(|line| line.split_once('\x1f'))
+        .map(|(hash, subject)| json!({"hash":hash,"subject":subject}))
+        .collect::<Vec<_>>();
+    // A remote may contain an intermediate removed commit even when it does not
+    // contain HEAD, so check the full range rather than just the reset target.
+    let pushed = if count == 0 {
+        false
+    } else {
+        git_text(root, &["rev-list", &range])?
+            .lines()
+            .try_fold(false, |found, removed| -> Result<bool> {
+                if found { return Ok(true); }
+                Ok(!git_text(root, &["branch", "-r", "--contains", removed])?.trim().is_empty())
+            })?
+    };
+    Ok(json!({
+        "hash":hash,
+        "head":head,
+        "branch":branch.unwrap_or_default(),
+        "detached":detached,
+        "isAncestor":is_ancestor,
+        "parents":parents,
+        "reset":{"count":count,"commits":commits,"pushed":pushed},
+    }))
+}
+
 fn first_parent(root: &Path, commit: &str) -> Option<String> {
     let spec = format!("{commit}^1");
     git_text(root, &["rev-parse", "--verify", "--quiet", &spec])
         .ok()
         .map(|value| value.trim().to_owned())
         .filter(|value| !value.is_empty())
+}
+
+const STASH_FORMAT: &str = "--format=%H%x1f%P%x1f%s%x1f%ct";
+
+fn stash_subject(subject: &str) -> (String, Option<String>) {
+    if let Some(rest) = subject.strip_prefix("On ") {
+        if let Some((branch, message)) = rest.split_once(": ") {
+            return (message.to_owned(), Some(branch.to_owned()));
+        }
+    }
+    if let Some(rest) = subject.strip_prefix("WIP on ") {
+        if let Some((branch, message)) = rest.split_once(": ") {
+            return (message.to_owned(), Some(branch.to_owned()));
+        }
+    }
+    (subject.to_owned(), None)
+}
+
+fn full_oid(oid: &str) -> bool {
+    matches!(oid.len(), 40 | 64) && oid.chars().all(|value| value.is_ascii_hexdigit())
+}
+
+/// Lists stashes by immutable commit OID. Their display index is intentionally
+/// derived on every read because `stash@{n}` shifts when Git changes the stack.
+pub(crate) fn stash_entries(root: &Path) -> Result<Vec<Value>> {
+    let output = git_text(root, &["stash", "list", STASH_FORMAT])?;
+    let mut entries = output
+        .lines()
+        .enumerate()
+        .filter_map(|(index, line)| {
+            let (line, timestamp) = line.rsplit_once('\u{1f}')?;
+            let (oid, line) = line.split_once('\u{1f}')?;
+            let (parents, subject) = line.split_once('\u{1f}')?;
+            if !full_oid(oid) {
+                return None;
+            }
+            let untracked_parent = parents.split_whitespace().nth(2).map(str::to_owned);
+            let (message, branch) = stash_subject(subject);
+            let mut entry = Map::new();
+            entry.insert("oid".into(), json!(oid));
+            entry.insert("index".into(), json!(index));
+            entry.insert("message".into(), json!(message));
+            if let Some(branch) = branch {
+                entry.insert("branch".into(), json!(branch));
+            }
+            entry.insert(
+                "createdAt".into(),
+                json!(timestamp.parse::<i64>().unwrap_or(0)),
+            );
+            entry.insert("untracked".into(), json!(false));
+            Some((Value::Object(entry), untracked_parent))
+        })
+        .collect::<Vec<_>>();
+    let checks = entries
+        .iter()
+        .filter_map(|(_, parent)| parent.as_ref())
+        .map(|parent| format!("{parent}^{{tree}}\n"))
+        .collect::<String>();
+    if !checks.is_empty() {
+        let sizes = run_git(
+            root,
+            &["cat-file", "--batch-check=%(objecttype) %(objectsize)"],
+            &[],
+            Some(checks.as_bytes()),
+            LOCAL_TIMEOUT,
+        )?;
+        for ((entry, _), line) in entries
+            .iter_mut()
+            .filter(|(_, parent)| parent.is_some())
+            .zip(String::from_utf8_lossy(&sizes).lines())
+        {
+            let size = line
+                .split_whitespace()
+                .nth(1)
+                .and_then(|size| size.parse::<u64>().ok())
+                .unwrap_or(0);
+            entry["untracked"] = json!(size > 0);
+        }
+    }
+    Ok(entries.into_iter().map(|(entry, _)| entry).collect())
+}
+
+/// Resolves a stable stash OID to its current, unstable stack index immediately
+/// before a mutation. Git accepts abbreviated revisions, so reject them here.
+pub(crate) fn stash_resolve(root: &Path, oid: &str) -> Result<usize> {
+    if !full_oid(oid) {
+        return Err(anyhow!("stash_not_found"));
+    }
+    stash_entries(root)?
+        .into_iter()
+        .find_map(|entry| (entry["oid"] == oid).then(|| entry["index"].as_u64()))
+        .flatten()
+        .map(|index| index as usize)
+        .ok_or_else(|| anyhow!("stash_not_found"))
+}
+
+fn stash_show(root: &Path, oid: &str) -> Result<Value> {
+    stash_resolve(root, oid)?;
+    let parent = format!("{oid}^1");
+    let tracked = run_git(
+        root,
+        &["diff", "--name-status", "-z", &parent, oid, "--"],
+        &[],
+        None,
+        LOCAL_TIMEOUT,
+    )?;
+    let mut files = parse_name_status(&tracked);
+    let untracked_parent = format!("{oid}^3");
+    if run_git(
+        root,
+        &["rev-parse", "--verify", "--quiet", &untracked_parent],
+        &[],
+        None,
+        LOCAL_TIMEOUT,
+    )
+    .is_ok()
+    {
+        let untracked = run_git(
+            root,
+            &["ls-tree", "-r", "--name-only", "-z", &untracked_parent],
+            &[],
+            None,
+            LOCAL_TIMEOUT,
+        )?;
+        for path in String::from_utf8_lossy(&untracked)
+            .split('\0')
+            .filter(|path| !path.is_empty())
+        {
+            files.push(json!({"path":path,"status":"A","untracked":true}));
+        }
+    }
+    Ok(json!({"files":files}))
 }
 
 /// Parses `--name-status -z` output into root-relative entries. With
@@ -579,6 +1410,376 @@ fn commit_diff(root: &Path, commit: &str, path: &str, original: Option<&str>) ->
             json!({"path":path,"oldText":old,"newText":new,"binary":false})
         }
         _ => json!({"path":path,"oldText":"","newText":"","binary":true}),
+    })
+}
+
+const MAX_COMPARE_FILES: usize = 1000;
+/// Untracked files have no numstat record, so their line counts come from a bounded read:
+/// at most this many files and this many bytes in total per refresh. Beyond that the counts are
+/// reported as unknown instead of slowing the read down.
+const MAX_COMPARE_UNTRACKED_READS: usize = 200;
+const MAX_COMPARE_UNTRACKED_BYTES: u64 = 8 * 1024 * 1024;
+
+/// One comparison base: the reference the user sees and the commit it resolved to.
+struct CompareBase {
+    reference: String,
+    oid: String,
+}
+
+fn commit_oid(root: &Path, reference: &str) -> Option<String> {
+    let spec = format!("{reference}^{{commit}}");
+    git_text(root, &["rev-parse", "--verify", "--quiet", &spec])
+        .ok()
+        .map(|value| value.trim().to_owned())
+        .filter(|value| full_oid(value))
+}
+
+/// An explicit base is one argv token: it may not look like an option or span lines.
+fn validate_compare_base(value: &str) -> Result<()> {
+    if value.is_empty()
+        || value.len() > 255
+        || value.starts_with('-')
+        || value.contains(['\0', '\r', '\n'])
+    {
+        return Err(anyhow!("invalid_request"));
+    }
+    Ok(())
+}
+
+/// The push remote of task 12, read-only. A base that cannot be named falls through to the
+/// well-known candidates instead of failing the whole read.
+fn default_compare_remote(root: &Path, current: Option<&str>) -> Option<String> {
+    if let Some(branch) = current {
+        if let Ok(remote) = push_remote(root, branch) {
+            return Some(remote);
+        }
+    }
+    legacy_default_remote(root).ok()
+}
+
+/// Branch names and their commits from one `for-each-ref`, so default base resolution costs one
+/// Git process instead of one probe per candidate.
+#[derive(Default)]
+struct CompareRefs {
+    heads: HashMap<String, String>,
+    remotes: HashMap<String, String>,
+}
+
+impl CompareRefs {
+    /// `refs/heads` wins over `refs/remotes` for an ambiguous short name, like `rev-parse`.
+    fn resolve(&self, name: &str) -> Option<&String> {
+        self.heads.get(name).or_else(|| self.remotes.get(name))
+    }
+}
+
+fn compare_refs(root: &Path) -> CompareRefs {
+    let mut refs = CompareRefs::default();
+    let Ok(output) = git_text(
+        root,
+        &[
+            "for-each-ref",
+            "--format=%(refname) %(objectname)",
+            "refs/heads",
+            "refs/remotes",
+        ],
+    ) else {
+        return refs;
+    };
+    for line in output.lines() {
+        let Some((reference, oid)) = line.split_once(' ') else { continue };
+        if !full_oid(oid) {
+            continue;
+        }
+        if let Some(short) = reference.strip_prefix("refs/heads/") {
+            refs.heads.insert(short.to_owned(), oid.to_owned());
+        } else if let Some(short) = reference.strip_prefix("refs/remotes/") {
+            // `refs/remotes/<remote>/HEAD` is the remote's default branch, not a branch of its own.
+            if !short.ends_with("/HEAD") {
+                refs.remotes.insert(short.to_owned(), oid.to_owned());
+            }
+        }
+    }
+    refs
+}
+
+/// Order: the push remote's default branch, then `origin/main`, `origin/master`, `main`, `master`.
+/// The current branch is never its own comparison base.
+fn default_compare_base(root: &Path, current: Option<&str>) -> Result<CompareBase> {
+    let mut candidates = Vec::new();
+    if let Some(remote) = default_compare_remote(root, current) {
+        if let Some(branch) = remote_default_branch(root, &remote) {
+            candidates.push(format!("{remote}/{branch}"));
+        }
+    }
+    candidates.extend(["origin/main", "origin/master", "main", "master"].map(str::to_owned));
+    let refs = compare_refs(root);
+    for reference in candidates {
+        if current.is_some_and(|branch| reference == branch) {
+            continue;
+        }
+        if let Some(oid) = refs.resolve(&reference) {
+            return Ok(CompareBase {
+                reference,
+                oid: oid.clone(),
+            });
+        }
+    }
+    Err(anyhow!("compare_base_unavailable"))
+}
+
+fn compare_status(letter: &str) -> &'static str {
+    match letter.chars().next() {
+        Some('A') => "added",
+        Some('D') => "deleted",
+        Some('R') => "renamed",
+        Some('T') => "typechange",
+        _ => "modified",
+    }
+}
+
+/// One `--numstat -z` record: counts, the new path and, for a rename, the original path.
+/// A record whose path tokens are missing or empty is dropped instead of yielding an empty path.
+fn numstat_record<'a>(
+    tokens: &[&'a str],
+    index: usize,
+) -> Option<(u64, u64, bool, Option<&'a str>, &'a str, usize)> {
+    // The path is the rest of the record: it may itself contain a tab.
+    let mut fields = tokens.get(index)?.splitn(3, '\t');
+    let added = fields.next()?;
+    let deleted = fields.next()?;
+    let path = fields.next()?;
+    let count = |value: &str| value.parse::<u64>().ok();
+    // `-` marks a binary file: it has no line counts to add.
+    let binary = added == "-" && deleted == "-";
+    let (added, deleted) = if binary { (0, 0) } else { (count(added)?, count(deleted)?) };
+    if path.is_empty() {
+        // A rename prints an empty path field, then the original and the new path.
+        let original = tokens.get(index + 1).copied().filter(|value| !value.is_empty())?;
+        let path = tokens.get(index + 2).copied().filter(|value| !value.is_empty())?;
+        return Some((added, deleted, binary, Some(original), path, 3));
+    }
+    Some((added, deleted, binary, None, path, 1))
+}
+
+/// Parses one combined `--raw --numstat -z` diff: the raw record carries the status and the
+/// rename source, the numstat record the +/− counts, so a refresh needs one Git call.
+pub(crate) fn parse_compare_files(output: &[u8]) -> Vec<Value> {
+    let text = String::from_utf8_lossy(output);
+    let tokens: Vec<&str> = text.split('\0').collect();
+    let mut statuses: HashMap<String, (String, Option<String>)> = HashMap::new();
+    let mut index = 0;
+    while index < tokens.len() {
+        let token = tokens[index];
+        let Some(header) = token.strip_prefix(':') else { break };
+        // `:oldmode newmode oldsha newsha STATUS`, then one path (two for a rename/copy).
+        let letter = header.rsplit(' ').next().unwrap_or("M").to_owned();
+        let paired = letter.starts_with('R') || letter.starts_with('C');
+        let Some(first) = tokens.get(index + 1).copied().filter(|value| !value.is_empty()) else {
+            break;
+        };
+        if paired {
+            let Some(second) = tokens.get(index + 2).copied().filter(|value| !value.is_empty())
+            else {
+                break;
+            };
+            statuses.insert(second.to_owned(), (letter, Some(first.to_owned())));
+            index += 3;
+        } else {
+            statuses.insert(first.to_owned(), (letter, None));
+            index += 2;
+        }
+    }
+    let mut files = Vec::new();
+    while index < tokens.len() {
+        let Some((added, deleted, binary, counted_original, path, consumed)) =
+            numstat_record(&tokens, index)
+        else {
+            index += 1;
+            continue;
+        };
+        index += consumed;
+        let (letter, status_original) = statuses
+            .get(path)
+            .cloned()
+            .unwrap_or_else(|| ("M".to_owned(), None));
+        let mut row = Map::new();
+        row.insert("path".into(), json!(path));
+        row.insert("status".into(), json!(compare_status(&letter)));
+        let original = status_original.or_else(|| counted_original.map(str::to_owned));
+        if let Some(original) = original.filter(|value| !value.is_empty()) {
+            row.insert("originalPath".into(), json!(original));
+        }
+        row.insert("additions".into(), json!(added));
+        row.insert("deletions".into(), json!(deleted));
+        row.insert("binary".into(), json!(binary));
+        files.push(Value::Object(row));
+    }
+    files
+}
+
+/// Line count and binary hint for an untracked file. `None` means the refresh budget was spent,
+/// so the count is unknown rather than zero.
+fn compare_untracked_lines(root: &Path, path: &str, budget: &mut u64) -> Option<(u64, bool)> {
+    let Ok(file) = crate::workspace_services::scoped_path(root, path, true) else { return Some((0, false)) };
+    let Ok(meta) = std::fs::metadata(&file) else { return Some((0, false)) };
+    if !meta.is_file() {
+        return Some((0, false));
+    }
+    let size = meta.len();
+    if size > *budget {
+        return None;
+    }
+    *budget -= size;
+    let Ok(bytes) = std::fs::read(&file) else { return Some((0, false)) };
+    if bytes.contains(&0) {
+        return Some((0, true));
+    }
+    let lines = bytes.iter().filter(|byte| **byte == b'\n').count()
+        + usize::from(!bytes.is_empty() && !bytes.ends_with(b"\n"));
+    Some((lines as u64, false))
+}
+
+/// Untracked files are not part of the diff, so one listing adds them as `added`. Reads are
+/// bounded per refresh; beyond the bounds the row keeps `countsUnknown`.
+fn compare_untracked_files(root: &Path) -> Vec<Value> {
+    let Ok(output) = run_git(
+        root,
+        &["ls-files", "-o", "--exclude-standard", "-z"],
+        &[],
+        None,
+        LOCAL_TIMEOUT,
+    ) else {
+        return Vec::new();
+    };
+    let mut budget = MAX_COMPARE_UNTRACKED_BYTES;
+    String::from_utf8_lossy(&output)
+        .split('\0')
+        .filter(|path| !path.is_empty())
+        .enumerate()
+        .map(|(index, path)| {
+            let counted = if index < MAX_COMPARE_UNTRACKED_READS {
+                compare_untracked_lines(root, path, &mut budget)
+            } else {
+                None
+            };
+            match counted {
+                Some((additions, binary)) => json!({"path":path,"status":"added","additions":additions,"deletions":0,"binary":binary}),
+                None => json!({"path":path,"status":"added","additions":0,"deletions":0,"binary":false,"countsUnknown":true}),
+            }
+        })
+        .collect()
+}
+
+/// Everything the current branch changes relative to its base, capped at `MAX_COMPARE_FILES`.
+fn compare_summary(root: &Path, requested: Option<&str>, committed_only: bool) -> Result<Value> {
+    let head = commit_oid(root, "HEAD").ok_or_else(|| anyhow!("compare_unborn"))?;
+    let current = git_text(root, &["symbolic-ref", "--quiet", "--short", "HEAD"])
+        .ok()
+        .map(|value| value.trim().to_owned())
+        .filter(|value| !value.is_empty());
+    let base = match requested {
+        Some(value) => {
+            validate_compare_base(value)?;
+            CompareBase {
+                reference: value.to_owned(),
+                oid: commit_oid(root, value).ok_or_else(|| anyhow!("compare_base_unavailable"))?,
+            }
+        }
+        None => default_compare_base(root, current.as_deref())?,
+    };
+    let merge_base = git_text(root, &["merge-base", &base.oid, &head])
+        .ok()
+        .map(|value| value.trim().to_owned())
+        .filter(|value| full_oid(value))
+        .ok_or_else(|| anyhow!("compare_no_merge_base"))?;
+    let mut args = vec![
+        "diff", "--raw", "--numstat", "-z", "-M", "--relative", merge_base.as_str(),
+    ];
+    if committed_only {
+        args.push(head.as_str());
+    }
+    let output = run_git(root, &args, &[], None, LOCAL_TIMEOUT)?;
+    let mut files = parse_compare_files(&output);
+    if !committed_only {
+        // `git rm --cached` leaves the file on disk: it is already listed as a deletion, so the
+        // untracked listing must not emit the same path a second time.
+        let listed: std::collections::HashSet<String> = files
+            .iter()
+            .filter_map(|file| file["path"].as_str().map(str::to_owned))
+            .collect();
+        files.extend(
+            compare_untracked_files(root)
+                .into_iter()
+                .filter(|file| {
+                    file["path"]
+                        .as_str()
+                        .is_some_and(|path| !listed.contains(path))
+                }),
+        );
+    }
+    files.sort_by(|left, right| {
+        left["path"]
+            .as_str()
+            .unwrap_or_default()
+            .cmp(right["path"].as_str().unwrap_or_default())
+    });
+    let truncated = files.len() > MAX_COMPARE_FILES;
+    files.truncate(MAX_COMPARE_FILES);
+    Ok(json!({
+        "base": {"ref": base.reference, "oid": base.oid},
+        "mergeBase": merge_base,
+        "head": head,
+        "files": files,
+        "truncated": truncated,
+    }))
+}
+
+/// `<mergeBase>:<originalPath>` against the working file, or against `HEAD` with `committedOnly`.
+/// The request carries the merge base the list was computed from, so a moved base is refused
+/// instead of silently recomputed.
+fn compare_diff(
+    root: &Path,
+    reference: &str,
+    oid: &str,
+    merge_base: &str,
+    path: &str,
+    original: Option<&str>,
+    committed_only: bool,
+) -> Result<Value> {
+    if !full_oid(oid) || !full_oid(merge_base) {
+        return Err(anyhow!("invalid_request"));
+    }
+    if !full_oid(reference) {
+        validate_compare_base(reference)?;
+        if commit_oid(root, reference).map_or(true, |current| current != oid) {
+            return Err(anyhow!("compare_stale"));
+        }
+    }
+    if commit_oid(root, merge_base).is_none() {
+        return Err(anyhow!("compare_stale"));
+    }
+    let old = read_blob(root, merge_base, original.unwrap_or(path))?;
+    let new = if committed_only {
+        read_blob(root, "HEAD", path)?
+    } else {
+        let file = crate::workspace_services::scoped_path(root, path, false)?;
+        match std::fs::symlink_metadata(&file) {
+            Ok(meta) if meta.is_file() => {
+                if meta.len() as usize > MAX_TEXT_BYTES {
+                    return Err(anyhow!("file_too_large"));
+                }
+                Some(std::fs::read(&file)?)
+            }
+            Ok(_) => return Err(anyhow!("file_reference_not_file")),
+            Err(_) => None,
+        }
+    };
+    let deleted = new.is_none();
+    let old_text = text_of(old.as_deref().unwrap_or_default());
+    let new_text = text_of(new.as_deref().unwrap_or_default());
+    Ok(match (old_text, new_text) {
+        (Some(old), Some(new)) => json!({"path":path,"oldText":old,"newText":new,"binary":false,"deleted":deleted}),
+        _ => json!({"path":path,"oldText":"","newText":"","binary":true,"deleted":deleted}),
     })
 }
 
@@ -679,6 +1880,7 @@ fn blame(root: &Path, path: &str) -> Result<Value> {
 }
 
 fn branches(root: &Path) -> Result<Value> {
+    let worktrees = branch_worktrees(root)?;
     let current = git_text(root, &["symbolic-ref", "--quiet", "--short", "HEAD"])
         .ok()
         .map(|value| value.trim().to_owned())
@@ -704,6 +1906,12 @@ fn branches(root: &Path) -> Result<Value> {
         branch.insert("name".into(), json!(fields[1]));
         branch.insert("remote".into(), json!(remote));
         branch.insert("current".into(), json!(fields[2] == "*"));
+        if !remote && fields[2] != "*" {
+            if let Some(owner) = worktrees.get(full) {
+                branch.insert("worktreePath".into(), json!(owner.path));
+                if owner.missing { branch.insert("worktreeMissing".into(), json!(true)); }
+            }
+        }
         if !fields[3].is_empty() {
             branch.insert("upstream".into(), json!(fields[3]));
         }
@@ -726,6 +1934,37 @@ fn branches(root: &Path) -> Result<Value> {
         branches.push(Value::Object(branch));
     }
     Ok(json!({"current":current,"detached":detached,"branches":branches}))
+}
+
+pub(crate) struct BranchWorktree {
+    pub path: String,
+    pub missing: bool,
+}
+
+pub(crate) fn worktree_identity(path: &str) -> String {
+    let path = plain_path(Path::new(path)).to_string_lossy().replace('\\', "/");
+    let path = path.trim_end_matches('/');
+    if cfg!(windows) { path.to_lowercase() } else { path.to_owned() }
+}
+
+/// Listed paths may be missing; never canonicalize them to identify an owner.
+pub(crate) fn branch_worktrees(root: &Path) -> Result<HashMap<String, BranchWorktree>> {
+    let raw = git_text(root, &["-c", "core.quotePath=false", "worktree", "list", "--porcelain"])?;
+    let mut branches = HashMap::new();
+    for record in raw.split("\n\n") {
+        let mut path = None;
+        let mut branch = None;
+        let mut prunable = false;
+        for field in record.lines() {
+            if let Some(value) = field.strip_prefix("worktree ") { path = Some(value); }
+            else if let Some(value) = field.strip_prefix("branch ") { branch = Some(value); }
+            else if field == "prunable" || field.starts_with("prunable ") { prunable = true; }
+        }
+        if let (Some(path), Some(branch)) = (path, branch) {
+            branches.insert(branch.to_owned(), BranchWorktree { path:path.to_owned(), missing:prunable || !Path::new(path).is_dir() });
+        }
+    }
+    Ok(branches)
 }
 
 /// Removes the Windows verbatim prefix that `canonicalize` adds; Git and Shell
@@ -874,6 +2113,147 @@ mod tests {
         assert_eq!(error.to_string(), "git_timeout");
     }
 
+    // Use Git's shell to kill its background PID, including the MSYS PID on Windows.
+    struct HeldGitPipe(tempfile::TempDir);
+
+    impl HeldGitPipe {
+        fn new() -> Self {
+            Self(tempfile::tempdir().unwrap())
+        }
+    }
+
+    impl Drop for HeldGitPipe {
+        fn drop(&mut self) {
+            let mut command = Command::new("git");
+            command
+                .arg("-C")
+                .arg(self.0.path())
+                .args(["-c", "alias.release=!kill $(cat held.pid)", "release"])
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null());
+            #[cfg(windows)]
+            {
+                use std::os::windows::process::CommandExt;
+                command.creation_flags(0x0800_0000);
+            }
+            let _ = command.status();
+        }
+    }
+
+    #[test]
+    fn run_git_deadline_survives_exited_git_with_held_stderr() {
+        let held = HeldGitPipe::new();
+        let started = Instant::now();
+        let stdout = run_git(
+            held.0.path(),
+            &["-c", "alias.hold=!sleep 30 </dev/null >/dev/null & echo $! > held.pid; printf 'git stdout'; printf 'before exit' >&2", "hold"],
+            &[], None, Duration::from_secs(10),
+        ).unwrap();
+        assert_eq!(stdout, b"git stdout");
+        assert!(held.0.path().join("held.pid").is_file());
+        assert!(started.elapsed() < Duration::from_millis(2750));
+    }
+
+    #[test]
+    fn run_git_preserves_failed_exit_and_partial_held_stderr() {
+        let held = HeldGitPipe::new();
+        let started = Instant::now();
+        let error = run_git(
+            held.0.path(),
+            &["-c", "alias.hold=!sleep 30 </dev/null >/dev/null & echo $! > held.pid; printf '%070000d' 0 >&2; printf 'before exit' >&2; exit 7", "hold"],
+            &[], None, Duration::from_secs(10),
+        ).unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            format!("git_failed: {}before exit", "0".repeat(70_000))
+        );
+        assert!(held.0.path().join("held.pid").is_file());
+        assert!(started.elapsed() < Duration::from_millis(2750));
+    }
+
+    #[test]
+    fn run_git_still_times_out_when_exited_git_has_held_stdout() {
+        let held = HeldGitPipe::new();
+        let started = Instant::now();
+        let error = run_git(
+            held.0.path(),
+            &[
+                "-c",
+                "alias.hold=!sleep 30 </dev/null 2>/dev/null & echo $! > held.pid",
+                "hold",
+            ],
+            &[],
+            None,
+            Duration::from_millis(500),
+        )
+        .unwrap_err();
+        assert_eq!(error.to_string(), "git_timeout");
+        assert!(held.0.path().join("held.pid").is_file());
+        assert!(started.elapsed() < Duration::from_secs(3));
+    }
+
+    #[test]
+    fn blob_fingerprint_reader_deadline_survives_exited_git_with_held_stderr() {
+        struct HeldStderr {
+            prefix: std::io::Cursor<Vec<u8>>,
+            started: std::sync::mpsc::Sender<()>,
+            release: std::sync::mpsc::Receiver<()>,
+        }
+
+        impl Read for HeldStderr {
+            fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+                let read = self.prefix.read(buffer)?;
+                if read != 0 {
+                    return Ok(read);
+                }
+                let _ = self.started.send(());
+                let _ = self.release.recv_timeout(Duration::from_secs(10));
+                Ok(0)
+            }
+        }
+
+        #[cfg(windows)]
+        let mut command = {
+            let mut command = Command::new("cmd");
+            command.args(["/C", "exit 0"]);
+            command
+        };
+        #[cfg(not(windows))]
+        let mut command = {
+            let mut command = Command::new("sh");
+            command.args(["-c", "exit 0"]);
+            command
+        };
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            command.creation_flags(0x0800_0000);
+        }
+        let mut child = command.spawn().unwrap();
+        child.wait().unwrap();
+        let (started_tx, started_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let started = Instant::now();
+        let (status, fingerprint, stderr) = blob_fingerprint_readers(
+            &mut child,
+            std::io::Cursor::new(b"blob stdout".to_vec()),
+            HeldStderr {
+                prefix: std::io::Cursor::new(vec![b'e'; MAX_GIT_STDERR_BYTES + 1024]),
+                started: started_tx,
+                release: release_rx,
+            },
+            Instant::now() + Duration::from_millis(100),
+        )
+        .unwrap();
+        assert!(status.success());
+        assert_eq!(fingerprint, hex::encode(Sha256::digest(b"blob stdout")));
+        assert_eq!(stderr, vec![b'e'; MAX_GIT_STDERR_BYTES]);
+        assert!(started_rx.recv_timeout(Duration::from_secs(1)).is_ok());
+        assert!(started.elapsed() < Duration::from_secs(1));
+        let _ = release_tx.send(());
+    }
+
     #[test]
     fn grouped_repository_discovery_matches_individual_reads_and_preserves_empty_prefix() {
         let temp = repo();
@@ -937,6 +2317,92 @@ mod tests {
         git(temp.path(), &["config", "user.name", "QA"]).unwrap();
         git(temp.path(), &["config", "core.autocrlf", "false"]).unwrap();
         temp
+    }
+
+    #[test]
+    fn stash_reads_use_stable_oids_and_include_untracked_files() {
+        let temp = repo();
+        fs::write(temp.path().join("tracked.txt"), "base\n").unwrap();
+        git(temp.path(), &["add", "."]).unwrap();
+        git(temp.path(), &["commit", "-qm", "base"]).unwrap();
+
+        fs::write(temp.path().join("tracked.txt"), "first\n").unwrap();
+        fs::write(temp.path().join("untracked.txt"), "first\n").unwrap();
+        git(
+            temp.path(),
+            &["stash", "push", "--include-untracked", "-qm", "first stash"],
+        )
+        .unwrap();
+        let first = stash_entries(temp.path()).unwrap().remove(0);
+        let first_oid = first["oid"].as_str().unwrap().to_owned();
+        assert_eq!(first["message"], "first stash");
+        assert_eq!(first["branch"], "main");
+        assert_eq!(first["untracked"], true);
+        assert!(first["createdAt"].is_i64() || first["createdAt"].is_u64());
+
+        fs::write(temp.path().join("tracked.txt"), "second\n").unwrap();
+        git(
+            temp.path(),
+            &["stash", "push", "--include-untracked", "-qm", "second stash"],
+        )
+        .unwrap();
+        assert_eq!(stash_entries(temp.path()).unwrap()[0]["untracked"], false);
+        assert_eq!(stash_resolve(temp.path(), &first_oid).unwrap(), 1);
+        assert_eq!(
+            stash_resolve(temp.path(), "aabbccddeeff00112233445566778899aabbccdd")
+                .unwrap_err()
+                .to_string(),
+            "stash_not_found"
+        );
+        assert_eq!(
+            stash_resolve(temp.path(), &first_oid[..8])
+                .unwrap_err()
+                .to_string(),
+            "stash_not_found"
+        );
+
+        let shown = stash_show(temp.path(), &first_oid).unwrap();
+        assert!(shown["files"]
+            .as_array()
+            .unwrap()
+            .contains(&json!({"path":"tracked.txt","status":"M"})));
+        assert!(shown["files"]
+            .as_array()
+            .unwrap()
+            .contains(&json!({"path":"untracked.txt","status":"A","untracked":true})));
+
+        let external_message = format!("external{}stash", '\u{1f}');
+        fs::write(temp.path().join("tracked.txt"), "external\n").unwrap();
+        git(
+            temp.path(),
+            &["stash", "push", "-qm", external_message.as_str()],
+        )
+        .unwrap();
+        let external = stash_entries(temp.path()).unwrap().remove(0);
+        let external_oid = external["oid"].as_str().unwrap();
+        assert_eq!(external["message"], external_message);
+        assert_eq!(stash_resolve(temp.path(), external_oid).unwrap(), 0);
+        assert!(stash_show(temp.path(), external_oid).unwrap()["files"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|file| file["path"] == "tracked.txt"));
+    }
+
+    #[test]
+    fn stash_subject_separates_default_branch_prefixes() {
+        assert_eq!(
+            stash_subject("On main: work"),
+            ("work".into(), Some("main".into()))
+        );
+        assert_eq!(
+            stash_subject("WIP on feature: abc123 work"),
+            ("abc123 work".into(), Some("feature".into()))
+        );
+        assert_eq!(
+            stash_subject("saved externally"),
+            ("saved externally".into(), None)
+        );
     }
 
     #[test]
@@ -1061,5 +2527,537 @@ mod tests {
         assert_eq!(parsed[0]["originalPath"], "old name.txt");
         assert_eq!(parsed[0]["path"], "新 文件.txt");
         assert_eq!(parsed[1]["status"], "M");
+    }
+
+    #[test]
+    fn compare_parser_reads_one_combined_raw_and_numstat_diff() {
+        // The raw records come first, then the numstat records, then the (ignored) stat summary.
+        let output = ":100644 100644 aaa bbb M\0new.txt\0:100644 000000 aaa 000 D\0gone.txt\0:100644 100644 aaa aaa R100\0old.txt\0moved.txt\0-\t-\tnew.txt\00\t2\tgone.txt\00\t0\t\0old.txt\0moved.txt\0 new.txt | 0\n 3 files changed, 0 insertions(+), 3 deletions(-)\n";
+        let files = parse_compare_files(output.as_bytes());
+        assert_eq!(files.len(), 3);
+        assert_eq!(files[0], json!({"path":"new.txt","status":"modified","additions":0,"deletions":0,"binary":true}));
+        assert_eq!(files[1], json!({"path":"gone.txt","status":"deleted","additions":0,"deletions":2,"binary":false}));
+        assert_eq!(files[2], json!({"path":"moved.txt","originalPath":"old.txt","status":"renamed","additions":0,"deletions":0,"binary":false}));
+    }
+
+    #[test]
+    fn compare_parser_never_emits_empty_paths_from_short_records() {
+        let nul = '\u{0}';
+        // A truncated rename: the raw header is there, its two paths are not.
+        let truncated_raw = format!(":100644 100644 aaa aaa R100{nul}old.txt{nul}");
+        assert!(parse_compare_files(truncated_raw.as_bytes()).is_empty());
+        // A numstat rename whose new path is missing: the record is skipped, not emitted empty.
+        let truncated_numstat = format!(":100644 100644 aaa bbb M{nul}ok.txt{nul}0\t1\t{nul}old.txt{nul}");
+        assert!(parse_compare_files(truncated_numstat.as_bytes()).is_empty());
+        // Empty raw paths never register a status key either.
+        let empty_paths = format!(":100644 100644 aaa bbb M{nul}{nul}:100644 100644 aaa bbb M{nul}{nul}1\t2\t{nul}{nul}");
+        for file in parse_compare_files(empty_paths.as_bytes()) {
+            assert_ne!(file["path"], "", "{file}");
+        }
+    }
+
+    /// A branch with a bare `origin` whose default branch is `main`.
+    fn compare_repository() -> (tempfile::TempDir, tempfile::TempDir) {
+        let temp = repo();
+        let root = temp.path();
+        fs::write(root.join("keep.txt"), "one\ntwo\nthree\n").unwrap();
+        fs::write(root.join("rename.txt"), "alpha\nbeta\ngamma\ndelta\n").unwrap();
+        fs::write(root.join("drop.txt"), "bye\n").unwrap();
+        fs::write(root.join("bin.dat"), "text").unwrap();
+        git(root, &["add", "."]).unwrap();
+        git(root, &["commit", "-qm", "base"]).unwrap();
+        let origin = tempfile::tempdir().unwrap();
+        git(origin.path(), &["init", "--bare", "-q"]).unwrap();
+        git(root, &["remote", "add", "origin", origin.path().to_str().unwrap()]).unwrap();
+        git(root, &["push", "-qu", "origin", "main"]).unwrap();
+        git(origin.path(), &["symbolic-ref", "HEAD", "refs/heads/main"]).unwrap();
+        git(root, &["switch", "-qc", "feature"]).unwrap();
+        (temp, origin)
+    }
+
+    fn compare_paths(summary: &Value) -> Vec<String> {
+        summary["files"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|file| file["path"].as_str().unwrap().to_owned())
+            .collect()
+    }
+
+    #[test]
+    fn compare_base_prefers_the_push_remote_default_branch_then_well_known_names() {
+        let (temp, _origin) = compare_repository();
+        let root = temp.path();
+        let summary = compare_summary(root, None, false).unwrap();
+        assert_eq!(summary["base"]["ref"], "origin/main");
+        assert_eq!(summary["base"]["oid"].as_str().unwrap().len(), 40);
+        assert_eq!(summary["mergeBase"], summary["base"]["oid"]);
+        assert_eq!(summary["head"].as_str().unwrap().len(), 40);
+        assert!(summary["files"].as_array().unwrap().is_empty());
+
+        // Without a remote default branch, `origin/main` still wins over `main`.
+        git(root, &["remote", "set-head", "origin", "--delete"]).ok();
+        if run_git(root, &["symbolic-ref", "--quiet", "refs/remotes/origin/HEAD"], &[], None, LOCAL_TIMEOUT).is_ok() {
+            return;
+        }
+        fs::write(root.join("only-local.txt"), "local\n").unwrap();
+        git(root, &["add", "."]).unwrap();
+        git(root, &["commit", "-qm", "local"]).unwrap();
+        assert_eq!(compare_summary(root, None, false).unwrap()["base"]["ref"], "origin/main");
+
+        // The current branch is never its own base.
+        git(root, &["switch", "-q", "main"]).unwrap();
+        git(root, &["remote", "remove", "origin"]).unwrap();
+        assert_eq!(
+            compare_summary(root, None, false).unwrap_err().to_string(),
+            "compare_base_unavailable"
+        );
+    }
+
+    #[test]
+    fn compare_lists_renames_deletions_binaries_and_untracked_files() {
+        let (temp, _origin) = compare_repository();
+        let root = temp.path();
+        git(root, &["mv", "rename.txt", "renamed.txt"]).unwrap();
+        git(root, &["rm", "-q", "drop.txt"]).unwrap();
+        fs::write(root.join("keep.txt"), "one\nTWO\nthree\n").unwrap();
+        fs::write(root.join("bin.dat"), [0u8, 1, 2, 3]).unwrap();
+        fs::write(root.join("fresh.txt"), "untracked\nlines\n").unwrap();
+        let summary = compare_summary(root, None, false).unwrap();
+        let files = summary["files"].as_array().unwrap();
+        let find = |path: &str| files.iter().find(|file| file["path"] == path).unwrap().clone();
+        assert_eq!(find("renamed.txt")["status"], "renamed");
+        assert_eq!(find("renamed.txt")["originalPath"], "rename.txt");
+        assert_eq!(find("drop.txt")["status"], "deleted");
+        assert_eq!(find("keep.txt")["additions"], 1);
+        assert_eq!(find("keep.txt")["deletions"], 1);
+        assert_eq!(find("bin.dat")["binary"], true);
+        assert_eq!(find("fresh.txt")["status"], "added");
+        assert_eq!(find("fresh.txt")["additions"], 2);
+        assert_eq!(summary["truncated"], false);
+        let mut paths = compare_paths(&summary);
+        let sorted = paths.clone();
+        paths.sort();
+        assert_eq!(paths, sorted, "files are sorted by path");
+        // Nothing is committed on the branch yet, so committed-only lists nothing while the
+        // working-tree scope lists all five files (the untracked one included).
+        assert!(compare_summary(root, None, true).unwrap()["files"].as_array().unwrap().is_empty());
+
+        // Commit everything: both scopes agree, and the untracked file becomes a committed addition.
+        git(root, &["add", "-A"]).unwrap();
+        git(root, &["commit", "-qm", "everything"]).unwrap();
+        let working = compare_summary(root, None, false).unwrap();
+        let committed = compare_summary(root, None, true).unwrap();
+        assert_eq!(compare_paths(&working), compare_paths(&committed));
+        assert_eq!(compare_paths(&committed).len(), 5);
+        assert_eq!(committed["files"][1]["path"], "drop.txt");
+        assert_eq!(committed["files"][2]["status"], "added");
+    }
+
+    #[test]
+    fn compare_refs_resolve_branch_candidates_in_one_read() {
+        let (temp, _origin) = compare_repository();
+        let root = temp.path();
+        git(root, &["branch", "stale-name"]).unwrap();
+        let refs = compare_refs(root);
+        // Local branches include the current one; remote-tracking branches keep their short name.
+        assert_eq!(refs.resolve("feature"), refs.heads.get("feature"));
+        assert!(refs.resolve("origin/main").is_some());
+        assert!(refs.remotes.contains_key("origin/main"));
+        // `refs/remotes/<remote>/HEAD` is the remote's default branch, not a candidate of its own.
+        assert!(!refs.remotes.contains_key("origin/HEAD"));
+        assert!(refs.resolve("does-not-exist").is_none());
+        // A short name prefers `refs/heads`, as `rev-parse` does.
+        git(root, &["commit", "--allow-empty", "-qm", "another"]).unwrap();
+        git(root, &["branch", "origin/main", "HEAD"]).unwrap();
+        let both = compare_refs(root);
+        assert!(both.heads.contains_key("origin/main") && both.remotes.contains_key("origin/main"));
+        assert_eq!(both.resolve("origin/main"), both.heads.get("origin/main"));
+        assert_ne!(both.heads.get("origin/main"), both.remotes.get("origin/main"));
+    }
+
+    #[test]
+    fn compare_lists_a_cached_deletion_only_once() {
+        let (temp, _origin) = compare_repository();
+        let root = temp.path();
+        // `git rm --cached` keeps the file on disk: the diff says deleted, `ls-files -o` says
+        // untracked. One row, and it stays the deletion.
+        git(root, &["rm", "-q", "--cached", "keep.txt"]).unwrap();
+        assert!(root.join("keep.txt").is_file());
+        let summary = compare_summary(root, None, false).unwrap();
+        let listed: Vec<_> = summary["files"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|file| file["path"] == "keep.txt")
+            .collect();
+        assert_eq!(listed.len(), 1, "{summary}");
+        assert_eq!(listed[0]["status"], "deleted");
+    }
+
+    #[test]
+    fn compare_requires_a_merge_base_and_reads_head_in_detached_state() {
+        let (temp, _origin) = compare_repository();
+        let root = temp.path();
+        fs::write(root.join("keep.txt"), "one\nTWO\nthree\n").unwrap();
+        let head = git(root, &["rev-parse", "HEAD"]).unwrap().trim().to_owned();
+        git(root, &["checkout", "--detach", "-q"]).unwrap();
+        let detached = compare_summary(root, None, false).unwrap();
+        assert_eq!(detached["head"], head);
+        assert_eq!(compare_paths(&detached), ["keep.txt"]);
+
+        // An unrelated history has no merge base.
+        git(root, &["checkout", "-q", "--orphan", "unrelated"]).unwrap();
+        git(root, &["commit", "-qm", "unrelated root", "--allow-empty"]).unwrap();
+        assert_eq!(
+            compare_summary(root, None, false).unwrap_err().to_string(),
+            "compare_no_merge_base"
+        );
+
+        // An unborn repository has no comparison at all.
+        let unborn = repo();
+        assert_eq!(
+            compare_summary(unborn.path(), None, false).unwrap_err().to_string(),
+            "compare_unborn"
+        );
+    }
+
+    #[test]
+    fn compare_refuses_invalid_and_moved_bases_and_caps_the_file_list() {
+        let (temp, _origin) = compare_repository();
+        let root = temp.path();
+        fs::write(root.join("keep.txt"), "one\nTWO\nthree\n").unwrap();
+        for invalid in ["-upload-pack", "main\nother", "does-not-exist"] {
+            let error = compare_summary(root, Some(invalid), false).unwrap_err().to_string();
+            assert!(
+                error == "invalid_request" || error == "compare_base_unavailable",
+                "{invalid}: {error}"
+            );
+        }
+        let summary = compare_summary(root, Some("origin/main"), false).unwrap();
+        assert_eq!(compare_paths(&summary), ["keep.txt"]);
+        let base_oid = summary["base"]["oid"].as_str().unwrap().to_owned();
+        let merge_base = summary["mergeBase"].as_str().unwrap().to_owned();
+        let diff = compare_diff(root, "origin/main", &base_oid, &merge_base, "keep.txt", None, false).unwrap();
+        assert_eq!(diff["oldText"], "one\ntwo\nthree\n");
+        assert_eq!(diff["newText"], "one\nTWO\nthree\n");
+        assert_eq!(diff["binary"], false);
+        assert_eq!(diff["deleted"], false);
+
+        // A moved base is detected from the ref the list was computed with.
+        let remote = git(root, &["remote", "get-url", "origin"]).unwrap().trim().to_owned();
+        let peer = tempfile::tempdir().unwrap();
+        git(peer.path(), &["clone", "-q", &remote, "."]).unwrap();
+        git(peer.path(), &["config", "user.email", "peer@example.test"]).unwrap();
+        git(peer.path(), &["config", "user.name", "Peer"]).unwrap();
+        fs::write(peer.path().join("peer.txt"), "peer\n").unwrap();
+        git(peer.path(), &["add", "."]).unwrap();
+        git(peer.path(), &["commit", "-qm", "peer"]).unwrap();
+        git(peer.path(), &["push", "-q"]).unwrap();
+        git(root, &["fetch", "-q", "origin"]).unwrap();
+        assert_eq!(
+            compare_diff(root, "origin/main", &base_oid, &merge_base, "keep.txt", None, false)
+                .unwrap_err()
+                .to_string(),
+            "compare_stale"
+        );
+
+        // 1000 files is the cap; the rest are reported through `truncated`.
+        let base = git(root, &["rev-parse", "origin/main"]).unwrap().trim().to_owned();
+        for index in 0..1005 {
+            fs::write(root.join(format!("bulk-{index:04}.txt")), "x\n").unwrap();
+        }
+        git(root, &["add", "-A"]).unwrap();
+        git(root, &["commit", "-qm", "bulk"]).unwrap();
+        let capped = compare_summary(root, Some(&base), true).unwrap();
+        assert_eq!(capped["files"].as_array().unwrap().len(), 1000);
+        assert_eq!(capped["truncated"], true);
+    }
+
+    #[test]
+    fn compare_diff_reads_the_working_file_or_head_and_refuses_unsafe_paths() {
+        let (temp, _origin) = compare_repository();
+        let root = temp.path();
+        fs::write(root.join("keep.txt"), "one\nTWO\nthree\n").unwrap();
+        let summary = compare_summary(root, None, false).unwrap();
+        let base_oid = summary["base"]["oid"].as_str().unwrap().to_owned();
+        let merge_base = summary["mergeBase"].as_str().unwrap().to_owned();
+        git(root, &["add", "-A"]).unwrap();
+        git(root, &["commit", "-qm", "commit the change"]).unwrap();
+
+        // Committed-only reads HEAD, so the unstaged working file no longer matters.
+        fs::write(root.join("keep.txt"), "dirty\n").unwrap();
+        let committed = compare_diff(root, "origin/main", &base_oid, &merge_base, "keep.txt", None, true).unwrap();
+        assert_eq!(committed["newText"], "one\nTWO\nthree\n");
+        let working = compare_diff(root, "origin/main", &base_oid, &merge_base, "keep.txt", None, false).unwrap();
+        assert_eq!(working["newText"], "dirty\n");
+
+        // A deleted working file has no new side.
+        fs::remove_file(root.join("keep.txt")).unwrap();
+        let deleted = compare_diff(root, "origin/main", &base_oid, &merge_base, "keep.txt", None, false).unwrap();
+        assert_eq!(deleted["deleted"], true);
+        assert_eq!(deleted["newText"], "");
+
+        for path in ["../outside.txt", "/absolute.txt"] {
+            assert_eq!(
+                compare_diff(root, "origin/main", &base_oid, &merge_base, path, None, false)
+                    .unwrap_err()
+                    .to_string(),
+                "invalid_path"
+            );
+        }
+        assert_eq!(
+            compare_diff(root, "origin/main", &base_oid, "HEAD", "keep.txt", None, false)
+                .unwrap_err()
+                .to_string(),
+            "invalid_request"
+        );
+    }
+
+    #[test]
+    fn compare_diff_reads_a_renames_base_side_from_its_original_path() {
+        let (temp, _origin) = compare_repository();
+        let root = temp.path();
+        git(root, &["mv", "rename.txt", "renamed.txt"]).unwrap();
+        fs::write(root.join("renamed.txt"), "alpha\nBETA\ngamma\ndelta\n").unwrap();
+        let summary = compare_summary(root, None, false).unwrap();
+        let base_oid = summary["base"]["oid"].as_str().unwrap().to_owned();
+        let merge_base = summary["mergeBase"].as_str().unwrap().to_owned();
+        let renamed = summary["files"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|file| file["path"] == "renamed.txt")
+            .unwrap()
+            .clone();
+        assert_eq!(renamed["originalPath"], "rename.txt");
+        let original = renamed["originalPath"].as_str().unwrap();
+        let diff = compare_diff(root, "origin/main", &base_oid, &merge_base, "renamed.txt", Some(original), false).unwrap();
+        assert_eq!(diff["oldText"], "alpha\nbeta\ngamma\ndelta\n");
+        assert_eq!(diff["newText"], "alpha\nBETA\ngamma\ndelta\n");
+        // Without the original path the base side is missing, so the file looks newly added.
+        let without = compare_diff(root, "origin/main", &base_oid, &merge_base, "renamed.txt", None, false).unwrap();
+        assert_eq!(without["oldText"], "");
+    }
+
+    #[test]
+    fn compare_reads_root_relative_paths_and_renames_in_a_subdirectory() {
+        let temp = repo();
+        let root = temp.path();
+        fs::write(root.join("outside.txt"), "outside\n").unwrap();
+        fs::create_dir_all(root.join("sub")).unwrap();
+        fs::write(root.join("sub/keep.txt"), "one\ntwo\n").unwrap();
+        fs::write(root.join("sub/rename.txt"), "alpha\nbeta\n").unwrap();
+        git(root, &["add", "."]).unwrap();
+        git(root, &["commit", "-qm", "base"]).unwrap();
+        let origin = tempfile::tempdir().unwrap();
+        git(origin.path(), &["init", "--bare", "-q"]).unwrap();
+        git(root, &["remote", "add", "origin", origin.path().to_str().unwrap()]).unwrap();
+        git(root, &["push", "-qu", "origin", "main"]).unwrap();
+        git(origin.path(), &["symbolic-ref", "HEAD", "refs/heads/main"]).unwrap();
+        git(root, &["switch", "-qc", "feature"]).unwrap();
+        let sub = root.join("sub");
+        git(&sub, &["mv", "rename.txt", "renamed.txt"]).unwrap();
+        fs::write(sub.join("fresh.txt"), "fresh\n").unwrap();
+        fs::write(sub.join("keep.txt"), "one\nTWO\n").unwrap();
+
+        let summary = compare_summary(&sub, None, false).unwrap();
+        assert_eq!(summary["base"]["ref"], "origin/main");
+        // Paths are relative to the registered root, and files outside it stay out of the list.
+        assert_eq!(compare_paths(&summary), ["fresh.txt", "keep.txt", "renamed.txt"]);
+        let renamed = summary["files"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|file| file["path"] == "renamed.txt")
+            .unwrap()
+            .clone();
+        assert_eq!(renamed["originalPath"], "rename.txt");
+        let base_oid = summary["base"]["oid"].as_str().unwrap().to_owned();
+        let merge_base = summary["mergeBase"].as_str().unwrap().to_owned();
+        // `<mergeBase>:./rename.txt` resolves inside the subdirectory root.
+        let diff = compare_diff(&sub, "origin/main", &base_oid, &merge_base, "renamed.txt", Some("rename.txt"), false).unwrap();
+        assert_eq!(diff["oldText"], "alpha\nbeta\n");
+        assert_eq!(diff["newText"], "alpha\nbeta\n");
+        let keep = compare_diff(&sub, "origin/main", &base_oid, &merge_base, "keep.txt", None, false).unwrap();
+        assert_eq!(keep["oldText"], "one\ntwo\n");
+    }
+
+    #[test]
+    fn compare_marks_uncounted_untracked_files_as_unknown() {
+        let (temp, _origin) = compare_repository();
+        let root = temp.path();
+        // One file larger than the whole per-refresh budget: its counts are unknown, not zero.
+        fs::write(root.join("huge.txt"), "x".repeat(MAX_COMPARE_UNTRACKED_BYTES as usize + 1)).unwrap();
+        let summary = compare_summary(root, None, false).unwrap();
+        let huge = summary["files"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|file| file["path"] == "huge.txt")
+            .unwrap()
+            .clone();
+        assert_eq!(huge["countsUnknown"], true);
+        assert_eq!(huge["additions"], 0);
+    }
+
+    #[test]
+    fn push_preview_refuses_multiple_configured_upstreams() {
+        let temp = repo();
+        git(temp.path(), &["config", "branch.main.remote", "origin"]).unwrap();
+        for merge in ["refs/heads/main", "refs/heads/other"] {
+            git(temp.path(), &["config", "--add", "branch.main.merge", merge]).unwrap();
+        }
+        assert_eq!(
+            upstream(temp.path(), "main").unwrap_err().to_string(),
+            "push_preview_unavailable: multiple or empty upstream branches"
+        );
+    }
+
+    #[test]
+    fn push_preview_reads_local_tracking_state_and_refuses_detached_head() {
+        let temp = repo();
+        let root = temp.path();
+        fs::write(root.join("a.txt"), "base\n").unwrap();
+        git(root, &["add", "."]).unwrap();
+        git(root, &["commit", "-qm", "base"]).unwrap();
+        let origin = tempfile::tempdir().unwrap();
+        git(origin.path(), &["init", "--bare", "-q"]).unwrap();
+        git(root, &["remote", "add", "origin", origin.path().to_str().unwrap()]).unwrap();
+        git(root, &["push", "-qu", "origin", "main"]).unwrap();
+        git(origin.path(), &["symbolic-ref", "HEAD", "refs/heads/main"]).unwrap();
+
+        for subject in ["local one", "local two"] {
+            fs::write(root.join("a.txt"), format!("{subject}\n")).unwrap();
+            git(root, &["commit", "-qam", subject]).unwrap();
+        }
+        let ahead = push_preview(root).unwrap();
+        assert_eq!(ahead["remote"], "origin");
+        assert_eq!(ahead["remoteBranch"], "main");
+        assert_eq!(ahead["ahead"]["count"], 2);
+        assert_eq!(ahead["behind"]["count"], 0);
+        assert_eq!(ahead["ahead"]["commits"].as_array().unwrap().len(), 2);
+        assert!(ahead["remoteOid"].as_str().unwrap().len() == 40);
+
+        let backup = tempfile::tempdir().unwrap();
+        git(backup.path(), &["init", "--bare", "-q"]).unwrap();
+        git(root, &["remote", "add", "backup", backup.path().to_str().unwrap()]).unwrap();
+        git(root, &["push", "-q", "backup", "main:main"]).unwrap();
+        git(root, &["fetch", "-q", "backup"]).unwrap();
+        let backup_reflog = git(root, &["rev-parse", "--git-path", "logs/refs/remotes/backup/main"])
+            .unwrap();
+        let backup_reflog = PathBuf::from(backup_reflog.trim());
+        let backup_reflog = if backup_reflog.is_absolute() { backup_reflog } else { root.join(backup_reflog) };
+        let backup_fetched_at = std::time::SystemTime::now() - std::time::Duration::from_secs(60);
+        fs::File::options().write(true).open(backup_reflog).unwrap()
+            .set_times(fs::FileTimes::new().set_modified(backup_fetched_at)).unwrap();
+        git(root, &["config", "branch.main.pushRemote", "backup"]).unwrap();
+        git(root, &["fetch", "-q", "origin"]).unwrap();
+        let triangular = push_preview(root).unwrap();
+        assert_eq!(triangular["remote"], "backup");
+        assert_eq!(triangular["remoteBranch"], "main");
+        assert_eq!(triangular["setUpstream"], false);
+        let last_fetched = chrono::DateTime::parse_from_rfc3339(triangular["lastFetchedAt"].as_str().unwrap()).unwrap();
+        assert!(last_fetched.timestamp() < chrono::Utc::now().timestamp() - 30, "an origin FETCH_HEAD is not freshness for backup");
+        git(root, &["config", "--unset", "branch.main.pushRemote"]).unwrap();
+
+        let peer = tempfile::tempdir().unwrap();
+        git(peer.path(), &["clone", "-q", origin.path().to_str().unwrap(), "."]).unwrap();
+        git(peer.path(), &["config", "user.email", "peer@example.test"]).unwrap();
+        git(peer.path(), &["config", "user.name", "Peer"]).unwrap();
+        fs::write(peer.path().join("peer.txt"), "peer\n").unwrap();
+        git(peer.path(), &["add", "."]).unwrap();
+        git(peer.path(), &["commit", "-qm", "peer"]).unwrap();
+        git(peer.path(), &["push", "-q"]).unwrap();
+        git(root, &["fetch", "-q", "origin"]).unwrap();
+        let diverged = push_preview(root).unwrap();
+        assert_eq!(diverged["ahead"]["count"], 2);
+        assert_eq!(diverged["behind"]["count"], 1);
+        assert_eq!(diverged["diverged"], true);
+
+        git(root, &["switch", "-qc", "feature"]).unwrap();
+        fs::write(root.join("feature.txt"), "feature\n").unwrap();
+        git(root, &["add", "."]).unwrap();
+        git(root, &["commit", "-qm", "feature"]).unwrap();
+        let publish = push_preview(root).unwrap();
+        assert_eq!(publish["setUpstream"], true);
+        assert_eq!(publish["remoteBranch"], "feature");
+        assert!(publish.get("remoteOid").is_none());
+
+        git(root, &["config", "branch.feature.pushRemote", "backup"]).unwrap();
+        assert!(push_preview(root).is_err(), "new branches keep legacy publish destination");
+        git(root, &["config", "--unset", "branch.feature.pushRemote"]).unwrap();
+        git(root, &["checkout", "--detach", "-q"]).unwrap();
+        assert_eq!(push_preview(root).unwrap_err().to_string(), "push_preview_unavailable: detached HEAD");
+    }
+
+    #[test]
+    fn push_preview_uses_full_head_ref_and_strips_branch_prefix_once() {
+        let temp = repo();
+        let root = temp.path();
+        fs::write(root.join("a.txt"), "base\n").unwrap();
+        git(root, &["add", "."]).unwrap();
+        git(root, &["commit", "-qm", "base"]).unwrap();
+        git(root, &["tag", "main"]).unwrap();
+        let origin = tempfile::tempdir().unwrap();
+        git(origin.path(), &["init", "--bare", "-q"]).unwrap();
+        git(root, &["remote", "add", "origin", origin.path().to_str().unwrap()]).unwrap();
+        git(root, &["push", "-qu", "origin", "refs/heads/main:refs/heads/main"]).unwrap();
+        git(root, &["push", "-q", "origin", "refs/heads/main:refs/heads/refs/heads/main"]).unwrap();
+        git(root, &["fetch", "-q", "origin"]).unwrap();
+        git(root, &["config", "branch.main.merge", "refs/heads/refs/heads/main"]).unwrap();
+        git(root, &["config", "push.default", "upstream"]).unwrap();
+
+        let preview = push_preview(root).unwrap();
+        assert_eq!(preview["branch"], "main");
+        assert_eq!(preview["localBranch"], "refs/heads/main");
+        assert_eq!(preview["remoteBranch"], "refs/heads/main");
+        assert_eq!(preview["upstream"], "origin/refs/heads/main");
+        assert!(preview.get("remoteOid").is_some());
+        git(root, &["config", "remote.origin.push", "refs/heads/main:refs/heads/refs/heads/main"]).unwrap();
+        assert_eq!(push_preview(root).unwrap()["remoteBranch"], "refs/heads/main");
+    }
+
+    #[test]
+    fn history_plan_resolves_full_fences_parents_and_reset_range() {
+        let temp = repo();
+        let root = temp.path();
+        fs::write(root.join("a.txt"), "base\n").unwrap();
+        git(root, &["add", "."]).unwrap();
+        git(root, &["commit", "-qm", "base"]).unwrap();
+        let base = git(root, &["rev-parse", "HEAD"]).unwrap().trim().to_owned();
+        fs::write(root.join("a.txt"), "next\n").unwrap();
+        git(root, &["commit", "-am", "next", "-q"]).unwrap();
+        let plan = history_plan(root, &base[..12]).unwrap();
+        assert_eq!(plan["hash"], base);
+        assert!(plan["head"].as_str().unwrap().len() == 40);
+        assert_eq!(plan["branch"], "main");
+        assert_eq!(plan["detached"], false);
+        assert_eq!(plan["isAncestor"], true);
+        assert_eq!(plan["reset"]["count"], 1);
+        assert_eq!(plan["reset"]["commits"][0]["subject"], "next");
+    }
+
+    #[test]
+    fn history_plan_bounds_long_ranges_and_warns_when_removed_commits_are_remote() {
+        let temp = repo();
+        let root = temp.path();
+        fs::write(root.join("a.txt"), "base\n").unwrap();
+        git(root, &["add", "."]).unwrap();
+        git(root, &["commit", "-qm", "base"]).unwrap();
+        let base = git(root, &["rev-parse", "HEAD"]).unwrap().trim().to_owned();
+        for index in 0..21 {
+            let message = format!("history {index}");
+            git(root, &["commit", "--allow-empty", "-qm", &message]).unwrap();
+        }
+        let remote = tempfile::tempdir().unwrap();
+        git(remote.path(), &["init", "--bare", "-q"]).unwrap();
+        git(root, &["remote", "add", "origin", remote.path().to_str().unwrap()]).unwrap();
+        git(root, &["push", "-qu", "origin", "main"]).unwrap();
+
+        let plan = history_plan(root, &base).unwrap();
+        assert_eq!(plan["reset"]["count"], 21);
+        assert_eq!(plan["reset"]["commits"].as_array().unwrap().len(), 20);
+        assert_eq!(plan["reset"]["pushed"], true);
     }
 }

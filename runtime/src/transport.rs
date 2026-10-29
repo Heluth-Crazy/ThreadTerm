@@ -247,11 +247,19 @@ fn request_lane(method: &str) -> Lane {
         | "session.launch.read"
         | "git.status"
         | "git.diff"
+        | "git.fingerprints"
+        | "git.history.plan"
         | "git.log"
+        | "git.push.preview"
+        | "git.stash.list"
+        | "git.stash.show"
+        | "git.undo.list"
         | "git.branches"
         | "git.commit.show"
         | "git.commit.diff"
         | "git.blame"
+        | "git.compare.files"
+        | "git.compare.diff"
         | "filesystem.list"
         | "filesystem.read"
         | "filesystem.external.read"
@@ -349,7 +357,8 @@ fn trace_method(method: &str) -> &'static str {
         "filesystem.create", "filesystem.delete", "filesystem.image", "filesystem.rename",
         "filesystem.resolve", "filesystem.write", "git.branch.delete", "git.checkout",
         "git.commit", "git.commit.selected", "git.discard", "git.fetch", "git.index.write",
-        "git.merge", "git.merge.abort", "git.pull", "git.push", "git.stage", "git.unstage",
+        "git.merge", "git.merge.abort", "git.cherryPick", "git.revert", "git.reset", "git.operation.abort", "git.operation.continue", "git.pull", "git.push", "git.stage", "git.stash.apply",
+        "git.stash.drop", "git.stash.push", "git.unstage",
         "history.import", "inbox.read", "plugin.list", "plugin.reload",
         "plugin.selectBrowserBinding", "plugin.setEnabled", "project.add", "project.remove",
         "project.update", "provider.list",
@@ -1017,7 +1026,16 @@ mod decoder_tests {
             "project.catalog.list",
             "git.status",
             "git.diff",
+            "git.fingerprints",
+            "git.history.plan",
             "git.log",
+            "git.push.preview",
+            "git.stash.list",
+            "git.stash.show",
+            "git.undo.list",
+            "git.blame",
+            "git.compare.files",
+            "git.compare.diff",
             "review.changes",
             "filesystem.search",
             "filesystem.external.read",
@@ -1045,6 +1063,15 @@ mod decoder_tests {
             "git.commit",
             "git.commit.selected",
             "git.index.write",
+            "git.stash.push",
+            "git.stash.apply",
+            "git.stash.drop",
+            "git.undo",
+            "git.cherryPick",
+            "git.revert",
+            "git.reset",
+            "git.operation.abort",
+            "git.operation.continue",
             "session.resume",
             "session.stop",
             "worktree.list",
@@ -1064,11 +1091,14 @@ mod decoder_tests {
     fn send_trace_classifies_only_fixed_public_ordered_methods() {
         for known in [
             "git.fetch",
+            "git.stash.push",
             "session.config.save",
             "chat.queue.add",
             "review.revert",
             "agentReview.start",
             "data.backup",
+            "git.stash.apply",
+            "git.cherryPick",
         ] {
             assert_eq!(trace_method(known), known, "{known}");
         }

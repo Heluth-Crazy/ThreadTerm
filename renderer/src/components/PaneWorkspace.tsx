@@ -1,6 +1,7 @@
 import { type CSSProperties, type DragEvent as ReactDragEvent, lazy, Suspense, useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { ContentRef, FileReference, PaneLayout, PreviewAssociation, ProviderCapability, Session, Snapshot } from "@threadterm/protocol";
 import { confirmCloseEditors } from "../dirtyEditors";
+import { retargetDiffFile } from '../diffFileNavigation';
 import { displayPath } from '../displayPath';
 import { useTranslation } from "../i18n";
 import {
@@ -204,6 +205,18 @@ export function PaneWorkspace({ layout, sessions, data, onChange, theme, termina
    }catch(error){if(mounted.current)setCloseIssue(error instanceof Error?error.message:String(error));}
    finally{closingRef.current=false;if(mounted.current)setClosing(false);}
   };
+  const navigateDiffFile=async(paneId:string,tab:Extract<ContentRef,{path:string}>,path:string,prepare?:()=>Promise<boolean>)=>{
+   if(closingRef.current)return;
+   closingRef.current=true;setClosing(true);setCloseIssue(undefined);onInteraction?.();
+   try {
+    if(!await confirmCloseEditors([editorId(paneId,tab)])||!mounted.current)return;
+    if(prepare && !await prepare())return;
+    if(!mounted.current)return;
+    const next=retargetDiffFile(latest.current,paneId,tab,path);
+    if(next!==latest.current)commit(next);
+   } catch(error){if(mounted.current)setCloseIssue(error instanceof Error?error.message:String(error));}
+   finally{closingRef.current=false;if(mounted.current)setClosing(false);}
+  };
   useEffect(() => {
     if (!fullscreenPaneId) return;
     const key = (event: KeyboardEvent) => {
@@ -243,6 +256,7 @@ export function PaneWorkspace({ layout, sessions, data, onChange, theme, termina
         onToggleFullscreen={() => setFullscreenPaneId(current => current === node.id ? undefined : node.id)}
         onSplit={(paneId) => {onInteraction?.();setSelectedPaneId(paneId);}}
         onClosePane={()=>void closeWorkspacePane(node.id)}
+        onNavigateDiff={(tab,path,prepare)=>void navigateDiffFile(node.id,tab,path,prepare)}
         onPickSession={onPickSession}
         onSessionChanged={onSessionChanged}
         onOpenSession={onOpenSession}
@@ -357,7 +371,7 @@ function Pane({
   onFork,
   providers,
   onResumed,
-  closing,onActivateTab,onCloseTab,onCloseTabs,onReorder,paneLabel,onSwitcherHost,fileMenuItems,onOpenSessionFiles,
+  closing,onActivateTab,onCloseTab,onCloseTabs,onReorder,paneLabel,onSwitcherHost,fileMenuItems,onOpenSessionFiles,onNavigateDiff,
   onFileReference,fileReveal,onOpenPath,projectPath,onWebNavigation,prepareBrowserShare,previewProvenance,previewLabels,delegationEnabled,sessionInfoEnabled,workbench,
 }: {
   node: Extract<PaneLayout, { kind: "pane" }>;
@@ -376,6 +390,7 @@ function Pane({
   onToggleFullscreen: () => void;
   onSplit: (paneId: string) => void;
   onClosePane:()=>void;
+  onNavigateDiff:(tab:Extract<ContentRef,{path:string}>,path:string,prepare?:()=>Promise<boolean>)=>void;
   onPickSession?: (paneId: string) => void;
   onSessionChanged?: () => void;
   onOpenSession?: (sessionId: string) => void;
@@ -504,7 +519,9 @@ function Pane({
       comments={workbench?.comments}/>
   ) : item.kind === "review" ? (
     <ReviewDiffView projectId={item.projectId} worktreePath={item.worktreePath} path={item.path} sessionId={item.sessionId}
+      worktreeSessionIds={sessions.filter(session=>session.projectId===item.projectId && (session.worktreePath ?? '')===(item.worktreePath ?? '')).map(session=>session.id)}
       checkpointId={item.checkpointId} toCheckpointId={item.toCheckpointId} editorId={editorId(node.id, item)} zh={zh}
+      onNavigate={path=>onNavigateDiff(item,path)} navigationDisabled={closing}
       onOpenFile={workbench?.openFile?path=>workbench.openFile?.({projectId:item.projectId,worktreePath:item.worktreePath,path}):undefined}
       comments={workbench?.comments}/>
   ) : item.kind === "web" ? (
@@ -518,6 +535,8 @@ function Pane({
       worktreePath={item.worktreePath}
       comments={workbench?.comments}
       initialStaged={item.kind === "diff" ? item.staged : undefined}
+      initialCompare={item.kind === "diff" ? item.compare : undefined}
+      onNavigateDiff={item.kind==='diff'?(path,prepare)=>onNavigateDiff(item,path,prepare):undefined} navigationDisabled={closing}
       onSendToAgent={workbench?.sendToAgent?lines=>workbench.sendToAgent?.({projectId:item.projectId,worktreePath:item.worktreePath,externalId:item.externalId,...lines}):undefined}
       onOpenHistory={workbench?.openHistory?target=>workbench.openHistory?.({projectId:item.projectId,worktreePath:item.worktreePath,...target}):undefined}
       initialPath={item.path}

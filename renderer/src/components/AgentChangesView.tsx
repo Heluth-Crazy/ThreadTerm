@@ -10,9 +10,11 @@ import { relativeTime } from './CodeEditor';
 import { workbenchError } from '../workbench/errors';
 import { baseName, FILES_CHANGED_EVENT, notifyFilesChanged, parentPath, type WorkbenchActions } from '../workbench/types';
 import { agentReviewError, defaultReviewAgent } from '../agentReview';
+import { reviewChangeSummary, reviewChangeTotals, reviewFileLineCounts } from '../agentChangeCounts';
 import { createRefreshQueue } from '../workbench/refreshQueue';
 import { eventTouchesWorktree } from '../workbench/refreshTriggers';
 import { AgentReviewSection } from './AgentReview';
+import { agentChangesRequestIsCurrent, beginAgentChangesRequest, createAgentChangesCache, finishAgentChangesRequest, refreshAgentChangesCache, resolveAgentChangesWindows } from '../agentChangesCache';
 
 const kindLabel = (checkpoint:ReviewCheckpoint, zh:boolean) => ({
  turn:zh ? '对话回合' : 'Turn',
@@ -25,6 +27,7 @@ function FileRows({files, zh, onOpen, onRevert}:{files:ReviewFile[];zh:boolean;o
  if(!files.length) return <p className="wb-empty">{zh ? '没有文件更改。' : 'No file changes.'}</p>;
  return <div role="list">{files.map(file => <div key={file.path} role="listitem" className={`wb-change-row tone-${file.status === 'A' ? 'added' : file.status === 'D' ? 'deleted' : 'modified'}`}>
   <button type="button" className="wb-change-open" title={file.path} onClick={() => onOpen(file.path)}><Icon name="file"/><span className="wb-name">{baseName(file.path)}</span><span className="wb-dir">{parentPath(file.path)}</span></button>
+  {(() => { const counts=reviewFileLineCounts(file); return <span className="wb-change-counts">{counts.binary ? <span className="wb-change-binary">{zh ? '二进制' : 'Binary'}</span> : <><span className="wb-change-added">+{counts.added}</span><span className="wb-change-removed">−{counts.removed}</span></>}</span>; })()}
   {onRevert && <span className="wb-row-actions"><button type="button" className="icon-btn" title={zh ? '还原到检查点' : 'Revert to checkpoint'} aria-label={zh ? '还原到检查点' : 'Revert to checkpoint'} onClick={() => onRevert(file)}><WbIcon name="undo"/></button></span>}
   <span className="wb-deco">{file.status}</span>
  </div>)}</div>;
@@ -34,8 +37,12 @@ export function AgentChangesView({sessions, activeSessionId, actions, zh, visibl
  const [sessionId, setSessionId] = useState(activeSessionId ?? sessions[0]?.id);
  const [state, setState] = useState<ReviewState>();
  const [latest, setLatest] = useState<ReviewFile[]>();
- const [turns, setTurns] = useState<Record<string,ReviewFile[]|'loading'>>({});
+ const latestTotals = reviewChangeTotals(latest ?? []);
+ const [turns, setTurns] = useState(() => createAgentChangesCache(sessionId));
+ const turnCache = useRef(turns);
+ if(turnCache.current.sessionId !== sessionId) turnCache.current = createAgentChangesCache(sessionId);
  const [open, setOpen] = useState<Set<string>>(new Set());
+ const openRef = useRef(open);
  const [issue, setIssue] = useState<string>();
  const [busy, setBusy] = useState(false);
  const [confirm, setConfirm] = useState<{checkpoint:ReviewCheckpoint;files:ReviewFile[];expected:Record<string,string|null>}>();
@@ -56,20 +63,34 @@ export function AgentChangesView({sessions, activeSessionId, actions, zh, visibl
  useEffect(() => { if(!sessionId || !sessions.some(session => session.id === sessionId)) setSessionId(sessions[0]?.id); }, [sessions]);
  const checkpoints = state?.checkpoints ?? [];
  const newest = checkpoints.find(checkpoint => checkpoint.status === 'ready');
+ const fetchTurn = useCallback(async (from:string) => {
+  const started = beginAgentChangesRequest(turnCache.current, from), ticket = started.ticket;
+  if(!ticket || !sessionId || turnCache.current.sessionId !== sessionId) return;
+  turnCache.current = started.cache; setTurns(started.cache);
+  try {
+   const value = await request('review.changes', {sessionId, from, ...(ticket.to ? {to:ticket.to} : {})});
+   if(!agentChangesRequestIsCurrent(turnCache.current, ticket)) return;
+   turnCache.current = finishAgentChangesRequest(turnCache.current, ticket, value.files); setTurns(turnCache.current);
+   if(!ticket.to) setLatest(value.files);
+  } catch(error) {
+   if(!agentChangesRequestIsCurrent(turnCache.current, ticket)) return;
+   turnCache.current = finishAgentChangesRequest(turnCache.current, ticket); setTurns(turnCache.current); setIssue(workbenchError(error, zh));
+  }
+ }, [sessionId, zh]);
  const load = useCallback(async () => {
-  if(!sessionId) return;
-  const ticket = ++generation.current;
+  if(!sessionId || turnCache.current.sessionId !== sessionId) return;
+  const ticket = ++generation.current, epoch = turnCache.current.epoch;
+  turnCache.current = refreshAgentChangesCache(turnCache.current); setTurns(turnCache.current);
   try {
    const value = await request('review.list', {sessionId});
-   if(ticket !== generation.current) return;
+   if(ticket !== generation.current || epoch !== turnCache.current.epoch) return;
+   turnCache.current = resolveAgentChangesWindows(turnCache.current, value.available ? value.checkpoints : []); setTurns(turnCache.current);
    setState(value); setIssue(undefined);
-   const head = value.checkpoints.find(checkpoint => checkpoint.status === 'ready');
-   if(value.available && head) {
-    const changes = await request('review.changes', {sessionId, from:head.id});
-    if(ticket === generation.current) setLatest(changes.files);
-   } else setLatest(undefined);
-   } catch(error) { if(ticket === generation.current) { setIssue(workbenchError(error, zh)); setState(undefined); setLatest(undefined); } }
- }, [sessionId]);
+   const head = value.available ? value.checkpoints.find(checkpoint => checkpoint.status === 'ready') : undefined;
+   if(!head) setLatest(undefined);
+   await Promise.all([...new Set([...(head ? [head.id] : []), ...openRef.current])].map(from => fetchTurn(from)));
+  } catch(error) { if(ticket === generation.current && epoch === turnCache.current.epoch) { setIssue(workbenchError(error, zh)); setState(undefined); setLatest(undefined); } }
+ }, [sessionId, fetchTurn]);
  const loadAgentReviews = useCallback(async () => {
   if(!visible || !sessionId) return;
   const ticket = ++reviewGeneration.current, requested = sessionId;
@@ -80,7 +101,7 @@ export function AgentChangesView({sessions, activeSessionId, actions, zh, visibl
    setReviews(value);
   } catch(error) { if(ticket === reviewGeneration.current && visibleRef.current && reviewSessionId.current === requested) setIssue(workbenchError(error, zh)); }
  }, [sessionId, visible, zh]);
- useEffect(() => { reviewSessionId.current=sessionId; reviewGeneration.current++; reviewerIds.current=new Set(); setReviews([]); setTurns({}); setOpen(new Set()); setState(undefined); setLatest(undefined); void load(); }, [sessionId]);
+ useEffect(() => { if(turnCache.current.sessionId !== sessionId) turnCache.current=createAgentChangesCache(sessionId); const epoch=turnCache.current.epoch; reviewSessionId.current=sessionId; reviewGeneration.current++; reviewerIds.current=new Set(); setReviews([]); setTurns(turnCache.current); openRef.current=new Set(); setOpen(openRef.current); setState(undefined); setLatest(undefined); void load(); return () => { generation.current++; if(turnCache.current.epoch === epoch) turnCache.current=createAgentChangesCache(); }; }, [sessionId]);
  // The reviewer's rows are event driven. The existing file-refresh timer never calls agentReview.list.
  useEffect(() => {
   if(!visible) return;
@@ -101,20 +122,16 @@ export function AgentChangesView({sessions, activeSessionId, actions, zh, visibl
   });
   return () => { queue.stop(); removeEventListener(FILES_CHANGED_EVENT, changed); removeEventListener('visibilitychange', shown); unsubscribe(); };
  }, [visible, load, loadAgentReviews, sessionId]);
- const toggleTurn = async (checkpoint:ReviewCheckpoint, next?:ReviewCheckpoint) => {
-  const id = checkpoint.id;
-  setOpen(current => { const value = new Set(current); if(value.has(id)) value.delete(id); else value.add(id); return value; });
-  if(turns[id] || checkpoint.status !== 'ready' || !sessionId) return;
-  setTurns(current => ({...current, [id]:'loading'}));
-  try {
-   const value = await request('review.changes', {sessionId, from:id, ...(next ? {to:next.id} : {})});
-   setTurns(current => ({...current, [id]:value.files}));
-  } catch(error) { setIssue(workbenchError(error, zh)); setTurns(current => { const value = {...current}; delete value[id]; return value; }); }
+ const toggleTurn = async (checkpoint:ReviewCheckpoint) => {
+  const id = checkpoint.id, value = new Set(openRef.current);
+  if(value.has(id)) value.delete(id); else value.add(id);
+  openRef.current = value; setOpen(value);
+  if(value.has(id) && checkpoint.status === 'ready') await fetchTurn(id);
  };
  const checkpointNow = async (kind:'manual'|'baseline') => {
   if(!sessionId) return;
   setBusy(true);
-  try { await request('review.checkpoint', {sessionId, kind, operationId:operationId()}); setTurns({}); await load(); }
+  try { await request('review.checkpoint', {sessionId, kind, operationId:operationId()}); await load(); }
   catch(error) { setIssue(workbenchError(error, zh)); }
   finally { setBusy(false); }
  };
@@ -124,7 +141,7 @@ export function AgentChangesView({sessions, activeSessionId, actions, zh, visibl
   try {
    await request('review.revert', {sessionId, checkpointId:confirm.checkpoint.id, paths:confirm.files.map(file => file.path), expectedFingerprints:confirm.expected, operationId:operationId()});
    // The view's own FILES_CHANGED listener reloads this list; the shared Git status hears it too.
-   setConfirm(undefined); setTurns({}); notifyFilesChanged();
+   setConfirm(undefined); notifyFilesChanged();
   } catch(error) { setIssue(workbenchError(error, zh)); setConfirm(undefined); }
   finally { setBusy(false); }
  };
@@ -190,6 +207,7 @@ export function AgentChangesView({sessions, activeSessionId, actions, zh, visibl
     <div className="wb-review-title">
      <span className="wb-section-label">{newest ? text('Since latest checkpoint', '最新检查点以来') : text('No checkpoint yet', '暂无检查点')}</span>
      {newest && <span className="wb-time">{kindLabel(newest, zh)} · {relativeTime(newest.createdAt, zh)}</span>}
+     {newest && latest && <span className="wb-review-counts" aria-label={reviewChangeSummary(latest, zh)}>{zh ? `${latest.length} 个文件` : `${latest.length} ${latest.length === 1 ? 'file' : 'files'}`} · <span className="wb-change-added">+{latestTotals.added}</span>{' '}<span className="wb-change-removed">−{latestTotals.removed}</span></span>}
     </div>
     <button type="button" className="btn btn-sm" disabled={busy} onClick={() => void checkpointNow('manual')} title={text('Snapshot the working tree now', '立即为工作区拍快照')}><WbIcon name="checkpoint"/>{text('Checkpoint', '检查点')}</button>
    </div>
@@ -207,9 +225,9 @@ export function AgentChangesView({sessions, activeSessionId, actions, zh, visibl
     {checkpoints.map((checkpoint, index) => {
      // The next newer ready checkpoint closes this turn's window; the newest compares to now.
      const next = checkpoints.slice(0, index).reverse().find(candidate => candidate.status === 'ready');
-     const files = turns[checkpoint.id], expanded = open.has(checkpoint.id);
+     const files = turns.sessionId === sessionId ? turns.rows[checkpoint.id] : undefined, expanded = open.has(checkpoint.id);
      return <div key={checkpoint.id} className={`wb-checkpoint${checkpoint.status === 'failed' ? ' failed' : ''}`}>
-      <button type="button" className="wb-checkpoint-head" aria-expanded={expanded} disabled={checkpoint.status !== 'ready'} onClick={() => void toggleTurn(checkpoint, next)} title={checkpoint.label}>
+      <button type="button" className="wb-checkpoint-head" aria-expanded={expanded} disabled={checkpoint.status !== 'ready'} onClick={() => void toggleTurn(checkpoint)} title={checkpoint.label}>
        <span className={`wb-chevron${expanded ? ' open' : ''}`} aria-hidden="true">{checkpoint.status === 'ready' && <Icon name="chevR"/>}</span>
        <span className="wb-checkpoint-kind">{kindLabel(checkpoint, zh)}</span>
        <span className="wb-name">{checkpoint.label ?? ''}</span>
@@ -217,7 +235,7 @@ export function AgentChangesView({sessions, activeSessionId, actions, zh, visibl
       </button>
       {checkpoint.status === 'failed' && <p className="wb-muted">{text('Snapshot failed: ', '快照失败：')}{checkpoint.error}</p>}
       {checkpoint.skipped.length > 0 && <p className="wb-muted">{text(`${checkpoint.skipped.length} large file(s) were not captured.`, `${checkpoint.skipped.length} 个大文件未被记录。`)}</p>}
-      {expanded && (files === 'loading' ? <p className="wb-summary">{text('Loading…', '正在读取…')}</p> : files && <FileRows files={files} zh={zh} onOpen={path => openReview(checkpoint, path, next)}/>)}
+      {expanded && (!files ? <p className="wb-summary">{text('Loading…', '正在读取…')}</p> : files && <FileRows files={files} zh={zh} onOpen={path => openReview(checkpoint, path, next)}/>)}
      </div>;
     })}
    </div>}

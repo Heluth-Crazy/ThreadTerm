@@ -5,6 +5,7 @@ import { changeGroups, decorationFor, decorationIndex } from '../renderer/src/wo
 import { stageChunk, unstageChunk, withLineBreaks } from '../renderer/src/workbench/indexEdit.ts';
 import { formatAgentReference, insertAtCaret, referencePath } from '../renderer/src/workbench/agentReference.ts';
 import { workbenchError } from '../renderer/src/workbench/errors.ts';
+import { branchRowState, checkoutLocalPaths, sortBranches, worktreeName } from '../renderer/src/workbench/branchMenu.ts';
 
 test('quick open prefers file-name matches, contiguous runs and shallow paths', () => {
  const paths = ['src/components/FileWorkspace.tsx', 'src/workbench/fuzzy.ts', 'node_modules/pkg/lib/fuzzy.ts', 'docs/fw-notes.md', 'src/components/Framework.tsx'];
@@ -68,4 +69,76 @@ test('runtime errors map to readable text without hiding Git output', () => {
  assert.match(workbenchError(new Error('Unsupported runtime method'), true), /重启/);
  assert.equal(workbenchError(new Error('git_failed: fatal: not a git repository'), false), 'fatal: not a git repository');
  assert.equal(workbenchError(new Error('something unexpected'), false), 'something unexpected');
+ assert.match(workbenchError(new Error('branch_checked_out_elsewhere: D:/repo/other'), false), /already checked out/);
+ assert.match(workbenchError(new Error('branch_checked_out_elsewhere: {"path":"D:/repo/missing","missing":true}'), false), /D:\/repo\/missing.*worktree prune/);
+ assert.match(workbenchError(new Error('checkout_blocked: would overwrite local changes'), true), /阻止/);
+ assert.match(workbenchError(new Error('checkout_would_overwrite: ["a.ts"]'), true), /覆盖/);
 });
+
+test('branch menu keeps current and recent local branches before remotes, with explicit worktree row states', () => {
+ const branches=sortBranches([
+  {name:'origin/main',remote:true,current:false,lastCommit:{hash:'3',subject:'remote',committedAt:'2026-01-03T00:00:00Z'}},
+  {name:'older',remote:false,current:false,lastCommit:{hash:'1',subject:'old',committedAt:'2026-01-01T00:00:00Z'}},
+  {name:'main',remote:false,current:true,lastCommit:{hash:'2',subject:'current',committedAt:'2026-01-02T00:00:00Z'}},
+  {name:'recent',remote:false,current:false,lastCommit:{hash:'4',subject:'recent',committedAt:'2026-01-04T00:00:00Z'}},
+ ]);
+ assert.deepEqual(branches.map(branch=>branch.name),['main','recent','older','origin/main']);
+ assert.equal(branchRowState({name:'main',remote:false,current:true},true),'current');
+ assert.equal(branchRowState({name:'topic',remote:false,current:false,worktreePath:'D:\\repo\\topic'},true),'open-worktree');
+ assert.equal(branchRowState({name:'topic',remote:false,current:false,worktreePath:'D:\\repo\\topic'},false),'worktree-unavailable');
+ assert.equal(branchRowState({name:'missing',remote:false,current:false,worktreePath:'D:\\repo\\missing',worktreeMissing:true},true),'worktree-missing');
+ assert.equal(branchRowState({name:'topic',remote:false,current:false},false),'checkout');
+ assert.equal(worktreeName('D:\\repo\\topic'),'topic');
+});
+
+test('checkout warnings deduplicate local paths across Git status groups and distinguish unloaded status', () => {
+ assert.equal(checkoutLocalPaths(undefined),undefined);
+ assert.deepEqual(checkoutLocalPaths({changes:[]}),[]);
+ assert.deepEqual(checkoutLocalPaths({changes:[
+  {path:'staged-and-unstaged.ts',indexStatus:'M',worktreeStatus:'M'},
+  {path:'staged-and-unstaged.ts',indexStatus:'M',worktreeStatus:'M'},
+  {path:'untracked.ts',indexStatus:'?',worktreeStatus:'?',untracked:true},
+  {path:'conflict.ts',indexStatus:'U',worktreeStatus:'U'},
+ ]}),['staged-and-unstaged.ts','untracked.ts','conflict.ts']);
+ assert.deepEqual(checkoutLocalPaths({changes:[
+  {path:'obstruction.txt',indexStatus:'?',worktreeStatus:'?',untracked:true},
+  {path:'other-obstruction.txt',indexStatus:'?',worktreeStatus:'?',untracked:true},
+  {path:'obstruction.txt',indexStatus:'?',worktreeStatus:'?',untracked:true},
+ ]}),['obstruction.txt','other-obstruction.txt']);
+});
+
+test('branch scope helpers load through type stripping and keep the header, groups and base order', async () => {
+ const {readFile}=await import('node:fs/promises');
+ const source=await readFile(new URL('../renderer/src/workbench/branchScope.ts',import.meta.url),'utf8');
+ for(const line of source.split('\n').filter(entry=>entry.startsWith('import')))assert.match(line,/^import type /,line);
+ const scope=await import('../renderer/src/workbench/branchScope.ts');
+ const files=[
+  {path:'src/b.ts',status:'modified',additions:2,deletions:1,binary:false},
+  {path:'README.md',status:'added',additions:5,deletions:0,binary:false},
+  {path:'src/a.ts',status:'renamed',originalPath:'src/z.ts',additions:0,deletions:0,binary:false},
+ ];
+ assert.equal(scope.compareHeaderText({branch:'feature',base:'origin/main',files,zh:false}),'feature vs origin/main · 3 files · +7 −1');
+ assert.deepEqual(scope.comparePaths(files),['README.md','src/a.ts','src/b.ts']);
+ assert.deepEqual(scope.compareGroups(files).map(group=>[group.dir,group.files.map(file=>file.path)]),[['',['README.md']],['src',['src/a.ts','src/b.ts']]]);
+ assert.deepEqual(scope.compareBaseOptions([{name:'main',remote:false,current:false},{name:'origin/main',remote:true,current:false}],{current:'feature',defaultRef:'origin/main',zh:false}).map(option=>`${option.kind}:${option.ref}`),['default:origin/main','local:main']);
+ assert.equal(scope.compareDiffEditable({committedOnly:true},true),false);
+ // Navigation follows the displayed directory grouping, not a plain path sort.
+ const mixed=[{path:'src/a.ts'},{path:'tsconfig.json'},{path:'package.json'},{path:'README.md'}];
+ assert.deepEqual(scope.comparePaths(mixed),['README.md','package.json','tsconfig.json','src/a.ts']);
+ assert.deepEqual(scope.comparePaths(mixed),scope.compareGroups(mixed).flatMap(group=>group.files.map(file=>file.path)));
+ // A compare tab is deduped on its scope and its own base path, never on path alone.
+ const compare={base:'origin/main',oid:'a'.repeat(40),mergeBase:'b'.repeat(40)};
+ assert.equal(scope.sameDiffTabKey({compare},{compare}),true);
+ assert.equal(scope.sameDiffTabKey({compare},{compare:{...compare,committedOnly:true}}),false);
+ assert.equal(scope.sameDiffTabKey({compare:{...compare,originalPath:'old.txt'}},{compare}),false);
+ // A retargeted tab never reuses the first file's base path.
+ const listed=[{path:'renamed.txt',originalPath:'original.txt'},{path:'src/a.ts'}];
+ assert.equal(scope.compareOriginalPath('renamed.txt','renamed.txt',{originalPath:'original.txt'},listed),'original.txt');
+ assert.equal(scope.compareOriginalPath('src/a.ts','src/a.ts',{originalPath:'original.txt'},listed),undefined);
+ scope.forgetBranchScopePreferences();
+ scope.writeBranchScopePreference('p\0',{mode:'branch',base:'origin/main',committedOnly:true});
+ assert.deepEqual(scope.readBranchScopePreference('p\0'),{mode:'branch',base:'origin/main',committedOnly:true});
+ scope.forgetBranchScopePreferences();
+ assert.equal(scope.readBranchScopePreference('p\0'),undefined);
+});
+

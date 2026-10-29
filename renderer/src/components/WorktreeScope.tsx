@@ -2,7 +2,9 @@ import { Select } from "./ui/Select";
 import { FormEvent, useEffect, useState } from "react";
 import type { LocalBranch, Project, Worktree } from "@threadterm/protocol";
 import { operationId, request } from "../bridge";
-import { displayPath } from "../projectScope";
+import { displayPath, sameCanonicalScope } from "../projectScope";
+import { workbenchError } from "../workbench/errors";
+import { useTranslation } from "../i18n";
 
 type Props = { project: Project; value?: string; onChange: (path?: string) => void };
 
@@ -19,12 +21,14 @@ function ProjectWorktreeScope({
   value?: string;
   onChange: (path?: string) => void;
 }) {
+  const { locale } = useTranslation();
+  const zh = locale === "zh-CN";
   const [items, setItems] = useState<Worktree[]>([]);
   const [branches, setBranches] = useState<LocalBranch[]>([]);
   const [expanded, setExpanded] = useState(false);
   const [path, setPath] = useState("");
   const [branch, setBranch] = useState("");
-  const [createBranch, setCreateBranch] = useState(true);
+  const [startPoint, setStartPoint] = useState("");
   const [issue, setIssue] = useState<string>();
   const [busy, setBusy] = useState(false);
   const [relocating, setRelocating] = useState<Worktree>();
@@ -42,11 +46,11 @@ function ProjectWorktreeScope({
       ),
     request("worktree.branches", { projectId: project.id })
       .then((next) => { setBranches(next); setBranchIssue(undefined); })
-      .catch((error) => { setBranches([]); setBranchIssue(error instanceof Error ? error.message : "Unable to load branches."); }),
+      .catch((error) => { setBranches([]); setBranchIssue(workbenchError(error, zh)); }),
   ]);
   useEffect(() => {
     void reload();
-  }, [project.id]);
+  }, [project.id, zh]);
   const create = async (event: FormEvent) => {
     event.preventDefault();
     setBusy(true);
@@ -56,7 +60,8 @@ function ProjectWorktreeScope({
         projectId: project.id,
         path: path.trim(),
         branch: branch.trim(),
-        createBranch,
+        createBranch: !existing,
+        ...(!existing && base ? { startPoint: base } : {}),
         operationId: operationId(),
       });
       await reload();
@@ -65,12 +70,19 @@ function ProjectWorktreeScope({
       setBranch("");
     } catch (error) {
       setIssue(
-        error instanceof Error ? error.message : "Unable to create worktree.",
+        workbenchError(error, zh),
       );
     } finally {
       setBusy(false);
     }
   };
+  const existing = branches.some((item) => item.name === branch.trim());
+  const currentWorktree = items.find((item) => value && sameCanonicalScope(item.path, value));
+  const base = startPoint || currentWorktree?.head || branches.find((item) => item.current)?.name || "";
+  const baseByName = new Map<string, LocalBranch>();
+  branches.forEach((item) => { baseByName.set(item.name, item); if (item.upstream) baseByName.set(item.upstream, item); });
+  const baseOptions = [...baseByName.entries()].map(([name, item]) => ({ name, item }));
+  const baseCommit = branches.find((item) => item.name === base || item.lastCommit.id === base)?.lastCommit;
   const relocate = async (item: Worktree) => {
     const path = relocationPath.trim();
     if (!path) return;
@@ -170,7 +182,6 @@ function ProjectWorktreeScope({
           <div key={item.name}>
             <button type="button" disabled={busy} onClick={() => {
               setBranch(item.name);
-              setCreateBranch(false);
             }}>
               {item.current ? "✓ " : ""}{item.name}
             </button>
@@ -198,13 +209,13 @@ function ProjectWorktreeScope({
           placeholder="Branch"
         /></label>
         <label>
-          <input
-            type="checkbox"
-            checked={createBranch}
-            onChange={(event) => setCreateBranch(event.target.checked)}
-          />{" "}
-          Create branch
+          {zh ? "基准" : "Base"}
+          <Select aria-label={zh ? "基准" : "Base"} value={base} disabled={existing} onChange={(event) => setStartPoint(event.target.value)}>
+            {base && !baseOptions.some((option) => option.name === base) && <option value={base}>{baseCommit ? `${baseCommit.id.slice(0, 8)} · ${baseCommit.subject}` : base}</option>}
+            {baseOptions.map((option) => <option key={option.name} value={option.name}>{option.name}</option>)}
+          </Select>
         </label>
+        {existing ? <p>{zh ? "使用已有分支。已有分支保留其现有提交，不能选择基准。" : "Use existing branch. An existing branch keeps its current commit, so its base cannot be changed."}</p> : baseCommit && <p>{baseCommit.id.slice(0, 8)} · {baseCommit.subject}</p>}
         <button disabled={busy || Boolean(branchIssue)} type="submit">
           Create worktree
         </button>

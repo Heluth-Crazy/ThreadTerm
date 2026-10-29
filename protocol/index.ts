@@ -873,25 +873,42 @@ export interface RequestMap {
  'draft.put': [FileScope&{path:string;content:string;baseFingerprint:string;expectedRevision:number;operationId:string},Draft];
  'draft.delete': [{id:string;expectedRevision:number;operationId:string},null];
  'git.status': [FileScope,GitStatus];
+ 'git.fingerprints': [FileScope&{paths:string[]},GitFingerprints];
  'git.stage': [FileScope&{paths:string[];expectedFingerprints?:Record<string,string>;operationId:string},{paths:string[]}];
  'git.unstage': [FileScope&{paths:string[];expectedFingerprints?:Record<string,string>;operationId:string},{paths:string[]}];
  'git.commit': [FileScope&{message:string;amend?:boolean;operationId:string},{commit:string}];
  'git.commit.selected': [FileScope&{message:string;selected:GitSelectedCommitEntry[];expectedHead:GitHeadSnapshot;expectedIndexFingerprint:string;operationId:string},GitSelectedCommitResult];
- 'git.fetch': [FileScope&{operationId:string},{output:string}];
+ 'git.fetch': [FileScope&{operationId:string;remote?:string},{output:string}];
  'git.pull': [FileScope&{operationId:string},{output:string}];
- 'git.push': [FileScope&{setUpstream?:boolean;operationId:string},{output:string}];
- 'git.merge': [FileScope&{branch:string;operationId:string},{output:string;conflicted:boolean}];
+ 'git.push': [FileScope&{operationId:string}&({setUpstream?:boolean;force?:never;expectedRemoteOid?:never;remote?:never;remoteBranch?:never;localBranch?:never}|{force:'with-lease';expectedRemoteOid:string;remote:string;remoteBranch:string;localBranch:string;setUpstream?:never}),{output:string}];
+ 'git.push.preview': [FileScope,GitPushPreview];
+ 'git.merge': [FileScope&({branch:string;upstream?:never}|{branch?:never;upstream:true})&{operationId:string},{output:string;conflicted:boolean;warning?:'merge_completed_after_error'}];
  'git.merge.abort': [FileScope&{operationId:string},{output:string}];
+ 'git.history.plan': [FileScope&{hash:string},GitHistoryPlan];
+ 'git.cherryPick': [FileScope&{hash:string;operationId:string},GitHistoryMutationResult];
+ 'git.revert': [FileScope&{hash:string;mainline?:number;operationId:string},GitHistoryMutationResult];
+ 'git.reset': [FileScope&{hash:string;mode:'soft'|'mixed';expectedHead:string;undoOf?:string;operationId:string},{output:string;previousHead:string;head:string;symbolicHead:string;undoId?:string}];
+ 'git.operation.abort': [FileScope&{kind:'cherry-pick'|'revert';operationId:string},{output:string;head?:string}];
+ 'git.operation.continue': [FileScope&{kind:'cherry-pick'|'revert';operationId:string},GitHistoryMutationResult];
  'git.diff': [FileScope&{path:string;staged:boolean},GitDiff];
  'git.index.write': [FileScope&{path:string;content:string;expectedIndexFingerprint:string|null;operationId:string},{path:string;indexFingerprint:string}];
- 'git.discard': [FileScope&{paths:string[];expectedFingerprints?:Record<string,string>;operationId:string},{paths:string[];recycled:string[]}];
- 'git.checkout': [FileScope&{branch:string;create?:boolean;startPoint?:string;operationId:string},{branch:string}];
- 'git.branch.delete': [FileScope&{branch:string;force?:boolean;operationId:string},{branch:string}];
+ 'git.discard': [FileScope&{paths:string[];expectedFingerprints:Record<string,string|null>;expectedIndexFingerprints:Record<string,string|null>;operationId:string},{paths:string[];recycled:string[];undoId?:string}];
+ 'git.checkout': [FileScope&{branch:string;create?:boolean;startPoint?:string;stash?:boolean;operationId:string},{branch:string;stash?:GitStashCheckout;warning?:string}];
+ 'git.branch.delete': [FileScope&{branch:string;force?:boolean;operationId:string},{branch:string;undoId?:string}];
  'git.branches': [FileScope,GitBranches];
+ 'git.stash.list': [FileScope,{entries:GitStashEntry[]}];
+ 'git.stash.show': [FileScope&{oid:string},{files:GitStashFile[]}];
+ 'git.stash.push': [FileScope&{message?:string;includeUntracked:boolean;operationId:string},{oid:string}];
+ 'git.stash.apply': [FileScope&{oid:string;pop:boolean;operationId:string},GitStashApply];
+ 'git.stash.drop': [FileScope&{oid:string;operationId:string},{oid:string;dropped:true;undoId?:string}];
+ 'git.undo': [FileScope&{id:string;operationId:string},{id:string;undoneAt:string}];
+ 'git.undo.list': [FileScope,{entries:GitUndoEntry[]}];
  'git.log': [FileScope&{path?:string;skip?:number;limit?:number;all?:boolean},GitLog];
  'git.commit.show': [FileScope&{commit:string},GitCommitDetail];
  'git.commit.diff': [FileScope&{commit:string;path:string;originalPath?:string},GitTextPair];
  'git.blame': [FileScope&{path:string},GitBlame];
+ 'git.compare.files': [FileScope&{base?:string;committedOnly?:boolean},GitCompareFiles];
+ 'git.compare.diff': [FileScope&{base:{ref?:string;oid:string};mergeBase:string;path:string;originalPath?:string;committedOnly?:boolean},GitCompareDiff];
  'filesystem.create': [FileScope&{path:string;kind:'file'|'directory';operationId:string},FileEntry];
  'filesystem.rename': [FileScope&{path:string;newPath:string;operationId:string},FileEntry];
  'filesystem.delete': [FileScope&{path:string;permanent?:boolean;operationId:string},{path:string;recycled:boolean}];
@@ -940,7 +957,7 @@ export interface RequestMap {
  'session.documents.pin': [{sessionId:string;path:string;operationId:string},SessionDocument[]];
  'session.documents.unpin': [{sessionId:string;path:string;operationId:string},SessionDocument[]];
  'worktree.list': [{projectId:string},Worktree[]];
- 'worktree.create': [{projectId:string;path:string;branch:string;createBranch:boolean;operationId:string},Worktree];
+ 'worktree.create': [{projectId:string;path:string;branch:string;createBranch:boolean;startPoint?:string;operationId:string},Worktree];
  'worktree.remove': [{id:string;operationId:string},null];
  'worktree.branches': [{projectId:string},LocalBranch[]];
  'worktree.relocate': [{id:string;path:string;operationId:string},Worktree];
@@ -997,16 +1014,19 @@ export interface ThreadTermBridge {
  exportDiagnostics():Promise<string|null>;
  scheduleElectronCacheCleanup(schedule:boolean):Promise<{scheduled:boolean;available:boolean;result?:string}>;
 }
-export const METHODS = ['browser.approval.read','browser.approval.resolve','git.commit.selected','preview.attach','preview.detach','preview.snapshot','preview.prepare','preview.ack','preview.observe','preview.close','chat.repair','filesystem.resolve','filesystem.external.open','filesystem.external.read','filesystem.external.image','filesystem.external.list','filesystem.external.forget','session.launch.read','catalog.visibility.list','catalog.visibility.update','session.resume','session.organize','git.merge','git.merge.abort','project.catalog.list','project.update','worktree.branches','worktree.relocate','session.rerun','git.fetch','git.pull','git.push','session.config.read','session.config.save','session.retry.read','session.retry.update','chat.draft.read','chat.draft.save','device.status','device.enable','device.disable','device.identity.reset','device.pairing.create','device.pairing.cancel','device.list','device.rename','device.renew','device.revoke','git.stage','git.unstage','git.commit','filesystem.image','chat.snapshot','chat.image.read','terminal.read','session.lookup','session.present','chat.read','chat.subagent.read','data.status','data.backup','data.backup.verify','data.relocation.status','data.relocation.prepare','data.relocation.cancel','settings.export','settings.import.preview','settings.import.apply','usage.query','usage.ledger.summary','usage.ledger.series','usage.ledger.breakdown','usage.ledger.sessions','usage.ledger.session','usage.ledger.sources','usage.ledger.refresh','usage.ledger.rebuild','usage.ledger.cancel','usage.ledger.settings','usage.ledger.settings.update','runtime.health','terminal.host','runtime.shutdown','runtime.snapshot','project.add','project.remove','session.create','history.import','session.stop','session.update','session.attention.acknowledge','session.claim','session.renew','session.release','terminal.input','terminal.resize','settings.update','provider.list','provider.refresh','plugin.list','plugin.setEnabled','plugin.selectBrowserBinding','plugin.reload','chat.queue.read','chat.queue.add','chat.queue.update','chat.queue.remove','chat.queue.move','chat.queue.pause','chat.queue.resume','chat.queue.send','quickLaunch.list','quickLaunch.save','quickLaunch.delete','quickLaunch.run','quickLaunch.setup.read','quickLaunch.setup.save','quickLaunch.setup.run','quickLaunch.setup.status','history.list','history.read','chat.send','chat.cancel','chat.approve','chat.answer','chat.options','chat.option.set','chat.connection','chat.context.read','chat.connect','filesystem.list','filesystem.read','filesystem.write','draft.list','draft.put','draft.delete','git.status','git.diff','worktree.list','worktree.create','worktree.remove','workspace.save','workspace.delete','inbox.read','git.index.write','git.discard','git.checkout','git.branch.delete','git.branches','git.log','git.commit.show','git.commit.diff','git.blame','filesystem.create','filesystem.rename','filesystem.delete','filesystem.files','filesystem.search','review.list','review.changes','review.diff','review.revert','review.checkpoint','agentReview.start','agentReview.list','agentReview.mark','group.prerequisites','group.create','group.list','group.read','group.send','group.stop','group.resend','group.member.add','group.member.update','group.member.remove','group.rename','group.archive','session.documents.list','session.documents.pin','session.documents.unpin','chat.projectTrust.set','chat.feedback.add','chat.feedback.read','chat.feedback.dismiss','chat.fork','chat.backgroundTasks.list','chat.backgroundTask.stop','chat.steer'] as const satisfies readonly Method[];
+export const METHODS = ['git.history.plan','git.cherryPick','git.revert','git.reset','git.operation.abort','git.operation.continue','browser.approval.read','browser.approval.resolve','git.commit.selected','preview.attach','preview.detach','preview.snapshot','preview.prepare','preview.ack','preview.observe','preview.close','chat.repair','filesystem.resolve','filesystem.external.open','filesystem.external.read','filesystem.external.image','filesystem.external.list','filesystem.external.forget','session.launch.read','catalog.visibility.list','catalog.visibility.update','session.resume','session.organize','git.merge','git.merge.abort','project.catalog.list','project.update','worktree.branches','worktree.relocate','session.rerun','git.fetch','git.pull','git.push','git.push.preview','session.config.read','session.config.save','session.retry.read','session.retry.update','chat.draft.read','chat.draft.save','device.status','device.enable','device.disable','device.identity.reset','device.pairing.create','device.pairing.cancel','device.list','device.rename','device.renew','device.revoke','git.stage','git.unstage','git.commit','filesystem.image','chat.snapshot','chat.image.read','terminal.read','session.lookup','session.present','chat.read','chat.subagent.read','data.status','data.backup','data.backup.verify','data.relocation.status','data.relocation.prepare','data.relocation.cancel','settings.export','settings.import.preview','settings.import.apply','usage.query','usage.ledger.summary','usage.ledger.series','usage.ledger.breakdown','usage.ledger.sessions','usage.ledger.session','usage.ledger.sources','usage.ledger.refresh','usage.ledger.rebuild','usage.ledger.cancel','usage.ledger.settings','usage.ledger.settings.update','runtime.health','terminal.host','runtime.shutdown','runtime.snapshot','project.add','project.remove','session.create','history.import','session.stop','session.update','session.attention.acknowledge','session.claim','session.renew','session.release','terminal.input','terminal.resize','settings.update','provider.list','provider.refresh','plugin.list','plugin.setEnabled','plugin.selectBrowserBinding','plugin.reload','chat.queue.read','chat.queue.add','chat.queue.update','chat.queue.remove','chat.queue.move','chat.queue.pause','chat.queue.resume','chat.queue.send','quickLaunch.list','quickLaunch.save','quickLaunch.delete','quickLaunch.run','quickLaunch.setup.read','quickLaunch.setup.save','quickLaunch.setup.run','quickLaunch.setup.status','history.list','history.read','chat.send','chat.cancel','chat.approve','chat.answer','chat.options','chat.option.set','chat.connection','chat.context.read','chat.connect','filesystem.list','filesystem.read','filesystem.write','draft.list','draft.put','draft.delete','git.status','git.fingerprints','git.diff','worktree.list','worktree.create','worktree.remove','workspace.save','workspace.delete','inbox.read','git.index.write','git.discard','git.checkout','git.branch.delete','git.branches','git.stash.list','git.stash.show','git.stash.push','git.stash.apply','git.stash.drop','git.log','git.commit.show','git.commit.diff','git.blame','git.compare.files','git.compare.diff','filesystem.create','filesystem.rename','filesystem.delete','filesystem.files','filesystem.search','review.list','review.changes','review.diff','review.revert','review.checkpoint','agentReview.start','agentReview.list','agentReview.mark','group.prerequisites','group.create','group.list','group.read','group.send','group.stop','group.resend','group.member.add','group.member.update','group.member.remove','group.rename','group.archive','session.documents.list','session.documents.pin','session.documents.unpin','chat.projectTrust.set','chat.feedback.add','chat.feedback.read','chat.feedback.dismiss','chat.fork','chat.backgroundTasks.list','chat.backgroundTask.stop','chat.steer'] as const satisfies readonly Method[];
 // Kept additive while this long-standing literal remains source-compatible.
 // The legacy list predates review-draft RPCs; extend it here so old callers of
 // `validateRequest` accept the additive methods without rebuilding that list.
 (METHODS as unknown as string[]).unshift(
+ 'git.undo','git.undo.list',
  'reviewDrafts.list','reviewDrafts.upsert','reviewDrafts.delete',
  'reviewDrafts.importLegacy','reviewDrafts.assetReferences',
 );
 // The RPC has a RequestMap entry above and must also pass the runtime registry.
 const stringFields: Partial<Record<Method,readonly string[]>> = {
+ 'git.history.plan':['projectId','hash'],'git.cherryPick':['projectId','hash','operationId'],'git.revert':['projectId','hash','operationId'],
+ 'git.reset':['projectId','hash','expectedHead','operationId'],'git.operation.abort':['projectId','kind','operationId'],'git.operation.continue':['projectId','kind','operationId'],
  'browser.approval.read':['sessionId','turnId','approvalId'],
  'browser.approval.resolve':['sessionId','turnId','approvalId','operationId','codeHash'],
  'git.commit.selected':['projectId','message','operationId','expectedIndexFingerprint'],
@@ -1020,7 +1040,7 @@ const stringFields: Partial<Record<Method,readonly string[]>> = {
  'session.launch.read':['sessionId'],
  'catalog.visibility.update':['kind','id','visibility','operationId'],
  'session.resume':['sessionId','operationId'],
- 'session.organize':['sessionId','operationId'],'git.merge':['projectId','branch','operationId'],'git.merge.abort':['projectId','operationId'],
+ 'session.organize':['sessionId','operationId'],'git.merge':['projectId','operationId'],'git.merge.abort':['projectId','operationId'],
  'project.update':['id','operationId'],'worktree.branches':['projectId'],'worktree.relocate':['id','path','operationId'],
  'device.enable':['operationId'],'device.disable':['operationId'],'device.identity.reset':['operationId'],'device.pairing.create':['permission','operationId'],'device.pairing.cancel':['pairingId','operationId'],'device.rename':['deviceId','name','operationId'],'device.renew':['deviceId','operationId'],'device.revoke':['deviceId','operationId'],
  'terminal.read':['sessionId'],'session.lookup':['operationId'],'session.present':['sessionId','placement','presentation','operationId'],
@@ -1051,8 +1071,9 @@ const stringFields: Partial<Record<Method,readonly string[]>> = {
  'worktree.list':['projectId'],'worktree.create':['projectId','path','branch','operationId'],
  'worktree.remove':['id','operationId'],'workspace.save':['name','operationId'],
  'workspace.delete':['id','operationId'],'inbox.read':['operationId'],
- 'git.index.write':['projectId','path','operationId'],'git.discard':['projectId','operationId'],'git.checkout':['projectId','branch','operationId'],'git.branch.delete':['projectId','branch','operationId'],
- 'git.branches':['projectId'],'git.log':['projectId'],'git.commit.show':['projectId','commit'],'git.commit.diff':['projectId','commit','path'],'git.blame':['projectId','path'],
+ 'git.index.write':['projectId','path','operationId'],'git.fingerprints':['projectId'],'git.discard':['projectId','operationId'],'git.checkout':['projectId','branch','operationId'],'git.branch.delete':['projectId','branch','operationId'],
+ 'git.push.preview':['projectId'],'git.branches':['projectId'],'git.stash.list':['projectId'],'git.stash.show':['projectId','oid'],'git.stash.push':['projectId','operationId'],'git.stash.apply':['projectId','oid','operationId'],'git.stash.drop':['projectId','oid','operationId'],'git.log':['projectId'],'git.commit.show':['projectId','commit'],'git.commit.diff':['projectId','commit','path'],'git.blame':['projectId','path'],
+ 'git.compare.files':['projectId'],'git.compare.diff':['projectId','path','mergeBase'],
  'filesystem.create':['projectId','path','kind','operationId'],'filesystem.rename':['projectId','path','newPath','operationId'],'filesystem.delete':['projectId','path','operationId'],'filesystem.files':['projectId'],'filesystem.search':['projectId','query'],
  'review.list':['sessionId'],'review.changes':['sessionId','from'],'review.diff':['sessionId','from','path'],'review.revert':['sessionId','checkpointId','operationId'],'review.checkpoint':['sessionId','kind','operationId'],
  'agentReview.start':['sessionId','agent','operationId'],'agentReview.list':['sessionId'],'agentReview.mark':['reviewId','state','operationId'],
@@ -1060,12 +1081,31 @@ const stringFields: Partial<Record<Method,readonly string[]>> = {
  'session.documents.list':['sessionId'],'session.documents.pin':['sessionId','path','operationId'],'session.documents.unpin':['sessionId','path','operationId'],
  'usage.ledger.session':['provider','nativeSessionId'],'usage.ledger.refresh':['operationId'],'usage.ledger.rebuild':['operationId'],'usage.ledger.cancel':['scanId','operationId'],'usage.ledger.settings.update':['operationId'],
 };
+(stringFields as Partial<Record<Method,readonly string[]>>)['git.undo']=['projectId','id','operationId'];
+(stringFields as Partial<Record<Method,readonly string[]>>)['git.undo.list']=['projectId'];
 export function isRecord(value:unknown):value is Record<string,unknown> { return typeof value==='object' && value!==null && !Array.isArray(value); }
 export function validateRequest(method:unknown,params:unknown):asserts method is Method {
  if(typeof method!=='string'||!(METHODS as readonly string[]).includes(method)) throw new Error('Unsupported runtime method');
  if(!isRecord(params)) throw new Error('Request parameters must be an object');
  if(!validateWireRequest({v:1,id:'boundary',method,params})) throw new Error('Request does not match the protocol schema');
  const m=method as Method;
+ if((m==='git.undo'||m==='git.undo.list')&&Object.keys(params).some(key=>!['projectId','worktreePath',...(m==='git.undo'?['id','operationId']:[])].includes(key))) throw new Error('Invalid undo request');
+ if(['git.history.plan','git.cherryPick','git.revert','git.reset'].includes(m)&&!/^[a-fA-F0-9]{7,64}$/.test(String(params.hash))) throw new Error('Invalid commit hash');
+ if(m==='git.revert'&&params.mainline!==undefined&&(!Number.isSafeInteger(params.mainline)||Number(params.mainline)<1)) throw new Error('Invalid mainline parent');
+ if(m==='git.reset') {
+  if(!/^(?:[a-fA-F0-9]{40}|[a-fA-F0-9]{64})$/.test(String(params.expectedHead))) throw new Error('Invalid reset HEAD fence');
+  if(params.undoOf!==undefined&&(params.mode!=='soft'||typeof params.undoOf!=='string'||!params.undoOf.trim())) throw new Error('Invalid reset undo receipt');
+ }
+ if(m==='git.push'&&params.force!==undefined&&(!/^(?:[a-fA-F0-9]{40}|[a-fA-F0-9]{64})$/.test(String(params.expectedRemoteOid)))) throw new Error('Invalid explicit push lease');
+ if(m==='git.push'&&params.force!==undefined) {
+  for(const key of ['remote','remoteBranch','localBranch']) if(typeof params[key]!=='string'||!params[key]||/[\u0000\r\n]/.test(params[key] as string)) throw new Error('Invalid reviewed push destination');
+  if(!(params.localBranch as string).startsWith('refs/heads/')||(params.localBranch as string).length==='refs/heads/'.length) throw new Error('Invalid reviewed local branch');
+ }
+ if(m==='git.fetch'&&params.remote!==undefined&&(typeof params.remote!=='string'||!params.remote||params.remote.startsWith('-')||/[\u0000\r\n]/.test(params.remote))) throw new Error('Invalid fetch remote');
+ if(m==='git.merge') {
+  const hasBranch=Object.hasOwn(params,'branch'),hasUpstream=params.upstream===true;
+  if(hasBranch===hasUpstream||hasBranch&&(typeof params.branch!=='string'||!params.branch)) throw new Error('Invalid merge target');
+ }
  if(m.startsWith('usage.ledger.')) {
   const ledger=params as Record<string,unknown>,filters=isRecord(ledger.filters)?ledger.filters:ledger;
   for(const key of ['from','to']) if(filters[key]!==undefined&&(typeof filters[key]!=='string'||!/^\d{4}-\d{2}-\d{2}$/.test(filters[key] as string))) throw new Error('Invalid usage date');
@@ -1160,7 +1200,18 @@ export function validateRequest(method:unknown,params:unknown):asserts method is
  if(['catalog.visibility.update','session.organize','project.update','draft.put','draft.delete','workspace.save','workspace.delete','settings.import.apply','session.config.save','session.retry.update','session.attention.acknowledge'].includes(m)&&(!Number.isSafeInteger(params.expectedRevision)||Number(params.expectedRevision)<0)) throw new Error('Invalid revision');
  if(m==='git.diff'&&typeof params.staged!=='boolean') throw new Error('Invalid diff mode');
  const pathOk=(value:unknown)=>typeof value==='string'&&value.length>0&&value.length<=4096&&!value.includes('\0');
- if(['filesystem.create','filesystem.rename','filesystem.delete','git.index.write','git.blame','git.commit.diff','review.diff'].includes(m)&&!pathOk(params.path)) throw new Error('Invalid path');
+ if(['filesystem.create','filesystem.rename','filesystem.delete','git.index.write','git.blame','git.commit.diff','git.compare.diff','review.diff'].includes(m)&&!pathOk(params.path)) throw new Error('Invalid path');
+ if(m==='git.compare.diff'&&params.originalPath!==undefined&&!pathOk(params.originalPath)) throw new Error('Invalid path');
+ // An explicit comparison base is one argv token: a ref name, or the full commit OID it resolved to.
+ const compareBaseOk=(value:unknown)=>typeof value==='string'&&value.length>0&&value.length<=255&&!value.startsWith('-')&&!/[\u0000\r\n]/.test(value);
+ if(m==='git.compare.files'&&params.base!==undefined&&!compareBaseOk(params.base)) throw new Error('Invalid compare base');
+ if((m==='git.compare.files'||m==='git.compare.diff')&&params.committedOnly!==undefined&&typeof params.committedOnly!=='boolean') throw new Error('Invalid compare scope');
+ if(m==='git.compare.diff') {
+  const base=params.base as {ref?:unknown;oid?:unknown};
+  if(!isRecord(base)||typeof base.oid!=='string'||!/^(?:[a-fA-F0-9]{40}|[a-fA-F0-9]{64})$/.test(base.oid)) throw new Error('Invalid compare base');
+  if(base.ref!==undefined&&!compareBaseOk(base.ref)) throw new Error('Invalid compare base');
+  if(typeof params.mergeBase!=='string'||!/^(?:[a-fA-F0-9]{40}|[a-fA-F0-9]{64})$/.test(params.mergeBase)) throw new Error('Invalid compare merge base');
+ }
  if(m==='filesystem.rename'&&!pathOk(params.newPath)) throw new Error('Invalid path');
  if(m==='git.log'&&params.path!==undefined&&!pathOk(params.path)) throw new Error('Invalid path');
  if(m==='git.log'&&params.all!==undefined&&typeof params.all!=='boolean') throw new Error('Invalid history scope');
@@ -1173,7 +1224,13 @@ export function validateRequest(method:unknown,params:unknown):asserts method is
   if(typeof params.content!=='string'||params.content.length>1024*1024) throw new Error('Invalid file content');
   if(!('expectedIndexFingerprint' in params)||(params.expectedIndexFingerprint!==null&&(typeof params.expectedIndexFingerprint!=='string'||!params.expectedIndexFingerprint))) throw new Error('Invalid index fingerprint');
  }
- if(['git.stage','git.unstage','git.discard','review.revert'].includes(m)&&(!Array.isArray(params.paths)||params.paths.length===0||params.paths.length>500||params.paths.some(path=>!pathOk(path)))) throw new Error('Invalid paths');
+ if(['git.stage','git.unstage','git.fingerprints','git.discard','review.revert'].includes(m)&&(!Array.isArray(params.paths)||params.paths.length===0||params.paths.length>500||params.paths.some(path=>!pathOk(path)))) throw new Error('Invalid paths');
+ if(m==='git.discard') {
+  const paths=params.paths as string[];
+  for(const expected of [params.expectedFingerprints,params.expectedIndexFingerprints]) {
+   if(!isRecord(expected)||Object.keys(expected).some(key=>!paths.includes(key))||paths.some(path=>!Object.hasOwn(expected,path))||Object.values(expected).some(value=>value!==null&&typeof value!=='string')) throw new Error('Invalid fingerprints');
+  }
+ }
  if(m==='review.revert') {
   const expected=params.expectedFingerprints,paths=params.paths as string[];
   if(!isRecord(expected)||Object.keys(expected).some(key=>!paths.includes(key))||paths.some(path=>!(path in expected))||Object.values(expected).some(value=>value!==null&&(typeof value!=='string'||!value))) throw new Error('Invalid fingerprints');
@@ -1183,6 +1240,7 @@ export function validateRequest(method:unknown,params:unknown):asserts method is
  if(['git.commit.show','git.commit.diff'].includes(m)&&!/^[0-9a-f]{4,64}$/i.test(String(params.commit))) throw new Error('Invalid commit');
  if(m==='session.retry.update' && (typeof params.enabled!=='boolean'||(params.maxRetries!==undefined&&(!Number.isInteger(params.maxRetries)||Number(params.maxRetries)<1||Number(params.maxRetries)>10))||(params.delaySeconds!==undefined&&(!Number.isInteger(params.delaySeconds)||Number(params.delaySeconds)<1||Number(params.delaySeconds)>3600)))) throw new Error('Invalid retry policy');
  if(m==='worktree.create'&&typeof params.createBranch!=='boolean') throw new Error('Invalid branch mode');
+ if(m==='worktree.create'&&params.startPoint!==undefined&&(params.createBranch!==true||typeof params.startPoint!=='string'||!params.startPoint||params.startPoint.length>255||params.startPoint.startsWith('-'))) throw new Error('Invalid start point');
  if(m==='inbox.read'&&(!Array.isArray(params.ids)||params.ids.length>500||params.ids.some(id=>typeof id!=='string'||!id))) throw new Error('Invalid inbox ids');
  if(m==='workspace.save') validateLayout(params.layout);
  if(m==='terminal.read') {
@@ -1252,6 +1310,53 @@ export function validateRequest(method:unknown,params:unknown):asserts method is
  if(params.limit!==undefined&&(!Number.isInteger(params.limit)||Number(params.limit)<1||Number(params.limit)>maxLimit)) throw new Error('Invalid page limit');
 }
 export function validateResult<M extends Method>(method:M,result:unknown):asserts result is RequestResult<M> {
+ if(method==='git.history.plan') {
+  const value=result as GitHistoryPlan, oid=/^(?:[a-fA-F0-9]{40}|[a-fA-F0-9]{64})$/;
+  if(!isRecord(result)||!oid.test(value.hash)||!oid.test(value.head)||!Array.isArray(value.parents)||value.parents.some(parent=>!isRecord(parent)||!oid.test(parent.hash))) throw new Error('Invalid history plan commits');
+  const range=value.reset;
+  if(!isRecord(range)||!Number.isSafeInteger(range.count)||range.count<0||!Array.isArray(range.commits)||range.commits.length>20||range.commits.length>range.count||range.commits.some(commit=>!isRecord(commit)||!oid.test(commit.hash))) throw new Error('Invalid reset commit range');
+ }
+ if(method==='git.reset') {
+  const value=result as RequestResult<'git.reset'>,oid=/^(?:[a-fA-F0-9]{40}|[a-fA-F0-9]{64})$/;
+  if(!isRecord(result)||!oid.test(value.previousHead)||!oid.test(value.head)||typeof value.symbolicHead!=='string'||(value.symbolicHead!=='detached'&&(!value.symbolicHead.startsWith('refs/heads/')||value.symbolicHead.length<12||/[\u0000\r\n]/.test(value.symbolicHead)))) throw new Error('Invalid reset result');
+ }
+ if(method==='git.undo.list') {
+  const value=result as RequestResult<'git.undo.list'>;
+  const undoPath=(path:unknown)=>typeof path!=='string'||!path||/^[\\/]|^[A-Za-z]:|(^|[\\/])\.\.([\\/]|$)/.test(path);
+  const undoPaths=(paths:unknown)=>!Array.isArray(paths)||paths.length>20||paths.some(undoPath);
+  if(!isRecord(result)||!Array.isArray(value.entries)||value.entries.length>50) throw new Error('Invalid undo list');
+  for(const entry of value.entries) {
+   if(!isRecord(entry)||typeof entry.id!=='string'||!entry.id||typeof entry.label!=='string'||!entry.label||typeof entry.createdAt!=='string'||!entry.createdAt||!['discard','branch','stash','reset'].includes(String(entry.kind))||typeof entry.available!=='boolean'||!Array.isArray(entry.paths)||entry.paths.length>20||!Number.isSafeInteger(entry.pathCount)||entry.pathCount<entry.paths.length||entry.pathCount<0||!(entry.undoneAt===null||typeof entry.undoneAt==='string')||entry.paths.some(undoPath)) throw new Error('Invalid undo list');
+   // Partial progress and the recycle count are optional (older runtimes omit them) but bounded.
+   if(entry.partial!==undefined&&typeof entry.partial!=='boolean') throw new Error('Invalid undo list');
+   if(entry.recycledCount!==undefined&&(!Number.isSafeInteger(entry.recycledCount)||entry.recycledCount<0)) throw new Error('Invalid undo list');
+   if((entry.applied!==undefined&&undoPaths(entry.applied))||(entry.remaining!==undefined&&undoPaths(entry.remaining))) throw new Error('Invalid undo list');
+  }
+ }
+ if(['git.cherryPick','git.revert','git.operation.abort','git.operation.continue'].includes(method)&&isRecord(result)&&result.head!==undefined&&!/^(?:[a-fA-F0-9]{40}|[a-fA-F0-9]{64})$/.test(String(result.head))) throw new Error('Invalid operation HEAD');
+ if(method==='git.compare.files') {
+  const value=result as GitCompareFiles, oid=/^(?:[a-fA-F0-9]{40}|[a-fA-F0-9]{64})$/;
+  if(!isRecord(result)||!isRecord(value.base)||typeof value.base.ref!=='string'||!value.base.ref||value.base.ref.length>255||!oid.test(value.base.oid)||!oid.test(value.mergeBase)||!oid.test(value.head)||!Array.isArray(value.files)||value.files.length>1000||typeof value.truncated!=='boolean') throw new Error('Invalid compare files');
+  for(const file of value.files) {
+   if(!isRecord(file)||typeof file.path!=='string'||!file.path||!['added','modified','deleted','renamed','typechange'].includes(String(file.status))||!Number.isSafeInteger(file.additions)||file.additions<0||!Number.isSafeInteger(file.deletions)||file.deletions<0||typeof file.binary!=='boolean') throw new Error('Invalid compare file');
+   if(file.originalPath!==undefined&&(typeof file.originalPath!=='string'||!file.originalPath)) throw new Error('Invalid compare file');
+   if(file.countsUnknown!==undefined&&typeof file.countsUnknown!=='boolean') throw new Error('Invalid compare file');
+  }
+ }
+ if(method==='git.compare.diff') {
+  const value=result as GitCompareDiff;
+  if(!isRecord(result)||typeof value.path!=='string'||!value.path||typeof value.oldText!=='string'||typeof value.newText!=='string'||typeof value.binary!=='boolean') throw new Error('Invalid compare diff');
+  if(value.deleted!==undefined&&typeof value.deleted!=='boolean') throw new Error('Invalid compare diff');
+ }
+ if(method==='git.push.preview') {
+  const value=result as GitPushPreview;
+  if(!isRecord(result)||typeof value.branch!=='string'||!value.branch||typeof value.remote!=='string'||!value.remote||typeof value.remoteBranch!=='string'||!value.remoteBranch) throw new Error('Invalid push destination');
+  if(typeof value.localBranch!=='string'||value.localBranch!==`refs/heads/${value.branch}`) throw new Error('Invalid push local branch');
+  if(value.remoteOid!==undefined&&!/^(?:[a-fA-F0-9]{40}|[a-fA-F0-9]{64})$/.test(value.remoteOid)) throw new Error('Invalid push lease');
+  for(const range of [value.ahead,value.behind]) {
+   if(!isRecord(range)||!Number.isSafeInteger(range.count)||range.count<0||!Array.isArray(range.commits)||range.commits.length>50||range.commits.length>range.count) throw new Error('Invalid push commit range');
+  }
+ }
  if(method==='browser.approval.read') {
   const value=result as BrowserEvalApprovalRead;
   if(!isRecord(result)||!isBrowserEvalArguments({tabId:value.tabId,code:value.code})
@@ -1297,6 +1402,14 @@ export function validateLayout(value:unknown):asserts value is PaneLayout {
     else if(['file','diff','preview'].includes(String(tab.kind))) {
      if(typeof tab.projectId!=='string'||!tab.projectId||typeof tab.path!=='string'||!tab.path) throw new Error('Invalid file tab');
      if(tab.ownerSessionId!==undefined&&(typeof tab.ownerSessionId!=='string'||!tab.ownerSessionId||tab.ownerSessionId.length>256||/[\u0000-\u001f\u007f]/.test(tab.ownerSessionId))) throw new Error('Invalid file tab owner');
+     if(tab.compare!==undefined) {
+      const compare=tab.compare as Partial<GitCompareRef>,oid=/^(?:[a-fA-F0-9]{40}|[a-fA-F0-9]{64})$/;
+      if(tab.kind!=='diff'||tab.staged!==undefined||!isRecord(compare)) throw new Error('Invalid compare tab');
+      if(typeof compare.base!=='string'||!compare.base||compare.base.length>255||compare.base.startsWith('-')||/[\u0000-\u001f\u007f-\u009f]/.test(compare.base)) throw new Error('Invalid compare tab base');
+      if(!oid.test(String(compare.oid))||!oid.test(String(compare.mergeBase))) throw new Error('Invalid compare tab commits');
+      if(compare.originalPath!==undefined&&(typeof compare.originalPath!=='string'||!compare.originalPath||compare.originalPath.length>4096||compare.originalPath.includes('\0'))) throw new Error('Invalid compare tab path');
+      if(compare.committedOnly!==undefined&&typeof compare.committedOnly!=='boolean') throw new Error('Invalid compare tab scope');
+     }
     }
     else if(tab.kind==='history') {
      if(typeof tab.projectId!=='string'||!tab.projectId||(tab.path!==undefined&&(typeof tab.path!=='string'||!tab.path))) throw new Error('Invalid history tab');
@@ -1331,7 +1444,9 @@ export type GitHeadSnapshot = {kind:'branch';oid:string;target:string}|{kind:'de
 export interface GitSelectedCommitSnapshot { head:GitHeadSnapshot; indexFingerprint:string; supported:boolean; unsupportedReason?:string; gitVersion?:string }
 export interface GitSelectedCommitEntry { path:string; indexStatus:string; originalPath?:string }
 export interface GitSelectedCommitResult { commit:string; tree:string; parent:string|null; refTarget:string|null; committedPaths:string[]; retainedStagedPaths:string[]; retainedStagedPathsTruncated?:boolean; postCommitError?:string; cleanupError?:string }
-export interface GitStatus { branch:string|null; upstream:string|null; ahead:number; behind:number; changes:GitChange[]; selectedCommit?:GitSelectedCommitSnapshot }
+export interface GitOperation { kind:'merge'|'rebase'|'cherry-pick'|'revert'; head?:string; message?:string }
+export interface GitStatus { branch:string|null; upstream:string|null; ahead:number; behind:number; changes:GitChange[]; operation?:GitOperation; selectedCommit?:GitSelectedCommitSnapshot }
+export interface GitFingerprints { fingerprints:Record<string,string|null>; indexFingerprints:Record<string,string|null> }
 /** staged=false: index → working tree (fingerprint is the working file); staged=true: HEAD → index. indexFingerprint is null when the path has no stage-0 index entry. */
 export interface GitDiff { path:string; staged:boolean; oldText:string; newText:string; binary:boolean; fingerprint:string; indexFingerprint?:string|null; deleted?:boolean }
 export interface FileListResult { paths:string[]; truncated:boolean }
@@ -1340,15 +1455,41 @@ export interface SearchQuery { query:string; regex?:boolean; caseSensitive?:bool
 export interface SearchMatch { line:number; column:number; length:number; preview:string; previewColumn:number }
 export interface SearchResult { files:{path:string;matches:SearchMatch[]}[]; truncated:boolean; searchedFiles:number }
 export interface GitCommitInfo { hash:string; parents:string[]; authorName:string; authorEmail:string; authoredAt:string; subject:string; refs:string[] }
+/** A read-only snapshot used to enable commit actions and fence reset confirmation. */
+export interface GitHistoryPlan { hash:string; head:string; branch:string; detached:boolean; isAncestor:boolean; parents:{hash:string;subject:string}[]; reset:{count:number;commits:{hash:string;subject:string}[];pushed:boolean} }
+export interface GitHistoryMutationResult { output:string; conflicted:boolean; head?:string }
+export interface GitPushCommit { hash:string; subject:string; author:string; committedAt:string }
+export interface GitPushRange { count:number; commits:GitPushCommit[] }
+/** Local remote-tracking information only; no network request is made. */
+export interface GitPushPreview { branch:string; localBranch:string; detached:boolean; remote:string; remoteBranch:string; upstream?:string; setUpstream:boolean; ahead:GitPushRange; behind:GitPushRange; remoteOid?:string; diverged:boolean; lastFetchedAt?:string; remoteDefaultBranch?:string }
 /** Commits in date order (children before parents). all=true lists every local/remote branch and tag (ignored for
  * file history); scope echoes it and is missing from runtimes older than the commit graph. */
 export interface GitLog { commits:GitCommitInfo[]; hasMore:boolean; scope?:'head'|'all' }
+export interface GitStashEntry { oid:string; index:number; message:string; branch?:string; createdAt:number; untracked:boolean }
+/** Identifier-only recovery journal metadata. Paths are repository-relative and capped by the runtime; `paths`/`pathCount` cover only undoable paths, while `recycledCount` counts paths recoverable only through the Recycle Bin. A partial entry records an Undo that restored some paths and then failed. */
+export interface GitUndoEntry { id:string; kind:'discard'|'branch'|'stash'|'reset'; label:string; createdAt:string; available:boolean; paths:string[]; pathCount:number; undoneAt:string|null; recycledCount?:number; partial?:boolean; applied?:string[]; remaining?:string[] }
+export interface GitStashFile { path:string; originalPath?:string; status:string; untracked?:boolean }
+export interface GitStashDropInterference { oid:string; ourEntryDropped:boolean; restored:Array<{oid:string;message:string}>; restoreFailed:Array<{oid:string;message:string;error:string}>; orderChanged:boolean; unknownEntryLost?:boolean }
+export interface GitStashApply { oid:string; applied:boolean; conflicted?:boolean; dropped:boolean; warning?:string; interference?:GitStashDropInterference; undoId?:string }
+export interface GitStashCheckout { oid:string; message?:string; applied?:boolean; conflicted?:boolean; dropped?:boolean; restored?:boolean; interference?:GitStashDropInterference }
 export interface GitCommitFile { path:string; originalPath?:string; status:string }
 export interface GitCommitDetail { commit:GitCommitInfo; body:string; files:GitCommitFile[] }
 export interface GitTextPair { path:string; oldText:string; newText:string; binary:boolean }
+export type GitCompareStatus = 'added'|'modified'|'deleted'|'renamed'|'typechange';
+/** One file of a branch-vs-base comparison. `originalPath` is the pre-rename path in the base.
+ * `countsUnknown` marks an untracked file whose line counts were skipped by the read budget. */
+export interface GitCompareFile { path:string; originalPath?:string; status:GitCompareStatus; additions:number; deletions:number; binary:boolean; countsUnknown?:boolean }
+/** The branch changes relative to `base`: `mergeBase` is the commit the list was computed from, `head` the current commit.
+ * `files` are capped at 1000, with `truncated` set when more were found. */
+export interface GitCompareFiles { base:{ref:string;oid:string}; mergeBase:string; head:string; files:GitCompareFile[]; truncated:boolean }
+/** `mergeBase` → working file (or `HEAD` with committedOnly); `deleted` when the new side does not exist. */
+export interface GitCompareDiff { path:string; oldText:string; newText:string; binary:boolean; deleted?:boolean }
+/** What a compare diff tab compares against. `base` is the short ref the user picked (or the OID), `mergeBase` the
+ * commit the file list came from, so a moved base is detected instead of silently recomputed. */
+export interface GitCompareRef { base:string; oid:string; mergeBase:string; originalPath?:string; committedOnly?:boolean }
 /** Uncommitted lines use commit ''. Ranges are 1-based and cover the working file. */
 export interface GitBlame { path:string; ranges:{start:number;count:number;commit:string}[]; commits:Record<string,{authorName:string;authoredAt:string;summary:string}> }
-export interface GitBranch { name:string; remote:boolean; current:boolean; upstream?:string; ahead?:number; behind?:number; gone?:boolean; lastCommit?:{hash:string;subject:string;committedAt:string} }
+export interface GitBranch { name:string; remote:boolean; current:boolean; upstream?:string; ahead?:number; behind?:number; gone?:boolean; lastCommit?:{hash:string;subject:string;committedAt:string}; worktreePath?:string; worktreeMissing?:boolean }
 export interface GitBranches { current:string|null; detached:boolean; branches:GitBranch[] }
 export interface ReviewCheckpoint { id:string; sessionId:string; kind:'turn'|'launch'|'manual'|'baseline'; turnId?:string; label?:string; createdAt:string; status:'ready'|'failed'; error?:string; skipped:string[] }
 export interface ReviewState { available:boolean; reason?:string; projectId?:string; worktreePath?:string; checkpoints:ReviewCheckpoint[] }
@@ -1374,7 +1515,7 @@ export interface AgentReview { id:string; sessionId:string; reviewerSessionId:st
  state:'starting'|'running'|'completed'|'failed'; files:number; truncated:string[]; instructions:'repository'|'built-in';
  createdAt:string; updatedAt:string; error?:string; findings?:AgentReviewFinding[]; unparsed?:boolean }
 export interface Worktree { id:string; projectId:string; path:string; branch:string|null; head:string; isMain:boolean; locked:boolean; missing:boolean; upstream?:string; lastCommit?:CommitSummary }
-export type ContentRef = {id:string;kind:'map';sessionId:string;ownerSessionId?:undefined;projectId?:undefined;worktreePath?:undefined;path?:undefined;assetKind?:undefined}|{id:string;kind:'group';groupId:string;/** User-supplied room title, bounded before persistence. */title:string;ownerSessionId?:undefined;projectId?:undefined;worktreePath?:undefined;path?:undefined;assetKind?:undefined}|{id:string;/** Persisted v16 workspace-tab compatibility only; no Roundtable runtime API remains. */kind:'roundtable';roundtableId:string;/** User-supplied room title, bounded before persistence. */title:string;ownerSessionId?:undefined;projectId?:undefined;worktreePath?:undefined;path?:undefined;assetKind?:undefined}|{id:string;kind:'session';sessionId:string}|{id:string;kind:'file'|'diff'|'preview';projectId:string;worktreePath?:string;path:string;/** Registered external file (`filesystem.external.*`); `path` is then its absolute display path and the tab is read-only. */externalId?:string;assetKind?:'text'|'image';ownerSessionId?:string;staged?:boolean}|{id:string;kind:'history';projectId:string;worktreePath?:string;path?:string;ownerSessionId?:undefined;assetKind?:undefined}|{id:string;kind:'review';projectId:string;worktreePath?:string;path:string;sessionId:string;checkpointId:string;toCheckpointId?:string;ownerSessionId?:undefined;assetKind?:undefined}|{id:string;kind:'web';url:string;/** Sanitized page title, at most 512 UTF-8 bytes. */title?:string;ownerSessionId?:undefined;projectId?:undefined;worktreePath?:undefined;path?:undefined}|{id:string;kind:'usage';/** Optional ThreadTerm project filter; absent = every project. */projectId?:string;ownerSessionId?:undefined};
+export type ContentRef = {id:string;kind:'map';sessionId:string;ownerSessionId?:undefined;projectId?:undefined;worktreePath?:undefined;path?:undefined;assetKind?:undefined}|{id:string;kind:'group';groupId:string;/** User-supplied room title, bounded before persistence. */title:string;ownerSessionId?:undefined;projectId?:undefined;worktreePath?:undefined;path?:undefined;assetKind?:undefined}|{id:string;/** Persisted v16 workspace-tab compatibility only; no Roundtable runtime API remains. */kind:'roundtable';roundtableId:string;/** User-supplied room title, bounded before persistence. */title:string;ownerSessionId?:undefined;projectId?:undefined;worktreePath?:undefined;path?:undefined;assetKind?:undefined}|{id:string;kind:'session';sessionId:string}|{id:string;kind:'file'|'diff'|'preview';projectId:string;worktreePath?:string;path:string;/** Registered external file (`filesystem.external.*`); `path` is then its absolute display path and the tab is read-only. */externalId?:string;assetKind?:'text'|'image';ownerSessionId?:string;staged?:boolean;/** Branch-versus-base diff tab (`git.compare.diff`); never combined with `staged`. */compare?:GitCompareRef}|{id:string;kind:'history';projectId:string;worktreePath?:string;path?:string;ownerSessionId?:undefined;assetKind?:undefined}|{id:string;kind:'review';projectId:string;worktreePath?:string;path:string;sessionId:string;checkpointId:string;toCheckpointId?:string;ownerSessionId?:undefined;assetKind?:undefined}|{id:string;kind:'web';url:string;/** Sanitized page title, at most 512 UTF-8 bytes. */title?:string;ownerSessionId?:undefined;projectId?:undefined;worktreePath?:undefined;path?:undefined}|{id:string;kind:'usage';/** Optional ThreadTerm project filter; absent = every project. */projectId?:string;ownerSessionId?:undefined};
 export type PaneLayout = {kind:'pane';id:string;tabs:ContentRef[];activeTabId:string|null}|{kind:'split';id:string;direction:'horizontal'|'vertical';ratio:number;first:PaneLayout;second:PaneLayout};
 export interface WorkspaceSave { id?:string;name:string;projectId?:string;worktreePath?:string;layout:PaneLayout;expectedRevision:number;operationId:string }
 

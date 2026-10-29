@@ -1405,7 +1405,7 @@ impl RuntimeService {
                 && request.params.get("text").and_then(Value::as_str).is_some_and(|text| text.trim() == "/fork")
                 && request.params.get("images").and_then(Value::as_array).is_none_or(Vec::is_empty);
             if request.method != "session.lookup" && request.method != "chat.answer" && request.method != "chat.repair" && request.method != "chat.projectTrust.set" && request.method != "chat.feedback.add" && request.method != "chat.feedback.dismiss"
-                && request.method != "chat.fork" && !slash_fork {
+                && request.method != "chat.fork" && request.method != "git.undo" && !slash_fork {
                 if let Some(operation_id) =
                     request.params.get("operationId").and_then(Value::as_str)
                 {

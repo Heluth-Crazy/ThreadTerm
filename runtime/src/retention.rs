@@ -3,6 +3,8 @@ use crate::db::Database;
 use anyhow::Result;
 
 pub(crate) const HISTORY_DAYS: i64 = 30;
+pub(crate) const GIT_UNDO_HISTORY_DAYS: i64 = 7;
+pub(crate) const GIT_UNDO_PER_WORKTREE: usize = 50;
 pub(crate) const OUTBOX_FLOOR: i64 = 10_000;
 // An ended terminal retains a useful scrollback suffix. Live replay has no
 // durable screen checkpoint, so its only redraw basis must remain untouched.
@@ -52,6 +54,34 @@ impl Database {
                 let _ = sender.try_send(());
             }
         }
+    }
+
+    /// Startup only: a Git request whose binding has neither a receipt nor a claim
+    /// was rejected before it touched Git, and older builds kept those rows forever.
+    /// Every startup sweeps them, which is always safe because nothing is in flight
+    /// before the runtime accepts requests. Bounded pages need no
+    /// `pause_for_foreground()`: there is no foreground writer to yield to yet.
+    pub fn release_orphan_git_bindings(&self) -> Result<usize> {
+        let mut removed = 0;
+        loop {
+            let count = batch(self, |tx| {
+                tx.execute(
+                    "DELETE FROM operation_requests WHERE id IN (
+                        SELECT id FROM operation_requests
+                        WHERE method LIKE 'git.%'
+                          AND NOT EXISTS(SELECT 1 FROM operations WHERE id=operation_requests.id)
+                          AND NOT EXISTS(SELECT 1 FROM external_operations WHERE id=operation_requests.id)
+                        ORDER BY id LIMIT ?)",
+                    rusqlite::params![BATCH_ROWS],
+                )
+                .map_err(Into::into)
+            })?;
+            removed += count;
+            if count < BATCH_ROWS {
+                break;
+            }
+        }
+        Ok(removed)
     }
 }
 
@@ -117,6 +147,7 @@ pub(crate) fn compact(db: &Database) -> Result<usize> {
         pause_for_foreground();
     }
     changed += compact_receipts(db, &cutoff)?;
+    changed += compact_git_undo(db)?;
     // Sessions are paged by primary key, without holding the writer during the pass.
     let mut after = String::new();
     loop {
@@ -159,6 +190,9 @@ fn compact_receipts(db: &Database, cutoff: &str) -> Result<usize> {
                 ("chat_fork_intents", "EXISTS(SELECT 1 FROM chat_fork_intents f WHERE o.id=f.operation_id OR substr(o.id,1,length(f.operation_id)+6)=f.operation_id||':fork:')"),
                 ("session_retry_attempts", "EXISTS(SELECT 1 FROM session_retry_attempts r WHERE r.operation_id=o.id AND r.status IN ('pending','claimed'))"),
                 ("delegations", "EXISTS(SELECT 1 FROM delegations d WHERE d.state IN ('starting','running','awaiting_parent','awaiting_user','cancelling','cancel_failed') AND (o.id=d.operation_id OR substr(o.id,1,length(d.operation_id)+1)=d.operation_id||':'))"),
+                // A Git undo row names the original operation receipt as its
+                // replay fence. Keep that receipt until the journal expires.
+                ("git_undo", "EXISTS(SELECT 1 FROM git_undo g WHERE g.operation_id=o.id)"),
                 // Auto-setup reconstruction uses worktree.create receipts as a
                 // durable creation catalogue. Keep these until its owner moves
                 // that catalogue into a dedicated state table.
@@ -250,6 +284,49 @@ fn compact_receipts(db: &Database, cutoff: &str) -> Result<usize> {
             break;
         }
         after = last.unwrap();
+        pause_for_foreground();
+    }
+    Ok(removed)
+}
+
+/// Git undo rows are independently bounded: they retain recovery identifiers,
+/// not content, and must disappear promptly when their Git object window ends.
+fn compact_git_undo(db: &Database) -> Result<usize> {
+    let cutoff = (chrono::Utc::now() - chrono::Duration::days(GIT_UNDO_HISTORY_DAYS))
+        .to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+    let mut removed = 0;
+    loop {
+        let count = batch(db, |tx| {
+            tx.execute(
+                "DELETE FROM git_undo WHERE id IN (SELECT id FROM git_undo WHERE created_at<? ORDER BY created_at,id LIMIT ?)",
+                rusqlite::params![cutoff, BATCH_ROWS],
+            )
+            .map_err(Into::into)
+        })?;
+        removed += count;
+        if count < BATCH_ROWS {
+            break;
+        }
+        pause_for_foreground();
+    }
+    loop {
+        let count = batch(db, |tx| {
+            tx.execute(
+                "DELETE FROM git_undo WHERE id IN (
+                    SELECT older.id FROM git_undo older
+                    WHERE (SELECT COUNT(*) FROM git_undo newer
+                           WHERE newer.project_id=older.project_id AND newer.worktree_path=older.worktree_path
+                             AND (newer.created_at>older.created_at OR (newer.created_at=older.created_at AND newer.id>older.id))) >= ?
+                    ORDER BY older.created_at,older.id LIMIT ?
+                )",
+                rusqlite::params![GIT_UNDO_PER_WORKTREE, BATCH_ROWS],
+            )
+            .map_err(Into::into)
+        })?;
+        removed += count;
+        if count < BATCH_ROWS {
+            break;
+        }
         pause_for_foreground();
     }
     Ok(removed)
@@ -605,5 +682,97 @@ mod tests {
             .unwrap();
         assert_eq!(page.len(), 1024);
         assert!(page.iter().all(|byte| *byte == b'z'));
+    }
+
+    #[test]
+    fn retention_bounds_git_undo_per_worktree_and_expires_old_rows() {
+        let root = tempfile::tempdir().unwrap();
+        let db = Database::open(&root.path().join("git-undo-retention.sqlite")).unwrap();
+        let project = db
+            .add_project(root.path().to_str().unwrap(), Some("undo"), "undo-project")
+            .unwrap();
+        let scope = root.path().to_str().unwrap();
+        db.transaction(|tx| {
+            tx.execute(
+                "INSERT INTO git_undo(id,operation_id,project_id,worktree_path,kind,payload,created_at) VALUES('expired','expired-op',?,?, 'discard','{}','2000-01-01T00:00:00.000Z')",
+                params![project.id, scope],
+            )?;
+            for index in 0..=GIT_UNDO_PER_WORKTREE {
+                tx.execute(
+                    "INSERT INTO git_undo(id,operation_id,project_id,worktree_path,kind,payload,created_at) VALUES(?,?,?,?,?,'{}',?)",
+                    params![
+                        format!("undo-{index:02}"),
+                        format!("operation-{index:02}"),
+                        project.id,
+                        scope,
+                        "discard",
+                        format!("2999-01-01T00:00:{index:02}.000Z"),
+                    ],
+                )?;
+            }
+            Ok(())
+        })
+        .unwrap();
+        compact(&db).unwrap();
+        db.transaction(|tx| {
+            let count: i64 = tx.query_row("SELECT COUNT(*) FROM git_undo", [], |row| row.get(0))?;
+            assert_eq!(count, GIT_UNDO_PER_WORKTREE as i64);
+            assert_eq!(
+                tx.query_row("SELECT COUNT(*) FROM git_undo WHERE id='expired'", [], |row| row.get::<_, i64>(0))?,
+                0
+            );
+            Ok(())
+        })
+        .unwrap();
+    }
+
+    #[test]
+    fn startup_cleanup_releases_only_unclaimed_git_bindings() {
+        let root = tempfile::tempdir().unwrap();
+        let db = Database::open(&root.path().join("git-bindings.sqlite")).unwrap();
+        // A fresh database has nothing to sweep.
+        assert_eq!(db.release_orphan_git_bindings().unwrap(), 0);
+        let request = serde_json::json!({"operationId":"unused"});
+        for (id, method) in [
+            ("git-orphan", "git.stage"),
+            ("git-receipted", "git.discard"),
+            ("git-claimed", "git.push"),
+            ("chat-orphan", "chat.queue.send"),
+            ("session-orphan", "session.update"),
+        ] {
+            db.bind_operation(id, method, &request).unwrap();
+        }
+        db.complete_operation("git-receipted", "git.discard", &serde_json::json!({"paths":[]}))
+            .unwrap();
+        assert!(db.claim_external_operation("git-claimed").unwrap());
+        // More orphans than one page, so the pass has to keep paging.
+        db.transaction(|tx| {
+            for index in 0..BATCH_ROWS + 5 {
+                tx.execute(
+                    "INSERT INTO operation_requests(id,method,params) VALUES(?,?,'{}')",
+                    params![format!("bulk-{index:04}"), "git.stage"],
+                )?;
+            }
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(db.release_orphan_git_bindings().unwrap(), BATCH_ROWS + 6);
+        assert!(db.operation_request("git-orphan").unwrap().is_none());
+        assert!(db.operation_request("bulk-0000").unwrap().is_none());
+        // A claim is not an orphan: it and its binding survive.
+        assert_eq!(db.operation_request("git-claimed").unwrap().unwrap().0, "git.push");
+        assert!(db.external_operation_pending("git-claimed").unwrap());
+        // Receipted and non-Git rows are not this pass's business.
+        for (id, method) in [
+            ("git-receipted", "git.discard"),
+            ("chat-orphan", "chat.queue.send"),
+            ("session-orphan", "session.update"),
+        ] {
+            assert_eq!(db.operation_request(id).unwrap().unwrap().0, method);
+        }
+        // Every startup sweeps, so a later orphan does not survive the next one.
+        db.bind_operation("git-late", "git.commit", &request).unwrap();
+        assert_eq!(db.release_orphan_git_bindings().unwrap(), 1);
+        assert!(db.operation_request("git-late").unwrap().is_none());
     }
 }

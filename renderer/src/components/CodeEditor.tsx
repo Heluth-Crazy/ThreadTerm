@@ -1,13 +1,19 @@
 import { autocompletion, completeAnyWord, type CompletionSource } from "@codemirror/autocomplete";
 import { history, historyKeymap, indentWithTab } from "@codemirror/commands";
 import { foldGutter, indentOnInput, language as languageFacet, syntaxTree } from "@codemirror/language";
-import { Chunk } from "@codemirror/merge";
+import type { Chunk } from "@codemirror/merge";
+import { buildGitHunks, canUseGitHunks } from "../workbench/gutterHunk";
+import { conflictBlocks } from "../workbench/conflictBlocks";
+import { gitHunkPopup, type GitHunkActions } from "./gitHunkPopup";
 import { gotoLine, searchKeymap } from "@codemirror/search";
+import { conflictResolver } from "./conflictEditor";
+import { dominantLineSeparator, normalizeEditorText, serializeEditorText, type EditorLineSeparator } from "./editorTextSerialization";
 import {
   Compartment,
   EditorSelection,
   EditorState,
   Facet,
+  Prec,
   RangeSet,
   RangeSetBuilder,
   StateEffect,
@@ -80,13 +86,14 @@ const markers: Record<LineChange, ChangeMarker> = {
   modified: new ChangeMarker("modified"),
   deleted: new ChangeMarker("deleted"),
 };
-const setLineChanges = StateEffect.define<RangeSet<GutterMarker>>();
-const lineChanges = StateField.define<RangeSet<GutterMarker>>({
-  create: () => RangeSet.empty,
+type GutterChanges = {markers:RangeSet<GutterMarker>;chunks:readonly Chunk[];base:string|null;doc:Text};
+const setLineChanges = StateEffect.define<GutterChanges>();
+const lineChanges = StateField.define<GutterChanges>({
+  create: state => ({markers:RangeSet.empty,chunks:[],base:null,doc:state.doc}),
   update(value, transaction) {
     for (const effect of transaction.effects)
       if (effect.is(setLineChanges)) return effect.value;
-    return transaction.docChanged ? value.map(transaction.changes) : value;
+    return transaction.docChanged ? {...value,markers:value.markers.map(transaction.changes)} : value;
   },
 });
 const gitBase = Facet.define<string | null, string | null>({
@@ -94,11 +101,7 @@ const gitBase = Facet.define<string | null, string | null>({
 });
 
 /** Line-level markers for the buffer against the index text (VS Code style). */
-export function changeMarkers(base: string, doc: Text): RangeSet<GutterMarker> {
-  const chunks = Chunk.build(Text.of(base.replace(/\r\n?/g, "\n").split("\n")), doc, {
-    scanLimit: 5000,
-    timeout: 250,
-  });
+export function changeMarkers(base: string, doc: Text, chunks:readonly Chunk[]=buildGitHunks(base,doc)): RangeSet<GutterMarker> {
   const lines = new Map<number, LineChange>();
   for (const chunk of chunks) {
     if (chunk.fromB >= chunk.toB) {
@@ -136,9 +139,9 @@ const gitGutterPlugin = ViewPlugin.fromClass(
       clearTimeout(this.timer);
       this.timer = setTimeout(() => {
         const base = this.view.state.facet(gitBase);
-        const value =
-          base === null ? RangeSet.empty : changeMarkers(base, this.view.state.doc);
-        this.view.dispatch({ effects: setLineChanges.of(value) });
+        const doc=this.view.state.doc,chunks=base===null?[]:buildGitHunks(base,doc);
+        const markers=base===null?RangeSet.empty:changeMarkers(base,doc,chunks);
+        this.view.dispatch({ effects: setLineChanges.of({markers,chunks,base,doc}) });
       }, delay);
     }
     destroy() {
@@ -146,12 +149,17 @@ const gitGutterPlugin = ViewPlugin.fromClass(
     }
   },
 );
+const gitMarkerOpen=Facet.define<(view:EditorView,position:number)=>boolean,((view:EditorView,position:number)=>boolean)|undefined>({combine:values=>values.at(-1)});
 const gitGutter: Extension = [
   lineChanges,
   gitGutterPlugin,
   gutter({
     class: "cm-git-gutter",
-    markers: (view) => view.state.field(lineChanges),
+    markers: (view) => view.state.field(lineChanges).markers,
+    domEventHandlers:{click:(view,line,event)=>{
+      if(!(event.target as Element).closest('.cm-git-marker'))return false;
+      return view.state.facet(gitMarkerOpen)?.(view,line.from)??false;
+    }},
   }),
 ];
 
@@ -278,6 +286,7 @@ export function CodeEditor({
   reveal,
   resetKey,
   gitBaseText,
+  gitHunkActions,
   blame,
   onBlameCommit,
   onSendToAgent,
@@ -294,6 +303,7 @@ export function CodeEditor({
   resetKey?: number;
   /** Index text for the change gutter; null/undefined hides it (untracked or non-Git). */
   gitBaseText?: string | null;
+  gitHunkActions?: GitHunkActions;
   blame?: GitBlame;
   onBlameCommit?: (commit: string) => void;
   /** Mod-L: hand the selected lines (or the cursor line) to an agent session. */
@@ -305,6 +315,8 @@ export function CodeEditor({
 }) {
   const host = useRef<HTMLDivElement>(null);
   const view = useRef<EditorView | undefined>(undefined);
+  const hunkActions=useRef(gitHunkActions);hunkActions.current=gitHunkActions;
+  const popup=useRef<ReturnType<typeof gitHunkPopup>|undefined>(undefined);
   const changed = useRef(onChange);
   changed.current = onChange;
   const save = useRef(onSave);
@@ -322,20 +334,29 @@ export function CodeEditor({
     base: new Compartment(),
     blame: new Compartment(),
   });
+  const textFormat = useRef<{separator: EditorLineSeparator; emitted?: string}>({separator: dominantLineSeparator(value)});
   const zh = globalThis.document.documentElement.lang === "zh-CN";
   useEffect(() => {
     if (!host.current) return;
     const { language, base, blame: blameSlot } = compartments.current;
+    textFormat.current = {separator: dominantLineSeparator(value)};
     const comments = Boolean(selected.current);
+    let conflictDoc:Text|undefined,hasConflicts=false;
+    const enabled=(editor:EditorView)=>{if(conflictDoc!==editor.state.doc){conflictDoc=editor.state.doc;const conflicts=conflictBlocks(conflictDoc.toString());hasConflicts=conflicts.blocks.length>0||conflicts.unparseable;}return canUseGitHunks(editor.state.facet(EditorState.readOnly),Boolean(hunkActions.current?.conflicted),hasConflicts);};
+    const hunks=gitHunkPopup(editor=>{const value=editor.state.field(lineChanges);if(editor.state.facet(gitBase)===null)return {base:'',doc:editor.state.doc,chunks:[]};return value.base!==null&&value.base===editor.state.facet(gitBase)&&value.doc===editor.state.doc?{base:value.base,doc:value.doc,chunks:value.chunks}:undefined;},hunkActions,enabled,zh);
+    popup.current=hunks;
     const state = EditorState.create({
       doc: value,
       extensions: [
         blameSlot.of([]),
         lineNumbers(),
         gitGutter,
+        hunks.extension,
+        gitMarkerOpen.of((editor,position)=>hunks.open(editor,position)),
         base.of(gitBase.of(gitBaseText ?? null)),
         foldGutter(),
         history(),
+        conflictResolver(zh),
         indentOnInput(),
         language.of([]),
         editorHighlight,
@@ -427,13 +448,22 @@ export function CodeEditor({
           { key: "Shift-F10", run: (editor) => { const range = editor.state.selection.main; const first = editor.state.doc.lineAt(range.from); let last = editor.state.doc.lineAt(range.to); if (range.to > range.from && range.to === last.from && last.number > first.number) last = editor.state.doc.line(last.number - 1); const selection = { startLine: first.number, endLine: last.number, text: editor.state.sliceDoc(first.from, last.to) }; const point = editor.coordsAtPos(range.head); contextMenu.current?.({ x: point?.left ?? editor.contentDOM.getBoundingClientRect().left, y: point?.bottom ?? editor.contentDOM.getBoundingClientRect().bottom, selection, hasSelection: range.from !== range.to, target: editor.contentDOM, copy: () => navigator.clipboard.writeText(editor.state.sliceDoc(range.from, range.to)), cut: async () => { if (!readOnly && range.from !== range.to) { const text = editor.state.sliceDoc(range.from, range.to); await navigator.clipboard.writeText(text); editor.dispatch({ changes: { from: range.from, to: range.to, insert: '' } }); } }, paste: async () => { if (!readOnly) { const text = await navigator.clipboard.readText(); editor.dispatch({ changes: { from: range.from, to: range.to, insert: text } }); } }, selectAll: () => editor.dispatch({ selection: EditorSelection.create([EditorSelection.range(0, editor.state.doc.length)]) }) }); return Boolean(contextMenu.current); }, preventDefault: true },
           { key: "ContextMenu", run: (editor) => { editor.contentDOM.dispatchEvent(new KeyboardEvent("keydown", { key: "F10", shiftKey: true, bubbles: true, cancelable: true })); return true; }, preventDefault: true },
         ]),
+        Prec.lowest(keymap.of([
+          { key: 'F7', run: editor => hunks.move(editor,1) },
+          { key: 'Shift-F7', run: editor => hunks.move(editor,-1) },
+        ])),
         EditorView.updateListener.of((update) => {
-          if (update.docChanged) changed.current(update.state.doc.toString());
+          if (update.docChanged) {
+            const serialized = serializeEditorText(update.state.doc.toString(), textFormat.current.separator);
+            textFormat.current.emitted = serialized;
+            changed.current(serialized);
+          }
         }),
       ],
     });
     const editor = new EditorView({ state, parent: host.current });
     view.current = editor;
+    if(!readOnly){editor.contentDOM.setAttribute('aria-keyshortcuts','F7 Shift+F7 Alt+F7');editor.dom.querySelector('.cm-git-gutter')?.setAttribute('title',zh?'查看更改 (Alt+F7) · 上一处/下一处 (Shift+F7/F7)':'Review change (Alt+F7) · Previous/next (Shift+F7/F7)');}
     const detachLanguage = attachLanguage(editor, language, path);
     return () => {
       detachLanguage();
@@ -443,11 +473,14 @@ export function CodeEditor({
   }, [path, readOnly, resetKey]);
   useEffect(() => {
     const current = view.current;
-    if (current && current.state.doc.toString() !== value)
-      current.dispatch({
-        changes: { from: 0, to: current.state.doc.length, insert: value },
-      });
+    if (!current) return;
+    // Echoes of our own edits retain the loaded format even after all line breaks are deleted.
+    if (value !== textFormat.current.emitted) textFormat.current.separator = dominantLineSeparator(value);
+    const normalized = normalizeEditorText(value);
+    if (current.state.doc.toString() !== normalized)
+      current.dispatch({ changes: { from: 0, to: current.state.doc.length, insert: normalized } });
   }, [value]);
+  useEffect(()=>{if(view.current)popup.current?.refresh(view.current);},[gitHunkActions]);
   useEffect(() => {
     const current = view.current;
     if (!current || !marks || !current.state.field(commentMarks, false)) return;

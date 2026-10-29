@@ -53,6 +53,30 @@ test('all four tool switches remain optional boolean portable settings',()=>{
 });
 import {validateRequest,validateResult,validateLayout,METHODS,isRuntimeEvent,PROTOCOL_CONTRACT,PROTOCOL_VERSION,protocolIncompatibleReason} from './index.ts';
 
+test('push preview and explicit lease contracts preserve plain push and reject unsafe force requests',()=>{
+ const scope={projectId:'p'},oid='a'.repeat(40),plain={...scope,operationId:'push'};
+ validateRequest('git.push',plain);
+ validateRequest('git.push',{...plain,setUpstream:true});
+ const reviewed={remote:'origin',remoteBranch:'main',localBranch:'refs/heads/main'};
+ validateRequest('git.push',{...plain,...reviewed,force:'with-lease',expectedRemoteOid:oid});
+ validateRequest('git.push',{...plain,...reviewed,force:'with-lease',expectedRemoteOid:'b'.repeat(64)});
+ for(const patch of [{force:'with-lease',expectedRemoteOid:oid,setUpstream:true},{force:true},{force:'force'},{force:'with-lease'},{expectedRemoteOid:oid},{force:'with-lease',expectedRemoteOid:''},{force:'with-lease',expectedRemoteOid:'HEAD'},{force:'with-lease',expectedRemoteOid:'a'.repeat(39)}]) assert.throws(()=>validateRequest('git.push',{...plain,...patch}));
+ validateRequest('git.push.preview',scope);
+ validateRequest('git.push.preview',{...scope,worktreePath:'worktree'});
+ for(const patch of [{projectId:''},{operationId:'unexpected'},{remote:'injected'},{force:'with-lease'}]) assert.throws(()=>validateRequest('git.push.preview',{...scope,...patch}));
+ const commit={hash:oid,subject:'Publish me',author:'QA',committedAt:'2026-10-28T12:00:00Z'};
+ const preview={branch:'main',localBranch:'refs/heads/main',detached:false,remote:'origin',remoteBranch:'main',upstream:'origin/main',setUpstream:false,ahead:{count:2,commits:[commit,commit]},behind:{count:0,commits:[]},remoteOid:oid,diverged:false,lastFetchedAt:commit.committedAt,remoteDefaultBranch:'main'};
+ validateResult('git.push.preview',preview);
+ validateResult('git.push.preview',{...preview,remoteOid:undefined,lastFetchedAt:undefined,remoteDefaultBranch:undefined,upstream:undefined,setUpstream:true});
+ validateResult('git.push.preview',{...preview,ahead:{count:100,commits:Array(50).fill(commit)}});
+ for(const patch of [{remote:''},{remoteOid:'HEAD'},{ahead:{count:-1,commits:[]}},{ahead:{count:1,commits:[commit,commit]}},{ahead:{count:51,commits:Array(51).fill(commit)}},{behind:{count:0.5,commits:[]}},{ahead:{count:1,commits:[{...commit,author:3}]}},{diverged:'yes'}]) assert.throws(()=>validateResult('git.push.preview',{...preview,...patch}));
+ for(const patch of [{remote:undefined},{remote:''},{remoteBranch:undefined},{localBranch:undefined},{localBranch:'main'}]) assert.throws(()=>validateRequest('git.push',{...plain,...reviewed,force:'with-lease',expectedRemoteOid:oid,...patch}));
+ validateRequest('git.fetch',{...plain,remote:'backup'});
+ for(const remote of ['', '-all', 'origin\nother']) assert.throws(()=>validateRequest('git.fetch',{...plain,remote}));
+ assert.throws(()=>validateResult('git.push.preview',{...preview,localBranch:'main'}));
+ assert.ok(METHODS.includes('git.push.preview'));
+});
+
 test('external files have a small read-only registration contract',()=>{
  const opened={id:'external-1',path:join(tmpdir(),'external-files','notes.md'),name:'notes.md',size:12,modifiedAt:'2026-10-26T00:00:00Z',openedAt:'2026-10-26T00:00:01Z',image:false};
  validateRequest('filesystem.external.open',{path:opened.path,source:'dialog'});
@@ -114,7 +138,16 @@ test('selected commits carry an exact staged snapshot and reject ambiguous or un
  validateResult('git.commit.selected',{...result,cleanupError:'git_selected_commit_cleanup_failed'});
  assert.throws(()=>validateResult('git.commit.selected',{...result,cleanupError:true}));
  assert.throws(()=>validateResult('git.commit.selected',{...result,retainedStagedPathsTruncated:'yes'}));
- validateResult('git.status',{branch:'main',upstream:null,ahead:0,behind:0,changes:[],selectedCommit:{head,indexFingerprint:fingerprint,supported:false,unsupportedReason:'Git cannot guard symbolic HEAD',gitVersion:'test'}});
+ validateRequest('git.merge',{projectId:'p',branch:'feature/merge',operationId:'merge-branch'});
+ validateRequest('git.merge',{projectId:'p',upstream:true,operationId:'merge-upstream'});
+ for(const target of [{},{branch:'feature/merge',upstream:true},{branch:'feature/merge',upstream:false},{branch:'',upstream:undefined},{upstream:false}]) assert.throws(()=>validateRequest('git.merge',{projectId:'p',operationId:'invalid-merge',...target}));
+ validateResult('git.merge',{output:'Already up to date.',conflicted:false});
+ validateResult('git.merge',{output:'Merge made by the recursive strategy.',conflicted:false,warning:'merge_completed_after_error'});
+ assert.throws(()=>validateResult('git.merge',{output:'',conflicted:false,warning:'merge_incomplete'}));
+ validateResult('git.status',{branch:'main',upstream:null,ahead:0,behind:0,changes:[],operation:{kind:'merge',head:'abc123',message:'Merge upstream'},selectedCommit:{head,indexFingerprint:fingerprint,supported:false,unsupportedReason:'Git cannot guard symbolic HEAD',gitVersion:'test'}});
+ assert.throws(()=>validateResult('git.status',{branch:'main',upstream:null,ahead:0,behind:0,changes:[],operation:{kind:'squash'}}));
+ assert.throws(()=>validateResult('git.status',{branch:'main',upstream:null,ahead:0,behind:0,changes:[],operation:{kind:'merge',head:7}}));
+ assert.throws(()=>validateResult('git.status',{branch:'main',upstream:null,ahead:0,behind:0,changes:[],operation:{kind:'merge',message:false}}));
  assert.throws(()=>validateResult('git.status',{branch:'main',upstream:null,ahead:0,behind:0,changes:[],selectedCommit:{head,indexFingerprint:fingerprint,supported:'yes'}}));
 });
 
@@ -754,4 +787,180 @@ test('group prerequisites preserve duplicate providers and explicit degradation'
  const row={provider:'fixture',usable:false,reason:'not_installed',fix:{kind:'install',text:'Install Fixture CLI'},readOnly:'prompt',readOnlyNote:'Read-only by instruction'};
  validateResult('group.prerequisites',{providers:[row,row],git:{found:false},folder:{repository:false,reason:'no_git'}});
  assert.throws(()=>validateResult('group.prerequisites',{providers:[{...row,readOnly:'assumed'}],git:{found:true}}));
+});
+
+test('git fingerprints snapshots and discard require exact nullable maps',()=>{
+ const paths=['tracked.txt','deleted.txt','untracked.txt'];
+ validateRequest('git.fingerprints',{projectId:'p',paths});
+ validateResult('git.fingerprints',{fingerprints:{'tracked.txt':'a'.repeat(64),'deleted.txt':null,'untracked.txt':'b'.repeat(64)},indexFingerprints:{'tracked.txt':'c'.repeat(64),'deleted.txt':'d'.repeat(64),'untracked.txt':null}});
+ const discard={projectId:'p',paths,expectedFingerprints:{'tracked.txt':'a'.repeat(64),'deleted.txt':null,'untracked.txt':'b'.repeat(64)},expectedIndexFingerprints:{'tracked.txt':'c'.repeat(64),'deleted.txt':'d'.repeat(64),'untracked.txt':null},operationId:'discard-1'};
+ validateRequest('git.discard',discard);
+ assert.ok(METHODS.includes('git.fingerprints'));
+ for(const patch of [
+  {paths:[]},{expectedFingerprints:undefined},{expectedIndexFingerprints:undefined},
+  {expectedFingerprints:{'tracked.txt':'a'.repeat(64),'deleted.txt':null}},{expectedIndexFingerprints:{'tracked.txt':'c'.repeat(64),'deleted.txt':'d'.repeat(64),'untracked.txt':null,extra:null}},
+  {expectedFingerprints:{...discard.expectedFingerprints,'untracked.txt':undefined}},{expectedIndexFingerprints:{...discard.expectedIndexFingerprints,'untracked.txt':0}},
+ ]) assert.throws(()=>validateRequest('git.discard',{...discard,...patch}));
+ for(const path of ['toString','constructor','__proto__']) assert.throws(()=>validateRequest('git.discard',{projectId:'p',paths:[path],expectedFingerprints:{},expectedIndexFingerprints:{},operationId:'discard-inherited'}));
+ const ownProto=JSON.parse('{\"__proto__\":null}');
+ validateRequest('git.discard',{projectId:'p',paths:['__proto__'],expectedFingerprints:ownProto,expectedIndexFingerprints:ownProto,operationId:'discard-own-proto'});
+ for(const params of [{projectId:'p',paths:[]},{projectId:'p',paths:Array.from({length:501},(_,i)=>'f'+i)}]) assert.throws(()=>validateRequest('git.fingerprints',params));
+});
+
+test('git branches add the optional checked-out worktree path',()=>{
+ const branch={name:'feature/elsewhere',remote:false,current:false,lastCommit:{hash:'a'.repeat(40),subject:'Elsewhere',committedAt:'2026-10-28T00:00:00Z'},worktreePath:'C:/repo/elsewhere'};
+ validateResult('git.branches',{current:'main',detached:false,branches:[branch]});
+ validateResult('git.branches',{current:'main',detached:false,branches:[{...branch,worktreeMissing:true}]});
+ validateResult('git.branches',{current:null,detached:true,branches:[{...branch,worktreePath:undefined}]});
+ assert.throws(()=>validateResult('git.branches',{current:'main',detached:false,branches:[{...branch,worktreePath:7}]}));
+ assert.throws(()=>validateResult('git.branches',{current:'main',detached:false,branches:[{...branch,worktreeMissing:'yes'}]}));
+});
+
+test('git stashes use stable OIDs, distinguish untracked files, and keep failed applications',()=>{
+ const oid='a'.repeat(40), scope={projectId:'p'};
+ const entry={oid,index:0,message:'ThreadTerm: switch to feature',branch:'main',createdAt:1_793_000_000,untracked:true};
+ validateRequest('git.stash.list',scope);
+ validateResult('git.stash.list',{entries:[entry]});
+ validateRequest('git.stash.show',{...scope,oid});
+ validateResult('git.stash.show',{files:[{path:'src/renamed.ts',originalPath:'src/changed.ts',status:'R'},{path:'scratch.txt',status:'?',untracked:true}]});
+ validateRequest('git.stash.push',{...scope,message:'save point',includeUntracked:true,operationId:'stash-push'});
+ validateResult('git.stash.push',{oid});
+ validateRequest('git.stash.apply',{...scope,oid,pop:true,operationId:'stash-pop'});
+ validateResult('git.stash.apply',{oid,applied:true,dropped:true});
+ validateResult('git.stash.apply',{oid,applied:true,conflicted:true,dropped:false});
+ validateResult('git.stash.apply',{oid,applied:false,dropped:false,warning:'untracked restore refused'});
+ const interference={oid,ourEntryDropped:false,restored:[{oid:'b'.repeat(40),message:'foreign save'}],restoreFailed:[{oid:'c'.repeat(40),message:'other save',error:'store failed'}],orderChanged:true,unknownEntryLost:true};
+ validateResult('git.stash.apply',{oid,applied:true,dropped:false,interference});
+ validateRequest('git.stash.drop',{...scope,oid,operationId:'stash-drop'});
+ validateResult('git.stash.drop',{oid,dropped:true});
+ validateRequest('git.checkout',{...scope,branch:'feature',stash:true,operationId:'stash-switch'});
+ validateResult('git.checkout',{branch:'feature',stash:{oid,applied:true,dropped:true}});
+ validateResult('git.checkout',{branch:'feature',stash:{oid,message:'ThreadTerm: switch to feature',applied:true,conflicted:true,dropped:false},warning:'post-checkout hook failed'});
+ validateResult('git.checkout',{branch:'feature',stash:{oid,applied:true,dropped:false,interference}});
+ for(const params of [{...scope,oid,pop:true},{...scope,oid,pop:'yes',operationId:'o'},{...scope,oid,operationId:'o',extra:true}]) assert.throws(()=>validateRequest('git.stash.apply',params));
+ assert.throws(()=>validateResult('git.stash.list',{entries:[{...entry,createdAt:'now'}]}));
+ assert.throws(()=>validateResult('git.stash.apply',{oid,applied:false,dropped:false,warning:1}));
+ assert.throws(()=>validateResult('git.stash.apply',{oid,applied:true,dropped:false,interference:{...interference,restoreFailed:[{oid:'c'.repeat(40),message:'other',error:1}]}}));
+ assert.ok(METHODS.includes('git.stash.list'));
+});
+
+
+test('worktree creation accepts a bounded base only for new branches',()=>{
+ const request={projectId:'p',path:'C:/worktree',branch:'feature/base',createBranch:true,operationId:'worktree-base'};
+ validateRequest('worktree.create',request);
+ for(const startPoint of ['main','origin/main','a'.repeat(40),'x'.repeat(255)]) validateRequest('worktree.create',{...request,startPoint});
+ validateRequest('worktree.create',{...request,createBranch:false});
+ for(const startPoint of ['', '-main', 'x'.repeat(256), 1, null]) assert.throws(()=>validateRequest('worktree.create',{...request,startPoint}));
+ assert.throws(()=>validateRequest('worktree.create',{...request,createBranch:false,startPoint:'main'}));
+});
+
+
+test('worktree bases accept multibyte refs within the character limit',()=>{
+ const request={projectId:'p',path:'C:/worktree',branch:'feature/base',createBranch:true,operationId:'worktree-multibyte-base'};
+ for(const startPoint of ['基'.repeat(43)+'/'+'准'.repeat(42),'基'.repeat(255)]) validateRequest('worktree.create',{...request,startPoint});
+ assert.throws(()=>validateRequest('worktree.create',{...request,startPoint:'基'.repeat(256)}));
+});
+
+test('history actions validate commit hashes, reset fences and operation kinds',()=>{
+ const scope={projectId:'p'},hash='a'.repeat(40),head='b'.repeat(40),operationId='history-action';
+ for(const method of ['git.history.plan','git.cherryPick','git.revert']) {
+  const params={...scope,hash,...(method==='git.history.plan'?{}:{operationId})};
+  validateRequest(method,params);
+  validateRequest(method,{...params,hash:'abcdef0'});
+  validateRequest(method,{...params,hash:'c'.repeat(64),worktreePath:'worktree'});
+  for(const bad of ['HEAD','--abort','abc123','g'.repeat(40),'a'.repeat(65),'abc1234\n']) assert.throws(()=>validateRequest(method,{...params,hash:bad}));
+  assert.ok(METHODS.includes(method));
+ }
+ validateRequest('git.revert',{...scope,hash,operationId,mainline:1});
+ for(const mainline of [0,-1,1.5,'1',Number.MAX_SAFE_INTEGER+1]) assert.throws(()=>validateRequest('git.revert',{...scope,hash,operationId,mainline}));
+ const reset={...scope,hash,operationId,expectedHead:head,mode:'mixed'};
+ validateRequest('git.reset',reset);
+ validateRequest('git.reset',{...reset,mode:'soft',undoOf:'completed-reset'});
+ for(const patch of [{mode:'hard'},{expectedHead:'HEAD'},{expectedHead:'abcdef0'},{expectedHead:undefined},{undoOf:'receipt'},{mode:'soft',undoOf:''},{mode:'soft',undoOf:' '},{mode:'soft',undoOf:3}]) assert.throws(()=>validateRequest('git.reset',{...reset,...patch}));
+ for(const method of ['git.operation.abort','git.operation.continue']) {
+  for(const kind of ['cherry-pick','revert']) validateRequest(method,{...scope,kind,operationId});
+  for(const kind of ['merge','rebase','--abort','']) assert.throws(()=>validateRequest(method,{...scope,kind,operationId}));
+  assert.throws(()=>validateRequest(method,{...scope,kind:'revert'}));
+  assert.ok(METHODS.includes(method));
+ }
+ assert.ok(METHODS.includes('git.reset'));
+});
+
+test('history plans and action results preserve full OIDs and bounded reset previews',()=>{
+ const hash='a'.repeat(40),head='b'.repeat(40),commit={hash,subject:'Reviewed commit'};
+ const plan={hash,head,branch:'main',detached:false,isAncestor:true,parents:[commit],reset:{count:21,commits:Array(20).fill(commit),pushed:true}};
+ validateResult('git.history.plan',plan);
+ validateResult('git.history.plan',{...plan,branch:'',detached:true,isAncestor:false,parents:[],reset:{count:0,commits:[],pushed:false}});
+ for(const patch of [{head:'abcdef0'},{hash:'HEAD'},{detached:'false'},{parents:[{hash:'abc1234',subject:'parent'}]},{reset:{count:1,commits:[commit,commit],pushed:false}},{reset:{count:21,commits:Array(21).fill(commit),pushed:false}},{reset:{count:-1,commits:[],pushed:false}},{reset:{count:0.5,commits:[],pushed:false}},{reset:{count:0,commits:[],pushed:'yes'}}]) assert.throws(()=>validateResult('git.history.plan',{...plan,...patch}));
+ for(const method of ['git.cherryPick','git.revert','git.operation.continue']) {
+  validateResult(method,{output:'done',conflicted:false,head});
+  validateResult(method,{output:'CONFLICT',conflicted:true});
+  assert.throws(()=>validateResult(method,{output:'done'}));
+  assert.throws(()=>validateResult(method,{output:'done',conflicted:false,head:'HEAD'}));
+ }
+ validateResult('git.operation.abort',{output:'',head});
+ validateResult('git.reset',{output:'',previousHead:head,head:hash,symbolicHead:'refs/heads/main'});
+ validateResult('git.reset',{output:'',previousHead:head,head:hash,symbolicHead:'detached'});
+ for(const symbolicHead of [undefined,'main','refs/heads/','refs/heads/main\n'])assert.throws(()=>validateResult('git.reset',{output:'',previousHead:head,head:hash,symbolicHead}));
+ assert.throws(()=>validateResult('git.reset',{output:'',previousHead:'HEAD',head:hash,symbolicHead:'refs/heads/main'}));
+ assert.throws(()=>validateResult('git.reset',{output:'',previousHead:head,symbolicHead:'refs/heads/main'}));
+});
+
+test('git undo exposes a bounded identifier-only journal and fences undo requests',()=>{
+ const scope={projectId:'project',worktreePath:'worktree'},id='undo-operation',operationId='undo-request';
+ validateRequest('git.undo.list',scope);
+ validateRequest('git.undo',{...scope,id,operationId});
+ for(const params of [{projectId:''},{...scope,id:''},{...scope,id,operationId:''},{...scope,id,operationId,paths:['leak']}]) assert.throws(()=>validateRequest(params.id===undefined?'git.undo.list':'git.undo',params));
+ const entry={id,kind:'discard',label:'Discard 2 files',createdAt:'2026-10-29T00:00:00Z',available:true,paths:['src/a.ts','src/b.ts'],pathCount:2,undoneAt:null};
+ validateResult('git.undo.list',{entries:[entry]});
+ validateResult('git.undo',{id,undoneAt:'2026-10-29T00:01:00Z'});
+ for(const patch of [{kind:'other'},{paths:['/absolute.ts']},{pathCount:-1},{pathCount:1.5},{undoneAt:undefined},{available:'yes'},{partial:'yes'},{applied:['/absolute.ts']},{remaining:['../escape.ts']}]) assert.throws(()=>validateResult('git.undo.list',{entries:[{...entry,...patch}]}));
+ const partial={...entry,undoneAt:'2026-10-29T00:01:00Z',available:false,partial:true,applied:['src/a.ts'],remaining:['src/b.ts']};
+ validateResult('git.undo.list',{entries:[partial]});
+ const recycled={...entry,paths:['src/a.ts'],pathCount:1,recycledCount:1,label:'Discarded changes in 1 file (1 more moved to the Recycle Bin)'};
+ validateResult('git.undo.list',{entries:[recycled]});
+ for(const patch of [{recycledCount:-1},{recycledCount:1.5},{recycledCount:'1'}]) assert.throws(()=>validateResult('git.undo.list',{entries:[{...recycled,...patch}]}));
+ assert.throws(()=>validateResult('git.undo.list',{entries:[{...partial,applied:Array(21).fill('src/a.ts')}]}));
+ assert.throws(()=>validateResult('git.undo',{id,undoneAt:null}));
+ assert.ok(METHODS.includes('git.undo')&&METHODS.includes('git.undo.list'));
+});
+
+test('branch comparison requests bound the base, the merge base and the scope',()=>{
+ const scope={projectId:'p'};
+ validateRequest('git.compare.files',scope);
+ validateRequest('git.compare.files',{...scope,worktreePath:'worktree'});
+ validateRequest('git.compare.files',{...scope,base:'origin/main'});
+ validateRequest('git.compare.files',{...scope,base:'a'.repeat(40),committedOnly:true});
+ for(const patch of [{projectId:''},{base:''},{base:'-upload-pack'},{base:'refs/heads/'+'x'.repeat(250)},{base:'main\ninjected'},{committedOnly:'yes'},{committedOnly:null},{operationId:'unexpected'}])
+  assert.throws(()=>validateRequest('git.compare.files',{...scope,...patch}),undefined,JSON.stringify(patch).slice(0,80));
+ const oid='a'.repeat(40);
+ validateRequest('git.compare.diff',{...scope,base:{ref:'origin/main',oid},mergeBase:oid,path:'src/a.ts'});
+ validateRequest('git.compare.diff',{...scope,base:{oid},mergeBase:oid,path:'src/a.ts',originalPath:'src/b.ts',committedOnly:true});
+ for(const patch of [{base:{}},{base:{oid:'HEAD'}},{base:{oid:'abc'}},{base:{ref:'',oid}},{base:{ref:'-x',oid}},{mergeBase:'abc'},{path:''},{committedOnly:1}])
+  assert.throws(()=>validateRequest('git.compare.diff',{...scope,base:{ref:'origin/main',oid},mergeBase:oid,path:'src/a.ts',...patch}),undefined,JSON.stringify(patch).slice(0,80));
+});
+
+test('branch comparison results cap files and keep statuses and counts exact',()=>{
+ const oid='a'.repeat(40),base={ref:'origin/main',oid};
+ const file={path:'src/a.ts',status:'modified',additions:4,deletions:2,binary:false};
+ const result={base,mergeBase:oid,head:'b'.repeat(40),files:[file,{path:'src/b.ts',originalPath:'src/old.ts',status:'renamed',additions:0,deletions:0,binary:false},{path:'img.png',status:'added',additions:0,deletions:0,binary:true},{path:'big.log',status:'added',additions:0,deletions:0,binary:false,countsUnknown:true}],truncated:false};
+ validateResult('git.compare.files',result);
+ validateResult('git.compare.files',{...result,files:[]});
+ validateResult('git.compare.files',{...result,files:Array.from({length:1000},(_,index)=>({...file,path:`src/${index}.ts`})),truncated:true});
+ for(const patch of [{base:{ref:'',oid}},{base:{ref:'origin/main',oid:'HEAD'}},{mergeBase:'abc'},{head:'HEAD'},{files:[{...file,status:'copied'}]},{files:[{...file,additions:-1}]},{files:[{...file,deletions:0.5}]},{files:[{...file,binary:'no'}]},{files:[{...file,originalPath:''}]},{files:[{...file,countsUnknown:'yes'}]},{files:Array.from({length:1001},(_,index)=>({...file,path:`src/${index}.ts`}))},{truncated:'yes'}])
+  assert.throws(()=>validateResult('git.compare.files',{...result,...patch}),undefined,JSON.stringify(patch).slice(0,80));
+ validateResult('git.compare.diff',{path:'src/a.ts',oldText:'old\n',newText:'new\n',binary:false,deleted:false});
+ validateResult('git.compare.diff',{path:'src/a.ts',oldText:'',newText:'',binary:true});
+ for(const patch of [{path:''},{oldText:1},{newText:null},{binary:'no'},{deleted:'no'}]) assert.throws(()=>validateResult('git.compare.diff',{path:'src/a.ts',oldText:'',newText:'',binary:false,...patch}));
+ assert.ok(METHODS.includes('git.compare.files')&&METHODS.includes('git.compare.diff'));
+});
+
+test('compare diff tabs require a full commit pair and no staged mode',()=>{
+ const oid='a'.repeat(40),tab={id:'compare',kind:'diff',projectId:'p',path:'src/a.ts',compare:{base:'origin/main',oid,mergeBase:oid}};
+ const layout=value=>({kind:'pane',id:'pane',tabs:[value],activeTabId:'compare'});
+ validateLayout(layout(tab));
+ validateLayout(layout({...tab,compare:{...tab.compare,committedOnly:true}}));
+ validateRequest('workspace.save',{name:'Compare',layout:layout(tab),expectedRevision:0,operationId:'compare-layout'});
+ for(const patch of [{staged:true},{kind:'file'},{kind:'preview'},{compare:{base:'-x',oid,mergeBase:oid}},{compare:{base:'origin/main',oid:'HEAD',mergeBase:oid}},{compare:{base:'origin/main',oid,mergeBase:'HEAD'}},{compare:{base:'origin/main',oid,mergeBase:oid,committedOnly:'yes'}},{compare:{base:'x'.repeat(256),oid,mergeBase:oid}}])
+  assert.throws(()=>validateLayout(layout({...tab,...patch})),undefined,JSON.stringify(patch).slice(0,80));
 });

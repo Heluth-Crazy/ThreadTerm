@@ -156,7 +156,7 @@ export function CatalogPopover({anchor,onClose,label,children,align='side'}:{anc
   },[anchor,mounted,align]);
   useEffect(()=>{
     const pointer=(event:PointerEvent)=>{if(!panel.current?.contains(event.target as Node)&&!anchor.contains(event.target as Node))callback.current();};
-    const key=(event:KeyboardEvent)=>{if(event.key==='Escape'){event.preventDefault();event.stopPropagation();callback.current();}if(event.key==='ArrowDown'||event.key==='ArrowUp'){event.preventDefault();const buttons=Array.from(panel.current?.querySelectorAll<HTMLButtonElement>('button:not(:disabled)')??[]),index=buttons.indexOf(document.activeElement as HTMLButtonElement);buttons[(index+(event.key==='ArrowDown'?1:-1)+buttons.length)%buttons.length]?.focus();}};
+    const key=(event:KeyboardEvent)=>{if(event.key==='Escape'){event.preventDefault();event.stopPropagation();callback.current();}if((event.key==='ArrowDown'||event.key==='ArrowUp')&&!(event.target instanceof HTMLSelectElement)){event.preventDefault();const buttons=Array.from(panel.current?.querySelectorAll<HTMLButtonElement>('button:not(:disabled)')??[]),index=buttons.indexOf(document.activeElement as HTMLButtonElement);buttons[(index+(event.key==='ArrowDown'?1:-1)+buttons.length)%buttons.length]?.focus();}};
     addEventListener('pointerdown',pointer);addEventListener('keydown',key,true);
     return()=>{removeEventListener('pointerdown',pointer);removeEventListener('keydown',key,true);if(anchor.isConnected)anchor.focus();};
   },[anchor]);

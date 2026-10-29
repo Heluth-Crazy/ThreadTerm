@@ -718,9 +718,15 @@ fn create_worktree(
         .get("createBranch")
         .and_then(Value::as_bool)
         .unwrap_or(false);
-    let start_point = object.get("startPoint").and_then(Value::as_str);
-    if start_point.is_some_and(|value| value.is_empty() || value.starts_with('-') || value.len() > 256)
+    let start_point = object
+        .get("startPoint")
+        .map(|value| value.as_str().ok_or_else(|| anyhow!("invalid_request")))
+        .transpose()?;
+    if start_point.is_some_and(|value| value.is_empty() || value.starts_with('-') || value.chars().count() > 255)
     {
+        return Err(anyhow!("invalid_request"));
+    }
+    if start_point.is_some() && !create_branch {
         return Err(anyhow!("invalid_request"));
     }
     let target = PathBuf::from(path);
@@ -733,6 +739,19 @@ fn create_worktree(
     {
         return Err(anyhow!("invalid_path"));
     }
+    // Resolve a user-facing ref before reserving its operation. A failed lookup
+    // must remain retryable, and an object ID avoids Git inferring an upstream
+    // from a remote-tracking ref when it creates the new branch.
+    let root = db.transaction(|tx| root_for(tx, project_id, None))?;
+    let resolved_start = if let Some(start) = start_point {
+        let spec = format!("{start}^{{commit}}");
+        crate::git_read::run_git(&root, &["rev-parse", "--verify", "--quiet", &spec], &[], None, WORKTREE_TIMEOUT)
+            .map(|stdout| String::from_utf8_lossy(&stdout).trim().to_owned())
+            .map_err(|_| anyhow!("start_point_not_found"))
+            .map(Some)?
+    } else {
+        None
+    };
     db.bind_operation(operation_id, method, &Value::Object(object.clone()))?;
     let intent = WorktreeIntent {
         operation_id: operation_id.to_owned(),
@@ -741,14 +760,13 @@ fn create_worktree(
         path: path.to_owned(),
         branch: Some(branch.to_owned()),
     };
-    // Reserve: resolve the root and record the intent in one short transaction.
-    let root = db.transaction(|tx| {
-        let root = root_for(tx, project_id, None)?;
+    // Reserve the durable intent in one short transaction.
+    db.transaction(|tx| {
         tx.execute(
             "INSERT OR IGNORE INTO worktree_intents(operation_id,method,project_id,path,branch,created_at) VALUES(?,?,?,?,?,?)",
             params![intent.operation_id, intent.method, intent.project_id, intent.path, intent.branch, Utc::now().to_rfc3339()],
         )?;
-        Ok(root)
+        Ok(())
     })?;
     if !db.claim_external_operation(operation_id)? {
         return reconcile_worktree(db, &intent)?.ok_or_else(|| anyhow!("operation_outcome_unknown"));
@@ -758,13 +776,13 @@ fn create_worktree(
     let _gate = lock.lock().map_err(|_| anyhow!("worktree lock poisoned"))?;
     let mut args = vec!["worktree", "add"];
     if create_branch {
-        args.extend(["-b", branch]);
+        args.extend(["--no-track", "-b", branch]);
     }
     args.push(path);
     if !create_branch {
         args.push(branch);
     }
-    if let Some(start) = start_point {
+    if let Some(start) = resolved_start.as_deref() {
         args.push(start);
     }
     let executed = crate::git_read::run_git(&root, &args, &[], None, WORKTREE_TIMEOUT).map(|_| ());
@@ -838,6 +856,10 @@ fn finish_worktree_creation(db: &Database, intent: &WorktreeIntent) -> Result<Va
 
 fn finish_worktree_removal(db: &Database, intent: &WorktreeIntent) -> Result<Value> {
     db.transaction(|tx| {
+        tx.execute(
+            "DELETE FROM git_undo WHERE project_id=? AND worktree_path=?",
+            params![intent.project_id, intent.path],
+        )?;
         tx.execute(
             "DELETE FROM worktrees WHERE project_id=? AND path=?",
             params![intent.project_id, intent.path],
@@ -1829,6 +1851,7 @@ pub fn git_status(root: &Path) -> Result<Value> {
     if inside.trim() != "true" {
         return Err(anyhow!("git_unavailable"));
     }
+    let operation = git_operation(&reader, root)?;
     for _ in 0..3 {
         let selected_snapshot = reader.snapshot()?;
         // symbolic-ref works for an unborn branch; detached HEAD has no branch name.
@@ -1899,11 +1922,71 @@ pub fn git_status(root: &Path) -> Result<Value> {
         {
             continue;
         }
-        return Ok(
-            json!({"branch":branch.as_deref().map(str::trim),"upstream":upstream.as_deref().map(str::trim),"ahead":ahead,"behind":behind,"changes":changes,"selectedCommit":selected_snapshot}),
-        );
+        let mut status = serde_json::Map::new();
+        status.insert("branch".into(), json!(branch.as_deref().map(str::trim)));
+        status.insert("upstream".into(), json!(upstream.as_deref().map(str::trim)));
+        status.insert("ahead".into(), json!(ahead));
+        status.insert("behind".into(), json!(behind));
+        status.insert("changes".into(), json!(changes));
+        status.insert("selectedCommit".into(), selected_snapshot);
+        if let Some(operation) = operation.clone() { status.insert("operation".into(), operation); }
+        return Ok(Value::Object(status));
     }
     Err(anyhow!("git_status_changed"))
+}
+
+fn git_operation(reader: &crate::git_selected_commit::GitStatusReader, root: &Path) -> Result<Option<Value>> {
+    let paths = reader.read(&["rev-parse", "--git-path", "MERGE_HEAD", "--git-path", "rebase-merge", "--git-path", "rebase-apply", "--git-path", "CHERRY_PICK_HEAD", "--git-path", "REVERT_HEAD"])?
+        .lines().map(PathBuf::from).map(|path| if path.is_absolute() { path } else { root.join(path) }).collect::<Vec<_>>();
+    if paths.len() != 5 { return Err(anyhow!("git_failed")); }
+    let present = |index: usize| paths[index].exists();
+    let head = |index: usize| fs::read_to_string(&paths[index]).ok().and_then(|value| value.lines().next().map(str::to_owned)).filter(|value| !value.is_empty());
+    if present(0) {
+        let mut operation = serde_json::Map::new();
+        operation.insert("kind".into(), json!("merge"));
+        if let Some(head) = head(0) { operation.insert("head".into(), json!(head)); }
+        if let Ok(file) = fs::File::open(paths[0].parent().unwrap_or(root).join("MERGE_MSG")) {
+            let mut message = Vec::with_capacity(4096);
+            let _ = file.take(4096).read_to_end(&mut message);
+            if let Some(message) = merge_message(&message) {
+                operation.insert("message".into(), json!(message));
+            }
+        }
+        return Ok(Some(Value::Object(operation)));
+    }
+    if present(1) || present(2) { return Ok(Some(json!({"kind":"rebase"}))); }
+    for (index, kind) in [(3, "cherry-pick"), (4, "revert")] {
+        if present(index) {
+            let mut operation = serde_json::Map::new();
+            operation.insert("kind".into(), json!(kind));
+            if let Some(head) = head(index) {
+                if matches!(head.len(), 40 | 64) && head.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+                    if let Ok(subject) = reader.read(&["log", "-1", "--format=%s", &head, "--"]) {
+                        operation.insert("message".into(), json!(subject.trim_end_matches(['\r', '\n'])));
+                    }
+                }
+                operation.insert("head".into(), json!(head));
+            }
+            return Ok(Some(Value::Object(operation)));
+        }
+    }
+    Ok(None)
+}
+
+/// The 4 KiB read may end inside a UTF-8 code point. Trim only that incomplete
+/// suffix; malformed bytes elsewhere are not silently replaced in the commit box.
+fn merge_message(bytes: &[u8]) -> Option<String> {
+    match std::str::from_utf8(bytes) {
+        Ok(message) => Some(message.to_owned()),
+        Err(error)
+            if error.error_len().is_none()
+                && bytes.len().saturating_sub(error.valid_up_to()) <= 3 => {
+            std::str::from_utf8(&bytes[..error.valid_up_to()])
+                .ok()
+                .map(str::to_owned)
+        }
+        Err(_) => None,
+    }
 }
 
 /// staged=false compares the index with the working file (editable side);
@@ -2574,6 +2657,27 @@ mod tests {
         assert_eq!(fs::read(root.join(".git/index")).unwrap(), before);
     }
     #[test]
+    fn git_status_reports_and_clears_a_bounded_merge_operation_in_a_linked_worktree() {
+        let temp = tempfile::tempdir().unwrap(); let root = temp.path().join("main"); fs::create_dir(&root).unwrap();
+        git(&root, &["init"]).unwrap(); git(&root, &["config", "user.email", "tests@threadterm.invalid"]).unwrap(); git(&root, &["config", "user.name", "ThreadTerm Tests"]).unwrap();
+        fs::write(root.join("a.txt"), "base\n").unwrap(); git(&root, &["add", "a.txt"]).unwrap(); git(&root, &["commit", "-m", "base"]).unwrap();
+        git(&root, &["checkout", "-b", "topic"]).unwrap(); fs::write(root.join("a.txt"), "topic\n").unwrap(); git(&root, &["commit", "-am", "topic"]).unwrap();
+        git(&root, &["checkout", "master"]).unwrap(); fs::write(root.join("a.txt"), "main\n").unwrap(); git(&root, &["commit", "-am", "main"]).unwrap();
+        let linked = temp.path().join("linked"); git(&root, &["worktree", "add", linked.to_str().unwrap(), "topic"]).unwrap(); assert!(git(&linked, &["merge", "master"]).is_err());
+        let message = git(&linked, &["rev-parse", "--git-path", "MERGE_MSG"]).unwrap(); let message = PathBuf::from(message.trim()); let message = if message.is_absolute() { message } else { linked.join(message) }; fs::write(&message, "x".repeat(5000)).unwrap();
+        let status = git_status(&linked).unwrap(); assert_eq!(status["operation"]["kind"], "merge"); assert!(status["operation"]["head"].is_string()); assert_eq!(status["operation"]["message"].as_str().unwrap().len(), 4096);
+        fs::write(&message, format!("{}é", "x".repeat(4095))).unwrap();
+        assert_eq!(git_status(&linked).unwrap()["operation"]["message"], "x".repeat(4095));
+        git(&linked, &["merge", "--abort"]).unwrap(); assert!(git_status(&linked).unwrap().get("operation").is_none());
+        for (marker, kind, directory) in [("rebase-merge", "rebase", true), ("CHERRY_PICK_HEAD", "cherry-pick", false), ("REVERT_HEAD", "revert", false)] {
+            let marker_path = git(&linked, &["rev-parse", "--git-path", marker]).unwrap();
+            let marker_path = PathBuf::from(marker_path.trim()); let marker_path = if marker_path.is_absolute() { marker_path } else { linked.join(marker_path) };
+            if directory { fs::create_dir(&marker_path).unwrap(); } else { fs::write(&marker_path, "deadbeef\n").unwrap(); }
+            assert_eq!(git_status(&linked).unwrap()["operation"]["kind"], kind);
+            if directory { fs::remove_dir(&marker_path).unwrap(); } else { fs::remove_file(&marker_path).unwrap(); }
+        }
+    }
+    #[test]
     fn worktree_and_branch_payloads_preserve_nullable_and_optional_fields() {
         let detached = worktree_json(
             "worktree",
@@ -3055,6 +3159,19 @@ mod tests {
         git(repo, &["commit", "-m", "initial"]).unwrap();
     }
 
+    /// A throwaway repository whose `origin/main` is available as a real
+    /// remote-tracking ref. The parent TempDir owns both checkouts and remote.
+    fn repository_with_local_bare_remote(parent: &Path) -> PathBuf {
+        let repo = parent.join("repo");
+        initialized_repository(&repo);
+        git(&repo, &["branch", "-M", "main"]).unwrap();
+        let remote = parent.join("origin.git");
+        git(parent, &["init", "--bare", remote.to_str().unwrap()]).unwrap();
+        git(&repo, &["remote", "add", "origin", remote.to_str().unwrap()]).unwrap();
+        git(&repo, &["push", "-u", "origin", "main"]).unwrap();
+        repo
+    }
+
     /// Writes a hook that blocks Git at a barrier until the release file exists,
     /// with a wall-clock bound so a failed assertion can never hang the suite.
     fn barrier_hook(repo: &Path, name: &str, started: &Path, release: &Path) {
@@ -3253,8 +3370,7 @@ mod tests {
     #[test]
     fn a_worktree_creation_interrupted_before_its_receipt_reconciles_at_startup() {
         let parent = tempfile::tempdir().unwrap();
-        let repo = parent.path().join("repo");
-        initialized_repository(&repo);
+        let repo = repository_with_local_bare_remote(parent.path());
         let db = Database::open(&parent.path().join("db.sqlite")).unwrap();
         initialize(&db).unwrap();
         let project = db
@@ -3275,7 +3391,7 @@ mod tests {
         })
         .unwrap();
         assert!(db.claim_external_operation("worktree-create-crashed").unwrap());
-        git(&repo, &["worktree", "add", "-b", "feature", target.to_str().unwrap()]).unwrap();
+        git(&repo, &["worktree", "add", "--no-track", "-b", "feature", target.to_str().unwrap(), "origin/main"]).unwrap();
 
         // Startup reconciliation registers the created worktree and completes the
         // operation instead of running `worktree add` a second time.
@@ -3291,6 +3407,98 @@ mod tests {
             .transaction(|tx| Ok(tx.query_row("SELECT COUNT(*) FROM worktree_intents", [], |r| r.get(0))?))
             .unwrap();
         assert_eq!(intents, 0);
+    }
+
+    #[test]
+    fn creating_from_local_or_remote_base_does_not_set_an_upstream() {
+        let parent = tempfile::tempdir().unwrap();
+        let repo = repository_with_local_bare_remote(parent.path());
+        let db = Database::open(&parent.path().join("db.sqlite")).unwrap();
+        initialize(&db).unwrap();
+        let project = db.add_project(repo.to_str().unwrap(), Some("p"), "project-op").unwrap();
+
+        for (base, branch) in [("origin/main", "from-remote"), ("main", "from-local")] {
+            let target = parent.path().join(branch);
+            let created = dispatch(&db, "worktree.create", &json!({"projectId":project.id,"path":target.to_string_lossy(),"branch":branch,"createBranch":true,"startPoint":base,"operationId":format!("worktree-create-{branch}")})).unwrap().unwrap();
+            assert_eq!(git(&target, &["rev-parse", "HEAD"]).unwrap().trim(), git(&repo, &["rev-parse", base]).unwrap().trim());
+            assert!(git(&target, &["rev-parse", "--abbrev-ref", "@{upstream}"]).is_err());
+            assert_eq!(created["head"].as_str().unwrap(), git(&target, &["rev-parse", "HEAD"]).unwrap().trim());
+        }
+    }
+
+    #[test]
+    fn a_multibyte_worktree_base_is_limited_by_characters() {
+        let parent = tempfile::tempdir().unwrap();
+        let repo = repository_with_local_bare_remote(parent.path());
+        let db = Database::open(&parent.path().join("db.sqlite")).unwrap();
+        initialize(&db).unwrap();
+        let project = db.add_project(repo.to_str().unwrap(), Some("p"), "project-op").unwrap();
+        // Each ref component fits on disk, while the full ref exceeds 255 UTF-8 bytes.
+        let base = format!("{}/{}", "基".repeat(43), "准".repeat(42));
+        assert!(base.len() > 255);
+        git(&repo, &["branch", &base]).unwrap();
+        let target = parent.path().join("multibyte-base");
+        let created = dispatch(&db, "worktree.create", &json!({"projectId":project.id,"path":target.to_string_lossy(),"branch":"multibyte-base","createBranch":true,"startPoint":base,"operationId":"worktree-create-multibyte-base"})).unwrap().unwrap();
+        assert_eq!(created["head"].as_str().unwrap(), git(&repo, &["rev-parse", "main"]).unwrap().trim());
+        assert!(git(&target, &["rev-parse", "--abbrev-ref", "@{upstream}"]).is_err());
+        // Boundary validation happens before Git attempts to resolve the ref.
+        for (count, expected) in [(255, "start_point_not_found"), (256, "invalid_request")] {
+            let missing = "基".repeat(count);
+            let error = dispatch(&db, "worktree.create", &json!({"projectId":project.id,"path":parent.path().join("missing-base").to_string_lossy(),"branch":"missing-base","createBranch":true,"startPoint":missing,"operationId":format!("worktree-create-multibyte-{count}")})).unwrap_err();
+            assert_eq!(error.to_string(), expected);
+        }
+    }
+
+    #[test]
+    fn non_string_worktree_bases_are_rejected_in_both_branch_modes() {
+        let parent = tempfile::tempdir().unwrap();
+        let repo = repository_with_local_bare_remote(parent.path());
+        let db = Database::open(&parent.path().join("db.sqlite")).unwrap();
+        initialize(&db).unwrap();
+        let project = db.add_project(repo.to_str().unwrap(), Some("p"), "project-op").unwrap();
+        let target = parent.path().join("non-string-base");
+        for create_branch in [true, false] {
+            for start in [json!(1), json!(true), Value::Null, json!([]), json!({})] {
+                let error = dispatch(&db, "worktree.create", &json!({"projectId":project.id,"path":target.to_string_lossy(),"branch":"non-string-base","createBranch":create_branch,"startPoint":start,"operationId":"worktree-create-non-string-base"})).unwrap_err();
+                assert_eq!(error.to_string(), "invalid_request");
+                assert!(!target.exists());
+            }
+        }
+        let intents: i64 = db.transaction(|tx| Ok(tx.query_row("SELECT COUNT(*) FROM worktree_intents", [], |r| r.get(0))?)).unwrap();
+        assert_eq!(intents, 0);
+    }
+
+    #[test]
+    fn an_invalid_worktree_base_is_retryable_without_reserving_an_intent() {
+        let parent = tempfile::tempdir().unwrap();
+        let repo = repository_with_local_bare_remote(parent.path());
+        let db = Database::open(&parent.path().join("db.sqlite")).unwrap();
+        initialize(&db).unwrap();
+        let project = db.add_project(repo.to_str().unwrap(), Some("p"), "project-op").unwrap();
+        let target = parent.path().join("invalid-base");
+        let params = json!({"projectId":project.id,"path":target.to_string_lossy(),"branch":"invalid-base","createBranch":true,"startPoint":"origin/missing","operationId":"worktree-create-invalid-base"});
+
+        let first = dispatch(&db, "worktree.create", &params).unwrap_err().to_string();
+        let retry = dispatch(&db, "worktree.create", &params).unwrap_err().to_string();
+        assert_eq!(first, "start_point_not_found");
+        assert_eq!(retry, first);
+        assert!(!target.exists());
+        assert!(git(&repo, &["rev-parse", "--verify", "--quiet", "refs/heads/invalid-base"]).is_err());
+        let intents: i64 = db.transaction(|tx| Ok(tx.query_row("SELECT COUNT(*) FROM worktree_intents", [], |r| r.get(0))?)).unwrap();
+        assert_eq!(intents, 0);
+    }
+
+    #[test]
+    fn an_existing_branch_with_a_worktree_base_is_rejected() {
+        let parent = tempfile::tempdir().unwrap();
+        let repo = repository_with_local_bare_remote(parent.path());
+        let db = Database::open(&parent.path().join("db.sqlite")).unwrap();
+        initialize(&db).unwrap();
+        let project = db.add_project(repo.to_str().unwrap(), Some("p"), "project-op").unwrap();
+        let target = parent.path().join("existing-main");
+
+        assert_eq!(dispatch(&db, "worktree.create", &json!({"projectId":project.id,"path":target.to_string_lossy(),"branch":"main","createBranch":false,"startPoint":"origin/main","operationId":"worktree-create-existing-base"})).unwrap_err().to_string(), "invalid_request");
+        assert!(!target.exists());
     }
 
     /// A removal interrupted after Git already deleted the directory reconciles

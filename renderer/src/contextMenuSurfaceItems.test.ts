@@ -20,7 +20,20 @@ test('history version labels precise lines and blocks unavailable actions', () =
 
 test('conflict rows use the existing resolved-stage label and commit sends remain visible when unavailable', () => {
  assert.equal(sourceControlMenuItems({zh:false,staged:false,conflict:true,discardable:false,busy:false,canSend:true})[1].label,'Mark resolved (stage)');
- assert.equal(historyCommitMenuItems({zh:false,canSend:false})[0].reason,'Open a Chat session in this workspace first.');
+ assert.equal(historyCommitMenuItems({zh:false,canSend:false}).find(item=>item.id==='history-send-to-agent')?.reason,'Open a Chat session in this workspace first.');
+});
+
+test('history actions follow commit reachability and preserve existing targets', () => {
+ const detached=historyCommitMenuItems({zh:false,canSend:true,includeActions:true,branch:'main',detached:true,isAncestor:false,operation:false});
+ assert.equal(detached.map(item=>item.id).join(','),'history-new-branch,history-new-worktree,history-cherry-pick,history-revert,history-reset,history-separator,history-send-to-agent,history-copy-commit-hash');
+ assert.equal(detached.find(item=>item.id==='history-cherry-pick')?.disabled,true);
+ assert.equal(detached.find(item=>item.id==='history-reset')?.disabled,true);
+ assert.equal(detached.find(item=>item.id==='history-new-branch')?.reason,undefined);
+ assert.equal(detached.find(item=>item.id==='history-new-worktree')?.reason,undefined);
+ const reached=historyCommitMenuItems({zh:false,canSend:true,includeActions:true,branch:'main',isAncestor:true});
+ assert.equal(reached.find(item=>item.id==='history-cherry-pick')?.disabled,true);
+ assert.equal(reached.find(item=>item.id==='history-reset')?.disabled,false);
+ assert.equal(reached.at(-1)?.id,'history-copy-commit-hash');
 });
 
 test('file tabs only expose actions backed by their host capabilities', () => {
@@ -30,4 +43,15 @@ test('file tabs only expose actions backed by their host capabilities', () => {
 
 test('Explorer preserves its existing agent and document menu labels', () => {
  assert.deepEqual(explorerFileMenuItems({zh:false,canHistory:true,canSend:true,plansLabel:'Add to Plans & docs'}).map(item=>item.label),['File history','Send to agent','Add to Plans & docs','Copy path']);
+});
+
+test('history action labels and blocked states are shared with header buttons without changing other commit menus',()=>{
+ const find=(options:Parameters<typeof historyCommitMenuItems>[0],id:string)=>historyCommitMenuItems(options).find(item=>item.id===id)!;
+ const options={zh:false,canSend:true,includeActions:true,branch:'feature/topic',isAncestor:false};
+ assert.equal(find(options,'history-cherry-pick').label,'Cherry-pick into feature/topic');
+ assert.equal(find(options,'history-reset').label,'Reset feature/topic to here…');
+ for(const patch of [{operation:true},{busy:true},{ready:false},{detached:true}])assert.equal(find({...options,...patch},'history-cherry-pick').disabled,true);
+ assert.equal(find({...options,isAncestor:true},'history-reset').disabled,false);
+ assert.equal(find({...options,isAncestor:true,operation:true},'history-reset').disabled,true);
+ assert.deepEqual(historyCommitMenuItems({zh:false,canSend:true}).map(item=>item.id),['history-send-to-agent','history-copy-commit-hash']);
 });

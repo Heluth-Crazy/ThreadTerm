@@ -327,15 +327,11 @@ fn delete(root: &Path, path: &str, permanent: bool) -> Result<Value> {
     Ok(json!({"path":to_slash(&relative),"recycled":recycled}))
 }
 
-/// Moves one entry to the Recycle Bin. Volumes without a Recycle Bin (network,
-/// many removable drives) are refused instead of being deleted permanently.
+/// Tests whether the containing volume accepts Recycle Bin operations.
 #[cfg(windows)]
-pub(crate) fn recycle(path: &Path) -> Result<()> {
+pub(crate) fn recycle_available(path: &Path) -> bool {
     use std::os::windows::ffi::OsStrExt;
-    use windows_sys::Win32::UI::Shell::{
-        SHFileOperationW, SHQueryRecycleBinW, FOF_ALLOWUNDO, FOF_NOCONFIRMATION, FOF_NOERRORUI,
-        FOF_SILENT, FO_DELETE, SHFILEOPSTRUCTW, SHQUERYRBINFO,
-    };
+    use windows_sys::Win32::UI::Shell::{SHQueryRecycleBinW, SHQUERYRBINFO};
     // Shell APIs do not accept verbatim (\\?\) paths.
     let plain = crate::git_read::plain_path(path);
     let volume = plain
@@ -355,9 +351,33 @@ pub(crate) fn recycle(path: &Path) -> Result<()> {
         i64NumItems: 0,
     };
     // SAFETY: both pointers are valid for the duration of the call.
-    if unsafe { SHQueryRecycleBinW(volume.as_ptr(), &mut info) } < 0 {
+    (unsafe { SHQueryRecycleBinW(volume.as_ptr(), &mut info) }) >= 0
+}
+
+#[cfg(not(windows))]
+pub(crate) fn recycle_available(_path: &Path) -> bool {
+    false
+}
+
+/// Moves one entry to the Recycle Bin. Volumes without a Recycle Bin (network,
+/// many removable drives) are refused instead of being deleted permanently.
+#[cfg(windows)]
+pub(crate) fn recycle(path: &Path) -> Result<()> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::UI::Shell::{
+        SHFileOperationW, FOF_ALLOWUNDO, FOF_NOCONFIRMATION, FOF_NOERRORUI, FOF_SILENT, FO_DELETE,
+        SHFILEOPSTRUCTW,
+    };
+    if !recycle_available(path) {
         return Err(anyhow!("recycle_unavailable"));
     }
+    // Shell APIs do not accept verbatim (\\?\) paths.
+    let plain = crate::git_read::plain_path(path);
+    let wide = |value: &Path| {
+        let mut encoded: Vec<u16> = value.as_os_str().encode_wide().collect();
+        encoded.push(0);
+        encoded
+    };
     let mut from = wide(&plain);
     from.push(0); // pFrom is a double-NUL terminated list.
     let mut operation = SHFILEOPSTRUCTW {
@@ -804,6 +824,16 @@ mod tests {
         assert_eq!(
             String::from_utf16(&units[column..column + 5]).unwrap(),
             "match"
+        );
+    }
+    #[cfg(not(windows))]
+    #[test]
+    fn recycle_availability_and_recycle_agree_off_windows() {
+        let path = Path::new("unavailable");
+        assert!(!recycle_available(path));
+        assert_eq!(
+            recycle(path).unwrap_err().to_string(),
+            "recycle_unavailable"
         );
     }
 }
