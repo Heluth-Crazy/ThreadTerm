@@ -106,3 +106,39 @@ test('checkout warnings deduplicate local paths across Git status groups and dis
   {path:'obstruction.txt',indexStatus:'?',worktreeStatus:'?',untracked:true},
  ]}),['obstruction.txt','other-obstruction.txt']);
 });
+
+test('branch scope helpers load through type stripping and keep the header, groups and base order', async () => {
+ const {readFile}=await import('node:fs/promises');
+ const source=await readFile(new URL('../renderer/src/workbench/branchScope.ts',import.meta.url),'utf8');
+ for(const line of source.split('\n').filter(entry=>entry.startsWith('import')))assert.match(line,/^import type /,line);
+ const scope=await import('../renderer/src/workbench/branchScope.ts');
+ const files=[
+  {path:'src/b.ts',status:'modified',additions:2,deletions:1,binary:false},
+  {path:'README.md',status:'added',additions:5,deletions:0,binary:false},
+  {path:'src/a.ts',status:'renamed',originalPath:'src/z.ts',additions:0,deletions:0,binary:false},
+ ];
+ assert.equal(scope.compareHeaderText({branch:'feature',base:'origin/main',files,zh:false}),'feature vs origin/main · 3 files · +7 −1');
+ assert.deepEqual(scope.comparePaths(files),['README.md','src/a.ts','src/b.ts']);
+ assert.deepEqual(scope.compareGroups(files).map(group=>[group.dir,group.files.map(file=>file.path)]),[['',['README.md']],['src',['src/a.ts','src/b.ts']]]);
+ assert.deepEqual(scope.compareBaseOptions([{name:'main',remote:false,current:false},{name:'origin/main',remote:true,current:false}],{current:'feature',defaultRef:'origin/main',zh:false}).map(option=>`${option.kind}:${option.ref}`),['default:origin/main','local:main']);
+ assert.equal(scope.compareDiffEditable({committedOnly:true},true),false);
+ // Navigation follows the displayed directory grouping, not a plain path sort.
+ const mixed=[{path:'src/a.ts'},{path:'tsconfig.json'},{path:'package.json'},{path:'README.md'}];
+ assert.deepEqual(scope.comparePaths(mixed),['README.md','package.json','tsconfig.json','src/a.ts']);
+ assert.deepEqual(scope.comparePaths(mixed),scope.compareGroups(mixed).flatMap(group=>group.files.map(file=>file.path)));
+ // A compare tab is deduped on its scope and its own base path, never on path alone.
+ const compare={base:'origin/main',oid:'a'.repeat(40),mergeBase:'b'.repeat(40)};
+ assert.equal(scope.sameDiffTabKey({compare},{compare}),true);
+ assert.equal(scope.sameDiffTabKey({compare},{compare:{...compare,committedOnly:true}}),false);
+ assert.equal(scope.sameDiffTabKey({compare:{...compare,originalPath:'old.txt'}},{compare}),false);
+ // A retargeted tab never reuses the first file's base path.
+ const listed=[{path:'renamed.txt',originalPath:'original.txt'},{path:'src/a.ts'}];
+ assert.equal(scope.compareOriginalPath('renamed.txt','renamed.txt',{originalPath:'original.txt'},listed),'original.txt');
+ assert.equal(scope.compareOriginalPath('src/a.ts','src/a.ts',{originalPath:'original.txt'},listed),undefined);
+ scope.forgetBranchScopePreferences();
+ scope.writeBranchScopePreference('p\0',{mode:'branch',base:'origin/main',committedOnly:true});
+ assert.deepEqual(scope.readBranchScopePreference('p\0'),{mode:'branch',base:'origin/main',committedOnly:true});
+ scope.forgetBranchScopePreferences();
+ assert.equal(scope.readBranchScopePreference('p\0'),undefined);
+});
+

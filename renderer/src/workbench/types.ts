@@ -1,4 +1,4 @@
-import type { GitStatus, SessionDocument } from '@threadterm/protocol';
+import type { GitStatus, GitCompareRef, SessionDocument } from '@threadterm/protocol';
 import type { AgentReference } from './agentReference';
 import { displayPath } from '../projectScope';
 
@@ -15,7 +15,9 @@ export type WorkbenchActions = {
  openFile:(path:string, position?:{line?:number;column?:number}) => void;
  /** Opens the file as a preview owned by the active session (hidden when switching sessions). */
  openBeside?:(path:string) => void;
- openDiff:(path:string, staged:boolean) => void;
+ /** `compare` opens the same diff surface against a base branch instead of the index
+  * (`git.compare.diff`); it is never combined with `staged`. */
+ openDiff:(path:string, staged:boolean, compare?:GitCompareRef) => void;
  /** Opens a materialized worktree through the host's project navigation rules. */
  openWorktree?:(path:string) => void;
  /** Absent when the host has no history tab (standalone Files page). */

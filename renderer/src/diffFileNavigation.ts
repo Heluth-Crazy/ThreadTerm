@@ -19,5 +19,13 @@ export function retargetDiffFile(layout:PaneLayout,paneId:string,tab:Extract<imp
   return first===layout.first&&second===layout.second?layout:{...layout,first,second};
  }
  if(layout.id!==paneId||!layout.tabs.includes(tab)||tab.path===path)return layout;
- return {...layout,tabs:layout.tabs.map(item=>item===tab?{...tab,path}:item)};
+ // A compare tab's `originalPath` is the base path of the file it was opened with: retargeting to
+ // another file must not carry it along, or the new file's base side would be read from it.
+ let retargeted:typeof tab = {...tab,path};
+ if(tab.kind==='diff'&&tab.compare) {
+  const kept={...tab.compare};
+  delete kept.originalPath;
+  retargeted={...tab,path,compare:kept};
+ }
+ return {...layout,tabs:layout.tabs.map(item=>item===tab?retargeted:item)};
 }

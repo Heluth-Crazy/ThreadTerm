@@ -711,6 +711,8 @@ pub fn dispatch(db: &Database, method: &str, params: &Value) -> Result<Option<Va
             | "git.blame"
             | "git.stash.list"
             | "git.stash.show"
+            | "git.compare.files"
+            | "git.compare.diff"
     ) {
         return Ok(None);
     }
@@ -754,6 +756,44 @@ pub fn dispatch(db: &Database, method: &str, params: &Value) -> Result<Option<Va
         "git.blame" => blame(&root, string(object, "path")?)?,
         "git.stash.list" => json!({"entries": stash_entries(&root)?}),
         "git.stash.show" => stash_show(&root, string(object, "oid")?)?,
+        "git.compare.files" => {
+            let base = match object.get("base") {
+                None | Some(Value::Null) => None,
+                Some(Value::String(value)) => Some(value.as_str()),
+                Some(_) => return Err(anyhow!("invalid_request")),
+            };
+            let committed_only = object
+                .get("committedOnly")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
+            compare_summary(&root, base, committed_only)?
+        }
+        "git.compare.diff" => {
+            let base = object
+                .get("base")
+                .and_then(Value::as_object)
+                .ok_or_else(|| anyhow!("invalid_request"))?;
+            let reference = base.get("ref").and_then(Value::as_str).unwrap_or_default();
+            let path = string(object, "path")?;
+            validate_relative(path)?;
+            let original = object.get("originalPath").and_then(Value::as_str);
+            if let Some(original) = original {
+                validate_relative(original)?;
+            }
+            let committed_only = object
+                .get("committedOnly")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
+            compare_diff(
+                &root,
+                reference,
+                string(base, "oid")?,
+                string(object, "mergeBase")?,
+                path,
+                original,
+                committed_only,
+            )?
+        }
         _ => unreachable!(),
     };
     Ok(Some(result))
@@ -1370,6 +1410,376 @@ fn commit_diff(root: &Path, commit: &str, path: &str, original: Option<&str>) ->
             json!({"path":path,"oldText":old,"newText":new,"binary":false})
         }
         _ => json!({"path":path,"oldText":"","newText":"","binary":true}),
+    })
+}
+
+const MAX_COMPARE_FILES: usize = 1000;
+/// Untracked files have no numstat record, so their line counts come from a bounded read:
+/// at most this many files and this many bytes in total per refresh. Beyond that the counts are
+/// reported as unknown instead of slowing the read down.
+const MAX_COMPARE_UNTRACKED_READS: usize = 200;
+const MAX_COMPARE_UNTRACKED_BYTES: u64 = 8 * 1024 * 1024;
+
+/// One comparison base: the reference the user sees and the commit it resolved to.
+struct CompareBase {
+    reference: String,
+    oid: String,
+}
+
+fn commit_oid(root: &Path, reference: &str) -> Option<String> {
+    let spec = format!("{reference}^{{commit}}");
+    git_text(root, &["rev-parse", "--verify", "--quiet", &spec])
+        .ok()
+        .map(|value| value.trim().to_owned())
+        .filter(|value| full_oid(value))
+}
+
+/// An explicit base is one argv token: it may not look like an option or span lines.
+fn validate_compare_base(value: &str) -> Result<()> {
+    if value.is_empty()
+        || value.len() > 255
+        || value.starts_with('-')
+        || value.contains(['\0', '\r', '\n'])
+    {
+        return Err(anyhow!("invalid_request"));
+    }
+    Ok(())
+}
+
+/// The push remote of task 12, read-only. A base that cannot be named falls through to the
+/// well-known candidates instead of failing the whole read.
+fn default_compare_remote(root: &Path, current: Option<&str>) -> Option<String> {
+    if let Some(branch) = current {
+        if let Ok(remote) = push_remote(root, branch) {
+            return Some(remote);
+        }
+    }
+    legacy_default_remote(root).ok()
+}
+
+/// Branch names and their commits from one `for-each-ref`, so default base resolution costs one
+/// Git process instead of one probe per candidate.
+#[derive(Default)]
+struct CompareRefs {
+    heads: HashMap<String, String>,
+    remotes: HashMap<String, String>,
+}
+
+impl CompareRefs {
+    /// `refs/heads` wins over `refs/remotes` for an ambiguous short name, like `rev-parse`.
+    fn resolve(&self, name: &str) -> Option<&String> {
+        self.heads.get(name).or_else(|| self.remotes.get(name))
+    }
+}
+
+fn compare_refs(root: &Path) -> CompareRefs {
+    let mut refs = CompareRefs::default();
+    let Ok(output) = git_text(
+        root,
+        &[
+            "for-each-ref",
+            "--format=%(refname) %(objectname)",
+            "refs/heads",
+            "refs/remotes",
+        ],
+    ) else {
+        return refs;
+    };
+    for line in output.lines() {
+        let Some((reference, oid)) = line.split_once(' ') else { continue };
+        if !full_oid(oid) {
+            continue;
+        }
+        if let Some(short) = reference.strip_prefix("refs/heads/") {
+            refs.heads.insert(short.to_owned(), oid.to_owned());
+        } else if let Some(short) = reference.strip_prefix("refs/remotes/") {
+            // `refs/remotes/<remote>/HEAD` is the remote's default branch, not a branch of its own.
+            if !short.ends_with("/HEAD") {
+                refs.remotes.insert(short.to_owned(), oid.to_owned());
+            }
+        }
+    }
+    refs
+}
+
+/// Order: the push remote's default branch, then `origin/main`, `origin/master`, `main`, `master`.
+/// The current branch is never its own comparison base.
+fn default_compare_base(root: &Path, current: Option<&str>) -> Result<CompareBase> {
+    let mut candidates = Vec::new();
+    if let Some(remote) = default_compare_remote(root, current) {
+        if let Some(branch) = remote_default_branch(root, &remote) {
+            candidates.push(format!("{remote}/{branch}"));
+        }
+    }
+    candidates.extend(["origin/main", "origin/master", "main", "master"].map(str::to_owned));
+    let refs = compare_refs(root);
+    for reference in candidates {
+        if current.is_some_and(|branch| reference == branch) {
+            continue;
+        }
+        if let Some(oid) = refs.resolve(&reference) {
+            return Ok(CompareBase {
+                reference,
+                oid: oid.clone(),
+            });
+        }
+    }
+    Err(anyhow!("compare_base_unavailable"))
+}
+
+fn compare_status(letter: &str) -> &'static str {
+    match letter.chars().next() {
+        Some('A') => "added",
+        Some('D') => "deleted",
+        Some('R') => "renamed",
+        Some('T') => "typechange",
+        _ => "modified",
+    }
+}
+
+/// One `--numstat -z` record: counts, the new path and, for a rename, the original path.
+/// A record whose path tokens are missing or empty is dropped instead of yielding an empty path.
+fn numstat_record<'a>(
+    tokens: &[&'a str],
+    index: usize,
+) -> Option<(u64, u64, bool, Option<&'a str>, &'a str, usize)> {
+    // The path is the rest of the record: it may itself contain a tab.
+    let mut fields = tokens.get(index)?.splitn(3, '\t');
+    let added = fields.next()?;
+    let deleted = fields.next()?;
+    let path = fields.next()?;
+    let count = |value: &str| value.parse::<u64>().ok();
+    // `-` marks a binary file: it has no line counts to add.
+    let binary = added == "-" && deleted == "-";
+    let (added, deleted) = if binary { (0, 0) } else { (count(added)?, count(deleted)?) };
+    if path.is_empty() {
+        // A rename prints an empty path field, then the original and the new path.
+        let original = tokens.get(index + 1).copied().filter(|value| !value.is_empty())?;
+        let path = tokens.get(index + 2).copied().filter(|value| !value.is_empty())?;
+        return Some((added, deleted, binary, Some(original), path, 3));
+    }
+    Some((added, deleted, binary, None, path, 1))
+}
+
+/// Parses one combined `--raw --numstat -z` diff: the raw record carries the status and the
+/// rename source, the numstat record the +/− counts, so a refresh needs one Git call.
+pub(crate) fn parse_compare_files(output: &[u8]) -> Vec<Value> {
+    let text = String::from_utf8_lossy(output);
+    let tokens: Vec<&str> = text.split('\0').collect();
+    let mut statuses: HashMap<String, (String, Option<String>)> = HashMap::new();
+    let mut index = 0;
+    while index < tokens.len() {
+        let token = tokens[index];
+        let Some(header) = token.strip_prefix(':') else { break };
+        // `:oldmode newmode oldsha newsha STATUS`, then one path (two for a rename/copy).
+        let letter = header.rsplit(' ').next().unwrap_or("M").to_owned();
+        let paired = letter.starts_with('R') || letter.starts_with('C');
+        let Some(first) = tokens.get(index + 1).copied().filter(|value| !value.is_empty()) else {
+            break;
+        };
+        if paired {
+            let Some(second) = tokens.get(index + 2).copied().filter(|value| !value.is_empty())
+            else {
+                break;
+            };
+            statuses.insert(second.to_owned(), (letter, Some(first.to_owned())));
+            index += 3;
+        } else {
+            statuses.insert(first.to_owned(), (letter, None));
+            index += 2;
+        }
+    }
+    let mut files = Vec::new();
+    while index < tokens.len() {
+        let Some((added, deleted, binary, counted_original, path, consumed)) =
+            numstat_record(&tokens, index)
+        else {
+            index += 1;
+            continue;
+        };
+        index += consumed;
+        let (letter, status_original) = statuses
+            .get(path)
+            .cloned()
+            .unwrap_or_else(|| ("M".to_owned(), None));
+        let mut row = Map::new();
+        row.insert("path".into(), json!(path));
+        row.insert("status".into(), json!(compare_status(&letter)));
+        let original = status_original.or_else(|| counted_original.map(str::to_owned));
+        if let Some(original) = original.filter(|value| !value.is_empty()) {
+            row.insert("originalPath".into(), json!(original));
+        }
+        row.insert("additions".into(), json!(added));
+        row.insert("deletions".into(), json!(deleted));
+        row.insert("binary".into(), json!(binary));
+        files.push(Value::Object(row));
+    }
+    files
+}
+
+/// Line count and binary hint for an untracked file. `None` means the refresh budget was spent,
+/// so the count is unknown rather than zero.
+fn compare_untracked_lines(root: &Path, path: &str, budget: &mut u64) -> Option<(u64, bool)> {
+    let Ok(file) = crate::workspace_services::scoped_path(root, path, true) else { return Some((0, false)) };
+    let Ok(meta) = std::fs::metadata(&file) else { return Some((0, false)) };
+    if !meta.is_file() {
+        return Some((0, false));
+    }
+    let size = meta.len();
+    if size > *budget {
+        return None;
+    }
+    *budget -= size;
+    let Ok(bytes) = std::fs::read(&file) else { return Some((0, false)) };
+    if bytes.contains(&0) {
+        return Some((0, true));
+    }
+    let lines = bytes.iter().filter(|byte| **byte == b'\n').count()
+        + usize::from(!bytes.is_empty() && !bytes.ends_with(b"\n"));
+    Some((lines as u64, false))
+}
+
+/// Untracked files are not part of the diff, so one listing adds them as `added`. Reads are
+/// bounded per refresh; beyond the bounds the row keeps `countsUnknown`.
+fn compare_untracked_files(root: &Path) -> Vec<Value> {
+    let Ok(output) = run_git(
+        root,
+        &["ls-files", "-o", "--exclude-standard", "-z"],
+        &[],
+        None,
+        LOCAL_TIMEOUT,
+    ) else {
+        return Vec::new();
+    };
+    let mut budget = MAX_COMPARE_UNTRACKED_BYTES;
+    String::from_utf8_lossy(&output)
+        .split('\0')
+        .filter(|path| !path.is_empty())
+        .enumerate()
+        .map(|(index, path)| {
+            let counted = if index < MAX_COMPARE_UNTRACKED_READS {
+                compare_untracked_lines(root, path, &mut budget)
+            } else {
+                None
+            };
+            match counted {
+                Some((additions, binary)) => json!({"path":path,"status":"added","additions":additions,"deletions":0,"binary":binary}),
+                None => json!({"path":path,"status":"added","additions":0,"deletions":0,"binary":false,"countsUnknown":true}),
+            }
+        })
+        .collect()
+}
+
+/// Everything the current branch changes relative to its base, capped at `MAX_COMPARE_FILES`.
+fn compare_summary(root: &Path, requested: Option<&str>, committed_only: bool) -> Result<Value> {
+    let head = commit_oid(root, "HEAD").ok_or_else(|| anyhow!("compare_unborn"))?;
+    let current = git_text(root, &["symbolic-ref", "--quiet", "--short", "HEAD"])
+        .ok()
+        .map(|value| value.trim().to_owned())
+        .filter(|value| !value.is_empty());
+    let base = match requested {
+        Some(value) => {
+            validate_compare_base(value)?;
+            CompareBase {
+                reference: value.to_owned(),
+                oid: commit_oid(root, value).ok_or_else(|| anyhow!("compare_base_unavailable"))?,
+            }
+        }
+        None => default_compare_base(root, current.as_deref())?,
+    };
+    let merge_base = git_text(root, &["merge-base", &base.oid, &head])
+        .ok()
+        .map(|value| value.trim().to_owned())
+        .filter(|value| full_oid(value))
+        .ok_or_else(|| anyhow!("compare_no_merge_base"))?;
+    let mut args = vec![
+        "diff", "--raw", "--numstat", "-z", "-M", "--relative", merge_base.as_str(),
+    ];
+    if committed_only {
+        args.push(head.as_str());
+    }
+    let output = run_git(root, &args, &[], None, LOCAL_TIMEOUT)?;
+    let mut files = parse_compare_files(&output);
+    if !committed_only {
+        // `git rm --cached` leaves the file on disk: it is already listed as a deletion, so the
+        // untracked listing must not emit the same path a second time.
+        let listed: std::collections::HashSet<String> = files
+            .iter()
+            .filter_map(|file| file["path"].as_str().map(str::to_owned))
+            .collect();
+        files.extend(
+            compare_untracked_files(root)
+                .into_iter()
+                .filter(|file| {
+                    file["path"]
+                        .as_str()
+                        .is_some_and(|path| !listed.contains(path))
+                }),
+        );
+    }
+    files.sort_by(|left, right| {
+        left["path"]
+            .as_str()
+            .unwrap_or_default()
+            .cmp(right["path"].as_str().unwrap_or_default())
+    });
+    let truncated = files.len() > MAX_COMPARE_FILES;
+    files.truncate(MAX_COMPARE_FILES);
+    Ok(json!({
+        "base": {"ref": base.reference, "oid": base.oid},
+        "mergeBase": merge_base,
+        "head": head,
+        "files": files,
+        "truncated": truncated,
+    }))
+}
+
+/// `<mergeBase>:<originalPath>` against the working file, or against `HEAD` with `committedOnly`.
+/// The request carries the merge base the list was computed from, so a moved base is refused
+/// instead of silently recomputed.
+fn compare_diff(
+    root: &Path,
+    reference: &str,
+    oid: &str,
+    merge_base: &str,
+    path: &str,
+    original: Option<&str>,
+    committed_only: bool,
+) -> Result<Value> {
+    if !full_oid(oid) || !full_oid(merge_base) {
+        return Err(anyhow!("invalid_request"));
+    }
+    if !full_oid(reference) {
+        validate_compare_base(reference)?;
+        if commit_oid(root, reference).map_or(true, |current| current != oid) {
+            return Err(anyhow!("compare_stale"));
+        }
+    }
+    if commit_oid(root, merge_base).is_none() {
+        return Err(anyhow!("compare_stale"));
+    }
+    let old = read_blob(root, merge_base, original.unwrap_or(path))?;
+    let new = if committed_only {
+        read_blob(root, "HEAD", path)?
+    } else {
+        let file = crate::workspace_services::scoped_path(root, path, false)?;
+        match std::fs::symlink_metadata(&file) {
+            Ok(meta) if meta.is_file() => {
+                if meta.len() as usize > MAX_TEXT_BYTES {
+                    return Err(anyhow!("file_too_large"));
+                }
+                Some(std::fs::read(&file)?)
+            }
+            Ok(_) => return Err(anyhow!("file_reference_not_file")),
+            Err(_) => None,
+        }
+    };
+    let deleted = new.is_none();
+    let old_text = text_of(old.as_deref().unwrap_or_default());
+    let new_text = text_of(new.as_deref().unwrap_or_default());
+    Ok(match (old_text, new_text) {
+        (Some(old), Some(new)) => json!({"path":path,"oldText":old,"newText":new,"binary":false,"deleted":deleted}),
+        _ => json!({"path":path,"oldText":"","newText":"","binary":true,"deleted":deleted}),
     })
 }
 
@@ -2117,6 +2527,378 @@ mod tests {
         assert_eq!(parsed[0]["originalPath"], "old name.txt");
         assert_eq!(parsed[0]["path"], "新 文件.txt");
         assert_eq!(parsed[1]["status"], "M");
+    }
+
+    #[test]
+    fn compare_parser_reads_one_combined_raw_and_numstat_diff() {
+        // The raw records come first, then the numstat records, then the (ignored) stat summary.
+        let output = ":100644 100644 aaa bbb M\0new.txt\0:100644 000000 aaa 000 D\0gone.txt\0:100644 100644 aaa aaa R100\0old.txt\0moved.txt\0-\t-\tnew.txt\00\t2\tgone.txt\00\t0\t\0old.txt\0moved.txt\0 new.txt | 0\n 3 files changed, 0 insertions(+), 3 deletions(-)\n";
+        let files = parse_compare_files(output.as_bytes());
+        assert_eq!(files.len(), 3);
+        assert_eq!(files[0], json!({"path":"new.txt","status":"modified","additions":0,"deletions":0,"binary":true}));
+        assert_eq!(files[1], json!({"path":"gone.txt","status":"deleted","additions":0,"deletions":2,"binary":false}));
+        assert_eq!(files[2], json!({"path":"moved.txt","originalPath":"old.txt","status":"renamed","additions":0,"deletions":0,"binary":false}));
+    }
+
+    #[test]
+    fn compare_parser_never_emits_empty_paths_from_short_records() {
+        let nul = '\u{0}';
+        // A truncated rename: the raw header is there, its two paths are not.
+        let truncated_raw = format!(":100644 100644 aaa aaa R100{nul}old.txt{nul}");
+        assert!(parse_compare_files(truncated_raw.as_bytes()).is_empty());
+        // A numstat rename whose new path is missing: the record is skipped, not emitted empty.
+        let truncated_numstat = format!(":100644 100644 aaa bbb M{nul}ok.txt{nul}0\t1\t{nul}old.txt{nul}");
+        assert!(parse_compare_files(truncated_numstat.as_bytes()).is_empty());
+        // Empty raw paths never register a status key either.
+        let empty_paths = format!(":100644 100644 aaa bbb M{nul}{nul}:100644 100644 aaa bbb M{nul}{nul}1\t2\t{nul}{nul}");
+        for file in parse_compare_files(empty_paths.as_bytes()) {
+            assert_ne!(file["path"], "", "{file}");
+        }
+    }
+
+    /// A branch with a bare `origin` whose default branch is `main`.
+    fn compare_repository() -> (tempfile::TempDir, tempfile::TempDir) {
+        let temp = repo();
+        let root = temp.path();
+        fs::write(root.join("keep.txt"), "one\ntwo\nthree\n").unwrap();
+        fs::write(root.join("rename.txt"), "alpha\nbeta\ngamma\ndelta\n").unwrap();
+        fs::write(root.join("drop.txt"), "bye\n").unwrap();
+        fs::write(root.join("bin.dat"), "text").unwrap();
+        git(root, &["add", "."]).unwrap();
+        git(root, &["commit", "-qm", "base"]).unwrap();
+        let origin = tempfile::tempdir().unwrap();
+        git(origin.path(), &["init", "--bare", "-q"]).unwrap();
+        git(root, &["remote", "add", "origin", origin.path().to_str().unwrap()]).unwrap();
+        git(root, &["push", "-qu", "origin", "main"]).unwrap();
+        git(origin.path(), &["symbolic-ref", "HEAD", "refs/heads/main"]).unwrap();
+        git(root, &["switch", "-qc", "feature"]).unwrap();
+        (temp, origin)
+    }
+
+    fn compare_paths(summary: &Value) -> Vec<String> {
+        summary["files"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|file| file["path"].as_str().unwrap().to_owned())
+            .collect()
+    }
+
+    #[test]
+    fn compare_base_prefers_the_push_remote_default_branch_then_well_known_names() {
+        let (temp, _origin) = compare_repository();
+        let root = temp.path();
+        let summary = compare_summary(root, None, false).unwrap();
+        assert_eq!(summary["base"]["ref"], "origin/main");
+        assert_eq!(summary["base"]["oid"].as_str().unwrap().len(), 40);
+        assert_eq!(summary["mergeBase"], summary["base"]["oid"]);
+        assert_eq!(summary["head"].as_str().unwrap().len(), 40);
+        assert!(summary["files"].as_array().unwrap().is_empty());
+
+        // Without a remote default branch, `origin/main` still wins over `main`.
+        git(root, &["remote", "set-head", "origin", "--delete"]).ok();
+        if run_git(root, &["symbolic-ref", "--quiet", "refs/remotes/origin/HEAD"], &[], None, LOCAL_TIMEOUT).is_ok() {
+            return;
+        }
+        fs::write(root.join("only-local.txt"), "local\n").unwrap();
+        git(root, &["add", "."]).unwrap();
+        git(root, &["commit", "-qm", "local"]).unwrap();
+        assert_eq!(compare_summary(root, None, false).unwrap()["base"]["ref"], "origin/main");
+
+        // The current branch is never its own base.
+        git(root, &["switch", "-q", "main"]).unwrap();
+        git(root, &["remote", "remove", "origin"]).unwrap();
+        assert_eq!(
+            compare_summary(root, None, false).unwrap_err().to_string(),
+            "compare_base_unavailable"
+        );
+    }
+
+    #[test]
+    fn compare_lists_renames_deletions_binaries_and_untracked_files() {
+        let (temp, _origin) = compare_repository();
+        let root = temp.path();
+        git(root, &["mv", "rename.txt", "renamed.txt"]).unwrap();
+        git(root, &["rm", "-q", "drop.txt"]).unwrap();
+        fs::write(root.join("keep.txt"), "one\nTWO\nthree\n").unwrap();
+        fs::write(root.join("bin.dat"), [0u8, 1, 2, 3]).unwrap();
+        fs::write(root.join("fresh.txt"), "untracked\nlines\n").unwrap();
+        let summary = compare_summary(root, None, false).unwrap();
+        let files = summary["files"].as_array().unwrap();
+        let find = |path: &str| files.iter().find(|file| file["path"] == path).unwrap().clone();
+        assert_eq!(find("renamed.txt")["status"], "renamed");
+        assert_eq!(find("renamed.txt")["originalPath"], "rename.txt");
+        assert_eq!(find("drop.txt")["status"], "deleted");
+        assert_eq!(find("keep.txt")["additions"], 1);
+        assert_eq!(find("keep.txt")["deletions"], 1);
+        assert_eq!(find("bin.dat")["binary"], true);
+        assert_eq!(find("fresh.txt")["status"], "added");
+        assert_eq!(find("fresh.txt")["additions"], 2);
+        assert_eq!(summary["truncated"], false);
+        let mut paths = compare_paths(&summary);
+        let sorted = paths.clone();
+        paths.sort();
+        assert_eq!(paths, sorted, "files are sorted by path");
+        // Nothing is committed on the branch yet, so committed-only lists nothing while the
+        // working-tree scope lists all five files (the untracked one included).
+        assert!(compare_summary(root, None, true).unwrap()["files"].as_array().unwrap().is_empty());
+
+        // Commit everything: both scopes agree, and the untracked file becomes a committed addition.
+        git(root, &["add", "-A"]).unwrap();
+        git(root, &["commit", "-qm", "everything"]).unwrap();
+        let working = compare_summary(root, None, false).unwrap();
+        let committed = compare_summary(root, None, true).unwrap();
+        assert_eq!(compare_paths(&working), compare_paths(&committed));
+        assert_eq!(compare_paths(&committed).len(), 5);
+        assert_eq!(committed["files"][1]["path"], "drop.txt");
+        assert_eq!(committed["files"][2]["status"], "added");
+    }
+
+    #[test]
+    fn compare_refs_resolve_branch_candidates_in_one_read() {
+        let (temp, _origin) = compare_repository();
+        let root = temp.path();
+        git(root, &["branch", "stale-name"]).unwrap();
+        let refs = compare_refs(root);
+        // Local branches include the current one; remote-tracking branches keep their short name.
+        assert_eq!(refs.resolve("feature"), refs.heads.get("feature"));
+        assert!(refs.resolve("origin/main").is_some());
+        assert!(refs.remotes.contains_key("origin/main"));
+        // `refs/remotes/<remote>/HEAD` is the remote's default branch, not a candidate of its own.
+        assert!(!refs.remotes.contains_key("origin/HEAD"));
+        assert!(refs.resolve("does-not-exist").is_none());
+        // A short name prefers `refs/heads`, as `rev-parse` does.
+        git(root, &["commit", "--allow-empty", "-qm", "another"]).unwrap();
+        git(root, &["branch", "origin/main", "HEAD"]).unwrap();
+        let both = compare_refs(root);
+        assert!(both.heads.contains_key("origin/main") && both.remotes.contains_key("origin/main"));
+        assert_eq!(both.resolve("origin/main"), both.heads.get("origin/main"));
+        assert_ne!(both.heads.get("origin/main"), both.remotes.get("origin/main"));
+    }
+
+    #[test]
+    fn compare_lists_a_cached_deletion_only_once() {
+        let (temp, _origin) = compare_repository();
+        let root = temp.path();
+        // `git rm --cached` keeps the file on disk: the diff says deleted, `ls-files -o` says
+        // untracked. One row, and it stays the deletion.
+        git(root, &["rm", "-q", "--cached", "keep.txt"]).unwrap();
+        assert!(root.join("keep.txt").is_file());
+        let summary = compare_summary(root, None, false).unwrap();
+        let listed: Vec<_> = summary["files"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|file| file["path"] == "keep.txt")
+            .collect();
+        assert_eq!(listed.len(), 1, "{summary}");
+        assert_eq!(listed[0]["status"], "deleted");
+    }
+
+    #[test]
+    fn compare_requires_a_merge_base_and_reads_head_in_detached_state() {
+        let (temp, _origin) = compare_repository();
+        let root = temp.path();
+        fs::write(root.join("keep.txt"), "one\nTWO\nthree\n").unwrap();
+        let head = git(root, &["rev-parse", "HEAD"]).unwrap().trim().to_owned();
+        git(root, &["checkout", "--detach", "-q"]).unwrap();
+        let detached = compare_summary(root, None, false).unwrap();
+        assert_eq!(detached["head"], head);
+        assert_eq!(compare_paths(&detached), ["keep.txt"]);
+
+        // An unrelated history has no merge base.
+        git(root, &["checkout", "-q", "--orphan", "unrelated"]).unwrap();
+        git(root, &["commit", "-qm", "unrelated root", "--allow-empty"]).unwrap();
+        assert_eq!(
+            compare_summary(root, None, false).unwrap_err().to_string(),
+            "compare_no_merge_base"
+        );
+
+        // An unborn repository has no comparison at all.
+        let unborn = repo();
+        assert_eq!(
+            compare_summary(unborn.path(), None, false).unwrap_err().to_string(),
+            "compare_unborn"
+        );
+    }
+
+    #[test]
+    fn compare_refuses_invalid_and_moved_bases_and_caps_the_file_list() {
+        let (temp, _origin) = compare_repository();
+        let root = temp.path();
+        fs::write(root.join("keep.txt"), "one\nTWO\nthree\n").unwrap();
+        for invalid in ["-upload-pack", "main\nother", "does-not-exist"] {
+            let error = compare_summary(root, Some(invalid), false).unwrap_err().to_string();
+            assert!(
+                error == "invalid_request" || error == "compare_base_unavailable",
+                "{invalid}: {error}"
+            );
+        }
+        let summary = compare_summary(root, Some("origin/main"), false).unwrap();
+        assert_eq!(compare_paths(&summary), ["keep.txt"]);
+        let base_oid = summary["base"]["oid"].as_str().unwrap().to_owned();
+        let merge_base = summary["mergeBase"].as_str().unwrap().to_owned();
+        let diff = compare_diff(root, "origin/main", &base_oid, &merge_base, "keep.txt", None, false).unwrap();
+        assert_eq!(diff["oldText"], "one\ntwo\nthree\n");
+        assert_eq!(diff["newText"], "one\nTWO\nthree\n");
+        assert_eq!(diff["binary"], false);
+        assert_eq!(diff["deleted"], false);
+
+        // A moved base is detected from the ref the list was computed with.
+        let remote = git(root, &["remote", "get-url", "origin"]).unwrap().trim().to_owned();
+        let peer = tempfile::tempdir().unwrap();
+        git(peer.path(), &["clone", "-q", &remote, "."]).unwrap();
+        git(peer.path(), &["config", "user.email", "peer@example.test"]).unwrap();
+        git(peer.path(), &["config", "user.name", "Peer"]).unwrap();
+        fs::write(peer.path().join("peer.txt"), "peer\n").unwrap();
+        git(peer.path(), &["add", "."]).unwrap();
+        git(peer.path(), &["commit", "-qm", "peer"]).unwrap();
+        git(peer.path(), &["push", "-q"]).unwrap();
+        git(root, &["fetch", "-q", "origin"]).unwrap();
+        assert_eq!(
+            compare_diff(root, "origin/main", &base_oid, &merge_base, "keep.txt", None, false)
+                .unwrap_err()
+                .to_string(),
+            "compare_stale"
+        );
+
+        // 1000 files is the cap; the rest are reported through `truncated`.
+        let base = git(root, &["rev-parse", "origin/main"]).unwrap().trim().to_owned();
+        for index in 0..1005 {
+            fs::write(root.join(format!("bulk-{index:04}.txt")), "x\n").unwrap();
+        }
+        git(root, &["add", "-A"]).unwrap();
+        git(root, &["commit", "-qm", "bulk"]).unwrap();
+        let capped = compare_summary(root, Some(&base), true).unwrap();
+        assert_eq!(capped["files"].as_array().unwrap().len(), 1000);
+        assert_eq!(capped["truncated"], true);
+    }
+
+    #[test]
+    fn compare_diff_reads_the_working_file_or_head_and_refuses_unsafe_paths() {
+        let (temp, _origin) = compare_repository();
+        let root = temp.path();
+        fs::write(root.join("keep.txt"), "one\nTWO\nthree\n").unwrap();
+        let summary = compare_summary(root, None, false).unwrap();
+        let base_oid = summary["base"]["oid"].as_str().unwrap().to_owned();
+        let merge_base = summary["mergeBase"].as_str().unwrap().to_owned();
+        git(root, &["add", "-A"]).unwrap();
+        git(root, &["commit", "-qm", "commit the change"]).unwrap();
+
+        // Committed-only reads HEAD, so the unstaged working file no longer matters.
+        fs::write(root.join("keep.txt"), "dirty\n").unwrap();
+        let committed = compare_diff(root, "origin/main", &base_oid, &merge_base, "keep.txt", None, true).unwrap();
+        assert_eq!(committed["newText"], "one\nTWO\nthree\n");
+        let working = compare_diff(root, "origin/main", &base_oid, &merge_base, "keep.txt", None, false).unwrap();
+        assert_eq!(working["newText"], "dirty\n");
+
+        // A deleted working file has no new side.
+        fs::remove_file(root.join("keep.txt")).unwrap();
+        let deleted = compare_diff(root, "origin/main", &base_oid, &merge_base, "keep.txt", None, false).unwrap();
+        assert_eq!(deleted["deleted"], true);
+        assert_eq!(deleted["newText"], "");
+
+        for path in ["../outside.txt", "/absolute.txt"] {
+            assert_eq!(
+                compare_diff(root, "origin/main", &base_oid, &merge_base, path, None, false)
+                    .unwrap_err()
+                    .to_string(),
+                "invalid_path"
+            );
+        }
+        assert_eq!(
+            compare_diff(root, "origin/main", &base_oid, "HEAD", "keep.txt", None, false)
+                .unwrap_err()
+                .to_string(),
+            "invalid_request"
+        );
+    }
+
+    #[test]
+    fn compare_diff_reads_a_renames_base_side_from_its_original_path() {
+        let (temp, _origin) = compare_repository();
+        let root = temp.path();
+        git(root, &["mv", "rename.txt", "renamed.txt"]).unwrap();
+        fs::write(root.join("renamed.txt"), "alpha\nBETA\ngamma\ndelta\n").unwrap();
+        let summary = compare_summary(root, None, false).unwrap();
+        let base_oid = summary["base"]["oid"].as_str().unwrap().to_owned();
+        let merge_base = summary["mergeBase"].as_str().unwrap().to_owned();
+        let renamed = summary["files"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|file| file["path"] == "renamed.txt")
+            .unwrap()
+            .clone();
+        assert_eq!(renamed["originalPath"], "rename.txt");
+        let original = renamed["originalPath"].as_str().unwrap();
+        let diff = compare_diff(root, "origin/main", &base_oid, &merge_base, "renamed.txt", Some(original), false).unwrap();
+        assert_eq!(diff["oldText"], "alpha\nbeta\ngamma\ndelta\n");
+        assert_eq!(diff["newText"], "alpha\nBETA\ngamma\ndelta\n");
+        // Without the original path the base side is missing, so the file looks newly added.
+        let without = compare_diff(root, "origin/main", &base_oid, &merge_base, "renamed.txt", None, false).unwrap();
+        assert_eq!(without["oldText"], "");
+    }
+
+    #[test]
+    fn compare_reads_root_relative_paths_and_renames_in_a_subdirectory() {
+        let temp = repo();
+        let root = temp.path();
+        fs::write(root.join("outside.txt"), "outside\n").unwrap();
+        fs::create_dir_all(root.join("sub")).unwrap();
+        fs::write(root.join("sub/keep.txt"), "one\ntwo\n").unwrap();
+        fs::write(root.join("sub/rename.txt"), "alpha\nbeta\n").unwrap();
+        git(root, &["add", "."]).unwrap();
+        git(root, &["commit", "-qm", "base"]).unwrap();
+        let origin = tempfile::tempdir().unwrap();
+        git(origin.path(), &["init", "--bare", "-q"]).unwrap();
+        git(root, &["remote", "add", "origin", origin.path().to_str().unwrap()]).unwrap();
+        git(root, &["push", "-qu", "origin", "main"]).unwrap();
+        git(origin.path(), &["symbolic-ref", "HEAD", "refs/heads/main"]).unwrap();
+        git(root, &["switch", "-qc", "feature"]).unwrap();
+        let sub = root.join("sub");
+        git(&sub, &["mv", "rename.txt", "renamed.txt"]).unwrap();
+        fs::write(sub.join("fresh.txt"), "fresh\n").unwrap();
+        fs::write(sub.join("keep.txt"), "one\nTWO\n").unwrap();
+
+        let summary = compare_summary(&sub, None, false).unwrap();
+        assert_eq!(summary["base"]["ref"], "origin/main");
+        // Paths are relative to the registered root, and files outside it stay out of the list.
+        assert_eq!(compare_paths(&summary), ["fresh.txt", "keep.txt", "renamed.txt"]);
+        let renamed = summary["files"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|file| file["path"] == "renamed.txt")
+            .unwrap()
+            .clone();
+        assert_eq!(renamed["originalPath"], "rename.txt");
+        let base_oid = summary["base"]["oid"].as_str().unwrap().to_owned();
+        let merge_base = summary["mergeBase"].as_str().unwrap().to_owned();
+        // `<mergeBase>:./rename.txt` resolves inside the subdirectory root.
+        let diff = compare_diff(&sub, "origin/main", &base_oid, &merge_base, "renamed.txt", Some("rename.txt"), false).unwrap();
+        assert_eq!(diff["oldText"], "alpha\nbeta\n");
+        assert_eq!(diff["newText"], "alpha\nbeta\n");
+        let keep = compare_diff(&sub, "origin/main", &base_oid, &merge_base, "keep.txt", None, false).unwrap();
+        assert_eq!(keep["oldText"], "one\ntwo\n");
+    }
+
+    #[test]
+    fn compare_marks_uncounted_untracked_files_as_unknown() {
+        let (temp, _origin) = compare_repository();
+        let root = temp.path();
+        // One file larger than the whole per-refresh budget: its counts are unknown, not zero.
+        fs::write(root.join("huge.txt"), "x".repeat(MAX_COMPARE_UNTRACKED_BYTES as usize + 1)).unwrap();
+        let summary = compare_summary(root, None, false).unwrap();
+        let huge = summary["files"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|file| file["path"] == "huge.txt")
+            .unwrap()
+            .clone();
+        assert_eq!(huge["countsUnknown"], true);
+        assert_eq!(huge["additions"], 0);
     }
 
     #[test]

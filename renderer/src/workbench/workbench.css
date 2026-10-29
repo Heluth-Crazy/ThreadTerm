@@ -201,6 +201,25 @@
 .wb-commit .wb-commit-more .ico { width:15px; height:15px; }
 .wb-selected-summary { margin:0; color:var(--muted); font-size:11px; line-height:1.35; }
 .wb-changes { padding:4px 6px 16px; border-top:1px solid var(--border); }
+/* Source Control scope switch: Changes keeps today's view, Branch compares with a base. */
+.wb-scm-scope { display:flex; gap:2px; margin:8px 10px 0; padding:2px; border:1px solid var(--border); border-radius:9px; background:var(--soft); }
+.wb-scope-tab { flex:1; min-width:0; height:26px; padding:0 8px; border:0; border-radius:7px; background:transparent; color:var(--muted); font:inherit; font-size:12px; cursor:pointer; }
+.wb-scope-tab:hover { color:var(--text); }
+.wb-scope-tab.active { background:var(--surface); color:var(--text); box-shadow:var(--wb-ring); }
+.wb-scope-tab:focus-visible { box-shadow:inset 0 0 0 1.5px var(--primary); outline:none; }
+.wb-branch-scope-head { display:flex; align-items:center; gap:6px; padding:2px 4px 4px 4px; }
+.wb-branch-scope-summary { flex:1; min-width:0; margin:0; color:var(--text); font-size:11.5px; line-height:1.4; overflow-wrap:anywhere; }
+.wb-branch-scope-controls { display:grid; gap:4px; padding:0 4px 6px; }
+.wb-branch-scope-base { display:grid; gap:3px; color:var(--muted); font-size:11px; }
+.wb-branch-scope-base select { min-width:0; height:28px; border:1px solid var(--border); border-radius:7px; background:var(--surface); color:var(--text); font:inherit; font-size:12px; }
+.wb-branch-scope-base select:focus { border-color:var(--primary); box-shadow:var(--wb-ring); outline:none; }
+.wb-branch-scope-committed { display:flex; align-items:center; gap:6px; color:var(--muted); font-size:11.5px; cursor:pointer; }
+.wb-branch-scope-committed input { width:14px; height:14px; margin:0; accent-color:var(--primary); }
+.wb-group-label { display:flex; flex:1; align-items:center; gap:4px; min-width:0; height:100%; padding:0 4px 0 2px; color:var(--muted); font-size:11px; font-weight:500; letter-spacing:.06em; text-transform:uppercase; }
+.wb-branch-counts { display:flex; flex:none; gap:4px; font:11px/1 var(--mono); font-variant-numeric:tabular-nums; white-space:nowrap; color:var(--muted); }
+.wb-branch-counts .wb-add { color:var(--wb-added); }
+.wb-branch-counts .wb-del { color:var(--wb-deleted); }
+.wb-branch-group .wb-deco { color:var(--muted); }
 .wb-change-group + .wb-change-group { margin-top:4px; }
 .wb-group-head { display:flex; align-items:center; height:var(--wb-row); padding:0 4px 0 22px; border-radius:var(--radius); }
 .wb-group-head:hover { background:var(--soft); }

@@ -535,6 +535,7 @@ function Pane({
       worktreePath={item.worktreePath}
       comments={workbench?.comments}
       initialStaged={item.kind === "diff" ? item.staged : undefined}
+      initialCompare={item.kind === "diff" ? item.compare : undefined}
       onNavigateDiff={item.kind==='diff'?(path,prepare)=>onNavigateDiff(item,path,prepare):undefined} navigationDisabled={closing}
       onSendToAgent={workbench?.sendToAgent?lines=>workbench.sendToAgent?.({projectId:item.projectId,worktreePath:item.worktreePath,externalId:item.externalId,...lines}):undefined}
       onOpenHistory={workbench?.openHistory?target=>workbench.openHistory?.({projectId:item.projectId,worktreePath:item.worktreePath,...target}):undefined}

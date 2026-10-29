@@ -924,3 +924,43 @@ test('git undo exposes a bounded identifier-only journal and fences undo request
  assert.throws(()=>validateResult('git.undo',{id,undoneAt:null}));
  assert.ok(METHODS.includes('git.undo')&&METHODS.includes('git.undo.list'));
 });
+
+test('branch comparison requests bound the base, the merge base and the scope',()=>{
+ const scope={projectId:'p'};
+ validateRequest('git.compare.files',scope);
+ validateRequest('git.compare.files',{...scope,worktreePath:'worktree'});
+ validateRequest('git.compare.files',{...scope,base:'origin/main'});
+ validateRequest('git.compare.files',{...scope,base:'a'.repeat(40),committedOnly:true});
+ for(const patch of [{projectId:''},{base:''},{base:'-upload-pack'},{base:'refs/heads/'+'x'.repeat(250)},{base:'main\ninjected'},{committedOnly:'yes'},{committedOnly:null},{operationId:'unexpected'}])
+  assert.throws(()=>validateRequest('git.compare.files',{...scope,...patch}),undefined,JSON.stringify(patch).slice(0,80));
+ const oid='a'.repeat(40);
+ validateRequest('git.compare.diff',{...scope,base:{ref:'origin/main',oid},mergeBase:oid,path:'src/a.ts'});
+ validateRequest('git.compare.diff',{...scope,base:{oid},mergeBase:oid,path:'src/a.ts',originalPath:'src/b.ts',committedOnly:true});
+ for(const patch of [{base:{}},{base:{oid:'HEAD'}},{base:{oid:'abc'}},{base:{ref:'',oid}},{base:{ref:'-x',oid}},{mergeBase:'abc'},{path:''},{committedOnly:1}])
+  assert.throws(()=>validateRequest('git.compare.diff',{...scope,base:{ref:'origin/main',oid},mergeBase:oid,path:'src/a.ts',...patch}),undefined,JSON.stringify(patch).slice(0,80));
+});
+
+test('branch comparison results cap files and keep statuses and counts exact',()=>{
+ const oid='a'.repeat(40),base={ref:'origin/main',oid};
+ const file={path:'src/a.ts',status:'modified',additions:4,deletions:2,binary:false};
+ const result={base,mergeBase:oid,head:'b'.repeat(40),files:[file,{path:'src/b.ts',originalPath:'src/old.ts',status:'renamed',additions:0,deletions:0,binary:false},{path:'img.png',status:'added',additions:0,deletions:0,binary:true},{path:'big.log',status:'added',additions:0,deletions:0,binary:false,countsUnknown:true}],truncated:false};
+ validateResult('git.compare.files',result);
+ validateResult('git.compare.files',{...result,files:[]});
+ validateResult('git.compare.files',{...result,files:Array.from({length:1000},(_,index)=>({...file,path:`src/${index}.ts`})),truncated:true});
+ for(const patch of [{base:{ref:'',oid}},{base:{ref:'origin/main',oid:'HEAD'}},{mergeBase:'abc'},{head:'HEAD'},{files:[{...file,status:'copied'}]},{files:[{...file,additions:-1}]},{files:[{...file,deletions:0.5}]},{files:[{...file,binary:'no'}]},{files:[{...file,originalPath:''}]},{files:[{...file,countsUnknown:'yes'}]},{files:Array.from({length:1001},(_,index)=>({...file,path:`src/${index}.ts`}))},{truncated:'yes'}])
+  assert.throws(()=>validateResult('git.compare.files',{...result,...patch}),undefined,JSON.stringify(patch).slice(0,80));
+ validateResult('git.compare.diff',{path:'src/a.ts',oldText:'old\n',newText:'new\n',binary:false,deleted:false});
+ validateResult('git.compare.diff',{path:'src/a.ts',oldText:'',newText:'',binary:true});
+ for(const patch of [{path:''},{oldText:1},{newText:null},{binary:'no'},{deleted:'no'}]) assert.throws(()=>validateResult('git.compare.diff',{path:'src/a.ts',oldText:'',newText:'',binary:false,...patch}));
+ assert.ok(METHODS.includes('git.compare.files')&&METHODS.includes('git.compare.diff'));
+});
+
+test('compare diff tabs require a full commit pair and no staged mode',()=>{
+ const oid='a'.repeat(40),tab={id:'compare',kind:'diff',projectId:'p',path:'src/a.ts',compare:{base:'origin/main',oid,mergeBase:oid}};
+ const layout=value=>({kind:'pane',id:'pane',tabs:[value],activeTabId:'compare'});
+ validateLayout(layout(tab));
+ validateLayout(layout({...tab,compare:{...tab.compare,committedOnly:true}}));
+ validateRequest('workspace.save',{name:'Compare',layout:layout(tab),expectedRevision:0,operationId:'compare-layout'});
+ for(const patch of [{staged:true},{kind:'file'},{kind:'preview'},{compare:{base:'-x',oid,mergeBase:oid}},{compare:{base:'origin/main',oid:'HEAD',mergeBase:oid}},{compare:{base:'origin/main',oid,mergeBase:'HEAD'}},{compare:{base:'origin/main',oid,mergeBase:oid,committedOnly:'yes'}},{compare:{base:'x'.repeat(256),oid,mergeBase:oid}}])
+  assert.throws(()=>validateLayout(layout({...tab,...patch})),undefined,JSON.stringify(patch).slice(0,80));
+});

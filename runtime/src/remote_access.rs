@@ -1313,6 +1313,8 @@ mod tests {
             "git.stash.drop",
             "git.undo",
             "git.undo.list",
+            "git.compare.files",
+            "git.compare.diff",
             "filesystem.delete",
             "filesystem.search",
             "review.list",

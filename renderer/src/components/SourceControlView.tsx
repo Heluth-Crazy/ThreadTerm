@@ -1,8 +1,8 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent, type MouseEvent, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import { WbIcon } from '../workbench/icons';
-import type { GitBranches, GitChange, GitPushPreview, GitSelectedCommitResult, GitStashApply, GitStashEntry, GitStashFile, GitUndoEntry } from '@threadterm/protocol';
-import { operationId, request } from '../bridge';
+import type { GitBranches, GitChange, GitCompareFile, GitCompareFiles, GitPushPreview, GitSelectedCommitResult, GitStashApply, GitStashEntry, GitStashFile, GitUndoEntry } from '@threadterm/protocol';
+import { operationId, request, subscribeEvents } from '../bridge';
 import { Icon } from './PrototypeIcon';
 import { CatalogPopover } from './CatalogActions';
 import { SurfaceDialog } from './SurfaceDialog';
@@ -11,7 +11,7 @@ import { gitOperationState, mergeResultMessage, pullDivergence } from '../workbe
 import { pushDestination, pushRejectionAction, requiresForcePushBranchConfirmation } from '../workbench/gitPushPreview';
 import { stashDropInterference, stashInterferenceError, workbenchError } from '../workbench/errors';
 import { selectedCommitUnsupportedText } from '../workbench/selectedCommitSupport';
-import { absolutePath, baseName, parentPath, scopeParams, type GitState, type WorkbenchActions, type WorkbenchScope } from '../workbench/types';
+import { absolutePath, baseName, FILES_CHANGED_EVENT, parentPath, scopeParams, type GitState, type WorkbenchActions, type WorkbenchScope } from '../workbench/types';
 import { ContextSendAction, sendContextToAgent } from './ContextSendAction';
 import { changedFileContext } from './GitContextActions';
 import { showContextMenu } from './ContextMenu';
@@ -27,6 +27,9 @@ import type { GitWorkbenchCommand } from '../workbench/gitKeyboardCommand';
 import { relativeTime } from './CodeEditor';
 import { consumeLatestUndo, latestUndo, noticeUndoId, publishLatestUndo, subscribeLatestUndo, type LatestUndoNotice, type UndoBoundNotice, undoEntryLabel, undoNoticeTimeout, undoRestoredPaths } from '../workbench/gitUndo';
 import { canonicalScopePath } from '../projectScope';
+import { branchScopeKey, compareBaseMovedText, compareBaseOptions, compareEmptyText, compareGroups, compareHeaderText, comparePaths, compareStatusLabel, compareStatusLetter, compareUnavailableText, readBranchScopePreference, writeBranchScopePreference, type BranchScopeMode } from '../workbench/branchScope';
+import { createRefreshQueue } from '../workbench/refreshQueue';
+import { eventTouchesWorktree } from '../workbench/refreshTriggers';
 
 type Confirm =
  | {kind:'discard';paths:string[];untracked:number;token:number;fingerprints?:Record<string,string|null>;indexFingerprints?:Record<string,string|null>;snapshotError?:string}
@@ -79,15 +82,32 @@ export function SourceControlView({scope, actions, git, zh, compact = false, too
  const changesRef=useRef<HTMLDivElement>(null);
  const [focusedRow,setFocusedRow]=useState<ChangeFocus>();
  const rowButtons=useRef(new Map<string,HTMLButtonElement>()),listOwnsFocus=useRef(false);
+ const branchButtons=useRef(new Map<string,HTMLButtonElement>()),branchListOwnsFocus=useRef(false);
  const scopeEpoch=useRef(0);
- const discardEpoch=useRef(0);
- const renderedScope=useRef(`${scope.projectId}\u0000${scope.worktreePath ?? ''}\u0000${scope.rootPath}`);
+ const discardEpoch=useRef(0); const renderedScope=useRef(`${scope.projectId}\u0000${scope.worktreePath ?? ''}\u0000${scope.rootPath}`);
  const text = (en:string, cn:string) => zh ? cn : en;
  const params = scopeParams(scope);
  const status = git.status;
  const rootKey=scope.rootPath;
  const scopeKey=`${scope.projectId}\u0000${scope.worktreePath ?? ''}\u0000${scope.rootPath}`;
  const undoWorktreeKey=`${scope.projectId}\u0000${canonicalScopePath(scope.worktreePath) ?? 'default'}`;
+ // Source Control scope (Changes | Branch). The choice is remembered per worktree in memory only.
+ const scopePreferenceKey=branchScopeKey(scope);
+ const [scopeMode,setScopeMode]=useState<BranchScopeMode>(()=>readBranchScopePreference(branchScopeKey(scope))?.mode ?? 'changes');
+ const [compareBase,setCompareBase]=useState<string|undefined>(()=>readBranchScopePreference(branchScopeKey(scope))?.base);
+ const [branchCommittedOnly,setBranchCommittedOnly]=useState<boolean>(()=>readBranchScopePreference(branchScopeKey(scope))?.committedOnly ?? false);
+ const [compare,setCompare]=useState<GitCompareFiles>();
+ const compareRef=useRef<GitCompareFiles|undefined>(undefined);
+ const [compareError,setCompareError]=useState<string>();
+ const [compareUnavailable,setCompareUnavailable]=useState(false);
+ const [compareLoading,setCompareLoading]=useState(false);
+ const [compareBaseMoved,setCompareBaseMoved]=useState(false);
+ const [compareFocused,setCompareFocused]=useState<ChangeFocus>();
+ const compareEpoch=useRef(0);
+ // A count of explicit loads, so the event subscription refreshes on a re-show but never duplicates an entry.
+ const compareLoadToken=useRef(0), compareSubscribedToken=useRef(0);
+ const compareParams=useRef({base:compareBase,committedOnly:branchCommittedOnly});
+ compareParams.current={base:compareBase,committedOnly:branchCommittedOnly};
  if(renderedScope.current!==scopeKey) { renderedScope.current=scopeKey; scopeEpoch.current++; }
  const operation=status && gitOperationState(status,zh);
  useEffect(() => {
@@ -121,6 +141,15 @@ export function SourceControlView({scope, actions, git, zh, compact = false, too
   setSelection(current=>setGroupSelection(current,rootKey,group,items,!all));
  };
  useEffect(() => { discardEpoch.current++; setDiverged(undefined); setBusy(undefined); setIssue(undefined); setNotice(undefined); setRecentActions(false); setUndoEntries(undefined); setUndoLoading(false); setCommittedWarning(undefined); setPushPreview(undefined); setPushDialog(false); setForcePushConfirmation(false); setForcePushBranch(''); setPushFailure(undefined); setConfirm(undefined); setCommitMenu(undefined); setBranchMenu(undefined); setBranches(undefined); setBranchQuery(''); setCreating(false); setStashes(undefined); setStashFiles({}); setStashLoading(undefined); setStashDialog(false); setStashMessage(''); setStashUntracked(true); setStashesCollapsed(true); }, [scope.projectId, scope.worktreePath, scope.rootPath]);
+ // The scope choice follows the worktree: it is read back from memory, never from disk.
+ useEffect(() => {
+  const stored=readBranchScopePreference(branchScopeKey(scope));
+  setScopeMode(stored?.mode ?? 'changes');
+  setCompareBase(stored?.base);
+  setBranchCommittedOnly(stored?.committedOnly ?? false);
+  compareEpoch.current++;
+  compareRef.current=undefined; setCompare(undefined); setCompareError(undefined); setCompareLoading(false); setCompareBaseMoved(false); setCompareFocused(undefined);
+ }, [scope.projectId, scope.worktreePath, scope.rootPath]);
  useEffect(()=>{const update=()=>setUndoNotice(latestUndo(undoWorktreeKey));update();return subscribeLatestUndo(undoWorktreeKey,update);},[undoWorktreeKey]);
  // Success notices are transient; errors stay until dismissed.
  useEffect(() => { if(!notice) return; const timer = setTimeout(() => setNoticeState(undefined), undoNoticeTimeout(Boolean(notice.undoId))); return () => clearTimeout(timer); }, [notice]);
@@ -356,6 +385,81 @@ export function SourceControlView({scope, actions, git, zh, compact = false, too
  };
  const loadBranches = async () => { const epoch=scopeEpoch.current; try { const next=await request('git.branches', params); if(epoch===scopeEpoch.current)setBranches(next); } catch(error) { if(epoch===scopeEpoch.current)setIssue(workbenchError(error, zh)); } };
  const loadStashes = async () => { const epoch=scopeEpoch.current; try { const result=await request('git.stash.list', params); if(epoch===scopeEpoch.current)setStashes(result.entries); } catch(error) { if(epoch===scopeEpoch.current)setIssue(workbenchError(error, zh)); } };
+ // Branch scope: one `git.compare.files` per refresh, diffs load lazily per file through the diff tab.
+ const applyCompare=(result:GitCompareFiles,explicit:boolean)=>{
+  const current=compareRef.current;
+  const moved=Boolean(current&&current.files.length&&(current.base.ref!==result.base.ref||current.base.oid!==result.base.oid||current.mergeBase!==result.mergeBase));
+  // An automatic refresh never swaps the list under an open diff: the header offers a refresh instead.
+  if(moved&&!explicit){ setCompareBaseMoved(true); return; }
+  compareRef.current=result; setCompare(result); setCompareBaseMoved(false);
+ };
+ const loadCompare=async (explicit=false) => {
+  const epoch=compareEpoch.current, {base,committedOnly}=compareParams.current;
+  setCompareLoading(true);
+  try {
+   const result=await request('git.compare.files',{...params,...(base?{base}:{}),...(committedOnly?{committedOnly:true}:{})});
+   if(epoch===compareEpoch.current){ setCompareError(undefined); applyCompare(result,explicit); }
+  } catch(error) {
+   if(epoch===compareEpoch.current){
+    compareRef.current=undefined; setCompare(undefined); setCompareBaseMoved(false);
+    // A missing base or an unborn repository is an explanatory state with the picker, not an error.
+    setCompareUnavailable(/compare_(base_unavailable|unborn)/.test(error instanceof Error ? error.message : String(error)));
+    setCompareError(workbenchError(error,zh));
+   }
+  } finally { if(epoch===compareEpoch.current)setCompareLoading(false); }
+ };
+ const loadCompareRef=useRef(loadCompare); loadCompareRef.current=loadCompare;
+ const rememberScope=(mode:BranchScopeMode,base:string|undefined,committedOnly:boolean)=>writeBranchScopePreference(scopePreferenceKey,{mode,...(base?{base}:{}),committedOnly});
+ const switchScope=(mode:BranchScopeMode)=>{ compareEpoch.current++; setScopeMode(mode); rememberScope(mode,compareBase,branchCommittedOnly); };
+ // Explicit choices reload at once; automatic refreshes queue behind the shared refresh queue.
+ useEffect(() => {
+  if(scopeMode!=='branch') return;
+  compareEpoch.current++;
+  compareLoadToken.current++;
+  void loadCompareRef.current(true);
+  void loadBranches();
+ }, [scopeMode, compareBase, branchCommittedOnly, scopeKey]);
+ useEffect(() => {
+  if(scopeMode!=='branch'||!visible) return;
+  const queue=createRefreshQueue(()=>loadCompareRef.current(false));
+  const changed=()=>{ void queue.request(); };
+  const shown=()=>{ if(document.visibilityState==='visible') changed(); };
+  // A Git event names its worktree; session ids are only needed for turn-ended events.
+  const ids:ReadonlySet<string>=new Set<string>();
+  const unsubscribe=subscribeEvents(event=>{ if(eventTouchesWorktree(event,{projectId:scope.projectId,worktreePath:scope.worktreePath},ids)) changed(); });
+  addEventListener(FILES_CHANGED_EVENT,changed); addEventListener('focus',changed); document.addEventListener('visibilitychange',shown);
+  // Entering the scope (or switching worktree) loaded once already; showing the panel again refreshes.
+  if(compareSubscribedToken.current===compareLoadToken.current) changed();
+  compareSubscribedToken.current=compareLoadToken.current;
+  return () => { queue.stop(); removeEventListener(FILES_CHANGED_EVENT,changed); removeEventListener('focus',changed); document.removeEventListener('visibilitychange',shown); unsubscribe(); };
+ }, [scopeMode, visible, scopeKey]);
+ const selectCompareBase=(ref:string)=>{ const base=ref&&ref!==compare?.base.ref?ref:undefined; setCompareBase(base); rememberScope(scopeMode,base,branchCommittedOnly); };
+ const toggleCompareCommitted=(value:boolean)=>{ setBranchCommittedOnly(value); rememberScope(scopeMode,compareBase,value); };
+ const openCompareFile=(file:GitCompareFile)=>{
+  if(!compare) return;
+  actions.openDiff(file.path,false,{base:compare.base.ref,oid:compare.base.oid,mergeBase:compare.mergeBase,...(file.originalPath?{originalPath:file.originalPath}:{}),...(branchCommittedOnly?{committedOnly:true}:{})});
+ };
+ const branchRows=comparePaths(compare?.files ?? []).map(path=>({group:'changes' as const,path}));
+ const branchTabRow=branchRows.find(row=>compareFocused&&changeFocusKey(row)===changeFocusKey(compareFocused))??branchRows[0];
+ useLayoutEffect(()=>{ if(branchListOwnsFocus.current&&branchTabRow)branchButtons.current.get(changeFocusKey(branchTabRow))?.focus(); },[compare,branchTabRow?.path]);
+ useEffect(()=>{setCompareFocused(undefined);branchListOwnsFocus.current=false;},[scopeKey,scopeMode]);
+ // Enter opens the file; Space and Delete deliberately do nothing in the Branch scope.
+ const onBranchKey=(event:KeyboardEvent<HTMLDivElement>)=>{
+  if(isKeyboardEditableTarget(event.target))return;
+  const element=(event.target as HTMLElement).closest<HTMLElement>('[data-branch-path]');
+  if(!element||!event.currentTarget.contains(element))return;
+  const path=element.dataset.branchPath??'', file=compare?.files.find(candidate=>candidate.path===path);
+  if(!file)return;
+  const current={group:'changes' as const,path};
+  if(event.key==='Enter'){ event.preventDefault(); openCompareFile(file); return; }
+  // Space and Delete keep the Changes-scope meaning out of the Branch scope: they do nothing here.
+  if(event.key===' '||event.key==='Delete'){ event.preventDefault(); return; }
+  if(event.ctrlKey||event.metaKey||event.shiftKey)return;
+  const target=rovingChangeTarget(branchRows,current,event.key);
+  if(target){ event.preventDefault(); setCompareFocused(target); branchButtons.current.get(changeFocusKey(target))?.focus(); }
+ };
+ const compareBaseChoices=compareBaseOptions(branches?.branches ?? [],{current:status?.branch??undefined,defaultRef:compare?.base.ref,zh});
+ const compareBaseLabel=compare?.base.ref ?? compareBase ?? text('Default base','默认基准');
  useEffect(() => { void loadStashes(); }, [scopeKey,status]);
  const showStashFiles = async (entry:GitStashEntry) => {
   if(stashFiles[entry.oid]) { setStashFiles(current => { const next={...current}; delete next[entry.oid]; return next; }); return; }
@@ -552,6 +656,10 @@ export function SourceControlView({scope, actions, git, zh, compact = false, too
  const localChangePaths=checkoutLocalPaths(status);
  return <div className={`wb-scm${compact ? ' compact' : ''}`}>
   {toolbar}
+  <div className="wb-scm-scope" role="tablist" aria-label={text('Source Control scope','源代码管理范围')}>
+   <button type="button" role="tab" aria-selected={scopeMode==='changes'} className={`wb-scope-tab${scopeMode==='changes' ? ' active' : ''}`} onClick={()=>switchScope('changes')}>{text('Changes','更改')}</button>
+   <button type="button" role="tab" aria-selected={scopeMode==='branch'} className={`wb-scope-tab${scopeMode==='branch' ? ' active' : ''}`} onClick={()=>switchScope('branch')}>{text('Branch','分支')}</button>
+  </div>
   {operation && <div className="wb-operation" role="status" data-testid="git-operation-banner">
    <p>{operation.label}</p>
    {status.operation?.kind==='merge' && <div className="wb-operation-actions">
@@ -590,7 +698,36 @@ export function SourceControlView({scope, actions, git, zh, compact = false, too
   {issue && <p className="wb-issue" role="alert">{issue}<button type="button" className="icon-btn" aria-label={text('Dismiss', '关闭提示')} onClick={() => setIssue(undefined)}><Icon name="close"/></button></p>}
   {notice && !issue && <p className="wb-notice" aria-live="polite"><span>{notice.message}</span>{noticeUndoId(notice,undoNotice)&&<button type="button" className="btn btn-sm" disabled={!!busy} onClick={()=>{const id=noticeUndoId(notice,undoNotice);if(id)void undo(id);}}>{text('Undo','撤销')}</button>}</p>}
   {committedWarning && <p className="wb-notice wb-commit-warning" role="status">{committedWarning}</p>}
-  <div ref={changesRef} tabIndex={-1} className="wb-changes" aria-keyshortcuts="Control+Z Meta+Z" onBlur={event=>{listOwnsFocus.current=event.relatedTarget instanceof Element&&event.relatedTarget.matches('.wb-change-open')&&event.currentTarget.contains(event.relatedTarget);}} onContextMenu={onChangeContext} onKeyDown={onChangeKey}>
+  {scopeMode==='branch' && <div ref={changesRef} tabIndex={-1} className="wb-changes wb-branch-scope" aria-label={text('Branch changes','分支更改')} onKeyDown={onBranchKey} onBlur={event=>{branchListOwnsFocus.current=event.relatedTarget instanceof Element&&event.relatedTarget.matches('.wb-branch-open')&&event.currentTarget.contains(event.relatedTarget);}}>
+   <div className="wb-branch-scope-head">
+    <p className="wb-branch-scope-summary" data-testid="branch-scope-summary">{compare
+      ? compareHeaderText({branch:status?.branch ?? 'HEAD',base:compare.base.ref,files:compare.files,truncated:compare.truncated,zh})
+      : compareLoading ? text('Comparing…','正在比较…') : text('Branch changes','分支更改')}</p>
+    {compareBaseMoved && <button type="button" className="btn btn-sm" onClick={()=>void loadCompare(true)} data-testid="branch-scope-base-moved">{compareBaseMovedText(zh)}</button>}
+   </div>
+   <div className="wb-branch-scope-controls">
+    <label className="wb-branch-scope-base">{text('Base','基准')}<select value={compareBase ?? compare?.base.ref ?? ''} aria-label={text('Base branch','基准分支')} onChange={event=>selectCompareBase(event.target.value)}>
+     {!compareBaseChoices.length && <option value={compareBase ?? ''}>{compareBaseLabel}</option>}
+     {(['default','local','remote'] as const).map(kind=>{ const group=compareBaseChoices.filter(option=>option.kind===kind); if(!group.length) return null;
+      const label=kind==='default'?text('Default base','默认基准'):kind==='local'?text('Local branches','本地分支'):text('Remote branches','远程分支');
+      return <optgroup key={kind} label={label}>{group.map(option=><option key={`${kind}:${option.ref}`} value={option.ref}>{option.label}</option>)}</optgroup>; })}
+    </select></label>
+    <label className="wb-branch-scope-committed"><input type="checkbox" checked={branchCommittedOnly} aria-label={text('Committed only','仅已提交')} onChange={event=>toggleCompareCommitted(event.target.checked)}/>{text('Committed only','仅已提交')}</label>
+   </div>
+   {compareError && !compare && <p className="wb-issue" role="alert">{compareUnavailable ? compareUnavailableText(zh) : compareError}</p>}
+   {compare && !compare.files.length && <p className="wb-empty">{compareEmptyText(compare.base.ref,zh)}</p>}
+   {compare && compare.files.length>0 && compareGroups(compare.files).map(group=>{ const title=group.dir||text('(root)','（根目录）'); return <section key={`dir:${group.dir}`} className="wb-change-group wb-branch-group" aria-label={title}>
+    <div className="wb-group-head"><span className="wb-group-label"><span className="wb-dir">{title}</span><span className="wb-count">{group.files.length}</span></span></div>
+    <div role="list">{group.files.map(file=>{ const focus={group:'changes' as const,path:file.path},key=changeFocusKey(focus); return <div key={file.path} className="wb-change-row" role="listitem" data-branch-path={file.path} data-branch-status={file.status}>
+     <button type="button" className="wb-change-open wb-branch-open" tabIndex={branchTabRow&&changeFocusKey(branchTabRow)===key?0:-1} ref={button=>{if(button)branchButtons.current.set(key,button);else branchButtons.current.delete(key);}} onFocus={()=>{branchListOwnsFocus.current=true;setCompareFocused(value=>value?.path===file.path?value:focus);}} aria-keyshortcuts="Enter" title={`${file.originalPath ? `${file.originalPath} → ${file.path}` : file.path} · ${compareStatusLabel(file.status,zh)} · ${text('Open diff (Enter)','打开差异（Enter）')}`} onClick={()=>openCompareFile(file)}>
+      <span className="wb-deco" aria-label={compareStatusLabel(file.status,zh)}>{compareStatusLetter(file.status)}</span><span className="wb-name">{baseName(file.path)}</span><span className="wb-dir">{parentPath(file.path)}</span>
+      <span className="wb-branch-counts">{file.binary ? <span className="wb-dir">{text('binary','二进制')}</span> : file.countsUnknown ? <span className="wb-dir">{text('unknown','未知')}</span> : <><span className="wb-add">+{file.additions}</span><span className="wb-del">−{file.deletions}</span></>}</span>
+     </button>
+    </div>; })}
+    </div>
+   </section>; })}
+  </div>}
+  {scopeMode==='changes' && <div ref={changesRef} tabIndex={-1} className="wb-changes" aria-keyshortcuts="Control+Z Meta+Z" onBlur={event=>{listOwnsFocus.current=event.relatedTarget instanceof Element&&event.relatedTarget.matches('.wb-change-open')&&event.currentTarget.contains(event.relatedTarget);}} onContextMenu={onChangeContext} onKeyDown={onChangeKey}>
    {section('conflicts', text('Merge conflicts', '合并冲突'), null)}
    {section('staged', text('Staged changes', '已暂存的更改'), <>
     <button type="button" className="icon-btn" title={text('Unstage selected files (whole file)', '取消暂存所选文件（整个文件）')} aria-label={text('Unstage selected files (whole file)', '取消暂存所选文件（整个文件）')} disabled={!!busy || !selectedStaged.length} onClick={() => void unstageSelected()}><WbIcon name="minus"/></button>
@@ -615,7 +752,7 @@ export function SourceControlView({scope, actions, git, zh, compact = false, too
     </div>)}</div>}
    </section>}
    {nothing && <p className="wb-empty">{text('No changes in this worktree.', '此工作树没有更改。')}</p>}
-  </div>
+  </div>}
   {commitMenu && <CatalogPopover anchor={commitMenu} label={text('Commit actions', '提交操作')} onClose={() => setCommitMenu(undefined)}>
    <button type="button" role="menuitem" className="menu-item" disabled={!groups.staged.length} onClick={() => { setCommitMenu(undefined); void commit('commit'); }}><Icon name="check"/>{text('Commit all staged', '提交全部暂存')}</button>
    <button type="button" role="menuitem" className="menu-item" disabled={!groups.staged.length} onClick={() => { setCommitMenu(undefined); void commit('push'); }}><Icon name="export"/>{status.upstream ? text('Commit & push', '提交并推送') : text('Commit & publish', '提交并发布')}</button>

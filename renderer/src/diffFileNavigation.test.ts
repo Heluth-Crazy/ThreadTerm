@@ -37,3 +37,18 @@ for(const kind of ['review','diff'] as const) test(`${kind} retarget preserves t
  assert.equal(retargetDiffFile(layout,'pane',{...tab},'b'),layout);
  assert.equal(retargetDiffFile(next,'pane',tab,'c'),next);
 });
+
+test('retargeting a compare tab drops the base path of the file it was opened with',()=>{
+ const compare={base:'origin/main',oid:'a'.repeat(40),mergeBase:'b'.repeat(40),originalPath:'original.txt'};
+ const tab={id:'compare',kind:'diff' as const,projectId:'p',path:'renamed.txt',compare};
+ const pane:PaneLayout={kind:'pane',id:'pane',tabs:[tab],activeTabId:'compare'};
+ const next=retargetDiffFile(pane,'pane',tab,'src/a.ts');
+ assert.equal(next.kind,'pane');if(next.kind!=='pane')throw Error('missing pane');
+ const moved=next.tabs[0] as Extract<ContentRef,{path:string}>;
+ assert.equal(moved.path,'src/a.ts');
+ assert.equal(moved.kind==='diff'?moved.compare?.originalPath:undefined,undefined,'another file never inherits the rename source');
+ assert.equal(moved.kind==='diff'?moved.compare?.mergeBase:undefined,compare.mergeBase);
+ assert.equal(moved.kind==='diff'?moved.compare?.base:undefined,'origin/main');
+ // Retargeting to the same path keeps the tab untouched.
+ assert.equal(retargetDiffFile(pane,'pane',tab,'renamed.txt'),pane);
+});

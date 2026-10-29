@@ -5,6 +5,9 @@ import type {
   Draft,
   FileDocument,
   GitBlame,
+  GitCompareDiff,
+  GitCompareFiles,
+  GitCompareRef,
   GitDiff,
 } from "@threadterm/protocol";
 import { operationId, request } from "../bridge";
@@ -40,6 +43,7 @@ import { changedFileContext } from "./GitContextActions";
 import { sendContextToAgent } from "./ContextSendAction";
 import { readDiffDocument } from '../fileDiffDocument';
 import { gitDiffFiles } from '../diffFileNavigation';
+import { compareDiffEditable, compareOriginalPath, comparePaths, compareReloadText, compareStaleText, compareTabSignature } from '../workbench/branchScope';
 import { DiffFileNavigation } from './DiffFileNavigation';
 import { externalFileError, externalFileErrorCode, externalSelectionText } from '../externalFiles';
 import { displayPath } from '../displayPath';
@@ -70,6 +74,8 @@ type Props = {
   };
   /** Opens a diff tab directly in its staged (HEAD → index) view. */
   initialStaged?: boolean;
+  /** Branch-versus-base diff (`git.compare.diff`) instead of the index diff. */
+  initialCompare?: GitCompareRef;
   /** Absolute root for "Copy path" in the standalone tools panel. */
   rootPath?: string;
   /** A registered external file is read through the explicit external-file API only. */
@@ -125,6 +131,7 @@ function FileWorkspaceInstance({
   assetKind,
   previewNavigation,
   initialStaged,
+  initialCompare,
   rootPath,
   externalId,
   onExternalChange,
@@ -161,6 +168,24 @@ function FileWorkspaceInstance({
     if (next !== "preview") onViewChange?.(next);
   };
   const [staged, setStaged] = useState(initialStaged ?? false);
+  // Branch-versus-base diffs reuse this surface: the old side is the merge base, the new side the
+  // working file (or HEAD with committedOnly). Base resolution and the file list stay in the side bar.
+  const [localCompare, setLocalCompare] = useState<GitCompareRef|undefined>(initialCompare);
+  const compare = localCompare;
+  const [compareStale, setCompareStale] = useState(false);
+  // The path this instance was opened with. Retargeting the tab (Alt+→) changes `initialPath`, but a
+  // compare tab's own `originalPath` only ever belongs to this first file.
+  const firstPath = useRef(initialPath);
+  // A tab that is re-pointed at another base (or another scope) re-syncs here instead of keeping the
+  // stale one; the Branch scope preference itself stays in memory only.
+  const [compareTabKey, setCompareTabKey] = useState(compareTabSignature(initialCompare));
+  const incomingCompareTabKey = compareTabSignature(initialCompare);
+  if(incomingCompareTabKey !== compareTabKey) {
+    setCompareTabKey(incomingCompareTabKey);
+    setLocalCompare(initialCompare);
+    setCompareStale(false);
+  }
+  const [compareFiles, setCompareFiles] = useState<GitCompareFiles>();
   const [hunk, setHunk] = useState(0);
   const [hunkCount, setHunkCount] = useState(0);
   const [gitBaseText, setGitBaseText] = useState<string | null>(null);
@@ -337,7 +362,7 @@ function FileWorkspaceInstance({
         ? (zh ? "请先完成当前评论。" : "Finish the current comment first.")
         : (zh ? "此工作区无法添加评论。" : "Comments are unavailable in this workspace.");
     const common = {zh,lines:selection,canComment,commentReason:reason,comment:()=>setCommentDraft(kind === "file" ? {side:"new",...selection} : selection as MergeSelection)};
-    const sourceItems = kind === "diff" ? diffSurfaceMenuItems({...common,prefix:"editor",hasSelection:Boolean(menu.hasSelection),sendDiff:commentsHost?.attachContext?async()=>sendContextToAgent({host:commentsHost,context:await changedFileContext(scope,document!.path,staged,zh),zh,sourceRoot:worktreePath??rootPath??commentsHost.projectRoot(projectId)}):undefined,copy:menu.copy ?? (()=>navigator.clipboard.writeText(selection.text)),copyPath:()=>navigator.clipboard.writeText(document!.path)}) : sourceEditorMenuItems({...common,hasSelection:Boolean(menu.hasSelection),readOnly:Boolean(external||document?.readonly),send:onSendToAgent?()=>onSendToAgent({path:document!.path,...(menu.hasSelection?{startLine:selection.startLine,endLine:selection.endLine, ...(external?{selection:selectedExternalText()}:{})}:{})}):undefined,plans:external?undefined:sessionDocuments?()=>void toggleSessionDocument():undefined,pinned:Boolean(pinnedDocument),plansDisabled:Boolean(external||sessionDocuments?.loading||documentPinning||sessionDocumentIssue),plansReason:external?(zh?"工作区外文件不能固定到计划与文档。":"Outside-workspace files cannot be pinned to Plans & docs."):sessionDocumentIssue?(zh?"计划与文档当前不可用。":"Plans & docs is unavailable."):undefined,history:external?undefined:onOpenHistory?()=>onOpenHistory({path:document!.path}):undefined,copy:menu.copy??(()=>navigator.clipboard.writeText(selection.text)),cut:menu.cut??(()=>{}),paste:menu.paste??(()=>{}),selectAll:menu.selectAll??(()=>{}),copyPath:()=>navigator.clipboard.writeText(document!.path),copyReference:()=>navigator.clipboard.writeText(`${document!.path}:${selection.startLine}-${selection.endLine}`)});
+    const sourceItems = kind === "diff" ? diffSurfaceMenuItems({...common,prefix:"editor",hasSelection:Boolean(menu.hasSelection),sendDiff:!compare&&commentsHost?.attachContext?async()=>sendContextToAgent({host:commentsHost,context:await changedFileContext(scope,document!.path,staged,zh),zh,sourceRoot:worktreePath??rootPath??commentsHost.projectRoot(projectId)}):undefined,copy:menu.copy ?? (()=>navigator.clipboard.writeText(selection.text)),copyPath:()=>navigator.clipboard.writeText(document!.path)}) : sourceEditorMenuItems({...common,hasSelection:Boolean(menu.hasSelection),readOnly:Boolean(external||document?.readonly),send:onSendToAgent?()=>onSendToAgent({path:document!.path,...(menu.hasSelection?{startLine:selection.startLine,endLine:selection.endLine, ...(external?{selection:selectedExternalText()}:{})}:{})}):undefined,plans:external?undefined:sessionDocuments?()=>void toggleSessionDocument():undefined,pinned:Boolean(pinnedDocument),plansDisabled:Boolean(external||sessionDocuments?.loading||documentPinning||sessionDocumentIssue),plansReason:external?(zh?"工作区外文件不能固定到计划与文档。":"Outside-workspace files cannot be pinned to Plans & docs."):sessionDocumentIssue?(zh?"计划与文档当前不可用。":"Plans & docs is unavailable."):undefined,history:external?undefined:onOpenHistory?()=>onOpenHistory({path:document!.path}):undefined,copy:menu.copy??(()=>navigator.clipboard.writeText(selection.text)),cut:menu.cut??(()=>{}),paste:menu.paste??(()=>{}),selectAll:menu.selectAll??(()=>{}),copyPath:()=>navigator.clipboard.writeText(document!.path),copyReference:()=>navigator.clipboard.writeText(`${document!.path}:${selection.startLine}-${selection.endLine}`)});
     showContextMenu({ x, y, restoreFocus: target, items: sourceItems });
   };
   async function refreshGit() {
@@ -414,7 +439,7 @@ function FileWorkspaceInstance({
         ? externalRead(externalId, path, false) as Promise<FileDocument>
         : request("filesystem.read", { ...scope, path });
       const value: FileDocument & { diffOnly?: true } = nextView === "diff"
-        ? await readDiffDocument(path, read, () => request("git.diff", { ...scope, path, staged }))
+        ? await readDiffDocument(path, read, () => compare ? compareDiffRequest(path).then(asCompareDiff) : request("git.diff", { ...scope, path, staged }))
         : await read();
       if (!mounted.current || ticket !== generation.current || !canApply()) return false;
       const saved = ignoreDraft || value.diffOnly ? undefined : drafts.current.get(path);
@@ -571,14 +596,57 @@ function FileWorkspaceInstance({
     [editorId, projectId, worktreePath, ownerSessionId],
   );
   useEffect(() => {
+    if(!compare) { setCompareFiles(undefined); return; }
+    let alive = true;
+    void request("git.compare.files", {...scope, base:compare.base, ...(compare.committedOnly ? {committedOnly:true} : {})})
+      .then(value => { if(alive) setCompareFiles(value); })
+      .catch(() => { if(alive) setCompareFiles(undefined); });
+    return () => { alive = false; };
+  }, [compare?.base, compare?.mergeBase, compare?.committedOnly, projectId, worktreePath]);
+  // A rename's base side lives at its pre-rename path, resolved per path from the current list.
+  const compareOriginal = (path: string) => compareOriginalPath(path, firstPath.current, compare, compareFiles?.files);
+  const compareDiffRequest = (path: string): Promise<GitCompareDiff> => {
+    const original = compareOriginal(path);
+    return request("git.compare.diff", {...scope, base:{ref:compare!.base, oid:compare!.oid}, mergeBase:compare!.mergeBase, path, ...(original ? {originalPath:original} : {}), ...(compare!.committedOnly ? {committedOnly:true} : {})});
+  };
+  // A base that moved while this tab was open (or across a restart) is re-pointed at the current
+  // base instead of leaving a dead end: the list is recomputed and this tab adopts its merge base.
+  const reloadCompareBase = async () => {
+    if(!compare) return;
+    setBusy(true);
+    try {
+      const fresh = await request("git.compare.files", {...scope, base:compare.base, ...(compare.committedOnly ? {committedOnly:true} : {})});
+      setCompareFiles(fresh);
+      setLocalCompare({base:fresh.base.ref, oid:fresh.base.oid, mergeBase:fresh.mergeBase, ...(compare.committedOnly ? {committedOnly:true} : {})});
+      setCompareStale(false);
+      setIssue(undefined);
+    } catch (error) {
+      setIssue(workbenchError(error, zh));
+    } finally {
+      setBusy(false);
+    }
+  };
+  // The diff surface renders a GitDiff; a compare diff has no index fingerprint and no staged state.
+  const asCompareDiff = (value: GitCompareDiff): GitDiff => ({path:value.path, staged:false, oldText:value.oldText, newText:value.newText, binary:value.binary, fingerprint:"", ...(value.deleted ? {deleted:true} : {})});
+  useEffect(() => {
     if (external || view !== "diff" || !document) return;
     let alive = true;
-    void request("git.diff", { ...scope, path: document.path, staged })
+    const loading = compare
+      ? compareDiffRequest(document.path).then(value => asCompareDiff(value))
+      : request("git.diff", { ...scope, path: document.path, staged });
+    void loading
       .then((value) => {
-        if (alive) setDiff(value);
+        if (alive) { setDiff(value); setCompareStale(false); }
       })
       .catch((error) => {
-        if (alive) setIssue(message(error));
+        if (!alive) return;
+        // A moved base is recoverable from this tab; keep the message out of the error strip.
+        if (compare && /compare_stale/.test(error instanceof Error ? error.message : String(error))) {
+          setCompareStale(true);
+          setIssue(undefined);
+          return;
+        }
+        setIssue(workbenchError(error, zh));
       });
     return () => {
       alive = false;
@@ -591,6 +659,8 @@ function FileWorkspaceInstance({
     document?.fingerprint,
     projectId,
     worktreePath,
+    compare?.mergeBase,
+    compareFiles,
   ]);
   async function deleteDraft(path: string) {
     clearTimeout(debounce.current);
@@ -763,8 +833,9 @@ function FileWorkspaceInstance({
   },[embedded,external,workbenchScopeKey]);
   const standaloneActions: WorkbenchActions = {
     openFile: (path) => choose(path, "file"),
-    openDiff: (path, nextStaged) => {
+    openDiff: (path, nextStaged, nextCompare) => {
       setStaged(nextStaged);
+      setLocalCompare(nextCompare);
       choose(path, "diff");
     },
     dirtyPaths: () => (dirty && document ? [document.path] : []),
@@ -939,6 +1010,12 @@ function FileWorkspaceInstance({
       </button>
     ) : null;
   const externalBoundary = document && external ? <ExternalFileBoundary path={document.path} zh={zh} noticeOpen={externalNoticeOpen} onNoticeToggle={() => setExternalNoticeOpen((open) => !open)} onCopy={() => void navigator.clipboard.writeText(document.path)} onReload={() => void open(document.path, view, true)} /> : null;
+  // In the Branch scope the diff walk follows the compared file list, not the working-tree groups.
+  const navigationPaths = compare
+    ? (compareFiles ? comparePaths(compareFiles.files) : document ? [document.path] : [])
+    : gitDiffFiles(gitState.status?.changes ?? [], staged);
+  // A compare diff is editable on the working side only in the working-tree scope, with a real disk file.
+  const compareEditable = compare ? compareDiffEditable(compare, !document?.readonly) : true;
 
   return (
     <section className={`file-workspace ${toolsOpen ? "tools-open" : ""} ${embedded ? "embedded" : ""}${external ? " external-file-workspace" : ""}`} data-git-workbench={!embedded&&!external||undefined} data-git-workbench-host={!embedded&&!external?gitWorkbenchHost.current:undefined} data-git-repository={!embedded&&!external&&gitState.status?'true':undefined}>
@@ -1122,15 +1199,25 @@ function FileWorkspaceInstance({
                   )}
                   {!previewNavigation && <span className="path">{document.path}</span>}
                   <span className="dim">
+                    {compare
+                      ? `${compare.committedOnly
+                          ? zh ? "仅已提交的更改" : "Committed changes only"
+                          : zh ? "工作区" : "Working tree"} · ${zh ? `对比 ${compare.base}` : `vs ${compare.base}`} · ${compare.committedOnly || document.readonly
+                          ? copy.readOnly
+                          : zh
+                            ? "左侧基线只读，右侧可编辑"
+                            : "Baseline is read-only; current file is editable"}`
+                      : <>
                     {staged ? copy.staged : copy.unstaged} ·{" "}
                     {staged || document.readonly
                       ? copy.readOnly
                       : zh
                         ? "左侧基线只读，右侧可编辑"
                         : "Baseline is read-only; current file is editable"}
+                  </>}
                   </span>
                   <span className="grow" />
-                  <DiffFileNavigation paths={gitDiffFiles(gitState.status?.changes ?? [], staged)} path={document.path} zh={zh} disabled={busy || navigationDisabled || fileNavigation} onNavigate={onNavigateDiff ? path => onNavigateDiff(path, () => open(path, "diff")) : path => choose(path, "diff")}/>
+                  <DiffFileNavigation paths={navigationPaths} path={document.path} zh={zh} disabled={busy || navigationDisabled || fileNavigation} onNavigate={onNavigateDiff ? path => onNavigateDiff(path, () => open(path, "diff")) : path => choose(path, "diff")}/>
                   {sessionDocuments && !image && (
                     <button
                       type="button"
@@ -1149,7 +1236,7 @@ function FileWorkspaceInstance({
                       <button type="button" className="icon-btn icon-btn-sm" aria-label={zh ? "上一个更改块" : "Previous hunk"} onClick={() => moveHunk(-1)}><WbIcon name="chev-up" /></button>
                       <span className="wb-hunk-count">{hunk + 1}/{hunkCount}</span>
                       <button type="button" className="icon-btn icon-btn-sm" aria-label={zh ? "下一个更改块" : "Next hunk"} onClick={() => moveHunk(1)}><Icon name="chevron" /></button>
-                      <button
+                      {!compare && <button
                         type="button"
                         className="btn btn-sm"
                         disabled={busy || dirty || (!staged && !!stageReason)}
@@ -1157,10 +1244,10 @@ function FileWorkspaceInstance({
                         onClick={() => void applyHunk()}
                       >
                         {staged ? (zh ? "取消暂存此块" : "Unstage hunk") : (zh ? "暂存此块" : "Stage hunk")}
-                      </button>
+                      </button>}
                     </span>
                   )}
-                  <button
+                  {!compare && <button
                     className="btn btn-sm"
                     disabled={busy || dirty || (!staged && !!stageReason)}
                     title={!staged ? stageReason : undefined}
@@ -1173,8 +1260,18 @@ function FileWorkspaceInstance({
                       : zh
                         ? "暂存文件"
                         : "Stage file"}
-                  </button>
-                  {!staged && diff && !diff.binary && (
+                  </button>}
+                  {compare && !compare.committedOnly && (
+                    <button
+                      type="button"
+                      className="btn btn-sm"
+                      disabled={busy || !compareEditable || !dirty}
+                      onClick={() => void saveFile()}
+                    >
+                      {zh ? "保存变更" : "Save changes"}
+                    </button>
+                  )}
+                  {!compare && !staged && diff && !diff.binary && (
                     <>
                       <button
                         className="btn btn-sm"
@@ -1216,7 +1313,12 @@ function FileWorkspaceInstance({
                   {commentDraft && !dirty && <CommentForm scope={commentScope} path={document.path} version={diffCommentVersion} selection={commentDraft} zh={zh} onCancel={() => setCommentDraft(undefined)} onAdded={() => setCommentDraft(undefined)} />}
                   <PendingComments scope={commentScope} host={commentsHost} comments={fileComments} zh={zh} />
                 </>}
-                {diff?.binary ? (
+                {compareStale ? (
+                  <p className="tt-editor-state" role="status" data-testid="compare-stale">
+                    <span>{compareStaleText(zh)}</span>
+                    <button type="button" className="btn btn-sm" disabled={busy} onClick={() => void reloadCompareBase()}>{compareReloadText(zh)}</button>
+                  </p>
+                ) : diff?.binary ? (
                   <p className="tt-editor-state">
                     {zh
                       ? "二进制文件无法显示文本对比。"
@@ -1227,8 +1329,8 @@ function FileWorkspaceInstance({
                     ref={mergeEditor}
                     path={document.path}
                     oldText={diff.oldText}
-                    newText={staged ? diff.newText : text}
-                    readOnly={staged || document.readonly || fileNavigation || Boolean(navigationDisabled)}
+                    newText={staged || compare?.committedOnly ? diff.newText : text}
+                    readOnly={staged || !compareEditable || document.readonly || fileNavigation || Boolean(navigationDisabled)}
                     onChange={value => { currentText.current = value; setText(value); }}
                     onSave={() => void saveFile()}
                     onChunks={setHunkCount}

@@ -258,6 +258,8 @@ fn request_lane(method: &str) -> Lane {
         | "git.commit.show"
         | "git.commit.diff"
         | "git.blame"
+        | "git.compare.files"
+        | "git.compare.diff"
         | "filesystem.list"
         | "filesystem.read"
         | "filesystem.external.read"
@@ -1031,6 +1033,9 @@ mod decoder_tests {
             "git.stash.list",
             "git.stash.show",
             "git.undo.list",
+            "git.blame",
+            "git.compare.files",
+            "git.compare.diff",
             "review.changes",
             "filesystem.search",
             "filesystem.external.read",

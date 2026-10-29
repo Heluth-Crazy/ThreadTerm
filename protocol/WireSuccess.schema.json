@@ -4100,6 +4100,9 @@
             },
             "staged": {
               "type": "boolean"
+            },
+            "compare": {
+              "$ref": "#/definitions/GitCompareRef"
             }
           },
           "required": [
@@ -4248,6 +4251,33 @@
           "additionalProperties": false
         }
       ]
+    },
+    "GitCompareRef": {
+      "type": "object",
+      "properties": {
+        "base": {
+          "type": "string"
+        },
+        "oid": {
+          "type": "string"
+        },
+        "mergeBase": {
+          "type": "string"
+        },
+        "originalPath": {
+          "type": "string"
+        },
+        "committedOnly": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "base",
+        "oid",
+        "mergeBase"
+      ],
+      "additionalProperties": false,
+      "description": "What a compare diff tab compares against. `base` is the short ref the user picked (or the OID), `mergeBase` the commit the file list came from, so a moved base is detected instead of silently recomputed."
     },
     "InboxItem": {
       "type": "object",
@@ -7631,6 +7661,130 @@
       ],
       "additionalProperties": false,
       "description": "Uncommitted lines use commit ''. Ranges are 1-based and cover the working file."
+    },
+    "RequestResult<\"git.compare.files\">": {
+      "$ref": "#/definitions/GitCompareFiles"
+    },
+    "GitCompareFiles": {
+      "type": "object",
+      "properties": {
+        "base": {
+          "type": "object",
+          "properties": {
+            "ref": {
+              "type": "string"
+            },
+            "oid": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "ref",
+            "oid"
+          ],
+          "additionalProperties": false
+        },
+        "mergeBase": {
+          "type": "string"
+        },
+        "head": {
+          "type": "string"
+        },
+        "files": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/GitCompareFile"
+          }
+        },
+        "truncated": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "base",
+        "mergeBase",
+        "head",
+        "files",
+        "truncated"
+      ],
+      "additionalProperties": false,
+      "description": "The branch changes relative to `base`: `mergeBase` is the commit the list was computed from, `head` the current commit. `files` are capped at 1000, with `truncated` set when more were found."
+    },
+    "GitCompareFile": {
+      "type": "object",
+      "properties": {
+        "path": {
+          "type": "string"
+        },
+        "originalPath": {
+          "type": "string"
+        },
+        "status": {
+          "$ref": "#/definitions/GitCompareStatus"
+        },
+        "additions": {
+          "type": "number"
+        },
+        "deletions": {
+          "type": "number"
+        },
+        "binary": {
+          "type": "boolean"
+        },
+        "countsUnknown": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "path",
+        "status",
+        "additions",
+        "deletions",
+        "binary"
+      ],
+      "additionalProperties": false,
+      "description": "One file of a branch-vs-base comparison. `originalPath` is the pre-rename path in the base. `countsUnknown` marks an untracked file whose line counts were skipped by the read budget."
+    },
+    "GitCompareStatus": {
+      "type": "string",
+      "enum": [
+        "added",
+        "modified",
+        "deleted",
+        "renamed",
+        "typechange"
+      ]
+    },
+    "RequestResult<\"git.compare.diff\">": {
+      "$ref": "#/definitions/GitCompareDiff"
+    },
+    "GitCompareDiff": {
+      "type": "object",
+      "properties": {
+        "path": {
+          "type": "string"
+        },
+        "oldText": {
+          "type": "string"
+        },
+        "newText": {
+          "type": "string"
+        },
+        "binary": {
+          "type": "boolean"
+        },
+        "deleted": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "path",
+        "oldText",
+        "newText",
+        "binary"
+      ],
+      "additionalProperties": false,
+      "description": "`mergeBase` → working file (or `HEAD` with committedOnly); `deleted` when the new side does not exist."
     },
     "RequestResult<\"filesystem.create\">": {
       "$ref": "#/definitions/FileEntry"
@@ -13431,6 +13585,58 @@
         },
         "result": {
           "$ref": "#/definitions/RequestResult%3C%22git.blame%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "result"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "git.compare.files"
+        },
+        "result": {
+          "$ref": "#/definitions/RequestResult%3C%22git.compare.files%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "result"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "git.compare.diff"
+        },
+        "result": {
+          "$ref": "#/definitions/RequestResult%3C%22git.compare.diff%22%3E"
         }
       },
       "required": [

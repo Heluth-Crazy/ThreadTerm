@@ -1,6 +1,6 @@
 import { Select } from "./ui/Select";
 import { useEffect, useRef, useState } from 'react';
-import type { ContentRef, Draft, FileReference, GitStatus, PaneLayout, PreviewAssociation, PreviewPresentation, Session, Snapshot, Worktree } from '@threadterm/protocol';
+import type { ContentRef, Draft, FileReference, GitCompareRef, GitStatus, PaneLayout, PreviewAssociation, PreviewPresentation, Session, Snapshot, Worktree } from '@threadterm/protocol';
 import { openExternalFiles, operationId, request, subscribeEvents } from '../bridge';
 import { externalFileError, externalFileErrorCode, externalSelectionQuote, isAbsoluteFilePath, openExternalPaths, type ExternalFileSource } from '../externalFiles';
 import { attachChatImages, insertChatText, insertSessionText } from '../terminalInputTargets';
@@ -12,6 +12,7 @@ import { activate, addPane, addTabToPane, closePane, placeWebTabBesideSession, r
 import { taskMapRoot } from '../taskMapRoot';
 import { focusedWorkspaceTab, isFileTab, isWebTabUrl, removeWorkspaceTabs, workspaceTabs, type FileTab } from '../workspaceTabs';
 import { canSplitPaneArea, fileViewPlacement, visibleSessionLayout } from '../sessionFileViews';
+import { sameDiffTabKey } from '../workbench/branchScope';
 import { PaneWorkspace, type PaneWorkbench } from './PaneWorkspace';
 import { WorkbenchSideBar, type WorkbenchCommand, type WorkbenchView } from './WorkbenchSideBar';
 import type { GitWorkbenchAction } from '../workbench/gitKeyboardCommand';
@@ -287,15 +288,15 @@ export function SessionWorkspace({session,data,theme,onBack,onSelect,onProject,o
  const fillPane=(s:Session)=>{if(picker?.mode!=='fill'||!picker.paneId)return;save(addTabToPane(layout,picker.paneId,tabFor(s)));setPicker(undefined);};
  const cancelPicker=()=>{if(picker?.mode==='fill'&&picker.paneId&&!workspaceTabs(latestLayout.current).some(item=>item.paneId===picker.paneId)){const next=closePane(latestLayout.current,picker.paneId);if(next)save(next);}setPicker(undefined);};
  const available=picker&&picker.mode!=='switch'?treeSessions.filter(s=>!sessionIdsIn(layout).includes(s.id)):allProjects?data.sessions.filter(s=>!s.archived):treeSessions;
- const openScopedFile=async(next:{projectId:string;worktreePath?:string;path:string;kind:'file'|'diff'|'preview';assetKind?:'text'|'image';externalId?:string;line?:number;column?:number;sourcePaneId?:string;ownerSessionId?:string;staged?:boolean},generation=++fileOpenGeneration.current)=>{
+ const openScopedFile=async(next:{projectId:string;worktreePath?:string;path:string;kind:'file'|'diff'|'preview';assetKind?:'text'|'image';externalId?:string;line?:number;column?:number;sourcePaneId?:string;ownerSessionId?:string;staged?:boolean;compare?:GitCompareRef},generation=++fileOpenGeneration.current)=>{
   const ownerSessionId=next.ownerSessionId;
   const opened=workspaceTabs(latestLayout.current);
-  const existing=opened.find(item=>isFileTab(item.tab)&&item.tab.ownerSessionId===ownerSessionId&&(next.externalId?item.tab.externalId===next.externalId:!item.tab.externalId&&item.tab.kind===next.kind&&item.tab.projectId===next.projectId&&sameCanonicalScope(item.tab.worktreePath??project?.path,next.worktreePath??project?.path)&&item.tab.path===next.path&&(next.kind!=='diff'||(item.tab.kind==='diff'&&Boolean(item.tab.staged)===Boolean(next.staged)))));
+  const existing=opened.find(item=>isFileTab(item.tab)&&item.tab.ownerSessionId===ownerSessionId&&(next.externalId?item.tab.externalId===next.externalId:!item.tab.externalId&&item.tab.kind===next.kind&&item.tab.projectId===next.projectId&&sameCanonicalScope(item.tab.worktreePath??project?.path,next.worktreePath??project?.path)&&item.tab.path===next.path&&(next.kind!=='diff'||(item.tab.kind==='diff'&&sameDiffTabKey(item.tab,next)))));
   let target=existing;
   if(!target){
    const placement=fileViewPlacement(latestLayout.current,ownerSessionId,next.sourcePaneId,wideForSplit());
    if(!live.current||generation!==fileOpenGeneration.current)return;
-   const tab:ContentRef={id:crypto.randomUUID(),kind:next.kind,projectId:next.projectId,worktreePath:next.worktreePath,path:next.path,assetKind:next.assetKind,ownerSessionId,...(next.externalId?{externalId:next.externalId}:{}),...(next.kind==='diff'&&next.staged?{staged:true}:{})};
+   const tab:ContentRef={id:crypto.randomUUID(),kind:next.kind,projectId:next.projectId,worktreePath:next.worktreePath,path:next.path,assetKind:next.assetKind,ownerSessionId,...(next.externalId?{externalId:next.externalId}:{}),...(next.kind==='diff'&&next.staged?{staged:true}:{}),...(next.kind==='diff'&&next.compare?{compare:next.compare}:{})};
    const updated=placement.split?addPane(latestLayout.current,tab):addTabToPane(latestLayout.current,placement.paneId,tab);
    target=workspaceTabs(updated).find(item=>item.tab.id===tab.id);if(!target)return;
    save(updated);
@@ -484,7 +485,7 @@ export function SessionWorkspace({session,data,theme,onBack,onSelect,onProject,o
   openFile:(file,position)=>void openScopedFile({projectId:project.id,worktreePath:path,path:file,kind:previewKind(file),line:position?.line,column:position?.column}).catch(fail),
   openSession:onSelect,
   openBeside:file=>void openScopedFile({projectId:project.id,worktreePath:path,path:file,kind:previewKind(file),ownerSessionId:previewSessionId}).catch(fail),
-  openDiff:(file,staged)=>void openScopedFile({projectId:project.id,worktreePath:path,path:file,kind:'diff',staged}).catch(fail),
+  openDiff:(file,staged,compare)=>void openScopedFile({projectId:project.id,worktreePath:path,path:file,kind:'diff',staged,...(compare?{compare}:{})}).catch(fail),
   openWorktree:worktreePath=>onProject(project.id,worktreePath),
   openHistory:target=>openHistory({projectId:project.id,worktreePath:path,...(typeof target==='string'?{path:target}:target)}),
   openReview:target=>void openWorkbenchTab({id:crypto.randomUUID(),kind:'review',projectId:project.id,worktreePath:path,...target},

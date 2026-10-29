@@ -4207,6 +4207,72 @@
         "projectId"
       ]
     },
+    "RequestParams<\"git.compare.files\">": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "base": {
+          "type": "string"
+        },
+        "committedOnly": {
+          "type": "boolean"
+        },
+        "projectId": {
+          "type": "string"
+        },
+        "worktreePath": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "projectId"
+      ]
+    },
+    "RequestParams<\"git.compare.diff\">": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "base": {
+          "type": "object",
+          "properties": {
+            "ref": {
+              "type": "string"
+            },
+            "oid": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "oid"
+          ],
+          "additionalProperties": false
+        },
+        "mergeBase": {
+          "type": "string"
+        },
+        "path": {
+          "type": "string"
+        },
+        "originalPath": {
+          "type": "string"
+        },
+        "committedOnly": {
+          "type": "boolean"
+        },
+        "projectId": {
+          "type": "string"
+        },
+        "worktreePath": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "base",
+        "mergeBase",
+        "path",
+        "projectId"
+      ]
+    },
     "RequestParams<\"filesystem.create\">": {
       "type": "object",
       "additionalProperties": false,
@@ -5327,6 +5393,9 @@
             },
             "staged": {
               "type": "boolean"
+            },
+            "compare": {
+              "$ref": "#/definitions/GitCompareRef"
             }
           },
           "required": [
@@ -5475,6 +5544,33 @@
           "additionalProperties": false
         }
       ]
+    },
+    "GitCompareRef": {
+      "type": "object",
+      "properties": {
+        "base": {
+          "type": "string"
+        },
+        "oid": {
+          "type": "string"
+        },
+        "mergeBase": {
+          "type": "string"
+        },
+        "originalPath": {
+          "type": "string"
+        },
+        "committedOnly": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "base",
+        "oid",
+        "mergeBase"
+      ],
+      "additionalProperties": false,
+      "description": "What a compare diff tab compares against. `base` is the short ref the user picked (or the OID), `mergeBase` the commit the file list came from, so a moved base is detected instead of silently recomputed."
     },
     "RequestParams<\"workspace.delete\">": {
       "type": "object",
@@ -10005,6 +10101,58 @@
         },
         "params": {
           "$ref": "#/definitions/RequestParams%3C%22git.blame%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "params"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "git.compare.files"
+        },
+        "params": {
+          "$ref": "#/definitions/RequestParams%3C%22git.compare.files%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "params"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "git.compare.diff"
+        },
+        "params": {
+          "$ref": "#/definitions/RequestParams%3C%22git.compare.diff%22%3E"
         }
       },
       "required": [

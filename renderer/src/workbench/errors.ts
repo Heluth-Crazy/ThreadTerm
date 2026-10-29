@@ -114,6 +114,11 @@ const known:Record<string,[string,string]> = {
  undo_already_applied:['该操作已被撤销。','This action has already been undone.'],
  undo_already_undone:['该操作已被撤销。','This action has already been undone.'],
  undo_capture_changed:['该操作的撤销记录已变化，未作任何更改。请刷新后重试。','This action’s undo record changed, so nothing changed. Refresh and try again.'],
+ // Branch scope: the comparison base could not be resolved, has no common history, or moved.
+ compare_base_unavailable:['无法确定比较基准分支。请选择一个基准分支。','No base branch could be determined. Choose a base branch.'],
+ compare_no_merge_base:['当前分支与基准分支没有共同历史，无法比较。请选择其他基准分支。','The current branch and the base have no common history. Choose another base branch.'],
+ compare_unborn:['此仓库还没有提交，无法比较。请先创建第一次提交。','This repository has no commits yet. Create the first commit before comparing.'],
+ compare_stale:['基准分支或工作区已变化，因此未显示此差异。请刷新分支视图后重新打开该文件。','The base or the worktree changed, so this diff was not shown. Refresh the Branch view and open the file again.'],
 };
 
 export function workbenchError(error:unknown, zh:boolean, context?:'discard'):string {
