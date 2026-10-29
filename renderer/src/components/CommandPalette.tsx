@@ -8,6 +8,8 @@ import { AgentIcon, Icon } from "./PrototypeIcon";
 import { useTranslation } from "../i18n";
 import { paletteKeyAction } from "../paletteKeys";
 import { useModalFocus } from "../useModalFocus";
+import type { GitWorkbenchAction } from "../workbench/gitKeyboardCommand";
+import { captureGitPaletteHost } from "../workbench/gitPaletteHost";
 import "./command-palette.css";
 
 type Props = { data: Snapshot; onClose: () => void; onSession: (id: string) => void; onProject: (id: string) => void; onCreate: () => void; onCreateGroup: () => void; onAll: () => void; onInbox: () => void; onSettings: () => void; onUsage?: () => void; workbench?: boolean };
@@ -20,7 +22,10 @@ export function CommandPalette({ data, onClose, onSession, onProject, onCreate, 
   const [order] = useState(() => paletteOrder(data.sessions));
   const externalHost=document.querySelector<HTMLElement>('[data-external-files]');
   const externalDisabledReason=externalHost?externalHost.dataset.externalDisabledReason:copy('Open a Chat workspace first.','请先打开聊天工作区。');
+  const [gitHost]=useState(()=>captureGitPaletteHost(document));
+  const gitDisabledReason=gitHost?.repository?undefined:gitHost?copy('Open a workspace with a Git repository first.','请先打开包含 Git 仓库的工作区。'):copy('Focus a Git workspace or open its Files and changes dialog first.','请先聚焦 Git 工作区，或打开其文件和更改对话框。');
   const workbenchEntry = (view: string, label: string, detail: string, icon: string): Entry => ({ id:`workbench:${view}`, group:copy("Workspace", "工作区"), label, detail, icon, run:() => dispatchEvent(new CustomEvent("threadterm:workbench", { detail:{ view } })) });
+  const gitEntry = (action:GitWorkbenchAction, label:string, detail:string, icon:string):Entry => ({id:`git:${action}`,group:copy('Git','Git'),label,detail:gitDisabledReason??detail,icon,disabledReason:gitDisabledReason,run:()=>{if(!gitDisabledReason&&gitHost?.element.isConnected)dispatchEvent(new CustomEvent('threadterm:workbench',{detail:{view:'scm',key:crypto.randomUUID(),action,hostKey:gitHost.key}}));}});
   const entries = useMemo<Entry[]>(() => [
     ...(workbench ? [
       workbenchEntry("quick-open", copy("Go to file…", "转到文件…"), "Ctrl+P", "file"),
@@ -29,6 +34,12 @@ export function CommandPalette({ data, onClose, onSession, onProject, onCreate, 
       workbenchEntry("scm", copy("Source Control", "源代码管理"), "Ctrl+Shift+G", "branch"),
       workbenchEntry("changes", copy("Agent changes", "Agent 改动"), copy("Review changes since checkpoints", "审查检查点以来的改动"), "spark"),
     ] : []),
+    gitEntry('commit',copy('Git: Commit…','Git：提交…'),copy('Focus the commit message','聚焦提交说明'),'check'),
+    gitEntry('pull',copy('Git: Pull','Git：拉取'),copy('Pull from the tracked branch','从跟踪分支拉取'),'branch'),
+    gitEntry('push',copy('Git: Push','Git：推送'),copy('Push to the tracked branch','推送到跟踪分支'),'export'),
+    gitEntry('fetch',copy('Git: Fetch','Git：获取'),copy('Fetch remote changes','获取远程更改'),'branch'),
+    gitEntry('switch-branch',copy('Git: Switch branch…','Git：切换分支…'),copy('Filter branches','筛选分支'),'branch'),
+    gitEntry('stash',copy('Git: Stash changes…','Git：暂存更改…'),copy('Save changes without committing','保存更改但不提交'),'archive'),
     { id:"new", group:copy("Actions", "动作"), label:copy("New terminal", "新建终端"), detail:copy("Create a session", "创建后直达会话"), icon:"plus", run:onCreate }, { id:"new-group", group:copy("Actions", "动作"), label:copy("New group chat…", "新建群聊…"), detail:copy("Work with several agents", "与多个智能体协作"), icon:"agents", run:onCreateGroup }, { id:"all", group:copy("Actions", "动作"), label:copy("All terminals", "打开所有终端"), detail:copy("Browse sessions", "查找会话与记录"), icon:"terminal", run:onAll }, { id:"usage", group:copy("Actions", "动作"), label:copy("Open usage", "打开用量"), detail:copy("Tokens, cost and activity", "Token、费用与活动"), icon:"layers", run:() => onUsage?.() }, { id:"inbox", group:copy("Actions", "动作"), label:copy("Open inbox", "打开待处理队列"), detail:copy(`${data.inbox.filter(item => isActionableInboxItem(item)).length} unread`, `${data.inbox.filter(item => isActionableInboxItem(item)).length} 项`), icon:"inbox", run:onInbox }, { id:"settings", group:copy("Actions", "动作"), label:copy("Settings", "设置"), detail:copy("Local preferences", "本地偏好"), icon:"gear", run:onSettings },
     ...data.projects.map(project => ({ id:`project:${project.id}`, group:copy("Projects", "项目"), label:project.name, detail:`${displayPath(project.path)} · ${copy("Project overview", "项目总览")}`, icon:"folder", run:() => onProject(project.id) })),
     ...orderedPaletteSessions(data.sessions, order).map(session => ({ id:`session:${session.id}`, group:copy("Sessions", "会话"), label:session.title, detail:paletteSessionDetail(session, data.projects, zh, data.providers), icon:"terminal", provider:session.provider, tone:paletteSessionState(session, zh).tone, run:() => onSession(session.id) })),

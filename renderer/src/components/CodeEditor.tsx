@@ -10,6 +10,7 @@ import {
   EditorSelection,
   EditorState,
   Facet,
+  Prec,
   RangeSet,
   RangeSetBuilder,
   StateEffect,
@@ -119,6 +120,20 @@ export function changeMarkers(base: string, doc: Text): RangeSet<GutterMarker> {
     builder.add(start, start, markers[lines.get(line)!]);
   }
   return builder.finish();
+}
+
+/** F7 follows the same index-to-buffer chunks that power the Git gutter. Conflict navigation has higher precedence. */
+function goToGitChange(view: EditorView, direction: 1|-1) {
+ const base=view.state.facet(gitBase);if(base===null)return false;
+ const chunks=Chunk.build(Text.of(base.replace(/\r\n?/g,'\n').split('\n')),view.state.doc,{scanLimit:5000,timeout:250});if(!chunks.length)return false;
+ const head=view.state.selection.main.head;let index=0;
+ for(let current=chunks.length-1;current>=0;current--) {
+  const chunk=chunks[current];
+  if(chunk.toB<head) {index=current+1;break;}
+  if(chunk.fromB<=head) {if(chunks.length===1)return false;index=current+(direction<0?0:1);break;}
+ }
+ const chunk=chunks[(index+(direction<0?chunks.length-1:0))%chunks.length],from=Math.min(chunk.fromB,view.state.doc.length),to=Math.min(chunk.toB,view.state.doc.length);
+ view.dispatch({selection:EditorSelection.single(from),userEvent:'select.byChunk',effects:EditorView.scrollIntoView(EditorSelection.range(to,from))});return true;
 }
 
 const gitGutterPlugin = ViewPlugin.fromClass(
@@ -432,6 +447,10 @@ export function CodeEditor({
           { key: "Shift-F10", run: (editor) => { const range = editor.state.selection.main; const first = editor.state.doc.lineAt(range.from); let last = editor.state.doc.lineAt(range.to); if (range.to > range.from && range.to === last.from && last.number > first.number) last = editor.state.doc.line(last.number - 1); const selection = { startLine: first.number, endLine: last.number, text: editor.state.sliceDoc(first.from, last.to) }; const point = editor.coordsAtPos(range.head); contextMenu.current?.({ x: point?.left ?? editor.contentDOM.getBoundingClientRect().left, y: point?.bottom ?? editor.contentDOM.getBoundingClientRect().bottom, selection, hasSelection: range.from !== range.to, target: editor.contentDOM, copy: () => navigator.clipboard.writeText(editor.state.sliceDoc(range.from, range.to)), cut: async () => { if (!readOnly && range.from !== range.to) { const text = editor.state.sliceDoc(range.from, range.to); await navigator.clipboard.writeText(text); editor.dispatch({ changes: { from: range.from, to: range.to, insert: '' } }); } }, paste: async () => { if (!readOnly) { const text = await navigator.clipboard.readText(); editor.dispatch({ changes: { from: range.from, to: range.to, insert: text } }); } }, selectAll: () => editor.dispatch({ selection: EditorSelection.create([EditorSelection.range(0, editor.state.doc.length)]) }) }); return Boolean(contextMenu.current); }, preventDefault: true },
           { key: "ContextMenu", run: (editor) => { editor.contentDOM.dispatchEvent(new KeyboardEvent("keydown", { key: "F10", shiftKey: true, bubbles: true, cancelable: true })); return true; }, preventDefault: true },
         ]),
+        Prec.lowest(keymap.of([
+          { key: 'F7', run: editor => goToGitChange(editor,1) },
+          { key: 'Shift-F7', run: editor => goToGitChange(editor,-1) },
+        ])),
         EditorView.updateListener.of((update) => {
           if (update.docChanged) {
             const serialized = serializeEditorText(update.state.doc.toString(), textFormat.current.separator);

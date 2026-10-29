@@ -11,11 +11,12 @@ import { workbenchError } from '../workbench/errors';
 import { FILES_CHANGED_EVENT, scopeParams, type GitState, type WorkbenchActions, type WorkbenchScope } from '../workbench/types';
 import { createRefreshQueue, type RefreshQueue } from '../workbench/refreshQueue';
 import { eventTouchesWorktree } from '../workbench/refreshTriggers';
+import type { GitWorkbenchAction } from '../workbench/gitKeyboardCommand';
 import '../workbench/workbench.css';
 import './panel-headers.css';
 
 export type WorkbenchView = 'files'|'search'|'scm'|'changes';
-export type WorkbenchCommand = { view:WorkbenchView|'toggle'; key:string };
+export type WorkbenchCommand = { view:WorkbenchView|'toggle'; key:string; action?:GitWorkbenchAction; scopeKey?:string };
 // Only the last view and the width are remembered. The panel starts closed whenever the workspace opens: a session
 // opens as just a session, and the panel appears only when a view is chosen (user decision 2026-09-28).
 type Stored = { view:WorkbenchView; width:number };
@@ -87,6 +88,7 @@ export function WorkbenchSideBar({scope, actions, sessions, activeSessionId, act
  const [open, setOpen] = useState(false);
  const [visited, setVisited] = useState<Set<WorkbenchView>>(() => new Set([stored.view]));
  const [focusKey, setFocusKey] = useState<string>();
+ const [handledCommand,setHandledCommand]=useState<string>();
  const [actionsHost, setActionsHost] = useState<HTMLDivElement|null>(null);
  const switcherRef=useRef<HTMLElement>(null),switcherFocus=useRef<WorkbenchView|undefined>(undefined),switcherTarget=useRef<HTMLElement|null>(null),relocatingSwitcher=useRef(false);
  const git = useGitStatus(scope, open, zh, sessions.filter(session => session.projectId === scope.projectId && (session.worktreePath ?? '') === (scope.worktreePath ?? '')).map(session => session.id));
@@ -154,7 +156,7 @@ export function WorkbenchSideBar({scope, actions, sessions, activeSessionId, act
     <div className="wb-panel-body">
      {visited.has('files') && <div className="wb-view" hidden={stored.view !== 'files'}><ExplorerView scope={scope} actions={actions} git={git} zh={zh} activePath={activePath} focusKey={stored.view === 'files' ? focusKey : undefined} toolbarHost={stored.view === 'files' ? actionsHost : undefined}/></div>}
      {visited.has('search') && <div className="wb-view" hidden={stored.view !== 'search'}><SearchView scope={scope} actions={actions} zh={zh} focusKey={stored.view === 'search' ? focusKey : undefined}/></div>}
-     {visited.has('scm') && <div className="wb-view" hidden={stored.view !== 'scm'}><SourceControlView scope={scope} actions={actions} git={git} zh={zh} toolbarHost={stored.view === 'scm' ? actionsHost : undefined}/></div>}
+     {visited.has('scm') && <div className="wb-view" hidden={stored.view !== 'scm'}><SourceControlView scope={scope} actions={actions} git={git} zh={zh} visible={open&&stored.view==='scm'} command={open&&stored.view==='scm'&&command?.view==='scm'&&command.action&&command.key!==handledCommand?{view:'scm',key:command.key,action:command.action,scopeKey:command.scopeKey}:undefined} onCommandHandled={setHandledCommand} toolbarHost={stored.view === 'scm' ? actionsHost : undefined}/></div>}
      {visited.has('changes') && <div className="wb-view" hidden={stored.view !== 'changes'}><AgentChangesView sessions={sessions} activeSessionId={activeSessionId} actions={actions} zh={zh} visible={stored.view === 'changes'} toolbarHost={stored.view === 'changes' ? actionsHost : undefined}/></div>}
     </div>
    </section>

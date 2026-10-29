@@ -15,6 +15,8 @@ import { ContextSendAction, sendContextToAgent } from './ContextSendAction';
 import type { ContextItem } from '../chatContext';
 import { showContextMenu } from './ContextMenu';
 import { historyCommitMenuItems, historyVersionMenuItems } from '../contextMenuSurfaceItems';
+import { isKeyboardEditableTarget } from '../workbench/scmKeyboard';
+import { defaultGitHistoryRovingCommit, resolveGitHistoryTarget } from '../workbench/gitHistorySelection';
 
 const PAGE = 100;
 const SCOPE_KEY = 'threadterm.workbench.historyScope';
@@ -42,6 +44,7 @@ export function GitHistoryView({projectId, worktreePath, path, focusCommit, zh, 
  const [commits, setCommits] = useState<GitCommitInfo[]>([]);
  const [hasMore, setHasMore] = useState(false);
  const [selected, setSelected] = useState<string>();
+ const [explicitTarget, setExplicitTarget] = useState(focusCommit);
  const [detail, setDetail] = useState<GitCommitDetail>();
  const [detailSelection, setDetailSelection] = useState<string>();
  const [file, setFile] = useState<{path:string;originalPath?:string}>();
@@ -55,9 +58,14 @@ export function GitHistoryView({projectId, worktreePath, path, focusCommit, zh, 
  const [allBranches, setAllBranches] = useState(() => { try { return localStorage.getItem(SCOPE_KEY) === 'all'; } catch { return false; } });
  const [remoteBranches, setRemoteBranches] = useState<ReadonlySet<string>>(new Set());
  const [notice, setNotice] = useState<string>();
- const generation = useRef(0), fileGeneration = useRef(0), pageGeneration = useRef(0);
+ const generation = useRef(0), fileGeneration = useRef(0), pageGeneration = useRef(0), explicitTargetRef = useRef(focusCommit), focusCommitPropRef = useRef(focusCommit), focusRow = useRef<string|undefined>(undefined), focusedCommit = useRef<string|undefined>(undefined), listFocused = useRef(false);
+ if(focusCommitPropRef.current!==focusCommit) { focusCommitPropRef.current=focusCommit; explicitTargetRef.current=focusCommit; }
+ const commitRows = useRef(new Map<string,HTMLButtonElement>());
  const all = !path && allBranches;
  const graph = useMemo(() => path ? undefined : commitGraph(commits), [commits, path]);
+ const selectedCommit = explicitTarget ?? selected;
+ const selectedRow = explicitTarget ? resolveGitHistoryTarget(explicitTarget, commits.map(commit=>commit.hash), detail&&detailSelection?{target:detailSelection,hash:detail.commit.hash}:undefined) : selected;
+ const selectCommit = (hash:string) => { explicitTargetRef.current=undefined; setExplicitTarget(undefined); setSelected(hash); };
  const text = (en:string, cn:string) => zh ? cn : en;
  const copy = (value:string) => void navigator.clipboard.writeText(value).catch(error => setIssue(workbenchError(error, zh)));
  const commitMenu = (value:GitCommitInfo, event:{clientX:number;clientY:number;currentTarget:HTMLElement}) => showContextMenu({x:event.clientX, y:event.clientY, restoreFocus:event.currentTarget, items:historyCommitMenuItems({zh,canSend:Boolean(commentsHost?.attachContext)}).map(item => ({...item,testId:item.id,onSelect:item.id === 'history-send-to-agent' ? () => commentsHost?.attachContext && sendContextToAgent({host:commentsHost, context:{kind:'commit', id:crypto.randomUUID(), sha:value.hash, subject:value.subject} satisfies ContextItem, zh}) : item.id === 'history-copy-commit-hash' ? () => copy(value.hash) : undefined}))});
@@ -67,17 +75,35 @@ export function GitHistoryView({projectId, worktreePath, path, focusCommit, zh, 
   if(!element || !event.currentTarget.contains(element)) return;
   const value = commits.find(candidate => candidate.hash === element.dataset.commitHash);
   if(!value) return;
-  event.preventDefault(); setSelected(value.hash); commitMenu(value, {clientX:event.clientX, clientY:event.clientY, currentTarget:element});
+  event.preventDefault(); selectCommit(value.hash); commitMenu(value, {clientX:event.clientX, clientY:event.clientY, currentTarget:element});
  };
  const onCommitKey = (event:KeyboardEvent<HTMLDivElement>) => {
-  if(event.key !== 'ContextMenu' && !(event.key === 'F10' && event.shiftKey)) return;
   const element = (event.target as HTMLElement).closest<HTMLElement>('[data-commit-hash]');
+  if(event.key === 'ContextMenu' || event.key === 'F10' && event.shiftKey) {
+   if(!element || !event.currentTarget.contains(element)) return;
+   const value = commits.find(candidate => candidate.hash === element.dataset.commitHash);
+   if(!value) return;
+   event.preventDefault(); const rect = element.getBoundingClientRect(); selectCommit(value.hash);
+   commitMenu(value, {clientX:rect.left + Math.min(16, rect.width / 2), clientY:rect.top + Math.min(16, rect.height / 2), currentTarget:element});
+   return;
+  }
+  if(event.altKey||event.ctrlKey||event.metaKey||event.shiftKey) return;
+  // A present or future history filter hands ArrowDown to the first result; other editable controls keep their native keys.
+  if(event.key==='ArrowDown'&&event.target instanceof Element&&event.target.closest('input')&&commits[0]) { const first=commits[0];event.preventDefault();focusRow.current=first.hash;if(first.hash===selectedCommit) {focusRow.current=undefined;commitRows.current.get(first.hash)?.focus();} else selectCommit(first.hash);return; }
+  if(isKeyboardEditableTarget(event.target)||!['ArrowUp','ArrowDown','Home','End','Enter'].includes(event.key)) return;
   if(!element || !event.currentTarget.contains(element)) return;
-  const value = commits.find(candidate => candidate.hash === element.dataset.commitHash);
-  if(!value) return;
-  event.preventDefault(); const rect = element.getBoundingClientRect(); setSelected(value.hash);
-  commitMenu(value, {clientX:rect.left + Math.min(16, rect.width / 2), clientY:rect.top + Math.min(16, rect.height / 2), currentTarget:element});
+  const index=commits.findIndex(candidate=>candidate.hash===element.dataset.commitHash);
+  const next=event.key==='Home'?commits[0]:event.key==='End'?commits.at(-1):event.key==='ArrowUp'?commits[Math.max(0,index-1)]:event.key==='ArrowDown'?commits[Math.min(commits.length-1,index+1)]:commits[index];
+  if(!next) return;
+  event.preventDefault();focusRow.current=next.hash;
+  if(next.hash===selectedCommit) { focusRow.current=undefined;commitRows.current.get(next.hash)?.focus(); }
+  else selectCommit(next.hash);
  };
+ useEffect(()=>{
+  const hash=focusRow.current??(listFocused.current?focusedCommit.current:undefined);if(!hash||hash!==selectedRow) return;
+  const row=commitRows.current.get(hash);if(!row) return;
+  focusRow.current=undefined;row.focus();
+ },[selectedRow,commits]);
  const loadPage = async (skip:number) => {
   const ticket = skip ? pageGeneration.current : ++pageGeneration.current;
   setLoading(true);
@@ -92,11 +118,11 @@ export function GitHistoryView({projectId, worktreePath, path, focusCommit, zh, 
    setNotice(all && value.scope !== 'all' ? restart : undefined);
    setCommits(current => skip ? [...current, ...value.commits] : value.commits);
    setHasMore(value.hasMore);
-   if(!skip && value.commits[0]) setSelected(current => current ?? focusCommit ?? value.commits[0].hash);
+   if(!skip && value.commits[0]) setSelected(current => defaultGitHistoryRovingCommit(current, explicitTargetRef.current, value.commits.map(commit => commit.hash)));
   } catch(error) { setIssue(workbenchError(error, zh)); }
   finally { setLoading(false); }
  };
- useEffect(() => { setCommits([]); setSelected(focusCommit); setDetail(undefined); void loadPage(0); }, [projectId, worktreePath, path, all]);
+ useEffect(() => { explicitTargetRef.current=focusCommit; setExplicitTarget(focusCommit); setCommits([]); setSelected(undefined); setDetail(undefined); void loadPage(0); }, [projectId, worktreePath, path, all]);
  useEffect(() => {
   if(path) return;
   let live = true;
@@ -104,37 +130,37 @@ export function GitHistoryView({projectId, worktreePath, path, focusCommit, zh, 
   return () => { live = false; };
  }, [projectId, worktreePath, path]);
  const chooseScope = (next:boolean) => { setAllBranches(next); try { localStorage.setItem(SCOPE_KEY, next ? 'all' : 'head'); } catch { /* keep in memory */ } };
- useEffect(() => { if(focusCommit) setSelected(focusCommit); }, [focusCommit]);
+ useEffect(() => { explicitTargetRef.current=focusCommit; setExplicitTarget(focusCommit); setSelected(current => focusCommit ? undefined : current ?? commits[0]?.hash); }, [focusCommit]);
  useEffect(() => {
-  if(!selected) return;
+  if(!selectedCommit) return;
   const ticket = ++generation.current;
   setDetail(undefined); setDetailSelection(undefined); setPair(undefined); setPairCommit(undefined); setFile(undefined);
-  void request('git.commit.show', {...scope, commit:selected}).then(value => {
+  void request('git.commit.show', {...scope, commit:selectedCommit}).then(value => {
    if(ticket !== generation.current) return;
-   setDetail(value); setDetailSelection(selected);
+   setDetail(value); setDetailSelection(selectedCommit);
    // File history opens the followed file directly; otherwise the first changed file.
    const initial = (path && value.files.find(candidate => candidate.path === path)) || value.files[0];
    if(initial) setFile({path:initial.path, originalPath:initial.originalPath});
   }).catch(error => { if(ticket === generation.current) setIssue(workbenchError(error, zh)); });
- }, [selected, projectId, worktreePath]);
+ }, [selectedCommit, projectId, worktreePath]);
  const info = detail?.commit;
  // The diff loads from the selected row as before; comments wait for the full hash (a blame click may select a short
  // one), so a comment always names the same commit.
- const commit = detailSelection === selected ? info?.hash : undefined;
+ const commit = detailSelection === selectedCommit ? info?.hash : undefined;
  useEffect(() => {
-  if(!selected || !file) return;
+  if(!selectedCommit || !file) return;
   const ticket = ++fileGeneration.current;
   setPair(undefined); setPairCommit(undefined);
-  void request('git.commit.diff', {...scope, commit:selected, path:file.path, ...(file.originalPath ? {originalPath:file.originalPath} : {})})
-   .then(value => { if(ticket === fileGeneration.current) { setPair(value); setPairCommit(selected); } })
+  void request('git.commit.diff', {...scope, commit:selectedCommit, path:file.path, ...(file.originalPath ? {originalPath:file.originalPath} : {})})
+   .then(value => { if(ticket === fileGeneration.current) { setPair(value); setPairCommit(selectedCommit); } })
    .catch(error => { if(ticket === fileGeneration.current) setIssue(workbenchError(error, zh)); });
- }, [selected, file?.path]);
- useEffect(() => { setSelection(undefined); setDraft(undefined); }, [selected, file?.path, commentScope?.projectId, commentScope?.root]);
- const version = pair && !pair.binary && commit && pairCommit === selected ? {kind:'commit' as const, commit} : undefined;
+ }, [selectedCommit, file?.path]);
+ useEffect(() => { setSelection(undefined); setDraft(undefined); }, [selectedCommit, file?.path, commentScope?.projectId, commentScope?.root]);
+ const version = pair && !pair.binary && commit && pairCommit === selectedCommit ? {kind:'commit' as const, commit} : undefined;
  const marks = useMemo(() => !version || !pair ? [] : comments.filter(comment => comment.path === pair.path && sameCommentVersion(comment.version, version))
   .map(({side, startLine, endLine}) => ({side, startLine, endLine})), [comments, pair, version?.commit]);
  return <section className={`wb-history${graph ? ' graph' : ''}`} aria-label={path ? text(`History of ${path}`, `${path} 的历史`) : text('Git history', 'Git 历史')}>
-  <div className="wb-history-list" role="listbox" aria-label={text('Commits', '提交')} onContextMenu={onCommitContext} onKeyDown={onCommitKey}>
+  <div className="wb-history-list" role="listbox" aria-label={text('Commits', '提交')} onFocus={() => { listFocused.current=true; }} onBlur={event => { if(!event.currentTarget.contains(event.relatedTarget)) listFocused.current=false; }} onContextMenu={onCommitContext} onKeyDown={onCommitKey}>
    <header className="wb-history-title"><Icon name="clock"/><strong>{path ? baseName(path) : text('History', '提交历史')}</strong>{path && <span className="wb-dir" title={path}>{parentPath(path)}</span>}
     {!path && <div className="seg wb-history-scope" role="radiogroup" aria-label={text('History scope', '历史范围')}>
      <button type="button" role="radio" aria-checked={!allBranches} className={`seg-btn${allBranches ? '' : ' active'}`} onClick={() => chooseScope(false)}>{text('Current branch', '当前分支')}</button>
@@ -142,8 +168,8 @@ export function GitHistoryView({projectId, worktreePath, path, focusCommit, zh, 
     </div>}</header>
    {notice && <p className="wb-notice" role="status">{notice}</p>}
    {issue && <p className="wb-issue" role="alert">{issue}<button type="button" className="icon-btn" aria-label={text('Dismiss', '关闭提示')} onClick={() => setIssue(undefined)}><Icon name="close"/></button></p>}
-   {commits.map((commit, index) => <button type="button" role="option" aria-selected={commit.hash === selected} key={commit.hash} data-commit-hash={commit.hash}
-    className={`wb-commit-row${commit.hash === selected ? ' selected' : ''}`} onClick={() => setSelected(commit.hash)}>
+   {commits.map((commit, index) => <button type="button" role="option" aria-selected={commit.hash === selectedRow} tabIndex={commit.hash === selectedRow ? 0 : -1} ref={element => { if(element) commitRows.current.set(commit.hash,element); else commitRows.current.delete(commit.hash); }} key={commit.hash} data-commit-hash={commit.hash} onFocus={() => { focusedCommit.current=commit.hash; }}
+    className={`wb-commit-row${commit.hash === selectedRow ? ' selected' : ''}`} onClick={() => selectCommit(commit.hash)}>
     {graph ? <GraphCell row={graph.rows[index]} width={graph.width} head={commit.refs.some(ref => ref === 'HEAD' || ref.startsWith('HEAD -> '))}/>
      : <span className={`wb-lane${commit.parents.length > 1 ? ' merge' : ''}`} aria-hidden="true"/>}
     <span className="wb-commit-text">
@@ -179,7 +205,7 @@ export function GitHistoryView({projectId, worktreePath, path, focusCommit, zh, 
       : pair ? <MergeEditor path={pair.path} oldText={pair.oldText} newText={pair.newText} readOnly onChange={() => {}} onSave={() => {}} onSelection={commentScope ? setSelection : undefined} onContextMenu={({x,y,selection,hasSelection,target,copy}) => fileDiffMenu({clientX:x, clientY:y, currentTarget:target}, selection, hasSelection, copy)} marks={commentScope ? marks : undefined}/>
       : file ? <p className="tt-editor-state">{text('Loading diff…', '正在读取对比…')}</p> : null}
     </div>
-   </> : <p className="tt-editor-state">{selected ? text('Loading commit…', '正在读取提交…') : text('Select a commit.', '选择一个提交。')}</p>}
+  </> : <p className="tt-editor-state">{selectedCommit ? text('Loading commit…', '正在读取提交…') : text('Select a commit.', '选择一个提交。')}</p>}
   </div>
  </section>;
 }

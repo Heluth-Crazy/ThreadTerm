@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type KeyboardEvent, type MouseEvent, type ReactNode } from 'react';
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent, type MouseEvent, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import { WbIcon } from '../workbench/icons';
 import type { GitBranches, GitChange, GitSelectedCommitResult, GitStashApply, GitStashEntry, GitStashFile } from '@threadterm/protocol';
@@ -21,6 +21,8 @@ import { useConflictStageGuard } from './useConflictStageGuard';
 import { clearSelectedChanges, selectedChanges, selectedCommitKey, setGroupSelection, toggleSelectedChange, type SelectedCommitGroup } from '../workbench/selectedCommitSelection';
 import { branchRowState, checkoutLocalPaths, sortBranches, worktreeName } from '../workbench/branchMenu';
 import { stashConflictNotice } from '../workbench/stashNotice';
+import { changeFocusAfterToggle, changeFocusKey, isKeyboardEditableTarget, orderedChangeRows, rovingChangeTarget, type ChangeFocus } from '../workbench/scmKeyboard';
+import type { GitWorkbenchCommand } from '../workbench/gitKeyboardCommand';
 
 type Confirm =
  | {kind:'discard';paths:string[];untracked:number;token:number;fingerprints?:Record<string,string|null>;indexFingerprints?:Record<string,string|null>;snapshotError?:string}
@@ -35,7 +37,7 @@ function GroupSelectionToggle({checked,mixed,label,onChange}:{checked:boolean;mi
  return <input ref={input} type="checkbox" className="wb-change-select" aria-label={label} checked={checked} onChange={onChange}/>;
 }
 
-export function SourceControlView({scope, actions, git, zh, compact = false, toolbarHost}:{scope:WorkbenchScope;actions:WorkbenchActions;git:GitState;zh:boolean;compact?:boolean;toolbarHost?:HTMLElement|null}) {
+export function SourceControlView({scope, actions, git, zh, compact = false, toolbarHost, command, onCommandHandled, visible=true}:{scope:WorkbenchScope;actions:WorkbenchActions;git:GitState;zh:boolean;compact?:boolean;toolbarHost?:HTMLElement|null;command?:GitWorkbenchCommand;onCommandHandled?:(key:string)=>void;visible?:boolean}) {
  const [message, setMessage] = useState('');
  const [diverged, setDiverged] = useState<{ahead:number;behind:number;branch:string;upstream:string}>();
  const prefilledMerge=useRef<string|undefined>(undefined);
@@ -60,7 +62,10 @@ export function SourceControlView({scope, actions, git, zh, compact = false, too
  const [stashesCollapsed, setStashesCollapsed] = useState(true);
  const [selection, setSelection] = useState<Set<string>>(() => new Set());
  const messageRef = useRef<HTMLTextAreaElement>(null);
+ const branchButton=useRef<HTMLButtonElement>(null),consumedCommand=useRef<string|undefined>(undefined);
  const changesRef=useRef<HTMLDivElement>(null);
+ const [focusedRow,setFocusedRow]=useState<ChangeFocus>();
+ const rowButtons=useRef(new Map<string,HTMLButtonElement>()),listOwnsFocus=useRef(false);
  const scopeEpoch=useRef(0);
  const discardEpoch=useRef(0);
  const renderedScope=useRef(`${scope.projectId}\u0000${scope.worktreePath ?? ''}\u0000${scope.rootPath}`);
@@ -87,6 +92,12 @@ export function SourceControlView({scope, actions, git, zh, compact = false, too
   return value;
  }, [status]);
  const conflictStates = useConflictStates(scope, groups.conflicts.map(change=>change.path), status);
+ const keyboardRows=orderedChangeRows(groups,collapsed);
+ const tabRow=keyboardRows.find(row=>focusedRow&&changeFocusKey(row)===changeFocusKey(focusedRow)) ?? keyboardRows[0];
+ useLayoutEffect(()=>{
+  if(listOwnsFocus.current&&tabRow)rowButtons.current.get(changeFocusKey(tabRow))?.focus();
+ },[status,collapsed,focusedRow]);
+ useEffect(()=>{setFocusedRow(undefined);listOwnsFocus.current=false;},[scopeKey]);
  const stageGuard = useConflictStageGuard(scope, zh);
  const selectedIn = (group:SelectedCommitGroup) => selectedChanges(selection, rootKey, group, groups[group]);
  const selectedStaged=selectedIn('staged');
@@ -176,13 +187,35 @@ export function SourceControlView({scope, actions, git, zh, compact = false, too
   changeMenu(change, group, {clientX:event.clientX, clientY:event.clientY, currentTarget:element});
  };
  const onChangeKey = (event:KeyboardEvent<HTMLDivElement>) => {
-  if(event.key !== 'ContextMenu' && !(event.key === 'F10' && event.shiftKey)) return;
+  if(isKeyboardEditableTarget(event.target))return;
   const element = (event.target as HTMLElement).closest<HTMLElement>('[data-change-path][data-change-group]');
   if(!element || !event.currentTarget.contains(element)) return;
   const group = element.dataset.changeGroup as ChangeGroup, change = groups[group]?.find(candidate => candidate.path === element.dataset.changePath);
   if(!change) return;
-  event.preventDefault(); const rect = element.getBoundingClientRect();
-  changeMenu(change, group, {clientX:rect.left + Math.min(16, rect.width / 2), clientY:rect.top + Math.min(16, rect.height / 2), currentTarget:element});
+  if(event.key==='ContextMenu'||(event.key==='F10'&&event.shiftKey)) {
+   event.preventDefault(); const rect=element.getBoundingClientRect();
+   changeMenu(change,group,{clientX:rect.left+Math.min(16,rect.width/2),clientY:rect.top+Math.min(16,rect.height/2),currentTarget:event.target as HTMLElement});return;
+  }
+  if(!(event.target as HTMLElement).matches('.wb-change-open')||event.altKey)return;
+  const current={group,path:change.path};
+  if(event.key===' '&&(event.ctrlKey||event.metaKey)) {
+   if(group!=='conflicts'){event.preventDefault();toggleSelection(group,change.path);}return;
+  }
+  if(event.ctrlKey||event.metaKey)return;
+  const target=rovingChangeTarget(keyboardRows,current,event.key);
+  if(target&&!event.shiftKey){event.preventDefault();setFocusedRow(target);rowButtons.current.get(changeFocusKey(target))?.focus();return;}
+  if(event.key==='Enter'){event.preventDefault();if(event.shiftKey)actions.openFile(change.path);else openChange(change,group);return;}
+  if(event.shiftKey)return;
+  if(event.key==='Delete'&&(group==='changes'||group==='untracked')){event.preventDefault();if(!busy)discard([change]);return;}
+  if(event.key===' ') {
+   event.preventDefault();if(busy||event.repeat)return;
+   const next=changeFocusAfterToggle(keyboardRows,current),epoch=scopeEpoch.current;
+   void (async()=>{
+    const ok=group==='staged'?await unstage([change.path]):await stage([change.path]);
+    if(!ok||epoch!==scopeEpoch.current)return;
+    setFocusedRow(next);
+   })();
+  }
  };
  const commit = async (mode:'commit'|'push'|'amend') => {
   const trimmed = message.trim();
@@ -344,6 +377,20 @@ export function SourceControlView({scope, actions, git, zh, compact = false, too
   }
  };
 
+ useEffect(()=>{
+  if(!command||consumedCommand.current===command.key)return;
+  if(command.scopeKey!==undefined&&command.scopeKey!==scopeKey){consumedCommand.current=command.key;onCommandHandled?.(command.key);return;}
+  if(!visible||!status||git.loading||busy)return;
+  consumedCommand.current=command.key;
+  onCommandHandled?.(command.key);
+  if(command.action==='commit')messageRef.current?.focus();
+  else if(command.action==='switch-branch'){if(branchButton.current)openBranches(branchButton.current);}
+  else if(command.action==='stash')setStashDialog(true);
+  else if(command.action==='fetch')void run('fetch',()=>request('git.fetch',{...params,operationId:operationId()}),text('Fetched.','已获取。'));
+  else if(command.action==='pull'&&status.upstream)void run('pull',()=>request('git.pull',{...params,operationId:operationId()}),text('Pulled.','已拉取。'));
+  else if(command.action==='push'&&status.branch)void push();
+ },[command,scopeKey,status,git.loading,busy,visible]);
+
  const tools = <>
   {actions.openHistory && <button type="button" className="icon-btn" title={text('History', '提交历史')} aria-label={text('History', '提交历史')} onClick={() => actions.openHistory?.()}><Icon name="clock"/></button>}
   <button type="button" className="icon-btn" title={text('Stash changes…', '暂存更改…')} aria-label={text('Stash changes…', '暂存更改…')} disabled={!!busy} onClick={() => setStashDialog(true)}><Icon name="archive"/></button>
@@ -359,18 +406,18 @@ export function SourceControlView({scope, actions, git, zh, compact = false, too
   const selectionGroup=group === 'conflicts' ? undefined : group as SelectedCommitGroup;
   const selected=selectionGroup!==undefined&&selection.has(selectedCommitKey(rootKey,selectionGroup,change.path));
   return <div key={`${group}:${change.path}`} className={`wb-change-row tone-${decoration.tone}`} role="listitem" data-change-path={change.path} data-change-group={group}>
-   {selectionGroup && <input type="checkbox" className="wb-change-select" aria-label={text(`Select ${change.path} in ${group}`, `在${group}中选择 ${change.path}`)} checked={selected} onClick={event=>event.stopPropagation()} onChange={()=>toggleSelection(selectionGroup,change.path)}/>}
-   <button type="button" className="wb-change-open" title={change.originalPath ? `${change.originalPath} → ${change.path}` : change.path}
+   {selectionGroup && <input tabIndex={-1} type="checkbox" className="wb-change-select" aria-keyshortcuts="Control+Space Meta+Space" aria-label={text(`Select ${change.path} in ${group}`, `在${group}中选择 ${change.path}`)} checked={selected} onClick={event=>event.stopPropagation()} onChange={()=>toggleSelection(selectionGroup,change.path)}/>}
+   <button type="button" className="wb-change-open" tabIndex={tabRow&&changeFocusKey(tabRow)===changeFocusKey({group,path:change.path})?0:-1} ref={button=>{const key=changeFocusKey({group,path:change.path});if(button)rowButtons.current.set(key,button);else rowButtons.current.delete(key);}} onFocus={()=>{listOwnsFocus.current=true;setFocusedRow(current=>current?.group===group&&current.path===change.path?current:{group,path:change.path});}} aria-keyshortcuts="Enter Shift+Enter Space Delete Control+Space Meta+Space" title={`${change.originalPath ? `${change.originalPath} → ${change.path}` : change.path} · ${text('Open diff (Enter) · Open file (Shift+Enter)','打开差异（Enter）· 打开文件（Shift+Enter）')}`}
     onClick={() => openChange(change, group)}>
     <Icon name="file"/><span className="wb-name">{baseName(change.path)}</span><span className="wb-dir">{parentPath(change.path)}</span>
    </button>
-   <span className="wb-row-actions">
-    <button type="button" className="icon-btn" title={text('Open file', '打开文件')} aria-label={text('Open file', '打开文件')} onClick={() => actions.openFile(change.path)}><Icon name="file"/></button>
+   <span className="wb-row-actions" ref={element=>{element?.querySelectorAll('button').forEach(button=>{button.tabIndex=-1;});}}>
+    <button tabIndex={-1} type="button" className="icon-btn" aria-keyshortcuts="Shift+Enter" title={text('Open file (Shift+Enter)', '打开文件（Shift+Enter）')} aria-label={text('Open file', '打开文件')} onClick={() => actions.openFile(change.path)}><Icon name="file"/></button>
     {actions.comments?.attachContext && <ContextSendAction host={actions.comments} item={() => changedFileContext(params, change.path, staged, zh)} sourceRoot={scope.rootPath} zh={zh} label={text('Send diff to agent', '将差异发送给 Agent')} iconOnly testId="source-control-send-diff"/>}
-    {(group === 'changes' || group === 'untracked') && <button type="button" className="icon-btn" title={text('Discard changes', '丢弃更改')} aria-label={text('Discard changes', '丢弃更改')} disabled={!!busy} onClick={() => discard([change])}><WbIcon name="undo"/></button>}
+    {(group === 'changes' || group === 'untracked') && <button tabIndex={-1} type="button" className="icon-btn" aria-keyshortcuts="Delete" title={text('Discard changes (Delete)', '丢弃更改（Delete）')} aria-label={text('Discard changes', '丢弃更改')} disabled={!!busy} onClick={() => discard([change])}><WbIcon name="undo"/></button>}
     {staged
-     ? <button type="button" className="icon-btn" title={text('Unstage', '取消暂存')} aria-label={text('Unstage', '取消暂存')} disabled={!!busy} onClick={() => void unstage([change.path])}><WbIcon name="minus"/></button>
-     : <button type="button" className="icon-btn" title={group === 'conflicts' ? conflictStageReason(conflictStates[change.path],zh) ?? text('Mark resolved (stage)', '标记已解决（暂存）') : text('Stage', '暂存')} aria-label={group==='conflicts'?text('Mark resolved (stage)','标记已解决（暂存）'):text('Stage', '暂存')} disabled={!!busy || (group==='conflicts' && !!conflictStageReason(conflictStates[change.path],zh))} onClick={() => void stage([change.path])}><Icon name="plus"/></button>}
+     ? <button tabIndex={-1} type="button" className="icon-btn" aria-keyshortcuts="Space" title={text('Unstage (Space)', '取消暂存（Space）')} aria-label={text('Unstage', '取消暂存')} disabled={!!busy} onClick={() => void unstage([change.path])}><WbIcon name="minus"/></button>
+     : <button tabIndex={-1} type="button" className="icon-btn" aria-keyshortcuts="Space" title={group === 'conflicts' ? conflictStageReason(conflictStates[change.path],zh) ?? text('Mark resolved (stage) (Space)', '标记已解决（暂存）（Space）') : text('Stage (Space)', '暂存（Space）')} aria-label={group==='conflicts'?text('Mark resolved (stage)','标记已解决（暂存）'):text('Stage', '暂存')} disabled={!!busy || (group==='conflicts' && !!conflictStageReason(conflictStates[change.path],zh))} onClick={() => void stage([change.path])}><Icon name="plus"/></button>}
    </span>
    <span className="wb-deco" aria-label={decoration.tone}>{decoration.letter}</span>
   </div>;
@@ -414,7 +461,7 @@ export function SourceControlView({scope, actions, git, zh, compact = false, too
    </div>}
   </div>}
   <div className="wb-scm-bar">
-   <button type="button" className="wb-branch-chip" title={status.upstream ? text(`Switch branch · tracking ${status.upstream}`, `切换分支 · 跟踪 ${status.upstream}`) : text('Switch branch · no upstream yet', '切换分支 · 尚无上游')} onClick={event => openBranches(event.currentTarget)}>
+   <button ref={branchButton} type="button" className="wb-branch-chip" title={status.upstream ? text(`Switch branch · tracking ${status.upstream}`, `切换分支 · 跟踪 ${status.upstream}`) : text('Switch branch · no upstream yet', '切换分支 · 尚无上游')} onClick={event => openBranches(event.currentTarget)}>
     <Icon name="branch"/><span className="wb-name">{status.branch ?? text('Detached HEAD', '分离的 HEAD')}</span><Icon name="chevron" className="wb-chip-caret"/>
    </button>
    <span className="wb-sync-actions">
@@ -440,7 +487,7 @@ export function SourceControlView({scope, actions, git, zh, compact = false, too
   {issue && <p className="wb-issue" role="alert">{issue}<button type="button" className="icon-btn" aria-label={text('Dismiss', '关闭提示')} onClick={() => setIssue(undefined)}><Icon name="close"/></button></p>}
   {notice && !issue && <p className="wb-notice" aria-live="polite">{notice}</p>}
   {committedWarning && <p className="wb-notice wb-commit-warning" role="status">{committedWarning}</p>}
-  <div ref={changesRef} tabIndex={-1} className="wb-changes" onContextMenu={onChangeContext} onKeyDown={onChangeKey}>
+  <div ref={changesRef} tabIndex={-1} className="wb-changes" onBlur={event=>{listOwnsFocus.current=event.relatedTarget instanceof Element&&event.relatedTarget.matches('.wb-change-open')&&event.currentTarget.contains(event.relatedTarget);}} onContextMenu={onChangeContext} onKeyDown={onChangeKey}>
    {section('conflicts', text('Merge conflicts', '合并冲突'), null)}
    {section('staged', text('Staged changes', '已暂存的更改'), <>
     <button type="button" className="icon-btn" title={text('Unstage selected files (whole file)', '取消暂存所选文件（整个文件）')} aria-label={text('Unstage selected files (whole file)', '取消暂存所选文件（整个文件）')} disabled={!!busy || !selectedStaged.length} onClick={() => void unstageSelected()}><WbIcon name="minus"/></button>

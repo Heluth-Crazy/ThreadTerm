@@ -14,6 +14,7 @@ import { focusedWorkspaceTab, isFileTab, isWebTabUrl, removeWorkspaceTabs, works
 import { canSplitPaneArea, fileViewPlacement, visibleSessionLayout } from '../sessionFileViews';
 import { PaneWorkspace, type PaneWorkbench } from './PaneWorkspace';
 import { WorkbenchSideBar, type WorkbenchCommand, type WorkbenchView } from './WorkbenchSideBar';
+import type { GitWorkbenchAction } from '../workbench/gitKeyboardCommand';
 import { QuickOpen, invalidateQuickOpen } from './QuickOpen';
 import { SessionDocuments } from './SessionDocuments';
 import { useSessionDocuments } from '../useSessionDocuments';
@@ -118,6 +119,7 @@ export function SessionWorkspace({session,data,theme,onBack,onSelect,onProject,o
  useEffect(()=>{live.current=true;return()=>{live.current=false;fileOpenGeneration.current++;};},[]);
  const [trees,setTrees]=useState<Worktree[]>([]),[git,setGit]=useState<GitStatus>();
  const [workbenchCommand,setWorkbenchCommand]=useState<WorkbenchCommand>(),[quickOpen,setQuickOpen]=useState(false),[historyFocus,setHistoryFocus]=useState<{tabId:string;commit:string;key:string}>();
+ const gitWorkbenchHost=useRef(crypto.randomUUID());
  const [inspector,setInspector]=useState(false);
  const [pinPicker,setPinPicker]=useState(false);
  const [picker,setPicker]=useState<{mode:'switch'|'add'|'fill';paneId?:string}>(),[query,setQuery]=useState(''),[allProjects,setAllProjects]=useState(false);
@@ -336,6 +338,7 @@ export function SessionWorkspace({session,data,theme,onBack,onSelect,onProject,o
  const previewKind=(file:string,assetKind?:'text'|'image')=>assetKind==='image'||/\.(md|png|jpe?g|gif|webp)$/i.test(file)?'preview' as const:'file' as const;
  // Workbench (side bar, history, review, send-to-agent). Files opened here are ownerless top-level tabs.
  const workbenchScope:WorkbenchScope|undefined=project&&path?{projectId:project.id,worktreePath:path,rootPath:path}:undefined;
+ const workbenchScopeRef=useRef(workbenchScope);workbenchScopeRef.current=workbenchScope;
  const documentsSession=data.sessions.find(candidate=>candidate.id===previewSessionId)??session;
  const documentsRoot=documentsSession.worktreePath??data.projects.find(candidate=>candidate.id===documentsSession.projectId)?.path;
  const documents=useSessionDocuments(documentsSession.id,zh);
@@ -565,14 +568,14 @@ export function SessionWorkspace({session,data,theme,onBack,onSelect,onProject,o
    if(!event.shiftKey&&letter==='o'){event.preventDefault();void chooseOutsideRef.current();return;}
    if(view){event.preventDefault();setWorkbenchCommand({view,key:crypto.randomUUID()});}
   };
-  const palette=(event:Event)=>{const view=(event as CustomEvent<{view:WorkbenchView|'quick-open'|'external-files'}>).detail?.view;if(view==='external-files')void chooseOutsideRef.current();else if(view==='quick-open')setQuickOpen(true);else if(view)setWorkbenchCommand({view,key:crypto.randomUUID()});};
+  const palette=(event:Event)=>{const detail=(event as CustomEvent<{view:WorkbenchView|'quick-open'|'external-files';key?:string;action?:GitWorkbenchAction;hostKey?:string}>).detail,scope=workbenchScopeRef.current;if(detail?.view==='external-files')void chooseOutsideRef.current();else if(detail?.view==='quick-open')setQuickOpen(true);else if(detail?.view==='scm'&&detail.action&&scope&&detail.hostKey===gitWorkbenchHost.current)setWorkbenchCommand({view:'scm',key:detail.key??crypto.randomUUID(),action:detail.action,scopeKey:`${scope.projectId}\0${scope.worktreePath??''}\0${scope.rootPath}`});else if(detail?.view==='scm'&&!detail.action)setWorkbenchCommand({view:'scm',key:detail.key??crypto.randomUUID()});else if(detail?.view&&detail.view!=='scm')setWorkbenchCommand({view:detail.view,key:detail.key??crypto.randomUUID()});};
   addEventListener('keydown',key);addEventListener('threadterm:workbench',palette);
   return()=>{removeEventListener('keydown',key);removeEventListener('threadterm:workbench',palette);};
  },[]);
  // Back goes to this session's branch home page (App.sessionHome); name it, since the label is just "Back".
  const home=project?(currentTree?.branch??git?.branch??project.name):undefined;
  const backTitle=home?(zh?`返回 ${home}`:`Back to ${home}`):(zh?'返回所有终端':'Back to all terminals');
- return <section className={`ws session-screen runtime-workspace${fullscreen?' terminal-fullscreen':''}`} data-external-files data-external-disabled-reason={externalDisabledReason} data-navigation-open={navigationOpen||undefined} aria-label={zh?'终端工作区':'Terminal workspace'}>
+ return <section className={`ws session-screen runtime-workspace${fullscreen?' terminal-fullscreen':''}`} data-external-files data-external-disabled-reason={externalDisabledReason} data-git-workbench data-git-workbench-host={gitWorkbenchHost.current} data-git-repository={git?'true':undefined} data-navigation-open={navigationOpen||undefined} aria-label={zh?'终端工作区':'Terminal workspace'}>
   {navigationOpen&&<button type="button" className="runtime-nav-scrim" aria-label={zh?'关闭导航':'Close navigation'} onClick={()=>closeNavigation()}/>}
   <header className="ws-top">
    <button className="ws-back" onClick={onBack} title={backTitle} aria-label={backTitle}><Icon name="back"/><span>{zh?'返回':'Back'}</span></button>

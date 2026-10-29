@@ -43,6 +43,7 @@ import { DiffFileNavigation } from './DiffFileNavigation';
 import { externalFileError, externalFileErrorCode, externalSelectionText } from '../externalFiles';
 import { displayPath } from '../displayPath';
 import { EditorView } from '@codemirror/view';
+import type { GitWorkbenchAction, GitWorkbenchCommand } from '../workbench/gitKeyboardCommand';
 
 type View = "file" | "diff" | "preview";
 type Props = {
@@ -141,6 +142,8 @@ function FileWorkspaceInstance({
   const [toolsOpen, setToolsOpen] = useState(!embedded && !initialPath);
   const [filesToolsHost, setFilesToolsHost] = useState<HTMLDivElement | null>(null);
   const [scmToolsHost, setScmToolsHost] = useState<HTMLDivElement | null>(null);
+  const [gitCommand, setGitCommand] = useState<GitWorkbenchCommand>();
+  const gitWorkbenchHost=useRef(crypto.randomUUID());
   const [openPaths, setOpenPaths] = useState<string[]>([]);
   const [document, setDocument] = useState<FileDocument>();
   const [image, setImage] = useState<{ mime: string; data: string }>();
@@ -742,6 +745,17 @@ function FileWorkspaceInstance({
     worktreePath,
     rootPath: rootPath ?? worktreePath ?? "",
   };
+  const workbenchScopeKey=`${workbenchScope.projectId}\0${workbenchScope.worktreePath??''}\0${workbenchScope.rootPath}`;
+  useEffect(() => {
+    const palette=(event:Event)=>{
+      if(external||embedded)return;
+      const detail=(event as CustomEvent<{view?:string;key?:string;action?:GitWorkbenchAction;hostKey?:string}>).detail;
+      if(detail?.view!=='scm'||!detail.action||detail.hostKey!==gitWorkbenchHost.current)return;
+      setToolsOpen(true);setGitCommand({view:'scm',key:detail.key??crypto.randomUUID(),action:detail.action,scopeKey:workbenchScopeKey});
+    };
+    addEventListener('threadterm:workbench',palette);
+    return()=>removeEventListener('threadterm:workbench',palette);
+  },[embedded,external,workbenchScopeKey]);
   const standaloneActions: WorkbenchActions = {
     openFile: (path) => choose(path, "file"),
     openDiff: (path, nextStaged) => {
@@ -892,7 +906,7 @@ function FileWorkspaceInstance({
   const externalBoundary = document && external ? <ExternalFileBoundary path={document.path} zh={zh} noticeOpen={externalNoticeOpen} onNoticeToggle={() => setExternalNoticeOpen((open) => !open)} onCopy={() => void navigator.clipboard.writeText(document.path)} onReload={() => void open(document.path, view, true)} /> : null;
 
   return (
-    <section className={`file-workspace ${toolsOpen ? "tools-open" : ""} ${embedded ? "embedded" : ""}${external ? " external-file-workspace" : ""}`}>
+    <section className={`file-workspace ${toolsOpen ? "tools-open" : ""} ${embedded ? "embedded" : ""}${external ? " external-file-workspace" : ""}`} data-git-workbench={!embedded&&!external||undefined} data-git-workbench-host={!embedded&&!external?gitWorkbenchHost.current:undefined} data-git-repository={!embedded&&!external&&gitState.status?'true':undefined}>
       {toolsOpen && !external && (
         <aside className="file-list tt-file-tree wb-embedded-tools">
           {/* Same header shape as the session side bar; each view portals its actions into it. */}
@@ -920,6 +934,9 @@ function FileWorkspaceInstance({
                 actions={standaloneActions}
                 git={gitState}
                 zh={zh}
+                command={gitCommand}
+                visible={toolsOpen && active!==false}
+                onCommandHandled={key=>setGitCommand(current=>current?.key===key?undefined:current)}
                 compact
                 toolbarHost={scmToolsHost}
               />
