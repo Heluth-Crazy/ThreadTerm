@@ -29,7 +29,8 @@ import { ExplorerView } from "./ExplorerView";
 import { SourceControlView } from "./SourceControlView";
 import { useGitStatus } from "./WorkbenchSideBar";
 import { WbIcon } from "../workbench/icons";
-import { stageChunk, unstageChunk, withLineBreaks } from "../workbench/indexEdit";
+import type { ChunkRange } from "../workbench/indexEdit";
+import { indexChunkContent } from "../workbench/gutterHunk";
 import { workbenchError } from "../workbench/errors";
 import { coveredBy, type WorkbenchActions } from "../workbench/types";
 import { isDocumentPinned, sessionDocumentError } from "../sessionDocuments";
@@ -163,6 +164,10 @@ function FileWorkspaceInstance({
   const [hunk, setHunk] = useState(0);
   const [hunkCount, setHunkCount] = useState(0);
   const [gitBaseText, setGitBaseText] = useState<string | null>(null);
+  const gutterBase=useRef<{path:string;diff:GitDiff}|undefined>(undefined);
+  const [gutterRevision,setGutterRevision]=useState(0);
+  const gutterStagePending=useRef(false);
+  const [diffReveal,setDiffReveal]=useState<{path:string;line:number}>();
   const [blameOn, setBlameOn] = useState(false);
   const [blame, setBlame] = useState<GitBlame>();
   const [diff, setDiff] = useState<GitDiff>();
@@ -777,19 +782,24 @@ function FileWorkspaceInstance({
   };
   // Index text for the editor's change gutter (null when untracked or not a repository).
   useEffect(() => {
+    if(gutterBase.current?.path!==document?.path||external||image||view!=='file') {gutterBase.current=undefined;setGitBaseText(null);}
     if (external || !document || image || view !== "file") return;
     let alive = true;
     void request("git.diff", { ...scope, path: document.path, staged: false })
       .then((value) => {
-        if (alive) setGitBaseText(value.binary || value.indexFingerprint == null ? null : value.oldText);
+        if (alive) {
+          const previous=gutterBase.current;
+          if(previous?.path!==document.path||previous.diff.indexFingerprint!==value.indexFingerprint||previous.diff.oldText!==value.oldText||previous.diff.binary!==value.binary)gutterBase.current={path:document.path,diff:value};
+          setGitBaseText(value.binary || value.indexFingerprint == null ? null : value.oldText);
+        }
       })
       .catch(() => {
-        if (alive) setGitBaseText(null);
+        if (alive) {gutterBase.current=undefined;setGitBaseText(null);}
       });
     return () => {
       alive = false;
     };
-  }, [external, document?.path, document?.fingerprint, view, projectId, worktreePath, gitState.status]);
+  }, [external, document?.path, document?.fingerprint, view, projectId, worktreePath, gitState.status,gutterRevision]);
   useEffect(() => {
     if (external || !blameOn || !document || dirty) {
       setBlame(undefined);
@@ -825,9 +835,7 @@ function FileWorkspaceInstance({
     const atCursor = editor.cursorChunk();
     const chunk = snapshot.chunks[atCursor >= 0 ? atCursor : hunk];
     if (!chunk) return;
-    const content = staged
-      ? unstageChunk(snapshot.a, snapshot.b, chunk)
-      : stageChunk(snapshot.a, snapshot.b, chunk);
+    const content = indexChunkContent(snapshot.a,snapshot.b,chunk,staged,staged?diff.newText:diff.oldText);
     setBusy(true);
     setIssue(undefined);
     try {
@@ -839,7 +847,7 @@ function FileWorkspaceInstance({
       await request("git.index.write", {
         ...scope,
         path: document.path,
-        content: withLineBreaks(content, staged ? diff.newText : diff.oldText),
+        content,
         expectedIndexFingerprint: diff.indexFingerprint ?? null,
         operationId: operationId(),
       });
@@ -851,6 +859,33 @@ function FileWorkspaceInstance({
       setBusy(false);
     }
   }
+  async function stageGutterHunk(baseText:string,buffer:string,chunk:ChunkRange) {
+    const origin=gutterBase.current,source=loaded.current,ticket=generation.current;
+    const fresh=()=>mounted.current&&ticket===generation.current&&loaded.current===source&&gutterBase.current===origin;
+    if(!origin||!source||origin.path!==source.path||origin.diff.oldText!==baseText||origin.diff.indexFingerprint==null||dirty||conflictedFile||gutterStagePending.current||currentText.current!==source.content)return;
+    gutterStagePending.current=true;setBusy(true);setIssue(undefined);
+    try {
+      const checked=await stageGuard.check([source.path],[]);
+      if(!checked||!fresh()||currentText.current!==source.content)return;
+      if(Object.hasOwn(checked,source.path)&&checked[source.path]!==source.fingerprint)throw Error('file_conflict');
+      await request('git.index.write',{...scope,path:source.path,content:indexChunkContent(baseText,buffer,chunk,false,baseText),expectedIndexFingerprint:origin.diff.indexFingerprint,operationId:operationId()});
+      if(!fresh())return;
+      gutterBase.current=undefined;setGitBaseText(null);setGutterRevision(value=>value+1);
+      await refreshGit();
+    } catch(error) {
+      if(fresh()) {setIssue(workbenchError(error,zh));gutterBase.current=undefined;setGitBaseText(null);setGutterRevision(value=>value+1);}
+    } finally {
+      gutterStagePending.current=false;
+      if(mounted.current)setBusy(false);
+    }
+  }
+  useEffect(()=>{
+    if(view!=='diff'||!diff||!diffReveal||diffReveal.path!==document?.path)return;
+    const editor=mergeEditor.current,snapshot=editor?.snapshot();if(!editor||!snapshot)return;
+    const position=snapshot.b.split('\n').slice(0,diffReveal.line-1).reduce((offset,line)=>offset+line.length+1,0);
+    const index=snapshot.chunks.findIndex(chunk=>chunk.fromB<=position&&position<chunk.toB||chunk.fromB>=position);
+    if(index>=0) {setHunk(index);editor.focusChunk(index);}setDiffReveal(undefined);
+  },[view,diff,diffReveal,document?.path,hunkCount]);
   const editorReveal =
     document && document.path === initialPath && reveal
       ? { ...reveal, path: document.path }
@@ -1286,7 +1321,8 @@ function FileWorkspaceInstance({
                     readOnly={external || document.readonly || fileNavigation || Boolean(navigationDisabled)}
                     reveal={editorReveal}
                     resetKey={editorResetKey}
-                    gitBaseText={gitBaseText}
+                    gitBaseText={external?null:gitBaseText}
+                    gitHunkActions={external?undefined:{conflicted:conflictedFile,disabled:dirty?(zh?'请先保存文件以暂存此更改':'Save the file to stage this change'):conflictedFile?(zh?'无法暂存冲突文件的单个更改':'Cannot stage a change in a conflicted file'):busy?(zh?'正在处理…':'Working…'):undefined,stage:(base,buffer,chunk)=>void stageGutterHunk(base,buffer,chunk),openDiff:line=>{setStaged(false);setDiffReveal({path:document.path,line});setView('diff');}}}
                     blame={blameOn && !dirty ? blame : undefined}
                     onBlameCommit={onOpenHistory ? (commit) => onOpenHistory({ path: document.path, commit }) : undefined}
                     onSendToAgent={onSendToAgent ? (lines) => onSendToAgent({ path: document.path, ...lines, ...(external ? { selection: selectedExternalText() } : {}) }) : undefined}

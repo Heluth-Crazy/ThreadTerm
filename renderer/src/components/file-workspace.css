@@ -28,3 +28,11 @@
 /* This sheet is portalled outside .file-workspace; outrank the late prototype's compact footer rule. */
 .runtime-overlay .dialog.file-unsaved-dialog > .dlg-foot{align-items:center;gap:8px;flex-wrap:wrap}
 .runtime-overlay .dialog.file-unsaved-dialog > .dlg-foot > .btn{flex:0 0 auto;height:32px;min-height:32px;padding:0 12px;border-radius:var(--radius);font-size:13px}
+.cm-git-hunk-popup { position: fixed; z-index: 50; width: min(600px, calc(100vw - 24px)); max-height: min(380px, calc(100vh - 24px)); display: flex; flex-direction: column; padding: 8px; gap: 8px; background: var(--raised); color: var(--text); border: 1px solid var(--border); border-radius: 6px; box-shadow: var(--shadow-soft); }
+.cm-git-hunk-header, .cm-git-hunk-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.cm-git-hunk-header strong { margin-right: auto; }
+.cm-git-hunk-lines { overflow: auto; min-height: 0; font: 12px/1.5 "Cascadia Code", Consolas, monospace; user-select: text; }
+.cm-git-hunk-lines pre { margin: 0; padding: 0 6px; font: inherit; white-space: pre; }
+.cm-git-hunk-removed { background: color-mix(in srgb, var(--wb-deleted) 14%, transparent); }
+.cm-git-hunk-added { background: color-mix(in srgb, var(--wb-added) 14%, transparent); }
+.cm-git-hunk-popup button:focus-visible { outline: 2px solid var(--primary); outline-offset: 1px; }
