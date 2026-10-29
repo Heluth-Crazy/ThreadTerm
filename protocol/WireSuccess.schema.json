@@ -6710,6 +6710,162 @@
       ],
       "additionalProperties": false
     },
+    "RequestResult<\"git.history.plan\">": {
+      "$ref": "#/definitions/GitHistoryPlan"
+    },
+    "GitHistoryPlan": {
+      "type": "object",
+      "properties": {
+        "hash": {
+          "type": "string"
+        },
+        "head": {
+          "type": "string"
+        },
+        "branch": {
+          "type": "string"
+        },
+        "detached": {
+          "type": "boolean"
+        },
+        "isAncestor": {
+          "type": "boolean"
+        },
+        "parents": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "hash": {
+                "type": "string"
+              },
+              "subject": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "hash",
+              "subject"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "reset": {
+          "type": "object",
+          "properties": {
+            "count": {
+              "type": "number"
+            },
+            "commits": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "hash": {
+                    "type": "string"
+                  },
+                  "subject": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "hash",
+                  "subject"
+                ],
+                "additionalProperties": false
+              }
+            },
+            "pushed": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "count",
+            "commits",
+            "pushed"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "required": [
+        "hash",
+        "head",
+        "branch",
+        "detached",
+        "isAncestor",
+        "parents",
+        "reset"
+      ],
+      "additionalProperties": false,
+      "description": "A read-only snapshot used to enable commit actions and fence reset confirmation."
+    },
+    "RequestResult<\"git.cherryPick\">": {
+      "$ref": "#/definitions/GitHistoryMutationResult"
+    },
+    "GitHistoryMutationResult": {
+      "type": "object",
+      "properties": {
+        "output": {
+          "type": "string"
+        },
+        "conflicted": {
+          "type": "boolean"
+        },
+        "head": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "output",
+        "conflicted"
+      ],
+      "additionalProperties": false
+    },
+    "RequestResult<\"git.revert\">": {
+      "$ref": "#/definitions/GitHistoryMutationResult"
+    },
+    "RequestResult<\"git.reset\">": {
+      "type": "object",
+      "properties": {
+        "output": {
+          "type": "string"
+        },
+        "previousHead": {
+          "type": "string"
+        },
+        "head": {
+          "type": "string"
+        },
+        "symbolicHead": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "output",
+        "previousHead",
+        "head",
+        "symbolicHead"
+      ],
+      "additionalProperties": false
+    },
+    "RequestResult<\"git.operation.abort\">": {
+      "type": "object",
+      "properties": {
+        "output": {
+          "type": "string"
+        },
+        "head": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "output"
+      ],
+      "additionalProperties": false
+    },
+    "RequestResult<\"git.operation.continue\">": {
+      "$ref": "#/definitions/GitHistoryMutationResult"
+    },
     "RequestResult<\"git.diff\">": {
       "$ref": "#/definitions/GitDiff"
     },
@@ -12560,6 +12716,162 @@
         },
         "result": {
           "$ref": "#/definitions/RequestResult%3C%22git.merge.abort%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "result"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "git.history.plan"
+        },
+        "result": {
+          "$ref": "#/definitions/RequestResult%3C%22git.history.plan%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "result"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "git.cherryPick"
+        },
+        "result": {
+          "$ref": "#/definitions/RequestResult%3C%22git.cherryPick%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "result"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "git.revert"
+        },
+        "result": {
+          "$ref": "#/definitions/RequestResult%3C%22git.revert%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "result"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "git.reset"
+        },
+        "result": {
+          "$ref": "#/definitions/RequestResult%3C%22git.reset%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "result"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "git.operation.abort"
+        },
+        "result": {
+          "$ref": "#/definitions/RequestResult%3C%22git.operation.abort%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "result"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "git.operation.continue"
+        },
+        "result": {
+          "$ref": "#/definitions/RequestResult%3C%22git.operation.continue%22%3E"
         }
       },
       "required": [

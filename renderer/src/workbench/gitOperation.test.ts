@@ -25,13 +25,16 @@ test('merge banner counts all porcelain conflict kinds and requires staged resol
  assert.equal(gitOperationState({...status,operation},true)?.canConclude,false);
  assert.equal(gitOperationState({...status,operation,changes:[{path:'resolved',indexStatus:'M',worktreeStatus:' ',untracked:false}]},true)?.canConclude,true);
 });
-test('other operations are informational in both languages; absent operation has no banner',()=>{
+test('cherry-pick and revert banners name their action and only continue after conflicts clear',()=>{
  assert.equal(gitOperationState(status,false),undefined);
  for(const kind of ['rebase','cherry-pick','revert'] as const) for(const zh of [true,false]) {
   const banner=gitOperationState({...status,operation:{kind}},zh)!;
   assert.equal(banner.canConclude,false);
-  assert.match(banner.label,zh?/终端/:/terminal/);
+  if(kind==='rebase') assert.match(banner.label,zh?/终端/:/terminal/);
+  else { assert.equal(banner.canContinue,true); assert.match(banner.label,kind==='cherry-pick'?/Cherry-picking|正在拣选/:/Reverting|正在还原/); }
  }
+ const conflicts=[{path:'conflict',indexStatus:'U',worktreeStatus:'U',untracked:false}];
+ assert.equal(gitOperationState({...status,operation:{kind:'cherry-pick',head:'a'.repeat(40),message:'subject'},changes:conflicts},false)?.canContinue,false);
 });
 test('divergence counts come only from the structured runtime error',()=>{
  assert.deepEqual(pullDivergence(new Error('pull_diverged: 12 3')),{ahead:12,behind:3});

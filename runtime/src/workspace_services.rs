@@ -1955,7 +1955,14 @@ fn git_operation(reader: &crate::git_selected_commit::GitStatusReader, root: &Pa
         if present(index) {
             let mut operation = serde_json::Map::new();
             operation.insert("kind".into(), json!(kind));
-            if let Some(head) = head(index) { operation.insert("head".into(), json!(head)); }
+            if let Some(head) = head(index) {
+                if matches!(head.len(), 40 | 64) && head.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+                    if let Ok(subject) = reader.read(&["log", "-1", "--format=%s", &head, "--"]) {
+                        operation.insert("message".into(), json!(subject.trim_end_matches(['\r', '\n'])));
+                    }
+                }
+                operation.insert("head".into(), json!(head));
+            }
             return Ok(Some(Value::Object(operation)));
         }
     }

@@ -316,6 +316,15 @@ export function SourceControlView({scope, actions, git, zh, compact = false, too
    await git.refresh();
   });
  };
+ const runOperation = async (kind:'cherry-pick'|'revert', action:'abort'|'continue') => {
+  const epoch=scopeEpoch.current;
+  setBusy(`${kind}-${action}`);setIssue(undefined);setNotice(undefined);
+  try {
+   const result=await request(action==='abort'?'git.operation.abort':'git.operation.continue',{...params,kind,operationId:operationId()});
+   if(epoch===scopeEpoch.current) setNotice(action==='abort'?text(`${kind==='cherry-pick'?'Cherry-pick':'Revert'} aborted.`,kind==='cherry-pick'?'已中止拣选。':'已中止还原。'):text(`${kind==='cherry-pick'?'Cherry-pick':'Revert'} completed.`,kind==='cherry-pick'?'拣选已完成。':'还原已完成。'));
+  } catch(error) { if(epoch===scopeEpoch.current) setIssue(workbenchError(error,zh)); }
+  finally { if(epoch===scopeEpoch.current)setBusy(undefined); }
+ };
  const loadBranches = async () => { const epoch=scopeEpoch.current; try { const next=await request('git.branches', params); if(epoch===scopeEpoch.current)setBranches(next); } catch(error) { if(epoch===scopeEpoch.current)setIssue(workbenchError(error, zh)); } };
  const loadStashes = async () => { const epoch=scopeEpoch.current; try { const result=await request('git.stash.list', params); if(epoch===scopeEpoch.current)setStashes(result.entries); } catch(error) { if(epoch===scopeEpoch.current)setIssue(workbenchError(error, zh)); } };
  useEffect(() => { void loadStashes(); }, [scopeKey,status]);
@@ -518,6 +527,10 @@ export function SourceControlView({scope, actions, git, zh, compact = false, too
    {status.operation?.kind==='merge' && <div className="wb-operation-actions">
     <button type="button" className="btn" disabled={!!busy} onClick={()=>setConfirm({kind:'abort-merge'})}>{text('Abort merge','中止合并')}</button>
     <button type="button" className="btn btn-primary" disabled={!!busy || !operation.canConclude} onClick={()=>void commit('commit')}>{text('Conclude merge','完成合并')}</button>
+   </div>}
+   {(status.operation?.kind==='cherry-pick'||status.operation?.kind==='revert') && <div className="wb-operation-actions">
+    <button type="button" className="btn" disabled={!!busy} onClick={()=>void runOperation(status.operation!.kind as 'cherry-pick'|'revert','abort')}>{text('Abort','中止')}</button>
+    <button type="button" className="btn btn-primary" disabled={!!busy || !operation.canContinue} title={!operation.canContinue?text('Resolve conflicts first','请先解决冲突'):undefined} onClick={()=>void runOperation(status.operation!.kind as 'cherry-pick'|'revert','continue')}>{text('Continue','继续')}</button>
    </div>}
   </div>}
   <div className="wb-scm-bar">

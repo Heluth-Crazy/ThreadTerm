@@ -646,7 +646,8 @@ fn has_head(root: &Path) -> bool {
 pub fn dispatch(db: &Database, method: &str, params: &Value) -> Result<Option<Value>> {
     if !matches!(
         method,
-        "git.branches"
+        "git.history.plan"
+            | "git.branches"
             | "git.log"
             | "git.push.preview"
             | "git.commit.show"
@@ -665,6 +666,7 @@ pub fn dispatch(db: &Database, method: &str, params: &Value) -> Result<Option<Va
     let root = db.transaction(|tx| root_for(tx, project_id, worktree))?;
     repo_prefix(&root)?;
     let result = match method {
+        "git.history.plan" => history_plan(&root, string(object, "hash")?)?,
         "git.branches" => branches(&root)?,
         "git.push.preview" => push_preview(&root)?,
         "git.log" => {
@@ -1032,6 +1034,63 @@ fn resolve_commit(root: &Path, commit: &str) -> Result<String> {
     git_text(root, &["rev-parse", "--verify", "--quiet", &spec])
         .map(|value| value.trim().to_owned())
         .map_err(|_| anyhow!("commit_not_found"))
+}
+
+/// Read the current fences and bounded consequences for a History action.
+/// This does not reserve an operation: every mutator rechecks its own fence.
+fn history_plan(root: &Path, commit: &str) -> Result<Value> {
+    if !(7..=64).contains(&commit.len()) || !commit.chars().all(|value| value.is_ascii_hexdigit()) {
+        return Err(anyhow!("invalid_commit"));
+    }
+    let hash = resolve_commit(root, commit)?;
+    let head = git_text(root, &["rev-parse", "--verify", "--quiet", "HEAD^{commit}"])
+        .map(|value| value.trim().to_owned())
+        .map_err(|_| anyhow!("commit_not_found"))?;
+    if !full_oid(&head) { return Err(anyhow!("commit_not_found")); }
+    let branch = git_text(root, &["symbolic-ref", "--quiet", "--short", "HEAD"])
+        .ok()
+        .map(|value| value.trim().to_owned())
+        .filter(|value| !value.is_empty());
+    let detached = branch.is_none();
+    let is_ancestor = run_git(root, &["merge-base", "--is-ancestor", &hash, &head], &[], None, LOCAL_TIMEOUT).is_ok();
+    let parents = git_text(root, &["log", "-1", "--format=%P", &hash])?
+        .split_whitespace()
+        .map(|parent| {
+            let subject = git_text(root, &["log", "-1", "--format=%s", parent])?;
+            Ok(json!({"hash":parent,"subject":subject.trim_end()}))
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let range = format!("{hash}..{head}");
+    let count = git_text(root, &["rev-list", "--count", &range])?
+        .trim()
+        .parse::<u64>()
+        .map_err(|_| anyhow!("git_failed"))?;
+    let commits = git_text(root, &["log", "--format=%H%x1f%s", "-n20", &range])?
+        .lines()
+        .filter_map(|line| line.split_once('\x1f'))
+        .map(|(hash, subject)| json!({"hash":hash,"subject":subject}))
+        .collect::<Vec<_>>();
+    // A remote may contain an intermediate removed commit even when it does not
+    // contain HEAD, so check the full range rather than just the reset target.
+    let pushed = if count == 0 {
+        false
+    } else {
+        git_text(root, &["rev-list", &range])?
+            .lines()
+            .try_fold(false, |found, removed| -> Result<bool> {
+                if found { return Ok(true); }
+                Ok(!git_text(root, &["branch", "-r", "--contains", removed])?.trim().is_empty())
+            })?
+    };
+    Ok(json!({
+        "hash":hash,
+        "head":head,
+        "branch":branch.unwrap_or_default(),
+        "detached":detached,
+        "isAncestor":is_ancestor,
+        "parents":parents,
+        "reset":{"count":count,"commits":commits,"pushed":pushed},
+    }))
 }
 
 fn first_parent(root: &Path, commit: &str) -> Option<String> {
@@ -2119,5 +2178,48 @@ mod tests {
         assert!(preview.get("remoteOid").is_some());
         git(root, &["config", "remote.origin.push", "refs/heads/main:refs/heads/refs/heads/main"]).unwrap();
         assert_eq!(push_preview(root).unwrap()["remoteBranch"], "refs/heads/main");
+    }
+
+    #[test]
+    fn history_plan_resolves_full_fences_parents_and_reset_range() {
+        let temp = repo();
+        let root = temp.path();
+        fs::write(root.join("a.txt"), "base\n").unwrap();
+        git(root, &["add", "."]).unwrap();
+        git(root, &["commit", "-qm", "base"]).unwrap();
+        let base = git(root, &["rev-parse", "HEAD"]).unwrap().trim().to_owned();
+        fs::write(root.join("a.txt"), "next\n").unwrap();
+        git(root, &["commit", "-am", "next", "-q"]).unwrap();
+        let plan = history_plan(root, &base[..12]).unwrap();
+        assert_eq!(plan["hash"], base);
+        assert!(plan["head"].as_str().unwrap().len() == 40);
+        assert_eq!(plan["branch"], "main");
+        assert_eq!(plan["detached"], false);
+        assert_eq!(plan["isAncestor"], true);
+        assert_eq!(plan["reset"]["count"], 1);
+        assert_eq!(plan["reset"]["commits"][0]["subject"], "next");
+    }
+
+    #[test]
+    fn history_plan_bounds_long_ranges_and_warns_when_removed_commits_are_remote() {
+        let temp = repo();
+        let root = temp.path();
+        fs::write(root.join("a.txt"), "base\n").unwrap();
+        git(root, &["add", "."]).unwrap();
+        git(root, &["commit", "-qm", "base"]).unwrap();
+        let base = git(root, &["rev-parse", "HEAD"]).unwrap().trim().to_owned();
+        for index in 0..21 {
+            let message = format!("history {index}");
+            git(root, &["commit", "--allow-empty", "-qm", &message]).unwrap();
+        }
+        let remote = tempfile::tempdir().unwrap();
+        git(remote.path(), &["init", "--bare", "-q"]).unwrap();
+        git(root, &["remote", "add", "origin", remote.path().to_str().unwrap()]).unwrap();
+        git(root, &["push", "-qu", "origin", "main"]).unwrap();
+
+        let plan = history_plan(root, &base).unwrap();
+        assert_eq!(plan["reset"]["count"], 21);
+        assert_eq!(plan["reset"]["commits"].as_array().unwrap().len(), 20);
+        assert_eq!(plan["reset"]["pushed"], true);
     }
 }

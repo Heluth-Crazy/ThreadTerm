@@ -52,6 +52,11 @@ pub fn dispatch(db: &Database, method: &str, params_value: &Value) -> Result<Opt
             | "git.discard"
             | "git.checkout"
             | "git.branch.delete"
+            | "git.cherryPick"
+            | "git.revert"
+            | "git.reset"
+            | "git.operation.abort"
+            | "git.operation.continue"
             | "git.stash.push" | "git.stash.apply" | "git.stash.drop"
     ) {
         return Ok(None);
@@ -63,7 +68,8 @@ pub fn dispatch(db: &Database, method: &str, params_value: &Value) -> Result<Opt
     let project_id = required_string(params, "projectId")?;
     let worktree = params.get("worktreePath").and_then(Value::as_str);
     // Force push's preflight reads the remote-tracking tip, which a completed push moves.
-    if method == "git.discard" || method.starts_with("git.stash.") || method == "git.checkout" || method == "git.push" {
+    if method == "git.discard" || method.starts_with("git.stash.") || method == "git.checkout" || method == "git.push"
+        || matches!(method, "git.cherryPick" | "git.revert" | "git.reset" | "git.operation.abort" | "git.operation.continue") {
         if let Some(result) = db.operation(operation_id)? {
             db.bind_operation(operation_id, method, params_value)?;
             return stash_receipt(method, result).map(Some);
@@ -88,6 +94,16 @@ pub fn dispatch(db: &Database, method: &str, params_value: &Value) -> Result<Opt
     } else {
         None
     };
+    let history_hash = match method {
+        "git.cherryPick" | "git.revert" => Some(history_commit_preflight(&root, params, method)?),
+        _ => None,
+    };
+    let reset = (method == "git.reset")
+        .then(|| reset_preflight(db, &root, params, project_id, worktree))
+        .transpose()?;
+    if matches!(method, "git.operation.abort" | "git.operation.continue") {
+        operation_preflight(&root, params, method == "git.operation.continue")?;
+    }
     // Validation and fences run before the claim so a rejected request stays retryable.
     match method {
         "git.index.write" => {
@@ -333,6 +349,51 @@ pub fn dispatch(db: &Database, method: &str, params_value: &Value) -> Result<Opt
             }
         },
         "git.merge.abort" => json!({"output":git(&root, &["merge", "--abort"])?}),
+        "git.cherryPick" | "git.revert" => history_apply(
+            db,
+            operation_id,
+            &root,
+            method,
+            params,
+            history_hash.as_deref().ok_or_else(|| anyhow!("invalid_request"))?,
+        )?,
+        "git.reset" => {
+            let plan = reset.as_ref().ok_or_else(|| anyhow!("invalid_request"))?;
+            let before = checkout_head(&root)?;
+            let before_symbolic_head = match symbolic_head(&root, &before) {
+                Ok(value) => value,
+                Err(error) if error.to_string() == "head_moved" => {
+                    release_discard_claim(db, operation_id)?;
+                    return Err(error);
+                }
+                Err(error) => return Err(error),
+            };
+            if before.oid != required_string(params, "expectedHead")? || before_symbolic_head != plan.symbolic_head {
+                release_discard_claim(db, operation_id)?;
+                return Err(anyhow!("head_moved"));
+            }
+            if params.contains_key("undoOf") {
+                if let Err(error) = reset_reflog_continuity(&root, &before_symbolic_head, &before.oid, &plan.target) {
+                    release_discard_claim(db, operation_id)?;
+                    return Err(error);
+                }
+            }
+            let mode = required_string(params, "mode")?;
+            let flag = match mode { "soft" => "--soft", "mixed" => "--mixed", _ => return Err(anyhow!("invalid_request")) };
+            let output = run_git(&root, &["reset", flag, &plan.target], &[], None, HOOK_TIMEOUT)?;
+            json!({"output":String::from_utf8_lossy(&output),"previousHead":before.oid,"head":plan.target,"symbolicHead":plan.symbolic_head})
+        }
+        "git.operation.abort" | "git.operation.continue" => {
+            let kind = required_string(params, "kind")?;
+            let command = if method == "git.operation.abort" { "--abort" } else { "--continue" };
+            let args = if method == "git.operation.continue" { vec!["-c", "core.editor=true", kind, command] } else { vec![kind, command] };
+            let output = run_git(&root, &args, &[], None, HOOK_TIMEOUT)?;
+            if method == "git.operation.abort" {
+                json!({"output":String::from_utf8_lossy(&output),"head":head_oid(&root)?})
+            } else {
+                json!({"output":String::from_utf8_lossy(&output),"conflicted":false,"head":head_oid(&root)?})
+            }
+        }
         _ => unreachable!(),
     };
     // Do not hide an uncertain external outcome: failure to persist completion is returned
@@ -385,6 +446,218 @@ fn stash_publish_failure<T>(db: &Database, scope: (&str, Option<&str>), result: 
         }
     }
     result
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct HistoryActionState { head: CheckoutHead, index_tree: String }
+
+fn head_oid(root: &Path) -> Result<String> {
+    let head = git(root, &["rev-parse", "HEAD"])?;
+    let head = head.trim();
+    if full_oid(head) { Ok(head.to_owned()) } else { Err(anyhow!("commit_not_found")) }
+}
+
+fn history_operation(root: &Path) -> Result<Option<String>> {
+    let paths = git(root, &["rev-parse", "--git-path", "MERGE_HEAD", "--git-path", "rebase-merge", "--git-path", "rebase-apply", "--git-path", "CHERRY_PICK_HEAD", "--git-path", "REVERT_HEAD"])?;
+    let paths = paths.lines().map(Path::new).map(|path| if path.is_absolute() { path.to_owned() } else { root.join(path) }).collect::<Vec<_>>();
+    if paths.len() != 5 { return Err(anyhow!("git_failed")); }
+    if paths[0].exists() { return Ok(Some("merge".to_owned())); }
+    if paths[1].exists() || paths[2].exists() { return Ok(Some("rebase".to_owned())); }
+    if paths[3].exists() { return Ok(Some("cherry-pick".to_owned())); }
+    if paths[4].exists() { return Ok(Some("revert".to_owned())); }
+    Ok(None)
+}
+
+fn resolve_history_commit(root: &Path, value: &str) -> Result<String> {
+    if !(7..=64).contains(&value.len()) || !value.chars().all(|character| character.is_ascii_hexdigit()) {
+        return Err(anyhow!("invalid_commit"));
+    }
+    let oid = git(root, &["rev-parse", "--verify", "--quiet", &format!("{value}^{{commit}}")])
+        .map(|output| output.trim().to_owned())
+        .map_err(|_| anyhow!("commit_not_found"))?;
+    if full_oid(&oid) { Ok(oid) } else { Err(anyhow!("commit_not_found")) }
+}
+
+fn history_commit_preflight(root: &Path, params: &serde_json::Map<String, Value>, method: &str) -> Result<String> {
+    let hash = resolve_history_commit(root, required_string(params, "hash")?)?;
+    if let Some(kind) = history_operation(root)? { return Err(anyhow!("operation_in_progress: {kind}")); }
+    if method == "git.cherryPick" && checkout_head(root)?.reference.is_none() { return Err(anyhow!("detached_head")); }
+    if method == "git.cherryPick" && params.contains_key("mainline") { return Err(anyhow!("invalid_request")); }
+    if method == "git.revert" {
+        let parents = git(root, &["log", "-1", "--format=%P", &hash])?.split_whitespace().count();
+        match params.get("mainline") {
+            Some(Value::Number(value)) if value.as_u64().is_some_and(|mainline| mainline > 0 && mainline as usize <= parents) => {}
+            None if parents <= 1 => {}
+            None => return Err(anyhow!("mainline_required")),
+            _ => return Err(anyhow!("invalid_mainline")),
+        }
+    }
+    Ok(hash)
+}
+
+struct ResetPlan {
+    target: String,
+    symbolic_head: String,
+}
+
+fn symbolic_head(root: &Path, head: &CheckoutHead) -> Result<String> {
+    match git(root, &["symbolic-ref", "--quiet", "HEAD"]) {
+        Ok(value) => {
+            let reference = value.trim();
+            if reference.starts_with("refs/heads/") && head.reference.as_deref() == Some(reference) {
+                Ok(reference.to_owned())
+            } else {
+                Err(anyhow!("head_moved"))
+            }
+        }
+        Err(error)
+            if error
+                .to_string()
+                .strip_prefix("git_failed:")
+                .is_some_and(|stderr| stderr.trim().is_empty()) =>
+        {
+            if head.reference.is_none() { Ok("detached".to_owned()) } else { Err(anyhow!("head_moved")) }
+        }
+        Err(error) => Err(error),
+    }
+}
+
+fn reset_reflog_entry(root: &Path, reference: &str, target: &str, previous: &str) -> Result<()> {
+    let output = git(root, &["reflog", "show", "--format=%H%x00%gs", "-2", reference])
+        .map_err(|_| anyhow!("branch_changed"))?;
+    let mut lines = output.lines();
+    let newest = lines.next().and_then(|line| line.split_once('\0'));
+    let prior = lines.next().and_then(|line| line.split_once('\0'));
+    if lines.next().is_some()
+        || !matches!(newest, Some((oid, subject)) if oid == target && subject.starts_with("reset: moving to"))
+        || !matches!(prior, Some((oid, _)) if oid == previous)
+    {
+        return Err(anyhow!("branch_changed"));
+    }
+    Ok(())
+}
+
+fn reset_reflog_continuity(root: &Path, symbolic_head: &str, target: &str, previous: &str) -> Result<()> {
+    let reference = if symbolic_head == "detached" { "HEAD" } else { symbolic_head };
+    reset_reflog_entry(root, reference, target, previous)?;
+    if reference != "HEAD" {
+        reset_reflog_entry(root, "HEAD", target, previous)?;
+    }
+    Ok(())
+}
+
+fn reset_preflight(db: &Database, root: &Path, params: &serde_json::Map<String, Value>, project_id: &str, worktree: Option<&str>) -> Result<ResetPlan> {
+    let hash = resolve_history_commit(root, required_string(params, "hash")?)?;
+    if let Some(kind) = history_operation(root)? { return Err(anyhow!("operation_in_progress: {kind}")); }
+    let mode = required_string(params, "mode")?;
+    if !matches!(mode, "soft" | "mixed") { return Err(anyhow!("invalid_request")); }
+    let expected = required_string(params, "expectedHead")?;
+    if !full_oid(expected) { return Err(anyhow!("invalid_request")); }
+    let current = checkout_head(root)?;
+    if current.oid != expected { return Err(anyhow!("head_moved")); }
+    let current_symbolic_head = symbolic_head(root, &current)?;
+    if let Some(undo_of) = params.get("undoOf") {
+        if mode != "soft" { return Err(anyhow!("invalid_request")); }
+        let undo_of = undo_of.as_str().filter(|value| !value.is_empty()).ok_or_else(|| anyhow!("invalid_request"))?;
+        let (method, request) = db.operation_request(undo_of)?.ok_or_else(|| anyhow!("reset_undo_not_found"))?;
+        let receipt = db.operation(undo_of)?.ok_or_else(|| anyhow!("reset_undo_not_found"))?;
+        let receipt_symbolic_head = receipt.get("symbolicHead").and_then(Value::as_str).ok_or_else(|| anyhow!("reset_undo_invalid"))?;
+        if method != "git.reset"
+            || request.get("projectId").and_then(Value::as_str) != Some(project_id)
+            || request.get("worktreePath").and_then(Value::as_str) != worktree
+            || receipt.get("previousHead").and_then(Value::as_str) != Some(hash.as_str())
+            || receipt.get("head").and_then(Value::as_str) != Some(expected)
+        { return Err(anyhow!("reset_undo_invalid")); }
+        if current_symbolic_head != receipt_symbolic_head { return Err(anyhow!("head_moved")); }
+        reset_reflog_continuity(root, receipt_symbolic_head, expected, &hash)?;
+    } else if !run_git(root, &["merge-base", "--is-ancestor", &hash, expected], &[], None, LOCAL_TIMEOUT).is_ok() {
+        return Err(anyhow!("not_ancestor"));
+    }
+    Ok(ResetPlan { target: hash, symbolic_head: current_symbolic_head })
+}
+
+fn operation_preflight(root: &Path, params: &serde_json::Map<String, Value>, continuing: bool) -> Result<()> {
+    let kind = required_string(params, "kind")?;
+    if !matches!(kind, "cherry-pick" | "revert") { return Err(anyhow!("invalid_request")); }
+    if history_operation(root)?.as_deref() != Some(kind) { return Err(anyhow!("operation_not_in_progress")); }
+    if continuing && !git(root, &["diff", "--name-only", "--diff-filter=U"])?.trim().is_empty() {
+        return Err(anyhow!("unresolved_conflicts"));
+    }
+    Ok(())
+}
+
+fn history_action_state(root: &Path) -> Result<HistoryActionState> {
+    Ok(HistoryActionState {
+        head: checkout_head(root)?,
+        index_tree: git(root, &["write-tree"])?.trim().to_owned(),
+    })
+}
+
+fn history_action_unchanged(root: &Path, before: &HistoryActionState) -> bool {
+    history_operation(root).ok().flatten().is_none()
+        && history_action_state(root).ok().as_ref() == Some(before)
+}
+
+/// Recognizes only Git 2.33's complete, English refusal sequences.  Unknown
+/// output retains its claim because it cannot prove Git did no work.
+fn history_refusal_paths(stderr: &str, command: &str) -> Option<Vec<String>> {
+    let lines = stderr.strip_prefix("git_failed: ").unwrap_or(stderr).lines().map(|line| line.trim_end_matches('\r')).filter(|line| !line.is_empty()).collect::<Vec<_>>();
+    let fatal = format!("fatal: {command} failed");
+    let staged = [
+        format!("error: your local changes would be overwritten by {command}."),
+        "hint: commit your changes or stash them to proceed.".to_owned(),
+        fatal.clone(),
+    ];
+    if lines == staged.iter().map(String::as_str).collect::<Vec<_>>() { return Some(Vec::new()); }
+    if lines == [format!("error: your local changes would be overwritten by {command}."), fatal.clone()] { return Some(Vec::new()); }
+    let headers = [
+        "error: Your local changes to the following files would be overwritten by merge:",
+        "error: The following untracked working tree files would be overwritten by merge:",
+    ];
+    let trailers = [
+        "Please commit your changes or stash them before you merge.",
+        "Please move or remove them before you merge.",
+    ];
+    let mut cursor = 0;
+    let mut paths = Vec::new();
+    while headers.contains(lines.get(cursor)?) {
+        cursor += 1;
+        let start = cursor;
+        while let Some(path) = lines.get(cursor).and_then(|line| line.strip_prefix('\t')) {
+            if path.is_empty() { return None; }
+            if paths.len() < 50 && !paths.iter().any(|known| known == path) { paths.push(path.to_owned()); }
+            cursor += 1;
+        }
+        if cursor == start { return None; }
+        if trailers.contains(lines.get(cursor)?) { cursor += 1; }
+    }
+    (cursor + 2 == lines.len() && lines.get(cursor) == Some(&"Aborting") && lines.get(cursor + 1) == Some(&fatal.as_str()) && !paths.is_empty()).then_some(paths)
+}
+
+fn history_apply(db: &Database, operation_id: &str, root: &Path, method: &str, params: &serde_json::Map<String, Value>, hash: &str) -> Result<Value> {
+    let command = if method == "git.cherryPick" { "cherry-pick" } else { "revert" };
+    let mut args = vec![command, "--no-edit"];
+    let mainline = (command == "revert").then(|| params.get("mainline").and_then(Value::as_u64).map(|value| value.to_string())).flatten();
+    if let Some(mainline) = mainline.as_deref() {
+        args.extend(["-m", mainline]);
+    }
+    args.push(hash);
+    let before = history_action_state(root)?;
+    match run_git(root, &args, &[("LANGUAGE", std::ffi::OsStr::new("C"))], None, HOOK_TIMEOUT) {
+        Ok(output) => Ok(json!({"output":String::from_utf8_lossy(&output),"conflicted":false,"head":head_oid(root)?})),
+        Err(error) => {
+            let text = error.to_string();
+            if history_operation(root)?.as_deref() == Some(command) {
+                return Ok(json!({"output":text,"conflicted":true,"head":head_oid(root)?}));
+            }
+            if history_refusal_paths(&text, command).is_some() && history_action_unchanged(root, &before) {
+                release_discard_claim(db, operation_id)?;
+                let code = if command == "cherry-pick" { "cherry_pick_would_overwrite" } else { "revert_would_overwrite" };
+                return Err(anyhow!("{code}"));
+            }
+            Err(error)
+        }
+    }
 }
 
 // Failed smart switches are durable receipts too: retries must never stash twice.
@@ -3489,6 +3762,395 @@ mod tests {
         git(root, &["commit", "-qm", "blocked"]).unwrap();
         let error = dispatch(&db, "git.push", &json!({"projectId":project,"operationId":"hook"})).unwrap_err().to_string();
         assert_eq!(error, "push_rejected_hook: policy denied");
+    }
+
+    #[test]
+    fn history_actions_replay_conflict_continue_abort_and_reset_fences() {
+        let (temp, db, project) = setup();
+        let root = temp.path();
+        git(root, &["branch", "-M", "main"]).unwrap();
+        let base = head_oid(root).unwrap();
+        git(root, &["switch", "-qc", "feature"]).unwrap();
+        fs::write(root.join("a.txt"), "feature\n").unwrap();
+        git(root, &["commit", "-am", "feature", "-q"]).unwrap();
+        let feature = head_oid(root).unwrap();
+        git(root, &["switch", "-q", "main"]).unwrap();
+
+        let picked = dispatch(&db, "git.cherryPick", &json!({"projectId":project,"hash":feature,"operationId":"pick"})).unwrap().unwrap();
+        assert_eq!(picked["conflicted"], false);
+        assert_eq!(dispatch(&db, "git.cherryPick", &json!({"projectId":project,"hash":feature,"operationId":"pick"})).unwrap().unwrap(), picked);
+
+        git(root, &["reset", "--hard", &base]).unwrap();
+        fs::write(root.join("a.txt"), "main\n").unwrap();
+        git(root, &["commit", "-am", "main", "-q"]).unwrap();
+        let conflict = dispatch(&db, "git.cherryPick", &json!({"projectId":project,"hash":feature,"operationId":"conflict"})).unwrap().unwrap();
+        assert_eq!(conflict["conflicted"], true);
+        let status = crate::workspace_services::git_status(root).unwrap();
+        assert_eq!(status["operation"]["head"], feature);
+        assert_eq!(status["operation"]["message"], "feature");
+        assert_eq!(dispatch(&db, "git.operation.continue", &json!({"projectId":project,"kind":"cherry-pick","operationId":"continue-unresolved"})).unwrap_err().to_string(), "unresolved_conflicts");
+        fs::write(root.join("a.txt"), "resolved\n").unwrap();
+        git(root, &["add", "a.txt"]).unwrap();
+        assert_eq!(dispatch(&db, "git.operation.continue", &json!({"projectId":project,"kind":"cherry-pick","operationId":"continue"})).unwrap().unwrap()["conflicted"], false);
+
+        git(root, &["reset", "--hard", &base]).unwrap();
+        fs::write(root.join("a.txt"), "main again\n").unwrap();
+        git(root, &["commit", "-am", "main again", "-q"]).unwrap();
+        assert_eq!(dispatch(&db, "git.cherryPick", &json!({"projectId":project,"hash":feature,"operationId":"abort-conflict"})).unwrap().unwrap()["conflicted"], true);
+        assert!(dispatch(&db, "git.operation.abort", &json!({"projectId":project,"kind":"cherry-pick","operationId":"abort"})).unwrap().unwrap()["output"].is_string());
+
+        let before_reset = head_oid(root).unwrap();
+        let reset = dispatch(&db, "git.reset", &json!({"projectId":project,"hash":base,"mode":"mixed","expectedHead":before_reset,"operationId":"reset"})).unwrap().unwrap();
+        assert_eq!(reset["previousHead"], before_reset);
+        assert_eq!(reset["head"], base);
+        assert_eq!(reset["symbolicHead"], "refs/heads/main");
+        let undo = dispatch(&db, "git.reset", &json!({"projectId":project,"hash":before_reset,"mode":"soft","expectedHead":base,"undoOf":"reset","operationId":"undo"})).unwrap().unwrap();
+        assert_eq!(undo["head"], before_reset);
+        assert_eq!(undo["symbolicHead"], "refs/heads/main");
+        assert_eq!(dispatch(&db, "git.reset", &json!({"projectId":project,"hash":base,"mode":"hard","expectedHead":before_reset,"operationId":"bad-mode"})).unwrap_err().to_string(), "invalid_request");
+        assert!(!db.external_operation_pending("bad-mode").unwrap());
+    }
+
+    #[test]
+    fn history_revert_clean_conflict_continue_abort_merge_and_replay() {
+        let (temp, db, project) = setup();
+        let root = temp.path();
+        git(root, &["config", "core.autocrlf", "false"]).unwrap();
+        git(root, &["branch", "-M", "main"]).unwrap();
+
+        fs::write(root.join("a.txt"), "clean\n").unwrap();
+        git(root, &["commit", "-am", "clean", "-q"]).unwrap();
+        let clean_commit = head_oid(root).unwrap();
+        let clean_request = json!({"projectId":project,"hash":clean_commit,"operationId":"revert-clean"});
+        let clean = dispatch(&db, "git.revert", &clean_request).unwrap().unwrap();
+        assert_eq!(clean["conflicted"], false);
+        assert_eq!(fs::read_to_string(root.join("a.txt")).unwrap(), "base");
+        assert_eq!(dispatch(&db, "git.revert", &clean_request).unwrap().unwrap(), clean);
+
+        fs::write(root.join("a.txt"), "target\n").unwrap();
+        git(root, &["commit", "-am", "revert target", "-q"]).unwrap();
+        let conflict_target = head_oid(root).unwrap();
+        fs::write(root.join("a.txt"), "later\n").unwrap();
+        git(root, &["commit", "-am", "later", "-q"]).unwrap();
+        let conflict = dispatch(
+            &db,
+            "git.revert",
+            &json!({"projectId":project,"hash":conflict_target,"operationId":"revert-conflict"}),
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(conflict["conflicted"], true);
+        let status = crate::workspace_services::git_status(root).unwrap();
+        assert_eq!(status["operation"]["head"], conflict_target);
+        assert_eq!(status["operation"]["message"], "revert target");
+        fs::write(root.join("a.txt"), "resolved\n").unwrap();
+        git(root, &["add", "a.txt"]).unwrap();
+        let continue_request = json!({"projectId":project,"kind":"revert","operationId":"revert-continue"});
+        let continued = dispatch(&db, "git.operation.continue", &continue_request)
+            .unwrap()
+            .unwrap();
+        assert_eq!(continued["conflicted"], false);
+        assert_eq!(
+            dispatch(&db, "git.operation.continue", &continue_request)
+                .unwrap()
+                .unwrap(),
+            continued
+        );
+
+        fs::write(root.join("abort.txt"), "base\n").unwrap();
+        git(root, &["add", "abort.txt"]).unwrap();
+        git(root, &["commit", "-qm", "abort base"]).unwrap();
+        fs::write(root.join("abort.txt"), "target\n").unwrap();
+        git(root, &["commit", "-am", "abort target", "-q"]).unwrap();
+        let abort_target = head_oid(root).unwrap();
+        fs::write(root.join("abort.txt"), "later\n").unwrap();
+        git(root, &["commit", "-am", "abort later", "-q"]).unwrap();
+        let before_abort = head_oid(root).unwrap();
+        assert_eq!(
+            dispatch(
+                &db,
+                "git.revert",
+                &json!({"projectId":project,"hash":abort_target,"operationId":"revert-abort-conflict"}),
+            )
+            .unwrap()
+            .unwrap()["conflicted"],
+            true
+        );
+        let abort_request = json!({"projectId":project,"kind":"revert","operationId":"revert-abort"});
+        let aborted = dispatch(&db, "git.operation.abort", &abort_request)
+            .unwrap()
+            .unwrap();
+        assert_eq!(aborted["head"], before_abort);
+        assert_eq!(fs::read_to_string(root.join("abort.txt")).unwrap(), "later\n");
+        assert_eq!(
+            dispatch(&db, "git.operation.abort", &abort_request)
+                .unwrap()
+                .unwrap(),
+            aborted
+        );
+
+        fs::write(root.join("merge.txt"), "base\n").unwrap();
+        git(root, &["add", "merge.txt"]).unwrap();
+        git(root, &["commit", "-qm", "merge base"]).unwrap();
+        git(root, &["switch", "-qc", "merge-side"]).unwrap();
+        fs::write(root.join("merge.txt"), "side\n").unwrap();
+        git(root, &["commit", "-am", "side", "-q"]).unwrap();
+        git(root, &["switch", "-q", "main"]).unwrap();
+        fs::write(root.join("main-only.txt"), "main\n").unwrap();
+        git(root, &["add", "main-only.txt"]).unwrap();
+        git(root, &["commit", "-qm", "main side"]).unwrap();
+        git(root, &["merge", "--no-ff", "merge-side", "-m", "merge side", "-q"]).unwrap();
+        let merge_commit = head_oid(root).unwrap();
+        let merge_request = json!({"projectId":project,"hash":merge_commit,"mainline":1,"operationId":"revert-merge"});
+        let merge_revert = dispatch(&db, "git.revert", &merge_request)
+            .unwrap()
+            .unwrap();
+        assert_eq!(merge_revert["conflicted"], false);
+        assert_eq!(fs::read_to_string(root.join("merge.txt")).unwrap(), "base\n");
+        assert_eq!(fs::read_to_string(root.join("main-only.txt")).unwrap(), "main\n");
+        assert_eq!(
+            dispatch(&db, "git.revert", &merge_request).unwrap().unwrap(),
+            merge_revert
+        );
+    }
+
+    #[test]
+    fn history_reset_modes_fences_and_replay_preserve_content() {
+        let (temp, db, project) = setup();
+        let root = temp.path();
+        git(root, &["config", "core.autocrlf", "false"]).unwrap();
+        git(root, &["branch", "-M", "main"]).unwrap();
+        fs::write(root.join("reset.txt"), "one\n").unwrap();
+        git(root, &["add", "reset.txt"]).unwrap();
+        git(root, &["commit", "-qm", "reset base"]).unwrap();
+        let base = head_oid(root).unwrap();
+        fs::write(root.join("reset.txt"), "two\n").unwrap();
+        git(root, &["commit", "-am", "reset next", "-q"]).unwrap();
+        let head = head_oid(root).unwrap();
+
+        let soft_request = json!({"projectId":project,"hash":base,"mode":"soft","expectedHead":head,"operationId":"reset-soft"});
+        let soft = dispatch(&db, "git.reset", &soft_request).unwrap().unwrap();
+        assert_eq!(soft["previousHead"], head);
+        assert_eq!(soft["symbolicHead"], "refs/heads/main");
+        assert_eq!(fs::read_to_string(root.join("reset.txt")).unwrap(), "two\n");
+        assert_eq!(git(root, &["diff", "--name-only"]).unwrap(), "");
+        assert_eq!(git(root, &["diff", "--cached", "--name-only"]).unwrap().trim(), "reset.txt");
+        assert_eq!(dispatch(&db, "git.reset", &soft_request).unwrap().unwrap(), soft);
+
+        git(root, &["reset", "--hard", &head]).unwrap();
+        let mixed_request = json!({"projectId":project,"hash":base,"mode":"mixed","expectedHead":head,"operationId":"reset-mixed"});
+        let mixed = dispatch(&db, "git.reset", &mixed_request).unwrap().unwrap();
+        assert_eq!(fs::read_to_string(root.join("reset.txt")).unwrap(), "two\n");
+        assert_eq!(git(root, &["diff", "--cached", "--name-only"]).unwrap(), "");
+        assert_eq!(git(root, &["diff", "--name-only"]).unwrap().trim(), "reset.txt");
+        assert_eq!(dispatch(&db, "git.reset", &mixed_request).unwrap().unwrap(), mixed);
+
+        let moved = dispatch(
+            &db,
+            "git.reset",
+            &json!({"projectId":project,"hash":base,"mode":"mixed","expectedHead":head,"operationId":"reset-head-moved"}),
+        )
+        .unwrap_err();
+        assert_eq!(moved.to_string(), "head_moved");
+        assert!(!db.external_operation_pending("reset-head-moved").unwrap());
+
+        git(root, &["reset", "--hard", &base]).unwrap();
+        git(root, &["switch", "-qc", "reset-side"]).unwrap();
+        fs::write(root.join("side.txt"), "side\n").unwrap();
+        git(root, &["add", "side.txt"]).unwrap();
+        git(root, &["commit", "-qm", "side"]).unwrap();
+        let nonancestor = head_oid(root).unwrap();
+        git(root, &["switch", "-q", "main"]).unwrap();
+        let rejected = dispatch(
+            &db,
+            "git.reset",
+            &json!({"projectId":project,"hash":nonancestor,"mode":"mixed","expectedHead":base,"operationId":"reset-nonancestor"}),
+        )
+        .unwrap_err();
+        assert_eq!(rejected.to_string(), "not_ancestor");
+        assert!(!db.external_operation_pending("reset-nonancestor").unwrap());
+        assert_eq!(head_oid(root).unwrap(), base);
+    }
+
+    #[test]
+    fn history_reset_undo_fences_symbolic_head_and_allows_matching_detached_head() {
+        let (temp, db, project) = setup();
+        let root = temp.path();
+        git(root, &["config", "core.autocrlf", "false"]).unwrap();
+        git(root, &["branch", "-M", "main"]).unwrap();
+        let target = head_oid(root).unwrap();
+        fs::write(root.join("a.txt"), "later\n").unwrap();
+        git(root, &["commit", "-am", "later", "-q"]).unwrap();
+        let previous = head_oid(root).unwrap();
+
+        let branch_reset = dispatch(
+            &db,
+            "git.reset",
+            &json!({"projectId":project,"hash":target,"mode":"mixed","expectedHead":previous,"operationId":"branch-reset"}),
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(branch_reset["symbolicHead"], "refs/heads/main");
+        git(root, &["restore", "--worktree", "--source=HEAD", "--", "a.txt"]).unwrap();
+        git(root, &["branch", "other", &target]).unwrap();
+        git(root, &["switch", "-q", "other"]).unwrap();
+        let branch_undo = json!({"projectId":project,"hash":previous,"mode":"soft","expectedHead":target,"undoOf":"branch-reset","operationId":"branch-undo"});
+        assert_eq!(
+            dispatch(&db, "git.reset", &branch_undo)
+                .unwrap_err()
+                .to_string(),
+            "head_moved"
+        );
+        assert!(!db.external_operation_pending("branch-undo").unwrap());
+        assert_eq!(git(root, &["rev-parse", "refs/heads/main"]).unwrap().trim(), target);
+        assert_eq!(git(root, &["rev-parse", "refs/heads/other"]).unwrap().trim(), target);
+        assert_eq!(checkout_head(root).unwrap().reference.as_deref(), Some("refs/heads/other"));
+
+        git(root, &["switch", "--detach", "-q", &previous]).unwrap();
+        let detached_reset = dispatch(
+            &db,
+            "git.reset",
+            &json!({"projectId":project,"hash":target,"mode":"mixed","expectedHead":previous,"operationId":"detached-reset"}),
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(detached_reset["symbolicHead"], "detached");
+        let detached_undo = json!({"projectId":project,"hash":previous,"mode":"soft","expectedHead":target,"undoOf":"detached-reset","operationId":"detached-undo"});
+        let undone = dispatch(&db, "git.reset", &detached_undo).unwrap().unwrap();
+        assert_eq!(undone["head"], previous);
+        assert_eq!(undone["symbolicHead"], "detached");
+
+        let fenced_reset = dispatch(
+            &db,
+            "git.reset",
+            &json!({"projectId":project,"hash":target,"mode":"mixed","expectedHead":previous,"operationId":"detached-fenced-reset"}),
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(fenced_reset["symbolicHead"], "detached");
+        git(root, &["restore", "--worktree", "--source=HEAD", "--", "a.txt"]).unwrap();
+        git(root, &["switch", "-qc", "attached-at-target"]).unwrap();
+        let fenced_undo = json!({"projectId":project,"hash":previous,"mode":"soft","expectedHead":target,"undoOf":"detached-fenced-reset","operationId":"detached-fenced-undo"});
+        assert_eq!(
+            dispatch(&db, "git.reset", &fenced_undo)
+                .unwrap_err()
+                .to_string(),
+            "head_moved"
+        );
+        assert!(!db.external_operation_pending("detached-fenced-undo").unwrap());
+        assert_eq!(git(root, &["rev-parse", "refs/heads/attached-at-target"]).unwrap().trim(), target);
+        assert_eq!(checkout_head(root).unwrap().reference.as_deref(), Some("refs/heads/attached-at-target"));
+
+        git(root, &["switch", "--detach", "-q", &target]).unwrap();
+        assert_eq!(dispatch(&db, "git.reset", &fenced_undo).unwrap_err().to_string(), "branch_changed");
+        assert!(!db.external_operation_pending("detached-fenced-undo").unwrap());
+        assert_eq!(checkout_head(root).unwrap(), CheckoutHead { reference: None, oid: target.clone() });
+        assert_eq!(git(root, &["rev-parse", "refs/heads/attached-at-target"]).unwrap().trim(), target);
+    }
+
+    #[test]
+    fn history_reset_undo_rejects_a_recreated_branch_with_the_same_name_and_oid() {
+        let (temp, db, project) = setup();
+        let root = temp.path();
+        git(root, &["config", "core.autocrlf", "false"]).unwrap();
+        git(root, &["branch", "-M", "main"]).unwrap();
+        let target = head_oid(root).unwrap();
+        fs::write(root.join("a.txt"), "later\n").unwrap();
+        git(root, &["commit", "-am", "later", "-q"]).unwrap();
+        let previous = head_oid(root).unwrap();
+        dispatch(
+            &db,
+            "git.reset",
+            &json!({"projectId":project,"hash":target,"mode":"mixed","expectedHead":previous,"operationId":"rename-reset"}),
+        )
+        .unwrap()
+        .unwrap();
+        git(root, &["restore", "--worktree", "--source=HEAD", "--", "a.txt"]).unwrap();
+        git(root, &["branch", "-m", "saved"]).unwrap();
+        git(root, &["branch", "main", &target]).unwrap();
+        git(root, &["switch", "-q", "main"]).unwrap();
+
+        let undo = json!({"projectId":project,"hash":previous,"mode":"soft","expectedHead":target,"undoOf":"rename-reset","operationId":"rename-undo"});
+        assert_eq!(dispatch(&db, "git.reset", &undo).unwrap_err().to_string(), "branch_changed");
+        assert!(!db.external_operation_pending("rename-undo").unwrap());
+        assert_eq!(git(root, &["rev-parse", "refs/heads/main"]).unwrap().trim(), target);
+        assert_eq!(git(root, &["rev-parse", "refs/heads/saved"]).unwrap().trim(), target);
+        assert_eq!(checkout_head(root).unwrap().reference.as_deref(), Some("refs/heads/main"));
+    }
+
+    #[test]
+    fn history_refusals_release_claims_and_retry_for_tracked_staged_and_untracked() {
+        {
+            let (temp, db, project) = setup();
+            let root = temp.path();
+            git(root, &["config", "core.autocrlf", "false"]).unwrap();
+            git(root, &["branch", "-M", "main"]).unwrap();
+            let base = head_oid(root).unwrap();
+            git(root, &["switch", "-qc", "tracked-source"]).unwrap();
+            fs::write(root.join("a.txt"), "picked\n").unwrap();
+            git(root, &["commit", "-am", "picked", "-q"]).unwrap();
+            let picked = head_oid(root).unwrap();
+            git(root, &["switch", "-q", "main"]).unwrap();
+            assert_eq!(head_oid(root).unwrap(), base);
+            fs::write(root.join("a.txt"), "local\n").unwrap();
+            let request = json!({"projectId":project,"hash":picked,"operationId":"tracked-refusal"});
+            assert_eq!(
+                dispatch(&db, "git.cherryPick", &request)
+                    .unwrap_err()
+                    .to_string(),
+                "cherry_pick_would_overwrite"
+            );
+            assert!(!db.external_operation_pending("tracked-refusal").unwrap());
+            git(root, &["restore", "a.txt"]).unwrap();
+            assert_eq!(dispatch(&db, "git.cherryPick", &request).unwrap().unwrap()["conflicted"], false);
+        }
+
+        {
+            let (temp, db, project) = setup();
+            let root = temp.path();
+            git(root, &["config", "core.autocrlf", "false"]).unwrap();
+            git(root, &["config", "advice.commitBeforeMerge", "false"]).unwrap();
+            fs::write(root.join("a.txt"), "target\n").unwrap();
+            git(root, &["commit", "-am", "target", "-q"]).unwrap();
+            let target = head_oid(root).unwrap();
+            fs::write(root.join("a.txt"), "staged\n").unwrap();
+            git(root, &["add", "a.txt"]).unwrap();
+            let request = json!({"projectId":project,"hash":target,"operationId":"staged-refusal"});
+            assert_eq!(
+                dispatch(&db, "git.revert", &request)
+                    .unwrap_err()
+                    .to_string(),
+                "revert_would_overwrite"
+            );
+            assert!(!db.external_operation_pending("staged-refusal").unwrap());
+            git(root, &["reset", "--hard", &target]).unwrap();
+            assert_eq!(dispatch(&db, "git.revert", &request).unwrap().unwrap()["conflicted"], false);
+        }
+
+        {
+            let (temp, db, project) = setup();
+            let root = temp.path();
+            git(root, &["config", "core.autocrlf", "false"]).unwrap();
+            git(root, &["config", "advice.commitBeforeMerge", "false"]).unwrap();
+            fs::write(root.join("gone.txt"), "tracked\n").unwrap();
+            git(root, &["add", "gone.txt"]).unwrap();
+            git(root, &["commit", "-qm", "add gone"]).unwrap();
+            git(root, &["rm", "-q", "gone.txt"]).unwrap();
+            git(root, &["commit", "-qm", "delete gone"]).unwrap();
+            let deletion = head_oid(root).unwrap();
+            fs::write(root.join("gone.txt"), "untracked\n").unwrap();
+            let request = json!({"projectId":project,"hash":deletion,"operationId":"untracked-refusal"});
+            assert_eq!(
+                dispatch(&db, "git.revert", &request)
+                    .unwrap_err()
+                    .to_string(),
+                "revert_would_overwrite"
+            );
+            assert!(!db.external_operation_pending("untracked-refusal").unwrap());
+            fs::remove_file(root.join("gone.txt")).unwrap();
+            assert_eq!(dispatch(&db, "git.revert", &request).unwrap().unwrap()["conflicted"], false);
+            assert_eq!(fs::read_to_string(root.join("gone.txt")).unwrap(), "tracked\n");
+        }
     }
 
 }

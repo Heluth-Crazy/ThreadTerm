@@ -881,6 +881,25 @@ impl Database {
             .map(|raw| serde_json::from_str(&raw).context("decoding idempotent result"))
             .transpose()
     }
+    /// Reads the immutable request bound to an operation receipt.  Callers use
+    /// this only to prove an undo targets the same original scope; it never
+    /// holds the database lock while performing external work.
+    pub fn operation_request(&self, operation_id: &str) -> Result<Option<(String, Value)>> {
+        let conn = self
+            .connection
+            .lock()
+            .map_err(|_| anyhow!("database lock poisoned"))?;
+        let request: Option<(String, String)> = conn
+            .query_row(
+                "SELECT method,params FROM operation_requests WHERE id=?",
+                [operation_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()?;
+        request
+            .map(|(method, raw)| serde_json::from_str(&raw).map(|params| (method, params)).context("decoding bound operation request"))
+            .transpose()
+    }
     pub fn deferred_codex_launch(&self, session_id: &str) -> Result<Option<Value>> {
         let conn = self
             .connection

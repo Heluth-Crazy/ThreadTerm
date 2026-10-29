@@ -3668,6 +3668,166 @@
         "projectId"
       ]
     },
+    "RequestParams<\"git.history.plan\">": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "hash": {
+          "type": "string"
+        },
+        "projectId": {
+          "type": "string"
+        },
+        "worktreePath": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "hash",
+        "projectId"
+      ]
+    },
+    "RequestParams<\"git.cherryPick\">": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "hash": {
+          "type": "string"
+        },
+        "operationId": {
+          "type": "string"
+        },
+        "projectId": {
+          "type": "string"
+        },
+        "worktreePath": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "hash",
+        "operationId",
+        "projectId"
+      ]
+    },
+    "RequestParams<\"git.revert\">": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "hash": {
+          "type": "string"
+        },
+        "mainline": {
+          "type": "number"
+        },
+        "operationId": {
+          "type": "string"
+        },
+        "projectId": {
+          "type": "string"
+        },
+        "worktreePath": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "hash",
+        "operationId",
+        "projectId"
+      ]
+    },
+    "RequestParams<\"git.reset\">": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "hash": {
+          "type": "string"
+        },
+        "mode": {
+          "type": "string",
+          "enum": [
+            "soft",
+            "mixed"
+          ]
+        },
+        "expectedHead": {
+          "type": "string"
+        },
+        "undoOf": {
+          "type": "string"
+        },
+        "operationId": {
+          "type": "string"
+        },
+        "projectId": {
+          "type": "string"
+        },
+        "worktreePath": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "expectedHead",
+        "hash",
+        "mode",
+        "operationId",
+        "projectId"
+      ]
+    },
+    "RequestParams<\"git.operation.abort\">": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "type": "string",
+          "enum": [
+            "cherry-pick",
+            "revert"
+          ]
+        },
+        "operationId": {
+          "type": "string"
+        },
+        "projectId": {
+          "type": "string"
+        },
+        "worktreePath": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "operationId",
+        "projectId"
+      ]
+    },
+    "RequestParams<\"git.operation.continue\">": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "type": "string",
+          "enum": [
+            "cherry-pick",
+            "revert"
+          ]
+        },
+        "operationId": {
+          "type": "string"
+        },
+        "projectId": {
+          "type": "string"
+        },
+        "worktreePath": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "operationId",
+        "projectId"
+      ]
+    },
     "RequestParams<\"git.diff\">": {
       "type": "object",
       "additionalProperties": false,
@@ -9221,6 +9381,162 @@
         },
         "params": {
           "$ref": "#/definitions/RequestParams%3C%22git.merge.abort%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "params"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "git.history.plan"
+        },
+        "params": {
+          "$ref": "#/definitions/RequestParams%3C%22git.history.plan%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "params"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "git.cherryPick"
+        },
+        "params": {
+          "$ref": "#/definitions/RequestParams%3C%22git.cherryPick%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "params"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "git.revert"
+        },
+        "params": {
+          "$ref": "#/definitions/RequestParams%3C%22git.revert%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "params"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "git.reset"
+        },
+        "params": {
+          "$ref": "#/definitions/RequestParams%3C%22git.reset%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "params"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "git.operation.abort"
+        },
+        "params": {
+          "$ref": "#/definitions/RequestParams%3C%22git.operation.abort%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "params"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "git.operation.continue"
+        },
+        "params": {
+          "$ref": "#/definitions/RequestParams%3C%22git.operation.continue%22%3E"
         }
       },
       "required": [

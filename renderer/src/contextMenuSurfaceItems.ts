@@ -16,8 +16,19 @@ export function sourceControlMenuItems({zh, staged, conflict, discardable, busy,
  ];
 }
 
-export function historyCommitMenuItems({zh,canSend}:{zh:boolean;canSend:boolean}):SurfaceMenuItem[] {
+export function historyCommitMenuItems({zh,canSend,includeActions=false,branch,detached=false,isAncestor=false,operation=false,busy=false,ready=true}:{zh:boolean;canSend:boolean;includeActions?:boolean;branch?:string;detached?:boolean;isAncestor?:boolean;operation?:boolean;busy?:boolean;ready?:boolean}):SurfaceMenuItem[] {
+ const running=operation||busy;
+ const unavailable=!ready ? copy(zh,'Checking commit actions…','正在检查提交操作…') : detached ? copy(zh,'Detached HEAD cannot receive this action.','游离 HEAD 时无法执行此操作。') : running ? busyReason(zh) : undefined;
+ const target=branch||copy(zh,'current branch','当前分支');
  return [
+  ...(includeActions?[
+   {id:'history-new-branch',label:copy(zh,'New branch from here…','从此处新建分支…'),disabled:!ready||running,reason:!ready||running?unavailable:undefined},
+   {id:'history-new-worktree',label:copy(zh,'New worktree from here…','从此处新建工作树…'),disabled:!ready||busy,reason:!ready||busy?unavailable:undefined},
+   {id:'history-cherry-pick',label:copy(zh,`Cherry-pick into ${target}`,`拣选到 ${target}`),disabled:!ready||detached||running||isAncestor,reason:isAncestor?copy(zh,'This commit is already on the current branch.','此提交已在当前分支上。'):unavailable},
+   {id:'history-revert',label:copy(zh,'Revert commit…','还原提交…'),disabled:!ready||running,reason:!ready||running?unavailable:undefined},
+   {id:'history-reset',label:copy(zh,`Reset ${target} to here…`,`将 ${target} 重置到此处…`),disabled:!ready||detached||running||!isAncestor,reason:ready&&!isAncestor?copy(zh,'Only commits on the current branch can be reset targets.','只有当前分支上的提交可以作为重置目标。'):unavailable},
+   {id:'history-separator',label:'',separator:true},
+  ]:[]),
   {id:'history-send-to-agent',label:copy(zh,'Send commit to agent','将提交发送给 Agent'),disabled:!canSend,reason:!canSend?copy(zh,'Open a Chat session in this workspace first.','请先在此工作区打开一个聊天会话。'):undefined},
   {id:'history-copy-commit-hash',label:copy(zh,'Copy commit hash','复制提交哈希')},
  ];

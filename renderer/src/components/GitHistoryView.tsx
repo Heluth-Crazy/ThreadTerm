@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent, type MouseEvent } from 'react';
-import type { GitCommitDetail, GitCommitInfo, GitTextPair } from '@threadterm/protocol';
-import { request } from '../bridge';
+import type { GitCommitDetail, GitCommitInfo, GitHistoryPlan, GitHistoryMutationResult, GitStatus, GitTextPair, Worktree } from '@threadterm/protocol';
+import { operationId, request, subscribeEvents } from '../bridge';
 import { Icon } from './PrototypeIcon';
 import { MergeEditor, type MergeSelection } from './MergeEditor';
 import { relativeTime } from './CodeEditor';
@@ -17,11 +17,16 @@ import { showContextMenu } from './ContextMenu';
 import { historyCommitMenuItems, historyVersionMenuItems } from '../contextMenuSurfaceItems';
 import { isKeyboardEditableTarget } from '../workbench/scmKeyboard';
 import { defaultGitHistoryRovingCommit, resolveGitHistoryTarget } from '../workbench/gitHistorySelection';
+import { SurfaceDialog } from './SurfaceDialog';
+import { historyActionSelection, resetDialogPreview, resetUndoMatchesBranch } from '../workbench/gitHistoryActions';
+import { NewWorktree } from './ProjectOverview';
 
 const PAGE = 100;
 const SCOPE_KEY = 'threadterm.workbench.historyScope';
 const ROW = 44, LANE = 14, MAX_LANES = 12;
 const laneX = (column:number) => 9 + Math.min(column, MAX_LANES - 1) * LANE;
+type HistoryDialog = {kind:'branch'|'worktree'|'cherry-pick'|'revert'|'reset';commit:GitCommitInfo;plan:GitHistoryPlan};
+type ResetReceipt = {previousHead:string;head:string;symbolicHead:string;operation:string};
 
 /** One row's slice of the commit graph; rows are a fixed height so the slices join into continuous lines. */
 function GraphCell({row, width, head}:{row:GraphRow;width:number;head:boolean}) {
@@ -58,6 +63,21 @@ export function GitHistoryView({projectId, worktreePath, path, focusCommit, zh, 
  const [allBranches, setAllBranches] = useState(() => { try { return localStorage.getItem(SCOPE_KEY) === 'all'; } catch { return false; } });
  const [remoteBranches, setRemoteBranches] = useState<ReadonlySet<string>>(new Set());
  const [notice, setNotice] = useState<string>();
+ const [dialog,setDialog]=useState<HistoryDialog>();
+ const [actionBusy,setActionBusy]=useState(false);
+ const [branchName,setBranchName]=useState('');
+ const [branchBase,setBranchBase]=useState('');
+ const [mainline,setMainline]=useState(1);
+ const [resetMode,setResetMode]=useState<'soft'|'mixed'>('mixed');
+ const [resetReceipt,setResetReceipt]=useState<ResetReceipt>();
+ const [projectPath,setProjectPath]=useState<string>();
+ const [gitStatus,setGitStatus]=useState<GitStatus>();
+ const [actionPlan,setActionPlan]=useState<GitHistoryPlan>();
+ const scopeKey=`${projectId}\0${worktreePath??''}\0${path??''}`;
+ const scopeIdentity=useRef(scopeKey);scopeIdentity.current=scopeKey;
+ const mounted=useRef(true),busyAction=useRef(false);
+ const isCurrent=()=>mounted.current&&scopeIdentity.current===scopeKey;
+ useEffect(()=>{mounted.current=true;return()=>{mounted.current=false;};},[]);
  const generation = useRef(0), fileGeneration = useRef(0), pageGeneration = useRef(0), explicitTargetRef = useRef(focusCommit), focusCommitPropRef = useRef(focusCommit), focusRow = useRef<string|undefined>(undefined), focusedCommit = useRef<string|undefined>(undefined), listFocused = useRef(false);
  if(focusCommitPropRef.current!==focusCommit) { focusCommitPropRef.current=focusCommit; explicitTargetRef.current=focusCommit; }
  const commitRows = useRef(new Map<string,HTMLButtonElement>());
@@ -68,7 +88,29 @@ export function GitHistoryView({projectId, worktreePath, path, focusCommit, zh, 
  const selectCommit = (hash:string) => { explicitTargetRef.current=undefined; setExplicitTarget(undefined); setSelected(hash); };
  const text = (en:string, cn:string) => zh ? cn : en;
  const copy = (value:string) => void navigator.clipboard.writeText(value).catch(error => setIssue(workbenchError(error, zh)));
- const commitMenu = (value:GitCommitInfo, event:{clientX:number;clientY:number;currentTarget:HTMLElement}) => showContextMenu({x:event.clientX, y:event.clientY, restoreFocus:event.currentTarget, items:historyCommitMenuItems({zh,canSend:Boolean(commentsHost?.attachContext)}).map(item => ({...item,testId:item.id,onSelect:item.id === 'history-send-to-agent' ? () => commentsHost?.attachContext && sendContextToAgent({host:commentsHost, context:{kind:'commit', id:crypto.randomUUID(), sha:value.hash, subject:value.subject} satisfies ContextItem, zh}) : item.id === 'history-copy-commit-hash' ? () => copy(value.hash) : undefined}))});
+ const actionItems=(plan:GitHistoryPlan|undefined,status=gitStatus)=>historyCommitMenuItems({zh,canSend:Boolean(commentsHost?.attachContext),includeActions:true,ready:Boolean(plan)&&Boolean(status),branch:plan?.branch,detached:plan?.detached,isAncestor:plan?.isAncestor,operation:Boolean(status?.operation),busy:actionBusy});
+ const openAction = async (kind:HistoryDialog['kind'], value:GitCommitInfo) => {
+  if(busyAction.current)return;
+  setIssue(undefined);
+  try {
+   const [plan,status]=await Promise.all([request('git.history.plan',{...scope,hash:value.hash}),request('git.status',scope)]);
+   if(!isCurrent())return;
+   setGitStatus(status);
+   const id=kind==='branch'?'history-new-branch':kind==='worktree'?'history-new-worktree':kind==='cherry-pick'?'history-cherry-pick':kind==='revert'?'history-revert':'history-reset';
+   if(actionItems(plan,status).find(item=>item.id===id)?.disabled)return;
+   if(kind==='cherry-pick') { await cherryPick(value,plan); return; }
+   setBranchName('');setBranchBase(plan.hash);setMainline(1);setResetMode('mixed');setDialog({kind,commit:value,plan});
+  } catch(error) { if(isCurrent())setIssue(workbenchError(error,zh)); }
+ };
+ const commitMenu = async (value:GitCommitInfo, event:{clientX:number;clientY:number;currentTarget:HTMLElement}) => {
+  let plan:GitHistoryPlan|undefined,status=gitStatus;
+  try { [plan,status]=await Promise.all([request('git.history.plan',{...scope,hash:value.hash}),request('git.status',scope)]); }
+  catch(error) { if(isCurrent())setIssue(workbenchError(error,zh)); }
+  if(!isCurrent()||!event.currentTarget.isConnected)return;
+  if(status)setGitStatus(status);
+  const kindById={'history-new-branch':'branch','history-new-worktree':'worktree','history-cherry-pick':'cherry-pick','history-revert':'revert','history-reset':'reset'} as const;
+  showContextMenu({x:event.clientX,y:event.clientY,restoreFocus:event.currentTarget,items:actionItems(plan,status).map(item=>({...item,testId:item.id,onSelect:item.id==='history-send-to-agent'?()=>commentsHost?.attachContext&&sendContextToAgent({host:commentsHost,context:{kind:'commit',id:crypto.randomUUID(),sha:value.hash,subject:value.subject} satisfies ContextItem,zh}):item.id==='history-copy-commit-hash'?()=>copy(value.hash):item.id in kindById?()=>void openAction(kindById[item.id as keyof typeof kindById],value):undefined}))});
+ };
  const fileDiffMenu = (event:{clientX:number;clientY:number;currentTarget:HTMLElement}, selectedLines:MergeSelection|undefined = selection, hasSelection=Boolean(selectedLines?.text), copySelection?:()=>Promise<void>) => {const commentReason=!commentScope || !version ? text('Comments are unavailable for this file version.', '此文件版本无法评论。') : !selectedLines ? text('Select lines on either side first.', '请先在任一侧选中行。') : draft ? text('Finish the current comment first.', '请先完成当前评论。') : undefined;showContextMenu({x:event.clientX, y:event.clientY, restoreFocus:event.currentTarget, items:historyVersionMenuItems({zh,startLine:selectedLines?.startLine,endLine:selectedLines?.endLine,canComment:Boolean(commentScope && version && selectedLines && !draft),commentReason,hasText:hasSelection,path:file?.path}).map(item => ({...item,testId:item.id,onSelect:item.id === 'history-comment-lines' ? () => selectedLines && setDraft(selectedLines) : item.id === 'history-copy-selection' ? () => copySelection ? copySelection() : selectedLines && copy(selectedLines.text) : item.id === 'history-copy-path' ? () => file && copy(file.path) : undefined}))});};
  const onCommitContext = (event:MouseEvent<HTMLDivElement>) => {
   const element = (event.target as HTMLElement).closest<HTMLElement>('[data-commit-hash]');
@@ -104,7 +146,8 @@ export function GitHistoryView({projectId, worktreePath, path, focusCommit, zh, 
   const row=commitRows.current.get(hash);if(!row) return;
   focusRow.current=undefined;row.focus();
  },[selectedRow,commits]);
- const loadPage = async (skip:number) => {
+ const loadPage = async (skip:number,preserveSelection=false) => {
+  if(!isCurrent())return;
   const ticket = skip ? pageGeneration.current : ++pageGeneration.current;
   setLoading(true);
   const params = {...scope, ...(path ? {path} : {}), skip, limit:PAGE};
@@ -114,15 +157,74 @@ export function GitHistoryView({projectId, worktreePath, path, focusCommit, zh, 
    // An older app rejects the `all` field and an older runtime ignores it (no `scope`): fall back to HEAD and say so.
    try { value = await request('git.log', all ? {...params, all:true} : params); }
    catch(error) { if(!all) throw error; value = await request('git.log', params); value = {...value, scope:undefined}; }
-   if(ticket !== pageGeneration.current) return;
-   setNotice(all && value.scope !== 'all' ? restart : undefined);
+   if(!isCurrent()||ticket !== pageGeneration.current) return;
+   if(all&&value.scope!=='all')setNotice(restart);
    setCommits(current => skip ? [...current, ...value.commits] : value.commits);
    setHasMore(value.hasMore);
-   if(!skip && value.commits[0]) setSelected(current => defaultGitHistoryRovingCommit(current, explicitTargetRef.current, value.commits.map(commit => commit.hash)));
-  } catch(error) { setIssue(workbenchError(error, zh)); }
-  finally { setLoading(false); }
+   if(!skip && !preserveSelection && value.commits[0]) setSelected(current => defaultGitHistoryRovingCommit(current, explicitTargetRef.current, value.commits.map(commit => commit.hash)));
+  } catch(error) { if(isCurrent())setIssue(workbenchError(error, zh)); }
+  finally { if(isCurrent())setLoading(false); }
+ };
+ const refreshAt = async (hash:string, message:string) => {
+  await loadPage(0);if(!isCurrent())return;
+  explicitTargetRef.current=hash;setExplicitTarget(hash);setSelected(hash);setNotice(message);
+ };
+ const finishHistoryAction = async (result:GitHistoryMutationResult,message:string) => {
+  if(!isCurrent())return;
+  const hash=historyActionSelection(result,explicitTargetRef.current);
+  if(hash)setSelected(hash);
+  setNotice(message);
+  await loadPage(0,true);
+ };
+ const cherryPick = async (_value:GitCommitInfo, plan:GitHistoryPlan) => {
+  if(busyAction.current||plan.detached||plan.isAncestor)return;
+  busyAction.current=true;setActionBusy(true);setIssue(undefined);
+  try {
+   const result=await request('git.cherryPick',{...scope,hash:plan.hash,operationId:operationId()});
+   await finishHistoryAction(result,result.conflicted?text('Cherry-pick has conflicts. Resolve them in Source Control, then continue.','拣选发生冲突。请在源代码管理中解决后继续。'):text('Cherry-pick completed.','拣选已完成。'));
+  }catch(error){if(isCurrent()){setIssue(workbenchError(error,zh));}}
+  finally{if(isCurrent()){busyAction.current=false;setActionBusy(false);}}
+ };
+ const submitDialog = async () => {
+  if(!dialog||busyAction.current)return;
+  busyAction.current=true;setActionBusy(true);setIssue(undefined);
+  try {
+   if(dialog.kind==='branch') {
+    if(!branchName.trim())return;
+    const before=await request('git.status',scope);if(!isCurrent())return;if(before.operation)throw new Error(`operation_in_progress: ${before.operation.kind}`);
+    await request('git.checkout',{...scope,branch:branchName.trim(),create:true,startPoint:branchBase.trim(),operationId:operationId()});if(!isCurrent())return;setDialog(undefined);const status=await request('git.status',scope),head=status.selectedCommit?.head;await refreshAt(head&&head.kind!=='unborn'?head.oid:dialog.plan.hash,text(`Created and switched to ${branchName.trim()}.`,`已创建并切换到 ${branchName.trim()}。`));
+   } else if(dialog.kind==='revert') {
+    const result=await request('git.revert',{...scope,hash:dialog.plan.hash,...(dialog.plan.parents.length>1?{mainline}:{}),operationId:operationId()});if(!isCurrent())return;setDialog(undefined);
+     await finishHistoryAction(result,result.conflicted?text('Revert has conflicts. Resolve them in Source Control, then continue.','还原发生冲突。请在源代码管理中解决后继续。'):text('Revert completed.','还原已完成。'));
+   } else if(dialog.kind==='reset') {
+    const resetOperation=operationId(),receipt=await request('git.reset',{...scope,hash:dialog.plan.hash,mode:resetMode,expectedHead:dialog.plan.head,operationId:resetOperation});if(!isCurrent())return;setDialog(undefined);setResetReceipt({previousHead:receipt.previousHead,head:receipt.head,symbolicHead:receipt.symbolicHead,operation:resetOperation});await refreshAt(receipt.head,text('Branch reset.','分支已重置。'));
+   }
+  }catch(error){if(isCurrent())setIssue(workbenchError(error,zh));}finally{if(isCurrent()){busyAction.current=false;setActionBusy(false);}}
+ };
+ const undoReset = async () => {
+  if(!resetReceipt||busyAction.current||!resetUndoMatchesBranch(resetReceipt.symbolicHead,gitStatus?.branch))return;
+  busyAction.current=true;setActionBusy(true);setIssue(undefined);
+  try{const receipt=await request('git.reset',{...scope,hash:resetReceipt.previousHead,mode:'soft',expectedHead:resetReceipt.head,undoOf:resetReceipt.operation,operationId:operationId()});if(!isCurrent())return;setResetReceipt(undefined);await refreshAt(receipt.head,text('Reset undone.','已撤销重置。'));}
+  catch(error){if(isCurrent())setIssue(workbenchError(error,zh));}finally{if(isCurrent()){busyAction.current=false;setActionBusy(false);}}
  };
  useEffect(() => { explicitTargetRef.current=focusCommit; setExplicitTarget(focusCommit); setCommits([]); setSelected(undefined); setDetail(undefined); void loadPage(0); }, [projectId, worktreePath, path, all]);
+ useEffect(() => { let live=true; void request('worktree.list',{projectId}).then((trees:Worktree[])=>{if(live)setProjectPath(trees.find(tree=>tree.isMain)?.path ?? worktreePath);}).catch(()=>{if(live)setProjectPath(worktreePath);}); return()=>{live=false;}; },[projectId,worktreePath]);
+ useEffect(()=>{
+  let live=true,requestNumber=0;
+  const refresh=async(changed=false)=>{
+   const ticket=++requestNumber;
+   try{const status=await request('git.status',scope);if(!live||!isCurrent()||ticket!==requestNumber)return;
+    setGitStatus(status);
+    if(changed){await loadPage(0,true);if(!live||!isCurrent()||ticket!==requestNumber)return;}
+   }catch(error){if(live&&isCurrent())setIssue(workbenchError(error,zh));}
+  };
+  void refresh();
+  const off=subscribeEvents(event=>{const data=event.data as {kind?:unknown;projectId?:unknown;worktreePath?:unknown}|null;if(event.event==='state.changed'&&data?.kind==='git'&&data.projectId===projectId&&(data.worktreePath??undefined)===worktreePath)void refresh(true);});
+  return()=>{live=false;off();};
+ },[scopeKey,all,zh]);
+ useEffect(()=>{setDialog(undefined);setResetReceipt(undefined);setGitStatus(undefined);setActionPlan(undefined);setActionBusy(false);setIssue(undefined);busyAction.current=false;},[scopeKey]);
+ useEffect(()=>{if(resetReceipt&&gitStatus&&!resetUndoMatchesBranch(resetReceipt.symbolicHead,gitStatus.branch))setResetReceipt(undefined);},[resetReceipt,gitStatus?.branch]);
+ useEffect(()=>{if(!notice)return;const timer=setTimeout(()=>setNotice(undefined),4000);return()=>clearTimeout(timer);},[notice]);
  useEffect(() => {
   if(path) return;
   let live = true;
@@ -144,6 +246,12 @@ export function GitHistoryView({projectId, worktreePath, path, focusCommit, zh, 
   }).catch(error => { if(ticket === generation.current) setIssue(workbenchError(error, zh)); });
  }, [selectedCommit, projectId, worktreePath]);
  const info = detail?.commit;
+ const headSnapshot=gitStatus?.selectedCommit?.head;
+ const statusHead=headSnapshot&&headSnapshot.kind!=='unborn'?headSnapshot.oid:undefined;
+ useEffect(()=>{setActionPlan(undefined);if(!info)return;let live=true;void request('git.history.plan',{...scope,hash:info.hash}).then(plan=>{if(live&&isCurrent())setActionPlan(plan);}).catch(error=>{if(live&&isCurrent())setIssue(workbenchError(error,zh));});return()=>{live=false;};},[info?.hash,statusHead,gitStatus?.branch,gitStatus?.operation?.kind,scopeKey]);
+ const headerItems=actionItems(actionPlan).slice(0,5);
+ const headerKinds=['branch','worktree','cherry-pick','revert','reset'] as const;
+ const resetPreview=dialog?.kind==='reset'?resetDialogPreview(dialog.plan.reset):undefined;
  // The diff loads from the selected row as before; comments wait for the full hash (a blame click may select a short
  // one), so a comment always names the same commit.
  const commit = detailSelection === selectedCommit ? info?.hash : undefined;
@@ -187,6 +295,7 @@ export function GitHistoryView({projectId, worktreePath, path, focusCommit, zh, 
      <strong>{info.subject}</strong>
      <span className="wb-commit-meta">{info.authorName} &lt;{info.authorEmail}&gt; · {new Date(info.authoredAt).toLocaleString()} · <code title={info.hash}>{info.hash.slice(0, 10)}</code>
       <button type="button" className="icon-btn" title={text('Copy commit hash', '复制提交哈希')} aria-label={text('Copy commit hash', '复制提交哈希')} onClick={() => copy(info.hash)}><Icon name="export"/></button></span>
+     <span className="wb-operation-actions">{headerItems.map((item,index)=><button key={item.id} type="button" className="btn btn-sm" disabled={item.disabled} title={item.reason} onClick={()=>void openAction(headerKinds[index],info)}>{item.label}</button>)}</span>
      {commentsHost?.attachContext && <ContextSendAction host={commentsHost} item={{kind:'commit', id:crypto.randomUUID(), sha:info.hash, subject:info.subject} satisfies ContextItem} zh={zh} label={text('Send to agent', '发送给 Agent')} testId="history-send-to-agent"/>}
      {detail?.body && <pre className="wb-commit-body">{detail.body}</pre>}
     </header>
@@ -207,5 +316,12 @@ export function GitHistoryView({projectId, worktreePath, path, focusCommit, zh, 
     </div>
   </> : <p className="tt-editor-state">{selectedCommit ? text('Loading commit…', '正在读取提交…') : text('Select a commit.', '选择一个提交。')}</p>}
   </div>
+  {resetReceipt&&resetUndoMatchesBranch(resetReceipt.symbolicHead,gitStatus?.branch)&&<p className="wb-notice" role="status">{text('The branch was reset.','分支已重置。')} <button type="button" className="btn btn-sm" disabled={actionBusy} onClick={()=>void undoReset()}>{text('Undo reset','撤销重置')}</button></p>}
+  {dialog&&dialog.kind!=='worktree'&&<SurfaceDialog size="wide" icon="branch" title={dialog.kind==='branch'?text('New branch from here','从此处新建分支'):dialog.kind==='cherry-pick'?text('Cherry-pick commit','拣选提交'):dialog.kind==='revert'?text('Revert commit','还原提交'):text('Reset branch to here','将分支重置到此处')} subtitle={`${dialog.commit.hash.slice(0,7)} · ${dialog.commit.subject}`} onClose={()=>{if(!actionBusy)setDialog(undefined);}} footer={<><button type="button" className="btn" disabled={actionBusy} onClick={()=>setDialog(undefined)}>{text('Cancel','取消')}</button><button type="button" className={dialog.kind==='reset'?'btn btn-danger':'btn btn-primary'} disabled={actionBusy||Boolean(gitStatus?.operation)||(dialog.kind==='branch'&&(!branchName.trim()||!branchBase.trim()))} onClick={()=>void submitDialog()}>{actionBusy?text('Working…','正在执行…'):dialog.kind==='branch'?text('Create branch','创建分支'):dialog.kind==='revert'?text('Revert commit','还原提交'):dialog.kind==='reset'?text('Reset branch','重置分支'):text('Cherry-pick','拣选')}</button></>}>
+   {dialog.kind==='branch'&&<><label className="field">{text('Branch name','分支名')}<input autoFocus value={branchName} onKeyDown={event=>{if(event.key==='Enter'&&branchName.trim()&&branchBase.trim())void submitDialog();}} onChange={event=>setBranchName(event.target.value)} aria-label={text('Branch name','分支名')} placeholder="feature/my-change"/></label><label className="field">{text('Base','基准')}<input value={branchBase} onChange={event=>setBranchBase(event.target.value)} aria-label={text('Base','基准')}/></label></>}
+   {dialog.kind==='revert'&&<>{dialog.plan.parents.length>1?<label className="field">{text('Mainline parent','主线父提交')}<select value={mainline} onChange={event=>setMainline(Number(event.target.value))}>{dialog.plan.parents.map((parent,index)=><option key={parent.hash} value={index+1}>{text(`Parent ${index+1}: ${parent.subject}`,`父提交 ${index+1}：${parent.subject}`)}</option>)}</select></label>:<p>{text('Create a new commit that reverses this commit.','创建一个新提交来还原此提交。')}</p>}</>}
+   {dialog.kind==='reset'&&<><p>{text('Choose how to keep the changes after moving the branch.','选择移动分支后保留更改的方式。')}</p><label><input type="radio" name="reset-mode" checked={resetMode==='soft'} onChange={()=>setResetMode('soft')}/>{text('Soft — keep changes staged','软重置 — 保留暂存的更改')}</label><label><input type="radio" name="reset-mode" checked={resetMode==='mixed'} onChange={()=>setResetMode('mixed')}/>{text('Mixed — keep changes unstaged','混合重置 — 保留未暂存的更改')}</label><p>{text('Commits leaving the branch:','将离开分支的提交：')}</p><div role="list" className="git-push-preview-list">{resetPreview?.commits.map(commit=><div key={commit.hash} role="listitem">{commit.hash.slice(0,7)} · {commit.subject}</div>)}{Boolean(resetPreview?.remaining)&&<div>{text(`and ${resetPreview!.remaining} more`,`以及另外 ${resetPreview!.remaining} 个`)}</div>}</div>{resetPreview?.pushed&&<p className="surface-error" role="alert">{text('Some of these commits are already pushed. The next push will need a force push.','其中一些提交已推送。下次推送将需要强制推送。')}</p>}</>}
+  </SurfaceDialog>}
+  {dialog?.kind==='worktree'&&projectPath&&<NewWorktree projectId={projectId} projectPath={projectPath} initialBase={dialog.plan.hash} onClose={()=>setDialog(undefined)} onCreated={()=>{if(isCurrent()){setDialog(undefined);setNotice(text('Worktree created.','工作树已创建。'));}}}/>}
  </section>;
 }

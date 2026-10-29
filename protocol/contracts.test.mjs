@@ -860,3 +860,48 @@ test('worktree bases accept multibyte refs within the character limit',()=>{
  for(const startPoint of ['基'.repeat(43)+'/'+'准'.repeat(42),'基'.repeat(255)]) validateRequest('worktree.create',{...request,startPoint});
  assert.throws(()=>validateRequest('worktree.create',{...request,startPoint:'基'.repeat(256)}));
 });
+
+test('history actions validate commit hashes, reset fences and operation kinds',()=>{
+ const scope={projectId:'p'},hash='a'.repeat(40),head='b'.repeat(40),operationId='history-action';
+ for(const method of ['git.history.plan','git.cherryPick','git.revert']) {
+  const params={...scope,hash,...(method==='git.history.plan'?{}:{operationId})};
+  validateRequest(method,params);
+  validateRequest(method,{...params,hash:'abcdef0'});
+  validateRequest(method,{...params,hash:'c'.repeat(64),worktreePath:'worktree'});
+  for(const bad of ['HEAD','--abort','abc123','g'.repeat(40),'a'.repeat(65),'abc1234\n']) assert.throws(()=>validateRequest(method,{...params,hash:bad}));
+  assert.ok(METHODS.includes(method));
+ }
+ validateRequest('git.revert',{...scope,hash,operationId,mainline:1});
+ for(const mainline of [0,-1,1.5,'1',Number.MAX_SAFE_INTEGER+1]) assert.throws(()=>validateRequest('git.revert',{...scope,hash,operationId,mainline}));
+ const reset={...scope,hash,operationId,expectedHead:head,mode:'mixed'};
+ validateRequest('git.reset',reset);
+ validateRequest('git.reset',{...reset,mode:'soft',undoOf:'completed-reset'});
+ for(const patch of [{mode:'hard'},{expectedHead:'HEAD'},{expectedHead:'abcdef0'},{expectedHead:undefined},{undoOf:'receipt'},{mode:'soft',undoOf:''},{mode:'soft',undoOf:' '},{mode:'soft',undoOf:3}]) assert.throws(()=>validateRequest('git.reset',{...reset,...patch}));
+ for(const method of ['git.operation.abort','git.operation.continue']) {
+  for(const kind of ['cherry-pick','revert']) validateRequest(method,{...scope,kind,operationId});
+  for(const kind of ['merge','rebase','--abort','']) assert.throws(()=>validateRequest(method,{...scope,kind,operationId}));
+  assert.throws(()=>validateRequest(method,{...scope,kind:'revert'}));
+  assert.ok(METHODS.includes(method));
+ }
+ assert.ok(METHODS.includes('git.reset'));
+});
+
+test('history plans and action results preserve full OIDs and bounded reset previews',()=>{
+ const hash='a'.repeat(40),head='b'.repeat(40),commit={hash,subject:'Reviewed commit'};
+ const plan={hash,head,branch:'main',detached:false,isAncestor:true,parents:[commit],reset:{count:21,commits:Array(20).fill(commit),pushed:true}};
+ validateResult('git.history.plan',plan);
+ validateResult('git.history.plan',{...plan,branch:'',detached:true,isAncestor:false,parents:[],reset:{count:0,commits:[],pushed:false}});
+ for(const patch of [{head:'abcdef0'},{hash:'HEAD'},{detached:'false'},{parents:[{hash:'abc1234',subject:'parent'}]},{reset:{count:1,commits:[commit,commit],pushed:false}},{reset:{count:21,commits:Array(21).fill(commit),pushed:false}},{reset:{count:-1,commits:[],pushed:false}},{reset:{count:0.5,commits:[],pushed:false}},{reset:{count:0,commits:[],pushed:'yes'}}]) assert.throws(()=>validateResult('git.history.plan',{...plan,...patch}));
+ for(const method of ['git.cherryPick','git.revert','git.operation.continue']) {
+  validateResult(method,{output:'done',conflicted:false,head});
+  validateResult(method,{output:'CONFLICT',conflicted:true});
+  assert.throws(()=>validateResult(method,{output:'done'}));
+  assert.throws(()=>validateResult(method,{output:'done',conflicted:false,head:'HEAD'}));
+ }
+ validateResult('git.operation.abort',{output:'',head});
+ validateResult('git.reset',{output:'',previousHead:head,head:hash,symbolicHead:'refs/heads/main'});
+ validateResult('git.reset',{output:'',previousHead:head,head:hash,symbolicHead:'detached'});
+ for(const symbolicHead of [undefined,'main','refs/heads/','refs/heads/main\n'])assert.throws(()=>validateResult('git.reset',{output:'',previousHead:head,head:hash,symbolicHead}));
+ assert.throws(()=>validateResult('git.reset',{output:'',previousHead:'HEAD',head:hash,symbolicHead:'refs/heads/main'}));
+ assert.throws(()=>validateResult('git.reset',{output:'',previousHead:head,symbolicHead:'refs/heads/main'}));
+});

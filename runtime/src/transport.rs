@@ -248,6 +248,7 @@ fn request_lane(method: &str) -> Lane {
         | "git.status"
         | "git.diff"
         | "git.fingerprints"
+        | "git.history.plan"
         | "git.log"
         | "git.push.preview"
         | "git.stash.list"
@@ -353,7 +354,7 @@ fn trace_method(method: &str) -> &'static str {
         "filesystem.create", "filesystem.delete", "filesystem.image", "filesystem.rename",
         "filesystem.resolve", "filesystem.write", "git.branch.delete", "git.checkout",
         "git.commit", "git.commit.selected", "git.discard", "git.fetch", "git.index.write",
-        "git.merge", "git.merge.abort", "git.pull", "git.push", "git.stage", "git.stash.apply",
+        "git.merge", "git.merge.abort", "git.cherryPick", "git.revert", "git.reset", "git.operation.abort", "git.operation.continue", "git.pull", "git.push", "git.stage", "git.stash.apply",
         "git.stash.drop", "git.stash.push", "git.unstage",
         "history.import", "inbox.read", "plugin.list", "plugin.reload",
         "plugin.selectBrowserBinding", "plugin.setEnabled", "project.add", "project.remove",
@@ -1023,6 +1024,7 @@ mod decoder_tests {
             "git.status",
             "git.diff",
             "git.fingerprints",
+            "git.history.plan",
             "git.log",
             "git.push.preview",
             "git.stash.list",
@@ -1057,6 +1059,11 @@ mod decoder_tests {
             "git.stash.push",
             "git.stash.apply",
             "git.stash.drop",
+            "git.cherryPick",
+            "git.revert",
+            "git.reset",
+            "git.operation.abort",
+            "git.operation.continue",
             "session.resume",
             "session.stop",
             "worktree.list",
@@ -1083,6 +1090,7 @@ mod decoder_tests {
             "agentReview.start",
             "data.backup",
             "git.stash.apply",
+            "git.cherryPick",
         ] {
             assert_eq!(trace_method(known), known, "{known}");
         }
