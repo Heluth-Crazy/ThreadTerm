@@ -1,0 +1,35 @@
+/* Run view: current configuration, Running across worktrees, and the Saved/Detected entry groups.
+   Rows reuse the popover's .ql-command markup, stacked for the narrower side bar. */
+.wb-run { display:flex; flex-direction:column; min-height:100%; }
+.wb-run .ql-command { grid-template-columns:minmax(0,1fr); grid-template-areas:"head" "code" "url" "actions"; row-gap:4px; padding:8px 10px; }
+.wb-run .ql-actions { justify-content:flex-start; }
+.wb-run .ql-url, .wb-run .ql-url-text { grid-area:url; display:block; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:var(--primary); font-size:11.5px; }
+.wb-run .ql-url:hover { text-decoration:underline; }
+.wb-run .ql-command.is-current { box-shadow:inset 2px 0 0 var(--primary); }
+.wb-run-head { display:flex; flex-direction:column; gap:6px; padding:8px 10px 10px; border-bottom:1px solid var(--border); }
+.wb-run-current { display:flex; align-items:center; gap:6px; min-width:0; }
+.wb-run-current strong { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:12.5px; }
+.wb-run-current .icon-btn { flex:none; width:22px; height:22px; }
+.wb-run-current .icon-btn .ico { width:14px; height:14px; }
+.wb-run-label { flex:none; color:var(--muted); font-size:11px; letter-spacing:.04em; text-transform:uppercase; }
+.wb-run-keys { display:flex; flex-wrap:wrap; gap:4px; }
+.wb-run-help { margin:0; color:var(--muted); font-size:11.5px; line-height:1.5; }
+.wb-run-section { border-bottom:1px solid var(--border); padding-bottom:6px; }
+.wb-run-section-head { display:flex; align-items:center; gap:6px; padding:8px 10px 2px; }
+.wb-run-section-head .btn { margin-left:auto; }
+.wb-run-running { display:flex; flex-direction:column; gap:4px; padding:8px 10px; border-top:1px solid var(--border); }
+.wb-run-running .ql-command-head { flex-wrap:wrap; }
+.wb-run-filter { box-sizing:border-box; width:calc(100% - 20px); height:28px; margin:8px 10px 2px; padding:0 8px; border:1px solid var(--border); border-radius:var(--radius); background:var(--surface); color:var(--text); font:inherit; font-size:12px; }
+.wb-run-filter:focus-visible { border-color:var(--primary); box-shadow:var(--wb-ring); outline:none; }
+.wb-run-group-head { display:flex; align-items:center; gap:6px; width:100%; padding:6px 10px; border:0; background:transparent; color:var(--muted); font:inherit; font-size:11px; letter-spacing:.05em; text-transform:uppercase; cursor:pointer; text-align:left; }
+.wb-run-group-head:hover { color:var(--text); }
+.wb-run-group-head:focus-visible { outline:2px solid var(--primary); outline-offset:-2px; }
+.wb-run-group-head .wb-count { margin-left:auto; }
+.wb-run-sub > .ql-detected-group-head { padding-left:26px; text-transform:none; letter-spacing:0; }
+.wb-run-foot { display:flex; flex-wrap:wrap; gap:4px; padding:8px 10px 12px; }
+.wb-run-foot .menu-item { flex:1 0 auto; width:auto; }
+.wb-run .ql-worktree { flex:none; max-width:45%; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:var(--muted); font-size:11px; }
+.wb-run .ql-uptime { flex:none; color:var(--faint); font-size:11px; font-variant-numeric:tabular-nums; }
+.wb-run-help-btn { flex:none; width:22px; height:22px; padding:0; border:0; border-radius:999px; background:transparent; color:var(--muted); font-family:inherit; font-size:12px; font-weight:600; line-height:1; cursor:pointer; }
+.wb-run-help-btn:hover { background:var(--soft); color:var(--text); }
+.wb-run-help-btn:focus-visible { outline:2px solid var(--primary); outline-offset:1px; }

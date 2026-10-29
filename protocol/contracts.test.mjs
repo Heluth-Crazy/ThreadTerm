@@ -796,6 +796,13 @@ test('detected entries are read-only suggestions with a stable key and exactly o
  assert.ok(METHODS.includes('quickLaunch.detect'));
 });
 
+test('restart names one run session and replays its receipt',()=>{
+ validateRequest('quickLaunch.restart',{sessionId:'s',operationId:'o'});
+ for(const patch of [{sessionId:undefined},{sessionId:''},{operationId:undefined},{operationId:''},{cwd:'C:\\repo'},{command:'npm run dev'}]) assert.throws(()=>validateRequest('quickLaunch.restart',{sessionId:'s',operationId:'o',...patch}));
+ validateResult('quickLaunch.restart',{existing:false,session:{id:'t2',title:'dev',provider:'custom',mode:'terminal',status:'starting',createdAt:'t',updatedAt:'t',run:{commandId:'detected:node:apps/web/package.json:dev',name:'dev',kind:'service',shell:'cmd'}}});
+ assert.ok(METHODS.includes('quickLaunch.restart'));
+});
+
 test('provider refresh is additive and carries the claimed generation',()=>{
  validateRequest('provider.refresh',{});
  validateResult('provider.refresh',{refreshId:1});

@@ -2459,6 +2459,22 @@
       ],
       "additionalProperties": false
     },
+    "RequestParams<\"quickLaunch.restart\">": {
+      "type": "object",
+      "properties": {
+        "sessionId": {
+          "type": "string"
+        },
+        "operationId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "sessionId",
+        "operationId"
+      ],
+      "additionalProperties": false
+    },
     "RequestParams<\"quickLaunch.detect\">": {
       "type": "object",
       "properties": {
@@ -8328,6 +8344,32 @@
         },
         "params": {
           "$ref": "#/definitions/RequestParams%3C%22quickLaunch.run%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "params"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "quickLaunch.restart"
+        },
+        "params": {
+          "$ref": "#/definitions/RequestParams%3C%22quickLaunch.restart%22%3E"
         }
       },
       "required": [

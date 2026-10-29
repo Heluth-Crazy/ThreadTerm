@@ -5115,6 +5115,22 @@
       ],
       "additionalProperties": false
     },
+    "RequestResult<\"quickLaunch.restart\">": {
+      "type": "object",
+      "properties": {
+        "session": {
+          "$ref": "#/definitions/Session"
+        },
+        "existing": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "session",
+        "existing"
+      ],
+      "additionalProperties": false
+    },
     "RequestResult<\"quickLaunch.detect\">": {
       "$ref": "#/definitions/QuickLaunchDetection"
     },
@@ -11890,6 +11906,32 @@
         },
         "result": {
           "$ref": "#/definitions/RequestResult%3C%22quickLaunch.run%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "result"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "quickLaunch.restart"
+        },
+        "result": {
+          "$ref": "#/definitions/RequestResult%3C%22quickLaunch.restart%22%3E"
         }
       },
       "required": [

@@ -985,3 +985,104 @@ fn unsafe_detected_commands_never_launch() {
     assert!(db.snapshot().unwrap().sessions.is_empty());
     runtime.shutdown();
 }
+
+#[cfg(windows)]
+#[test]
+fn restart_stops_the_active_run_then_relaunches_the_edited_saved_command() {
+    let (root, db) = test_db();
+    let project_id = project(&db, root.path(), "project-restart-saved");
+    let runtime = service(root.path(), Arc::clone(&db));
+    let cwd = root.path().to_string_lossy().to_string();
+    let saved = runtime.dispatch("test", rpc("quickLaunch.save", json!({
+        "projectId":project_id,"name":"Server","command":"ping -n 30 127.0.0.1 > nul","shell":"cmd","cwd":"","kind":"service","env":[],"operationId":"restart-save"
+    }), "restart-save")).unwrap();
+    let first = runtime.dispatch("test", rpc("quickLaunch.run", json!({"commandId":saved["id"],"cwd":cwd,"operationId":"restart-run"}), "restart-run")).unwrap();
+    let first_id = first["session"]["id"].as_str().unwrap().to_owned();
+    assert_eq!(first["existing"], json!(false));
+    // The saved text changes while the run is active: restart relaunches from the current text.
+    runtime.dispatch("test", rpc("quickLaunch.save", json!({
+        "projectId":project_id,"id":saved["id"],"expectedRevision":1,"name":"Server","command":"echo SECOND>result.txt","shell":"cmd","cwd":"","kind":"task","env":[],"operationId":"restart-edit"
+    }), "restart-edit")).unwrap();
+    let restarted = runtime.dispatch("test", rpc("quickLaunch.restart", json!({"sessionId":first_id,"operationId":"restart-1"}), "restart-1")).unwrap();
+    let second_id = restarted["session"]["id"].as_str().unwrap().to_owned();
+    assert_ne!(second_id, first_id);
+    assert_eq!(restarted["existing"], json!(false));
+    assert_eq!(restarted["session"]["run"]["commandId"], saved["id"]);
+    // The stop is the existing intent plus the existing PTY stop: the old run ends quietly.
+    let stopped = db.session_by_id(&first_id).unwrap().unwrap();
+    assert_eq!(stopped.status, "exited");
+    assert_eq!(stopped.run.unwrap().stop_requested, Some(true));
+    wait_inactive(&db, &second_id);
+    assert_eq!(
+        std::fs::read_to_string(root.path().join("result.txt")).unwrap().trim(),
+        "SECOND"
+    );
+    // Receipt replay returns the same new session and launches nothing.
+    let replay = runtime.dispatch("test", rpc("quickLaunch.restart", json!({"sessionId":first_id,"operationId":"restart-1"}), "restart-1")).unwrap();
+    assert_eq!(replay["session"]["id"], json!(second_id));
+    assert_eq!(db.snapshot().unwrap().sessions.len(), 2);
+    runtime.shutdown();
+}
+
+#[cfg(windows)]
+#[test]
+fn restart_detected_entry_redetects_its_command_and_refuses_a_removed_source() {
+    let (root, db) = test_db();
+    let project_id = project(&db, root.path(), "project-restart-detected");
+    let procfile = root.path().join("Procfile");
+    std::fs::write(&procfile, "task: echo FIRST>result.txt\n").unwrap();
+    let runtime = service(root.path(), Arc::clone(&db));
+    let cwd = root.path().to_string_lossy().to_string();
+    let first = runtime.dispatch("test", rpc("quickLaunch.run", json!({"detectedKey":"procfile:Procfile:task","projectId":project_id,"cwd":cwd,"operationId":"detected-first"}), "detected-first")).unwrap();
+    let first_id = first["session"]["id"].as_str().unwrap().to_owned();
+    wait_inactive(&db, &first_id);
+    assert_eq!(std::fs::read_to_string(root.path().join("result.txt")).unwrap().trim(), "FIRST");
+    std::fs::write(&procfile, "task: echo SECOND>result.txt\n").unwrap();
+    let restarted = runtime.dispatch("test", rpc("quickLaunch.restart", json!({"sessionId":first_id,"operationId":"detected-restart"}), "detected-restart")).unwrap();
+    let second_id = restarted["session"]["id"].as_str().unwrap().to_owned();
+    assert_eq!(restarted["session"]["run"]["commandId"], "detected:procfile:Procfile:task");
+    wait_inactive(&db, &second_id);
+    assert_eq!(std::fs::read_to_string(root.path().join("result.txt")).unwrap().trim(), "SECOND");
+    std::fs::remove_file(&procfile).unwrap();
+    let error = runtime.dispatch("test", rpc("quickLaunch.restart", json!({"sessionId":second_id,"operationId":"detected-gone"}), "detected-gone")).unwrap_err();
+    assert_eq!(error.code, "detected_entry_not_found");
+    assert_eq!(db.snapshot().unwrap().sessions.len(), 2, "nothing relaunched");
+    // An unknown session is refused before any run is touched.
+    assert_eq!(
+        runtime.dispatch("test", rpc("quickLaunch.restart", json!({"sessionId":"missing","operationId":"restart-missing"}), "restart-missing")).unwrap_err().code,
+        "session_not_found"
+    );
+    runtime.shutdown();
+}
+
+#[cfg(windows)]
+#[test]
+fn restart_gives_up_after_its_bounded_stop_wait() {
+    let (root, db) = test_db();
+    let project_id = project(&db, root.path(), "project-restart-timeout");
+    let root_key = root.path().canonicalize().unwrap().to_string_lossy().into_owned();
+    let saved = dispatch(&db, &PtyManager::new(Arc::new(crate::output::OutputStore::default())), "quickLaunch.save", &json!({
+        "projectId":project_id,"name":"Stuck","command":"ping -n 30 127.0.0.1 > nul","shell":"cmd","cwd":"","kind":"service","env":[],"operationId":"stuck-save"
+    })).unwrap();
+    // A reserved run whose launch never reached a PTY, as a crash between reservation and
+    // launch leaves it: stop marks the intent, and only the bounded wait can end the restart.
+    let now = Utc::now().to_rfc3339();
+    let command_id = saved["id"].as_str().unwrap().to_owned();
+    let snapshot_json = saved.to_string();
+    db.transaction(|tx| {
+        tx.execute("INSERT INTO sessions(id,project_id,worktree_path,title,provider,mode,status,created_at,updated_at,followed) VALUES('stuck',?,?,'Stuck','custom','terminal','starting',?,?,0)", params![project_id,root_key,now,now])?;
+        tx.execute("INSERT INTO session_activity(session_id,state,revision) VALUES('stuck','unknown',1)", [])?;
+        tx.execute("INSERT INTO quick_launch_runs(session_id,command_id,project_id,root,snapshot_json,url,url_source,stop_requested,started_at) VALUES('stuck',?,?,?,?,NULL,NULL,0,?)", params![command_id,project_id,root_key,snapshot_json,now])?;
+        Ok(())
+    }).unwrap();
+    let pty = PtyManager::new(Arc::new(crate::output::OutputStore::default()));
+    assert_eq!(RESTART_STOP_TIMEOUT, Duration::from_secs(10), "the bound the rest of the product waits for");
+    let error = restart_with(&db, &pty, Restart { session_id: "stuck".into(), operation_id: "stuck-restart".into() }, Duration::from_millis(150)).unwrap_err();
+    assert_eq!(error.to_string(), "restart_stop_timeout");
+    let session = db.session_by_id("stuck").unwrap().unwrap();
+    assert_eq!(session.status, "starting");
+    assert_eq!(session.run.unwrap().stop_requested, Some(true));
+    assert_eq!(db.snapshot().unwrap().sessions.len(), 1, "a timed-out restart launches nothing");
+    let recorded: i64 = db.transaction(|tx| Ok(tx.query_row("SELECT COUNT(*) FROM operations WHERE method='quickLaunch.restart'", [], |r| r.get(0))?)).unwrap();
+    assert_eq!(recorded, 0, "a timed-out restart records no receipt");
+}

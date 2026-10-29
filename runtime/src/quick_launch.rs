@@ -11,6 +11,7 @@ use std::{
     collections::HashSet,
     path::{Path, PathBuf},
     sync::{Arc, Mutex, OnceLock},
+    time::{Duration, Instant},
 };
 
 // Dispatch holds only a shared service gate. Serialize admission across clients,
@@ -30,6 +31,7 @@ pub(crate) const ERROR_CODES: &[&str] = &[
     "detected_entry_not_found",
     "tool_not_found",
     "invalid_command",
+    "restart_stop_timeout",
 ];
 
 #[path = "quick_launch_setup.rs"]
@@ -191,12 +193,18 @@ struct Rerun {
     session_id: String,
     operation_id: String,
 }
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct Restart {
+    session_id: String,
+    operation_id: String,
+}
 
 pub(crate) fn handles(method: &str) -> bool {
     matches!(
         method,
         "quickLaunch.list" | "quickLaunch.save" | "quickLaunch.delete" | "quickLaunch.run"
-        | "quickLaunch.detect"
+        | "quickLaunch.restart" | "quickLaunch.detect"
         | "quickLaunch.setup.read" | "quickLaunch.setup.save" | "quickLaunch.setup.run" | "quickLaunch.setup.status"
     )
 }
@@ -274,6 +282,11 @@ pub(crate) fn validate(method: &str, value: &Value) -> Result<()> {
                 }
                 _ => return Err(anyhow!("invalid_request")),
             }
+        }
+        "quickLaunch.restart" => {
+            let p: Restart = serde_json::from_value(value.clone())?;
+            required(&p.session_id)?;
+            required(&p.operation_id)?;
         }
         "quickLaunch.detect" => {
             let p: Detect = serde_json::from_value(value.clone())?;
@@ -496,6 +509,7 @@ pub(crate) fn dispatch(
                 None,
             )
         }
+        "quickLaunch.restart" => restart(db, pty, serde_json::from_value(value.clone())?),
         _ => Err(anyhow!("unknown_method")),
     }
 }
@@ -793,6 +807,108 @@ pub(crate) fn request_stop(db: &Database, id: &str) -> Result<()> {
         if changed_rows != 0 { changed(tx, "session.run", Some(id))?; }
         Ok(())
     })
+}
+
+/// A restart waits this long for the stopped run to leave its active status before
+/// giving up; on timeout nothing has been relaunched and the original run is untouched.
+const RESTART_STOP_TIMEOUT: Duration = Duration::from_secs(10);
+/// Status polling between the stop and the relaunch; the stop itself is synchronous on
+/// Windows, so this only covers a run whose exit is still being finalized.
+const RESTART_POLL: Duration = Duration::from_millis(20);
+
+fn restart(db: &Arc<Database>, pty: &PtyManager, p: Restart) -> Result<Value> {
+    restart_with(db, pty, p, RESTART_STOP_TIMEOUT)
+}
+
+/// Stop, wait for the exit, then launch the same entry again for the same root. The
+/// admission lock is released while waiting, so another run or stop is never queued
+/// behind the wait; it is re-taken for the relaunch, which also re-checks the receipt.
+fn restart_with(
+    db: &Arc<Database>,
+    pty: &PtyManager,
+    p: Restart,
+    stop_timeout: Duration,
+) -> Result<Value> {
+    // Read the run before stopping: an unknown session and a replayed operation must
+    // not touch the run that is still active.
+    let (raw, root, project) = db
+        .transaction(|tx| {
+            Ok(tx
+                .query_row(
+                    "SELECT snapshot_json,root,project_id FROM quick_launch_runs WHERE session_id=?",
+                    [&p.session_id],
+                    |r| {
+                        Ok((
+                            r.get::<_, String>(0)?,
+                            r.get::<_, String>(1)?,
+                            r.get::<_, String>(2)?,
+                        ))
+                    },
+                )
+                .optional()?)
+        })?
+        .ok_or_else(|| anyhow!("session_not_found"))?;
+    {
+        let _guard = ADMISSION
+            .lock()
+            .map_err(|_| anyhow!("quick launch admission poisoned"))?;
+        if let Some(result) = db.operation(&p.operation_id)? {
+            return Ok(result);
+        }
+    }
+    request_stop(db, &p.session_id)?;
+    match pty.stop(db, &p.session_id, true) {
+        Ok(()) => {}
+        // Its reader may already be finalizing an exit; the bounded wait decides.
+        Err(error) if error.to_string() == "session has no live PTY" => {}
+        Err(error) => return Err(error),
+    }
+    if !wait_for_exit(db, &p.session_id, stop_timeout)? {
+        return Err(anyhow!("restart_stop_timeout"));
+    }
+    let _guard = ADMISSION
+        .lock()
+        .map_err(|_| anyhow!("quick launch admission poisoned"))?;
+    if let Some(result) = db.operation(&p.operation_id)? {
+        return Ok(result);
+    }
+    let (snapshot, _) = setup::decode_snapshot(&raw)?;
+    // A saved entry relaunches from its current saved text; a detected one is re-detected,
+    // so an entry whose source disappeared fails instead of running a stale command.
+    let snapshot = match snapshot.id.strip_prefix("detected:") {
+        Some(key) => detected_snapshot(db, &project, &root, key)?,
+        None => read_command(db, &snapshot.id)?,
+    };
+    start(
+        db,
+        pty,
+        &snapshot,
+        &root,
+        &p.operation_id,
+        "quickLaunch.restart",
+        None,
+        None,
+    )
+}
+
+/// True once the session left its active status, false at the deadline.
+fn wait_for_exit(db: &Database, id: &str, timeout: Duration) -> Result<bool> {
+    let deadline = Instant::now() + timeout;
+    loop {
+        let status: Option<String> = db.transaction(|tx| {
+            Ok(tx
+                .query_row("SELECT status FROM sessions WHERE id=?", [id], |r| r.get(0))
+                .optional()?)
+        })?;
+        match status.as_deref() {
+            Some("starting" | "running" | "idle" | "waiting") => {}
+            _ => return Ok(true),
+        }
+        if Instant::now() >= deadline {
+            return Ok(false);
+        }
+        std::thread::sleep(RESTART_POLL);
+    }
 }
 
 /// User-stopped runs and successful setup steps end quietly: neither needs an Inbox item.

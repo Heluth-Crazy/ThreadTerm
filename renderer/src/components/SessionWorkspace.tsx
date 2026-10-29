@@ -15,6 +15,7 @@ import { canSplitPaneArea, fileViewPlacement, visibleSessionLayout } from '../se
 import { sameDiffTabKey } from '../workbench/branchScope';
 import { PaneWorkspace, type PaneWorkbench } from './PaneWorkspace';
 import { WorkbenchSideBar, type WorkbenchCommand, type WorkbenchView } from './WorkbenchSideBar';
+import { runKeyCommand, type RunCommandRequest } from '../workbench/runView';
 import type { GitWorkbenchAction } from '../workbench/gitKeyboardCommand';
 import { QuickOpen, invalidateQuickOpen } from './QuickOpen';
 import { SessionDocuments } from './SessionDocuments';
@@ -121,6 +122,8 @@ export function SessionWorkspace({session,data,theme,onBack,onSelect,onProject,o
  const [trees,setTrees]=useState<Worktree[]>([]),[git,setGit]=useState<GitStatus>();
  const [workbenchCommand,setWorkbenchCommand]=useState<WorkbenchCommand>(),[quickOpen,setQuickOpen]=useState(false),[historyFocus,setHistoryFocus]=useState<{tabId:string;commit:string;key:string}>();
  const gitWorkbenchHost=useRef(crypto.randomUUID());
+ // The Run palette entries are addressed to this workspace's worktree, never to a background one.
+ const runWorkbenchHost=useRef(crypto.randomUUID());
  const [inspector,setInspector]=useState(false);
  const [pinPicker,setPinPicker]=useState(false);
  const [picker,setPicker]=useState<{mode:'switch'|'add'|'fill';paneId?:string}>(),[query,setQuery]=useState(''),[allProjects,setAllProjects]=useState(false);
@@ -484,6 +487,7 @@ export function SessionWorkspace({session,data,theme,onBack,onSelect,onProject,o
   sessionDocuments:canPin?documents:undefined,
   openFile:(file,position)=>void openScopedFile({projectId:project.id,worktreePath:path,path:file,kind:previewKind(file),line:position?.line,column:position?.column}).catch(fail),
   openSession:onSelect,
+  openPreview:url=>{void paneWorkbench.openWeb?.(url);},
   openBeside:file=>void openScopedFile({projectId:project.id,worktreePath:path,path:file,kind:previewKind(file),ownerSessionId:previewSessionId}).catch(fail),
   openDiff:(file,staged,compare)=>void openScopedFile({projectId:project.id,worktreePath:path,path:file,kind:'diff',staged,...(compare?{compare}:{})}).catch(fail),
   openWorktree:worktreePath=>onProject(project.id,worktreePath),
@@ -562,6 +566,9 @@ export function SessionWorkspace({session,data,theme,onBack,onSelect,onProject,o
  // Workbench shortcuts never fire inside a terminal: Ctrl+P/B/L belong to shells and TUIs there.
  useEffect(()=>{
   const key=(event:KeyboardEvent)=>{
+   // Ctrl+F5 / Shift+F5 / Ctrl+Shift+F5 act on this worktree's current configuration from any side bar view.
+   const run=runKeyCommand(event);
+   if(run){event.preventDefault();setWorkbenchCommand({view:'run',key:run.key,run});return;}
    if(!(event.ctrlKey||event.metaKey)||event.altKey||(event.target as Element|null)?.closest?.('.xterm'))return;
    const letter=event.key.toLowerCase();
    const view:WorkbenchView|'toggle'|undefined=event.shiftKey?({e:'files',f:'search',g:'scm'} as Record<string,WorkbenchView>)[letter]:letter==='b'?'toggle':undefined;
@@ -569,21 +576,21 @@ export function SessionWorkspace({session,data,theme,onBack,onSelect,onProject,o
    if(!event.shiftKey&&letter==='o'){event.preventDefault();void chooseOutsideRef.current();return;}
    if(view){event.preventDefault();setWorkbenchCommand({view,key:crypto.randomUUID()});}
   };
-  const palette=(event:Event)=>{const detail=(event as CustomEvent<{view:WorkbenchView|'quick-open'|'external-files';key?:string;action?:GitWorkbenchAction;hostKey?:string}>).detail,scope=workbenchScopeRef.current;if(detail?.view==='external-files')void chooseOutsideRef.current();else if(detail?.view==='quick-open')setQuickOpen(true);else if(detail?.view==='scm'&&detail.action&&scope&&detail.hostKey===gitWorkbenchHost.current)setWorkbenchCommand({view:'scm',key:detail.key??crypto.randomUUID(),action:detail.action,scopeKey:`${scope.projectId}\0${scope.worktreePath??''}\0${scope.rootPath}`});else if(detail?.view==='scm'&&!detail.action)setWorkbenchCommand({view:'scm',key:detail.key??crypto.randomUUID()});else if(detail?.view&&detail.view!=='scm')setWorkbenchCommand({view:detail.view,key:detail.key??crypto.randomUUID()});};
+  const palette=(event:Event)=>{const detail=(event as CustomEvent<{view:WorkbenchView|'quick-open'|'external-files';key?:string;action?:GitWorkbenchAction;hostKey?:string;run?:RunCommandRequest}>).detail,scope=workbenchScopeRef.current;if(detail?.view==='external-files')void chooseOutsideRef.current();else if(detail?.view==='quick-open')setQuickOpen(true);else if(detail?.view==='run'&&detail.run&&detail.hostKey===runWorkbenchHost.current)setWorkbenchCommand({view:'run',key:detail.key??crypto.randomUUID(),run:{...detail.run,key:detail.run.key??detail.key??crypto.randomUUID()}});else if(detail?.view==='scm'&&detail.action&&scope&&detail.hostKey===gitWorkbenchHost.current)setWorkbenchCommand({view:'scm',key:detail.key??crypto.randomUUID(),action:detail.action,scopeKey:`${scope.projectId}\0${scope.worktreePath??''}\0${scope.rootPath}`});else if(detail?.view==='scm'&&!detail.action)setWorkbenchCommand({view:'scm',key:detail.key??crypto.randomUUID()});else if(detail?.view&&detail.view!=='scm')setWorkbenchCommand({view:detail.view,key:detail.key??crypto.randomUUID()});};
   addEventListener('keydown',key);addEventListener('threadterm:workbench',palette);
   return()=>{removeEventListener('keydown',key);removeEventListener('threadterm:workbench',palette);};
  },[]);
  // Back goes to this session's branch home page (App.sessionHome); name it, since the label is just "Back".
  const home=project?(currentTree?.branch??git?.branch??project.name):undefined;
  const backTitle=home?(zh?`返回 ${home}`:`Back to ${home}`):(zh?'返回所有终端':'Back to all terminals');
- return <section className={`ws session-screen runtime-workspace${fullscreen?' terminal-fullscreen':''}`} data-external-files data-external-disabled-reason={externalDisabledReason} data-git-workbench data-git-workbench-host={gitWorkbenchHost.current} data-git-repository={git?'true':undefined} data-navigation-open={navigationOpen||undefined} aria-label={zh?'终端工作区':'Terminal workspace'}>
+ return <section className={`ws session-screen runtime-workspace${fullscreen?' terminal-fullscreen':''}`} data-external-files data-external-disabled-reason={externalDisabledReason} data-git-workbench data-git-workbench-host={gitWorkbenchHost.current} data-git-repository={git?'true':undefined} data-run-workbench data-run-workbench-host={runWorkbenchHost.current} data-run-project-id={project?.id} data-run-worktree-path={path} data-navigation-open={navigationOpen||undefined} aria-label={zh?'终端工作区':'Terminal workspace'}>
   {navigationOpen&&<button type="button" className="runtime-nav-scrim" aria-label={zh?'关闭导航':'Close navigation'} onClick={()=>closeNavigation()}/>}
   <header className="ws-top">
    <button className="ws-back" onClick={onBack} title={backTitle} aria-label={backTitle}><Icon name="back"/><span>{zh?'返回':'Back'}</span></button>
    <button ref={navigationToggle} type="button" className="runtime-nav-toggle icon-btn" aria-label={zh?'打开导航':'Open navigation'} aria-expanded={navigationOpen} aria-controls="runtime-navigation" onClick={()=>navigationOpen?closeNavigation(false):setNavigationOpen(true)}><Icon name="panel"/></button>
    {project&&<button className="ws-chip" title={project.name} onClick={()=>onProject(project.id)}><span className="dot primary"/><span className="ws-chip-label">{project.name}</span></button>}
    {project&&<button className="ws-chip branch" title={displayPath(path??'')} onClick={()=>onProject(project.id,path)}><Icon name="branch"/><span className="ws-chip-label">{currentTree?.branch??git?.branch??displayPath(path??'').split(/[\\/]/).at(-1)}</span></button>}
-   {project&&path&&<QuickLaunchMenu key={`${project.id}:${path}`} projectId={project.id} root={path} data={data} onOpenSession={onSelect} onOpenPreview={paneWorkbench.openWeb}/>}
+   {project&&path&&<QuickLaunchMenu key={`${project.id}:${path}`} projectId={project.id} root={path} data={data} onOpenSession={onSelect} onOpenPreview={paneWorkbench.openWeb} onOpenRunView={()=>setWorkbenchCommand({view:'run',key:crypto.randomUUID()})}/>}
    {session.run&&<QuickLaunchRunChip session={session} onOpenPreview={paneWorkbench.openWeb}/>}
    <div className="top-spacer"/>
    <button className="icon-btn" onClick={()=>setInspector(value=>!value)} aria-pressed={inspector} aria-label={zh?'会话详情面板':'Session details'}><Icon name="panel"/></button>
@@ -592,7 +599,7 @@ export function SessionWorkspace({session,data,theme,onBack,onSelect,onProject,o
    {issue&&<p className="surface-error" role="alert">{issue}</p>}
    {commentNotice&&<div className="ws-notice-anchor"><p role="status">{commentNotice}</p></div>}
    {fileIssue&&<div className="workspace-file-error" role="alert"><span>{fileIssue.message} <code title={displayPath(fileIssue.path)}>{displayPath(fileIssue.path)}</code></span><button type="button" className="btn" onClick={()=>void navigator.clipboard.writeText(fileIssue.path).catch(fail)}>{zh?'复制路径':'Copy path'}</button><button type="button" className="icon-btn" aria-label={zh?'关闭提示':'Dismiss notice'} onClick={()=>setFileIssue(undefined)}><Icon name="close"/></button></div>}
-   <div className={`ws-content${inspector?' with-drawer':''}`}>{workbenchScope&&workbenchActions&&<WorkbenchSideBar scope={workbenchScope} actions={workbenchActions} sessions={workspaceSessions} activeSessionId={previewSessionId} activePath={activeFilePath} command={workbenchCommand} switcherHost={switcherHost} zh={zh}/>}<div className="ws-pane" ref={paneArea}>
+   <div className={`ws-content${inspector?' with-drawer':''}`}>{workbenchScope&&workbenchActions&&<WorkbenchSideBar scope={workbenchScope} actions={workbenchActions} sessions={workspaceSessions} allSessions={data.sessions} activeSessionId={previewSessionId} activePath={activeFilePath} command={workbenchCommand} switcherHost={switcherHost} zh={zh}/>}<div className="ws-pane" ref={paneArea}>
     <div className="workspace-content-host">
      <ContextHost.Provider value={commentsHost}><PaneWorkspace
       layout={layout} sessions={data.sessions} data={data} theme={theme}
