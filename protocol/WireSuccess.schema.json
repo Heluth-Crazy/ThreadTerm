@@ -6838,6 +6838,9 @@
         },
         "symbolicHead": {
           "type": "string"
+        },
+        "undoId": {
+          "type": "string"
         }
       },
       "required": [
@@ -6941,6 +6944,9 @@
           "items": {
             "type": "string"
           }
+        },
+        "undoId": {
+          "type": "string"
         }
       },
       "required": [
@@ -7068,6 +7074,9 @@
       "type": "object",
       "properties": {
         "branch": {
+          "type": "string"
+        },
+        "undoId": {
           "type": "string"
         }
       },
@@ -7281,6 +7290,9 @@
         },
         "interference": {
           "$ref": "#/definitions/GitStashDropInterference"
+        },
+        "undoId": {
+          "type": "string"
         }
       },
       "required": [
@@ -7299,6 +7311,9 @@
         "dropped": {
           "type": "boolean",
           "const": true
+        },
+        "undoId": {
+          "type": "string"
         }
       },
       "required": [
@@ -7306,6 +7321,108 @@
         "dropped"
       ],
       "additionalProperties": false
+    },
+    "RequestResult<\"git.undo\">": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "undoneAt": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "undoneAt"
+      ],
+      "additionalProperties": false
+    },
+    "RequestResult<\"git.undo.list\">": {
+      "type": "object",
+      "properties": {
+        "entries": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/GitUndoEntry"
+          }
+        }
+      },
+      "required": [
+        "entries"
+      ],
+      "additionalProperties": false
+    },
+    "GitUndoEntry": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "kind": {
+          "type": "string",
+          "enum": [
+            "discard",
+            "branch",
+            "stash",
+            "reset"
+          ]
+        },
+        "label": {
+          "type": "string"
+        },
+        "createdAt": {
+          "type": "string"
+        },
+        "available": {
+          "type": "boolean"
+        },
+        "paths": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "pathCount": {
+          "type": "number"
+        },
+        "undoneAt": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "recycledCount": {
+          "type": "number"
+        },
+        "partial": {
+          "type": "boolean"
+        },
+        "applied": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "remaining": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "id",
+        "kind",
+        "label",
+        "createdAt",
+        "available",
+        "paths",
+        "pathCount",
+        "undoneAt"
+      ],
+      "additionalProperties": false,
+      "description": "Identifier-only recovery journal metadata. Paths are repository-relative and capped by the runtime; `paths`/`pathCount` cover only undoable paths, while `recycledCount` counts paths recoverable only through the Recycle Bin. A partial entry records an Undo that restored some paths and then failed."
     },
     "RequestResult<\"git.log\">": {
       "$ref": "#/definitions/GitLog"
@@ -13158,6 +13275,58 @@
         },
         "result": {
           "$ref": "#/definitions/RequestResult%3C%22git.stash.drop%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "result"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "git.undo"
+        },
+        "result": {
+          "$ref": "#/definitions/RequestResult%3C%22git.undo%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "result"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "git.undo.list"
+        },
+        "result": {
+          "$ref": "#/definitions/RequestResult%3C%22git.undo.list%22%3E"
         }
       },
       "required": [

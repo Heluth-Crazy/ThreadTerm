@@ -96,7 +96,9 @@
 .wb-issue .icon-btn .ico { width:13px; height:13px; }
 .wb-interference-list { display:block; margin-top:4px; }
 .wb-interference-entry { display:block; max-width:100%; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-family:var(--mono); }
-.wb-notice { margin:8px 10px; padding:7px 10px; border-radius:var(--radius); background:var(--primary-tint); color:var(--text); font-size:12px; line-height:1.45; }
+.wb-notice { display:flex; align-items:center; justify-content:space-between; gap:8px; margin:8px 10px; padding:7px 10px; border-radius:var(--radius); background:var(--primary-tint); color:var(--text); font-size:12px; line-height:1.45; }
+.wb-notice > span { min-width:0; overflow-wrap:anywhere; }
+.wb-notice .btn { flex:none; }
 .wb-summary { margin:6px 14px; color:var(--muted); font-size:12px; }
 .wb-empty { margin:10px 14px; color:var(--muted); font-size:12px; line-height:1.5; }
 .wb-hint { margin:0 14px 8px; color:var(--faint); font-size:11.5px; line-height:1.5; }
@@ -265,6 +267,12 @@ button.wb-change-row { width:100%; border:0; background:transparent; color:var(-
 .wb-stash-dialog input:focus { border-color:var(--primary); box-shadow:var(--wb-ring); outline:none; }
 .wb-stash-dialog label.wb-stash-checkbox { display:flex; align-items:center; gap:7px; color:var(--text); }
 .wb-stash-checkbox input { width:15px; height:15px; margin:0; accent-color:var(--primary); }
+.wb-undo-list { display:grid; gap:4px; max-height:min(320px,42dvh); overflow:auto; }
+.wb-undo-entry { display:flex; align-items:center; justify-content:space-between; gap:8px; padding:7px 2px; border-bottom:1px solid var(--border); }
+.wb-undo-entry > div { display:grid; gap:2px; min-width:0; }
+.wb-undo-entry strong { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:12px; }
+.wb-undo-entry .wb-path-line { max-width:260px; color:var(--muted); font-size:11px; }
+.wb-undo-confirm { color:var(--muted); }
 
 /* ---- Agent changes ---- */
 .wb-review { display:flex; flex-direction:column; min-height:100%; padding-bottom:16px; }

@@ -1,7 +1,7 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent, type MouseEvent, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import { WbIcon } from '../workbench/icons';
-import type { GitBranches, GitChange, GitPushPreview, GitSelectedCommitResult, GitStashApply, GitStashEntry, GitStashFile } from '@threadterm/protocol';
+import type { GitBranches, GitChange, GitPushPreview, GitSelectedCommitResult, GitStashApply, GitStashEntry, GitStashFile, GitUndoEntry } from '@threadterm/protocol';
 import { operationId, request } from '../bridge';
 import { Icon } from './PrototypeIcon';
 import { CatalogPopover } from './CatalogActions';
@@ -25,6 +25,8 @@ import { stashConflictNotice } from '../workbench/stashNotice';
 import { changeFocusAfterToggle, changeFocusKey, isKeyboardEditableTarget, orderedChangeRows, rovingChangeTarget, type ChangeFocus } from '../workbench/scmKeyboard';
 import type { GitWorkbenchCommand } from '../workbench/gitKeyboardCommand';
 import { relativeTime } from './CodeEditor';
+import { consumeLatestUndo, latestUndo, noticeUndoId, publishLatestUndo, subscribeLatestUndo, type LatestUndoNotice, type UndoBoundNotice, undoEntryLabel, undoNoticeTimeout, undoRestoredPaths } from '../workbench/gitUndo';
+import { canonicalScopePath } from '../projectScope';
 
 type Confirm =
  | {kind:'discard';paths:string[];untracked:number;token:number;fingerprints?:Record<string,string|null>;indexFingerprints?:Record<string,string|null>;snapshotError?:string}
@@ -45,7 +47,11 @@ export function SourceControlView({scope, actions, git, zh, compact = false, too
  const prefilledMerge=useRef<string|undefined>(undefined);
  const [busy, setBusy] = useState<string>();
  const [issue, setIssue] = useState<ReactNode>();
- const [notice, setNotice] = useState<ReactNode>();
+ const [notice, setNoticeState] = useState<UndoBoundNotice<ReactNode>>();
+ const [undoNotice,setUndoNotice]=useState<LatestUndoNotice>();
+ const [recentActions,setRecentActions]=useState(false);
+ const [undoEntries,setUndoEntries]=useState<GitUndoEntry[]>();
+ const [undoLoading,setUndoLoading]=useState(false);
  const [committedWarning, setCommittedWarning] = useState<ReactNode>();
  const [pushPreview, setPushPreview] = useState<GitPushPreview>();
  const [pushDialog, setPushDialog] = useState(false);
@@ -81,6 +87,7 @@ export function SourceControlView({scope, actions, git, zh, compact = false, too
  const status = git.status;
  const rootKey=scope.rootPath;
  const scopeKey=`${scope.projectId}\u0000${scope.worktreePath ?? ''}\u0000${scope.rootPath}`;
+ const undoWorktreeKey=`${scope.projectId}\u0000${canonicalScopePath(scope.worktreePath) ?? 'default'}`;
  if(renderedScope.current!==scopeKey) { renderedScope.current=scopeKey; scopeEpoch.current++; }
  const operation=status && gitOperationState(status,zh);
  useEffect(() => {
@@ -113,9 +120,29 @@ export function SourceControlView({scope, actions, git, zh, compact = false, too
   const items=groups[group], all=items.length>0&&items.every(change=>selection.has(selectedCommitKey(rootKey,group,change.path)));
   setSelection(current=>setGroupSelection(current,rootKey,group,items,!all));
  };
- useEffect(() => { discardEpoch.current++; setDiverged(undefined); setBusy(undefined); setIssue(undefined); setNotice(undefined); setCommittedWarning(undefined); setPushPreview(undefined); setPushDialog(false); setForcePushConfirmation(false); setForcePushBranch(''); setPushFailure(undefined); setConfirm(undefined); setCommitMenu(undefined); setBranchMenu(undefined); setBranches(undefined); setBranchQuery(''); setCreating(false); setStashes(undefined); setStashFiles({}); setStashLoading(undefined); setStashDialog(false); setStashMessage(''); setStashUntracked(true); setStashesCollapsed(true); }, [scope.projectId, scope.worktreePath, scope.rootPath]);
+ useEffect(() => { discardEpoch.current++; setDiverged(undefined); setBusy(undefined); setIssue(undefined); setNotice(undefined); setRecentActions(false); setUndoEntries(undefined); setUndoLoading(false); setCommittedWarning(undefined); setPushPreview(undefined); setPushDialog(false); setForcePushConfirmation(false); setForcePushBranch(''); setPushFailure(undefined); setConfirm(undefined); setCommitMenu(undefined); setBranchMenu(undefined); setBranches(undefined); setBranchQuery(''); setCreating(false); setStashes(undefined); setStashFiles({}); setStashLoading(undefined); setStashDialog(false); setStashMessage(''); setStashUntracked(true); setStashesCollapsed(true); }, [scope.projectId, scope.worktreePath, scope.rootPath]);
+ useEffect(()=>{const update=()=>setUndoNotice(latestUndo(undoWorktreeKey));update();return subscribeLatestUndo(undoWorktreeKey,update);},[undoWorktreeKey]);
  // Success notices are transient; errors stay until dismissed.
- useEffect(() => { if(!notice) return; const timer = setTimeout(() => setNotice(undefined), 4000); return () => clearTimeout(timer); }, [notice]);
+ useEffect(() => { if(!notice) return; const timer = setTimeout(() => setNoticeState(undefined), undoNoticeTimeout(Boolean(notice.undoId))); return () => clearTimeout(timer); }, [notice]);
+ // Any other notice or error replaces the notice that carried the Undo action.
+ const setNotice=(message:ReactNode)=>setNoticeState(message===undefined?undefined:{message});
+ useEffect(()=>{if(issue)setNoticeState(current=>current?.undoId?{message:current.message}:current);},[issue]);
+
+ const showUndoNotice=(message:ReactNode,undoId?:string,kind?:LatestUndoNotice['kind'],label?:string)=>{setNoticeState({message,...(undoId?{undoId}:{})});if(undoId&&kind&&label)publishLatestUndo(undoWorktreeKey,{journalId:undoId,kind,label});};
+ const loadUndoEntries=async()=>{
+  const epoch=scopeEpoch.current;setUndoLoading(true);
+  try { const result=await request('git.undo.list',params);if(epoch===scopeEpoch.current)setUndoEntries(result.entries); }
+  catch(error) { if(epoch===scopeEpoch.current)setIssue(workbenchError(error,zh)); }
+  finally { if(epoch===scopeEpoch.current)setUndoLoading(false); }
+ };
+ const openRecentActions=()=>{setRecentActions(true);void loadUndoEntries();};
+ const openMoreActions=(event:MouseEvent<HTMLButtonElement>)=>showContextMenu({x:event.clientX,y:event.clientY,restoreFocus:event.currentTarget,items:[{id:'source-control-recent-actions',label:text('Recent actions','最近操作'),onSelect:openRecentActions}]});
+ const undo=async(id:string)=>{
+  const epoch=scopeEpoch.current;setBusy('undo');setIssue(undefined);
+  try { await request('git.undo',{...params,id,operationId:operationId()});if(epoch===scopeEpoch.current){consumeLatestUndo(undoWorktreeKey,id);setNotice(text('Action undone.','操作已撤销。'));void loadUndoEntries();void git.refresh();void loadBranches();void loadStashes();} }
+  catch(error) { if(epoch===scopeEpoch.current){ if(undoRestoredPaths(error)) { void git.refresh(); void loadUndoEntries(); } setIssue(workbenchError(error,zh)); } }
+  finally { if(epoch===scopeEpoch.current)setBusy(undefined); }
+ };
 
  const run = async <T,>(label:string, action:() => Promise<T>, done?:string|((result:T)=>string|undefined)) => {
   const epoch=scopeEpoch.current; let succeeded=false;
@@ -195,6 +222,8 @@ export function SourceControlView({scope, actions, git, zh, compact = false, too
  };
  const onChangeKey = (event:KeyboardEvent<HTMLDivElement>) => {
   if(isKeyboardEditableTarget(event.target))return;
+  const currentUndo=latestUndo(undoWorktreeKey),undoId=noticeUndoId(notice,currentUndo);
+  if((event.ctrlKey||event.metaKey)&&event.key.toLowerCase()==='z'&&currentUndo&&undoId&&!busy) { event.preventDefault();void undo(currentUndo.journalId);return; }
   const element = (event.target as HTMLElement).closest<HTMLElement>('[data-change-path][data-change-group]');
   if(!element || !event.currentTarget.contains(element)) return;
   const group = element.dataset.changeGroup as ChangeGroup, change = groups[group]?.find(candidate => candidate.path === element.dataset.changePath);
@@ -358,7 +387,7 @@ export function SourceControlView({scope, actions, git, zh, compact = false, too
  };
  const applyStash = async (entry:GitStashEntry, pop:boolean) => {
   const epoch=scopeEpoch.current; setBusy(pop?'stash-pop':'stash-apply'); setIssue(undefined); setNotice(undefined);
-  try { const result=await request('git.stash.apply',{...params,oid:entry.oid,pop,operationId:operationId()}); if(epoch===scopeEpoch.current) { setNotice(stashResultNotice(result,entry,pop)); const interference='interference' in result ? interferenceNotice(result.interference) : undefined; if(interference)setCommittedWarning(interference); void loadStashes(); } }
+  try { const result=await request('git.stash.apply',{...params,oid:entry.oid,pop,operationId:operationId()}); if(epoch===scopeEpoch.current) { const undoId='undoId' in result&&typeof result.undoId==='string'?result.undoId:undefined; showUndoNotice(stashResultNotice(result,entry,pop),undoId,undoId?'stash':undefined,undoId?`Remove stash: ${entry.message}`:undefined); const interference='interference' in result ? interferenceNotice(result.interference) : undefined; if(interference)setCommittedWarning(interference); void loadStashes(); } }
   catch(error) { if(epoch===scopeEpoch.current) { const interference=interferenceNotice(error); setIssue(interference ?? workbenchError(error,zh)); if(interference) void loadStashes(); } }
   finally { if(epoch===scopeEpoch.current)setBusy(undefined); }
  };
@@ -409,8 +438,8 @@ export function SourceControlView({scope, actions, git, zh, compact = false, too
    if(dirty.length) { setIssue(text(`Save or close unsaved editors first: ${dirty.join(', ')}`, `请先保存或关闭未保存的编辑器：${dirty.join('、')}`)); return; }
    setBusy('discard'); setIssue(undefined); setNotice(undefined); setCommittedWarning(undefined);
    try {
-    await request('git.discard', {...params, paths:current.paths, expectedFingerprints:current.fingerprints, expectedIndexFingerprints:current.indexFingerprints, operationId:operationId()});
-    if(epoch===scopeEpoch.current)setNotice(text('Changes discarded.', '更改已丢弃。'));
+    const result=await request('git.discard', {...params, paths:current.paths, expectedFingerprints:current.fingerprints, expectedIndexFingerprints:current.indexFingerprints, operationId:operationId()});
+    if(epoch===scopeEpoch.current)showUndoNotice(text('Changes discarded.', '更改已丢弃。'),result.undoId,'discard','Discarded changes');
    } catch(error) {
     if(epoch===scopeEpoch.current) {
      if(/(?:file_conflict|index_conflict|discard_incomplete)/.test(String(error))) void git.refresh();
@@ -429,14 +458,14 @@ export function SourceControlView({scope, actions, git, zh, compact = false, too
    void checkout(current.branch,false,true);
   } else if(current.kind === 'stash-drop') {
    setBusy('stash-drop'); setIssue(undefined);
-   try { await request('git.stash.drop',{...params,oid:current.entry.oid,operationId:operationId()}); if(epoch===scopeEpoch.current) { setConfirm(undefined); setNotice(text('Stash removed.', '暂存已移除。')); void loadStashes(); } }
+   try { const result=await request('git.stash.drop',{...params,oid:current.entry.oid,operationId:operationId()}); if(epoch===scopeEpoch.current) { setConfirm(undefined); showUndoNotice(text('Stash removed.', '暂存已移除。'),result.undoId,'stash',`Remove stash: ${current.entry.message}`); void loadStashes(); } }
    catch(error) { if(epoch===scopeEpoch.current) { setConfirm(undefined); const interference=interferenceNotice(error); setIssue(interference ?? workbenchError(error,zh)); if(interference) void loadStashes(); } }
    finally { if(epoch===scopeEpoch.current)setBusy(undefined); }
   } else {
    setBusy('branch'); setIssue(undefined);
    try {
-    await request('git.branch.delete', {...params, branch:current.branch, ...(current.force ? {force:true} : {}), operationId:operationId()});
-    if(epoch===scopeEpoch.current) { setConfirm(undefined); setNotice(text(`Deleted ${current.branch}.`, `已删除 ${current.branch}。`)); void loadBranches(); }
+    const result=await request('git.branch.delete', {...params, branch:current.branch, ...(current.force ? {force:true} : {}), operationId:operationId()});
+    if(epoch===scopeEpoch.current) { setConfirm(undefined); showUndoNotice(text(`Deleted ${current.branch}.`, `已删除 ${current.branch}。`),result.undoId,'branch',`Delete ${current.branch}`); void loadBranches(); }
    } catch(error) {
     if(epoch===scopeEpoch.current) {
      if(!current.force && /branch_not_merged/.test(String(error))) setConfirm({...current, force:true});
@@ -463,6 +492,7 @@ export function SourceControlView({scope, actions, git, zh, compact = false, too
  const tools = <>
   {actions.openHistory && <button type="button" className="icon-btn" title={text('History', '提交历史')} aria-label={text('History', '提交历史')} onClick={() => actions.openHistory?.()}><Icon name="clock"/></button>}
   <button type="button" className="icon-btn" title={text('Stash changes…', '暂存更改…')} aria-label={text('Stash changes…', '暂存更改…')} disabled={!!busy} onClick={() => setStashDialog(true)}><Icon name="archive"/></button>
+  <button type="button" className="icon-btn" title={text('More actions', '更多操作')} aria-label={text('More actions', '更多操作')} aria-haspopup="menu" disabled={!!busy} onClick={openMoreActions}><Icon name="more"/></button>
   <button type="button" className="icon-btn" title={text('Refresh', '刷新')} aria-label={text('Refresh', '刷新')} onClick={() => void git.refresh()}><WbIcon name="refresh"/></button>
  </>;
  const toolbar = toolbarHost ? createPortal(tools, toolbarHost) : null;
@@ -558,9 +588,9 @@ export function SourceControlView({scope, actions, git, zh, compact = false, too
   </div>
   {busy && busy !== 'commit' && <p className="wb-summary" aria-live="polite">{text('Working…', '正在执行…')}</p>}
   {issue && <p className="wb-issue" role="alert">{issue}<button type="button" className="icon-btn" aria-label={text('Dismiss', '关闭提示')} onClick={() => setIssue(undefined)}><Icon name="close"/></button></p>}
-  {notice && !issue && <p className="wb-notice" aria-live="polite">{notice}</p>}
+  {notice && !issue && <p className="wb-notice" aria-live="polite"><span>{notice.message}</span>{noticeUndoId(notice,undoNotice)&&<button type="button" className="btn btn-sm" disabled={!!busy} onClick={()=>{const id=noticeUndoId(notice,undoNotice);if(id)void undo(id);}}>{text('Undo','撤销')}</button>}</p>}
   {committedWarning && <p className="wb-notice wb-commit-warning" role="status">{committedWarning}</p>}
-  <div ref={changesRef} tabIndex={-1} className="wb-changes" onBlur={event=>{listOwnsFocus.current=event.relatedTarget instanceof Element&&event.relatedTarget.matches('.wb-change-open')&&event.currentTarget.contains(event.relatedTarget);}} onContextMenu={onChangeContext} onKeyDown={onChangeKey}>
+  <div ref={changesRef} tabIndex={-1} className="wb-changes" aria-keyshortcuts="Control+Z Meta+Z" onBlur={event=>{listOwnsFocus.current=event.relatedTarget instanceof Element&&event.relatedTarget.matches('.wb-change-open')&&event.currentTarget.contains(event.relatedTarget);}} onContextMenu={onChangeContext} onKeyDown={onChangeKey}>
    {section('conflicts', text('Merge conflicts', '合并冲突'), null)}
    {section('staged', text('Staged changes', '已暂存的更改'), <>
     <button type="button" className="icon-btn" title={text('Unstage selected files (whole file)', '取消暂存所选文件（整个文件）')} aria-label={text('Unstage selected files (whole file)', '取消暂存所选文件（整个文件）')} disabled={!!busy || !selectedStaged.length} onClick={() => void unstageSelected()}><WbIcon name="minus"/></button>
@@ -646,6 +676,14 @@ export function SourceControlView({scope, actions, git, zh, compact = false, too
    footer={<><button type="button" className="btn" disabled={!!busy} onClick={()=>setStashDialog(false)}>{text('Cancel','取消')}</button><button type="button" className="btn btn-primary" disabled={!!busy} onClick={()=>void pushStash()}>{busy==='stash-push'?text('Stashing…','正在暂存…'):text('Stash changes','暂存更改')}</button></>}>
    <div className="wb-stash-dialog"><label>{text('Message (optional)', '说明（可选）')}<input autoFocus maxLength={200} value={stashMessage} onChange={event=>setStashMessage(event.target.value.replace(/[\r\n\t\u0000-\u001f]/g,''))} aria-label={text('Stash message', '暂存说明')}/></label><label className="wb-stash-checkbox"><input type="checkbox" checked={stashUntracked} onChange={event=>setStashUntracked(event.target.checked)}/>{text('Include untracked files', '包括未跟踪文件')}</label></div>
   </SurfaceDialog>}
+  {recentActions && <SurfaceDialog size="sm" icon="clock" title={text('Recent actions','最近操作')} subtitle={text('Actions can be undone for up to 7 days.','操作最多可在 7 天内撤销。')} onClose={()=>{if(!busy)setRecentActions(false);}}
+   footer={<button type="button" className="btn" disabled={!!busy} onClick={()=>setRecentActions(false)}>{text('Close','关闭')}</button>}>
+   <div className="wb-undo-list" aria-live="polite">
+    {undoLoading&&!undoEntries&&<p className="wb-summary">{text('Loading…','正在加载…')}</p>}
+    {undoEntries?.map(entry=><div className="wb-undo-entry" key={entry.id}><div><strong>{undoEntryLabel(entry,zh)}</strong><span className="wb-time">{relativeTime(entry.createdAt,zh)}</span>{entry.partial&&<span className="wb-path-line">{text(`Restored: ${(entry.applied??[]).join(', ')||'none'}`,`已恢复：${(entry.applied??[]).join('、')||'无'}`)}</span>}{entry.partial&&<span className="wb-path-line">{text(`Not restored: ${(entry.remaining??[]).join(', ')||'none'}`,`未恢复：${(entry.remaining??[]).join('、')||'无'}`)}</span>}{!entry.partial&&entry.pathCount>0&&<span className="wb-path-line" title={entry.paths.join(', ')}>{entry.paths.length?entry.paths.join(', '):text(`${entry.pathCount} file(s)`,`${entry.pathCount} 个文件`)}</span>}</div><button type="button" className="btn btn-sm" disabled={!!busy||!entry.available||Boolean(entry.undoneAt)} title={!entry.available?text('This action is no longer available.','此操作已不可用。'):undefined} onClick={()=>void undo(entry.id)}>{entry.undoneAt?text('Undone','已撤销'):text('Undo','撤销')}</button></div>)}
+    {undoEntries&&!undoEntries.length&&!undoLoading&&<p className="wb-empty">{text('No recent actions.','没有最近操作。')}</p>}
+   </div>
+  </SurfaceDialog>}
   {confirm && <SurfaceDialog size="sm" icon={confirm.kind === 'amend' ? 'clock' : confirm.kind === 'checkout-overwrite' ? 'branch' : 'trash'}
    title={confirm.kind === 'abort-merge' ? text('Abort merge?','中止合并？') : confirm.kind === 'discard' ? text('Discard changes?', '丢弃更改？') : confirm.kind === 'amend' ? text('Amend the last commit?', '修改上次提交？') : confirm.kind === 'checkout-overwrite' ? text(`Switching to ${confirm.branch} would overwrite local changes`, `切换到 ${confirm.branch} 会覆盖本地更改`) : confirm.kind === 'stash-drop' ? text('Drop stash?', '删除暂存？') : confirm.force ? text('Force delete unmerged branch?', '强制删除未合并的分支？') : text('Delete branch?', '删除分支？')}
    subtitle={confirm.kind === 'abort-merge' ? undefined : confirm.kind === 'discard' ? confirm.paths.join(', ') : confirm.kind === 'amend' ? confirm.subject : confirm.kind === 'checkout-overwrite' ? undefined : confirm.kind === 'stash-drop' ? confirm.entry.message : confirm.branch}
@@ -657,9 +695,7 @@ export function SourceControlView({scope, actions, git, zh, compact = false, too
     </button>}
    </>}>
    {confirm.kind === 'discard' && (!confirm.fingerprints || !confirm.indexFingerprints || confirm.snapshotError) && <p className="wb-summary" role={confirm.snapshotError ? 'alert' : 'status'}>{confirm.snapshotError ?? text('Checking files before discard…', '正在检查丢弃前的文件…')}</p>}
-   {confirm.kind === 'checkout-overwrite' ? <><p>{text("Files Git won't overwrite:", 'Git 不会覆盖的文件：')}</p>{confirm.paths.slice(0,10).map(path=><span key={path} className="wb-path-line">{path}</span>)}{confirm.paths.length>10&&<span className="wb-path-line">{text(`and ${confirm.paths.length-10} more`, `以及另外 ${confirm.paths.length-10} 个`)}</span>}{localChangePaths&&<><p>{text(`Your local changes (${localChangePaths.length})`, `你的本地更改（${localChangePaths.length}）`)}</p>{localChangePaths.slice(0,10).map(path=><span key={path} className="wb-path-line">{path}</span>)}{localChangePaths.length>10&&<span className="wb-path-line">{text(`and ${localChangePaths.length-10} more`, `以及另外 ${localChangePaths.length-10} 个`)}</span>}</>}<p className="wb-hint">{text('Stash and switch includes untracked files. If Git cannot re-apply them, they stay listed in Stashes.', '“暂存并切换”会包括未跟踪文件；如果 Git 无法重新应用它们，它们会保留在暂存列表中。')}</p></> : <p>{confirm.kind === 'abort-merge' ? text('Abort this merge and restore the state before the merge?','中止当前合并并还原合并开始前的状态？') : confirm.kind === 'discard'
-    ? text(`Tracked files return to their staged version.${confirm.untracked ? ` ${confirm.untracked} untracked file(s) will be moved to the Recycle Bin.` : ''}`, `已跟踪文件将恢复为暂存区版本。${confirm.untracked ? `${confirm.untracked} 个未跟踪文件将移到回收站。` : ''}`)
-     : confirm.kind === 'amend'
+   {confirm.kind === 'checkout-overwrite' ? <><p>{text("Files Git won't overwrite:", 'Git 不会覆盖的文件：')}</p>{confirm.paths.slice(0,10).map(path=><span key={path} className="wb-path-line">{path}</span>)}{confirm.paths.length>10&&<span className="wb-path-line">{text(`and ${confirm.paths.length-10} more`, `以及另外 ${confirm.paths.length-10} 个`)}</span>}{localChangePaths&&<><p>{text(`Your local changes (${localChangePaths.length})`, `你的本地更改（${localChangePaths.length}）`)}</p>{localChangePaths.slice(0,10).map(path=><span key={path} className="wb-path-line">{path}</span>)}{localChangePaths.length>10&&<span className="wb-path-line">{text(`and ${localChangePaths.length-10} more`, `以及另外 ${localChangePaths.length-10} 个`)}</span>}</>}<p className="wb-hint">{text('Stash and switch includes untracked files. If Git cannot re-apply them, they stay listed in Stashes.', '“暂存并切换”会包括未跟踪文件；如果 Git 无法重新应用它们，它们会保留在暂存列表中。')}</p></> : confirm.kind === 'discard' ? <>{confirm.paths.length>confirm.untracked&&<p>{text('Tracked files return to their staged version. You can undo this from Recent actions for 7 days.','已跟踪文件将恢复为暂存区版本。你可以在“最近操作”中于 7 天内撤销此操作。')}</p>}{confirm.untracked>0&&<p>{text('Untracked files go to the Recycle Bin.','未跟踪文件将移到回收站。')}</p>}</> : <p>{confirm.kind === 'abort-merge' ? text('Abort this merge and restore the state before the merge?','中止当前合并并还原合并开始前的状态？') : confirm.kind === 'amend'
      ? text('The staged changes and the new message replace this commit. Do not amend commits that were already pushed and shared.', '已暂存的更改和新的说明会替换此提交。已推送并共享的提交请不要修改。')
      : confirm.kind === 'stash-drop'
      ? text('This removes the saved changes permanently.', '这会永久删除已保存的更改。')

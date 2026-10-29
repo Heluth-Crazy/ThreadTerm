@@ -857,6 +857,10 @@ fn finish_worktree_creation(db: &Database, intent: &WorktreeIntent) -> Result<Va
 fn finish_worktree_removal(db: &Database, intent: &WorktreeIntent) -> Result<Value> {
     db.transaction(|tx| {
         tx.execute(
+            "DELETE FROM git_undo WHERE project_id=? AND worktree_path=?",
+            params![intent.project_id, intent.path],
+        )?;
+        tx.execute(
             "DELETE FROM worktrees WHERE project_id=? AND path=?",
             params![intent.project_id, intent.path],
         )?;

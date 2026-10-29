@@ -27,8 +27,15 @@ thread_local! {
 }
 
 pub fn dispatch(db: &Database, method: &str, params_value: &Value) -> Result<Option<Value>> {
+    // Ordered transport lanes are per connection. Keep the entry's preflight,
+    // effect and consumed marker together across local clients as well.
+    static UNDO_EXECUTION: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    let _undo_execution = if method == "git.undo" {
+        Some(UNDO_EXECUTION.lock().map_err(|_| anyhow!("undo_unavailable"))?)
+    } else { None };
     // This read shares the exact worktree/index snapshot logic with discard, but never
     // binds, claims or completes an operation.
+    if method == "git.undo.list" { return undo_list(db, params_value).map(Some); }
     if method == "git.fingerprints" {
         let params = params_value
             .as_object()
@@ -55,6 +62,7 @@ pub fn dispatch(db: &Database, method: &str, params_value: &Value) -> Result<Opt
             | "git.cherryPick"
             | "git.revert"
             | "git.reset"
+            | "git.undo"
             | "git.operation.abort"
             | "git.operation.continue"
             | "git.stash.push" | "git.stash.apply" | "git.stash.drop"
@@ -68,14 +76,16 @@ pub fn dispatch(db: &Database, method: &str, params_value: &Value) -> Result<Opt
     let project_id = required_string(params, "projectId")?;
     let worktree = params.get("worktreePath").and_then(Value::as_str);
     // Force push's preflight reads the remote-tracking tip, which a completed push moves.
-    if method == "git.discard" || method.starts_with("git.stash.") || method == "git.checkout" || method == "git.push"
+    if method == "git.undo" || method == "git.discard" || method.starts_with("git.stash.") || method == "git.checkout" || method == "git.push"
         || matches!(method, "git.cherryPick" | "git.revert" | "git.reset" | "git.operation.abort" | "git.operation.continue") {
         if let Some(result) = db.operation(operation_id)? {
             db.bind_operation(operation_id, method, params_value)?;
             return stash_receipt(method, result).map(Some);
         }
         if db.external_operation_pending(operation_id)? {
-            db.bind_operation(operation_id, method, params_value)?;
+            if method != "git.undo" || db.operation_request(operation_id)?.is_some() {
+                db.bind_operation(operation_id, method, params_value)?;
+            }
             return Err(anyhow!("operation_outcome_unknown"));
         }
     }
@@ -168,6 +178,7 @@ pub fn dispatch(db: &Database, method: &str, params_value: &Value) -> Result<Opt
             validate_fetch_remote(&root, remote.as_str().ok_or_else(|| anyhow!("invalid_request"))?)?;
         }
     }
+    if method == "git.undo" { undo_preflight(db, &root, params)?; }
     db.bind_operation(operation_id, method, params_value)?;
     if let Some(result) = db.operation(operation_id)? {
         return stash_receipt(method, result).map(Some);
@@ -197,6 +208,7 @@ pub fn dispatch(db: &Database, method: &str, params_value: &Value) -> Result<Opt
     let project_id = required_string(params, "projectId")?;
     let worktree = params.get("worktreePath").and_then(Value::as_str);
     let root = db.transaction(|tx| root_for(tx, project_id, worktree))?;
+    let journal = UndoJournal { db, operation_id, project_id, root: &root, release_on_failure: true };
     let result = match method {
         "git.stage" | "git.unstage" => {
             let paths = paths(params)?;
@@ -284,17 +296,17 @@ pub fn dispatch(db: &Database, method: &str, params_value: &Value) -> Result<Opt
             let Some(pushed) = oid else { release_discard_claim(db, operation_id)?; return Err(anyhow!("nothing_to_stash")); };
             json!({"oid":pushed.oid})
         }
-        "git.stash.apply" => stash_publish_failure(db, (project_id, worktree), stash_apply(&root, required_string(params, "oid")?, params.get("pop").and_then(Value::as_bool) == Some(true)))?,
+        "git.stash.apply" => stash_publish_failure(db, (project_id, worktree), stash_apply(&root, required_string(params, "oid")?, params.get("pop").and_then(Value::as_bool) == Some(true), &journal))?,
         "git.stash.drop" => {
             let oid = required_string(params, "oid")?;
-            let interference = stash_publish_failure(db, (project_id, worktree), stash_drop(&root, oid))?;
+            let interference = stash_publish_failure(db, (project_id, worktree), stash_drop(&root, oid, &journal))?;
             match interference {
                 Some(detail) => json!({"oid":oid,"dropped":false,"interference":detail}),
-                None => json!({"oid":oid,"dropped":true}),
+                None => json!({"oid":oid,"dropped":true,"undoId":operation_id}),
             }
         }
         "git.checkout" if params.get("stash").and_then(Value::as_bool) == Some(true) => {
-            stash_publish_failure(db, (project_id, worktree), stash_switch(&root, checkout.as_ref().unwrap(), required_string(params, "branch")?, operation_id))?
+            stash_publish_failure(db, (project_id, worktree), stash_switch(&root, checkout.as_ref().unwrap(), required_string(params, "branch")?, operation_id, &journal))?
         }
         "git.checkout" => {
             let plan = checkout.as_ref().unwrap();
@@ -324,15 +336,22 @@ pub fn dispatch(db: &Database, method: &str, params_value: &Value) -> Result<Opt
             } else {
                 "-d"
             };
-            git(&root, &["branch", flag, branch]).map_err(|error| {
+            journal.capture("branch", || {
+                let tip = git(&root, &["rev-parse", "--verify", &format!("refs/heads/{branch}")])?;
+                let remote = git(&root, &["config", "--get", &format!("branch.{branch}.remote")]).ok();
+                let merge = git(&root, &["config", "--get", &format!("branch.{branch}.merge")]).ok();
+                Ok(json!({"branch":branch,"tipOid":tip.trim(),"remote":remote.map(|s| s.trim().to_owned()),"merge":merge.map(|s| s.trim().to_owned())}))
+            })?;
+            if let Err(error) = git(&root, &["branch", flag, branch]).map_err(|error| {
                 if error.to_string().contains("not fully merged") {
                     anyhow!("branch_not_merged")
                 } else {
                     error
                 }
-            })?;
-            json!({"branch":branch})
+            }) { journal.remove()?; return Err(error); }
+            json!({"branch":branch,"undoId":operation_id})
         }
+        "git.undo" => undo_apply(db, operation_id, &root, params)?,
         "git.merge" => match merge(&root, merge_target.as_deref().ok_or_else(|| anyhow!("invalid_request"))?) {
             Ok(result) => result,
             Err(error) => {
@@ -380,8 +399,12 @@ pub fn dispatch(db: &Database, method: &str, params_value: &Value) -> Result<Opt
             }
             let mode = required_string(params, "mode")?;
             let flag = match mode { "soft" => "--soft", "mixed" => "--mixed", _ => return Err(anyhow!("invalid_request")) };
-            let output = run_git(&root, &["reset", flag, &plan.target], &[], None, HOOK_TIMEOUT)?;
-            json!({"output":String::from_utf8_lossy(&output),"previousHead":before.oid,"head":plan.target,"symbolicHead":plan.symbolic_head})
+            let nonce = hex::encode(Sha256::digest(operation_id.as_bytes()));
+            let reflog_action = format!("reset: moving to {} [ThreadTerm {}]", plan.target, &nonce[..16]);
+            let reflog_label = format!("{reflog_action}: updating HEAD");
+            journal.capture("reset", || Ok(json!({"previousHead":before.oid,"target":plan.target,"branchRef":before_symbolic_head,"reflogLabel":reflog_label})))?;
+            let output = run_git(&root, &["reset", flag, &plan.target], &[("GIT_REFLOG_ACTION", std::ffi::OsStr::new(&reflog_action))], None, HOOK_TIMEOUT)?;
+            json!({"output":String::from_utf8_lossy(&output),"previousHead":before.oid,"head":plan.target,"symbolicHead":plan.symbolic_head,"undoId":operation_id})
         }
         "git.operation.abort" | "git.operation.continue" => {
             let kind = required_string(params, "kind")?;
@@ -396,9 +419,16 @@ pub fn dispatch(db: &Database, method: &str, params_value: &Value) -> Result<Opt
         }
         _ => unreachable!(),
     };
+    if matches!(method, "git.stash.apply" | "git.checkout") {
+        let outcome = result.get("stash").unwrap_or(&result);
+        if outcome.get("dropped").and_then(Value::as_bool) != Some(true) { journal.remove()?; }
+    }
     // Do not hide an uncertain external outcome: failure to persist completion is returned
     // to the caller; the reserved operation remains distinguishable from a successful one.
     if let Err(error) = db.transaction(|tx| {
+        if method == "git.undo" {
+            if !crate::db::mark_git_undo_undone(tx, required_string(params, "id")?)? { return Err(anyhow!("undo_already_undone")); }
+        }
         complete(
             tx,
             operation_id,
@@ -425,6 +455,227 @@ pub fn dispatch(db: &Database, method: &str, params_value: &Value) -> Result<Opt
         return Err(error);
     }
     stash_receipt(method, result).map(Some)
+}
+
+
+struct UndoJournal<'a> {
+    db: &'a Database,
+    operation_id: &'a str,
+    project_id: &'a str,
+    root: &'a Path,
+    release_on_failure: bool,
+}
+
+impl UndoJournal<'_> {
+    fn capture(&self, kind: &str, capture: impl FnOnce() -> Result<Value>) -> Result<Value> {
+        let outcome = (|| {
+            let payload = capture()?;
+            if let Some(existing) = self.db.git_undo_get(self.operation_id, self.project_id, &self.root.to_string_lossy())? {
+                if existing.kind != kind || existing.payload != payload { return Err(anyhow!("undo_capture_changed")); }
+            } else {
+                self.db.git_undo_insert(self.operation_id, self.operation_id, self.project_id,
+                    &self.root.to_string_lossy(), kind, &payload)?;
+            }
+            Ok(payload)
+        })();
+        match outcome {
+            Ok(payload) => Ok(payload),
+            Err(error) => {
+                if self.release_on_failure { release_discard_claim(self.db, self.operation_id)?; }
+                if error.to_string().contains("discard_conflict") || error.to_string() == "undo_capture_unsupported" { return Err(error); }
+                Err(anyhow!("undo_capture_failed: {error}"))
+            }
+        }
+    }
+
+    fn remove(&self) -> Result<()> {
+        self.db.transaction(|tx| crate::db::delete_git_undo(tx, self.operation_id))
+    }
+}
+
+fn undo_entry(db: &Database, root: &Path, params: &serde_json::Map<String, Value>) -> Result<crate::db::GitUndoEntry> {
+    let entry = db.git_undo_get(required_string(params, "id")?, required_string(params, "projectId")?, &root.to_string_lossy())?
+        .ok_or_else(|| anyhow!("undo_unavailable"))?;
+    if entry.undone_at.is_some() { return Err(anyhow!("undo_already_undone")); }
+    // An unfinished external action cannot be assumed to have completed, even if
+    // its recovery identifiers were captured before the effect.
+    if !undo_effect_confirmed(db, &entry)? { return Err(anyhow!("undo_unavailable")); }
+    Ok(entry)
+}
+
+fn undo_effect_confirmed(db: &Database, entry: &crate::db::GitUndoEntry) -> Result<bool> {
+    let Some(receipt) = db.operation(&entry.operation_id)? else { return Ok(false); };
+    if entry.kind == "stash" {
+        let outcome = receipt.get("stash").unwrap_or(&receipt);
+        return Ok(outcome.get("dropped").and_then(Value::as_bool) == Some(true) && outcome.get("interference").is_none());
+    }
+    Ok(true)
+}
+
+fn undo_objects_available(root: &Path, kind: &str, payload: &Value) -> bool {
+    let keys: &[&str] = match kind { "branch" => &["tipOid"], "stash" => &["stashOid"], "reset" => &["previousHead"], _ => &[] };
+    keys.iter().all(|key| payload[*key].as_str().is_some_and(|oid| git(root, &["cat-file", "-e", oid]).is_ok()))
+}
+
+fn undo_preflight(db: &Database, root: &Path, params: &serde_json::Map<String, Value>) -> Result<()> {
+    let entry = undo_entry(db, root, params)?;
+    let p = &entry.payload;
+    if !undo_objects_available(root, &entry.kind, p) { return Err(anyhow!("undo_unavailable")); }
+    match entry.kind.as_str() {
+        "discard" => { crate::git_undo::preflight_discard(root, p)?; }
+        "branch" => {
+            let branch = p["branch"].as_str().ok_or_else(|| anyhow!("undo_unavailable"))?;
+            validate_branch_name(root, branch)?;
+            if checkout_optional_ref(root, &format!("refs/heads/{branch}"))?.is_some() { return Err(anyhow!("undo_conflict: {branch}")); }
+        }
+        "stash" => {}
+        "reset" => {
+            let head = checkout_head(root)?;
+            let reference = p["branchRef"].as_str().ok_or_else(|| anyhow!("undo_unavailable"))?;
+            if Some(head.oid.as_str()) != p["target"].as_str() || symbolic_head(root, &head)? != reference { return Err(anyhow!("undo_conflict: HEAD")); }
+            reset_reflog_continuity(root, reference, &head.oid, p["previousHead"].as_str().ok_or_else(|| anyhow!("undo_unavailable"))?)
+                .map_err(|_| anyhow!("undo_conflict: HEAD"))?;
+            // Keep the existing continuity fence and also identify this exact reset:
+            // an external reset away and back can recreate the same OID boundary.
+            let label = p["reflogLabel"].as_str().ok_or_else(|| anyhow!("undo_unavailable"))?;
+            for reference in if reference == "detached" { vec!["HEAD"] } else { vec![reference, "HEAD"] } {
+                if git(root, &["reflog", "show", "--format=%gs", "-1", reference])?.trim_end() != label {
+                    return Err(anyhow!("undo_conflict: HEAD"));
+                }
+            }
+        }
+        _ => return Err(anyhow!("undo_unavailable")),
+    }
+    Ok(())
+}
+
+fn release_undo_claim(db: &Database, operation_id: &str) -> Result<()> {
+    db.transaction(|tx| {
+        tx.execute("DELETE FROM external_operations WHERE id=?1 AND NOT EXISTS(SELECT 1 FROM operations WHERE id=?1)", [operation_id])?;
+        tx.execute("DELETE FROM operation_requests WHERE id=?1 AND NOT EXISTS(SELECT 1 FROM operations WHERE id=?1) AND NOT EXISTS(SELECT 1 FROM external_operations WHERE id=?1)", [operation_id])?;
+        Ok(())
+    })
+}
+
+fn mark_undo_partial(
+    db: &Database,
+    entry: &crate::db::GitUndoEntry,
+    applied: &[String],
+    remaining: &[String],
+) -> Result<()> {
+    let mut payload = entry.payload.clone();
+    anyhow::ensure!(payload.is_object(), "undo_unavailable");
+    payload["partial"] = serde_json::json!({"applied": applied, "remaining": remaining});
+    db.transaction(|tx| {
+        anyhow::ensure!(
+            crate::db::mark_git_undo_partial(tx, &entry.id, &payload)?,
+            "undo_already_undone"
+        );
+        Ok(())
+    })
+}
+
+fn undo_apply(db: &Database, operation_id: &str, root: &Path, params: &serde_json::Map<String, Value>) -> Result<Value> {
+    if let Err(error) = undo_preflight(db, root, params) {
+        release_undo_claim(db, operation_id)?;
+        return Err(error);
+    }
+    let entry = undo_entry(db, root, params)?;
+    let p = &entry.payload;
+    match entry.kind.as_str() {
+        "discard" => {
+            let prepared = match crate::git_undo::preflight_discard(root, p) {
+                Ok(prepared) => prepared,
+                Err(error) => { release_undo_claim(db, operation_id)?; return Err(error); }
+            };
+            if let Err(error) = crate::git_undo::apply_discard(root, prepared) {
+                if crate::git_undo::undo_no_effect(&error) {
+                    release_undo_claim(db, operation_id)?;
+                } else if let Some((applied, remaining)) = crate::git_undo::undo_progress(&error) {
+                    // Some paths were restored before the failure: retire the entry,
+                    // keep the progress visible and let every surface re-read the worktree.
+                    if !applied.is_empty() {
+                        let mut suffix = String::new();
+                        if let Err(mark) = mark_undo_partial(db, &entry, applied, remaining) {
+                            suffix.push_str(&format!("; undo journal update failed: {mark}"));
+                        }
+                        let worktree = params.get("worktreePath").and_then(Value::as_str);
+                        if publish_git_change(db, required_string(params, "projectId")?, worktree).is_err() {
+                            suffix.push_str("; refresh event unavailable");
+                        }
+                        if !suffix.is_empty() {
+                            return Err(anyhow!("{error}{suffix}"));
+                        }
+                    }
+                }
+                return Err(error);
+            }
+        }
+        "branch" => {
+            let branch = p["branch"].as_str().unwrap();
+            // update-ref's zero-old-OID condition also fences a racing branch creator.
+            let zero = "0".repeat(p["tipOid"].as_str().unwrap().len());
+            git(root, &["update-ref", &format!("refs/heads/{branch}"), p["tipOid"].as_str().unwrap(), &zero])?;
+            for key in ["remote", "merge"] {
+                if let Some(value) = p[key].as_str() { git(root, &["config", &format!("branch.{branch}.{key}"), value])?; }
+            }
+        }
+        "stash" => {
+            let oid = p["stashOid"].as_str().unwrap();
+            if !stash_stack(root)?.iter().any(|(present, _)| present == oid) {
+                stash_restore_foreign(root, oid, p["message"].as_str().unwrap_or("Recovered stash"))?;
+            }
+        }
+        "reset" => { git(root, &["reset", "--soft", p["previousHead"].as_str().unwrap()])?; }
+        _ => return Err(anyhow!("undo_unavailable")),
+    }
+    Ok(json!({"id":entry.id,"undoneAt":Utc::now().to_rfc3339()}))
+}
+
+fn undo_list(db: &Database, params_value: &Value) -> Result<Value> {
+    let params = params_value.as_object().ok_or_else(|| anyhow!("invalid_request"))?;
+    let project = required_string(params, "projectId")?;
+    let root = db.transaction(|tx| root_for(tx, project, params.get("worktreePath").and_then(Value::as_str)))?;
+    let mut rows = Vec::new();
+    for entry in db.git_undo_list(project, &root.to_string_lossy())? {
+        if !undo_effect_confirmed(db, &entry)? { continue; }
+        let p = &entry.payload;
+        // A discard row names only what Undo can restore; paths that went to the
+        // Recycle Bin are counted separately.
+        let (paths, recycled) = match entry.kind.as_str() {
+            "discard" => crate::git_undo::discard_undoable_paths(p).unwrap_or_default(),
+            _ => (p["paths"].as_array().map(|paths| paths.iter().filter_map(|path| path.as_str().or_else(|| path["path"].as_str())).map(str::to_owned).collect::<Vec<_>>()).unwrap_or_default(), 0),
+        };
+        let plural = if paths.len() == 1 { "" } else { "s" };
+        let recycled_plural = if recycled == 1 { "" } else { "s" };
+        let label = match entry.kind.as_str() {
+            "branch" => format!("Delete {}", p["branch"].as_str().unwrap_or("branch")),
+            "stash" => format!("Remove stash: {}", p["message"].as_str().unwrap_or("stash")),
+            "reset" => format!("Reset {}", p["previousHead"].as_str().unwrap_or("").chars().take(8).collect::<String>()),
+            _ if paths.is_empty() && recycled > 0 => format!("{recycled} file{recycled_plural} moved to the Recycle Bin"),
+            _ => {
+                let mut label = format!("Discarded changes in {} file{plural}", paths.len());
+                if recycled > 0 { label.push_str(&format!(" ({recycled} more moved to the Recycle Bin)")); }
+                label
+            }
+        };
+        let available = entry.undone_at.is_none() && if entry.kind == "discard" { crate::git_undo::discard_available(&root, p) } else { undo_objects_available(&root, &entry.kind, p) };
+        let empty = Vec::new();
+        let partial = p.get("partial");
+        let applied = partial
+            .and_then(|partial| partial["applied"].as_array())
+            .map(|applied| applied.iter().filter_map(Value::as_str).map(str::to_owned).collect::<Vec<_>>())
+            .unwrap_or_else(|| empty.clone());
+        let remaining = partial
+            .and_then(|partial| partial["remaining"].as_array())
+            .map(|remaining| remaining.iter().filter_map(Value::as_str).map(str::to_owned).collect::<Vec<_>>())
+            .unwrap_or(empty);
+        rows.push(json!({"id":entry.id,"kind":entry.kind,"label":label,"createdAt":entry.created_at,
+            "available":available,"paths":paths.iter().take(20).collect::<Vec<_>>(),"pathCount":paths.len(),"undoneAt":entry.undone_at,"recycledCount":recycled,
+            "partial":!applied.is_empty()||!remaining.is_empty(),
+            "applied":applied.iter().take(20).collect::<Vec<_>>(),"remaining":remaining.iter().take(20).collect::<Vec<_>>()}));
+    }
+    Ok(json!({"entries":rows}))
 }
 
 fn stash_publish_failure<T>(db: &Database, scope: (&str, Option<&str>), result: Result<T>) -> Result<T> {
@@ -763,9 +1014,10 @@ fn stash_restore_foreign(root: &Path, oid: &str, message: &str) -> Result<()> {
     Ok(())
 }
 
-fn stash_drop(root: &Path, oid: &str) -> Result<Option<Value>> {
+fn stash_drop(root: &Path, oid: &str, journal: &UndoJournal<'_>) -> Result<Option<Value>> {
     let before = stash_stack(root)?;
     let index = before.iter().position(|(entry, _)| entry == oid).ok_or_else(|| anyhow!("stash_not_found"))?;
+    journal.capture("stash", || Ok(json!({"stashOid":oid,"message":before[index].1.chars().take(200).collect::<String>()})))?;
     let selector = format!("stash@{{{index}}}");
     #[cfg(test)]
     stash_test_hooks::before_drop(root)?;
@@ -795,6 +1047,10 @@ fn stash_drop(root: &Path, oid: &str) -> Result<Option<Value>> {
     }).unwrap_or(true);
     let mut detail = json!({"oid":oid,"ourEntryDropped":ours_gone,"restored":restored,"restoreFailed":restore_failed,"orderChanged":order_changed});
     if unknown { detail["unknownEntryLost"] = json!(true); }
+    // Recovery of a foreign entry must not depend on journal maintenance.
+    if let Err(error) = journal.remove() {
+        return Err(anyhow!("stash_operation_failed: {}", json!({"oid":oid,"dropped":false,"interference":detail,"error":error.to_string()})));
+    }
     Ok(Some(detail))
 }
 
@@ -839,18 +1095,30 @@ mod stash_test_hooks {
     }
 }
 
-fn stash_apply(root: &Path, oid: &str, pop: bool) -> Result<Value> {
+fn stash_apply(root: &Path, oid: &str, pop: bool, journal: &UndoJournal<'_>) -> Result<Value> {
     crate::git_read::stash_resolve(root, oid)?;
+    if pop {
+        let stack = stash_stack(root)?;
+        let message = stack.iter().find(|(entry, _)| entry == oid).ok_or_else(|| anyhow!("stash_not_found"))?.1.chars().take(200).collect::<String>();
+        journal.capture("stash", || Ok(json!({"stashOid":oid,"message":message})))?;
+    }
     match run_git(root, &["stash", "apply", oid], &[], None, HOOK_TIMEOUT) {
         Ok(_) => {
             let cleanup = (|| -> Result<Option<Value>> {
                 #[cfg(test)]
                 stash_test_hooks::after_apply(root)?;
-                if pop { stash_drop(root, oid) } else { Ok(None) }
+                // Apply has already changed the worktree. A cleanup/capture
+                // failure must retain the uncertain claim rather than retry apply.
+                let cleanup_journal = UndoJournal { release_on_failure: false, ..*journal };
+                if pop { stash_drop(root, oid, &cleanup_journal) } else { Ok(None) }
             })();
             match cleanup {
                 Ok(Some(interference)) => Ok(json!({"oid":oid,"applied":true,"dropped":false,"interference":interference})),
-                Ok(None) => Ok(json!({"oid":oid,"applied":true,"dropped":pop})),
+                Ok(None) => {
+                    let mut result = json!({"oid":oid,"applied":true,"dropped":pop});
+                    if pop { result["undoId"] = json!(journal.operation_id); }
+                    Ok(result)
+                },
                 Err(error) => {
                     let mut detail = stash_error_detail(oid, error);
                     detail["applied"] = json!(true);
@@ -878,7 +1146,7 @@ fn stash_switch_message(branch: &str, operation_id: &str) -> String {
     format!("{prefix}{suffix}")
 }
 
-fn stash_switch(root: &Path, plan: &CheckoutPlan, branch: &str, operation_id: &str) -> Result<Value> {
+fn stash_switch(root: &Path, plan: &CheckoutPlan, branch: &str, operation_id: &str, journal: &UndoJournal<'_>) -> Result<Value> {
     let before = checkout_head(root)?;
     let message = stash_switch_message(branch, operation_id);
     let pushed = stash_push(root, &message, true)?;
@@ -896,13 +1164,14 @@ fn stash_switch(root: &Path, plan: &CheckoutPlan, branch: &str, operation_id: &s
         return Ok(json!({"branch":current.trim()}));
     };
     let oid = pushed.oid;
+    let journal = &UndoJournal { release_on_failure: false, ..*journal };
     // Everything after push must retain the recovery OID, even an unexpected read failure.
     let mut known_apply = None;
     let outcome = (|| -> Result<Value> {
         if let Err(error) = &switched {
             let after = checkout_head(root)?;
             if after == before {
-                let restored = stash_apply(root, &oid, pushed.added_entry)?;
+                let restored = stash_apply(root, &oid, pushed.added_entry, journal)?;
                 known_apply = Some(restored.clone());
                 let clean = restored["applied"] == true && restored.get("conflicted") != Some(&Value::Bool(true));
                 let mut stash = restored;
@@ -916,7 +1185,7 @@ fn stash_switch(root: &Path, plan: &CheckoutPlan, branch: &str, operation_id: &s
                 return Ok(json!({"error":error.to_string(),"stash":{"oid":oid,"restored":false,"dropped":false}}));
             }
         }
-        let mut applied = stash_apply(root, &oid, pushed.added_entry)?;
+        let mut applied = stash_apply(root, &oid, pushed.added_entry, journal)?;
         known_apply = Some(applied.clone());
         applied["message"] = json!(message);
         let apply_warning = applied.as_object_mut().and_then(|value| value.remove("warning"));
@@ -1085,6 +1354,19 @@ fn discard_path_summary(paths: &[String]) -> String {
     format!("[{summary}]")
 }
 
+/// Publishes a scoped Git change without a completion receipt, so every surface
+/// re-reads the worktree after a partially applied effect.
+fn publish_git_change(db: &Database, project_id: &str, worktree: Option<&str>) -> Result<()> {
+    db.transaction(|tx| {
+        let data = json!({"kind":"git","projectId":project_id,"worktreePath":worktree});
+        tx.execute(
+            "INSERT INTO outbox(event,data,created_at) VALUES('state.changed',?,?)",
+            params![serde_json::to_string(&data)?, Utc::now().to_rfc3339()],
+        )?;
+        Ok(())
+    })
+}
+
 fn discard_incomplete(
     db: &Database,
     scope: (&str, Option<&str>),
@@ -1093,14 +1375,8 @@ fn discard_incomplete(
     error: anyhow::Error,
 ) -> anyhow::Error {
     // Publish refresh without a completion receipt; the external claim remains uncertain.
-    let publication = db.transaction(|tx| {
-        let data = json!({"kind":"git","projectId":scope.0,"worktreePath":scope.1});
-        tx.execute(
-            "INSERT INTO outbox(event,data,created_at) VALUES('state.changed',?,?)",
-            params![serde_json::to_string(&data)?, Utc::now().to_rfc3339()],
-        )?;
-        Ok(())
-    });
+    let publication = publish_git_change(db, scope.0, scope.1);
+    let displaced = crate::git_undo::kept_displaced(&error).map(str::to_owned);
     let detail: String = error
         .to_string()
         .chars()
@@ -1113,9 +1389,10 @@ fn discard_incomplete(
         ""
     };
     anyhow!(
-        "discard_incomplete: completed: {}; failed: {}; {detail}{refresh}",
+        "discard_incomplete: completed: {}; failed: {}; {detail}{refresh}; completedPaths: {}; remainingPaths: {}; keptDisplaced: {}",
         discard_path_summary(completed),
-        discard_path_summary(failed)
+        discard_path_summary(failed),
+        json!(completed), json!(failed), json!(displaced)
     )
 }
 
@@ -1135,14 +1412,16 @@ fn discard_paths(
         if params["expectedIndexFingerprints"][path].is_null() {
             untracked.push(path.clone());
         } else {
-            tracked.push((path.clone(), format!(":(literal){path}")));
+            tracked.push(path.clone());
         }
     }
     let mut completed = Vec::new();
     let mut recycled = Vec::new();
-    // A write in the milliseconds between this final verification and an effect
-    // is not detected. Keep git restore so eol/smudge/LFS filters still apply.
+    // Validate every representation before any recycle or worktree handoff.
+    // Each tracked handoff then validates the bytes it actually displaced.
     verify_claimed_discard(db, operation_id, root, paths, params)?;
+    let journal = UndoJournal { db, operation_id, project_id: scope.0, root, release_on_failure: true };
+    let mut payload = journal.capture("discard", || crate::git_undo::capture_discard(root, paths, params))?;
     for path in untracked {
         let resolved = match scoped_path(root, &path, true) {
             Ok(resolved) => resolved,
@@ -1166,20 +1445,38 @@ fn discard_paths(
         completed.push(path.clone());
         recycled.push(path);
     }
-    for (path, literal) in tracked {
-        // One path per command lets failures report which restores completed.
-        if let Err(error) = git(root, &["restore", "--worktree", "--", &literal]) {
-            let changed = discard_worktree_fingerprint(root, &path)
-                .map(|current| json!(current) != params["expectedFingerprints"][&path])
-                .unwrap_or(true);
-            if !completed.is_empty() || changed {
-                return Err(discard_incomplete(db, scope, &completed, &[path], error));
-            }
-            return Err(error);
+    let undoable = !tracked.is_empty();
+    for (index, path) in tracked.iter().enumerate() {
+        #[cfg(test)]
+        discard_handoff_hooks::before_path(root, path)?;
+        let handoff = crate::git_undo::discard_handoff(root, path, params, &mut payload, |payload| {
+            db.transaction(|tx| {
+                let changed = tx.execute("UPDATE git_undo SET payload=? WHERE id=?", params![serde_json::to_string(payload)?, operation_id])?;
+                anyhow::ensure!(changed == 1, "undo_capture_failed");
+                Ok(())
+            })
+        });
+        if let Err(error) = handoff {
+            return Err(discard_incomplete(db, scope, &completed, &tracked[index..], error));
         }
-        completed.push(path);
+        completed.push(path.clone());
     }
-    Ok(json!({"paths":paths,"recycled":recycled}))
+    let mut result = json!({"paths":paths,"recycled":recycled});
+    if undoable { result["undoId"] = json!(operation_id); }
+    Ok(result)
+}
+
+#[cfg(test)]
+mod discard_handoff_hooks {
+    use super::*;
+    type Hook = Box<dyn FnMut(&Path, &str) -> Result<()>>;
+    thread_local! { static BEFORE: std::cell::RefCell<Option<Hook>> = const { std::cell::RefCell::new(None) }; }
+    pub struct Guard(Option<Hook>);
+    impl Drop for Guard { fn drop(&mut self) { BEFORE.with(|hook| *hook.borrow_mut() = self.0.take()); } }
+    pub fn install(hook: Hook) -> Guard { BEFORE.with(|slot| Guard(slot.replace(Some(hook)))) }
+    pub fn before_path(root: &Path, path: &str) -> Result<()> {
+        BEFORE.with(|hook| match hook.borrow_mut().as_mut() { Some(hook) => hook(root, path), None => Ok(()) })
+    }
 }
 
 #[cfg(test)]
@@ -1234,7 +1531,7 @@ mod discard_test_hooks {
 
 /// Resolve existing files through the registered-root guard. For an absent path,
 /// check its nearest existing ancestor as well (including junction/symlink parents).
-fn discard_worktree_fingerprint(root: &Path, path: &str) -> Result<Option<String>> {
+pub(crate) fn discard_worktree_fingerprint(root: &Path, path: &str) -> Result<Option<String>> {
     validate_relative(path)?;
     let candidate = root.join(path);
     match fs::symlink_metadata(&candidate) {
@@ -1320,7 +1617,7 @@ fn discard_expected_map<'a>(
     Ok(map)
 }
 
-fn verify_discard_fingerprints(
+pub(crate) fn verify_discard_fingerprints(
     root: &Path,
     paths: &[String],
     params: &serde_json::Map<String, Value>,
@@ -4151,6 +4448,285 @@ mod tests {
             assert_eq!(dispatch(&db, "git.revert", &request).unwrap().unwrap()["conflicted"], false);
             assert_eq!(fs::read_to_string(root.join("gone.txt")).unwrap(), "tracked\n");
         }
+    }
+
+
+    #[test]
+    fn undo_journal_branch_stash_reset_and_receipts_are_fenced() {
+        let (temp, db, project) = setup(); let root = temp.path();
+        let initial = head_oid(root).unwrap();
+        git(root, &["branch", "recover-me"]).unwrap();
+        git(root, &["config", "branch.recover-me.remote", "."]).unwrap();
+        git(root, &["config", "branch.recover-me.merge", "refs/heads/master"]).unwrap();
+        let deleted = call(&db, "git.branch.delete", json!({"projectId":project,"branch":"recover-me","operationId":"delete-journal"})).unwrap();
+        assert_eq!(deleted["undoId"], "delete-journal");
+        git(root, &["branch", "recover-me"]).unwrap();
+        let request = json!({"projectId":project,"id":"delete-journal","operationId":"undo-branch"});
+        assert!(call(&db,"git.undo",request.clone()).unwrap_err().to_string().starts_with("undo_conflict"));
+        assert!(!db.external_operation_pending("undo-branch").unwrap());
+        git(root, &["branch", "-D", "recover-me"]).unwrap();
+        let undone = call(&db,"git.undo",request.clone()).unwrap();
+        assert_eq!(git(root,&["rev-parse","refs/heads/recover-me"]).unwrap().trim(),initial);
+        assert_eq!(git(root,&["config","--get","branch.recover-me.remote"]).unwrap().trim(),".");
+        assert_eq!(call(&db,"git.undo",request).unwrap(),undone);
+        assert_eq!(call(&db,"git.undo",json!({"projectId":project,"id":"delete-journal","operationId":"undo-again"})).unwrap_err().to_string(),"undo_already_undone");
+        fs::write(root.join("a.txt"),"stash data").unwrap();
+        let pushed = call(&db,"git.stash.push",json!({"projectId":project,"message":"recover stash","includeUntracked":false,"operationId":"push-journal"})).unwrap();
+        call(&db,"git.stash.drop",json!({"projectId":project,"oid":pushed["oid"],"operationId":"drop-journal"})).unwrap();
+        call(&db,"git.undo",json!({"projectId":project,"id":"drop-journal","operationId":"undo-stash"})).unwrap();
+        assert!(stash_stack(root).unwrap().iter().any(|(oid,_)|Some(oid.as_str())==pushed["oid"].as_str()));
+        fs::write(root.join("a.txt"),"next").unwrap();git(root,&["add","a.txt"]).unwrap();git(root,&["commit","-m","next"]).unwrap();
+        let previous = head_oid(root).unwrap();
+        call(&db,"git.reset",json!({"projectId":project,"hash":initial,"mode":"soft","expectedHead":previous,"operationId":"reset-journal"})).unwrap();
+        call(&db,"git.undo",json!({"projectId":project,"id":"reset-journal","operationId":"undo-reset-journal"})).unwrap();
+        assert_eq!(head_oid(root).unwrap(),previous);
+        let list = call(&db,"git.undo.list",json!({"projectId":project})).unwrap();
+        assert_eq!(list["entries"].as_array().unwrap().len(),3);
+    }
+
+    #[test]
+    fn undo_capture_failure_releases_discard_without_effect() {
+        let (temp, db, project) = setup();
+        fs::write(temp.path().join("a.txt"), b"capture me\r\n").unwrap();
+        let request = discard_request(&db,&project,&["a.txt"],"capture-failure");
+        db.transaction(|tx| { tx.execute_batch("CREATE TRIGGER reject_undo BEFORE INSERT ON git_undo BEGIN SELECT RAISE(ABORT,'test capture failure'); END;")?; Ok(()) }).unwrap();
+        assert!(call(&db,"git.discard",request.clone()).unwrap_err().to_string().starts_with("undo_capture_failed"));
+        assert_eq!(fs::read(temp.path().join("a.txt")).unwrap(), b"capture me\r\n");
+        assert!(!db.external_operation_pending("capture-failure").unwrap());
+        db.transaction(|tx| { tx.execute_batch("DROP TRIGGER reject_undo")?; Ok(()) }).unwrap();
+        call(&db,"git.discard",request).unwrap();
+        call(&db,"git.undo",json!({"projectId":project,"id":"capture-failure","operationId":"undo-captured"})).unwrap();
+        assert_eq!(fs::read(temp.path().join("a.txt")).unwrap(), b"capture me\r\n");
+    }
+
+
+    #[test]
+    fn journal_reset_undo_rejects_head_roundtrip_and_recreated_branch() {
+        let (temp, db, project) = setup(); let root = temp.path();
+        let initial = head_oid(root).unwrap();
+        fs::write(root.join("a.txt"),"second").unwrap();git(root,&["add","a.txt"]).unwrap();git(root,&["commit","-m","second"]).unwrap();
+        let previous = head_oid(root).unwrap();
+        call(&db,"git.reset",json!({"projectId":project,"hash":initial,"mode":"soft","expectedHead":previous,"operationId":"reset-roundtrip"})).unwrap();
+        git(root,&["reset","--soft",&previous]).unwrap();
+        git(root,&["reset","--soft",&initial]).unwrap();
+        let undo = json!({"projectId":project,"id":"reset-roundtrip","operationId":"undo-roundtrip"});
+        assert!(call(&db,"git.undo",undo).unwrap_err().to_string().starts_with("undo_conflict"));
+        assert!(!db.external_operation_pending("undo-roundtrip").unwrap());
+        assert_eq!(head_oid(root).unwrap(),initial);
+    }
+
+
+    #[test]
+    fn stash_pop_capture_change_after_apply_keeps_the_claim() {
+        let (temp, db, project) = setup(); let root = temp.path();
+        fs::write(root.join("a.txt"),"local to pop").unwrap();
+        let pushed = call(&db,"git.stash.push",json!({"projectId":project,"message":"original","includeUntracked":false,"operationId":"pop-capture-push"})).unwrap();
+        let oid = pushed["oid"].as_str().unwrap().to_owned();
+        let hook_oid = oid.clone();
+        let _guard = stash_test_hooks::install(None,Some(Box::new(move |root| {
+            git(root,&["stash","drop","stash@{0}"])?;
+            git(root,&["stash","store","-m","changed subject",&hook_oid])?; Ok(())
+        })),false,false);
+        let request = json!({"projectId":project,"oid":oid,"pop":true,"operationId":"pop-capture-change"});
+        let error = call(&db,"git.stash.apply",request.clone()).unwrap_err().to_string();
+        assert!(error.starts_with("stash_operation_failed:"),"{error}");
+        assert_eq!(fs::read(root.join("a.txt")).unwrap(),b"local to pop");
+        assert!(db.external_operation_pending("pop-capture-change").unwrap());
+        assert_eq!(call(&db,"git.stash.apply",request).unwrap_err().to_string(),"operation_outcome_unknown");
+        let listed = call(&db,"git.undo.list",json!({"projectId":project})).unwrap();
+        assert!(listed["entries"].as_array().unwrap().is_empty());
+    }
+
+
+    #[test]
+    fn concurrent_journal_undo_consumes_a_stash_entry_once() {
+        let (temp, db, project) = setup(); let root = temp.path();
+        fs::write(root.join("a.txt"),"local stash").unwrap();
+        let pushed = call(&db,"git.stash.push",json!({"projectId":project,"includeUntracked":false,"operationId":"concurrent-push"})).unwrap();
+        call(&db,"git.stash.drop",json!({"projectId":project,"oid":pushed["oid"],"operationId":"concurrent-drop"})).unwrap();
+        let db = std::sync::Arc::new(db);
+        let start = std::sync::Arc::new(std::sync::Barrier::new(3));
+        let mut jobs = Vec::new();
+        for index in 0..2 {
+            let (db, start, project) = (db.clone(), start.clone(), project.clone());
+            jobs.push(std::thread::spawn(move || {
+                start.wait();
+                call(&db,"git.undo",json!({"projectId":project,"id":"concurrent-drop","operationId":format!("concurrent-undo-{index}")})).map_err(|error|error.to_string())
+            }));
+        }
+        start.wait();
+        let results: Vec<_> = jobs.into_iter().map(|job|job.join().unwrap()).collect();
+        assert_eq!(results.iter().filter(|result|result.is_ok()).count(),1);
+        assert!(results.iter().any(|result|result.as_ref().err().map(String::as_str)==Some("undo_already_undone")));
+        let stack = stash_stack(root).unwrap();
+        assert_eq!(stack.iter().filter(|(oid,_)|Some(oid.as_str())==pushed["oid"].as_str()).count(),1);
+    }
+
+
+    #[test]
+    fn stash_interference_repairs_foreign_entries_before_journal_cleanup() {
+        let (temp, db, project) = setup(); let root = temp.path();
+        fs::write(root.join("a.txt"),"foreign").unwrap();
+        let foreign = call(&db,"git.stash.push",json!({"projectId":project,"message":"foreign","includeUntracked":false,"operationId":"cleanup-foreign"})).unwrap()["oid"].as_str().unwrap().to_owned();
+        fs::write(root.join("a.txt"),"ours").unwrap();
+        let pushed = call(&db,"git.stash.push",json!({"projectId":project,"message":"ours","includeUntracked":false,"operationId":"cleanup-push"})).unwrap();
+        let _guard = stash_test_hooks::install(Some(Box::new(move |root| {
+            git(root,&["stash","drop","stash@{0}"])?;
+            Ok(())
+        })),None,false,false);
+        db.transaction(|tx| { tx.execute_batch("CREATE TRIGGER reject_undo_delete BEFORE DELETE ON git_undo BEGIN SELECT RAISE(ABORT,'journal delete failed'); END;")?; Ok(()) }).unwrap();
+        let error = call(&db,"git.stash.drop",json!({"projectId":project,"oid":pushed["oid"],"operationId":"cleanup-drop"})).unwrap_err().to_string();
+        assert!(error.starts_with("stash_operation_failed:"),"{error}");
+        assert!(stash_stack(root).unwrap().iter().any(|(oid,_)|oid==&foreign));
+        assert!(db.external_operation_pending("cleanup-drop").unwrap());
+        assert!(call(&db,"git.undo.list",json!({"projectId":project})).unwrap()["entries"].as_array().unwrap().is_empty());
+    }
+
+
+    #[test]
+    fn discard_handoff_preserves_a_later_edit_between_paths() {
+        let (temp, db, project) = setup(); let root = temp.path();
+        fs::write(root.join("b.txt"), "b base").unwrap();
+        fs::write(root.join("c.txt"), "c base").unwrap();
+        git(root, &["add", "b.txt", "c.txt"]).unwrap();
+        git(root, &["commit", "-m", "additional paths"]).unwrap();
+        for path in ["a.txt", "b.txt", "c.txt"] { fs::write(root.join(path), format!("confirmed {path}")).unwrap(); }
+        let request = discard_request(&db, &project, &["a.txt","b.txt","c.txt"], "handoff-between");
+        let _hook = discard_handoff_hooks::install(Box::new(|root, path| {
+            if path == "b.txt" { fs::write(root.join(path), "editor saved b after a")?; }
+            Ok(())
+        }));
+        let error = call(&db,"git.discard",request.clone()).unwrap_err().to_string();
+        assert!(error.starts_with("discard_incomplete:"),"{error}");
+        assert!(error.contains("completedPaths: [\"a.txt\"]"),"{error}");
+        assert!(error.contains("remainingPaths: [\"b.txt\",\"c.txt\"]"),"{error}");
+        assert_eq!(fs::read(root.join("a.txt")).unwrap(),b"base");
+        assert_eq!(fs::read(root.join("b.txt")).unwrap(),b"editor saved b after a");
+        assert_eq!(fs::read(root.join("c.txt")).unwrap(),b"confirmed c.txt");
+        assert!(db.external_operation_pending("handoff-between").unwrap());
+        assert_eq!(call(&db,"git.discard",request).unwrap_err().to_string(),"operation_outcome_unknown");
+    }
+
+    #[test]
+    fn undo_rejections_leave_no_request_binding() {
+        let (temp, db, project) = setup(); let root = temp.path();
+        fs::write(root.join("a.txt"),"confirmed bytes").unwrap();
+        let discard = discard_request(&db,&project,&["a.txt"],"undo-reject-discard");
+        call(&db,"git.discard",discard).unwrap();
+        fs::write(root.join("a.txt"),"later user edit").unwrap();
+        for index in 0..5 {
+            let operation = format!("undo-rejected-{index}");
+            let request = json!({"projectId":project,"id":"undo-reject-discard","operationId":operation});
+            assert!(call(&db,"git.undo",request).unwrap_err().to_string().starts_with("undo_conflict"));
+            assert!(db.operation_request(&operation).unwrap().is_none());
+            assert!(!db.external_operation_pending(&operation).unwrap());
+        }
+        let unavailable = json!({"projectId":project,"id":"missing-journal","operationId":"undo-unavailable-rejected"});
+        assert_eq!(call(&db,"git.undo",unavailable).unwrap_err().to_string(),"undo_unavailable");
+        assert!(db.operation_request("undo-unavailable-rejected").unwrap().is_none());
+        db.claim_external_operation("undo-pending-unbound").unwrap();
+        let pending = json!({"projectId":project,"id":"undo-reject-discard","operationId":"undo-pending-unbound"});
+        assert_eq!(call(&db,"git.undo",pending).unwrap_err().to_string(),"operation_outcome_unknown");
+        assert!(db.operation_request("undo-pending-unbound").unwrap().is_none());
+    }
+
+
+    #[test]
+    fn undo_handoff_edit_survives_and_releases_no_effect_request() {
+        let (temp, db, project) = setup(); let root = temp.path();
+        fs::write(root.join("a.txt"),"discarded bytes").unwrap();
+        let discard = discard_request(&db,&project,&["a.txt"],"undo-race-discard");
+        call(&db,"git.discard",discard).unwrap();
+        let _hook = crate::git_undo::test_hooks::install_undo_after_prepare(|root| {
+            fs::write(root.join("a.txt"),"editor saved during undo preparation")?; Ok(())
+        });
+        let request = json!({"projectId":project,"id":"undo-race-discard","operationId":"undo-race-reject"});
+        let error = call(&db,"git.undo",request).unwrap_err().to_string();
+        assert!(error.starts_with("undo_conflict:"),"{error}");
+        assert_eq!(fs::read(root.join("a.txt")).unwrap(),b"editor saved during undo preparation");
+        assert!(!db.external_operation_pending("undo-race-reject").unwrap());
+        assert!(db.operation_request("undo-race-reject").unwrap().is_none());
+        let journal_root = db.transaction(|tx| root_for(tx, &project, None)).unwrap();
+        assert!(db.git_undo_get("undo-race-discard",&project,&journal_root.to_string_lossy()).unwrap().unwrap().undone_at.is_none());
+    }
+
+
+    #[test]
+    fn partial_undo_retires_the_journal_entry_and_lists_its_progress() {
+        let (temp, db, project) = setup(); let root = temp.path();
+        fs::write(root.join("b.txt"),"base b").unwrap();
+        git(root, &["add", "b.txt"]).unwrap();
+        git(root, &["commit", "-m", "second"]).unwrap();
+        fs::write(root.join("a.txt"),"discarded a").unwrap();
+        fs::write(root.join("b.txt"),"discarded b").unwrap();
+        let discard = discard_request(&db,&project,&["a.txt","b.txt"],"undo-partial-discard");
+        call(&db,"git.discard",discard).unwrap();
+        let _hook = crate::git_undo::test_hooks::install_undo_after_install(|_root, path| {
+            if path == "a.txt" { return Err(anyhow!("injected failure after the first install")); }
+            Ok(())
+        });
+        let request = json!({"projectId":project,"id":"undo-partial-discard","operationId":"undo-partial"});
+        let before: i64 = db.transaction(|tx| Ok(tx.query_row("SELECT COUNT(*) FROM outbox", [], |row| row.get(0))?)).unwrap();
+        let error = call(&db,"git.undo",request.clone()).unwrap_err().to_string();
+        assert!(error.starts_with("undo_conflict: completed=[a.txt]; remaining=[b.txt]"),"{error}");
+        let after: i64 = db.transaction(|tx| Ok(tx.query_row("SELECT COUNT(*) FROM outbox", [], |row| row.get(0))?)).unwrap();
+        assert!(after > before, "a partial Undo publishes a scoped state.changed event");
+        let published: String = db.transaction(|tx| Ok(tx.query_row("SELECT data FROM outbox ORDER BY created_at DESC, rowid DESC LIMIT 1", [], |row| row.get(0))?)).unwrap();
+        let published: Value = serde_json::from_str(&published).unwrap();
+        assert_eq!(published["kind"],json!("git"));
+        assert_eq!(published["projectId"],json!(project));
+        assert_eq!(fs::read(root.join("a.txt")).unwrap(),b"discarded a");
+        assert_eq!(fs::read(root.join("b.txt")).unwrap(),b"base b");
+        // The restored path is a real effect, so its claim stays uncertain.
+        assert!(db.external_operation_pending("undo-partial").unwrap());
+        let journal_root = db.transaction(|tx| root_for(tx, &project, None)).unwrap();
+        let row = db.git_undo_get("undo-partial-discard",&project,&journal_root.to_string_lossy()).unwrap().unwrap();
+        assert!(row.undone_at.is_some());
+        assert_eq!(row.payload["partial"]["applied"],json!(["a.txt"]));
+        assert_eq!(row.payload["partial"]["remaining"],json!(["b.txt"]));
+        assert_eq!(call(&db,"git.undo",json!({"projectId":project,"id":"undo-partial-discard","operationId":"undo-partial-again"})).unwrap_err().to_string(),"undo_already_undone");
+        let listed = call(&db,"git.undo.list",json!({"projectId":project})).unwrap();
+        let entry = listed["entries"].as_array().unwrap().iter().find(|entry| entry["id"]=="undo-partial-discard").unwrap();
+        assert_eq!(entry["available"],json!(false));
+        assert_eq!(entry["partial"],json!(true));
+        assert!(entry["undoneAt"].as_str().is_some());
+        assert_eq!(entry["applied"],json!(["a.txt"]));
+        assert_eq!(entry["remaining"],json!(["b.txt"]));
+    }
+
+    #[test]
+    fn undo_list_counts_recycled_paths_separately_from_undoable_ones() {
+        let (temp, db, project) = setup(); let root = temp.path();
+        fs::write(root.join("a.txt"),"tracked edit").unwrap();
+        fs::write(root.join("untracked.txt"),"recycle me").unwrap();
+        let _hooks = discard_test_hooks::install(true, None);
+        let discard = discard_request(&db,&project,&["a.txt","untracked.txt"],"undo-mixed-discard");
+        let result = call(&db,"git.discard",discard).unwrap();
+        let undo_id = result["undoId"].as_str().expect("tracked paths stay undoable").to_owned();
+        let listed = call(&db,"git.undo.list",json!({"projectId":project})).unwrap();
+        let entry = listed["entries"].as_array().unwrap().iter().find(|entry| entry["id"]==undo_id.as_str()).unwrap();
+        // Only the tracked path is undoable; the recycled path is counted apart.
+        assert_eq!(entry["paths"],json!(["a.txt"]));
+        assert_eq!(entry["pathCount"],json!(1));
+        assert_eq!(entry["recycledCount"],json!(1));
+        let label = entry["label"].as_str().unwrap();
+        assert_eq!(label,"Discarded changes in 1 file (1 more moved to the Recycle Bin)");
+    }
+
+    #[test]
+    fn discard_keeps_displaced_original_when_journal_update_fails() {
+        let (temp, db, project) = setup(); let root = temp.path();
+        fs::write(root.join("a.txt"),"confirmed original bytes").unwrap();
+        let request = discard_request(&db,&project,&["a.txt"],"discard-update-fail");
+        db.transaction(|tx| { tx.execute_batch("CREATE TRIGGER reject_undo_update BEFORE UPDATE ON git_undo BEGIN SELECT RAISE(ABORT,'journal unavailable'); END;")?; Ok(()) }).unwrap();
+        let error = call(&db,"git.discard",request).unwrap_err().to_string();
+        assert!(error.starts_with("discard_incomplete:"),"{error}");
+        let kept: Value = serde_json::from_str(error.rsplit("; keptDisplaced: ").next().unwrap()).unwrap();
+        let kept = kept.as_str().expect("recovery path reported");
+        assert_eq!(fs::read(root.join(kept)).unwrap(),b"confirmed original bytes");
+        assert_eq!(fs::read(root.join("a.txt")).unwrap(),b"base");
+        assert!(db.external_operation_pending("discard-update-fail").unwrap());
+        assert!(db.operation("discard-update-fail").unwrap().is_none());
     }
 
 }

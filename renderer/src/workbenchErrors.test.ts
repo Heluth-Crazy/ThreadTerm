@@ -45,6 +45,23 @@ test('worktree base errors explain how to recover', () => {
  assert.equal(workbenchError(new Error('invalid_request'), false), 'The request is invalid. Check the worktree options and try again.');
 });
 
+test('undo failures explain whether the action conflicted or expired', () => {
+ for(const code of ['undo_conflict: src/file.ts','undo_unavailable','undo_capture_failed','undo_already_undone']) for(const zh of [true,false]) {
+  const message=workbenchError(new Error(code),zh);
+  assert.notEqual(message,code);
+  assert.match(message,zh?/[\u4e00-\u9fff]/:/[a-z]/i);
+ }
+});
+
+test('a partial guarded Undo conflict does not claim that nothing changed',()=>{
+ for(const code of ['undo_conflict','undo_capture_unsupported','undo_capture_failed']) for(const zh of [true,false]) {
+  const message=workbenchError(new Error(`${code}: completed=[src/a.ts]; remaining=[src/b.ts]; kept displaced file: .b.tt-displaced`),zh);
+  assert.doesNotMatch(message,/nothing was undone|未撤销任何内容|nothing changed|未作任何更改/);
+  assert.match(message,/src\/a\.ts/);
+  assert.match(message,zh?/[\u4e00-\u9fff]/:/[a-z]/i);
+ }
+});
+
 test('a changed reviewed push destination asks for a new review', () => {
  assert.equal(workbenchError(new Error('push_destination_changed'), false), 'The push destination changed since this preview. Review it again before pushing.');
  assert.equal(workbenchError(new Error('push_destination_changed'), true), '推送目标自预览后已变化。请重新检查后再推送。');

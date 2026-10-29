@@ -253,6 +253,7 @@ fn request_lane(method: &str) -> Lane {
         | "git.push.preview"
         | "git.stash.list"
         | "git.stash.show"
+        | "git.undo.list"
         | "git.branches"
         | "git.commit.show"
         | "git.commit.diff"
@@ -1029,6 +1030,7 @@ mod decoder_tests {
             "git.push.preview",
             "git.stash.list",
             "git.stash.show",
+            "git.undo.list",
             "review.changes",
             "filesystem.search",
             "filesystem.external.read",
@@ -1059,6 +1061,7 @@ mod decoder_tests {
             "git.stash.push",
             "git.stash.apply",
             "git.stash.drop",
+            "git.undo",
             "git.cherryPick",
             "git.revert",
             "git.reset",

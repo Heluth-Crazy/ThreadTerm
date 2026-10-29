@@ -4090,6 +4090,32 @@
         "projectId"
       ]
     },
+    "RequestParams<\"git.undo\">": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "operationId": {
+          "type": "string"
+        },
+        "projectId": {
+          "type": "string"
+        },
+        "worktreePath": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "operationId",
+        "projectId"
+      ]
+    },
+    "RequestParams<\"git.undo.list\">": {
+      "$ref": "#/definitions/FileScope"
+    },
     "RequestParams<\"git.log\">": {
       "type": "object",
       "additionalProperties": false,
@@ -9823,6 +9849,58 @@
         },
         "params": {
           "$ref": "#/definitions/RequestParams%3C%22git.stash.drop%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "params"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "git.undo"
+        },
+        "params": {
+          "$ref": "#/definitions/RequestParams%3C%22git.undo%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "params"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "git.undo.list"
+        },
+        "params": {
+          "$ref": "#/definitions/RequestParams%3C%22git.undo.list%22%3E"
         }
       },
       "required": [

@@ -24,6 +24,20 @@ pub struct Database {
     pub(crate) retention: Mutex<Option<std::sync::mpsc::SyncSender<()>>>,
 }
 
+/// Identifier-only recovery metadata for a completed destructive Git action.
+/// File contents remain exclusively in Git's object store.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct GitUndoEntry {
+    pub id: String,
+    pub operation_id: String,
+    pub project_id: String,
+    pub worktree_path: String,
+    pub kind: String,
+    pub payload: Value,
+    pub created_at: String,
+    pub undone_at: Option<String>,
+}
+
 #[path = "schema.rs"]
 pub(crate) mod schema;
 
@@ -48,6 +62,8 @@ impl Database {
              CREATE TABLE IF NOT EXISTS operations (id TEXT PRIMARY KEY, method TEXT NOT NULL, result TEXT NOT NULL, created_at TEXT NOT NULL);
              CREATE TABLE IF NOT EXISTS operation_requests (id TEXT PRIMARY KEY, method TEXT NOT NULL, params TEXT NOT NULL);
              CREATE TABLE IF NOT EXISTS external_operations (id TEXT PRIMARY KEY, started_at TEXT NOT NULL);
+             CREATE TABLE IF NOT EXISTS git_undo (id TEXT PRIMARY KEY, operation_id TEXT NOT NULL, project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE, worktree_path TEXT NOT NULL, kind TEXT NOT NULL, payload TEXT NOT NULL, created_at TEXT NOT NULL, undone_at TEXT);
+             CREATE INDEX IF NOT EXISTS git_undo_scope_created ON git_undo(project_id, worktree_path, created_at);
              CREATE TABLE IF NOT EXISTS outbox (seq INTEGER PRIMARY KEY AUTOINCREMENT, event TEXT NOT NULL, data TEXT NOT NULL, created_at TEXT NOT NULL);
              CREATE TABLE IF NOT EXISTS leases (session_id TEXT PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE, client_id TEXT NOT NULL, epoch INTEGER NOT NULL, expires_at TEXT NOT NULL);
              CREATE TABLE IF NOT EXISTS output_chunks (session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE, start_cursor INTEGER NOT NULL, data BLOB NOT NULL, PRIMARY KEY(session_id,start_cursor));
@@ -880,6 +896,65 @@ impl Database {
         result
             .map(|raw| serde_json::from_str(&raw).context("decoding idempotent result"))
             .transpose()
+    }
+    /// Stores identifiers for a captured Git recovery point and bounds its scope
+    /// before returning to the external Git effect.
+    pub(crate) fn git_undo_insert(
+        &self,
+        id: &str,
+        operation_id: &str,
+        project_id: &str,
+        worktree_path: &str,
+        kind: &str,
+        payload: &Value,
+    ) -> Result<()> {
+        anyhow::ensure!(
+            !id.is_empty()
+                && !operation_id.is_empty()
+                && !project_id.is_empty()
+                && !worktree_path.is_empty()
+                && !kind.is_empty()
+                && payload.is_object(),
+            "invalid_git_undo"
+        );
+        self.transaction(|tx| {
+            let created_at = now();
+            tx.execute(
+                "INSERT INTO git_undo(id,operation_id,project_id,worktree_path,kind,payload,created_at,undone_at) VALUES(?,?,?,?,?,?,?,NULL)",
+                params![id, operation_id, project_id, worktree_path, kind, serde_json::to_string(payload)?, created_at],
+            )?;
+            prune_git_undo_scope(tx, project_id, worktree_path, &git_undo_cutoff())?;
+            Ok(())
+        })
+    }
+    /// Reads a journal row only from its recorded project/worktree scope. Old
+    /// rows are unavailable immediately, even before the retention worker runs.
+    pub(crate) fn git_undo_get(
+        &self,
+        id: &str,
+        project_id: &str,
+        worktree_path: &str,
+    ) -> Result<Option<GitUndoEntry>> {
+        let conn = self.connection.lock().map_err(|_| anyhow!("database lock poisoned"))?;
+        conn.query_row(
+            "SELECT id,operation_id,project_id,worktree_path,kind,payload,created_at,undone_at FROM git_undo WHERE id=? AND project_id=? AND worktree_path=? AND created_at>=?",
+            params![id, project_id, worktree_path, git_undo_cutoff()],
+            git_undo_row,
+        ).optional().map_err(Into::into)
+    }
+    /// Returns a worktree's bounded journal newest first. Entries already undone
+    /// are retained for history but carry `undone_at`.
+    pub(crate) fn git_undo_list(
+        &self,
+        project_id: &str,
+        worktree_path: &str,
+    ) -> Result<Vec<GitUndoEntry>> {
+        let conn = self.connection.lock().map_err(|_| anyhow!("database lock poisoned"))?;
+        let mut statement = conn.prepare("SELECT id,operation_id,project_id,worktree_path,kind,payload,created_at,undone_at FROM git_undo WHERE project_id=? AND worktree_path=? AND created_at>=? ORDER BY created_at DESC,id DESC LIMIT ?")?;
+        let rows = statement
+            .query_map(params![project_id, worktree_path, git_undo_cutoff(), crate::retention::GIT_UNDO_PER_WORKTREE], git_undo_row)?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows)
     }
     /// Reads the immutable request bound to an operation receipt.  Callers use
     /// this only to prove an undo targets the same original scope; it never
@@ -2086,6 +2161,84 @@ fn normalize_history_transcript(session_id: &str, sources: &[ChatItem]) -> Resul
     }
     Ok(items)
 }
+fn git_undo_cutoff() -> String {
+    (Utc::now() - chrono::Duration::days(crate::retention::GIT_UNDO_HISTORY_DAYS))
+        .to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
+}
+
+fn git_undo_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<GitUndoEntry> {
+    let payload: String = row.get(5)?;
+    Ok(GitUndoEntry {
+        id: row.get(0)?,
+        operation_id: row.get(1)?,
+        project_id: row.get(2)?,
+        worktree_path: row.get(3)?,
+        kind: row.get(4)?,
+        payload: serde_json::from_str(&payload).map_err(|error| {
+            rusqlite::Error::FromSqlConversionFailure(
+                5,
+                rusqlite::types::Type::Text,
+                Box::new(error),
+            )
+        })?,
+        created_at: row.get(6)?,
+        undone_at: row.get(7)?,
+    })
+}
+
+fn prune_git_undo_scope(
+    tx: &Transaction<'_>,
+    project_id: &str,
+    worktree_path: &str,
+    cutoff: &str,
+) -> Result<()> {
+    tx.execute(
+        "DELETE FROM git_undo WHERE project_id=? AND worktree_path=? AND created_at<?",
+        params![project_id, worktree_path, cutoff],
+    )?;
+    tx.execute(
+        "DELETE FROM git_undo WHERE id IN (
+            SELECT older.id FROM git_undo older
+            WHERE older.project_id=?1 AND older.worktree_path=?2
+              AND (SELECT COUNT(*) FROM git_undo newer
+                   WHERE newer.project_id=older.project_id AND newer.worktree_path=older.worktree_path
+                     AND (newer.created_at>older.created_at OR (newer.created_at=older.created_at AND newer.id>older.id))) >= ?3
+        )",
+        params![project_id, worktree_path, crate::retention::GIT_UNDO_PER_WORKTREE],
+    )?;
+    Ok(())
+}
+
+/// Marks one recovery entry consumed. Call this in the same transaction that
+/// publishes the undo receipt, after the external effect has succeeded.
+pub(crate) fn mark_git_undo_undone(tx: &Transaction<'_>, id: &str) -> Result<bool> {
+    Ok(tx.execute(
+        "UPDATE git_undo SET undone_at=? WHERE id=? AND undone_at IS NULL",
+        params![now(), id],
+    )? == 1)
+}
+
+/// Marks an entry consumed by an Undo that restored only some paths. Recording
+/// the progress in the payload keeps the applied/remaining lists available to
+/// `git.undo.list` while making the entry permanently non-undoable.
+pub(crate) fn mark_git_undo_partial(
+    tx: &Transaction<'_>,
+    id: &str,
+    payload: &Value,
+) -> Result<bool> {
+    Ok(tx.execute(
+        "UPDATE git_undo SET undone_at=?, payload=? WHERE id=? AND undone_at IS NULL",
+        params![now(), serde_json::to_string(payload)?, id],
+    )? == 1)
+}
+
+/// Removes a pending recovery capture after the owning Git action proves it
+/// did not complete (for example capture failure or stash interference).
+pub(crate) fn delete_git_undo(tx: &Transaction<'_>, id: &str) -> Result<()> {
+    tx.execute("DELETE FROM git_undo WHERE id=?", [id])?;
+    Ok(())
+}
+
 fn now() -> String {
     Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
 }
@@ -4789,6 +4942,37 @@ mod browser_eval_context_tests {
             })
             .unwrap();
         assert!(!outbox.contains("PRIVATE_PAYLOAD"));
+    }
+
+    #[test]
+    fn git_undo_is_scope_fenced_bounded_and_removed_with_its_project() {
+        let root = tempfile::tempdir().unwrap();
+        let db = Database::open(&root.path().join("git-undo.sqlite")).unwrap();
+        let project = db
+            .add_project(root.path().to_str().unwrap(), Some("undo"), "add-project")
+            .unwrap();
+        let worktree = root.path().to_str().unwrap();
+        for index in 0..=crate::retention::GIT_UNDO_PER_WORKTREE {
+            db.git_undo_insert(
+                &format!("undo-{index:02}"),
+                &format!("operation-{index:02}"),
+                &project.id,
+                worktree,
+                "discard",
+                &json!({"oid": format!("{index:040x}")}),
+            )
+            .unwrap();
+        }
+        let rows = db.git_undo_list(&project.id, worktree).unwrap();
+        assert_eq!(rows.len(), crate::retention::GIT_UNDO_PER_WORKTREE);
+        assert_eq!(rows[0].id, "undo-50");
+        assert!(db.git_undo_get("undo-00", &project.id, worktree).unwrap().is_none());
+        assert!(db.git_undo_get("undo-50", &project.id, "other").unwrap().is_none());
+        db.remove_project(&project.id, "remove-project").unwrap();
+        let remaining: i64 = db
+            .transaction(|tx| tx.query_row("SELECT COUNT(*) FROM git_undo", [], |row| row.get(0)).map_err(Into::into))
+            .unwrap();
+        assert_eq!(remaining, 0);
     }
 }
 

@@ -887,20 +887,22 @@ export interface RequestMap {
  'git.history.plan': [FileScope&{hash:string},GitHistoryPlan];
  'git.cherryPick': [FileScope&{hash:string;operationId:string},GitHistoryMutationResult];
  'git.revert': [FileScope&{hash:string;mainline?:number;operationId:string},GitHistoryMutationResult];
- 'git.reset': [FileScope&{hash:string;mode:'soft'|'mixed';expectedHead:string;undoOf?:string;operationId:string},{output:string;previousHead:string;head:string;symbolicHead:string}];
+ 'git.reset': [FileScope&{hash:string;mode:'soft'|'mixed';expectedHead:string;undoOf?:string;operationId:string},{output:string;previousHead:string;head:string;symbolicHead:string;undoId?:string}];
  'git.operation.abort': [FileScope&{kind:'cherry-pick'|'revert';operationId:string},{output:string;head?:string}];
  'git.operation.continue': [FileScope&{kind:'cherry-pick'|'revert';operationId:string},GitHistoryMutationResult];
  'git.diff': [FileScope&{path:string;staged:boolean},GitDiff];
  'git.index.write': [FileScope&{path:string;content:string;expectedIndexFingerprint:string|null;operationId:string},{path:string;indexFingerprint:string}];
- 'git.discard': [FileScope&{paths:string[];expectedFingerprints:Record<string,string|null>;expectedIndexFingerprints:Record<string,string|null>;operationId:string},{paths:string[];recycled:string[]}];
+ 'git.discard': [FileScope&{paths:string[];expectedFingerprints:Record<string,string|null>;expectedIndexFingerprints:Record<string,string|null>;operationId:string},{paths:string[];recycled:string[];undoId?:string}];
  'git.checkout': [FileScope&{branch:string;create?:boolean;startPoint?:string;stash?:boolean;operationId:string},{branch:string;stash?:GitStashCheckout;warning?:string}];
- 'git.branch.delete': [FileScope&{branch:string;force?:boolean;operationId:string},{branch:string}];
+ 'git.branch.delete': [FileScope&{branch:string;force?:boolean;operationId:string},{branch:string;undoId?:string}];
  'git.branches': [FileScope,GitBranches];
  'git.stash.list': [FileScope,{entries:GitStashEntry[]}];
  'git.stash.show': [FileScope&{oid:string},{files:GitStashFile[]}];
  'git.stash.push': [FileScope&{message?:string;includeUntracked:boolean;operationId:string},{oid:string}];
  'git.stash.apply': [FileScope&{oid:string;pop:boolean;operationId:string},GitStashApply];
- 'git.stash.drop': [FileScope&{oid:string;operationId:string},{oid:string;dropped:true}];
+ 'git.stash.drop': [FileScope&{oid:string;operationId:string},{oid:string;dropped:true;undoId?:string}];
+ 'git.undo': [FileScope&{id:string;operationId:string},{id:string;undoneAt:string}];
+ 'git.undo.list': [FileScope,{entries:GitUndoEntry[]}];
  'git.log': [FileScope&{path?:string;skip?:number;limit?:number;all?:boolean},GitLog];
  'git.commit.show': [FileScope&{commit:string},GitCommitDetail];
  'git.commit.diff': [FileScope&{commit:string;path:string;originalPath?:string},GitTextPair];
@@ -1015,6 +1017,7 @@ export const METHODS = ['git.history.plan','git.cherryPick','git.revert','git.re
 // The legacy list predates review-draft RPCs; extend it here so old callers of
 // `validateRequest` accept the additive methods without rebuilding that list.
 (METHODS as unknown as string[]).unshift(
+ 'git.undo','git.undo.list',
  'reviewDrafts.list','reviewDrafts.upsert','reviewDrafts.delete',
  'reviewDrafts.importLegacy','reviewDrafts.assetReferences',
 );
@@ -1075,12 +1078,15 @@ const stringFields: Partial<Record<Method,readonly string[]>> = {
  'session.documents.list':['sessionId'],'session.documents.pin':['sessionId','path','operationId'],'session.documents.unpin':['sessionId','path','operationId'],
  'usage.ledger.session':['provider','nativeSessionId'],'usage.ledger.refresh':['operationId'],'usage.ledger.rebuild':['operationId'],'usage.ledger.cancel':['scanId','operationId'],'usage.ledger.settings.update':['operationId'],
 };
+(stringFields as Partial<Record<Method,readonly string[]>>)['git.undo']=['projectId','id','operationId'];
+(stringFields as Partial<Record<Method,readonly string[]>>)['git.undo.list']=['projectId'];
 export function isRecord(value:unknown):value is Record<string,unknown> { return typeof value==='object' && value!==null && !Array.isArray(value); }
 export function validateRequest(method:unknown,params:unknown):asserts method is Method {
  if(typeof method!=='string'||!(METHODS as readonly string[]).includes(method)) throw new Error('Unsupported runtime method');
  if(!isRecord(params)) throw new Error('Request parameters must be an object');
  if(!validateWireRequest({v:1,id:'boundary',method,params})) throw new Error('Request does not match the protocol schema');
  const m=method as Method;
+ if((m==='git.undo'||m==='git.undo.list')&&Object.keys(params).some(key=>!['projectId','worktreePath',...(m==='git.undo'?['id','operationId']:[])].includes(key))) throw new Error('Invalid undo request');
  if(['git.history.plan','git.cherryPick','git.revert','git.reset'].includes(m)&&!/^[a-fA-F0-9]{7,64}$/.test(String(params.hash))) throw new Error('Invalid commit hash');
  if(m==='git.revert'&&params.mainline!==undefined&&(!Number.isSafeInteger(params.mainline)||Number(params.mainline)<1)) throw new Error('Invalid mainline parent');
  if(m==='git.reset') {
@@ -1300,6 +1306,19 @@ export function validateResult<M extends Method>(method:M,result:unknown):assert
   const value=result as RequestResult<'git.reset'>,oid=/^(?:[a-fA-F0-9]{40}|[a-fA-F0-9]{64})$/;
   if(!isRecord(result)||!oid.test(value.previousHead)||!oid.test(value.head)||typeof value.symbolicHead!=='string'||(value.symbolicHead!=='detached'&&(!value.symbolicHead.startsWith('refs/heads/')||value.symbolicHead.length<12||/[\u0000\r\n]/.test(value.symbolicHead)))) throw new Error('Invalid reset result');
  }
+ if(method==='git.undo.list') {
+  const value=result as RequestResult<'git.undo.list'>;
+  const undoPath=(path:unknown)=>typeof path!=='string'||!path||/^[\\/]|^[A-Za-z]:|(^|[\\/])\.\.([\\/]|$)/.test(path);
+  const undoPaths=(paths:unknown)=>!Array.isArray(paths)||paths.length>20||paths.some(undoPath);
+  if(!isRecord(result)||!Array.isArray(value.entries)||value.entries.length>50) throw new Error('Invalid undo list');
+  for(const entry of value.entries) {
+   if(!isRecord(entry)||typeof entry.id!=='string'||!entry.id||typeof entry.label!=='string'||!entry.label||typeof entry.createdAt!=='string'||!entry.createdAt||!['discard','branch','stash','reset'].includes(String(entry.kind))||typeof entry.available!=='boolean'||!Array.isArray(entry.paths)||entry.paths.length>20||!Number.isSafeInteger(entry.pathCount)||entry.pathCount<entry.paths.length||entry.pathCount<0||!(entry.undoneAt===null||typeof entry.undoneAt==='string')||entry.paths.some(undoPath)) throw new Error('Invalid undo list');
+   // Partial progress and the recycle count are optional (older runtimes omit them) but bounded.
+   if(entry.partial!==undefined&&typeof entry.partial!=='boolean') throw new Error('Invalid undo list');
+   if(entry.recycledCount!==undefined&&(!Number.isSafeInteger(entry.recycledCount)||entry.recycledCount<0)) throw new Error('Invalid undo list');
+   if((entry.applied!==undefined&&undoPaths(entry.applied))||(entry.remaining!==undefined&&undoPaths(entry.remaining))) throw new Error('Invalid undo list');
+  }
+ }
  if(['git.cherryPick','git.revert','git.operation.abort','git.operation.continue'].includes(method)&&isRecord(result)&&result.head!==undefined&&!/^(?:[a-fA-F0-9]{40}|[a-fA-F0-9]{64})$/.test(String(result.head))) throw new Error('Invalid operation HEAD');
  if(method==='git.push.preview') {
   const value=result as GitPushPreview;
@@ -1411,9 +1430,11 @@ export interface GitPushPreview { branch:string; localBranch:string; detached:bo
  * file history); scope echoes it and is missing from runtimes older than the commit graph. */
 export interface GitLog { commits:GitCommitInfo[]; hasMore:boolean; scope?:'head'|'all' }
 export interface GitStashEntry { oid:string; index:number; message:string; branch?:string; createdAt:number; untracked:boolean }
+/** Identifier-only recovery journal metadata. Paths are repository-relative and capped by the runtime; `paths`/`pathCount` cover only undoable paths, while `recycledCount` counts paths recoverable only through the Recycle Bin. A partial entry records an Undo that restored some paths and then failed. */
+export interface GitUndoEntry { id:string; kind:'discard'|'branch'|'stash'|'reset'; label:string; createdAt:string; available:boolean; paths:string[]; pathCount:number; undoneAt:string|null; recycledCount?:number; partial?:boolean; applied?:string[]; remaining?:string[] }
 export interface GitStashFile { path:string; originalPath?:string; status:string; untracked?:boolean }
 export interface GitStashDropInterference { oid:string; ourEntryDropped:boolean; restored:Array<{oid:string;message:string}>; restoreFailed:Array<{oid:string;message:string;error:string}>; orderChanged:boolean; unknownEntryLost?:boolean }
-export interface GitStashApply { oid:string; applied:boolean; conflicted?:boolean; dropped:boolean; warning?:string; interference?:GitStashDropInterference }
+export interface GitStashApply { oid:string; applied:boolean; conflicted?:boolean; dropped:boolean; warning?:string; interference?:GitStashDropInterference; undoId?:string }
 export interface GitStashCheckout { oid:string; message?:string; applied?:boolean; conflicted?:boolean; dropped?:boolean; restored?:boolean; interference?:GitStashDropInterference }
 export interface GitCommitFile { path:string; originalPath?:string; status:string }
 export interface GitCommitDetail { commit:GitCommitInfo; body:string; files:GitCommitFile[] }

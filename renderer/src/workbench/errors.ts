@@ -1,5 +1,10 @@
 /** Runtime error codes from file/Git/review commands → short user-facing text.
  * Unknown errors keep Git's own message so failures are never disguised. */
+// No imports: QA tests load this module directly through Node's type stripping.
+/** True when a rejected Undo already restored some paths; the runtime reports them in `completed=[…]`. */
+export function undoRestoredPaths(error:unknown) {
+ return /completed\s*=\s*\[\s*[^\]\s]/.test(error instanceof Error ? error.message : String(error));
+}
 export type StashDropInterference = {oid:string;ourEntryDropped:boolean;restored:{oid:string;message:string}[];restoreFailed:{oid:string;message:string;error:string}[];orderChanged:boolean;unknownEntryLost?:boolean};
 type StashEntry = {oid:string;message:string};
 const stashEntry = (value:unknown):StashEntry|undefined => value !== null && typeof value==='object' && typeof (value as StashEntry).oid==='string' && typeof (value as StashEntry).message==='string' ? value as StashEntry : undefined;
@@ -102,6 +107,13 @@ const known:Record<string,[string,string]> = {
  git_selected_commit_ref_conflict:['提交引用已变化，未创建提交。请刷新后重试。','The commit reference changed; no commit was created. Refresh and try again.'],
  git_selected_commit_cleanup_failed:['提交已发布，但清理报告错误。请刷新确认状态。','The commit was published, but cleanup reported an error. Refresh to confirm the state.'],
  discard_incomplete:['操作因错误中止前已丢弃部分更改。列表已刷新，请检查剩余内容。','Some changes were discarded before an error stopped the operation. The list has been refreshed; check what remains.'],
+ undo_conflict:['自该操作后文件或引用已发生变化，因此未撤销任何内容。请检查当前状态后重试。','Files or refs changed after this action, so nothing was undone. Review the current state and try again.'],
+ undo_unavailable:['用于撤销的 Git 对象已不可用。','The Git objects needed to undo this action are no longer available.'],
+ undo_capture_failed:['无法在执行操作前捕获撤销信息，因此未作任何更改。请检查后重试。','Undo information could not be captured before this action, so nothing changed. Review and try again.'],
+ undo_capture_unsupported:['此工作区无法安全保存撤销所需的信息，因此未作任何更改。','This worktree cannot safely capture the information needed for Undo, so nothing changed.'],
+ undo_already_applied:['该操作已被撤销。','This action has already been undone.'],
+ undo_already_undone:['该操作已被撤销。','This action has already been undone.'],
+ undo_capture_changed:['该操作的撤销记录已变化，未作任何更改。请刷新后重试。','This action’s undo record changed, so nothing changed. Refresh and try again.'],
 };
 
 export function workbenchError(error:unknown, zh:boolean, context?:'discard'):string {
@@ -144,6 +156,9 @@ export function workbenchError(error:unknown, zh:boolean, context?:'discard'):st
   if(context === 'discard' && (code === 'file_conflict' || code === 'index_conflict')) return zh ? '自打开此对话框后文件已发生更改。未丢弃任何更改。请检查更改后重试。' : 'Files changed since you opened this dialog. Nothing was discarded. Review the changes and try again.';
   const marker = text.indexOf(`${code}:`);
   const detail = marker >= 0 ? text.slice(marker + code.length + 1).trim() : '';
+  // An Undo that restored some paths must not claim that nothing changed, whichever
+  // code reported the failure (conflict, unsupported install, or capture error).
+  if((code==='undo_conflict'||code==='undo_capture_unsupported'||code==='undo_capture_failed')&&undoRestoredPaths(detail)) return (zh ? '撤销在恢复部分路径后失败。请检查当前状态和保留的恢复文件。' : 'Undo restored some paths before it failed. Review the current state and any retained recovery files.') + (detail ? ` ${detail}` : '');
   if(code === 'branch_checked_out_elsewhere' && detail) {
    try {
     const owner=JSON.parse(detail) as {path?:unknown;missing?:unknown};

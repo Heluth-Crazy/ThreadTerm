@@ -905,3 +905,22 @@ test('history plans and action results preserve full OIDs and bounded reset prev
  assert.throws(()=>validateResult('git.reset',{output:'',previousHead:'HEAD',head:hash,symbolicHead:'refs/heads/main'}));
  assert.throws(()=>validateResult('git.reset',{output:'',previousHead:head,symbolicHead:'refs/heads/main'}));
 });
+
+test('git undo exposes a bounded identifier-only journal and fences undo requests',()=>{
+ const scope={projectId:'project',worktreePath:'worktree'},id='undo-operation',operationId='undo-request';
+ validateRequest('git.undo.list',scope);
+ validateRequest('git.undo',{...scope,id,operationId});
+ for(const params of [{projectId:''},{...scope,id:''},{...scope,id,operationId:''},{...scope,id,operationId,paths:['leak']}]) assert.throws(()=>validateRequest(params.id===undefined?'git.undo.list':'git.undo',params));
+ const entry={id,kind:'discard',label:'Discard 2 files',createdAt:'2026-10-29T00:00:00Z',available:true,paths:['src/a.ts','src/b.ts'],pathCount:2,undoneAt:null};
+ validateResult('git.undo.list',{entries:[entry]});
+ validateResult('git.undo',{id,undoneAt:'2026-10-29T00:01:00Z'});
+ for(const patch of [{kind:'other'},{paths:['/absolute.ts']},{pathCount:-1},{pathCount:1.5},{undoneAt:undefined},{available:'yes'},{partial:'yes'},{applied:['/absolute.ts']},{remaining:['../escape.ts']}]) assert.throws(()=>validateResult('git.undo.list',{entries:[{...entry,...patch}]}));
+ const partial={...entry,undoneAt:'2026-10-29T00:01:00Z',available:false,partial:true,applied:['src/a.ts'],remaining:['src/b.ts']};
+ validateResult('git.undo.list',{entries:[partial]});
+ const recycled={...entry,paths:['src/a.ts'],pathCount:1,recycledCount:1,label:'Discarded changes in 1 file (1 more moved to the Recycle Bin)'};
+ validateResult('git.undo.list',{entries:[recycled]});
+ for(const patch of [{recycledCount:-1},{recycledCount:1.5},{recycledCount:'1'}]) assert.throws(()=>validateResult('git.undo.list',{entries:[{...recycled,...patch}]}));
+ assert.throws(()=>validateResult('git.undo.list',{entries:[{...partial,applied:Array(21).fill('src/a.ts')}]}));
+ assert.throws(()=>validateResult('git.undo',{id,undoneAt:null}));
+ assert.ok(METHODS.includes('git.undo')&&METHODS.includes('git.undo.list'));
+});

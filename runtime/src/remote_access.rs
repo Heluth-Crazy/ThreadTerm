@@ -1311,6 +1311,8 @@ mod tests {
             "git.stash.push",
             "git.stash.apply",
             "git.stash.drop",
+            "git.undo",
+            "git.undo.list",
             "filesystem.delete",
             "filesystem.search",
             "review.list",

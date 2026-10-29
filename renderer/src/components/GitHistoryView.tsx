@@ -20,13 +20,15 @@ import { defaultGitHistoryRovingCommit, resolveGitHistoryTarget } from '../workb
 import { SurfaceDialog } from './SurfaceDialog';
 import { historyActionSelection, resetDialogPreview, resetUndoMatchesBranch } from '../workbench/gitHistoryActions';
 import { NewWorktree } from './ProjectOverview';
+import { consumeLatestUndo, latestUndo, noticeUndoId, publishLatestUndo, resetReceiptWithUndo, subscribeLatestUndo, type LatestUndoNotice, type UndoBoundNotice, undoNoticeTimeout } from '../workbench/gitUndo';
+import { canonicalScopePath } from '../projectScope';
 
 const PAGE = 100;
 const SCOPE_KEY = 'threadterm.workbench.historyScope';
 const ROW = 44, LANE = 14, MAX_LANES = 12;
 const laneX = (column:number) => 9 + Math.min(column, MAX_LANES - 1) * LANE;
 type HistoryDialog = {kind:'branch'|'worktree'|'cherry-pick'|'revert'|'reset';commit:GitCommitInfo;plan:GitHistoryPlan};
-type ResetReceipt = {previousHead:string;head:string;symbolicHead:string;operation:string};
+type ResetReceipt = {previousHead:string;head:string;symbolicHead:string;operation:string;undoId?:string};
 
 /** One row's slice of the commit graph; rows are a fixed height so the slices join into continuous lines. */
 function GraphCell({row, width, head}:{row:GraphRow;width:number;head:boolean}) {
@@ -62,7 +64,9 @@ export function GitHistoryView({projectId, worktreePath, path, focusCommit, zh, 
  // Repository history is drawn as a graph of the current branch or of every branch; file history is a plain list.
  const [allBranches, setAllBranches] = useState(() => { try { return localStorage.getItem(SCOPE_KEY) === 'all'; } catch { return false; } });
  const [remoteBranches, setRemoteBranches] = useState<ReadonlySet<string>>(new Set());
- const [notice, setNotice] = useState<string>();
+ const [notice, setNoticeState] = useState<UndoBoundNotice<string>>();
+ // Ordinary notices are plain text; only the action notice keeps its Undo binding.
+ const setNotice=(message:string|undefined)=>setNoticeState(message===undefined?undefined:{message});
  const [dialog,setDialog]=useState<HistoryDialog>();
  const [actionBusy,setActionBusy]=useState(false);
  const [branchName,setBranchName]=useState('');
@@ -70,10 +74,12 @@ export function GitHistoryView({projectId, worktreePath, path, focusCommit, zh, 
  const [mainline,setMainline]=useState(1);
  const [resetMode,setResetMode]=useState<'soft'|'mixed'>('mixed');
  const [resetReceipt,setResetReceipt]=useState<ResetReceipt>();
+ const [undoNotice,setUndoNotice]=useState<LatestUndoNotice>();
  const [projectPath,setProjectPath]=useState<string>();
  const [gitStatus,setGitStatus]=useState<GitStatus>();
  const [actionPlan,setActionPlan]=useState<GitHistoryPlan>();
  const scopeKey=`${projectId}\0${worktreePath??''}\0${path??''}`;
+ const undoWorktreeKey=`${projectId}\0${canonicalScopePath(worktreePath) ?? 'default'}`;
  const scopeIdentity=useRef(scopeKey);scopeIdentity.current=scopeKey;
  const mounted=useRef(true),busyAction=useRef(false);
  const isCurrent=()=>mounted.current&&scopeIdentity.current===scopeKey;
@@ -120,6 +126,8 @@ export function GitHistoryView({projectId, worktreePath, path, focusCommit, zh, 
   event.preventDefault(); selectCommit(value.hash); commitMenu(value, {clientX:event.clientX, clientY:event.clientY, currentTarget:element});
  };
  const onCommitKey = (event:KeyboardEvent<HTMLDivElement>) => {
+  const currentUndo=latestUndo(undoWorktreeKey);
+  if(!isKeyboardEditableTarget(event.target)&&(event.ctrlKey||event.metaKey)&&!event.shiftKey&&event.key.toLowerCase()==='z'&&currentUndo&&noticeUndoId(notice,currentUndo)&&!actionBusy){event.preventDefault();void undoLatest();return;}
   const element = (event.target as HTMLElement).closest<HTMLElement>('[data-commit-hash]');
   if(event.key === 'ContextMenu' || event.key === 'F10' && event.shiftKey) {
    if(!element || !event.currentTarget.contains(element)) return;
@@ -165,9 +173,9 @@ export function GitHistoryView({projectId, worktreePath, path, focusCommit, zh, 
   } catch(error) { if(isCurrent())setIssue(workbenchError(error, zh)); }
   finally { if(isCurrent())setLoading(false); }
  };
- const refreshAt = async (hash:string, message:string) => {
+ const refreshAt = async (hash:string, message:string, undoId?:string) => {
   await loadPage(0);if(!isCurrent())return;
-  explicitTargetRef.current=hash;setExplicitTarget(hash);setSelected(hash);setNotice(message);
+  explicitTargetRef.current=hash;setExplicitTarget(hash);setSelected(hash);setNoticeState({message,...(undoId?{undoId}:{})});
  };
  const finishHistoryAction = async (result:GitHistoryMutationResult,message:string) => {
   if(!isCurrent())return;
@@ -197,12 +205,19 @@ export function GitHistoryView({projectId, worktreePath, path, focusCommit, zh, 
     const result=await request('git.revert',{...scope,hash:dialog.plan.hash,...(dialog.plan.parents.length>1?{mainline}:{}),operationId:operationId()});if(!isCurrent())return;setDialog(undefined);
      await finishHistoryAction(result,result.conflicted?text('Revert has conflicts. Resolve them in Source Control, then continue.','还原发生冲突。请在源代码管理中解决后继续。'):text('Revert completed.','还原已完成。'));
    } else if(dialog.kind==='reset') {
-    const resetOperation=operationId(),receipt=await request('git.reset',{...scope,hash:dialog.plan.hash,mode:resetMode,expectedHead:dialog.plan.head,operationId:resetOperation});if(!isCurrent())return;setDialog(undefined);setResetReceipt({previousHead:receipt.previousHead,head:receipt.head,symbolicHead:receipt.symbolicHead,operation:resetOperation});await refreshAt(receipt.head,text('Branch reset.','分支已重置。'));
+    const resetOperation=operationId(),receipt=await request('git.reset',{...scope,hash:dialog.plan.hash,mode:resetMode,expectedHead:dialog.plan.head,operationId:resetOperation});if(!isCurrent())return;setDialog(undefined);setResetReceipt({previousHead:receipt.previousHead,head:receipt.head,symbolicHead:receipt.symbolicHead,operation:resetOperation,undoId:receipt.undoId});if(receipt.undoId)publishLatestUndo(undoWorktreeKey,{journalId:receipt.undoId,kind:'reset',label:'Reset branch'});await refreshAt(receipt.head,text('Branch reset.','分支已重置。'),receipt.undoId);
    }
   }catch(error){if(isCurrent())setIssue(workbenchError(error,zh));}finally{if(isCurrent()){busyAction.current=false;setActionBusy(false);}}
  };
+ const undoLatest = async () => {
+  const current=latestUndo(undoWorktreeKey);if(!current||busyAction.current)return;
+  busyAction.current=true;setActionBusy(true);setIssue(undefined);
+  try{await request('git.undo',{...scope,id:current.journalId,operationId:operationId()});if(!isCurrent())return;consumeLatestUndo(undoWorktreeKey,current.journalId);setResetReceipt(undefined);await loadPage(0,true);setNotice(text('Action undone.','操作已撤销。'));}
+  catch(error){if(isCurrent())setIssue(workbenchError(error,zh));}finally{if(isCurrent()){busyAction.current=false;setActionBusy(false);}}
+ };
  const undoReset = async () => {
   if(!resetReceipt||busyAction.current||!resetUndoMatchesBranch(resetReceipt.symbolicHead,gitStatus?.branch))return;
+  if(resetReceipt.undoId){await undoLatest();return;}
   busyAction.current=true;setActionBusy(true);setIssue(undefined);
   try{const receipt=await request('git.reset',{...scope,hash:resetReceipt.previousHead,mode:'soft',expectedHead:resetReceipt.head,undoOf:resetReceipt.operation,operationId:operationId()});if(!isCurrent())return;setResetReceipt(undefined);await refreshAt(receipt.head,text('Reset undone.','已撤销重置。'));}
   catch(error){if(isCurrent())setIssue(workbenchError(error,zh));}finally{if(isCurrent()){busyAction.current=false;setActionBusy(false);}}
@@ -223,8 +238,19 @@ export function GitHistoryView({projectId, worktreePath, path, focusCommit, zh, 
   return()=>{live=false;off();};
  },[scopeKey,all,zh]);
  useEffect(()=>{setDialog(undefined);setResetReceipt(undefined);setGitStatus(undefined);setActionPlan(undefined);setActionBusy(false);setIssue(undefined);busyAction.current=false;},[scopeKey]);
+ useEffect(()=>{
+  const update=()=>{
+   const current=latestUndo(undoWorktreeKey);setUndoNotice(current);
+   // The legacy reset block is only a fallback for receipts without a journal entry;
+   // once that entry is consumed, expires, or is superseded the receipt is retired.
+   setResetReceipt(receipt=>resetReceiptWithUndo(receipt,current));
+  };
+  update();return subscribeLatestUndo(undoWorktreeKey,update);
+ },[undoWorktreeKey]);
  useEffect(()=>{if(resetReceipt&&gitStatus&&!resetUndoMatchesBranch(resetReceipt.symbolicHead,gitStatus.branch))setResetReceipt(undefined);},[resetReceipt,gitStatus?.branch]);
- useEffect(()=>{if(!notice)return;const timer=setTimeout(()=>setNotice(undefined),4000);return()=>clearTimeout(timer);},[notice]);
+ useEffect(()=>{if(!notice)return;const timer=setTimeout(()=>setNoticeState(undefined),undoNoticeTimeout(Boolean(notice.undoId)));return()=>clearTimeout(timer);},[notice]);
+ // Any error shown beside the notice retires its Undo binding.
+ useEffect(()=>{if(issue)setNoticeState(current=>current?.undoId?{message:current.message}:current);},[issue]);
  useEffect(() => {
   if(path) return;
   let live = true;
@@ -274,7 +300,12 @@ export function GitHistoryView({projectId, worktreePath, path, focusCommit, zh, 
      <button type="button" role="radio" aria-checked={!allBranches} className={`seg-btn${allBranches ? '' : ' active'}`} onClick={() => chooseScope(false)}>{text('Current branch', '当前分支')}</button>
      <button type="button" role="radio" aria-checked={allBranches} className={`seg-btn${allBranches ? ' active' : ''}`} onClick={() => chooseScope(true)}>{text('All branches', '所有分支')}</button>
     </div>}</header>
-   {notice && <p className="wb-notice" role="status">{notice}</p>}
+   {notice && (()=>{
+    const undoId=noticeUndoId(notice,undoNotice), resetUndo=Boolean(undoId)&&resetReceipt?.undoId===undoId;
+    // A reset's Undo disappears once its branch changes; the runtime would refuse it anyway.
+    const offered=Boolean(undoId)&&(!resetUndo||resetUndoMatchesBranch(resetReceipt!.symbolicHead,gitStatus?.branch));
+    return <p className="wb-notice" role="status"><span>{notice.message}</span>{offered&&<button type="button" className="btn btn-sm" disabled={actionBusy} onClick={()=>void undoLatest()}>{resetUndo?text('Undo reset','撤销重置'):text('Undo','撤销')}</button>}</p>;
+   })()}
    {issue && <p className="wb-issue" role="alert">{issue}<button type="button" className="icon-btn" aria-label={text('Dismiss', '关闭提示')} onClick={() => setIssue(undefined)}><Icon name="close"/></button></p>}
    {commits.map((commit, index) => <button type="button" role="option" aria-selected={commit.hash === selectedRow} tabIndex={commit.hash === selectedRow ? 0 : -1} ref={element => { if(element) commitRows.current.set(commit.hash,element); else commitRows.current.delete(commit.hash); }} key={commit.hash} data-commit-hash={commit.hash} onFocus={() => { focusedCommit.current=commit.hash; }}
     className={`wb-commit-row${commit.hash === selectedRow ? ' selected' : ''}`} onClick={() => selectCommit(commit.hash)}>
@@ -316,7 +347,7 @@ export function GitHistoryView({projectId, worktreePath, path, focusCommit, zh, 
     </div>
   </> : <p className="tt-editor-state">{selectedCommit ? text('Loading commit…', '正在读取提交…') : text('Select a commit.', '选择一个提交。')}</p>}
   </div>
-  {resetReceipt&&resetUndoMatchesBranch(resetReceipt.symbolicHead,gitStatus?.branch)&&<p className="wb-notice" role="status">{text('The branch was reset.','分支已重置。')} <button type="button" className="btn btn-sm" disabled={actionBusy} onClick={()=>void undoReset()}>{text('Undo reset','撤销重置')}</button></p>}
+  {resetReceipt&&!resetReceipt.undoId&&resetUndoMatchesBranch(resetReceipt.symbolicHead,gitStatus?.branch)&&<p className="wb-notice" role="status"><span>{text('The branch was reset.','分支已重置。')}</span><button type="button" className="btn btn-sm" disabled={actionBusy} onClick={()=>void undoReset()}>{text('Undo reset','撤销重置')}</button></p>}
   {dialog&&dialog.kind!=='worktree'&&<SurfaceDialog size="wide" icon="branch" title={dialog.kind==='branch'?text('New branch from here','从此处新建分支'):dialog.kind==='cherry-pick'?text('Cherry-pick commit','拣选提交'):dialog.kind==='revert'?text('Revert commit','还原提交'):text('Reset branch to here','将分支重置到此处')} subtitle={`${dialog.commit.hash.slice(0,7)} · ${dialog.commit.subject}`} onClose={()=>{if(!actionBusy)setDialog(undefined);}} footer={<><button type="button" className="btn" disabled={actionBusy} onClick={()=>setDialog(undefined)}>{text('Cancel','取消')}</button><button type="button" className={dialog.kind==='reset'?'btn btn-danger':'btn btn-primary'} disabled={actionBusy||Boolean(gitStatus?.operation)||(dialog.kind==='branch'&&(!branchName.trim()||!branchBase.trim()))} onClick={()=>void submitDialog()}>{actionBusy?text('Working…','正在执行…'):dialog.kind==='branch'?text('Create branch','创建分支'):dialog.kind==='revert'?text('Revert commit','还原提交'):dialog.kind==='reset'?text('Reset branch','重置分支'):text('Cherry-pick','拣选')}</button></>}>
    {dialog.kind==='branch'&&<><label className="field">{text('Branch name','分支名')}<input autoFocus value={branchName} onKeyDown={event=>{if(event.key==='Enter'&&branchName.trim()&&branchBase.trim())void submitDialog();}} onChange={event=>setBranchName(event.target.value)} aria-label={text('Branch name','分支名')} placeholder="feature/my-change"/></label><label className="field">{text('Base','基准')}<input value={branchBase} onChange={event=>setBranchBase(event.target.value)} aria-label={text('Base','基准')}/></label></>}
    {dialog.kind==='revert'&&<>{dialog.plan.parents.length>1?<label className="field">{text('Mainline parent','主线父提交')}<select value={mainline} onChange={event=>setMainline(Number(event.target.value))}>{dialog.plan.parents.map((parent,index)=><option key={parent.hash} value={index+1}>{text(`Parent ${index+1}: ${parent.subject}`,`父提交 ${index+1}：${parent.subject}`)}</option>)}</select></label>:<p>{text('Create a new commit that reverses this commit.','创建一个新提交来还原此提交。')}</p>}</>}

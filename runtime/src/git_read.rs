@@ -187,6 +187,62 @@ pub(crate) fn run_git(
     Ok(stdout)
 }
 
+/// Streams one command's stdout into `file` instead of buffering it, so a
+/// recovery copy is bounded by disk rather than by memory. The file is flushed
+/// and synced before this returns; failures keep the `run_git` error shape.
+pub(crate) fn run_git_to_file(
+    root: &Path,
+    args: &[&str],
+    file: std::fs::File,
+    timeout: Duration,
+) -> Result<()> {
+    let mut command = Command::new("git");
+    command
+        .arg("-C")
+        .arg(root)
+        .args(["-c", "core.quotepath=off"])
+        .args(args)
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .env("GIT_OPTIONAL_LOCKS", "0")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        command.creation_flags(0x0800_0000);
+    }
+    #[cfg(test)]
+    git_barrier::pass(root);
+    let mut child = command.spawn().context("launching git")?;
+    let stdout = child.stdout.take().ok_or_else(|| anyhow!("git_failed"))?;
+    let stderr = child.stderr.take().ok_or_else(|| anyhow!("git_failed"))?;
+    let deadline = Instant::now() + timeout;
+    let (status, written, stderr) = git_readers(
+        &mut child,
+        move || {
+            let mut stdout = stdout;
+            let mut file = file;
+            std::io::copy(&mut stdout, &mut file).and_then(|written| {
+                file.flush()?;
+                file.sync_all()?;
+                Ok(written)
+            })
+        },
+        stderr,
+        MAX_GIT_STDERR_BYTES,
+        deadline,
+    )?;
+    written.ok_or_else(|| anyhow!("git_failed"))??;
+    if !status.success() {
+        return Err(anyhow!(
+            "git_failed: {}",
+            String::from_utf8_lossy(&stderr.unwrap_or_default()).trim()
+        ));
+    }
+    Ok(())
+}
+
 pub(crate) fn git_text(root: &Path, args: &[&str]) -> Result<String> {
     let bytes = run_git(root, args, &[], None, LOCAL_TIMEOUT)?;
     Ok(String::from_utf8_lossy(&bytes).into_owned())
