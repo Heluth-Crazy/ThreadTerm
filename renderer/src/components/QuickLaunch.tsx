@@ -1,11 +1,11 @@
 import { useEffect, useId, useRef, useState, type KeyboardEvent } from 'react';
 import { createPortal } from 'react-dom';
-import type { QuickLaunchCommand, QuickLaunchEnvVar, QuickLaunchKind, QuickLaunchSetup, QuickLaunchShell, Session, Snapshot, WorktreeSetupRun } from '@threadterm/protocol';
+import type { DetectedRunEntry, QuickLaunchCommand, QuickLaunchEnvVar, QuickLaunchKind, QuickLaunchSetup, QuickLaunchShell, Session, Snapshot, WorktreeSetupRun } from '@threadterm/protocol';
 import { operationId, request, subscribeEvents } from '../bridge';
 import { useTranslation } from '../i18n';
 import { displayPath, pathIsWithinCanonicalScope, sameCanonicalScope } from '../projectScope';
 import { isWebTabUrl } from '../workspaceTabs';
-import { activeRun, packageScripts, quickLaunchError, runState, runStateLabel, type PackageScript } from '../quickLaunch';
+import { activeRun, detectedSections, detectedSourceLabel, missingToolLabel, packageScripts, quickLaunchError, runState, runStateLabel, type PackageScript } from '../quickLaunch';
 import { setupActions, setupCurrentSessionId, setupForRoot, setupStatusLine, type WorktreeSetupAction } from '../worktreeSetup';
 import { Icon } from './PrototypeIcon';
 import { SurfaceDialog } from './SurfaceDialog';
@@ -18,11 +18,12 @@ const Play = () => <svg className="ico" viewBox="0 0 24 24" aria-hidden="true"><
 type Props = { projectId: string; root: string; data: Snapshot; onOpenSession: (id: string) => void; onOpenPreview?: (url: string) => void };
 export function QuickLaunchMenu({ projectId, root, data, onOpenSession, onOpenPreview }: Props) {
  const { locale } = useTranslation(), zh = locale === 'zh-CN', copy = (en:string,cn:string) => zh ? cn : en;
- const [open,setOpen] = useState(false), [editor,setEditor] = useState<QuickLaunchCommand|'new'>(), [importing,setImporting] = useState(false), [setupEditor,setSetupEditor] = useState(false);
+ const [open,setOpen] = useState(false), [editor,setEditor] = useState<QuickLaunchCommand|'new'|DetectedRunEntry>(), [importing,setImporting] = useState(false), [setupEditor,setSetupEditor] = useState(false);
  const [commands,setCommands] = useState<QuickLaunchCommand[]>([]), [loading,setLoading] = useState(false), [issue,setIssue] = useState<string>(), [busy,setBusy] = useState(false);
+ const [detected,setDetected] = useState<DetectedRunEntry[]>([]), [detectedTruncated,setDetectedTruncated] = useState(false), [detecting,setDetecting] = useState(false);
  const [setupRuns,setSetupRuns] = useState<WorktreeSetupRun[]>([]);
- const anchor = useRef<HTMLButtonElement>(null), generation = useRef(0), setupGeneration = useRef(0), action = useRef(false), id = useId();
- useEffect(() => () => { generation.current++;setupGeneration.current++; }, [projectId,root]);
+ const anchor = useRef<HTMLButtonElement>(null), generation = useRef(0), detectGeneration = useRef(0), setupGeneration = useRef(0), action = useRef(false), id = useId();
+ useEffect(() => () => { generation.current++;detectGeneration.current++;setupGeneration.current++; }, [projectId,root]);
  const refresh = async () => {
   const token = ++generation.current; setLoading(true); setIssue(undefined);
   try { const rows = await request('quickLaunch.list',{projectId}); if(token === generation.current)setCommands(rows); return rows; }
@@ -30,19 +31,24 @@ export function QuickLaunchMenu({ projectId, root, data, onOpenSession, onOpenPr
   finally { if(token === generation.current)setLoading(false); }
   };
  const refreshSetup = async () => { const token=++setupGeneration.current;try{const rows=await request('quickLaunch.setup.status',{projectId});if(token===setupGeneration.current)setSetupRuns(rows);return rows;}catch(error){if(token===setupGeneration.current)setIssue(quickLaunchError(error,zh));throw error;} };
+ // Detection is read-only and live: it is reloaded whenever the popover opens, fenced like the saved list.
+ const refreshDetected = async () => { const token=++detectGeneration.current;setDetecting(true);try{const value=await request('quickLaunch.detect',{projectId,cwd:root});if(token===detectGeneration.current){setDetected(value.entries);setDetectedTruncated(value.truncated);}return value;}catch(error){if(token===detectGeneration.current)setIssue(quickLaunchError(error,zh));throw error;}finally{if(token===detectGeneration.current)setDetecting(false);} };
  useEffect(()=>{const reload=()=>{void refreshSetup().catch(()=>{});};reload();const unsubscribe=subscribeEvents(event=>{const detail=event.data as {kind?:unknown;projectId?:unknown}|null;if(event.event==='state.changed'&&detail?.kind==='quickLaunch.setup'&&detail.projectId===projectId)reload();});return()=>{setupGeneration.current++;unsubscribe();};},[projectId,zh]);
  const run = async (command:QuickLaunchCommand) => { const result = await request('quickLaunch.run',{commandId:command.id,cwd:root,operationId:operationId()}); setOpen(false); onOpenSession(result.session.id); };
+ // A detected run names only its key: the runtime re-detects and launches the entry itself.
+ const runDetected = async (entry:DetectedRunEntry) => { const result = await request('quickLaunch.run',{detectedKey:entry.key,projectId,cwd:root,operationId:operationId()}); setOpen(false); onOpenSession(result.session.id); };
  const perform = async (task:()=>Promise<void>) => { if(action.current)return; action.current=true;setBusy(true);setIssue(undefined);try{await task();}catch(error){setIssue(quickLaunchError(error,zh));}finally{action.current=false;setBusy(false);} };
  const edit = (command:QuickLaunchCommand|'new') => { setOpen(false);setEditor(command);void refresh().catch(()=>{}); };
  const startImport = () => { setOpen(false);setImporting(true); };
  const runs = new Map<string,Session[]>();
   if(open){const projectRoot=data.projects.find(project=>project.id===projectId)?.path;for(const session of data.sessions){if(session.projectId!==projectId||!session.run||!sameCanonicalScope(session.worktreePath??projectRoot,root))continue;const scoped=session.worktreePath?session:{...session,worktreePath:projectRoot};const group=runs.get(session.run.commandId)??[];group.push(scoped);runs.set(session.run.commandId,group);}}
  const currentSetup=setupForRoot(setupRuns,root),currentSetupSessionId=setupCurrentSessionId(currentSetup,data.sessions);
+ const editing = editor==='new'?undefined:editor, editingCommand = editing&&'id' in editing?editing:undefined, editingDetected = editing&&'key' in editing?editing:undefined;
  return <>
-  <button ref={anchor} type="button" className="btn ql-trigger" aria-haspopup="dialog" aria-expanded={open} aria-controls={open?id:undefined} onClick={()=>{if(open)setOpen(false);else{setOpen(true);void refresh().catch(()=>{});void refreshSetup().catch(()=>{});}}} onKeyDown={event=>{if(event.key==='ArrowDown'){event.preventDefault();if(!open){setOpen(true);void refresh().catch(()=>{});void refreshSetup().catch(()=>{});}}}}><Play/>{copy('Run','运行')}<Icon name="chevD"/></button>
+  <button ref={anchor} type="button" className="btn ql-trigger" aria-haspopup="dialog" aria-expanded={open} aria-controls={open?id:undefined} onClick={()=>{if(open)setOpen(false);else{setOpen(true);void refresh().catch(()=>{});void refreshSetup().catch(()=>{});void refreshDetected().catch(()=>{});}}} onKeyDown={event=>{if(event.key==='ArrowDown'){event.preventDefault();if(!open){setOpen(true);void refresh().catch(()=>{});void refreshSetup().catch(()=>{});void refreshDetected().catch(()=>{});}}}}><Play/>{copy('Run','运行')}<Icon name="chevD"/></button>
   {open&&<LaunchPopover id={id} anchor={anchor.current} onClose={()=>setOpen(false)} title={copy('Run commands','运行命令')}>
    <SetupStatus run={currentSetup} currentSessionId={currentSetupSessionId} zh={zh} busy={busy} onAction={actionName=>void perform(async()=>{if(actionName==='open'){if(currentSetupSessionId){setOpen(false);onOpenSession(currentSetupSessionId);}return;}await request('quickLaunch.setup.run',{projectId,cwd:root,fromStep:actionName==='retry'?currentSetup?.step:undefined,operationId:operationId()});await refreshSetup();})}/>
-   {issue&&<p className="surface-error" role="alert">{issue}<button className="btn" disabled={loading||busy} onClick={()=>void refresh().catch(()=>{})}>{copy('Reload','重新加载')}</button></p>}
+   {issue&&<p className="surface-error" role="alert">{issue}<button className="btn" disabled={loading||busy} onClick={()=>{void refresh().catch(()=>{});void refreshDetected().catch(()=>{});}}>{copy('Reload','重新加载')}</button></p>}
    {loading?<p className="shell-menu-empty" role="status">{copy('Loading commands…','正在加载命令…')}</p>:<div className="ql-list">{commands.map(command=>{
     const scoped = runs.get(command.id)??[];
     const active = activeRun(scoped,command.id,root), latest = active ?? scoped.filter(session=>session.run?.commandId===command.id&&sameCanonicalScope(session.worktreePath,root)).sort((a,b)=>b.createdAt.localeCompare(a.createdAt)||b.updatedAt.localeCompare(a.updatedAt))[0];
@@ -51,10 +57,26 @@ export function QuickLaunchMenu({ projectId, root, data, onOpenSession, onOpenPr
      <div className="ql-command-head"><strong>{command.name}</strong>{view&&<span className={`ql-state ql-${view.state}`}><span className="dot" aria-hidden="true"/>{runStateLabel(view,zh)}</span>}</div><code title={command.command}>{command.command}</code>
      <div className="ql-actions"><button className="btn btn-sm" disabled={busy} onClick={()=>active?(setOpen(false),onOpenSession(active.id)):void perform(()=>run(command))}>{active?<Icon name="terminal"/>:<Play/>}{active?copy('Open terminal','打开终端'):copy('Run','运行')}</button>{active&&<button className="btn btn-sm" disabled={busy} onClick={()=>void perform(async()=>{await request('session.stop',{sessionId:active.id,operationId:operationId()});})}>{copy('Stop','停止')}</button>}{view?.url&&onOpenPreview&&<button className="btn btn-sm" disabled={busy} onClick={()=>{setOpen(false);onOpenPreview(view.url!);}}>{copy('Preview','预览')}</button>}<button className="btn btn-sm btn-ghost" disabled={busy} onClick={()=>edit(command)}>{copy('Edit','编辑')}</button></div>
     </section>;
-   })}{!commands.length&&<div className="shell-menu-empty"><p>{copy('No saved commands','没有保存的命令')}</p><button className="btn" onClick={startImport}>{copy('Import from package.json','从 package.json 导入')}</button></div>}</div>}
+   })}{!commands.length&&<div className="shell-menu-empty"><p>{copy('No saved commands','没有保存的命令')}</p><button className="btn" onClick={startImport}>{copy('Import from package.json','从 package.json 导入')}</button></div>}
+   {detected.length>0&&<section className="ql-detected" data-testid="quick-launch-detected" aria-label={copy('Detected entries','检测到的条目')}>
+    <header className="ql-detected-head"><strong>{copy('Detected','检测到的')}</strong>{detectedTruncated&&<span className="ql-state">{copy('Partial list','部分列表')}</span>}</header>
+    {detectedSections(detected).map(section=><div className="ql-detected-source" key={section.kind} data-testid={`quick-launch-detected-${section.kind}`}>
+     <h4>{detectedSourceLabel(section.kind,zh)}</h4>
+     {section.groups.map(group=><div className="ql-detected-group" key={group.name}>
+      <div className="ql-detected-group-head">{group.name}</div>
+      {group.entries.map(entry=>{const key=`detected:${entry.key}`,scoped=runs.get(key)??[],active=activeRun(scoped,key,root),latest=active??scoped.filter(session=>session.run?.commandId===key&&sameCanonicalScope(session.worktreePath,root)).sort((a,b)=>b.createdAt.localeCompare(a.createdAt)||b.updatedAt.localeCompare(a.updatedAt))[0],view=latest?runState(latest):undefined,missing=entry.missingTool?missingToolLabel(entry.missingTool,zh):undefined;
+       return <section className={`ql-command ql-detected-entry${missing?' is-missing':''}`} key={entry.key} data-testid={`quick-launch-detected-entry-${entry.key}`} aria-label={entry.name} title={missing}>
+        <div className="ql-command-head"><strong>{entry.name}</strong><span className="ql-source-label">{entry.source.label}</span>{view&&<span className={`ql-state ql-${view.state}`}><span className="dot" aria-hidden="true"/>{runStateLabel(view,zh)}</span>}{missing&&<span className="ql-missing-tool">{missing}</span>}</div><code title={entry.command}>{entry.command}</code>
+        <div className="ql-actions"><button className="btn btn-sm" disabled={busy||Boolean(missing)} title={missing} onClick={()=>active?(setOpen(false),onOpenSession(active.id)):void perform(()=>runDetected(entry))}>{active?<Icon name="terminal"/>:<Play/>}{active?copy('Open terminal','打开终端'):copy('Run','运行')}</button><button className="btn btn-sm btn-ghost" disabled={busy||Boolean(missing)} title={missing} onClick={()=>{setOpen(false);setEditor(entry);}}>{copy('Save as command…','另存为命令…')}</button></div>
+       </section>;
+      })}
+     </div>)}
+    </div>)}
+   </section>}
+   {detecting&&!detected.length&&<p className="shell-menu-empty" role="status">{copy('Looking for runnable entries…','正在查找可运行的条目…')}</p>}</div>}
    <footer className="shell-menu-foot"><button className="menu-item" disabled={busy} onClick={()=>{setOpen(false);setSetupEditor(true);}}><Icon name="branch"/>{copy('Worktree setup…','工作树初始化…')}</button><button className="menu-item" disabled={busy} onClick={()=>edit('new')}><Icon name="plus"/>{copy('New command','新建命令')}</button><button className="menu-item" disabled={busy} onClick={startImport}>{copy('Import scripts','导入脚本')}</button></footer>
   </LaunchPopover>}
-  {editor&&<CommandEditor key={editor==='new'?'new':editor.id} command={editor==='new'?undefined:editor} projectId={projectId} root={root} onClose={()=>{setEditor(undefined);anchor.current?.focus();}} onChanged={async()=>{await refresh();}} onReload={async commandId=>(await refresh()).find(command=>command.id===commandId)} onRun={run}/>}
+  {editor&&<CommandEditor key={editor==='new'?'new':editingCommand?editingCommand.id:`detected:${editingDetected?.key}`} command={editingCommand} detected={editingDetected} projectId={projectId} root={root} onClose={()=>{setEditor(undefined);anchor.current?.focus();}} onChanged={async()=>{await refresh();}} onReload={async commandId=>(await refresh()).find(command=>command.id===commandId)} onRun={run}/>}
    {importing&&<ImportScripts projectId={projectId} root={root} onClose={()=>{setImporting(false);anchor.current?.focus();}} onChanged={async()=>{await refresh();}}/>}
    {setupEditor&&<SetupEditor projectId={projectId} commands={commands} onClose={()=>{setSetupEditor(false);anchor.current?.focus();}} onSaved={async()=>{await refreshSetup();}}/>}
  </>;
@@ -121,10 +143,10 @@ function LaunchPopover({id,anchor,onClose,title,children}:{id:string;anchor:HTML
 }
 
 type Draft = { name:string; shell:QuickLaunchShell; command:string; cwd:string; kind:QuickLaunchKind; env:QuickLaunchEnvVar[]; previewUrl:string };
-const draftFor=(command?:QuickLaunchCommand):Draft=>({name:command?.name??'',shell:command?.shell??'cmd',command:command?.command??'',cwd:command?.cwd??'',kind:command?.kind??'service',env:command?.env.map(row=>({...row}))??[],previewUrl:command?.previewUrl??''});
-function CommandEditor({command,projectId,root,onClose,onChanged,onReload,onRun}:{command?:QuickLaunchCommand;projectId:string;root:string;onClose:()=>void;onChanged:()=>Promise<void>;onReload:(id:string)=>Promise<QuickLaunchCommand|undefined>;onRun:(command:QuickLaunchCommand)=>Promise<void>}) {
+const draftFor=(command?:QuickLaunchCommand,detected?:DetectedRunEntry):Draft=>({name:command?.name??detected?.name??'',shell:command?.shell??detected?.shell??'cmd',command:command?.command??detected?.command??'',cwd:command?.cwd??detected?.cwd??'',kind:command?.kind??detected?.kind??'service',env:command?.env.map(row=>({...row}))??[],previewUrl:command?.previewUrl??''});
+function CommandEditor({command,detected,projectId,root,onClose,onChanged,onReload,onRun}:{command?:QuickLaunchCommand;detected?:DetectedRunEntry;projectId:string;root:string;onClose:()=>void;onChanged:()=>Promise<void>;onReload:(id:string)=>Promise<QuickLaunchCommand|undefined>;onRun:(command:QuickLaunchCommand)=>Promise<void>}) {
  const {locale}=useTranslation(),zh=locale==='zh-CN',copy=(en:string,cn:string)=>zh?cn:en,id=useId();
- const [saved,setSaved]=useState(command),[draft,setDraft]=useState(()=>draftFor(command)),[busy,setBusy]=useState(false),[issue,setIssue]=useState<string>(),[conflict,setConflict]=useState(false),[deleting,setDeleting]=useState(false);
+ const [saved,setSaved]=useState(command),[draft,setDraft]=useState(()=>draftFor(command,detected)),[busy,setBusy]=useState(false),[issue,setIssue]=useState<string>(),[conflict,setConflict]=useState(false),[deleting,setDeleting]=useState(false);
  const lock=useRef(false),formId=`ql-editor-${id}`,saveAttempt=useRef<{key:string;operationId:string}|undefined>(undefined),deleteAttempt=useRef<{revision:number;operationId:string}|undefined>(undefined);
  const update=<K extends keyof Draft>(key:K,value:Draft[K])=>setDraft(current=>({...current,[key]:value}));
  const close=()=>{if(!lock.current)onClose();};
@@ -145,7 +167,7 @@ function CommandEditor({command,projectId,root,onClose,onChanged,onReload,onRun}
  const reload=async()=>{if(!saved||lock.current)return;lock.current=true;setBusy(true);try{const latest=await onReload(saved.id);if(!latest)throw new Error('command_not_found');setSaved(latest);setDraft(draftFor(latest));setConflict(false);setIssue(undefined);}catch(error){setIssue(quickLaunchError(error,zh));}finally{lock.current=false;setBusy(false);}};
  const remove=async()=>{if(!saved||lock.current)return;lock.current=true;setBusy(true);try{if(deleteAttempt.current?.revision!==saved.revision)deleteAttempt.current={revision:saved.revision,operationId:operationId()};await request('quickLaunch.delete',{id:saved.id,expectedRevision:saved.revision,operationId:deleteAttempt.current.operationId});await onChanged();onClose();}catch(error){setDeleting(false);setIssue(quickLaunchError(error,zh));setConflict(String(error).includes('revision_conflict'));}finally{lock.current=false;setBusy(false);}};
  const valid=Boolean(draft.name.trim()&&draft.command.trim())&&!conflict;
- return <><SurfaceDialog title={saved?copy('Edit command','编辑命令'):copy('New command','新建命令')} subtitle={displayPath(root)} icon="terminal" variant="plain" className="ql-editor" onClose={close} footer={<>{saved&&<button className="btn btn-danger ql-delete" disabled={busy} onClick={()=>setDeleting(true)}>{copy('Delete','删除')}</button>}<button className="btn" disabled={busy} onClick={close}>{copy('Cancel','取消')}</button><button className="btn" disabled={busy||!valid} onClick={()=>void save(true)}>{copy('Save and run','保存并运行')}</button><button className="btn btn-primary" type="submit" form={formId} disabled={busy||!valid}>{busy?copy('Saving…','正在保存…'):copy('Save','保存')}</button></>}>
+ return <><SurfaceDialog title={saved?copy('Edit command','编辑命令'):detected?copy('Save as command','另存为命令'):copy('New command','新建命令')} subtitle={displayPath(root)} icon="terminal" variant="plain" className="ql-editor" onClose={close} footer={<>{saved&&<button className="btn btn-danger ql-delete" disabled={busy} onClick={()=>setDeleting(true)}>{copy('Delete','删除')}</button>}<button className="btn" disabled={busy} onClick={close}>{copy('Cancel','取消')}</button><button className="btn" disabled={busy||!valid} onClick={()=>void save(true)}>{copy('Save and run','保存并运行')}</button><button className="btn btn-primary" type="submit" form={formId} disabled={busy||!valid}>{busy?copy('Saving…','正在保存…'):copy('Save','保存')}</button></>}>
   <form id={formId} onSubmit={event=>{event.preventDefault();void save(false);}}><fieldset disabled={busy} className="ql-fields">
    <div className="field"><label htmlFor={`${id}-name`}>{copy('Name','名称')}</label><input id={`${id}-name`} required maxLength={80} value={draft.name} onChange={e=>update('name',e.target.value)}/></div>
    <div className="field"><label id={`${id}-shell-label`}>{copy('Shell','命令行 Shell')}</label><Select aria-labelledby={`${id}-shell-label`} aria-label={copy('Shell','命令行 Shell')} value={draft.shell} onChange={e=>update('shell',e.target.value as QuickLaunchShell)}><option value="cmd">CMD</option><option value="powershell">Windows PowerShell</option><option value="pwsh">PowerShell 7</option></Select></div>

@@ -771,6 +771,31 @@ test('quick launch commands are bounded: relative cwd inside the root, known she
  validateResult('quickLaunch.run',{existing:false,session:{id:'s',title:'Web dev server',provider:'custom',mode:'terminal',status:'running',createdAt:'t',updatedAt:'t',run:{commandId:'c',name:'Web dev server',kind:'service',shell:'cmd',url:'http://localhost:5174/',urlSource:'output'}}});
 });
 
+test('detected entries are read-only suggestions with a stable key and exactly one run target',()=>{
+ const scope={projectId:'p',cwd:'C:\\repo'};
+ validateRequest('quickLaunch.detect',scope);
+ for(const patch of [{projectId:undefined},{projectId:''},{cwd:undefined},{cwd:''},{operationId:'unexpected'}]) assert.throws(()=>validateRequest('quickLaunch.detect',{...scope,...patch}));
+ const entry={key:'node:apps/web/package.json:dev',source:{kind:'node',file:'apps/web/package.json',label:'package.json'},name:'dev',command:'npm run dev',shell:'cmd',cwd:'apps/web',kind:'service',group:'@acme/web'};
+ validateResult('quickLaunch.detect',{entries:[entry],truncated:false});
+ validateResult('quickLaunch.detect',{entries:[],truncated:false});
+ validateResult('quickLaunch.detect',{entries:[{...entry,key:'procfile:Procfile:web',missingTool:'make',source:{kind:'procfile',file:'Procfile',label:'Procfile'},command:'make web',kind:'task'}],truncated:true});
+ for(const patch of [{source:{kind:'maven',file:'pom.xml',label:'pom.xml'}},{missingTool:3},{group:3},{kind:'daemon'}]) assert.throws(()=>validateResult('quickLaunch.detect',{entries:[{...entry,...patch}],truncated:false}));
+ // Nothing detected can be launched with client-supplied command text: only a key is accepted, and it needs a project.
+ validateRequest('quickLaunch.run',{commandId:'c',cwd:'C:\\repo',operationId:'o'});
+ validateRequest('quickLaunch.run',{detectedKey:entry.key,projectId:'p',cwd:'C:\\repo',operationId:'o'});
+ for(const patch of [
+  {commandId:undefined,operationId:'o'},
+  {commandId:'c',detectedKey:entry.key,projectId:'p'},
+  {commandId:undefined,detectedKey:''},
+  {commandId:undefined,detectedKey:'x'.repeat(513)},
+  {commandId:undefined,projectId:undefined},
+  {commandId:undefined,projectId:''},
+  {commandId:undefined,command:'npm run injected'},
+ ]) assert.throws(()=>validateRequest('quickLaunch.run',{cwd:'C:\\repo',operationId:'o',...patch}));
+ validateResult('quickLaunch.run',{existing:true,session:{id:'t1',title:'dev',provider:'custom',mode:'terminal',status:'running',createdAt:'t',updatedAt:'t',run:{commandId:'detected:node:apps/web/package.json:dev',name:'dev',kind:'service',shell:'cmd'}}});
+ assert.ok(METHODS.includes('quickLaunch.detect'));
+});
+
 test('provider refresh is additive and carries the claimed generation',()=>{
  validateRequest('provider.refresh',{});
  validateResult('provider.refresh',{refreshId:1});

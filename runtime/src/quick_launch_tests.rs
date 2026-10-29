@@ -803,3 +803,185 @@ fn stopped_run_ends_quietly_but_a_failed_run_still_needs_attention() {
     assert_eq!(inbox(&failed_id), Some(("failed".to_owned(), false)), "a failing run still needs attention");
     runtime.shutdown();
 }
+
+fn detect_request(project_id: &str, root: &Path) -> Value {
+    json!({"projectId":project_id,"cwd":root.to_string_lossy()})
+}
+
+#[test]
+fn detect_lists_live_entries_and_run_requires_exactly_one_target() {
+    let (root, db) = test_db();
+    let project_id = project(&db, root.path(), "project-detect");
+    std::fs::write(
+        root.path().join("package.json"),
+        r#"{"name":"demo","scripts":{"dev":"node x","build":"tsc"}}"#,
+    )
+    .unwrap();
+    let runtime = service(root.path(), Arc::clone(&db));
+    let detected = runtime
+        .dispatch(
+            "test",
+            rpc("quickLaunch.detect", detect_request(&project_id, root.path()), "detect"),
+        )
+        .unwrap();
+    let entries = detected["entries"].as_array().unwrap();
+    assert_eq!(entries.len(), 2);
+    assert_eq!(detected["truncated"], json!(false));
+    assert_eq!(entries[0]["key"], json!("node:package.json:build"));
+    assert_eq!(entries[0]["source"]["kind"], json!("node"));
+    assert_eq!(entries[0]["source"]["file"], json!("package.json"));
+    assert_eq!(entries[1]["key"], json!("node:package.json:dev"));
+    assert_eq!(entries[1]["kind"], json!("service"));
+    assert_eq!(entries[1]["cwd"], json!(""));
+    assert!(entries[1].get("missingTool").is_none() || entries[1]["missingTool"].is_string());
+    // Detection resolves the root through the same validation runs use.
+    let outside = tempfile::tempdir().unwrap();
+    let error = runtime
+        .dispatch(
+            "test",
+            rpc(
+                "quickLaunch.detect",
+                json!({"projectId":project_id,"cwd":outside.path().to_string_lossy()}),
+                "detect-outside",
+            ),
+        )
+        .unwrap_err();
+    assert_eq!(error.code, "cwd_outside_root");
+    let cwd = root.path().to_string_lossy().to_string();
+    for (params, code) in [
+        (json!({"cwd":cwd,"operationId":"neither"}), "invalid_request"),
+        (
+            json!({"commandId":"saved","detectedKey":"node:package.json:dev","projectId":project_id,"cwd":cwd,"operationId":"both"}),
+            "invalid_request",
+        ),
+        (json!({"detectedKey":"node:package.json:dev","cwd":cwd,"operationId":"no-project"}), "invalid_request"),
+        (json!({"detectedKey":"","projectId":project_id,"cwd":cwd,"operationId":"empty"}), "invalid_request"),
+        (
+            json!({"detectedKey":"node:package.json:gone","projectId":project_id,"cwd":cwd,"operationId":"gone"}),
+            "detected_entry_not_found",
+        ),
+    ] {
+        let error = runtime
+            .dispatch("test", rpc("quickLaunch.run", params.clone(), "bad"))
+            .unwrap_err();
+        assert_eq!(error.code, code, "{params}");
+    }
+    runtime.shutdown();
+}
+
+#[test]
+fn detected_run_refuses_a_missing_tool_before_launching() {
+    let (root, db) = test_db();
+    let project_id = project(&db, root.path(), "project-detected-missing");
+    std::fs::write(
+        root.path().join("Procfile"),
+        "web: tt-qa-definitely-missing-tool --serve\n",
+    )
+    .unwrap();
+    let runtime = service(root.path(), Arc::clone(&db));
+    let error = runtime
+        .dispatch(
+            "test",
+            rpc(
+                "quickLaunch.run",
+                json!({"detectedKey":"procfile:Procfile:web","projectId":project_id,"cwd":root.path().to_string_lossy(),"operationId":"missing-tool"}),
+                "missing-tool",
+            ),
+        )
+        .unwrap_err();
+    assert_eq!(error.code, "tool_not_found");
+    assert!(
+        error.message.starts_with("tool_not_found: tt-qa-definitely-missing-tool"),
+        "{}",
+        error.message
+    );
+    assert!(db.snapshot().unwrap().sessions.is_empty(), "nothing launched");
+    runtime.shutdown();
+}
+
+#[cfg(windows)]
+#[test]
+fn detected_run_redetects_its_command_and_shares_admission() {
+    let (root, db) = test_db();
+    let project_id = project(&db, root.path(), "project-detected-run");
+    let procfile = root.path().join("Procfile");
+    std::fs::write(&procfile, "web: ping -n 30 127.0.0.1 > nul\ntask: echo FIRST>result.txt\n").unwrap();
+    let runtime = service(root.path(), Arc::clone(&db));
+    let cwd = root.path().to_string_lossy().to_string();
+    let run = |key: &str, operation: &str| {
+        runtime.dispatch(
+            "test",
+            rpc(
+                "quickLaunch.run",
+                json!({"detectedKey":key,"projectId":project_id,"cwd":cwd,"operationId":operation}),
+                operation,
+            ),
+        )
+    };
+    // The launch re-reads the files: an edited command is what actually runs.
+    std::fs::write(&procfile, "web: ping -n 30 127.0.0.1 > nul\ntask: echo SECOND>result.txt\n").unwrap();
+    let task = run("procfile:Procfile:task", "detected-task").unwrap();
+    let task_id = task["session"]["id"].as_str().unwrap().to_owned();
+    wait_inactive(&db, &task_id);
+    assert_eq!(
+        std::fs::read_to_string(root.path().join("result.txt")).unwrap().trim(),
+        "SECOND"
+    );
+    let service_run = run("procfile:Procfile:web", "detected-web").unwrap();
+    let id = service_run["session"]["id"].as_str().unwrap().to_owned();
+    assert_eq!(service_run["existing"], json!(false));
+    let stored = db.session_by_id(&id).unwrap().unwrap().run.unwrap();
+    assert_eq!(stored.command_id, "detected:procfile:Procfile:web");
+    assert_eq!(stored.kind, "service");
+    let again = run("procfile:Procfile:web", "detected-web-again").unwrap();
+    assert_eq!(again["existing"], json!(true));
+    assert_eq!(again["session"]["id"], json!(id));
+    runtime
+        .dispatch(
+            "test",
+            rpc(
+                "session.stop",
+                json!({"sessionId":id,"operationId":"stop-detected","force":true}),
+                "stop-detected",
+            ),
+        )
+        .unwrap();
+    wait_inactive(&db, &id);
+    // Removing the source retires the key.
+    std::fs::remove_file(&procfile).unwrap();
+    assert_eq!(
+        run("procfile:Procfile:web", "detected-gone").unwrap_err().code,
+        "detected_entry_not_found"
+    );
+    runtime.shutdown();
+}
+
+#[test]
+fn unsafe_detected_commands_never_launch() {
+    let (root, db) = test_db();
+    let project_id = project(&db, root.path(), "project-detected-unsafe");
+    std::fs::write(root.path().join("Procfile"), "web: node --x\0--y\n").unwrap();
+    let runtime = service(root.path(), Arc::clone(&db));
+    let cwd = root.path().to_string_lossy().to_string();
+    let detected = runtime
+        .dispatch(
+            "test",
+            rpc("quickLaunch.detect", detect_request(&project_id, root.path()), "detect-unsafe"),
+        )
+        .unwrap();
+    assert_eq!(detected["entries"], json!([]), "an unlaunchable command is never listed");
+    // Even the listed key cannot start it: detection refuses the entry outright.
+    let error = runtime
+        .dispatch(
+            "test",
+            rpc(
+                "quickLaunch.run",
+                json!({"detectedKey":"procfile:Procfile:web","projectId":project_id,"cwd":cwd,"operationId":"unsafe"}),
+                "unsafe",
+            ),
+        )
+        .unwrap_err();
+    assert_eq!(error.code, "detected_entry_not_found");
+    assert!(db.snapshot().unwrap().sessions.is_empty());
+    runtime.shutdown();
+}

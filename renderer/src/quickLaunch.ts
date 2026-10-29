@@ -1,4 +1,4 @@
-import type { QuickLaunchKind, Session } from '@threadterm/protocol';
+import type { DetectedRunEntry, DetectedRunSourceKind, QuickLaunchKind, Session } from '@threadterm/protocol';
 import { sameCanonicalScope } from './projectScope';
 import { workbenchError } from './workbench/errors';
 
@@ -32,6 +32,27 @@ export function packageScripts(json: string, lockfiles: readonly string[]): Pack
   return { name, command: `${manager} ${name}`, kind: /^(dev|start|serve|preview|watch.*)$/i.test(name) ? 'service' : 'task' };
  });
 }
+/** Detected entries grouped by source kind, then by the manifest's own group (package or target file). */
+export type DetectedSection = { kind: DetectedRunSourceKind; groups: { name: string; entries: DetectedRunEntry[] }[] };
+const detectedOrder: DetectedRunSourceKind[] = ['node','cargo','make','just','compose','procfile'];
+export function detectedSections(entries: readonly DetectedRunEntry[]): DetectedSection[] {
+ const byKind = new Map<DetectedRunSourceKind, Map<string, DetectedRunEntry[]>>();
+ for (const entry of entries) {
+  const groups = byKind.get(entry.source.kind) ?? new Map<string, DetectedRunEntry[]>();
+  byKind.set(entry.source.kind, groups);
+  const name = entry.group || entry.source.label || entry.source.file;
+  groups.set(name, [...(groups.get(name) ?? []), entry]);
+ }
+ return detectedOrder.filter(kind => byKind.has(kind)).map(kind => ({ kind, groups: [...byKind.get(kind)!].map(([name, entries]) => ({ name, entries })) }));
+}
+export function detectedSourceLabel(kind: DetectedRunSourceKind, zh: boolean): string {
+ const labels: Record<DetectedRunSourceKind,[string,string]> = { node:['Node scripts','Node 脚本'], cargo:['Cargo','Cargo'], make:['Makefile','Makefile'], just:['just recipes','just 配方'], compose:['Compose services','Compose 服务'], procfile:['Procfile','Procfile'] };
+ return labels[kind][zh ? 1 : 0];
+}
+/** A disabled detected row explains exactly which executable is missing. */
+export function missingToolLabel(tool: string, zh: boolean): string {
+ return zh ? `PATH 中找不到 ${tool}` : `${tool} isn't on PATH`;
+}
 const errors: Record<string,[string,string]> = {
  revision_conflict:['This command changed elsewhere. Reload it before saving; your draft is kept.','此命令已在其他窗口修改。请重新加载后再保存；草稿已保留。'],
  command_not_found:['This saved command no longer exists.','此保存的命令已不存在。'], too_many_commands:['A project can save up to 100 commands.','每个项目最多保存 100 个命令。'],
@@ -43,6 +64,7 @@ const errors: Record<string,[string,string]> = {
  invalid_name:['Use a name of up to 80 characters without control characters.','名称最多 80 个字符，不能包含控制字符。'], invalid_command:['Enter command text of up to 8,000 characters.','请输入最多 8,000 个字符的命令。'], invalid_cwd:['Use a relative directory inside this worktree (up to 260 characters).','请使用此工作树内的相对目录（最多 260 个字符）。'],
  project_not_found:['This project no longer exists.','此项目已不存在。'], worktree_missing:['This worktree directory is missing.','此工作树目录已丢失。'], workspace_read_only:['This workspace is read-only.','此工作区为只读。'], workspace_archived:['Restore this archived workspace before running a command.','请恢复此已归档的工作区后再运行命令。'],
  setup_empty:['Choose at least one Task command in Worktree setup before running it.','请先在工作树初始化中选择至少一个任务命令。'], invalid_step:['This setup step is no longer available. Reopen the Run menu and try again.','此初始化步骤已不可用。请重新打开运行菜单后重试。'], not_a_task:['Only Task commands can be setup steps.','只有任务命令可以作为初始化步骤。'],
+ detected_entry_not_found:['This detected entry no longer exists. Reopen Run to see the current list.','这条检测条目已不存在。重新打开 Run 查看当前列表。'], tool_not_found:['A tool this entry needs is not on PATH.','PATH 中找不到此条目所需的工具。'],
 };
 export function quickLaunchError(error: unknown, zh: boolean): string {
  const message = error instanceof Error ? error.message : String(error);

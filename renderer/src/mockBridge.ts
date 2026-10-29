@@ -52,6 +52,8 @@ function respond(method: Method): unknown {
       return [];
     case "quickLaunch.setup.read":
       return { revision: 0, commandIds: [] };
+    case "quickLaunch.detect":
+      return { entries: [], truncated: false };
     case "runtime.health":
       return { ok: true, mock: true };
     case "inbox.read":

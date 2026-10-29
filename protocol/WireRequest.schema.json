@@ -2440,6 +2440,12 @@
         "commandId": {
           "type": "string"
         },
+        "detectedKey": {
+          "type": "string"
+        },
+        "projectId": {
+          "type": "string"
+        },
         "cwd": {
           "type": "string"
         },
@@ -2448,9 +2454,24 @@
         }
       },
       "required": [
-        "commandId",
         "cwd",
         "operationId"
+      ],
+      "additionalProperties": false
+    },
+    "RequestParams<\"quickLaunch.detect\">": {
+      "type": "object",
+      "properties": {
+        "projectId": {
+          "type": "string"
+        },
+        "cwd": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "projectId",
+        "cwd"
       ],
       "additionalProperties": false
     },
@@ -8307,6 +8328,32 @@
         },
         "params": {
           "$ref": "#/definitions/RequestParams%3C%22quickLaunch.run%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "params"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "quickLaunch.detect"
+        },
+        "params": {
+          "$ref": "#/definitions/RequestParams%3C%22quickLaunch.detect%22%3E"
         }
       },
       "required": [

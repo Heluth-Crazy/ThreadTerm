@@ -3168,7 +3168,9 @@ fn map_error(message: &str) -> RpcError {
         "chat_repair_unavailable" | "chat_busy" | "chat_repair_superseded" | "invalid_history_transcript" => message,
         "operation_outcome_unknown" => "operation_outcome_unknown",
         value if crate::delegation::ERROR_CODES.contains(&value) => value,
-        value if crate::quick_launch::ERROR_CODES.contains(&value) => value,
+        value if crate::quick_launch::ERROR_CODES.contains(&value.split(':').next().unwrap_or(value)) => {
+            value.split(':').next().unwrap_or(value)
+        }
         value
             if crate::git_selected_commit::ERROR_CODES
                 .contains(&value.split(':').next().unwrap_or(value)) =>

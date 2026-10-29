@@ -24,3 +24,12 @@
 .ql-editor summary:focus-visible { outline:2px solid var(--primary); outline-offset:2px; }
 @media(max-width:800px) { .ql-run-chip { max-width:160px; }.ql-menu { max-width:calc(100vw - 16px); } }
 @media(max-width:520px) { .ql-import .dlg-foot .sheet-foot-meta { flex:1 0 100%; margin-right:0; }.ql-import .dlg-foot > .btn { flex:1 1 calc(50% - 4px); min-width:0; justify-content:center; } }
+/* Detected: computed from the worktree's files when the popover opens, grouped by source then package/target. */
+.ql-detected { border-top:1px solid var(--border); }
+.ql-detected-head { display:flex; align-items:center; gap:8px; padding:8px 12px 4px; }
+.ql-detected-head strong { font-size:12px; text-transform:uppercase; letter-spacing:.04em; color:var(--muted); }
+.ql-detected-source h4 { margin:6px 12px 2px; font-size:11px; font-weight:600; color:var(--muted); }
+.ql-detected-group-head { padding:2px 12px; font-size:11px; color:var(--muted); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.ql-source-label { flex:none; font-size:10px; color:var(--muted); border:1px solid var(--border); border-radius:999px; padding:0 6px; }
+.ql-missing-tool { font-size:11px; color:var(--danger); }
+.ql-detected-entry.is-missing strong, .ql-detected-entry.is-missing code { opacity:.6; }

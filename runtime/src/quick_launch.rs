@@ -27,6 +27,9 @@ pub(crate) const ERROR_CODES: &[&str] = &[
     "setup_empty",
     "invalid_step",
     "not_a_task",
+    "detected_entry_not_found",
+    "tool_not_found",
+    "invalid_command",
 ];
 
 #[path = "quick_launch_setup.rs"]
@@ -169,8 +172,16 @@ struct Delete {
 }
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct Detect {
+    project_id: String,
+    cwd: String,
+}
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct Run {
-    command_id: String,
+    command_id: Option<String>,
+    detected_key: Option<String>,
+    project_id: Option<String>,
     cwd: String,
     operation_id: String,
 }
@@ -185,6 +196,7 @@ pub(crate) fn handles(method: &str) -> bool {
     matches!(
         method,
         "quickLaunch.list" | "quickLaunch.save" | "quickLaunch.delete" | "quickLaunch.run"
+        | "quickLaunch.detect"
         | "quickLaunch.setup.read" | "quickLaunch.setup.save" | "quickLaunch.setup.run" | "quickLaunch.setup.status"
     )
 }
@@ -247,9 +259,26 @@ pub(crate) fn validate(method: &str, value: &Value) -> Result<()> {
         }
         "quickLaunch.run" => {
             let p: Run = serde_json::from_value(value.clone())?;
-            required(&p.command_id)?;
             required(&p.cwd)?;
             required(&p.operation_id)?;
+            // Exactly one target: a saved command, or a key the runtime will
+            // re-detect. A detected run needs its project to resolve the root.
+            match (&p.command_id, &p.detected_key) {
+                (Some(id), None) => required(id)?,
+                (None, Some(key)) => {
+                    required(key)?;
+                    if units(key) > 512 {
+                        return Err(anyhow!("invalid_request"));
+                    }
+                    required(p.project_id.as_deref().unwrap_or_default())?;
+                }
+                _ => return Err(anyhow!("invalid_request")),
+            }
+        }
+        "quickLaunch.detect" => {
+            let p: Detect = serde_json::from_value(value.clone())?;
+            required(&p.project_id)?;
+            required(&p.cwd)?;
         }
         "quickLaunch.save" => {
             for key in ["id", "expectedRevision", "previewUrl"] {
@@ -369,6 +398,48 @@ fn read_command(db: &Database, id: &str) -> Result<QuickLaunchCommand> {
     })
 }
 
+/// Converts a live detection entry into the same immutable snapshot saved
+/// commands use, so admission, rerun and the run projection need no special
+/// case. The request only names a key: command text always comes from the
+/// files, never from the client.
+fn detected_snapshot(
+    db: &Database,
+    project: &str,
+    cwd: &str,
+    key: &str,
+) -> Result<QuickLaunchCommand> {
+    let root = setup::root_for_setup(db, project, cwd)?;
+    let detection = crate::run_detect::detect(&root);
+    let entry = detection
+        .entries
+        .into_iter()
+        .find(|entry| entry.key == key)
+        .ok_or_else(|| anyhow!("detected_entry_not_found"))?;
+    if let Some(tool) = entry.missing_tool {
+        return Err(anyhow!("tool_not_found: {tool}"));
+    }
+    // Detection already drops these, so this only guards a listing that changed
+    // between the click and the re-detection.
+    if !crate::run_detect::command_is_safe(&entry.command, &entry.shell) {
+        return Err(anyhow!("invalid_command"));
+    }
+    let now = Utc::now().to_rfc3339();
+    Ok(QuickLaunchCommand {
+        id: format!("detected:{key}"),
+        project_id: project.to_owned(),
+        revision: 1,
+        name: entry.name,
+        command: entry.command,
+        shell: entry.shell,
+        cwd: entry.cwd,
+        kind: entry.kind,
+        env: Vec::new(),
+        preview_url: None,
+        created_at: now.clone(),
+        updated_at: now,
+    })
+}
+
 pub(crate) fn dispatch(
     db: &Arc<Database>,
     pty: &PtyManager,
@@ -390,6 +461,12 @@ pub(crate) fn dispatch(
         }
         "quickLaunch.save" => save(db, serde_json::from_value(value.clone())?),
         "quickLaunch.delete" => delete(db, serde_json::from_value(value.clone())?),
+        "quickLaunch.detect" => {
+            let p: Detect = serde_json::from_value(value.clone())?;
+            let root = setup::root_for_setup(db, &p.project_id, &p.cwd)?;
+            let detection = crate::run_detect::detect(&root);
+            Ok(json!({"entries":detection.entries,"truncated":detection.truncated}))
+        }
         "quickLaunch.run" => {
             let p: Run = serde_json::from_value(value.clone())?;
             let _guard = ADMISSION
@@ -398,7 +475,16 @@ pub(crate) fn dispatch(
             if let Some(result) = db.operation(&p.operation_id)? {
                 return Ok(result);
             }
-            let snapshot = read_command(db, &p.command_id)?;
+            let snapshot = match (&p.command_id, &p.detected_key) {
+                (Some(id), None) => read_command(db, id)?,
+                (None, Some(key)) => detected_snapshot(
+                    db,
+                    p.project_id.as_deref().unwrap_or_default(),
+                    &p.cwd,
+                    key,
+                )?,
+                _ => return Err(anyhow!("invalid_request")),
+            };
             start(
                 db,
                 pty,

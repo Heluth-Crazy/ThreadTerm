@@ -244,6 +244,7 @@ fn request_lane(method: &str) -> Lane {
         "group.prerequisites"
         | "terminal.read"
         | "project.catalog.list"
+        | "quickLaunch.detect"
         | "session.launch.read"
         | "git.status"
         | "git.diff"
@@ -363,7 +364,7 @@ fn trace_method(method: &str) -> &'static str {
         "plugin.selectBrowserBinding", "plugin.setEnabled", "project.add", "project.remove",
         "project.update", "provider.list",
         "provider.refresh",
-        "quickLaunch.delete", "quickLaunch.list", "quickLaunch.run", "quickLaunch.save",
+        "quickLaunch.delete", "quickLaunch.detect", "quickLaunch.list", "quickLaunch.run", "quickLaunch.save",
         "quickLaunch.setup.read", "quickLaunch.setup.run", "quickLaunch.setup.save",
         "quickLaunch.setup.status", "review.checkpoint", "review.revert", "runtime.health",
         "runtime.shutdown", "runtime.snapshot", "session.attention.acknowledge",
@@ -1024,6 +1025,7 @@ mod decoder_tests {
             "chat.tool.feedback",
             "chat.feedback.read",
             "project.catalog.list",
+            "quickLaunch.detect",
             "git.status",
             "git.diff",
             "git.fingerprints",

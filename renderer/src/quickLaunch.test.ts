@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import type { Session } from "@threadterm/protocol";
-import { activeRun, packageScripts, quickLaunchError, runState, runStateLabel } from "./quickLaunch";
+import type { DetectedRunEntry, Session } from "@threadterm/protocol";
+import { activeRun, detectedSections, detectedSourceLabel, missingToolLabel, packageScripts, quickLaunchError, runState, runStateLabel } from "./quickLaunch";
 
 const session = (overrides: Partial<Session> = {}): Session => ({ id: "run-1", title: "Dev", provider: "custom", mode: "terminal", status: "exited", createdAt: "2026-10-06T00:00:00.000Z", updatedAt: "2026-10-06T00:00:00.000Z", worktreePath: "C:\\repo", run: { commandId: "dev", name: "Dev", kind: "service", shell: "cmd" }, ...overrides });
 
@@ -59,4 +59,39 @@ test("Quick Launch labels and errors are localized", () => {
   assert.equal(runStateLabel({ state: "failed", exitCode: 3 }, false), "Failed (exit 3)"); assert.equal(runStateLabel({ state: "failed", exitCode: 3 }, true), "失败（退出码 3）");
   const errors: Record<string, [string, string]> = { revision_conflict: ["changed elsewhere", "其他窗口"], command_not_found: ["no longer exists", "不存在"], too_many_commands: ["up to 100", "最多保存 100"], cmd_single_line: ["one line", "仅执行一行"], shell_unavailable: ["not installed", "未安装"], cwd_outside_root: ["inside this worktree", "工作树内"], cwd_missing: ["does not exist", "不存在"], package_scripts_invalid: ["Invalid package.json", "package.json 无效"], no_package_scripts: ["No scripts", "没有脚本"], no_package_json: ["No package.json", "没有 package.json"], invalid_env: ["environment names", "环境变量名称"], invalid_preview_url: ["http://", "http://"] };
   for (const [code, [en, zh]] of Object.entries(errors)) { assert.match(quickLaunchError(new Error(code), false), new RegExp(en)); assert.match(quickLaunchError(new Error(code), true), new RegExp(zh)); }
+});
+
+const detectedEntry = (overrides: Partial<DetectedRunEntry> = {}): DetectedRunEntry => ({ key: "node:package.json:dev", source: { kind: "node", file: "package.json", label: "package.json" }, name: "dev", command: "npm run dev", shell: "cmd", cwd: "", kind: "service", group: "demo", ...overrides });
+
+test("detectedSections groups by source then manifest group in a fixed order", () => {
+  const web = { kind: "node" as const, file: "apps/web/package.json", label: "package.json" };
+  const entries = [
+    detectedEntry({ key: "make:Makefile:build", source: { kind: "make", file: "Makefile", label: "Makefile" }, group: "Makefile", command: "make build", kind: "task" }),
+    detectedEntry({ key: "node:apps/web/package.json:build", source: web, group: "@acme/web", cwd: "apps/web", kind: "task" }),
+    detectedEntry(),
+    detectedEntry({ key: "cargo:crates/api:test", source: { kind: "cargo", file: "crates/api/Cargo.toml", label: "Cargo.toml" }, group: "api", command: "cargo test -p api", kind: "task" }),
+    detectedEntry({ key: "node:apps/web/package.json:dev", source: web, group: "@acme/web", cwd: "apps/web" }),
+  ];
+  const sections = detectedSections(entries);
+  assert.deepEqual(sections.map(section => section.kind), ["node", "cargo", "make"]);
+  assert.deepEqual(sections[0].groups.map(group => group.name), ["@acme/web", "demo"]);
+  assert.deepEqual(sections[0].groups[0].entries.map(entry => entry.key), ["node:apps/web/package.json:build", "node:apps/web/package.json:dev"]);
+  assert.deepEqual(sections[1].groups.map(group => group.entries[0].key), ["cargo:crates/api:test"]);
+  assert.deepEqual(detectedSections([]), []);
+  // A source without a package name still groups, by its manifest label.
+  assert.equal(detectedSections([detectedEntry({ group: "" })])[0].groups[0].name, "package.json");
+});
+
+test("detected source labels, missing-tool copy and errors are localized", () => {
+  for (const kind of ["node", "cargo", "make", "just", "compose", "procfile"] as const) {
+    assert.ok(detectedSourceLabel(kind, false).length > 0 && detectedSourceLabel(kind, true).length > 0);
+  }
+  assert.equal(detectedSourceLabel("node", false), "Node scripts");
+  assert.equal(detectedSourceLabel("node", true), "Node 脚本");
+  assert.equal(missingToolLabel("make", false), "make isn't on PATH");
+  assert.equal(missingToolLabel("make", true), "PATH 中找不到 make");
+  assert.match(quickLaunchError(new Error("detected_entry_not_found"), false), /no longer exists/);
+  assert.match(quickLaunchError(new Error("detected_entry_not_found"), true), /已不存在/);
+  assert.match(quickLaunchError(new Error("tool_not_found: make"), false), /not on PATH/);
+  assert.match(quickLaunchError(new Error("tool_not_found: make"), true), /PATH/);
 });

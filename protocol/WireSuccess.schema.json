@@ -5115,6 +5115,105 @@
       ],
       "additionalProperties": false
     },
+    "RequestResult<\"quickLaunch.detect\">": {
+      "$ref": "#/definitions/QuickLaunchDetection"
+    },
+    "QuickLaunchDetection": {
+      "type": "object",
+      "properties": {
+        "entries": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/DetectedRunEntry"
+          }
+        },
+        "truncated": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "entries",
+        "truncated"
+      ],
+      "additionalProperties": false
+    },
+    "DetectedRunEntry": {
+      "type": "object",
+      "properties": {
+        "key": {
+          "type": "string"
+        },
+        "source": {
+          "$ref": "#/definitions/DetectedRunSource"
+        },
+        "name": {
+          "type": "string"
+        },
+        "command": {
+          "type": "string"
+        },
+        "shell": {
+          "$ref": "#/definitions/QuickLaunchShell"
+        },
+        "cwd": {
+          "type": "string"
+        },
+        "kind": {
+          "$ref": "#/definitions/QuickLaunchKind"
+        },
+        "group": {
+          "type": "string",
+          "description": "Package or target group the row is listed under."
+        },
+        "missingTool": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "key",
+        "source",
+        "name",
+        "command",
+        "shell",
+        "cwd",
+        "kind",
+        "group"
+      ],
+      "additionalProperties": false,
+      "description": "A runnable entry computed live from the worktree's files and never stored; it retires itself when its source goes."
+    },
+    "DetectedRunSource": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "$ref": "#/definitions/DetectedRunSourceKind"
+        },
+        "file": {
+          "type": "string"
+        },
+        "label": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "file",
+        "label"
+      ],
+      "additionalProperties": false
+    },
+    "DetectedRunSourceKind": {
+      "type": "string",
+      "enum": [
+        "node",
+        "cargo",
+        "make",
+        "just",
+        "compose",
+        "procfile"
+      ],
+      "description": "Where a detected entry came from. Detection reads manifest files only, never a build tool."
+    },
     "RequestResult<\"quickLaunch.setup.read\">": {
       "$ref": "#/definitions/QuickLaunchSetup"
     },
@@ -11791,6 +11890,32 @@
         },
         "result": {
           "$ref": "#/definitions/RequestResult%3C%22quickLaunch.run%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "result"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "quickLaunch.detect"
+        },
+        "result": {
+          "$ref": "#/definitions/RequestResult%3C%22quickLaunch.detect%22%3E"
         }
       },
       "required": [
