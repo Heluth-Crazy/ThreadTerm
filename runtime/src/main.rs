@@ -37,6 +37,11 @@ async fn run() -> Result<()> {
     ))?;
     let credential = config.credential()?;
     let db = Arc::new(Database::open(&config.database_path)?);
+    // Rejected Git clicks used to keep their request binding; sweep those leftovers on
+    // every startup, before any request can be in flight. A failure must not block startup.
+    if let Err(error) = db.release_orphan_git_bindings() {
+        threadterm_v3_runtime::runtime_log::emit(format_args!("Orphan Git binding cleanup deferred: {error:#}"));
+    }
     threadterm_v3_runtime::workspace_services::initialize(&db)?;
     threadterm_v3_runtime::project_catalog::initialize(&db)?;
     threadterm_v3_runtime::settings_services::initialize(&db)?;

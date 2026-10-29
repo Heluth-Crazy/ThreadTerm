@@ -55,6 +55,34 @@ impl Database {
             }
         }
     }
+
+    /// Startup only: a Git request whose binding has neither a receipt nor a claim
+    /// was rejected before it touched Git, and older builds kept those rows forever.
+    /// Every startup sweeps them, which is always safe because nothing is in flight
+    /// before the runtime accepts requests. Bounded pages need no
+    /// `pause_for_foreground()`: there is no foreground writer to yield to yet.
+    pub fn release_orphan_git_bindings(&self) -> Result<usize> {
+        let mut removed = 0;
+        loop {
+            let count = batch(self, |tx| {
+                tx.execute(
+                    "DELETE FROM operation_requests WHERE id IN (
+                        SELECT id FROM operation_requests
+                        WHERE method LIKE 'git.%'
+                          AND NOT EXISTS(SELECT 1 FROM operations WHERE id=operation_requests.id)
+                          AND NOT EXISTS(SELECT 1 FROM external_operations WHERE id=operation_requests.id)
+                        ORDER BY id LIMIT ?)",
+                    rusqlite::params![BATCH_ROWS],
+                )
+                .map_err(Into::into)
+            })?;
+            removed += count;
+            if count < BATCH_ROWS {
+                break;
+            }
+        }
+        Ok(removed)
+    }
 }
 
 /// A transaction can mutate at most 1,000 rows, including projections and
@@ -696,5 +724,55 @@ mod tests {
             Ok(())
         })
         .unwrap();
+    }
+
+    #[test]
+    fn startup_cleanup_releases_only_unclaimed_git_bindings() {
+        let root = tempfile::tempdir().unwrap();
+        let db = Database::open(&root.path().join("git-bindings.sqlite")).unwrap();
+        // A fresh database has nothing to sweep.
+        assert_eq!(db.release_orphan_git_bindings().unwrap(), 0);
+        let request = serde_json::json!({"operationId":"unused"});
+        for (id, method) in [
+            ("git-orphan", "git.stage"),
+            ("git-receipted", "git.discard"),
+            ("git-claimed", "git.push"),
+            ("chat-orphan", "chat.queue.send"),
+            ("session-orphan", "session.update"),
+        ] {
+            db.bind_operation(id, method, &request).unwrap();
+        }
+        db.complete_operation("git-receipted", "git.discard", &serde_json::json!({"paths":[]}))
+            .unwrap();
+        assert!(db.claim_external_operation("git-claimed").unwrap());
+        // More orphans than one page, so the pass has to keep paging.
+        db.transaction(|tx| {
+            for index in 0..BATCH_ROWS + 5 {
+                tx.execute(
+                    "INSERT INTO operation_requests(id,method,params) VALUES(?,?,'{}')",
+                    params![format!("bulk-{index:04}"), "git.stage"],
+                )?;
+            }
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(db.release_orphan_git_bindings().unwrap(), BATCH_ROWS + 6);
+        assert!(db.operation_request("git-orphan").unwrap().is_none());
+        assert!(db.operation_request("bulk-0000").unwrap().is_none());
+        // A claim is not an orphan: it and its binding survive.
+        assert_eq!(db.operation_request("git-claimed").unwrap().unwrap().0, "git.push");
+        assert!(db.external_operation_pending("git-claimed").unwrap());
+        // Receipted and non-Git rows are not this pass's business.
+        for (id, method) in [
+            ("git-receipted", "git.discard"),
+            ("chat-orphan", "chat.queue.send"),
+            ("session-orphan", "session.update"),
+        ] {
+            assert_eq!(db.operation_request(id).unwrap().unwrap().0, method);
+        }
+        // Every startup sweeps, so a later orphan does not survive the next one.
+        db.bind_operation("git-late", "git.commit", &request).unwrap();
+        assert_eq!(db.release_orphan_git_bindings().unwrap(), 1);
+        assert!(db.operation_request("git-late").unwrap().is_none());
     }
 }

@@ -69,137 +69,175 @@ pub fn dispatch(db: &Database, method: &str, params_value: &Value) -> Result<Opt
     ) {
         return Ok(None);
     }
-    let params = params_value
-        .as_object()
-        .ok_or_else(|| anyhow!("invalid_request"))?;
-    let operation_id = required_string(params, "operationId")?;
-    let project_id = required_string(params, "projectId")?;
-    let worktree = params.get("worktreePath").and_then(Value::as_str);
-    // Force push's preflight reads the remote-tracking tip, which a completed push moves.
-    if method == "git.undo" || method == "git.discard" || method.starts_with("git.stash.") || method == "git.checkout" || method == "git.push"
-        || matches!(method, "git.cherryPick" | "git.revert" | "git.reset" | "git.operation.abort" | "git.operation.continue") {
+    // Only the operationId is needed to hold the execution lock and to release a
+    // rejected reservation, so both start before the rest of the request is parsed.
+    let request_id = params_value
+        .get("operationId")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    // Requests that share an id are serialized from the first preflight through the
+    // recorded completion: a rejecting twin must never release the binding of a
+    // request that is already past its preflight. The guard is taken outside every
+    // SQLite transaction and dropped last.
+    let flight = operation_flight(request_id)?;
+    let _flight = flight
+        .as_ref()
+        .map(|flight| flight.lock().map_err(|_| anyhow!("git_failed")))
+        .transpose()?;
+    // Everything up to the claim only reads state, so a rejection there proves Git
+    // never ran: release the reserved request id instead of leaving one orphan
+    // `operation_requests` row per rejected click. One wrapper keeps that true for
+    // every preflight, including the binding service.rs already reserved.
+    let mut merge_target = None;
+    let mut history_hash = None;
+    let mut reset = None;
+    let mut force_push = None;
+    let mut checkout = None;
+    let pre_claim = without_binding_on_rejection(db, request_id, || {
+        let params = params_value
+            .as_object()
+            .ok_or_else(|| anyhow!("invalid_request"))?;
+        let operation_id = required_string(params, "operationId")?;
+        let project_id = required_string(params, "projectId")?;
+        let worktree = params.get("worktreePath").and_then(Value::as_str);
+        // Force push's preflight reads the remote-tracking tip, which a completed push moves.
+        if method == "git.undo" || method == "git.discard" || method.starts_with("git.stash.") || method == "git.checkout" || method == "git.push"
+            || matches!(method, "git.cherryPick" | "git.revert" | "git.reset" | "git.operation.abort" | "git.operation.continue") {
+            if let Some(result) = db.operation(operation_id)? {
+                db.bind_operation(operation_id, method, params_value)?;
+                return stash_receipt(method, result).map(Some);
+            }
+            if db.external_operation_pending(operation_id)? {
+                if method != "git.undo" || db.operation_request(operation_id)?.is_some() {
+                    db.bind_operation(operation_id, method, params_value)?;
+                }
+                return Err(anyhow!("operation_outcome_unknown"));
+            }
+        }
+        let root = db.transaction(|tx| root_for(tx, project_id, worktree))?;
+        // A completed receipt is replayed before any preflight that reads mutable state:
+        // a retry after a lost response is the same operation even when the index or
+        // working tree has changed since it succeeded.
         if let Some(result) = db.operation(operation_id)? {
             db.bind_operation(operation_id, method, params_value)?;
             return stash_receipt(method, result).map(Some);
         }
-        if db.external_operation_pending(operation_id)? {
-            if method != "git.undo" || db.operation_request(operation_id)?.is_some() {
-                db.bind_operation(operation_id, method, params_value)?;
-            }
-            return Err(anyhow!("operation_outcome_unknown"));
+        merge_target = if method == "git.merge" {
+            let target = self::merge_target(&root, params)?;
+            ensure_clean(&root)?;
+            Some(target)
+        } else {
+            None
+        };
+        history_hash = match method {
+            "git.cherryPick" | "git.revert" => Some(history_commit_preflight(&root, params, method)?),
+            _ => None,
+        };
+        reset = (method == "git.reset")
+            .then(|| reset_preflight(db, &root, params, project_id, worktree))
+            .transpose()?;
+        if matches!(method, "git.operation.abort" | "git.operation.continue") {
+            operation_preflight(&root, params, method == "git.operation.continue")?;
         }
-    }
-    let root = db.transaction(|tx| root_for(tx, project_id, worktree))?;
-    // A completed receipt is replayed before any preflight that reads mutable state:
-    // a retry after a lost response is the same operation even when the index or
-    // working tree has changed since it succeeded.
-    if let Some(result) = db.operation(operation_id)? {
-        db.bind_operation(operation_id, method, params_value)?;
-        return stash_receipt(method, result).map(Some);
-    }
-    let merge_target = if method == "git.merge" {
-        let target = merge_target(&root, params)?;
-        ensure_clean(&root)?;
-        Some(target)
-    } else {
-        None
-    };
-    let history_hash = match method {
-        "git.cherryPick" | "git.revert" => Some(history_commit_preflight(&root, params, method)?),
-        _ => None,
-    };
-    let reset = (method == "git.reset")
-        .then(|| reset_preflight(db, &root, params, project_id, worktree))
-        .transpose()?;
-    if matches!(method, "git.operation.abort" | "git.operation.continue") {
-        operation_preflight(&root, params, method == "git.operation.continue")?;
-    }
-    // Validation and fences run before the claim so a rejected request stays retryable.
-    match method {
-        "git.index.write" => {
-            let path = required_string(params, "path")?;
-            validate_relative(path)?;
-            repo_prefix(&root)?;
-            let content = params
-                .get("content")
-                .and_then(Value::as_str)
-                .ok_or_else(|| anyhow!("invalid_content"))?;
-            if content.len() > MAX_TEXT_BYTES || content.as_bytes().contains(&0) {
-                return Err(anyhow!("invalid_content"));
+        // Validation and fences run before the claim so a rejected request stays retryable.
+        match method {
+            "git.index.write" => {
+                let path = required_string(params, "path")?;
+                validate_relative(path)?;
+                repo_prefix(&root)?;
+                let content = params
+                    .get("content")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| anyhow!("invalid_content"))?;
+                if content.len() > MAX_TEXT_BYTES || content.as_bytes().contains(&0) {
+                    return Err(anyhow!("invalid_content"));
+                }
+                let expected = match params.get("expectedIndexFingerprint") {
+                    Some(Value::Null) => None,
+                    Some(Value::String(value)) if !value.is_empty() => Some(value.as_str()),
+                    _ => return Err(anyhow!("invalid_request")),
+                };
+                if index_entry(&root, path)?
+                    .map(|entry| entry.fingerprint)
+                    .as_deref()
+                    != expected
+                {
+                    return Err(anyhow!("index_conflict"));
+                }
             }
-            let expected = match params.get("expectedIndexFingerprint") {
-                Some(Value::Null) => None,
-                Some(Value::String(value)) if !value.is_empty() => Some(value.as_str()),
-                _ => return Err(anyhow!("invalid_request")),
-            };
-            if index_entry(&root, path)?
-                .map(|entry| entry.fingerprint)
-                .as_deref()
-                != expected
+            "git.branch.delete" => {
+                validate_branch_name(&root, required_string(params, "branch")?)?;
+            }
+            "git.discard" => {
+                if let Some(result) = discard_preflight(db, &root, params_value)? {
+                    return stash_receipt(method, result).map(Some);
+                }
+            }
+            // `diff --cached --quiet` exits 1 (an error here) when something is staged.
+            "git.commit"
+                if params.get("amend").and_then(Value::as_bool) != Some(true)
+                    && run_git(
+                        &root,
+                        &["diff", "--cached", "--quiet"],
+                        &[],
+                        None,
+                        LOCAL_TIMEOUT,
+                    )
+                    .is_ok() =>
             {
-                return Err(anyhow!("index_conflict"));
+                return Err(anyhow!("nothing_staged"));
+            }
+            _ => {}
+        }
+        force_push = if method == "git.push" && ["force", "expectedRemoteOid", "remote", "remoteBranch", "localBranch"].iter().any(|key| params.contains_key(*key)) {
+            if db.external_operation_pending(operation_id)? {
+                db.bind_operation(operation_id, method, params_value)?;
+                return Err(anyhow!("operation_outcome_unknown"));
+            }
+            Some(prepare_force_push(&root, params)?)
+        } else {
+            None
+        };
+        if method == "git.fetch" {
+            if let Some(remote) = params.get("remote") {
+                validate_fetch_remote(&root, remote.as_str().ok_or_else(|| anyhow!("invalid_request"))?)?;
             }
         }
-        "git.branch.delete" => {
-            validate_branch_name(&root, required_string(params, "branch")?)?;
+        if method == "git.undo" { undo_preflight(db, &root, params)?; }
+        db.bind_operation(operation_id, method, params_value)?;
+        if let Some(result) = db.operation(operation_id)? {
+            return stash_receipt(method, result).map(Some);
         }
-        "git.discard" => {
-            if let Some(result) = discard_preflight(db, &root, params_value)? {
-                return stash_receipt(method, result).map(Some);
+        checkout = if method == "git.checkout" {
+            if db.external_operation_pending(operation_id)? {
+                return Err(anyhow!("operation_outcome_unknown"));
+            }
+            Some(checkout_preflight(&root, params)?)
+        } else {
+            None
+        };
+        // Stash preflight is read-only and follows receipt/pending-claim checks.
+        if method == "git.stash.push" {
+            stash_message(params)?;
+            let include = params.get("includeUntracked").and_then(Value::as_bool).ok_or_else(|| anyhow!("invalid_request"))?;
+            if !stash_has_changes(&root, include)? {
+                #[cfg(test)]
+                preflight_test_hooks::before_rejection();
+                return Err(anyhow!("nothing_to_stash"));
             }
         }
-        // `diff --cached --quiet` exits 1 (an error here) when something is staged.
-        "git.commit"
-            if params.get("amend").and_then(Value::as_bool) != Some(true)
-                && run_git(
-                    &root,
-                    &["diff", "--cached", "--quiet"],
-                    &[],
-                    None,
-                    LOCAL_TIMEOUT,
-                )
-                .is_ok() =>
-        {
-            return Err(anyhow!("nothing_staged"));
+        if method == "git.stash.apply" || method == "git.stash.drop" {
+            crate::git_read::stash_resolve(&root, required_string(params, "oid")?)?;
         }
-        _ => {}
+        Ok(None)
+    })?;
+    if let Some(result) = pre_claim {
+        return Ok(Some(result));
     }
-    let force_push = if method == "git.push" && ["force", "expectedRemoteOid", "remote", "remoteBranch", "localBranch"].iter().any(|key| params.contains_key(*key)) {
-        if db.external_operation_pending(operation_id)? {
-            db.bind_operation(operation_id, method, params_value)?;
-            return Err(anyhow!("operation_outcome_unknown"));
-        }
-        Some(prepare_force_push(&root, params)?)
-    } else {
-        None
-    };
-    if method == "git.fetch" {
-        if let Some(remote) = params.get("remote") {
-            validate_fetch_remote(&root, remote.as_str().ok_or_else(|| anyhow!("invalid_request"))?)?;
-        }
-    }
-    if method == "git.undo" { undo_preflight(db, &root, params)?; }
-    db.bind_operation(operation_id, method, params_value)?;
-    if let Some(result) = db.operation(operation_id)? {
-        return stash_receipt(method, result).map(Some);
-    }
-    let checkout = if method == "git.checkout" {
-        if db.external_operation_pending(operation_id)? {
-            return Err(anyhow!("operation_outcome_unknown"));
-        }
-        Some(checkout_preflight(&root, params)?)
-    } else {
-        None
-    };
-    // Stash preflight is read-only and follows receipt/pending-claim checks.
-    if method == "git.stash.push" {
-        stash_message(params)?;
-        let include = params.get("includeUntracked").and_then(Value::as_bool).ok_or_else(|| anyhow!("invalid_request"))?;
-        if !stash_has_changes(&root, include)? { return Err(anyhow!("nothing_to_stash")); }
-    }
-    if method == "git.stash.apply" || method == "git.stash.drop" {
-        crate::git_read::stash_resolve(&root, required_string(params, "oid")?)?;
-    }
+    let params = params_value
+        .as_object()
+        .ok_or_else(|| anyhow!("invalid_request"))?;
+    let operation_id = required_string(params, "operationId")?;
     // This insert is an atomic execution claim. A caller that finds a claim without
     // completion cannot know whether Git already applied the external side effect.
     if !db.claim_external_operation(operation_id)? {
@@ -457,6 +495,89 @@ pub fn dispatch(db: &Database, method: &str, params_value: &Value) -> Result<Opt
     stash_receipt(method, result).map(Some)
 }
 
+/// Serializes Git requests that share an operation id. Two connections can replay
+/// the same id at once; without this, one preflight's rejection would delete the
+/// reservation another request is already executing under.
+fn operation_flight(operation_id: &str) -> Result<Option<std::sync::Arc<std::sync::Mutex<()>>>> {
+    use std::sync::{Arc, Mutex, OnceLock, Weak};
+    type Flights = std::collections::HashMap<String, Weak<Mutex<()>>>;
+    static FLIGHTS: OnceLock<Mutex<Flights>> = OnceLock::new();
+    if operation_id.is_empty() {
+        return Ok(None);
+    }
+    let mut flights = FLIGHTS
+        .get_or_init(Mutex::default)
+        .lock()
+        .map_err(|_| anyhow!("git_failed"))?;
+    flights.retain(|_, flight| flight.strong_count() > 0);
+    if let Some(flight) = flights.get(operation_id).and_then(Weak::upgrade) {
+        return Ok(Some(flight));
+    }
+    let flight = Arc::new(Mutex::new(()));
+    flights.insert(operation_id.to_owned(), Arc::downgrade(&flight));
+    Ok(Some(flight))
+}
+
+/// Drops the binding of an operation that provably had no effect. The guards keep a
+/// completed receipt and an external claim, the two states whose outcome a retry must
+/// still be able to read back. Only Git reservations are ever released here.
+fn release_unclaimed_binding(tx: &Transaction<'_>, operation_id: &str) -> Result<()> {
+    tx.execute(
+        "DELETE FROM operation_requests WHERE id=?1 AND method LIKE 'git.%' AND NOT EXISTS(SELECT 1 FROM operations WHERE id=?1) AND NOT EXISTS(SELECT 1 FROM external_operations WHERE id=?1)",
+        [operation_id],
+    )?;
+    Ok(())
+}
+
+/// Lets a test pause inside a preflight that is about to reject, so a same-id request
+/// on another thread is provably waiting on the execution lock. Thread-local: the
+/// dispatching thread installs its own one-shot hook.
+#[cfg(test)]
+mod preflight_test_hooks {
+    use std::cell::RefCell;
+
+    thread_local! {
+        static BEFORE_REJECTION: RefCell<Option<Box<dyn FnOnce()>>> = const { RefCell::new(None) };
+    }
+
+    pub struct Guard;
+    impl Drop for Guard {
+        fn drop(&mut self) {
+            BEFORE_REJECTION.with(|hook| *hook.borrow_mut() = None);
+        }
+    }
+
+    pub fn install(hook: impl FnOnce() + 'static) -> Guard {
+        BEFORE_REJECTION.with(|slot| *slot.borrow_mut() = Some(Box::new(hook)));
+        Guard
+    }
+
+    pub fn before_rejection() {
+        let hook = BEFORE_REJECTION.with(|slot| slot.borrow_mut().take());
+        if let Some(hook) = hook {
+            hook();
+        }
+    }
+}
+
+/// Runs the read-only pre-claim section of a Git method. A rejection there means Git
+/// never ran, so the request binding is released; a claimed or completed operation
+/// keeps its rows through the same guarded delete.
+fn without_binding_on_rejection<T>(
+    db: &Database,
+    operation_id: &str,
+    section: impl FnOnce() -> Result<T>,
+) -> Result<T> {
+    match section() {
+        Ok(value) => Ok(value),
+        Err(error) => {
+            if let Err(release) = db.transaction(|tx| release_unclaimed_binding(tx, operation_id)) {
+                eprintln!("Git request binding release failed: {release:#}");
+            }
+            Err(error)
+        }
+    }
+}
 
 struct UndoJournal<'a> {
     db: &'a Database,
@@ -552,8 +673,7 @@ fn undo_preflight(db: &Database, root: &Path, params: &serde_json::Map<String, V
 fn release_undo_claim(db: &Database, operation_id: &str) -> Result<()> {
     db.transaction(|tx| {
         tx.execute("DELETE FROM external_operations WHERE id=?1 AND NOT EXISTS(SELECT 1 FROM operations WHERE id=?1)", [operation_id])?;
-        tx.execute("DELETE FROM operation_requests WHERE id=?1 AND NOT EXISTS(SELECT 1 FROM operations WHERE id=?1) AND NOT EXISTS(SELECT 1 FROM external_operations WHERE id=?1)", [operation_id])?;
-        Ok(())
+        release_unclaimed_binding(tx, operation_id)
     })
 }
 
@@ -1679,7 +1799,9 @@ fn release_discard_claim(db: &Database, operation_id: &str) -> Result<()> {
             "DELETE FROM external_operations WHERE id=? AND NOT EXISTS (SELECT 1 FROM operations WHERE id=?)",
             params![operation_id, operation_id],
         )?;
-        Ok(())
+        // Releasing the claim declares that Git did nothing, so the reservation that
+        // named this attempt goes with it.
+        release_unclaimed_binding(tx, operation_id)
     })
 }
 
@@ -4628,6 +4750,163 @@ mod tests {
         let pending = json!({"projectId":project,"id":"undo-reject-discard","operationId":"undo-pending-unbound"});
         assert_eq!(call(&db,"git.undo",pending).unwrap_err().to_string(),"operation_outcome_unknown");
         assert!(db.operation_request("undo-pending-unbound").unwrap().is_none());
+    }
+
+
+    /// service.rs reserves the request id before dispatch, so a rejection has to
+    /// release a binding the caller already made, not one dispatch happened to make.
+    fn call_bound(db: &Database, method: &str, params: Value) -> Result<Value> {
+        let operation_id = required_string(params.as_object().unwrap(), "operationId")?;
+        db.bind_operation(operation_id, method, &params)?;
+        dispatch(db, method, &params).map(Option::unwrap)
+    }
+
+    #[test]
+    fn rejected_preflights_release_the_request_binding() {
+        let (temp, db, project) = setup(); let root = temp.path();
+        let original = git(root, &["branch", "--show-current"]).unwrap().trim().to_owned();
+        git(root, &["switch", "-qc", "target"]).unwrap();
+        fs::write(root.join("a.txt"), "target edit").unwrap();
+        git(root, &["commit", "-qam", "target edit"]).unwrap();
+        let picked = head_oid(root).unwrap();
+        git(root, &["switch", "-q", &original]).unwrap();
+        // Stash refusal on a clean worktree.
+        let stash = json!({"projectId":project,"message":"nothing","includeUntracked":true,"operationId":"stash-rejected"});
+        assert_eq!(call_bound(&db, "git.stash.push", stash.clone()).unwrap_err().to_string(), "nothing_to_stash");
+        assert!(db.operation_request("stash-rejected").unwrap().is_none());
+        // The rejected id is free again, even with different parameters: nothing happened.
+        fs::write(root.join("a.txt"), "stash me").unwrap();
+        let retried = json!({"projectId":project,"message":"retry after rejection","includeUntracked":false,"operationId":"stash-rejected"});
+        assert!(call_bound(&db, "git.stash.push", retried).unwrap()["oid"].is_string());
+        git(root, &["stash", "pop", "-q"]).unwrap();
+        git(root, &["restore", "--worktree", "a.txt"]).unwrap();
+        // Force push refused because the reviewed destination no longer matches.
+        let push = json!({"projectId":project,"operationId":"force-rejected","force":"with-lease","expectedRemoteOid":head_oid(root).unwrap(),"remote":"origin","remoteBranch":"main","localBranch":"main"});
+        assert_eq!(call_bound(&db, "git.push", push).unwrap_err().to_string(), "push_destination_changed");
+        assert!(db.operation_request("force-rejected").unwrap().is_none());
+        // Reset refused because HEAD moved since the plan was read.
+        let reset = json!({"projectId":project,"operationId":"reset-rejected","hash":head_oid(root).unwrap(),"mode":"mixed","expectedHead":"0".repeat(40)});
+        assert_eq!(call_bound(&db, "git.reset", reset).unwrap_err().to_string(), "head_moved");
+        assert!(db.operation_request("reset-rejected").unwrap().is_none());
+        // Discard refused because the file changed after it was reviewed.
+        fs::write(root.join("a.txt"), "reviewed").unwrap();
+        let discard = discard_request(&db, &project, &["a.txt"], "discard-rejected");
+        fs::write(root.join("a.txt"), "edited after review").unwrap();
+        assert_eq!(call_bound(&db, "git.discard", discard).unwrap_err().to_string(), "file_conflict");
+        assert!(db.operation_request("discard-rejected").unwrap().is_none());
+        assert!(!db.external_operation_pending("discard-rejected").unwrap());
+        assert!(db.operation("discard-rejected").unwrap().is_none());
+        // Merge refused before it starts because the worktree is dirty.
+        let merge = json!({"projectId":project,"branch":"target","operationId":"merge-rejected"});
+        assert_eq!(call_bound(&db, "git.merge", merge).unwrap_err().to_string(), "git_worktree_dirty");
+        assert!(db.operation_request("merge-rejected").unwrap().is_none());
+        // Cherry-pick refused because a local edit would be overwritten.
+        let cherry = json!({"projectId":project,"hash":picked,"operationId":"cherry-rejected"});
+        assert_eq!(call_bound(&db, "git.cherryPick", cherry).unwrap_err().to_string(), "cherry_pick_would_overwrite");
+        assert!(db.operation_request("cherry-rejected").unwrap().is_none());
+        assert!(!db.external_operation_pending("cherry-rejected").unwrap());
+    }
+
+
+    #[test]
+    fn checkout_overwrite_refusal_releases_its_claim_and_binding() {
+        // Only provable after the claim: Git itself refuses, so the refusal rides on
+        // release_discard_claim rather than on the pre-claim wrapper.
+        let (temp, db, project) = setup(); let root = temp.path();
+        let original = git(root, &["branch", "--show-current"]).unwrap().trim().to_owned();
+        git(root, &["switch", "-qc", "target"]).unwrap();
+        fs::write(root.join("new.txt"), "target untracked").unwrap();
+        git(root, &["add", "new.txt"]).unwrap();
+        git(root, &["commit", "-qm", "target file"]).unwrap();
+        git(root, &["switch", "-q", &original]).unwrap();
+        fs::write(root.join("new.txt"), "local untracked").unwrap();
+        let checkout = json!({"projectId":project,"branch":"target","operationId":"checkout-rejected"});
+        let error = call_bound(&db, "git.checkout", checkout).unwrap_err().to_string();
+        assert!(error.starts_with("checkout_would_overwrite: "), "{error}");
+        assert!(db.operation_request("checkout-rejected").unwrap().is_none());
+        assert!(!db.external_operation_pending("checkout-rejected").unwrap());
+        assert!(db.operation("checkout-rejected").unwrap().is_none());
+    }
+
+
+    #[test]
+    fn same_id_requests_wait_for_the_execution_lock() {
+        use std::sync::{mpsc, Arc};
+        let (temp, db, project) = setup();
+        let db = Arc::new(db);
+        let root = temp.path().to_path_buf();
+        // The worktree starts clean, so the first request's stash preflight rejects.
+        let request = json!({"projectId":project,"message":"serialized","includeUntracked":true,"operationId":"same-id-stash"});
+        let (paused, paused_wait) = mpsc::channel::<()>();
+        let (release, release_wait) = mpsc::channel::<()>();
+        let (twin_started, twin_start_wait) = mpsc::channel::<()>();
+        let (twin_done, twin_done_wait) = mpsc::channel::<Result<Value>>();
+        let first = {
+            let db = Arc::clone(&db);
+            let root = root.clone();
+            let request = request.clone();
+            std::thread::spawn(move || {
+                let _hook = preflight_test_hooks::install(move || {
+                    // Still inside the preflight and holding the id's lock: publish the
+                    // pause, wait for the twin to be running, then leave the worktree dirty
+                    // so the twin's own preflight passes.
+                    paused.send(()).unwrap();
+                    release_wait.recv().unwrap();
+                    fs::write(root.join("a.txt"), "dirty after the rejection").unwrap();
+                });
+                dispatch(&db, "git.stash.push", &request).map(Option::unwrap)
+            })
+        };
+        paused_wait.recv().unwrap();
+        let twin = {
+            let db = Arc::clone(&db);
+            std::thread::spawn(move || {
+                twin_started.send(()).unwrap();
+                let result = dispatch(&db, "git.stash.push", &request).map(Option::unwrap);
+                twin_done.send(result).unwrap();
+            })
+        };
+        twin_start_wait.recv().unwrap();
+        // The twin provably waits: the first request still holds the id's lock.
+        assert!(matches!(
+            twin_done_wait.recv_timeout(std::time::Duration::from_millis(300)),
+            Err(mpsc::RecvTimeoutError::Timeout)
+        ));
+        release.send(()).unwrap();
+        assert_eq!(first.join().unwrap().unwrap_err().to_string(), "nothing_to_stash");
+        twin.join().unwrap();
+        // Only now does the twin run: it completes and keeps its binding and receipt.
+        let completed = twin_done_wait.recv().unwrap().unwrap();
+        assert!(completed["oid"].is_string());
+        assert!(db.operation_request("same-id-stash").unwrap().is_some());
+        assert!(db.operation("same-id-stash").unwrap().is_some());
+        assert!(!db.external_operation_pending("same-id-stash").unwrap());
+    }
+
+
+    #[test]
+    fn claimed_and_completed_operations_keep_their_binding() {
+        let (temp, db, project) = setup(); let root = temp.path();
+        // A claim without a receipt is not a no-effect rejection: the binding and the
+        // claim stay, so the next caller still sees operation_outcome_unknown.
+        fs::write(root.join("a.txt"), "local").unwrap();
+        let stash = json!({"projectId":project,"message":"pending","includeUntracked":true,"operationId":"claimed-stash"});
+        db.bind_operation("claimed-stash", "git.stash.push", &stash).unwrap();
+        assert!(db.claim_external_operation("claimed-stash").unwrap());
+        assert_eq!(call(&db, "git.stash.push", stash.clone()).unwrap_err().to_string(), "operation_outcome_unknown");
+        assert!(db.operation_request("claimed-stash").unwrap().is_some());
+        assert!(db.external_operation_pending("claimed-stash").unwrap());
+        let mut different = stash.clone();
+        different["message"] = json!("different parameters");
+        assert!(call(&db, "git.stash.push", different).unwrap_err().to_string().starts_with("operation_conflict:"));
+        assert!(db.operation_request("claimed-stash").unwrap().is_some());
+        assert!(db.external_operation_pending("claimed-stash").unwrap());
+        // A completed operation keeps its binding and replays it.
+        let stage = json!({"projectId":project,"paths":["a.txt"],"expectedFingerprints":{"a.txt":fingerprint(b"local")},"operationId":"completed-stage"});
+        let receipt = call(&db, "git.stage", stage.clone()).unwrap();
+        assert_eq!(call(&db, "git.stage", stage).unwrap(), receipt);
+        assert!(db.operation_request("completed-stage").unwrap().is_some());
+        assert_eq!(db.operation("completed-stage").unwrap().unwrap(), receipt);
     }
 
 
