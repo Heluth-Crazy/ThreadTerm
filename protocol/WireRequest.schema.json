@@ -3495,6 +3495,9 @@
         "operationId": {
           "type": "string"
         },
+        "remote": {
+          "type": "string"
+        },
         "projectId": {
           "type": "string"
         },
@@ -3527,26 +3530,73 @@
       ]
     },
     "RequestParams<\"git.push\">": {
-      "type": "object",
-      "additionalProperties": false,
-      "properties": {
-        "setUpstream": {
-          "type": "boolean"
+      "anyOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "setUpstream": {
+              "type": "boolean"
+            },
+            "operationId": {
+              "type": "string"
+            },
+            "projectId": {
+              "type": "string"
+            },
+            "worktreePath": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "operationId",
+            "projectId"
+          ]
         },
-        "operationId": {
-          "type": "string"
-        },
-        "projectId": {
-          "type": "string"
-        },
-        "worktreePath": {
-          "type": "string"
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "force": {
+              "type": "string",
+              "const": "with-lease"
+            },
+            "expectedRemoteOid": {
+              "type": "string"
+            },
+            "remote": {
+              "type": "string"
+            },
+            "remoteBranch": {
+              "type": "string"
+            },
+            "localBranch": {
+              "type": "string"
+            },
+            "operationId": {
+              "type": "string"
+            },
+            "projectId": {
+              "type": "string"
+            },
+            "worktreePath": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "expectedRemoteOid",
+            "force",
+            "localBranch",
+            "operationId",
+            "projectId",
+            "remote",
+            "remoteBranch"
+          ]
         }
-      },
-      "required": [
-        "operationId",
-        "projectId"
       ]
+    },
+    "RequestParams<\"git.push.preview\">": {
+      "$ref": "#/definitions/FileScope"
     },
     "RequestParams<\"git.merge\">": {
       "anyOf": [
@@ -9093,6 +9143,32 @@
         },
         "params": {
           "$ref": "#/definitions/RequestParams%3C%22git.push%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "params"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "git.push.preview"
+        },
+        "params": {
+          "$ref": "#/definitions/RequestParams%3C%22git.push.preview%22%3E"
         }
       },
       "required": [

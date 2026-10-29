@@ -234,6 +234,18 @@ button.wb-change-row { width:100%; border:0; background:transparent; color:var(-
 .wb-branch-item .menu-item .wb-name { flex:1; font-family:var(--mono); font-size:12px; }
 .wb-branch-item .icon-btn { flex:none; width:26px; height:26px; }
 .wb-path-line { display:block; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-family:var(--mono); font-size:12px; }
+.git-push-preview-dialog .dlg-body, .git-push-force-dialog .dlg-body { min-height:0; overflow-y:auto; }
+.git-push-preview-dialog form { display:grid; gap:12px; }
+.git-push-preview-dialog h3 { margin:0; font-size:13px; }
+.git-push-preview-meta, .git-push-preview-warning, .git-push-preview-dialog .surface-error { display:flex; align-items:center; justify-content:space-between; gap:10px; }
+.git-push-preview-meta { color:var(--muted); font-size:12px; }
+.git-push-preview-warning { padding:10px 12px; border:1px solid color-mix(in srgb,var(--amber) 35%,var(--border)); border-radius:var(--radius); background:color-mix(in srgb,var(--amber) 8%,var(--surface)); color:var(--text); font-size:12px; line-height:1.45; }
+.git-push-preview-list { max-height:min(320px,42dvh); overflow:auto; border:1px solid var(--border); border-radius:var(--radius); scrollbar-width:thin; }
+.git-push-preview-list .wb-commit-row { border-radius:0; }
+.git-push-preview-list .wb-commit-row:focus-visible { outline:2px solid var(--primary); outline-offset:-2px; }
+.git-push-confirm-label { display:grid; gap:6px; color:var(--text); font-size:12px; }
+.git-push-confirm-label input { height:32px; padding:0 9px; border:1px solid var(--border); border-radius:7px; background:var(--surface); color:var(--text); font:inherit; }
+.git-push-confirm-label input:focus { border-color:var(--primary); box-shadow:var(--wb-ring); outline:none; }
 .wb-stash-row { display:flex; flex-wrap:wrap; align-items:center; gap:4px; min-height:var(--wb-row); padding:2px 4px 2px 22px; border-radius:var(--radius); font-size:13px; }
 .wb-stash-row:hover { background:var(--soft); }
 .wb-stash-summary { display:flex; flex:1 1 140px; flex-wrap:wrap; align-items:center; gap:2px 6px; min-width:0; }

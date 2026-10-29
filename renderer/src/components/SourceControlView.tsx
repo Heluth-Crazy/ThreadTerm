@@ -1,13 +1,14 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent, type MouseEvent, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import { WbIcon } from '../workbench/icons';
-import type { GitBranches, GitChange, GitSelectedCommitResult, GitStashApply, GitStashEntry, GitStashFile } from '@threadterm/protocol';
+import type { GitBranches, GitChange, GitPushPreview, GitSelectedCommitResult, GitStashApply, GitStashEntry, GitStashFile } from '@threadterm/protocol';
 import { operationId, request } from '../bridge';
 import { Icon } from './PrototypeIcon';
 import { CatalogPopover } from './CatalogActions';
 import { SurfaceDialog } from './SurfaceDialog';
 import { changeGroups, decorationFor, type ChangeGroup } from '../workbench/gitDecorations';
 import { gitOperationState, mergeResultMessage, pullDivergence } from '../workbench/gitOperation';
+import { pushDestination, pushRejectionAction, requiresForcePushBranchConfirmation } from '../workbench/gitPushPreview';
 import { stashDropInterference, stashInterferenceError, workbenchError } from '../workbench/errors';
 import { selectedCommitUnsupportedText } from '../workbench/selectedCommitSupport';
 import { absolutePath, baseName, parentPath, scopeParams, type GitState, type WorkbenchActions, type WorkbenchScope } from '../workbench/types';
@@ -23,6 +24,7 @@ import { branchRowState, checkoutLocalPaths, sortBranches, worktreeName } from '
 import { stashConflictNotice } from '../workbench/stashNotice';
 import { changeFocusAfterToggle, changeFocusKey, isKeyboardEditableTarget, orderedChangeRows, rovingChangeTarget, type ChangeFocus } from '../workbench/scmKeyboard';
 import type { GitWorkbenchCommand } from '../workbench/gitKeyboardCommand';
+import { relativeTime } from './CodeEditor';
 
 type Confirm =
  | {kind:'discard';paths:string[];untracked:number;token:number;fingerprints?:Record<string,string|null>;indexFingerprints?:Record<string,string|null>;snapshotError?:string}
@@ -45,6 +47,11 @@ export function SourceControlView({scope, actions, git, zh, compact = false, too
  const [issue, setIssue] = useState<ReactNode>();
  const [notice, setNotice] = useState<ReactNode>();
  const [committedWarning, setCommittedWarning] = useState<ReactNode>();
+ const [pushPreview, setPushPreview] = useState<GitPushPreview>();
+ const [pushDialog, setPushDialog] = useState(false);
+ const [forcePushConfirmation, setForcePushConfirmation] = useState(false);
+ const [forcePushBranch, setForcePushBranch] = useState('');
+ const [pushFailure, setPushFailure] = useState<'force'|'refresh'|'review'>();
  const [collapsed, setCollapsed] = useState<Set<ChangeGroup>>(new Set());
  const [confirm, setConfirm] = useState<Confirm>();
  const [commitMenu, setCommitMenu] = useState<HTMLElement>();
@@ -106,7 +113,7 @@ export function SourceControlView({scope, actions, git, zh, compact = false, too
   const items=groups[group], all=items.length>0&&items.every(change=>selection.has(selectedCommitKey(rootKey,group,change.path)));
   setSelection(current=>setGroupSelection(current,rootKey,group,items,!all));
  };
- useEffect(() => { discardEpoch.current++; setDiverged(undefined); setBusy(undefined); setIssue(undefined); setNotice(undefined); setCommittedWarning(undefined); setConfirm(undefined); setCommitMenu(undefined); setBranchMenu(undefined); setBranches(undefined); setBranchQuery(''); setCreating(false); setStashes(undefined); setStashFiles({}); setStashLoading(undefined); setStashDialog(false); setStashMessage(''); setStashUntracked(true); setStashesCollapsed(true); }, [scope.projectId, scope.worktreePath, scope.rootPath]);
+ useEffect(() => { discardEpoch.current++; setDiverged(undefined); setBusy(undefined); setIssue(undefined); setNotice(undefined); setCommittedWarning(undefined); setPushPreview(undefined); setPushDialog(false); setForcePushConfirmation(false); setForcePushBranch(''); setPushFailure(undefined); setConfirm(undefined); setCommitMenu(undefined); setBranchMenu(undefined); setBranches(undefined); setBranchQuery(''); setCreating(false); setStashes(undefined); setStashFiles({}); setStashLoading(undefined); setStashDialog(false); setStashMessage(''); setStashUntracked(true); setStashesCollapsed(true); }, [scope.projectId, scope.worktreePath, scope.rootPath]);
  // Success notices are transient; errors stay until dismissed.
  useEffect(() => { if(!notice) return; const timer = setTimeout(() => setNotice(undefined), 4000); return () => clearTimeout(timer); }, [notice]);
 
@@ -231,7 +238,7 @@ export function SourceControlView({scope, actions, git, zh, compact = false, too
   const ok = await run('commit', () => request('git.commit', {...params, message:trimmed, operationId:operationId()}), text('Committed.', '已提交。'));
   if(!ok) return;
   setMessage('');
-  if(mode === 'push') await push();
+  if(mode === 'push') await openPushPreview();
  };
  const commitSelected = async () => {
   const trimmed=message.trim();
@@ -244,7 +251,60 @@ export function SourceControlView({scope, actions, git, zh, compact = false, too
   setMessage('');
   if(result.postCommitError||result.cleanupError) setCommittedWarning([result.postCommitError&&text(`Committed, but the post-commit hook reported: ${result.postCommitError}`, `已提交，但提交后钩子报告：${result.postCommitError}`),result.cleanupError&&text('Committed, but cleanup after publication reported an error.', '已提交，但发布后的清理报告错误。')].filter(Boolean).join(' '));
  };
- const push = () => run('push', () => request('git.push', {...params, ...(status?.upstream ? {} : {setUpstream:true}), operationId:operationId()}), status?.upstream ? text('Pushed.', '已推送。') : text('Branch published.', '分支已发布。'));
+ const plainPush = () => run('push', () => request('git.push', {...params, ...(status?.upstream ? {} : {setUpstream:true}), operationId:operationId()}), status?.upstream ? text('Pushed.', '已推送。') : text('Branch published.', '分支已发布。'));
+ const openPushPreview = async (allowPlainFallback=true) => {
+  const epoch=scopeEpoch.current;
+  if(!allowPlainFallback) { setPushDialog(false); setPushPreview(undefined); setForcePushConfirmation(false); setForcePushBranch(''); }
+  setBusy('push-preview'); setIssue(undefined); setNotice(undefined); setPushFailure(undefined);
+  try {
+   const preview=await request('git.push.preview',params);
+   if(epoch===scopeEpoch.current) { setPushPreview(preview); setPushDialog(true); }
+  } catch(error) {
+   if(epoch!==scopeEpoch.current) return;
+   if(allowPlainFallback&&/push_preview_unavailable/.test(error instanceof Error ? error.message : String(error))) { setBusy(undefined); await plainPush(); return; }
+   setIssue(workbenchError(error,zh));
+  } finally { if(epoch===scopeEpoch.current)setBusy(undefined); }
+ };
+ const refreshPushPreview = async () => {
+  const epoch=scopeEpoch.current;
+  setBusy('push-preview'); setIssue(undefined); setPushFailure(undefined);
+  try { await request('git.fetch',{...params,remote:pushPreview?.remote,operationId:operationId()}); const preview=await request('git.push.preview',params); if(epoch===scopeEpoch.current) { setPushPreview(preview); setForcePushConfirmation(false); setForcePushBranch(''); } }
+  catch(error) { if(epoch===scopeEpoch.current)setIssue(workbenchError(error,zh)); }
+  finally { if(epoch===scopeEpoch.current)setBusy(undefined); }
+ };
+ const pushFromPreview = async (force=false) => {
+  const preview=pushPreview, epoch=scopeEpoch.current;
+  if(!preview) return;
+  if(force&&!preview.remoteOid) { setIssue(text('The remote branch has no lease value. Fetch and review it again before force pushing.','远程分支没有可用的租约值。强制推送前请获取并重新检查。')); return; }
+  setBusy(force?'force-push':'push'); setIssue(undefined); setNotice(undefined); setPushFailure(undefined);
+  try {
+   await request('git.push',{...params,...(force ? {force:'with-lease' as const,expectedRemoteOid:preview.remoteOid!,remote:preview.remote,remoteBranch:preview.remoteBranch,localBranch:preview.localBranch} : {...(preview.setUpstream ? {setUpstream:true} : {})}),operationId:operationId()});
+   if(epoch===scopeEpoch.current) { setForcePushConfirmation(false); setPushDialog(false); setNotice(force ? text('Force pushed with a lease.','已使用租约强制推送。') : preview.setUpstream ? text('Branch published.','分支已发布。') : text('Pushed.','已推送。')); }
+  } catch(error) {
+   if(epoch!==scopeEpoch.current) return;
+   const action=pushRejectionAction(error);
+   setIssue(workbenchError(error,zh));
+   if(action) { setPushFailure(action); if(action==='refresh'||action==='review') { setForcePushConfirmation(false); setForcePushBranch(''); } }
+ } finally { if(epoch===scopeEpoch.current)setBusy(undefined); }
+ };
+ useEffect(()=>{
+  if(!pushDialog||forcePushConfirmation) return;
+  const confirm=(event:globalThis.KeyboardEvent)=>{
+   if(event.key!=='Enter'||event.repeat||busy||event.target instanceof Element&&event.target.closest('button,input,textarea,select')) return;
+   event.preventDefault(); void pushFromPreview();
+  };
+  addEventListener('keydown',confirm);
+  return()=>removeEventListener('keydown',confirm);
+ },[pushDialog,forcePushConfirmation,busy,pushPreview]);
+ useEffect(()=>{
+  if(!forcePushConfirmation||!pushPreview) return;
+  const confirm=(event:globalThis.KeyboardEvent)=>{
+   if(event.key!=='Enter'||event.repeat||busy||!(event.target instanceof HTMLInputElement)||event.target.value!==pushPreview.remoteBranch) return;
+   event.preventDefault(); void pushFromPreview(true);
+  };
+  addEventListener('keydown',confirm);
+  return()=>removeEventListener('keydown',confirm);
+ },[forcePushConfirmation,pushPreview,busy,forcePushBranch]);
  const mergeUpstream = () => {
   const epoch=scopeEpoch.current;
   return run('merge',async()=>{
@@ -388,7 +448,7 @@ export function SourceControlView({scope, actions, git, zh, compact = false, too
   else if(command.action==='stash')setStashDialog(true);
   else if(command.action==='fetch')void run('fetch',()=>request('git.fetch',{...params,operationId:operationId()}),text('Fetched.','已获取。'));
   else if(command.action==='pull'&&status.upstream)void run('pull',()=>request('git.pull',{...params,operationId:operationId()}),text('Pulled.','已拉取。'));
-  else if(command.action==='push'&&status.branch)void push();
+  else if(command.action==='push'&&status.branch)void openPushPreview();
  },[command,scopeKey,status,git.loading,busy,visible]);
 
  const tools = <>
@@ -468,7 +528,7 @@ export function SourceControlView({scope, actions, git, zh, compact = false, too
     {!toolbarHost && tools}
     <button type="button" className="icon-btn" title={text('Fetch', '获取')} aria-label={text('Fetch', '获取')} disabled={!!busy} onClick={() => void run('fetch', () => request('git.fetch', {...params, operationId:operationId()}), text('Fetched.', '已获取。'))}><WbIcon name="fetch"/></button>
     <button type="button" className="icon-btn wb-count-btn" title={status.upstream ? text(`Pull (fast-forward only) · ${status.behind} behind`, `拉取（仅快进）· 落后 ${status.behind}`) : text('Pull · no upstream yet', '拉取 · 尚无上游')} aria-label={text('Pull', '拉取')} disabled={!!busy || !status.upstream} onClick={() => void run('pull', () => request('git.pull', {...params, operationId:operationId()}), text('Pulled.', '已拉取。'))}><WbIcon name="pull"/>{status.upstream && status.behind > 0 && <span className="wb-btn-count">{status.behind}</span>}</button>
-    <button type="button" className="icon-btn wb-count-btn" title={status.upstream ? text(`Push · ${status.ahead} ahead`, `推送 · 领先 ${status.ahead}`) : text('Publish branch', '发布分支')} aria-label={status.upstream ? text('Push', '推送') : text('Publish branch', '发布分支')} disabled={!!busy || !status.branch} onClick={() => void push()}><WbIcon name="push"/>{status.upstream && status.ahead > 0 && <span className="wb-btn-count">{status.ahead}</span>}</button>
+     <button type="button" className="icon-btn wb-count-btn" title={status.upstream ? text(`Push · ${status.ahead} ahead`, `推送 · 领先 ${status.ahead}`) : text('Publish branch', '发布分支')} aria-label={status.upstream ? text('Push', '推送') : text('Publish branch', '发布分支')} disabled={!!busy || !status.branch} onClick={() => void openPushPreview()}><WbIcon name="push"/>{status.upstream && status.ahead > 0 && <span className="wb-btn-count">{status.ahead}</span>}</button>
    </span>
   </div>
   <div className="wb-commit">
@@ -517,8 +577,29 @@ export function SourceControlView({scope, actions, git, zh, compact = false, too
    <button type="button" role="menuitem" className="menu-item" disabled={!groups.staged.length} onClick={() => { setCommitMenu(undefined); void commit('commit'); }}><Icon name="check"/>{text('Commit all staged', '提交全部暂存')}</button>
    <button type="button" role="menuitem" className="menu-item" disabled={!groups.staged.length} onClick={() => { setCommitMenu(undefined); void commit('push'); }}><Icon name="export"/>{status.upstream ? text('Commit & push', '提交并推送') : text('Commit & publish', '提交并发布')}</button>
    <button type="button" role="menuitem" className="menu-item" onClick={() => { setCommitMenu(undefined); void commit('amend'); }}><Icon name="clock"/>{text('Amend last commit…', '修改上次提交…')}</button>
-  </CatalogPopover>}
-  {branchMenu && <CatalogPopover anchor={branchMenu} align="start" label={text('Branches', '分支')} onClose={() => setBranchMenu(undefined)}>
+   </CatalogPopover>}
+   {pushDialog&&pushPreview&&!forcePushConfirmation&&<SurfaceDialog size="wide" icon="export" className="git-push-preview-dialog" title={text('Push branch','推送分支')} subtitle={pushDestination(pushPreview,zh)} onClose={()=>{if(!busy||busy==='push-preview')setPushDialog(false);}}
+    footer={<><button type="button" className="btn" disabled={!!busy} onClick={()=>setPushDialog(false)}>{text('Cancel','取消')}</button><button type="submit" form="git-push-preview-form" className="btn btn-primary" disabled={!!busy}>{busy==='push'?text('Pushing…','正在推送…'):text('Push','推送')}</button></>}>
+    <form id="git-push-preview-form" onSubmit={event=>{event.preventDefault();void pushFromPreview();}}>
+     {issue&&<p className="surface-error" role="alert">{issue}</p>}
+     <div className="git-push-preview-meta"><span>{pushPreview.lastFetchedAt?text(`Remote info from ${relativeTime(pushPreview.lastFetchedAt,zh)}`,`远程信息更新于 ${relativeTime(pushPreview.lastFetchedAt,zh)}`):text('Remote fetch time is unavailable.','远程获取时间不可用。')}</span><button type="button" className="btn btn-sm" disabled={!!busy} onClick={()=>void refreshPushPreview()}>{busy==='push-preview'?text('Refreshing…','正在刷新…'):text('Fetch and refresh','获取并刷新')}</button></div>
+     {pushPreview.behind.count>0&&<div className="surface-error" role="status"><span>{text(`The remote has ${pushPreview.behind.count} commit${pushPreview.behind.count===1?'':'s'} you do not have. A normal push may be rejected.`,`远程分支有 ${pushPreview.behind.count} 个你尚未获取的提交，普通推送可能被拒绝。`)}</span><button type="button" className="btn btn-sm" disabled={!!busy} onClick={()=>{setPushDialog(false);void run('pull',()=>request('git.pull',{...params,operationId:operationId()}),text('Pulled.','已拉取。'));}}>{text('Pull','拉取')}</button></div>}
+     {pushFailure==='force'&&<div className="surface-error" role="status"><span>{text('The remote rejected the normal push because it has commits you do not have.','远程分支有你尚未获取的提交，因此拒绝了普通推送。')}</span><span><button type="button" className="btn btn-sm" disabled={!!busy} onClick={()=>{setPushDialog(false);void run('pull',()=>request('git.pull',{...params,operationId:operationId()}),text('Pulled.','已拉取。'));}}>{text('Pull','拉取')}</button><button type="button" className="btn btn-danger" disabled={!!busy||!pushPreview.remoteOid} onClick={()=>{setForcePushBranch('');setForcePushConfirmation(true);}}>{text('Force push…','强制推送…')}</button></span></div>}
+     {pushFailure==='refresh'&&<div className="surface-error" role="status"><span>{text('The remote changed since this preview. Fetch and review it again.','远程分支自预览后已变化。请获取并重新检查。')}</span><button type="button" className="btn" disabled={!!busy} onClick={()=>void refreshPushPreview()}>{text('Fetch and review again','获取并重新检查')}</button></div>}
+     {pushFailure==='review'&&<div className="surface-error" role="status"><span>{text('The push destination changed since this preview. Review it again.','推送目标自预览后已变化。请重新检查。')}</span><button type="button" className="btn" disabled={!!busy} onClick={()=>void openPushPreview(false)}>{text('Review again','重新检查')}</button></div>}
+     {pushPreview.diverged&&pushFailure!=='force'&&<div className="git-push-preview-warning" role="status"><span>{text('This branch has diverged from its remote. Force push replaces remote history.','此分支已与远程分叉。强制推送会替换远程历史。')}</span><button type="button" className="btn btn-danger" disabled={!!busy||!pushPreview.remoteOid} onClick={()=>{setForcePushBranch('');setForcePushConfirmation(true);}}>{text('Force push…','强制推送…')}</button></div>}
+     <h3>{text(`Commits to push (${pushPreview.ahead.count})`,`要推送的提交（${pushPreview.ahead.count}）`)}</h3>
+     {pushPreview.ahead.commits.length?<div className="git-push-preview-list" role="list" tabIndex={0} data-testid="git-push-preview-commits" aria-label={text('Commits to push','要推送的提交')}>{pushPreview.ahead.commits.map(commit=><button type="button" role="listitem" key={commit.hash} data-testid="git-push-preview-commit" className="wb-commit-row" disabled={!actions.openHistory||(!!busy&&busy!=='push-preview')} onClick={()=>{setPushDialog(false);actions.openHistory?.({commit:commit.hash});}}><span className="wb-commit-text"><span className="wb-commit-line"><span className="wb-commit-subject">{commit.subject||text('(no message)','（无说明）')}</span></span><span className="wb-commit-meta">{commit.author} · {relativeTime(commit.committedAt,zh)} · <code>{commit.hash.slice(0,7)}</code></span></span></button>)}</div>:<p className="wb-empty">{text('No commits need to be pushed.','没有需要推送的提交。')}</p>}
+    </form>
+   </SurfaceDialog>}
+   {forcePushConfirmation&&pushPreview&&<SurfaceDialog size="sm" icon="branch" className="git-push-force-dialog" title={text('Force push with lease?','使用租约强制推送？')} subtitle={text(`Force push will replace ${pushPreview.remote}/${pushPreview.remoteBranch}`,`强制推送将替换 ${pushPreview.remote}/${pushPreview.remoteBranch}`)} onClose={()=>{if(!busy)setForcePushConfirmation(false);}}
+    footer={<><button type="button" className="btn" disabled={!!busy} onClick={()=>setForcePushConfirmation(false)}>{text('Cancel','取消')}</button><button type="button" className="btn btn-danger" disabled={!!busy||!pushPreview.remoteOid||(requiresForcePushBranchConfirmation(pushPreview)&&forcePushBranch!==pushPreview.remoteBranch)} onClick={()=>void pushFromPreview(true)}>{busy==='force-push'?text('Force pushing…','正在强制推送…'):text('Force push (with lease)','强制推送（带租约）')}</button></>}>
+    {issue&&<p className="surface-error" role="alert">{issue}</p>}
+    <p>{text('This uses a lease and fails safely if somebody pushed to this branch after the preview.','此操作使用租约；如果有人在预览后推送到该分支，操作会安全失败。')}</p>
+    {pushPreview.behind.commits.length>0&&<><p>{text('Remote commits that will be discarded:','将被丢弃的远程提交：')}</p><div className="git-push-preview-list" role="list" tabIndex={0} data-testid="git-push-preview-discarded-commits" aria-label={text('Remote commits to discard','将丢弃的远程提交')}>{pushPreview.behind.commits.map(commit=><div key={commit.hash} role="listitem" className="wb-commit-row"><span className="wb-commit-text"><span className="wb-commit-subject">{commit.subject||text('(no message)','（无说明）')}</span><span className="wb-commit-meta">{commit.author} · {relativeTime(commit.committedAt,zh)} · <code>{commit.hash.slice(0,7)}</code></span></span></div>)}</div></>}
+    {requiresForcePushBranchConfirmation(pushPreview)&&<label className="git-push-confirm-label">{text(`Type ${pushPreview.remoteBranch} to confirm this default-branch force push.`,`输入 ${pushPreview.remoteBranch} 以确认对默认分支的强制推送。`)}<input autoFocus value={forcePushBranch} onChange={event=>setForcePushBranch(event.target.value)} aria-label={text(`Type ${pushPreview.remoteBranch} to confirm`,`输入 ${pushPreview.remoteBranch} 以确认`)}/></label>}
+   </SurfaceDialog>}
+   {branchMenu && <CatalogPopover anchor={branchMenu} align="start" label={text('Branches', '分支')} onClose={() => setBranchMenu(undefined)}>
    <div className="wb-branch-menu">
     <input autoFocus className="wb-branch-filter" value={branchQuery} onChange={event => setBranchQuery(event.target.value)} placeholder={creating ? text('New branch name', '新分支名称') : text('Filter or create a branch', '筛选或新建分支')} aria-label={text('Branch name', '分支名称')}
      onKeyDown={event => { if(event.key === 'Enter' && creating && branchQuery.trim()) { event.preventDefault(); void checkout(branchQuery.trim(), true); } }}/>

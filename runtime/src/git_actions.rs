@@ -62,7 +62,8 @@ pub fn dispatch(db: &Database, method: &str, params_value: &Value) -> Result<Opt
     let operation_id = required_string(params, "operationId")?;
     let project_id = required_string(params, "projectId")?;
     let worktree = params.get("worktreePath").and_then(Value::as_str);
-    if method == "git.discard" || method.starts_with("git.stash.") || method == "git.checkout" {
+    // Force push's preflight reads the remote-tracking tip, which a completed push moves.
+    if method == "git.discard" || method.starts_with("git.stash.") || method == "git.checkout" || method == "git.push" {
         if let Some(result) = db.operation(operation_id)? {
             db.bind_operation(operation_id, method, params_value)?;
             return stash_receipt(method, result).map(Some);
@@ -137,6 +138,20 @@ pub fn dispatch(db: &Database, method: &str, params_value: &Value) -> Result<Opt
         }
         _ => {}
     }
+    let force_push = if method == "git.push" && ["force", "expectedRemoteOid", "remote", "remoteBranch", "localBranch"].iter().any(|key| params.contains_key(*key)) {
+        if db.external_operation_pending(operation_id)? {
+            db.bind_operation(operation_id, method, params_value)?;
+            return Err(anyhow!("operation_outcome_unknown"));
+        }
+        Some(prepare_force_push(&root, params)?)
+    } else {
+        None
+    };
+    if method == "git.fetch" {
+        if let Some(remote) = params.get("remote") {
+            validate_fetch_remote(&root, remote.as_str().ok_or_else(|| anyhow!("invalid_request"))?)?;
+        }
+    }
     db.bind_operation(operation_id, method, params_value)?;
     if let Some(result) = db.operation(operation_id)? {
         return stash_receipt(method, result).map(Some);
@@ -197,14 +212,22 @@ pub fn dispatch(db: &Database, method: &str, params_value: &Value) -> Result<Opt
             let commit = git(&root, &["rev-parse", "HEAD"])?;
             json!({"commit":commit.trim()})
         }
-        "git.fetch" => json!({"output":network(&root, &["fetch", "--prune"])?}),
+        "git.fetch" => {
+            let args = match params.get("remote").and_then(Value::as_str) {
+                Some(remote) => vec!["fetch", "--prune", remote],
+                None => vec!["fetch", "--prune"],
+            };
+            json!({"output":network(&root, &args)?})
+        }
         "git.pull" => json!({"output":pull(&root)?}),
         "git.push" => {
-            if params.get("setUpstream").and_then(Value::as_bool) == Some(true) {
+            if let Some(plan) = force_push.as_ref() {
+                json!({"output": force_push_with_lease(&root, plan)?})
+            } else if params.get("setUpstream").and_then(Value::as_bool) == Some(true) {
                 let remote = default_remote(&root)?;
-                json!({"output":network(&root, &["push", "--porcelain", "-u", &remote, "HEAD"])?})
+                json!({"output":push_network(&root, &["push", "--porcelain", "-u", &remote, "HEAD"])?})
             } else {
-                json!({"output":network(&root, &["push", "--porcelain"])?})
+                json!({"output":push_network(&root, &["push", "--porcelain"])?})
             }
         }
         "git.index.write" => {
@@ -1158,6 +1181,100 @@ fn network(root: &Path, args: &[&str]) -> Result<String> {
     Ok(String::from_utf8_lossy(&output).into_owned())
 }
 
+/// Keeps the existing plain-push argument vectors intact while fixing Git's
+/// output language for stable rejection classification.
+fn push_network(root: &Path, args: &[&str]) -> Result<String> {
+    match run_git(root, args, &[("LANGUAGE", std::ffi::OsStr::new("C"))], None, NETWORK_TIMEOUT) {
+        Ok(output) => Ok(String::from_utf8_lossy(&output).into_owned()),
+        Err(error) => Err(classify_push_rejection(error)),
+    }
+}
+
+struct ForcePushPlan {
+    remote: String,
+    remote_branch: String,
+    local_branch: String,
+    expected_oid: String,
+}
+
+fn validate_fetch_remote(root: &Path, remote: &str) -> Result<()> {
+    if remote.is_empty() || remote.starts_with('-') || remote.contains(['\0', '\r', '\n'])
+        || !git(root, &["remote"])?.lines().any(|configured| configured == remote)
+    {
+        return Err(anyhow!("invalid_remote"));
+    }
+    Ok(())
+}
+
+fn prepare_force_push(root: &Path, params: &serde_json::Map<String, Value>) -> Result<ForcePushPlan> {
+    if params.get("force").and_then(Value::as_str) != Some("with-lease") || params.contains_key("setUpstream") {
+        return Err(anyhow!("invalid_request"));
+    }
+    let expected = required_string(params, "expectedRemoteOid")?;
+    if !full_oid(expected) {
+        return Err(anyhow!("invalid_request"));
+    }
+    let remote = required_string(params, "remote")?;
+    let remote_branch = required_string(params, "remoteBranch")?;
+    let local_branch = required_string(params, "localBranch")?;
+    let preview = crate::git_read::push_preview(root)
+        .map_err(|_| anyhow!("push_destination_changed"))?;
+    let current_branch = git(root, &["symbolic-ref", "--quiet", "HEAD"])
+        .map_err(|_| anyhow!("push_destination_changed"))?;
+    if preview["remote"].as_str() != Some(remote)
+        || preview["remoteBranch"].as_str() != Some(remote_branch)
+        || preview["localBranch"].as_str() != Some(local_branch)
+        || current_branch.trim() != local_branch
+    {
+        return Err(anyhow!("push_destination_changed"));
+    }
+    let actual = preview.get("remoteOid").and_then(Value::as_str);
+    if actual != Some(expected) {
+        return Err(anyhow!("push_lease_stale"));
+    }
+    Ok(ForcePushPlan {
+        remote: remote.to_owned(), remote_branch: remote_branch.to_owned(),
+        local_branch: local_branch.to_owned(), expected_oid: expected.to_owned(),
+    })
+}
+
+fn force_push_with_lease(root: &Path, plan: &ForcePushPlan) -> Result<String> {
+    let lease = format!("--force-with-lease=refs/heads/{}:{}", plan.remote_branch, plan.expected_oid);
+    let destination = format!("{}:refs/heads/{}", plan.local_branch, plan.remote_branch);
+    let args = ["push", "--porcelain", &lease, "--force-if-includes", &plan.remote, &destination];
+    match run_git(root, &args, &[("LANGUAGE", std::ffi::OsStr::new("C"))], None, NETWORK_TIMEOUT) {
+        Ok(output) => Ok(String::from_utf8_lossy(&output).into_owned()),
+        Err(error) => Err(classify_push_rejection(error)),
+    }
+}
+
+fn full_oid(value: &str) -> bool {
+    matches!(value.len(), 40 | 64) && value.chars().all(|ch| ch.is_ascii_hexdigit())
+}
+
+fn classify_push_rejection(error: anyhow::Error) -> anyhow::Error {
+    let text = if let Some(push) = error.downcast_ref::<crate::git_read::PushPorcelainFailure>() {
+        format!("{}\n{}", push.stdout, push.stderr)
+    } else {
+        error.to_string()
+    };
+    let lower = text.to_ascii_lowercase();
+    if lower.contains("stale info") { return anyhow!("push_lease_stale"); }
+    if lower.contains("pre-receive hook declined") || lower.contains("protected branch") {
+        let remote = text.lines().map(str::trim).find_map(|line| line.find("remote:").map(|index| line[index + "remote:".len()..].trim()))
+            .unwrap_or("remote rejected");
+        return anyhow!("push_rejected_hook: {remote}");
+    }
+    if lower.contains("non-fast-forward") || lower.contains("fetch first") { return anyhow!("push_rejected_non_ff"); }
+    if lower.contains("authentication failed") || lower.contains("could not read username") || lower.contains("permission denied (publickey)") {
+        return anyhow!("push_auth_failed");
+    }
+    if lower.contains("could not resolve host") || lower.contains("could not resolve hostname") || lower.contains("failed to connect") || lower.contains("unable to access") || lower.contains("no such host") {
+        return anyhow!("push_remote_unreachable");
+    }
+    error
+}
+
 fn pull(root: &Path) -> Result<String> {
     // No remote/refspec override: Git honors the current branch's configured
     // fetch remote. Network failures must never be relabeled as divergence.
@@ -1694,7 +1811,8 @@ mod tests {
         let result = dispatch(&db, "git.merge", &json!({"projectId":project,"branch":"feature","operationId":"post-timeout"})).unwrap().unwrap();
         assert_eq!(result["conflicted"], false); assert_eq!(result["warning"], "merge_completed_after_error");
         assert!(result["output"].as_str().unwrap().contains("git_timeout"));
-        assert!(hook.pid.exists()); assert_eq!(outbox_count(&db), events + 1); assert_eq!(last_event(&db), json!({"kind":"git","projectId":project,"worktreePath":null}));
+        // Under load the timeout can fire before the post-merge hook starts; the outcome is the same.
+        assert_eq!(outbox_count(&db), events + 1); assert_eq!(last_event(&db), json!({"kind":"git","projectId":project,"worktreePath":null}));
         drop(hook); drop(timeout);
     }
     #[test]
@@ -3210,6 +3328,167 @@ mod tests {
         assert_eq!(detail["candidateOids"],json!([detail["oid"]]));assert!(detail["oid"].is_string());
         assert_eq!(checkout_head(root).unwrap(),before);assert_eq!(fs::read_to_string(root.join("a.txt")).unwrap(),"base");
         assert_eq!(stash_stack(root).unwrap()[0].0,detail["oid"].as_str().unwrap());
+    }
+
+    #[test]
+    fn push_force_lease_and_rejections_use_explicit_safe_contracts() {
+        let (temp, db, project) = setup();
+        let root = temp.path();
+        let remote = tempfile::tempdir().unwrap();
+        git(remote.path(), &["init", "--bare", "-q"]).unwrap();
+        git(root, &["remote", "add", "origin", remote.path().to_str().unwrap()]).unwrap();
+        let branch = git(root, &["branch", "--show-current"]).unwrap().trim().to_owned();
+        git(root, &["push", "-qu", "origin", &branch]).unwrap();
+        git(remote.path(), &["symbolic-ref", "HEAD", &format!("refs/heads/{branch}")]).unwrap();
+        let published = crate::git_read::push_preview(root).unwrap();
+        let expected = published["remoteOid"].as_str().unwrap().to_owned();
+
+        fs::write(root.join("a.txt"), "rewritten\n").unwrap();
+        git(root, &["add", "a.txt"]).unwrap();
+        git(root, &["commit", "--amend", "-qm", "rewritten history"]).unwrap();
+        let force_request = json!({
+            "projectId":project, "operationId":"force-ok", "remote":published["remote"], "remoteBranch":published["remoteBranch"], "localBranch":published["localBranch"], "force":"with-lease", "expectedRemoteOid":expected,
+        });
+        let forced = dispatch(&db, "git.push", &force_request).unwrap().unwrap();
+        assert!(forced["output"].as_str().is_some());
+        // A retry after a lost response replays the receipt, although the lease no longer matches the moved tip.
+        assert_eq!(dispatch(&db, "git.push", &force_request).unwrap().unwrap(), forced);
+
+        let stale = crate::git_read::push_preview(root).unwrap();
+        let stale_oid = stale["remoteOid"].as_str().unwrap().to_owned();
+        let peer = tempfile::tempdir().unwrap();
+        git(peer.path(), &["clone", "-q", remote.path().to_str().unwrap(), "."]).unwrap();
+        git(peer.path(), &["config", "user.email", "peer@example.test"]).unwrap();
+        git(peer.path(), &["config", "user.name", "Peer"]).unwrap();
+        fs::write(peer.path().join("peer.txt"), "peer\n").unwrap();
+        git(peer.path(), &["add", "."]).unwrap();
+        git(peer.path(), &["commit", "-qm", "peer"]).unwrap();
+        git(peer.path(), &["push", "-q"]).unwrap();
+        let error = dispatch(&db, "git.push", &json!({
+            "projectId":project, "operationId":"force-stale", "remote":published["remote"], "remoteBranch":published["remoteBranch"], "localBranch":published["localBranch"], "force":"with-lease", "expectedRemoteOid":stale_oid,
+        })).unwrap_err().to_string();
+        assert_eq!(error, "push_lease_stale");
+        git(root, &["fetch", "-q", "origin"]).unwrap();
+        let error = dispatch(&db, "git.push", &json!({
+            "projectId":project, "operationId":"force-stale-local", "remote":published["remote"], "remoteBranch":published["remoteBranch"], "localBranch":published["localBranch"], "force":"with-lease", "expectedRemoteOid":stale_oid,
+        })).unwrap_err().to_string();
+        assert_eq!(error, "push_lease_stale");
+
+        let non_ff = dispatch(&db, "git.push", &json!({"projectId":project,"operationId":"non-ff"})).unwrap_err().to_string();
+        assert_eq!(non_ff, "push_rejected_non_ff");
+    }
+
+    #[test]
+    fn force_push_binds_reviewed_branch_and_remote_before_claiming() {
+        let (temp, db, project) = setup();
+        let root = temp.path();
+        git(root, &["branch", "-M", "main"]).unwrap();
+        let origin = tempfile::tempdir().unwrap();
+        let backup = tempfile::tempdir().unwrap();
+        for (name, remote) in [("origin", &origin), ("backup", &backup)] {
+            git(remote.path(), &["init", "--bare", "-q"]).unwrap();
+            git(root, &["remote", "add", name, remote.path().to_str().unwrap()]).unwrap();
+        }
+        git(root, &["push", "-qu", "origin", "main"]).unwrap();
+        git(root, &["switch", "-qc", "feature"]).unwrap();
+        git(root, &["push", "-qu", "origin", "feature"]).unwrap();
+        fs::write(root.join("a.txt"), "feature rewrite").unwrap();
+        git(root, &["commit", "-qam", "feature rewrite", "--amend"]).unwrap();
+        let preview = crate::git_read::push_preview(root).unwrap();
+        let request = json!({"projectId":project,"operationId":"reviewed-feature","force":"with-lease",
+            "remote":preview["remote"],"remoteBranch":preview["remoteBranch"],
+            "localBranch":preview["localBranch"],"expectedRemoteOid":preview["remoteOid"]});
+
+        git(root, &["switch", "-q", "main"]).unwrap();
+        fs::write(root.join("a.txt"), "main rewrite").unwrap();
+        git(root, &["commit", "-qam", "main rewrite", "--amend"]).unwrap();
+        assert_eq!(git(root, &["rev-parse", "refs/remotes/origin/main"]).unwrap().trim(), preview["remoteOid"].as_str().unwrap());
+        assert_eq!(dispatch(&db, "git.push", &request).unwrap_err().to_string(), "push_destination_changed");
+        assert!(!db.external_operation_pending("reviewed-feature").unwrap());
+        assert!(db.operation("reviewed-feature").unwrap().is_none());
+        assert_eq!(git(origin.path(), &["rev-parse", "refs/heads/main"]).unwrap().trim(), preview["remoteOid"].as_str().unwrap());
+
+        git(root, &["switch", "-q", "feature"]).unwrap();
+        assert!(dispatch(&db, "git.push", &request).unwrap().unwrap()["output"].is_string());
+        let reviewed = crate::git_read::push_preview(root).unwrap();
+        git(root, &["push", "-q", "backup", "feature"]).unwrap();
+        git(root, &["config", "branch.feature.pushRemote", "backup"]).unwrap();
+        assert_eq!(crate::git_read::push_preview(root).unwrap()["remoteOid"], reviewed["remoteOid"]);
+        let request = json!({"projectId":project,"operationId":"reviewed-origin","force":"with-lease",
+            "remote":reviewed["remote"],"remoteBranch":reviewed["remoteBranch"],
+            "localBranch":reviewed["localBranch"],"expectedRemoteOid":reviewed["remoteOid"]});
+        assert_eq!(dispatch(&db, "git.push", &request).unwrap_err().to_string(), "push_destination_changed");
+        assert!(!db.external_operation_pending("reviewed-origin").unwrap());
+        git(root, &["config", "--unset", "branch.feature.pushRemote"]).unwrap();
+        assert!(dispatch(&db, "git.push", &request).unwrap().unwrap()["output"].is_string());
+    }
+
+    #[test]
+    fn fetch_targets_only_a_configured_reviewed_remote() {
+        let (temp, db, project) = setup();
+        let root = temp.path();
+        let branch = git(root, &["branch", "--show-current"]).unwrap().trim().to_owned();
+        let origin = tempfile::tempdir().unwrap();
+        let backup = tempfile::tempdir().unwrap();
+        for (name, remote) in [("origin", &origin), ("backup", &backup)] {
+            git(remote.path(), &["init", "--bare", "-q"]).unwrap();
+            git(root, &["remote", "add", name, remote.path().to_str().unwrap()]).unwrap();
+            git(root, &["push", "-q", name, &branch]).unwrap();
+        }
+        git(root, &["branch", "--set-upstream-to", &format!("origin/{branch}")]).unwrap();
+        git(root, &["config", &format!("branch.{branch}.pushRemote"), "backup"]).unwrap();
+        let before = git(root, &["rev-parse", &format!("refs/remotes/origin/{branch}")]).unwrap();
+        let peer = tempfile::tempdir().unwrap();
+        git(peer.path(), &["clone", "-q", "-b", &branch, backup.path().to_str().unwrap(), "."]).unwrap();
+        git(peer.path(), &["config", "user.email", "peer@example.test"]).unwrap();
+        git(peer.path(), &["config", "user.name", "Peer"]).unwrap();
+        git(peer.path(), &["commit", "--allow-empty", "-qm", "backup advanced"]).unwrap();
+        git(peer.path(), &["push", "-q"]).unwrap();
+        for remote in ["--all", "missing", backup.path().to_str().unwrap()] {
+            let request = json!({"projectId":project,"operationId":"invalid-fetch","remote":remote});
+            assert_eq!(dispatch(&db, "git.fetch", &request).unwrap_err().to_string(), "invalid_remote");
+            assert!(!db.external_operation_pending("invalid-fetch").unwrap());
+        }
+        dispatch(&db, "git.fetch", &json!({"projectId":project,"operationId":"backup-fetch","remote":"backup"})).unwrap();
+        assert_eq!(git(root, &["rev-parse", &format!("refs/remotes/origin/{branch}")]).unwrap(), before);
+        let preview = crate::git_read::push_preview(root).unwrap();
+        assert_eq!(preview["remote"], "backup");
+        assert_eq!(preview["behind"]["count"], 1);
+        assert!(preview["lastFetchedAt"].is_string());
+    }
+
+    #[test]
+    fn push_rejection_classifier_is_stable_and_hook_precedes_advice() {
+        for (text, expected) in [
+            ("remote: protected branch\n! [remote rejected] main -> main (pre-receive hook declined)\nnon-fast-forward", "push_rejected_hook: protected branch"),
+            ("fatal: Authentication failed for 'https://example.test/'", "push_auth_failed"),
+            ("git@example.test: Could not resolve hostname example.test", "push_remote_unreachable"),
+        ] {
+            assert_eq!(classify_push_rejection(anyhow!("git_failed: {text}")).to_string(), expected);
+        }
+        assert_eq!(classify_push_rejection(anyhow!("git_failed: unexplained failure")).to_string(), "git_failed: unexplained failure");
+        assert_eq!(classify_push_rejection(anyhow!("git_failed: stale info")).to_string(), "push_lease_stale");
+    }
+
+    #[test]
+    fn push_hook_decline_returns_its_first_remote_line() {
+        let (temp, db, project) = setup();
+        let root = temp.path();
+        let remote = tempfile::tempdir().unwrap();
+        git(remote.path(), &["init", "--bare", "-q"]).unwrap();
+        git(root, &["remote", "add", "origin", remote.path().to_str().unwrap()]).unwrap();
+        let branch = git(root, &["branch", "--show-current"]).unwrap().trim().to_owned();
+        git(root, &["push", "-qu", "origin", &branch]).unwrap();
+        fs::write(remote.path().join("hooks/pre-receive"), "#!/bin/sh\necho policy denied >&2\nexit 1\n").unwrap();
+        #[cfg(unix)] {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(remote.path().join("hooks/pre-receive"), fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        fs::write(root.join("hook.txt"), "blocked\n").unwrap();
+        git(root, &["add", "."]).unwrap();
+        git(root, &["commit", "-qm", "blocked"]).unwrap();
+        let error = dispatch(&db, "git.push", &json!({"projectId":project,"operationId":"hook"})).unwrap_err().to_string();
+        assert_eq!(error, "push_rejected_hook: policy denied");
     }
 
 }

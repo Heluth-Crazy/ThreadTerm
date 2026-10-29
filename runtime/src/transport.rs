@@ -249,6 +249,7 @@ fn request_lane(method: &str) -> Lane {
         | "git.diff"
         | "git.fingerprints"
         | "git.log"
+        | "git.push.preview"
         | "git.stash.list"
         | "git.stash.show"
         | "git.branches"
@@ -1023,6 +1024,7 @@ mod decoder_tests {
             "git.diff",
             "git.fingerprints",
             "git.log",
+            "git.push.preview",
             "git.stash.list",
             "git.stash.show",
             "review.changes",

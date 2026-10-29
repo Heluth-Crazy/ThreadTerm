@@ -45,6 +45,11 @@ test('worktree base errors explain how to recover', () => {
  assert.equal(workbenchError(new Error('invalid_request'), false), 'The request is invalid. Check the worktree options and try again.');
 });
 
+test('a changed reviewed push destination asks for a new review', () => {
+ assert.equal(workbenchError(new Error('push_destination_changed'), false), 'The push destination changed since this preview. Review it again before pushing.');
+ assert.equal(workbenchError(new Error('push_destination_changed'), true), '推送目标自预览后已变化。请重新检查后再推送。');
+});
+
 test('stash errors and a smart-switch receipt have bilingual explanations', () => {
  for(const code of ['nothing_to_stash','stash_not_found','stash_apply_failed']) for(const zh of [true,false]) {
   const message=workbenchError(new Error(code),zh);

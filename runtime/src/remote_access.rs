@@ -1299,6 +1299,7 @@ mod tests {
             "git.discard",
             "git.fingerprints",
             "git.log",
+            "git.push.preview",
             "git.stash.list",
             "git.stash.show",
             "git.stash.push",

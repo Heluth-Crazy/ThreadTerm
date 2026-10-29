@@ -6575,6 +6575,109 @@
       ],
       "additionalProperties": false
     },
+    "RequestResult<\"git.push.preview\">": {
+      "$ref": "#/definitions/GitPushPreview"
+    },
+    "GitPushPreview": {
+      "type": "object",
+      "properties": {
+        "branch": {
+          "type": "string"
+        },
+        "localBranch": {
+          "type": "string"
+        },
+        "detached": {
+          "type": "boolean"
+        },
+        "remote": {
+          "type": "string"
+        },
+        "remoteBranch": {
+          "type": "string"
+        },
+        "upstream": {
+          "type": "string"
+        },
+        "setUpstream": {
+          "type": "boolean"
+        },
+        "ahead": {
+          "$ref": "#/definitions/GitPushRange"
+        },
+        "behind": {
+          "$ref": "#/definitions/GitPushRange"
+        },
+        "remoteOid": {
+          "type": "string"
+        },
+        "diverged": {
+          "type": "boolean"
+        },
+        "lastFetchedAt": {
+          "type": "string"
+        },
+        "remoteDefaultBranch": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "branch",
+        "localBranch",
+        "detached",
+        "remote",
+        "remoteBranch",
+        "setUpstream",
+        "ahead",
+        "behind",
+        "diverged"
+      ],
+      "additionalProperties": false,
+      "description": "Local remote-tracking information only; no network request is made."
+    },
+    "GitPushRange": {
+      "type": "object",
+      "properties": {
+        "count": {
+          "type": "number"
+        },
+        "commits": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/GitPushCommit"
+          }
+        }
+      },
+      "required": [
+        "count",
+        "commits"
+      ],
+      "additionalProperties": false
+    },
+    "GitPushCommit": {
+      "type": "object",
+      "properties": {
+        "hash": {
+          "type": "string"
+        },
+        "subject": {
+          "type": "string"
+        },
+        "author": {
+          "type": "string"
+        },
+        "committedAt": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "hash",
+        "subject",
+        "author",
+        "committedAt"
+      ],
+      "additionalProperties": false
+    },
     "RequestResult<\"git.merge\">": {
       "type": "object",
       "properties": {
@@ -12379,6 +12482,32 @@
         },
         "result": {
           "$ref": "#/definitions/RequestResult%3C%22git.push%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "result"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "git.push.preview"
+        },
+        "result": {
+          "$ref": "#/definitions/RequestResult%3C%22git.push.preview%22%3E"
         }
       },
       "required": [

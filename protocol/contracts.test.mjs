@@ -53,6 +53,30 @@ test('all four tool switches remain optional boolean portable settings',()=>{
 });
 import {validateRequest,validateResult,validateLayout,METHODS,isRuntimeEvent,PROTOCOL_CONTRACT,PROTOCOL_VERSION,protocolIncompatibleReason} from './index.ts';
 
+test('push preview and explicit lease contracts preserve plain push and reject unsafe force requests',()=>{
+ const scope={projectId:'p'},oid='a'.repeat(40),plain={...scope,operationId:'push'};
+ validateRequest('git.push',plain);
+ validateRequest('git.push',{...plain,setUpstream:true});
+ const reviewed={remote:'origin',remoteBranch:'main',localBranch:'refs/heads/main'};
+ validateRequest('git.push',{...plain,...reviewed,force:'with-lease',expectedRemoteOid:oid});
+ validateRequest('git.push',{...plain,...reviewed,force:'with-lease',expectedRemoteOid:'b'.repeat(64)});
+ for(const patch of [{force:'with-lease',expectedRemoteOid:oid,setUpstream:true},{force:true},{force:'force'},{force:'with-lease'},{expectedRemoteOid:oid},{force:'with-lease',expectedRemoteOid:''},{force:'with-lease',expectedRemoteOid:'HEAD'},{force:'with-lease',expectedRemoteOid:'a'.repeat(39)}]) assert.throws(()=>validateRequest('git.push',{...plain,...patch}));
+ validateRequest('git.push.preview',scope);
+ validateRequest('git.push.preview',{...scope,worktreePath:'worktree'});
+ for(const patch of [{projectId:''},{operationId:'unexpected'},{remote:'injected'},{force:'with-lease'}]) assert.throws(()=>validateRequest('git.push.preview',{...scope,...patch}));
+ const commit={hash:oid,subject:'Publish me',author:'QA',committedAt:'2026-10-28T12:00:00Z'};
+ const preview={branch:'main',localBranch:'refs/heads/main',detached:false,remote:'origin',remoteBranch:'main',upstream:'origin/main',setUpstream:false,ahead:{count:2,commits:[commit,commit]},behind:{count:0,commits:[]},remoteOid:oid,diverged:false,lastFetchedAt:commit.committedAt,remoteDefaultBranch:'main'};
+ validateResult('git.push.preview',preview);
+ validateResult('git.push.preview',{...preview,remoteOid:undefined,lastFetchedAt:undefined,remoteDefaultBranch:undefined,upstream:undefined,setUpstream:true});
+ validateResult('git.push.preview',{...preview,ahead:{count:100,commits:Array(50).fill(commit)}});
+ for(const patch of [{remote:''},{remoteOid:'HEAD'},{ahead:{count:-1,commits:[]}},{ahead:{count:1,commits:[commit,commit]}},{ahead:{count:51,commits:Array(51).fill(commit)}},{behind:{count:0.5,commits:[]}},{ahead:{count:1,commits:[{...commit,author:3}]}},{diverged:'yes'}]) assert.throws(()=>validateResult('git.push.preview',{...preview,...patch}));
+ for(const patch of [{remote:undefined},{remote:''},{remoteBranch:undefined},{localBranch:undefined},{localBranch:'main'}]) assert.throws(()=>validateRequest('git.push',{...plain,...reviewed,force:'with-lease',expectedRemoteOid:oid,...patch}));
+ validateRequest('git.fetch',{...plain,remote:'backup'});
+ for(const remote of ['', '-all', 'origin\nother']) assert.throws(()=>validateRequest('git.fetch',{...plain,remote}));
+ assert.throws(()=>validateResult('git.push.preview',{...preview,localBranch:'main'}));
+ assert.ok(METHODS.includes('git.push.preview'));
+});
+
 test('external files have a small read-only registration contract',()=>{
  const opened={id:'external-1',path:join(tmpdir(),'external-files','notes.md'),name:'notes.md',size:12,modifiedAt:'2026-10-26T00:00:00Z',openedAt:'2026-10-26T00:00:01Z',image:false};
  validateRequest('filesystem.external.open',{path:opened.path,source:'dialog'});

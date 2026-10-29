@@ -19,7 +19,7 @@ export type WorkbenchActions = {
  /** Opens a materialized worktree through the host's project navigation rules. */
  openWorktree?:(path:string) => void;
  /** Absent when the host has no history tab (standalone Files page). */
- openHistory?:(path?:string) => void;
+ openHistory?:(target?:string|{path?:string;commit?:string}) => void;
  openReview?:(target:{sessionId:string;checkpointId:string;toCheckpointId?:string;path:string}) => void;
  /** Absent when no agent session can receive a reference. */
  sendToAgent?:(reference:AgentReference) => void;

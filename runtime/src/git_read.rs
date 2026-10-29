@@ -27,6 +27,22 @@ const MAX_GIT_STDERR_BYTES: usize = 64 * 1024;
 const POST_EXIT_STDERR_GRACE: Duration = Duration::from_secs(2);
 const ZERO_COMMIT: &str = "0000000000000000000000000000000000000000";
 
+/// Failed porcelain pushes need their stdout for structured rejection handling,
+/// but their public error text remains Git's historical stderr text.
+#[derive(Debug)]
+pub(crate) struct PushPorcelainFailure {
+    pub stdout: String,
+    pub stderr: String,
+}
+
+impl std::fmt::Display for PushPorcelainFailure {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(formatter, "git_failed: {}", self.stderr)
+    }
+}
+
+impl std::error::Error for PushPorcelainFailure {}
+
 fn send_trace_git_step(args: &[&str]) -> &'static str {
     let mut command = 0;
     while args.get(command) == Some(&"-c") && args.get(command + 1).is_some() {
@@ -42,6 +58,14 @@ fn send_trace_git_step(args: &[&str]) -> &'static str {
         Some("ls-files") => "ls-files",
         _ => "other",
     }
+}
+
+fn is_push_command(args: &[&str]) -> bool {
+    let mut command = 0;
+    while args.get(command) == Some(&"-c") && args.get(command + 1).is_some() {
+        command += 2;
+    }
+    args.get(command) == Some(&"push") && args.contains(&"--porcelain")
 }
 
 /// Runs Git with a hard timeout, no terminal prompt and no optional index locks.
@@ -142,10 +166,16 @@ pub(crate) fn run_git(
                 .outcome("error")
                 .duration_us(trace_timer.elapsed_us()),
         );
-        return Err(anyhow!(
-            "git_failed: {}",
-            String::from_utf8_lossy(&stderr).trim()
-        ));
+        // Push porcelain writes its rejection reason to stdout. Preserve it for
+        // the push classifier while retaining the historic stderr-only public
+        // error for every Git command and non-porcelain push.
+        if is_push_command(args) {
+            return Err(PushPorcelainFailure {
+                stdout: String::from_utf8_lossy(&stdout).into_owned(),
+                stderr: String::from_utf8_lossy(&stderr).trim().to_owned(),
+            }.into());
+        }
+        return Err(anyhow!("git_failed: {}", String::from_utf8_lossy(&stderr).trim()));
     }
     crate::send_trace::emit(
         crate::send_trace::Event::new("review.git.exit")
@@ -618,6 +648,7 @@ pub fn dispatch(db: &Database, method: &str, params: &Value) -> Result<Option<Va
         method,
         "git.branches"
             | "git.log"
+            | "git.push.preview"
             | "git.commit.show"
             | "git.commit.diff"
             | "git.blame"
@@ -635,6 +666,7 @@ pub fn dispatch(db: &Database, method: &str, params: &Value) -> Result<Option<Va
     repo_prefix(&root)?;
     let result = match method {
         "git.branches" => branches(&root)?,
+        "git.push.preview" => push_preview(&root)?,
         "git.log" => {
             let path = object.get("path").and_then(Value::as_str);
             if let Some(path) = path {
@@ -667,6 +699,255 @@ pub fn dispatch(db: &Database, method: &str, params: &Value) -> Result<Option<Va
         _ => unreachable!(),
     };
     Ok(Some(result))
+}
+
+const PUSH_PREVIEW_FORMAT: &str = "--format=%x1e%H%x1f%s%x1f%an%x1f%cI";
+
+/// Resolves the one local destination that an ordinary push would use without
+/// contacting the remote. Ambiguous push configuration deliberately fails
+/// closed so callers can retain the existing plain-push behavior.
+pub(crate) fn push_preview(root: &Path) -> Result<Value> {
+    let local_branch = git_text(root, &["symbolic-ref", "--quiet", "HEAD"])
+        .map_err(|_| anyhow!("push_preview_unavailable: detached HEAD"))?
+        .trim()
+        .to_owned();
+    let branch = branch_name(&local_branch)
+        .filter(|branch| !branch.is_empty())
+        .ok_or_else(|| anyhow!("push_preview_unavailable: detached HEAD"))?
+        .to_owned();
+
+    let remote = push_remote(root, &branch)?;
+    let configured_destination = reject_ambiguous_push_config(root, &remote, &branch)?;
+    let upstream = upstream(root, &branch)?;
+    let push_default = git_config(root, "push.default");
+    let remote_branch = if let Some(destination) = configured_destination {
+        if upstream.is_none() {
+            return Err(anyhow!("push_preview_unavailable: publish refspec is not compatible with legacy publish"));
+        }
+        destination
+    } else {
+        match push_default.as_deref() {
+            Some("current") => branch.clone(),
+            Some("upstream") => {
+                let Some((upstream_remote, upstream_branch)) = upstream.as_ref() else {
+                    return Err(anyhow!("push_preview_unavailable: push.default upstream has no upstream"));
+                };
+                if upstream_remote != &remote {
+                    return Err(anyhow!("push_preview_unavailable: upstream remote differs from push remote"));
+                }
+                branch_name(upstream_branch).expect("upstream is a branch").to_owned()
+            }
+            None | Some("simple") => match upstream.as_ref() {
+                Some((upstream_remote, upstream_branch)) if upstream_remote == &remote && upstream_branch == &format!("refs/heads/{branch}") => branch.clone(),
+                // A triangular setup pushes the current branch to its push remote.
+                Some((upstream_remote, _)) if upstream_remote != &remote => branch.clone(),
+                Some(_) => return Err(anyhow!("push_preview_unavailable: simple push does not map one branch")),
+                None => branch.clone(),
+            },
+            _ => unreachable!("unsupported push.default rejected above"),
+        }
+    };
+    let set_upstream = upstream.is_none();
+    if set_upstream && remote != legacy_default_remote(root)? {
+        return Err(anyhow!("push_preview_unavailable: configured push remote differs from legacy publish remote"));
+    }
+    let remote_ref = format!("refs/remotes/{remote}/{remote_branch}");
+    let remote_oid = git_text(root, &["rev-parse", "--verify", "--quiet", &remote_ref])
+        .ok()
+        .map(|value| value.trim().to_owned())
+        .filter(|value| full_oid(value));
+    let (ahead, behind) = if remote_oid.is_some() {
+        let ahead_range = format!("{remote_ref}..HEAD");
+        let behind_range = format!("HEAD..{remote_ref}");
+        (
+            push_preview_commits(root, &[&ahead_range])?,
+            push_preview_commits(root, &[&behind_range])?,
+        )
+    } else {
+        let not_remotes = format!("--remotes={remote}");
+        (push_preview_commits(root, &["HEAD", "--not", &not_remotes])?, empty_push_range())
+    };
+    let mut preview = json!({
+        "branch": branch,
+        "localBranch": local_branch,
+        "detached": false,
+        "remote": remote,
+        "remoteBranch": remote_branch,
+        "setUpstream": set_upstream,
+        "ahead": ahead,
+        "behind": behind,
+        "diverged": remote_oid.is_some() && ahead["count"].as_u64().unwrap_or(0) > 0 && behind["count"].as_u64().unwrap_or(0) > 0,
+    });
+    if let Some((upstream_remote, upstream_branch)) = upstream {
+        preview["upstream"] = json!(format!("{upstream_remote}/{}", branch_name(&upstream_branch).expect("upstream is a branch")));
+    }
+    if let Some(oid) = remote_oid {
+        preview["remoteOid"] = json!(oid);
+    }
+    if let Some(branch) = remote_default_branch(root, preview["remote"].as_str().unwrap()) {
+        preview["remoteDefaultBranch"] = json!(branch);
+    }
+    if let Some(last_fetched) = last_fetched_at(root, preview["remote"].as_str().unwrap(), preview["remoteBranch"].as_str().unwrap()) {
+        preview["lastFetchedAt"] = json!(last_fetched);
+    }
+    Ok(preview)
+}
+
+fn legacy_default_remote(root: &Path) -> Result<String> {
+    let remotes = git_text(root, &["remote"])?;
+    let remotes: Vec<_> = remotes.lines().map(str::trim).filter(|value| !value.is_empty()).collect();
+    if remotes.iter().any(|remote| *remote == "origin") {
+        Ok("origin".to_owned())
+    } else if remotes.len() == 1 {
+        Ok(remotes[0].to_owned())
+    } else {
+        Err(anyhow!("push_preview_unavailable: no unambiguous remote"))
+    }
+}
+
+fn push_remote(root: &Path, branch: &str) -> Result<String> {
+    for key in [
+        format!("branch.{branch}.pushRemote"),
+        "remote.pushDefault".to_owned(),
+        format!("branch.{branch}.remote"),
+    ] {
+        if let Some(remote) = git_config(root, &key) {
+            return Ok(remote);
+        }
+    }
+    let remotes = git_text(root, &["remote"])?;
+    let remotes: Vec<_> = remotes.lines().map(str::trim).filter(|value| !value.is_empty()).collect();
+    if remotes.iter().any(|remote| *remote == "origin") {
+        Ok("origin".to_owned())
+    } else if remotes.len() == 1 {
+        Ok(remotes[0].to_owned())
+    } else {
+        Err(anyhow!("push_preview_unavailable: no unambiguous remote"))
+    }
+}
+
+fn git_config(root: &Path, key: &str) -> Option<String> {
+    git_text(root, &["config", "--get", key])
+        .ok()
+        .map(|value| value.trim().to_owned())
+        .filter(|value| !value.is_empty())
+}
+
+fn upstream(root: &Path, branch: &str) -> Result<Option<(String, String)>> {
+    let Some(remote) = git_config(root, &format!("branch.{branch}.remote")) else { return Ok(None); };
+    let merges = git_text(root, &["config", "--get-all", &format!("branch.{branch}.merge")]).unwrap_or_default();
+    let merges: Vec<_> = merges.lines().map(str::trim).collect();
+    let merge = match merges.as_slice() {
+        [] => return Ok(None),
+        [merge] if !merge.is_empty() => (*merge).to_owned(),
+        _ => return Err(anyhow!("push_preview_unavailable: multiple or empty upstream branches")),
+    };
+    if branch_name(&merge).is_none() {
+        return Err(anyhow!("push_preview_unavailable: upstream is not a branch"));
+    }
+    Ok(Some((remote, merge)))
+}
+
+fn branch_name(reference: &str) -> Option<&str> {
+    reference.strip_prefix("refs/heads/")
+}
+
+fn reject_ambiguous_push_config(root: &Path, remote: &str, branch: &str) -> Result<Option<String>> {
+    let push_default = git_config(root, "push.default");
+    if !matches!(push_default.as_deref(), None | Some("simple" | "current" | "upstream")) {
+        return Err(anyhow!("push_preview_unavailable: push.default does not select one branch"));
+    }
+    if git_config_bool(root, &format!("remote.{remote}.mirror")) {
+        return Err(anyhow!("push_preview_unavailable: remote mirror is configured"));
+    }
+    if git_config_bool(root, "push.followTags") {
+        return Err(anyhow!("push_preview_unavailable: push.followTags is configured"));
+    }
+    let fetch_refspecs = git_text(root, &["config", "--get-all", &format!("remote.{remote}.fetch")]).unwrap_or_default();
+    let expected_fetch = format!("+refs/heads/*:refs/remotes/{remote}/*");
+    if fetch_refspecs.lines().map(str::trim).filter(|value| !value.is_empty()).collect::<Vec<_>>() != [expected_fetch.as_str()] {
+        return Err(anyhow!("push_preview_unavailable: remote fetch refspec is not standard"));
+    }
+    let refspecs = git_text(root, &["config", "--get-all", &format!("remote.{remote}.push")]).unwrap_or_default();
+    let refspecs: Vec<_> = refspecs.lines().map(str::trim).filter(|value| !value.is_empty()).collect();
+    let destination = match refspecs.as_slice() {
+        [] => None,
+        [refspec] => exact_push_refspec_destination(refspec, branch)
+            .ok_or_else(|| anyhow!("push_preview_unavailable: remote push refspec does not select one branch"))
+            .map(Some)?,
+        _ => return Err(anyhow!("push_preview_unavailable: multiple push refspecs")),
+    };
+    let urls = git_text(root, &["remote", "get-url", "--push", "--all", remote])
+        .map_err(|_| anyhow!("push_preview_unavailable: remote has no push URL"))?;
+    let mut urls: Vec<_> = urls.lines().map(str::trim).filter(|value| !value.is_empty()).collect();
+    urls.sort_unstable();
+    urls.dedup();
+    if urls.len() != 1 {
+        return Err(anyhow!("push_preview_unavailable: multiple push URLs"));
+    }
+    let fetch_urls = git_text(root, &["remote", "get-url", "--all", remote]).unwrap_or_default();
+    let mut fetch_urls: Vec<_> = fetch_urls.lines().map(str::trim).filter(|value| !value.is_empty()).collect();
+    fetch_urls.sort_unstable();
+    fetch_urls.dedup();
+    if fetch_urls.len() != 1 || fetch_urls[0] != urls[0] {
+        return Err(anyhow!("push_preview_unavailable: push URL differs from fetch URL"));
+    }
+    Ok(destination)
+}
+
+fn exact_push_refspec_destination(refspec: &str, branch: &str) -> Option<String> {
+    let (source, destination) = refspec.split_once(':')?;
+    (source == format!("refs/heads/{branch}") && destination.starts_with("refs/heads/")
+        && !destination.contains('*') && !destination.starts_with('+'))
+        .then(|| branch_name(destination).expect("destination is a branch").to_owned())
+}
+
+fn git_config_bool(root: &Path, key: &str) -> bool {
+    git_text(root, &["config", "--bool", "--get", key])
+        .ok()
+        .is_some_and(|value| value.trim() == "true")
+}
+
+fn push_preview_commits(root: &Path, revisions: &[&str]) -> Result<Value> {
+    let mut count_args = vec!["rev-list", "--count"];
+    count_args.extend_from_slice(revisions);
+    let count = git_text(root, &count_args)
+        .map_err(|_| anyhow!("push_preview_unavailable: cannot resolve commit range"))?
+        .trim()
+        .parse::<u64>()
+        .map_err(|_| anyhow!("push_preview_unavailable: cannot count commits"))?;
+    let mut log_args = vec!["log", PUSH_PREVIEW_FORMAT, "-n50"];
+    log_args.extend_from_slice(revisions);
+    let commits = parse_push_preview_commits(&git_text(root, &log_args)?);
+    Ok(json!({"count": count, "commits": commits}))
+}
+
+fn parse_push_preview_commits(output: &str) -> Vec<Value> {
+    output.split('\u{1e}').filter_map(|record| {
+        let fields: Vec<_> = record.trim_matches(['\r', '\n']).split('\u{1f}').collect();
+        (fields.len() == 4 && full_oid(fields[0])).then(|| json!({
+            "hash": fields[0], "subject": fields[1], "author": fields[2], "committedAt": fields[3],
+        }))
+    }).collect()
+}
+
+fn empty_push_range() -> Value { json!({"count": 0, "commits": []}) }
+
+fn remote_default_branch(root: &Path, remote: &str) -> Option<String> {
+    let head = format!("refs/remotes/{remote}/HEAD");
+    if let Ok(value) = git_text(root, &["symbolic-ref", "--quiet", &head]) {
+        return value.trim().strip_prefix(&format!("refs/remotes/{remote}/")).map(str::to_owned);
+    }
+    None
+}
+
+fn last_fetched_at(root: &Path, remote: &str, remote_branch: &str) -> Option<String> {
+    let reflog = format!("logs/refs/remotes/{remote}/{remote_branch}");
+    let path = git_text(root, &["rev-parse", "--git-path", &reflog]).ok()?;
+    let path = PathBuf::from(path.trim());
+    let path = if path.is_absolute() { path } else { root.join(path) };
+    let modified = std::fs::metadata(path).ok()?.modified().ok()?;
+    Some(chrono::DateTime::<Utc>::from(modified).to_rfc3339())
 }
 
 fn string<'a>(object: &'a Map<String, Value>, key: &str) -> Result<&'a str> {
@@ -1721,5 +2002,122 @@ mod tests {
         assert_eq!(parsed[0]["originalPath"], "old name.txt");
         assert_eq!(parsed[0]["path"], "新 文件.txt");
         assert_eq!(parsed[1]["status"], "M");
+    }
+
+    #[test]
+    fn push_preview_refuses_multiple_configured_upstreams() {
+        let temp = repo();
+        git(temp.path(), &["config", "branch.main.remote", "origin"]).unwrap();
+        for merge in ["refs/heads/main", "refs/heads/other"] {
+            git(temp.path(), &["config", "--add", "branch.main.merge", merge]).unwrap();
+        }
+        assert_eq!(
+            upstream(temp.path(), "main").unwrap_err().to_string(),
+            "push_preview_unavailable: multiple or empty upstream branches"
+        );
+    }
+
+    #[test]
+    fn push_preview_reads_local_tracking_state_and_refuses_detached_head() {
+        let temp = repo();
+        let root = temp.path();
+        fs::write(root.join("a.txt"), "base\n").unwrap();
+        git(root, &["add", "."]).unwrap();
+        git(root, &["commit", "-qm", "base"]).unwrap();
+        let origin = tempfile::tempdir().unwrap();
+        git(origin.path(), &["init", "--bare", "-q"]).unwrap();
+        git(root, &["remote", "add", "origin", origin.path().to_str().unwrap()]).unwrap();
+        git(root, &["push", "-qu", "origin", "main"]).unwrap();
+        git(origin.path(), &["symbolic-ref", "HEAD", "refs/heads/main"]).unwrap();
+
+        for subject in ["local one", "local two"] {
+            fs::write(root.join("a.txt"), format!("{subject}\n")).unwrap();
+            git(root, &["commit", "-qam", subject]).unwrap();
+        }
+        let ahead = push_preview(root).unwrap();
+        assert_eq!(ahead["remote"], "origin");
+        assert_eq!(ahead["remoteBranch"], "main");
+        assert_eq!(ahead["ahead"]["count"], 2);
+        assert_eq!(ahead["behind"]["count"], 0);
+        assert_eq!(ahead["ahead"]["commits"].as_array().unwrap().len(), 2);
+        assert!(ahead["remoteOid"].as_str().unwrap().len() == 40);
+
+        let backup = tempfile::tempdir().unwrap();
+        git(backup.path(), &["init", "--bare", "-q"]).unwrap();
+        git(root, &["remote", "add", "backup", backup.path().to_str().unwrap()]).unwrap();
+        git(root, &["push", "-q", "backup", "main:main"]).unwrap();
+        git(root, &["fetch", "-q", "backup"]).unwrap();
+        let backup_reflog = git(root, &["rev-parse", "--git-path", "logs/refs/remotes/backup/main"])
+            .unwrap();
+        let backup_reflog = PathBuf::from(backup_reflog.trim());
+        let backup_reflog = if backup_reflog.is_absolute() { backup_reflog } else { root.join(backup_reflog) };
+        let backup_fetched_at = std::time::SystemTime::now() - std::time::Duration::from_secs(60);
+        fs::File::options().write(true).open(backup_reflog).unwrap()
+            .set_times(fs::FileTimes::new().set_modified(backup_fetched_at)).unwrap();
+        git(root, &["config", "branch.main.pushRemote", "backup"]).unwrap();
+        git(root, &["fetch", "-q", "origin"]).unwrap();
+        let triangular = push_preview(root).unwrap();
+        assert_eq!(triangular["remote"], "backup");
+        assert_eq!(triangular["remoteBranch"], "main");
+        assert_eq!(triangular["setUpstream"], false);
+        let last_fetched = chrono::DateTime::parse_from_rfc3339(triangular["lastFetchedAt"].as_str().unwrap()).unwrap();
+        assert!(last_fetched.timestamp() < chrono::Utc::now().timestamp() - 30, "an origin FETCH_HEAD is not freshness for backup");
+        git(root, &["config", "--unset", "branch.main.pushRemote"]).unwrap();
+
+        let peer = tempfile::tempdir().unwrap();
+        git(peer.path(), &["clone", "-q", origin.path().to_str().unwrap(), "."]).unwrap();
+        git(peer.path(), &["config", "user.email", "peer@example.test"]).unwrap();
+        git(peer.path(), &["config", "user.name", "Peer"]).unwrap();
+        fs::write(peer.path().join("peer.txt"), "peer\n").unwrap();
+        git(peer.path(), &["add", "."]).unwrap();
+        git(peer.path(), &["commit", "-qm", "peer"]).unwrap();
+        git(peer.path(), &["push", "-q"]).unwrap();
+        git(root, &["fetch", "-q", "origin"]).unwrap();
+        let diverged = push_preview(root).unwrap();
+        assert_eq!(diverged["ahead"]["count"], 2);
+        assert_eq!(diverged["behind"]["count"], 1);
+        assert_eq!(diverged["diverged"], true);
+
+        git(root, &["switch", "-qc", "feature"]).unwrap();
+        fs::write(root.join("feature.txt"), "feature\n").unwrap();
+        git(root, &["add", "."]).unwrap();
+        git(root, &["commit", "-qm", "feature"]).unwrap();
+        let publish = push_preview(root).unwrap();
+        assert_eq!(publish["setUpstream"], true);
+        assert_eq!(publish["remoteBranch"], "feature");
+        assert!(publish.get("remoteOid").is_none());
+
+        git(root, &["config", "branch.feature.pushRemote", "backup"]).unwrap();
+        assert!(push_preview(root).is_err(), "new branches keep legacy publish destination");
+        git(root, &["config", "--unset", "branch.feature.pushRemote"]).unwrap();
+        git(root, &["checkout", "--detach", "-q"]).unwrap();
+        assert_eq!(push_preview(root).unwrap_err().to_string(), "push_preview_unavailable: detached HEAD");
+    }
+
+    #[test]
+    fn push_preview_uses_full_head_ref_and_strips_branch_prefix_once() {
+        let temp = repo();
+        let root = temp.path();
+        fs::write(root.join("a.txt"), "base\n").unwrap();
+        git(root, &["add", "."]).unwrap();
+        git(root, &["commit", "-qm", "base"]).unwrap();
+        git(root, &["tag", "main"]).unwrap();
+        let origin = tempfile::tempdir().unwrap();
+        git(origin.path(), &["init", "--bare", "-q"]).unwrap();
+        git(root, &["remote", "add", "origin", origin.path().to_str().unwrap()]).unwrap();
+        git(root, &["push", "-qu", "origin", "refs/heads/main:refs/heads/main"]).unwrap();
+        git(root, &["push", "-q", "origin", "refs/heads/main:refs/heads/refs/heads/main"]).unwrap();
+        git(root, &["fetch", "-q", "origin"]).unwrap();
+        git(root, &["config", "branch.main.merge", "refs/heads/refs/heads/main"]).unwrap();
+        git(root, &["config", "push.default", "upstream"]).unwrap();
+
+        let preview = push_preview(root).unwrap();
+        assert_eq!(preview["branch"], "main");
+        assert_eq!(preview["localBranch"], "refs/heads/main");
+        assert_eq!(preview["remoteBranch"], "refs/heads/main");
+        assert_eq!(preview["upstream"], "origin/refs/heads/main");
+        assert!(preview.get("remoteOid").is_some());
+        git(root, &["config", "remote.origin.push", "refs/heads/main:refs/heads/refs/heads/main"]).unwrap();
+        assert_eq!(push_preview(root).unwrap()["remoteBranch"], "refs/heads/main");
     }
 }
