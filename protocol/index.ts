@@ -88,8 +88,8 @@ export interface ChatToolRunList { /** The canonical worktree root the tools are
 export interface ChatToolRunStart { runId:string; /** An instance was already active: nothing new was launched. */ existing:boolean; state:SessionStatus; entryId:string|null; name:string|null }
 export interface ChatToolRunStatus extends ChatToolRunSummary { uptimeSeconds:number }
 /** A stop is the user's Stop: the intent flag plus terminating the run's process tree. */
-export interface ChatToolRunStop { runId:string; state:SessionStatus; stopRequested:true }
-export interface ChatToolRunLogs { /** Plain text: ANSI/OSC sequences stripped, CR overwrites collapsed, at most 64 KiB. */ text:string;
+export interface ChatToolRunStop { runId:string; /** The stopped run's entry, for the tool card's summary. */ entryId:string|null; name:string|null; state:SessionStatus; stopRequested:true }
+export interface ChatToolRunLogs { runId:string; /** The read run's entry, for the tool card's summary. */ entryId:string|null; name:string|null; /** Plain text: ANSI/OSC sequences stripped, CR overwrites collapsed, at most 64 KiB. */ text:string;
  /** The scan cap (1 MiB back), the text cap or the line bound cut something. */ truncated:boolean; totalBytes:number }
 export type WorktreeSetupState = 'running'|'completed'|'failed'|'cancelled'|'interrupted';
 /** One sequence in one worktree. `commandIds`/`names` are snapshots taken at start. `step` is the step running now, or the
@@ -324,6 +324,10 @@ export interface ChatQuestion {
  id:string; header?:string; question:string;
  options:{label:string;description?:string}[];
  multiSelect:boolean; allowOther:boolean; secret:boolean;
+ /** Runtime-only: `command` marks a run approval so the card renders `command` as its own unclamped block. */
+ presentation?:'command';
+ /** The exact command being approved. Only the run approval sets it; agent input cannot. */
+ command?:string;
 }
 export interface ChatFormField {
  id:string; title?:string; description?:string;

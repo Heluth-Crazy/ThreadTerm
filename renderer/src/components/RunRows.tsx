@@ -3,7 +3,7 @@ import type { DetectedRunEntry, QuickLaunchCommand, QuickLaunchKind, Session } f
 import { request, subscribeEvents } from '../bridge';
 import { sameCanonicalScope } from '../projectScope';
 import { activeRun, missingToolLabel, previewWaitingLabel, quickLaunchError, runState, runStateLabel, suggestedTag } from '../quickLaunch';
-import { detectedCommandId } from '../workbench/runView';
+import { detectedCommandId, agentStartLabel, startedByChat } from '../workbench/runView';
 import { Icon } from './PrototypeIcon';
 
 /** The Run glyph: the approved play triangle, shared by the popover, the view and the palette icon. */
@@ -46,9 +46,19 @@ export function RunUrlLink({url, onOpenPreview, pending, zh}:{url:string;onOpenP
  return <a className="ql-url" data-testid="run-url" href={url} title={url} onClick={event => { event.preventDefault(); onOpenPreview(url); }}>{url}</a>;
 }
 
+/** A run started by an agent's chat: a small "Agent" tag whose tooltip names the chat and whose click focuses it. */
+export function AgentTag({startedBy, sessions, zh, onOpen}:{startedBy?:string;sessions:readonly Session[];zh:boolean;onOpen?:(id:string) => void}) {
+ const label = agentStartLabel(startedBy, sessions, zh), chat = startedByChat(startedBy, sessions);
+ if (!label) return null;
+ const text = zh ? '代理' : 'Agent';
+ return chat && onOpen
+  ? <button type="button" className="ql-agent-tag" data-testid="run-agent-tag" title={label} aria-label={label} onClick={() => onOpen(chat.id)}>{text}</button>
+  : <span className="ql-agent-tag" data-testid="run-agent-tag" title={label}>{text}</span>;
+}
+
 /** The shared row: identity, command text, run state and URL. Each surface adds its own actions, so the popover keeps
  * its compact launcher buttons and the Run view adds Restart, Stop and Set as current without a second row renderer. */
-export function RunEntryRow({entry, session, zh, busy, worktree, uptime, current, actions}:{
+export function RunEntryRow({entry, session, zh, busy, worktree, uptime, current, agentLabel, actions}:{
  entry:RunEntry;
  session?:Session;
  zh:boolean;
@@ -56,6 +66,8 @@ export function RunEntryRow({entry, session, zh, busy, worktree, uptime, current
  worktree?:string;
  uptime?:string;
  current?:boolean;
+ /** The Agent tag's tooltip for this entry's active run, when an agent started it. */
+ agentLabel?:string;
  actions:ReactNode;
 }) {
  const view = session ? runState(session) : undefined;
@@ -69,7 +81,7 @@ export function RunEntryRow({entry, session, zh, busy, worktree, uptime, current
    {entry.sourceLabel && <span className="ql-source-label">{entry.sourceLabel}</span>}
    {suggested && <span className="ql-source-label ql-suggested" data-suggested="true" title={suggested.title}>{suggested.label}</span>}
    {worktree && <span className="ql-worktree" title={worktree}>{worktree}</span>}
-   {view && <span className={`ql-state ql-${view.state}`}><span className="dot" aria-hidden="true"/>{runStateLabel(view, zh)}</span>}
+   {view && <span className={`ql-state ql-${view.state}`} title={agentLabel}><span className="dot" aria-hidden="true"/>{runStateLabel(view, zh)}</span>}
    {uptime && <span className="ql-uptime">{uptime}</span>}
    {missing && <span className="ql-missing-tool">{missing}</span>}
   </div>

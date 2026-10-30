@@ -1,0 +1,16 @@
+{
+  "schemaVersion": 1,
+  "id": "run-tools-acp",
+  "name": "Run tools Echo (QA fixture)",
+  "version": "1.0.0",
+  "publisher": "ThreadTerm QA",
+  "description": "Local ACP fixture that exercises the app-hosted Run tools.",
+  "homepage": "https://example.invalid/run-tools-echo",
+  "contributes": { "agents": [{
+    "id": "run-tools-echo", "name": "Run tools Echo", "icon": "icon.svg",
+    "command": "node", "args": ["{pluginDir}/agent.mjs"], "versionArgs": ["--version"],
+    "terminal": { "args": [], "resumeArgs": ["--resume", "{sessionId}"] },
+    "chat": { "protocol": "acp", "args": ["--acp"] }, "signIn": { "args": ["login"] },
+    "homepage": "https://example.invalid/run-tools-echo"
+  }] }
+}

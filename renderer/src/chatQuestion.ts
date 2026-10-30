@@ -1,4 +1,4 @@
-import type { ChatAnswerResponse, ChatInteractionForm } from "@threadterm/protocol";
+import type { ChatAnswerResponse, ChatInteractionForm, ChatQuestion } from "@threadterm/protocol";
 
 export type { ChatInteractionForm } from "@threadterm/protocol";
 type QuestionSubmit = Extract<ChatAnswerResponse, { action: "submit" }>;
@@ -46,6 +46,33 @@ export function questionSummary(form: ChatInteractionForm, values: Record<string
 /** A question that already ends in "?" or ":" (ASCII or full-width) is followed by its answer without another colon. */
 export function summaryLine(label: string, value: string): string {
   return /[?:？：]$/.test(label.trimEnd()) ? `${label.trimEnd()} ${value}` : `${label}: ${value}`;
+}
+
+/**
+ * Characters a card must not render literally: Unicode format characters (zero-width, bidi
+ * embedding/override/isolate, BOM), control characters other than tab, and line/paragraph
+ * separators. The runtime refuses to approve a detected command containing them; showing them
+ * visibly here is defense in depth for any other path that reaches the card.
+ */
+const UNPRINTABLE = /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu;
+
+/** `node safe<U+200B>.js` must never read as `node safe.js`: render the character it hides. */
+export function visibleControlCharacters(text: string): string {
+  return text.replace(UNPRINTABLE, (character, offset: number) => character === "\t"
+    ? character
+    : `⟨U+${(text.codePointAt(offset) ?? 0).toString(16).toUpperCase().padStart(4, "0")}⟩`);
+}
+
+/**
+ * What a question's title line and command block are. Only a run approval (`presentation`
+ * `command`, set by the runtime from the re-detected entry) gets a separate command block;
+ * an ordinary question, including a multi-line `ask_user` one, renders exactly as before.
+ */
+export function questionPresentation(question: ChatQuestion): { title: string; command?: string } {
+  if (question.presentation !== "command") return { title: question.question };
+  const [title, ...rest] = question.question.split("\n");
+  const command = question.command ?? rest.join("\n");
+  return command ? { title, command: visibleControlCharacters(command) } : { title };
 }
 
 function summaryValue(value: unknown): string {

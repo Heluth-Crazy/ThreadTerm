@@ -11,6 +11,7 @@ import { Icon } from './PrototypeIcon';
 import { SurfaceDialog } from './SurfaceDialog';
 import { Select } from './ui/Select';
 import { detectedRunEntries, Play, RunEntryPrimary, RunEntryRow, runEntrySessions, savedRunEntries, useRunCatalog } from './RunRows';
+import { agentStartLabel } from '../workbench/runView';
 import './shell-menus.css';
 import './quick-launch.css';
 import './worktree-setup.css';
@@ -49,6 +50,7 @@ export function QuickLaunchMenu({ projectId, root, data, onOpenSession, onOpenPr
     const {active,latest} = runEntrySessions(scoped, entry.commandId, root);
     const shown = active ?? latest, url = shown?.run?.url, pendingPreview = !previewReady(shown);
     return <RunEntryRow key={entry.commandId} entry={entry} session={shown} zh={zh} busy={busy}
+     agentLabel={agentStartLabel(shown?.run?.startedBy, data.sessions, zh)}
      actions={<>
       <RunEntryPrimary entry={entry} active={active} busy={busy} zh={zh} onRun={()=>void perform(()=>run(command))} onOpen={sessionId=>{setOpen(false);onOpenSession(sessionId);}}/>
       {active&&<button className="btn btn-sm" disabled={busy} onClick={()=>void perform(async()=>{await request('session.stop',{sessionId:active.id,operationId:operationId()});})}>{copy('Stop','停止')}</button>}
@@ -64,6 +66,7 @@ export function QuickLaunchMenu({ projectId, root, data, onOpenSession, onOpenPr
       <div className="ql-detected-group-head">{group.name}</div>
       {group.entries.map(detected=>{const entry = detectedRunEntries([detected])[0];const {active,latest} = runEntrySessions(scoped, entry.commandId, root);
        return <RunEntryRow key={entry.commandId} entry={entry} session={active ?? latest} zh={zh} busy={busy}
+        agentLabel={agentStartLabel((active ?? latest)?.run?.startedBy, data.sessions, zh)}
         actions={<>
          <RunEntryPrimary entry={entry} active={active} busy={busy} zh={zh} onRun={()=>void perform(()=>runDetected(detected))} onOpen={sessionId=>{setOpen(false);onOpenSession(sessionId);}}/>
          <button className="btn btn-sm btn-ghost" disabled={busy||Boolean(entry.missingTool)} title={entry.missingTool} onClick={()=>{setOpen(false);setEditor(detected);}}>{copy('Save as command…','另存为命令…')}</button>

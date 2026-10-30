@@ -2,8 +2,8 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import type { Session } from '@threadterm/protocol';
 import {
- createRunCurrentConfigs, currentRunEntry, detectedCommandId, detectedKeyOf, entryRefOf, filterRunEntries, formatUptime, lastRunEntry,
- paletteRunEntries, runKeyAction, runningRows, RUN_SHORTCUTS, runShortcutLabel, uptimeMs, worktreeLabel,
+ agentStartLabel, createRunCurrentConfigs, currentRunEntry, detectedCommandId, detectedKeyOf, entryRefOf, filterRunEntries, formatUptime, lastRunEntry,
+ paletteRunEntries, runKeyAction, runningRows, RUN_SHORTCUTS, runShortcutLabel, startedByChat, uptimeMs, worktreeLabel,
 } from './runView';
 
 type Run = { commandId:string; name:string; kind:'service'|'task' };
@@ -120,4 +120,15 @@ test('worktree labels drop the runtime extended prefix and trailing separators',
  assert.equal(worktreeLabel('\\\\?\\C:\\work\\ThreadTerm-v3\\'), 'ThreadTerm-v3');
  assert.equal(worktreeLabel('C:/work/feature-run'), 'feature-run');
  assert.equal(worktreeLabel(undefined), '');
+});
+
+test('an agent-started run names the chat that started it', () => {
+ const chat = { ...session('chat-1', 'C:\\work\\main', '2026-01-01T09:00:00Z'), title:'Run tools QA', mode:'chat' } as Session;
+ const sessions = [chat, session('editor', 'C:\\work\\main', '2026-01-01T10:00:00Z')];
+ assert.equal(agentStartLabel('chat-1', sessions, false), 'Started by Run tools QA');
+ assert.equal(agentStartLabel('chat-1', sessions, true), '由 Run tools QA 启动');
+ assert.equal(agentStartLabel(undefined, sessions, false), undefined);
+ assert.equal(agentStartLabel('gone', sessions, false), 'Started by gone', 'a chat that is gone keeps a truthful label');
+ assert.equal(startedByChat('chat-1', sessions)?.id, 'chat-1');
+ assert.equal(startedByChat('gone', sessions), undefined);
 });

@@ -13,7 +13,8 @@ import {
 import { CommandEditor, ImportScripts, SetupEditor } from './QuickLaunch';
 import { Icon } from './PrototypeIcon';
 import { showContextMenu } from './ContextMenu';
-import { detectedRunEntries, Play, RunEntryPrimary, RunEntryRow, RunUrlLink, runEntrySessions, savedRunEntries, useRunCatalog, type RunEntry } from './RunRows';
+import { detectedRunEntries, AgentTag, Play, RunEntryPrimary, RunEntryRow, RunUrlLink, runEntrySessions, savedRunEntries, useRunCatalog, type RunEntry } from './RunRows';
+import { agentStartLabel } from '../workbench/runView';
 import './quick-launch.css';
 import './run-view.css';
 
@@ -158,6 +159,7 @@ export function RunViewPanel({scope, sessions, actions, zh, visible, command, on
   const { active } = runEntrySessions(projectSessions, entry.commandId, root);
   return <RunEntryRow key={entry.commandId} entry={entry} session={active} zh={chinese} busy={busy}
    current={current?.commandId === entry.commandId}
+   agentLabel={agentStartLabel(active?.run?.startedBy, sessions, chinese)}
    actions={<>
     <RunEntryPrimary entry={entry} active={active} busy={busy} zh={chinese} onRun={() => void runEntry(entry)} onOpen={open}/>
     <button type="button" className="icon-btn" data-testid={`run-row-menu-${entry.key}`} aria-label={`${copy('More actions','更多操作')} ${entry.name}`} aria-haspopup="menu" title={copy('More actions','更多操作')} onClick={event => rowMenu(entry, active, event)}><Icon name="more"/></button>
@@ -184,7 +186,7 @@ export function RunViewPanel({scope, sessions, actions, zh, visible, command, on
    <header className="wb-run-section-head"><span className="wb-section-label">{copy('Running','运行中')}</span><span className="wb-count">{running.length}</span>
     <button type="button" className="btn btn-sm btn-ghost" data-testid="run-stop-all" disabled={busy || !running.some(row => row.current)} title={copy('Stop every run of this worktree','停止此工作树中的所有运行')} onClick={() => void stopAll()}>{copy('Stop all','全部停止')}</button></header>
    {running.length === 0 ? <p className="wb-empty">{copy('No run is active in this project.','此项目当前没有运行中的进程。')}</p> : running.map(row => <section className={`wb-run-running${row.current ? ' current' : ''}`} key={row.session.id} data-testid="run-running-row" data-session-id={row.session.id} data-run-entry={row.commandId} data-current={row.current ? 'true' : undefined}>
-    <div className="ql-command-head"><strong>{row.name}</strong><span className="ql-worktree" title={row.current ? copy('This worktree','此工作树') : row.worktree}>{row.worktree}</span><span className={`ql-state ql-${row.state.state}`} data-testid="run-running-state"><span className="dot" aria-hidden="true"/>{runStateLabel(row.state, chinese)}</span>{row.state.port !== undefined && <span className="ql-port" data-testid="run-port">:{row.state.port}</span>}<span className="ql-uptime" title={copy('Uptime','运行时长')}>{formatUptime(uptimeMs(row.session.createdAt, now))}</span></div>
+    <div className="ql-command-head"><strong>{row.name}</strong><AgentTag startedBy={row.session.run?.startedBy} sessions={sessions} zh={chinese} onOpen={open}/><span className="ql-worktree" title={row.current ? copy('This worktree','此工作树') : row.worktree}>{row.worktree}</span><span className={`ql-state ql-${row.state.state}`} data-testid="run-running-state"><span className="dot" aria-hidden="true"/>{runStateLabel(row.state, chinese)}</span>{row.state.port !== undefined && <span className="ql-port" data-testid="run-port">:{row.state.port}</span>}<span className="ql-uptime" title={copy('Uptime','运行时长')}>{formatUptime(uptimeMs(row.session.createdAt, now))}</span></div>
     {row.state.url && <RunUrlLink url={row.state.url} onOpenPreview={actions.openPreview} pending={!previewReady(row.session)} zh={chinese}/>}
     <div className="ql-actions">
      <button type="button" className="btn btn-sm" data-testid="run-restart" disabled={busy} onClick={() => void restartRun(row.session)}>{copy('Restart','重启')}</button>

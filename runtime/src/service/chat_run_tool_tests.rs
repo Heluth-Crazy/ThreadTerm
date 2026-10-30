@@ -1125,6 +1125,10 @@ fn a_long_detected_command_is_shown_in_full_or_refused_never_shortened() {
     assert!(!question.contains('…'), "the command is never shortened: {question}");
     assert!(question.starts_with("Run this detected command from `Procfile` in `"));
     assert!(question.contains(&format!("\n{shown}")), "the command is on its own line");
+    // The card renders the command from its own runtime-only field, marked `presentation:"command"`.
+    let form = &fixture.card(&approval)["data"]["form"]["questions"][0];
+    assert_eq!(form["presentation"], "command");
+    assert_eq!(form["command"], json!(shown));
     fixture.answer(&turn, &approval, "Don't run");
     assert_eq!(start.join().unwrap().unwrap_err().to_string(), "run_declined");
 
@@ -1144,6 +1148,48 @@ fn a_long_detected_command_is_shown_in_full_or_refused_never_shortened() {
         "detected_command_too_long"
     );
     assert_eq!(fixture.sessions(), 1, "a command too long to show is never launched");
+}
+
+#[cfg(windows)]
+#[test]
+fn a_detected_command_with_unprintable_characters_is_never_shown_or_launched() {
+    let fixture = Fixture::new();
+    // Invisible format characters (zero-width, bidi override, BOM), line/paragraph separators and
+    // other controls (except tab) can make the card read differently from what would run.
+    for (name, command) in [
+        ("zero_width", "node safe\u{200B}.js"),
+        ("bidi", "node \u{202E}sj.exe"),
+        ("bom", "node \u{FEFF}safe.js"),
+        ("line_separator", "node safe\u{2028}.js"),
+        ("paragraph_separator", "node safe\u{2029}.js"),
+        ("other_control", "node safe\u{7}.js"),
+    ] {
+        std::fs::write(fixture.root.join("Procfile"), format!("web: {command}\n")).unwrap();
+        assert_eq!(
+            fixture
+                .start_in_background(
+                    "chat.tool.run.start",
+                    json!({"id":"detected:procfile:Procfile:web","requestId":name}),
+                )
+                .join()
+                .unwrap()
+                .unwrap_err()
+                .to_string(),
+            "detected_command_unprintable",
+            "{name}"
+        );
+    }
+    assert_eq!(fixture.sessions(), 1, "an unprintable command is never launched");
+    // A tab is ordinary whitespace inside a command and stays approvable.
+    std::fs::write(fixture.root.join("Procfile"), "web: node\tsafe.js\n").unwrap();
+    let start = fixture.start_in_background(
+        "chat.tool.run.start",
+        json!({"id":"detected:procfile:Procfile:web","requestId":"tab"}),
+    );
+    let (turn, approval) = fixture.pending_approval();
+    assert_eq!(fixture.card(&approval)["data"]["form"]["questions"][0]["presentation"], "command");
+    fixture.answer(&turn, &approval, "Don't run");
+    assert_eq!(start.join().unwrap().unwrap_err().to_string(), "run_declined");
 }
 
 #[cfg(windows)]

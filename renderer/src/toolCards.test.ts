@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import type { ChatPart } from '@threadterm/protocol';
-import { approvalPreviewBudget, APPROVAL_PREVIEW_FILE_LIMIT, APPROVAL_PREVIEW_ROW_LIMIT, cardBodyVisible, commandDisplayCwd, compactToolArguments, diffView, editFileStats, isOpenableDiffPath, jsonView, mcpResultView, moreFilesLabel, outputView, toolCardHasBody, toolStatusLabel, DIFF_COLLAPSE_LINES, OUTPUT_MAX_LINES, JSON_NODE_LIMIT } from './toolCards';
+import { approvalPreviewBudget, APPROVAL_PREVIEW_FILE_LIMIT, APPROVAL_PREVIEW_ROW_LIMIT, cardBodyVisible, commandDisplayCwd, compactToolArguments, diffView, editFileStats, isOpenableDiffPath, jsonView, mcpResultView, moreFilesLabel, outputView, runToolName, runToolSummary, runToolSummaryFromPart, runToolSummaryLabel, toolCardHasBody, toolStatusLabel, DIFF_COLLAPSE_LINES, OUTPUT_MAX_LINES, JSON_NODE_LIMIT } from './toolCards';
 import { toolSummary, toolSummaryLabel, toolSummarySegments, toolSummaryText } from './toolActivity';
 import { toolView } from './toolView';
 
@@ -272,4 +272,111 @@ test('a command with no actions is only a command', () => {
   assert.equal(view.kind, 'command');
   const summary = toolSummary([{ id: 'e', itemId: 'i', part: part({ id: 'c', type: 'commandExecution', command: 'npm run lint' }, 'commandExecution') }]);
   assert.deepEqual({ explored: summary.explored, searched: summary.searched, ran: summary.ran }, { explored: 0, searched: 0, ran: 1 });
+});
+
+test('run tool cards summarise launch, stop, logs, list, status and errors in one line', () => {
+  const result = (payload: unknown, isError = false) => ({ content: [{ type: 'text', text: JSON.stringify(payload) }], isError });
+  const zh = (_en: string, chinese: string) => chinese;
+
+  const launched = runToolSummary('run_start', { id: 'saved', requestId: 'r-1' }, result({ runId: 't1', existing: false, state: 'starting', entryId: 'saved', name: 'Dev' }));
+  assert.deepEqual(launched, { kind: 'launch', name: 'Dev', existing: false });
+  assert.equal(runToolSummaryLabel(launched!, copy), 'Started Dev');
+  assert.equal(runToolSummaryLabel(launched!, zh), '已启动 Dev');
+  const already = runToolSummary('run_restart', { runId: 't1', requestId: 'r-2' }, result({ runId: 't2', existing: true, state: 'running', entryId: 'saved', name: 'Dev' }));
+  assert.equal(runToolSummaryLabel(already!, copy), 'Already running Dev');
+  assert.equal(runToolSummaryLabel(already!, zh), '已在运行 Dev');
+
+  const stopped = runToolSummary('run_stop', { runId: 't1' }, result({ runId: 't1', entryId: 'saved', name: 'Dev', state: 'running', stopRequested: true }));
+  assert.deepEqual(stopped, { kind: 'stop', name: 'Dev' });
+  assert.equal(runToolSummaryLabel(stopped!, copy), 'Stopped Dev');
+  assert.equal(runToolSummaryLabel(stopped!, zh), '已停止 Dev');
+
+  const logs = runToolSummary('run_logs', { runId: 't1' }, result({ runId: 't1', entryId: 'saved', name: 'Dev', text: 'ready\n30%\n', truncated: false, totalBytes: 12 }));
+  assert.deepEqual(logs, { kind: 'logs', name: 'Dev', lines: 2 });
+  assert.equal(runToolSummaryLabel(logs!, copy), '2 lines of Dev');
+  assert.equal(runToolSummaryLabel(logs!, zh), 'Dev 的 2 行输出');
+  assert.deepEqual(runToolSummary('run_logs', { runId: 't1' }, result({ name: 'Dev', text: '' })), { kind: 'logs', name: 'Dev', lines: 0 });
+
+  const list = runToolSummary('run_list', {}, result({ worktree: 'C:\\repo', truncated: false, entries: [{ id: 'saved' }, { id: 'detected:x' }], runs: [{ state: 'running' }, { state: 'waiting' }, { state: 'exited' }] }));
+  assert.deepEqual(list, { kind: 'list', entries: 2, running: 2 });
+  assert.equal(runToolSummaryLabel(list!, copy), '2 entries, 2 running');
+  assert.equal(runToolSummaryLabel(list!, zh), '2 个条目，2 个运行中');
+
+  const status = runToolSummary('run_status', { runId: 't1' }, result({ runId: 't1', name: 'quiet server', state: 'waiting', readiness: 'ready', port: 5123, uptimeSeconds: 4 }));
+  assert.deepEqual(status, { kind: 'status', name: 'quiet server', state: 'waiting', readiness: 'ready' });
+  assert.equal(runToolSummaryLabel(status!, copy), 'quiet server: Ready');
+  assert.equal(runToolSummaryLabel(status!, zh), 'quiet server: 已就绪');
+  assert.equal(runToolSummaryLabel(runToolSummary('run_status', {}, result({ name: 'Dev', state: 'starting' }))!, copy), 'Dev: Starting');
+
+  for (const [code, en, chinese] of [['run_declined', 'Run declined', '已拒绝运行'], ['run_not_found', 'Run not found', '未找到该运行'], ['run_not_permitted', 'Not permitted', '没有权限']]) {
+    const error = runToolSummary('run_start', { id: 'detected:x', requestId: 'r' }, result({ error: { code: 'chat_tool_request_failed', message: code } }, true));
+    assert.deepEqual(error, { kind: 'error', code });
+    assert.equal(runToolSummaryLabel(error!, copy), en);
+    assert.equal(runToolSummaryLabel(error!, zh), chinese);
+  }
+  const unknown = runToolSummary('run_list', {}, result({ error: { code: 'invalid_arguments', message: '`runId` is required' } }, true));
+  assert.deepEqual(unknown, { kind: 'error', code: 'invalid_arguments' });
+  assert.equal(runToolSummaryLabel(unknown!, copy), 'invalid_arguments');
+  const tooLong = runToolSummary('run_start', {}, result({ error: { code: 'chat_tool_request_failed', message: 'detected_command_too_long' } }, true));
+  assert.equal(runToolSummaryLabel(tooLong!, copy), 'detected_command_too_long');
+
+  assert.equal(runToolSummary('ask_user', {}, result({ ok: true })), undefined);
+  assert.equal(runToolSummary(undefined, {}, result({ ok: true })), undefined);
+  assert.equal(runToolSummary('run_stop', { runId: 't1' }, undefined), undefined, 'no result, no invented summary');
+  assert.equal(runToolSummary('run_list', {}, result({ worktree: 'C:\\repo' })), undefined);
+});
+test("run summaries read every provider's native tool part and result shape", () => {
+  // Claude: the merged tool_result block carries the result in data.content, the tool name in toolName.
+  const claude = part({
+    type: 'tool_result', tool_use_id: 'tu-1', is_error: false,
+    content: [{ type: 'text', text: JSON.stringify({ runId: 'r1', existing: false, state: 'starting', entryId: 'saved', name: 'Dev' }) }],
+  }, 'mcp__threadterm__run_start', 'complete');
+  assert.equal(toolView(claude).kind, 'mcp');
+  assert.deepEqual(runToolSummaryFromPart(claude), { kind: 'launch', name: 'Dev', existing: false });
+
+  // ACP: the tool_call_update carries the result in rawOutput (an MCP envelope).
+  const acp = part({
+    sessionUpdate: 'tool_call_update', toolCallId: 'c1', status: 'completed', rawInput: {},
+    rawOutput: { content: [{ type: 'text', text: JSON.stringify({ worktree: 'C:/w', entries: [{ id: 'saved' }, { id: 'detected:x' }], runs: [{ state: 'running' }, { state: 'exited' }], truncated: false }) }], isError: false },
+  }, 'mcp__threadterm__run_list', 'complete');
+  assert.equal(toolView(acp).kind, 'mcp');
+  assert.deepEqual(runToolSummaryFromPart(acp), { kind: 'list', entries: 2, running: 1 });
+
+  // Grok: names the tool threadterm__<tool> (a generic view) and may nest rawOutput.Content.content as a string.
+  const grok = part({
+    sessionUpdate: 'tool_call_update', toolCallId: 'tc-1', status: 'completed', rawInput: { runId: 'r1' },
+    rawOutput: { Content: { content: JSON.stringify({ runId: 'r1', entryId: 'saved', name: 'Dev', state: 'running', stopRequested: true }) } },
+  }, 'threadterm__run_stop', 'complete');
+  assert.equal(toolView(grok).kind, 'generic');
+  assert.deepEqual(runToolSummaryFromPart(grok), { kind: 'stop', name: 'Dev' });
+
+  // Codex: data.result is the envelope already.
+  const codex = part({
+    type: 'mcpToolCall', server: 'threadterm', tool: 'run_status',
+    result: { content: [{ type: 'text', text: JSON.stringify({ name: 'quiet server', state: 'waiting', readiness: 'ready', port: 5123 }) }], isError: false },
+  }, 'mcp__threadterm__run_status', 'complete');
+  assert.equal(toolView(codex).kind, 'mcp');
+  assert.deepEqual(runToolSummaryFromPart(codex), { kind: 'status', name: 'quiet server', state: 'waiting', readiness: 'ready' });
+
+  // An unprintable detected command is a named run error, not a bare code.
+  const refused = part({
+    type: 'tool_result', tool_use_id: 'tu-2', is_error: true,
+    content: [{ type: 'text', text: JSON.stringify({ error: { code: 'chat_tool_request_failed', message: 'detected_command_unprintable' } }) }],
+  }, 'mcp__threadterm__run_start', 'complete');
+  const summary = runToolSummaryFromPart(refused);
+  assert.deepEqual(summary, { kind: 'error', code: 'detected_command_unprintable' });
+  assert.equal(runToolSummaryLabel(summary!, copy), 'Unprintable command');
+  assert.equal(runToolSummaryLabel(summary!, (_en, chinese) => chinese), '命令含不可见字符');
+
+  // Exact tool identities only: a foreign server's lookalike is never summarised.
+  assert.equal(runToolName('mcp__threadterm__run_list'), 'run_list');
+  assert.equal(runToolName('threadterm__run_restart'), 'run_restart');
+  assert.equal(runToolName('mcp__threadterm__run_list_extra'), undefined);
+  assert.equal(runToolName('other__run_list'), undefined);
+  assert.equal(runToolSummaryFromPart(part({ content: [] }, 'mcp__threadterm__run_list_extra', 'complete')), undefined);
+  // A foreign MCP server exposing the same bare tool name is not ThreadTerm's run tool either.
+  assert.equal(
+    runToolSummaryFromPart(part({ type: 'mcpToolCall', server: 'other', tool: 'run_list', result: { content: [{ type: 'text', text: '{"entries":[],"runs":[]}' }], isError: false } }, 'mcp__other__run_list', 'complete')),
+    undefined,
+  );
 });

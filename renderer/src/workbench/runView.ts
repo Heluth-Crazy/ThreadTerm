@@ -46,6 +46,16 @@ export function worktreeLabel(path:string|undefined):string {
  return value.slice(Math.max(value.lastIndexOf('\\'), value.lastIndexOf('/')) + 1) || value;
 }
 
+/** The chat that started a run, when the snapshot still holds it. A run the user started has no `startedBy`. */
+export const startedByChat = (startedBy:string|undefined, sessions:readonly Session[]):Session|undefined => startedBy ? sessions.find(session => session.id === startedBy) : undefined;
+/** The Agent tag's tooltip: `Started by <chat title>` / `由 <chat title> 启动`. The title is resolved from the
+ * snapshot's sessions; a chat that is gone falls back to the recorded session id. */
+export function agentStartLabel(startedBy:string|undefined, sessions:readonly Session[], zh:boolean):string|undefined {
+ if (!startedBy) return undefined;
+ const title = startedByChat(startedBy, sessions)?.title?.trim() || startedBy;
+ return zh ? `由 ${title} 启动` : `Started by ${title}`;
+}
+
 /** How long a run has been up; absent (0) for a timestamp the runtime did not record. */
 export function uptimeMs(createdAt:string, now:number):number {
  const started = Date.parse(createdAt);

@@ -81,6 +81,9 @@ try {
     + `setTimeout(()=>server.listen(0,'127.0.0.1',()=>writeFileSync('port.txt',String(server.address().port))),1500);\n`
     + `process.on('SIGTERM',()=>process.exit(0));\n`;
   await writeFile(join(work, 'server.mjs'), server);
+  // The "quiet idle" scenario runs this service: it stays alive without ever listening, so the run is
+  // deterministically still waiting (not racing an immediate exit) until the probe stops it.
+  await writeFile(join(work, 'idle.mjs'), `setInterval(()=>{}, 1000);\nprocess.on('SIGTERM',()=>process.exit(0));\n`);
   git('init'); git('config', 'user.email', 'qa@threadterm.invalid'); git('config', 'user.name', 'Run readiness QA');
   git('add', '.'); git('commit', '-m', 'fixture');
 

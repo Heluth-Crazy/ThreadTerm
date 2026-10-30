@@ -1034,7 +1034,7 @@ test('agent run tools are caller-scoped, bounded and never carry caller identity
  validateResult('chat.tool.run.start',{runId:'t1',existing:false,state:'starting',entryId:'saved',name:'Dev'});
  validateResult('chat.tool.run.start',{runId:'t1',existing:true,state:'running',entryId:null,name:null});
  validateResult('chat.tool.run.status',{...run,uptimeSeconds:12});
- validateResult('chat.tool.run.logs',{text:'ready\n30%\ntail',truncated:false,totalBytes:42});
- validateResult('chat.tool.run.stop',{runId:'t1',state:'running',stopRequested:true});
+ validateResult('chat.tool.run.logs',{runId:'t1',entryId:'saved',name:'Dev',text:'ready\n30%\ntail',truncated:false,totalBytes:42});
+ validateResult('chat.tool.run.stop',{runId:'t1',entryId:'saved',name:'Dev',state:'running',stopRequested:true});
  validateResult('chat.tool.run.restart',{runId:'t2',existing:false,state:'starting',entryId:'detected:node:package.json:dev',name:'dev'});
 });

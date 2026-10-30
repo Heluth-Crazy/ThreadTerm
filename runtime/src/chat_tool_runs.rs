@@ -236,6 +236,9 @@ impl ChatTools {
             self.db.read_output_window(&run.0, None, true, LOG_SCAN_BYTES)?;
         let (text, cut) = plain_tail(&data, lines);
         Ok(json!({
+            "runId":run.0,
+            "entryId":run.1.command_id,
+            "name":run.1.name,
             "text":text,
             "truncated":scanned || cut,
             "totalBytes":total,
@@ -270,7 +273,7 @@ impl ChatTools {
             Err(error) if error.to_string() == "session has no live PTY" => {}
             Err(error) => return Err(error),
         }
-        Ok(json!({"runId":run_id,"state":state,"stopRequested":true}))
+        Ok(json!({"runId":run_id,"entryId":run.command_id,"name":run.name,"state":state,"stopRequested":true}))
     }
 
     pub(crate) fn prepare_run(
@@ -381,11 +384,9 @@ impl ChatTools {
             Some(question) => {
                 let waiter = self.prepare_ask_value(
                     providers,
-                    AskRequest {
-                        caller_session_id: run.session_id.clone(),
-                        caller_token: run.token.clone(),
-                        questions: vec![question],
-                    },
+                    run.session_id.clone(),
+                    run.token.clone(),
+                    vec![question],
                     Capability::Run,
                 )?;
                 Ok(RunPlan::Approval { waiter, run })
@@ -466,11 +467,9 @@ impl ChatTools {
         };
         let waiter = self.prepare_ask_value(
             providers,
-            AskRequest {
-                caller_session_id: run.session_id.clone(),
-                caller_token: run.token.clone(),
-                questions: vec![question],
-            },
+            run.session_id.clone(),
+            run.token.clone(),
+            vec![question],
             Capability::Run,
         )?;
         Ok(RunPlan::Approval { waiter, run })
@@ -532,11 +531,9 @@ impl ChatTools {
                 };
                 let waiter = self.prepare_ask_value(
                     providers,
-                    AskRequest {
-                        caller_session_id: session_id.clone(),
-                        caller_token: token.clone(),
-                        questions: vec![approval_question(&snapshot, &source_file, &scope.root_key)?],
-                    },
+                    session_id.clone(),
+                    token.clone(),
+                    vec![approval_question(&snapshot, &source_file, &scope.root_key)?],
                     Capability::Run,
                 )?;
                 if !approved_answer(&waiter.wait()?) {
@@ -818,12 +815,17 @@ fn require_run_writes(db: &Database, session_id: &str) -> Result<()> {
 /// The card text comes from the re-detected entry, never from the agent. The command is
 /// shown in full on its own line (it may contain backticks), so what the user reads is
 /// exactly what launches; only the file and worktree labels may be shortened. A command
-/// that does not fit the card is refused instead of shown as a harmless-looking prefix.
+/// that does not fit the card, or that contains characters a card cannot show faithfully
+/// (invisible format characters, other controls except tab, line/paragraph separators),
+/// is refused instead of shown as a harmless-looking prefix.
 fn approval_question(
     snapshot: &QuickLaunchCommand,
     source_file: &str,
     worktree: &str,
 ) -> Result<Question> {
+    if snapshot.command.chars().any(unprintable) {
+        return Err(anyhow!("detected_command_unprintable"));
+    }
     let question = format!(
         "Run this detected command from `{}` in `{}`?\n{}",
         shorten(source_file, CARD_PATH_CHARS),
@@ -848,7 +850,28 @@ fn approval_question(
         ],
         multi_select: false,
         allow_other: false,
+        presentation: Some("command".to_owned()),
+        command: Some(snapshot.command.clone()),
     })
+}
+
+/// True for a character the approval card cannot render unambiguously: Unicode format
+/// characters (zero-width, bidi embeddings/overrides/isolates, BOM), control characters
+/// other than tab, and line/paragraph separators. `node safe\u{200B}.js` otherwise reads as
+/// `node safe.js` while running something else, and bidi controls can reorder the text.
+fn unprintable(c: char) -> bool {
+    matches!(c, '\u{2028}' | '\u{2029}') || (c.is_control() && c != '\t') || format_character(c)
+}
+
+/// General category Cf. Kept as an explicit list so the check needs no Unicode database.
+fn format_character(c: char) -> bool {
+    matches!(
+        c as u32,
+        0x00AD | 0x0600..=0x0605 | 0x061C | 0x06DD | 0x070F | 0x0890..=0x0891 | 0x08E2 | 0x180E
+            | 0x200B..=0x200F | 0x202A..=0x202E | 0x2060..=0x2064 | 0x2066..=0x206F | 0xFEFF
+            | 0xFFF9..=0xFFFB | 0x110BD | 0x110CD | 0x13430..=0x1343F | 0x1BCA0..=0x1BCA3
+            | 0x1D173..=0x1D17A | 0xE0001 | 0xE0020..=0xE007F
+    )
 }
 
 /// The operation id of one tool call: namespaced by caller session and method so two

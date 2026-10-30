@@ -5630,6 +5630,21 @@
     "ChatToolRunLogs": {
       "type": "object",
       "properties": {
+        "runId": {
+          "type": "string"
+        },
+        "entryId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "name": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "text": {
           "type": "string"
         },
@@ -5642,6 +5657,9 @@
         }
       },
       "required": [
+        "runId",
+        "entryId",
+        "name",
         "text",
         "truncated",
         "totalBytes"
@@ -5657,6 +5675,18 @@
         "runId": {
           "type": "string"
         },
+        "entryId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "name": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "state": {
           "$ref": "#/definitions/SessionStatus"
         },
@@ -5667,6 +5697,8 @@
       },
       "required": [
         "runId",
+        "entryId",
+        "name",
         "state",
         "stopRequested"
       ],

@@ -432,6 +432,7 @@ fn codex_auto_approved_threadterm_tools(tools: &ChatToolServer) -> Vec<&'static 
         if env("THREADTERM_CHAT_TOOL_ASK") == Some("1") { result.push("ask_user"); }
         if env("THREADTERM_CHAT_TOOL_SESSION_INFO") == Some("1") { result.push("session_info"); }
         if env("THREADTERM_CHAT_TOOL_FEEDBACK") == Some("1") { result.push("feedback_check"); }
+        if env("THREADTERM_CHAT_TOOL_RUN") == Some("1") { result.extend(crate::mcp_delegation::RUN_TOOL_NAMES); }
     }
     result
 }
@@ -7273,6 +7274,39 @@ process.on('exit', () => clearTimeout(timeout));
         assert!(codex_auto_approved_threadterm_tools(&terminal).is_empty());
         let foreign = ChatToolServer { name: "other".into(), ..parent("delegation", "secret") };
         assert!(codex_auto_approved_threadterm_tools(&foreign).is_empty());
+    }
+
+    #[test]
+    fn codex_preapproves_run_tools_only_when_the_run_switch_is_on() {
+        let server = |env: Vec<(&str, &str)>| ChatToolServer {
+            name: "threadterm".into(), command: "mcp".into(), args: vec![],
+            env: env.into_iter().map(|(key, value)| (key.to_owned(), value.to_owned())).collect(),
+        };
+        let chat = |run: Option<&str>| {
+            let mut env = vec![
+                ("THREADTERM_MCP_PROFILE", "chat-tools"),
+                ("THREADTERM_CHAT_TOKEN", "opaque"),
+                ("THREADTERM_CHAT_TOOL_ASK", "0"),
+                ("THREADTERM_CHAT_TOOL_SESSION_INFO", "0"),
+                ("THREADTERM_CHAT_TOOL_FEEDBACK", "0"),
+            ];
+            if let Some(value) = run { env.push(("THREADTERM_CHAT_TOOL_RUN", value)); }
+            server(env)
+        };
+        assert_eq!(codex_auto_approved_threadterm_tools(&chat(None)), Vec::<&str>::new());
+        assert_eq!(codex_auto_approved_threadterm_tools(&chat(Some("0"))), Vec::<&str>::new());
+        assert_eq!(codex_auto_approved_threadterm_tools(&chat(Some("1"))), crate::mcp_delegation::RUN_TOOL_NAMES);
+        let overrides = codex_tool_server_overrides(Some(&chat(Some("1")))).join("\n");
+        for tool in crate::mcp_delegation::RUN_TOOL_NAMES {
+            assert!(overrides.contains(&format!("mcp_servers.threadterm.tools.{tool}.approval_mode='approve'")), "{tool}");
+        }
+        for tool in ["run_list_extra", "run_start_extra", "run_", "ask_user", "shell"] {
+            assert!(!overrides.contains(&format!("tools.{tool}.approval_mode='approve'")), "{tool}");
+        }
+        // The run list still needs the chat token: an empty one approves nothing.
+        let mut untokened = chat(Some("1"));
+        for entry in untokened.env.iter_mut() { if entry.0 == "THREADTERM_CHAT_TOKEN" { entry.1 = String::new(); } }
+        assert_eq!(codex_auto_approved_threadterm_tools(&untokened), Vec::<&str>::new());
     }
 
     #[test]

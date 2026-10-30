@@ -63,7 +63,7 @@ pub type ProjectTrustResolver =
     Arc<dyn Fn(&str, &str) -> Result<Option<String>, ProviderError> + Send + Sync>;
 
 #[derive(Clone, Copy, Default)]
-pub(crate) struct ChatToolPolicy {pub delegation:bool,pub preview:bool,pub browser:bool,pub ask:bool,pub session_info:bool,pub feedback:bool}
+pub(crate) struct ChatToolPolicy {pub delegation:bool,pub preview:bool,pub browser:bool,pub ask:bool,pub session_info:bool,pub feedback:bool,pub run:bool}
 pub(crate) fn chat_tool_policy(tools:Option<&ChatToolServer>)->ChatToolPolicy {
     let Some(server)=tools.filter(|s|s.name=="threadterm") else{return ChatToolPolicy::default()};
     let env=|key:&str|server.env.iter().find(|(name,_)|name==key).map(|(_,value)|value.as_str());
@@ -75,43 +75,53 @@ pub(crate) fn chat_tool_policy(tools:Option<&ChatToolServer>)->ChatToolPolicy {
         ask: composed && env("THREADTERM_CHAT_TOKEN").is_some_and(|s|!s.is_empty()) && env("THREADTERM_CHAT_TOOL_ASK") == Some("1"),
         session_info: composed && env("THREADTERM_CHAT_TOKEN").is_some_and(|s|!s.is_empty()) && env("THREADTERM_CHAT_TOOL_SESSION_INFO") == Some("1"),
         feedback: composed && env("THREADTERM_CHAT_TOKEN").is_some_and(|s|!s.is_empty()) && env("THREADTERM_CHAT_TOOL_FEEDBACK") == Some("1"),
+        run: composed && env("THREADTERM_CHAT_TOKEN").is_some_and(|s|!s.is_empty()) && env("THREADTERM_CHAT_TOOL_RUN") == Some("1"),
     }
 }
-pub(crate) fn acp_scoped_permission_option(params:&Value,policy:&ChatToolPolicy)->Option<String> {
+pub(crate) fn acp_scoped_permission_option(params:&Value,policy:&ChatToolPolicy,namespace:ToolNamespace)->Option<String> {
     let call=params.get("toolCall")?;let title=call.get("title")?.as_str()?;
-    if !is_threadterm_tool(title)
-        && !title
-            .strip_prefix("mcp__threadterm__")
-            .or_else(|| title.strip_prefix("threadterm__"))
-            .is_some_and(|tool| crate::preview::TOOL_NAMES.contains(&tool) || crate::browser_tools::TOOL_NAMES.contains(&tool))
-    {
-        return None;
-    }
-    let tool=title.strip_prefix("mcp__threadterm__").or_else(||title.strip_prefix("threadterm__"))?;
+    // Only the namespace this adapter actually uses counts: a foreign MCP server can be named so
+    // that its title collides with the other spelling (Grok would render a server named `mcp`
+    // exposing `threadterm__run_start` as `mcp__threadterm__run_start`).
+    let tool=namespace.tool(title)?;
     let allowed=crate::delegation::TOOL_NAMES.contains(&tool) && policy.delegation
         || tool=="ask_user" && policy.ask
         || tool=="session_info" && policy.session_info
         || tool=="feedback_check" && policy.feedback
+        || crate::mcp_delegation::RUN_TOOL_NAMES.contains(&tool) && policy.run
         || crate::preview::TOOL_NAMES.contains(&tool) && policy.preview
         || crate::browser_tools::TOOL_NAMES.contains(&tool) && policy.browser;
     if !allowed||matches!(call.get("kind").and_then(Value::as_str),Some("read"|"edit"|"delete"|"move"|"execute"|"fetch")){return None}
     params.get("options")?.as_array()?.iter().find(|o|o.get("kind").and_then(Value::as_str)==Some("allow_once"))?.get("optionId")?.as_str().map(str::to_owned)
 }
-pub(crate) fn approve_scoped_threadterm_tool(responder:&Mutex<Option<common::JsonLineResponder>>,raw:&Value,policy:&ChatToolPolicy)->bool {
+pub(crate) fn approve_scoped_threadterm_tool(responder:&Mutex<Option<common::JsonLineResponder>>,raw:&Value,policy:&ChatToolPolicy,namespace:ToolNamespace)->bool {
     if raw.get("method").and_then(Value::as_str)!=Some("session/request_permission"){return false}
-    let (Some(id),Some(option))=(raw.get("id"),raw.get("params").and_then(|p|acp_scoped_permission_option(p,policy))) else{return false};
+    let (Some(id),Some(option))=(raw.get("id"),raw.get("params").and_then(|p|acp_scoped_permission_option(p,policy,namespace))) else{return false};
     let Ok(slot)=responder.lock() else{return false};
     slot.as_ref().is_some_and(|r|r.respond(id.clone(),json!({"outcome":{"outcome":"selected","optionId":option}})).is_ok())
 }
 
-/// True only for the exact names agents give ThreadTerm's own delegation tools
-/// (`mcp__threadterm__<tool>` for Claude and Kimi, `threadterm__<tool>` for
-/// Grok). Never a prefix match: a shell command titled with the prefix must
-/// still go through normal approval.
-pub(crate) fn is_threadterm_tool(name: &str) -> bool {
-    name.strip_prefix("mcp__threadterm__")
-        .or_else(|| name.strip_prefix("threadterm__"))
-        .is_some_and(|tool| crate::delegation::TOOL_NAMES.contains(&tool) || matches!(tool, "ask_user" | "session_info" | "feedback_check"))
+/// The MCP tool namespace one adapter uses for ThreadTerm's own server. Claude/Kimi-style ACP
+/// agents name tools `mcp__threadterm__<tool>`; Grok names them `threadterm__<tool>`. Never read
+/// both: an adapter must not auto-approve a title that only exists in the other spelling.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ToolNamespace { McpThreadterm, Threadterm }
+impl ToolNamespace {
+    fn prefix(self) -> &'static str { match self { Self::McpThreadterm => "mcp__threadterm__", Self::Threadterm => "threadterm__" } }
+    /// The exact tool name after this namespace's prefix, or None for any other title.
+    pub(crate) fn tool<'a>(self, name: &'a str) -> Option<&'a str> { name.strip_prefix(self.prefix()) }
+}
+
+/// True only for the exact names agents give ThreadTerm's own tools in `namespace`'s spelling
+/// (`mcp__threadterm__<tool>` for Claude and Kimi, `threadterm__<tool>` for Grok). Never a prefix
+/// match and never the other namespace: a shell command or a foreign server titled with the
+/// prefix must still go through normal approval.
+pub(crate) fn is_threadterm_tool(namespace: ToolNamespace, name: &str) -> bool {
+    namespace.tool(name).is_some_and(|tool| crate::delegation::TOOL_NAMES.contains(&tool)
+        || crate::mcp_delegation::RUN_TOOL_NAMES.contains(&tool)
+        || crate::preview::TOOL_NAMES.contains(&tool)
+        || crate::browser_tools::TOOL_NAMES.contains(&tool)
+        || matches!(tool, "ask_user" | "session_info" | "feedback_check"))
 }
 
 /// ACP `session/new` / `session/load` `mcpServers` for an optional tool server.
@@ -131,11 +141,11 @@ pub(crate) fn acp_mcp_servers(tools: Option<&ChatToolServer>) -> Value {
 /// delegation tools, the once-only allow option to answer with. Requires the
 /// exact tool title and a non-file, non-shell tool kind.
 #[cfg(test)]
-pub(crate) fn acp_threadterm_permission_option(params: &Value) -> Option<String> {
+pub(crate) fn acp_threadterm_permission_option(params: &Value, namespace: ToolNamespace) -> Option<String> {
     let call = params.get("toolCall")?;
     let title = call.get("title").and_then(Value::as_str)?;
     let kind = call.get("kind").and_then(Value::as_str);
-    if !is_threadterm_tool(title)
+    if !is_threadterm_tool(namespace, title)
         || matches!(kind, Some("read" | "edit" | "delete" | "move" | "execute" | "fetch"))
     {
         return None;
@@ -4060,18 +4070,39 @@ mod capability_cache_tests {
 mod delegation_tool_tests {
     use super::*;
 
+    const MCP: ToolNamespace = ToolNamespace::McpThreadterm;
+    const GROK: ToolNamespace = ToolNamespace::Threadterm;
+    /// One request with the exact title, a non-shell kind and a once-only allow option.
+    fn request(title: &str) -> Value {
+        json!({"toolCall":{"title":title,"kind":"other"},"options":[{"optionId":"once","kind":"allow_once"}]})
+    }
+
     #[test]
     fn only_exact_delegation_tool_names_are_threadterm_tools() {
-        assert!(is_threadterm_tool("mcp__threadterm__delegate_start"));
-        assert!(is_threadterm_tool("threadterm__delegate_wait"));
-        assert!(!is_threadterm_tool("mcp__threadterm__terminal_create"));
-        assert!(!is_threadterm_tool("mcp__threadterm__delegate_start; rm -rf ."));
-        assert!(!is_threadterm_tool("Shell: mcp__threadterm__delegate_start"));
-        assert!(!is_threadterm_tool("mcp__other__delegate_start"));
-        assert!(is_threadterm_tool("mcp__threadterm__ask_user"));
-        assert!(is_threadterm_tool("threadterm__session_info"));
-        assert!(is_threadterm_tool("mcp__threadterm__feedback_check"));
-        assert!(!is_threadterm_tool("mcp__threadterm__ask_user; rm -rf ."));
+        assert!(is_threadterm_tool(MCP, "mcp__threadterm__delegate_start"));
+        assert!(is_threadterm_tool(GROK, "threadterm__delegate_wait"));
+        assert!(!is_threadterm_tool(MCP, "threadterm__delegate_wait"), "the ACP adapter never reads Grok's spelling");
+        assert!(!is_threadterm_tool(GROK, "mcp__threadterm__delegate_start"), "Grok never reads the ACP spelling");
+        assert!(!is_threadterm_tool(MCP, "mcp__threadterm__terminal_create"));
+        assert!(!is_threadterm_tool(MCP, "mcp__threadterm__delegate_start; rm -rf ."));
+        assert!(!is_threadterm_tool(MCP, "Shell: mcp__threadterm__delegate_start"));
+        assert!(!is_threadterm_tool(MCP, "mcp__other__delegate_start"));
+        assert!(is_threadterm_tool(MCP, "mcp__threadterm__ask_user"));
+        assert!(is_threadterm_tool(GROK, "threadterm__session_info"));
+        assert!(is_threadterm_tool(MCP, "mcp__threadterm__feedback_check"));
+        assert!(!is_threadterm_tool(MCP, "mcp__threadterm__ask_user; rm -rf ."));
+    }
+
+    #[test]
+    fn only_exact_run_tool_names_are_threadterm_tools() {
+        for tool in crate::mcp_delegation::RUN_TOOL_NAMES {
+            assert!(is_threadterm_tool(MCP, &format!("mcp__threadterm__{tool}")), "{tool}");
+            assert!(is_threadterm_tool(GROK, &format!("threadterm__{tool}")), "{tool}");
+        }
+        assert!(!is_threadterm_tool(MCP, "mcp__threadterm__run_list_extra"));
+        assert!(!is_threadterm_tool(GROK, "threadterm__run_start_extra"));
+        assert!(!is_threadterm_tool(MCP, "mcp__threadterm__run_"));
+        assert!(!is_threadterm_tool(MCP, "mcp__threadterm__run_list; rm -rf ."));
     }
 
     #[test]
@@ -4091,7 +4122,7 @@ mod delegation_tool_tests {
 
     #[test]
     fn acp_permissions_for_delegation_tools_pick_allow_once_only() {
-        let request = |title: &str, kind: &str| {
+        let one = |title: &str, kind: &str| {
             json!({"toolCall":{"title":title,"kind":kind},"options":[
                 {"optionId":"approve_once","kind":"allow_once"},
                 {"optionId":"approve_always","kind":"allow_always"},
@@ -4099,44 +4130,112 @@ mod delegation_tool_tests {
             ]})
         };
         assert_eq!(
-            acp_threadterm_permission_option(&request("mcp__threadterm__delegate_start", "other")),
+            acp_threadterm_permission_option(&one("mcp__threadterm__delegate_start", "other"), MCP),
             Some("approve_once".into())
         );
         assert_eq!(
-            acp_threadterm_permission_option(&request("threadterm__delegate_wait", "other")),
+            acp_threadterm_permission_option(&one("threadterm__delegate_wait", "other"), GROK),
             Some("approve_once".into())
         );
         assert_eq!(
-            acp_threadterm_permission_option(&request("mcp__threadterm__delegate_start", "execute")),
+            acp_threadterm_permission_option(&one("mcp__threadterm__delegate_start", "execute"), MCP),
             None,
             "a shell call is never auto-approved, whatever its title"
         );
         assert_eq!(
-            acp_threadterm_permission_option(&request("mcp__codegraph__search", "other")),
+            acp_threadterm_permission_option(&one("mcp__codegraph__search", "other"), MCP),
             None
         );
         let no_once = json!({"toolCall":{"title":"mcp__threadterm__delegate_start","kind":"other"},"options":[{"optionId":"approve_always","kind":"allow_always"}]});
-        assert_eq!(acp_threadterm_permission_option(&no_once), None);
+        assert_eq!(acp_threadterm_permission_option(&no_once, MCP), None);
     }
 
     #[test]
     fn scoped_permissions_never_approve_a_disabled_app_tool() {
-        let request = json!({"toolCall":{"title":"mcp__threadterm__ask_user","kind":"other"},"options":[{"optionId":"once","kind":"allow_once"}]});
-        assert_eq!(acp_scoped_permission_option(&request, &ChatToolPolicy { delegation: true, ..Default::default() }), None);
-        assert_eq!(acp_scoped_permission_option(&request, &ChatToolPolicy { ask: true, ..Default::default() }), Some("once".into()));
+        let ask = request("mcp__threadterm__ask_user");
+        assert_eq!(acp_scoped_permission_option(&ask, &ChatToolPolicy { delegation: true, ..Default::default() }, MCP), None);
+        assert_eq!(acp_scoped_permission_option(&ask, &ChatToolPolicy { ask: true, ..Default::default() }, MCP), Some("once".into()));
         let shell = json!({"toolCall":{"title":"mcp__threadterm__ask_user","kind":"execute"},"options":[{"optionId":"once","kind":"allow_once"}]});
-        assert_eq!(acp_scoped_permission_option(&shell, &ChatToolPolicy { ask: true, ..Default::default() }), None);
+        assert_eq!(acp_scoped_permission_option(&shell, &ChatToolPolicy { ask: true, ..Default::default() }, MCP), None);
     }
 
     #[test]
     fn scoped_permissions_keep_preview_exact_and_never_prefix_match() {
-        let request = |title: &str, kind: &str| json!({"toolCall":{"title":title,"kind":kind},"options":[{"optionId":"once","kind":"allow_once"}]});
         let policy = ChatToolPolicy { preview: true, ..Default::default() };
-        assert_eq!(acp_scoped_permission_option(&request("mcp__threadterm__preview_present", "other"), &policy), Some("once".into()));
-        assert_eq!(acp_scoped_permission_option(&request("threadterm__preview_status", "other"), &policy), Some("once".into()));
-        assert_eq!(acp_scoped_permission_option(&request("mcp__threadterm__preview_present", "other"), &ChatToolPolicy::default()), None);
-        assert_eq!(acp_scoped_permission_option(&request("mcp__threadterm__preview_present_extra", "other"), &policy), None);
-        assert_eq!(acp_scoped_permission_option(&request("mcp__threadterm__preview_present", "execute"), &policy), None);
+        assert_eq!(acp_scoped_permission_option(&request("mcp__threadterm__preview_present"), &policy, MCP), Some("once".into()));
+        assert_eq!(acp_scoped_permission_option(&request("threadterm__preview_status"), &policy, GROK), Some("once".into()));
+        assert_eq!(acp_scoped_permission_option(&request("mcp__threadterm__preview_present"), &ChatToolPolicy::default(), MCP), None);
+        assert_eq!(acp_scoped_permission_option(&request("mcp__threadterm__preview_present_extra"), &policy, MCP), None);
+        assert_eq!(acp_scoped_permission_option(&request("mcp__threadterm__preview_present"), &policy, GROK), None);
+    }
+
+    #[test]
+    fn scoped_permissions_approve_run_tools_only_when_the_run_switch_is_on() {
+        let policy = ChatToolPolicy { run: true, ..Default::default() };
+        for tool in crate::mcp_delegation::RUN_TOOL_NAMES {
+            let exact = format!("mcp__threadterm__{tool}");
+            assert_eq!(acp_scoped_permission_option(&request(&exact), &policy, MCP), Some("once".into()), "{exact}");
+            assert_eq!(acp_scoped_permission_option(&request(&format!("{exact}_extra")), &policy, MCP), None, "{exact}_extra");
+            assert_eq!(acp_scoped_permission_option(&request(&exact), &ChatToolPolicy::default(), MCP), None, "{exact} with the switch off");
+        }
+        let shell = json!({"toolCall":{"title":"mcp__threadterm__run_start","kind":"execute"},"options":[{"optionId":"once","kind":"allow_once"}]});
+        assert_eq!(acp_scoped_permission_option(&shell, &policy, MCP), None);
+    }
+
+    #[test]
+    fn a_foreign_mcp_server_cannot_borrow_the_other_adapters_namespace() {
+        // Grok names tools `server__tool`: a foreign server called `mcp` exposing `threadterm__run_start`
+        // therefore appears as `mcp__threadterm__run_start`. Every ThreadTerm family must refuse the other
+        // spelling in its own namespace, while accepting its own exact names.
+        let all = ChatToolPolicy { delegation: true, preview: true, browser: true, ask: true, session_info: true, feedback: true, run: true };
+        let chat: &[&str] = &["ask_user", "session_info", "feedback_check"];
+        let families: Vec<&[&str]> = vec![
+            &crate::delegation::TOOL_NAMES,
+            &crate::mcp_delegation::RUN_TOOL_NAMES,
+            &crate::preview::TOOL_NAMES,
+            &crate::browser_tools::TOOL_NAMES,
+            chat,
+        ];
+        for tools in families {
+            for tool in tools {
+                let acp = format!("mcp__threadterm__{tool}");
+                let grok = format!("threadterm__{tool}");
+                assert_eq!(acp_scoped_permission_option(&request(&acp), &all, MCP), Some("once".into()), "ACP accepts {tool}");
+                assert_eq!(acp_scoped_permission_option(&request(&grok), &all, GROK), Some("once".into()), "Grok accepts {tool}");
+                assert_eq!(acp_scoped_permission_option(&request(&acp), &all, GROK), None, "Grok must not read a foreign server's {acp}");
+                assert_eq!(acp_scoped_permission_option(&request(&grok), &all, MCP), None, "ACP must not read a foreign server's {grok}");
+            }
+        }
+    }
+
+    #[test]
+    fn the_run_policy_follows_the_server_env_switch() {
+        let server = |env: Vec<(&str, &str)>| ChatToolServer {
+            name: "threadterm".into(), command: "mcp".into(), args: Vec::new(),
+            env: env.into_iter().map(|(key, value)| (key.to_owned(), value.to_owned())).collect(),
+        };
+        let composed = |run: &str| server(vec![
+            ("THREADTERM_MCP_PROFILE", "chat-tools"),
+            ("THREADTERM_CHAT_TOKEN", "opaque"),
+            ("THREADTERM_CHAT_TOOL_RUN", run),
+        ]);
+        assert!(chat_tool_policy(Some(&composed("1"))).run);
+        assert!(!chat_tool_policy(Some(&composed("0"))).run);
+        assert!(!chat_tool_policy(Some(&server(vec![
+            ("THREADTERM_MCP_PROFILE", "chat-tools"),
+            ("THREADTERM_CHAT_TOKEN", "opaque"),
+        ]))).run, "no switch means no run tools");
+        assert!(!chat_tool_policy(Some(&server(vec![
+            ("THREADTERM_MCP_PROFILE", "chat-tools"),
+            ("THREADTERM_CHAT_TOKEN", ""),
+            ("THREADTERM_CHAT_TOOL_RUN", "1"),
+        ]))).run, "the run switch still needs the chat token");
+        assert!(!chat_tool_policy(Some(&server(vec![
+            ("THREADTERM_MCP_PROFILE", "delegation"),
+            ("THREADTERM_CHAT_TOKEN", "opaque"),
+            ("THREADTERM_CHAT_TOOL_RUN", "1"),
+        ]))).run, "only the composed chat-tools server carries it");
+        assert!(!chat_tool_policy(None).run);
     }
 }
 

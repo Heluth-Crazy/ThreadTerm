@@ -549,6 +549,9 @@ textarea.create-input { height:88px; min-height:88px; max-height:240px; padding:
 .chat-question-fieldset legend.chat-question-field-label { font-size:13px; font-weight:500; }
 .chat-question-number { display:block; margin-bottom:4px; color:var(--muted); font-size:11px; font-weight:500; }
 .chat-question-title { display:block; margin-top:4px; color:var(--text); font-size:14px; font-weight:600; }
+/* A multi-line question (the run approval) keeps the rest of its text in a monospaced, wrapped, scrollable block.
+   Nothing here clamps or ellipsizes it: the human must read exactly the command they approve. */
+.chat-question-command { display:block; box-sizing:border-box; width:100%; max-width:560px; max-height:280px; margin-top:8px; padding:8px 10px; overflow:auto; border:1px solid var(--border); border-radius:7px; background:var(--raised); color:var(--text); font-family:ui-monospace,SFMono-Regular,Consolas,'Liberation Mono',monospace; font-size:12px; font-weight:400; line-height:1.5; white-space:pre-wrap; overflow-wrap:anywhere; }
 .chat-question-option { display:flex; align-items:flex-start; gap:10px; width:100%; max-width:560px; min-width:0; min-height:42px; padding:10px 12px; border:1px solid var(--border); border-radius:7px; background:var(--raised); font-size:13px; cursor:pointer; transition:background .12s, border-color .12s; }
 .chat-question-option:hover:where(:not(:has(input:disabled))) { background:var(--soft); }
 .chat-question-option.is-selected { border-color:color-mix(in srgb,var(--primary) 55%,var(--border)); background:color-mix(in srgb,var(--primary) 8%,var(--surface)); }

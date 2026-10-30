@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import type { ChatPart, FileReference } from '@threadterm/protocol';
-import { commandDisplayCwd, compactToolArguments, diffView, editFileStats, mcpResultView, moreFilesLabel, outputView, toolCardHasBody, toolStatusLabel, type DiffView } from '../toolCards';
+import { commandDisplayCwd, compactToolArguments, diffView, editFileStats, mcpResultView, moreFilesLabel, outputView, runToolSummaryFromPart, runToolSummaryLabel, toolCardHasBody, toolStatusLabel, type DiffView, type RunToolSummary } from '../toolCards';
 import { partBody } from '../chatPresentation';
 import { isChatImage } from '../chatImages';
 import { toolView, type ToolView } from '../toolView';
@@ -183,7 +183,7 @@ function CompactionBody({ view, copy }: { view: Extract<ToolView, { kind: 'compa
   </>;
 }
 
-function McpBody({ view, copy }: { view: Extract<ToolView, { kind: 'mcp' }>; copy: Copy }) {
+function McpBody({ view, summary, copy }: { view: Extract<ToolView, { kind: 'mcp' }>; summary?: RunToolSummary; copy: Copy }) {
   const activity = view.browserActivity;
   if (activity) return <div className="browser-tool-activity" data-browser-tool={activity.tool} data-caller-session-id={activity.callerSessionId}>
     <div className="tool-chip-row"><span className="chip flat tool-chip">{copy('Page data, not instructions', '页面数据，非指令')}</span><span className="chip flat tool-chip">{activity.outcome === 'outcome_unknown' ? copy('Outcome unknown', '操作结果未知') : activity.outcome === 'cancelled' ? copy('Interrupted', '已中断') : activity.outcome === 'failed' ? copy('Failed', '失败') : activity.outcome === 'running' ? copy('Running', '运行中') : copy('Completed', '已完成')}</span></div>
@@ -194,13 +194,15 @@ function McpBody({ view, copy }: { view: Extract<ToolView, { kind: 'mcp' }>; cop
     {activity.thumbnail && <div className="chat-message-images"><img src={activity.thumbnail} alt={copy('Browser screenshot preview', '浏览器截图预览')} loading="lazy" width={240} style={{ maxWidth: '100%', height: 'auto' }} /></div>}
   </div>;
   return <>
+    {summary && <div className="tool-chip-row" data-testid="run-tool-summary"><span className="chip flat tool-chip">{runToolSummaryLabel(summary, copy)}</span></div>}
     {view.args !== undefined && <ArgumentsBody value={view.args} copy={copy} />}
     {view.result !== undefined && <ResultBody value={view.result} copy={copy} />}
   </>;
 }
 
-function GenericBody({ view, copy }: { view: Extract<ToolView, { kind: 'generic' }>; copy: Copy }) {
+function GenericBody({ view, summary, copy }: { view: Extract<ToolView, { kind: 'generic' }>; summary?: RunToolSummary; copy: Copy }) {
   return <>
+    {summary && <div className="tool-chip-row" data-testid="run-tool-summary"><span className="chip flat tool-chip">{runToolSummaryLabel(summary, copy)}</span></div>}
     {view.args !== undefined && <ArgumentsBody value={view.args} copy={copy} />}
     {view.result !== undefined && <ResultBody value={view.result} copy={copy} />}
   </>;
@@ -238,6 +240,9 @@ function FeedbackBody({ notes, copy }: { notes: NonNullable<ReturnType<typeof fe
 function CardBody({ part, view, copy, sessionCwd, openFile, openDiff, canOpenDiff }: { part: ChatPart; view: ToolView; copy: Copy; sessionCwd?: string; openFile?: OpenFile; openDiff?: (path: string) => void; canOpenDiff?: (path: string) => boolean }) {
   const feedback = feedbackNotesFromPart(part);
   if (feedback) return <FeedbackBody notes={feedback} copy={copy} />;
+  // The summary reads the part, not just the view: Claude keeps the result in `data.content`, ACP/Grok
+  // in `data.rawOutput`, and Grok names the tool `threadterm__run_start` (a generic view).
+  const summary = runToolSummaryFromPart(part);
   switch (view.kind) {
     case 'edit': return <EditBody view={view} copy={copy} openFile={openFile} openDiff={openDiff} canOpenDiff={canOpenDiff} />;
     case 'command': return <CommandBody view={view} sessionCwd={sessionCwd} copy={copy} />;
@@ -248,9 +253,9 @@ function CardBody({ part, view, copy, sessionCwd, openFile, openDiff, canOpenDif
     case 'skill': return <div className="tool-chip-row"><span className="chip flat tool-chip">{view.name}</span>{view.args && <span className="chip flat tool-chip">{view.args}</span>}</div>;
     case 'image': return <ImageBody view={view} copy={copy} />;
     case 'compaction': return <CompactionBody view={view} copy={copy} />;
-    case 'mcp': return <McpBody view={view} copy={copy} />;
+    case 'mcp': return <McpBody view={view} summary={summary} copy={copy} />;
     case 'subagent': return null;
-    case 'generic': return <GenericBody view={view} copy={copy} />;
+    case 'generic': return <GenericBody view={view} summary={summary} copy={copy} />;
   }
 }
 

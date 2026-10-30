@@ -270,12 +270,25 @@ impl ChatTools {
     }
 
     fn ask(&self, providers: &Providers, request: AskRequest) -> Result<Value> {
-        self.prepare_ask_value(providers, request, Capability::Ask)?
-            .wait()
+        self.prepare_ask_value(
+            providers,
+            request.caller_session_id,
+            request.caller_token,
+            request.questions.into_iter().map(Question::from).collect(),
+            Capability::Ask,
+        )?
+        .wait()
     }
 
     pub(crate) fn prepare_ask(&self, providers: &Providers, params: &Value) -> Result<AskWaiter> {
-        self.prepare_ask_value(providers, parse(params)?, Capability::Ask)
+        let request: AskRequest = parse(params)?;
+        self.prepare_ask_value(
+            providers,
+            request.caller_session_id,
+            request.caller_token,
+            request.questions.into_iter().map(Question::from).collect(),
+            Capability::Ask,
+        )
     }
 
     /// Publish an app-owned card and return its waiter. The capability is the tool
@@ -284,19 +297,21 @@ impl ChatTools {
     fn prepare_ask_value(
         &self,
         providers: &Providers,
-        request: AskRequest,
+        caller_session_id: String,
+        caller_token: String,
+        questions: Vec<Question>,
         capability: Capability,
     ) -> Result<AskWaiter> {
         self.with_authorized(
             providers,
-            &request.caller_session_id,
-            &request.caller_token,
+            &caller_session_id,
+            &caller_token,
             capability,
             |state| {
-                validate_questions(&request.questions)?;
+                validate_questions(&questions)?;
                 let session = self
                     .db
-                    .session_by_id(&request.caller_session_id)?
+                    .session_by_id(&caller_session_id)?
                     .ok_or_else(|| anyhow!("session_not_found"))?;
                 let turn_id = session
                     .activity
@@ -304,9 +319,9 @@ impl ChatTools {
                     .and_then(|activity| activity.turn_id)
                     .ok_or_else(|| anyhow!("chat_turn_inactive"))?;
                 let approval_id = format!("threadterm-ask-{}", uuid::Uuid::new_v4());
-                let (data, answers) = question_data(&approval_id, request.questions);
+                let (data, answers) = question_data(&approval_id, questions);
                 let pending = Arc::new(PendingAsk {
-                    session_id: request.caller_session_id.clone(),
+                    session_id: caller_session_id.clone(),
                     turn_id: turn_id.clone(),
                     approval_id: approval_id.clone(),
                     data: data.clone(),
@@ -324,7 +339,7 @@ impl ChatTools {
                     .insert(approval_id.clone(), Arc::clone(&pending));
                 let published = match crate::chat_projection::record_if_active(
                     &self.db,
-                    &request.caller_session_id,
+                    &caller_session_id,
                     &turn_id,
                     "chat.approval",
                     &json!({
@@ -899,11 +914,44 @@ impl PendingAsk {
 struct AskRequest {
     caller_session_id: String,
     caller_token: String,
-    questions: Vec<Question>,
+    questions: Vec<AskQuestion>,
 }
 
-#[derive(Deserialize, Serialize)]
+/// Agent-supplied `ask_user` input. It has no `presentation`/`command`: with
+/// `deny_unknown_fields` an agent cannot mark its own question as a run approval or
+/// supply the command text the card shows. Only `approval_question` builds a `Question`
+/// with that marker, from the re-detected entry.
+#[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct AskQuestion {
+    header: Option<String>,
+    question: String,
+    options: Vec<QuestionOption>,
+    #[serde(default)]
+    multi_select: bool,
+    #[serde(default)]
+    allow_other: bool,
+}
+
+impl From<AskQuestion> for Question {
+    fn from(input: AskQuestion) -> Self {
+        Self {
+            header: input.header,
+            question: input.question,
+            options: input.options,
+            multi_select: input.multi_select,
+            allow_other: input.allow_other,
+            presentation: None,
+            command: None,
+        }
+    }
+}
+
+/// One question sharing the approval lifecycle. `presentation`/`command` are runtime-only:
+/// `Some("command")` tells the card to render `command` as a distinct, unclamped block, and
+/// only the run approval sets it.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 struct Question {
     header: Option<String>,
     question: String,
@@ -912,6 +960,10 @@ struct Question {
     multi_select: bool,
     #[serde(default)]
     allow_other: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    presentation: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    command: Option<String>,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -1017,14 +1069,21 @@ fn question_data(approval_id: &str, questions: Vec<Question>) -> (Value, Vec<Ans
                 question: question.question.clone(),
                 multi_select: question.multi_select,
             });
-            json!({
+            let mut form = json!({
                 "id":id,
                 "header":question.header,
                 "question":question.question,
                 "options":question.options,
                 "multiSelect":question.multi_select,
                 "allowOther":question.allow_other,
-            })
+            });
+            if let Some(presentation) = question.presentation {
+                form["presentation"] = json!(presentation);
+            }
+            if let Some(command) = question.command {
+                form["command"] = json!(command);
+            }
+            form
         })
         .collect::<Vec<_>>();
     (

@@ -10,7 +10,7 @@ use super::{
         version_probe, ChatTextSegments, CommandSpec, EnvelopeStyle, JsonLineProcess, JsonLineResponder,
     },
     emit_bound as emit, verify_permission_options, ChatSession, ChatToolPolicy, ChatToolServer, ProviderAdapter, ProviderCapability,
-    NativeSessionRef, ProviderError, ScopedProviderEvents, TerminalCommand,
+    NativeSessionRef, ProviderError, ScopedProviderEvents, TerminalCommand, ToolNamespace,
 };
 use crate::plugins::{AgentDescriptor, TerminalConfig};
 use crate::chat_questions::answer_summary;
@@ -1621,6 +1621,10 @@ fn drain_acp_permissions(
     }
 }
 
+/// Claude and Kimi name ThreadTerm's tools `mcp__threadterm__<tool>`; this adapter never reads
+/// Grok's `threadterm__<tool>` spelling, so a foreign server named so cannot borrow approval.
+const ACP_TOOL_NAMESPACE: ToolNamespace = ToolNamespace::McpThreadterm;
+
 /// Return whether this frame may be projected. Delegation approval precedes
 /// replay cancellation; every unsupported reverse request is rejected once.
 fn handle_acp_message(
@@ -1634,9 +1638,9 @@ fn handle_acp_message(
     if !request { return project_events; }
     let permission = raw["method"] == "session/request_permission";
     if permission && raw.get("params")
-        .and_then(|params| acp_scoped_permission_option(params, &tool_policy)).is_some() {
+        .and_then(|params| acp_scoped_permission_option(params, &tool_policy, ACP_TOOL_NAMESPACE)).is_some() {
         // Once attempted, do not send a different outcome after a partial write.
-        let _ = approve_scoped_threadterm_tool(responder, raw, &tool_policy);
+        let _ = approve_scoped_threadterm_tool(responder, raw, &tool_policy, ACP_TOOL_NAMESPACE);
         return false;
     }
     if permission && project_events { return true; }
@@ -3336,6 +3340,25 @@ mod tests {
             assert_eq!(responses.iter().find(|row| row["id"] == "early-unknown").unwrap()["error"]["code"], -32601);
         }
     }
+    #[test]
+    fn acp_rejects_a_threadterm_tool_name_from_a_foreign_namespace() {
+        let policy = ChatToolPolicy { delegation: true, run: true, ask: true, preview: true, browser: true, ..Default::default() };
+        let request = |title: &str| json!({"toolCall":{"title":title,"kind":"other"},"options":[{"optionId":"once","kind":"allow_once"}]});
+        for tool in ["delegate_start", "run_start", "ask_user", "preview_present", "browser_list_tabs"] {
+            assert_eq!(
+                super::super::acp_scoped_permission_option(&request(&format!("mcp__threadterm__{tool}")), &policy, ACP_TOOL_NAMESPACE),
+                Some("once".into()),
+                "this adapter approves its own exact {tool}"
+            );
+            assert_eq!(
+                super::super::acp_scoped_permission_option(&request(&format!("threadterm__{tool}")), &policy, ACP_TOOL_NAMESPACE),
+                None,
+                "a foreign server named threadterm must not be approved for {tool}"
+            );
+            assert!(!super::super::is_threadterm_tool(ACP_TOOL_NAMESPACE, &format!("threadterm__{tool}")));
+        }
+    }
+
     use crate::plugins::PluginRegistry;
 
     #[test]

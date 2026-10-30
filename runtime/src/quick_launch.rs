@@ -37,6 +37,7 @@ pub(crate) const ERROR_CODES: &[&str] = &[
     "run_declined",
     "detected_entry_changed",
     "detected_command_too_long",
+    "detected_command_unprintable",
 ];
 
 #[path = "quick_launch_setup.rs"]
