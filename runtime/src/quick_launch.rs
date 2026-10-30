@@ -48,6 +48,10 @@ pub(crate) const ERROR_CODES: &[&str] = &[
     "repo_entry_not_found",
     "repo_entry_changed",
     "secret_missing",
+    // Phase 3: a proposal that is unknown, already decided, or one too many.
+    "run_proposal_not_found",
+    "run_proposal_not_pending",
+    "too_many_proposals",
 ];
 
 #[path = "quick_launch_setup.rs"]
@@ -59,6 +63,11 @@ pub(crate) use setup::{cancel_scoped_sequence, root_for_setup, sequence_by_id, s
 mod readiness;
 #[path = "run_ports.rs"]
 mod ports;
+// Phase 3: recent runs (bounded, temporary) and agent proposals (pending until a human accepts).
+#[path = "run_recent.rs"]
+pub(crate) mod run_recent;
+#[path = "run_proposals.rs"]
+pub(crate) mod run_proposals;
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -160,7 +169,7 @@ pub(crate) fn initialize_connection(conn: &Connection) -> Result<()> {
     let existing: Vec<String> = columns
         .query_map([], |row| row.get::<_, String>(1))?
         .collect::<rusqlite::Result<Vec<_>>>()?;
-    for (column, definition) in [("readiness", "TEXT"), ("ready_port", "INTEGER"), ("allocated_port", "INTEGER"), ("started_by", "TEXT")] {
+    for (column, definition) in [("readiness", "TEXT"), ("ready_port", "INTEGER"), ("allocated_port", "INTEGER"), ("started_by", "TEXT"), ("kept_command_id", "TEXT")] {
         if !existing.iter().any(|name| name == column) {
             conn.execute_batch(&format!(
                 "ALTER TABLE quick_launch_runs ADD COLUMN {column} {definition}"
@@ -192,6 +201,7 @@ pub(crate) fn initialize_connection(conn: &Connection) -> Result<()> {
     let tx = conn.unchecked_transaction()?;
     ports::initialize(&tx)?;
     tx.commit()?;
+    run_proposals::initialize(conn)?;
     Ok(())
 }
 
@@ -250,11 +260,13 @@ fn projection(
 struct List {
     project_id: String,
 }
-#[derive(Deserialize)]
+#[derive(Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct Save {
     project_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
     id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     expected_revision: Option<i64>,
     name: String,
     command: String,
@@ -264,20 +276,26 @@ struct Save {
     env: Vec<SaveEnv>,
     #[serde(default)]
     depends_on: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     preview_url: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     repo_source: Option<RepoSource>,
     operation_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    run_id: Option<String>,
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct SaveEnv {
     pub(crate) name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) value: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) secret: Option<bool>,
 }
 
-#[derive(Deserialize)]
+#[derive(Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct RepoSource {
     id: String,
@@ -334,6 +352,8 @@ pub(crate) fn handles(method: &str) -> bool {
         | "quickLaunch.setup.read" | "quickLaunch.setup.save" | "quickLaunch.setup.run" | "quickLaunch.setup.status"
         | "quickLaunch.sequence.cancel"
         | "quickLaunch.repo.list" | "quickLaunch.repo.save" | "quickLaunch.repo.delete" | "quickLaunch.repo.trust"
+        | "quickLaunch.recent" | "quickLaunch.proposals.list"
+        | "quickLaunch.proposals.accept" | "quickLaunch.proposals.reject"
     )
 }
 fn required(value: &str) -> Result<()> {
@@ -406,6 +426,13 @@ pub(crate) fn validate(method: &str, value: &Value) -> Result<()> {
     if method.starts_with("quickLaunch.repo.") {
         return crate::run_repo_config::validate(method, value);
     }
+    // Phase 3's read methods and its human-only proposal decisions validate in their own modules.
+    if method == "quickLaunch.recent" {
+        return run_recent::validate(value);
+    }
+    if method.starts_with("quickLaunch.proposals.") {
+        return run_proposals::validate(method, value);
+    }
     match method {
         "quickLaunch.list" => {
             let p: List = serde_json::from_value(value.clone())?;
@@ -465,7 +492,7 @@ pub(crate) fn validate(method: &str, value: &Value) -> Result<()> {
             required(&p.cwd)?;
         }
         "quickLaunch.save" => {
-            for key in ["id", "expectedRevision", "previewUrl", "repoSource"] {
+            for key in ["id", "expectedRevision", "previewUrl", "repoSource", "runId"] {
                 if value.get(key).is_some_and(Value::is_null) {
                     return Err(anyhow!("invalid_request"));
                 }
@@ -521,8 +548,12 @@ pub(crate) fn validate(method: &str, value: &Value) -> Result<()> {
             {
                 return Err(anyhow!("invalid_request"));
             }
+            if let Some(run_id) = &p.run_id { required(run_id)?; }
             if let Some(id) = &p.id {
                 required(id)?;
+            }
+            if p.id.is_some() != p.expected_revision.is_some() {
+                return Err(anyhow!("invalid_request"));
             }
             if let Some(expected) = p.expected_revision {
                 revision(expected)?;
@@ -535,6 +566,13 @@ pub(crate) fn validate(method: &str, value: &Value) -> Result<()> {
         _ => {}
     }
     Ok(())
+}
+
+fn validate_command_fields(name: &str, command: &str, shell: &str, cwd: &str, kind: &str, env: &[SaveEnv], preview: Option<&str>) -> Result<()> {
+    let p = Save { project_id:"validation".into(), id:None, expected_revision:None,
+        name:name.into(), command:command.into(), shell:shell.into(), cwd:cwd.into(), kind:kind.into(), env:env.to_vec(),
+        depends_on:vec![], preview_url:preview.map(str::to_owned), repo_source:None, operation_id:"validation".into(), run_id:None };
+    validate("quickLaunch.save", &serde_json::to_value(p)?)
 }
 
 fn operation_tx(tx: &Transaction<'_>, id: &str) -> Result<Option<Value>> {
@@ -841,6 +879,10 @@ pub(crate) fn dispatch(
             )
         }
         "quickLaunch.restart" => restart(db, pty, serde_json::from_value(value.clone())?),
+        "quickLaunch.recent" => run_recent::dispatch(db, value),
+        "quickLaunch.proposals.list" => run_proposals::list(db, value),
+        "quickLaunch.proposals.accept" => run_proposals::accept(db, value),
+        "quickLaunch.proposals.reject" => run_proposals::reject(db, value),
         _ => Err(anyhow!("unknown_method")),
     }
 }
@@ -852,6 +894,42 @@ fn save(db: &Database, p: Save) -> Result<Value> {
         .transpose()?;
     db.transaction(|tx| {
         if let Some(result) = operation_tx(tx, &p.operation_id)? { return Ok(result); }
+        let mut source = match (&p.repo_source, &repo_root) {
+            (Some(source), Some(root)) => crate::run_repo_config::repo_move_source(tx, &p.project_id, root, &source.id, &source.fingerprint)?,
+            (None, None) => std::collections::HashMap::new(),
+            _ => return Err(anyhow!("invalid_request")),
+        };
+        if let Some(run_id) = &p.run_id {
+            let raw: Option<String> = tx.query_row("SELECT snapshot_json FROM quick_launch_runs WHERE session_id=? AND project_id=?", params![run_id,p.project_id], |row| row.get(0)).optional()?;
+            if let Some(raw) = raw {
+            let (snapshot, _, _) = setup::decode_snapshot(&raw)?;
+            // Repo Keep is a local copy without secrets. Never copy a repo override via a run id.
+            if !snapshot.id.starts_with("repo:") {
+                let values = crate::run_repo_config::secret_source(tx, &p.project_id, &snapshot.id)?;
+                for item in &snapshot.env {
+                    if crate::run_repo_config::is_secret_reference(&item.value) {
+                        if let Some(value) = values.get(&item.name.to_ascii_uppercase()) {
+                            source.insert(item.name.to_ascii_uppercase(), value.clone());
+                        }
+                    }
+                }
+            }
+        }
+        }
+        let command = save_command_tx(tx, &p, &source)?;
+        if let Some(run_id) = &p.run_id {
+            let rows = tx.execute("UPDATE quick_launch_runs SET kept_command_id=? WHERE session_id=? AND project_id=? AND kept_command_id IS NULL", params![command.id,run_id,p.project_id])?;
+            if rows != 0 { changed(tx, "quickLaunch.recent", None)?; }
+        }
+        let result = public_command_value(tx, &command)?;
+        complete(tx, &p.operation_id, "quickLaunch.save", &result)?;
+        changed(tx, "quickLaunch.commands", None)?;
+        Ok(result)
+    })
+}
+/// Shared human save/accept writer: validate before any mutation, keep secret references internal.
+fn save_command_tx(tx: &Transaction<'_>, p: &Save, source: &std::collections::HashMap<String, String>) -> Result<QuickLaunchCommand> {
+    validate("quickLaunch.save", &serde_json::to_value(p)?)?;
         let previous = p.id.as_ref().map(|id| tx.query_row(&format!("SELECT {COMMAND_COLUMNS} FROM quick_launch_commands WHERE id=? AND project_id=?"), params![id,p.project_id], command_row).optional()).transpose()?.flatten();
         if p.id.is_some() && previous.is_none() { return Err(anyhow!("command_not_found")); }
         if previous.as_ref().is_some_and(|command| Some(command.revision) != p.expected_revision) { return Err(anyhow!("revision_conflict")); }
@@ -862,37 +940,23 @@ fn save(db: &Database, p: Save) -> Result<Value> {
         }
         validate_depends_on(tx, &p.project_id, p.id.as_deref(), &p.depends_on)?;
         let id = p.id.clone().unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
-        let source = match (&p.repo_source, &repo_root) {
-            (Some(source), Some(root)) => crate::run_repo_config::repo_move_source(
-                tx,
-                &p.project_id,
-                root,
-                &source.id,
-                &source.fingerprint,
-            )?,
-            (None, None) => std::collections::HashMap::new(),
-            _ => return Err(anyhow!("invalid_request")),
-        };
         let env = crate::run_repo_config::replace_secret_env(
             tx,
             &p.project_id,
             &id,
             &p.env,
-            &source,
+            source,
         )?;
         let now = Utc::now().to_rfc3339();
-        let command = QuickLaunchCommand { id, project_id:p.project_id,
-            revision:previous.as_ref().map_or(1, |c| c.revision + 1), name:trim_wire(&p.name).to_owned(), command:p.command,
-            shell:p.shell, cwd:p.cwd, kind:p.kind, env, depends_on:p.depends_on, preview_url:p.preview_url,
+        let command = QuickLaunchCommand { id, project_id:p.project_id.clone(),
+            revision:previous.as_ref().map_or(1, |c| c.revision + 1), name:trim_wire(&p.name).to_owned(), command:p.command.clone(),
+            shell:p.shell.clone(), cwd:p.cwd.clone(), kind:p.kind.clone(), env, depends_on:p.depends_on.clone(), preview_url:p.preview_url.clone(),
             created_at:previous.map_or_else(|| now.clone(), |c| c.created_at), updated_at:now };
         tx.execute("INSERT INTO quick_launch_commands(id,project_id,revision,name,command,shell,cwd,kind,env_json,depends_on_json,preview_url,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET revision=excluded.revision,name=excluded.name,command=excluded.command,shell=excluded.shell,cwd=excluded.cwd,kind=excluded.kind,env_json=excluded.env_json,depends_on_json=excluded.depends_on_json,preview_url=excluded.preview_url,updated_at=excluded.updated_at",
             params![command.id,command.project_id,command.revision,command.name,command.command,command.shell,command.cwd,command.kind,serde_json::to_string(&command.env)?,serde_json::to_string(&command.depends_on)?,command.preview_url,command.created_at,command.updated_at])?;
-        let result = public_command_value(tx, &command)?;
-        complete(tx, &p.operation_id, "quickLaunch.save", &result)?;
-        changed(tx, "quickLaunch.commands", None)?;
-        Ok(result)
-    })
+    Ok(command)
 }
+
 fn validate_depends_on(
     tx: &Transaction<'_>,
     project_id: &str,

@@ -285,6 +285,9 @@ test('run tool cards summarise launch, stop, logs, list, status and errors in on
   const already = runToolSummary('run_restart', { runId: 't1', requestId: 'r-2' }, result({ runId: 't2', existing: true, state: 'running', entryId: 'saved', name: 'Dev' }));
   assert.equal(runToolSummaryLabel(already!, copy), 'Already running Dev');
   assert.equal(runToolSummaryLabel(already!, zh), '已在运行 Dev');
+  const proposed = runToolSummary('run_propose', { name: 'API', command: 'npm run api', reason: 'needed', requestId: 'p-1' }, result({ proposalId: 'p1', state: 'pending' }));
+  assert.deepEqual(proposed, { kind: 'proposal', name: 'API' });
+  assert.equal(runToolSummaryLabel(proposed!, copy), 'Proposed API');
 
   const stopped = runToolSummary('run_stop', { runId: 't1' }, result({ runId: 't1', entryId: 'saved', name: 'Dev', state: 'running', stopRequested: true }));
   assert.deepEqual(stopped, { kind: 'stop', name: 'Dev' });

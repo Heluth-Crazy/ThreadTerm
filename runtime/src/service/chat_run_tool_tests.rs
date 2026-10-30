@@ -495,6 +495,62 @@ fn list_reports_saved_detected_and_attributed_runs_of_the_callers_worktree() {
 }
 
 #[test]
+fn propose_never_saves_or_runs_replays_per_caller_and_list_shows_only_the_callers_proposals() {
+    let fixture = Fixture::new();
+    let before_entries = fixture.call("chat.tool.run.list", json!({})).unwrap();
+    assert!(before_entries["entries"].as_array().unwrap().is_empty());
+    assert!(before_entries["runs"].as_array().unwrap().is_empty());
+    assert!(before_entries["proposals"].as_array().unwrap().is_empty());
+    assert_eq!(
+        fixture
+            .call(
+                "chat.tool.run.propose",
+                json!({"name":"Suggested","command":"node app.mjs","reason":"A reason","previewUrl":null,"requestId":"null-preview"}),
+            )
+            .unwrap_err()
+            .to_string(),
+        "invalid_request"
+    );
+
+    let params = json!({
+        "name":"Suggested server","command":"node server.mjs","reason":"Starts the API for local checks",
+        "shell":"cmd","cwd":"","kind":"service","env":[],"requestId":"proposal-1"
+    });
+    let first = fixture.call("chat.tool.run.propose", params.clone()).unwrap();
+    assert_eq!(first["state"], "pending");
+    assert!(first["proposalId"].is_string());
+    // A retry is the same proposal, and neither call created an entry or a terminal.
+    assert_eq!(fixture.call("chat.tool.run.propose", params).unwrap(), first);
+    let listed = fixture.call("chat.tool.run.list", json!({})).unwrap();
+    assert!(listed["entries"].as_array().unwrap().is_empty());
+    assert!(listed["runs"].as_array().unwrap().is_empty());
+    let proposals = listed["proposals"].as_array().unwrap();
+    assert_eq!(proposals.len(), 1);
+    assert_eq!(proposals[0]["proposalId"], first["proposalId"]);
+    assert_eq!(proposals[0]["state"], "pending");
+
+    let (other, other_token) = fixture.second_agent();
+    let other_list = fixture
+        .tools
+        .dispatch(
+            &fixture.providers,
+            "chat.tool.run.list",
+            &json!({"callerSessionId":other,"callerToken":other_token}),
+        )
+        .unwrap();
+    assert!(other_list["proposals"].as_array().unwrap().is_empty());
+    // Replay is still authoritative after a target has been deleted.
+    let target = fixture.save("Target", "echo target", "task");
+    let update = json!({"id":target,"name":"Updated","command":"echo updated","reason":"Update task","requestId":"update-replay"});
+    let original = fixture.call("chat.tool.run.propose", update.clone()).unwrap();
+    fixture.db.transaction(|tx| {
+        tx.execute("DELETE FROM quick_launch_commands WHERE id=?", [&target])?;
+        Ok(())
+    }).unwrap();
+    assert_eq!(fixture.call("chat.tool.run.propose", update).unwrap(), original);
+}
+
+#[test]
 fn another_projects_run_is_run_not_found_rather_than_forbidden() {
     let fixture = Fixture::new();
     let other = fixture.dir.path().join("other");
@@ -574,7 +630,7 @@ fn another_projects_run_is_run_not_found_rather_than_forbidden() {
 }
 
 #[test]
-fn a_read_only_delegate_may_look_but_not_start_stop_or_restart() {
+fn a_read_only_delegate_may_look_but_not_start_stop_restart_or_propose() {
     let fixture = Fixture::new();
     write_package(&fixture.root, "node dev.js");
     let run = fixture.detected_run("node:package.json:dev");
@@ -628,6 +684,16 @@ fn a_read_only_delegate_may_look_but_not_start_stop_or_restart() {
                 &fixture.providers,
                 &fixture.pty,
                 &json!({"callerSessionId":fixture.session,"callerToken":fixture.token,"runId":run}),
+            )
+            .unwrap_err()
+            .to_string(),
+        "run_not_permitted"
+    );
+    assert_eq!(
+        fixture
+            .call(
+                "chat.tool.run.propose",
+                json!({"name":"Blocked","command":"node app.mjs","reason":"No write authority","requestId":"ro-propose"}),
             )
             .unwrap_err()
             .to_string(),
@@ -761,6 +827,38 @@ fn a_saved_agent_start_reports_and_attributes_its_dependency_sequence() {
         "id":target,"requestId":"agent-dependency-start"
     })).join().unwrap().unwrap();
     assert_eq!(replay["sequenceId"],sequence_id);
+}
+
+#[cfg(windows)]
+#[test]
+fn run_list_combines_repo_entries_own_proposals_and_dependency_sequence() {
+    let fixture = Fixture::new();
+    fixture.save_repo("api", "echo repo");
+    let dependency = fixture.save("List dependency", "ping -n 1 127.0.0.1 > nul", "task");
+    let target = crate::quick_launch::dispatch(&fixture.db, &fixture.pty, "quickLaunch.save", &json!({
+        "projectId":fixture.project,"name":"List target","command":"ping -n 1 127.0.0.1 > nul",
+        "shell":"cmd","cwd":"","kind":"task","env":[],"dependsOn":[dependency],
+        "operationId":"save-list-target"
+    })).unwrap()["id"].as_str().unwrap().to_owned();
+    let proposal = fixture.call("chat.tool.run.propose", json!({
+        "name":"Proposed","command":"echo proposed","reason":"combine list sources","requestId":"combined-list"
+    })).unwrap();
+    let started = fixture.start_in_background("chat.tool.run.start", json!({
+        "id":target,"requestId":"combined-sequence"
+    })).join().unwrap().unwrap();
+
+    let list = fixture.call("chat.tool.run.list", json!({})).unwrap();
+    assert!(list["entries"].as_array().unwrap().iter().any(|entry| {
+        entry["id"] == "repo:api" && entry["source"] == "repo"
+    }));
+    assert!(list["proposals"].as_array().unwrap().iter().any(|item| {
+        item["proposalId"] == proposal["proposalId"] && item["state"] == "pending"
+    }));
+    let sequence_run = list["runs"].as_array().unwrap().iter().find(|run| {
+        run["runId"] == started["runId"]
+    }).expect("the sequence target is in the same list response");
+    assert_eq!(sequence_run["sequence"]["id"], started["sequenceId"]);
+    assert_eq!(sequence_run["sequence"]["targetCommandId"], target);
 }
 
 #[cfg(windows)]

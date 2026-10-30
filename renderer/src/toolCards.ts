@@ -203,7 +203,7 @@ export function mcpResultView(value: unknown): { text?: string; structuredConten
 }
 
 /** Every run tool's one-line summary; nothing else is summarised this way. */
-const RUN_TOOL_NAMES = new Set(['run_list', 'run_start', 'run_status', 'run_logs', 'run_stop', 'run_restart']);
+const RUN_TOOL_NAMES = new Set(['run_list', 'run_start', 'run_status', 'run_logs', 'run_stop', 'run_restart', 'run_propose']);
 const RUN_ACTIVE_STATES = new Set(['starting', 'running', 'idle', 'waiting']);
 /** Stable run codes; the MCP host wraps a runtime error into `chat_tool_request_failed` with the code as its message. */
 const RUN_ERROR_CODES = new Set([
@@ -217,6 +217,7 @@ export type RunToolSummary =
   | { kind: 'logs'; name: string; lines: number }
   | { kind: 'list'; entries: number; running: number }
   | { kind: 'status'; name: string; state: string; readiness?: string }
+  | { kind: 'proposal'; name: string }
   | { kind: 'error'; code: string };
 
 function jsonRecord(value: unknown): Record<string, unknown> | undefined {
@@ -245,6 +246,10 @@ export function runToolSummary(tool: string | undefined, args: unknown, result: 
   if (!payload) return undefined;
   const name = textField(payload.name);
   switch (tool) {
+    case 'run_propose': {
+      const proposedName = name ?? textField(jsonRecord(args)?.name);
+      return proposedName && textField(payload.state) === 'pending' ? { kind: 'proposal', name: proposedName } : undefined;
+    }
     case 'run_start':
     case 'run_restart':
       return name ? { kind: 'launch', name, existing: payload.existing === true } : undefined;
@@ -280,6 +285,7 @@ export function runToolSummaryLabel(summary: RunToolSummary, copy: Copy): string
       : copy(`${summary.lines} lines of ${summary.name}`, `${summary.name} 的 ${summary.lines} 行输出`);
     case 'list': return copy(`${summary.entries} ${summary.entries === 1 ? 'entry' : 'entries'}, ${summary.running} running`, `${summary.entries} 个条目，${summary.running} 个运行中`);
     case 'status': return `${summary.name}: ${runStatusText(summary.state, summary.readiness, copy)}`;
+    case 'proposal': return copy(`Proposed ${summary.name}`, `已提议 ${summary.name}`);
     case 'error':
       if (summary.code === 'run_declined') return copy('Run declined', '已拒绝运行');
       if (summary.code === 'run_not_found') return copy('Run not found', '未找到该运行');

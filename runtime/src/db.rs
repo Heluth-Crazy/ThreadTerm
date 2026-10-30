@@ -227,7 +227,7 @@ impl Database {
         self.transaction(|tx| {
             use sha2::{Digest, Sha256};
             let raw=serde_json::to_string(request)?;
-            let private=matches!(method, "quickLaunch.save" | "quickLaunch.repo.save");
+            let private=matches!(method, "quickLaunch.save" | "quickLaunch.repo.save" | "quickLaunch.proposals.accept");
             let serialized=if private {
                 json!({"requestSha256":hex::encode(Sha256::digest(format!("{method}\0{raw}").as_bytes()))}).to_string()
             } else { raw.clone() };
@@ -3854,7 +3854,7 @@ mod tests {
         let secret = "review-round-private-operation-value";
         let request = json!({"operationId":"private-save","entry":{"env":[{"name":"TOKEN","secret":true,"value":secret}]}});
         let db = Database::open(&path).unwrap();
-        for method in ["quickLaunch.save", "quickLaunch.repo.save"] {
+        for method in ["quickLaunch.save", "quickLaunch.repo.save", "quickLaunch.proposals.accept"] {
             db.bind_operation(method, method, &request).unwrap();
             db.bind_operation(method, method, &request).unwrap();
         }
@@ -3867,8 +3867,10 @@ mod tests {
         drop(db);
         let db = Database::open(&path).unwrap();
         db.bind_operation("quickLaunch.repo.save", "quickLaunch.repo.save", &request).unwrap();
+        db.bind_operation("quickLaunch.proposals.accept", "quickLaunch.proposals.accept", &request).unwrap();
         let changed = json!({"operationId":"private-save","entry":{"env":[{"name":"TOKEN","secret":true,"value":"changed"}]}});
         assert!(db.bind_operation("quickLaunch.repo.save", "quickLaunch.repo.save", &changed).is_err());
+        assert!(db.bind_operation("quickLaunch.proposals.accept", "quickLaunch.proposals.accept", &changed).is_err());
     }
 
     #[test]

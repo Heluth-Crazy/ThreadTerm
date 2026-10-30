@@ -20,6 +20,7 @@
 .ql-editor .note,.ql-import .note { margin:6px 0 10px; }.ql-delete { margin-right:auto; }
 .ql-advanced { border-top:1px solid var(--border); padding-top:12px; }.ql-advanced summary { cursor:pointer; font-size:12px; margin-bottom:10px; }.ql-advanced .field>label { display:block; margin-bottom:6px; }
 .ql-env-row { display:flex; gap:6px; margin-bottom:6px; }.ql-env-row input { min-width:0; width:0; flex:2; }.ql-env-row input:first-child { flex:1; }
+.ql-secret-value { display:flex; align-items:center; min-width:0; flex:2; padding:0 8px; border:1px solid var(--border); border-radius:var(--radius); color:var(--muted); font-size:12px; }
 .ql-env-secret { display:inline-flex; align-items:center; gap:4px; flex:none; color:var(--muted); font-size:11px; white-space:nowrap; }
 .ql-repo-storage { display:flex; align-items:center; gap:7px; margin:0 0 8px; font-size:12px; }
 .ql-repo-details { grid-column:1 / -1; margin-top:2px; }.ql-repo-details .ql-source-label { margin:0 4px 4px 0; background:var(--surface); cursor:pointer; }
@@ -31,6 +32,8 @@
 .ql-import .dlg-foot .sheet-foot-meta { margin-right:auto; color:var(--muted); font-size:13px; line-height:1.25; font-variant-numeric:tabular-nums; }
 .ql-script-list { max-height:320px; overflow:auto; }.ql-script { display:flex; align-items:center; gap:10px; border-top:1px solid var(--border); padding:10px 0; font-size:12px; }.ql-script>span:nth-child(2) { flex:1; min-width:0; }.ql-script code { display:block; color:var(--muted); margin-top:3px; overflow-wrap:anywhere; }
 .ql-editor summary:focus-visible { outline:2px solid var(--primary); outline-offset:2px; }
+.ql-proposal-current { margin-top:14px; padding-top:12px; border-top:1px solid var(--border); }
+.ql-proposal-current > strong { display:block; margin-bottom:8px; font-size:12px; }.ql-proposal-current > p { margin:0 0 8px; color:var(--muted); font-size:12px; line-height:1.45; }
 @media(max-width:800px) { .ql-run-chip { max-width:160px; }.ql-menu { max-width:calc(100vw - 16px); } }
 @media(max-width:520px) { .ql-import .dlg-foot .sheet-foot-meta { flex:1 0 100%; margin-right:0; }.ql-import .dlg-foot > .btn { flex:1 1 calc(50% - 4px); min-width:0; justify-content:center; } }
 /* Detected: computed from the worktree's files when the popover opens, grouped by source then package/target. */
@@ -48,3 +51,13 @@
 /* A suggestion is inferred, not declared: the same tag shape, dashed. */
 .ql-source-label.ql-suggested { border-style:dashed; }
 .ql-detected-entry.is-missing strong, .ql-detected-entry.is-missing code { opacity:.6; }
+
+.wb-proposal-review { display:flex; flex-direction:column; gap:8px; margin:6px 0; }
+.wb-proposal-review .wb-proposal-field { display:grid; grid-template-columns:minmax(90px,auto) minmax(0,1fr); gap:4px 8px; }
+.wb-proposal-review .wb-proposal-field > strong { overflow-wrap:anywhere; text-transform:none; }
+.wb-proposal-review pre { margin:0; padding:6px; white-space:pre-wrap; overflow-wrap:anywhere; overflow:auto; font:11px/1.45 var(--mono); background:var(--soft); color:var(--text); }
+.wb-proposal-review .wb-proposal-diff pre { grid-column:1 / -1; }
+.wb-proposal-review pre span { display:block; }
+.wb-proposal-review del, .wb-proposal-review ins { grid-column:2; white-space:pre-wrap; overflow-wrap:anywhere; text-decoration:none; }
+.wb-proposal-review del, .wb-proposal-review .is-removed { color:var(--danger); }
+.wb-proposal-review ins, .wb-proposal-review .is-added { color:var(--success,var(--primary)); }

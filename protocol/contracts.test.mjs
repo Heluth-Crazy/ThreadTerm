@@ -796,6 +796,23 @@ test('quick launch commands are bounded: relative cwd inside the root, known she
  for(const patch of [{readiness:'starting'},{urlSource:'guess'},{port:'8080'},{port:null},{allocatedPort:'8080'},{allocatedPort:null},{readiness:null}]) assert.throws(()=>validateResult('quickLaunch.run',{...ready,session:{...ready.session,run:{...ready.session.run,...patch}}}),/Invalid runtime result|protocol schema/,JSON.stringify(patch));
 });
 
+test('recent runs and agent proposals require scoped reads and bounded human-only proposal input',()=>{
+ const scope={projectId:'p',cwd:'C:\\repo'};
+ validateRequest('quickLaunch.recent',scope);
+ validateRequest('quickLaunch.proposals.list',scope);
+ for(const method of ['quickLaunch.recent','quickLaunch.proposals.list']) for(const patch of [{projectId:''},{cwd:''},{cwd:undefined}]) assert.throws(()=>validateRequest(method,{...scope,...patch}));
+ validateRequest('quickLaunch.proposals.accept',{proposalId:'proposal',operationId:'accept'});
+ validateRequest('quickLaunch.proposals.accept',{proposalId:'proposal',operationId:'accept',edits:{name:'Edited',command:'npm run changed',shell:'pwsh',cwd:'packages/web',kind:'task',env:[{name:'NODE_ENV',value:'test'}],previewUrl:'http://localhost:5173/'}});
+ validateRequest('quickLaunch.proposals.accept',{proposalId:'proposal',operationId:'accept',edits:{env:[{name:'TOKEN',secret:true}],dependsOn:['db']}});
+ validateRequest('quickLaunch.proposals.reject',{proposalId:'proposal',operationId:'reject'});
+ for(const edits of [{command:''},{cwd:'../outside'},{shell:'bash'},{env:[{name:'A',value:'1'},{name:'a',value:'2'}]},{previewUrl:'file:///unsafe'}]) assert.throws(()=>validateRequest('quickLaunch.proposals.accept',{proposalId:'proposal',operationId:'accept',edits}));
+ const proposal={name:'Suggested command',command:'node task.mjs',reason:'The project needs this task.',requestId:'agent-request'};
+ validateRequest('chat.tool.run.propose',proposal);
+ validateRequest('chat.tool.run.propose',{...proposal,id:'saved',cwd:'packages/web',kind:'task',shell:'pwsh',env:[{name:'NODE_ENV',value:'test'}],previewUrl:'http://localhost:5173/'});
+ assert.throws(()=>validateRequest('chat.tool.run.propose',{...proposal,env:[{name:'TOKEN',value:'x',secret:true}]}));
+ for(const patch of [{reason:''},{reason:'x'.repeat(2001)},{command:'one\ntwo',shell:'cmd'},{cwd:'../outside'},{kind:'daemon'}]) assert.throws(()=>validateRequest('chat.tool.run.propose',{...proposal,...patch}));
+});
+
 test('detected entries are read-only suggestions with a stable key and exactly one run target',()=>{
  const scope={projectId:'p',cwd:'C:\\repo'};
  validateRequest('quickLaunch.detect',scope);
@@ -1110,4 +1127,27 @@ test('saved port templates and dependencies compose with private environment inp
  assert.throws(()=>validateRequest('quickLaunch.save',{...input,dependsOn:['db','db']}));
  const {operationId,...fields}=input;
  validateResult('quickLaunch.save',{...fields,id:'api',revision:1,createdAt:'now',updatedAt:'now',env:[{name:'TOKEN',secret:true,hasValue:true},{name:'PORT',value:'${port}'}]});
+});
+
+test('recent and proposal results keep snapshots, decisions and caller summaries typed',()=>{
+ const snapshot={id:'cmd',projectId:'p',revision:1,name:'Build',command:'npm run build',shell:'cmd',cwd:'',kind:'task',env:[],createdAt:'2026-10-30T00:00:00Z',updatedAt:'2026-10-30T00:00:00Z'};
+ const run={runId:'r',entryId:'cmd',name:'Build',command:'npm run build',source:'saved',startedAt:snapshot.createdAt,state:'completed',exitCode:0,stopped:false,snapshot,kept:{commandId:'cmd'}};
+ validateResult('quickLaunch.recent',{runs:[run]});
+ assert.throws(()=>validateResult('quickLaunch.recent',{runs:[{...run,source:'proposal'}]}));
+ const proposal={id:'q',projectId:'p',root:'C:/repo',sessionId:'chat',name:'Build',command:'npm run build',shell:'cmd',cwd:'',kind:'task',env:[],reason:'Build locally',state:'pending',createdAt:snapshot.createdAt};
+ validateResult('quickLaunch.proposals.list',{pending:[proposal],decided:[{...proposal,state:'accepted',decidedCommandId:'cmd'}]});
+ validateResult('quickLaunch.proposals.accept',snapshot);
+ validateResult('quickLaunch.proposals.reject',null);
+ validateResult('chat.tool.run.propose',{proposalId:'q',state:'pending'});
+ assert.throws(()=>validateResult('chat.tool.run.propose',{proposalId:'q',state:'accepted'}));
+ validateResult('chat.tool.run.list',{worktree:'C:/repo',entries:[],runs:[],truncated:false,proposals:[{proposalId:'q',name:'Build',state:'accepted',createdAt:snapshot.createdAt,decidedCommandId:'cmd'}]});
+});
+
+
+test('agent run list composes repo entries, own proposals, and dependency sequence results',()=>{
+ const sequence={id:'seq',projectId:'p',root:'C:/repo',commandIds:['prepare','api'],names:['Prepare','API'],step:0,state:'running',sessionIds:['r'],trigger:'depends_on',targetCommandId:'api',createdAt:'now',updatedAt:'now'};
+ validateResult('chat.tool.run.list',{worktree:'C:/repo',
+  entries:[{id:'repo:api',name:'Shared API',command:'node app.mjs',cwd:'',kind:'service',source:'repo',approved:false}],
+  runs:[{runId:'r',entryId:'prepare',name:'Prepare',state:'running',startedAt:'now',startedBy:'agent',startedBySelf:true,sequence}],
+  proposals:[{proposalId:'q',name:'Suggested',state:'pending',createdAt:'now'}],truncated:false});
 });

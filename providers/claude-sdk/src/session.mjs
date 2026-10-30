@@ -57,7 +57,7 @@ export const THREADTERM_BROWSER_TOOLS = new Set([...THREADTERM_BROWSER_READ_TOOL
 export const THREADTERM_CHAT_TOOLS = new Set(['ask_user', 'session_info', 'feedback_check'].map(name => `mcp__threadterm__${name}`));
 // The Run tools as the SDK names them (runtime `mcp_delegation::RUN_TOOL_NAMES`), approved only when
 // THREADTERM_CHAT_TOOL_RUN=1 arrives with the composed chat-tools server.
-export const THREADTERM_RUN_TOOLS = new Set(['run_list', 'run_start', 'run_status', 'run_logs', 'run_stop', 'run_restart'].map(name => `mcp__threadterm__${name}`));
+export const THREADTERM_RUN_TOOLS = new Set(['run_list', 'run_start', 'run_status', 'run_logs', 'run_stop', 'run_restart', 'run_propose'].map(name => `mcp__threadterm__${name}`));
 const EFFORT_NAMES = { low: 'Low', medium: 'Medium', high: 'High', xhigh: 'Extra high', max: 'Max' };
 
 const ROUNDTABLE_READ_ONLY_TOOLS = new Set(['Read', 'Glob', 'Grep']);

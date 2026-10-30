@@ -97,6 +97,7 @@ export function missingToolLabel(tool: string, zh: boolean): string {
  return zh ? `PATH 中找不到 ${tool}` : `${tool} isn't on PATH`;
 }
 const errors: Record<string,[string,string]> = {
+ detected_command_unprintable:["This command or proposal contains invisible formatting or control characters.","此命令或建议包含不可见的格式字符或控制字符。"],
  revision_conflict:['This command changed elsewhere. Reload it before saving; your draft is kept.','此命令已在其他窗口修改。请重新加载后再保存；草稿已保留。'],
  command_not_found:['This saved command no longer exists.','此保存的命令已不存在。'], too_many_commands:['A project can save up to 100 commands.','每个项目最多保存 100 个命令。'],
  cmd_single_line:['CMD runs one line — join commands with &&.','CMD 仅执行一行，请用 && 连接命令。'], shell_unavailable:['This shell is not installed or available.','此 Shell 未安装或不可用。'],
@@ -113,6 +114,7 @@ const errors: Record<string,[string,string]> = {
  command_has_dependents:['This command is required by other saved commands. Remove it from their Start after lists first.','其他已保存命令依赖此命令。请先从它们的启动依赖列表中移除。'],
  repo_config_conflict:['The shared run file changed elsewhere. Reopen Run and review it before saving.','共享运行文件已在其他位置更改。请重新打开 Run，检查后再保存。'], repo_config_invalid:['.threadterm/run.json is invalid. Fix the file and reopen Run.','.threadterm/run.json 无效。请修复该文件后重新打开 Run。'],
  secret_missing:['Enter the missing secret value in the shared command editor.','请在共享命令编辑器中填写缺失的密钥值。'], repo_entry_not_found:['This shared entry no longer exists. Reopen Run to see the current file.','此共享条目已不存在。请重新打开 Run 查看当前文件。'],
+ run_proposal_not_found:['This proposal no longer exists. Reload proposals and try again.','此建议已不存在。请重新加载建议后重试。'], run_proposal_not_pending:['This proposal was already decided. Reload proposals to see its result.','此建议已处理。请重新加载建议查看结果。'], too_many_proposals:['This project already has the maximum number of pending proposals.','此项目的待处理建议已达到上限。'],
 };
 export function quickLaunchError(error: unknown, zh: boolean): string {
  const message = error instanceof Error ? error.message : String(error);

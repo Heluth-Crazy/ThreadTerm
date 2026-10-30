@@ -2391,6 +2391,9 @@
           ],
           "additionalProperties": false
         },
+        "runId": {
+          "type": "string"
+        },
         "operationId": {
           "type": "string"
         }
@@ -2784,6 +2787,110 @@
       ],
       "additionalProperties": false
     },
+    "RequestParams<\"quickLaunch.recent\">": {
+      "type": "object",
+      "properties": {
+        "projectId": {
+          "type": "string"
+        },
+        "cwd": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "projectId",
+        "cwd"
+      ],
+      "additionalProperties": false
+    },
+    "RequestParams<\"quickLaunch.proposals.list\">": {
+      "type": "object",
+      "properties": {
+        "projectId": {
+          "type": "string"
+        },
+        "cwd": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "projectId",
+        "cwd"
+      ],
+      "additionalProperties": false
+    },
+    "RequestParams<\"quickLaunch.proposals.accept\">": {
+      "type": "object",
+      "properties": {
+        "proposalId": {
+          "type": "string"
+        },
+        "operationId": {
+          "type": "string"
+        },
+        "edits": {
+          "$ref": "#/definitions/RunProposalEdits"
+        }
+      },
+      "required": [
+        "proposalId",
+        "operationId"
+      ],
+      "additionalProperties": false
+    },
+    "RunProposalEdits": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "command": {
+          "type": "string"
+        },
+        "shell": {
+          "$ref": "#/definitions/QuickLaunchShell"
+        },
+        "cwd": {
+          "type": "string"
+        },
+        "kind": {
+          "$ref": "#/definitions/QuickLaunchKind"
+        },
+        "env": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/QuickLaunchSaveEnvVar"
+          }
+        },
+        "previewUrl": {
+          "type": "string"
+        },
+        "dependsOn": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "additionalProperties": false,
+      "description": "The human's edits from the command editor, applied over the proposal by `quickLaunch.proposals.accept`. An absent field keeps the proposal's value; `previewUrl: ''` clears the fallback address."
+    },
+    "RequestParams<\"quickLaunch.proposals.reject\">": {
+      "type": "object",
+      "properties": {
+        "proposalId": {
+          "type": "string"
+        },
+        "operationId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "proposalId",
+        "operationId"
+      ],
+      "additionalProperties": false
+    },
     "RequestParams<\"chat.tool.run.list\">": {
       "type": "object",
       "additionalProperties": false
@@ -2858,6 +2965,68 @@
         "requestId"
       ],
       "additionalProperties": false
+    },
+    "RequestParams<\"chat.tool.run.propose\">": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "command": {
+          "type": "string"
+        },
+        "reason": {
+          "type": "string"
+        },
+        "id": {
+          "type": "string"
+        },
+        "cwd": {
+          "type": "string"
+        },
+        "kind": {
+          "$ref": "#/definitions/QuickLaunchKind"
+        },
+        "shell": {
+          "$ref": "#/definitions/QuickLaunchShell"
+        },
+        "env": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/RunProposalEnvVar"
+          }
+        },
+        "previewUrl": {
+          "type": "string"
+        },
+        "requestId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "command",
+        "reason",
+        "requestId"
+      ],
+      "additionalProperties": false
+    },
+    "RunProposalEnvVar": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "value": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "value"
+      ],
+      "additionalProperties": false,
+      "description": "Agent proposals never carry secret metadata or values: every suggested override is plain text."
     },
     "RequestParams<\"history.list\">": {
       "type": "object",
@@ -8975,6 +9144,110 @@
         },
         "method": {
           "type": "string",
+          "const": "quickLaunch.recent"
+        },
+        "params": {
+          "$ref": "#/definitions/RequestParams%3C%22quickLaunch.recent%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "params"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "quickLaunch.proposals.list"
+        },
+        "params": {
+          "$ref": "#/definitions/RequestParams%3C%22quickLaunch.proposals.list%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "params"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "quickLaunch.proposals.accept"
+        },
+        "params": {
+          "$ref": "#/definitions/RequestParams%3C%22quickLaunch.proposals.accept%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "params"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "quickLaunch.proposals.reject"
+        },
+        "params": {
+          "$ref": "#/definitions/RequestParams%3C%22quickLaunch.proposals.reject%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "params"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
           "const": "chat.tool.run.list"
         },
         "params": {
@@ -9109,6 +9382,32 @@
         },
         "params": {
           "$ref": "#/definitions/RequestParams%3C%22chat.tool.run.restart%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "params"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "chat.tool.run.propose"
+        },
+        "params": {
+          "$ref": "#/definitions/RequestParams%3C%22chat.tool.run.propose%22%3E"
         }
       },
       "required": [

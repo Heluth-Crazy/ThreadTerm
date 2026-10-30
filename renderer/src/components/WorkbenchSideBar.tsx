@@ -14,6 +14,7 @@ import { FILES_CHANGED_EVENT, scopeParams, type GitState, type WorkbenchActions,
 import type { RunCommandRequest } from '../workbench/runView';
 import { createRefreshQueue, type RefreshQueue } from '../workbench/refreshQueue';
 import { eventTouchesWorktree } from '../workbench/refreshTriggers';
+import { useRunProposalCount } from '../runProposals';
 import type { GitWorkbenchAction } from '../workbench/gitKeyboardCommand';
 import '../workbench/workbench.css';
 import './panel-headers.css';
@@ -135,12 +136,13 @@ export function WorkbenchSideBar({scope, actions, sessions, allSessions = [], ac
   target.addEventListener('pointermove', move); target.addEventListener('pointerup', end); target.addEventListener('pointercancel', end);
  };
  const changeCount = git.status?.changes.length ?? 0;
+ const proposalCount = useRunProposalCount({projectId:scope.projectId,root:scope.rootPath}, zh);
  const views:{id:WorkbenchView;icon:string;label:string;shortcut:string;badge?:number}[] = [
   {id:'files', icon:'file', label:text('Files', '文件'), shortcut:'Ctrl+Shift+E'},
   {id:'search', icon:'search', label:text('Search', '搜索'), shortcut:'Ctrl+Shift+F'},
   {id:'scm', icon:'branch', label:text('Source Control', '源代码管理'), shortcut:'Ctrl+Shift+G', badge:changeCount || undefined},
   // The Run view deliberately has no shortcut: Ctrl+Shift+R is Electron's Force Reload in the default menu.
-  {id:'run', icon:'play', label:text('Run', '运行'), shortcut:''},
+  {id:'run', icon:'play', label:text('Run', '运行'), shortcut:'', badge:proposalCount || undefined},
   {id:'changes', icon:'spark', label:text('Agent changes', 'Agent 改动'), shortcut:''},
  ];
  const current = views.find(view => view.id === stored.view)!;
@@ -149,7 +151,7 @@ export function WorkbenchSideBar({scope, actions, sessions, allSessions = [], ac
    data-view={view.id} aria-pressed={open && stored.view === view.id} aria-label={view.label}
    title={`${view.label}${view.shortcut ? ` (${view.shortcut})` : ''}${open && stored.view === view.id ? text(' · click to hide the side bar (Ctrl+B)', ' · 再次点击隐藏侧栏（Ctrl+B）') : ''}`}
    onClick={() => select(view.id)}>
-   <WbIcon name={view.icon}/>{view.badge ? <span className="wb-switch-badge">{view.badge > 99 ? '99+' : view.badge}</span> : null}
+   <WbIcon name={view.icon}/>{view.badge ? <span className="wb-switch-badge" data-testid={view.id==='run'?'run-proposals-badge':undefined} role={view.id==='run'?'status':undefined} aria-live={view.id==='run'?'polite':undefined} aria-label={view.id==='run'?text(`${view.badge} pending proposal${view.badge===1?'':'s'}`,`${view.badge} 个待处理建议`):undefined}>{view.badge > 99 ? '99+' : view.badge}</span> : null}
   </button>)}
  </nav>;
  return <>

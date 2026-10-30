@@ -407,10 +407,11 @@ test('ThreadTerm run tools are approved only by exact name and only when the run
   const session = new ClaudeSession({ cardId: 'card-run-tools', sdk, write() {} });
   const servers = { threadterm: { type: 'stdio', command: 'threadterm-v3-mcp', args: [], env: { THREADTERM_CHAT_TOKEN: 'chat-token', THREADTERM_CHAT_TOOL_ASK: '0', THREADTERM_CHAT_TOOL_SESSION_INFO: '0', THREADTERM_CHAT_TOOL_FEEDBACK: '0', THREADTERM_CHAT_TOOL_RUN: '1' } } };
   await session.start({ cwd: 'C:/', sessionId: null, mcpServers: servers });
-  const runTools = ['run_list', 'run_start', 'run_status', 'run_logs', 'run_stop', 'run_restart'].map(name => `mcp__threadterm__${name}`);
+  const runTools = ['run_list', 'run_start', 'run_status', 'run_logs', 'run_stop', 'run_restart', 'run_propose'].map(name => `mcp__threadterm__${name}`);
   assert.deepEqual(sdk.state.options.allowedTools, runTools);
   assert.equal((await session.requestPermission('mcp__threadterm__run_list', {})).behavior, 'allow');
   assert.equal((await session.requestPermission('mcp__threadterm__run_start', { id: 'saved', requestId: 'r-1' })).behavior, 'allow');
+  assert.equal((await session.requestPermission('mcp__threadterm__run_propose', { name: 'Suggested', command: 'node app.mjs', reason: 'Run the app', requestId: 'p-1' })).behavior, 'allow');
   assert.equal(await settledWithin(session.requestPermission('mcp__threadterm__run_list_extra', {}), 50), 'pending', 'a prefix spoof still asks the user');
   assert.equal(await settledWithin(session.requestPermission('mcp__threadterm__run_', {}), 50), 'pending');
   session.decide([...session.pending.keys()][0], 'deny');

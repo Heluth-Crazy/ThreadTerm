@@ -466,6 +466,7 @@ fn chat_method(name: &str, chat: &ChatCaller) -> Option<(&'static str, bool)> {
         "run_logs" => ("chat.tool.run.logs", chat.run),
         "run_stop" => ("chat.tool.run.stop", chat.run),
         "run_restart" => ("chat.tool.run.restart", chat.run),
+        "run_propose" => ("chat.tool.run.propose", chat.run),
         _ => return None,
     })
 }
@@ -488,18 +489,19 @@ fn chat_tools(caller: &ChatCaller) -> Vec<Value> {
 }
 
 /// The run tools' names, in catalogue order; 2b auto-approves exactly these.
-pub const RUN_TOOL_NAMES: [&str; 6] = [
+pub const RUN_TOOL_NAMES: [&str; 7] = [
     "run_list",
     "run_start",
     "run_status",
     "run_logs",
     "run_stop",
     "run_restart",
+    "run_propose",
 ];
 
 /// One short line: the tool descriptions carry the details, and Claude Code keeps
 /// only the first 2048 characters of the instructions.
-const RUN_INSTRUCTIONS:&str="\nUse run_list to see this worktree's Run entries; run_start asks for detected or untrusted repo entries; read run_logs instead of starting duplicates.";
+const RUN_INSTRUCTIONS:&str="\nUse run_list to see this worktree's Run entries; run_start asks for detected/untrusted repo entries; read run_logs instead of starting duplicates; run_propose needs human acceptance.";
 
 fn run_tools() -> Vec<Value> {
     let run_id = json!({"type":"string","minLength":1,"maxLength":128});
@@ -535,6 +537,21 @@ fn run_tools() -> Vec<Value> {
             "run_restart",
             "Stop a run of your own worktree and start its entry again. Detected and untrusted or changed repo entries ask the user again; saved and trusted unchanged repo entries restart directly. Pass an unique `requestId` so a retry replays the same restart.",
             json!({"type":"object","additionalProperties":false,"required":["runId","requestId"],"properties":{"runId":run_id,"requestId":{"type":"string","minLength":1,"maxLength":128,"description":"Idempotency key: the same value returns the same restart."}}}),
+        ),
+        tool(
+            "run_propose",
+            "Suggest a new Run command, or an update to one saved entry of your own worktree project. A human must accept it in the Run view before anything is saved or run. Pass an unique `requestId` so a retry replays the same pending proposal.",
+            json!({"type":"object","additionalProperties":false,"required":["name","command","reason","requestId"],"properties":{
+                "name":{"type":"string","minLength":1,"maxLength":80},
+                "command":{"type":"string","minLength":1,"maxLength":8000},
+                "reason":{"type":"string","minLength":1,"maxLength":2000},
+                "id":{"type":"string","minLength":1,"maxLength":512,"description":"A saved command id from your own project, to suggest an update."},
+                "cwd":{"type":"string","maxLength":260},
+                "kind":{"type":"string","enum":["service","task"]},
+                "shell":{"type":"string","enum":["cmd","powershell","pwsh"]},
+                "env":{"type":"array","maxItems":32,"items":{"type":"object","additionalProperties":false,"required":["name","value"],"properties":{"name":{"type":"string","minLength":1,"maxLength":128},"value":{"type":"string","maxLength":8192}}}},
+                "previewUrl":{"type":"string","maxLength":2048},
+                "requestId":{"type":"string","minLength":1,"maxLength":128,"description":"Idempotency key: the same value returns the same proposal."}}}),
         ),
     ]
 }
@@ -2391,6 +2408,17 @@ mod tests {
             tools[5]["inputSchema"]["required"],
             json!(["runId", "requestId"])
         );
+        let propose = &tools[6];
+        assert_eq!(propose["name"], "run_propose");
+        assert_eq!(
+            propose["inputSchema"]["required"],
+            json!(["name", "command", "reason", "requestId"])
+        );
+        assert_eq!(propose["inputSchema"]["properties"]["reason"]["maxLength"], 2000);
+        assert_eq!(propose["inputSchema"]["properties"]["cwd"]["maxLength"], 260);
+        assert_eq!(propose["inputSchema"]["properties"]["env"]["maxItems"], 32);
+        assert_eq!(propose["inputSchema"]["properties"]["env"]["items"]["properties"]["value"]["maxLength"], 8192);
+        assert!(propose["description"].as_str().unwrap().contains("must accept"));
         assert!(tools[1]["description"].as_str().unwrap().contains("asks the user first"));
         assert!(tools.iter().any(|tool| tool["description"]
             .as_str()
@@ -2422,11 +2450,13 @@ mod tests {
             ("run_logs", "chat.tool.run.logs"),
             ("run_stop", "chat.tool.run.stop"),
             ("run_restart", "chat.tool.run.restart"),
+            ("run_propose", "chat.tool.run.propose"),
         ] {
             assert_eq!(chat_method(name, &chat), Some((method, true)), "{name}");
         }
         let off = ChatCaller { run: false, ..chat.clone() };
         assert_eq!(chat_method("run_start", &off), Some(("chat.tool.run.start", false)));
+        assert_eq!(chat_method("run_propose", &off), Some(("chat.tool.run.propose", false)));
         assert_eq!(chat_method("terminal_list", &chat), None);
         // Identity is runtime-injected for every run tool, never taken from the model.
         assert_eq!(
