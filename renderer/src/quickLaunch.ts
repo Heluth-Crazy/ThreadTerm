@@ -93,6 +93,8 @@ const errors: Record<string,[string,string]> = {
  project_not_found:['This project no longer exists.','此项目已不存在。'], worktree_missing:['This worktree directory is missing.','此工作树目录已丢失。'], workspace_read_only:['This workspace is read-only.','此工作区为只读。'], workspace_archived:['Restore this archived workspace before running a command.','请恢复此已归档的工作区后再运行命令。'],
  setup_empty:['Choose at least one Task command in Worktree setup before running it.','请先在工作树初始化中选择至少一个任务命令。'], invalid_step:['This setup step is no longer available. Reopen the Run menu and try again.','此初始化步骤已不可用。请重新打开运行菜单后重试。'], not_a_task:['Only Task commands can be setup steps.','只有任务命令可以作为初始化步骤。'],
  detected_entry_not_found:['This detected entry no longer exists. Reopen Run to see the current list.','这条检测条目已不存在。重新打开 Run 查看当前列表。'], tool_not_found:['A tool this entry needs is not on PATH.','PATH 中找不到此条目所需的工具。'],
+ repo_config_conflict:['The shared run file changed elsewhere. Reopen Run and review it before saving.','共享运行文件已在其他位置更改。请重新打开 Run，检查后再保存。'], repo_config_invalid:['.threadterm/run.json is invalid. Fix the file and reopen Run.','.threadterm/run.json 无效。请修复该文件后重新打开 Run。'],
+ secret_missing:['Enter the missing secret value in the shared command editor.','请在共享命令编辑器中填写缺失的密钥值。'], repo_entry_not_found:['This shared entry no longer exists. Reopen Run to see the current file.','此共享条目已不存在。请重新打开 Run 查看当前文件。'],
 };
 export function quickLaunchError(error: unknown, zh: boolean): string {
  const message = error instanceof Error ? error.message : String(error);

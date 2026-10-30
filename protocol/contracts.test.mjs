@@ -1038,3 +1038,46 @@ test('agent run tools are caller-scoped, bounded and never carry caller identity
  validateResult('chat.tool.run.stop',{runId:'t1',state:'running',stopRequested:true});
  validateResult('chat.tool.run.restart',{runId:'t2',existing:false,state:'starting',entryId:'detected:node:package.json:dev',name:'dev'});
 });
+
+test('repo run configs keep file concurrency, local secrets and exact trust in the protocol',()=>{
+ const scope={projectId:'p',cwd:'C:\\repo-wt'},fingerprint='a'.repeat(64),fileFingerprint='b'.repeat(64);
+ validateRequest('quickLaunch.run',{...scope,repoId:'api',operationId:'run-repo'});
+ for(const target of [{},{commandId:'saved',repoId:'api'},{detectedKey:'node:package.json:dev',repoId:'api'},{repoId:'Bad ID'},{repoId:'api',projectId:undefined}])assert.throws(()=>validateRequest('quickLaunch.run',{...scope,operationId:'run-repo',...target}));
+ validateRequest('quickLaunch.repo.list',scope);
+ const input={name:'API',command:'npm run dev',shell:'cmd',cwd:'apps/api',kind:'service',env:[{name:'LOG_LEVEL',value:'debug'},{name:'API_TOKEN',value:'local-only',secret:true}],previewUrl:'http://localhost:3000/'};
+ validateRequest('quickLaunch.repo.save',{...scope,entry:input,operationId:'save-repo'});
+ validateRequest('quickLaunch.repo.save',{...scope,entry:{...input,id:'api'},expectedFingerprint:fileFingerprint,operationId:'save-repo'});
+ for(const entry of [{...input,id:'Bad ID'},{...input,env:[{name:'API_TOKEN',value:'x',secret:null}]},{...input,command:''},{...input,command:'echo one\necho two'}])assert.throws(()=>validateRequest('quickLaunch.repo.save',{...scope,entry,operationId:'save-repo'}));
+ assert.throws(()=>validateRequest('quickLaunch.repo.save',{...scope,entry:input,operationId:'x'.repeat(513)}));
+ validateRequest('quickLaunch.repo.delete',{...scope,id:'api',expectedFingerprint:fileFingerprint,operationId:'delete-repo'});
+ validateRequest('quickLaunch.repo.trust',{...scope,id:'api',fingerprint,operationId:'trust-repo'});
+ assert.throws(()=>validateRequest('quickLaunch.repo.trust',{...scope,id:'api',fingerprint:'stale',operationId:'trust-repo'}));
+ const accepted={command:input.command,shell:'cmd',cwd:input.cwd,kind:'service',env:[{name:'LOG_LEVEL',value:'debug'},{name:'API_TOKEN',secret:true}],previewUrl:input.previewUrl};
+ const entry={id:'api',...input,env:[{name:'LOG_LEVEL',value:'debug'},{name:'API_TOKEN',secret:true,hasValue:false}],fingerprint,trusted:false,changed:true,missingSecrets:['API_TOKEN'],accepted};
+ validateResult('quickLaunch.repo.list',{exists:true,fileFingerprint,entries:[entry]});
+ validateResult('quickLaunch.repo.list',{exists:true,fileFingerprint,entries:[],error:'repo_config_invalid: invalid JSON'});
+ validateResult('quickLaunch.repo.list',{exists:false,entries:[]});
+ validateResult('quickLaunch.repo.save',entry);
+ validateResult('quickLaunch.repo.trust',{...entry,trusted:true,changed:false});
+ validateResult('quickLaunch.repo.delete',null);
+ const agentEntry={id:'repo:api',name:'API',command:input.command,cwd:input.cwd,kind:'service',source:'repo',approved:false};
+ validateResult('chat.tool.run.list',{worktree:'C:\\repo-wt',entries:[agentEntry],runs:[],truncated:false});
+ assert.ok(['quickLaunch.repo.list','quickLaunch.repo.save','quickLaunch.repo.delete','quickLaunch.repo.trust'].every(method=>METHODS.includes(method)));
+});
+
+test('run secret contracts preserve overrides without returning plaintext and fence server-side moves',()=>{
+ const fingerprint='a'.repeat(64),scope={projectId:'p',cwd:'C:/worktree'};
+ const fields={name:'API',command:'node server.mjs',shell:'cmd',cwd:'',kind:'service',env:[{name:'TOKEN',secret:true}]};
+ validateRequest('quickLaunch.repo.save',{...scope,entry:fields,localSource:{id:'local',revision:1},operationId:'move-repo'});
+ validateRequest('quickLaunch.save',{projectId:'p',...fields,repoSource:{id:'api',fingerprint,cwd:scope.cwd},operationId:'move-local'});
+ for(const source of [{id:'api',fingerprint:'bad',cwd:scope.cwd},{id:'api',fingerprint,cwd:''}])assert.throws(()=>validateRequest('quickLaunch.save',{projectId:'p',...fields,repoSource:source,operationId:'bad-source'}));
+ assert.throws(()=>validateRequest('quickLaunch.repo.save',{...scope,entry:fields,localSource:{id:'local',revision:0},operationId:'bad-source'}));
+ assert.throws(()=>validateRequest('quickLaunch.repo.save',{...scope,entry:{...fields,env:[{name:'PUBLIC'}]},operationId:'missing-value'}));
+ const repo={id:'api',...fields,env:[{name:'TOKEN',secret:true,hasValue:true}],fingerprint,trusted:true,changed:false,missingSecrets:[]};
+ const local={id:'local',projectId:'p',revision:1,...fields,env:repo.env,createdAt:'now',updatedAt:'now'};
+ validateResult('quickLaunch.repo.save',repo);validateResult('quickLaunch.repo.trust',repo);validateResult('quickLaunch.save',local);validateResult('quickLaunch.list',[local]);
+ for(const env of [[{name:'TOKEN',secret:true,value:'must-not-return',hasValue:true}],[{name:'TOKEN',secret:true}]]) {
+  assert.throws(()=>validateResult('quickLaunch.repo.save',{...repo,env}));
+  assert.throws(()=>validateResult('quickLaunch.save',{...local,env}));
+ }
+});

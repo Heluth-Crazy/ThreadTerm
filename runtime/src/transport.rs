@@ -248,6 +248,7 @@ fn request_lane(method: &str) -> Lane {
         | "terminal.read"
         | "project.catalog.list"
         | "quickLaunch.detect"
+        | "quickLaunch.repo.list"
         | "session.launch.read"
         | "git.status"
         | "git.diff"
@@ -368,6 +369,7 @@ fn trace_method(method: &str) -> &'static str {
         "project.update", "provider.list",
         "provider.refresh",
         "quickLaunch.delete", "quickLaunch.detect", "quickLaunch.list", "quickLaunch.restart", "quickLaunch.run", "quickLaunch.save",
+        "quickLaunch.repo.delete", "quickLaunch.repo.list", "quickLaunch.repo.save", "quickLaunch.repo.trust",
         "quickLaunch.setup.read", "quickLaunch.setup.run", "quickLaunch.setup.save",
         "quickLaunch.setup.status", "review.checkpoint", "review.revert", "runtime.health",
         "runtime.shutdown", "runtime.snapshot", "session.attention.acknowledge",
@@ -1017,6 +1019,15 @@ mod decoder_tests {
         assert!(!is_terminal_history_gap(&anyhow::anyhow!(
             "database lock poisoned"
         )));
+    }
+
+    #[test]
+    fn repo_config_reads_and_mutations_use_their_expected_lanes() {
+        assert_eq!(request_lane("quickLaunch.repo.list"), Lane::Concurrent);
+        for method in ["quickLaunch.repo.save", "quickLaunch.repo.delete", "quickLaunch.repo.trust"] {
+            assert_eq!(request_lane(method), Lane::Ordered, "{method}");
+            assert_eq!(trace_method(method), method);
+        }
     }
 
     #[test]

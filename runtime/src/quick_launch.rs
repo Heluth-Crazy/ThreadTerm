@@ -37,13 +37,18 @@ pub(crate) const ERROR_CODES: &[&str] = &[
     "run_declined",
     "detected_entry_changed",
     "detected_command_too_long",
+    "repo_config_invalid",
+    "repo_config_conflict",
+    "repo_entry_not_found",
+    "repo_entry_changed",
+    "secret_missing",
 ];
 
 #[path = "quick_launch_setup.rs"]
 mod setup;
+pub(crate) use setup::root_for_setup;
 pub use setup::{mark_setup_runs_interrupted, setup_after_worktree_create};
 pub(crate) use setup::{setup_terminal_exited, start_next_setup_step};
-pub(crate) use setup::root_for_setup;
 #[path = "quick_launch_readiness.rs"]
 mod readiness;
 
@@ -129,13 +134,15 @@ pub(crate) fn initialize_connection(conn: &Connection) -> Result<()> {
          CREATE INDEX IF NOT EXISTS quick_launch_setup_creations ON operations(method) WHERE method='worktree.create';
          CREATE UNIQUE INDEX IF NOT EXISTS quick_launch_setup_active ON quick_launch_setup_runs(project_id,root) WHERE state='running';"
     )?;
+    crate::run_repo_config::initialize_connection(conn)?;
     // Additive migration: readiness arrived after the first runs were recorded, so
     // old rows stay NULL (= no readiness state) instead of being rewritten.
     let mut columns = conn.prepare("PRAGMA table_info(quick_launch_runs)")?;
     let existing: Vec<String> = columns
         .query_map([], |row| row.get::<_, String>(1))?
         .collect::<rusqlite::Result<Vec<_>>>()?;
-    for (column, definition) in [("readiness", "TEXT"), ("ready_port", "INTEGER"), ("started_by", "TEXT")] {
+    for (column, definition) in [("readiness", "TEXT"), ("ready_port", "INTEGER"), ("started_by", "TEXT"),
+    ] {
         if !existing.iter().any(|name| name == column) {
             conn.execute_batch(&format!(
                 "ALTER TABLE quick_launch_runs ADD COLUMN {column} {definition}"
@@ -205,9 +212,26 @@ struct Save {
     shell: String,
     cwd: String,
     kind: String,
-    env: Vec<EnvVar>,
+    env: Vec<SaveEnv>,
     preview_url: Option<String>,
+    repo_source: Option<RepoSource>,
     operation_id: String,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct SaveEnv {
+    pub(crate) name: String,
+    pub(crate) value: Option<String>,
+    pub(crate) secret: Option<bool>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct RepoSource {
+    id: String,
+    fingerprint: String,
+    cwd: String,
 }
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -227,6 +251,7 @@ struct Detect {
 struct Run {
     command_id: Option<String>,
     detected_key: Option<String>,
+    repo_id: Option<String>,
     project_id: Option<String>,
     cwd: String,
     operation_id: String,
@@ -249,7 +274,11 @@ pub(crate) fn handles(method: &str) -> bool {
         method,
         "quickLaunch.list" | "quickLaunch.save" | "quickLaunch.delete" | "quickLaunch.run"
         | "quickLaunch.restart" | "quickLaunch.detect"
-        | "quickLaunch.setup.read" | "quickLaunch.setup.save" | "quickLaunch.setup.run" | "quickLaunch.setup.status"
+            | "quickLaunch.repo.list"
+            | "quickLaunch.repo.save"
+            | "quickLaunch.repo.delete"
+            | "quickLaunch.repo.trust"
+            | "quickLaunch.setup.read" | "quickLaunch.setup.save" | "quickLaunch.setup.run" | "quickLaunch.setup.status"
     )
 }
 fn required(value: &str) -> Result<()> {
@@ -298,6 +327,9 @@ pub(crate) fn validate(method: &str, value: &Value) -> Result<()> {
     if method.starts_with("quickLaunch.setup.") {
         return setup::validate_setup(method, value);
     }
+    if method.starts_with("quickLaunch.repo.") {
+        return crate::run_repo_config::validate(method, value);
+    }
     match method {
         "quickLaunch.list" => {
             let p: List = serde_json::from_value(value.clone())?;
@@ -313,13 +345,27 @@ pub(crate) fn validate(method: &str, value: &Value) -> Result<()> {
             let p: Run = serde_json::from_value(value.clone())?;
             required(&p.cwd)?;
             required(&p.operation_id)?;
-            // Exactly one target: a saved command, or a key the runtime will
-            // re-detect. A detected run needs its project to resolve the root.
-            match (&p.command_id, &p.detected_key) {
-                (Some(id), None) => required(id)?,
-                (None, Some(key)) => {
+            // Exactly one target; detected and repo text is always re-read from files.
+            match (&p.command_id, &p.detected_key, &p.repo_id) {
+                (Some(id), None, None) => required(id)?,
+                (None, Some(key), None) => {
                     required(key)?;
                     if units(key) > 512 {
+                        return Err(anyhow!("invalid_request"));
+                    }
+                    required(p.project_id.as_deref().unwrap_or_default())?;
+                }
+                (None, None, Some(id)) => {
+                    required(id)?;
+                    let bytes = id.as_bytes();
+                    if bytes.len() > 64
+                        || !bytes[0].is_ascii_lowercase() && !bytes[0].is_ascii_digit()
+                        || !bytes.iter().all(|byte| {
+                            byte.is_ascii_lowercase()
+                                || byte.is_ascii_digit()
+                                || matches!(byte, b'_' | b'.' | b'-')
+                        })
+                    {
                         return Err(anyhow!("invalid_request"));
                     }
                     required(p.project_id.as_deref().unwrap_or_default())?;
@@ -338,10 +384,20 @@ pub(crate) fn validate(method: &str, value: &Value) -> Result<()> {
             required(&p.cwd)?;
         }
         "quickLaunch.save" => {
-            for key in ["id", "expectedRevision", "previewUrl"] {
+            for key in ["id", "expectedRevision", "previewUrl", "repoSource"] {
                 if value.get(key).is_some_and(Value::is_null) {
                     return Err(anyhow!("invalid_request"));
                 }
+            }
+            if value
+                .get("env")
+                .and_then(Value::as_array)
+                .is_some_and(|env| env.iter().any(|item| {
+                    item.get("value").is_some_and(Value::is_null)
+                        || item.get("secret").is_some_and(Value::is_null)
+                }))
+            {
+                return Err(anyhow!("invalid_request"));
             }
             let p: Save = serde_json::from_value(value.clone())?;
             required(&p.project_id)?;
@@ -372,8 +428,10 @@ pub(crate) fn validate(method: &str, value: &Value) -> Result<()> {
                         || !bytes
                             .iter()
                             .all(|c| c.is_ascii_alphanumeric() || *c == b'_')
-                        || units(&item.value) > 8192
-                        || item.value.contains('\0')
+                        || item.value.as_ref().is_some_and(|value| {
+                            units(value) > 8192 || value.contains('\0')
+                        })
+                        || item.secret != Some(true) && item.value.is_none()
                         || !names.insert(item.name.to_ascii_uppercase())
                 })
                 || p.preview_url.as_ref().is_some_and(|url| !preview_url(url))
@@ -386,6 +444,10 @@ pub(crate) fn validate(method: &str, value: &Value) -> Result<()> {
             }
             if let Some(expected) = p.expected_revision {
                 revision(expected)?;
+            }
+            if let Some(source) = &p.repo_source {
+                crate::run_repo_config::validate_repo_source(&source.id, &source.fingerprint)?;
+                required(&source.cwd)?;
             }
         }
         _ => {}
@@ -409,13 +471,11 @@ fn operation_tx(tx: &Transaction<'_>, id: &str) -> Result<Option<Value>> {
 pub(crate) fn replayed_operation(
     db: &Database,
     id: &str,
-    method: &str,
-) -> Result<Option<Value>> {
+    method: &str) -> Result<Option<Value>> {
     db.transaction(|tx| {
         let row: Option<(String, String)> = tx
-            .query_row("SELECT method,result FROM operations WHERE id=?", [id], |r| {
-                Ok((r.get(0)?, r.get(1)?))
-            })
+            .query_row("SELECT method,result FROM operations WHERE id=?", [id], |r| Ok((r.get(0)?, r.get(1)?)),
+            )
             .optional()?;
         match row {
             Some((recorded, result)) if recorded == method => {
@@ -463,6 +523,37 @@ fn command_row(r: &Row<'_>) -> rusqlite::Result<QuickLaunchCommand> {
         created_at: r.get(10)?,
         updated_at: r.get(11)?,
     })
+}
+
+fn public_command_value(tx: &Transaction<'_>, command: &QuickLaunchCommand) -> Result<Value> {
+    let mut value = serde_json::to_value(command)?;
+    value["env"] = Value::Array(crate::run_repo_config::public_env(
+        tx,
+        &command.project_id,
+        &command.id,
+        &command.env,
+    )?);
+    Ok(value)
+}
+
+pub(crate) fn local_move_source(
+    tx: &Transaction<'_>,
+    project: &str,
+    id: &str,
+    revision: i64,
+) -> Result<QuickLaunchCommand> {
+    let command = tx
+        .query_row(
+            &format!("SELECT {COMMAND_COLUMNS} FROM quick_launch_commands WHERE id=? AND project_id=?"),
+            params![id, project],
+            command_row,
+        )
+        .optional()?
+        .ok_or_else(|| anyhow!("command_not_found"))?;
+    if command.revision != revision {
+        return Err(anyhow!("revision_conflict"));
+    }
+    Ok(command)
 }
 const COMMAND_COLUMNS: &str =
     "id,project_id,revision,name,command,shell,cwd,kind,env_json,preview_url,created_at,updated_at";
@@ -575,13 +666,25 @@ pub(crate) fn dispatch(
     if method.starts_with("quickLaunch.setup.") {
         return setup::dispatch_setup(db, pty, method, value);
     }
+    if method.starts_with("quickLaunch.repo.") {
+        let project = value
+            .get("projectId")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        let cwd = value.get("cwd").and_then(Value::as_str).unwrap_or_default();
+        let root = setup::root_for_setup(db, project, cwd)?;
+        if method == "quickLaunch.repo.list" {
+            return crate::run_repo_config::list(db, project, &root);
+        }
+        return crate::run_repo_config::dispatch(db, project, &root, method, value);
+    }
     match method {
         "quickLaunch.list" => {
             let p: List = serde_json::from_value(value.clone())?;
             db.transaction(|tx| {
                 let mut stmt = tx.prepare(&format!("SELECT {COMMAND_COLUMNS} FROM quick_launch_commands WHERE project_id=? ORDER BY created_at,rowid"))?;
                 let commands = stmt.query_map([p.project_id], command_row)?.collect::<rusqlite::Result<Vec<_>>>()?;
-                Ok(serde_json::to_value(commands)?)
+                commands.iter().map(|command| public_command_value(tx, command)).collect::<Result<Vec<_>>>().map(Value::Array)
             })
         }
         "quickLaunch.save" => save(db, serde_json::from_value(value.clone())?),
@@ -600,14 +703,20 @@ pub(crate) fn dispatch(
             if let Some(result) = db.operation(&p.operation_id)? {
                 return Ok(result);
             }
-            let snapshot = match (&p.command_id, &p.detected_key) {
-                (Some(id), None) => read_command(db, id)?,
-                (None, Some(key)) => detected_snapshot(
+            let snapshot = match (&p.command_id, &p.detected_key, &p.repo_id) {
+                (Some(id), None, None) => read_command(db, id)?,
+                (None, Some(key), None) => {
+                    detected_snapshot(
                     db,
                     p.project_id.as_deref().unwrap_or_default(),
                     &p.cwd,
-                    key,
-                )?,
+                    key)?
+                }
+                (None, None, Some(id)) => {
+                    let project = p.project_id.as_deref().unwrap_or_default();
+                    let root = setup::root_for_setup(db, project, &p.cwd)?;
+                    crate::run_repo_config::snapshot(db, project, &root, id)?
+                }
                 _ => return Err(anyhow!("invalid_request")),
             };
             start(
@@ -627,6 +736,11 @@ pub(crate) fn dispatch(
     }
 }
 fn save(db: &Database, p: Save) -> Result<Value> {
+    let repo_root = p
+        .repo_source
+        .as_ref()
+        .map(|source| setup::root_for_setup(db, &p.project_id, &source.cwd))
+        .transpose()?;
     db.transaction(|tx| {
         if let Some(result) = operation_tx(tx, &p.operation_id)? { return Ok(result); }
         let previous = p.id.as_ref().map(|id| tx.query_row(&format!("SELECT {COMMAND_COLUMNS} FROM quick_launch_commands WHERE id=? AND project_id=?"), params![id,p.project_id], command_row).optional()).transpose()?.flatten();
@@ -637,14 +751,33 @@ fn save(db: &Database, p: Save) -> Result<Value> {
             let count: i64 = tx.query_row("SELECT COUNT(*) FROM quick_launch_commands WHERE project_id=?", [&p.project_id], |r| r.get(0))?;
             if count >= 100 { return Err(anyhow!("too_many_commands")); }
         }
+        let id = p.id.clone().unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+        let source = match (&p.repo_source, &repo_root) {
+            (Some(source), Some(root)) => crate::run_repo_config::repo_move_source(
+                tx,
+                &p.project_id,
+                root,
+                &source.id,
+                &source.fingerprint,
+            )?,
+            (None, None) => std::collections::HashMap::new(),
+            _ => return Err(anyhow!("invalid_request")),
+        };
+        let env = crate::run_repo_config::replace_secret_env(
+            tx,
+            &p.project_id,
+            &id,
+            &p.env,
+            &source,
+        )?;
         let now = Utc::now().to_rfc3339();
-        let command = QuickLaunchCommand { id: p.id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string()), project_id:p.project_id,
+        let command = QuickLaunchCommand { id, project_id:p.project_id,
             revision:previous.as_ref().map_or(1, |c| c.revision + 1), name:trim_wire(&p.name).to_owned(), command:p.command,
-            shell:p.shell, cwd:p.cwd, kind:p.kind, env:p.env, preview_url:p.preview_url,
+            shell:p.shell, cwd:p.cwd, kind:p.kind, env, preview_url:p.preview_url,
             created_at:previous.map_or_else(|| now.clone(), |c| c.created_at), updated_at:now };
         tx.execute("INSERT INTO quick_launch_commands(id,project_id,revision,name,command,shell,cwd,kind,env_json,preview_url,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET revision=excluded.revision,name=excluded.name,command=excluded.command,shell=excluded.shell,cwd=excluded.cwd,kind=excluded.kind,env_json=excluded.env_json,preview_url=excluded.preview_url,updated_at=excluded.updated_at",
             params![command.id,command.project_id,command.revision,command.name,command.command,command.shell,command.cwd,command.kind,serde_json::to_string(&command.env)?,command.preview_url,command.created_at,command.updated_at])?;
-        let result = serde_json::to_value(command)?;
+        let result = public_command_value(tx, &command)?;
         complete(tx, &p.operation_id, "quickLaunch.save", &result)?;
         changed(tx, "quickLaunch.commands", None)?;
         Ok(result)
@@ -731,7 +864,9 @@ fn shell_command(shell: &str, command: &str) -> Result<(String, Vec<String>)> {
                         .find(|path| path.is_file())
                 });
             let fallback = std::env::var_os("ProgramFiles")
-                .map(|dir| PathBuf::from(dir).join("PowerShell").join("7").join("pwsh.exe"));
+                .map(|dir| {
+                PathBuf::from(dir).join("PowerShell").join("7").join("pwsh.exe")
+            });
             let program = found
                 .or_else(|| fallback.filter(|path| path.is_file()))
                 .ok_or_else(|| anyhow!("shell_unavailable"))?;
@@ -763,6 +898,7 @@ fn start(
     setup: Option<&setup::SetupStep>,
     started_by: Option<&str>,
 ) -> Result<Value> {
+    ensure_secret_references(db, snapshot)?;
     let root = setup::root_for_setup(db, &snapshot.project_id, cwd)?;
     let directory = launch_directory(&root, &snapshot.cwd)?;
     // Persist the canonical operational path, including Windows' verbatim
@@ -871,6 +1007,25 @@ fn start(
     }
     Ok(result)
 }
+
+fn ensure_secret_references(db: &Database, snapshot: &QuickLaunchCommand) -> Result<()> {
+    db.transaction(|tx| {
+        for item in &snapshot.env {
+            if crate::run_repo_config::is_secret_reference(&item.value)
+                && crate::run_repo_config::resolve_secret(
+                    tx,
+                    &snapshot.project_id,
+                    &snapshot.id,
+                    &item.name,
+                )?
+                .is_none()
+            {
+                return Err(anyhow!("secret_missing: {}", item.name));
+            }
+        }
+        Ok(())
+    })
+}
 // Only needed inside the admission transaction; use the canonical projection
 // without taking Database's connection mutex recursively.
 fn session_value(tx: &Transaction<'_>, id: &str) -> Result<Value> {
@@ -949,7 +1104,8 @@ const RESTART_STOP_TIMEOUT: Duration = Duration::from_secs(10);
 const RESTART_POLL: Duration = Duration::from_millis(20);
 
 fn restart(db: &Arc<Database>, pty: &PtyManager, p: Restart) -> Result<Value> {
-    restart_entry(db, pty, &p.session_id, &p.operation_id, None, "quickLaunch.restart", None)
+    restart_entry(db, pty, &p.session_id, &p.operation_id, None, "quickLaunch.restart", None,
+    )
 }
 
 /// Stop, wait for the exit, then launch the same entry again for the same root. The
@@ -1034,14 +1190,20 @@ fn restart_using(
         return Ok(result);
     }
     let (snapshot, _) = setup::decode_snapshot(&raw)?;
-    // A saved entry relaunches from its current saved text; a detected one is re-detected,
+    // Saved and repo entries relaunch from current storage; a detected one is re-detected,
     // so an entry whose source disappeared fails instead of running a stale command.
     let snapshot = match approved {
         Some(approved) => approved.clone(),
-        None => match snapshot.id.strip_prefix("detected:") {
-            Some(key) => detected_snapshot(db, &project, &root, key)?,
-            None => read_command(db, &snapshot.id)?,
-        },
+        None => {
+            if let Some(key) = snapshot.id.strip_prefix("detected:") {
+                detected_snapshot(db, &project, &root, key)?
+            } else if let Some(id) = snapshot.id.strip_prefix("repo:") {
+                let root_path = setup::root_for_setup(db, &project, &root)?;
+                crate::run_repo_config::snapshot(db, &project, &root_path, id)?
+            } else {
+                read_command(db, &snapshot.id)?
+            }
+        }
     };
     start(
         db,
@@ -1179,11 +1341,26 @@ pub(crate) fn apply_environment(
         })
         .map(|(k, v)| (k.to_owned(), v.to_owned()))
         .collect();
-    let overrides: Vec<_> = snapshot
+    let overrides: Vec<_> = db.transaction(|tx| {
+        snapshot
         .env
         .iter()
-        .map(|item| (item.name.clone(), expand(&item.value, &inherited)))
-        .collect();
+        .map(|item| {
+                let value = if crate::run_repo_config::is_secret_reference(&item.value) {
+                    crate::run_repo_config::resolve_secret(
+                        tx,
+                        &snapshot.project_id,
+                        &snapshot.id,
+                        &item.name,
+                    )?
+                    .ok_or_else(|| anyhow!("secret_missing: {}", item.name))?
+                } else {
+                    item.value.clone()
+                };
+                Ok((item.name.clone(), expand(&value, &inherited)))
+            })
+            .collect::<Result<Vec<_>>>()
+    })?;
     #[cfg(windows)]
     crate::bootstrap::application_environment(command, &overrides)?;
     #[cfg(not(windows))]

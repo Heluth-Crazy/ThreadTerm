@@ -20,6 +20,11 @@
 .ql-editor .note,.ql-import .note { margin:6px 0 10px; }.ql-delete { margin-right:auto; }
 .ql-advanced { border-top:1px solid var(--border); padding-top:12px; }.ql-advanced summary { cursor:pointer; font-size:12px; margin-bottom:10px; }.ql-advanced .field>label { display:block; margin-bottom:6px; }
 .ql-env-row { display:flex; gap:6px; margin-bottom:6px; }.ql-env-row input { min-width:0; width:0; flex:2; }.ql-env-row input:first-child { flex:1; }
+.ql-env-secret { display:inline-flex; align-items:center; gap:4px; flex:none; color:var(--muted); font-size:11px; white-space:nowrap; }
+.ql-repo-storage { display:flex; align-items:center; gap:7px; margin:0 0 8px; font-size:12px; }
+.ql-repo-details { grid-column:1 / -1; margin-top:2px; }.ql-repo-details .ql-source-label { margin:0 4px 4px 0; background:var(--surface); cursor:pointer; }
+.ql-repo-details .ql-repo-changed { color:var(--danger); border-color:currentColor; }.ql-repo-details .ql-repo-missing { color:var(--danger); }
+.ql-repo-diff { margin:4px 0; padding:7px; border:1px solid var(--border); border-radius:var(--radius); background:var(--surface); font-size:11px; }.ql-repo-diff section { margin:0 0 7px; }.ql-repo-diff section:last-of-type { margin-bottom:6px; }.ql-repo-diff strong,.ql-repo-diff span { display:block; color:var(--muted); }.ql-repo-diff pre { max-height:80px; margin:2px 0; overflow:auto; white-space:pre-wrap; overflow-wrap:anywhere; font:inherit; color:var(--text); }
 .ql-directory { display:flex; gap:8px; }.ql-directory input { flex:1; min-width:0; }.ql-directory .btn { flex-shrink:0; }
 .ql-import .ql-directory { align-items:stretch; }.ql-import .ql-directory input { box-sizing:border-box; height:32px; min-height:32px; padding:6px 10px; border-radius:var(--radius); font-size:13px; }.ql-import .ql-directory .btn { flex:0 0 auto; }
 .ql-import .dlg-foot { display:flex; flex-wrap:wrap; align-items:center; gap:8px; }

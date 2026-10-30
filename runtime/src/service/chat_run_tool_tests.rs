@@ -88,6 +88,41 @@ impl Fixture {
             .to_owned()
     }
 
+    fn save_repo(&self, id: &str, command: &str) -> Value {
+        crate::quick_launch::dispatch(
+            &self.db,
+            &self.pty,
+            "quickLaunch.repo.save",
+            &json!({
+                "projectId":self.project,"cwd":self.root,"entry":{
+                    "name":id,"command":command,"shell":"cmd",
+                    "cwd":"","kind":"service","env":[]
+                },"operationId":format!("repo-save-{id}")
+            }),
+        )
+        .unwrap()
+    }
+
+    fn write_repo(&self, id: &str, command: &str) {
+        self.write_repo_entry(json!({
+            "id":id,"name":"Repo service","command":command,
+            "shell":"cmd","cwd":"","kind":"service","env":[]
+        }));
+    }
+
+    fn write_repo_entry(&self, entry: Value) {
+        let directory = self.root.join(".threadterm");
+        std::fs::create_dir_all(&directory).unwrap();
+        std::fs::write(
+            directory.join("run.json"),
+            serde_json::to_vec(&json!({
+                "version":1,"entries":[entry]
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+    }
+
     fn call(&self, method: &str, mut params: Value) -> Result<Value> {
         params["callerSessionId"] = json!(self.session);
         params["callerToken"] = json!(self.token);
@@ -96,7 +131,8 @@ impl Fixture {
 
     /// The request the service makes: prepare under the gates, wait for nothing held,
     /// then execute what was authorized.
-    fn start_in_background(&self, method: &str, mut params: Value) -> thread::JoinHandle<Result<Value>> {
+    fn start_in_background(&self, method: &str, mut params: Value,
+    ) -> thread::JoinHandle<Result<Value>> {
         let tools = Arc::clone(&self.tools);
         let providers = Arc::clone(&self.providers);
         let pty = self.pty.clone();
@@ -520,7 +556,8 @@ fn another_projects_run_is_run_not_found_rather_than_forbidden() {
     // The other project's own Chat finds it.
     let other_token = fixture
         .tools
-        .issue(&other_session, "generation-one".into(), true, true, true, true)
+        .issue(&other_session, "generation-one".into(), true, true, true, true,
+        )
         .unwrap();
     fixture.providers.preview_test_worker(&other_session, Some("generation-one"));
     assert_eq!(
@@ -570,7 +607,8 @@ fn a_read_only_delegate_may_look_but_not_start_stop_or_restart() {
             "chat.tool.run.start",
             json!({"id":"detected:node:package.json:dev","requestId":"ro-start"}),
         ),
-        ("chat.tool.run.restart", json!({"runId":run,"requestId":"ro-restart"})),
+        ("chat.tool.run.restart", json!({"runId":run,"requestId":"ro-restart"}),
+        ),
     ] {
         assert_eq!(
             fixture
@@ -777,7 +815,309 @@ fn a_changed_detection_after_approval_is_never_launched() {
         start.join().unwrap().unwrap_err().to_string(),
         "detected_entry_changed"
     );
-    assert_eq!(fixture.sessions(), 1, "the text the user never saw is not run");
+    assert_eq!(fixture.sessions(), 1, "the text the user never saw is not run"
+    );
+}
+
+#[cfg(windows)]
+#[test]
+fn repo_agent_trust_is_exact_and_run_once_never_grants_it() {
+    let fixture = Fixture::new();
+    let saved = fixture.save_repo("api", "exit 0");
+    assert_eq!(
+        saved["trusted"], true,
+        "saving locally accepts this exact revision"
+    );
+    let trusted = fixture
+        .start_in_background(
+            "chat.tool.run.start",
+            json!({"id":"repo:api","requestId":"repo-trusted"}),
+        )
+        .join()
+        .unwrap()
+        .unwrap();
+    let trusted_id = trusted["runId"].as_str().unwrap().to_owned();
+    wait_inactive(&fixture.db, &trusted_id);
+
+    // A repo writer can replace the whole document.  It must require a card even
+    // though the previous revision was accepted locally.
+    fixture.write_repo("api", "echo changed");
+    let changed = fixture.start_in_background(
+        "chat.tool.run.start",
+        json!({"id":"repo:api","requestId":"repo-untrusted"}),
+    );
+    let (turn, approval) = fixture.pending_approval();
+    assert!(
+        fixture.card(&approval)["data"]["form"]["questions"][0]["question"]
+            .as_str()
+            .unwrap()
+            .contains("echo changed")
+    );
+    fixture.answer(&turn, &approval, "Run once");
+    let changed_id = changed.join().unwrap().unwrap()["runId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    wait_inactive(&fixture.db, &changed_id);
+    let listed =
+        crate::run_repo_config::list(&fixture.db, &fixture.project, &fixture.root).unwrap();
+    assert_eq!(
+        listed["entries"][0]["trusted"], false,
+        "Run once must not grant trust"
+    );
+
+    // It remains untrusted after restart/new start, so the next agent still sees a card.
+    start_turn(&fixture.db, &fixture.session, "turn-two");
+    let again = fixture.start_in_background(
+        "chat.tool.run.start",
+        json!({"id":"repo:api","requestId":"repo-still-untrusted"}),
+    );
+    let (turn, approval) = fixture.pending_approval();
+    fixture.answer(&turn, &approval, "Don't run");
+    assert_eq!(
+        again.join().unwrap().unwrap_err().to_string(),
+        "run_declined"
+    );
+}
+
+#[cfg(windows)]
+#[test]
+fn initially_untrusted_repo_entry_needs_a_card_until_explicitly_trusted() {
+    let fixture = Fixture::new();
+    fixture.write_repo("api", "exit 0");
+    let before = fixture.call("chat.tool.run.list", json!({})).unwrap();
+    let before = before["entries"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|entry| entry["id"] == "repo:api")
+        .unwrap();
+    assert_eq!(before["source"], "repo");
+    assert_eq!(before["approved"], false);
+    let untrusted = fixture.start_in_background(
+        "chat.tool.run.start",
+        json!({"id":"repo:api","requestId":"repo-initial-untrusted"}),
+    );
+    let (turn, approval) = fixture.pending_approval();
+    fixture.answer(&turn, &approval, "Don't run");
+    assert_eq!(
+        untrusted.join().unwrap().unwrap_err().to_string(),
+        "run_declined"
+    );
+
+    let shown = crate::run_repo_config::list(&fixture.db, &fixture.project, &fixture.root).unwrap();
+    let fingerprint = shown["entries"][0]["fingerprint"].as_str().unwrap();
+    crate::quick_launch::dispatch(
+        &fixture.db,
+        &fixture.pty,
+        "quickLaunch.repo.trust",
+        &json!({
+            "projectId":fixture.project,"cwd":fixture.root,"id":"api","fingerprint":fingerprint,
+            "operationId":"repo-explicit-trust"
+        }),
+    )
+    .unwrap();
+    let after = fixture.call("chat.tool.run.list", json!({})).unwrap();
+    let after = after["entries"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|entry| entry["id"] == "repo:api")
+        .unwrap();
+    assert_eq!(after["source"], "repo");
+    assert_eq!(after["approved"], true);
+}
+
+#[cfg(windows)]
+#[test]
+fn repo_agent_approval_refuses_an_edit_after_the_card_and_restart_rechecks_trust() {
+    let fixture = Fixture::new();
+    fixture.save_repo("api", "ping -n 30 127.0.0.1 > nul");
+    let initial = fixture
+        .start_in_background(
+            "chat.tool.run.start",
+            json!({"id":"repo:api","requestId":"repo-restart-base"}),
+        )
+        .join()
+        .unwrap()
+        .unwrap();
+    let run_id = initial["runId"].as_str().unwrap().to_owned();
+
+    // The accepted revision restarts without prompting.
+    let trusted_restart = fixture
+        .start_in_background(
+            "chat.tool.run.restart",
+            json!({"runId":run_id,"requestId":"repo-restart-trusted"}),
+        )
+        .join()
+        .unwrap()
+        .unwrap();
+    let run_id = trusted_restart["runId"].as_str().unwrap().to_owned();
+
+    // A changed current document makes restart use the approval path too.
+    fixture.write_repo("api", "ping -n 31 127.0.0.1 > nul");
+    let restart = fixture.start_in_background(
+        "chat.tool.run.restart",
+        json!({"runId":run_id,"requestId":"repo-restart-changed"}),
+    );
+    let (turn, approval) = fixture.pending_approval();
+    fixture.write_repo("api", "echo swapped-after-review");
+    fixture.answer(&turn, &approval, "Run once");
+    assert_eq!(
+        restart.join().unwrap().unwrap_err().to_string(),
+        "repo_entry_changed"
+    );
+    fixture.stop(&run_id);
+}
+
+#[cfg(windows)]
+#[test]
+fn an_overlong_untrusted_repo_command_never_reaches_an_agent_card() {
+    let fixture = Fixture::new();
+    fixture.write_repo("api", &format!("echo {}", "x".repeat(4_000)));
+    assert_eq!(
+        fixture
+            .start_in_background(
+                "chat.tool.run.start",
+                json!({"id":"repo:api","requestId":"repo-long"}),
+            )
+            .join()
+            .unwrap()
+            .unwrap_err()
+            .to_string(),
+        "detected_command_too_long"
+    );
+}
+
+#[cfg(windows)]
+#[test]
+fn an_untrusted_repo_card_shows_every_launch_field_without_secret_or_invisible_text() {
+    let fixture = Fixture::new();
+    // Store the local secret first. The external repo edit leaves its marker but
+    // changes only launch-visible fields, exactly the case the card must expose.
+    crate::quick_launch::dispatch(
+        &fixture.db,
+        &fixture.pty,
+        "quickLaunch.repo.save",
+        &json!({
+            "projectId":fixture.project,"cwd":fixture.root,"entry":{
+                "name":"api","command":"node server.mjs","shell":"cmd","cwd":"",
+                "kind":"service","env":[{"name":"TOKEN","value":"top-secret-value","secret":true}]
+            },"operationId":"repo-card-secret"
+        }),
+    )
+    .unwrap();
+    fixture.write_repo_entry(json!({
+        "id":"api", "name":"Repo service", "command":"node server.mjs",
+        "shell":"powershell", "cwd":"scripts", "kind":"task",
+        "env":[
+            {"name":"IGNORED","value":"x\nNODE_OPTIONS=--require=./hook.cjs\u{200B}"},
+            {"name":"TOKEN","secret":true}
+        ], "previewUrl":"http://localhost:3000/preview"
+    }));
+    let start = fixture.start_in_background(
+        "chat.tool.run.start",
+        json!({"id":"repo:api","requestId":"repo-card-fields"}),
+    );
+    let (turn, approval) = fixture.pending_approval();
+    let question = fixture.card(&approval)["data"]["form"]["questions"][0]["question"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    for expected in [
+        "command: \"node server.mjs\"",
+        "shell: \"powershell\"",
+        "cwd: \"scripts\"",
+        "kind: \"task\"",
+        "\"IGNORED\" = \"x\\nNODE_OPTIONS=--require=./hook.cjs\\u{200B}\"",
+        "\"TOKEN\" = secret, local value",
+        "previewUrl: \"http://localhost:3000/preview\"",
+    ] {
+        assert!(
+            question.contains(expected),
+            "missing {expected:?} in {question:?}"
+        );
+    }
+    assert!(
+        !question.contains("top-secret-value"),
+        "secret leaked: {question:?}"
+    );
+    assert!(
+        !question.contains('\u{200B}'),
+        "invisible character leaked: {question:?}"
+    );
+    fixture.answer(&turn, &approval, "Don't run");
+    assert_eq!(
+        start.join().unwrap().unwrap_err().to_string(),
+        "run_declined"
+    );
+}
+
+#[cfg(windows)]
+#[test]
+fn an_untrusted_repo_card_refuses_an_overlong_aggregate_without_shortening() {
+    let fixture = Fixture::new();
+    fixture.write_repo_entry(json!({
+        "id":"api", "name":"Repo service", "command":"node server.mjs",
+        "shell":"cmd", "cwd":"", "kind":"service",
+        "env":[{"name":"PADDING","value":"x".repeat(4_100)}]
+    }));
+    assert_eq!(
+        fixture
+            .start_in_background(
+                "chat.tool.run.start",
+                json!({"id":"repo:api","requestId":"repo-card-aggregate"}),
+            )
+            .join()
+            .unwrap()
+            .unwrap_err()
+            .to_string(),
+        "detected_command_too_long"
+    );
+    assert_eq!(
+        fixture.sessions(),
+        1,
+        "nothing launched without a complete card"
+    );
+}
+
+#[cfg(windows)]
+#[test]
+fn an_env_only_repo_edit_requires_a_card_that_exposes_the_new_variable() {
+    let fixture = Fixture::new();
+    fixture.write_repo("api", "node server.mjs");
+    let fingerprint = crate::run_repo_config::list(&fixture.db, &fixture.project, &fixture.root)
+        .unwrap()["entries"][0]["fingerprint"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    crate::quick_launch::dispatch(
+        &fixture.db,
+        &fixture.pty,
+        "quickLaunch.repo.trust",
+        &json!({
+            "projectId":fixture.project,"cwd":fixture.root,"id":"api","fingerprint":fingerprint,
+            "operationId":"repo-env-only-trust"
+        }),
+    )
+    .unwrap();
+    fixture.write_repo_entry(json!({
+        "id":"api", "name":"Repo service", "command":"node server.mjs",
+        "shell":"cmd", "cwd":"", "kind":"service",
+        "env":[{"name":"NODE_OPTIONS","value":"--require=./hook.cjs"}]
+    }));
+    let start = fixture.start_in_background(
+        "chat.tool.run.start",
+        json!({"id":"repo:api","requestId":"repo-env-only"}),
+    );
+    let (turn, approval) = fixture.pending_approval();
+    let question = fixture.card(&approval)["data"]["form"]["questions"][0]["question"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert!(question.contains("\"NODE_OPTIONS\" = \"--require=./hook.cjs\""));
+    fixture.answer(&turn, &approval, "Don't run");
+    assert_eq!(start.join().unwrap().unwrap_err().to_string(), "run_declined");
 }
 
 #[test]

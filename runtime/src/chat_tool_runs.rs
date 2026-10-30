@@ -59,20 +59,28 @@ pub(crate) enum RunKind {
     Start {
         operation_id: String,
         snapshot: QuickLaunchCommand,
+        repo_fingerprint: Option<String>,
+        /// Marker-preserving repo launch document, with no local secret values.
+        repo_launch: Option<Value>,
     },
     Restart {
         operation_id: String,
         run_id: String,
-        /// The re-detected entry the user just approved, or `None` for a saved entry.
+        /// The current detected/repo snapshot, or `None` for a saved entry.
         approved: Option<QuickLaunchCommand>,
+        repo_fingerprint: Option<String>,
+        repo_launch: Option<Value>,
     },
     /// An instance of this entry is already active: never ask, never launch a second.
     Existing {
         run_id: String,
         operation_id: String,
         snapshot: QuickLaunchCommand,
-        /// The detected entry's source file, when this entry asks before starting.
+        /// The detected/repo source file used if this instance exits before launch.
         source_file: Option<String>,
+        requires_approval: bool,
+        repo_fingerprint: Option<String>,
+        repo_launch: Option<Value>,
     },
     /// The request id already has a receipt for this tool: replay it, do not ask again.
     Ready(Value),
@@ -156,6 +164,7 @@ impl ChatTools {
         let runs = self.scope_runs(&scope)?;
         let saved = crate::quick_launch::saved_commands(&self.db, &scope.project_id)?;
         let detection = crate::run_detect::detect(&scope.root);
+        let repo = crate::run_repo_config::list(&self.db, &scope.project_id, &scope.root)?;
         let active = |entry: &str| {
             runs.iter()
                 .find(|run| run.active() && run.command_id == entry)
@@ -185,6 +194,21 @@ impl ChatTools {
                 value["activeRunId"] = run;
             }
             entries.push(value);
+        }
+        if let Some(repo_entries) = repo.get("entries").and_then(Value::as_array) {
+            for entry in repo_entries {
+                let id = format!("repo:{}", entry["id"].as_str().unwrap_or_default());
+                let approved = entry["trusted"].as_bool().unwrap_or(false)
+                    && !entry["changed"].as_bool().unwrap_or(false);
+                let mut value = json!({
+                    "id":id,"name":entry["name"],"command":entry["command"],"cwd":entry["cwd"],
+                    "kind":entry["kind"],"source":"repo","approved":approved,
+                });
+                if let Some(run) = active(&id) {
+                    value["activeRunId"] = run;
+                }
+                entries.push(value);
+            }
         }
         let mut values = Vec::new();
         let mut finished = 0;
@@ -325,8 +349,8 @@ impl ChatTools {
                 kind: RunKind::Ready(launch_value(&result)?),
             }));
         }
-        let (snapshot, source_file) = match request.id.strip_prefix("detected:") {
-            Some(key) => {
+        let (snapshot, source_file, requires_approval, repo_fingerprint, repo_launch) =
+            if let Some(key) = request.id.strip_prefix("detected:") {
                 if key.is_empty() || key.chars().count() > MAX_ENTRY_ID {
                     return Err(anyhow!("invalid_request"));
                 }
@@ -338,25 +362,44 @@ impl ChatTools {
                     .ok_or_else(|| anyhow!("detected_entry_not_found"))?;
                 let source_file = entry.source.file.clone();
                 let snapshot = crate::quick_launch::detected_command(&scope.project_id, entry)?;
-                (snapshot, Some(source_file))
-            }
-            None => {
+                (snapshot, Some(source_file), true, None, None)
+            } else if let Some(id) = request.id.strip_prefix("repo:") {
+                if id.is_empty() || id.chars().count() > 64 {
+                    return Err(anyhow!("invalid_request"));
+                }
+                // Read the launch snapshot and its local trust decision together.  A
+                // separate snapshot + list sequence could pair changed command text
+                // with the previous document's trusted fingerprint.
+                let (snapshot, fingerprint, trusted, launch) =
+                    crate::run_repo_config::agent_snapshot(
+                        &self.db,
+                        &scope.project_id,
+                        &scope.root,
+                        id,
+                    )?;
+                (
+                    snapshot,
+                    Some(".threadterm/run.json".to_owned()),
+                    !trusted,
+                    Some(fingerprint),
+                    Some(launch),
+                )
+            } else {
                 if request.id.is_empty() || request.id.chars().count() > MAX_ENTRY_ID {
                     return Err(anyhow!("invalid_request"));
                 }
                 let snapshot =
                     crate::quick_launch::scoped_command(&self.db, &scope.project_id, &request.id)?;
-                (snapshot, None)
-            }
-        };
+                (snapshot, None, false, None, None)
+            };
         // One query answers both questions: whether the user has to be asked, and
         // whether this call returns an active instance or starts one. Two queries could
         // see the instance exit in between and launch a detected entry unasked.
         let active = self.active_run(&scope, &snapshot.id)?;
-        let question = match (&active, &source_file) {
-            (None, Some(source_file)) => {
-                Some(approval_question(&snapshot, source_file, &scope.root_key)?)
-            }
+        let question = match (&active, &source_file, requires_approval) {
+            (None, Some(source_file), true) => Some(approval_question(&snapshot, source_file, &scope.root_key,
+                repo_launch.as_ref(),
+            )?),
             _ => None,
         };
         let kind = match active {
@@ -365,10 +408,15 @@ impl ChatTools {
                 operation_id,
                 snapshot,
                 source_file,
+                requires_approval,
+                repo_fingerprint,
+                repo_launch,
             },
             None => RunKind::Start {
                 operation_id,
                 snapshot,
+                repo_fingerprint,
+                repo_launch,
             },
         };
         let run = AuthorizedRun {
@@ -432,21 +480,11 @@ impl ChatTools {
                 kind: RunKind::Ready(launch_value(&result)?),
             }));
         }
-        // Only a detected entry needs consent again: its text comes from files that
-        // may have changed since the run started.
-        let Some(key) = run.command_id.strip_prefix("detected:") else {
-            return Ok(RunPlan::Launch(AuthorizedRun {
-                session_id: request.caller_session_id,
-                token: request.caller_token,
-                kind: RunKind::Restart {
-                    operation_id,
-                    run_id,
-                    approved: None,
-                },
-            }));
-        };
-        let key = key.to_owned();
-        let detection = crate::run_detect::detect(&scope.root);
+        // Repo entries restart from current storage and ask unless their exact launch
+        // fingerprint is locally trusted. Detected entries always ask again.
+        let (snapshot, source_file, requires_approval, repo_fingerprint, repo_launch) =
+            if let Some(key) = run.command_id.strip_prefix("detected:") {
+                let detection = crate::run_detect::detect(&scope.root);
         let entry = detection
             .entries
             .into_iter()
@@ -454,7 +492,35 @@ impl ChatTools {
             .ok_or_else(|| anyhow!("detected_entry_not_found"))?;
         let source_file = entry.source.file.clone();
         let snapshot = crate::quick_launch::detected_command(&scope.project_id, entry)?;
-        let question = approval_question(&snapshot, &source_file, &scope.root_key)?;
+                (snapshot, source_file, true, None, None)
+            } else if let Some(id) = run.command_id.strip_prefix("repo:") {
+                let (snapshot, fingerprint, trusted, launch) =
+                    crate::run_repo_config::agent_snapshot(
+                        &self.db,
+                        &scope.project_id,
+                        &scope.root,
+                        id,
+                    )?;
+                (
+                    snapshot,
+                    ".threadterm/run.json".to_owned(),
+                    !trusted,
+                    Some(fingerprint),
+                    Some(launch),
+                )
+            } else {
+                return Ok(RunPlan::Launch(AuthorizedRun {
+                    session_id: request.caller_session_id,
+                    token: request.caller_token,
+                    kind: RunKind::Restart {
+                        operation_id,
+                        run_id,
+                        approved: None,
+                        repo_fingerprint: None,
+                        repo_launch: None,
+                    },
+                }));
+            };
         let run = AuthorizedRun {
             session_id: request.caller_session_id,
             token: request.caller_token,
@@ -462,7 +528,25 @@ impl ChatTools {
                 operation_id,
                 run_id,
                 approved: Some(snapshot),
+                repo_fingerprint,
+                repo_launch,
             },
+        };
+        if !requires_approval {
+            return Ok(RunPlan::Launch(run));
+        }
+        let question = match &run.kind {
+            RunKind::Restart {
+                approved: Some(snapshot),
+                repo_launch,
+                ..
+            } => approval_question(
+                snapshot,
+                &source_file,
+                &scope.root_key,
+                repo_launch.as_ref(),
+            )?,
+            _ => return Err(anyhow!("invalid_request")),
         };
         let waiter = self.prepare_ask_value(
             providers,
@@ -484,8 +568,7 @@ impl ChatTools {
     pub(crate) fn await_run(
         &self,
         providers: &Providers,
-        plan: RunPlan,
-    ) -> Result<AuthorizedRun> {
+        plan: RunPlan) -> Result<AuthorizedRun> {
         match plan {
             RunPlan::Launch(run) => {
                 let AuthorizedRun {
@@ -498,6 +581,9 @@ impl ChatTools {
                     operation_id,
                     snapshot,
                     source_file,
+                    requires_approval,
+                    repo_fingerprint,
+                    repo_launch,
                 } = kind
                 else {
                     return Ok(AuthorizedRun {
@@ -516,26 +602,36 @@ impl ChatTools {
                             operation_id,
                             snapshot,
                             source_file,
+                            requires_approval,
+                            repo_fingerprint,
+                            repo_launch,
                         },
                     });
                 }
-                let Some(source_file) = source_file else {
-                    // A saved entry never asks: relaunch it like a fresh start.
+                if !requires_approval {
+                    // Saved and trusted repo entries relaunch without another card.
                     return Ok(AuthorizedRun {
                         session_id,
                         token,
                         kind: RunKind::Start {
                             operation_id,
                             snapshot,
+                            repo_fingerprint,
+                            repo_launch,
                         },
                     });
+                }
+                let Some(source_file) = source_file else {
+                    return Err(anyhow!("invalid_request"));
                 };
                 let waiter = self.prepare_ask_value(
                     providers,
                     AskRequest {
                         caller_session_id: session_id.clone(),
                         caller_token: token.clone(),
-                        questions: vec![approval_question(&snapshot, &source_file, &scope.root_key)?],
+                        questions: vec![approval_question(&snapshot, &source_file, &scope.root_key,
+                            repo_launch.as_ref(),
+                        )?],
                     },
                     Capability::Run,
                 )?;
@@ -548,6 +644,8 @@ impl ChatTools {
                     kind: RunKind::Start {
                         operation_id,
                         snapshot,
+                        repo_fingerprint,
+                        repo_launch,
                     },
                 })
             }
@@ -593,8 +691,10 @@ impl ChatTools {
             RunKind::Start {
                 operation_id,
                 snapshot,
+                repo_fingerprint,
+                ..
             } => {
-                verify_detected(&scope, &snapshot)?;
+                verify_detected(&self.db, &scope, &snapshot, repo_fingerprint.as_deref())?;
                 crate::quick_launch::start_entry(
                     &self.db,
                     pty,
@@ -609,12 +709,14 @@ impl ChatTools {
                 operation_id,
                 run_id,
                 approved,
+                repo_fingerprint,
+                ..
             } => {
                 // The run must still be inside this scope: another worktree's or a
                 // relocated run is never stopped.
                 self.scoped_run_in(&scope, &run_id)?;
                 if let Some(approved) = approved.as_ref() {
-                    verify_detected(&scope, approved)?;
+                    verify_detected(&self.db, &scope, approved, repo_fingerprint.as_deref())?;
                 }
                 crate::quick_launch::restart_entry(
                     &self.db,
@@ -815,21 +917,31 @@ fn require_run_writes(db: &Database, session_id: &str) -> Result<()> {
     Ok(())
 }
 
-/// The card text comes from the re-detected entry, never from the agent. The command is
-/// shown in full on its own line (it may contain backticks), so what the user reads is
-/// exactly what launches; only the file and worktree labels may be shortened. A command
-/// that does not fit the card is refused instead of shown as a harmless-looking prefix.
+/// The card text comes from a fresh file read, never from the agent. Repo cards show
+/// every launch input from the marker-preserving document: secret values are never
+/// rendered, and all strings use an unambiguous escaped representation. Nothing is
+/// shortened: if the complete question cannot fit, the run is refused.
 fn approval_question(
     snapshot: &QuickLaunchCommand,
     source_file: &str,
     worktree: &str,
+    repo_launch: Option<&Value>,
 ) -> Result<Question> {
-    let question = format!(
+    let repo = snapshot.id.starts_with("repo:");
+    let question = if repo {
+        repo_approval_question(
+            repo_launch.ok_or_else(|| anyhow!("repo_entry_changed"))?,
+            source_file,
+            worktree,
+        )?
+    } else {
+        format!(
         "Run this detected command from `{}` in `{}`?\n{}",
         shorten(source_file, CARD_PATH_CHARS),
         shorten(worktree, CARD_PATH_CHARS),
         snapshot.command,
-    );
+    )
+    };
     if question.chars().count() > MAX_QUESTION_CHARS {
         return Err(anyhow!("detected_command_too_long"));
     }
@@ -839,7 +951,11 @@ fn approval_question(
         options: vec![
             QuestionOption {
                 label: "Run once".to_owned(),
-                description: Some("Start this detected entry once. Nothing is saved.".to_owned()),
+                description: Some(if repo {
+                    "Start this repo entry once. This does not change its local trust.".to_owned()
+                } else {
+                    "Start this detected entry once. Nothing is saved.".to_owned()
+                }),
             },
             QuestionOption {
                 label: "Don't run".to_owned(),
@@ -849,6 +965,83 @@ fn approval_question(
         multi_select: false,
         allow_other: false,
     })
+}
+
+fn repo_approval_question(launch: &Value, source_file: &str, worktree: &str) -> Result<String> {
+    let object = launch
+        .as_object()
+        .ok_or_else(|| anyhow!("repo_entry_changed"))?;
+    let field = |name: &str| -> Result<&str> {
+        object
+            .get(name)
+            .and_then(Value::as_str)
+            .ok_or_else(|| anyhow!("repo_entry_changed"))
+    };
+    let mut question = format!(
+        "Run this repo command from `{}` in `{}`?\ncommand: {}\nshell: {}\ncwd: {}\nkind: {}\nenv:",
+        display_card_string(source_file),
+        display_card_string(worktree),
+        display_card_string(field("command")?),
+        display_card_string(field("shell")?),
+        display_card_string(field("cwd")?),
+        display_card_string(field("kind")?),
+    );
+    let env = object
+        .get("env")
+        .and_then(Value::as_array)
+        .ok_or_else(|| anyhow!("repo_entry_changed"))?;
+    for item in env {
+        let item = item
+            .as_object()
+            .ok_or_else(|| anyhow!("repo_entry_changed"))?;
+        let name = item
+            .get("name")
+            .and_then(Value::as_str)
+            .ok_or_else(|| anyhow!("repo_entry_changed"))?;
+        question.push_str("\n  ");
+        question.push_str(&display_card_string(name));
+        question.push_str(" = ");
+        if item.get("secret").and_then(Value::as_bool) == Some(true) {
+            question.push_str("secret, local value");
+        } else {
+            let value = item
+                .get("value")
+                .and_then(Value::as_str)
+                .ok_or_else(|| anyhow!("repo_entry_changed"))?;
+            question.push_str(&display_card_string(value));
+        }
+    }
+    question.push_str("\npreviewUrl: ");
+    match object.get("previewUrl") {
+        Some(Value::String(value)) => question.push_str(&display_card_string(value)),
+        None => question.push_str("(none)"),
+        _ => return Err(anyhow!("repo_entry_changed")),
+    }
+    Ok(question)
+}
+
+/// Quote values and make every non-printing or non-ASCII code point visible. This
+/// avoids a newline, bidi mark, or zero-width character hiding a changed field in the
+/// approval card while preserving the exact code points the runtime will launch.
+fn display_card_string(value: &str) -> String {
+    let mut shown = String::with_capacity(value.len() + 2);
+    shown.push('"');
+    for character in value.chars() {
+        match character {
+            '\\' => shown.push_str("\\\\"),
+            '"' => shown.push_str("\\\""),
+            '\n' => shown.push_str("\\n"),
+            '\r' => shown.push_str("\\r"),
+            '\t' => shown.push_str("\\t"),
+            ' '..='~' => shown.push(character),
+            other => {
+                use std::fmt::Write;
+                let _ = write!(shown, "\\u{{{:X}}}", other as u32);
+            }
+        }
+    }
+    shown.push('"');
+    shown
 }
 
 /// The operation id of one tool call: namespaced by caller session and method so two
@@ -877,8 +1070,26 @@ fn approved_answer(outcome: &Value) -> bool {
         == Some("Run once")
 }
 
-/// A detected snapshot is launched only if re-detection still produces the same text.
-fn verify_detected(scope: &RunScope, snapshot: &QuickLaunchCommand) -> Result<()> {
+/// Detected and repo snapshots launch only if a fresh read still has the reviewed content.
+fn verify_detected(
+    db: &Database,
+    scope: &RunScope,
+    snapshot: &QuickLaunchCommand,
+    repo_fingerprint: Option<&str>,
+) -> Result<()> {
+    if snapshot.id.starts_with("repo:") {
+        // `agent_snapshot` fenced trust to the exact document that supplied this
+        // command.  Re-read and compare the complete launch snapshot after a card
+        // so text, shell, cwd, kind, preview URL, and env cannot change unseen.
+        let expected_fingerprint = repo_fingerprint.ok_or_else(|| anyhow!("repo_entry_changed"))?;
+        return crate::run_repo_config::verify_snapshot(
+            db,
+            &scope.project_id,
+            &scope.root,
+            snapshot,
+            expected_fingerprint,
+        );
+    }
     let Some(key) = snapshot.id.strip_prefix("detected:") else {
         return Ok(());
     };

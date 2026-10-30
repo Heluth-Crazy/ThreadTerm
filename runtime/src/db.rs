@@ -225,10 +225,18 @@ impl Database {
     /// describe exactly the same operation even when its result is not ready.
     pub fn bind_operation(&self, id: &str, method: &str, request: &Value) -> Result<()> {
         self.transaction(|tx| {
-            let serialized=serde_json::to_string(request)?;
+            use sha2::{Digest, Sha256};
+            let raw=serde_json::to_string(request)?;
+            let private=matches!(method, "quickLaunch.save" | "quickLaunch.repo.save");
+            let serialized=if private {
+                json!({"requestSha256":hex::encode(Sha256::digest(format!("{method}\0{raw}").as_bytes()))}).to_string()
+            } else { raw.clone() };
             let prior:Option<(String,String)>=tx.query_row("SELECT method,params FROM operation_requests WHERE id=?",[id],|r|Ok((r.get(0)?,r.get(1)?))).optional()?;
             if let Some((prior_method,prior_params))=prior {
-                if prior_method!=method || prior_params!=serialized { return Err(anyhow!("operation_conflict: operationId was already used with different parameters")); }
+                if prior_method!=method || (prior_params!=serialized && !(private && prior_params==raw)) { return Err(anyhow!("operation_conflict: operationId was already used with different parameters")); }
+                if private && prior_params!=serialized {
+                    tx.execute("UPDATE operation_requests SET params=? WHERE id=?",params![serialized,id])?;
+                }
             } else {
                 let completed_method:Option<String>=tx.query_row("SELECT method FROM operations WHERE id=?",[id],|r|r.get(0)).optional()?;
                 if completed_method.is_some_and(|previous| previous!=method) { return Err(anyhow!("operation_conflict: operationId belongs to another method")); }
@@ -3839,6 +3847,30 @@ mod tests {
         assert_eq!(restored.id, session.id);
         assert_eq!(restored.status, "exited");
     }
+    #[test]
+    fn run_save_operation_bindings_hash_secrets_and_keep_exact_replay_identity() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("db.sqlite");
+        let secret = "review-round-private-operation-value";
+        let request = json!({"operationId":"private-save","entry":{"env":[{"name":"TOKEN","secret":true,"value":secret}]}});
+        let db = Database::open(&path).unwrap();
+        for method in ["quickLaunch.save", "quickLaunch.repo.save"] {
+            db.bind_operation(method, method, &request).unwrap();
+            db.bind_operation(method, method, &request).unwrap();
+        }
+        let raw: Vec<String> = db.transaction(|tx| {
+            let mut statement = tx.prepare("SELECT params FROM operation_requests")?;
+            let values = statement.query_map([], |row| row.get(0))?.collect::<rusqlite::Result<_>>()?;
+            Ok(values)
+        }).unwrap();
+        assert!(raw.iter().all(|value| !value.contains(secret) && value.contains("requestSha256")));
+        drop(db);
+        let db = Database::open(&path).unwrap();
+        db.bind_operation("quickLaunch.repo.save", "quickLaunch.repo.save", &request).unwrap();
+        let changed = json!({"operationId":"private-save","entry":{"env":[{"name":"TOKEN","secret":true,"value":"changed"}]}});
+        assert!(db.bind_operation("quickLaunch.repo.save", "quickLaunch.repo.save", &changed).is_err());
+    }
+
     #[test]
     fn operation_identity_rejects_method_and_parameter_reuse_after_reopen() {
         let dir = tempfile::tempdir().unwrap();
