@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import type { DetectedRunEntry, Session } from "@threadterm/protocol";
-import { activeRun, detectedSections, detectedSourceLabel, missingToolLabel, packageScripts, quickLaunchError, runState, runStateLabel } from "./quickLaunch";
+import { activeRun, detectedSections, detectedSourceLabel, missingToolLabel, packageScripts, quickLaunchError, runState, runStateLabel, suggestedLabel, suggestedTag, suggestedTitle } from "./quickLaunch";
 
 const session = (overrides: Partial<Session> = {}): Session => ({ id: "run-1", title: "Dev", provider: "custom", mode: "terminal", status: "exited", createdAt: "2026-10-06T00:00:00.000Z", updatedAt: "2026-10-06T00:00:00.000Z", worktreePath: "C:\\repo", run: { commandId: "dev", name: "Dev", kind: "service", shell: "cmd" }, ...overrides });
 
@@ -83,15 +83,36 @@ test("detectedSections groups by source then manifest group in a fixed order", (
 });
 
 test("detected source labels, missing-tool copy and errors are localized", () => {
-  for (const kind of ["node", "cargo", "make", "just", "compose", "procfile"] as const) {
+  for (const kind of ["node", "cargo", "maven", "gradle", "python", "make", "just", "compose", "procfile"] as const) {
     assert.ok(detectedSourceLabel(kind, false).length > 0 && detectedSourceLabel(kind, true).length > 0);
   }
   assert.equal(detectedSourceLabel("node", false), "Node scripts");
   assert.equal(detectedSourceLabel("node", true), "Node 脚本");
+  assert.equal(detectedSourceLabel("maven", false), "Maven");
+  assert.equal(detectedSourceLabel("gradle", true), "Gradle");
+  assert.equal(detectedSourceLabel("python", false), "Python");
   assert.equal(missingToolLabel("make", false), "make isn't on PATH");
   assert.equal(missingToolLabel("make", true), "PATH 中找不到 make");
+  assert.equal(suggestedLabel(false), "Suggested");
+  assert.equal(suggestedLabel(true), "建议");
+  assert.equal(suggestedTitle(false), "Found in source code; check the command before saving.");
+  assert.equal(suggestedTitle(true), "根据源代码推断；保存前请检查命令。");
   assert.match(quickLaunchError(new Error("detected_entry_not_found"), false), /no longer exists/);
   assert.match(quickLaunchError(new Error("detected_entry_not_found"), true), /已不存在/);
   assert.match(quickLaunchError(new Error("tool_not_found: make"), false), /not on PATH/);
   assert.match(quickLaunchError(new Error("tool_not_found: make"), true), /PATH/);
+});
+
+test("detectedSections orders the JVM and Python kinds between Cargo and Makefile", () => {
+  const entry = (kind: DetectedRunEntry["source"]["kind"], file: string): DetectedRunEntry => detectedEntry({ key: `${kind}:${file}:test`, source: { kind, file, label: file }, group: file });
+  const entries = [entry("procfile", "Procfile"), entry("python", "pyproject.toml"), entry("gradle", "build.gradle"), entry("maven", "pom.xml"), entry("cargo", "Cargo.toml"), entry("node", "package.json")];
+  assert.deepEqual(detectedSections(entries).map(section => section.kind), ["node", "cargo", "maven", "gradle", "python", "procfile"]);
+  assert.deepEqual(detectedSections([entry("python", "pyproject.toml")])[0].groups.map(group => group.name), ["pyproject.toml"]);
+  // The tag itself is decided by the production helper the row uses, not by the fixture.
+  const suggested = suggestedTag(detectedEntry({ suggested: true }), false);
+  assert.deepEqual(suggested, { label: "Suggested", title: "Found in source code; check the command before saving." });
+  assert.deepEqual(suggestedTag({ suggested: true }, true), { label: "建议", title: "根据源代码推断；保存前请检查命令。" });
+  assert.equal(suggestedTag(detectedEntry(), false), undefined, "a manifest entry shows no tag");
+  assert.equal(suggestedTag({ suggested: false }, false), undefined);
+  assert.equal(suggestedTag(undefined, false), undefined, "a saved row has no detected entry");
 });

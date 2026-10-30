@@ -5183,6 +5183,10 @@
         },
         "missingTool": {
           "type": "string"
+        },
+        "suggested": {
+          "type": "boolean",
+          "description": "Inferred from source code rather than declared in a manifest; shown as a suggestion."
         }
       },
       "required": [
@@ -5223,6 +5227,9 @@
       "enum": [
         "node",
         "cargo",
+        "maven",
+        "gradle",
+        "python",
         "make",
         "just",
         "compose",

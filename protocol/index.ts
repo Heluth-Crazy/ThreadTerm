@@ -60,12 +60,13 @@ export interface SessionRun { commandId:string; name:string; kind:QuickLaunchKin
  * and on request. Saving a non-empty list is the user's consent to run it automatically. Revision 0 = never saved. */
 export interface QuickLaunchSetup { projectId:string; revision:number; commandIds:string[] }
 /** Where a detected entry came from. Detection reads manifest files only, never a build tool. */
-export type DetectedRunSourceKind = 'node'|'cargo'|'make'|'just'|'compose'|'procfile';
+export type DetectedRunSourceKind = 'node'|'cargo'|'maven'|'gradle'|'python'|'make'|'just'|'compose'|'procfile';
 export interface DetectedRunSource { kind:DetectedRunSourceKind; /** Relative to the worktree root, forward slashes. */ file:string; /** Short label for the row: the manifest's file name. */ label:string }
 /** A runnable entry computed live from the worktree's files and never stored; it retires itself when its source goes. */
 export interface DetectedRunEntry { /** Stable, readable identity, e.g. `node:apps/web/package.json:dev`. */ key:string; source:DetectedRunSource;
  name:string; command:string; shell:QuickLaunchShell; /** Relative to the worktree root, '' = the root. */ cwd:string; kind:QuickLaunchKind;
- /** Package or target group the row is listed under. */ group:string; /** The entry's tool is not on PATH; the runtime refuses to launch it. */ missingTool?:string }
+ /** Package or target group the row is listed under. */ group:string; /** The entry's tool is not on PATH; the runtime refuses to launch it. */ missingTool?:string;
+ /** Inferred from source code rather than declared in a manifest; shown as a suggestion. */ suggested?:boolean }
 export interface QuickLaunchDetection { entries:DetectedRunEntry[]; /** A bound stopped the scan (entries, members, glob depth or time). */ truncated:boolean }
 export type WorktreeSetupState = 'running'|'completed'|'failed'|'cancelled'|'interrupted';
 /** One sequence in one worktree. `commandIds`/`names` are snapshots taken at start. `step` is the step running now, or the

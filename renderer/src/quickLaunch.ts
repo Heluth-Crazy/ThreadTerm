@@ -34,7 +34,7 @@ export function packageScripts(json: string, lockfiles: readonly string[]): Pack
 }
 /** Detected entries grouped by source kind, then by the manifest's own group (package or target file). */
 export type DetectedSection = { kind: DetectedRunSourceKind; groups: { name: string; entries: DetectedRunEntry[] }[] };
-const detectedOrder: DetectedRunSourceKind[] = ['node','cargo','make','just','compose','procfile'];
+const detectedOrder: DetectedRunSourceKind[] = ['node','cargo','maven','gradle','python','make','just','compose','procfile'];
 export function detectedSections(entries: readonly DetectedRunEntry[]): DetectedSection[] {
  const byKind = new Map<DetectedRunSourceKind, Map<string, DetectedRunEntry[]>>();
  for (const entry of entries) {
@@ -46,8 +46,19 @@ export function detectedSections(entries: readonly DetectedRunEntry[]): Detected
  return detectedOrder.filter(kind => byKind.has(kind)).map(kind => ({ kind, groups: [...byKind.get(kind)!].map(([name, entries]) => ({ name, entries })) }));
 }
 export function detectedSourceLabel(kind: DetectedRunSourceKind, zh: boolean): string {
- const labels: Record<DetectedRunSourceKind,[string,string]> = { node:['Node scripts','Node 脚本'], cargo:['Cargo','Cargo'], make:['Makefile','Makefile'], just:['just recipes','just 配方'], compose:['Compose services','Compose 服务'], procfile:['Procfile','Procfile'] };
+ const labels: Record<DetectedRunSourceKind,[string,string]> = { node:['Node scripts','Node 脚本'], cargo:['Cargo','Cargo'], maven:['Maven','Maven'], gradle:['Gradle','Gradle'], python:['Python','Python'], make:['Makefile','Makefile'], just:['just recipes','just 配方'], compose:['Compose services','Compose 服务'], procfile:['Procfile','Procfile'] };
  return labels[kind][zh ? 1 : 0];
+}
+/** A suggested entry was inferred from source code, not declared in a manifest: the row asks for a look first. */
+export function suggestedLabel(zh: boolean): string {
+ return zh ? '建议' : 'Suggested';
+}
+export function suggestedTitle(zh: boolean): string {
+ return zh ? '根据源代码推断；保存前请检查命令。' : 'Found in source code; check the command before saving.';
+}
+/** The tag a detected row shows, decided here so the popover and the Run view cannot disagree. */
+export function suggestedTag(detected: Pick<DetectedRunEntry, 'suggested'> | undefined, zh: boolean): { label: string; title: string } | undefined {
+ return detected?.suggested ? { label: suggestedLabel(zh), title: suggestedTitle(zh) } : undefined;
 }
 /** A disabled detected row explains exactly which executable is missing. */
 export function missingToolLabel(tool: string, zh: boolean): string {

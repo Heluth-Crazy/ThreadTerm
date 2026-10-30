@@ -32,4 +32,6 @@
 .ql-detected-group-head { padding:2px 12px; font-size:11px; color:var(--muted); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .ql-source-label { flex:none; font-size:10px; color:var(--muted); border:1px solid var(--border); border-radius:999px; padding:0 6px; }
 .ql-missing-tool { font-size:11px; color:var(--danger); }
+/* A suggestion is inferred, not declared: the same tag shape, dashed. */
+.ql-source-label.ql-suggested { border-style:dashed; }
 .ql-detected-entry.is-missing strong, .ql-detected-entry.is-missing code { opacity:.6; }

@@ -956,6 +956,47 @@ fn detected_run_redetects_its_command_and_shares_admission() {
     runtime.shutdown();
 }
 
+#[cfg(windows)]
+#[test]
+fn detected_maven_run_uses_the_wrapper_from_the_maven_root() {
+    let (root, db) = test_db();
+    let project_id = project(&db, root.path(), "project-detected-maven");
+    std::fs::write(
+        root.path().join("pom.xml"),
+        "<project><artifactId>demo</artifactId><build><plugins><plugin><artifactId>spring-boot-maven-plugin</artifactId></plugin></plugins></build></project>",
+    )
+    .unwrap();
+    // The wrapper records its arguments instead of building anything.
+    std::fs::write(
+        root.path().join("mvnw.cmd"),
+        "@echo off\r\necho %* > mvn-args.txt\r\n",
+    )
+    .unwrap();
+    let runtime = service(root.path(), Arc::clone(&db));
+    let cwd = root.path().to_string_lossy().to_string();
+    let run = runtime
+        .dispatch(
+            "test",
+            rpc(
+                "quickLaunch.run",
+                json!({"detectedKey":"maven:pom.xml:spring-boot:run","projectId":project_id,"cwd":cwd,"operationId":"detected-maven"}),
+                "detected-maven",
+            ),
+        )
+        .unwrap();
+    let id = run["session"]["id"].as_str().unwrap().to_owned();
+    wait_inactive(&db, &id);
+    let stored = db.session_by_id(&id).unwrap().unwrap().run.unwrap();
+    assert_eq!(stored.command_id, "detected:maven:pom.xml:spring-boot:run");
+    let arguments = std::fs::read_to_string(root.path().join("mvn-args.txt"))
+        .unwrap_or_else(|error| panic!("{error}: {:?}", output_text(&db, &id)));
+    assert!(
+        arguments.trim().ends_with("spring-boot:run"),
+        "the wrapper got {arguments:?}"
+    );
+    runtime.shutdown();
+}
+
 #[test]
 fn unsafe_detected_commands_never_launch() {
     let (root, db) = test_db();

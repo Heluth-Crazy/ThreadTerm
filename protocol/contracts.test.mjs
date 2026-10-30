@@ -779,7 +779,12 @@ test('detected entries are read-only suggestions with a stable key and exactly o
  validateResult('quickLaunch.detect',{entries:[entry],truncated:false});
  validateResult('quickLaunch.detect',{entries:[],truncated:false});
  validateResult('quickLaunch.detect',{entries:[{...entry,key:'procfile:Procfile:web',missingTool:'make',source:{kind:'procfile',file:'Procfile',label:'Procfile'},command:'make web',kind:'task'}],truncated:true});
- for(const patch of [{source:{kind:'maven',file:'pom.xml',label:'pom.xml'}},{missingTool:3},{group:3},{kind:'daemon'}]) assert.throws(()=>validateResult('quickLaunch.detect',{entries:[{...entry,...patch}],truncated:false}));
+ // The JVM and Python detectors add three source kinds; `suggested` marks an entry inferred from source code.
+ for(const [kind,file,label,command] of [['maven','pom.xml','pom.xml','mvn test'],['gradle','build.gradle','build.gradle','gradle test'],['python','pyproject.toml','pyproject.toml','uv run python -m pytest']]) {
+  validateResult('quickLaunch.detect',{entries:[{...entry,key:`${kind}:${file}:test`,source:{kind,file,label},command}],truncated:false});
+  validateResult('quickLaunch.detect',{entries:[{...entry,key:`${kind}:${file}:suggested`,source:{kind,file,label},command,suggested:true}],truncated:false});
+ }
+ for(const patch of [{source:{kind:'daemon',file:'pom.xml',label:'pom.xml'}},{missingTool:3},{group:3},{kind:'daemon'},{suggested:'yes'},{suggested:null}]) assert.throws(()=>validateResult('quickLaunch.detect',{entries:[{...entry,...patch}],truncated:false}));
  // Nothing detected can be launched with client-supplied command text: only a key is accepted, and it needs a project.
  validateRequest('quickLaunch.run',{commandId:'c',cwd:'C:\\repo',operationId:'o'});
  validateRequest('quickLaunch.run',{detectedKey:entry.key,projectId:'p',cwd:'C:\\repo',operationId:'o'});

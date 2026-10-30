@@ -22,10 +22,16 @@ use std::{
 const MANIFEST_LIMIT: u64 = 1024 * 1024;
 const MAX_ENTRIES: usize = 200;
 const MAX_MEMBERS: usize = 64;
+// A flat root may hold thousands of loose files; the project-directory scan stops
+// there instead of walking the whole listing.
+const MAX_SCAN_ENTRIES: usize = 4096;
 // Wildcard index bound: `*` (index 0) and `a/*` (index 1) expand; `a/b/*` is too deep.
 const MAX_GLOB_DEPTH: usize = 2;
 const BUDGET: Duration = Duration::from_millis(250);
 const SKIPPED_DIRS: [&str; 3] = ["node_modules", "target", ".git"];
+// Additionally skipped while looking for a project directory one level down: these
+// hold an environment or build output, never a project of their own.
+const NESTED_SKIPPED_DIRS: [&str; 6] = ["venv", ".venv", "__pycache__", "build", "dist", "out"];
 const WEB_FRAMEWORKS: [&str; 9] = [
     "axum", "actix-web", "rocket", "warp", "poem", "tide", "hyper", "tonic", "salvo",
 ];
@@ -55,6 +61,13 @@ pub(crate) struct DetectedRunEntry {
     pub group: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub missing_tool: Option<String>,
+    /// Inferred from source code rather than declared in a manifest.
+    #[serde(skip_serializing_if = "not_true")]
+    pub suggested: bool,
+}
+
+fn not_true(value: &bool) -> bool {
+    !*value
 }
 
 pub(crate) struct Detection {
@@ -66,10 +79,23 @@ pub(crate) fn detect(root: &Path) -> Detection {
     detect_with(root, Budget::default())
 }
 
-fn detect_with(root: &Path, mut budget: Budget) -> Detection {
-    let mut sink = Sink::new(root);
+fn detect_with(root: &Path, budget: Budget) -> Detection {
+    detect_with_env(root, budget, None)
+}
+
+/// The test seam: an injected environment replaces the runtime's own terminal
+/// environment, so a fixture never depends on what is installed on the machine.
+fn detect_with_env(
+    root: &Path,
+    mut budget: Budget,
+    vars: Option<Vec<(OsString, OsString)>>,
+) -> Detection {
+    let mut sink = Sink::with_vars(root, vars);
     detect_node(root, &mut budget, &mut sink);
     detect_cargo(root, &mut budget, &mut sink);
+    jvm::detect_maven(root, &mut budget, &mut sink);
+    jvm::detect_gradle(root, &mut budget, &mut sink);
+    python::detect_python(root, &mut budget, &mut sink);
     detect_make(root, &mut budget, &mut sink);
     detect_just(root, &mut budget, &mut sink);
     detect_compose(root, &mut budget, &mut sink);
@@ -133,6 +159,7 @@ struct Candidate {
     entry_kind: &'static str,
     group: String,
     key: String,
+    suggested: bool,
 }
 
 struct Sink {
@@ -144,8 +171,10 @@ struct Sink {
 }
 
 impl Sink {
-    fn new(root: &Path) -> Self {
-        let vars = environment::for_terminal().unwrap_or_else(|| std::env::vars_os().collect());
+    fn with_vars(root: &Path, vars: Option<Vec<(OsString, OsString)>>) -> Self {
+        let vars = vars.unwrap_or_else(|| {
+            environment::for_terminal().unwrap_or_else(|| std::env::vars_os().collect())
+        });
         Self {
             entries: Vec::new(),
             keys: BTreeSet::new(),
@@ -206,6 +235,7 @@ impl Sink {
             kind: candidate.entry_kind.to_owned(),
             group: candidate.group,
             missing_tool,
+            suggested: candidate.suggested,
         });
     }
 }
@@ -290,6 +320,7 @@ fn detect_node(root: &Path, budget: &mut Budget, sink: &mut Sink) {
                         "task"
                     },
                     group: group.clone(),
+                    suggested: false,
                 },
             );
         }
@@ -505,6 +536,7 @@ fn detect_cargo(root: &Path, budget: &mut Budget, sink: &mut Sink) {
                     cwd: dir.clone(),
                     entry_kind,
                     group: name.clone(),
+                    suggested: false,
                 },
             );
         }
@@ -523,6 +555,7 @@ fn detect_cargo(root: &Path, budget: &mut Budget, sink: &mut Sink) {
                     cwd: dir.clone(),
                     entry_kind: "task",
                     group: name.clone(),
+                    suggested: false,
                 },
             );
         }
@@ -540,6 +573,7 @@ fn detect_cargo(root: &Path, budget: &mut Budget, sink: &mut Sink) {
                     cwd: String::new(),
                     entry_kind: "task",
                     group: "workspace".into(),
+                    suggested: false,
                 },
             );
         }
@@ -674,6 +708,7 @@ fn detect_make(root: &Path, budget: &mut Budget, sink: &mut Sink) {
                 cwd: String::new(),
                 entry_kind: "task",
                 group: file.to_string(),
+                    suggested: false,
             },
         );
     }
@@ -727,6 +762,7 @@ fn detect_just(root: &Path, budget: &mut Budget, sink: &mut Sink) {
                 cwd: String::new(),
                 entry_kind: "task",
                 group: file.to_string(),
+                    suggested: false,
             },
         );
     }
@@ -772,6 +808,7 @@ fn detect_compose(root: &Path, budget: &mut Budget, sink: &mut Sink) {
                 cwd: String::new(),
                 entry_kind: "service",
                 group: file.to_string(),
+                    suggested: false,
             },
         );
     }
@@ -868,6 +905,7 @@ fn detect_procfile(root: &Path, budget: &mut Budget, sink: &mut Sink) {
                 cwd: String::new(),
                 entry_kind: "service",
                 group: "Procfile".into(),
+                    suggested: false,
             },
         );
     }
@@ -1033,39 +1071,50 @@ fn tool_available(tool: &str, vars: &[(OsString, OsString)], cwd: &Path) -> bool
     if tool.is_empty() || tool.contains(['/', '\\', '=']) || tool.starts_with('-') {
         return true;
     }
-    let extensions: Vec<String> = if cfg!(windows) {
-        var(vars, "PATHEXT")
-            .map(|value| {
-                value
-                    .to_string_lossy()
-                    .split(';')
-                    .filter(|ext| !ext.trim().is_empty())
-                    .map(|ext| ext.trim().to_owned())
-                    .collect::<Vec<String>>()
-            })
-            .filter(|extensions| !extensions.is_empty())
-            .unwrap_or_else(|| {
-                [".COM", ".EXE", ".BAT", ".CMD"]
-                    .iter()
-                    .map(|ext| (*ext).to_owned())
-                    .collect()
-            })
-    } else {
-        Vec::new()
-    };
-    let present = |directory: &Path| {
-        directory.join(tool).is_file()
-            || extensions
-                .iter()
-                .any(|extension| directory.join(format!("{tool}{extension}")).is_file())
-    };
-    if present(cwd) {
+    let extensions = executable_extensions(vars);
+    if present_in(cwd, tool, &extensions) {
         return true;
     }
+    tool_on_path(tool, vars)
+}
+
+/// A PATH lookup without the working directory: the Python detector only asks
+/// whether the `py` launcher exists, never whether the project ships one.
+fn tool_on_path(tool: &str, vars: &[(OsString, OsString)]) -> bool {
     let Some(path) = var(vars, "PATH") else {
         return false;
     };
-    std::env::split_paths(path).any(|directory| present(&directory))
+    let extensions = executable_extensions(vars);
+    std::env::split_paths(path).any(|directory| present_in(&directory, tool, &extensions))
+}
+
+fn executable_extensions(vars: &[(OsString, OsString)]) -> Vec<String> {
+    if !cfg!(windows) {
+        return Vec::new();
+    }
+    var(vars, "PATHEXT")
+        .map(|value| {
+            value
+                .to_string_lossy()
+                .split(';')
+                .filter(|ext| !ext.trim().is_empty())
+                .map(|ext| ext.trim().to_owned())
+                .collect::<Vec<String>>()
+        })
+        .filter(|extensions| !extensions.is_empty())
+        .unwrap_or_else(|| {
+            [".COM", ".EXE", ".BAT", ".CMD"]
+                .iter()
+                .map(|ext| (*ext).to_owned())
+                .collect()
+        })
+}
+
+fn present_in(directory: &Path, tool: &str, extensions: &[String]) -> bool {
+    directory.join(tool).is_file()
+        || extensions
+            .iter()
+            .any(|extension| directory.join(format!("{tool}{extension}")).is_file())
 }
 
 fn var<'a>(vars: &'a [(OsString, OsString)], name: &str) -> Option<&'a OsString> {
@@ -1108,6 +1157,71 @@ fn strip_comment(line: &str) -> &str {
     line
 }
 
+
+/// The worktree root when it holds one of the ecosystem's manifests, else the
+/// immediate child directories that do — the common `backend/` + `frontend/`
+/// layout. Hidden, vendored, environment and build-output directories are
+/// skipped; only candidate directories count toward the 64-project cap, the
+/// whole listing is bounded separately, and every child must resolve inside the
+/// root so a junction cannot make detection read a manifest outside the worktree.
+fn project_dirs(root: &Path, budget: &mut Budget, is_project: &dyn Fn(&Path) -> bool) -> Vec<String> {
+    if is_project(root) {
+        return vec![String::new()];
+    }
+    let Ok(read) = fs::read_dir(root) else {
+        return Vec::new();
+    };
+    // The root is the base a child must stay inside, resolved once.
+    let Ok(base) = root.canonicalize() else {
+        return Vec::new();
+    };
+    let mut found: Vec<String> = Vec::new();
+    let mut iterated = 0usize;
+    for entry in read.filter_map(Result::ok) {
+        if budget.expired() {
+            break;
+        }
+        if iterated >= MAX_SCAN_ENTRIES {
+            budget.truncated = true;
+            break;
+        }
+        iterated += 1;
+        if !entry.file_type().is_ok_and(|kind| kind.is_dir()) {
+            continue;
+        }
+        let Some(name) = entry.file_name().to_str().map(str::to_owned) else {
+            continue;
+        };
+        if skipped_dir(&name)
+            || NESTED_SKIPPED_DIRS
+                .iter()
+                .any(|skip| name.eq_ignore_ascii_case(skip))
+        {
+            continue;
+        }
+        if found.len() >= MAX_MEMBERS {
+            budget.truncated = true;
+            break;
+        }
+        let directory = root.join(&name);
+        if !directory
+            .canonicalize()
+            .is_ok_and(|path| path.starts_with(&base))
+        {
+            continue;
+        }
+        if is_project(&directory) {
+            found.push(name);
+        }
+    }
+    found.sort();
+    found
+}
+
+#[path = "run_detect_jvm.rs"]
+mod jvm;
+#[path = "run_detect_python.rs"]
+mod python;
 
 #[cfg(test)]
 #[path = "run_detect_tests.rs"]

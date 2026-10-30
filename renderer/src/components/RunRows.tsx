@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
 import type { DetectedRunEntry, QuickLaunchCommand, QuickLaunchKind, Session } from '@threadterm/protocol';
 import { request, subscribeEvents } from '../bridge';
 import { sameCanonicalScope } from '../projectScope';
-import { activeRun, missingToolLabel, quickLaunchError, runState, runStateLabel } from '../quickLaunch';
+import { activeRun, missingToolLabel, quickLaunchError, runState, runStateLabel, suggestedTag } from '../quickLaunch';
 import { detectedCommandId } from '../workbench/runView';
 import { Icon } from './PrototypeIcon';
 
@@ -58,12 +58,14 @@ export function RunEntryRow({entry, session, zh, busy, worktree, uptime, current
 }) {
  const view = session ? runState(session) : undefined;
  const missing = entry.missingTool ? missingToolLabel(entry.missingTool, zh) : undefined;
+ const suggested = suggestedTag(entry.detected, zh);
  return <section className={`ql-command${entry.source === 'detected' ? ' ql-detected-entry' : ''}${missing ? ' is-missing' : ''}${current ? ' is-current' : ''}`}
   data-testid={entry.source === 'saved' ? `quick-launch-command-${entry.key}` : `quick-launch-detected-entry-${entry.key}`}
   data-run-entry={entry.commandId} data-current={current ? 'true' : undefined} aria-label={entry.name} title={missing}>
   <div className="ql-command-head">
    <strong>{entry.name}</strong>
    {entry.sourceLabel && <span className="ql-source-label">{entry.sourceLabel}</span>}
+   {suggested && <span className="ql-source-label ql-suggested" data-suggested="true" title={suggested.title}>{suggested.label}</span>}
    {worktree && <span className="ql-worktree" title={worktree}>{worktree}</span>}
    {view && <span className={`ql-state ql-${view.state}`}><span className="dot" aria-hidden="true"/>{runStateLabel(view, zh)}</span>}
    {uptime && <span className="ql-uptime">{uptime}</span>}
