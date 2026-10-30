@@ -383,7 +383,9 @@ test('web preview tabs show only http(s) pages and belong to no session',()=>{
 test('file references are additive, scoped by session, and bounded at the request boundary',()=>{
  validateRequest('filesystem.resolve',{sessionId:'s',path:'src/main.ts',line:5,column:2});
  validateRequest('filesystem.resolve',{sessionId:'s',path:'src/main.ts',column:2});
- for(const patch of [{sessionId:''},{path:''},{path:'a\0b'},{path:'x'.repeat(16385)},{line:0},{column:1000001},{line:1.5},{projectId:'injected-scope'}])assert.throws(()=>validateRequest('filesystem.resolve',{sessionId:'s',path:'a.ts',...patch}));
+ // A JVM frame asks the runtime to search source roots for the package-relative file.
+ validateRequest('filesystem.resolve',{sessionId:'s',path:'com/example/UserController.java',line:42,sourceSearch:true});
+ for(const patch of [{sessionId:''},{path:''},{path:'a\0b'},{path:'x'.repeat(16385)},{line:0},{column:1000001},{line:1.5},{projectId:'injected-scope'},{sourceSearch:'yes'},{sourceSearch:1}])assert.throws(()=>validateRequest('filesystem.resolve',{sessionId:'s',path:'a.ts',...patch}));
  validateResult('filesystem.resolve',{projectId:'p',worktreePath:'D:/repo',path:'image',kind:'image',line:1});
  assert.throws(()=>validateResult('filesystem.resolve',{path:'a.ts',kind:'text'}));
  validateResult('chat.read',[{id:'tool',role:'assistant',createdAt:'now',parts:[{type:'tool',status:'failed',fileReferences:[{path:'README.md',line:2}]}]}]);

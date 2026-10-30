@@ -90,3 +90,39 @@ test('the Ctrl layer skips pending lookups and redraws when they settle', async 
   assert.equal(settled, 1);
   assert.deepEqual(terminalFileLinks(terminal, 1, () => {}, undefined, validator).map(link => link.text), ['src/a.ts']);
 });
+
+// A fake runtime that knows which paths were found, and whether a source search was asked for.
+const sourceRuntime = found => createFileLinkValidator(async (path, sourceSearch) => {
+  const key = sourceSearch ? `source:${path}` : path;
+  return found.includes(key) ? 'exists' : 'missing';
+});
+
+test('a JVM frame links its package-relative source, not the bare file name', async () => {
+  const terminal = await terminalWith(120, '\tat com.example.web.UserController.list(UserController.java:42)');
+  const opened = [];
+  // The bare file name does not exist, and the source search alone is answered.
+  assert.deepEqual(await provided(terminal, 1, sourceRuntime([]), opened), []);
+  assert.deepEqual(await provided(terminal, 1, sourceRuntime(['source:com/example/web/UserController.java']), opened).then(links => links.map(link => link.text)), ['UserController.java:42']);
+  assert.deepEqual(opened, [{ path: 'com/example/web/UserController.java', line: 42, sourceSearch: true }]);
+});
+
+test('a Maven bracket line links the path it names', async () => {
+  const path = 'D:/proj/api/src/main/java/com/example/Hello.java';
+  const line = `/D:/proj/api/src/main/java/com/example/Hello.java:[3,5] cannot find symbol`;
+  const terminal = await terminalWith(160, `[ERROR] ${line}`);
+  const opened = [];
+  assert.deepEqual((await provided(terminal, 1, runtime([path]), opened)).map(link => link.text), [`/D:/proj/api/src/main/java/com/example/Hello.java:[3,5]`]);
+  assert.deepEqual(opened, [{ path, line: 3, column: 5 }]);
+});
+
+test('the same path with and without the source search is checked separately', async () => {
+  const checked = [];
+  const validator = createFileLinkValidator(async (path, sourceSearch) => {
+    checked.push([path, Boolean(sourceSearch)]);
+    return sourceSearch ? 'exists' : 'missing';
+  });
+  await Promise.all([validator.settle('com/example/Foo.java'), validator.settle('com/example/Foo.java', true)]);
+  assert.deepEqual(checked, [['com/example/Foo.java', false], ['com/example/Foo.java', true]]);
+  assert.equal(validator.peek('com/example/Foo.java'), 'missing');
+  assert.equal(validator.peek('com/example/Foo.java', true), 'exists');
+});

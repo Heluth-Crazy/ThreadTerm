@@ -1349,12 +1349,13 @@ impl RuntimeService {
         if request.method == "filesystem.resolve" {
             let p: FileResolve = parse(&request.params)
                 .map_err(|failure| error("invalid_request", &failure.to_string()))?;
-            return crate::workspace_services::resolve_file_reference(
+            return crate::workspace_services::resolve_file_reference_with_source_search(
                 &self.db,
                 &p.session_id,
                 &p.path,
                 p.line,
                 p.column,
+                p.source_search,
             )
             .map_err(file_reference_rpc_error);
         }
@@ -3206,6 +3207,9 @@ struct FileResolve {
     path: String,
     line: Option<u32>,
     column: Option<u32>,
+    /// Untrusted hint from the renderer; validated by the runtime's own source path rules.
+    #[serde(default)]
+    source_search: bool,
 }
 #[derive(Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]

@@ -3071,6 +3071,9 @@
         "column": {
           "type": "number"
         },
+        "sourceSearch": {
+          "type": "boolean"
+        },
         "sessionId": {
           "type": "string"
         }

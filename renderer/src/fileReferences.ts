@@ -16,7 +16,10 @@ const BARE_NAMED_FILE=/^(?:dockerfile|makefile|readme(?:\.[a-z0-9]{1,16})?)$/i;
 const NAMED_FILE_PATH=/(?:^|[\\/])(?:dockerfile|makefile|readme(?:\.[a-z0-9]{1,16})?)$/i;
 const ABSOLUTE=/^(?:[a-z]:\\|[a-z]:\/(?!\/)|\\\\(?:\?\\)?[^\\/]+[\\/]|\/)/i;
 // Closing punctuation, including the full-width marks of Chinese prose (。，：；！？）】》」』”’、).
-const TRAILING=/[),.:;!?'"`\]}>”’」』）】》〉、。，：；！？]+$/u;
+const TRAILING_PUNCT='),.:;!?\'"`}>”’」』）】》〉、。，：；！？';
+const TRAILING=new RegExp(`[${TRAILING_PUNCT}\\]]+$`,'u');
+// Maven's `path:[line,col]` suffix ends in a bracket, which the strip above would eat.
+const TRAILING_BEFORE_BRACKET=new RegExp(`[${TRAILING_PUNCT}]+$`,'u');
 // Chinese prose puts no space between a path and the punctuation or words around it
 // (`见src/a.ts。`), so full-width punctuation, box drawing and TUI bullets/prompts
 // (│ ⎿ ⏺ • › ❯) end a token just like whitespace.
@@ -29,6 +32,14 @@ const OPENERS='([{<';
 const CLOSERS=')]}>';
 const TRAILING_MARKS=',.:;!?\'"`';
 const LINE_IN_PARENS=/\((\d+)(?:,(\d+))?\)$/;
+// `/D:/repo/a.ts` is how Maven and many editors spell a Windows path; runtime scope wants `D:/repo/a.ts`.
+const driveWithoutSlash=(path:string)=>path.replace(/^\/(?=[a-z]:[\\/](?![\\/]))/i,'');
+// JVM stack frames name the file only inside the parentheses, so the package comes from the dotted frame.
+const JVM_SEGMENT='[A-Za-z_$][\\w$]*';
+const JVM_FILE_NAME=new RegExp(`^${JVM_SEGMENT}\\.(?:java|kt|kts|scala|groovy)$`,'i');
+// `com.example.web.UserController.list`, optionally behind `at ` and a module/class-loader prefix
+// (`java.base/`, `app//`); the last segment is the method, which may be `<init>` or a lambda.
+const JVM_FRAME=new RegExp(`^(?:at\\s+)?(?:[^\\s/()]+/+)?((?:${JVM_SEGMENT}\\.)+${JVM_SEGMENT}|(?:${JVM_SEGMENT}\\.)+<(?:init|clinit)>)$`);
 
 function localFileUri(value:string):string|undefined {
   if(!/^file:\/\//i.test(value)||/[?#%]/.test(value))return;
@@ -67,11 +78,26 @@ function splitLocation(value:string):FileReference|undefined {
 
 const looksLikeFile=(path:string)=>FILE_EXTENSION.test(path)||NAMED_FILE_PATH.test(path);
 
+/** Maven's `path:[line,col]` and `path:[line]`, read before the closing bracket is trimmed.
+ *  `undefined` is "not this form"; `null` is "this form, with an out-of-range position". */
+function splitMavenPosition(value:string):{path:string;line:number;column?:number}|null|undefined {
+  const match=/^(.*?):\[(\d+)(?:,(\d+))?\]$/.exec(value.replace(TRAILING_BEFORE_BRACKET,''));
+  if(!match)return;
+  // Only Maven's own shape: a path, not prose such as `Makefile:[1]` or `foo.bar:[1]`.
+  const path=match[1]; if(!/[\\/]/.test(path)&&!/^[a-z]:/i.test(path))return;
+  const line=Number(match[2]); const column=match[3]===undefined?undefined:Number(match[3]);
+  if(!Number.isSafeInteger(line)||line<1||line>MAX_POSITION||(column!==undefined&&(!Number.isSafeInteger(column)||column<1||column>MAX_POSITION)))return null;
+  return {path,line,...(column===undefined?{}:{column})};
+}
+
 /** Parses a bounded, explicit local path; it never decodes or touches the filesystem. */
 export function parseFileReference(text:string):FileReference|undefined {
   let value=text.trim();
   if(value.length<2||value.length>MAX_CANDIDATE_LENGTH)return;
   if((value.startsWith('"')&&value.endsWith('"'))||(value.startsWith("'")&&value.endsWith("'"))||(value.startsWith('`')&&value.endsWith('`')))value=value.slice(1,-1);
+  const bracket=splitMavenPosition(value);
+  if(bracket===null)return;
+  if(bracket)value=`${bracket.path}:${bracket.line}${bracket.column===undefined?'':':'+bracket.column}`;
   value=value.replace(TRAILING,'');
   const fragment=splitLineFragment(value);if(!fragment)return;
   value=fragment.path;
@@ -101,6 +127,8 @@ export function parseMarkdownFileReference(href:string):FileReference|undefined 
 }
 
 const isBreak=(value:string)=>BREAK.test(value);
+/** The exact reading chat has always linked: no speculative marker and no source search. */
+const plainReference=(candidate:FileReferenceCandidate):ExtractedFileReference=>({path:candidate.path,...(candidate.line===undefined?{}:{line:candidate.line}),...(candidate.column===undefined?{}:{column:candidate.column}),start:candidate.start,end:candidate.end});
 // A scheme-prefixed token (`https://host/?q=src/a.ts`) is a URL, never a local path.
 const insideUrl=(text:string,offset:number)=>URL_PREFIX.test(text.slice(Math.max(0,offset-256),offset));
 
@@ -121,13 +149,24 @@ function readSpan(text:string,from:number,to:number):FileReferenceCandidate|unde
   const located=LINE_IN_PARENS.exec(core);
   if(!located||located.index===0){
     const reference=parseFileReference(core);
-    return reference&&{...reference,start:from,end};
+    return reference&&{...reference,path:driveWithoutSlash(reference.path),start:from,end};
   }
   // Compiler form `src/a.ts(10,5)`, as printed by tsc and MSBuild.
   const base=parseFileReference(core.slice(0,located.index));
   const line=Number(located[1]); const column=located[2]===undefined?undefined:Number(located[2]);
   if(!base||base.line!==undefined||line<1||line>MAX_POSITION||(column!==undefined&&(column<1||column>MAX_POSITION)))return;
-  return {path:base.path,line,...(column===undefined?{}:{column}),start:from,end};
+  return {path:driveWithoutSlash(base.path),line,...(column===undefined?{}:{column}),start:from,end};
+}
+
+/** A JVM frame's package-relative source file, for the runtime's bounded source search. */
+function jvmSourceReading(text:string,from:number,found:FileReferenceCandidate):FileReferenceCandidate|undefined {
+  if(found.line===undefined||text[found.start-1]!=='(')return;
+  const frame=JVM_FRAME.exec(text.slice(from,found.start-1))?.[1]; if(!frame)return;
+  // The parentheses hold a bare file name; an actual path already resolves without a search.
+  const fileName=found.path; if(!JVM_FILE_NAME.test(fileName)||/[\\/]/.test(fileName))return;
+  const segments=frame.split('.'); const method=segments.pop(), className=segments.pop();
+  if(!method||!className)return;
+  return {...found,path:[...segments,fileName].join('/'),sourceSearch:true};
 }
 
 /** Readings of one unquoted token: `Update(src/a.ts)`, `--out=./a.js`, `修改了src/a.ts文件`, `a.ts(3,1):`. */
@@ -153,7 +192,11 @@ function tokenCandidates(text:string,from:number,to:number):FileReferenceCandida
     if(!found||insideUrl(text,found.start))continue;
     // `git diff` prints `a/src/x.ts` and `b/src/x.ts`; only the runtime knows which exists.
     const unprefixed=/^[ab][\\/]/.test(text.slice(found.start,found.start+2))?readSpan(text,found.start+2,found.end):undefined;
-    return unprefixed?[found,{...unprefixed,speculative:true}]:[found];
+    const fallback=unprefixed?{...unprefixed,speculative:true as const}:undefined;
+    // A JVM frame is tried as a package-relative source first; the bare file name stays the fallback.
+    const source=jvmSourceReading(text,from,found);
+    if(source)return [source,{...found,speculative:true},...(fallback?[fallback]:[])];
+    return fallback?[found,fallback]:[found];
   }
   return [];
 }
@@ -185,7 +228,8 @@ export function fileReferenceCandidates(text:string):FileReferenceCandidate[][] 
   const emit=(raw:string,offset:number,line?:number)=>{
     if(raw.length>MAX_CANDIDATE_LENGTH||insideUrl(text,offset))return;
     const reference=parseFileReference(raw); if(!reference)return;
-    groups.push([{...reference,...(line&&reference.line===undefined?{line}:{}),start:offset,end:offset+raw.length}]);
+    // Quoted paths, Markdown targets and tracebacks get the same `/D:/` reading as unquoted tokens.
+    groups.push([{...reference,path:driveWithoutSlash(reference.path),...(line&&reference.line===undefined?{line}:{}),start:offset,end:offset+raw.length}]);
   };
   // Scan each token once. The former global regex could retry a growing slash-only token
   // at every slash; this keeps long non-path input linear while retaining quoted and
@@ -230,5 +274,11 @@ export function fileReferenceCandidates(text:string):FileReferenceCandidate[][] 
 
 /** Extracts prose, quoted/code, Markdown-target and local-file-URI candidates with JS offsets. */
 export function extractFileReferences(text:string):ExtractedFileReference[] {
-  return fileReferenceCandidates(text).flatMap(group=>group.filter(candidate=>!candidate.speculative).slice(0,1));
+  return fileReferenceCandidates(text).flatMap(group=>{
+    // A JVM frame is terminal-only. Chat keeps exactly the bare `File.java:N` reading it had before
+    // that reading was paired with a source search, so no chat link changes in this step.
+    const source=group.findIndex(candidate=>candidate.sourceSearch);
+    if(source>=0){const fallback=group[source+1];return fallback?[plainReference(fallback)]:[];}
+    return group.filter(candidate=>!candidate.speculative).slice(0,1);
+  });
 }

@@ -15,13 +15,25 @@ use std::{
     path::{Component, Path, PathBuf},
     process::Command,
     sync::{Arc, Mutex, OnceLock},
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 pub const MAX_DOCUMENT_BYTES: usize = 1024 * 1024;
 pub(crate) const MAX_IMAGE_BYTES: u64 = 4 * 1024 * 1024;
 const MAX_FILE_REFERENCE_PATH_BYTES: usize = 16 * 1024;
 const MAX_FILE_REFERENCE_POSITION: u32 = 1_000_000;
+/// A JVM stack frame names only the file (`UserController.java`), so a bounded
+/// search of the session's source roots turns it into a readable path.
+const MAX_SOURCE_SEARCH_SEGMENTS: usize = 64;
+const MAX_SOURCE_SEARCH_BASES: usize = 256;
+/// One directory read is capped too, so a folder with tens of thousands of entries
+/// cannot stall a hover before the base cap or the deadline is reached.
+const MAX_SOURCE_SEARCH_ENTRIES: usize = 1024;
+/// A whole walk, enumeration included. Windows spends ~30-50 us on one `is_file` miss,
+/// so a 200-module tree needs ~150 ms; the result is then cached by the renderer.
+const SOURCE_SEARCH_BUDGET: Duration = Duration::from_millis(150);
+/// `.git`, `.gradle` and every other hidden directory are skipped by the leading dot.
+const SOURCE_SEARCH_SKIPPED: [&str; 5] = ["node_modules", "target", "build", "out", "bin"];
 /// Worktree Git work runs outside the database lock under this deadline; a
 /// repository's checkout hooks may legitimately take minutes.
 const WORKTREE_TIMEOUT: Duration = Duration::from_secs(300);
@@ -255,12 +267,32 @@ pub fn resolve_file_reference(
     line: Option<u32>,
     column: Option<u32>,
 ) -> Result<Value> {
+    resolve_file_reference_with_source_search(db, session_id, path, line, column, false)
+}
+
+/// With `source_search`, `path` is a package-relative JVM source file
+/// (`com/example/Foo.java`) that is found by searching the session's source
+/// roots instead of the launch cwd. The found file then takes exactly the same
+/// canonicalise, containment, kind and size checks as a literal path.
+pub fn resolve_file_reference_with_source_search(
+    db: &Database,
+    session_id: &str,
+    path: &str,
+    line: Option<u32>,
+    column: Option<u32>,
+    source_search: bool,
+) -> Result<Value> {
     validate_file_reference_input(path, line, column)?;
     let scope = session_file_scope(db, session_id)?;
     let project_id = &scope.project_id;
     let root = &scope.root;
-    let candidate = scope
-        .candidate(path)?
+    let requested = if source_search {
+        search_source_roots(&scope, path)?
+    } else {
+        Some(scope.candidate(path)?)
+    };
+    let candidate = requested
+        .ok_or_else(|| anyhow!("file_reference_not_found"))?
         .canonicalize()
         .map_err(|_| anyhow!("file_reference_not_found"))?;
     if !path_is_within(&candidate, root)? {
@@ -369,7 +401,11 @@ pub(crate) fn session_file_scope(db: &Database, session_id: &str) -> Result<Sess
         project_id: project_id.to_owned(),
         root,
         cwd: cwd.to_path_buf(),
-        relative_requires_absolute: matches!(session.provider.as_str(), "shell" | "custom"),
+        // A Quick Launch run's cwd is fixed by the run, so its relative output (`--> src/main.rs:10:5`)
+        // resolves like any other session's. A plain shell/custom terminal may have `cd`'d elsewhere,
+        // which is why its relative references stay refused.
+        relative_requires_absolute: session.run.is_none()
+            && matches!(session.provider.as_str(), "shell" | "custom"),
     })
 }
 
@@ -441,6 +477,236 @@ fn looks_like_uri(path: &str) -> bool {
         && path[..colon].bytes().enumerate().all(|(index, byte)| {
             byte.is_ascii_alphanumeric() || (index > 0 && matches!(byte, b'+' | b'-' | b'.'))
         })
+}
+
+/// A source-search path is a package directory plus a JVM source file name:
+/// relative, forward slashes, Java identifiers, nothing else.
+fn validate_source_search_path(path: &str) -> Result<()> {
+    let invalid = || anyhow!("file_reference_invalid_path");
+    if path.contains('\\') || path.len() > MAX_FILE_REFERENCE_PATH_BYTES {
+        return Err(invalid());
+    }
+    let segments: Vec<&str> = path.split('/').collect();
+    if segments.len() > MAX_SOURCE_SEARCH_SEGMENTS {
+        return Err(invalid());
+    }
+    let Some((file, directories)) = segments.split_last() else {
+        return Err(invalid());
+    };
+    if directories
+        .iter()
+        .any(|segment| !is_java_identifier(segment))
+    {
+        return Err(invalid());
+    }
+    let Some((stem, extension)) = file.rsplit_once('.') else {
+        return Err(invalid());
+    };
+    if !is_java_identifier(stem)
+        || !matches!(
+            extension.to_ascii_lowercase().as_str(),
+            "java" | "kt" | "kts" | "scala" | "groovy"
+        )
+    {
+        return Err(invalid());
+    }
+    Ok(())
+}
+
+fn is_java_identifier(value: &str) -> bool {
+    let mut characters = value.chars();
+    let Some(first) = characters.next() else {
+        return false;
+    };
+    (first.is_ascii_alphabetic() || matches!(first, '_' | '$'))
+        && characters
+            .all(|character| character.is_ascii_alphanumeric() || matches!(character, '_' | '$'))
+}
+
+/// The first existing file wins: the session cwd, the root, then every module
+/// directory, then their children. The walk is bounded in time, bases and entries,
+/// and each base is probed as soon as it is discovered, so a hit early in the order
+/// never pays for the rest of the tree.
+fn search_source_roots(scope: &SessionFileScope, path: &str) -> Result<Option<PathBuf>> {
+    validate_source_search_path(path)?;
+    let relatives = source_search_relatives(path);
+    let mut search = SourceSearch::new();
+    let found = search.walk(&scope.root, &scope.cwd, |base| {
+        for relative in &relatives {
+            let candidate = base.join(relative);
+            if !candidate.is_file() {
+                continue;
+            }
+            // A junction or symlink below a base can point outside the root: skip that hit and keep
+            // looking, so one escaping link cannot fail an otherwise resolvable frame.
+            let Ok(canonical) = candidate.canonicalize() else {
+                continue;
+            };
+            if !matches!(path_is_within(&canonical, &scope.root), Ok(true)) {
+                continue;
+            }
+            return Some(canonical);
+        }
+        None
+    });
+    Ok(found)
+}
+
+/// The source roots that can hold this file: its own language first, then the
+/// generic fallbacks. A `.java` file never lives under `src/main/kotlin`, so the
+/// other languages cost nothing.
+fn source_search_relatives(path: &str) -> Vec<String> {
+    let language = match path.rsplit('.').next().map(str::to_ascii_lowercase) {
+        Some(extension) if extension == "java" => Some("java"),
+        Some(extension) if matches!(extension.as_str(), "kt" | "kts") => Some("kotlin"),
+        Some(extension) if extension == "scala" => Some("scala"),
+        Some(extension) if extension == "groovy" => Some("groovy"),
+        _ => None,
+    };
+    let mut relatives = Vec::with_capacity(4);
+    if let Some(language) = language {
+        relatives.push(format!("src/main/{language}/{path}"));
+        relatives.push(format!("src/test/{language}/{path}"));
+    }
+    relatives.push(format!("src/{path}"));
+    relatives.push(path.to_owned());
+    relatives
+}
+
+/// A bounded, deadline-aware walk of the session's module directories. The clock
+/// starts before the first directory is read and is re-checked inside every loop,
+/// so a root like `D:/` or a huge `vendor/` cannot cost seconds per hover.
+struct SourceSearch {
+    deadline: Instant,
+    /// Directories whose entries were read; a seam for the bounds test.
+    enumerated_directories: usize,
+    /// Directory entries examined; a seam for the bounds test.
+    examined_entries: usize,
+    bases: Vec<PathBuf>,
+    seen: HashSet<String>,
+}
+
+impl SourceSearch {
+    fn new() -> Self {
+        Self {
+            deadline: Instant::now() + SOURCE_SEARCH_BUDGET,
+            enumerated_directories: 0,
+            examined_entries: 0,
+            bases: Vec::with_capacity(MAX_SOURCE_SEARCH_BASES),
+            seen: HashSet::new(),
+        }
+    }
+
+    fn expired(&self) -> bool {
+        Instant::now() > self.deadline
+    }
+
+    fn full(&self) -> bool {
+        self.bases.len() >= MAX_SOURCE_SEARCH_BASES
+    }
+
+    fn stopped(&self) -> bool {
+        self.full() || self.expired()
+    }
+
+    /// cwd → root → every child directory (sorted) → their children, probing each
+    /// base as it is reached. Stops at the first hit, the base cap or the deadline.
+    fn walk<F>(&mut self, root: &Path, cwd: &Path, mut visit: F) -> Option<PathBuf>
+    where
+        F: FnMut(&Path) -> Option<PathBuf>,
+    {
+        for base in [cwd, root] {
+            if let Some(hit) = self.probe(base, &mut visit) {
+                return Some(hit);
+            }
+        }
+        let children = self.children(root);
+        for child in &children {
+            if let Some(hit) = self.probe(child, &mut visit) {
+                return Some(hit);
+            }
+        }
+        for child in &children {
+            for grandchild in self.children(child) {
+                if let Some(hit) = self.probe(&grandchild, &mut visit) {
+                    return Some(hit);
+                }
+            }
+        }
+        None
+    }
+
+    /// Probes one base unless the walk has already stopped or the base repeats.
+    fn probe<F>(&mut self, candidate: &Path, visit: &mut F) -> Option<PathBuf>
+    where
+        F: FnMut(&Path) -> Option<PathBuf>,
+    {
+        if self.stopped() || !self.push(candidate) {
+            return None;
+        }
+        visit(candidate)
+    }
+
+    /// Records a base; `false` when the cap is reached or the base was already seen.
+    fn push(&mut self, candidate: &Path) -> bool {
+        if self.full() {
+            return false;
+        }
+        if !self.seen.insert(candidate.to_string_lossy().to_lowercase()) {
+            return false;
+        }
+        self.bases.push(candidate.to_path_buf());
+        true
+    }
+
+    /// Child directories in name order, bounded by entries per directory and by the
+    /// deadline. Junctions are followed on purpose: `search_source_roots` decides
+    /// containment per hit, so one escape cannot hide a later real module.
+    fn children(&mut self, directory: &Path) -> Vec<PathBuf> {
+        if self.stopped() {
+            return Vec::new();
+        }
+        self.enumerated_directories += 1;
+        let Ok(entries) = fs::read_dir(directory) else {
+            return Vec::new();
+        };
+        let mut examined = 0usize;
+        let mut children: Vec<(String, PathBuf)> = Vec::new();
+        for entry in entries {
+            if examined >= MAX_SOURCE_SEARCH_ENTRIES || self.expired() {
+                break;
+            }
+            examined += 1;
+            self.examined_entries += 1;
+            let Ok(entry) = entry else {
+                continue;
+            };
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if name.starts_with('.')
+                || SOURCE_SEARCH_SKIPPED
+                    .iter()
+                    .any(|skipped| name.eq_ignore_ascii_case(skipped))
+            {
+                continue;
+            }
+            // `file_type()` comes from the directory read itself; only a reparse point (a junction
+            // or a directory symlink) needs a metadata call to learn it is a directory.
+            let path = entry.path();
+            let is_directory = match entry.file_type() {
+                Ok(kind) if kind.is_dir() => true,
+                Ok(kind) if kind.is_symlink() => {
+                    fs::metadata(&path).is_ok_and(|metadata| metadata.is_dir())
+                }
+                _ => false,
+            };
+            if !is_directory {
+                continue;
+            }
+            children.push((name, path));
+        }
+        children.sort_by(|left, right| left.0.cmp(&right.0));
+        children.into_iter().map(|(_, path)| path).collect()
+    }
 }
 
 pub(crate) fn relative_path_string(root: &Path, path: &Path) -> Result<String> {
@@ -4191,5 +4457,399 @@ mod tests {
             .transaction(|tx| root_for(tx, &project.id, Some(path)))
             .unwrap();
         assert_eq!(resolved, temp.path().canonicalize().unwrap());
+    }
+
+    /// Writes a fixture file, creating its directories.
+    fn source_search_file(root: &Path, relative: &str) {
+        let path = root.join(relative);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(path, "class Fixture {}\n").unwrap();
+    }
+
+    fn source_search_project(root: &Path, operation_id: &str) -> (Database, String) {
+        let db = Database::open(&root.join("db.sqlite")).unwrap();
+        initialize(&db).unwrap();
+        let project = db
+            .add_project(root.to_str().unwrap(), Some("src"), operation_id)
+            .unwrap();
+        (db, project.id)
+    }
+
+    fn source_search_resolve(
+        db: &Database,
+        session_id: &str,
+        path: &str,
+        line: Option<u32>,
+    ) -> Result<Value> {
+        resolve_file_reference_with_source_search(db, session_id, path, line, None, true)
+    }
+
+    #[test]
+    fn source_search_finds_jvm_sources_under_source_roots() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("repo");
+        fs::create_dir_all(&root).unwrap();
+        source_search_file(&root, "src/main/java/com/example/Hello.java");
+        source_search_file(&root, "api/src/main/java/com/example/Api.java");
+        source_search_file(&root, "services/api/src/test/java/com/example/Nested.java");
+        source_search_file(&root, "k/src/main/kotlin/com/example/Hello.kt");
+        let (db, project_id) = source_search_project(&root, "source-project");
+        let session = file_reference_session(&db, &project_id, &root, "codex", "source-session");
+        for (path, expected) in [
+            (
+                "com/example/Hello.java",
+                "src/main/java/com/example/Hello.java",
+            ),
+            (
+                "com/example/Api.java",
+                "api/src/main/java/com/example/Api.java",
+            ),
+            (
+                "com/example/Nested.java",
+                "services/api/src/test/java/com/example/Nested.java",
+            ),
+            (
+                "com/example/Hello.kt",
+                "k/src/main/kotlin/com/example/Hello.kt",
+            ),
+        ] {
+            let resolved = source_search_resolve(&db, &session.id, path, Some(3)).unwrap();
+            assert_eq!(resolved["path"], expected, "{path}");
+            assert_eq!(resolved["line"], 3);
+            assert_eq!(resolved["kind"], "text");
+        }
+        assert_eq!(
+            source_search_resolve(&db, &session.id, "com/example/Missing.java", None)
+                .unwrap_err()
+                .to_string(),
+            "file_reference_not_found"
+        );
+        // Without the flag the same text stays a literal cwd-relative path.
+        assert_eq!(
+            resolve_file_reference(&db, &session.id, "com/example/Hello.java", None, None)
+                .unwrap_err()
+                .to_string(),
+            "file_reference_not_found"
+        );
+        assert_eq!(
+            resolve_file_reference(
+                &db,
+                &session.id,
+                "src/main/java/com/example/Hello.java",
+                None,
+                None,
+            )
+            .unwrap()["path"],
+            "src/main/java/com/example/Hello.java"
+        );
+    }
+
+    #[test]
+    fn source_search_prefers_the_session_cwd_over_a_module() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("repo");
+        source_search_file(&root, "alpha/src/main/java/com/example/Hello.java");
+        source_search_file(&root, "beta/src/main/java/com/example/Hello.java");
+        let (db, project_id) = source_search_project(&root, "cwd-project");
+        let session =
+            file_reference_session(&db, &project_id, &root.join("beta"), "codex", "cwd-session");
+        assert_eq!(
+            source_search_resolve(&db, &session.id, "com/example/Hello.java", None).unwrap()
+                ["path"],
+            "beta/src/main/java/com/example/Hello.java"
+        );
+    }
+
+    #[test]
+    fn source_search_skips_build_and_hidden_directories() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("repo");
+        source_search_file(&root, "keep/src/main/java/com/example/Keep.java");
+        for skipped in ["target", "build", "out", "bin", "node_modules", ".cache"] {
+            source_search_file(
+                &root,
+                &format!("{skipped}/src/main/java/com/example/Gone.java"),
+            );
+        }
+        let (db, project_id) = source_search_project(&root, "skip-project");
+        let session = file_reference_session(&db, &project_id, &root, "codex", "skip-session");
+        assert_eq!(
+            source_search_resolve(&db, &session.id, "com/example/Keep.java", None).unwrap()["path"],
+            "keep/src/main/java/com/example/Keep.java"
+        );
+        assert_eq!(
+            source_search_resolve(&db, &session.id, "com/example/Gone.java", None)
+                .unwrap_err()
+                .to_string(),
+            "file_reference_not_found"
+        );
+        assert!(
+            !SourceSearch::new()
+                .children(&root)
+                .iter()
+                .any(|base| base.file_name().is_some_and(|name| name == "target")),
+            "target must not be a search base"
+        );
+    }
+
+    #[test]
+    fn source_search_reaches_a_later_module_of_a_wide_tree() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("repo");
+        // 200 modules: cwd+root+200 children is 202 bases, so all of them are searched
+        // before the cap, and the children are pushed before any grandchild.
+        for index in 0..200 {
+            fs::create_dir_all(root.join(format!("m{index:03}"))).unwrap();
+        }
+        source_search_file(&root, "m150/src/main/java/com/example/Hello.java");
+        let (db, project_id) = source_search_project(&root, "wide-project");
+        let session = file_reference_session(&db, &project_id, &root, "codex", "wide-session");
+        assert_eq!(
+            source_search_resolve(&db, &session.id, "com/example/Hello.java", None).unwrap()
+                ["path"],
+            "m150/src/main/java/com/example/Hello.java"
+        );
+    }
+
+    #[test]
+    fn source_search_walk_stops_enumerating_a_huge_root() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("repo");
+        // Far more directories than one directory read may examine, and more than the base cap.
+        for index in 0..1200 {
+            fs::create_dir_all(root.join(format!("d{index:04}"))).unwrap();
+        }
+        let started = Instant::now();
+        let mut search = SourceSearch::new();
+        let mut probed = 0usize;
+        let hit = search.walk(&root, &root, |_| {
+            probed += 1;
+            None
+        });
+        let elapsed = started.elapsed();
+        assert!(hit.is_none());
+        assert!(
+            search.examined_entries <= MAX_SOURCE_SEARCH_ENTRIES,
+            "examined {} of 1200 entries",
+            search.examined_entries
+        );
+        assert!(search.bases.len() <= MAX_SOURCE_SEARCH_BASES);
+        assert_eq!(probed, search.bases.len(), "every base is probed once");
+        assert_eq!(
+            search.enumerated_directories, 1,
+            "the walk must not descend into 256 modules of a 1200-directory root"
+        );
+        assert!(elapsed < Duration::from_secs(3), "walk took {elapsed:?}");
+    }
+
+    #[test]
+    fn source_search_caps_the_base_count() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("repo");
+        for index in 0..400 {
+            fs::create_dir_all(root.join(format!("m{index:03}"))).unwrap();
+        }
+        source_search_file(&root, "m000/src/main/java/com/example/Early.java");
+        source_search_file(&root, "m399/src/main/java/com/example/Late.java");
+        let (db, project_id) = source_search_project(&root, "cap-project");
+        let session = file_reference_session(&db, &project_id, &root, "codex", "cap-session");
+        assert_eq!(
+            source_search_resolve(&db, &session.id, "com/example/Early.java", None).unwrap()
+                ["path"],
+            "m000/src/main/java/com/example/Early.java"
+        );
+        assert_eq!(
+            source_search_resolve(&db, &session.id, "com/example/Late.java", None)
+                .unwrap_err()
+                .to_string(),
+            "file_reference_not_found"
+        );
+    }
+
+    #[test]
+    fn source_search_refuses_paths_that_are_not_package_relative_sources() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("repo");
+        source_search_file(&root, "src/main/java/com/example/Hello.java");
+        let (db, project_id) = source_search_project(&root, "invalid-project");
+        let session = file_reference_session(&db, &project_id, &root, "codex", "invalid-session");
+        let too_many = format!("{}/Hello.java", vec!["a"; 64].join("/"));
+        for path in [
+            "../com/example/Hello.java",
+            "com\\example\\Hello.java",
+            "/com/example/Hello.java",
+            "com//example/Hello.java",
+            "com/ex-ample/Hello.java",
+            "com/example/Hello.txt",
+            "com/example/Hello",
+            "com/example/Hello.java:12",
+            "C:/repo/com/example/Hello.java",
+            too_many.as_str(),
+        ] {
+            assert_eq!(
+                source_search_resolve(&db, &session.id, path, None)
+                    .unwrap_err()
+                    .to_string(),
+                "file_reference_invalid_path",
+                "{path}"
+            );
+        }
+        // 64 segments is the inclusive limit, so the boundary is a search, not a refusal.
+        assert_eq!(
+            source_search_resolve(
+                &db,
+                &session.id,
+                &format!("{}/Hello.java", vec!["a"; 63].join("/")),
+                None
+            )
+            .unwrap_err()
+            .to_string(),
+            "file_reference_not_found"
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn source_search_skips_junction_hits_outside_the_session_root() {
+        use std::os::windows::process::CommandExt;
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("repo");
+        fs::create_dir_all(&root).unwrap();
+        let outside = temp.path().join("outside");
+        source_search_file(&outside, "src/main/java/com/example/Escape.java");
+        // The same frame also exists inside the root, after the junction in name order.
+        source_search_file(&root, "zreal/src/main/java/com/example/Escape.java");
+        let junction = root.join("aescape");
+        assert!(Command::new("cmd")
+            .args(["/c", "mklink", "/J"])
+            .arg(&junction)
+            .arg(&outside)
+            .creation_flags(0x0800_0000)
+            .output()
+            .unwrap()
+            .status
+            .success());
+        let (db, project_id) = source_search_project(&root, "junction-project");
+        let session = file_reference_session(&db, &project_id, &root, "codex", "junction-session");
+        // The junction comes first but is outside the root: the search continues instead of failing.
+        assert_eq!(
+            source_search_resolve(&db, &session.id, "com/example/Escape.java", None).unwrap()
+                ["path"],
+            "zreal/src/main/java/com/example/Escape.java"
+        );
+        // With only the escaping link left, the answer is "not found", never "outside scope".
+        assert_eq!(
+            source_search_resolve(&db, &session.id, "com/example/Outside.java", None)
+                .unwrap_err()
+                .to_string(),
+            "file_reference_not_found"
+        );
+        source_search_file(&outside, "src/main/java/com/example/Outside.java");
+        assert_eq!(
+            source_search_resolve(&db, &session.id, "com/example/Outside.java", None)
+                .unwrap_err()
+                .to_string(),
+            "file_reference_not_found"
+        );
+        fs::remove_dir(junction).unwrap();
+    }
+
+    #[test]
+    fn quick_launch_runs_resolve_relative_references_against_the_launch_cwd() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("repo");
+        fs::create_dir_all(root.join("src")).unwrap();
+        fs::write(root.join("src").join("main.rs"), "fn main() {}\n").unwrap();
+        fs::write(root.join("tests.rs"), "#[test]\n").unwrap();
+        fs::write(temp.path().join("outside.txt"), "outside").unwrap();
+        let (db, project_id) = source_search_project(&root, "run-project");
+        // A run session is a `custom` terminal with a fixed launch cwd, recorded by its run row.
+        let session = file_reference_session(&db, &project_id, &root, "custom", "run-session");
+        db.transaction(|tx| {
+            let snapshot = crate::quick_launch::QuickLaunchCommand {
+                id: "command".into(),
+                project_id: project_id.clone(),
+                revision: 1,
+                name: "cargo build".into(),
+                command: "cargo build".into(),
+                shell: "cmd".into(),
+                cwd: String::new(),
+                kind: "task".into(),
+                env: Vec::new(),
+                preview_url: None,
+                created_at: "now".into(),
+                updated_at: "now".into(),
+            };
+            tx.execute(
+                "INSERT INTO quick_launch_runs(session_id,command_id,project_id,root,snapshot_json,url,url_source,stop_requested,started_at) VALUES(?,?,?,?,?,NULL,NULL,0,?)",
+                params![
+                    session.id,
+                    "command",
+                    project_id,
+                    root.to_string_lossy(),
+                    serde_json::to_string(&snapshot)?,
+                    "now"
+                ],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+        let recorded = db.session_by_id(&session.id).unwrap().unwrap();
+        assert!(
+            recorded.run.is_some(),
+            "the fixture session is a Quick Launch run"
+        );
+        let relative =
+            resolve_file_reference(&db, &session.id, "src/main.rs", Some(10), Some(5)).unwrap();
+        assert_eq!(relative["path"], "src/main.rs");
+        assert_eq!(relative["line"], 10);
+        assert_eq!(relative["column"], 5);
+        assert_eq!(
+            resolve_file_reference(&db, &session.id, "tests.rs", None, None).unwrap()["path"],
+            "tests.rs"
+        );
+        // A relative location outside the root is still refused by containment.
+        assert_eq!(
+            resolve_file_reference(&db, &session.id, "../outside.txt", None, None)
+                .unwrap_err()
+                .to_string(),
+            "file_reference_outside_scope"
+        );
+    }
+
+    #[test]
+    fn plain_custom_terminals_still_refuse_relative_references() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("repo");
+        fs::create_dir_all(&root).unwrap();
+        fs::write(root.join("same.txt"), "text").unwrap();
+        let (db, project_id) = source_search_project(&root, "custom-project");
+        let session = file_reference_session(&db, &project_id, &root, "custom", "custom-session");
+        let recorded = db.session_by_id(&session.id).unwrap().unwrap();
+        assert!(recorded.run.is_none());
+        assert_eq!(
+            resolve_file_reference(&db, &session.id, "same.txt", None, None)
+                .unwrap_err()
+                .to_string(),
+            "file_reference_relative_requires_absolute"
+        );
+        assert_eq!(
+            resolve_file_reference(
+                &db,
+                &session.id,
+                root.join("same.txt").to_str().unwrap(),
+                None,
+                None,
+            )
+            .unwrap()["path"],
+            "same.txt"
+        );
+        // The source search is still available to a plain terminal (it never was cwd-relative).
+        source_search_file(&root, "src/main/java/com/example/Hello.java");
+        assert_eq!(
+            source_search_resolve(&db, &session.id, "com/example/Hello.java", None).unwrap()
+                ["path"],
+            "src/main/java/com/example/Hello.java"
+        );
     }
 }

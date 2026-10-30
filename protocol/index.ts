@@ -144,7 +144,8 @@ export type ReviewDraftDelete =
 export interface InboxItem { id:string; sessionId:string; kind:string; title:string; createdAt:string; read:boolean }
 export interface Snapshot { epoch:string; revision:number; projects:Project[]; sessions:Session[]; settings:Settings; workspaces:Workspace[]; inbox:InboxItem[]; providers:ProviderCapability[] }
 export interface NativeHistoryItem { provider:ProviderId; nativeId:string; title:string; cwd?:string; updatedAt:string; resumable:boolean; reason?:string }
-export interface FileReference { path:string; line?:number; column?:number }
+/** A location in a local file. `sourceSearch` asks the runtime to resolve a package-relative JVM source path (`com/x/Foo.java`) by a bounded search of source roots under the session's root. */
+export interface FileReference { path:string; line?:number; column?:number; sourceSearch?:boolean }
 export interface ResolvedFileReference extends FileScope, FileReference { kind:'text'|'image' }
 export type ChatPlanEntryStatus = 'pending'|'in_progress'|'completed';
 export type ChatPlanEntryPriority = 'high'|'medium'|'low';
@@ -877,6 +878,7 @@ export interface RequestMap {
  'chat.connection': [{sessionId:string},ChatConnectionState];
  'chat.connect': [{sessionId:string;leaseEpoch:number;operationId:string},ChatConnectionState];
  'filesystem.list': [FileScope&{path:string},FileEntry[]];
+ /** Resolve a scoped file. `sourceSearch` resolves a package-relative JVM source path (`com/x/Foo.java`) by a bounded search of source roots under the session's root. */
  'filesystem.resolve': [{sessionId:string}&FileReference,ResolvedFileReference];
  'filesystem.external.open': [{path:string;source:ExternalFileSource;sessionId?:string},ExternalFileOpenResult];
  'filesystem.external.read': [{id:string},FileDocument];
@@ -1211,6 +1213,7 @@ export function validateRequest(method:unknown,params:unknown):asserts method is
  if(m==='filesystem.list' && typeof params.path!=='string') throw new Error('Invalid path');
  if(m==='filesystem.resolve') {
   if(String(params.path).length>16*1024||String(params.path).includes('\0')) throw new Error('Invalid file reference');
+  if(params.sourceSearch!==undefined&&typeof params.sourceSearch!=='boolean') throw new Error('Invalid source search flag');
   for(const key of ['line','column']) if(params[key]!==undefined&&(!Number.isSafeInteger(params[key])||Number(params[key])<1||Number(params[key])>1_000_000)) throw new Error(`Invalid ${key}`);
  }
  if(['filesystem.write','draft.put'].includes(m) && (typeof params.content!=='string'||params.content.length>1024*1024)) throw new Error('Invalid file content');

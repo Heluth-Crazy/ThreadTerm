@@ -138,3 +138,61 @@ test('speculative readings wait for the runtime and never replace the default',(
  assert.deepEqual(groups('diff --git a/src/foo.ts b/src/foo.ts'),[['a/src/foo.ts','src/foo.ts?'],['b/src/foo.ts','src/foo.ts?']]);
  assert.deepEqual(extractFileReferences(String.raw`C:\Program Files\x.exe`).map(item=>item.path),[String.raw`C:\Program`,String.raw`Files\x.exe`]);
 });
+test('Maven bracket positions read as path, line and column',()=>{
+ const readings=text=>fileReferenceCandidates(text).map(group=>group.map(item=>({path:item.path,line:item.line??null,column:item.column??null,text:text.slice(item.start,item.end)})));
+ assert.deepEqual(readings('/D:/proj/src/main/java/com/x/Foo.java:[12,5]'),[[{path:'D:/proj/src/main/java/com/x/Foo.java',line:12,column:5,text:'/D:/proj/src/main/java/com/x/Foo.java:[12,5]'}]]);
+ assert.deepEqual(readings(String.raw`D:\proj\src\Foo.java:[12,5]`),[[{path:String.raw`D:\proj\src\Foo.java`,line:12,column:5,text:String.raw`D:\proj\src\Foo.java:[12,5]`}]]);
+ assert.deepEqual(readings('src/main/java/com/x/Foo.java:[12]'),[[{path:'src/main/java/com/x/Foo.java',line:12,column:null,text:'src/main/java/com/x/Foo.java:[12]'}]]);
+ assert.deepEqual(parseFileReference('src/Foo.java:[12,5]'),{path:'src/Foo.java',line:12,column:5});
+ assert.deepEqual(parseFileReference(String.raw`D:\proj\Foo.java:[12]`),{path:String.raw`D:\proj\Foo.java`,line:12});
+ assert.equal(parseFileReference('src/Foo.java:[0,5]'),undefined);
+ assert.equal(parseFileReference('src/Foo.java:[12,1000001]'),undefined);
+ // Only path-shaped values: a bare name with a bracket suffix is prose, not Maven output.
+ assert.equal(parseFileReference('Foo.java:[12,5]'),undefined);
+});
+test('JVM stack frames read as package-relative sources with the bare file as fallback',()=>{
+ const readings=text=>fileReferenceCandidates(text).flat().map(item=>({path:item.path,line:item.line??null,column:item.column??null,sourceSearch:item.sourceSearch??false,speculative:item.speculative??false,text:text.slice(item.start,item.end)}));
+ for(const [text,source,bare,line] of [
+  [String.raw`	at com.example.web.UserController.list(UserController.java:42)`,'com/example/web/UserController.java','UserController.java:42',42],
+  [String.raw`	at com.example.web.UserController$Builder.build(UserController.java:88)`,'com/example/web/UserController.java','UserController.java:88',88],
+  [String.raw`	at com.example.Lambda.lambda$main$0(Lambda.java:12)`,'com/example/Lambda.java','Lambda.java:12',12],
+  [String.raw`	at com.example.Factory.<init>(Factory.java:7)`,'com/example/Factory.java','Factory.java:7',7],
+  [String.raw`	at java.base/java.lang.Thread.getStackTrace(Thread.java:833)`,'java/lang/Thread.java','Thread.java:833',833],
+  [String.raw`	at app//com.example.Hello.main(Hello.java:3)`,'com/example/Hello.java','Hello.java:3',3],
+  [String.raw`	at Hello.main(Hello.java:3)`,'Hello.java','Hello.java:3',3],
+  [String.raw`	at com.example.Hello.main(Hello.kt:9)`,'com/example/Hello.kt','Hello.kt:9',9],
+ ]) {
+  const found=readings(text);
+  assert.equal(found.length,2,text);
+  assert.deepEqual(found[0],{path:source,line,column:null,sourceSearch:true,speculative:false,text:bare},text);
+  assert.deepEqual(found[1],{path:bare.split(':')[0].split('/').pop(),line,column:null,sourceSearch:false,speculative:true,text:bare},text);
+  // Chat is unchanged by this step: exactly the bare reading 1d found before.
+  const chat=extractFileReferences(text);
+  assert.deepEqual(chat.map(item=>({...item})),[{path:bare.split(':')[0].split('/').pop(),line,start:text.indexOf(bare),end:text.indexOf(bare)+bare.length}],text);
+ }
+});
+test('Python tracebacks and pytest locations are read without new parsing',()=>{
+ const spans=text=>extractFileReferences(text).map(item=>[item.path,item.line??null,item.column??null]);
+ assert.deepEqual(spans(String.raw`  File "src\app\main.py", line 10, in run`),[[String.raw`src\app\main.py`,10,null]]);
+ assert.deepEqual(spans(String.raw`  File "<frozen importlib._bootstrap>", line 1`),[]);
+ assert.deepEqual(spans('tests/test_api.py:42: AssertionError'),[['tests/test_api.py',42,null]]);
+});
+test('frames, brackets and dotted prose never invent links',()=>{
+ const spans=text=>extractFileReferences(text).map(item=>item.path);
+ assert.deepEqual(spans('at least 3(items)'),[]);
+ assert.deepEqual(spans('look at foo.bar(x)'),[]);
+ assert.deepEqual(fileReferenceCandidates('look at foo.bar(x)'),[]);
+ // A paren position in another language keeps its single, non-speculative reading.
+ assert.deepEqual(fileReferenceCandidates('at com.example.Foo.bar(Foo.js:3)').flat().map(item=>[item.path,item.sourceSearch??false,item.speculative??false]),[['Foo.js',false,false]]);
+ assert.deepEqual(spans('src/a.ts:[1,'),[]);
+ // A bracket suffix on a bare name is prose, not a Maven location.
+ for(const text of ['see Makefile:[1]','README:[1]','foo.bar:[1]','open Dockerfile:[12,5]']) assert.deepEqual(extractFileReferences(text),[],text);
+});
+test('quoted paths, Markdown targets and tracebacks read the /X:/ drive form',()=>{
+ const spans=text=>extractFileReferences(text).map(item=>[item.path,item.line??null,item.column??null]);
+ assert.deepEqual(spans(String.raw`  File "/D:/repo/pkg/mod.py", line 2`),[['D:/repo/pkg/mod.py',2,null]]);
+ assert.deepEqual(spans('[open](/D:/repo/src/a.ts:7)'),[['D:/repo/src/a.ts',7,null]]);
+ assert.deepEqual(spans('`/D:/repo/src/a.ts`'),[['D:/repo/src/a.ts',null,null]]);
+ // The literal parser is untouched, so a raw path keeps its own spelling.
+ assert.deepEqual(parseFileReference('/D:/repo/src/a.ts'),{path:'/D:/repo/src/a.ts'});
+});

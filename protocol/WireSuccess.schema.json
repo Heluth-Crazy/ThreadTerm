@@ -2352,12 +2352,16 @@
         },
         "column": {
           "type": "number"
+        },
+        "sourceSearch": {
+          "type": "boolean"
         }
       },
       "required": [
         "path"
       ],
-      "additionalProperties": false
+      "additionalProperties": false,
+      "description": "A location in a local file. `sourceSearch` asks the runtime to resolve a package-relative JVM source path (`com/x/Foo.java`) by a bounded search of source roots under the session's root."
     },
     "ChatPlanPart": {
       "type": "object",
@@ -6083,6 +6087,9 @@
         },
         "column": {
           "type": "number"
+        },
+        "sourceSearch": {
+          "type": "boolean"
         },
         "projectId": {
           "type": "string"
