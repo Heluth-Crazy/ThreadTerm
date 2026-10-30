@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
-import type { DetectedRunEntry, QuickLaunchCommand, QuickLaunchKind, Session } from '@threadterm/protocol';
+import type { DetectedRunEntry, QuickLaunchCommand, QuickLaunchKind, QuickLaunchRepoCatalog, QuickLaunchRepoEntry, Session } from '@threadterm/protocol';
 import { request, subscribeEvents } from '../bridge';
 import { sameCanonicalScope } from '../projectScope';
 import { activeRun, missingToolLabel, previewWaitingLabel, quickLaunchError, runState, runStateLabel, suggestedTag } from '../quickLaunch';
@@ -9,13 +9,12 @@ import { Icon } from './PrototypeIcon';
 /** The Run glyph: the approved play triangle, shared by the popover, the view and the palette icon. */
 export const Play = () => <svg className="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="m8 5 11 7-11 7z" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinejoin="round"/></svg>;
 
-/** One launchable row, from either source. A detected entry carries no trusted command text beyond what detection
- * returned; a run names only its `detected:<key>`. */
+/** One launchable row. Detected and repo entries name only an id; launch text always comes from a fresh file read. */
 export type RunEntry = {
  key:string;
- /** The `run.commandId` this entry records: a saved id, or `detected:<key>`. */
+ /** The `run.commandId` this entry records: a saved id, `detected:<key>`, or `repo:<id>`. */
  commandId:string;
- source:'saved'|'detected';
+ source:'saved'|'detected'|'repo';
  name:string;
  command:string;
  kind:QuickLaunchKind;
@@ -23,13 +22,17 @@ export type RunEntry = {
  sourceLabel?:string;
  group?:string;
  missingTool?:string;
+ disabledReason?:string;
  saved?:QuickLaunchCommand;
  detected?:DetectedRunEntry;
+ repo?:QuickLaunchRepoEntry;
 };
 export const savedRunEntry = (command:QuickLaunchCommand):RunEntry => ({ key:command.id, commandId:command.id, source:'saved', name:command.name, command:command.command, kind:command.kind, cwd:command.cwd, saved:command });
 export const detectedRunEntry = (entry:DetectedRunEntry):RunEntry => ({ key:entry.key, commandId:detectedCommandId(entry.key), source:'detected', name:entry.name, command:entry.command, kind:entry.kind, cwd:entry.cwd, sourceLabel:entry.source.label, group:entry.group, missingTool:entry.missingTool, detected:entry });
+export const repoRunEntry = (entry:QuickLaunchRepoEntry):RunEntry => ({ key:entry.id, commandId:`repo:${entry.id}`, source:'repo', name:entry.name, command:entry.command, kind:entry.kind, cwd:entry.cwd, sourceLabel:'.threadterm/run.json', disabledReason:entry.missingSecrets.length ? `Needs ${entry.missingSecrets[0]}` : undefined, repo:entry });
 export const savedRunEntries = (commands:readonly QuickLaunchCommand[]) => commands.map(savedRunEntry);
 export const detectedRunEntries = (entries:readonly DetectedRunEntry[]) => entries.map(detectedRunEntry);
+export const repoRunEntries = (entries:readonly QuickLaunchRepoEntry[]) => entries.map(repoRunEntry);
 
 /** The active run and the latest run of one entry in one worktree, resolved exactly as admission defines them. */
 export function runEntrySessions(sessions:readonly Session[], commandId:string, root:string):{active?:Session;latest?:Session} {
@@ -58,7 +61,7 @@ export function AgentTag({startedBy, sessions, zh, onOpen}:{startedBy?:string;se
 
 /** The shared row: identity, command text, run state and URL. Each surface adds its own actions, so the popover keeps
  * its compact launcher buttons and the Run view adds Restart, Stop and Set as current without a second row renderer. */
-export function RunEntryRow({entry, session, zh, busy, worktree, uptime, current, agentLabel, actions, sequenceText, onCancelSequence}:{
+export function RunEntryRow({entry, session, zh, busy, worktree, uptime, current, agentLabel, details, actions, sequenceText, onCancelSequence}:{
  entry:RunEntry;
  session?:Session;
  zh:boolean;
@@ -68,15 +71,16 @@ export function RunEntryRow({entry, session, zh, busy, worktree, uptime, current
  current?:boolean;
  /** The Agent tag's tooltip for this entry's active run, when an agent started it. */
  agentLabel?:string;
+ details?:ReactNode;
  actions:ReactNode;
  sequenceText?:string;
  onCancelSequence?:()=>void;
 }) {
  const view = session ? runState(session) : undefined;
- const missing = entry.missingTool ? missingToolLabel(entry.missingTool, zh) : undefined;
+ const missing = entry.missingTool ? missingToolLabel(entry.missingTool, zh) : entry.repo?.missingSecrets.length ? (zh ? `需要 ${entry.repo.missingSecrets[0]}` : `Needs ${entry.repo.missingSecrets[0]}`) : entry.disabledReason;
  const suggested = suggestedTag(entry.detected, zh);
  return <section className={`ql-command${entry.source === 'detected' ? ' ql-detected-entry' : ''}${missing ? ' is-missing' : ''}${current ? ' is-current' : ''}`}
-  data-testid={entry.source === 'saved' ? `quick-launch-command-${entry.key}` : `quick-launch-detected-entry-${entry.key}`}
+  data-testid={entry.source === 'saved' ? `quick-launch-command-${entry.key}` : entry.source === 'repo' ? `quick-launch-repo-entry-${entry.key}` : `quick-launch-detected-entry-${entry.key}`}
   data-run-entry={entry.commandId} data-current={current ? 'true' : undefined} aria-label={entry.name} title={missing}>
   <div className="ql-command-head">
    <strong>{entry.name}</strong>
@@ -89,22 +93,26 @@ export function RunEntryRow({entry, session, zh, busy, worktree, uptime, current
    {sequenceText && <span className="ql-sequence-chip" data-testid="run-sequence-chip">{sequenceText}{onCancelSequence&&<button type="button" className="btn btn-sm btn-ghost" aria-label={zh?'取消启动序列':'Cancel starting sequence'} disabled={busy} onClick={onCancelSequence}>{zh?'取消':'Cancel'}</button>}</span>}
   </div>
   <code title={entry.command}>{entry.command}</code>
+  {details}
   <div className="ql-actions" data-busy={busy ? 'true' : undefined}>{actions}</div>
  </section>;
 }
 
-export type RunCatalog = { commands:QuickLaunchCommand[]; detected:DetectedRunEntry[]; truncated:boolean; loading:boolean; detecting:boolean; issue?:string; refresh:() => void };
+export type RunCatalog = { commands:QuickLaunchCommand[]; detected:DetectedRunEntry[]; repo:QuickLaunchRepoCatalog; truncated:boolean; loading:boolean; detecting:boolean; repoLoading:boolean; issue?:string; refresh:() => void };
 
-/** Saved commands and live detected entries of one worktree, read only while the surface is live: when it becomes live,
- * on a scope change, and on the runtime's own events. A closed popover never lists or detects. Every read is fenced by
- * its generation, so a slow answer for a previous worktree can never overwrite the current one; nothing polls. */
+/** Commands must wait for all three catalog sources: a repo entry can be the user's current configuration. */
+export const runCatalogReady = (catalog:Pick<RunCatalog,'loading'|'detecting'|'repoLoading'>) => !catalog.loading && !catalog.detecting && !catalog.repoLoading;
+
+/** Saved, detected and repo entries of one worktree, read only while the surface is live. All reads are generation-fenced;
+ * focus and visibility re-read file-backed entries, and no file watcher or polling is added. */
 export function useRunCatalog({projectId, root, live, zh, sessionIds}:{projectId:string;root:string;live:boolean;zh:boolean;sessionIds:ReadonlySet<string>}):RunCatalog {
  const [commands, setCommands] = useState<QuickLaunchCommand[]>([]);
  const [detected, setDetected] = useState<DetectedRunEntry[]>([]);
+ const [repo, setRepo] = useState<QuickLaunchRepoCatalog>({exists:false,entries:[]});
  const [truncated, setTruncated] = useState(false);
- const [loading, setLoading] = useState(true), [detecting, setDetecting] = useState(true);
+ const [loading, setLoading] = useState(true), [detecting, setDetecting] = useState(true), [repoLoading, setRepoLoading] = useState(true);
  const [issue, setIssue] = useState<string>();
- const listGeneration = useRef(0), detectGeneration = useRef(0);
+ const listGeneration = useRef(0), detectGeneration = useRef(0), repoGeneration = useRef(0);
  const ids = useRef(sessionIds); ids.current = sessionIds;
  const load = useCallback(async () => {
   const token = ++listGeneration.current;
@@ -120,29 +128,37 @@ export function useRunCatalog({projectId, root, live, zh, sessionIds}:{projectId
   catch (error) { if (token === detectGeneration.current) setIssue(quickLaunchError(error, zh)); throw error; }
   finally { if (token === detectGeneration.current) setDetecting(false); }
  }, [projectId, root, zh]);
- const refresh = useCallback(() => { setIssue(undefined); void load().catch(() => {}); void detect().catch(() => {}); }, [load, detect]);
+ const readRepo = useCallback(async () => {
+  const token = ++repoGeneration.current;
+  setRepoLoading(true);
+  try { const value = await request('quickLaunch.repo.list', {projectId, cwd:root}); if (token === repoGeneration.current) { setRepo(value); if (value.error) setIssue(quickLaunchError(value.error, zh)); else setIssue(undefined); } return value; }
+  catch (error) { if (token === repoGeneration.current) setIssue(quickLaunchError(error, zh)); throw error; }
+  finally { if (token === repoGeneration.current) setRepoLoading(false); }
+ }, [projectId, root, zh]);
+ const refresh = useCallback(() => { setIssue(undefined); void load().catch(() => {}); void detect().catch(() => {}); void readRepo().catch(() => {}); }, [load, detect, readRepo]);
  useEffect(() => {
-  setCommands([]); setDetected([]); setTruncated(false); setIssue(undefined); setLoading(true); setDetecting(true);
-  return () => { listGeneration.current++; detectGeneration.current++; };
+  setCommands([]); setDetected([]); setRepo({exists:false,entries:[]}); setTruncated(false); setIssue(undefined); setLoading(true); setDetecting(true); setRepoLoading(true);
+  return () => { listGeneration.current++; detectGeneration.current++; repoGeneration.current++; };
  }, [projectId, root]);
  useEffect(() => {
   if (!live) return;
-  // Every time the surface becomes live, or its scope changes while live: it may have missed file changes.
   refresh();
   const unsubscribe = subscribeEvents(event => {
    if (event.event !== 'state.changed') return;
    const data = event.data as {kind?:unknown;sessionId?:unknown}|undefined, kind = String(data?.kind ?? '');
-   if (kind === 'quickLaunch.commands' || kind === 'quickLaunch.setup') refresh();
-   // A start or stop of one of this project's runs may have changed the files detection reads (a lockfile, a build).
+   if (kind === 'quickLaunch.commands' || kind === 'quickLaunch.setup' || kind === 'quickLaunch.repo') refresh();
    else if (kind === 'session.run' && ids.current.has(String(data?.sessionId ?? ''))) void detect().catch(() => {});
   });
-  return () => { listGeneration.current++; detectGeneration.current++; unsubscribe(); };
- }, [live, refresh, detect]);
- return { commands, detected, truncated, loading, detecting, issue, refresh };
+  const focus = () => { if (document.visibilityState === 'visible') { void detect().catch(() => {}); void readRepo().catch(() => {}); } };
+  const visibility = () => { if (document.visibilityState === 'visible') focus(); };
+  addEventListener('focus', focus); document.addEventListener('visibilitychange', visibility);
+  return () => { listGeneration.current++; detectGeneration.current++; repoGeneration.current++; unsubscribe(); removeEventListener('focus', focus); document.removeEventListener('visibilitychange', visibility); };
+ }, [live, refresh, detect, readRepo]);
+ return { commands, detected, repo, truncated, loading, detecting, repoLoading, issue, refresh };
 }
 
 /** A runnable entry's primary button: run it, or open its existing terminal while it is active. */
 export function RunEntryPrimary({entry, active, busy, zh, onRun, onOpen}:{entry:RunEntry;active?:Session;busy?:boolean;zh:boolean;onRun:() => void;onOpen:(id:string) => void}) {
- const missing = entry.missingTool ? missingToolLabel(entry.missingTool, zh) : undefined;
+ const missing = entry.missingTool ? missingToolLabel(entry.missingTool, zh) : entry.repo?.missingSecrets.length ? (zh ? `需要 ${entry.repo.missingSecrets[0]}` : `Needs ${entry.repo.missingSecrets[0]}`) : entry.disabledReason;
  return <button className="btn btn-sm" data-run-primary="true" disabled={busy || Boolean(missing)} title={missing} onClick={() => active ? onOpen(active.id) : onRun()}>{active ? <Icon name="terminal"/> : <Play/>}{active ? (zh ? '打开终端' : 'Open terminal') : (zh ? '运行' : 'Run')}</button>;
 }

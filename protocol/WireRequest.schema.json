@@ -2359,7 +2359,7 @@
         "env": {
           "type": "array",
           "items": {
-            "$ref": "#/definitions/QuickLaunchEnvVar"
+            "$ref": "#/definitions/QuickLaunchSaveEnvVar"
           }
         },
         "previewUrl": {
@@ -2370,6 +2370,26 @@
           "items": {
             "type": "string"
           }
+        },
+        "repoSource": {
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "fingerprint": {
+              "type": "string"
+            },
+            "cwd": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "id",
+            "fingerprint",
+            "cwd"
+          ],
+          "additionalProperties": false
         },
         "operationId": {
           "type": "string"
@@ -2404,7 +2424,7 @@
       ],
       "description": "`service` keeps running (dev server, API); `task` is expected to exit (build, test). Only changes wording/defaults."
     },
-    "QuickLaunchEnvVar": {
+    "QuickLaunchSaveEnvVar": {
       "type": "object",
       "properties": {
         "name": {
@@ -2412,13 +2432,16 @@
         },
         "value": {
           "type": "string"
+        },
+        "secret": {
+          "type": "boolean"
         }
       },
       "required": [
-        "name",
-        "value"
+        "name"
       ],
-      "additionalProperties": false
+      "additionalProperties": false,
+      "description": "Omit a secret value to retain/copy its existing local override; an explicit empty string is a valid replacement."
     },
     "RequestParams<\"quickLaunch.delete\">": {
       "type": "object",
@@ -2447,6 +2470,9 @@
           "type": "string"
         },
         "detectedKey": {
+          "type": "string"
+        },
+        "repoId": {
           "type": "string"
         },
         "projectId": {
@@ -2494,6 +2520,161 @@
       "required": [
         "projectId",
         "cwd"
+      ],
+      "additionalProperties": false
+    },
+    "RequestParams<\"quickLaunch.repo.list\">": {
+      "type": "object",
+      "properties": {
+        "projectId": {
+          "type": "string"
+        },
+        "cwd": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "projectId",
+        "cwd"
+      ],
+      "additionalProperties": false
+    },
+    "RequestParams<\"quickLaunch.repo.save\">": {
+      "type": "object",
+      "properties": {
+        "projectId": {
+          "type": "string"
+        },
+        "cwd": {
+          "type": "string"
+        },
+        "entry": {
+          "$ref": "#/definitions/QuickLaunchRepoSaveEntry"
+        },
+        "expectedFingerprint": {
+          "type": "string"
+        },
+        "localSource": {
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "revision": {
+              "type": "number"
+            }
+          },
+          "required": [
+            "id",
+            "revision"
+          ],
+          "additionalProperties": false
+        },
+        "operationId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "projectId",
+        "cwd",
+        "entry",
+        "operationId"
+      ],
+      "additionalProperties": false
+    },
+    "QuickLaunchRepoSaveEntry": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "command": {
+          "type": "string"
+        },
+        "shell": {
+          "$ref": "#/definitions/QuickLaunchShell"
+        },
+        "cwd": {
+          "type": "string"
+        },
+        "kind": {
+          "$ref": "#/definitions/QuickLaunchKind"
+        },
+        "env": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/QuickLaunchSaveEnvVar"
+          }
+        },
+        "previewUrl": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "command",
+        "shell",
+        "cwd",
+        "kind",
+        "env"
+      ],
+      "additionalProperties": false
+    },
+    "RequestParams<\"quickLaunch.repo.delete\">": {
+      "type": "object",
+      "properties": {
+        "projectId": {
+          "type": "string"
+        },
+        "cwd": {
+          "type": "string"
+        },
+        "id": {
+          "type": "string"
+        },
+        "expectedFingerprint": {
+          "type": "string"
+        },
+        "operationId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "projectId",
+        "cwd",
+        "id",
+        "operationId"
+      ],
+      "additionalProperties": false
+    },
+    "RequestParams<\"quickLaunch.repo.trust\">": {
+      "type": "object",
+      "properties": {
+        "projectId": {
+          "type": "string"
+        },
+        "cwd": {
+          "type": "string"
+        },
+        "id": {
+          "type": "string"
+        },
+        "fingerprint": {
+          "type": "string"
+        },
+        "operationId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "projectId",
+        "cwd",
+        "id",
+        "fingerprint",
+        "operationId"
       ],
       "additionalProperties": false
     },
@@ -8512,6 +8693,110 @@
         },
         "params": {
           "$ref": "#/definitions/RequestParams%3C%22quickLaunch.detect%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "params"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "quickLaunch.repo.list"
+        },
+        "params": {
+          "$ref": "#/definitions/RequestParams%3C%22quickLaunch.repo.list%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "params"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "quickLaunch.repo.save"
+        },
+        "params": {
+          "$ref": "#/definitions/RequestParams%3C%22quickLaunch.repo.save%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "params"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "quickLaunch.repo.delete"
+        },
+        "params": {
+          "$ref": "#/definitions/RequestParams%3C%22quickLaunch.repo.delete%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "params"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "quickLaunch.repo.trust"
+        },
+        "params": {
+          "$ref": "#/definitions/RequestParams%3C%22quickLaunch.repo.trust%22%3E"
         }
       },
       "required": [

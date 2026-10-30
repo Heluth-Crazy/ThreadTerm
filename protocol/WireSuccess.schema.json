@@ -5145,11 +5145,16 @@
         },
         "value": {
           "type": "string"
+        },
+        "secret": {
+          "type": "boolean"
+        },
+        "hasValue": {
+          "type": "boolean"
         }
       },
       "required": [
-        "name",
-        "value"
+        "name"
       ],
       "additionalProperties": false
     },
@@ -5398,6 +5403,182 @@
       ],
       "description": "Where a detected entry came from. Detection reads manifest files only, never a build tool."
     },
+    "RequestResult<\"quickLaunch.repo.list\">": {
+      "$ref": "#/definitions/QuickLaunchRepoCatalog"
+    },
+    "QuickLaunchRepoCatalog": {
+      "type": "object",
+      "properties": {
+        "exists": {
+          "type": "boolean"
+        },
+        "fileFingerprint": {
+          "type": "string"
+        },
+        "entries": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/QuickLaunchRepoEntry"
+          }
+        },
+        "error": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "exists",
+        "entries"
+      ],
+      "additionalProperties": false
+    },
+    "QuickLaunchRepoEntry": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "command": {
+          "type": "string"
+        },
+        "shell": {
+          "$ref": "#/definitions/QuickLaunchShell"
+        },
+        "cwd": {
+          "type": "string"
+        },
+        "kind": {
+          "$ref": "#/definitions/QuickLaunchKind"
+        },
+        "env": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/QuickLaunchRepoEnvVar"
+          }
+        },
+        "previewUrl": {
+          "type": "string"
+        },
+        "fingerprint": {
+          "type": "string",
+          "description": "SHA-256 of canonical launch-relevant fields, excluding secret values."
+        },
+        "trusted": {
+          "type": "boolean"
+        },
+        "changed": {
+          "type": "boolean"
+        },
+        "missingSecrets": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "accepted": {
+          "$ref": "#/definitions/QuickLaunchRepoLaunchFields"
+        }
+      },
+      "required": [
+        "id",
+        "name",
+        "command",
+        "shell",
+        "cwd",
+        "kind",
+        "env",
+        "fingerprint",
+        "trusted",
+        "changed",
+        "missingSecrets"
+      ],
+      "additionalProperties": false
+    },
+    "QuickLaunchRepoEnvVar": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "value": {
+          "type": "string"
+        },
+        "secret": {
+          "type": "boolean"
+        },
+        "hasValue": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "name"
+      ],
+      "description": "Repo-stored shared entries. Secret values are local overrides and never appear in `.threadterm/run.json`."
+    },
+    "QuickLaunchRepoLaunchFields": {
+      "type": "object",
+      "properties": {
+        "command": {
+          "type": "string"
+        },
+        "shell": {
+          "$ref": "#/definitions/QuickLaunchShell"
+        },
+        "cwd": {
+          "type": "string"
+        },
+        "kind": {
+          "$ref": "#/definitions/QuickLaunchKind"
+        },
+        "env": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/QuickLaunchRepoAcceptedEnvVar"
+          }
+        },
+        "previewUrl": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "command",
+        "shell",
+        "cwd",
+        "kind",
+        "env"
+      ],
+      "additionalProperties": false
+    },
+    "QuickLaunchRepoAcceptedEnvVar": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "value": {
+          "type": "string"
+        },
+        "secret": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "name"
+      ],
+      "additionalProperties": false
+    },
+    "RequestResult<\"quickLaunch.repo.save\">": {
+      "$ref": "#/definitions/QuickLaunchRepoEntry"
+    },
+    "RequestResult<\"quickLaunch.repo.delete\">": {
+      "type": "null"
+    },
+    "RequestResult<\"quickLaunch.repo.trust\">": {
+      "$ref": "#/definitions/QuickLaunchRepoEntry"
+    },
     "RequestResult<\"quickLaunch.setup.read\">": {
       "$ref": "#/definitions/QuickLaunchSetup"
     },
@@ -5505,7 +5686,8 @@
           "type": "string",
           "enum": [
             "saved",
-            "detected"
+            "detected",
+            "repo"
           ]
         },
         "approved": {
@@ -5529,7 +5711,7 @@
         "approved"
       ],
       "additionalProperties": false,
-      "description": "Agent Run tools (`run_list`/`run_start`/`run_status`/`run_logs`/`run_stop`/`run_restart`). They are caller-scoped: every entry and run belongs to the calling Chat's own project and worktree root; anything else is `run_not_found`. A detected entry starts only after an `ask_user` card in that Chat, and the runtime launches exactly the text it showed. The runtime injects `callerSessionId` and `callerToken`; a model-supplied value is rejected."
+      "description": "Agent Run tools (`run_list`/`run_start`/`run_status`/`run_logs`/`run_stop`/`run_restart`). They are caller-scoped: every entry and run belongs to the calling Chat's own project and worktree root; anything else is `run_not_found`. A detected or untrusted repo entry starts only after an `ask_user` card in that Chat, and the runtime launches exactly the text it showed. The runtime injects `callerSessionId` and `callerToken`; a model-supplied value is rejected."
     },
     "ChatToolRunSummary": {
       "type": "object",
@@ -12415,6 +12597,110 @@
         },
         "result": {
           "$ref": "#/definitions/RequestResult%3C%22quickLaunch.detect%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "result"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "quickLaunch.repo.list"
+        },
+        "result": {
+          "$ref": "#/definitions/RequestResult%3C%22quickLaunch.repo.list%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "result"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "quickLaunch.repo.save"
+        },
+        "result": {
+          "$ref": "#/definitions/RequestResult%3C%22quickLaunch.repo.save%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "result"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "quickLaunch.repo.delete"
+        },
+        "result": {
+          "$ref": "#/definitions/RequestResult%3C%22quickLaunch.repo.delete%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "result"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "quickLaunch.repo.trust"
+        },
+        "result": {
+          "$ref": "#/definitions/RequestResult%3C%22quickLaunch.repo.trust%22%3E"
         }
       },
       "required": [

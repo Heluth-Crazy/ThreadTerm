@@ -111,6 +111,8 @@ const errors: Record<string,[string,string]> = {
  nested_depends_on:['A dependency cannot have dependencies of its own.','依赖命令不能再包含依赖。'], invalid_depends_on:['Choose saved commands from this project without cycles or self-references.','请选择本项目中没有循环或自引用的保存命令。'],
  dependency_failed:['A required dependency failed to start.','所需依赖启动失败。'], port_unavailable:['A free port could not be allocated for this command.','无法为此命令分配可用端口。'],
  command_has_dependents:['This command is required by other saved commands. Remove it from their Start after lists first.','其他已保存命令依赖此命令。请先从它们的启动依赖列表中移除。'],
+ repo_config_conflict:['The shared run file changed elsewhere. Reopen Run and review it before saving.','共享运行文件已在其他位置更改。请重新打开 Run，检查后再保存。'], repo_config_invalid:['.threadterm/run.json is invalid. Fix the file and reopen Run.','.threadterm/run.json 无效。请修复该文件后重新打开 Run。'],
+ secret_missing:['Enter the missing secret value in the shared command editor.','请在共享命令编辑器中填写缺失的密钥值。'], repo_entry_not_found:['This shared entry no longer exists. Reopen Run to see the current file.','此共享条目已不存在。请重新打开 Run 查看当前文件。'],
 };
 export function quickLaunchError(error: unknown, zh: boolean): string {
  const message = error instanceof Error ? error.message : String(error);

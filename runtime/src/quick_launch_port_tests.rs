@@ -7,7 +7,8 @@ fn existing_setup_rows_migrate_before_sequence_indexes_are_created() {
     conn.execute_batch(
         "CREATE TABLE projects(id TEXT PRIMARY KEY);
          CREATE TABLE sessions(id TEXT PRIMARY KEY);
-         CREATE TABLE operations(method TEXT);
+         CREATE TABLE operations(id TEXT PRIMARY KEY,method TEXT,result TEXT);
+         CREATE TABLE operation_requests(id TEXT PRIMARY KEY,method TEXT,params TEXT);
          CREATE TABLE quick_launch_setup_runs (
            id TEXT PRIMARY KEY, project_id TEXT NOT NULL, root TEXT NOT NULL,
            command_ids_json TEXT NOT NULL, names_json TEXT NOT NULL, snapshots_json TEXT NOT NULL,
@@ -51,6 +52,16 @@ fn port_resolution_keeps_the_template_and_detected_entries_untouched() {
     assert_eq!(resolved.env[0].value, "43210");
     assert_eq!(resolved.preview_url.as_deref(), Some("http://localhost:43210/"));
     assert!(saved.command.contains("${port}"));
+
+    let repo = command("repo:api");
+    assert!(!saved_port_template(&repo));
+    assert_eq!(resolve_port(&repo, None).unwrap(), repo);
+
+    let mut private = saved.clone();
+    private.env.push(EnvVar { name: "TOKEN".into(), value: "\0threadterm-local-secret".into() });
+    // Only the runtime-owned exact reference is accepted by template resolution.
+    let resolved = resolve_port(&private, Some(43210)).unwrap();
+    assert_eq!(resolved.env[1], private.env[1]);
 
     let mut detected = command("detected:node:dev");
     assert!(!saved_port_template(&detected));

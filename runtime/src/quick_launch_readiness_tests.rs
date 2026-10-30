@@ -428,7 +428,9 @@ fn an_old_run_table_gains_the_readiness_columns() {
     let dir = tempfile::tempdir().unwrap();
     let conn = rusqlite::Connection::open(dir.path().join("old.sqlite")).unwrap();
     conn.execute_batch(
-        "CREATE TABLE operations (id TEXT PRIMARY KEY, method TEXT NOT NULL);
+        "CREATE TABLE projects (id TEXT PRIMARY KEY);
+         CREATE TABLE operations (id TEXT PRIMARY KEY, method TEXT NOT NULL, result TEXT NOT NULL);
+         CREATE TABLE operation_requests (id TEXT PRIMARY KEY, method TEXT NOT NULL, params TEXT NOT NULL);
          CREATE TABLE quick_launch_runs (
          session_id TEXT PRIMARY KEY, command_id TEXT NOT NULL, project_id TEXT NOT NULL,
          root TEXT NOT NULL, snapshot_json TEXT NOT NULL, url TEXT, url_source TEXT,

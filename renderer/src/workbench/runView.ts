@@ -7,7 +7,7 @@ import { isKeyboardEditableTarget } from './scmKeyboard';
 export type RunScope = { projectId:string; root:string };
 /** A runnable entry as the view, the popover and the palette name it. A detected entry's command text is never
  * carried here: it always comes from the files through `detected:<key>`. */
-export type RunEntryRef = { commandId:string; name:string; source:'saved'|'detected' };
+export type RunEntryRef = { commandId:string; name:string; source:'saved'|'detected'|'repo' };
 /** A command addressed to one workbench's Run view: one entry of its current worktree (palette), every run of it
  * (palette), or the current configuration (the F5 keys). */
 export type RunCommandRequest = { key:string; commandId?:string; detectedKey?:string; stopAll?:boolean; current?:RunKeyAction };
@@ -16,7 +16,7 @@ export const DETECTED_PREFIX = 'detected:';
 export const detectedCommandId = (key:string) => `${DETECTED_PREFIX}${key}`;
 /** The detection key behind a `detected:<key>` run, or undefined for a saved command. */
 export const detectedKeyOf = (commandId:string) => commandId.startsWith(DETECTED_PREFIX) ? commandId.slice(DETECTED_PREFIX.length) : undefined;
-export const entryRefOf = (commandId:string, name:string):RunEntryRef => ({ commandId, name, source:detectedKeyOf(commandId) ? 'detected' : 'saved' });
+export const entryRefOf = (commandId:string, name:string):RunEntryRef => ({ commandId, name, source:detectedKeyOf(commandId) ? 'detected' : commandId.startsWith('repo:') ? 'repo' : 'saved' });
 
 /** Exactly the statuses the runtime admits a run in, so Running shows what "one active run per entry and root" owns. */
 export const ACTIVE_RUN_STATUSES:readonly string[] = ['starting', 'running', 'idle', 'waiting'];

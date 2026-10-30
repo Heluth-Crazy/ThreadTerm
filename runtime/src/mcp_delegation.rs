@@ -499,21 +499,21 @@ pub const RUN_TOOL_NAMES: [&str; 6] = [
 
 /// One short line: the tool descriptions carry the details, and Claude Code keeps
 /// only the first 2048 characters of the instructions.
-const RUN_INSTRUCTIONS:&str="\nUse run_list to see this worktree's Run entries; run_start starts one (detected entries ask the user first); read run_logs instead of starting duplicates.";
+const RUN_INSTRUCTIONS:&str="\nUse run_list to see this worktree's Run entries; run_start asks for detected or untrusted repo entries; read run_logs instead of starting duplicates.";
 
 fn run_tools() -> Vec<Value> {
     let run_id = json!({"type":"string","minLength":1,"maxLength":128});
     vec![
         tool(
             "run_list",
-            "List the Run entries and runs of your own worktree: saved commands and detected entries, plus active runs and the latest finished ones. Prefer an existing run; do not start duplicates.",
+            "List the Run entries and runs of your own worktree: saved, detected and shared repo entries, plus active runs and the latest finished ones. Prefer an existing run; do not start duplicates.",
             json!({"type":"object","additionalProperties":false,"properties":{}}),
         ),
         tool(
             "run_start",
-            "Start one Run entry of your own worktree, given its `id` from run_list. A saved entry starts directly; a detected entry asks the user first, so nothing runs without consent. One instance per entry and worktree: an active one is returned instead of starting another. Pass an unique `requestId` so a retry replays the same launch.",
+            "Start one Run entry of your own worktree, given its `id` from run_list. Saved entries and trusted unchanged repo entries start directly; a detected, untrusted or changed repo entry asks the user first. Run once does not change repo trust. One active instance is returned instead of starting another. Pass an unique `requestId` so a retry replays the same launch.",
             json!({"type":"object","additionalProperties":false,"required":["id","requestId"],"properties":{
-                "id":{"type":"string","minLength":1,"maxLength":512,"description":"A run_list entry id: a saved command id or `detected:<key>`."},
+                "id":{"type":"string","minLength":1,"maxLength":512,"description":"A run_list entry id: a saved command id, `detected:<key>`, or `repo:<id>`."},
                 "requestId":{"type":"string","minLength":1,"maxLength":128,"description":"Idempotency key: the same value returns the same run."}}}),
         ),
         tool(
@@ -533,7 +533,7 @@ fn run_tools() -> Vec<Value> {
         ),
         tool(
             "run_restart",
-            "Stop a run of your own worktree and start its entry again. A detected entry asks the user again; a saved entry restarts directly. Pass an unique `requestId` so a retry replays the same restart.",
+            "Stop a run of your own worktree and start its entry again. Detected and untrusted or changed repo entries ask the user again; saved and trusted unchanged repo entries restart directly. Pass an unique `requestId` so a retry replays the same restart.",
             json!({"type":"object","additionalProperties":false,"required":["runId","requestId"],"properties":{"runId":run_id,"requestId":{"type":"string","minLength":1,"maxLength":128,"description":"Idempotency key: the same value returns the same restart."}}}),
         ),
     ]
