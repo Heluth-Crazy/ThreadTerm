@@ -137,6 +137,27 @@ struct RunRestartRequest {
     request_id: String,
 }
 
+/// An agent suggestion is deliberately separate from a launch: this request can only
+/// create a pending proposal. The caller identity remains runtime-injected, like the
+/// other run tools, and is removed before the proposal payload reaches its storage
+/// boundary.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct RunProposeRequest {
+    caller_session_id: String,
+    caller_token: String,
+    name: String,
+    command: String,
+    reason: String,
+    id: Option<String>,
+    cwd: Option<String>,
+    kind: Option<String>,
+    shell: Option<String>,
+    env: Option<Value>,
+    preview_url: Option<String>,
+    request_id: String,
+}
+
 const RUN_COLUMNS: &str = "q.session_id,q.command_id,q.snapshot_json,q.url,q.readiness,q.ready_port,q.started_at,q.started_by,q.stop_requested,s.status,s.exit_code";
 const ACTIVE_STATES: &str = "('starting','running','idle','waiting')";
 
@@ -197,12 +218,90 @@ impl ChatTools {
             }
             values.push(run_list_value(run, &caller));
         }
+        // A chat can see only its own suggestions and their decisions. This is
+        // intentionally a read of proposal storage, never a path that can apply one.
+        let proposals = crate::quick_launch::run_proposals::list_for_session(
+            &self.db,
+            &scope.project_id,
+            &scope.root_key,
+            &caller,
+        )?;
         Ok(json!({
             "worktree":scope.root_key,
             "entries":entries,
             "runs":values,
+            "proposals":proposals,
             "truncated":detection.truncated,
         }))
+    }
+
+    pub(crate) fn run_propose(&self, providers: &Providers, params: &Value) -> Result<Value> {
+        // Serde maps JSON null onto Option::None. These optionals mean "omitted",
+        // not "erase a target field", so reject explicit null before deserializing.
+        if ["id", "cwd", "kind", "shell", "env", "previewUrl"]
+            .iter()
+            .any(|key| params.get(*key).is_some_and(Value::is_null))
+        {
+            return Err(anyhow!("invalid_request"));
+        }
+        let request: RunProposeRequest = parse(params)?;
+        if request.request_id.is_empty() || request.request_id.chars().count() > MAX_RUN_ID {
+            return Err(anyhow!("invalid_request"));
+        }
+        let scope = self.with_authorized(
+            providers,
+            &request.caller_session_id,
+            &request.caller_token,
+            Capability::Run,
+            |_| {
+                // Do the scope and write check before looking up an optional target.
+                // A read-only delegate must not learn whether a command exists.
+                let scope = self.run_scope(&request.caller_session_id)?;
+                require_run_writes(&self.db, &request.caller_session_id)?;
+                if let Some(id) = request.id.as_deref() {
+                    if id.is_empty() || id.chars().count() > MAX_ENTRY_ID {
+                        return Err(anyhow!("run_not_found"));
+                    }
+                    // Storage checks project ownership after replay lookup, so a retry
+                    // still returns its first proposal if the target has since disappeared.
+                }
+                Ok(scope)
+            },
+        )?;
+        // Storage owns the same command-field validation as quickLaunch.save. Strip
+        // the injected credentials, then namespace the idempotency key per chat so
+        // two agents can safely use the same requestId.
+        let mut proposal = json!({
+            "name":request.name,
+            "command":request.command,
+            "reason":request.reason,
+            "requestId":run_operation_id(&request.caller_session_id, "chat.tool.run.propose", &request.request_id),
+        });
+        if let Some(id) = request.id {
+            proposal["id"] = json!(id);
+        }
+        if let Some(cwd) = request.cwd {
+            proposal["cwd"] = json!(cwd);
+        }
+        if let Some(kind) = request.kind {
+            proposal["kind"] = json!(kind);
+        }
+        if let Some(shell) = request.shell {
+            proposal["shell"] = json!(shell);
+        }
+        if let Some(env) = request.env {
+            proposal["env"] = env;
+        }
+        if let Some(preview_url) = request.preview_url {
+            proposal["previewUrl"] = json!(preview_url);
+        }
+        crate::quick_launch::run_proposals::propose(
+            &self.db,
+            &request.caller_session_id,
+            &scope.project_id,
+            &scope.root_key,
+            &proposal,
+        )
     }
 
     pub(crate) fn run_status(&self, providers: &Providers, params: &Value) -> Result<Value> {
@@ -859,7 +958,7 @@ fn approval_question(
 /// characters (zero-width, bidi embeddings/overrides/isolates, BOM), control characters
 /// other than tab, and line/paragraph separators. `node safe\u{200B}.js` otherwise reads as
 /// `node safe.js` while running something else, and bidi controls can reorder the text.
-fn unprintable(c: char) -> bool {
+pub(crate) fn unprintable(c: char) -> bool {
     matches!(c, '\u{2028}' | '\u{2029}') || (c.is_control() && c != '\t') || format_character(c)
 }
 

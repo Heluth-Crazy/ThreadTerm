@@ -248,6 +248,7 @@ fn request_lane(method: &str) -> Lane {
         | "terminal.read"
         | "project.catalog.list"
         | "quickLaunch.detect"
+        | "quickLaunch.recent" | "quickLaunch.proposals.list"
         | "session.launch.read"
         | "git.status"
         | "git.diff"
@@ -369,7 +370,7 @@ fn trace_method(method: &str) -> &'static str {
         "provider.refresh",
         "quickLaunch.delete", "quickLaunch.detect", "quickLaunch.list", "quickLaunch.restart", "quickLaunch.run", "quickLaunch.save",
         "quickLaunch.setup.read", "quickLaunch.setup.run", "quickLaunch.setup.save",
-        "quickLaunch.setup.status", "review.checkpoint", "review.revert", "runtime.health",
+        "quickLaunch.setup.status", "quickLaunch.recent", "quickLaunch.proposals.list", "quickLaunch.proposals.accept", "quickLaunch.proposals.reject", "chat.tool.run.propose", "review.checkpoint", "review.revert", "runtime.health",
         "runtime.shutdown", "runtime.snapshot", "session.attention.acknowledge",
         "session.config.read", "session.config.save", "session.create", "session.documents.list",
         "session.documents.pin", "session.documents.unpin", "session.lookup", "session.organize",
@@ -1085,6 +1086,9 @@ mod decoder_tests {
             "chat.tool.run.start",
             "chat.tool.run.stop",
             "chat.tool.run.restart",
+            "chat.tool.run.propose",
+            "quickLaunch.proposals.accept",
+            "quickLaunch.proposals.reject",
             "quickLaunch.restart",
             "worktree.list",
             "workspace.save",
@@ -1111,6 +1115,9 @@ mod decoder_tests {
             "chat.tool.run.start",
             "chat.tool.run.stop",
             "chat.tool.run.restart",
+            "chat.tool.run.propose",
+            "quickLaunch.proposals.accept",
+            "quickLaunch.proposals.reject",
         ] {
             assert_eq!(request_lane(mutation), Lane::Ordered, "{mutation}");
         }

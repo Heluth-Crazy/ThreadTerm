@@ -1,5 +1,5 @@
 import { useEffect, useId, useMemo, useRef, useState } from 'react';
-import type { DetectedRunEntry, QuickLaunchCommand, Session } from '@threadterm/protocol';
+import type { DetectedRunEntry, QuickLaunchCommand, QuickLaunchRecentRun, RunProposal, Session } from '@threadterm/protocol';
 import { operationId, request } from '../bridge';
 import { useTranslation } from '../i18n';
 import { detectedSections, detectedSourceLabel, previewReady, quickLaunchError, runStateLabel } from '../quickLaunch';
@@ -15,6 +15,9 @@ import { Icon } from './PrototypeIcon';
 import { showContextMenu } from './ContextMenu';
 import { detectedRunEntries, AgentTag, Play, RunEntryPrimary, RunEntryRow, RunUrlLink, runEntrySessions, savedRunEntries, useRunCatalog, type RunEntry } from './RunRows';
 import { agentStartLabel } from '../workbench/runView';
+import { useRecentRuns, useRunProposals } from '../runProposals';
+import { RunRecent } from './RunRecent';
+import { RunProposals } from './RunProposals';
 import './quick-launch.css';
 import './run-view.css';
 
@@ -35,7 +38,10 @@ export function RunViewPanel({scope, sessions, actions, zh, visible, command, on
  const root = scope.rootPath, runScope = { projectId:scope.projectId, root };
  const projectSessions = useMemo(() => sessions.filter(session => session.projectId === scope.projectId), [sessions, scope.projectId]);
  const sessionIds = useMemo(() => new Set(projectSessions.map(session => session.id)), [projectSessions]);
+ const sessionKey=useMemo(()=>projectSessions.map(session=>`${session.id}:${session.status}:${session.updatedAt}`).join('|'),[projectSessions]);
  const catalog = useRunCatalog({ projectId:scope.projectId, root, live:visible, zh:chinese, sessionIds });
+ const recent = useRecentRuns({projectId:scope.projectId,root}, visible, chinese, sessionIds, sessionKey);
+ const proposals = useRunProposals({projectId:scope.projectId,root}, visible, chinese);
  const [busy, setBusy] = useState(false);
  const [issue, setIssue] = useState<string>();
  const [filter, setFilter] = useState('');
@@ -44,6 +50,8 @@ export function RunViewPanel({scope, sessions, actions, zh, visible, command, on
  const [help, setHelp] = useState(false);
  const [, setConfigRevision] = useState(0);
  const [editor, setEditor] = useState<QuickLaunchCommand|'new'|DetectedRunEntry>();
+ const [keepRun,setKeepRun]=useState<{run:QuickLaunchRecentRun;command?:QuickLaunchCommand}>();
+ const [proposal,setProposal]=useState<RunProposal>();
  const [importing, setImporting] = useState(false);
  const [setupEditor, setSetupEditor] = useState(false);
  const handled = useRef<string|undefined>(undefined);
@@ -80,6 +88,7 @@ export function RunViewPanel({scope, sessions, actions, zh, visible, command, on
  const stopAll = () => perform(async () => {
   for (const row of runningRows(projectSessions, runScope).filter(candidate => candidate.current)) await request('session.stop', { sessionId:row.session.id, operationId:operationId() });
  });
+ const rejectProposal=(item:RunProposal)=>perform(async()=>{await request('quickLaunch.proposals.reject',{proposalId:item.id,operationId:operationId()});await proposals.reload();});
  const runCurrent = () => { if (currentEntry) void runEntry(currentEntry); };
  const stopCurrent = () => { if (currentRun) void stopRun(currentRun); };
  // Restart of a configuration that is not running starts it, which is what Restart means in a Run view.
@@ -196,6 +205,9 @@ export function RunViewPanel({scope, sessions, actions, zh, visible, command, on
    </section>)}
   </section>
 
+  <RunProposals proposals={proposals.pending} sessions={sessions} zh={chinese} busy={busy}
+   onAccept={item=>setProposal(item)} onReject={item=>void rejectProposal(item)} onOpenChat={open}/>
+
   <section className="wb-run-section" data-testid="run-entries" aria-label={copy('Commands','命令')}>
    {catalog.commands.length + catalog.detected.length >= RUN_FILTER_FROM && <input className="wb-run-filter" type="search" data-testid="run-filter" value={filter} placeholder={copy('Filter entries','筛选条目')} aria-label={copy('Filter entries','筛选条目')} onChange={event => setFilter(event.target.value)}/>}
    {catalog.loading && !everything.length ? <p className="wb-empty" role="status">{copy('Loading commands…','正在加载命令…')}</p> : null}
@@ -212,6 +224,9 @@ export function RunViewPanel({scope, sessions, actions, zh, visible, command, on
    {catalog.truncated && <p className="wb-hint">{copy('The detected list is partial.','检测到的列表不完整。')}</p>}
   </section>
 
+  <RunRecent runs={recent.runs} commands={catalog.commands} sessions={sessions} zh={chinese} busy={busy} onOpenChat={open}
+   onKeep={run=>setKeepRun({run,command:catalog.commands.find(command=>command.id===run.entryId)})}/>
+
   <footer className="wb-run-foot">
    <button type="button" className="menu-item" data-testid="run-worktree-setup" disabled={busy} onClick={() => setSetupEditor(true)}><Icon name="branch"/>{copy('Worktree setup…','工作树初始化…')}</button>
    <button type="button" className="menu-item" data-testid="run-import" disabled={busy} onClick={() => setImporting(true)}><Icon name="export"/>{copy('Import from package.json','从 package.json 导入')}</button>
@@ -223,6 +238,14 @@ export function RunViewPanel({scope, sessions, actions, zh, visible, command, on
    onClose={() => setEditor(undefined)} onChanged={async () => { catalog.refresh(); }}
    onReload={async commandId => (await request('quickLaunch.list', {projectId:scope.projectId})).find(command => command.id === commandId)}
    onRun={async command => { const result = await request('quickLaunch.run', { commandId:command.id, cwd:root, operationId:operationId() }); open(result.session.id); }}/>}
+  {keepRun && <CommandEditor key={`keep:${keepRun.run.runId}`} command={keepRun.command} initial={keepRun.run.snapshot} runId={keepRun.run.runId}
+   projectId={scope.projectId} root={root} onClose={()=>setKeepRun(undefined)} onChanged={async()=>{catalog.refresh();await recent.reload();}}
+   onReload={async commandId=>(await request('quickLaunch.list',{projectId:scope.projectId})).find(command=>command.id===commandId)}
+   onRun={async command=>{const result=await request('quickLaunch.run',{commandId:command.id,cwd:root,operationId:operationId()});open(result.session.id);}}/>}
+  {proposal && <CommandEditor key={`proposal:${proposal.id}`} command={proposal.target} proposal={proposal}
+   projectId={scope.projectId} root={root} onClose={()=>setProposal(undefined)} onChanged={async()=>{catalog.refresh();await proposals.reload();}}
+   onReload={async commandId=>(await request('quickLaunch.list',{projectId:scope.projectId})).find(command=>command.id===commandId)}
+   onRun={async()=>{}}/>}
   {importing && <ImportScripts projectId={scope.projectId} root={root} onClose={() => setImporting(false)} onChanged={async () => { catalog.refresh(); }}/>}
   {setupEditor && <SetupEditor projectId={scope.projectId} commands={catalog.commands} onClose={() => setSetupEditor(false)} onSaved={async () => { catalog.refresh(); }}/>}
  </div>;

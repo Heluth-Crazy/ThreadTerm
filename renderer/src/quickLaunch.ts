@@ -82,6 +82,7 @@ export function missingToolLabel(tool: string, zh: boolean): string {
  return zh ? `PATH 中找不到 ${tool}` : `${tool} isn't on PATH`;
 }
 const errors: Record<string,[string,string]> = {
+ detected_command_unprintable:["This command or proposal contains invisible formatting or control characters.","此命令或建议包含不可见的格式字符或控制字符。"],
  revision_conflict:['This command changed elsewhere. Reload it before saving; your draft is kept.','此命令已在其他窗口修改。请重新加载后再保存；草稿已保留。'],
  command_not_found:['This saved command no longer exists.','此保存的命令已不存在。'], too_many_commands:['A project can save up to 100 commands.','每个项目最多保存 100 个命令。'],
  cmd_single_line:['CMD runs one line — join commands with &&.','CMD 仅执行一行，请用 && 连接命令。'], shell_unavailable:['This shell is not installed or available.','此 Shell 未安装或不可用。'],
@@ -93,6 +94,7 @@ const errors: Record<string,[string,string]> = {
  project_not_found:['This project no longer exists.','此项目已不存在。'], worktree_missing:['This worktree directory is missing.','此工作树目录已丢失。'], workspace_read_only:['This workspace is read-only.','此工作区为只读。'], workspace_archived:['Restore this archived workspace before running a command.','请恢复此已归档的工作区后再运行命令。'],
  setup_empty:['Choose at least one Task command in Worktree setup before running it.','请先在工作树初始化中选择至少一个任务命令。'], invalid_step:['This setup step is no longer available. Reopen the Run menu and try again.','此初始化步骤已不可用。请重新打开运行菜单后重试。'], not_a_task:['Only Task commands can be setup steps.','只有任务命令可以作为初始化步骤。'],
  detected_entry_not_found:['This detected entry no longer exists. Reopen Run to see the current list.','这条检测条目已不存在。重新打开 Run 查看当前列表。'], tool_not_found:['A tool this entry needs is not on PATH.','PATH 中找不到此条目所需的工具。'],
+ run_proposal_not_found:['This proposal no longer exists. Reload proposals and try again.','此建议已不存在。请重新加载建议后重试。'], run_proposal_not_pending:['This proposal was already decided. Reload proposals to see its result.','此建议已处理。请重新加载建议查看结果。'], too_many_proposals:['This project already has the maximum number of pending proposals.','此项目的待处理建议已达到上限。'],
 };
 export function quickLaunchError(error: unknown, zh: boolean): string {
  const message = error instanceof Error ? error.message : String(error);

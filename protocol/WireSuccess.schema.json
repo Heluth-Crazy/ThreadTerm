@@ -5384,6 +5384,239 @@
         "$ref": "#/definitions/WorktreeSetupRun"
       }
     },
+    "RequestResult<\"quickLaunch.recent\">": {
+      "$ref": "#/definitions/QuickLaunchRecent"
+    },
+    "QuickLaunchRecent": {
+      "type": "object",
+      "properties": {
+        "runs": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/QuickLaunchRecentRun"
+          }
+        }
+      },
+      "required": [
+        "runs"
+      ],
+      "additionalProperties": false
+    },
+    "QuickLaunchRecentRun": {
+      "type": "object",
+      "properties": {
+        "runId": {
+          "type": "string"
+        },
+        "entryId": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "command": {
+          "type": "string",
+          "description": "The launch snapshot's text, which is what Keep saves."
+        },
+        "source": {
+          "type": "string",
+          "enum": [
+            "saved",
+            "detected",
+            "adhoc"
+          ]
+        },
+        "startedAt": {
+          "type": "string"
+        },
+        "endedAt": {
+          "type": "string"
+        },
+        "state": {
+          "$ref": "#/definitions/QuickLaunchRunState"
+        },
+        "exitCode": {
+          "type": "number"
+        },
+        "stopped": {
+          "type": "boolean"
+        },
+        "startedBy": {
+          "type": "string",
+          "description": "The Chat session whose agent started it. The renderer resolves the title."
+        },
+        "kept": {
+          "type": "object",
+          "properties": {
+            "commandId": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "commandId"
+          ],
+          "additionalProperties": false,
+          "description": "Set once the run was kept as a saved command."
+        },
+        "snapshot": {
+          "$ref": "#/definitions/QuickLaunchCommand",
+          "description": "The immutable launch snapshot: exactly the fields Keep prefills the command editor with."
+        }
+      },
+      "required": [
+        "runId",
+        "entryId",
+        "name",
+        "command",
+        "source",
+        "startedAt",
+        "state",
+        "stopped",
+        "snapshot"
+      ],
+      "additionalProperties": false,
+      "description": "One recent run of a worktree: temporary by design. The last runs of the worktree within 7 days, at most 20; deleting its session removes the row, and nothing older is listed. `source` is `adhoc` once the saved command behind a run is gone, so Keep still has the snapshot to promote."
+    },
+    "QuickLaunchRunState": {
+      "type": "string",
+      "enum": [
+        "starting",
+        "ready",
+        "running",
+        "completed",
+        "exited",
+        "failed",
+        "stopped",
+        "interrupted"
+      ],
+      "description": "How a recent run ended (or that it is still active), in the Run view's own vocabulary."
+    },
+    "RequestResult<\"quickLaunch.proposals.list\">": {
+      "$ref": "#/definitions/RunProposalList"
+    },
+    "RunProposalList": {
+      "type": "object",
+      "properties": {
+        "pending": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/RunProposal"
+          }
+        },
+        "decided": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/RunProposal"
+          },
+          "description": "The last 10 decided proposals of the worktree, newest decision first."
+        }
+      },
+      "required": [
+        "pending",
+        "decided"
+      ],
+      "additionalProperties": false
+    },
+    "RunProposal": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "projectId": {
+          "type": "string"
+        },
+        "root": {
+          "type": "string"
+        },
+        "sessionId": {
+          "type": "string",
+          "description": "The proposing Chat session."
+        },
+        "targetCommandId": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "command": {
+          "type": "string"
+        },
+        "shell": {
+          "$ref": "#/definitions/QuickLaunchShell"
+        },
+        "cwd": {
+          "type": "string"
+        },
+        "kind": {
+          "$ref": "#/definitions/QuickLaunchKind"
+        },
+        "env": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/QuickLaunchEnvVar"
+          }
+        },
+        "previewUrl": {
+          "type": "string"
+        },
+        "reason": {
+          "type": "string"
+        },
+        "state": {
+          "$ref": "#/definitions/RunProposalState"
+        },
+        "baseRevision": {
+          "type": "number"
+        },
+        "createdAt": {
+          "type": "string"
+        },
+        "decidedAt": {
+          "type": "string"
+        },
+        "decidedCommandId": {
+          "type": "string"
+        },
+        "target": {
+          "$ref": "#/definitions/QuickLaunchCommand",
+          "description": "The target command as it is now, so the UI can show the diff; absent when it no longer exists."
+        }
+      },
+      "required": [
+        "id",
+        "projectId",
+        "root",
+        "sessionId",
+        "name",
+        "command",
+        "shell",
+        "cwd",
+        "kind",
+        "env",
+        "reason",
+        "state",
+        "createdAt"
+      ],
+      "additionalProperties": false,
+      "description": "An agent's suggested command (`run_propose`), or its suggestion for updating a saved one. It is only a pending suggestion: a human accepts it in the Run view, so prompt injection can neither persist nor run a command."
+    },
+    "RunProposalState": {
+      "type": "string",
+      "enum": [
+        "pending",
+        "accepted",
+        "rejected",
+        "superseded",
+        "expired"
+      ]
+    },
+    "RequestResult<\"quickLaunch.proposals.accept\">": {
+      "$ref": "#/definitions/QuickLaunchCommand"
+    },
+    "RequestResult<\"quickLaunch.proposals.reject\">": {
+      "type": "null"
+    },
     "RequestResult<\"chat.tool.run.list\">": {
       "$ref": "#/definitions/ChatToolRunList"
     },
@@ -5405,6 +5638,12 @@
             "$ref": "#/definitions/ChatToolRunSummary"
           },
           "description": "Active runs plus the latest finished ones."
+        },
+        "proposals": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/ChatToolRunProposalSummary"
+          }
         },
         "truncated": {
           "type": "boolean"
@@ -5522,6 +5761,37 @@
         "startedBySelf"
       ],
       "additionalProperties": false
+    },
+    "ChatToolRunProposalSummary": {
+      "type": "object",
+      "properties": {
+        "proposalId": {
+          "type": "string"
+        },
+        "state": {
+          "$ref": "#/definitions/RunProposalState"
+        },
+        "name": {
+          "type": "string"
+        },
+        "targetCommandId": {
+          "type": "string"
+        },
+        "createdAt": {
+          "type": "string"
+        },
+        "decidedCommandId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "proposalId",
+        "state",
+        "name",
+        "createdAt"
+      ],
+      "additionalProperties": false,
+      "description": "One of the calling Chat's own proposals, so `run_list` shows what the human decided."
     },
     "RequestResult<\"chat.tool.run.start\">": {
       "$ref": "#/definitions/ChatToolRunStart"
@@ -5707,6 +5977,27 @@
     },
     "RequestResult<\"chat.tool.run.restart\">": {
       "$ref": "#/definitions/ChatToolRunStart"
+    },
+    "RequestResult<\"chat.tool.run.propose\">": {
+      "$ref": "#/definitions/ChatToolRunProposal"
+    },
+    "ChatToolRunProposal": {
+      "type": "object",
+      "properties": {
+        "proposalId": {
+          "type": "string"
+        },
+        "state": {
+          "type": "string",
+          "const": "pending"
+        }
+      },
+      "required": [
+        "proposalId",
+        "state"
+      ],
+      "additionalProperties": false,
+      "description": "`run_propose`: a pending suggestion. Nothing is saved and nothing runs until a human accepts it in the Run view."
     },
     "RequestResult<\"history.list\">": {
       "type": "object",
@@ -12446,6 +12737,110 @@
         },
         "method": {
           "type": "string",
+          "const": "quickLaunch.recent"
+        },
+        "result": {
+          "$ref": "#/definitions/RequestResult%3C%22quickLaunch.recent%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "result"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "quickLaunch.proposals.list"
+        },
+        "result": {
+          "$ref": "#/definitions/RequestResult%3C%22quickLaunch.proposals.list%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "result"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "quickLaunch.proposals.accept"
+        },
+        "result": {
+          "$ref": "#/definitions/RequestResult%3C%22quickLaunch.proposals.accept%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "result"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "quickLaunch.proposals.reject"
+        },
+        "result": {
+          "$ref": "#/definitions/RequestResult%3C%22quickLaunch.proposals.reject%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "result"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
           "const": "chat.tool.run.list"
         },
         "result": {
@@ -12580,6 +12975,32 @@
         },
         "result": {
           "$ref": "#/definitions/RequestResult%3C%22chat.tool.run.restart%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "result"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "chat.tool.run.propose"
+        },
+        "result": {
+          "$ref": "#/definitions/RequestResult%3C%22chat.tool.run.propose%22%3E"
         }
       },
       "required": [

@@ -183,6 +183,7 @@ impl ChatTools {
             "chat.tool.run.list" => self.run_list(providers, params),
             "chat.tool.run.status" => self.run_status(providers, params),
             "chat.tool.run.logs" => self.run_logs(providers, params),
+            "chat.tool.run.propose" => self.run_propose(providers, params),
             // `chat.tool.run.start`, `run.restart` and `run.stop` take the PTY or
             // wait for the user; the service routes those itself.
             _ => Err(anyhow!("unknown_method")),
@@ -1233,3 +1234,4 @@ fn feedback_ids_outside_turns(
 
 #[path = "chat_tool_runs.rs"]
 pub(crate) mod runs;
+pub(crate) use runs::unprintable;

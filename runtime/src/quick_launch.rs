@@ -38,6 +38,10 @@ pub(crate) const ERROR_CODES: &[&str] = &[
     "detected_entry_changed",
     "detected_command_too_long",
     "detected_command_unprintable",
+    // Phase 3: a proposal that is unknown, already decided, or one too many.
+    "run_proposal_not_found",
+    "run_proposal_not_pending",
+    "too_many_proposals",
 ];
 
 #[path = "quick_launch_setup.rs"]
@@ -47,6 +51,11 @@ pub(crate) use setup::{setup_terminal_exited, start_next_setup_step};
 pub(crate) use setup::root_for_setup;
 #[path = "quick_launch_readiness.rs"]
 mod readiness;
+// Phase 3: recent runs (bounded, temporary) and agent proposals (pending until a human accepts).
+#[path = "run_recent.rs"]
+pub(crate) mod run_recent;
+#[path = "run_proposals.rs"]
+pub(crate) mod run_proposals;
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -136,13 +145,20 @@ pub(crate) fn initialize_connection(conn: &Connection) -> Result<()> {
     let existing: Vec<String> = columns
         .query_map([], |row| row.get::<_, String>(1))?
         .collect::<rusqlite::Result<Vec<_>>>()?;
-    for (column, definition) in [("readiness", "TEXT"), ("ready_port", "INTEGER"), ("started_by", "TEXT")] {
+    for (column, definition) in [
+        ("readiness", "TEXT"),
+        ("ready_port", "INTEGER"),
+        ("started_by", "TEXT"),
+        // Phase 3: the saved command a recent run was kept as. NULL until the user keeps it.
+        ("kept_command_id", "TEXT"),
+    ] {
         if !existing.iter().any(|name| name == column) {
             conn.execute_batch(&format!(
                 "ALTER TABLE quick_launch_runs ADD COLUMN {column} {definition}"
             ))?;
         }
     }
+    run_proposals::initialize(conn)?;
     Ok(())
 }
 
@@ -197,18 +213,20 @@ struct List {
 }
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct Save {
-    project_id: String,
-    id: Option<String>,
-    expected_revision: Option<i64>,
-    name: String,
-    command: String,
-    shell: String,
-    cwd: String,
-    kind: String,
-    env: Vec<EnvVar>,
-    preview_url: Option<String>,
-    operation_id: String,
+pub(crate) struct Save {
+    pub(crate) project_id: String,
+    pub(crate) id: Option<String>,
+    pub(crate) expected_revision: Option<i64>,
+    pub(crate) name: String,
+    pub(crate) command: String,
+    pub(crate) shell: String,
+    pub(crate) cwd: String,
+    pub(crate) kind: String,
+    pub(crate) env: Vec<EnvVar>,
+    pub(crate) preview_url: Option<String>,
+    pub(crate) operation_id: String,
+    /// Phase 3: the recent run this save keeps. It is recorded on that run as `kept_command_id`.
+    pub(crate) run_id: Option<String>,
 }
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -251,6 +269,8 @@ pub(crate) fn handles(method: &str) -> bool {
         "quickLaunch.list" | "quickLaunch.save" | "quickLaunch.delete" | "quickLaunch.run"
         | "quickLaunch.restart" | "quickLaunch.detect"
         | "quickLaunch.setup.read" | "quickLaunch.setup.save" | "quickLaunch.setup.run" | "quickLaunch.setup.status"
+        | "quickLaunch.recent" | "quickLaunch.proposals.list"
+        | "quickLaunch.proposals.accept" | "quickLaunch.proposals.reject"
     )
 }
 fn required(value: &str) -> Result<()> {
@@ -295,9 +315,64 @@ fn preview_url(value: &str) -> bool {
         && reqwest::Url::parse(value)
             .is_ok_and(|url| matches!(url.scheme(), "http" | "https") && url.host_str().is_some())
 }
+/// The field rules a saved command and an agent proposal share: name, command text, shell, kind,
+/// relative cwd, environment overrides and the preview address. Both paths must agree, so a
+/// proposal can never carry something `quickLaunch.save` would refuse.
+pub(crate) fn validate_command_fields(
+    name: &str,
+    command: &str,
+    shell: &str,
+    cwd: &str,
+    kind: &str,
+    env: &[EnvVar],
+    preview: Option<&str>,
+) -> Result<()> {
+    let name = trim_wire(name);
+    if name.is_empty()
+        || name.chars().count() > 80
+        || name.chars().any(|c| c <= '\u{1f}' || c == '\u{7f}')
+        || trim_wire(command).is_empty()
+        || units(command) > 8000
+        || command.contains('\0')
+        || !matches!(shell, "cmd" | "powershell" | "pwsh")
+        || !matches!(kind, "service" | "task")
+        || !relative_cwd(cwd)
+    {
+        return Err(anyhow!("invalid_request"));
+    }
+    if shell == "cmd" && command.contains(['\r', '\n']) {
+        return Err(anyhow!("cmd_single_line"));
+    }
+    let mut names = HashSet::new();
+    if env.len() > 32
+        || env.iter().any(|item| {
+            let bytes = item.name.as_bytes();
+            bytes.is_empty()
+                || bytes.len() > 128
+                || !(bytes[0].is_ascii_alphabetic() || bytes[0] == b'_')
+                || !bytes
+                    .iter()
+                    .all(|c| c.is_ascii_alphanumeric() || *c == b'_')
+                || units(&item.value) > 8192
+                || item.value.contains('\0')
+                || !names.insert(item.name.to_ascii_uppercase())
+        })
+        || preview.is_some_and(|url| !preview_url(url))
+    {
+        return Err(anyhow!("invalid_request"));
+    }
+    Ok(())
+}
 pub(crate) fn validate(method: &str, value: &Value) -> Result<()> {
     if method.starts_with("quickLaunch.setup.") {
         return setup::validate_setup(method, value);
+    }
+    // Phase 3's read methods and its human-only proposal decisions validate in their own modules.
+    if method == "quickLaunch.recent" {
+        return run_recent::validate(value);
+    }
+    if method.starts_with("quickLaunch.proposals.") {
+        return run_proposals::validate(method, value);
     }
     match method {
         "quickLaunch.list" => {
@@ -339,7 +414,7 @@ pub(crate) fn validate(method: &str, value: &Value) -> Result<()> {
             required(&p.cwd)?;
         }
         "quickLaunch.save" => {
-            for key in ["id", "expectedRevision", "previewUrl"] {
+            for key in ["id", "expectedRevision", "previewUrl", "runId"] {
                 if value.get(key).is_some_and(Value::is_null) {
                     return Err(anyhow!("invalid_request"));
                 }
@@ -347,43 +422,21 @@ pub(crate) fn validate(method: &str, value: &Value) -> Result<()> {
             let p: Save = serde_json::from_value(value.clone())?;
             required(&p.project_id)?;
             required(&p.operation_id)?;
-            let name = trim_wire(&p.name);
-            if name.is_empty()
-                || name.chars().count() > 80
-                || name.chars().any(|c| c <= '\u{1f}' || c == '\u{7f}')
-                || trim_wire(&p.command).is_empty()
-                || units(&p.command) > 8000
-                || p.command.contains('\0')
-                || !matches!(p.shell.as_str(), "cmd" | "powershell" | "pwsh")
-                || !matches!(p.kind.as_str(), "service" | "task")
-                || !relative_cwd(&p.cwd)
-            {
-                return Err(anyhow!("invalid_request"));
-            }
-            if p.shell == "cmd" && p.command.contains(['\r', '\n']) {
-                return Err(anyhow!("cmd_single_line"));
-            }
-            let mut names = HashSet::new();
-            if p.env.len() > 32
-                || p.env.iter().any(|item| {
-                    let bytes = item.name.as_bytes();
-                    bytes.is_empty()
-                        || bytes.len() > 128
-                        || !(bytes[0].is_ascii_alphabetic() || bytes[0] == b'_')
-                        || !bytes
-                            .iter()
-                            .all(|c| c.is_ascii_alphanumeric() || *c == b'_')
-                        || units(&item.value) > 8192
-                        || item.value.contains('\0')
-                        || !names.insert(item.name.to_ascii_uppercase())
-                })
-                || p.preview_url.as_ref().is_some_and(|url| !preview_url(url))
-                || p.id.is_some() != p.expected_revision.is_some()
-            {
-                return Err(anyhow!("invalid_request"));
-            }
+            validate_command_fields(
+                &p.name,
+                &p.command,
+                &p.shell,
+                &p.cwd,
+                &p.kind,
+                &p.env,
+                p.preview_url.as_deref(),
+            )?;
+            if let Some(run_id) = &p.run_id { required(run_id)?; }
             if let Some(id) = &p.id {
                 required(id)?;
+            }
+            if p.id.is_some() != p.expected_revision.is_some() {
+                return Err(anyhow!("invalid_request"));
             }
             if let Some(expected) = p.expected_revision {
                 revision(expected)?;
@@ -624,32 +677,69 @@ pub(crate) fn dispatch(
             )
         }
         "quickLaunch.restart" => restart(db, pty, serde_json::from_value(value.clone())?),
+        "quickLaunch.recent" => run_recent::dispatch(db, value),
+        "quickLaunch.proposals.list" => run_proposals::list(db, value),
+        "quickLaunch.proposals.accept" => run_proposals::accept(db, value),
+        "quickLaunch.proposals.reject" => run_proposals::reject(db, value),
         _ => Err(anyhow!("unknown_method")),
     }
 }
 fn save(db: &Database, p: Save) -> Result<Value> {
     db.transaction(|tx| {
         if let Some(result) = operation_tx(tx, &p.operation_id)? { return Ok(result); }
-        let previous = p.id.as_ref().map(|id| tx.query_row(&format!("SELECT {COMMAND_COLUMNS} FROM quick_launch_commands WHERE id=? AND project_id=?"), params![id,p.project_id], command_row).optional()).transpose()?.flatten();
-        if p.id.is_some() && previous.is_none() { return Err(anyhow!("command_not_found")); }
-        if previous.as_ref().is_some_and(|command| Some(command.revision) != p.expected_revision) { return Err(anyhow!("revision_conflict")); }
-        if previous.as_ref().is_some_and(|command| command.revision >= MAX_SAFE_INTEGER) { return Err(anyhow!("invalid_request")); }
-        if previous.is_none() {
-            let count: i64 = tx.query_row("SELECT COUNT(*) FROM quick_launch_commands WHERE project_id=?", [&p.project_id], |r| r.get(0))?;
-            if count >= 100 { return Err(anyhow!("too_many_commands")); }
+        let command = save_command_tx(tx, &p.project_id, CommandSave {
+            id: p.id.as_deref(), expected_revision: p.expected_revision, name: &p.name, command: &p.command,
+            shell: &p.shell, cwd: &p.cwd, kind: &p.kind, env: &p.env, preview_url: p.preview_url.clone(),
+        })?;
+        // Keeping a recent run records the command it became on that run only; a run id from another
+        // project changes nothing. The Recent list is re-read from the runtime's own event.
+        if let Some(run_id) = &p.run_id {
+            let rows = tx.execute(
+                "UPDATE quick_launch_runs SET kept_command_id=? WHERE session_id=? AND project_id=? AND kept_command_id IS NULL",
+                params![command.id, run_id, p.project_id],
+            )?;
+            if rows != 0 { changed(tx, "quickLaunch.recent", None)?; }
         }
-        let now = Utc::now().to_rfc3339();
-        let command = QuickLaunchCommand { id: p.id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string()), project_id:p.project_id,
-            revision:previous.as_ref().map_or(1, |c| c.revision + 1), name:trim_wire(&p.name).to_owned(), command:p.command,
-            shell:p.shell, cwd:p.cwd, kind:p.kind, env:p.env, preview_url:p.preview_url,
-            created_at:previous.map_or_else(|| now.clone(), |c| c.created_at), updated_at:now };
-        tx.execute("INSERT INTO quick_launch_commands(id,project_id,revision,name,command,shell,cwd,kind,env_json,preview_url,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET revision=excluded.revision,name=excluded.name,command=excluded.command,shell=excluded.shell,cwd=excluded.cwd,kind=excluded.kind,env_json=excluded.env_json,preview_url=excluded.preview_url,updated_at=excluded.updated_at",
-            params![command.id,command.project_id,command.revision,command.name,command.command,command.shell,command.cwd,command.kind,serde_json::to_string(&command.env)?,command.preview_url,command.created_at,command.updated_at])?;
         let result = serde_json::to_value(command)?;
         complete(tx, &p.operation_id, "quickLaunch.save", &result)?;
         changed(tx, "quickLaunch.commands", None)?;
         Ok(result)
     })
+}
+
+/// One command write, as the save path and `quickLaunch.proposals.accept` both describe it.
+pub(crate) struct CommandSave<'a> {
+    pub id: Option<&'a str>,
+    pub expected_revision: Option<i64>,
+    pub name: &'a str,
+    pub command: &'a str,
+    pub shell: &'a str,
+    pub cwd: &'a str,
+    pub kind: &'a str,
+    pub env: &'a [EnvVar],
+    pub preview_url: Option<String>,
+}
+
+/// The create-or-update mutation `quickLaunch.save` and an accepted proposal share: the same revision
+/// check, the same 100-command bound and the same stored shape. It records no receipt and emits no
+/// event, because the caller decides what the operation was.
+pub(crate) fn save_command_tx(tx: &Transaction<'_>, project_id: &str, save: CommandSave<'_>) -> Result<QuickLaunchCommand> {
+    let previous = save.id.map(|id| tx.query_row(&format!("SELECT {COMMAND_COLUMNS} FROM quick_launch_commands WHERE id=? AND project_id=?"), params![id,project_id], command_row).optional()).transpose()?.flatten();
+    if save.id.is_some() && previous.is_none() { return Err(anyhow!("command_not_found")); }
+    if previous.as_ref().is_some_and(|command| Some(command.revision) != save.expected_revision) { return Err(anyhow!("revision_conflict")); }
+    if previous.as_ref().is_some_and(|command| command.revision >= MAX_SAFE_INTEGER) { return Err(anyhow!("invalid_request")); }
+    if previous.is_none() {
+        let count: i64 = tx.query_row("SELECT COUNT(*) FROM quick_launch_commands WHERE project_id=?", [project_id], |r| r.get(0))?;
+        if count >= 100 { return Err(anyhow!("too_many_commands")); }
+    }
+    let now = Utc::now().to_rfc3339();
+    let command = QuickLaunchCommand { id: save.id.map(str::to_owned).unwrap_or_else(|| uuid::Uuid::new_v4().to_string()), project_id:project_id.to_owned(),
+        revision:previous.as_ref().map_or(1, |c| c.revision + 1), name:trim_wire(save.name).to_owned(), command:save.command.to_owned(),
+        shell:save.shell.to_owned(), cwd:save.cwd.to_owned(), kind:save.kind.to_owned(), env:save.env.to_vec(), preview_url:save.preview_url,
+        created_at:previous.map_or_else(|| now.clone(), |c| c.created_at), updated_at:now };
+    tx.execute("INSERT INTO quick_launch_commands(id,project_id,revision,name,command,shell,cwd,kind,env_json,preview_url,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET revision=excluded.revision,name=excluded.name,command=excluded.command,shell=excluded.shell,cwd=excluded.cwd,kind=excluded.kind,env_json=excluded.env_json,preview_url=excluded.preview_url,updated_at=excluded.updated_at",
+        params![command.id,command.project_id,command.revision,command.name,command.command,command.shell,command.cwd,command.kind,serde_json::to_string(&command.env)?,command.preview_url,command.created_at,command.updated_at])?;
+    Ok(command)
 }
 fn delete(db: &Database, p: Delete) -> Result<Value> {
     db.transaction(|tx| {

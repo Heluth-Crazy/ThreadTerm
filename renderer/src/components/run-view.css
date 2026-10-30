@@ -38,3 +38,23 @@
 .wb-run .ql-agent-tag:hover { color:var(--text); border-color:var(--primary); }
 .wb-run span.ql-agent-tag { cursor:default; }
 .wb-run .ql-agent-tag:focus-visible { outline:2px solid var(--primary); outline-offset:1px; }
+.wb-recent-row, .wb-proposal-row { display:flex; flex-direction:column; gap:5px; padding:8px 10px; border-top:1px solid var(--border); }
+.wb-recent-row code, .wb-proposal-command { display:block; white-space:pre-wrap; overflow-wrap:anywhere; color:var(--muted); font-size:11px; }
+.wb-recent-row .ql-actions, .wb-proposal-row .ql-actions { justify-content:flex-start; }
+.wb-kept { color:var(--muted); font-size:11px; }
+.wb-agent-chat { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:var(--muted); font-size:11px; }
+.wb-proposal-reason { margin:0; font-size:11.5px; line-height:1.45; overflow-wrap:anywhere; }
+.wb-proposal-reason span { color:var(--muted); }
+.wb-proposal-diff { display:flex; flex-direction:column; gap:6px; }
+.wb-proposal-field { display:grid; grid-template-columns:96px minmax(0,1fr); gap:4px 8px; font-size:11px; }
+.wb-proposal-field > strong { color:var(--muted); font-size:10px; letter-spacing:.03em; text-transform:uppercase; }
+.wb-proposal-field del, .wb-proposal-field ins { grid-column:2; overflow-wrap:anywhere; text-decoration:none; }
+.wb-proposal-field del { color:var(--danger); }
+.wb-proposal-field ins { color:var(--success,var(--primary)); }
+.wb-proposal-field pre { grid-column:1 / -1; margin:0; padding:6px; overflow:auto; background:var(--soft); color:var(--text); font:11px/1.45 var(--mono); white-space:pre-wrap; overflow-wrap:anywhere; }
+.wb-proposal-field pre span { display:block; }
+.wb-proposal-field pre .is-removed { color:var(--danger); }.wb-proposal-field pre .is-added { color:var(--success,var(--primary)); }
+
+.wb-run-recent > summary { cursor:pointer; list-style:none; }
+.wb-run-recent > summary::before { content:"▸"; color:var(--muted); }
+.wb-run-recent[open] > summary::before { content:"▾"; }
