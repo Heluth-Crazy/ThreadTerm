@@ -170,7 +170,7 @@ pub(super) fn dispatch_setup(db: &Arc<Database>, pty: &PtyManager, method: &str,
     }
 }
 
-pub(super) fn root_for_setup(db: &Database, project: &str, cwd: &str) -> Result<PathBuf> {
+pub(crate) fn root_for_setup(db: &Database, project: &str, cwd: &str) -> Result<PathBuf> {
     if !Path::new(cwd).is_absolute() || !Path::new(cwd).is_dir() { return Err(anyhow!("cwd_missing")); }
     let root = crate::workspace_services::workspace_root_for_cwd(db, project, cwd).map_err(|error| match error.to_string().as_str() {
         "invalid_cwd" => anyhow!("cwd_missing"),
@@ -284,7 +284,7 @@ fn start_step_locked(db: &Arc<Database>, pty: &PtyManager, id: &str) -> Result<(
         return Ok(());
     }
     let step = SetupStep {run_id:run.id.clone(),step:run.step,total:commands.len()};
-    let result = start(db,pty,&commands[run.step],&run.root,&format!("setup:{}:{}",run.id,run.step),"quickLaunch.run",None,Some(&step));
+    let result = start(db,pty,&commands[run.step],&run.root,&format!("setup:{}:{}",run.id,run.step),"quickLaunch.run",None,Some(&step),None);
     match result {
         Ok(value) => {
             let session = &value["session"];

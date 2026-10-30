@@ -32,12 +32,18 @@ pub(crate) const ERROR_CODES: &[&str] = &[
     "tool_not_found",
     "invalid_command",
     "restart_stop_timeout",
+    "run_not_found",
+    "run_not_permitted",
+    "run_declined",
+    "detected_entry_changed",
+    "detected_command_too_long",
 ];
 
 #[path = "quick_launch_setup.rs"]
 mod setup;
 pub use setup::{mark_setup_runs_interrupted, setup_after_worktree_create};
 pub(crate) use setup::{setup_terminal_exited, start_next_setup_step};
+pub(crate) use setup::root_for_setup;
 #[path = "quick_launch_readiness.rs"]
 mod readiness;
 
@@ -87,6 +93,10 @@ pub struct SessionRun {
     /// The port the run was announced on, when it became ready by port.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub port: Option<u16>,
+    /// The Chat session whose agent started this run. Absent for user runs; set
+    /// by the caller-scoped run tools only, and shown as "started by" in 2b.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub started_by: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub setup: Option<setup::SetupStep>,
 }
@@ -104,7 +114,7 @@ pub(crate) fn initialize_connection(conn: &Connection) -> Result<()> {
          command_id TEXT NOT NULL, project_id TEXT NOT NULL, root TEXT NOT NULL,
          snapshot_json TEXT NOT NULL, url TEXT, url_source TEXT,
          stop_requested INTEGER NOT NULL DEFAULT 0, started_at TEXT NOT NULL,
-         readiness TEXT, ready_port INTEGER);
+         readiness TEXT, ready_port INTEGER, started_by TEXT);
          CREATE INDEX IF NOT EXISTS quick_launch_admission ON quick_launch_runs(command_id,root);
          CREATE TABLE IF NOT EXISTS quick_launch_setup (
          project_id TEXT PRIMARY KEY REFERENCES projects(id) ON DELETE CASCADE,
@@ -125,7 +135,7 @@ pub(crate) fn initialize_connection(conn: &Connection) -> Result<()> {
     let existing: Vec<String> = columns
         .query_map([], |row| row.get::<_, String>(1))?
         .collect::<rusqlite::Result<Vec<_>>>()?;
-    for (column, definition) in [("readiness", "TEXT"), ("ready_port", "INTEGER")] {
+    for (column, definition) in [("readiness", "TEXT"), ("ready_port", "INTEGER"), ("started_by", "TEXT")] {
         if !existing.iter().any(|name| name == column) {
             conn.execute_batch(&format!(
                 "ALTER TABLE quick_launch_runs ADD COLUMN {column} {definition}"
@@ -150,6 +160,7 @@ pub(crate) fn run_from_row(row: &Row<'_>, offset: usize) -> rusqlite::Result<Opt
         row.get(offset + 4)?,
         row.get::<_, Option<i64>>(offset + 5)?
             .and_then(|port| u16::try_from(port).ok()),
+        row.get(offset + 6)?,
     );
     run.setup = setup;
     Ok(Some(run))
@@ -161,6 +172,7 @@ fn projection(
     stopped: bool,
     readiness: Option<String>,
     port: Option<u16>,
+    started_by: Option<String>,
 ) -> SessionRun {
     SessionRun {
         command_id: snapshot.id.clone(),
@@ -172,6 +184,7 @@ fn projection(
         stop_requested: stopped.then_some(true),
         readiness,
         port,
+        started_by,
         setup: None,
     }
 }
@@ -389,6 +402,29 @@ fn operation_tx(tx: &Transaction<'_>, id: &str) -> Result<Option<Value>> {
     raw.map(|raw| serde_json::from_str(&raw).map_err(Into::into))
         .transpose()
 }
+
+/// A recorded result, only when it was recorded for this method. A request id reused
+/// for a different operation is not a replay, so an agent tool never answers with
+/// another method's receipt.
+pub(crate) fn replayed_operation(
+    db: &Database,
+    id: &str,
+    method: &str,
+) -> Result<Option<Value>> {
+    db.transaction(|tx| {
+        let row: Option<(String, String)> = tx
+            .query_row("SELECT method,result FROM operations WHERE id=?", [id], |r| {
+                Ok((r.get(0)?, r.get(1)?))
+            })
+            .optional()?;
+        match row {
+            Some((recorded, result)) if recorded == method => {
+                Ok(Some(serde_json::from_str(&result)?))
+            }
+            _ => Ok(None),
+        }
+    })
+}
 fn complete(tx: &Transaction<'_>, id: &str, method: &str, result: &Value) -> Result<()> {
     tx.execute(
         "INSERT INTO operations(id,method,result,created_at) VALUES(?,?,?,?)",
@@ -459,6 +495,16 @@ fn detected_snapshot(
         .into_iter()
         .find(|entry| entry.key == key)
         .ok_or_else(|| anyhow!("detected_entry_not_found"))?;
+    detected_command(project, entry)
+}
+
+/// The immutable snapshot one detected entry becomes, from an entry that was just
+/// detected by the caller. Shared with the agent run tools, which must show the same
+/// text they launch and never a second, differently-timed scan.
+pub(crate) fn detected_command(
+    project: &str,
+    entry: crate::run_detect::DetectedRunEntry,
+) -> Result<QuickLaunchCommand> {
     if let Some(tool) = entry.missing_tool {
         return Err(anyhow!("tool_not_found: {tool}"));
     }
@@ -469,7 +515,7 @@ fn detected_snapshot(
     }
     let now = Utc::now().to_rfc3339();
     Ok(QuickLaunchCommand {
-        id: format!("detected:{key}"),
+        id: format!("detected:{}", entry.key),
         project_id: project.to_owned(),
         revision: 1,
         name: entry.name,
@@ -482,6 +528,41 @@ fn detected_snapshot(
         created_at: now.clone(),
         updated_at: now,
     })
+}
+
+/// The saved commands of one project, in list order.
+pub(crate) fn saved_commands(db: &Database, project: &str) -> Result<Vec<QuickLaunchCommand>> {
+    db.transaction(|tx| {
+        let mut statement = tx.prepare(&format!(
+            "SELECT {COMMAND_COLUMNS} FROM quick_launch_commands WHERE project_id=? ORDER BY created_at,rowid"
+        ))?;
+        let commands = statement
+            .query_map([project], command_row)?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(commands)
+    })
+}
+
+/// One saved command, scoped to the caller's project: an id from another project is
+/// `run_not_found`, so a scope is never revealed by an error.
+pub(crate) fn scoped_command(db: &Database, project: &str, id: &str) -> Result<QuickLaunchCommand> {
+    db.transaction(|tx| {
+        tx.query_row(
+            &format!(
+                "SELECT {COMMAND_COLUMNS} FROM quick_launch_commands WHERE id=? AND project_id=?"
+            ),
+            params![id, project],
+            command_row,
+        )
+        .optional()?
+        .ok_or_else(|| anyhow!("run_not_found"))
+    })
+}
+
+/// The stored display name of a run snapshot, without materialising the whole snapshot.
+pub(crate) fn snapshot_name(raw: &str) -> serde_json::Result<String> {
+    let (snapshot, _) = setup::decode_snapshot(raw)?;
+    Ok(snapshot.name)
 }
 
 pub(crate) fn dispatch(
@@ -536,6 +617,7 @@ pub(crate) fn dispatch(
                 &p.cwd,
                 &p.operation_id,
                 "quickLaunch.run",
+                None,
                 None,
                 None,
             )
@@ -679,6 +761,7 @@ fn start(
     method: &str,
     source: Option<&str>,
     setup: Option<&setup::SetupStep>,
+    started_by: Option<&str>,
 ) -> Result<Value> {
     let root = setup::root_for_setup(db, &snapshot.project_id, cwd)?;
     let directory = launch_directory(&root, &snapshot.cwd)?;
@@ -730,7 +813,7 @@ fn start(
         tx.execute("INSERT INTO sessions(id,project_id,worktree_path,title,provider,mode,status,created_at,updated_at,followed) VALUES(?,?,?,?,'custom','terminal','starting',?,?,0)", params![id,snapshot.project_id,root.to_string_lossy(),snapshot.name,now,now])?;
         tx.execute("INSERT INTO session_activity(session_id,state,revision) VALUES(?,'unknown',1)", [&id])?;
         tx.execute("INSERT INTO session_launch_configs(session_id,revision,provider,mode,cwd,project_id,title,executable,args_json,source_session_id) VALUES(?,1,'custom','terminal',?,?,?,?,?,?)", params![id,launch.cwd,launch.project_id,launch.title,launch.executable,serde_json::to_string(&args)?,source])?;
-        tx.execute("INSERT INTO quick_launch_runs(session_id,command_id,project_id,root,snapshot_json,url,url_source,stop_requested,started_at,readiness) VALUES(?,?,?,?,?,?,?,0,?,?)", params![id,snapshot.id,snapshot.project_id,root_key,serde_json::to_string(snapshot)?,snapshot.preview_url,snapshot.preview_url.as_ref().map(|_| "configured"),now,initial_readiness])?;
+        tx.execute("INSERT INTO quick_launch_runs(session_id,command_id,project_id,root,snapshot_json,url,url_source,stop_requested,started_at,readiness,started_by) VALUES(?,?,?,?,?,?,?,0,?,?,?)", params![id,snapshot.id,snapshot.project_id,root_key,serde_json::to_string(snapshot)?,snapshot.preview_url,snapshot.preview_url.as_ref().map(|_| "configured"),now,initial_readiness,started_by])?;
         if let Some(step) = setup { setup::attach_session(tx, step, &id)?; }
         changed(tx, "session.run", Some(&id))?;
         // Reserve replay before the external side effect. A runtime crash leaves
@@ -796,7 +879,7 @@ fn session_value(tx: &Transaction<'_>, id: &str) -> Result<Value> {
         [id],
         |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
     )?;
-    let run = tx.query_row("SELECT snapshot_json,url,url_source,stop_requested,readiness,ready_port FROM quick_launch_runs WHERE session_id=?", [id], |r| run_from_row(r,0))?;
+    let run = tx.query_row("SELECT snapshot_json,url,url_source,stop_requested,readiness,ready_port,started_by FROM quick_launch_runs WHERE session_id=?", [id], |r| run_from_row(r,0))?;
     Ok(
         json!({"id":id,"projectId":project,"worktreePath":root,"title":title,"provider":"custom","mode":"terminal","status":"starting","createdAt":created,"updatedAt":created,"followed":false,"archived":false,"pinned":false,"bookmarked":false,"sortOrder":0,"organizationRevision":0,"activity":{"state":"unknown","revision":1},"run":run}),
     )
@@ -842,6 +925,7 @@ pub(crate) fn rerun(db: &Arc<Database>, pty: &PtyManager, value: &Value) -> Resu
         "session.rerun",
         Some(&p.session_id),
         None,
+        None,
     )?))
 }
 pub(crate) fn request_stop(db: &Database, id: &str) -> Result<()> {
@@ -865,16 +949,45 @@ const RESTART_STOP_TIMEOUT: Duration = Duration::from_secs(10);
 const RESTART_POLL: Duration = Duration::from_millis(20);
 
 fn restart(db: &Arc<Database>, pty: &PtyManager, p: Restart) -> Result<Value> {
-    restart_with(db, pty, p, RESTART_STOP_TIMEOUT)
+    restart_entry(db, pty, &p.session_id, &p.operation_id, None, "quickLaunch.restart", None)
 }
 
 /// Stop, wait for the exit, then launch the same entry again for the same root. The
 /// admission lock is released while waiting, so another run or stop is never queued
 /// behind the wait; it is re-taken for the relaunch, which also re-checks the receipt.
-fn restart_with(
+///
+/// `approved` carries a snapshot whose text the user already approved (a detected entry
+/// started by an agent); it is relaunched verbatim instead of being resolved again.
+/// `started_by` is the Chat session of the agent that asked, and is stored on the new run.
+pub(crate) fn restart_entry(
     db: &Arc<Database>,
     pty: &PtyManager,
-    p: Restart,
+    session_id: &str,
+    operation_id: &str,
+    approved: Option<&QuickLaunchCommand>,
+    method: &str,
+    started_by: Option<&str>,
+) -> Result<Value> {
+    restart_using(
+        db,
+        pty,
+        session_id,
+        operation_id,
+        approved,
+        method,
+        started_by,
+        RESTART_STOP_TIMEOUT,
+    )
+}
+
+fn restart_using(
+    db: &Arc<Database>,
+    pty: &PtyManager,
+    session_id: &str,
+    operation_id: &str,
+    approved: Option<&QuickLaunchCommand>,
+    method: &str,
+    started_by: Option<&str>,
     stop_timeout: Duration,
 ) -> Result<Value> {
     // Read the run before stopping: an unknown session and a replayed operation must
@@ -884,7 +997,7 @@ fn restart_with(
             Ok(tx
                 .query_row(
                     "SELECT snapshot_json,root,project_id FROM quick_launch_runs WHERE session_id=?",
-                    [&p.session_id],
+                    [session_id],
                     |r| {
                         Ok((
                             r.get::<_, String>(0)?,
@@ -900,42 +1013,78 @@ fn restart_with(
         let _guard = ADMISSION
             .lock()
             .map_err(|_| anyhow!("quick launch admission poisoned"))?;
-        if let Some(result) = db.operation(&p.operation_id)? {
+        if let Some(result) = replayed_operation(db, operation_id, method)? {
             return Ok(result);
         }
     }
-    request_stop(db, &p.session_id)?;
-    match pty.stop(db, &p.session_id, true) {
+    request_stop(db, session_id)?;
+    match pty.stop(db, session_id, true) {
         Ok(()) => {}
         // Its reader may already be finalizing an exit; the bounded wait decides.
         Err(error) if error.to_string() == "session has no live PTY" => {}
         Err(error) => return Err(error),
     }
-    if !wait_for_exit(db, &p.session_id, stop_timeout)? {
+    if !wait_for_exit(db, session_id, stop_timeout)? {
         return Err(anyhow!("restart_stop_timeout"));
     }
     let _guard = ADMISSION
         .lock()
         .map_err(|_| anyhow!("quick launch admission poisoned"))?;
-    if let Some(result) = db.operation(&p.operation_id)? {
+    if let Some(result) = replayed_operation(db, operation_id, method)? {
         return Ok(result);
     }
     let (snapshot, _) = setup::decode_snapshot(&raw)?;
     // A saved entry relaunches from its current saved text; a detected one is re-detected,
     // so an entry whose source disappeared fails instead of running a stale command.
-    let snapshot = match snapshot.id.strip_prefix("detected:") {
-        Some(key) => detected_snapshot(db, &project, &root, key)?,
-        None => read_command(db, &snapshot.id)?,
+    let snapshot = match approved {
+        Some(approved) => approved.clone(),
+        None => match snapshot.id.strip_prefix("detected:") {
+            Some(key) => detected_snapshot(db, &project, &root, key)?,
+            None => read_command(db, &snapshot.id)?,
+        },
     };
     start(
         db,
         pty,
         &snapshot,
         &root,
-        &p.operation_id,
-        "quickLaunch.restart",
+        operation_id,
+        method,
         None,
         None,
+        started_by,
+    )
+}
+
+/// The caller-scoped launch behind `chat.tool.run.start`: the same admission, one active
+/// instance per entry and root, and the same operation receipt and replay as
+/// `quickLaunch.run`, but attributed to the Chat session that asked.
+pub(crate) fn start_entry(
+    db: &Arc<Database>,
+    pty: &PtyManager,
+    snapshot: &QuickLaunchCommand,
+    root: &str,
+    operation_id: &str,
+    started_by: &str,
+) -> Result<Value> {
+    let _guard = ADMISSION
+        .lock()
+        .map_err(|_| anyhow!("quick launch admission poisoned"))?;
+    // Only a receipt this tool recorded is a replay: an operation id that belongs to
+    // another method never answers a run start.
+    if let Some(result) = replayed_operation(db, operation_id, "chat.tool.run.start")? {
+        return Ok(result);
+    }
+    start(
+        db,
+        pty,
+        snapshot,
+        root,
+        operation_id,
+        "chat.tool.run.start",
+        None,
+        None,
+        Some(started_by),
     )
 }
 
@@ -1051,13 +1200,57 @@ pub(crate) fn apply_environment(
 
 const SCAN_LIMIT: usize = 1024 * 1024;
 #[derive(Default)]
-enum Escape {
+pub(crate) enum Escape {
     #[default]
     Text,
     Esc,
     Csi,
     Osc,
     OscEsc,
+}
+impl Escape {
+    /// Advances one byte of terminal output. True means the byte is literal text;
+    /// a control sequence consumes its bytes instead. Shared by the URL observer
+    /// and the run-log reader so both strip the same sequences.
+    pub(crate) fn advance(&mut self, byte: u8) -> bool {
+        match *self {
+            Escape::Text if byte == 0x1b => {
+                *self = Escape::Esc;
+                false
+            }
+            Escape::Text => true,
+            Escape::Esc => {
+                *self = match byte {
+                    b'[' => Escape::Csi,
+                    b']' => Escape::Osc,
+                    0x20..=0x2f => Escape::Esc,
+                    _ => Escape::Text,
+                };
+                false
+            }
+            Escape::Csi if (0x40..=0x7e).contains(&byte) => {
+                *self = Escape::Text;
+                false
+            }
+            Escape::Osc if byte == 7 => {
+                *self = Escape::Text;
+                false
+            }
+            Escape::Osc if byte == 0x1b => {
+                *self = Escape::OscEsc;
+                false
+            }
+            Escape::OscEsc => {
+                *self = if byte == b'\\' {
+                    Escape::Text
+                } else {
+                    Escape::Osc
+                };
+                false
+            }
+            _ => false,
+        }
+    }
 }
 /// Constructed only for run sessions, on their existing PTY reader. No timer,
 /// polling worker, or output processing exists for ordinary sessions.
@@ -1077,28 +1270,8 @@ impl OutputObserver {
         let count = bytes.len().min(SCAN_LIMIT - self.scanned);
         self.scanned += count;
         for &byte in &bytes[..count] {
-            match self.escape {
-                Escape::Text if byte == 0x1b => self.escape = Escape::Esc,
-                Escape::Text => self.pending.push(byte),
-                Escape::Esc => {
-                    self.escape = match byte {
-                        b'[' => Escape::Csi,
-                        b']' => Escape::Osc,
-                        0x20..=0x2f => Escape::Esc,
-                        _ => Escape::Text,
-                    }
-                }
-                Escape::Csi if (0x40..=0x7e).contains(&byte) => self.escape = Escape::Text,
-                Escape::Osc if byte == 7 => self.escape = Escape::Text,
-                Escape::Osc if byte == 0x1b => self.escape = Escape::OscEsc,
-                Escape::OscEsc => {
-                    self.escape = if byte == b'\\' {
-                        Escape::Text
-                    } else {
-                        Escape::Osc
-                    }
-                }
-                _ => {}
+            if self.escape.advance(byte) {
+                self.pending.push(byte);
             }
         }
         let valid = match std::str::from_utf8(&self.pending) {

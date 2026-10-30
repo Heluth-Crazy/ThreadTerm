@@ -726,6 +726,9 @@ test('worktree setup saves an ordered unique list of up to 20 commands and runs 
  assert.throws(()=>validateResult('quickLaunch.setup.run',{...run,state:'paused'}));
  assert.throws(()=>validateResult('quickLaunch.setup.run',{...run,trigger:'startup'}));
  validateResult('quickLaunch.run',{existing:false,session:{id:'t1',title:'Install',provider:'custom',mode:'terminal',status:'running',createdAt:'t',updatedAt:'t',run:{commandId:'install',name:'Install',kind:'task',shell:'cmd',setup:{runId:'s',step:0,total:2}}}});
+ // An agent-started run carries the calling Chat session; a user run leaves it out.
+ validateResult('quickLaunch.run',{existing:false,session:{id:'t2',title:'Dev',provider:'custom',mode:'terminal',status:'running',createdAt:'t',updatedAt:'t',run:{commandId:'dev',name:'Dev',kind:'service',shell:'cmd',readiness:'ready',port:5173,startedBy:'chat-session',setup:{runId:'s',step:0,total:1}}}});
+ assert.throws(()=>validateResult('quickLaunch.run',{existing:false,session:{id:'t2',title:'Dev',provider:'custom',mode:'terminal',status:'running',createdAt:'t',updatedAt:'t',run:{commandId:'dev',name:'Dev',kind:'service',shell:'cmd',startedBy:7}}}));
 });
 
 test('session documents pin relative paths inside the worktree and list exact rows',()=>{
@@ -1009,4 +1012,29 @@ test('compare diff tabs require a full commit pair and no staged mode',()=>{
  validateRequest('workspace.save',{name:'Compare',layout:layout(tab),expectedRevision:0,operationId:'compare-layout'});
  for(const patch of [{staged:true},{kind:'file'},{kind:'preview'},{compare:{base:'-x',oid,mergeBase:oid}},{compare:{base:'origin/main',oid:'HEAD',mergeBase:oid}},{compare:{base:'origin/main',oid,mergeBase:'HEAD'}},{compare:{base:'origin/main',oid,mergeBase:oid,committedOnly:'yes'}},{compare:{base:'x'.repeat(256),oid,mergeBase:oid}}])
   assert.throws(()=>validateLayout(layout({...tab,...patch})),undefined,JSON.stringify(patch).slice(0,80));
+});
+
+test('agent run tools are caller-scoped, bounded and never carry caller identity',()=>{
+ validateRequest('chat.tool.run.list',{});
+ validateRequest('chat.tool.run.start',{id:'detected:node:package.json:dev',requestId:'run-1'});
+ validateRequest('chat.tool.run.start',{id:'saved-command',requestId:'run-2'});
+ validateRequest('chat.tool.run.status',{runId:'t1'});
+ validateRequest('chat.tool.run.logs',{runId:'t1'});
+ validateRequest('chat.tool.run.logs',{runId:'t1',lines:2000});
+ validateRequest('chat.tool.run.stop',{runId:'t1'});
+ validateRequest('chat.tool.run.restart',{runId:'t1',requestId:'restart-1'});
+ for(const method of ['chat.tool.run.start','chat.tool.run.restart'])assert.throws(()=>validateRequest(method,{runId:'t1',id:'saved',requestId:'r',callerSessionId:'spoofed',callerToken:'spoofed'}));
+ const entry={id:'saved',name:'Dev',command:'npm run dev',cwd:'',kind:'service',source:'saved',approved:true,activeRunId:'t1'};
+ const detected={id:'detected:node:package.json:dev',name:'dev',command:'npm run dev',cwd:'',kind:'service',source:'detected',approved:false,missingTool:'npm'};
+ const run={runId:'t1',entryId:'saved',name:'Dev',state:'running',readiness:'waiting',url:'http://localhost:5173/',port:5173,startedAt:'2026-10-30T00:00:00Z',startedBy:'agent',startedBySelf:true};
+ validateResult('chat.tool.run.list',{worktree:'C:\\repo-wt',entries:[entry,detected],runs:[run],truncated:false});
+ validateResult('chat.tool.run.list',{worktree:'C:\\repo-wt',entries:[],runs:[{...run,exitCode:0,state:'exited',readiness:undefined,url:undefined,port:undefined}].map(({readiness,url,port,...rest})=>rest),truncated:true});
+ assert.throws(()=>validateResult('chat.tool.run.list',{worktree:'C:\\repo-wt',entries:[{...entry,source:'proposal'}],runs:[],truncated:false}));
+ assert.throws(()=>validateResult('chat.tool.run.list',{worktree:'C:\\repo-wt',entries:[{...entry,approved:'yes'}],runs:[],truncated:false}));
+ validateResult('chat.tool.run.start',{runId:'t1',existing:false,state:'starting',entryId:'saved',name:'Dev'});
+ validateResult('chat.tool.run.start',{runId:'t1',existing:true,state:'running',entryId:null,name:null});
+ validateResult('chat.tool.run.status',{...run,uptimeSeconds:12});
+ validateResult('chat.tool.run.logs',{text:'ready\n30%\ntail',truncated:false,totalBytes:42});
+ validateResult('chat.tool.run.stop',{runId:'t1',state:'running',stopRequested:true});
+ validateResult('chat.tool.run.restart',{runId:'t2',existing:false,state:'starting',entryId:'detected:node:package.json:dev',name:'dev'});
 });

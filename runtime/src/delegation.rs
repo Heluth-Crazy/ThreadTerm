@@ -40,12 +40,14 @@ pub(crate) struct ChatToolSettings {
     pub ask: bool,
     pub session_info: bool,
     pub feedback: bool,
+    /// Caller-scoped Run tools (`run_list`, `run_start`, ...). On by default, like Ask.
+    pub run: bool,
     pub delegation: bool,
 }
 
 impl Default for ChatToolSettings {
     fn default() -> Self {
-        Self { ask: true, session_info: true, feedback: true, delegation: true }
+        Self { ask: true, session_info: true, feedback: true, run: true, delegation: true }
     }
 }
 
@@ -55,6 +57,7 @@ pub(crate) fn chat_tool_settings(db: &Database) -> Result<ChatToolSettings> {
     if let Some(value) = settings.get("chatTools.ask").and_then(Value::as_bool) { result.ask = value; }
     if let Some(value) = settings.get("chatTools.sessionInfo").and_then(Value::as_bool) { result.session_info = value; }
     if let Some(value) = settings.get("chatTools.feedback").and_then(Value::as_bool) { result.feedback = value; }
+    if let Some(value) = settings.get("chatTools.run").and_then(Value::as_bool) { result.run = value; }
     if let Some(value) = settings.get("chatTools.delegation").and_then(Value::as_bool) { result.delegation = value; }
     Ok(result)
 }

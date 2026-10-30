@@ -19,6 +19,8 @@ use std::{
 
 const MAX_QUESTIONS: usize = 4;
 const MAX_OPTIONS: usize = 6;
+/// The card's question bound (`ask_user` and the run approval share it).
+pub(crate) const MAX_QUESTION_CHARS: usize = 4_000;
 const MAX_ASK_BYTES: usize = 64 * 1024;
 const MAX_TRANSCRIPT_ITEMS: usize = 20;
 const MAX_TRANSCRIPT_BYTES: usize = 16 * 1024;
@@ -45,6 +47,7 @@ struct Grant {
     ask: bool,
     session_info: bool,
     feedback: bool,
+    run: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -52,6 +55,7 @@ enum Capability {
     Ask,
     SessionInfo,
     Feedback,
+    Run,
 }
 
 #[derive(Clone)]
@@ -139,6 +143,7 @@ impl ChatTools {
         ask: bool,
         session_info: bool,
         feedback: bool,
+        run: bool,
     ) -> Result<String> {
         if session_id.is_empty() || generation.is_empty() {
             return Err(anyhow!("chat_tool_invalid_grant"));
@@ -157,6 +162,7 @@ impl ChatTools {
                     ask,
                     session_info,
                     feedback,
+                    run,
                 },
             );
         Ok(token)
@@ -172,6 +178,13 @@ impl ChatTools {
             "chat.tool.ask" => self.ask(providers, parse(params)?),
             "chat.tool.sessionInfo" => self.session_info(providers, parse(params)?),
             "chat.tool.feedback" => self.feedback_check(providers, parse(params)?),
+            // `chat.tool.run.start` and `chat.tool.run.restart` can wait for the user,
+            // so the service prepares them through `prepare_run` instead.
+            "chat.tool.run.list" => self.run_list(providers, params),
+            "chat.tool.run.status" => self.run_status(providers, params),
+            "chat.tool.run.logs" => self.run_logs(providers, params),
+            // `chat.tool.run.start`, `run.restart` and `run.stop` take the PTY or
+            // wait for the user; the service routes those itself.
             _ => Err(anyhow!("unknown_method")),
         }
     }
@@ -200,6 +213,7 @@ impl ChatTools {
             Capability::Ask => grant.ask,
             Capability::SessionInfo => grant.session_info,
             Capability::Feedback => grant.feedback,
+            Capability::Run => grant.run,
         };
         if !allowed {
             return Err(anyhow!("chat_tool_disabled"));
@@ -256,19 +270,28 @@ impl ChatTools {
     }
 
     fn ask(&self, providers: &Providers, request: AskRequest) -> Result<Value> {
-        self.prepare_ask_value(providers, request)?.wait()
+        self.prepare_ask_value(providers, request, Capability::Ask)?
+            .wait()
     }
 
     pub(crate) fn prepare_ask(&self, providers: &Providers, params: &Value) -> Result<AskWaiter> {
-        self.prepare_ask_value(providers, parse(params)?)
+        self.prepare_ask_value(providers, parse(params)?, Capability::Ask)
     }
 
-    fn prepare_ask_value(&self, providers: &Providers, request: AskRequest) -> Result<AskWaiter> {
+    /// Publish an app-owned card and return its waiter. The capability is the tool
+    /// family the card belongs to: `ask_user` needs `Ask`, a run approval needs `Run`, so
+    /// turning one switch off never disables the other.
+    fn prepare_ask_value(
+        &self,
+        providers: &Providers,
+        request: AskRequest,
+        capability: Capability,
+    ) -> Result<AskWaiter> {
         self.with_authorized(
             providers,
             &request.caller_session_id,
             &request.caller_token,
-            Capability::Ask,
+            capability,
             |state| {
                 validate_questions(&request.questions)?;
                 let session = self
@@ -955,7 +978,7 @@ fn validate_questions(questions: &[Question]) -> Result<()> {
     let mut prompts = HashSet::new();
     for question in questions {
         if question.question.trim().is_empty()
-            || question.question.chars().count() > 4_000
+            || question.question.chars().count() > MAX_QUESTION_CHARS
             || question
                 .header
                 .as_ref()
@@ -1148,3 +1171,6 @@ fn feedback_ids_outside_turns(
         .map(|(id, _)| id)
         .collect())
 }
+
+#[path = "chat_tool_runs.rs"]
+pub(crate) mod runs;

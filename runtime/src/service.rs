@@ -1252,8 +1252,13 @@ impl RuntimeService {
             return self.browser_tools.cancel(request.params).map_err(browser_rpc_error);
         }
         // `ask_user` waits for a later `chat.answer`, so release the global
-        // relocation fence after its short admission and publication step.
-        if request.method == "chat.tool.ask" {
+        // relocation fence after its short admission and publication step. The run
+        // tools reuse that card: only the approval waits; the launch itself is a
+        // mutation and re-takes the fence once the user decided.
+        if matches!(
+            request.method.as_str(),
+            "chat.tool.ask" | "chat.tool.run.start" | "chat.tool.run.restart"
+        ) {
             if request.v != 1 {
                 return Err(error("unsupported_version", "only protocol version 1 is supported"));
             }
@@ -1269,10 +1274,35 @@ impl RuntimeService {
             }
             let tools = crate::chat_tools::shared(&self.config.database_path, Arc::clone(&self.db))
                 .map_err(|failure| map_error(&failure.to_string()))?;
-            let waiter = tools.prepare_ask(&self.providers, &request.params)
+            if request.method == "chat.tool.ask" {
+                let waiter = tools.prepare_ask(&self.providers, &request.params)
+                    .map_err(|failure| map_error(&failure.to_string()))?;
+                drop(gate);
+                return waiter.wait().map_err(|failure| map_error(&failure.to_string()));
+            }
+            let plan = tools.prepare_run(&self.providers, &request.method, &request.params)
                 .map_err(|failure| map_error(&failure.to_string()))?;
             drop(gate);
-            return waiter.wait().map_err(|failure| map_error(&failure.to_string()));
+            let run = tools.await_run(&self.providers, plan)
+                .map_err(|failure| map_error(&failure.to_string()))?;
+            // The approval may have been answered minutes later, while the runtime was
+            // shutting down or a data relocation was waiting. Re-check what `dispatch`
+            // checks before a mutation, so the launch cannot slip past it.
+            if self.shutdown_pending.load(Ordering::Acquire) {
+                return Err(error("runtime_stopping", "Runtime is shutting down"));
+            }
+            let _gate = self.relocation_gate.read()
+                .map_err(|_| error("runtime_error", "relocation lock poisoned"))?;
+            if crate::settings_services::relocation_blocks(&self.config, &request.method)
+                .map_err(|failure| error("runtime_error", &failure.to_string()))?
+            {
+                return Err(error(
+                    "relocation_pending",
+                    "data relocation is awaiting activation or cancellation",
+                ));
+            }
+            return tools.execute_run(&self.providers, &self.pty, run)
+                .map_err(|failure| map_error(&failure.to_string()));
         }
         let exclusive = matches!(
             request.method.as_str(),
@@ -1380,8 +1410,12 @@ impl RuntimeService {
                 return self.browser_tools.approval_resolve(principal, &request.params);
             }
             if request.method.starts_with("chat.tool.") {
-                return crate::chat_tools::shared(&self.config.database_path, Arc::clone(&self.db))?
-                    .dispatch(&self.providers, &request.method, &request.params);
+                let tools = crate::chat_tools::shared(&self.config.database_path, Arc::clone(&self.db))?;
+                // A run stop is the user's Stop: the intent flag plus the PTY stop.
+                if request.method == "chat.tool.run.stop" {
+                    return tools.run_stop(&self.providers, &self.pty, &request.params);
+                }
+                return tools.dispatch(&self.providers, &request.method, &request.params);
             }
             if request.method.starts_with("preview.") {
                 return self.previews.dispatch(&self.providers, principal, &request.method, &request.params);
@@ -5219,6 +5253,8 @@ mod tests {
 mod chat_lifecycle_tests;
 #[cfg(test)]
 mod chat_tool_tests;
+#[cfg(test)]
+mod chat_run_tool_tests;
 #[cfg(test)]
 mod chat_fork_tests;
 #[cfg(test)]

@@ -1118,7 +1118,7 @@ fn restart_gives_up_after_its_bounded_stop_wait() {
     }).unwrap();
     let pty = PtyManager::new(Arc::new(crate::output::OutputStore::default()));
     assert_eq!(RESTART_STOP_TIMEOUT, Duration::from_secs(10), "the bound the rest of the product waits for");
-    let error = restart_with(&db, &pty, Restart { session_id: "stuck".into(), operation_id: "stuck-restart".into() }, Duration::from_millis(150)).unwrap_err();
+    let error = restart_using(&db, &pty, "stuck", "stuck-restart", None, "quickLaunch.restart", None, Duration::from_millis(150)).unwrap_err();
     assert_eq!(error.to_string(), "restart_stop_timeout");
     let session = db.session_by_id("stuck").unwrap().unwrap();
     assert_eq!(session.status, "starting");

@@ -34,6 +34,7 @@ const ALLOWED_SETTINGS: &[&str] = &[
     "chatTools.ask",
     "chatTools.sessionInfo",
     "chatTools.feedback",
+    "chatTools.run",
     "chatTools.delegation",
 ];
 const RUNTIME_SETTINGS: &[&str] = &[
@@ -57,6 +58,7 @@ const RUNTIME_SETTINGS: &[&str] = &[
     "chatTools.ask",
     "chatTools.sessionInfo",
     "chatTools.feedback",
+    "chatTools.run",
     "chatTools.delegation",
     "chatTools",
     // Machine-specific (not exported): the console host for Windows terminals (conpty.rs); read at runtime start.
@@ -1036,6 +1038,7 @@ fn valid_setting(key: &str, value: &Value) -> Result<()> {
         "chatTools.ask"
         | "chatTools.sessionInfo"
         | "chatTools.feedback"
+        | "chatTools.run"
         | "chatTools.delegation"
             if value.is_boolean() =>
         {
@@ -1507,24 +1510,31 @@ mod tests {
 
     #[test]
     fn chat_tool_switches_are_boolean_and_portable() {
-        let patch = json!({"chatTools.ask":false,"chatTools.sessionInfo":true,"chatTools.feedback":false,"chatTools.delegation":true});
+        let patch = json!({"chatTools.ask":false,"chatTools.sessionInfo":true,"chatTools.feedback":false,"chatTools.run":true,"chatTools.delegation":true});
         assert!(valid_runtime_patch(&patch).is_ok());
         assert!(valid_runtime_patch(&json!({"chatTools.ask":"false"})).is_err());
+        assert!(valid_runtime_patch(&json!({"chatTools.run":"true"})).is_err());
         for key in [
             "chatTools.ask",
             "chatTools.sessionInfo",
             "chatTools.feedback",
+            "chatTools.run",
             "chatTools.delegation",
         ] {
             assert!(ALLOWED_SETTINGS.contains(&key));
         }
         let root = tempfile::tempdir().unwrap();
         let db = Database::open(&root.path().join("settings.sqlite")).unwrap();
+        assert!(
+            crate::delegation::chat_tool_settings(&db).unwrap().run,
+            "the run switch is on by default, like Ask"
+        );
         db.update_settings(&patch, 0, "chat-tool-settings").unwrap();
         let exported = settings_export(&db).unwrap();
         assert_eq!(exported["settings"]["chatTools.ask"], false);
         assert_eq!(exported["settings"]["chatTools.sessionInfo"], true);
         assert_eq!(exported["settings"]["chatTools.feedback"], false);
+        assert_eq!(exported["settings"]["chatTools.run"], true);
         assert_eq!(exported["settings"]["chatTools.delegation"], true);
     }
 

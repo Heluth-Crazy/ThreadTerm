@@ -2565,6 +2565,81 @@
       ],
       "additionalProperties": false
     },
+    "RequestParams<\"chat.tool.run.list\">": {
+      "type": "object",
+      "additionalProperties": false
+    },
+    "RequestParams<\"chat.tool.run.start\">": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "requestId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "requestId"
+      ],
+      "additionalProperties": false
+    },
+    "RequestParams<\"chat.tool.run.status\">": {
+      "type": "object",
+      "properties": {
+        "runId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "runId"
+      ],
+      "additionalProperties": false
+    },
+    "RequestParams<\"chat.tool.run.logs\">": {
+      "type": "object",
+      "properties": {
+        "runId": {
+          "type": "string"
+        },
+        "lines": {
+          "type": "number"
+        }
+      },
+      "required": [
+        "runId"
+      ],
+      "additionalProperties": false
+    },
+    "RequestParams<\"chat.tool.run.stop\">": {
+      "type": "object",
+      "properties": {
+        "runId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "runId"
+      ],
+      "additionalProperties": false
+    },
+    "RequestParams<\"chat.tool.run.restart\">": {
+      "type": "object",
+      "properties": {
+        "runId": {
+          "type": "string"
+        },
+        "requestId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "runId",
+        "requestId"
+      ],
+      "additionalProperties": false
+    },
     "RequestParams<\"history.list\">": {
       "type": "object",
       "properties": {
@@ -8503,6 +8578,162 @@
         },
         "params": {
           "$ref": "#/definitions/RequestParams%3C%22quickLaunch.setup.status%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "params"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "chat.tool.run.list"
+        },
+        "params": {
+          "$ref": "#/definitions/RequestParams%3C%22chat.tool.run.list%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "params"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "chat.tool.run.start"
+        },
+        "params": {
+          "$ref": "#/definitions/RequestParams%3C%22chat.tool.run.start%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "params"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "chat.tool.run.status"
+        },
+        "params": {
+          "$ref": "#/definitions/RequestParams%3C%22chat.tool.run.status%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "params"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "chat.tool.run.logs"
+        },
+        "params": {
+          "$ref": "#/definitions/RequestParams%3C%22chat.tool.run.logs%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "params"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "chat.tool.run.stop"
+        },
+        "params": {
+          "$ref": "#/definitions/RequestParams%3C%22chat.tool.run.stop%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "params"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "chat.tool.run.restart"
+        },
+        "params": {
+          "$ref": "#/definitions/RequestParams%3C%22chat.tool.run.restart%22%3E"
         }
       },
       "required": [

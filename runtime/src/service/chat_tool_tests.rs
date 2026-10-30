@@ -36,6 +36,7 @@ impl Fixture {
                 ask,
                 session_info,
                 feedback,
+                true,
             )
             .unwrap();
         Self {
@@ -211,6 +212,7 @@ fn ask_cancel_close_and_generation_replacement_settle_once_without_pending_cards
             true,
             false,
             false,
+            true,
         )
         .unwrap();
     fixture
@@ -463,6 +465,7 @@ fn reconnect_fences_a_paused_old_feedback_consumer_before_commit() {
             "generation-two".into(),
             false,
             false,
+            true,
             true,
         )
         .unwrap();

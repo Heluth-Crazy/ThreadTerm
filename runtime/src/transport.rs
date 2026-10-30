@@ -241,6 +241,9 @@ fn request_lane(method: &str) -> Lane {
     match method {
         "chat.tool.ask" | "chat.tool.sessionInfo" | "chat.tool.feedback" | "chat.feedback.read"
         | "chat.image.read" => Lane::Concurrent,
+        // The run reads never wait for the user; `run.start`/`run.restart` do, and stay
+        // ordered so one approval cannot reorder a stop behind a start.
+        "chat.tool.run.list" | "chat.tool.run.status" | "chat.tool.run.logs" => Lane::Concurrent,
         "group.prerequisites"
         | "terminal.read"
         | "project.catalog.list"
@@ -1023,6 +1026,9 @@ mod decoder_tests {
             "chat.tool.ask",
             "chat.tool.sessionInfo",
             "chat.tool.feedback",
+            "chat.tool.run.list",
+            "chat.tool.run.status",
+            "chat.tool.run.logs",
             "chat.feedback.read",
             "project.catalog.list",
             "quickLaunch.detect",
@@ -1076,6 +1082,9 @@ mod decoder_tests {
             "git.operation.continue",
             "session.resume",
             "session.stop",
+            "chat.tool.run.start",
+            "chat.tool.run.stop",
+            "chat.tool.run.restart",
             "quickLaunch.restart",
             "worktree.list",
             "workspace.save",
@@ -1087,6 +1096,23 @@ mod decoder_tests {
             "not.a.method",
         ] {
             assert_eq!(request_lane(method), Lane::Ordered, "{method}");
+        }
+
+        // The agent run tools specifically: a status/log list poll must never wait behind
+        // a slow read, and the three that can block on the user stay ordered.
+        for read in [
+            "chat.tool.run.list",
+            "chat.tool.run.status",
+            "chat.tool.run.logs",
+        ] {
+            assert_eq!(request_lane(read), Lane::Concurrent, "{read}");
+        }
+        for mutation in [
+            "chat.tool.run.start",
+            "chat.tool.run.stop",
+            "chat.tool.run.restart",
+        ] {
+            assert_eq!(request_lane(mutation), Lane::Ordered, "{mutation}");
         }
     }
 

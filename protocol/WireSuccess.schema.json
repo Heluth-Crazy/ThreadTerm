@@ -2133,6 +2133,10 @@
           "type": "number",
           "description": "The port the run became ready on; only when readiness came from a port."
         },
+        "startedBy": {
+          "type": "string",
+          "description": "The Chat session whose agent started this run (a run the user started has none). The Run view labels it in 2b."
+        },
         "stopRequested": {
           "type": "boolean",
           "description": "The user asked to stop it: an exit after this reads as \"Stopped\", not as a failure."
@@ -3298,6 +3302,9 @@
             "chatTools.feedback": {
               "type": "boolean"
             },
+            "chatTools.run": {
+              "type": "boolean"
+            },
             "chatTools.delegation": {
               "type": "boolean"
             }
@@ -3524,6 +3531,9 @@
           "type": "boolean"
         },
         "chatTools.feedback": {
+          "type": "boolean"
+        },
+        "chatTools.run": {
           "type": "boolean"
         },
         "chatTools.delegation": {
@@ -5373,6 +5383,298 @@
       "items": {
         "$ref": "#/definitions/WorktreeSetupRun"
       }
+    },
+    "RequestResult<\"chat.tool.run.list\">": {
+      "$ref": "#/definitions/ChatToolRunList"
+    },
+    "ChatToolRunList": {
+      "type": "object",
+      "properties": {
+        "worktree": {
+          "type": "string"
+        },
+        "entries": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/ChatToolRunEntry"
+          }
+        },
+        "runs": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/ChatToolRunSummary"
+          },
+          "description": "Active runs plus the latest finished ones."
+        },
+        "truncated": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "worktree",
+        "entries",
+        "runs",
+        "truncated"
+      ],
+      "additionalProperties": false
+    },
+    "ChatToolRunEntry": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "command": {
+          "type": "string"
+        },
+        "cwd": {
+          "type": "string"
+        },
+        "kind": {
+          "$ref": "#/definitions/QuickLaunchKind"
+        },
+        "source": {
+          "type": "string",
+          "enum": [
+            "saved",
+            "detected"
+          ]
+        },
+        "approved": {
+          "type": "boolean"
+        },
+        "missingTool": {
+          "type": "string",
+          "description": "The entry's tool is not on PATH; it cannot be started."
+        },
+        "activeRunId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "name",
+        "command",
+        "cwd",
+        "kind",
+        "source",
+        "approved"
+      ],
+      "additionalProperties": false,
+      "description": "Agent Run tools (`run_list`/`run_start`/`run_status`/`run_logs`/`run_stop`/`run_restart`). They are caller-scoped: every entry and run belongs to the calling Chat's own project and worktree root; anything else is `run_not_found`. A detected entry starts only after an `ask_user` card in that Chat, and the runtime launches exactly the text it showed. The runtime injects `callerSessionId` and `callerToken`; a model-supplied value is rejected."
+    },
+    "ChatToolRunSummary": {
+      "type": "object",
+      "properties": {
+        "runId": {
+          "type": "string"
+        },
+        "entryId": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "state": {
+          "$ref": "#/definitions/SessionStatus"
+        },
+        "readiness": {
+          "type": "string",
+          "enum": [
+            "waiting",
+            "ready",
+            "none"
+          ]
+        },
+        "url": {
+          "type": "string"
+        },
+        "port": {
+          "type": "number"
+        },
+        "exitCode": {
+          "type": "number"
+        },
+        "startedAt": {
+          "type": "string"
+        },
+        "startedBy": {
+          "type": "string",
+          "enum": [
+            "user",
+            "agent"
+          ]
+        },
+        "startedBySelf": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "runId",
+        "entryId",
+        "name",
+        "state",
+        "startedAt",
+        "startedBy",
+        "startedBySelf"
+      ],
+      "additionalProperties": false
+    },
+    "RequestResult<\"chat.tool.run.start\">": {
+      "$ref": "#/definitions/ChatToolRunStart"
+    },
+    "ChatToolRunStart": {
+      "type": "object",
+      "properties": {
+        "runId": {
+          "type": "string"
+        },
+        "existing": {
+          "type": "boolean"
+        },
+        "state": {
+          "$ref": "#/definitions/SessionStatus"
+        },
+        "entryId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "name": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "runId",
+        "existing",
+        "state",
+        "entryId",
+        "name"
+      ],
+      "additionalProperties": false
+    },
+    "RequestResult<\"chat.tool.run.status\">": {
+      "$ref": "#/definitions/ChatToolRunStatus"
+    },
+    "ChatToolRunStatus": {
+      "type": "object",
+      "properties": {
+        "runId": {
+          "type": "string"
+        },
+        "entryId": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "state": {
+          "$ref": "#/definitions/SessionStatus"
+        },
+        "readiness": {
+          "type": "string",
+          "enum": [
+            "waiting",
+            "ready",
+            "none"
+          ]
+        },
+        "url": {
+          "type": "string"
+        },
+        "port": {
+          "type": "number"
+        },
+        "exitCode": {
+          "type": "number"
+        },
+        "startedAt": {
+          "type": "string"
+        },
+        "startedBy": {
+          "type": "string",
+          "enum": [
+            "user",
+            "agent"
+          ]
+        },
+        "startedBySelf": {
+          "type": "boolean"
+        },
+        "uptimeSeconds": {
+          "type": "number"
+        }
+      },
+      "required": [
+        "entryId",
+        "name",
+        "runId",
+        "startedAt",
+        "startedBy",
+        "startedBySelf",
+        "state",
+        "uptimeSeconds"
+      ],
+      "additionalProperties": false
+    },
+    "RequestResult<\"chat.tool.run.logs\">": {
+      "$ref": "#/definitions/ChatToolRunLogs"
+    },
+    "ChatToolRunLogs": {
+      "type": "object",
+      "properties": {
+        "text": {
+          "type": "string"
+        },
+        "truncated": {
+          "type": "boolean",
+          "description": "The scan cap (1 MiB back), the text cap or the line bound cut something."
+        },
+        "totalBytes": {
+          "type": "number"
+        }
+      },
+      "required": [
+        "text",
+        "truncated",
+        "totalBytes"
+      ],
+      "additionalProperties": false
+    },
+    "RequestResult<\"chat.tool.run.stop\">": {
+      "$ref": "#/definitions/ChatToolRunStop"
+    },
+    "ChatToolRunStop": {
+      "type": "object",
+      "properties": {
+        "runId": {
+          "type": "string"
+        },
+        "state": {
+          "$ref": "#/definitions/SessionStatus"
+        },
+        "stopRequested": {
+          "type": "boolean",
+          "const": true
+        }
+      },
+      "required": [
+        "runId",
+        "state",
+        "stopRequested"
+      ],
+      "additionalProperties": false,
+      "description": "A stop is the user's Stop: the intent flag plus terminating the run's process tree."
+    },
+    "RequestResult<\"chat.tool.run.restart\">": {
+      "$ref": "#/definitions/ChatToolRunStart"
     },
     "RequestResult<\"history.list\">": {
       "type": "object",
@@ -12090,6 +12392,162 @@
         },
         "result": {
           "$ref": "#/definitions/RequestResult%3C%22quickLaunch.setup.status%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "result"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "chat.tool.run.list"
+        },
+        "result": {
+          "$ref": "#/definitions/RequestResult%3C%22chat.tool.run.list%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "result"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "chat.tool.run.start"
+        },
+        "result": {
+          "$ref": "#/definitions/RequestResult%3C%22chat.tool.run.start%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "result"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "chat.tool.run.status"
+        },
+        "result": {
+          "$ref": "#/definitions/RequestResult%3C%22chat.tool.run.status%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "result"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "chat.tool.run.logs"
+        },
+        "result": {
+          "$ref": "#/definitions/RequestResult%3C%22chat.tool.run.logs%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "result"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "chat.tool.run.stop"
+        },
+        "result": {
+          "$ref": "#/definitions/RequestResult%3C%22chat.tool.run.stop%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "result"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "chat.tool.run.restart"
+        },
+        "result": {
+          "$ref": "#/definitions/RequestResult%3C%22chat.tool.run.restart%22%3E"
         }
       },
       "required": [
