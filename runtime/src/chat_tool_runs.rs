@@ -207,14 +207,30 @@ impl ChatTools {
 
     pub(crate) fn run_status(&self, providers: &Providers, params: &Value) -> Result<Value> {
         let request: RunIdRequest = parse(params)?;
-        let run = self.with_authorized(
+        self.with_authorized(
             providers,
             &request.caller_session_id,
             &request.caller_token,
             Capability::Run,
-            |_| self.scoped_run(&request.caller_session_id, &request.run_id),
-        )?;
-        Ok(status_value(&run, &request.caller_session_id))
+            |_| {
+                let scope = self.run_scope(&request.caller_session_id)?;
+                match self.scoped_run_in(&scope,&request.run_id) {
+                    Ok(run) => {
+                        let mut value = status_value(&run, &request.caller_session_id);
+                        if let Some(sequence) = crate::quick_launch::sequence_for_session(&self.db,&run.0)? {
+                            value["sequence"] = sequence;
+                        }
+                        return Ok(value);
+                    }
+                    Err(error) if error.to_string() == "run_not_found" => {}
+                    Err(error) => return Err(error),
+                }
+                let (sequence,started_by) = crate::quick_launch::sequence_by_id(
+                    &self.db,&request.run_id,&scope.project_id,&scope.root_key)?
+                    .ok_or_else(||anyhow!("run_not_found"))?;
+                Ok(sequence_status_value(&sequence,started_by.as_deref(),&request.caller_session_id))
+            },
+        )
     }
 
     pub(crate) fn run_logs(&self, providers: &Providers, params: &Value) -> Result<Value> {
@@ -249,17 +265,27 @@ impl ChatTools {
         params: &Value,
     ) -> Result<Value> {
         let request: RunIdRequest = parse(params)?;
-        let (run_id, run) = self.with_authorized(
+        let scope = self.with_authorized(
             providers,
             &request.caller_session_id,
             &request.caller_token,
             Capability::Run,
             |_| {
-                let run = self.scoped_run(&request.caller_session_id, &request.run_id)?;
+                let scope = self.run_scope(&request.caller_session_id)?;
                 require_run_writes(&self.db, &request.caller_session_id)?;
-                Ok(run)
+                Ok(scope)
             },
         )?;
+        let (run_id,run) = match self.scoped_run_in(&scope,&request.run_id) {
+            Ok(run) => run,
+            Err(error) if error.to_string() == "run_not_found" => {
+                let sequence = crate::quick_launch::cancel_scoped_sequence(
+                    &self.db,&request.run_id,&scope.project_id,&scope.root_key)?
+                    .ok_or_else(||anyhow!("run_not_found"))?;
+                return Ok(json!({"runId":request.run_id,"state":sequence["state"],"stopRequested":true,"sequence":sequence}));
+            }
+            Err(error) => return Err(error),
+        };
         let state = run.state;
         // The user's Stop: mark the intent (a later exit reads as "Stopped", not a
         // failure) and then stop the session's process tree, outside every lock.
@@ -317,7 +343,7 @@ impl ChatTools {
         // A retried request replays its recorded launch instead of asking the user a
         // second time for a run that already started.
         if let Some(result) =
-            crate::quick_launch::replayed_operation(&self.db, &operation_id, "chat.tool.run.start")?
+            crate::quick_launch::replayed_run_operation(&self.db, &operation_id, "chat.tool.run.start")?
         {
             return Ok(RunPlan::Launch(AuthorizedRun {
                 session_id: request.caller_session_id,
@@ -421,7 +447,7 @@ impl ChatTools {
             &request.request_id,
         );
         // A retried restart replays its receipt rather than asking again.
-        if let Some(result) = crate::quick_launch::replayed_operation(
+        if let Some(result) = crate::quick_launch::replayed_run_operation(
             &self.db,
             &operation_id,
             "chat.tool.run.restart",
@@ -789,13 +815,30 @@ fn launch_value(value: &Value) -> Result<Value> {
     let session = value
         .get("session")
         .ok_or_else(|| anyhow!("session_not_found"))?;
-    Ok(json!({
+    let mut launch = json!({
         "runId":session["id"],
         "existing":value["existing"].as_bool().unwrap_or(false),
         "state":session["status"],
         "entryId":session.pointer("/run/commandId"),
         "name":session.pointer("/run/name"),
-    }))
+    });
+    if let Some(sequence_id) = value.get("sequenceId") { launch["sequenceId"] = sequence_id.clone(); }
+    if let Some(sequence) = value.get("sequence") { launch["sequence"] = sequence.clone(); }
+    Ok(launch)
+}
+
+fn sequence_status_value(sequence: &Value, started_by: Option<&str>, caller: &str) -> Value {
+    json!({
+        "runId":sequence["id"],
+        "entryId":sequence["targetCommandId"],
+        "name":sequence["names"].as_array().and_then(|names|names.last()).cloned().unwrap_or(Value::Null),
+        "state":sequence["state"],
+        "startedAt":sequence["createdAt"],
+        "uptimeSeconds":sequence["createdAt"].as_str().map(uptime_seconds).unwrap_or(0),
+        "startedBy":if started_by.is_some() {"agent"} else {"user"},
+        "startedBySelf":started_by == Some(caller),
+        "sequence":sequence,
+    })
 }
 
 /// A read-only delegate and a read-only session may look but not launch, stop or

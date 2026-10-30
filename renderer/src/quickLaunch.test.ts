@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import type { DetectedRunEntry, Session, SessionRun } from "@threadterm/protocol";
-import { activeRun, detectedSections, detectedSourceLabel, missingToolLabel, packageScripts, previewReady, previewWaitingLabel, quickLaunchError, runState, runStateLabel, suggestedLabel, suggestedTag, suggestedTitle } from "./quickLaunch";
+import { activeRun, dependencyOptionIds, detectedSections, detectedSourceLabel, missingToolLabel, packageScripts, previewReady, previewWaitingLabel, quickLaunchError, runState, runStateLabel, suggestedLabel, suggestedTag, suggestedTitle } from "./quickLaunch";
 
 const session = (overrides: Partial<Session> = {}): Session => ({ id: "run-1", title: "Dev", provider: "custom", mode: "terminal", status: "exited", createdAt: "2026-10-06T00:00:00.000Z", updatedAt: "2026-10-06T00:00:00.000Z", worktreePath: "C:\\repo", run: { commandId: "dev", name: "Dev", kind: "service", shell: "cmd" }, ...overrides });
 
@@ -57,8 +57,20 @@ test("Quick Launch labels and errors are localized", () => {
   for (const [state, [en, zh]] of Object.entries(labels)) { assert.equal(runStateLabel({ state: state as keyof typeof labels }, false), en); assert.equal(runStateLabel({ state: state as keyof typeof labels }, true), zh); }
   assert.equal(runStateLabel({ state: "failed" }, false), "Failed to start"); assert.equal(runStateLabel({ state: "failed" }, true), "启动失败");
   assert.equal(runStateLabel({ state: "failed", exitCode: 3 }, false), "Failed (exit 3)"); assert.equal(runStateLabel({ state: "failed", exitCode: 3 }, true), "失败（退出码 3）");
-  const errors: Record<string, [string, string]> = { revision_conflict: ["changed elsewhere", "其他窗口"], command_not_found: ["no longer exists", "不存在"], too_many_commands: ["up to 100", "最多保存 100"], cmd_single_line: ["one line", "仅执行一行"], shell_unavailable: ["not installed", "未安装"], cwd_outside_root: ["inside this worktree", "工作树内"], cwd_missing: ["does not exist", "不存在"], package_scripts_invalid: ["Invalid package.json", "package.json 无效"], no_package_scripts: ["No scripts", "没有脚本"], no_package_json: ["No package.json", "没有 package.json"], invalid_env: ["environment names", "环境变量名称"], invalid_preview_url: ["http://", "http://"] };
+  const errors: Record<string, [string, string]> = { revision_conflict: ["changed elsewhere", "其他窗口"], command_not_found: ["no longer exists", "不存在"], too_many_commands: ["up to 100", "最多保存 100"], cmd_single_line: ["one line", "仅执行一行"], shell_unavailable: ["not installed", "未安装"], cwd_outside_root: ["inside this worktree", "工作树内"], cwd_missing: ["does not exist", "不存在"], package_scripts_invalid: ["Invalid package.json", "package.json 无效"], no_package_scripts: ["No scripts", "没有脚本"], no_package_json: ["No package.json", "没有 package.json"], invalid_env: ["environment names", "环境变量名称"], invalid_preview_url: ["http://", "http://"], nested_depends_on:["cannot have dependencies","不能再包含依赖"], invalid_depends_on:["without cycles","没有循环"], dependency_failed:["dependency failed","依赖启动失败"], port_unavailable:["port could not be allocated","无法为此命令分配"], command_has_dependents:["required by other saved commands","其他已保存命令依赖"] };
   for (const [code, [en, zh]] of Object.entries(errors)) { assert.match(quickLaunchError(new Error(code), false), new RegExp(en)); assert.match(quickLaunchError(new Error(code), true), new RegExp(zh)); }
+  assert.equal(quickLaunchError(new Error('dependency_failed: db'), false), 'Dependency failed: db');
+  assert.equal(quickLaunchError(new Error('dependency_failed: db'), true), '依赖失败：db');
+  assert.equal(quickLaunchError(new Error('command_has_dependents: API, Web'), false), 'Cannot delete this command because it is required by: API, Web');
+  assert.equal(quickLaunchError(new Error('command_has_dependents: API, Web'), true), '无法删除此命令，因为以下命令依赖它：API, Web');
+});
+
+test("dependency choices retain a missing saved id so an editor can remove it", () => {
+  const catalog = [
+    { id: "api", projectId: "p", revision: 1, name: "API", command: "node api", shell: "cmd" as const, cwd: "", kind: "service" as const, env: [], createdAt: "now", updatedAt: "now" },
+    { id: "web", projectId: "p", revision: 1, name: "Web", command: "node web", shell: "cmd" as const, cwd: "", kind: "service" as const, env: [], createdAt: "now", updatedAt: "now" },
+  ];
+  assert.deepEqual(dependencyOptionIds(catalog, ["missing-db", "api"], "web"), ["api", "missing-db"]);
 });
 
 test("runState reports readiness for service runs and leaves tasks alone", () => {
@@ -73,6 +85,7 @@ test("runState reports readiness for service runs and leaves tasks alone", () =>
   assert.equal(runState(session({ status: "running", run: { ...service, readiness: "none" } })).state, "running");
   assert.equal(runState(session({ status: "running", run: service })).state, "running");
   assert.equal(runState(session({ status: "running", run: { ...service, readiness: "none", port: 5173 } })).port, undefined, "a port is only shown while ready");
+  assert.equal(runState(session({ status: "running", run: { ...service, readiness: "waiting", allocatedPort: 43123 } })).port, 43123, "an allocation is shown before readiness");
   // A port is shown only while it is the run's address: a printed URL that replaced it never shows it.
   assert.equal(runState(session({ status: "running", run: { ...service, readiness: "ready", urlSource: "port", port: 5173 } })).port, 5173);
   assert.equal(runState(session({ status: "running", run: { ...service, readiness: "ready", urlSource: "output", url: "http://localhost:3000/", port: 5173 } })).port, undefined, "the printed address wins, so no :port");
@@ -96,6 +109,8 @@ test("the Ready label is localized and Open Preview waits for readiness", () => 
   assert.equal(previewReady(live({ readiness: "none", urlSource: "configured" })), true);
   assert.equal(previewReady(live({ urlSource: "configured" })), true);
   assert.equal(previewReady(live({ readiness: "waiting", urlSource: "output" })), true);
+  assert.equal(previewReady(live({ readiness: "waiting", urlSource: "output", allocatedPort: 43123 })), false, "an allocated port must listen even when output printed a URL");
+  assert.equal(previewReady(live({ readiness: "ready", urlSource: "output", allocatedPort: 43123 })), true);
   // Only a still-watching run's own configured fallback waits…
   assert.equal(previewReady(live({ readiness: "waiting", urlSource: "configured" })), false);
   // …and a run whose session already ended never waits, even if its watcher never settled.

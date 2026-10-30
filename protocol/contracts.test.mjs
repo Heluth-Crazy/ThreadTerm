@@ -723,9 +723,16 @@ test('worktree setup saves an ordered unique list of up to 20 commands and runs 
  const run={id:'s',projectId:'p',root:'C:\\repo-wt',commandIds:['install','build'],names:['Install','Build'],step:1,state:'failed',sessionIds:['t1','t2'],exitCode:1,trigger:'worktree.create',createdAt:'t',updatedAt:'t'};
  validateResult('quickLaunch.setup.run',run);
  validateResult('quickLaunch.setup.status',[run,{...run,id:'s2',state:'interrupted',exitCode:undefined,trigger:'retry'}].map(({exitCode,...rest})=>exitCode===undefined?rest:{...rest,exitCode}));
+ const dependencyRun={...run,id:'depends-1',state:'running',exitCode:undefined,trigger:'depends_on',targetCommandId:'web'};
+ validateResult('quickLaunch.setup.status',[dependencyRun]);
+ validateRequest('quickLaunch.sequence.cancel',{id:'depends-1',operationId:'cancel-depends'});
+ validateResult('quickLaunch.sequence.cancel',{...dependencyRun,state:'cancelled'});
+ validateResult('quickLaunch.setup.status',[{...dependencyRun,state:'failed',error:'dependency_failed: db'}]);
  assert.throws(()=>validateResult('quickLaunch.setup.run',{...run,state:'paused'}));
  assert.throws(()=>validateResult('quickLaunch.setup.run',{...run,trigger:'startup'}));
+ assert.throws(()=>validateResult('quickLaunch.setup.run',{...dependencyRun,targetCommandId:7}));
  validateResult('quickLaunch.run',{existing:false,session:{id:'t1',title:'Install',provider:'custom',mode:'terminal',status:'running',createdAt:'t',updatedAt:'t',run:{commandId:'install',name:'Install',kind:'task',shell:'cmd',setup:{runId:'s',step:0,total:2}}}});
+ validateResult('quickLaunch.run',{existing:false,session:{id:'t3',title:'db',provider:'custom',mode:'terminal',status:'running',createdAt:'t',updatedAt:'t',run:{commandId:'db',name:'db',kind:'service',shell:'cmd',sequence:{runId:'depends-1',step:0,total:2}}},sequence:dependencyRun,sequenceId:'depends-1'});
  // An agent-started run carries the calling Chat session; a user run leaves it out.
  validateResult('quickLaunch.run',{existing:false,session:{id:'t2',title:'Dev',provider:'custom',mode:'terminal',status:'running',createdAt:'t',updatedAt:'t',run:{commandId:'dev',name:'Dev',kind:'service',shell:'cmd',readiness:'ready',port:5173,startedBy:'chat-session',setup:{runId:'s',step:0,total:1}}}});
  assert.throws(()=>validateResult('quickLaunch.run',{existing:false,session:{id:'t2',title:'Dev',provider:'custom',mode:'terminal',status:'running',createdAt:'t',updatedAt:'t',run:{commandId:'dev',name:'Dev',kind:'service',shell:'cmd',startedBy:7}}}));
@@ -759,7 +766,7 @@ test('preview presentation is attachment-scoped and requires a persisted tab ack
 test('quick launch commands are bounded: relative cwd inside the root, known shells, unique env names, revisioned updates',()=>{
  const base={projectId:'p',name:'Web dev server',command:'npm run dev',shell:'cmd',cwd:'',kind:'service',env:[],operationId:'o'};
  validateRequest('quickLaunch.save',base);
- validateRequest('quickLaunch.save',{...base,cwd:'packages\\web',shell:'pwsh',kind:'task',env:[{name:'JAVA_HOME',value:'C:\\jdk'},{name:'Path',value:'C:\\tools;%PATH%'}],previewUrl:'http://localhost:5173/'});
+ validateRequest('quickLaunch.save',{...base,cwd:'packages\\web',shell:'pwsh',kind:'task',command:'node server.mjs --port ${port}',env:[{name:'PORT',value:'${port}'},{name:'Path',value:'C:\\tools;%PATH%'}],previewUrl:'http://localhost:${port}/',dependsOn:['db','api']});
  validateRequest('quickLaunch.save',{...base,id:'c',expectedRevision:2,command:'Write-Host "a b"\nnpm test'});
  for(const cwd of ['..','a/../..','..\\x','C:\\repo','/abs','\\\\server\\share','a|b']) assert.throws(()=>validateRequest('quickLaunch.save',{...base,cwd}),/Invalid working directory/);
  // Enums: the generated schema rejects these first; the explicit checks back it up.
@@ -770,17 +777,23 @@ test('quick launch commands are bounded: relative cwd inside the root, known she
  assert.throws(()=>validateRequest('quickLaunch.save',{...base,env:[{name:'A',value:'1'},{name:'a',value:'2'}]}),/Invalid environment overrides/);
  assert.throws(()=>validateRequest('quickLaunch.save',{...base,env:[{name:'1BAD',value:''}]}),/Invalid environment overrides/);
  assert.throws(()=>validateRequest('quickLaunch.save',{...base,previewUrl:'file:///C:/x.html'}),/Invalid preview address/);
+ for(const dependsOn of [['db','db'],[''],Array.from({length:9},(_,index)=>`c${index}`),'db']) assert.throws(()=>validateRequest('quickLaunch.save',{...base,dependsOn}),/Invalid command dependencies|protocol schema/);
  assert.throws(()=>validateRequest('quickLaunch.save',{...base,id:'c'}),/Invalid command revision/);
  assert.throws(()=>validateRequest('quickLaunch.delete',{id:'c',expectedRevision:0,operationId:'o'}),/Invalid command revision/);
  validateRequest('quickLaunch.run',{commandId:'c',cwd:'C:\\repo',operationId:'o'});
+ validateRequest('quickLaunch.port.read',{commandId:'c',cwd:'C:\\repo'});
+ validateResult('quickLaunch.port.read',{port:5173});
+ validateResult('quickLaunch.port.read',{});
+ assert.throws(()=>validateRequest('quickLaunch.port.read',{commandId:'',cwd:'C:\\repo'}));
+ assert.throws(()=>validateResult('quickLaunch.port.read',{port:'5173'}));
  validateResult('quickLaunch.run',{existing:false,session:{id:'s',title:'Web dev server',provider:'custom',mode:'terminal',status:'running',createdAt:'t',updatedAt:'t',run:{commandId:'c',name:'Web dev server',kind:'service',shell:'cmd',url:'http://localhost:5174/',urlSource:'output'}}});
  // Readiness: a watched run, a run ready on its own port, one whose watcher gave up, and an older run without it.
  const ready={existing:false,session:{id:'s',title:'Web dev server',provider:'custom',mode:'terminal',status:'running',createdAt:'t',updatedAt:'t',run:{commandId:'c',name:'Web dev server',kind:'service',shell:'cmd',readiness:'waiting'}}};
  validateResult('quickLaunch.run',ready);
- validateResult('quickLaunch.run',{...ready,session:{...ready.session,run:{...ready.session.run,readiness:'ready',url:'http://localhost:8080/',urlSource:'port',port:8080}}});
+ validateResult('quickLaunch.run',{...ready,session:{...ready.session,run:{...ready.session.run,readiness:'ready',url:'http://localhost:8080/',urlSource:'port',port:8080,allocatedPort:8080}}});
  validateResult('quickLaunch.run',{...ready,session:{...ready.session,run:{...ready.session.run,readiness:'none'}}});
  validateResult('quickLaunch.run',{...ready,session:{...ready.session,run:{commandId:'c',name:'Build',kind:'task',shell:'cmd'}}});
- for(const patch of [{readiness:'starting'},{urlSource:'guess'},{port:'8080'},{port:null},{readiness:null}]) assert.throws(()=>validateResult('quickLaunch.run',{...ready,session:{...ready.session,run:{...ready.session.run,...patch}}}),/Invalid runtime result|protocol schema/,JSON.stringify(patch));
+ for(const patch of [{readiness:'starting'},{urlSource:'guess'},{port:'8080'},{port:null},{allocatedPort:'8080'},{allocatedPort:null},{readiness:null}]) assert.throws(()=>validateResult('quickLaunch.run',{...ready,session:{...ready.session,run:{...ready.session.run,...patch}}}),/Invalid runtime result|protocol schema/,JSON.stringify(patch));
 });
 
 test('detected entries are read-only suggestions with a stable key and exactly one run target',()=>{
@@ -817,6 +830,7 @@ test('restart names one run session and replays its receipt',()=>{
  validateRequest('quickLaunch.restart',{sessionId:'s',operationId:'o'});
  for(const patch of [{sessionId:undefined},{sessionId:''},{operationId:undefined},{operationId:''},{cwd:'C:\\repo'},{command:'npm run dev'}]) assert.throws(()=>validateRequest('quickLaunch.restart',{sessionId:'s',operationId:'o',...patch}));
  validateResult('quickLaunch.restart',{existing:false,session:{id:'t2',title:'dev',provider:'custom',mode:'terminal',status:'starting',createdAt:'t',updatedAt:'t',run:{commandId:'detected:node:apps/web/package.json:dev',name:'dev',kind:'service',shell:'cmd'}}});
+ validateResult('quickLaunch.restart',{existing:false,session:{id:'t2',title:'db',provider:'custom',mode:'terminal',status:'starting',createdAt:'t',updatedAt:'t',run:{commandId:'db',name:'db',kind:'service',shell:'cmd'}},sequenceId:'depends-1',sequence:{id:'depends-1',projectId:'p',root:'C:\\repo-wt',commandIds:['db'],names:['db'],step:0,state:'running',sessionIds:['t2'],trigger:'depends_on',targetCommandId:'api',createdAt:'t',updatedAt:'t'}});
  assert.ok(METHODS.includes('quickLaunch.restart'));
 });
 
@@ -1032,9 +1046,14 @@ test('agent run tools are caller-scoped, bounded and never carry caller identity
  assert.throws(()=>validateResult('chat.tool.run.list',{worktree:'C:\\repo-wt',entries:[{...entry,source:'proposal'}],runs:[],truncated:false}));
  assert.throws(()=>validateResult('chat.tool.run.list',{worktree:'C:\\repo-wt',entries:[{...entry,approved:'yes'}],runs:[],truncated:false}));
  validateResult('chat.tool.run.start',{runId:'t1',existing:false,state:'starting',entryId:'saved',name:'Dev'});
+ validateResult('chat.tool.run.start',{runId:'t1',existing:false,state:'starting',entryId:'saved',name:'Dev',sequenceId:'depends-1',sequence:{id:'depends-1',projectId:'p',root:'C:\\repo-wt',commandIds:['db'],names:['db'],step:0,state:'running',sessionIds:['t1'],trigger:'depends_on',targetCommandId:'api',createdAt:'t',updatedAt:'t'}});
  validateResult('chat.tool.run.start',{runId:'t1',existing:true,state:'running',entryId:null,name:null});
+ assert.throws(()=>validateResult('chat.tool.run.start',{runId:'t1',existing:false,state:'starting',entryId:'saved',name:'Dev',sequenceId:7}));
  validateResult('chat.tool.run.status',{...run,uptimeSeconds:12});
+ validateResult('chat.tool.run.status',{...run,uptimeSeconds:12,sequence:{id:'depends-1',projectId:'p',root:'C:\\repo-wt',commandIds:['db'],names:['db'],step:0,state:'running',sessionIds:['t1'],trigger:'depends_on',targetCommandId:'api',createdAt:'t',updatedAt:'t'}});
+ validateResult('chat.tool.run.status',{runId:'depends-1',entryId:'api',name:'api',state:'completed',startedAt:'t',startedBy:'agent',startedBySelf:true,uptimeSeconds:12,sequence:{id:'depends-1',projectId:'p',root:'C:\\repo-wt',commandIds:['db'],names:['db'],step:0,state:'completed',sessionIds:['t1'],trigger:'depends_on',targetCommandId:'api',createdAt:'t',updatedAt:'t'}});
  validateResult('chat.tool.run.logs',{text:'ready\n30%\ntail',truncated:false,totalBytes:42});
  validateResult('chat.tool.run.stop',{runId:'t1',state:'running',stopRequested:true});
+ validateResult('chat.tool.run.stop',{runId:'depends-1',state:'cancelled',stopRequested:true,sequence:{id:'depends-1',projectId:'p',root:'C:\\repo-wt',commandIds:['db'],names:['db'],step:0,state:'cancelled',sessionIds:['t1'],trigger:'depends_on',targetCommandId:'api',createdAt:'t',updatedAt:'t'}});
  validateResult('chat.tool.run.restart',{runId:'t2',existing:false,state:'starting',entryId:'detected:node:package.json:dev',name:'dev'});
 });

@@ -4776,6 +4776,7 @@ mod tests {
                 cwd: String::new(),
                 kind: "task".into(),
                 env: Vec::new(),
+                depends_on: Vec::new(),
                 preview_url: None,
                 created_at: "now".into(),
                 updated_at: "now".into(),

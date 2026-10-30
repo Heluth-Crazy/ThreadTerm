@@ -36,6 +36,10 @@
 .ql-detected-group-head { padding:2px 12px; font-size:11px; color:var(--muted); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .ql-source-label { flex:none; font-size:10px; color:var(--muted); border:1px solid var(--border); border-radius:999px; padding:0 6px; }
 .ql-missing-tool { font-size:11px; color:var(--danger); }
+.ql-sequence-chip { display:inline-flex; align-items:center; gap:4px; max-width:100%; color:var(--primary); font-size:11px; font-weight:600; white-space:nowrap; }
+.ql-sequence-chip .btn { min-height:22px; padding:1px 5px; }
+.ql-depends { display:grid; gap:5px; }
+.ql-depends-row { display:flex; align-items:center; gap:7px; font-size:12px; }
 /* A suggestion is inferred, not declared: the same tag shape, dashed. */
 .ql-source-label.ql-suggested { border-style:dashed; }
 .ql-detected-entry.is-missing strong, .ql-detected-entry.is-missing code { opacity:.6; }

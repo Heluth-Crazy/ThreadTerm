@@ -4,7 +4,7 @@ import { sameCanonicalScope } from './projectScope';
 export type WorktreeSetupAction = 'open'|'retry'|'run';
 
 export function setupForRoot(runs: readonly WorktreeSetupRun[], root: string): WorktreeSetupRun | undefined {
- return runs.filter(run => sameCanonicalScope(run.root, root)).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt) || b.createdAt.localeCompare(a.createdAt))[0];
+ return runs.filter(run => (run as WorktreeSetupRun & {trigger?:string}).trigger !== 'depends_on' && sameCanonicalScope(run.root, root)).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt) || b.createdAt.localeCompare(a.createdAt))[0];
 }
 
 export function setupStepLabel(run: WorktreeSetupRun, zh: boolean): string {

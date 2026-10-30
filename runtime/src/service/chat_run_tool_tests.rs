@@ -693,6 +693,40 @@ fn a_saved_start_replays_by_request_id_and_returns_the_active_instance() {
 
 #[cfg(windows)]
 #[test]
+fn a_saved_agent_start_reports_and_attributes_its_dependency_sequence() {
+    let fixture = Fixture::new();
+    let dependency = fixture.save("Agent dependency","echo dependency>> agent-dependency-order.txt","task");
+    let target = crate::quick_launch::dispatch(&fixture.db,&fixture.pty,"quickLaunch.save",&json!({
+        "projectId":fixture.project,"name":"Agent target","command":"echo target>> agent-dependency-order.txt",
+        "shell":"cmd","cwd":"","kind":"task","env":[],"dependsOn":[dependency],"operationId":"save-agent-target"
+    })).unwrap()["id"].as_str().unwrap().to_owned();
+    let started = fixture.start_in_background("chat.tool.run.start",json!({
+        "id":target,"requestId":"agent-dependency-start"
+    })).join().unwrap().unwrap();
+    let run_id = started["runId"].as_str().unwrap().to_owned();
+    let sequence_id = started["sequenceId"].as_str().unwrap().to_owned();
+    assert_eq!(started["sequence"]["trigger"],"depends_on");
+    assert_eq!(fixture.started_by(&run_id).as_deref(),Some(fixture.session.as_str()));
+    let deadline = Instant::now()+Duration::from_secs(8);
+    let completed = loop {
+        let status = fixture.call("chat.tool.run.status",json!({"runId":sequence_id})).unwrap();
+        if status["sequence"]["state"] == "completed" { break status; }
+        assert!(Instant::now()<deadline,"agent dependency sequence did not complete: {status}");
+        thread::sleep(Duration::from_millis(20));
+    };
+    assert_eq!(completed["sequence"]["id"],sequence_id);
+    assert_eq!(completed["sequence"]["targetCommandId"],target);
+    for session in completed["sequence"]["sessionIds"].as_array().unwrap() {
+        assert_eq!(fixture.started_by(session.as_str().unwrap()).as_deref(),Some(fixture.session.as_str()));
+    }
+    let replay = fixture.start_in_background("chat.tool.run.start",json!({
+        "id":target,"requestId":"agent-dependency-start"
+    })).join().unwrap().unwrap();
+    assert_eq!(replay["sequenceId"],sequence_id);
+}
+
+#[cfg(windows)]
+#[test]
 fn a_detected_start_asks_with_the_detected_text_and_launches_that_snapshot() {
     let fixture = Fixture::new();
     write_package(&fixture.root, "exit 0");
@@ -969,7 +1003,7 @@ fn the_started_by_column_is_added_to_an_existing_runs_table() {
     let run = db
         .transaction(|tx| {
             Ok(tx.query_row(
-                "SELECT snapshot_json,url,url_source,stop_requested,readiness,ready_port,started_by FROM quick_launch_runs WHERE session_id='old'",
+                "SELECT snapshot_json,url,url_source,stop_requested,readiness,ready_port,started_by,allocated_port FROM quick_launch_runs WHERE session_id='old'",
                 [],
                 |row| crate::quick_launch::run_from_row(row, 0),
             )?)

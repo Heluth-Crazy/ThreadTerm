@@ -81,6 +81,7 @@ try {
     + `setTimeout(()=>server.listen(0,'127.0.0.1',()=>writeFileSync('port.txt',String(server.address().port))),1500);\n`
     + `process.on('SIGTERM',()=>process.exit(0));\n`;
   await writeFile(join(work, 'server.mjs'), server);
+  await writeFile(join(work, 'idle.mjs'), 'setInterval(()=>{},1000);\n');
   git('init'); git('config', 'user.email', 'qa@threadterm.invalid'); git('config', 'user.name', 'Run readiness QA');
   git('add', '.'); git('commit', '-m', 'fixture');
 
