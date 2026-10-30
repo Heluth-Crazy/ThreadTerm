@@ -38,6 +38,8 @@ pub(crate) const ERROR_CODES: &[&str] = &[
 mod setup;
 pub use setup::{mark_setup_runs_interrupted, setup_after_worktree_create};
 pub(crate) use setup::{setup_terminal_exited, start_next_setup_step};
+#[path = "quick_launch_readiness.rs"]
+mod readiness;
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -77,6 +79,14 @@ pub struct SessionRun {
     pub url_source: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub stop_requested: Option<bool>,
+    /// `waiting` while a service run is watched, `ready` once it listened or
+    /// printed a URL, `none` when the watcher gave up or this platform cannot
+    /// tell. Absent for tasks and for runs recorded before readiness existed.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub readiness: Option<String>,
+    /// The port the run was announced on, when it became ready by port.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub port: Option<u16>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub setup: Option<setup::SetupStep>,
 }
@@ -93,7 +103,8 @@ pub(crate) fn initialize_connection(conn: &Connection) -> Result<()> {
          session_id TEXT PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE,
          command_id TEXT NOT NULL, project_id TEXT NOT NULL, root TEXT NOT NULL,
          snapshot_json TEXT NOT NULL, url TEXT, url_source TEXT,
-         stop_requested INTEGER NOT NULL DEFAULT 0, started_at TEXT NOT NULL);
+         stop_requested INTEGER NOT NULL DEFAULT 0, started_at TEXT NOT NULL,
+         readiness TEXT, ready_port INTEGER);
          CREATE INDEX IF NOT EXISTS quick_launch_admission ON quick_launch_runs(command_id,root);
          CREATE TABLE IF NOT EXISTS quick_launch_setup (
          project_id TEXT PRIMARY KEY REFERENCES projects(id) ON DELETE CASCADE,
@@ -108,6 +119,19 @@ pub(crate) fn initialize_connection(conn: &Connection) -> Result<()> {
          CREATE INDEX IF NOT EXISTS quick_launch_setup_creations ON operations(method) WHERE method='worktree.create';
          CREATE UNIQUE INDEX IF NOT EXISTS quick_launch_setup_active ON quick_launch_setup_runs(project_id,root) WHERE state='running';"
     )?;
+    // Additive migration: readiness arrived after the first runs were recorded, so
+    // old rows stay NULL (= no readiness state) instead of being rewritten.
+    let mut columns = conn.prepare("PRAGMA table_info(quick_launch_runs)")?;
+    let existing: Vec<String> = columns
+        .query_map([], |row| row.get::<_, String>(1))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    for (column, definition) in [("readiness", "TEXT"), ("ready_port", "INTEGER")] {
+        if !existing.iter().any(|name| name == column) {
+            conn.execute_batch(&format!(
+                "ALTER TABLE quick_launch_runs ADD COLUMN {column} {definition}"
+            ))?;
+        }
+    }
     Ok(())
 }
 
@@ -123,6 +147,9 @@ pub(crate) fn run_from_row(row: &Row<'_>, offset: usize) -> rusqlite::Result<Opt
         row.get(offset + 1)?,
         row.get(offset + 2)?,
         row.get::<_, bool>(offset + 3)?,
+        row.get(offset + 4)?,
+        row.get::<_, Option<i64>>(offset + 5)?
+            .and_then(|port| u16::try_from(port).ok()),
     );
     run.setup = setup;
     Ok(Some(run))
@@ -132,6 +159,8 @@ fn projection(
     url: Option<String>,
     url_source: Option<String>,
     stopped: bool,
+    readiness: Option<String>,
+    port: Option<u16>,
 ) -> SessionRun {
     SessionRun {
         command_id: snapshot.id.clone(),
@@ -141,6 +170,8 @@ fn projection(
         url,
         url_source,
         stop_requested: stopped.then_some(true),
+        readiness,
+        port,
         setup: None,
     }
 }
@@ -684,13 +715,22 @@ fn start(
         executable: Some(program.clone()),
         args: args.clone(),
     };
+    // Only a service run is watched for a listening port, and only where the
+    // platform can name the ports of a process tree; elsewhere the printed URL is
+    // the one readiness signal (recorded as `none` until then).
+    let watched = snapshot.kind == "service" && readiness::supported();
+    let initial_readiness = if snapshot.kind == "service" {
+        Some(if watched { "waiting" } else { "none" })
+    } else {
+        None
+    };
     // Reserve durable session, association and LaunchSpec together. Never hold the
     // SQLite connection during ConPTY/bootstrap or shell execution.
     db.transaction(|tx| {
         tx.execute("INSERT INTO sessions(id,project_id,worktree_path,title,provider,mode,status,created_at,updated_at,followed) VALUES(?,?,?,?,'custom','terminal','starting',?,?,0)", params![id,snapshot.project_id,root.to_string_lossy(),snapshot.name,now,now])?;
         tx.execute("INSERT INTO session_activity(session_id,state,revision) VALUES(?,'unknown',1)", [&id])?;
         tx.execute("INSERT INTO session_launch_configs(session_id,revision,provider,mode,cwd,project_id,title,executable,args_json,source_session_id) VALUES(?,1,'custom','terminal',?,?,?,?,?,?)", params![id,launch.cwd,launch.project_id,launch.title,launch.executable,serde_json::to_string(&args)?,source])?;
-        tx.execute("INSERT INTO quick_launch_runs(session_id,command_id,project_id,root,snapshot_json,url,url_source,stop_requested,started_at) VALUES(?,?,?,?,?,?,?,0,?)", params![id,snapshot.id,snapshot.project_id,root_key,serde_json::to_string(snapshot)?,snapshot.preview_url,snapshot.preview_url.as_ref().map(|_| "configured"),now])?;
+        tx.execute("INSERT INTO quick_launch_runs(session_id,command_id,project_id,root,snapshot_json,url,url_source,stop_requested,started_at,readiness) VALUES(?,?,?,?,?,?,?,0,?,?)", params![id,snapshot.id,snapshot.project_id,root_key,serde_json::to_string(snapshot)?,snapshot.preview_url,snapshot.preview_url.as_ref().map(|_| "configured"),now,initial_readiness])?;
         if let Some(step) = setup { setup::attach_session(tx, step, &id)?; }
         changed(tx, "session.run", Some(&id))?;
         // Reserve replay before the external side effect. A runtime crash leaves
@@ -715,6 +755,10 @@ fn start(
                 "UPDATE operations SET result=? WHERE id=?",
                 params![result.to_string(), operation],
             )?;
+            tx.execute(
+                "UPDATE quick_launch_runs SET readiness='none' WHERE session_id=? AND readiness='waiting'",
+                [&id],
+            )?;
             Ok(())
         })?;
         // This operation already owns a durable terminal. Return its failed
@@ -738,6 +782,10 @@ fn start(
         changed(tx, "session.run", Some(&id))?;
         Ok(())
     })?;
+    // After the PTY exists, so the first poll already sees the run's process tree.
+    if watched {
+        readiness::spawn(db, pty, &id);
+    }
     Ok(result)
 }
 // Only needed inside the admission transaction; use the canonical projection
@@ -748,7 +796,7 @@ fn session_value(tx: &Transaction<'_>, id: &str) -> Result<Value> {
         [id],
         |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
     )?;
-    let run = tx.query_row("SELECT snapshot_json,url,url_source,stop_requested FROM quick_launch_runs WHERE session_id=?", [id], |r| run_from_row(r,0))?;
+    let run = tx.query_row("SELECT snapshot_json,url,url_source,stop_requested,readiness,ready_port FROM quick_launch_runs WHERE session_id=?", [id], |r| run_from_row(r,0))?;
     Ok(
         json!({"id":id,"projectId":project,"worktreePath":root,"title":title,"provider":"custom","mode":"terminal","status":"starting","createdAt":created,"updatedAt":created,"followed":false,"archived":false,"pinned":false,"bookmarked":false,"sortOrder":0,"organizationRevision":0,"activity":{"state":"unknown","revision":1},"run":run}),
     )
@@ -1161,7 +1209,37 @@ fn detect_url(text: &str, final_chunk: bool) -> Option<String> {
 }
 pub(crate) fn observe_output(db: &Database, id: &str, url: &str) -> Result<()> {
     db.transaction(|tx| {
-        if tx.execute("UPDATE quick_launch_runs SET url=?,url_source='output' WHERE session_id=? AND (url_source IS NULL OR url_source!='output')", params![url,id])? != 0 {
+        // A printed URL is readiness too: it ends the port watch, and on a platform
+        // without port discovery it is the only readiness signal there is. A port that
+        // stops being the address is cleared, so `port` and the link can never disagree.
+        // Tasks have no readiness state to change, and a repeat is not an event.
+        if tx.execute("UPDATE quick_launch_runs SET url=?,url_source='output',readiness=CASE WHEN readiness IS NULL THEN NULL ELSE 'ready' END,ready_port=CASE WHEN url_source='port' THEN NULL ELSE ready_port END WHERE session_id=? AND (url_source IS NULL OR url_source!='output' OR readiness IN ('waiting','none'))", params![url,id])? != 0 {
+            changed(tx, "session.run", Some(id))?;
+        }
+        Ok(())
+    })
+}
+
+/// Startup recovery: a `waiting` run whose session is no longer live can never become
+/// ready, and is not watched again. Idempotent, so a live runtime can run it too.
+pub fn reconcile_readiness(db: &Database) -> Result<()> {
+    db.transaction(|tx| {
+        let waiting: Vec<String> = {
+            let mut stmt = tx.prepare(
+                "SELECT session_id FROM quick_launch_runs q WHERE readiness='waiting' \
+                 AND NOT EXISTS(SELECT 1 FROM sessions s WHERE s.id=q.session_id \
+                 AND s.status IN ('starting','running','idle','waiting'))",
+            )?;
+            let ids = stmt
+                .query_map([], |r| r.get::<_, String>(0))?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            ids
+        };
+        for id in &waiting {
+            tx.execute(
+                "UPDATE quick_launch_runs SET readiness='none' WHERE session_id=?",
+                [id],
+            )?;
             changed(tx, "session.run", Some(id))?;
         }
         Ok(())
@@ -1171,6 +1249,10 @@ pub(crate) fn observe_output(db: &Database, id: &str, url: &str) -> Result<()> {
 #[cfg(test)]
 #[path = "quick_launch_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "quick_launch_readiness_tests.rs"]
+mod readiness_tests;
 
 #[cfg(test)]
 #[path = "quick_launch_setup_tests.rs"]

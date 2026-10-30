@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import type { DetectedRunEntry, Session } from "@threadterm/protocol";
-import { activeRun, detectedSections, detectedSourceLabel, missingToolLabel, packageScripts, quickLaunchError, runState, runStateLabel, suggestedLabel, suggestedTag, suggestedTitle } from "./quickLaunch";
+import type { DetectedRunEntry, Session, SessionRun } from "@threadterm/protocol";
+import { activeRun, detectedSections, detectedSourceLabel, missingToolLabel, packageScripts, previewReady, previewWaitingLabel, quickLaunchError, runState, runStateLabel, suggestedLabel, suggestedTag, suggestedTitle } from "./quickLaunch";
 
 const session = (overrides: Partial<Session> = {}): Session => ({ id: "run-1", title: "Dev", provider: "custom", mode: "terminal", status: "exited", createdAt: "2026-10-06T00:00:00.000Z", updatedAt: "2026-10-06T00:00:00.000Z", worktreePath: "C:\\repo", run: { commandId: "dev", name: "Dev", kind: "service", shell: "cmd" }, ...overrides });
 
@@ -59,6 +59,49 @@ test("Quick Launch labels and errors are localized", () => {
   assert.equal(runStateLabel({ state: "failed", exitCode: 3 }, false), "Failed (exit 3)"); assert.equal(runStateLabel({ state: "failed", exitCode: 3 }, true), "失败（退出码 3）");
   const errors: Record<string, [string, string]> = { revision_conflict: ["changed elsewhere", "其他窗口"], command_not_found: ["no longer exists", "不存在"], too_many_commands: ["up to 100", "最多保存 100"], cmd_single_line: ["one line", "仅执行一行"], shell_unavailable: ["not installed", "未安装"], cwd_outside_root: ["inside this worktree", "工作树内"], cwd_missing: ["does not exist", "不存在"], package_scripts_invalid: ["Invalid package.json", "package.json 无效"], no_package_scripts: ["No scripts", "没有脚本"], no_package_json: ["No package.json", "没有 package.json"], invalid_env: ["environment names", "环境变量名称"], invalid_preview_url: ["http://", "http://"] };
   for (const [code, [en, zh]] of Object.entries(errors)) { assert.match(quickLaunchError(new Error(code), false), new RegExp(en)); assert.match(quickLaunchError(new Error(code), true), new RegExp(zh)); }
+});
+
+test("runState reports readiness for service runs and leaves tasks alone", () => {
+  const service = { commandId: "dev", name: "Dev", kind: "service" as const, shell: "cmd" as const };
+  // Watched: Starting while the process runs, however healthy its status looks.
+  for (const status of ["running", "idle", "waiting"] as const) assert.equal(runState(session({ status, run: { ...service, readiness: "waiting" } })).state, "starting", status);
+  // Ready, and it says which port when the port is the address.
+  const ready = runState(session({ status: "running", run: { ...service, readiness: "ready", urlSource: "port", port: 5173 } }));
+  assert.equal(ready.state, "ready");
+  assert.equal(ready.port, 5173);
+  // No answer, or an older run: Running, as before readiness existed.
+  assert.equal(runState(session({ status: "running", run: { ...service, readiness: "none" } })).state, "running");
+  assert.equal(runState(session({ status: "running", run: service })).state, "running");
+  assert.equal(runState(session({ status: "running", run: { ...service, readiness: "none", port: 5173 } })).port, undefined, "a port is only shown while ready");
+  // A port is shown only while it is the run's address: a printed URL that replaced it never shows it.
+  assert.equal(runState(session({ status: "running", run: { ...service, readiness: "ready", urlSource: "port", port: 5173 } })).port, 5173);
+  assert.equal(runState(session({ status: "running", run: { ...service, readiness: "ready", urlSource: "output", url: "http://localhost:3000/", port: 5173 } })).port, undefined, "the printed address wins, so no :port");
+  assert.equal(runState(session({ status: "running", run: { ...service, readiness: "ready", port: 5173 } })).port, undefined, "no urlSource, no port");
+  // Tasks are untouched by readiness.
+  const task = { ...service, kind: "task" as const };
+  for (const readiness of ["waiting", "ready", "none"] as const) assert.equal(runState(session({ status: "running", run: { ...task, readiness } })).state, "running", readiness);
+  // An end still wins over readiness.
+  assert.equal(runState(session({ status: "exited", exitCode: 0, run: { ...service, readiness: "ready" } })).state, "exited");
+  assert.equal(runState(session({ status: "error", run: { ...service, readiness: "waiting" } })).state, "failed");
+});
+
+test("the Ready label is localized and Open Preview waits for readiness", () => {
+  assert.equal(runStateLabel({ state: "ready" }, false), "Ready");
+  assert.equal(runStateLabel({ state: "ready" }, true), "已就绪");
+  assert.equal(previewWaitingLabel(false), "Waiting for the server to listen…");
+  assert.equal(previewWaitingLabel(true), "等待服务开始监听…");
+  const live = (run: Partial<SessionRun>, status: Session["status"] = "running"): Session => ({ id: "run-1", title: "Dev", provider: "custom", mode: "terminal", status, createdAt: "2026-10-06T00:00:00.000Z", updatedAt: "2026-10-06T00:00:00.000Z", worktreePath: "C:\\repo", run: { commandId: "dev", name: "Dev", kind: "service", shell: "cmd", ...run } });
+  // Open once ready, once the watcher gave up, for runs without readiness, and for a printed URL.
+  assert.equal(previewReady(live({ readiness: "ready", urlSource: "port" })), true);
+  assert.equal(previewReady(live({ readiness: "none", urlSource: "configured" })), true);
+  assert.equal(previewReady(live({ urlSource: "configured" })), true);
+  assert.equal(previewReady(live({ readiness: "waiting", urlSource: "output" })), true);
+  // Only a still-watching run's own configured fallback waits…
+  assert.equal(previewReady(live({ readiness: "waiting", urlSource: "configured" })), false);
+  // …and a run whose session already ended never waits, even if its watcher never settled.
+  for (const status of ["exited", "interrupted", "error"] as const) assert.equal(previewReady(live({ readiness: "waiting", urlSource: "configured" }, status)), true, status);
+  assert.equal(previewReady({ status: "running" }), false, "no run, no preview");
+  assert.equal(previewReady(undefined), false);
 });
 
 const detectedEntry = (overrides: Partial<DetectedRunEntry> = {}): DetectedRunEntry => ({ key: "node:package.json:dev", source: { kind: "node", file: "package.json", label: "package.json" }, name: "dev", command: "npm run dev", shell: "cmd", cwd: "", kind: "service", group: "demo", ...overrides });

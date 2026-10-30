@@ -2116,8 +2116,22 @@
           "type": "string",
           "enum": [
             "output",
-            "configured"
+            "configured",
+            "port"
           ]
+        },
+        "readiness": {
+          "type": "string",
+          "enum": [
+            "waiting",
+            "ready",
+            "none"
+          ],
+          "description": "`waiting` while a service run is watched for a listening port, `ready` once it listened or printed a URL, `none` when the watcher gave up or this platform cannot tell. Absent for tasks and for runs older than readiness."
+        },
+        "port": {
+          "type": "number",
+          "description": "The port the run became ready on; only when readiness came from a port."
         },
         "stopRequested": {
           "type": "boolean",

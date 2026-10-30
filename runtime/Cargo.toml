@@ -45,7 +45,7 @@ toml_edit = { version = "0.25.11", default-features = false, features = ["parse"
 uuid = { version = "1.11", features = ["v4", "serde"] }
 
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security", "Win32_Security_Authorization", "Win32_System_Threading", "Win32_System_JobObjects", "Win32_System_Pipes", "Win32_Storage_FileSystem", "Win32_System_IO", "Win32_System_Console", "Win32_System_LibraryLoader", "Win32_System_Environment", "Win32_System_Registry", "Win32_Globalization", "Win32_UI_Shell"] }
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security", "Win32_Security_Authorization", "Win32_System_Threading", "Win32_System_JobObjects", "Win32_System_Pipes", "Win32_Storage_FileSystem", "Win32_System_IO", "Win32_System_Console", "Win32_System_LibraryLoader", "Win32_System_Environment", "Win32_System_Registry", "Win32_Globalization", "Win32_UI_Shell", "Win32_NetworkManagement_IpHelper", "Win32_Networking_WinSock"] }
 
 [dev-dependencies]
 tempfile = "3.14"

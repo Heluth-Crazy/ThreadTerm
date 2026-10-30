@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
 import type { DetectedRunEntry, QuickLaunchCommand, QuickLaunchKind, Session } from '@threadterm/protocol';
 import { request, subscribeEvents } from '../bridge';
 import { sameCanonicalScope } from '../projectScope';
-import { activeRun, missingToolLabel, quickLaunchError, runState, runStateLabel, suggestedTag } from '../quickLaunch';
+import { activeRun, missingToolLabel, previewWaitingLabel, quickLaunchError, runState, runStateLabel, suggestedTag } from '../quickLaunch';
 import { detectedCommandId } from '../workbench/runView';
 import { Icon } from './PrototypeIcon';
 
@@ -38,9 +38,11 @@ export function runEntrySessions(sessions:readonly Session[], commandId:string, 
  return { active:activeRun(scoped, commandId, root), latest };
 }
 
-/** The URL a run printed, opening the existing preview surface. */
-export function RunUrlLink({url, onOpenPreview}:{url:string;onOpenPreview?:(url:string) => void}) {
+/** The URL a run printed or listened on, opening the existing preview surface. While a service run is
+ * still being watched, its configured fallback is shown but cannot be opened yet. */
+export function RunUrlLink({url, onOpenPreview, pending, zh}:{url:string;onOpenPreview?:(url:string) => void;pending?:boolean;zh?:boolean}) {
  if (!onOpenPreview) return <code className="ql-url-text">{url}</code>;
+ if (pending) return <span className="ql-url is-pending" data-testid="run-url" data-pending="true" aria-disabled="true" title={previewWaitingLabel(Boolean(zh))}>{url}</span>;
  return <a className="ql-url" data-testid="run-url" href={url} title={url} onClick={event => { event.preventDefault(); onOpenPreview(url); }}>{url}</a>;
 }
 

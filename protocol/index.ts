@@ -53,7 +53,11 @@ export interface QuickLaunchCommand { id:string; projectId:string; revision:numb
  /** Relative to the worktree root, '' = the root; resolved again at every run and kept inside the root. */ cwd:string; kind:QuickLaunchKind; env:QuickLaunchEnvVar[];
  /** Fallback preview address when the run prints no local URL. */ previewUrl?:string; createdAt:string; updatedAt:string }
 /** The launch snapshot of a run; editing or deleting the command later does not change it. */
-export interface SessionRun { commandId:string; name:string; kind:QuickLaunchKind; shell:QuickLaunchShell; /** The first local http(s) URL this run printed (`output`), else the command's fallback (`configured`). */ url?:string; urlSource?:'output'|'configured';
+export interface SessionRun { commandId:string; name:string; kind:QuickLaunchKind; shell:QuickLaunchShell; /** The first local http(s) URL this run printed (`output`), the port its process tree listened on (`port`), else the command's fallback (`configured`). */ url?:string; urlSource?:'output'|'configured'|'port';
+ /** `waiting` while a service run is watched for a listening port, `ready` once it listened or printed a URL, `none`
+  * when the watcher gave up or this platform cannot tell. Absent for tasks and for runs older than readiness. */
+ readiness?:'waiting'|'ready'|'none';
+ /** The port the run became ready on; only when readiness came from a port. */ port?:number;
  /** The user asked to stop it: an exit after this reads as "Stopped", not as a failure. */ stopRequested?:boolean;
  /** Present when a worktree setup sequence started this run: its id, 0-based step and step count. */ setup?:{runId:string;step:number;total:number} }
 /** Worktree setup (Quick Launch): a project's chosen `task` commands, run in order in every new worktree of the project

@@ -771,6 +771,13 @@ test('quick launch commands are bounded: relative cwd inside the root, known she
  assert.throws(()=>validateRequest('quickLaunch.delete',{id:'c',expectedRevision:0,operationId:'o'}),/Invalid command revision/);
  validateRequest('quickLaunch.run',{commandId:'c',cwd:'C:\\repo',operationId:'o'});
  validateResult('quickLaunch.run',{existing:false,session:{id:'s',title:'Web dev server',provider:'custom',mode:'terminal',status:'running',createdAt:'t',updatedAt:'t',run:{commandId:'c',name:'Web dev server',kind:'service',shell:'cmd',url:'http://localhost:5174/',urlSource:'output'}}});
+ // Readiness: a watched run, a run ready on its own port, one whose watcher gave up, and an older run without it.
+ const ready={existing:false,session:{id:'s',title:'Web dev server',provider:'custom',mode:'terminal',status:'running',createdAt:'t',updatedAt:'t',run:{commandId:'c',name:'Web dev server',kind:'service',shell:'cmd',readiness:'waiting'}}};
+ validateResult('quickLaunch.run',ready);
+ validateResult('quickLaunch.run',{...ready,session:{...ready.session,run:{...ready.session.run,readiness:'ready',url:'http://localhost:8080/',urlSource:'port',port:8080}}});
+ validateResult('quickLaunch.run',{...ready,session:{...ready.session,run:{...ready.session.run,readiness:'none'}}});
+ validateResult('quickLaunch.run',{...ready,session:{...ready.session,run:{commandId:'c',name:'Build',kind:'task',shell:'cmd'}}});
+ for(const patch of [{readiness:'starting'},{urlSource:'guess'},{port:'8080'},{port:null},{readiness:null}]) assert.throws(()=>validateResult('quickLaunch.run',{...ready,session:{...ready.session,run:{...ready.session.run,...patch}}}),/Invalid runtime result|protocol schema/,JSON.stringify(patch));
 });
 
 test('detected entries are read-only suggestions with a stable key and exactly one run target',()=>{

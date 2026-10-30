@@ -426,6 +426,24 @@ impl PtyManager {
             .cloned()
             .ok_or_else(|| anyhow!("session is not running"))
     }
+    /// Pids of one session's process tree, for the read-only readiness poll. The
+    /// registry lock is released before the job is asked, so a poll never blocks a
+    /// launch or a stop beyond its own query.
+    pub(crate) fn process_ids(&self, session_id: &str) -> Vec<u32> {
+        let live = self
+            .sessions
+            .lock()
+            .ok()
+            .and_then(|registry| registry.get(session_id).cloned());
+        let Some(live) = live else {
+            return Vec::new();
+        };
+        live.job
+            .lock()
+            .ok()
+            .and_then(|job| job.as_ref().map(SessionJob::process_ids))
+            .unwrap_or_default()
+    }
 }
 /// Reports the first failed durable append of one stretch of storage failure.
 fn report_storage_failure(seen: &mut Option<String>, session_id: &str, error: &anyhow::Error) {

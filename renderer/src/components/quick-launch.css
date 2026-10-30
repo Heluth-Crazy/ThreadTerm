@@ -10,7 +10,11 @@
 .ql-command code { grid-area:code; display:block; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:11px; color:var(--muted); margin:2px 0 0; }
 .ql-actions { grid-area:actions; display:flex; flex-wrap:wrap; justify-content:flex-end; gap:4px; }
 .ql-state { display:inline-flex; align-items:center; gap:5px; font-size:11px; white-space:nowrap; color:var(--muted); }.ql-state .dot { width:6px; height:6px; flex-shrink:0; background:currentColor; }
-.ql-running,.ql-starting { color:var(--primary); }.ql-failed,.ql-interrupted { color:var(--danger); }.ql-completed { color:var(--success,var(--primary)); }
+.ql-running,.ql-starting,.ql-ready { color:var(--primary); }.ql-failed,.ql-interrupted { color:var(--danger); }.ql-completed { color:var(--success,var(--primary)); }
+/* The port readiness found, right after the state it explains. */
+.ql-port { font-size:11px; color:var(--primary); font-variant-numeric:tabular-nums; }
+/* Enabled only once the run answers: present, but not a link yet. */
+.ql-url.is-pending { color:var(--muted); cursor:default; text-decoration:none; }
 .ql-run-chip { border:1px solid var(--border); border-radius:var(--radius); padding:5px 8px; min-width:0; max-width:260px; }.ql-run-chip>span:last-child { overflow:hidden; text-overflow:ellipsis; }
 .ql-fields { border:0; margin:0; padding:0; min-width:0; }.ql-editor textarea { width:100%; resize:vertical; min-height:90px; font-family:var(--mono); }.ql-editor .field>input[id$="-command"] { font-family:var(--mono); }
 .ql-editor .note,.ql-import .note { margin:6px 0 10px; }.ql-delete { margin-right:auto; }

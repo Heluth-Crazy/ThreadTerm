@@ -2,18 +2,35 @@ import type { DetectedRunEntry, DetectedRunSourceKind, QuickLaunchKind, Session 
 import { sameCanonicalScope } from './projectScope';
 import { workbenchError } from './workbench/errors';
 
-export type RunState = 'starting'|'running'|'completed'|'exited'|'failed'|'stopped'|'interrupted';
-export type RunView = { state: RunState; exitCode?: number; url?: string };
+export type RunState = 'starting'|'ready'|'running'|'completed'|'exited'|'failed'|'stopped'|'interrupted';
+export type RunView = { state: RunState; exitCode?: number; url?: string; port?: number };
 export function runState(session: Pick<Session, 'status'|'exitCode'|'run'>): RunView {
  const { status, exitCode, run } = session;
- const state: RunState = status === 'starting' ? 'starting' : ['running','idle','waiting'].includes(status) ? 'running' : run?.stopRequested ? 'stopped' : status === 'interrupted' ? 'interrupted' : status === 'error' || (exitCode !== undefined && exitCode !== 0) ? 'failed' : exitCode === 0 && run?.kind === 'task' ? 'completed' : 'exited';
- return { state, exitCode, url: run?.url };
+ // A service run says what its readiness watcher knows: watched is Starting, listening is Ready,
+ // and no answer at all stays Running, as every run did before readiness existed.
+ const readiness = run?.kind === 'service' ? run.readiness : undefined;
+ const state: RunState = status === 'starting' || (['running','idle','waiting'].includes(status) && readiness === 'waiting') ? 'starting' : ['running','idle','waiting'].includes(status) ? readiness === 'ready' ? 'ready' : 'running' : run?.stopRequested ? 'stopped' : status === 'interrupted' ? 'interrupted' : status === 'error' || (exitCode !== undefined && exitCode !== 0) ? 'failed' : exitCode === 0 && run?.kind === 'task' ? 'completed' : 'exited';
+ // A port is shown only while it is the address: a printed URL that replaced it clears it.
+ return { state, exitCode, url: run?.url, port: readiness === 'ready' && run?.urlSource === 'port' ? run?.port : undefined };
+}
+/** Open Preview waits only while a live run is still being watched on its own configured address.
+ * A ready run, a run without readiness (older runs, tasks), one that printed its URL, and a run whose
+ * session already ended are all open, so a dead run never keeps a disabled link. */
+export function previewReady(session: Pick<Session, 'status'|'run'> | undefined): boolean {
+ const run = session?.run;
+ if (!run) return false;
+ if (!['starting','running','idle','waiting'].includes(session!.status)) return true;
+ return !(run.readiness === 'waiting' && run.urlSource === 'configured');
+}
+/** Why a run's preview link is disabled. */
+export function previewWaitingLabel(zh: boolean): string {
+ return zh ? '等待服务开始监听…' : 'Waiting for the server to listen…';
 }
 export function activeRun(sessions: readonly Session[], commandId: string, root: string): Session | undefined {
  return sessions.find(session => session.run?.commandId === commandId && !session.archived && !session.readOnly && ['starting','running','idle','waiting'].includes(session.status) && sameCanonicalScope(session.worktreePath, root));
 }
 export function runStateLabel(view: RunView, zh: boolean): string {
- const labels: Record<RunState, [string,string]> = { starting:['Starting','启动中'], running:['Running','运行中'], completed:['Completed','已完成'], exited:['Exited','已退出'], failed:['Failed','失败'], stopped:['Stopped','已停止'], interrupted:['Interrupted','已中断'] };
+ const labels: Record<RunState, [string,string]> = { starting:['Starting','启动中'], ready:['Ready','已就绪'], running:['Running','运行中'], completed:['Completed','已完成'], exited:['Exited','已退出'], failed:['Failed','失败'], stopped:['Stopped','已停止'], interrupted:['Interrupted','已中断'] };
  if (view.state === 'failed') return view.exitCode === undefined ? (zh ? '启动失败' : 'Failed to start') : (zh ? `失败（退出码 ${view.exitCode}）` : `Failed (exit ${view.exitCode})`);
  return labels[view.state][zh ? 1 : 0];
 }

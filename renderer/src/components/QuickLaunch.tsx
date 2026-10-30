@@ -5,7 +5,7 @@ import { operationId, request, subscribeEvents } from '../bridge';
 import { useTranslation } from '../i18n';
 import { displayPath, pathIsWithinCanonicalScope, sameCanonicalScope } from '../projectScope';
 import { isWebTabUrl } from '../workspaceTabs';
-import { detectedSections, detectedSourceLabel, packageScripts, quickLaunchError, runState, runStateLabel, type PackageScript } from '../quickLaunch';
+import { detectedSections, detectedSourceLabel, packageScripts, previewReady, previewWaitingLabel, quickLaunchError, runState, runStateLabel, type PackageScript } from '../quickLaunch';
 import { setupActions, setupCurrentSessionId, setupForRoot, setupStatusLine, type WorktreeSetupAction } from '../worktreeSetup';
 import { Icon } from './PrototypeIcon';
 import { SurfaceDialog } from './SurfaceDialog';
@@ -47,12 +47,12 @@ export function QuickLaunchMenu({ projectId, root, data, onOpenSession, onOpenPr
    {catalog.loading&&!catalog.commands.length?<p className="shell-menu-empty" role="status">{copy('Loading commands…','正在加载命令…')}</p>:<div className="ql-list">{catalog.commands.map(command=>{
     const entry = savedRunEntries([command])[0];
     const {active,latest} = runEntrySessions(scoped, entry.commandId, root);
-    const url = latest?.run?.url;
-    return <RunEntryRow key={entry.commandId} entry={entry} session={active ?? latest} zh={zh} busy={busy}
+    const shown = active ?? latest, url = shown?.run?.url, pendingPreview = !previewReady(shown);
+    return <RunEntryRow key={entry.commandId} entry={entry} session={shown} zh={zh} busy={busy}
      actions={<>
       <RunEntryPrimary entry={entry} active={active} busy={busy} zh={zh} onRun={()=>void perform(()=>run(command))} onOpen={sessionId=>{setOpen(false);onOpenSession(sessionId);}}/>
       {active&&<button className="btn btn-sm" disabled={busy} onClick={()=>void perform(async()=>{await request('session.stop',{sessionId:active.id,operationId:operationId()});})}>{copy('Stop','停止')}</button>}
-      {url&&onOpenPreview&&<button className="btn btn-sm" disabled={busy} onClick={()=>{setOpen(false);onOpenPreview(url);}}>{copy('Preview','预览')}</button>}
+      {url&&onOpenPreview&&<button className="btn btn-sm" disabled={busy||pendingPreview} title={pendingPreview?previewWaitingLabel(zh):undefined} onClick={()=>{setOpen(false);onOpenPreview(url);}}>{copy('Preview','预览')}</button>}
       <button className="btn btn-sm btn-ghost" disabled={busy} onClick={()=>edit(command)}>{copy('Edit','编辑')}</button>
      </>}/>;
    })}{!catalog.commands.length&&<div className="shell-menu-empty"><p>{copy('No saved commands','没有保存的命令')}</p><button className="btn" onClick={startImport}>{copy('Import from package.json','从 package.json 导入')}</button></div>}
@@ -216,6 +216,6 @@ export function ImportScripts({projectId,root,onClose,onChanged}:{projectId:stri
 }
 
 export function QuickLaunchRunChip({session,onOpenPreview}:{session:Session;onOpenPreview?:(url:string)=>void}) {
- const {locale}=useTranslation(),zh=locale==='zh-CN';if(!session.run)return null;const view=runState(session);
- return <><span className={`ql-run-chip ql-state ql-${view.state}`} data-testid="quick-launch-run-chip" title={session.run.name}><span className="dot" aria-hidden="true"/><span>{session.run.name} · {runStateLabel(view,zh)}</span></span>{view.url&&onOpenPreview&&<button type="button" className="btn" onClick={()=>onOpenPreview(view.url!)}>{zh?'预览':'Preview'}</button>}</>;
+ const {locale}=useTranslation(),zh=locale==='zh-CN';if(!session.run)return null;const view=runState(session),pending=!previewReady(session);
+ return <><span className={`ql-run-chip ql-state ql-${view.state}`} data-testid="quick-launch-run-chip" title={session.run.name}><span className="dot" aria-hidden="true"/><span>{session.run.name} · {runStateLabel(view,zh)}</span></span>{view.url&&onOpenPreview&&<button type="button" className="btn" disabled={pending} title={pending?previewWaitingLabel(zh):undefined} onClick={()=>onOpenPreview(view.url!)}>{zh?'预览':'Preview'}</button>}</>;
 }
