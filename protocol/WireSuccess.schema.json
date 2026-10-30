@@ -2133,6 +2133,10 @@
           "type": "number",
           "description": "The port the run became ready on; only when readiness came from a port."
         },
+        "allocatedPort": {
+          "type": "number",
+          "description": "The free port allocated from this command's `${port}` template. It remains present before readiness and may differ from `port`, which is the port observed as ready."
+        },
         "startedBy": {
           "type": "string",
           "description": "The Chat session whose agent started this run (a run the user started has none). The Run view labels it in 2b."
@@ -2161,6 +2165,27 @@
           ],
           "additionalProperties": false,
           "description": "Present when a worktree setup sequence started this run: its id, 0-based step and step count."
+        },
+        "sequence": {
+          "type": "object",
+          "properties": {
+            "runId": {
+              "type": "string"
+            },
+            "step": {
+              "type": "number"
+            },
+            "total": {
+              "type": "number"
+            }
+          },
+          "required": [
+            "runId",
+            "step",
+            "total"
+          ],
+          "additionalProperties": false,
+          "description": "Present when the shared sequence runner started this run: its id, 0-based step and step count."
         }
       },
       "required": [
@@ -5083,6 +5108,13 @@
           "type": "string",
           "description": "Fallback preview address when the run prints no local URL."
         },
+        "dependsOn": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Saved commands to start and satisfy in order before this command; one level only."
+        },
         "createdAt": {
           "type": "string"
         },
@@ -5135,6 +5167,12 @@
         },
         "existing": {
           "type": "boolean"
+        },
+        "sequence": {
+          "$ref": "#/definitions/WorktreeSetupRun"
+        },
+        "sequenceId": {
+          "type": "string"
         }
       },
       "required": [
@@ -5142,6 +5180,95 @@
         "existing"
       ],
       "additionalProperties": false
+    },
+    "WorktreeSetupRun": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "projectId": {
+          "type": "string"
+        },
+        "root": {
+          "type": "string"
+        },
+        "commandIds": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "names": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "step": {
+          "type": "number"
+        },
+        "state": {
+          "$ref": "#/definitions/WorktreeSetupState"
+        },
+        "sessionIds": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "exitCode": {
+          "type": "number"
+        },
+        "trigger": {
+          "type": "string",
+          "enum": [
+            "worktree.create",
+            "manual",
+            "retry",
+            "depends_on"
+          ]
+        },
+        "targetCommandId": {
+          "type": "string",
+          "description": "The saved command requested after a `depends_on` sequence completes."
+        },
+        "error": {
+          "type": "string",
+          "description": "A dependency sequence reports `dependency_failed: <name>` when its current prerequisite cannot be satisfied."
+        },
+        "createdAt": {
+          "type": "string"
+        },
+        "updatedAt": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "projectId",
+        "root",
+        "commandIds",
+        "names",
+        "step",
+        "state",
+        "sessionIds",
+        "trigger",
+        "createdAt",
+        "updatedAt"
+      ],
+      "additionalProperties": false,
+      "description": "One sequence in one worktree. `commandIds`/`names` are snapshots taken at start. `step` is the step running now, or the one that failed / was cancelled / was interrupted. `sessionIds` holds the terminal of every step started so far. `exitCode` is the failed step's exit code. A runtime restart turns `running` into `interrupted`; it never resumes."
+    },
+    "WorktreeSetupState": {
+      "type": "string",
+      "enum": [
+        "running",
+        "completed",
+        "failed",
+        "cancelled",
+        "interrupted"
+      ]
     },
     "RequestResult<\"quickLaunch.restart\">": {
       "type": "object",
@@ -5151,6 +5278,12 @@
         },
         "existing": {
           "type": "boolean"
+        },
+        "sequence": {
+          "$ref": "#/definitions/WorktreeSetupRun"
+        },
+        "sequenceId": {
+          "type": "string"
         }
       },
       "required": [
@@ -5298,91 +5431,23 @@
     "RequestResult<\"quickLaunch.setup.run\">": {
       "$ref": "#/definitions/WorktreeSetupRun"
     },
-    "WorktreeSetupRun": {
-      "type": "object",
-      "properties": {
-        "id": {
-          "type": "string"
-        },
-        "projectId": {
-          "type": "string"
-        },
-        "root": {
-          "type": "string"
-        },
-        "commandIds": {
-          "type": "array",
-          "items": {
-            "type": "string"
-          }
-        },
-        "names": {
-          "type": "array",
-          "items": {
-            "type": "string"
-          }
-        },
-        "step": {
-          "type": "number"
-        },
-        "state": {
-          "$ref": "#/definitions/WorktreeSetupState"
-        },
-        "sessionIds": {
-          "type": "array",
-          "items": {
-            "type": "string"
-          }
-        },
-        "exitCode": {
-          "type": "number"
-        },
-        "trigger": {
-          "type": "string",
-          "enum": [
-            "worktree.create",
-            "manual",
-            "retry"
-          ]
-        },
-        "createdAt": {
-          "type": "string"
-        },
-        "updatedAt": {
-          "type": "string"
-        }
-      },
-      "required": [
-        "id",
-        "projectId",
-        "root",
-        "commandIds",
-        "names",
-        "step",
-        "state",
-        "sessionIds",
-        "trigger",
-        "createdAt",
-        "updatedAt"
-      ],
-      "additionalProperties": false,
-      "description": "One sequence in one worktree. `commandIds`/`names` are snapshots taken at start. `step` is the step running now, or the one that failed / was cancelled / was interrupted. `sessionIds` holds the terminal of every step started so far. `exitCode` is the failed step's exit code. A runtime restart turns `running` into `interrupted`; it never resumes."
-    },
-    "WorktreeSetupState": {
-      "type": "string",
-      "enum": [
-        "running",
-        "completed",
-        "failed",
-        "cancelled",
-        "interrupted"
-      ]
-    },
     "RequestResult<\"quickLaunch.setup.status\">": {
       "type": "array",
       "items": {
         "$ref": "#/definitions/WorktreeSetupRun"
       }
+    },
+    "RequestResult<\"quickLaunch.sequence.cancel\">": {
+      "$ref": "#/definitions/WorktreeSetupRun"
+    },
+    "RequestResult<\"quickLaunch.port.read\">": {
+      "type": "object",
+      "properties": {
+        "port": {
+          "type": "number"
+        }
+      },
+      "additionalProperties": false
     },
     "RequestResult<\"chat.tool.run.list\">": {
       "$ref": "#/definitions/ChatToolRunList"
@@ -5549,6 +5614,13 @@
             "string",
             "null"
           ]
+        },
+        "sequenceId": {
+          "type": "string",
+          "description": "Present when `run_start` launched a dependency sequence; use `run_status` to follow its progress."
+        },
+        "sequence": {
+          "$ref": "#/definitions/WorktreeSetupRun"
         }
       },
       "required": [
@@ -5576,7 +5648,14 @@
           "type": "string"
         },
         "state": {
-          "$ref": "#/definitions/SessionStatus"
+          "anyOf": [
+            {
+              "$ref": "#/definitions/SessionStatus"
+            },
+            {
+              "$ref": "#/definitions/WorktreeSetupState"
+            }
+          ]
         },
         "readiness": {
           "type": "string",
@@ -5610,19 +5689,24 @@
         },
         "uptimeSeconds": {
           "type": "number"
+        },
+        "sequence": {
+          "$ref": "#/definitions/WorktreeSetupRun",
+          "description": "Present while or after this run belongs to a shared dependency sequence."
         }
       },
       "required": [
+        "runId",
         "entryId",
         "name",
-        "runId",
+        "state",
         "startedAt",
         "startedBy",
         "startedBySelf",
-        "state",
         "uptimeSeconds"
       ],
-      "additionalProperties": false
+      "additionalProperties": false,
+      "description": "`run_status` may name a terminal run or, when `runId` is a dependency sequence id, the sequence target itself."
     },
     "RequestResult<\"chat.tool.run.logs\">": {
       "$ref": "#/definitions/ChatToolRunLogs"
@@ -5688,11 +5772,22 @@
           ]
         },
         "state": {
-          "$ref": "#/definitions/SessionStatus"
+          "anyOf": [
+            {
+              "$ref": "#/definitions/SessionStatus"
+            },
+            {
+              "$ref": "#/definitions/WorktreeSetupState"
+            }
+          ]
         },
         "stopRequested": {
           "type": "boolean",
           "const": true
+        },
+        "sequence": {
+          "$ref": "#/definitions/WorktreeSetupRun",
+          "description": "Present when Stop cancelled a dependency sequence."
         }
       },
       "required": [
@@ -12424,6 +12519,58 @@
         },
         "result": {
           "$ref": "#/definitions/RequestResult%3C%22quickLaunch.setup.status%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "result"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "quickLaunch.sequence.cancel"
+        },
+        "result": {
+          "$ref": "#/definitions/RequestResult%3C%22quickLaunch.sequence.cancel%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "result"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "quickLaunch.port.read"
+        },
+        "result": {
+          "$ref": "#/definitions/RequestResult%3C%22quickLaunch.port.read%22%3E"
         }
       },
       "required": [

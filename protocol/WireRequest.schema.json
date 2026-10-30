@@ -2365,6 +2365,12 @@
         "previewUrl": {
           "type": "string"
         },
+        "dependsOn": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
         "operationId": {
           "type": "string"
         }
@@ -2562,6 +2568,38 @@
       },
       "required": [
         "projectId"
+      ],
+      "additionalProperties": false
+    },
+    "RequestParams<\"quickLaunch.sequence.cancel\">": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "operationId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "operationId"
+      ],
+      "additionalProperties": false
+    },
+    "RequestParams<\"quickLaunch.port.read\">": {
+      "type": "object",
+      "properties": {
+        "commandId": {
+          "type": "string"
+        },
+        "cwd": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "commandId",
+        "cwd"
       ],
       "additionalProperties": false
     },
@@ -8578,6 +8616,58 @@
         },
         "params": {
           "$ref": "#/definitions/RequestParams%3C%22quickLaunch.setup.status%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "params"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "quickLaunch.sequence.cancel"
+        },
+        "params": {
+          "$ref": "#/definitions/RequestParams%3C%22quickLaunch.sequence.cancel%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "params"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "quickLaunch.port.read"
+        },
+        "params": {
+          "$ref": "#/definitions/RequestParams%3C%22quickLaunch.port.read%22%3E"
         }
       },
       "required": [

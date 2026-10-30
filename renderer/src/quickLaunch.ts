@@ -1,4 +1,4 @@
-import type { DetectedRunEntry, DetectedRunSourceKind, QuickLaunchKind, Session } from '@threadterm/protocol';
+import type { DetectedRunEntry, DetectedRunSourceKind, QuickLaunchCommand, QuickLaunchKind, Session } from '@threadterm/protocol';
 import { sameCanonicalScope } from './projectScope';
 import { workbenchError } from './workbench/errors';
 
@@ -10,8 +10,8 @@ export function runState(session: Pick<Session, 'status'|'exitCode'|'run'>): Run
  // and no answer at all stays Running, as every run did before readiness existed.
  const readiness = run?.kind === 'service' ? run.readiness : undefined;
  const state: RunState = status === 'starting' || (['running','idle','waiting'].includes(status) && readiness === 'waiting') ? 'starting' : ['running','idle','waiting'].includes(status) ? readiness === 'ready' ? 'ready' : 'running' : run?.stopRequested ? 'stopped' : status === 'interrupted' ? 'interrupted' : status === 'error' || (exitCode !== undefined && exitCode !== 0) ? 'failed' : exitCode === 0 && run?.kind === 'task' ? 'completed' : 'exited';
- // A port is shown only while it is the address: a printed URL that replaced it clears it.
- return { state, exitCode, url: run?.url, port: readiness === 'ready' && run?.urlSource === 'port' ? run?.port : undefined };
+ // An allocated port is stable from launch onward; the readiness port remains the fallback for older runs.
+ return { state, exitCode, url: run?.url, port: run?.allocatedPort ?? (readiness === 'ready' && run?.urlSource === 'port' ? run?.port : undefined) };
 }
 /** Open Preview waits only while a live run is still being watched on its own configured address.
  * A ready run, a run without readiness (older runs, tasks), one that printed its URL, and a run whose
@@ -20,11 +20,26 @@ export function previewReady(session: Pick<Session, 'status'|'run'> | undefined)
  const run = session?.run;
  if (!run) return false;
  if (!['starting','running','idle','waiting'].includes(session!.status)) return true;
+ // A `${port}` launch is ready only when its reserved port listens; printed URLs do not satisfy that contract.
+ if (run.allocatedPort !== undefined && run.readiness === 'waiting') return false;
  return !(run.readiness === 'waiting' && run.urlSource === 'configured');
 }
 /** Why a run's preview link is disabled. */
 export function previewWaitingLabel(zh: boolean): string {
  return zh ? '等待服务开始监听…' : 'Waiting for the server to listen…';
+}
+/** Copy shared by the editor and its small renderer helper test. */
+export function portPlaceholderHint(zh: boolean): string {
+ return zh ? '使用 ${port} 为每个工作树分配空闲端口。' : 'Use ${port} for a free port per worktree.';
+}
+export function resolvedPortPreview(port: number, zh: boolean): string {
+ return zh ? `此工作树的已分配端口：${port}` : `Resolved port for this worktree: ${port}`;
+}
+/** Keep a stale saved dependency visible long enough for its owner to remove it. */
+export function dependencyOptionIds(catalog: readonly QuickLaunchCommand[], dependsOn: readonly string[], selfId?: string): string[] {
+ const known = catalog.filter(command => command.id !== selfId).map(command => command.id);
+ const knownIds = new Set(known);
+ return [...known,...dependsOn.filter(id => id !== selfId && !knownIds.has(id))];
 }
 export function activeRun(sessions: readonly Session[], commandId: string, root: string): Session | undefined {
  return sessions.find(session => session.run?.commandId === commandId && !session.archived && !session.readOnly && ['starting','running','idle','waiting'].includes(session.status) && sameCanonicalScope(session.worktreePath, root));
@@ -93,11 +108,16 @@ const errors: Record<string,[string,string]> = {
  project_not_found:['This project no longer exists.','此项目已不存在。'], worktree_missing:['This worktree directory is missing.','此工作树目录已丢失。'], workspace_read_only:['This workspace is read-only.','此工作区为只读。'], workspace_archived:['Restore this archived workspace before running a command.','请恢复此已归档的工作区后再运行命令。'],
  setup_empty:['Choose at least one Task command in Worktree setup before running it.','请先在工作树初始化中选择至少一个任务命令。'], invalid_step:['This setup step is no longer available. Reopen the Run menu and try again.','此初始化步骤已不可用。请重新打开运行菜单后重试。'], not_a_task:['Only Task commands can be setup steps.','只有任务命令可以作为初始化步骤。'],
  detected_entry_not_found:['This detected entry no longer exists. Reopen Run to see the current list.','这条检测条目已不存在。重新打开 Run 查看当前列表。'], tool_not_found:['A tool this entry needs is not on PATH.','PATH 中找不到此条目所需的工具。'],
+ nested_depends_on:['A dependency cannot have dependencies of its own.','依赖命令不能再包含依赖。'], invalid_depends_on:['Choose saved commands from this project without cycles or self-references.','请选择本项目中没有循环或自引用的保存命令。'],
+ dependency_failed:['A required dependency failed to start.','所需依赖启动失败。'], port_unavailable:['A free port could not be allocated for this command.','无法为此命令分配可用端口。'],
+ command_has_dependents:['This command is required by other saved commands. Remove it from their Start after lists first.','其他已保存命令依赖此命令。请先从它们的启动依赖列表中移除。'],
 };
 export function quickLaunchError(error: unknown, zh: boolean): string {
  const message = error instanceof Error ? error.message : String(error);
  const aliases: Record<string,string> = { 'Invalid command name':'invalid_name', 'Invalid command text':'invalid_command', 'Invalid working directory':'invalid_cwd', 'Invalid environment overrides':'invalid_env', 'Invalid preview address':'invalid_preview_url' };
  const raw = Object.keys(aliases).find(key=>message.includes(key));
  const code = raw ? aliases[raw] : Object.keys(errors).find(key => message.includes(key));
+ if (code === 'dependency_failed') { const name=message.match(/dependency_failed:\s*(.+)/)?.[1]; if(name)return zh?`依赖失败：${name}`:`Dependency failed: ${name}`; }
+ if (code === 'command_has_dependents') { const names=message.match(/command_has_dependents:\s*(.+)/)?.[1]; if(names)return zh?`无法删除此命令，因为以下命令依赖它：${names}`:`Cannot delete this command because it is required by: ${names}`; }
  return code ? errors[code][zh ? 1 : 0] : workbenchError(error, zh);
 }

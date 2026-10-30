@@ -36,3 +36,8 @@ test('worktree setup status selects the latest matching canonical root', () => {
  assert.equal(setupForRoot([older, current], 'c:/repo')?.id, 'current');
  assert.equal(setupForRoot([older], 'C:\\other'), undefined);
 });
+
+test('worktree setup status ignores dependency sequences at the same root', () => {
+ const dependency = run({ id:'dependency', trigger:'depends_on', updatedAt:'2026-10-08T00:00:00.000Z' });
+ assert.equal(setupForRoot([run(), dependency], 'C:\\repo')?.id, 'setup-1');
+});

@@ -58,7 +58,7 @@ export function AgentTag({startedBy, sessions, zh, onOpen}:{startedBy?:string;se
 
 /** The shared row: identity, command text, run state and URL. Each surface adds its own actions, so the popover keeps
  * its compact launcher buttons and the Run view adds Restart, Stop and Set as current without a second row renderer. */
-export function RunEntryRow({entry, session, zh, busy, worktree, uptime, current, agentLabel, actions}:{
+export function RunEntryRow({entry, session, zh, busy, worktree, uptime, current, agentLabel, actions, sequenceText, onCancelSequence}:{
  entry:RunEntry;
  session?:Session;
  zh:boolean;
@@ -69,6 +69,8 @@ export function RunEntryRow({entry, session, zh, busy, worktree, uptime, current
  /** The Agent tag's tooltip for this entry's active run, when an agent started it. */
  agentLabel?:string;
  actions:ReactNode;
+ sequenceText?:string;
+ onCancelSequence?:()=>void;
 }) {
  const view = session ? runState(session) : undefined;
  const missing = entry.missingTool ? missingToolLabel(entry.missingTool, zh) : undefined;
@@ -84,6 +86,7 @@ export function RunEntryRow({entry, session, zh, busy, worktree, uptime, current
    {view && <span className={`ql-state ql-${view.state}`} title={agentLabel}><span className="dot" aria-hidden="true"/>{runStateLabel(view, zh)}</span>}
    {uptime && <span className="ql-uptime">{uptime}</span>}
    {missing && <span className="ql-missing-tool">{missing}</span>}
+   {sequenceText && <span className="ql-sequence-chip" data-testid="run-sequence-chip">{sequenceText}{onCancelSequence&&<button type="button" className="btn btn-sm btn-ghost" aria-label={zh?'取消启动序列':'Cancel starting sequence'} disabled={busy} onClick={onCancelSequence}>{zh?'取消':'Cancel'}</button>}</span>}
   </div>
   <code title={entry.command}>{entry.command}</code>
   <div className="ql-actions" data-busy={busy ? 'true' : undefined}>{actions}</div>

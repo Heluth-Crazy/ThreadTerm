@@ -38,15 +38,22 @@ pub(crate) const ERROR_CODES: &[&str] = &[
     "detected_entry_changed",
     "detected_command_too_long",
     "detected_command_unprintable",
+    "nested_depends_on",
+    "invalid_depends_on",
+    "dependency_failed",
+    "port_unavailable",
+    "command_has_dependents",
 ];
 
 #[path = "quick_launch_setup.rs"]
 mod setup;
 pub use setup::{mark_setup_runs_interrupted, setup_after_worktree_create};
 pub(crate) use setup::{setup_terminal_exited, start_next_setup_step};
-pub(crate) use setup::root_for_setup;
+pub(crate) use setup::{cancel_scoped_sequence, root_for_setup, sequence_by_id, sequence_for_session};
 #[path = "quick_launch_readiness.rs"]
 mod readiness;
+#[path = "run_ports.rs"]
+mod ports;
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -67,6 +74,8 @@ pub struct QuickLaunchCommand {
     pub cwd: String,
     pub kind: String,
     pub env: Vec<EnvVar>,
+    #[serde(default)]
+    pub depends_on: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub preview_url: Option<String>,
     pub created_at: String,
@@ -94,12 +103,17 @@ pub struct SessionRun {
     /// The port the run was announced on, when it became ready by port.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub port: Option<u16>,
+    /// The `${port}` value selected for this command/worktree before readiness.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub allocated_port: Option<u16>,
     /// The Chat session whose agent started this run. Absent for user runs; set
     /// by the caller-scoped run tools only, and shown as "started by" in 2b.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub started_by: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub setup: Option<setup::SetupStep>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sequence: Option<setup::SetupStep>,
 }
 
 pub(crate) fn initialize_connection(conn: &Connection) -> Result<()> {
@@ -108,14 +122,14 @@ pub(crate) fn initialize_connection(conn: &Connection) -> Result<()> {
          id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
          revision INTEGER NOT NULL, name TEXT NOT NULL, command TEXT NOT NULL, shell TEXT NOT NULL,
          cwd TEXT NOT NULL, kind TEXT NOT NULL, env_json TEXT NOT NULL, preview_url TEXT,
-         created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+         created_at TEXT NOT NULL, updated_at TEXT NOT NULL, depends_on_json TEXT NOT NULL DEFAULT '[]');
          CREATE INDEX IF NOT EXISTS quick_launch_project ON quick_launch_commands(project_id,created_at);
          CREATE TABLE IF NOT EXISTS quick_launch_runs (
          session_id TEXT PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE,
          command_id TEXT NOT NULL, project_id TEXT NOT NULL, root TEXT NOT NULL,
          snapshot_json TEXT NOT NULL, url TEXT, url_source TEXT,
          stop_requested INTEGER NOT NULL DEFAULT 0, started_at TEXT NOT NULL,
-         readiness TEXT, ready_port INTEGER, started_by TEXT);
+         readiness TEXT, ready_port INTEGER, started_by TEXT, allocated_port INTEGER);
          CREATE INDEX IF NOT EXISTS quick_launch_admission ON quick_launch_runs(command_id,root);
          CREATE TABLE IF NOT EXISTS quick_launch_setup (
          project_id TEXT PRIMARY KEY REFERENCES projects(id) ON DELETE CASCADE,
@@ -125,10 +139,14 @@ pub(crate) fn initialize_connection(conn: &Connection) -> Result<()> {
          root TEXT NOT NULL, command_ids_json TEXT NOT NULL, names_json TEXT NOT NULL,
          snapshots_json TEXT NOT NULL, step INTEGER NOT NULL, state TEXT NOT NULL,
          session_ids_json TEXT NOT NULL, exit_code INTEGER, trigger TEXT NOT NULL,
-         created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+         created_at TEXT NOT NULL, updated_at TEXT NOT NULL, target_command_id TEXT, started_by TEXT);
          CREATE INDEX IF NOT EXISTS quick_launch_setup_root ON quick_launch_setup_runs(project_id,root,created_at);
          CREATE INDEX IF NOT EXISTS quick_launch_setup_creations ON operations(method) WHERE method='worktree.create';
-         CREATE UNIQUE INDEX IF NOT EXISTS quick_launch_setup_active ON quick_launch_setup_runs(project_id,root) WHERE state='running';"
+         CREATE TABLE IF NOT EXISTS quick_launch_sequence_operations (
+         operation_id TEXT PRIMARY KEY, method TEXT NOT NULL,
+         sequence_id TEXT NOT NULL REFERENCES quick_launch_setup_runs(id) ON DELETE CASCADE,
+         source_session_id TEXT);
+         CREATE INDEX IF NOT EXISTS quick_launch_sequence_operation_sequence ON quick_launch_sequence_operations(sequence_id);"
     )?;
     // Additive migration: readiness arrived after the first runs were recorded, so
     // old rows stay NULL (= no readiness state) instead of being rewritten.
@@ -136,13 +154,38 @@ pub(crate) fn initialize_connection(conn: &Connection) -> Result<()> {
     let existing: Vec<String> = columns
         .query_map([], |row| row.get::<_, String>(1))?
         .collect::<rusqlite::Result<Vec<_>>>()?;
-    for (column, definition) in [("readiness", "TEXT"), ("ready_port", "INTEGER"), ("started_by", "TEXT")] {
+    for (column, definition) in [("readiness", "TEXT"), ("ready_port", "INTEGER"), ("allocated_port", "INTEGER"), ("started_by", "TEXT")] {
         if !existing.iter().any(|name| name == column) {
             conn.execute_batch(&format!(
                 "ALTER TABLE quick_launch_runs ADD COLUMN {column} {definition}"
             ))?;
         }
     }
+    let mut setup_columns = conn.prepare("PRAGMA table_info(quick_launch_setup_runs)")?;
+    let setup_existing: Vec<String> = setup_columns
+        .query_map([], |row| row.get::<_, String>(1))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    if !setup_existing.iter().any(|name| name == "target_command_id") {
+        conn.execute_batch("ALTER TABLE quick_launch_setup_runs ADD COLUMN target_command_id TEXT")?;
+    }
+    if !setup_existing.iter().any(|name| name == "started_by") {
+        conn.execute_batch("ALTER TABLE quick_launch_setup_runs ADD COLUMN started_by TEXT")?;
+    }
+    conn.execute_batch(
+        "DROP INDEX IF EXISTS quick_launch_setup_active;
+         CREATE UNIQUE INDEX quick_launch_setup_active ON quick_launch_setup_runs(project_id,root) WHERE state='running' AND target_command_id IS NULL;
+         CREATE UNIQUE INDEX IF NOT EXISTS quick_launch_sequence_active ON quick_launch_setup_runs(project_id,root,target_command_id) WHERE state='running' AND target_command_id IS NOT NULL;"
+    )?;
+    let mut command_columns = conn.prepare("PRAGMA table_info(quick_launch_commands)")?;
+    let command_existing: Vec<String> = command_columns
+        .query_map([], |row| row.get::<_, String>(1))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    if !command_existing.iter().any(|name| name == "depends_on_json") {
+        conn.execute_batch("ALTER TABLE quick_launch_commands ADD COLUMN depends_on_json TEXT NOT NULL DEFAULT '[]'")?;
+    }
+    let tx = conn.unchecked_transaction()?;
+    ports::initialize(&tx)?;
+    tx.commit()?;
     Ok(())
 }
 
@@ -150,7 +193,7 @@ pub(crate) fn run_from_row(row: &Row<'_>, offset: usize) -> rusqlite::Result<Opt
     let Some(raw) = row.get::<_, Option<String>>(offset)? else {
         return Ok(None);
     };
-    let (snapshot, setup) = setup::decode_snapshot(&raw).map_err(|e| {
+    let (snapshot, setup, sequence) = setup::decode_snapshot(&raw).map_err(|e| {
         rusqlite::Error::FromSqlConversionFailure(offset, rusqlite::types::Type::Text, Box::new(e))
     })?;
     let mut run = projection(
@@ -162,8 +205,11 @@ pub(crate) fn run_from_row(row: &Row<'_>, offset: usize) -> rusqlite::Result<Opt
         row.get::<_, Option<i64>>(offset + 5)?
             .and_then(|port| u16::try_from(port).ok()),
         row.get(offset + 6)?,
+        row.get::<_, Option<i64>>(offset + 7)?
+            .and_then(|port| u16::try_from(port).ok()),
     );
     run.setup = setup;
+    run.sequence = sequence;
     Ok(Some(run))
 }
 fn projection(
@@ -174,6 +220,7 @@ fn projection(
     readiness: Option<String>,
     port: Option<u16>,
     started_by: Option<String>,
+    allocated_port: Option<u16>,
 ) -> SessionRun {
     SessionRun {
         command_id: snapshot.id.clone(),
@@ -186,7 +233,9 @@ fn projection(
         readiness,
         port,
         started_by,
+        allocated_port,
         setup: None,
+        sequence: None,
     }
 }
 
@@ -207,6 +256,8 @@ struct Save {
     cwd: String,
     kind: String,
     env: Vec<EnvVar>,
+    #[serde(default)]
+    depends_on: Vec<String>,
     preview_url: Option<String>,
     operation_id: String,
 }
@@ -244,13 +295,20 @@ struct Restart {
     session_id: String,
     operation_id: String,
 }
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct PortRead {
+    command_id: String,
+    cwd: String,
+}
 
 pub(crate) fn handles(method: &str) -> bool {
     matches!(
         method,
         "quickLaunch.list" | "quickLaunch.save" | "quickLaunch.delete" | "quickLaunch.run"
-        | "quickLaunch.restart" | "quickLaunch.detect"
+        | "quickLaunch.restart" | "quickLaunch.detect" | "quickLaunch.port.read"
         | "quickLaunch.setup.read" | "quickLaunch.setup.save" | "quickLaunch.setup.run" | "quickLaunch.setup.status"
+        | "quickLaunch.sequence.cancel"
     )
 }
 fn required(value: &str) -> Result<()> {
@@ -292,11 +350,32 @@ fn preview_url(value: &str) -> bool {
         && !value
             .chars()
             .any(|c| c.is_whitespace() || c <= '\u{1f}' || ('\u{7f}'..='\u{9f}').contains(&c))
-        && reqwest::Url::parse(value)
+        && reqwest::Url::parse(&value.replace("${port}", "1"))
             .is_ok_and(|url| matches!(url.scheme(), "http" | "https") && url.host_str().is_some())
 }
+fn valid_depends_on(depends_on: &[String]) -> bool {
+    depends_on.len() <= 8
+        && depends_on.iter().all(|id| !id.is_empty() && units(id) <= 128)
+        && depends_on.iter().collect::<HashSet<_>>().len() == depends_on.len()
+}
+fn valid_env(env: &[EnvVar]) -> bool {
+    let mut names = HashSet::new();
+    env.len() <= 32
+        && !env.iter().any(|item| {
+            let bytes = item.name.as_bytes();
+            bytes.is_empty()
+                || bytes.len() > 128
+                || !(bytes[0].is_ascii_alphabetic() || bytes[0] == b'_')
+                || !bytes
+                    .iter()
+                    .all(|c| c.is_ascii_alphanumeric() || *c == b'_')
+                || units(&item.value) > 8192
+                || item.value.contains('\0')
+                || !names.insert(item.name.to_ascii_uppercase())
+        })
+}
 pub(crate) fn validate(method: &str, value: &Value) -> Result<()> {
-    if method.starts_with("quickLaunch.setup.") {
+    if method.starts_with("quickLaunch.setup.") || method.starts_with("quickLaunch.sequence.") {
         return setup::validate_setup(method, value);
     }
     match method {
@@ -338,6 +417,11 @@ pub(crate) fn validate(method: &str, value: &Value) -> Result<()> {
             required(&p.project_id)?;
             required(&p.cwd)?;
         }
+        "quickLaunch.port.read" => {
+            let p: PortRead = serde_json::from_value(value.clone())?;
+            required(&p.command_id)?;
+            required(&p.cwd)?;
+        }
         "quickLaunch.save" => {
             for key in ["id", "expectedRevision", "previewUrl"] {
                 if value.get(key).is_some_and(Value::is_null) {
@@ -363,21 +447,9 @@ pub(crate) fn validate(method: &str, value: &Value) -> Result<()> {
             if p.shell == "cmd" && p.command.contains(['\r', '\n']) {
                 return Err(anyhow!("cmd_single_line"));
             }
-            let mut names = HashSet::new();
-            if p.env.len() > 32
-                || p.env.iter().any(|item| {
-                    let bytes = item.name.as_bytes();
-                    bytes.is_empty()
-                        || bytes.len() > 128
-                        || !(bytes[0].is_ascii_alphabetic() || bytes[0] == b'_')
-                        || !bytes
-                            .iter()
-                            .all(|c| c.is_ascii_alphanumeric() || *c == b'_')
-                        || units(&item.value) > 8192
-                        || item.value.contains('\0')
-                        || !names.insert(item.name.to_ascii_uppercase())
-                })
+            if !valid_env(&p.env)
                 || p.preview_url.as_ref().is_some_and(|url| !preview_url(url))
+                || !valid_depends_on(&p.depends_on)
                 || p.id.is_some() != p.expected_revision.is_some()
             {
                 return Err(anyhow!("invalid_request"));
@@ -407,12 +479,18 @@ fn operation_tx(tx: &Transaction<'_>, id: &str) -> Result<Option<Value>> {
 /// A recorded result, only when it was recorded for this method. A request id reused
 /// for a different operation is not a replay, so an agent tool never answers with
 /// another method's receipt.
+pub(crate) fn replayed_run_operation(db: &Database, id: &str, method: &str) -> Result<Option<Value>> {
+    let _guard = ADMISSION.lock().map_err(|_| anyhow!("quick launch admission poisoned"))?;
+    replayed_operation(db,id,method)
+}
+
+// Launch callers already holding ADMISSION use this reader directly.
 pub(crate) fn replayed_operation(
     db: &Database,
     id: &str,
     method: &str,
 ) -> Result<Option<Value>> {
-    db.transaction(|tx| {
+    let result = db.transaction(|tx| {
         let row: Option<(String, String)> = tx
             .query_row("SELECT method,result FROM operations WHERE id=?", [id], |r| {
                 Ok((r.get(0)?, r.get(1)?))
@@ -424,7 +502,9 @@ pub(crate) fn replayed_operation(
             }
             _ => Ok(None),
         }
-    })
+    })?;
+    if result.is_some() { return Ok(result); }
+    setup::replay_dependency_operation(db, id, method)
 }
 fn complete(tx: &Transaction<'_>, id: &str, method: &str, result: &Value) -> Result<()> {
     tx.execute(
@@ -450,6 +530,9 @@ fn command_row(r: &Row<'_>) -> rusqlite::Result<QuickLaunchCommand> {
     let env = serde_json::from_str(&raw).map_err(|e| {
         rusqlite::Error::FromSqlConversionFailure(8, rusqlite::types::Type::Text, Box::new(e))
     })?;
+    let depends_on: Vec<String> = serde_json::from_str(&r.get::<_, String>(12)?).map_err(|e| {
+        rusqlite::Error::FromSqlConversionFailure(12, rusqlite::types::Type::Text, Box::new(e))
+    })?;
     Ok(QuickLaunchCommand {
         id: r.get(0)?,
         project_id: r.get(1)?,
@@ -460,13 +543,14 @@ fn command_row(r: &Row<'_>) -> rusqlite::Result<QuickLaunchCommand> {
         cwd: r.get(6)?,
         kind: r.get(7)?,
         env,
+        depends_on,
         preview_url: r.get(9)?,
         created_at: r.get(10)?,
         updated_at: r.get(11)?,
     })
 }
 const COMMAND_COLUMNS: &str =
-    "id,project_id,revision,name,command,shell,cwd,kind,env_json,preview_url,created_at,updated_at";
+    "id,project_id,revision,name,command,shell,cwd,kind,env_json,preview_url,created_at,updated_at,depends_on_json";
 fn read_command(db: &Database, id: &str) -> Result<QuickLaunchCommand> {
     db.transaction(|tx| {
         tx.query_row(
@@ -525,6 +609,7 @@ pub(crate) fn detected_command(
         cwd: entry.cwd,
         kind: entry.kind,
         env: Vec::new(),
+        depends_on: Vec::new(),
         preview_url: None,
         created_at: now.clone(),
         updated_at: now,
@@ -562,7 +647,7 @@ pub(crate) fn scoped_command(db: &Database, project: &str, id: &str) -> Result<Q
 
 /// The stored display name of a run snapshot, without materialising the whole snapshot.
 pub(crate) fn snapshot_name(raw: &str) -> serde_json::Result<String> {
-    let (snapshot, _) = setup::decode_snapshot(raw)?;
+    let (snapshot, _, _) = setup::decode_snapshot(raw)?;
     Ok(snapshot.name)
 }
 
@@ -573,7 +658,7 @@ pub(crate) fn dispatch(
     value: &Value,
 ) -> Result<Value> {
     validate(method, value)?;
-    if method.starts_with("quickLaunch.setup.") {
+    if method.starts_with("quickLaunch.setup.") || method.starts_with("quickLaunch.sequence.") {
         return setup::dispatch_setup(db, pty, method, value);
     }
     match method {
@@ -593,12 +678,16 @@ pub(crate) fn dispatch(
             let detection = crate::run_detect::detect(&root);
             Ok(json!({"entries":detection.entries,"truncated":detection.truncated}))
         }
+        "quickLaunch.port.read" => {
+            let p: PortRead = serde_json::from_value(value.clone())?;
+            let command = read_command(db, &p.command_id)?;
+            let root = setup::root_for_setup(db, &command.project_id, &p.cwd)?;
+            let port = db.transaction(|tx| ports::read(tx, &command.id, &root.to_string_lossy()))?;
+            Ok(port.map_or_else(|| json!({}), |port| json!({"port":port})))
+        }
         "quickLaunch.run" => {
             let p: Run = serde_json::from_value(value.clone())?;
-            let _guard = ADMISSION
-                .lock()
-                .map_err(|_| anyhow!("quick launch admission poisoned"))?;
-            if let Some(result) = db.operation(&p.operation_id)? {
+            if let Some(result) = replayed_run_operation(db,&p.operation_id,"quickLaunch.run")? {
                 return Ok(result);
             }
             let snapshot = match (&p.command_id, &p.detected_key) {
@@ -611,6 +700,15 @@ pub(crate) fn dispatch(
                 )?,
                 _ => return Err(anyhow!("invalid_request")),
             };
+            if !snapshot.depends_on.is_empty() {
+                return setup::run_dependencies(db,pty,&snapshot,&p.cwd,&p.operation_id,"quickLaunch.run",None,None);
+            }
+            let _guard = ADMISSION
+                .lock()
+                .map_err(|_| anyhow!("quick launch admission poisoned"))?;
+            if let Some(result) = db.operation(&p.operation_id)? {
+                return Ok(result);
+            }
             start(
                 db,
                 pty,
@@ -638,18 +736,66 @@ fn save(db: &Database, p: Save) -> Result<Value> {
             let count: i64 = tx.query_row("SELECT COUNT(*) FROM quick_launch_commands WHERE project_id=?", [&p.project_id], |r| r.get(0))?;
             if count >= 100 { return Err(anyhow!("too_many_commands")); }
         }
+        validate_depends_on(tx, &p.project_id, p.id.as_deref(), &p.depends_on)?;
         let now = Utc::now().to_rfc3339();
         let command = QuickLaunchCommand { id: p.id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string()), project_id:p.project_id,
             revision:previous.as_ref().map_or(1, |c| c.revision + 1), name:trim_wire(&p.name).to_owned(), command:p.command,
-            shell:p.shell, cwd:p.cwd, kind:p.kind, env:p.env, preview_url:p.preview_url,
+            shell:p.shell, cwd:p.cwd, kind:p.kind, env:p.env, depends_on:p.depends_on, preview_url:p.preview_url,
             created_at:previous.map_or_else(|| now.clone(), |c| c.created_at), updated_at:now };
-        tx.execute("INSERT INTO quick_launch_commands(id,project_id,revision,name,command,shell,cwd,kind,env_json,preview_url,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET revision=excluded.revision,name=excluded.name,command=excluded.command,shell=excluded.shell,cwd=excluded.cwd,kind=excluded.kind,env_json=excluded.env_json,preview_url=excluded.preview_url,updated_at=excluded.updated_at",
-            params![command.id,command.project_id,command.revision,command.name,command.command,command.shell,command.cwd,command.kind,serde_json::to_string(&command.env)?,command.preview_url,command.created_at,command.updated_at])?;
+        tx.execute("INSERT INTO quick_launch_commands(id,project_id,revision,name,command,shell,cwd,kind,env_json,depends_on_json,preview_url,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET revision=excluded.revision,name=excluded.name,command=excluded.command,shell=excluded.shell,cwd=excluded.cwd,kind=excluded.kind,env_json=excluded.env_json,depends_on_json=excluded.depends_on_json,preview_url=excluded.preview_url,updated_at=excluded.updated_at",
+            params![command.id,command.project_id,command.revision,command.name,command.command,command.shell,command.cwd,command.kind,serde_json::to_string(&command.env)?,serde_json::to_string(&command.depends_on)?,command.preview_url,command.created_at,command.updated_at])?;
         let result = serde_json::to_value(command)?;
         complete(tx, &p.operation_id, "quickLaunch.save", &result)?;
         changed(tx, "quickLaunch.commands", None)?;
         Ok(result)
     })
+}
+fn validate_depends_on(
+    tx: &Transaction<'_>,
+    project_id: &str,
+    command_id: Option<&str>,
+    depends_on: &[String],
+) -> Result<()> {
+    if command_id.is_some_and(|id| depends_on.iter().any(|dependency| dependency == id)) {
+        return Err(anyhow!("invalid_depends_on"));
+    }
+    for dependency in depends_on {
+        let row: Option<(String, String)> = tx
+            .query_row(
+                "SELECT project_id,depends_on_json FROM quick_launch_commands WHERE id=?",
+                [dependency],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()?;
+        let Some((dependency_project, nested)) = row else {
+            return Err(anyhow!("invalid_depends_on"));
+        };
+        if dependency_project != project_id {
+            return Err(anyhow!("invalid_depends_on"));
+        }
+        let nested: Vec<String> = serde_json::from_str(&nested)?;
+        if command_id.is_some_and(|id| nested.iter().any(|nested_id| nested_id == id)) {
+            return Err(anyhow!("invalid_depends_on"));
+        }
+        if !nested.is_empty() {
+            return Err(anyhow!("nested_depends_on"));
+        }
+    }
+    if let Some(id) = command_id {
+        let used_as_dependency: Vec<String> = tx
+            .prepare("SELECT depends_on_json FROM quick_launch_commands WHERE project_id=? AND id!=?")?
+            .query_map(params![project_id, id], |row| row.get(0))?
+            .collect::<rusqlite::Result<_>>()?;
+        if !depends_on.is_empty()
+            && used_as_dependency.into_iter().any(|raw| {
+                serde_json::from_str::<Vec<String>>(&raw)
+                    .is_ok_and(|dependencies| dependencies.iter().any(|dependency| dependency == id))
+            })
+        {
+            return Err(anyhow!("nested_depends_on"));
+        }
+    }
+    Ok(())
 }
 fn delete(db: &Database, p: Delete) -> Result<Value> {
     db.transaction(|tx| {
@@ -666,6 +812,14 @@ fn delete(db: &Database, p: Delete) -> Result<Value> {
             .ok_or_else(|| anyhow!("command_not_found"))?;
         if found != p.expected_revision {
             return Err(anyhow!("revision_conflict"));
+        }
+        let dependents: Vec<String> = {
+            let mut statement = tx.prepare("SELECT name FROM quick_launch_commands c WHERE c.id!=? AND EXISTS(SELECT 1 FROM json_each(c.depends_on_json) WHERE value=?) ORDER BY name,id")?;
+            let rows = statement.query_map(params![p.id,p.id], |row| row.get(0))?;
+            rows.collect::<rusqlite::Result<_>>()?
+        };
+        if !dependents.is_empty() {
+            return Err(anyhow!("command_has_dependents: {}",dependents.join(", ")));
         }
         setup::remove_command(tx, &p.id)?;
         tx.execute("DELETE FROM quick_launch_commands WHERE id=?", [&p.id])?;
@@ -693,6 +847,42 @@ fn launch_directory(root: &Path, relative: &str) -> Result<PathBuf> {
         return Err(anyhow!("cwd_outside_root"));
     }
     Ok(candidate)
+}
+fn saved_port_template(command: &QuickLaunchCommand) -> bool {
+    !command.id.starts_with("detected:")
+        && (command.command.contains("${port}")
+            || command.env.iter().any(|variable| variable.value.contains("${port}"))
+            || command
+                .preview_url
+                .as_deref()
+                .is_some_and(|url| url.contains("${port}")))
+}
+
+fn resolve_port(template: &QuickLaunchCommand, port: Option<u16>) -> Result<QuickLaunchCommand> {
+    let Some(port) = port else { return Ok(template.clone()); };
+    let replacement = port.to_string();
+    let mut resolved = template.clone();
+    resolved.command = resolved.command.replace("${port}", &replacement);
+    for variable in &mut resolved.env {
+        variable.value = variable.value.replace("${port}", &replacement);
+    }
+    resolved.preview_url = resolved
+        .preview_url
+        .as_deref()
+        .map(|url| url.replace("${port}", &replacement));
+    if trim_wire(&resolved.command).is_empty()
+        || units(&resolved.command) > 8000
+        || resolved.command.contains('\0')
+        || !matches!(resolved.shell.as_str(), "cmd" | "powershell" | "pwsh")
+        || !matches!(resolved.kind.as_str(), "service" | "task")
+        || !relative_cwd(&resolved.cwd)
+        || (resolved.shell == "cmd" && resolved.command.contains(['\r', '\n']))
+        || !valid_env(&resolved.env)
+        || resolved.preview_url.as_ref().is_some_and(|url| !preview_url(url))
+    {
+        return Err(anyhow!("invalid_command"));
+    }
+    Ok(resolved)
 }
 fn powershell_script(command: &str) -> String {
     let script = format!("$global:LASTEXITCODE = 0\n{command}\n$ok = $?\nif ($global:LASTEXITCODE) {{ exit $global:LASTEXITCODE }}\nif (-not $ok) {{ exit 1 }}");
@@ -787,7 +977,13 @@ fn start(
         db.transaction(|tx| complete(tx, operation, method, &result))?;
         return Ok(result);
     }
-    let (program, args) = shell_command(&snapshot.shell, &snapshot.command)?;
+    let allocated_port = if saved_port_template(snapshot) {
+        Some(db.transaction(|tx| ports::allocate(tx, &snapshot.id, &root_key))?)
+    } else {
+        None
+    };
+    let launch_snapshot = resolve_port(snapshot, allocated_port)?;
+    let (program, args) = shell_command(&launch_snapshot.shell, &launch_snapshot.command)?;
     let id = uuid::Uuid::new_v4().to_string();
     let now = Utc::now().to_rfc3339();
     let launch = LaunchSpec {
@@ -795,7 +991,7 @@ fn start(
         mode: "terminal".into(),
         cwd: directory.to_string_lossy().into_owned(),
         project_id: Some(snapshot.project_id.clone()),
-        title: Some(snapshot.name.clone()),
+        title: Some(launch_snapshot.name.clone()),
         executable: Some(program.clone()),
         args: args.clone(),
     };
@@ -814,7 +1010,7 @@ fn start(
         tx.execute("INSERT INTO sessions(id,project_id,worktree_path,title,provider,mode,status,created_at,updated_at,followed) VALUES(?,?,?,?,'custom','terminal','starting',?,?,0)", params![id,snapshot.project_id,root.to_string_lossy(),snapshot.name,now,now])?;
         tx.execute("INSERT INTO session_activity(session_id,state,revision) VALUES(?,'unknown',1)", [&id])?;
         tx.execute("INSERT INTO session_launch_configs(session_id,revision,provider,mode,cwd,project_id,title,executable,args_json,source_session_id) VALUES(?,1,'custom','terminal',?,?,?,?,?,?)", params![id,launch.cwd,launch.project_id,launch.title,launch.executable,serde_json::to_string(&args)?,source])?;
-        tx.execute("INSERT INTO quick_launch_runs(session_id,command_id,project_id,root,snapshot_json,url,url_source,stop_requested,started_at,readiness,started_by) VALUES(?,?,?,?,?,?,?,0,?,?,?)", params![id,snapshot.id,snapshot.project_id,root_key,serde_json::to_string(snapshot)?,snapshot.preview_url,snapshot.preview_url.as_ref().map(|_| "configured"),now,initial_readiness,started_by])?;
+        tx.execute("INSERT INTO quick_launch_runs(session_id,command_id,project_id,root,snapshot_json,url,url_source,stop_requested,started_at,readiness,allocated_port,started_by) VALUES(?,?,?,?,?,?,?,0,?,?,?,?)", params![id,snapshot.id,snapshot.project_id,root_key,serde_json::to_string(snapshot)?,launch_snapshot.preview_url,launch_snapshot.preview_url.as_ref().map(|_| "configured"),now,initial_readiness,allocated_port,started_by])?;
         if let Some(step) = setup { setup::attach_session(tx, step, &id)?; }
         changed(tx, "session.run", Some(&id))?;
         // Reserve replay before the external side effect. A runtime crash leaves
@@ -880,7 +1076,7 @@ fn session_value(tx: &Transaction<'_>, id: &str) -> Result<Value> {
         [id],
         |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
     )?;
-    let run = tx.query_row("SELECT snapshot_json,url,url_source,stop_requested,readiness,ready_port,started_by FROM quick_launch_runs WHERE session_id=?", [id], |r| run_from_row(r,0))?;
+    let run = tx.query_row("SELECT snapshot_json,url,url_source,stop_requested,readiness,ready_port,started_by,allocated_port FROM quick_launch_runs WHERE session_id=?", [id], |r| run_from_row(r,0))?;
     Ok(
         json!({"id":id,"projectId":project,"worktreePath":root,"title":title,"provider":"custom","mode":"terminal","status":"starting","createdAt":created,"updatedAt":created,"followed":false,"archived":false,"pinned":false,"bookmarked":false,"sortOrder":0,"organizationRevision":0,"activity":{"state":"unknown","revision":1},"run":run}),
     )
@@ -904,7 +1100,7 @@ pub(crate) fn rerun(db: &Arc<Database>, pty: &PtyManager, value: &Value) -> Resu
     let _guard = ADMISSION
         .lock()
         .map_err(|_| anyhow!("quick launch admission poisoned"))?;
-    if let Some(result) = db.operation(&p.operation_id)? {
+    if let Some(result) = replayed_operation(db,&p.operation_id,"session.rerun")? {
         return Ok(Some(result));
     }
     let source = db
@@ -916,7 +1112,11 @@ pub(crate) fn rerun(db: &Arc<Database>, pty: &PtyManager, value: &Value) -> Resu
     ) {
         return Err(anyhow!("End the current session before rerunning it"));
     }
-    let (snapshot, _) = setup::decode_snapshot(&raw)?;
+    let (snapshot, _, _) = setup::decode_snapshot(&raw)?;
+    if !snapshot.depends_on.is_empty() {
+        drop(_guard);
+        return setup::run_dependencies(db,pty,&snapshot,&root,&p.operation_id,"session.rerun",None,Some(&p.session_id)).map(Some);
+    }
     Ok(Some(start(
         db,
         pty,
@@ -1034,7 +1234,7 @@ fn restart_using(
     if let Some(result) = replayed_operation(db, operation_id, method)? {
         return Ok(result);
     }
-    let (snapshot, _) = setup::decode_snapshot(&raw)?;
+    let (snapshot, _, _) = setup::decode_snapshot(&raw)?;
     // A saved entry relaunches from its current saved text; a detected one is re-detected,
     // so an entry whose source disappeared fails instead of running a stale command.
     let snapshot = match approved {
@@ -1044,6 +1244,10 @@ fn restart_using(
             None => read_command(db, &snapshot.id)?,
         },
     };
+    if !snapshot.depends_on.is_empty() {
+        drop(_guard);
+        return setup::run_dependencies(db,pty,&snapshot,&root,operation_id,method,started_by,None);
+    }
     start(
         db,
         pty,
@@ -1068,6 +1272,9 @@ pub(crate) fn start_entry(
     operation_id: &str,
     started_by: &str,
 ) -> Result<Value> {
+    if !snapshot.depends_on.is_empty() {
+        return setup::run_dependencies(db,pty,snapshot,root,operation_id,"chat.tool.run.start",Some(started_by),None);
+    }
     let _guard = ADMISSION
         .lock()
         .map_err(|_| anyhow!("quick launch admission poisoned"))?;
@@ -1155,14 +1362,15 @@ pub(crate) fn apply_environment(
     id: &str,
     command: &mut CommandBuilder,
 ) -> Result<()> {
-    let raw: String = db.transaction(|tx| {
+    let (raw, allocated_port): (String, Option<i64>) = db.transaction(|tx| {
         Ok(tx.query_row(
-            "SELECT snapshot_json FROM quick_launch_runs WHERE session_id=?",
+            "SELECT snapshot_json,allocated_port FROM quick_launch_runs WHERE session_id=?",
             [id],
-            |r| r.get(0),
+            |r| Ok((r.get(0)?, r.get(1)?)),
         )?)
     })?;
-    let (snapshot, _) = setup::decode_snapshot(&raw)?;
+    let (template, _, _) = setup::decode_snapshot(&raw)?;
+    let snapshot = resolve_port(&template, allocated_port.and_then(|port| u16::try_from(port).ok()))?;
     // Snapshot once: every override expands against the composed inherited
     // environment, rather than against overrides ordered earlier in the form.
     let inherited: Vec<_> = command
@@ -1251,6 +1459,32 @@ impl Escape {
             }
             _ => false,
         }
+    }
+}
+
+#[cfg(test)]
+mod port_template_tests {
+    use super::*;
+
+    fn template() -> QuickLaunchCommand {
+        QuickLaunchCommand {
+            id: "saved".into(), project_id: "project".into(), revision: 1,
+            name: "server".into(), command: "node app --port ${port}".into(),
+            shell: "cmd".into(), cwd: String::new(), kind: "service".into(),
+            env: vec![EnvVar { name: "APP_PORT".into(), value: "${port}".into() }],
+            depends_on: Vec::new(), preview_url: Some("http://localhost:${port}/".into()),
+            created_at: "now".into(), updated_at: "now".into(),
+        }
+    }
+
+    #[test]
+    fn substitutes_every_launch_field_without_changing_the_template() {
+        let command = template();
+        let resolved = resolve_port(&command, Some(43123)).unwrap();
+        assert_eq!(resolved.command, "node app --port 43123");
+        assert_eq!(resolved.env[0].value, "43123");
+        assert_eq!(resolved.preview_url.as_deref(), Some("http://localhost:43123/"));
+        assert!(command.command.contains("${port}"));
     }
 }
 /// Constructed only for run sessions, on their existing PTY reader. No timer,
@@ -1387,7 +1621,7 @@ pub(crate) fn observe_output(db: &Database, id: &str, url: &str) -> Result<()> {
         // without port discovery it is the only readiness signal there is. A port that
         // stops being the address is cleared, so `port` and the link can never disagree.
         // Tasks have no readiness state to change, and a repeat is not an event.
-        if tx.execute("UPDATE quick_launch_runs SET url=?,url_source='output',readiness=CASE WHEN readiness IS NULL THEN NULL ELSE 'ready' END,ready_port=CASE WHEN url_source='port' THEN NULL ELSE ready_port END WHERE session_id=? AND (url_source IS NULL OR url_source!='output' OR readiness IN ('waiting','none'))", params![url,id])? != 0 {
+        if tx.execute("UPDATE quick_launch_runs SET url=?,url_source='output',readiness=CASE WHEN readiness IS NULL THEN NULL WHEN allocated_port IS NULL THEN 'ready' ELSE readiness END,ready_port=CASE WHEN url_source='port' THEN NULL ELSE ready_port END WHERE session_id=? AND (url_source IS NULL OR url_source!='output' OR readiness IN ('waiting','none'))", params![url,id])? != 0 {
             changed(tx, "session.run", Some(id))?;
         }
         Ok(())
@@ -1425,9 +1659,21 @@ pub fn reconcile_readiness(db: &Database) -> Result<()> {
 mod tests;
 
 #[cfg(test)]
+#[path = "quick_launch_port_tests.rs"]
+mod port_tests;
+
+#[cfg(test)]
 #[path = "quick_launch_readiness_tests.rs"]
 mod readiness_tests;
 
 #[cfg(test)]
 #[path = "quick_launch_setup_tests.rs"]
 mod setup_tests;
+
+#[cfg(test)]
+#[path = "quick_launch_sequence_tests.rs"]
+mod sequence_tests;
+
+#[cfg(test)]
+#[path = "quick_launch_depends_tests.rs"]
+mod depends_tests;

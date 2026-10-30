@@ -51,16 +51,19 @@ export type QuickLaunchKind = 'service'|'task';
 export interface QuickLaunchEnvVar { name:string; /** `%NAME%` references expand against the inherited environment at run time. */ value:string }
 export interface QuickLaunchCommand { id:string; projectId:string; revision:number; name:string; /** Verbatim command text for the shell (may hold several lines for PowerShell). */ command:string; shell:QuickLaunchShell;
  /** Relative to the worktree root, '' = the root; resolved again at every run and kept inside the root. */ cwd:string; kind:QuickLaunchKind; env:QuickLaunchEnvVar[];
- /** Fallback preview address when the run prints no local URL. */ previewUrl?:string; createdAt:string; updatedAt:string }
+ /** Fallback preview address when the run prints no local URL. */ previewUrl?:string;
+ /** Saved commands to start and satisfy in order before this command; one level only. */ dependsOn?:string[]; createdAt:string; updatedAt:string }
 /** The launch snapshot of a run; editing or deleting the command later does not change it. */
 export interface SessionRun { commandId:string; name:string; kind:QuickLaunchKind; shell:QuickLaunchShell; /** The first local http(s) URL this run printed (`output`), the port its process tree listened on (`port`), else the command's fallback (`configured`). */ url?:string; urlSource?:'output'|'configured'|'port';
  /** `waiting` while a service run is watched for a listening port, `ready` once it listened or printed a URL, `none`
   * when the watcher gave up or this platform cannot tell. Absent for tasks and for runs older than readiness. */
  readiness?:'waiting'|'ready'|'none';
  /** The port the run became ready on; only when readiness came from a port. */ port?:number;
+ /** The free port allocated from this command's `${port}` template. It remains present before readiness and may differ from `port`, which is the port observed as ready. */ allocatedPort?:number;
  /** The Chat session whose agent started this run (a run the user started has none). The Run view labels it in 2b. */ startedBy?:string;
  /** The user asked to stop it: an exit after this reads as "Stopped", not as a failure. */ stopRequested?:boolean;
- /** Present when a worktree setup sequence started this run: its id, 0-based step and step count. */ setup?:{runId:string;step:number;total:number} }
+ /** Present when a worktree setup sequence started this run: its id, 0-based step and step count. */ setup?:{runId:string;step:number;total:number};
+ /** Present when the shared sequence runner started this run: its id, 0-based step and step count. */ sequence?:{runId:string;step:number;total:number} }
 /** Worktree setup (Quick Launch): a project's chosen `task` commands, run in order in every new worktree of the project
  * and on request. Saving a non-empty list is the user's consent to run it automatically. Revision 0 = never saved. */
 export interface QuickLaunchSetup { projectId:string; revision:number; commandIds:string[] }
@@ -85,10 +88,15 @@ export interface ChatToolRunSummary { runId:string; entryId:string; name:string;
  startedAt:string; startedBy:'user'|'agent'; /** Started by the calling Chat session itself. */ startedBySelf:boolean }
 export interface ChatToolRunList { /** The canonical worktree root the tools are scoped to. */ worktree:string; entries:ChatToolRunEntry[];
  /** Active runs plus the latest finished ones. */ runs:ChatToolRunSummary[]; truncated:boolean }
-export interface ChatToolRunStart { runId:string; /** An instance was already active: nothing new was launched. */ existing:boolean; state:SessionStatus; entryId:string|null; name:string|null }
-export interface ChatToolRunStatus extends ChatToolRunSummary { uptimeSeconds:number }
+export interface ChatToolRunStart { runId:string; /** An instance was already active: nothing new was launched. */ existing:boolean; state:SessionStatus; entryId:string|null; name:string|null;
+ /** Present when `run_start` launched a dependency sequence; use `run_status` to follow its progress. */ sequenceId?:string; sequence?:WorktreeSetupRun }
+/** `run_status` may name a terminal run or, when `runId` is a dependency sequence id, the sequence target itself. */
+export interface ChatToolRunStatus { runId:string; entryId:string; name:string; state:SessionStatus|WorktreeSetupState; readiness?:'waiting'|'ready'|'none'; url?:string; port?:number; exitCode?:number;
+ startedAt:string; startedBy:'user'|'agent'; /** Started by the calling Chat session itself. */ startedBySelf:boolean; uptimeSeconds:number;
+ /** Present while or after this run belongs to a shared dependency sequence. */ sequence?:WorktreeSetupRun }
 /** A stop is the user's Stop: the intent flag plus terminating the run's process tree. */
-export interface ChatToolRunStop { runId:string; /** The stopped run's entry, for the tool card's summary. */ entryId:string|null; name:string|null; state:SessionStatus; stopRequested:true }
+export interface ChatToolRunStop { runId:string; /** The stopped run's entry, for the tool card's summary. */ entryId:string|null; name:string|null; state:SessionStatus|WorktreeSetupState; stopRequested:true;
+ /** Present when Stop cancelled a dependency sequence. */ sequence?:WorktreeSetupRun }
 export interface ChatToolRunLogs { runId:string; /** The read run's entry, for the tool card's summary. */ entryId:string|null; name:string|null; /** Plain text: ANSI/OSC sequences stripped, CR overwrites collapsed, at most 64 KiB. */ text:string;
  /** The scan cap (1 MiB back), the text cap or the line bound cut something. */ truncated:boolean; totalBytes:number }
 export type WorktreeSetupState = 'running'|'completed'|'failed'|'cancelled'|'interrupted';
@@ -96,7 +104,9 @@ export type WorktreeSetupState = 'running'|'completed'|'failed'|'cancelled'|'int
  * one that failed / was cancelled / was interrupted. `sessionIds` holds the terminal of every step started so far.
  * `exitCode` is the failed step's exit code. A runtime restart turns `running` into `interrupted`; it never resumes. */
 export interface WorktreeSetupRun { id:string; projectId:string; root:string; commandIds:string[]; names:string[]; step:number;
- state:WorktreeSetupState; sessionIds:string[]; exitCode?:number; trigger:'worktree.create'|'manual'|'retry'; createdAt:string; updatedAt:string }
+ state:WorktreeSetupState; sessionIds:string[]; exitCode?:number; trigger:'worktree.create'|'manual'|'retry'|'depends_on';
+ /** The saved command requested after a `depends_on` sequence completes. */ targetCommandId?:string;
+ /** A dependency sequence reports `dependency_failed: <name>` when its current prerequisite cannot be satisfied. */ error?:string; createdAt:string; updatedAt:string }
 /** Prompt queue (Chat): messages written while the agent works wait here; the runtime sends them in order, one per
  * finished turn, through the same path as chat.send. Never while paused, disconnected, mid-turn or awaiting an approval. */
 export interface ChatQueueItem { id:string; text:string; images:string[]; revision:number; createdAt:string; updatedAt:string;
@@ -862,18 +872,18 @@ export interface RequestMap {
  'chat.queue.send': [{sessionId:string;itemId:string;operationId:string;leaseEpoch:number},ChatQueue];
  'quickLaunch.list': [{projectId:string},QuickLaunchCommand[]];
  /** Creates (no `id`) or replaces a command (`id` + `expectedRevision`; a stale revision fails with `revision_conflict`). */
- 'quickLaunch.save': [{projectId:string;id?:string;expectedRevision?:number;name:string;command:string;shell:QuickLaunchShell;cwd:string;kind:QuickLaunchKind;env:QuickLaunchEnvVar[];previewUrl?:string;operationId:string},QuickLaunchCommand];
+ 'quickLaunch.save': [{projectId:string;id?:string;expectedRevision?:number;name:string;command:string;shell:QuickLaunchShell;cwd:string;kind:QuickLaunchKind;env:QuickLaunchEnvVar[];previewUrl?:string;dependsOn?:string[];operationId:string},QuickLaunchCommand];
  /** Running runs of the command keep running. */
  'quickLaunch.delete': [{id:string;expectedRevision:number;operationId:string},null];
  /** Runs the command in the worktree whose root is `cwd` (a registered root of the command's project). When a run of this
   * command is already active in that root, returns it with `existing: true` instead of starting another.
   * Exactly one of `commandId` (a saved command) or `detectedKey` (re-detected from the files; needs `projectId`) is
   * accepted. The command text of a detected entry always comes from the files, never from this request. */
- 'quickLaunch.run': [{commandId?:string;detectedKey?:string;projectId?:string;cwd:string;operationId:string},{session:Session;existing:boolean}];
+ 'quickLaunch.run': [{commandId?:string;detectedKey?:string;projectId?:string;cwd:string;operationId:string},{session:Session;existing:boolean;sequence?:WorktreeSetupRun;sequenceId?:string}];
  /** Stops the run of this session, waits up to 10 s for it to exit (`restart_stop_timeout`, nothing relaunched), then
   * launches the same entry again for the same worktree root: a saved command from its current saved text, a detected
   * entry by re-detecting it (`detected_entry_not_found`). The result is the new session. */
- 'quickLaunch.restart': [{sessionId:string;operationId:string},{session:Session;existing:boolean}];
+ 'quickLaunch.restart': [{sessionId:string;operationId:string},{session:Session;existing:boolean;sequence?:WorktreeSetupRun;sequenceId?:string}];
  /** Detected entries of the worktree whose root is `cwd` (a registered root of the project). Reads files only. */
  'quickLaunch.detect': [{projectId:string;cwd:string},QuickLaunchDetection];
  'quickLaunch.setup.read': [{projectId:string},QuickLaunchSetup];
@@ -886,6 +896,10 @@ export interface RequestMap {
  'quickLaunch.setup.run': [{projectId:string;cwd:string;fromStep?:number;operationId:string},WorktreeSetupRun];
  /** The latest sequence of each worktree root of the project. */
  'quickLaunch.setup.status': [{projectId:string},WorktreeSetupRun[]];
+ /** Cancels a running shared setup or dependency sequence. */
+ 'quickLaunch.sequence.cancel': [{id:string;operationId:string},WorktreeSetupRun];
+ /** Reads the persisted `${port}` allocation for one saved command in one worktree. */
+ 'quickLaunch.port.read': [{commandId:string;cwd:string},{port?:number}];
  /** Agent run tools. Caller-scoped to the calling Chat's worktree: another worktree's or project's run is `run_not_found`.
   * A read-only delegate may list, read status and read logs only (`run_not_permitted` otherwise). */
  'chat.tool.run.list': [{},ChatToolRunList];
@@ -1081,6 +1095,7 @@ export const METHODS = ['git.history.plan','git.cherryPick','git.revert','git.re
  'git.undo','git.undo.list',
  'reviewDrafts.list','reviewDrafts.upsert','reviewDrafts.delete',
  'reviewDrafts.importLegacy','reviewDrafts.assetReferences',
+ 'quickLaunch.sequence.cancel','quickLaunch.port.read',
 );
 // The RPC has a RequestMap entry above and must also pass the runtime registry.
 const stringFields: Partial<Record<Method,readonly string[]>> = {
@@ -1142,6 +1157,8 @@ const stringFields: Partial<Record<Method,readonly string[]>> = {
 };
 (stringFields as Partial<Record<Method,readonly string[]>>)['git.undo']=['projectId','id','operationId'];
 (stringFields as Partial<Record<Method,readonly string[]>>)['git.undo.list']=['projectId'];
+(stringFields as Partial<Record<Method,readonly string[]>>)['quickLaunch.sequence.cancel']=['id','operationId'];
+(stringFields as Partial<Record<Method,readonly string[]>>)['quickLaunch.port.read']=['commandId','cwd'];
 export function isRecord(value:unknown):value is Record<string,unknown> { return typeof value==='object' && value!==null && !Array.isArray(value); }
 export function validateRequest(method:unknown,params:unknown):asserts method is Method {
  if(typeof method!=='string'||!(METHODS as readonly string[]).includes(method)) throw new Error('Unsupported runtime method');
@@ -1322,7 +1339,8 @@ export function validateRequest(method:unknown,params:unknown):asserts method is
   // Relative to the worktree root; the runtime resolves it again at every run and keeps it inside the root.
   if(typeof params.cwd!=='string'||params.cwd.length>260||/^([a-z]:|[\\/])/i.test(params.cwd)||/(^|[\\/])\.\.([\\/]|$)/.test(params.cwd)||/[\u0000-\u001f<>"|?*]/.test(params.cwd)) throw new Error('Invalid working directory');
   if(!Array.isArray(params.env)||params.env.length>32||params.env.some(item=>!isRecord(item)||typeof item.name!=='string'||!/^[A-Za-z_][A-Za-z0-9_]{0,127}$/.test(item.name)||typeof item.value!=='string'||item.value.length>8192||item.value.includes('\u0000'))||new Set(params.env.map(item=>String((item as {name:unknown}).name).toUpperCase())).size!==params.env.length) throw new Error('Invalid environment overrides');
-  if(params.previewUrl!==undefined&&!isWebPreviewUrl(params.previewUrl)) throw new Error('Invalid preview address');
+  if(params.previewUrl!==undefined&&!isQuickLaunchPreviewUrl(params.previewUrl)) throw new Error('Invalid preview address');
+  if(params.dependsOn!==undefined&&(!Array.isArray(params.dependsOn)||params.dependsOn.length>8||params.dependsOn.some(id=>typeof id!=='string'||!id)||new Set(params.dependsOn).size!==params.dependsOn.length)) throw new Error('Invalid command dependencies');
   if((params.id===undefined)!==(params.expectedRevision===undefined)||(params.expectedRevision!==undefined&&(!Number.isSafeInteger(params.expectedRevision)||Number(params.expectedRevision)<1))) throw new Error('Invalid command revision');
  }
  if(m==='quickLaunch.delete'&&(!Number.isSafeInteger(params.expectedRevision)||Number(params.expectedRevision)<1)) throw new Error('Invalid command revision');
@@ -1447,6 +1465,10 @@ export function validateResult<M extends Method>(method:M,result:unknown):assert
 export function isWebPreviewUrl(value:unknown):value is string {
  if(typeof value!=='string'||!value||value.length>2048||/[\s\u0000-\u001f\u007f-\u009f]/.test(value)) return false;
  try { const url=new URL(value); return (url.protocol==='http:'||url.protocol==='https:')&&Boolean(url.hostname); } catch { return false; }
+}
+/** Quick Launch resolves its literal `${port}` token before launching, then applies the ordinary web preview invariant. */
+function isQuickLaunchPreviewUrl(value:unknown):value is string {
+ return typeof value==='string'&&isWebPreviewUrl(value.replaceAll('${port}','5173'));
 }
 export function validateLayout(value:unknown):asserts value is PaneLayout {
  let panes=0; const ids=new Set<string>();

@@ -1,6 +1,6 @@
 import { useEffect, useId, useMemo, useRef, useState } from 'react';
 import type { DetectedRunEntry, QuickLaunchCommand, Session } from '@threadterm/protocol';
-import { operationId, request } from '../bridge';
+import { operationId, request, subscribeEvents } from '../bridge';
 import { useTranslation } from '../i18n';
 import { detectedSections, detectedSourceLabel, previewReady, quickLaunchError, runStateLabel } from '../quickLaunch';
 import { useVisibleTicker } from '../visibleTicker';
@@ -10,7 +10,9 @@ import {
  currentRunEntry, filterRunEntries, formatUptime, runCurrentConfigs, runningRows, RUN_FILTER_FROM, RUN_SHORTCUTS,
  runShortcutLabel, uptimeMs, type RunCommandRequest,
 } from '../workbench/runView';
-import { CommandEditor, ImportScripts, SetupEditor } from './QuickLaunch';
+import { CommandEditor, ImportScripts } from './QuickLaunch';
+import { RunSetupSection } from './RunSetupSection';
+import { activeSequenceForCommand, allocatedRunPort, sequenceChipText } from '../runSequence';
 import { Icon } from './PrototypeIcon';
 import { showContextMenu } from './ContextMenu';
 import { detectedRunEntries, AgentTag, Play, RunEntryPrimary, RunEntryRow, RunUrlLink, runEntrySessions, savedRunEntries, useRunCatalog, type RunEntry } from './RunRows';
@@ -45,7 +47,7 @@ export function RunViewPanel({scope, sessions, actions, zh, visible, command, on
  const [, setConfigRevision] = useState(0);
  const [editor, setEditor] = useState<QuickLaunchCommand|'new'|DetectedRunEntry>();
  const [importing, setImporting] = useState(false);
- const [setupEditor, setSetupEditor] = useState(false);
+ const [sequenceRuns, setSequenceRuns] = useState<import('@threadterm/protocol').WorktreeSetupRun[]>([]);
  const handled = useRef<string|undefined>(undefined);
  const id = useId(), helpId = `${id}-help`;
  // Uptime is the only timer: one tick per second, only while this view is visible.
@@ -57,6 +59,7 @@ export function RunViewPanel({scope, sessions, actions, zh, visible, command, on
  const current = currentRunEntry(runScope, projectSessions, runCurrentConfigs.get(runScope));
  const currentEntry = current ? everything.find(entry => entry.commandId === current.commandId) : undefined;
  const currentRun = current ? running.find(row => row.current && row.commandId === current.commandId)?.session : undefined;
+ useEffect(() => { if (!visible) return; let active=true; const refresh=()=>{void request('quickLaunch.setup.status',{projectId:scope.projectId}).then(value=>{if(active)setSequenceRuns(value);}).catch(()=>{});}; refresh(); const unsubscribe=subscribeEvents(event=>{const data=event.data as {kind?:unknown;projectId?:unknown}|undefined;if(event.event==='state.changed'&&data?.kind==='quickLaunch.setup'&&data.projectId===scope.projectId)refresh();}); return()=>{active=false;unsubscribe();}; }, [visible,scope.projectId]);
 
  const perform = async (task:() => Promise<void>) => {
   if (busy) return;
@@ -157,13 +160,14 @@ export function RunViewPanel({scope, sessions, actions, zh, visible, command, on
 
  const renderRow = (entry:RunEntry) => {
   const { active } = runEntrySessions(projectSessions, entry.commandId, root);
+  const sequence = activeSequenceForCommand(sequenceRuns, root, entry.commandId), sequenceText=sequenceChipText(sequence,chinese);
   return <RunEntryRow key={entry.commandId} entry={entry} session={active} zh={chinese} busy={busy}
    current={current?.commandId === entry.commandId}
    agentLabel={agentStartLabel(active?.run?.startedBy, sessions, chinese)}
    actions={<>
     <RunEntryPrimary entry={entry} active={active} busy={busy} zh={chinese} onRun={() => void runEntry(entry)} onOpen={open}/>
     <button type="button" className="icon-btn" data-testid={`run-row-menu-${entry.key}`} aria-label={`${copy('More actions','更多操作')} ${entry.name}`} aria-haspopup="menu" title={copy('More actions','更多操作')} onClick={event => rowMenu(entry, active, event)}><Icon name="more"/></button>
-   </>}/>;
+   </>} sequenceText={sequenceText} onCancelSequence={sequence?.state==='running'?()=>void perform(async()=>{await request('quickLaunch.sequence.cancel',{id:sequence.id,operationId:operationId()});}):undefined}/>;
  };
 
  return <div className="wb-run" data-testid="run-view" data-run-scope={`${scope.projectId}\0${root}`} onKeyDown={roveRows}>
@@ -186,7 +190,7 @@ export function RunViewPanel({scope, sessions, actions, zh, visible, command, on
    <header className="wb-run-section-head"><span className="wb-section-label">{copy('Running','运行中')}</span><span className="wb-count">{running.length}</span>
     <button type="button" className="btn btn-sm btn-ghost" data-testid="run-stop-all" disabled={busy || !running.some(row => row.current)} title={copy('Stop every run of this worktree','停止此工作树中的所有运行')} onClick={() => void stopAll()}>{copy('Stop all','全部停止')}</button></header>
    {running.length === 0 ? <p className="wb-empty">{copy('No run is active in this project.','此项目当前没有运行中的进程。')}</p> : running.map(row => <section className={`wb-run-running${row.current ? ' current' : ''}`} key={row.session.id} data-testid="run-running-row" data-session-id={row.session.id} data-run-entry={row.commandId} data-current={row.current ? 'true' : undefined}>
-    <div className="ql-command-head"><strong>{row.name}</strong><AgentTag startedBy={row.session.run?.startedBy} sessions={sessions} zh={chinese} onOpen={open}/><span className="ql-worktree" title={row.current ? copy('This worktree','此工作树') : row.worktree}>{row.worktree}</span><span className={`ql-state ql-${row.state.state}`} data-testid="run-running-state"><span className="dot" aria-hidden="true"/>{runStateLabel(row.state, chinese)}</span>{row.state.port !== undefined && <span className="ql-port" data-testid="run-port">:{row.state.port}</span>}<span className="ql-uptime" title={copy('Uptime','运行时长')}>{formatUptime(uptimeMs(row.session.createdAt, now))}</span></div>
+    <div className="ql-command-head"><strong>{row.name}</strong><AgentTag startedBy={row.session.run?.startedBy} sessions={sessions} zh={chinese} onOpen={open}/><span className="ql-worktree" title={row.current ? copy('This worktree','此工作树') : row.worktree}>{row.worktree}</span><span className={`ql-state ql-${row.state.state}`} data-testid="run-running-state"><span className="dot" aria-hidden="true"/>{runStateLabel(row.state, chinese)}</span>{allocatedRunPort(row.session) !== undefined && <span className="ql-port" data-testid="run-port">:{allocatedRunPort(row.session)}</span>}<span className="ql-uptime" title={copy('Uptime','运行时长')}>{formatUptime(uptimeMs(row.session.createdAt, now))}</span></div>
     {row.state.url && <RunUrlLink url={row.state.url} onOpenPreview={actions.openPreview} pending={!previewReady(row.session)} zh={chinese}/>}
     <div className="ql-actions">
      <button type="button" className="btn btn-sm" data-testid="run-restart" disabled={busy} onClick={() => void restartRun(row.session)}>{copy('Restart','重启')}</button>
@@ -195,6 +199,8 @@ export function RunViewPanel({scope, sessions, actions, zh, visible, command, on
     </div>
    </section>)}
   </section>
+
+  <RunSetupSection projectId={scope.projectId} root={root} commands={catalog.commands} sessions={projectSessions} zh={chinese} onOpenSession={open} onChanged={catalog.refresh}/>
 
   <section className="wb-run-section" data-testid="run-entries" aria-label={copy('Commands','命令')}>
    {catalog.commands.length + catalog.detected.length >= RUN_FILTER_FROM && <input className="wb-run-filter" type="search" data-testid="run-filter" value={filter} placeholder={copy('Filter entries','筛选条目')} aria-label={copy('Filter entries','筛选条目')} onChange={event => setFilter(event.target.value)}/>}
@@ -213,7 +219,6 @@ export function RunViewPanel({scope, sessions, actions, zh, visible, command, on
   </section>
 
   <footer className="wb-run-foot">
-   <button type="button" className="menu-item" data-testid="run-worktree-setup" disabled={busy} onClick={() => setSetupEditor(true)}><Icon name="branch"/>{copy('Worktree setup…','工作树初始化…')}</button>
    <button type="button" className="menu-item" data-testid="run-import" disabled={busy} onClick={() => setImporting(true)}><Icon name="export"/>{copy('Import from package.json','从 package.json 导入')}</button>
   </footer>
 
@@ -224,6 +229,5 @@ export function RunViewPanel({scope, sessions, actions, zh, visible, command, on
    onReload={async commandId => (await request('quickLaunch.list', {projectId:scope.projectId})).find(command => command.id === commandId)}
    onRun={async command => { const result = await request('quickLaunch.run', { commandId:command.id, cwd:root, operationId:operationId() }); open(result.session.id); }}/>}
   {importing && <ImportScripts projectId={scope.projectId} root={root} onClose={() => setImporting(false)} onChanged={async () => { catalog.refresh(); }}/>}
-  {setupEditor && <SetupEditor projectId={scope.projectId} commands={catalog.commands} onClose={() => setSetupEditor(false)} onSaved={async () => { catalog.refresh(); }}/>}
  </div>;
 }

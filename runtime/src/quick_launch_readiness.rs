@@ -65,6 +65,15 @@ pub(super) fn next_step(elapsed: Duration, ports: &[u16], printed: Option<u16>) 
     }
 }
 
+/// An allocated port is the only listener that can satisfy that run.
+pub(super) fn candidate_ports(allocated: Option<u16>, ports: &[u16]) -> Vec<u16> {
+    match allocated {
+        Some(port) if ports.contains(&port) => vec![port],
+        Some(_) => Vec::new(),
+        None => ports.to_vec(),
+    }
+}
+
 /// The run's port: the one it printed when that one listens, else the lowest port
 /// that is not a debugger port, else the lowest port at all.
 pub(super) fn select_port(ports: &[u16], printed: Option<u16>) -> Option<u16> {
@@ -94,13 +103,14 @@ struct WatchState {
     stopped: bool,
     ready: bool,
     printed_port: Option<u16>,
+    allocated_port: Option<u16>,
 }
 
 fn watch_state(db: &Database, id: &str) -> Result<Option<WatchState>> {
     db.transaction(|tx| {
         Ok(tx
             .query_row(
-                "SELECT s.status,q.stop_requested,q.readiness,q.url,q.url_source \
+                "SELECT s.status,q.stop_requested,q.readiness,q.url,q.url_source,q.allocated_port \
                  FROM quick_launch_runs q JOIN sessions s ON s.id=q.session_id WHERE q.session_id=?",
                 [id],
                 |r| {
@@ -120,6 +130,7 @@ fn watch_state(db: &Database, id: &str) -> Result<Option<WatchState>> {
                         } else {
                             None
                         },
+                        allocated_port: r.get::<_, Option<i64>>(5)?.and_then(|port| u16::try_from(port).ok()),
                     })
                 },
             )
@@ -202,7 +213,10 @@ pub(super) fn watch(db: &Database, host: &impl WatchHost, id: &str) {
             break;
         }
         let ports = host.ports(id);
-        match next_step(host.elapsed(), &ports, state.printed_port) {
+        // An allocated `${port}` identifies this particular run. Other listeners in
+        // its job (inspectors, helpers, or a stale child) never satisfy it.
+        let candidates = candidate_ports(state.allocated_port, &ports);
+        match next_step(host.elapsed(), &candidates, state.printed_port) {
             Step::Ready(port) => {
                 if observe_port(db, id, port).is_ok() {
                     return;

@@ -38,3 +38,12 @@
 .wb-run .ql-agent-tag:hover { color:var(--text); border-color:var(--primary); }
 .wb-run span.ql-agent-tag { cursor:default; }
 .wb-run .ql-agent-tag:focus-visible { outline:2px solid var(--primary); outline-offset:1px; }
+.wb-run-setup-actions { display:flex; gap:4px; margin-left:auto; }
+.wb-run-section-head .wb-run-setup-actions .btn { margin-left:0; }
+.wb-run-setup-status { display:flex; flex-wrap:wrap; align-items:center; gap:6px; padding:6px 10px; color:var(--muted); font-size:12px; }
+.wb-run-setup-status span { margin-right:auto; }
+.wb-run-setup-list { display:grid; gap:4px; margin:2px 10px 8px; padding-left:22px; font-size:12px; }
+.wb-run-setup-list li { display:flex; flex-wrap:wrap; gap:5px; }
+.wb-run-setup-list code { color:var(--muted); overflow-wrap:anywhere; }
+.wb-run-setup-editor { padding:4px 10px 10px; border-top:1px solid var(--border); }
+.wb-run-setup-save { display:flex; justify-content:flex-end; margin-top:8px; }

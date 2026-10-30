@@ -12,14 +12,15 @@ import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { build as esbuild } from 'esbuild';
 import { build as viteBuild } from 'vite';
+import { acquireElectronQaLock } from './lib/electron-lock.mjs';
 import { electron } from './lib/desktop1.mjs'; // Desktop 1; never takes the user's desktop.
 
 const root = resolve(fileURLToPath(new URL('..', import.meta.url)));
-const runtime = join(root, 'runtime/target-qa/debug/threadterm-v3-runtime.exe');
-const gitDir = (() => {
+const runtime = process.env.THREADTERM_V3_RUNTIME_BIN ?? join(root, 'runtime/target-qa/debug/threadterm-v3-runtime.exe');
+const gitExe = process.env.THREADTERM_TEST_GIT ?? (() => {
  const found = execFileSync('where', ['git'], { encoding: 'utf8', windowsHide: true }).split(/\r?\n/).filter(Boolean);
  const git = found.find(path => /\\cmd\\git\.exe$/i.test(path)) ?? found[0];
- assert.ok(git, 'git was not found'); return dirname(git);
+ assert.ok(git, 'git was not found'); return git;
 })();
 const scratch = await mkdtemp(join(tmpdir(), 'tt-worktree-setup-'));
 const work = join(scratch, 'fixture');
@@ -28,7 +29,9 @@ const appDir = join(scratch, 'app');
 const out = join(root, 'qa/results/worktree-setup');
 const keep = process.argv.includes('--keep');
 const report = { passed: false, scratch, checks: [], screenshots: [], errors: [] };
-let app, page, project, finalizing = false;
+let app, page, project, releaseLock, finalizing = false;
+const gitDir = dirname(gitExe);
+const fixtureEnv = Object.fromEntries(Object.entries(process.env).filter(([key]) => !/^git_/i.test(key)));
 const delay = ms => new Promise(done => setTimeout(done, ms));
 const asText = error => error instanceof Error ? (error.stack ?? error.message) : String(error);
 const check = value => { report.checks.push(value); console.log(`PASS ${value}`); };
@@ -55,13 +58,13 @@ async function buildApp() {
 }
 async function prepareFixture() {
  await mkdir(work, { recursive: true });
- for (const args of [['init'], ['config', 'user.email', 'qa@example.test'], ['config', 'user.name', 'Worktree Setup QA']]) execFileSync('git', args, { cwd: work, stdio: 'pipe' });
+ for (const args of [['init'], ['config', 'user.email', 'qa@example.test'], ['config', 'user.name', 'Worktree Setup QA']]) execFileSync(gitExe, args, { cwd: work, stdio: 'pipe', windowsHide: true, env: fixtureEnv });
  await writeFile(join(work, 'step1.mjs'), "import { writeFile } from 'node:fs/promises'; await writeFile('step1.done','done');\n");
  await writeFile(join(work, 'step2.mjs'), "import { existsSync } from 'node:fs'; if (!existsSync('allow-step2')) process.exit(1);\n");
  await writeFile(join(work, 'step3.mjs'), "import { writeFile } from 'node:fs/promises'; await writeFile('step3.done','done');\n");
  await writeFile(join(work, 'README.md'), 'worktree setup fixture\n');
- execFileSync('git', ['add', '.'], { cwd: work, stdio: 'pipe' });
- execFileSync('git', ['commit', '-m', 'fixture'], { cwd: work, stdio: 'pipe' });
+ execFileSync(gitExe, ['add', '.'], { cwd: work, stdio: 'pipe', windowsHide: true, env: fixtureEnv });
+ execFileSync(gitExe, ['commit', '-m', 'fixture'], { cwd: work, stdio: 'pipe', windowsHide: true, env: fixtureEnv });
  await buildApp();
 }
 const menu = () => page.locator('[data-testid="quick-launch-menu"]');
@@ -116,6 +119,7 @@ async function finalize(fatal) {
  if (page && report.errors.length) await page.screenshot({ path: join(out, 'failure.png') }).catch(() => {});
  if (page) await Promise.race([request('runtime.shutdown', { operationId: randomUUID() }), delay(3_000)]).catch(() => {});
  if (app) { await Promise.race([app.evaluate(({ app: electronApp }) => electronApp.exit(0)), delay(2_000)]).catch(() => {}); await Promise.race([app.close(), delay(5_000)]).catch(() => {}); try { app.process()?.kill(); } catch {} }
+ await releaseLock?.().catch(() => {});
  if (!keep) await rm(scratch, { recursive: true, force: true, maxRetries: 10, retryDelay: 250 }).catch(() => {});
  await writeFile(join(out, 'report.json'), JSON.stringify(report, null, 2)).catch(() => {});
  process.exitCode = report.passed && !report.errors.length ? 0 : 1;
@@ -127,8 +131,9 @@ try {
  assert.ok(existsSync(runtime), `missing ${runtime}; build runtime/target-qa first`);
  await rm(out, { recursive: true, force: true }); await mkdir(out, { recursive: true }); await prepareFixture();
  // Remove every spelling of PATH before constructing the complete, safe process PATH.
- const env = Object.fromEntries(Object.entries(process.env).filter(([name]) => name.toLowerCase() !== 'path' && !/^(claudecode|claude_code_.*|claude_pid|claude_effort|threadterm_.*|electron_run_as_node|tt_qa_.*)$/i.test(name)));
- Object.assign(env, { PATH: [dirname(process.execPath), gitDir, join(process.env.SystemRoot || 'C:\\Windows', 'System32')].join(';'), THREADTERM_V3_DATA: join(scratch, 'data'), THREADTERM_V3_USER_DATA: join(scratch, 'profile'), THREADTERM_V3_PIPE: `\\\\.\\pipe\\tt-worktree-setup-${randomUUID()}`, THREADTERM_V3_RUNTIME: runtime });
+ const env = Object.fromEntries(Object.entries(process.env).filter(([name]) => name.toLowerCase() !== 'path' && !/^git_/i.test(name) && !/^(claudecode|claude_code_.*|claude_pid|claude_effort|threadterm_.*|electron_run_as_node|tt_qa_.*)$/i.test(name)));
+ Object.assign(env, { HOME: join(scratch, 'home'), USERPROFILE: join(scratch, 'home'), CODEX_HOME: join(scratch, 'codex'), APPDATA: join(scratch, 'appdata'), LOCALAPPDATA: join(scratch, 'localappdata'), PATH: [dirname(process.execPath), gitDir, join(process.env.SystemRoot || 'C:\\Windows', 'System32')].join(';'), THREADTERM_V3_DATA: join(scratch, 'data'), THREADTERM_V3_USER_DATA: join(scratch, 'profile'), THREADTERM_V3_PIPE: `\\\\.\\pipe\\tt-worktree-setup-${randomUUID()}`, THREADTERM_V3_RUNTIME: runtime });
+ releaseLock = await acquireElectronQaLock();
  app = await electron.launch({ args: [appDir], cwd: root, env, timeout: 60_000 }); page = await app.firstWindow({ timeout: 45_000 }); page.setDefaultTimeout(20_000);
  page.on('pageerror', error => report.errors.push(`pageerror: ${error.message}`)); page.on('console', message => { if (message.type() === 'error') report.errors.push(`console: ${message.text()}`); });
  await page.waitForFunction(() => Boolean(window.threadterm)); await page.locator('.app-shell').waitFor({ timeout: 60_000 }); await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].setContentSize(1440, 900));
