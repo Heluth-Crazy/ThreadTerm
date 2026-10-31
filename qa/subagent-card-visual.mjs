@@ -67,7 +67,7 @@ window.qaReads = () => readCalls.slice();
 window.qaTimerCounts = () => ({starts:intervalStarts,stops:intervalStops});
 window.qaEmit = item => { const event={event:'chat.item',seq:sequence++,data:{sessionId:activeScenario,item}}; listeners.forEach(listener=>listener(event)); };
 const root = createRoot(document.getElementById('root'));
-window.qaRender = (scenario, locale='en', theme='light') => { activeScenario=scenario; document.documentElement.dataset.theme=theme; root.render(<I18nProvider locale={locale}><SessionSurfaceContext.Provider value={{primaryHost:null,menuHost:null,focused:true,openFile:()=>{}}}><ChatView key={scenario} session={{id:scenario,provider:scenario==='native'?'kimi':scenario.startsWith('background-')?'grok':'codex',mode:'chat',status:(scenario==='completed'||scenario==='background-completed')?'idle':'running',readOnly:true,title:'Subagent card QA',createdAt:'now',updatedAt:'now'}} /></SessionSurfaceContext.Provider></I18nProvider>); };
+window.qaRender = (scenario, locale='en', theme='light') => { readCalls.length = 0; activeScenario=scenario; document.documentElement.dataset.theme=theme; root.render(<I18nProvider locale={locale}><SessionSurfaceContext.Provider value={{primaryHost:null,menuHost:null,focused:true,openFile:()=>{}}}><ChatView key={scenario} session={{id:scenario,provider:scenario==='native'?'kimi':scenario.startsWith('background-')?'grok':'codex',mode:'chat',status:(scenario==='completed'||scenario==='background-completed')?'idle':'running',readOnly:true,title:'Subagent card QA',createdAt:'now',updatedAt:'now'}} /></SessionSurfaceContext.Provider></I18nProvider>); };
 window.qaRender('running');
 `;
 
@@ -178,7 +178,14 @@ try {
   await render('resize');
   // A scrolled-up reader keeps the message they were reading in view; native
   // scroll anchoring may adjust scrollTop to do so, so pixels are not compared.
-  await page.evaluate(() => { const log=document.querySelector('.v3-chat-log'); log.scrollTop=160; log.dispatchEvent(new Event('scroll'));
+  // Only a real user gesture pauses follow; programmatic scrollTop is snapped back.
+  await page.locator('.v3-chat-log').hover();
+  await page.mouse.wheel(0, -2400);
+  await page.waitForFunction(() => {
+    const log=document.querySelector('.v3-chat-log');
+    return !!document.querySelector('.chat-back-to-bottom') && !!log && log.scrollTop > 0 && log.scrollHeight-log.scrollTop-log.clientHeight > 24;
+  });
+  await page.evaluate(() => { const log=document.querySelector('.v3-chat-log');
     const box=log.getBoundingClientRect(); const reading=Array.from(log.querySelectorAll('.v3-chat-message')).find(node => node.getBoundingClientRect().top >= box.top);
     reading?.setAttribute('data-qa-reading', ''); });
   await shot('18-resize-scrolled-up-wide.png');
