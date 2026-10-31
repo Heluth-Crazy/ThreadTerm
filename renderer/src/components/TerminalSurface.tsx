@@ -15,6 +15,7 @@ import { shiftEnterBytes } from '../terminalKeys';
 import { createResizeScheduler, RESIZE_QUIET_MS } from '../terminalResize';
 import { conptyHost, windowsPtyFor } from '../terminalHost';
 import { applyStorageEvent, storageNoteFromRead, terminalStorageAttention, terminalStorageLabel, type TerminalStorageNote } from '../terminalStorageNote';
+import { EXACT, fidelityAfterLiveGap, screenFidelityDetail, screenFidelityLabel, type ScreenFidelity } from '../terminalFidelity';
 import './terminal-surface.css';
 import {BlockInspector} from './BlockInspector';
 import { AgentIcon, Icon } from './PrototypeIcon';
@@ -118,6 +119,9 @@ export function TerminalSurface({ sessionId, provider, theme, terminalCompatibil
   const [controlState, setControlState] = useState<TerminalControlState>({ phase: 'disabled' });
   const [issue, setIssue] = useState<string>();
   const [storageNote, setStorageNote] = useState<TerminalStorageNote>();
+  // A live gap leaves the parser uncertain for the rest of this replay (R3);
+  // the mount effect below is the only place that starts a fresh, exact one.
+  const [fidelity, setFidelity] = useState<ScreenFidelity>(EXACT);
   const [unread, setUnread] = useState(0);
   const [selectedLink, setSelectedLink] = useState<string>();
   const [inspected, setInspected] = useState<string>();
@@ -299,7 +303,7 @@ export function TerminalSurface({ sessionId, provider, theme, terminalCompatibil
     const scrollDisposable = terminal.onScroll(() => {
       if (terminal.buffer.active.viewportY >= terminal.buffer.active.baseY) setUnread(0);
     });
-    terminal.options.disableStdin = true; setIssue(undefined); setReplayFailure(undefined); setCompletionHint(false); setStorageNote(undefined);
+    terminal.options.disableStdin = true; setIssue(undefined); setReplayFailure(undefined); setCompletionHint(false); setStorageNote(undefined); setFidelity(EXACT);
     // Legacy records have no trustworthy geometry. Keep their documented
     // best-effort current-pane replay instead of inventing an 80x24 history.
     if (!fixedSize) { try { fit.fit(); } catch { /* host may not be measurable yet */ } }
@@ -420,7 +424,7 @@ export function TerminalSurface({ sessionId, provider, theme, terminalCompatibil
               failReplay("gap", zh ? `保留的输出有缺口，从第 ${chunk.cursor} 字节才继续（已回放 ${replayCursor} / ${replayEnd}）。` : `Retained output has a gap and resumes at byte ${chunk.cursor} (replayed ${replayCursor} of ${replayEnd}).`);
               return;
             }
-            setIssue("Some older terminal output is no longer available. Live output continues.");
+            setFidelity(current => fidelityAfterLiveGap(current, chunk.cursor));
           }
           if (chunk.data.byteLength) {
             nativeCursor.observe(chunk.data);
@@ -668,6 +672,7 @@ export function TerminalSurface({ sessionId, provider, theme, terminalCompatibil
     </SurfaceActions>
     </div>
     {storageNote && <p className="term-storage-degraded" role="alert"><strong>{terminalStorageLabel(zh)}</strong><span>{terminalStorageAttention(zh)}</span></p>}
+    {fidelity.kind === 'inexact' && <p className="term-legacy-note term-fidelity-note" role="status"><strong>{screenFidelityLabel(zh)}</strong>{screenFidelityDetail(zh)}</p>}
     {unknownGeometry && <p className="term-legacy-note" role="status">{zh ? "该历史会话未记录终端尺寸，部分全屏界面可能错位。重新运行可生成可稳定回放的新记录。" : "This historical session has no recorded terminal size; full-screen interfaces may be misaligned. Rerun it to create a new record that replays reliably."}</p>}
     <div className="term-content"><div className={`terminal-host term-output${fixedSize ? " fixed-geometry" : ""}`} ref={host} aria-label={zh ? '实时终端输出' : 'Live terminal output'} />
     {(hasSelection || (selectionFile && openFileRef.current)) && <div className="terminal-selection-actions">
