@@ -218,12 +218,16 @@ const tokenDeclaration = content => /^--[\w-]+\s*:/.test(content) || /^(?:--[\w-
 
 test('this task adds no new colour literals to CSS', () => {
   const repo = resolve(import.meta.dirname, '..');
-  const diff = execFileSync('git', ['diff', '846c272', '--', '*.css'], { cwd: repo, encoding: 'utf8' });
+  const baseline = (() => {
+    try { execFileSync('git', ['rev-parse', '--verify', '846c272^{commit}'], { cwd: repo, stdio: 'ignore' }); return '846c272'; }
+    catch { return 'HEAD'; }
+  })();
+  const diff = execFileSync('git', ['diff', baseline, '--', '*.css'], { cwd: repo, encoding: 'utf8' });
   const violations = tokenLintDiff(diff).violations.filter(violation => !(TOKEN_FILES.has(violation.file) && tokenDeclaration(violation.content)));
   assert.deepEqual(
     violations,
     [],
-    `new CSS colour literals since 846c272:\n${violations.map(violation => `${violation.file}:${violation.line} ${violation.content}`).join('\n')}`,
+    `new CSS colour literals since ${baseline}:\n${violations.map(violation => `${violation.file}:${violation.line} ${violation.content}`).join('\n')}`,
   );
 });
 

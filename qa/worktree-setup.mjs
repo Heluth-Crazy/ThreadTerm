@@ -26,7 +26,7 @@ const scratch = await mkdtemp(join(tmpdir(), 'tt-worktree-setup-'));
 const work = join(scratch, 'fixture');
 const created = join(scratch, 'setup-worktree');
 const appDir = join(scratch, 'app');
-const out = join(root, 'qa/results/worktree-setup');
+const out = join(scratch, 'screenshots');
 const keep = process.argv.includes('--keep');
 const report = { passed: false, scratch, checks: [], screenshots: [], errors: [] };
 let app, page, project, releaseLock, finalizing = false;
@@ -67,12 +67,19 @@ async function prepareFixture() {
  execFileSync(gitExe, ['commit', '-m', 'fixture'], { cwd: work, stdio: 'pipe', windowsHide: true, env: fixtureEnv });
  await buildApp();
 }
-const menu = () => page.locator('[data-testid="quick-launch-menu"]');
-// The trigger toggles; after "Run setup again" the menu stays open to show progress.
-async function openRun() { if (!(await menu().isVisible())) await page.getByRole('button', { name: /^(Run|运行)/ }).first().click(); await menu().waitFor(); }
+const hosts=new Map();
+async function showRun(rootPath=work) {
+ let host=hosts.get(rootPath);
+ if(!host){host=await request('session.create',{projectId:project.id,cwd:rootPath,title:'Setup QA host',provider:'custom',mode:'terminal',executable:process.execPath,args:['-e','setTimeout(()=>{},300000)'],operationId:randomUUID()});hosts.set(rootPath,host);}
+ await request('session.present',{sessionId:host.id,placement:'workspace',presentation:'focused',operationId:randomUUID()});
+ await page.locator('.session-screen').waitFor();
+ if(!await page.getByTestId('run-view').isVisible())await page.locator('.wb-switch-btn[data-view="run"]').click();
+ await page.getByTestId('run-view').waitFor();
+}
 async function saveSetupInDialog(commands) {
- await openRun();
- await page.getByRole('button', { name: /Worktree setup|工作树初始化/ }).click();
+ await showRun();
+ await page.getByTestId('run-view-menu').click();
+ await page.getByRole('menuitem', { name: /Worktree setup|工作树初始化/ }).click();
  const dialog = page.getByRole('dialog'); await dialog.waitFor();
  await shot('01-setup-dialog.png');
  for (const command of commands) {
@@ -87,6 +94,7 @@ async function saveSetupInDialog(commands) {
  await dialog.waitFor({ state: 'hidden' });
  const setup = await request('quickLaunch.setup.read', { projectId: project.id });
  assert.deepEqual(setup.commandIds, commands.map(command => command.id), 'dialog saved setup commands in fixture order');
+ await page.locator('.ws-top .ws-chip.branch').click();await page.getByTestId('project-home').waitFor();
 }
 async function createWorktreeViaUi() {
  await page.getByRole('button', { name: /^(New worktree|新建工作树)$/ }).click();
@@ -102,14 +110,14 @@ async function showCreatedWorktree() {
  if (await row.count()) { await row.click(); await page.getByTestId('project-home').waitFor(); }
 }
 async function openRunSetupAgain() {
- await openRun();
- await page.getByRole('button', { name: /Run setup again|再次运行初始化/ }).click();
+ await showRun(created);
+ await page.getByTestId('run-setup-section').getByRole('button',{name:/Run again|再次运行/}).click();
 }
 // Stop the running step the way a user would: its Stop button in the Run menu.
 async function stopCurrentStep(run) {
  assert.ok(run.sessionIds.at(-1), 'running setup has a current terminal');
- await openRun();
- const row = menu().locator('.ql-command').filter({ hasText: run.names[run.step] });
+ await showRun(created);
+ const row = page.locator(`[data-testid="run-running-row"][data-session-id="${run.sessionIds.at(-1)}"]`);
  await row.getByRole('button', { name: /^(Stop|停止)$/ }).click();
 }
 async function finalize(fatal) {
@@ -120,8 +128,8 @@ async function finalize(fatal) {
  if (page) await Promise.race([request('runtime.shutdown', { operationId: randomUUID() }), delay(3_000)]).catch(() => {});
  if (app) { await Promise.race([app.evaluate(({ app: electronApp }) => electronApp.exit(0)), delay(2_000)]).catch(() => {}); await Promise.race([app.close(), delay(5_000)]).catch(() => {}); try { app.process()?.kill(); } catch {} }
  await releaseLock?.().catch(() => {});
- if (!keep) await rm(scratch, { recursive: true, force: true, maxRetries: 10, retryDelay: 250 }).catch(() => {});
- await writeFile(join(out, 'report.json'), JSON.stringify(report, null, 2)).catch(() => {});
+ console.log(JSON.stringify({passed:report.passed,checks:report.checks.length,errors:report.errors}));
+ await rm(scratch, { recursive: true, force: true, maxRetries: 10, retryDelay: 250 }).catch(() => {});
  process.exitCode = report.passed && !report.errors.length ? 0 : 1;
 }
 process.on('uncaughtException', error => { void finalize(error); });

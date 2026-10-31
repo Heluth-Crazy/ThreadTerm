@@ -1,9 +1,18 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import type { DetectedRunEntry, Session, SessionRun } from "@threadterm/protocol";
-import { activeRun, dependencyOptionIds, detectedSections, detectedSourceLabel, missingToolLabel, packageScripts, previewReady, previewWaitingLabel, quickLaunchError, runState, runStateLabel, suggestedLabel, suggestedTag, suggestedTitle } from "./quickLaunch";
+import { activeRun, commandHasAdvancedFields, dependencyOptionIds, detectedSections, detectedSourceLabel, inferredCommandKind, missingToolLabel, packageScripts, previewReady, previewWaitingLabel, quickLaunchError, runState, runStateLabel, suggestedLabel, suggestedTag, suggestedTitle } from "./quickLaunch";
 
 const session = (overrides: Partial<Session> = {}): Session => ({ id: "run-1", title: "Dev", provider: "custom", mode: "terminal", status: "exited", createdAt: "2026-10-06T00:00:00.000Z", updatedAt: "2026-10-06T00:00:00.000Z", worktreePath: "C:\\repo", run: { commandId: "dev", name: "Dev", kind: "service", shell: "cmd" }, ...overrides });
+
+test("hand-written command type inference keeps long-running commands as services", () => {
+ for (const command of ["npm run dev", "vite --host serve", "docker compose up", "uvicorn app:api", "flask run", "./gradlew bootRun", "python manage.py runserver"]) assert.equal(inferredCommandKind(command), "service", command);
+ for (const command of ["npm run build", "cargo test", "make lint", "echo start-over"]) assert.equal(inferredCommandKind(command), "task", command);
+ const base={shell:"cmd" as const,env:[],previewUrl:"",dependsOn:[]};
+ assert.equal(commandHasAdvancedFields(base,"local"),false);
+ assert.equal(commandHasAdvancedFields({...base,env:[{name:"PORT",value:"3000"}]},"local"),true);
+ assert.equal(commandHasAdvancedFields(base,"repo"),true);
+});
 
 test("runState exhaustively maps status, kind, exit code, and stop intent", () => {
   const service = { commandId: "dev", name: "Dev", kind: "service" as const, shell: "cmd" as const }, task = { ...service, kind: "task" as const };

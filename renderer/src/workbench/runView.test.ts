@@ -6,10 +6,10 @@ import {
  paletteRunEntries, runKeyAction, runningRows, RUN_SHORTCUTS, runShortcutLabel, startedByChat, uptimeMs, worktreeLabel,
 } from './runView';
 
-type Run = { commandId:string; name:string; kind:'service'|'task' };
+type Run = { commandId:string; name:string; kind:'service'|'task'; startedBy?:string };
 const session = (id:string, worktreePath:string, created:string, run?:Run, status:Session['status'] = 'running'):Session => ({
  id, projectId:'p1', worktreePath, title:run?.name ?? id, provider:'custom', mode:'terminal', status, createdAt:created, updatedAt:created,
- ...(run ? { run:{ commandId:run.commandId, name:run.name, kind:run.kind, shell:'cmd' } } : {}),
+ ...(run ? { run:{ commandId:run.commandId, name:run.name, kind:run.kind, shell:'cmd', ...(run.startedBy ? { startedBy:run.startedBy } : {}) } } : {}),
 }) as Session;
 
 test('running lists every worktree of the project, the current one first and then the newest', () => {
@@ -45,6 +45,8 @@ test('the current configuration is the last run of this worktree until one is ch
   session('one', 'C:\\work\\main', '2026-01-01T10:00:00Z', { commandId:'dev', name:'dev', kind:'service' }),
   session('two', 'C:\\work\\main', '2026-01-01T12:00:00Z', { commandId:detectedCommandId('node:package.json:build'), name:'build', kind:'task' }, 'exited'),
   session('other', 'C:\\work\\feature', '2026-01-01T13:00:00Z', { commandId:'test', name:'test', kind:'task' }),
+  // An agent's later run in this worktree does not take over the user's Run button.
+  session('agent', 'C:\\work\\main', '2026-01-01T14:00:00Z', { commandId:'lint', name:'lint', kind:'task', startedBy:'chat-1' }),
  ] as Session[];
  const scope = { projectId:'p1', root:'c:\\work\\main' };
  assert.deepEqual(lastRunEntry(scope, sessions), { commandId:'detected:node:package.json:build', name:'build', source:'detected' });
@@ -67,6 +69,7 @@ test('detected ids round-trip and name their source', () => {
  assert.equal(detectedKeyOf('a9471c2e-0000'), undefined);
  assert.deepEqual(entryRefOf('detected:make:Makefile:build', 'build'), { commandId:'detected:make:Makefile:build', name:'build', source:'detected' });
  assert.deepEqual(entryRefOf('saved-id', 'Dev'), { commandId:'saved-id', name:'Dev', source:'saved' });
+ assert.deepEqual(entryRefOf('repo:shared-dev', 'Shared dev'), { commandId:'repo:shared-dev', name:'Shared dev', source:'repo' });
 });
 
 test('the filter box matches a name, a command or a group and keeps an empty query unchanged', () => {

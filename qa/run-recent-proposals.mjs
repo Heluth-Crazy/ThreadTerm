@@ -40,7 +40,7 @@ const DEV_ENTRY = 'detected:node:package.json:dev';
 const scratch = await mkdtemp(join(tmpdir(), 'tt-run-recent-proposals-'));
 const work = join(scratch, 'work'), second = join(scratch, 'second');
 const appDir = join(scratch, 'app'), bin = join(scratch, 'bin'), plugins = join(scratch, 'plugins');
-const out = join(root, 'qa/results/run-recent-proposals');
+const out = join(scratch, 'screenshots');
 // Fixture PATH: Node (the ACP fixture itself), Git's cmd folder and System32 only — no agent binary anywhere.
 const fixturePath = [bin, dirname(process.execPath), dirname(gitExe), join(process.env.SystemRoot ?? 'C:\\Windows', 'System32')].filter(Boolean).join(';');
 const inherited = {...process.env, GIT_DIR: process.env.GIT_DIR ?? join(scratch, 'contaminating-git-dir')};
@@ -317,8 +317,7 @@ try {
   if (!await view.isVisible()) await page.locator('.wb-switch-btn[data-view="run"]').click();
   const recent = view.getByTestId('run-recent');
   await recent.waitFor();
-  await recent.locator('summary').click();
-  assert.equal(await recent.getAttribute('open'), null, 'Recent collapses');
+  assert.equal(await recent.getAttribute('open'), null, 'Recent starts collapsed');
   await recent.locator('summary').click();
   const userRecent = recent.locator(`[data-testid="run-recent-row"][data-run-id="${userStarted.session.id}"]`);
   await userRecent.waitFor();
@@ -334,8 +333,8 @@ try {
   await page.getByTestId('command-editor-save').click();
   await keepEditor.waitFor({state: 'detached'});
   const afterKeep = await request('quickLaunch.list', {projectId: project.id});
-  assert.ok(afterKeep.some(command => command.name === 'dev' && command.command === 'npm run dev'), 'Keep saves the detected launch snapshot as a normal command');
-  check('Recent shows user and Agent attribution; Keep opens the snapshot and saves it as a normal command');
+  assert.ok(afterKeep.some(command => command.name === 'dev' && command.command === 'npm run dev'), 'Pin saves the detected launch snapshot as a normal command');
+  check('Recent shows user and Agent attribution; Pin… opens the snapshot and saves it as a normal command');
 
   // Rejected disguised text must never reach the human's pending list.
   const beforeDisguised = await request('quickLaunch.proposals.list', {projectId: project.id, cwd: work});
@@ -449,7 +448,7 @@ try {
   try { await page?.screenshot({path: join(out, 'failure.png')}); } catch {}
 } finally {
   try { for (const session of (await sessions()).filter(active)) await request('session.stop', {sessionId: session.id, operationId: randomUUID()}); } catch {}
-  try { await request('runtime.shutdown', {operationId: randomUUID()}); } catch {}
+  try { await Promise.race([request('runtime.shutdown', {operationId: randomUUID()}),delay(3000)]); } catch {}
   if (app) {
     await Promise.race([app.evaluate(({app: electronApp}) => electronApp.exit(0)), delay(2000)]).catch(() => {});
     await Promise.race([app.close(), delay(5000)]).catch(() => {});

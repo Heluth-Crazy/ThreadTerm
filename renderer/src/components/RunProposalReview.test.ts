@@ -35,8 +35,8 @@ test('shared pending-row and accept reviews never read a secret value, even from
  for(const html of [review,row]) { assert.match(html,/secret/); assert.doesNotMatch(html,/value-trap|current-value-trap|undefined/); }
 });
 
-test('repo recent runs are visibly labeled as shared and offer Keep as a separate action',()=>{
+test('repo recent runs are collapsed by default, visibly shared, and offer Pin as a separate action',()=>{
  const run={runId:'run',entryId:'repo:shared',name:'Shared server',command:'node server.mjs',source:'repo' as const,startedAt:'2026-10-30T00:00:00Z',state:'completed' as const,stopped:false,snapshot:{id:'repo:shared',projectId:'project',revision:1,name:'Shared server',command:'node server.mjs',shell:'cmd' as const,cwd:'',kind:'service' as const,env:[{name:'TOKEN',secret:true}],createdAt:'2026-10-30T00:00:00Z',updatedAt:'2026-10-30T00:00:00Z'}};
  const html=renderToStaticMarkup(createElement(RunRecent,{runs:[run],commands:[],sessions:[],zh:false,busy:false,onKeep(){},onOpenChat(){}}));
- assert.match(html,/Shared \(repo\)/); assert.match(html,/Keep/);
+ assert.match(html,/Shared \(repo\)/); assert.match(html,/Pin…/); assert.match(html,/<details/); assert.doesNotMatch(html,/<details[^>]*\bopen/);
 });

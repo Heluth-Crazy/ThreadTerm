@@ -1,4 +1,5 @@
 import type { Session } from '@threadterm/protocol';
+import { useSyncExternalStore } from 'react';
 import { canonicalScopePath, displayPath, sameCanonicalScope } from '../projectScope';
 import { runState, type RunView as RunStateView } from '../quickLaunch';
 import { isKeyboardEditableTarget } from './scmKeyboard';
@@ -70,22 +71,31 @@ export function formatUptime(ms:number):string {
 }
 
 /** The explicit "Set as current" choices, kept in renderer memory per (project, worktree) and never persisted. */
-export type RunCurrentConfigs = { get:(scope:RunScope) => RunEntryRef|undefined; choose:(scope:RunScope, entry:RunEntryRef) => void; forget:(scope:RunScope) => void };
+export type RunCurrentConfigs = { get:(scope:RunScope) => RunEntryRef|undefined; choose:(scope:RunScope, entry:RunEntryRef) => void; forget:(scope:RunScope) => void; subscribe:(listener:()=>void)=>()=>void; revision:()=>number };
 const scopeKey = (scope:RunScope) => `${scope.projectId}\0${canonicalScopePath(scope.root) ?? scope.root}`;
 export function createRunCurrentConfigs():RunCurrentConfigs {
  const chosen = new Map<string,RunEntryRef>();
+ const listeners=new Set<()=>void>();let revision=0;
+ const changed=()=>{revision++;listeners.forEach(listener=>listener());};
  return {
   get:scope => chosen.get(scopeKey(scope)),
-  choose:(scope, entry) => { chosen.set(scopeKey(scope), entry); },
-  forget:scope => { chosen.delete(scopeKey(scope)); },
+  choose:(scope, entry) => { chosen.set(scopeKey(scope), entry);changed(); },
+  forget:scope => { chosen.delete(scopeKey(scope));changed(); },
+  subscribe:listener=>{listeners.add(listener);return()=>{listeners.delete(listener);};},
+  revision:()=>revision,
  };
 }
 export const runCurrentConfigs = createRunCurrentConfigs();
+export function useRunCurrentEntry(scope:RunScope, sessions:readonly Session[]):RunEntryRef|undefined {
+ useSyncExternalStore(runCurrentConfigs.subscribe,runCurrentConfigs.revision);
+ return currentRunEntry(scope,sessions,runCurrentConfigs.get(scope));
+}
 
-/** The entry last run from this worktree, which is what "current configuration" means until one is chosen by hand. */
+/** The entry the user last ran from this worktree, which the toolbar's Run button reruns until one is chosen by hand.
+ * An agent's runs never take the button over. */
 export function lastRunEntry(scope:RunScope, sessions:readonly Session[]):RunEntryRef|undefined {
  const latest = sessions
-  .filter(session => session.projectId === scope.projectId && session.run && sameCanonicalScope(session.worktreePath, scope.root))
+  .filter(session => session.projectId === scope.projectId && session.run && !session.run.startedBy && sameCanonicalScope(session.worktreePath, scope.root))
   .sort((left, right) => right.createdAt.localeCompare(left.createdAt) || right.updatedAt.localeCompare(left.updatedAt))[0];
  return latest?.run ? entryRefOf(latest.run.commandId, latest.run.name) : undefined;
 }
@@ -105,7 +115,7 @@ export function runKeyAction(event:{key:string;ctrlKey?:boolean;shiftKey?:boolea
 }
 export const RUN_SHORTCUTS:Record<RunKeyAction,string> = { run:'Control+F5', stop:'Shift+F5', restart:'Control+Shift+F5' };
 /** The Run command a workbench's F5 keys send to its Run view, or undefined: never from a terminal, an editor, an input
- * or a modal dialog. The host shows the Run view, which acts on its current configuration. */
+ * or a modal dialog. The workspace executes it without changing the current view. */
 export function runKeyCommand(event:KeyboardEvent):RunCommandRequest|undefined {
  const current = runKeyAction(event);
  if (!current || (event.target as Element|null)?.closest?.('.xterm, [role="dialog"][aria-modal="true"]') || isKeyboardEditableTarget(event.target)) return undefined;
@@ -124,7 +134,7 @@ export function filterRunEntries<T extends {name:string;command:string;detail?:s
 /** At most 20 palette rows for the current worktree: saved commands first, then detected entries. */
 export const PALETTE_RUN_LIMIT = 20;
 export type PaletteRunEntry = { id:string; name:string; detail:string; commandId?:string; detectedKey?:string };
-export function paletteRunEntries(entries:readonly {name:string;command:string;commandId:string;source:'saved'|'detected';detail?:string}[], limit = PALETTE_RUN_LIMIT):PaletteRunEntry[] {
+export function paletteRunEntries(entries:readonly {name:string;command:string;commandId:string;source:'saved'|'detected'|'repo';detail?:string}[], limit = PALETTE_RUN_LIMIT):PaletteRunEntry[] {
  const seen = new Set<string>();
  const rows:PaletteRunEntry[] = [];
  for (const entry of entries) {

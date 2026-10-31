@@ -13,6 +13,7 @@ import type { GitWorkbenchAction } from "../workbench/gitKeyboardCommand";
 import { captureGitPaletteHost, captureRunPaletteHost } from "../workbench/gitPaletteHost";
 import { WbIcon } from "../workbench/icons";
 import { isActiveRun, paletteRunEntries, type PaletteRunEntry } from "../workbench/runView";
+import { quickLaunchError } from "../quickLaunch";
 import "./command-palette.css";
 
 type Props = { data: Snapshot; onClose: () => void; onSession: (id: string) => void; onProject: (id: string) => void; onCreate: () => void; onCreateGroup: () => void; onAll: () => void; onInbox: () => void; onSettings: () => void; onUsage?: () => void; workbench?: boolean };
@@ -31,18 +32,20 @@ export function CommandPalette({ data, onClose, onSession, onProject, onCreate, 
   const [runHost]=useState(()=>captureRunPaletteHost(document));
   const runDisabledReason=runHost?undefined:copy('Focus a workspace with the Run view first.','请先聚焦包含运行视图的工作区。');
   const [runEntries,setRunEntries]=useState<PaletteRunEntry[]>([]);
+  const [runIssue,setRunIssue]=useState<string>();
   useEffect(()=>{
     if(!workbench||!runHost)return;
     let live=true;const {projectId,root}=runHost;
-    void Promise.all([request('quickLaunch.list',{projectId}),request('quickLaunch.detect',{projectId,cwd:root})])
-      .then(([commands,detection])=>{if(!live)return;setRunEntries(paletteRunEntries([
+    void Promise.all([request('quickLaunch.list',{projectId}),request('quickLaunch.detect',{projectId,cwd:root}),request('quickLaunch.repo.list',{projectId,cwd:root})])
+      .then(([commands,detection,repo])=>{if(!live)return;setRunEntries(paletteRunEntries([
         ...commands.map(command=>({name:command.name,command:command.command,commandId:command.id,source:'saved' as const})),
-        ...detection.entries.map(entry=>({name:entry.name,command:entry.command,commandId:`detected:${entry.key}`,source:'detected' as const})),
+        ...repo.entries.map(entry=>({name:entry.name,command:entry.command,commandId:`repo:${entry.id}`,source:'repo' as const})),
+        ...detection.entries.filter(entry=>!entry.missingTool).map(entry=>({name:entry.name,command:entry.command,commandId:`detected:${entry.key}`,source:'detected' as const})),
       ]));})
-      .catch(()=>{});
+      .catch(error=>{if(live)setRunIssue(quickLaunchError(error,zh));});
     return()=>{live=false;};
   },[workbench,runHost]);
-  const runActive=runHost?data.sessions.filter(session=>isActiveRun(session)&&sameCanonicalScope(session.worktreePath,runHost.root)).length:0;
+  const runActive=runHost?data.sessions.filter(session=>session.projectId===runHost.projectId&&isActiveRun(session)&&sameCanonicalScope(session.worktreePath,runHost.root)).length:0;
   const runEntry=(target:{commandId?:string;detectedKey?:string;stopAll?:boolean},label:string,detail:string,icon:string,disabled=false):Entry=>{
     const reason=runDisabledReason??(disabled?detail:undefined);
     return { id:`run:${target.commandId??target.detectedKey??'stop-all'}`, group:copy('Run','运行'), label, detail:reason??detail, icon, disabledReason:reason, run:()=>{ if(reason||!runHost?.element.isConnected)return; const key=crypto.randomUUID(); dispatchEvent(new CustomEvent('threadterm:workbench',{detail:{view:'run',key,hostKey:runHost.key,run:{key,...target}}})); } };
@@ -72,5 +75,5 @@ export function CommandPalette({ data, onClose, onSession, onProject, onCreate, 
   useEffect(() => { input.current?.focus(); }, []); useEffect(() => setActive(0), [query]);
   useEffect(() => { const key = (event: KeyboardEvent) => { const action = paletteKeyAction(event); if (!action) return; if (action === "run" && event.target instanceof Element && event.target.closest(".cmd-row")) return; event.preventDefault(); if (action === "ignore") return; if (action === "close") { onClose(); return; } if (action === "next") { setActive(value => Math.min(value + 1, Math.max(0, matches.length - 1))); return; } if (action === "previous") { setActive(value => Math.max(0, value - 1)); return; } if (matches[active] && !matches[active].disabledReason) { matches[active].run(); onClose(); } }; addEventListener("keydown", key); return () => removeEventListener("keydown", key); }, [active, matches, onClose]);
   let index = -1, lastGroup = "";
-  return <div className="scrim shell-palette-scrim" onMouseDown={event => { if (event.target === event.currentTarget) onClose(); }}><section ref={panel} tabIndex={-1} className="dialog palette" role="dialog" aria-modal="true" aria-label={copy("Command palette", "命令面板")}><input ref={input} className="palette-input" value={query} onChange={event => setQuery(event.target.value)} placeholder={copy("Search commands, projects, sessions, or switch terminals…", "搜索命令、项目、会话，或切换终端…")} /> <div className="palette-results">{matches.map(entry => { const currentIndex = ++index; const group = entry.group !== lastGroup ? (lastGroup = entry.group) : ""; return <div key={entry.id}>{group && <div className="cmd-group">{group}</div>}<button className={`cmd-row${currentIndex === active ? " active" : ""}`} disabled={!!entry.disabledReason} title={entry.disabledReason} onMouseEnter={() => setActive(currentIndex)} onClick={() => { entry.run(); onClose(); }}>{entry.provider ? <AgentIcon provider={entry.provider} /> : <WbIcon name={entry.icon} />}<b>{entry.label}</b><span>{entry.tone && <i className={`dot st-${entry.tone}`} aria-hidden="true" />}{entry.detail}</span></button></div>; })}{!matches.length && <p className="palette-empty">{copy("No matching commands. Try a project or session name.", "没有匹配命令。试试项目名或会话名。")}</p>}</div><footer className="palette-foot"><span>{copy("↑ ↓ Select", "↑ ↓ 选择")}</span><span>{copy("Enter Open", "Enter 打开")}</span><span>{copy("Esc Close", "Esc 关闭")}</span></footer></section></div>;
+  return <div className="scrim shell-palette-scrim" onMouseDown={event => { if (event.target === event.currentTarget) onClose(); }}><section ref={panel} tabIndex={-1} className="dialog palette" role="dialog" aria-modal="true" aria-label={copy("Command palette", "命令面板")}><input ref={input} className="palette-input" value={query} onChange={event => setQuery(event.target.value)} placeholder={copy("Search commands, projects, sessions, or switch terminals…", "搜索命令、项目、会话，或切换终端…")} /> {runIssue&&<p className="surface-error" role="alert">{runIssue}</p>}<div className="palette-results">{matches.map(entry => { const currentIndex = ++index; const group = entry.group !== lastGroup ? (lastGroup = entry.group) : ""; return <div key={entry.id}>{group && <div className="cmd-group">{group}</div>}<button className={`cmd-row${currentIndex === active ? " active" : ""}`} disabled={!!entry.disabledReason} title={entry.disabledReason} onMouseEnter={() => setActive(currentIndex)} onClick={() => { entry.run(); onClose(); }}>{entry.provider ? <AgentIcon provider={entry.provider} /> : <WbIcon name={entry.icon} />}<b>{entry.label}</b><span>{entry.tone && <i className={`dot st-${entry.tone}`} aria-hidden="true" />}{entry.detail}</span></button></div>; })}{!matches.length && <p className="palette-empty">{copy("No matching commands. Try a project or session name.", "没有匹配命令。试试项目名或会话名。")}</p>}</div><footer className="palette-foot"><span>{copy("↑ ↓ Select", "↑ ↓ 选择")}</span><span>{copy("Enter Open", "Enter 打开")}</span><span>{copy("Esc Close", "Esc 关闭")}</span></footer></section></div>;
 }

@@ -101,7 +101,7 @@ import './renderer/src/styles.css';
 import './renderer/src/workbench/workbench.css';
 const work=${JSON.stringify(work)};
 function Probe(){
- const [snapshot,setSnapshot]=useState(),[project,setProject]=useState(),[command,setCommand]=useState(),[opened,setOpened]=useState(),[preview,setPreview]=useState(),[error,setError]=useState();
+ const [snapshot,setSnapshot]=useState(),[project,setProject]=useState(),[command,setCommand]=useState({view:'run',key:'initial'}),[opened,setOpened]=useState(),[preview,setPreview]=useState(),[error,setError]=useState();
  useEffect(()=>{(async()=>{const first=await window.threadterm.request('runtime.snapshot',{});await window.threadterm.request('settings.update',{patch:{language:'en',notifications:{native:false,attention:false,completed:false,sound:false}},expectedRevision:first.settings.revision,operationId:crypto.randomUUID()});const added=await window.threadterm.request('project.add',{path:work,name:'Run readiness QA',operationId:crypto.randomUUID()});window.__projectId=added.id;setProject(added.id);setSnapshot(await window.threadterm.request('runtime.snapshot',{}));})().catch(value=>setError(String(value)));},[]);
  useEffect(()=>{if(!project)return;let live=true;const poll=async()=>{for(;live;){try{setSnapshot(await window.threadterm.request('runtime.snapshot',{}));}catch{}await new Promise(done=>setTimeout(done,300));}};void poll();return()=>{live=false;};},[project]);
  if(error)return <p role='alert'>{error}</p>;
@@ -129,24 +129,21 @@ createRoot(document.getElementById('root')).render(<Probe/>);`;
   page.on('pageerror', error => pageErrors.push(error.message));
   await page.waitForFunction(() => Boolean(window.threadterm));
   await app.evaluate(({BrowserWindow}) => BrowserWindow.getAllWindows()[0].setContentSize(1200, 900));
-  await page.locator('.ql-trigger').waitFor();
-
   // One saved service command: a Node server that prints nothing at all.
-  const command = await request('quickLaunch.save', {projectId: await page.evaluate(() => window.__projectId), name: 'quiet server', command: 'node server.mjs', shell: 'cmd', cwd: '', kind: 'service', env: [], operationId: randomUUID()});
-  await page.locator('.ql-trigger').click();
-  await page.getByTestId('quick-launch-menu').waitFor();
-  await page.getByTestId('open-run-view').click();
+  const projectId = await until(async () => await page.evaluate(() => window.__projectId), 'the fixture project is ready');
+  const command = await request('quickLaunch.save', {projectId, name: 'quiet server', command: 'node server.mjs', shell: 'cmd', cwd: '', kind: 'service', env: [], operationId: randomUUID()});
   const view = page.getByTestId('run-view');
   await view.waitFor();
 
   // Run it from its row.
   await until(async () => await view.getByTestId(`quick-launch-command-${command.id}`).count(), 'the saved command is listed');
-  await view.getByTestId(`quick-launch-command-${command.id}`).getByRole('button', {name: 'Run'}).click();
+  await view.getByTestId(`quick-launch-command-${command.id}`).locator('[data-run-primary]').click();
   const row = runningRow(command.id);
   await row.first().waitFor();
   // The runtime marks a service run `waiting`, so the row says Starting while the server sleeps.
-  const starting = await row.first().getByTestId('run-running-state').innerText();
-  assert.match(starting, /Starting/, `the watched run shows Starting, not ${starting}`);
+  const starting = await until(async () => (await snapshot()).sessions.find(candidate => candidate.run?.commandId === command.id && candidate.run?.readiness === 'waiting'), 'the watched run is waiting');
+  assert.equal(starting.run.readiness, 'waiting');
+  await until(async () => (await row.first().getByTestId('run-running-state').getAttribute('data-state')) === 'starting', 'the row shows Starting');
   assert.equal(await row.first().getByTestId('run-url').count(), 0, 'no URL exists before the server listens');
   check('A service run that has not listened yet shows Starting in the Running row');
 
@@ -161,7 +158,8 @@ createRoot(document.getElementById('root')).render(<Probe/>);`;
   const portFile = await until(async () => { try { return String(await readFile(join(work, 'port.txt'), 'utf8')).trim() || undefined; } catch {} }, 'the fixture wrote the port it listens on');
   assert.equal(ready.run.port, Number(portFile), 'the ready port is the one the fixture listens on');
   assert.equal(ready.run.url, `http://localhost:${portFile}/`);
-  await until(async () => /Ready/.test(await row.first().getByTestId('run-running-state').innerText()), 'the row shows Ready');
+  await until(async () => (await snapshot()).sessions.find(candidate => candidate.id === ready.id)?.run?.readiness === 'ready', 'the row reaches ready state');
+  await until(async () => (await row.first().getByTestId('run-running-state').getAttribute('data-state')) === 'ready', 'the row shows Ready');
   assert.equal((await row.first().getByTestId('run-port').innerText()).trim(), `:${portFile}`);
   assert.equal((await row.first().getAttribute('data-run-entry')), command.id);
   check(`The Running row turns Ready with :${portFile} once the run's own listener appears`);
@@ -190,7 +188,7 @@ createRoot(document.getElementById('root')).render(<Probe/>);`;
   const configuredUrl = 'http://localhost:3999/';
   const quiet = await request('quickLaunch.save', {projectId: project, name: 'quiet idle', command: 'node idle.mjs', shell: 'cmd', cwd: '', kind: 'service', env: [], previewUrl: configuredUrl, operationId: randomUUID()});
   await until(async () => await view.getByTestId(`quick-launch-command-${quiet.id}`).count(), 'the configured command is listed');
-  await view.getByTestId(`quick-launch-command-${quiet.id}`).getByRole('button', {name: 'Run'}).click();
+  await view.getByTestId(`quick-launch-command-${quiet.id}`).locator('[data-run-primary]').click();
   const quietRow = runningRow(quiet.id).first();
   await quietRow.waitFor();
   // The row shows the configured address, but it is not a link yet.
@@ -199,31 +197,15 @@ createRoot(document.getElementById('root')).render(<Probe/>);`;
   assert.equal(await pendingLink.getAttribute('data-pending'), 'true');
   assert.equal(await pendingLink.getAttribute('aria-disabled'), 'true');
   assert.match(await pendingLink.getAttribute('title'), /Waiting for the server to listen/);
-  assert.equal((await pendingLink.innerText()).trim(), configuredUrl);
-  // The popover's Preview button for the same run is disabled with the same reason.
-  await page.locator('.ql-trigger').click();
-  const popoverRow = page.getByTestId('quick-launch-menu').getByTestId(`quick-launch-command-${quiet.id}`);
-  await popoverRow.waitFor();
-  const popoverPreview = popoverRow.getByRole('button', {name: 'Preview'});
-  assert.equal(await popoverPreview.isDisabled(), true);
-  assert.match(await popoverPreview.getAttribute('title'), /Waiting for the server to listen/);
-  await page.keyboard.press('Escape');
-  await page.getByTestId('quick-launch-menu').waitFor({state: 'detached'});
-  check('A watching service shows its configured preview as disabled, in the row and in the popover');
+  assert.equal((await pendingLink.innerText()).trim(), ':3999', 'pending preview keeps its compact configured port visible');
+  check('A watching service shows its configured preview as disabled in the Running row');
 
   const quietId = await quietRow.getAttribute('data-session-id');
   await quietRow.getByTestId('run-stop').click();
   await until(async () => !(await snapshot()).sessions.some(candidate => candidate.id === quietId && active(candidate)), 'Stop ends the quiet run');
   await until(async () => (await snapshot()).sessions.find(candidate => candidate.id === quietId)?.run?.readiness !== 'waiting', 'the stopped run settles its readiness');
-  await page.locator('.ql-trigger').click();
-  await popoverRow.waitFor();
-  const reopened = popoverRow.getByRole('button', {name: 'Preview'});
-  await until(async () => !(await reopened.isDisabled()), 'the stopped run configured preview is enabled again');
-  assert.equal(await reopened.getAttribute('title'), null);
-  await reopened.click();
-  await until(async () => (await page.getByTestId('preview-url').innerText()).trim() === configuredUrl, 'the enabled preview opens the configured address');
-  await page.keyboard.press('Escape');
-  check('Stopping the run before it listens enables its configured preview again');
+  assert.equal((await snapshot()).sessions.find(candidate => candidate.id === quietId)?.run?.url, configuredUrl);
+  check('Stopping the run before it listens preserves its configured preview address');
 
   assert.deepEqual(pageErrors, [], 'the probe page raised no error');
 

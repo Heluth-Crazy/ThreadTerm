@@ -1,4 +1,4 @@
-import type { DetectedRunEntry, DetectedRunSourceKind, QuickLaunchCommand, QuickLaunchKind, Session } from '@threadterm/protocol';
+import type { DetectedRunEntry, DetectedRunSourceKind, QuickLaunchCommand, QuickLaunchKind, QuickLaunchShell, Session } from '@threadterm/protocol';
 import { sameCanonicalScope } from './projectScope';
 import { workbenchError } from './workbench/errors';
 
@@ -50,6 +50,15 @@ export function runStateLabel(view: RunView, zh: boolean): string {
  return labels[view.state][zh ? 1 : 0];
 }
 export type PackageScript = { name: string; command: string; kind: QuickLaunchKind };
+/** A hand-written command is a service only when its text has a conventional long-running intent.
+ * Detected and proposal commands retain the kind supplied by their source. */
+export function inferredCommandKind(command:string):QuickLaunchKind {
+ return /(?:^|\s)(?:dev|serve|start|watch\w*|up|bootRun|spring-boot:run|uvicorn|runserver|flask\s+run)(?:\s|$)/i.test(command) ? 'service' : 'task';
+}
+/** Fields hidden behind Advanced. Review sources deliberately force this open even with default values. */
+export function commandHasAdvancedFields(command:Pick<QuickLaunchCommand,'shell'|'env'|'previewUrl'|'dependsOn'>, storage:'local'|'repo', projectShell:QuickLaunchShell='cmd'):boolean {
+ return storage==='repo'||command.shell!==projectShell||command.env.length>0||Boolean(command.previewUrl)||Boolean(command.dependsOn?.length);
+}
 export function packageScripts(json: string, lockfiles: readonly string[]): PackageScript[] {
  let value: unknown;
  try { value = JSON.parse(json); } catch { throw new Error('package_scripts_invalid'); }
@@ -80,6 +89,12 @@ export function detectedSections(entries: readonly DetectedRunEntry[]): Detected
 export function detectedSourceLabel(kind: DetectedRunSourceKind, zh: boolean): string {
  const labels: Record<DetectedRunSourceKind,[string,string]> = { node:['Node scripts','Node 脚本'], cargo:['Cargo','Cargo'], maven:['Maven','Maven'], gradle:['Gradle','Gradle'], python:['Python','Python'], make:['Makefile','Makefile'], just:['just recipes','just 配方'], compose:['Compose services','Compose 服务'], procfile:['Procfile','Procfile'] };
  return labels[kind][zh ? 1 : 0];
+}
+/** One compact group label shared by the Run view and toolbar quick pick. */
+export function detectedGroupLabel(entry:Pick<DetectedRunEntry,'source'|'group'>, zh:boolean):string {
+ const copy=(en:string,cn:string)=>zh?cn:en;
+ const source=entry.source.kind==='node'?'Node':entry.source.kind==='compose'?'Compose':entry.source.kind==='just'?copy('Just','Just'):detectedSourceLabel(entry.source.kind,zh);
+ return entry.source.kind==='make'||entry.source.kind==='compose'||!entry.group ? source : `${source} · ${entry.group}`;
 }
 /** A suggested entry was inferred from source code, not declared in a manifest: the row asks for a look first. */
 export function suggestedLabel(zh: boolean): string {

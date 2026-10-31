@@ -92,38 +92,23 @@ try {
   const source = `import React,{useEffect,useState} from 'react';
 import {createRoot} from 'react-dom/client';
 import {QuickLaunchMenu} from './renderer/src/components/QuickLaunch';
-import {WorkbenchSideBar} from './renderer/src/components/WorkbenchSideBar';
+import {SessionWorkspace} from './renderer/src/components/SessionWorkspace';
 import {CommandPalette} from './renderer/src/components/CommandPalette';
-import {runKeyCommand} from './renderer/src/workbench/runView';
 import {I18nProvider} from './renderer/src/i18n';
 import './renderer/src/styles.css';
 import './renderer/src/workbench/workbench.css';
 const work=${JSON.stringify(work)};
-const host='run-view-qa';
 function Probe(){
- const [snapshot,setSnapshot]=useState(),[project,setProject]=useState(),[command,setCommand]=useState(),[palette,setPalette]=useState(false),[switcherHost,setSwitcherHost]=useState(),[opened,setOpened]=useState(),[error,setError]=useState();
- useEffect(()=>{(async()=>{const first=await window.threadterm.request('runtime.snapshot',{});await window.threadterm.request('settings.update',{patch:{language:'en',notifications:{native:false,attention:false,completed:false,sound:false}},expectedRevision:first.settings.revision,operationId:crypto.randomUUID()});const added=await window.threadterm.request('project.add',{path:work,name:'Run view QA',operationId:crypto.randomUUID()});window.__projectId=added.id;setProject(added.id);setSnapshot(await window.threadterm.request('runtime.snapshot',{}));})().catch(value=>setError(String(value)));},[]);
- useEffect(()=>{if(!project)return;let live=true;const poll=async()=>{for(;live;){try{setSnapshot(await window.threadterm.request('runtime.snapshot',{}));}catch{}await new Promise(done=>setTimeout(done,300));}};void poll();return()=>{live=false;};},[project]);
- useEffect(()=>{const receive=event=>{const detail=event.detail;if(detail?.view!=='run')return;if(detail.run){if(detail.hostKey!==host)return;setCommand({view:'run',key:detail.key??crypto.randomUUID(),run:{...detail.run,key:detail.run.key??detail.key??crypto.randomUUID()}});}else setCommand({view:'run',key:detail.key??crypto.randomUUID()});};addEventListener('threadterm:workbench',receive);return()=>removeEventListener('threadterm:workbench',receive);},[]);
- // The F5 keys reach the Run view exactly as SessionWorkspace routes them, from any side bar view.
- useEffect(()=>{const key=event=>{const run=runKeyCommand(event);if(run){event.preventDefault();setCommand({view:'run',key:run.key,run});}};addEventListener('keydown',key);return()=>removeEventListener('keydown',key);},[]);
+ const [state,setState]=useState(),[palette,setPalette]=useState(false),[opened,setOpened]=useState(''),[error,setError]=useState();
+ useEffect(()=>{let live=true;(async()=>{for(;;){const id=window.__runViewSession;if(id){const data=await window.threadterm.request('runtime.snapshot',{}),session=data.sessions.find(item=>item.id===id);if(session){if(live)setState({data,session});return;}}await new Promise(done=>setTimeout(done,100));}})().catch(value=>setError(String(value)));return()=>{live=false;};},[]);
+ useEffect(()=>{if(!state)return;let live=true;const timer=setInterval(async()=>{const data=await window.threadterm.request('runtime.snapshot',{}),session=data.sessions.find(item=>item.id===state.session.id);if(live&&session)setState({data,session});},200);return()=>{live=false;clearInterval(timer);};},[state?.session.id]);
  if(error)return <p role='alert'>{error}</p>;
- if(!project||!snapshot)return <p>Starting isolated runtime…</p>;
- const actions={openFile:()=>{},openDiff:()=>{},dirtyPaths:()=>[],renamed:()=>{},deleted:()=>{},openSession:id=>setOpened(id),openPreview:url=>{window.__preview=url;}};
- return <I18nProvider locale='en'><section className='runtime-workspace' data-run-workbench data-run-workbench-host={host} data-run-project-id={project} data-run-worktree-path={work} style={{width:1100}}>
-  <button type='button' onClick={()=>setPalette(true)}>Open palette</button>
-  <QuickLaunchMenu projectId={project} root={work} data={snapshot} onOpenSession={id=>setOpened(id)} onOpenPreview={url=>{window.__preview=url;}} onOpenRunView={()=>setCommand({view:'run',key:crypto.randomUUID()})}/>
-  <div ref={setSwitcherHost}/>
-  <div style={{display:'flex',gap:12,alignItems:'flex-start'}}>
-   <WorkbenchSideBar scope={{projectId:project,worktreePath:work,rootPath:work}} actions={actions} sessions={[]} allSessions={snapshot.sessions} command={command} switcherHost={switcherHost} zh={false}/>
-   <p data-testid='opened-session' style={{fontSize:11}}>{opened}</p>
-  </div>
-  {palette&&<CommandPalette data={{...snapshot,inbox:[],providers:[]}} workbench onClose={()=>setPalette(false)} onSession={()=>{}} onProject={()=>{}} onCreate={()=>{}} onCreateGroup={()=>{}} onAll={()=>{}} onInbox={()=>{}} onSettings={()=>{}}/>}
- </section></I18nProvider>;
+ if(!state)return <p>Starting isolated runtime…</p>;const {data,session}=state;
+ return <I18nProvider locale='en'><><button type='button' onClick={()=>setPalette(true)}>Open palette</button><p data-testid='opened-session'>{opened}</p><SessionWorkspace session={session} data={data} theme='light' onBack={()=>{}} onSelect={id=>setOpened(id)} onProject={()=>{}} onChanged={()=>{}} onBackgroundPresented={()=>{}}/>{palette&&<CommandPalette data={data} workbench onClose={()=>setPalette(false)} onSession={()=>{}} onProject={()=>{}} onCreate={()=>{}} onCreateGroup={()=>{}} onAll={()=>{}} onInbox={()=>{}} onSettings={()=>{}}/>}</></I18nProvider>;
 }
 createRoot(document.getElementById('root')).render(<Probe/>);`;
-  await esbuild({stdin: {contents: source, resolveDir: root, sourcefile: 'run-view-probe.tsx', loader: 'tsx'}, bundle: true, platform: 'browser', format: 'iife', jsx: 'automatic', outfile: join(rendererDir, 'probe.js'), logLevel: 'error'});
-  await writeFile(join(rendererDir, 'index.html'), '<!doctype html><html lang="en" data-theme="light"><link rel="stylesheet" href="probe.css"><style>html,body,#root{background:var(--bg);min-height:100%;color:var(--text)}main{background:var(--surface);min-height:860px}</style><div id="root"></div><script src="probe.js"></script></html>');
+  await esbuild({stdin: {contents: source, resolveDir: root, sourcefile: 'run-view-probe.tsx', loader: 'tsx'}, bundle: true, platform: 'browser', format: 'iife', charset:'utf8', jsx: 'automatic', loader:{'.woff2':'dataurl','.woff':'dataurl','.ttf':'dataurl'}, outfile: join(rendererDir, 'probe.js'), logLevel: 'error'});
+  await writeFile(join(rendererDir, 'index.html'), '<!doctype html><html lang="en" data-theme="light"><meta charset="utf-8"><link rel="stylesheet" href="probe.css"><style>html,body,#root{background:var(--bg);min-height:100%;color:var(--text)}main{background:var(--surface);min-height:860px}</style><div id="root"></div><script src="probe.js"></script></html>');
   await writeFile(join(appDir, 'package.json'), JSON.stringify({name: 'threadterm-run-view-qa', version: '0.1.0', main: 'main.cjs'}));
 
   releaseLock = await acquireElectronQaLock();
@@ -133,26 +118,28 @@ createRoot(document.getElementById('root')).render(<Probe/>);`;
   page.on('pageerror', error => console.error(`Renderer error: ${error.message}`));
   await page.waitForFunction(() => Boolean(window.threadterm));
   await app.evaluate(({BrowserWindow}) => BrowserWindow.getAllWindows()[0].setContentSize(1200, 900));
-  await page.locator('.ql-trigger').waitFor();
+  const initial=await snapshot();
+  await request('settings.update',{patch:{language:'en',notifications:{native:false,attention:false,completed:false,sound:false}},expectedRevision:initial.settings.revision,operationId:randomUUID()});
+  const project=await request('project.add',{path:work,name:'Run view QA',operationId:randomUUID()});
+  const seed=await request('session.create',{projectId:project.id,cwd:work,title:'Run view host',provider:'custom',mode:'terminal',executable:process.execPath,args:['-e','setTimeout(()=>{},60000)'],operationId:randomUUID()});
+  await page.evaluate(([projectId,sessionId])=>{window.__projectId=projectId;window.__runViewSession=sessionId;},[project.id,seed.id]);
+  await page.locator('[data-testid="quick-launch-split"]').waitFor();
 
-  // The popover stays a compact launcher and opens the Run view from its footer.
-  await page.locator('.ql-trigger').click();
-  await page.getByTestId('quick-launch-menu').waitFor();
-  await page.getByTestId('open-run-view').click();
+  // Open the actual sidebar Run tab; production F5/palette routing below is exercised through SessionWorkspace.
+  await page.locator('.wb-switch-btn[data-view="run"]').click();
   const view = page.getByTestId('run-view');
   await view.waitFor();
-  await view.getByTestId('run-group-detected:node').waitFor();
-  assert.match(await view.getByTestId('run-group-detected:node').innerText(), /Node scripts/i);
-  assert.equal((await view.getByTestId('run-current').innerText()).trim(), 'None yet');
+  await view.getByTestId('quick-launch-detected-entry-node:package.json:dev').waitFor();
+  assert.match(await view.getByTestId('run-entries').innerText(), /Node/i);
   // The view has no shortcut of its own: Ctrl+Shift+R is Electron's Force Reload.
   const runTitle = await page.locator('.wb-switch-btn[data-view="run"]').getAttribute('title');
   assert.match(runTitle, /^Run/);
   assert.doesNotMatch(runTitle, /Ctrl\+Shift\+R/);
-  check('The popover opens the Run view; it lists detected entries and no current configuration yet');
+  check('The Run view lists detected entries through the real SessionWorkspace sidebar');
 
   // Roving arrows move between the rows' primary buttons; Enter activates and Delete does nothing.
-  const buildButton = view.getByTestId('quick-launch-detected-entry-node:package.json:build').getByRole('button', {name: 'Run'});
-  const devButton = view.getByTestId('quick-launch-detected-entry-node:package.json:dev').getByRole('button', {name: 'Run'});
+  const buildButton = view.getByTestId('quick-launch-detected-entry-node:package.json:build').locator('[data-run-primary]');
+  const devButton = view.getByTestId('quick-launch-detected-entry-node:package.json:dev').locator('[data-run-primary]');
   await buildButton.focus();
   await page.keyboard.press('ArrowDown');
   assert.equal(await devButton.evaluate(element => element === document.activeElement), true, 'ArrowDown moves to the next row');
@@ -162,21 +149,27 @@ createRoot(document.getElementById('root')).render(<Probe/>);`;
   assert.equal(await buildButton.evaluate(element => element === document.activeElement), true, 'Delete does nothing on a run row');
   check('Arrow keys rove between run rows while Delete does nothing');
 
-  // The three keys are advertised exactly once on the header buttons.
-  assert.equal(await page.getByTestId('run-current-run').getAttribute('aria-keyshortcuts'), 'Control+F5');
-  assert.equal(await page.getByTestId('run-current-stop').getAttribute('aria-keyshortcuts'), 'Shift+F5');
-  assert.equal(await page.getByTestId('run-current-restart').getAttribute('aria-keyshortcuts'), 'Control+Shift+F5');
-  assert.match(await page.getByTestId('run-current-run').getAttribute('title'), /Ctrl\+F5/);
-  assert.match(await page.getByTestId('run-current-restart').getAttribute('title'), /Ctrl\+Shift\+F5/);
-  await page.getByRole('button', {name: 'About the current configuration'}).click();
-  await view.locator('[role="note"]').waitFor();
-  assert.match(await view.locator('[role="note"]').innerText(), /Ctrl\+F5/);
-  await page.getByRole('button', {name: 'About the current configuration'}).click();
-  check('The header advertises Ctrl+F5, Shift+F5 and Ctrl+Shift+F5 in its tooltips and aria-keyshortcuts');
+  await page.getByTestId('quick-launch-main').focus();
+  await page.keyboard.press('Control+F5');
+  await page.getByTestId('quick-launch-menu').waitFor();
+  assert.equal(await view.isVisible(), true, 'Ctrl+F5 with no current entry keeps the active Run view in place');
+  await page.keyboard.press('Escape');
+  await page.getByTestId('run-view-menu').click();
+  for (const [action,shortcut] of [['run','Ctrl+F5'],['stop','Shift+F5'],['restart','Ctrl+Shift+F5']]) {
+    const item=page.getByTestId(`run-current-${action}`);
+    await item.waitFor();
+    assert.equal(await item.getAttribute('aria-keyshortcuts'), shortcut);
+    assert.equal(await item.getAttribute('aria-disabled'), 'true');
+    assert.match((await item.getAttribute('aria-description'))??'', /Choose an entry for the Run button first/);
+  }
+  assert.equal(await page.locator('[role="alert"]').count(), 0, 'disabled shortcut help is contained in the menu, not a red view alert');
+  await page.keyboard.press('Escape');
+  check('Production SessionWorkspace Ctrl+F5 opens the quick pick before a current entry exists, while Run options explain disabled shortcuts');
 
   // Running a detected entry from the view lists it in Running with its printed URL.
   const dev = 'detected:node:package.json:dev';
-  await view.getByTestId('quick-launch-detected-entry-node:package.json:dev').getByRole('button', {name: 'Run'}).click();
+  const openedBeforeRun=(await page.getByTestId('opened-session').innerText()).trim();
+  await view.getByTestId('quick-launch-detected-entry-node:package.json:dev').locator('[data-run-primary]').click();
   const first = await until(async () => {
     const row = runningRow(dev).first();
     if (!await row.count()) return undefined;
@@ -186,16 +179,25 @@ createRoot(document.getElementById('root')).render(<Probe/>);`;
   }, 'the dev run is listed in Running with its URL');
   assert.match(first.run.url, /^http:\/\/localhost:\d+\/$/);
   await runningRow(dev).first().getByTestId('run-url').waitFor();
-  assert.match(await runningRow(dev).first().getByTestId('run-url').innerText(), /^http:\/\/localhost:\d+\/$/);
-  await until(async () => (await page.getByTestId('opened-session').innerText()).trim() === first.id, 'the view opens the launched terminal');
-  assert.equal((await view.getByTestId('run-current').innerText()).trim(), 'dev', 'the last run of this worktree becomes the current configuration');
-  await page.getByTestId('run-current-restart').waitFor();
-  assert.equal(await page.getByTestId('run-current-stop').isDisabled(), false);
-  check('Run starts the detected dev entry from the view, lists it in Running with its URL and makes it current');
+  assert.match((await runningRow(dev).first().getByTestId('run-url').getAttribute('href'))??'', /^http:\/\/localhost:\d+\/$/);
+  assert.equal((await page.getByTestId('opened-session').innerText()).trim(), openedBeforeRun, 'Run leaves output unopened');
+  await page.getByTestId('quick-launch-stop').waitFor();
+  // The running entry's left glyph opens output explicitly and never launches a second process.
+  await view.getByTestId('quick-launch-detected-entry-node:package.json:dev').locator('[data-run-primary]').click();
+  assert.equal((await page.getByTestId('opened-session').innerText()).trim(), first.id);
+  assert.equal(runsOf((await snapshot()).sessions, dev).filter(active).length, 1, 'opening output does not start another run');
+  check('Run starts the detected dev entry from the view, lists it inline, and opens output only from its running glyph');
 
-  // Restart stops the run and relaunches the same entry as a new session.
+  // Run options expose controller shortcuts for the current entry; Restart relaunches it as a new session.
   const restarted = await (async () => {
-    await runningRow(dev).first().getByTestId('run-restart').click();
+    await page.getByTestId('run-view-menu').click();
+    for (const [action,shortcut] of [['run','Ctrl+F5'],['stop','Shift+F5'],['restart','Ctrl+Shift+F5']]) {
+      const item=page.getByTestId(`run-current-${action}`);
+      await item.waitFor();
+      assert.equal(await item.getAttribute('aria-keyshortcuts'), shortcut);
+      assert.equal(await item.getAttribute('aria-disabled'), null);
+    }
+    await page.getByTestId('run-current-restart').click();
     return until(async () => {
       const sessions = (await snapshot()).sessions;
       const next = runsOf(sessions, dev).find(session => session.id !== first.id && active(session));
@@ -206,27 +208,28 @@ createRoot(document.getElementById('root')).render(<Probe/>);`;
   })();
   assert.equal(restarted.run.commandId, dev);
   assert.equal(await runningRow(dev).count(), 1, 'one active run per entry and worktree');
-  await until(async () => (await page.getByTestId('opened-session').innerText()).trim() === restarted.id, 'Restart opens its new terminal');
-  check('Restart stops the run and relaunches the same detected entry as a new session');
+  assert.equal((await page.getByTestId('opened-session').innerText()).trim(), first.id, 'Restart does not change the explicitly opened output');
+  check('Restart stops the run and relaunches the same detected entry as a new session without navigation');
 
-  // Shift+F5 stops the current configuration from another side bar view and shows the Run view; Ctrl+F5 runs it again.
+  // Shift+F5 stops and Ctrl+F5 runs from Files without opening Run.
   const runViewShown = () => page.evaluate(() => { const element = document.querySelector('[data-testid="run-view"]'); return Boolean(element && !element.closest('[hidden]')); });
   await page.locator('.wb-switch-btn[data-view="files"]').click();
   await until(async () => !(await runViewShown()), 'the Files view replaces the Run view');
   await page.getByRole('button', {name: 'Open palette'}).focus();
   await page.keyboard.press('Shift+F5');
   await until(async () => !active((await snapshot()).sessions.find(session => session.id === restarted.id)), 'Shift+F5 stops the current run');
-  await until(runViewShown, 'Shift+F5 shows the Run view');
-  await page.waitForFunction(() => !document.querySelector('[data-testid="run-running-row"]'));
-  await page.getByTestId('run-current-restart').focus();
+  assert.equal(await runViewShown(), false, 'Shift+F5 keeps the Files view active');
   await page.keyboard.press('Control+F5');
   const third = await until(async () => {
     const session = runsOf((await snapshot()).sessions, dev).find(candidate => candidate.id !== first.id && candidate.id !== restarted.id && active(candidate));
     return session?.run?.url && session;
   }, 'Ctrl+F5 runs the current configuration again');
   assert.equal(third.run.name, 'dev');
-  await runningRow(dev).first().waitFor();
-  check('Shift+F5 stops the current configuration from the Files view and shows Run; Ctrl+F5 runs it again');
+  assert.equal(await runViewShown(), false, 'Ctrl+F5 keeps the Files view active');
+  await page.keyboard.press('Control+Shift+F5');
+  const fourth=await until(async()=>runsOf((await snapshot()).sessions,dev).find(candidate=>candidate.id!==first.id&&candidate.id!==restarted.id&&candidate.id!==third.id&&active(candidate)),'Ctrl+Shift+F5 restarts the current configuration');
+  assert.equal(await runViewShown(),false,'Ctrl+Shift+F5 keeps the Files view active');
+  check('Shift+F5, Ctrl+F5, and Ctrl+Shift+F5 use production controller routing from Files without opening Run');
 
   // The palette's "Run: build" starts a task through the captured host.
   await page.getByRole('button', {name: 'Open palette'}).click();
@@ -244,30 +247,30 @@ createRoot(document.getElementById('root')).render(<Probe/>);`;
   assert.equal((await snapshot()).sessions.find(session => session.id === build.id).exitCode, 0);
   check('The palette\'s "Run: build" starts the detected build task for the captured worktree');
 
-  // The same palette entry also works when the workspace has not shown the Run view yet: the view mounts on the
-  // command and resolves it once its first catalog read settled.
-  await page.locator('.wb-switch-btn[data-view="run"]').click();
-  await page.waitForFunction(() => !document.querySelector('[data-testid="run-view"]'));
+  // The same palette entry works while Run is unmounted and does not mount it.
+  await page.locator('.wb-panel-close').click();
+  assert.equal(await page.getByTestId('run-view').count(),0,'closing the sidebar unmounts Run before the palette command');
   await page.getByRole('button', {name: 'Open palette'}).click();
   await palette.getByRole('textbox').fill('Run: build');
   await palette.locator('.cmd-row', {hasText: 'Run: build'}).waitFor();
   await page.keyboard.press('Enter');
-  const laterBuild = await until(async () => (await snapshot()).sessions.find(session => session.run?.commandId === 'detected:node:package.json:build' && session.id !== build.id), 'the palette opens the Run view and runs the entry');
-  await page.waitForFunction(() => Boolean(document.querySelector('[data-testid="run-view"]')));
+  const laterBuild = await until(async () => (await snapshot()).sessions.find(session => session.run?.commandId === 'detected:node:package.json:build' && session.id !== build.id), 'the palette runs the entry while Run is unmounted');
+  assert.equal(await page.getByTestId('run-view').count(),0,'palette keeps Run unmounted');
   await until(async () => !active((await snapshot()).sessions.find(session => session.id === laterBuild.id)), 'the second build task ends');
-  check('The palette opens the Run view for a workspace that never showed it and starts the entry');
+  check('The palette starts an entry while Run is unmounted without changing the view');
 
   // A second worktree's run is listed in Running with its own worktree label.
   const tree = await request('worktree.create', {projectId: await page.evaluate(() => window.__projectId), path: second, branch: 'qa-run-view', createBranch: true, operationId: randomUUID()});
   assert.ok(samePath(tree.path, second));
   const other = await request('quickLaunch.run', {detectedKey: 'node:package.json:dev', projectId: await page.evaluate(() => window.__projectId), cwd: second, operationId: randomUUID()});
+  await page.locator('.wb-switch-btn[data-view="run"]').click();
   const foreign = await until(async () => {
     const row = page.locator(`[data-testid="run-running-row"][data-session-id="${other.session.id}"]`);
     return await row.count() ? row : undefined;
   }, 'the second worktree run appears in Running');
   assert.match(await foreign.innerText(), /second/, 'the row names its worktree');
   assert.equal(await foreign.getAttribute('data-current'), null, 'a run of another worktree is not the current one');
-  assert.match(await runningRow(dev).first().innerText(), /work/, 'the current worktree row keeps its own label');
+  assert.equal(await runningRow(dev).first().locator('.ql-worktree').count(),0,'the current worktree row has no redundant worktree label');
   assert.equal((await snapshot()).sessions.filter(session => active(session) && session.run?.commandId === dev).length, 2);
   check('A second worktree\'s run appears in Running with its worktree label');
 

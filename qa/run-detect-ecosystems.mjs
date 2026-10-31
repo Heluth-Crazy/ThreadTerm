@@ -41,7 +41,7 @@ const work = join(scratch, 'work'), appDir = join(scratch, 'app'), rendererDir =
 // Fixture PATH: Node, Git's cmd folder and System32 only. Which of mvn/gradle/python are installed is irrelevant:
 // the probe asserts on each row's detected missingTool instead of on this machine.
 const gitCmd = dirname(gitExe);
-const fixturePath = [dirname(process.execPath), gitCmd, join(process.env.SystemRoot ?? 'C:\\Windows', 'System32')].filter(Boolean).join(';');
+const fixturePath = [work, dirname(process.execPath), gitCmd, join(process.env.SystemRoot ?? 'C:\\Windows', 'System32')].filter(Boolean).join(';');
 const inherited = {...process.env, GIT_DIR: process.env.GIT_DIR ?? join(scratch, 'contaminating-git-dir')};
 const env = Object.fromEntries(Object.entries(inherited).filter(([key]) => !/^(path|home|userprofile|codex_home|appdata|localappdata|threadterm_v3_.*|threadterm_test_git|threadterm_qa_.*|git_.*|npm_config_.*|node_options)$/i.test(key)));
 Object.assign(env, {
@@ -81,6 +81,7 @@ try {
   await writeFile(join(work, 'build.gradle'), "plugins {\n    id 'application'\n}\n");
   await writeFile(join(work, 'pyproject.toml'), '[project]\nname = "probe-python"\n\n[tool.pytest.ini_options]\naddopts = "-q"\n');
   await writeFile(join(work, 'app.py'), 'from flask import Flask\napp = Flask(__name__)\n');
+  await writeFile(join(work, 'python.cmd'), '@echo off\r\nexit /b 0\r\n');
   git('init'); git('config', 'user.email', 'qa@threadterm.invalid'); git('config', 'user.name', 'Run ecosystems QA');
   git('add', '.'); git('commit', '-m', 'fixture');
 
@@ -97,7 +98,7 @@ import './renderer/src/styles.css';
 import './renderer/src/workbench/workbench.css';
 const work=${JSON.stringify(work)};
 function Probe(){
- const [snapshot,setSnapshot]=useState(),[project,setProject]=useState(),[command,setCommand]=useState(),[switcherHost,setSwitcherHost]=useState(),[opened,setOpened]=useState(),[error,setError]=useState();
+ const [snapshot,setSnapshot]=useState(),[project,setProject]=useState(),[command,setCommand]=useState({view:'run',key:'initial'}),[switcherHost,setSwitcherHost]=useState(),[opened,setOpened]=useState(),[error,setError]=useState();
  useEffect(()=>{(async()=>{const first=await window.threadterm.request('runtime.snapshot',{});await window.threadterm.request('settings.update',{patch:{language:'en',notifications:{native:false,attention:false,completed:false,sound:false}},expectedRevision:first.settings.revision,operationId:crypto.randomUUID()});const added=await window.threadterm.request('project.add',{path:work,name:'Run ecosystems QA',operationId:crypto.randomUUID()});window.__projectId=added.id;setProject(added.id);setSnapshot(await window.threadterm.request('runtime.snapshot',{}));})().catch(value=>setError(String(value)));},[]);
  useEffect(()=>{if(!project)return;let live=true;const poll=async()=>{for(;live;){try{setSnapshot(await window.threadterm.request('runtime.snapshot',{}));}catch{}await new Promise(done=>setTimeout(done,300));}};void poll();return()=>{live=false;};},[project]);
  if(error)return <p role='alert'>{error}</p>;
@@ -124,64 +125,65 @@ createRoot(document.getElementById('root')).render(<Probe/>);`;
   page.on('pageerror', error => console.error(`Renderer error: ${error.message}`));
   await page.waitForFunction(() => Boolean(window.threadterm));
   await app.evaluate(({BrowserWindow}) => BrowserWindow.getAllWindows()[0].setContentSize(1200, 900));
-  await page.locator('.ql-trigger').waitFor();
-
   // The Run view groups each ecosystem from the files alone; no build tool ran to list them.
-  await page.locator('.ql-trigger').click();
-  await page.getByTestId('quick-launch-menu').waitFor();
-  await page.getByTestId('open-run-view').click();
   const view = page.getByTestId('run-view');
   await view.waitFor();
-  const mavenGroup = view.getByTestId('run-group-detected:maven');
-  const gradleGroup = view.getByTestId('run-group-detected:gradle');
-  const pythonGroup = view.getByTestId('run-group-detected:python');
-  await mavenGroup.waitFor(); await gradleGroup.waitFor(); await pythonGroup.waitFor();
-  assert.match(await mavenGroup.innerText(), /Maven/i);
-  assert.match(await mavenGroup.innerText(), /pom\.xml/);
-  assert.match(await gradleGroup.innerText(), /Gradle/i);
-  assert.match(await pythonGroup.innerText(), /Python/i);
-  assert.match(await pythonGroup.innerText(), /-m flask --app app\.py:app run/);
-  check('The Run view shows Maven, Gradle and Python groups detected from the fixture files');
+  const projectId = await until(async () => await page.evaluate(() => window.__projectId), 'the fixture project is ready');
+  const detected = await request('quickLaunch.detect', {projectId, cwd: work});
+  for (const kind of ['maven', 'gradle', 'python']) assert.ok(detected.entries.some(entry => entry.source.kind === kind), `${kind} is detected from the fixture files`);
+  const availableKinds = ['maven', 'gradle', 'python'].filter(kind => detected.entries.some(entry => entry.source.kind === kind && !entry.missingTool));
+  for (const kind of availableKinds) await view.locator(`[data-testid^="run-group-detected:${kind}:"]`).first().waitFor();
+  if (detected.entries.some(entry => entry.missingTool)) await view.getByTestId('run-unavailable').waitFor();
+  const mavenGroup = view.locator('[data-testid^="run-group-detected:maven:"]').first();
+  if (availableKinds.includes('maven')) { assert.match(await mavenGroup.innerText(), /Maven/i); assert.match(await mavenGroup.innerText(), /probe-maven/i); }
+  const pythonGroup = view.locator('[data-testid^="run-group-detected:python:"]').first();
+  if (availableKinds.includes('python')) { assert.match(await pythonGroup.innerText(), /Python/i); assert.match(await pythonGroup.innerText(), /-m flask --app app\.py:app run/); }
+  check('The Run view shows available detected groups and keeps unavailable tools in the collapsed PATH summary');
 
   // A source-inferred app is tagged as a suggestion, with the tooltip that asks for a look first.
+  const flaskEntry = detected.entries.find(entry => entry.key === 'python:app.py:flask');
+  const pytestEntry = detected.entries.find(entry => entry.key === 'python:pyproject.toml:pytest');
+  assert.ok(flaskEntry?.suggested && pytestEntry && !pytestEntry.suggested, 'source Flask is suggested while manifest pytest is not');
+  assert.equal(flaskEntry.missingTool, undefined, 'the fixture supplies python.cmd');
+  assert.equal(pytestEntry.missingTool, undefined, 'the fixture supplies python.cmd');
   const flask = view.getByTestId('quick-launch-detected-entry-python:app.py:flask');
   await flask.waitFor();
   const suggested = flask.locator('[data-suggested="true"]');
   await suggested.waitFor();
   assert.equal((await suggested.innerText()).trim(), 'Suggested');
   assert.equal(await suggested.getAttribute('title'), 'Found in source code; check the command before saving.');
-  // The declared pytest entry is not a suggestion.
   const pytest = view.getByTestId('quick-launch-detected-entry-python:pyproject.toml:pytest');
   await pytest.waitFor();
   assert.equal(await pytest.locator('[data-suggested="true"]').count(), 0, 'a manifest entry is not a suggestion');
   check('The Flask row shows the Suggested tag with its tooltip; the pytest row does not');
 
   // The Gradle rows are disabled exactly when detection reports the missing tool, never per machine.
-  const projectId = await page.evaluate(() => window.__projectId);
-  const detected = await request('quickLaunch.detect', {projectId, cwd: work});
   const gradleRun = detected.entries.find(entry => entry.key === 'gradle:build.gradle:run');
   assert.ok(gradleRun, `the application plugin produces a run entry: ${JSON.stringify(detected.entries.map(entry => entry.key))}`);
   assert.equal(gradleRun.command, 'gradle run');
-  const gradleRow = view.getByTestId('quick-launch-detected-entry-gradle:build.gradle:run');
-  await gradleRow.waitFor();
-  const gradleRunButton = gradleRow.getByRole('button', {name: 'Run', exact: true});
   if (gradleRun.missingTool) {
-    assert.equal(await gradleRunButton.isDisabled(), true, 'a row whose tool is missing cannot run');
-    assert.match((await gradleRow.getAttribute('title')) ?? '', new RegExp(`${escape(gradleRun.missingTool)} isn't on PATH`));
+    const unavailable = view.getByTestId('run-unavailable');
+    await unavailable.waitFor();
+    const count = detected.entries.filter(entry => entry.missingTool === gradleRun.missingTool).length;
+    assert.match(await unavailable.innerText(), new RegExp(`${escape(gradleRun.missingTool)} \\(${count}\\)`));
   } else {
-    assert.equal(await gradleRunButton.isDisabled(), false, 'gradle is on the runtime PATH here, so the row runs');
+    const gradleRow = view.getByTestId('quick-launch-detected-entry-gradle:build.gradle:run');
+    await gradleRow.waitFor();
+    assert.equal(await gradleRow.locator('[data-run-primary]').isDisabled(), false, 'gradle is on the runtime PATH here, so the row runs');
   }
   check(`The Gradle rows match their detected missingTool (${gradleRun.missingTool ?? 'gradle present'})`);
 
   // Running the detected Maven service launches the wrapper in the Maven root with the detected goal.
   const mavenRow = view.getByTestId('quick-launch-detected-entry-maven:pom.xml:spring-boot:run');
+  assert.equal(detected.entries.find(entry => entry.key === 'maven:pom.xml:spring-boot:run')?.missingTool, undefined, 'the fixture Maven wrapper is runnable');
   await mavenRow.waitFor();
-  await mavenRow.getByRole('button', {name: 'Run', exact: true}).click();
-  const id = await until(async () => (await page.getByTestId('opened-session').innerText()).trim() || undefined, 'the view opens the Maven run terminal');
+  const openedBeforeRun = (await page.getByTestId('opened-session').innerText()).trim();
+  await mavenRow.locator('[data-run-primary]').click();
   const session = await until(async () => {
-    const run = (await snapshot()).sessions.find(candidate => candidate.id === id);
-    return run?.run?.commandId === 'detected:maven:pom.xml:spring-boot:run' && run;
+    const run = (await snapshot()).sessions.find(candidate => candidate.run?.commandId === 'detected:maven:pom.xml:spring-boot:run');
+    return run;
   }, 'the Maven run records its detected key');
+  assert.equal((await page.getByTestId('opened-session').innerText()).trim(), openedBeforeRun, 'starting a run leaves the opened session unchanged');
   assert.equal(session.run.commandId, 'detected:maven:pom.xml:spring-boot:run');
   assert.equal(session.run.kind, 'service');
   await until(() => existsSync(join(work, 'maven-args.txt')), 'the wrapper ran');

@@ -40,7 +40,7 @@ const DEV_ENTRY = 'detected:node:package.json:dev';
 const scratch = await mkdtemp(join(tmpdir(), 'tt-run-agent-tools-'));
 const work = join(scratch, 'work'), second = join(scratch, 'second');
 const appDir = join(scratch, 'app'), bin = join(scratch, 'bin'), plugins = join(scratch, 'plugins');
-const out = join(root, 'qa/results/run-agent-tools');
+const out = join(scratch, 'out');
 // Fixture PATH: Node (the ACP fixture itself), Git's cmd folder and System32 only — no agent binary anywhere.
 const fixturePath = [bin, dirname(process.execPath), dirname(gitExe), join(process.env.SystemRoot ?? 'C:\\Windows', 'System32')].filter(Boolean).join(';');
 const inherited = {...process.env, GIT_DIR: process.env.GIT_DIR ?? join(scratch, 'contaminating-git-dir')};
@@ -144,7 +144,7 @@ const runById = async id => (await sessions()).find(session => session.id === id
 const activeRunOf = async commandId => (await sessions()).find(session => session.run?.commandId === commandId && active(session) && samePath(session.worktreePath, work));
 
 try {
-  await rm(out, {recursive: true, force: true}); await mkdir(out, {recursive: true});
+  await mkdir(out, {recursive: true});
   await mkdir(work, {recursive: true}); await mkdir(bin, {recursive: true}); await mkdir(plugins, {recursive: true});
   // A saved service: an HTTP server that prints a line but no URL, so only port readiness can reveal it.
   await writeFile(join(work, 'server.mjs'), `import http from 'node:http';\n`

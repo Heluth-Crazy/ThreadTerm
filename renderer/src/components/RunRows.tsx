@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
 import type { DetectedRunEntry, QuickLaunchCommand, QuickLaunchKind, QuickLaunchRepoCatalog, QuickLaunchRepoEntry, Session } from '@threadterm/protocol';
 import { request, subscribeEvents } from '../bridge';
 import { sameCanonicalScope } from '../projectScope';
-import { activeRun, missingToolLabel, previewWaitingLabel, quickLaunchError, runState, runStateLabel, suggestedTag } from '../quickLaunch';
+import { activeRun, missingToolLabel, previewWaitingLabel, quickLaunchError, runState, suggestedTag } from '../quickLaunch';
 import { detectedCommandId, agentStartLabel, startedByChat } from '../workbench/runView';
 import { Icon } from './PrototypeIcon';
 
@@ -34,6 +34,15 @@ export const savedRunEntries = (commands:readonly QuickLaunchCommand[]) => comma
 export const detectedRunEntries = (entries:readonly DetectedRunEntry[]) => entries.map(detectedRunEntry);
 export const repoRunEntries = (entries:readonly QuickLaunchRepoEntry[]) => entries.map(repoRunEntry);
 
+/** A pinned command replaces its detected twin only when it launches exactly the same thing. */
+export function isPinnedDetectedTwin(command:Pick<QuickLaunchCommand,'command'|'cwd'|'shell'>, entry:Pick<DetectedRunEntry,'command'|'cwd'|'shell'>) {
+ return command.command === entry.command && command.cwd === entry.cwd && command.shell === entry.shell;
+}
+/** Removing a plain pin is safe when its detected source preserves the whole launch definition. */
+export function unpinNeedsConfirm(command:Pick<QuickLaunchCommand,'name'|'kind'|'env'|'previewUrl'|'dependsOn'|'command'|'cwd'|'shell'>, detected?:Pick<DetectedRunEntry,'name'|'kind'|'command'|'cwd'|'shell'>) {
+ return !detected || command.name !== detected.name || command.kind !== detected.kind || !isPinnedDetectedTwin(command, detected) || command.env.length > 0 || Boolean(command.previewUrl) || Boolean(command.dependsOn?.length);
+}
+
 /** The active run and the latest run of one entry in one worktree, resolved exactly as admission defines them. */
 export function runEntrySessions(sessions:readonly Session[], commandId:string, root:string):{active?:Session;latest?:Session} {
  const scoped = sessions.filter(session => session.run?.commandId === commandId && !session.archived && !session.readOnly && sameCanonicalScope(session.worktreePath, root));
@@ -43,10 +52,12 @@ export function runEntrySessions(sessions:readonly Session[], commandId:string, 
 
 /** The URL a run printed or listened on, opening the existing preview surface. While a service run is
  * still being watched, its configured fallback is shown but cannot be opened yet. */
-export function RunUrlLink({url, onOpenPreview, pending, zh}:{url:string;onOpenPreview?:(url:string) => void;pending?:boolean;zh?:boolean}) {
- if (!onOpenPreview) return <code className="ql-url-text">{url}</code>;
- if (pending) return <span className="ql-url is-pending" data-testid="run-url" data-pending="true" aria-disabled="true" title={previewWaitingLabel(Boolean(zh))}>{url}</span>;
- return <a className="ql-url" data-testid="run-url" href={url} title={url} onClick={event => { event.preventDefault(); onOpenPreview(url); }}>{url}</a>;
+export function RunUrlLink({url, compact, onOpenPreview, pending, zh}:{url:string;compact?:boolean;onOpenPreview?:(url:string) => void;pending?:boolean;zh?:boolean}) {
+ const port=compact?url.match(/^https?:\/\/[^/]+:(\d+)(?:\/|$)/)?.[1]:undefined;
+ const text=port?<span data-testid="run-port">:{port}</span>:url;
+ if (!onOpenPreview) return <code className="ql-url-text" title={url}>{text}</code>;
+ if (pending) return <span className="ql-url is-pending" data-testid="run-url" data-pending="true" aria-disabled="true" title={previewWaitingLabel(Boolean(zh))}>{text}</span>;
+ return <a className="ql-url" data-testid="run-url" href={url} title={url} onClick={event => { event.preventDefault(); onOpenPreview(url); }}>{text}</a>;
 }
 
 /** A run started by an agent's chat: a small "Agent" tag whose tooltip names the chat and whose click focuses it. */
@@ -59,42 +70,26 @@ export function AgentTag({startedBy, sessions, zh, onOpen}:{startedBy?:string;se
   : <span className="ql-agent-tag" data-testid="run-agent-tag" title={label}>{text}</span>;
 }
 
-/** The shared row: identity, command text, run state and URL. Each surface adds its own actions, so the popover keeps
- * its compact launcher buttons and the Run view adds Restart, Stop and Set as current without a second row renderer. */
-export function RunEntryRow({entry, session, zh, busy, worktree, uptime, current, agentLabel, details, actions, sequenceText, onCancelSequence}:{
- entry:RunEntry;
- session?:Session;
- zh:boolean;
- busy?:boolean;
- worktree?:string;
- uptime?:string;
- current?:boolean;
- /** The Agent tag's tooltip for this entry's active run, when an agent started it. */
- agentLabel?:string;
- details?:ReactNode;
- actions:ReactNode;
- sequenceText?:string;
- onCancelSequence?:()=>void;
+/** One dense entry row. The output affordance stays distinct from starting a run. */
+export function RunEntryRow({entry, session, latest, zh, busy, current, details, actions, onOpen, onRun, sequenceText, onCancelSequence}:{
+ entry:RunEntry;session?:Session;latest?:Session;zh:boolean;busy?:boolean;current?:boolean;
+ sequenceText?:string;onCancelSequence?:()=>void;details?:ReactNode;actions:ReactNode;onOpen?:(id:string)=>void;onRun?:()=>void;
 }) {
+ const copy=(en:string,cn:string)=>zh?cn:en;
  const view = session ? runState(session) : undefined;
+ const last = latest ? runState(latest) : undefined;
  const missing = entry.missingTool ? missingToolLabel(entry.missingTool, zh) : entry.repo?.missingSecrets.length ? (zh ? `需要 ${entry.repo.missingSecrets[0]}` : `Needs ${entry.repo.missingSecrets[0]}`) : entry.disabledReason;
  const suggested = suggestedTag(entry.detected, zh);
- return <section className={`ql-command${entry.source === 'detected' ? ' ql-detected-entry' : ''}${missing ? ' is-missing' : ''}${current ? ' is-current' : ''}`}
+ return <section className={`wb-run-row${entry.source === 'detected' ? ' ql-detected-entry' : ''}${missing ? ' is-missing' : ''}${current ? ' is-current' : ''}`}
   data-testid={entry.source === 'saved' ? `quick-launch-command-${entry.key}` : entry.source === 'repo' ? `quick-launch-repo-entry-${entry.key}` : `quick-launch-detected-entry-${entry.key}`}
-  data-run-entry={entry.commandId} data-current={current ? 'true' : undefined} aria-label={entry.name} title={missing}>
-  <div className="ql-command-head">
-   <strong>{entry.name}</strong>
-   {entry.sourceLabel && <span className="ql-source-label">{entry.sourceLabel}</span>}
-   {suggested && <span className="ql-source-label ql-suggested" data-suggested="true" title={suggested.title}>{suggested.label}</span>}
-   {worktree && <span className="ql-worktree" title={worktree}>{worktree}</span>}
-   {view && <span className={`ql-state ql-${view.state}`} title={agentLabel}><span className="dot" aria-hidden="true"/>{runStateLabel(view, zh)}</span>}
-   {uptime && <span className="ql-uptime">{uptime}</span>}
-   {missing && <span className="ql-missing-tool">{missing}</span>}
-   {sequenceText && <span className="ql-sequence-chip" data-testid="run-sequence-chip">{sequenceText}{onCancelSequence&&<button type="button" className="btn btn-sm btn-ghost" aria-label={zh?'取消启动序列':'Cancel starting sequence'} disabled={busy} onClick={onCancelSequence}>{zh?'取消':'Cancel'}</button>}</span>}
-  </div>
-  <code title={entry.command}>{entry.command}</code>
-  {details}
-  <div className="ql-actions" data-busy={busy ? 'true' : undefined}>{actions}</div>
+  data-run-entry={entry.commandId} data-current={current ? 'true' : undefined} aria-label={entry.name} title={missing}
+  onDoubleClick={event => { if (!session && !missing) { event.preventDefault();onRun?.(); } }} onKeyDown={event=>{if(event.key==='Enter'&&!session&&!missing&&!event.altKey&&!event.ctrlKey&&!event.metaKey&&(event.target===event.currentTarget||Boolean((event.target as HTMLElement).closest('[data-run-primary],.wb-run-row-name')))){event.preventDefault();onRun?.();}}}>
+  {session?<button type="button" className={`icon-btn wb-run-row-play ql-state ql-${view!.state}`} data-run-primary="true" aria-label={copy('Open output','打开输出')} title={copy('Open output','打开输出')} onClick={()=>onOpen?.(session.id)}><span className="dot" aria-hidden="true"/></button>
+   :last?.state==='failed'?<button type="button" className="icon-btn wb-run-row-play ql-failed" data-run-primary="true" aria-label={zh?`显示输出（退出码 ${last.exitCode ?? ''}）`:`Show output (exit ${last.exitCode ?? ''})`} title={zh?`显示输出（退出码 ${last.exitCode ?? ''}）`:`Show output (exit ${last.exitCode ?? ''})`} onClick={()=>onOpen?.(latest!.id)}>×</button>
+   :<button type="button" className="icon-btn wb-run-row-play" data-run-primary="true" aria-label={`${zh?'运行':'Run'} ${entry.name}`} title={`${zh?'运行':'Run'} ${entry.name}`} disabled={busy || Boolean(missing)} onClick={() => onRun?.()}><Play/></button>}
+  {session ? <button type="button" className={`wb-run-row-name ql-${view!.state}`} onClick={() => onOpen?.(session.id)} title={entry.name}><strong>{entry.name}</strong></button>
+   : <span className="wb-run-row-name" title={entry.name}><strong>{entry.name}</strong>{suggested&&<span className="ql-source-label ql-suggested" data-suggested="true" title={suggested.title}>{suggested.label}</span>}</span>}
+  {sequenceText?<span className="wb-run-sequence" data-testid="run-sequence-chip" title={sequenceText}><span>{sequenceText}</span>{onCancelSequence&&<button type="button" className="wb-run-row-name" disabled={busy} onClick={onCancelSequence}>{copy('Cancel','取消')}</button>}</span>:<code title={entry.command}>{entry.command}</code>}{details}<span className="wb-run-row-actions">{actions}</span>
  </section>;
 }
 
@@ -155,10 +150,4 @@ export function useRunCatalog({projectId, root, live, zh, sessionIds}:{projectId
   return () => { listGeneration.current++; detectGeneration.current++; repoGeneration.current++; unsubscribe(); removeEventListener('focus', focus); document.removeEventListener('visibilitychange', visibility); };
  }, [live, refresh, detect, readRepo]);
  return { commands, detected, repo, truncated, loading, detecting, repoLoading, issue, refresh };
-}
-
-/** A runnable entry's primary button: run it, or open its existing terminal while it is active. */
-export function RunEntryPrimary({entry, active, busy, zh, onRun, onOpen}:{entry:RunEntry;active?:Session;busy?:boolean;zh:boolean;onRun:() => void;onOpen:(id:string) => void}) {
- const missing = entry.missingTool ? missingToolLabel(entry.missingTool, zh) : entry.repo?.missingSecrets.length ? (zh ? `需要 ${entry.repo.missingSecrets[0]}` : `Needs ${entry.repo.missingSecrets[0]}`) : entry.disabledReason;
- return <button className="btn btn-sm" data-run-primary="true" disabled={busy || Boolean(missing)} title={missing} onClick={() => active ? onOpen(active.id) : onRun()}>{active ? <Icon name="terminal"/> : <Play/>}{active ? (zh ? '打开终端' : 'Open terminal') : (zh ? '运行' : 'Run')}</button>;
 }
