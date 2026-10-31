@@ -100,6 +100,16 @@ window.qaEmit = async text => {
   cursor += data.byteLength;
   await outputListener({ sessionId: 'qa-terminal-history', cursor: chunkCursor, data, gap: false });
 };
+// A live gap reports the next retained cursor after lost bytes; the surface
+// keeps rendering from there but may no longer reproduce the screen (R3).
+window.qaEmitGap = async (lostBytes, text) => {
+  if (!outputListener) throw new Error('output subscription is not ready');
+  cursor += lostBytes;
+  const data = encoder.encode(text);
+  const chunkCursor = cursor;
+  cursor += data.byteLength;
+  await outputListener({ sessionId: 'qa-terminal-history', cursor: chunkCursor, data, gap: true });
+};
 
 function Fixture() {
   const [status, setStatus] = useState('running');
@@ -276,6 +286,27 @@ try {
   assert.ok(await page.evaluate(count => window.qaBridgeMetrics.requests.filter(r => r.method === 'session.claim').length > count, claimsBefore));
   await page.evaluate(() => window.qaTerminal.input('resume-input'));
   await page.waitForFunction(() => window.qaBridgeMetrics.requests.some(r => r.method === 'terminal.input' && r.params.data === 'resume-input'));
+
+  // After the replay is complete a live gap only makes the screen inexact: the
+  // xterm parser keeps going, so the surface must keep saying so instead of a
+  // transient message that later errors and actions can overwrite (R3).
+  await page.evaluate(() => window.qaEmitGap(128, 'AFTER-GAP live output resumes\r\n'));
+  const fidelityNote = page.locator('.term-fidelity-note');
+  await fidelityNote.waitFor();
+  assert.equal(await fidelityNote.isVisible(), true, 'the live-gap note is not visible');
+  assert.equal(await fidelityNote.getAttribute('role'), 'status', 'the live-gap note is not announced as status');
+  assert.match(await fidelityNote.innerText(), /Screen may be inaccurate/, `unexpected live-gap label: ${await fidelityNote.innerText()}`);
+  assert.match(await fidelityNote.innerText(), /Some output was lost/, 'the live-gap note lacks its explanation');
+  assert.equal(await page.evaluate(() => Array.from({ length: window.qaTerminal.buffer.active.length }, (_, i) => window.qaTerminal.buffer.active.getLine(i)?.translateToString(true)).some(line => line?.includes('AFTER-GAP live output resumes'))), true, 'output after the gap was not rendered');
+  await page.evaluate(() => window.qaEmit('AFTER-GAP live output keeps flowing\r\n'));
+  await page.waitForTimeout(100);
+  const stickyNote = page.locator('.term-fidelity-note');
+  assert.equal(await stickyNote.count(), 1, 'the live-gap note did not survive later output');
+  assert.match(await stickyNote.innerText(), /Screen may be inaccurate/, 'the live-gap note changed after later output');
+  await page.screenshot({ path: join(out, 'live-gap-fidelity-note.png') });
+  report.screenshots.push('live-gap-fidelity-note.png');
+  report.checks.push('a live output gap shows a sticky screen-fidelity note while live output keeps rendering');
+
   await page.evaluate(() => window.qaSetStatus('exited'));
   await page.getByRole('button', { name: 'New with same config' }).click();
   await page.waitForFunction(() => window.qaOpenedSession === 'qa-new-conversation');
