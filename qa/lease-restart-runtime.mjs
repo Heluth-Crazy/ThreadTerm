@@ -115,7 +115,9 @@ async function echo(peer, sessionId, epoch, marker) {
   for (const end = Date.now() + 15_000; Date.now() < end; await delay(80)) {
     const page = await peer.request('terminal.read', { sessionId, cursor, limit: 65_536 });
     if (page.nextCursor > cursor) { output += Buffer.from(page.data, 'base64').toString('utf8'); cursor = page.nextCursor; }
-    if (output.split(marker).length > 2) return; // the echoed command line plus its output
+    // ConPTY may wrap a long prompt mid-token, so the typed line is not a reliable second
+    // continuous match; the echo builtin output is enough (same as terminal-lease-runtime).
+    if (output.includes(marker)) return;
   }
   throw Error(`cmd did not print ${marker}`);
 }

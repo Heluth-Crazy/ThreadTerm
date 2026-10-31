@@ -1760,6 +1760,8 @@ impl RuntimeService {
                 }
                 "terminal.input" => {
                     let p: TerminalInput = parse(&request.params)?;
+                    // Fence → short require (DB released) → PTY write. Never hold SQLite across I/O.
+                    let _fence = self.leases.fence(&p.session_id);
                     self.leases
                         .require(&self.db, &p.session_id, principal, p.lease_epoch)?;
                     self.db.require_interactive(&p.session_id)?;
@@ -1768,6 +1770,7 @@ impl RuntimeService {
                 }
                 "terminal.resize" => {
                     let p: TerminalResize = parse(&request.params)?;
+                    let _fence = self.leases.fence(&p.session_id);
                     self.leases
                         .require(&self.db, &p.session_id, principal, p.lease_epoch)?;
                     self.pty.resize(&p.session_id, p.cols, p.rows)?;
@@ -4589,6 +4592,94 @@ mod tests {
         assert_eq!(after_stop.status, "idle");
         assert_eq!(db.chat_items(&session.id).unwrap().len(), 1);
         assert!(db.output_from(&session.id, 0, 1).unwrap().is_empty());
+    }
+
+    #[test]
+    fn terminal_input_after_departed_takeover_fails_with_stale_lease_and_writes_nothing() {
+        let root = tempfile::tempdir().unwrap();
+        let db = Arc::new(Database::open(&root.path().join("runtime.sqlite")).unwrap());
+        crate::session_configs::initialize(&db).unwrap();
+        crate::retry_scheduler::initialize(&db).unwrap();
+        let service = test_service(root.path(), Arc::clone(&db));
+        #[cfg(windows)]
+        let (executable, args) = ("cmd.exe", json!(["/Q", "/K"]));
+        #[cfg(not(windows))]
+        let (executable, args) = ("/bin/sh", json!([]));
+        let created = service
+            .dispatch(
+                "alice",
+                RpcRequest {
+                    v: 1,
+                    id: "create-lease-input".into(),
+                    method: "session.create".into(),
+                    params: json!({
+                        "cwd": root.path(),
+                        "provider": "shell",
+                        "mode": "terminal",
+                        "executable": executable,
+                        "args": args,
+                        "operationId": "create-lease-input",
+                    }),
+                },
+            )
+            .unwrap();
+        let session_id = created["id"].as_str().unwrap().to_owned();
+        let alice = service.leases.connect("alice");
+        let epoch_a = service
+            .dispatch(
+                "alice",
+                RpcRequest {
+                    v: 1,
+                    id: "claim-a".into(),
+                    method: "session.claim".into(),
+                    params: json!({"sessionId": session_id}),
+                },
+            )
+            .unwrap()["leaseEpoch"]
+            .as_i64()
+            .unwrap();
+        drop(alice);
+        let _bob = service.leases.connect("bob");
+        let epoch_b = service
+            .dispatch(
+                "bob",
+                RpcRequest {
+                    v: 1,
+                    id: "claim-b".into(),
+                    method: "session.claim".into(),
+                    params: json!({"sessionId": session_id}),
+                },
+            )
+            .unwrap()["leaseEpoch"]
+            .as_i64()
+            .unwrap();
+        assert_eq!(epoch_b, epoch_a + 1);
+        let error = service
+            .dispatch(
+                "alice",
+                RpcRequest {
+                    v: 1,
+                    id: "stale-input".into(),
+                    method: "terminal.input".into(),
+                    params: json!({"sessionId": session_id, "data": "echo should-not-land\r\n", "leaseEpoch": epoch_a}),
+                },
+            )
+            .unwrap_err();
+        assert_eq!(error.code, "stale_lease");
+        // cmd.exe echoes typed input, so the marker would show up in the output if it had reached the PTY. Its
+        // prompt arrives asynchronously, which is why this checks the marker rather than the byte count.
+        std::thread::sleep(std::time::Duration::from_millis(500));
+        let output: Vec<u8> = db.output_from(&session_id, 0, 1 << 20).unwrap().into_iter().flat_map(|(_, bytes)| bytes).collect();
+        assert!(!String::from_utf8_lossy(&output).contains("should-not-land"), "stale input must not reach the PTY");
+        let _ = service.dispatch(
+            "bob",
+            RpcRequest {
+                v: 1,
+                id: "stop-lease-input".into(),
+                method: "session.stop".into(),
+                params: json!({"sessionId": session_id, "force": true, "operationId": "stop-lease-input"}),
+            },
+        );
     }
 
     #[test]
