@@ -16,7 +16,7 @@ import { RunSetupSection } from './RunSetupSection';
 import { activeSequenceForCommand, allocatedRunPort, sequenceChipText } from '../runSequence';
 import { Icon } from './PrototypeIcon';
 import { showContextMenu } from './ContextMenu';
-import { detectedRunEntries, AgentTag, isPinnedDetectedTwin, Play, repoRunEntries, RunEntryRow, RunUrlLink, runEntrySessions, savedRunEntries, unpinNeedsConfirm, useRunCatalog, type RunEntry } from './RunRows';
+import { detectedRunEntries, AgentTag, isPinnedDetectedTwin, listedDetected, Play, repoRunEntries, RunEntryRow, RunUrlLink, runEntrySessions, savedRunEntries, unpinNeedsConfirm, useRunCatalog, type RunEntry } from './RunRows';
  import { RunRepoDetails } from './RunRepoDetails';
 import { useRecentRuns, useRunProposals } from '../runProposals';
 import { RunRecent } from './RunRecent';
@@ -140,7 +140,7 @@ export function RunViewPanel({scope, sessions, actions, zh, visible, toolbarHost
   const next = event.key === 'Home' ? 0 : event.key === 'End' ? buttons.length - 1 : (index + (event.key === 'ArrowDown' ? 1 : -1) + buttons.length) % buttons.length;
   buttons[next]?.focus();
  };
- const visibleDetected=catalog.detected.filter(entry=>!entry.missingTool&&!catalog.commands.some(command=>isPinnedDetectedTwin(command,entry)));
+ const visibleDetected=listedDetected(catalog.detected,catalog.commands);
  const base:{key:string;label:string;rows:RunEntry[]}[] = [
   ...(saved.length?[{key:'saved',label:copy('Pinned','已固定'),rows:saved}]:[]),
   ...(repo.length?[{key:'repo',label:copy('Shared · run.json','共享 · run.json'),rows:repo}]:[]),

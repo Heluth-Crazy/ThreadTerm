@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import type { Session } from '@threadterm/protocol';
-import { isPinnedDetectedTwin, RunEntryRow, runCatalogReady, unpinNeedsConfirm } from './RunRows';
+import { isPinnedDetectedTwin, listedDetected, RunEntryRow, runCatalogReady, unpinNeedsConfirm } from './RunRows';
 
 test('run commands wait for the initial repo catalog read', () => {
  assert.equal(runCatalogReady({loading:false,detecting:false,repoLoading:true}),false);
@@ -17,6 +17,13 @@ test('a pin hides only its exact detected launch twin', () => {
  assert.equal(isPinnedDetectedTwin(saved,{...detected,cwd:'app'}),false);
  assert.equal(isPinnedDetectedTwin(saved,{...detected,shell:'pwsh'}),false);
  assert.equal(isPinnedDetectedTwin(saved,{...detected,command:'npm run other'}),false);
+});
+// The view, the toolbar list and the palette share this filter, so a pinned command is never offered twice.
+test('lists hide detected entries whose tool is missing or that a pin replaces', () => {
+ const build={...detected,name:'build',command:'npm run build'}, make={...detected,name:'all',command:'make all',missingTool:'make'};
+ assert.deepEqual(listedDetected([detected,build,make],[]).map(entry=>entry.name),['dev','build']);
+ assert.deepEqual(listedDetected([detected,build,make],[saved]).map(entry=>entry.name),['build']);
+ assert.deepEqual(listedDetected([detected],[{...saved,cwd:'app'}]).map(entry=>entry.name),['dev'],'a pin that launches elsewhere keeps its detected entry');
 });
 test('unpin confirmation protects settings not present in project files', () => {
  assert.equal(unpinNeedsConfirm(saved,detected),false);

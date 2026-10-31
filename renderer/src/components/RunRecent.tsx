@@ -15,10 +15,12 @@ export function RunRecent({runs,commands,sessions,zh,busy,onKeep,onOpenChat}:{ru
   {runs.map(run => {
    const current=commands.find(command=>command.id===run.entryId);
     const unchanged=run.source==='saved' && Boolean(current) && ['name','command','shell','cwd','kind','previewUrl'].every(key=>current![key as keyof QuickLaunchCommand]===run.snapshot[key as keyof QuickLaunchCommand]) && JSON.stringify(current?.env)===JSON.stringify(run.snapshot.env) && JSON.stringify(current?.dependsOn??[])===JSON.stringify(run.snapshot.dependsOn??[]) && !run.kept;
+   // One line at any width: the name and Pin… keep their room; state, source and command give way first.
+   const label=recentRunLabel(run,zh),source=sourceLabel(run.source,zh);
    return <article className="wb-recent-row" key={run.runId} data-testid="run-recent-row" data-run-id={run.runId}>
-    <div className="ql-command-head"><strong>{run.name}</strong><span className="ql-source-label">{sourceLabel(run.source,zh)}</span><AgentTag startedBy={run.startedBy} sessions={sessions} zh={zh} onOpen={onOpenChat}/>{run.startedBy&&<span className="wb-agent-chat">{sessions.find(session=>session.id===run.startedBy)?.title??run.startedBy}</span>}<span className={`ql-state ql-${run.state}`}><span className="dot" aria-hidden="true"/>{recentRunLabel(run,zh)}</span></div>
-    <code title={run.command}>{run.command}</code>
-    {!unchanged && <div className="ql-actions">{run.kept ? <span className="wb-kept" title={run.kept.commandId}>{copy('Pinned','已固定')}</span> : <button type="button" className="btn btn-sm" data-testid="run-recent-keep" disabled={busy} onClick={()=>onKeep(run)}>{copy('Pin…','固定…')}</button>}</div>}
+    <span className={`ql-state ql-${run.state}`} title={label}><span className="dot" aria-hidden="true"/></span><strong title={run.name}>{run.name}</strong><AgentTag startedBy={run.startedBy} sessions={sessions} zh={zh} onOpen={onOpenChat}/>
+    <span className="wb-recent-meta" title={`${label} · ${source} · ${run.command}`}><span className={`ql-${run.state}`}>{label}</span> · {source} · <code>{run.command}</code></span>
+    {!unchanged && (run.kept ? <span className="wb-kept" title={run.kept.commandId}>{copy('Pinned','已固定')}</span> : <button type="button" className="btn btn-sm" data-testid="run-recent-keep" disabled={busy} onClick={()=>onKeep(run)}>{copy('Pin…','固定…')}</button>)}
    </article>;
   })}
  </details>;

@@ -38,6 +38,10 @@ export const repoRunEntries = (entries:readonly QuickLaunchRepoEntry[]) => entri
 export function isPinnedDetectedTwin(command:Pick<QuickLaunchCommand,'command'|'cwd'|'shell'>, entry:Pick<DetectedRunEntry,'command'|'cwd'|'shell'>) {
  return command.command === entry.command && command.cwd === entry.cwd && command.shell === entry.shell;
 }
+/** The detected entries a list offers: not those whose tool is missing, nor those a pinned twin replaces. */
+export function listedDetected<T extends Pick<DetectedRunEntry,'command'|'cwd'|'shell'|'missingTool'>>(detected:readonly T[], commands:readonly Pick<QuickLaunchCommand,'command'|'cwd'|'shell'>[]):T[] {
+ return detected.filter(entry => !entry.missingTool && !commands.some(command => isPinnedDetectedTwin(command, entry)));
+}
 /** Removing a plain pin is safe when its detected source preserves the whole launch definition. */
 export function unpinNeedsConfirm(command:Pick<QuickLaunchCommand,'name'|'kind'|'env'|'previewUrl'|'dependsOn'|'command'|'cwd'|'shell'>, detected?:Pick<DetectedRunEntry,'name'|'kind'|'command'|'cwd'|'shell'>) {
  return !detected || command.name !== detected.name || command.kind !== detected.kind || !isPinnedDetectedTwin(command, detected) || command.env.length > 0 || Boolean(command.previewUrl) || Boolean(command.dependsOn?.length);

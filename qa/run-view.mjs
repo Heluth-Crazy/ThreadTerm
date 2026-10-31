@@ -231,9 +231,24 @@ createRoot(document.getElementById('root')).render(<Probe/>);`;
   assert.equal(await runViewShown(),false,'Ctrl+Shift+F5 keeps the Files view active');
   check('Shift+F5, Ctrl+F5, and Ctrl+Shift+F5 use production controller routing from Files without opening Run');
 
-  // The palette's "Run: build" starts a task through the captured host.
+  // A pinned twin replaces its detected entry in the palette, as it does in the Run view and the toolbar list.
+  const projectId = await page.evaluate(() => window.__projectId);
+  const detectedDev = (await request('quickLaunch.detect', {projectId, cwd: work})).entries.find(entry => entry.key === 'node:package.json:dev');
+  const twin = await request('quickLaunch.save', {projectId, name: 'dev', command: detectedDev.command, shell: detectedDev.shell, cwd: detectedDev.cwd, kind: detectedDev.kind, env: [], operationId: randomUUID()});
   await page.getByRole('button', {name: 'Open palette'}).click();
   const palette = page.getByRole('dialog', {name: 'Command palette'});
+  await palette.waitFor();
+  await palette.getByRole('textbox').fill('Run: dev');
+  const devRows = palette.locator('.cmd-row', {hasText: 'Run: dev'});
+  await devRows.first().waitFor();
+  assert.equal(await devRows.count(), 1, 'a pinned command and its detected twin share one palette row');
+  await page.keyboard.press('Escape');
+  await palette.waitFor({state: 'hidden'});
+  await request('quickLaunch.delete', {id: twin.id, expectedRevision: twin.revision, operationId: randomUUID()});
+  check('The palette lists a pinned command once, without its detected twin');
+
+  // The palette's "Run: build" starts a task through the captured host.
+  await page.getByRole('button', {name: 'Open palette'}).click();
   await palette.waitFor();
   // The palette loads the captured worktree's entries asynchronously; wait for the row before pressing Enter.
   await palette.getByRole('textbox').fill('Run: build');

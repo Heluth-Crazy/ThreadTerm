@@ -14,6 +14,7 @@ import { captureGitPaletteHost, captureRunPaletteHost } from "../workbench/gitPa
 import { WbIcon } from "../workbench/icons";
 import { isActiveRun, paletteRunEntries, type PaletteRunEntry } from "../workbench/runView";
 import { quickLaunchError } from "../quickLaunch";
+import { listedDetected } from "./RunRows";
 import "./command-palette.css";
 
 type Props = { data: Snapshot; onClose: () => void; onSession: (id: string) => void; onProject: (id: string) => void; onCreate: () => void; onCreateGroup: () => void; onAll: () => void; onInbox: () => void; onSettings: () => void; onUsage?: () => void; workbench?: boolean };
@@ -40,7 +41,7 @@ export function CommandPalette({ data, onClose, onSession, onProject, onCreate, 
       .then(([commands,detection,repo])=>{if(!live)return;setRunEntries(paletteRunEntries([
         ...commands.map(command=>({name:command.name,command:command.command,commandId:command.id,source:'saved' as const})),
         ...repo.entries.map(entry=>({name:entry.name,command:entry.command,commandId:`repo:${entry.id}`,source:'repo' as const})),
-        ...detection.entries.filter(entry=>!entry.missingTool).map(entry=>({name:entry.name,command:entry.command,commandId:`detected:${entry.key}`,source:'detected' as const})),
+        ...listedDetected(detection.entries,commands).map(entry=>({name:entry.name,command:entry.command,commandId:`detected:${entry.key}`,source:'detected' as const})),
       ]));})
       .catch(error=>{if(live)setRunIssue(quickLaunchError(error,zh));});
     return()=>{live=false;};
