@@ -13,6 +13,7 @@ import { sessionState, sessionStateLabel } from "../sessionState";
 import { agentName } from "../agents";
 import { historyChatPreview, historyOpenLabel, historyPreviewText } from "../historyPresentation";
 import { stripAnsi } from "../chatContext";
+import { isCodeReviewSession } from "../codeReview";
 
 export type SessionScope = "all" | "active" | "recent" | "followed" | "bookmarked" | "archived";
 type Layout = "cards" | "list";
@@ -100,6 +101,7 @@ export function AllTerminalsPage({ data, recentIds, initialScope = "all", highli
   // A plain-folder project (no git worktrees) has no list to judge its sessions' directories against.
   const unavailable = (session: Session) => { const trees = worktrees[session.projectId ?? ""]; if (!session.worktreePath || !trees?.length) return false; const tree = treeFor(trees, session.worktreePath); return !tree || Boolean(tree.missing); };
   const matches = (session: Session) => {
+    if (isCodeReviewSession(session)) return false;
     const output = outputs[session.id]?.text ?? "";
     const text = `${session.title} ${displayProvider(session.provider)} ${projectName(session.projectId)} ${branchFor(session)} ${session.worktreePath ?? ""} ${displayPath(session.worktreePath)} ${output}`.toLowerCase();
     return (!query || text.includes(query.toLowerCase())) && (projectId === "all" || session.projectId === projectId) && (worktreePath === "all" || session.worktreePath === worktreePath) && (status === "all" || session.status === status) &&

@@ -26,6 +26,7 @@ import { sessionDocumentError } from '../sessionDocuments';
 import { dirtyPathsInScope } from '../dirtyEditors';
 import { formatAgentReference, referencePath } from '../workbench/agentReference';
 import { workbenchError } from '../workbench/errors';
+import { isCodeReviewSession } from '../codeReview';
 import { coveredBy, type WorkbenchActions, type WorkbenchScope } from '../workbench/types';
 import { AgentIcon, Icon } from './PrototypeIcon';
 import { SessionActions } from './SessionActions';
@@ -144,7 +145,7 @@ export function SessionWorkspace({session,data,theme,onBack,onSelect,onProject,o
  const saving=useRef(Promise.resolve()),saved=useRef({id:restored?.id,revision:restored?.revision??0});
  const persistedLayout=useRef<PaneLayout|undefined>(undefined);
  const currentTree=trees.find(tree=>sameCanonicalScope(tree.path,path));
- const treeSessions=data.sessions.filter(s=>s.projectId===session.projectId&&sameCanonicalScope(s.worktreePath??project?.path,path)&&(!s.archived||s.id===session.id));
+ const treeSessions=data.sessions.filter(s=>s.projectId===session.projectId&&sameCanonicalScope(s.worktreePath??project?.path,path)&&(!s.archived||s.id===session.id)&&(!isCodeReviewSession(s)||s.id===session.id));
  const hostedChatIds=data.sessions.filter(candidate=>candidate.mode==='chat'&&sessionIdsIn(layout).includes(candidate.id)).map(candidate=>candidate.id);
  const state=session.readOnly?'ended':session.status==='waiting'?'needs':session.status==='error'?'failed':session.status==='interrupted'?'stalled':working(session)?'running':'ended';
  const stateLabel=zh?({needs:'待处理',failed:'失败',stalled:'已中断',running:'运行中',ended:session.readOnly?'只读历史':'已结束'}[state]):({needs:'Attention',failed:'Failed',stalled:'Interrupted',running:'Running',ended:session.readOnly?'Read-only history':'Ended'}[state]);
@@ -292,7 +293,7 @@ export function SessionWorkspace({session,data,theme,onBack,onSelect,onProject,o
  const addSessionPane=(s:Session)=>{save(addPane(layout,tabFor(s)));setPicker(undefined);};
  const fillPane=(s:Session)=>{if(picker?.mode!=='fill'||!picker.paneId)return;save(addTabToPane(layout,picker.paneId,tabFor(s)));setPicker(undefined);};
  const cancelPicker=()=>{if(picker?.mode==='fill'&&picker.paneId&&!workspaceTabs(latestLayout.current).some(item=>item.paneId===picker.paneId)){const next=closePane(latestLayout.current,picker.paneId);if(next)save(next);}setPicker(undefined);};
- const available=picker&&picker.mode!=='switch'?treeSessions.filter(s=>!sessionIdsIn(layout).includes(s.id)):allProjects?data.sessions.filter(s=>!s.archived):treeSessions;
+ const available=picker&&picker.mode!=='switch'?treeSessions.filter(s=>!sessionIdsIn(layout).includes(s.id)):allProjects?data.sessions.filter(s=>!s.archived&&!isCodeReviewSession(s)):treeSessions;
  const openScopedFile=async(next:{projectId:string;worktreePath?:string;path:string;kind:'file'|'diff'|'preview';assetKind?:'text'|'image';externalId?:string;line?:number;column?:number;sourcePaneId?:string;ownerSessionId?:string;staged?:boolean;compare?:GitCompareRef},generation=++fileOpenGeneration.current)=>{
   const ownerSessionId=next.ownerSessionId;
   const opened=workspaceTabs(latestLayout.current);

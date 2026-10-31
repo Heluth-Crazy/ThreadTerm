@@ -1,0 +1,35 @@
+.code-review-dialog .dlg-body { display:flex; flex-direction:column; gap:12px; max-height:min(70vh,640px); overflow:auto; }
+.code-review-field { display:flex; flex-direction:column; gap:6px; margin:0; padding:0; border:0; min-width:0; }
+.code-review-field > span, .code-review-field > legend { color:var(--muted); font-size:12px; }
+.code-review-field select, .code-review-field textarea {
+  width:100%; min-width:0; border:1px solid var(--border); border-radius:8px; background:var(--bg); color:var(--text);
+  padding:8px 10px; font:inherit;
+}
+.code-review-field textarea { resize:vertical; min-height:64px; line-height:1.45; }
+/* A fixed-height select with block padding clips its text; size it explicitly. */
+.code-review-dialog .code-review-field select { height:36px; padding:0 10px; line-height:normal; }
+.code-review-providers, .code-review-segments { display:flex; flex-wrap:wrap; gap:6px; }
+/* Three equal scope tiles: label and count on one line, the reason below. */
+.code-review-scopes { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:6px; }
+.code-review-scope { flex-wrap:wrap; align-content:flex-start; }
+.code-review-scope > span:first-child { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.code-review-provider, .code-review-scope, .code-review-segments > button {
+  display:flex; align-items:center; gap:6px; min-width:0; border:1px solid var(--border); border-radius:8px;
+  background:var(--bg); color:var(--text); padding:7px 10px; font:inherit; text-align:left; cursor:pointer;
+}
+.code-review-provider.is-selected, .code-review-scope.is-selected, .code-review-segments > button.is-selected {
+  border-color:color-mix(in srgb, var(--primary) 55%, var(--border));
+  background:color-mix(in srgb, var(--primary) 12%, var(--bg));
+}
+.code-review-provider:disabled, .code-review-scope:disabled { opacity:0.55; cursor:not-allowed; }
+.code-review-provider-name { font-weight:600; }
+.code-review-provider-reason, .code-review-hint, .code-review-loading { color:var(--muted); font-size:12px; }
+.code-review-provider-reason { display:block; width:100%; font-weight:400; }
+.code-review-count {
+  margin-left:auto; border-radius:999px; padding:0 7px; background:var(--soft); color:var(--muted); font-size:11px;
+}
+.code-review-active {
+  display:flex; flex-wrap:wrap; gap:8px; align-items:center; justify-content:space-between;
+  border:1px solid var(--border); border-radius:8px; padding:10px 12px; background:var(--soft);
+}
+.code-review-active p { margin:0; }

@@ -1,4 +1,5 @@
 import type { Project, Session, SessionStatus } from '@threadterm/protocol';
+import { isCodeReviewSession } from '../codeReview';
 
 export type HistoryScope = 'all' | 'bookmarked' | 'archived';
 
@@ -12,6 +13,7 @@ export function filterSessionHistory(
 ): Session[] {
   const terms = query.trim().toLocaleLowerCase();
   return sessions.filter(session => {
+    if (isCodeReviewSession(session)) return false;
     if (scope === 'bookmarked' && !session.bookmarked) return false;
     if (scope === 'archived' ? !session.archived : scope === 'all' && session.archived) return false;
     if (projectId && session.projectId !== projectId) return false;

@@ -8,6 +8,7 @@ import { CatalogActions, CatalogPopover, restoreCatalogTarget, type CatalogTarge
 import "./project-catalog.css";
 import { sessionState, sessionStateLabel } from "../sessionState";
 import { activityOrder, isTerminalAttentionSession, sessionActivity, sessionActivityLabel, sortSessionsByActivity } from "../sessionActivity";
+import { isCodeReviewSession } from "../codeReview";
 import { delegationStateLabel, nestedDelegateIds, withDelegates } from "../delegation";
 import { catalogGroups, groupCatalogLabel, groupCatalogState, groupCatalogStatusClass, groupMemberIds, groupMemberLabel } from "../groupCatalog";
 import { openGroup } from "../groupNavigation";
@@ -52,7 +53,7 @@ export function ProjectCatalog({selectedProjectId,selectedWorktreePath,selectedS
   const [items,setItems]=useState<ProjectCatalogItem[]>([]),[trees,setTrees]=useState<Record<string,Worktree[]>>({}),[groups,setGroups]=useState<Record<string,GroupSummary[]>>({});
   const [issue,setIssue]=useState<string>(),[collapsed,setCollapsed]=useState<Record<string,boolean>>({}),[showAll,setShowAll]=useState<Record<string,boolean>>({});
   const [scopeProjectId,setScopeProjectId]=useState<string>(),[menuAnchor,setMenuAnchor]=useState<HTMLElement>(),[activities,setActivities]=useState<Record<string,NonNullable<Session['activity']>>>({}),[frozenOrder,setFrozenOrder]=useState<ReadonlyMap<string,number>>(),generation=useRef(0),groupGeneration=useRef(0),catalogProjectIds=useRef<string[]>([]),activityEpoch=useRef<string|undefined>(undefined);
-  const catalogSessions=useMemo(()=>sessions.map(session=>{const snapshotActivity=session.activity,override=activities[session.id];return !override||snapshotActivity&&snapshotActivity.revision>=override.revision?session:{...session,activity:override};}),[sessions,activities]);
+  const catalogSessions=useMemo(()=>sessions.filter(session=>!isCodeReviewSession(session)).map(session=>{const snapshotActivity=session.activity,override=activities[session.id];return !override||snapshotActivity&&snapshotActivity.revision>=override.revision?session:{...session,activity:override};}),[sessions,activities]);
   const visibilityOf=(kind:CatalogVisibility["kind"],id:string)=>visibility.find(row=>row.kind===kind&&row.id===id)?.visibility??"active";
   const reloadGroups=async()=>{
     const current=++groupGeneration.current,ids=catalogProjectIds.current;

@@ -833,7 +833,10 @@ fn card_preview(summary: &Value, status: &str, error: Option<&str>) -> String {
             let finders = if summary["depth"] == "quick" { 1 } else { (count("stagesTotal") - 1).max(1) };
             match summary["stage"].as_str().unwrap_or("") {
                 "finding" => format!("Finding issues · {}/{finders}", count("stagesDone").min(finders)),
-                "verifying" => format!("Verifying {} findings", count("candidates")),
+                "verifying" => match count("candidates") {
+                    1 => "Verifying 1 finding".to_owned(),
+                    candidates => format!("Verifying {candidates} findings"),
+                },
                 _ => "Preparing".into(),
             }
         }

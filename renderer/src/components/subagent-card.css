@@ -32,3 +32,16 @@
 .chat-subagent-transcript .v3-chat-message.is-native.user { width:100%; max-width:100%; margin:8px 0; padding:6px 8px; border-radius:6px; font-size:12px; line-height:1.5; }
 .chat-subagent-nested { color:var(--muted); font-size:12px; overflow-wrap:anywhere; }
 @container (max-width:420px) { .chat-subagent-card > details > summary, .chat-subagent-body { padding:10px; } .chat-subagent-heading { gap:5px; } .chat-subagent-status { gap:3px; padding:1px 3px; font-size:10px; } }
+.chat-review-actions, .chat-review-fix-actions { display:flex; flex-wrap:wrap; gap:8px; margin:0 0 10px; }
+.chat-review-reviewer-menu { position:relative; }
+.chat-review-menu { position:absolute; z-index:5; top:100%; left:0; margin-top:4px; min-width:160px; }
+.chat-review-group { margin:12px 0; }
+.chat-review-group h3 { margin:0 0 8px; font-size:12px; color:var(--muted); font-weight:600; text-transform:uppercase; letter-spacing:0.04em; }
+.chat-review-finding { border:1px solid var(--border); border-radius:8px; padding:10px; margin:0 0 8px; background:var(--bg); }
+.chat-review-finding-head { display:flex; align-items:flex-start; gap:8px; font-weight:600; }
+.chat-review-severity { flex:none; border-radius:5px; padding:1px 6px; font-size:11px; text-transform:uppercase; border:1px solid var(--border); }
+.chat-review-severity.is-high { color:var(--danger, var(--text)); }
+.chat-review-title { min-width:0; overflow-wrap:anywhere; }
+.chat-review-location { display:inline-block; margin:6px 0 0; border:0; background:none; color:var(--primary); cursor:pointer; padding:0; font:inherit; }
+.chat-review-body, .chat-review-scenario p { margin:6px 0 0; overflow-wrap:anywhere; white-space:pre-wrap; }
+.chat-review-scenario summary { cursor:pointer; color:var(--muted); font-size:12px; }

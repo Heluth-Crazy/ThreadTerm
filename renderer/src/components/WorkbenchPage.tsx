@@ -40,7 +40,7 @@ export function WorkbenchPage({ data, recentIds = [], onSession, onCreate, onAdd
     void request("worktree.list", { projectId }).then(next => { if (current) { setTrees(next); setPath(next[0]?.path ?? ""); } }).catch(() => { if (current) setTrees([]); }).finally(() => { if (current) setTreesLoading(false); });
     return () => { current = false; };
   }, [projectId]);
-  const sessions = useMemo(() => [...data.sessions].filter(session => !session.archived).sort((left, right) => right.updatedAt.localeCompare(left.updatedAt)), [data.sessions]);
+  const sessions = useMemo(() => [...data.sessions].filter(session => !session.archived && !session.codeReview).sort((left, right) => right.updatedAt.localeCompare(left.updatedAt)), [data.sessions]);
   const recent = useMemo(() => { const byId = new Map(sessions.map(session => [session.id, session])); const opened = recentIds.map(id => byId.get(id)).filter((session): session is Session => Boolean(session)); const openedIds = new Set(opened.map(session => session.id)); return [...opened, ...sessions.filter(session => !openedIds.has(session.id))]; }, [recentIds, sessions]);
   const inbox = data.inbox.filter(item => isActionableInboxItem(item));
   const projectName = (id?: string) => data.projects.find(project => project.id === id)?.name ?? (zh ? "未归属" : "Unattributed");
