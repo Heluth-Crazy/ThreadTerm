@@ -8,7 +8,7 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import net from 'node:net';
 import { tmpdir } from 'node:os';
 import { join, resolve, sep } from 'node:path';
-import { validateResult } from '../protocol/index.ts';
+import { PROTOCOL_CONTRACT, PROTOCOL_VERSION, validateResult } from '../protocol/index.ts';
 
 const delay = milliseconds => new Promise(resolve => setTimeout(resolve, milliseconds));
 const root = resolve('.');
@@ -55,11 +55,22 @@ class Peer {
   json(value) { const bytes = Buffer.from(JSON.stringify(value)); const frame = Buffer.alloc(bytes.length + 4); frame.writeUInt32LE(bytes.length); bytes.copy(frame, 4); this.socket.write(frame); }
   async auth(credential, clientId) {
     const challenge = JSON.parse(await this.next());
-    assert.equal(challenge.contract, 3);
-    this.json({ kind: 'auth', clientId, protocol: 1, contract: 3, nonce: challenge.nonce, hmac: createHmac('sha256', credential).update(`1:${clientId}:${challenge.nonce}`).digest('hex') });
+    assert.equal(challenge.contract, PROTOCOL_CONTRACT);
+    this.json({
+      kind: 'auth',
+      clientId,
+      protocol: PROTOCOL_VERSION,
+      contract: PROTOCOL_CONTRACT,
+      nonce: challenge.nonce,
+      hmac: createHmac('sha256', credential).update(`${PROTOCOL_VERSION}:${clientId}:${challenge.nonce}`).digest('hex'),
+    });
     const proof = JSON.parse(await this.next());
-    assert.equal(proof.kind, 'authenticated'); assert.equal(proof.contract, 3);
-    assert.equal(proof.hmac, createHmac('sha256', credential).update(`server:1:${clientId}:${challenge.nonce}`).digest('hex'));
+    assert.equal(proof.kind, 'authenticated');
+    assert.equal(proof.contract, PROTOCOL_CONTRACT);
+    assert.equal(
+      proof.hmac,
+      createHmac('sha256', credential).update(`server:${PROTOCOL_VERSION}:${clientId}:${challenge.nonce}`).digest('hex'),
+    );
   }
   async request(method, params = {}) {
     const id = randomUUID(); this.json({ v: 1, id, method, params });

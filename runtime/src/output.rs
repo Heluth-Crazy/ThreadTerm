@@ -2,18 +2,50 @@ use crate::db::Database;
 use anyhow::Result;
 use std::{
     collections::{HashMap, VecDeque},
-    sync::Mutex,
+    sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc, Condvar, Mutex,
+    },
+    thread,
+    time::{Duration, Instant},
 };
 use tokio::sync::Notify;
+
+#[cfg(test)]
+#[path = "output_bench_tests.rs"]
+mod output_bench_tests;
+
+#[cfg(test)]
+#[path = "output_retry_tests.rs"]
+mod output_retry_tests;
 
 const RETAINED_MEMORY_BYTES: usize = 512 * 1024;
 /// Bytes a stream may hold while the database refuses them. Dropping older
 /// bytes advances the durable cursor past them, so a client reads an explicit
 /// history gap instead of silently missing output.
 const MAX_PENDING_BYTES: usize = 4 * 1024 * 1024;
+/// Lock order: map (lookup only, released before stream) -> session stream -> commit gate -> DB.
+/// Notifications run after releasing every lock.
 pub struct OutputStore {
-    streams: Mutex<HashMap<String, Stream>>,
+    streams: Mutex<HashMap<String, Arc<Mutex<Stream>>>>,
+    /// Output INSERTs queue here, one at a time, instead of all contending for the DB connection mutex, which is
+    /// not fair: with eight flooding sessions, other requests' DB reads waited about 4x longer (output flood
+    /// benchmark, 10-31-output-storage-path).
+    commit_gate: Mutex<()>,
     notify: Notify,
+    retry: Arc<(Mutex<RetryState>, Condvar)>,
+    pending_bytes: AtomicUsize,
+}
+#[derive(Debug, PartialEq, Eq)]
+pub enum FlushOutcome {
+    Clean { durable_end: i64 },
+    Retryable { pending_bytes: usize },
+}
+#[derive(Default)]
+struct RetryState {
+    started: bool,
+    stopped: bool,
+    generation: u64,
 }
 struct Stream {
     /// The durable cursor: only advanced after the database accepted the bytes.
@@ -23,6 +55,8 @@ struct Stream {
     /// Drained bytes the database has not accepted yet (see `append`).
     pending: Vec<u8>,
     degraded: bool,
+    retry_at: Instant,
+    backoff: Duration,
 }
 impl Stream {
     fn new() -> Self {
@@ -32,28 +66,90 @@ impl Stream {
             bytes: 0,
             pending: Vec::new(),
             degraded: false,
+            retry_at: Instant::now(),
+            backoff: Duration::from_millis(250),
         }
     }
 }
 impl OutputStore {
+    fn stream(&self, session_id: &str) -> Arc<Mutex<Stream>> {
+        self.streams
+            .lock()
+            .expect("output lock poisoned")
+            .entry(session_id.to_owned())
+            .or_insert_with(|| Arc::new(Mutex::new(Stream::new())))
+            .clone()
+    }
+
     /// Persists one drained chunk and returns its durable start offset.
     ///
     /// Storage failure policy: the durable cursor advances only after the
     /// database accepted the bytes. A refused chunk stays in `pending`, the
     /// terminal is marked storage-degraded, and the next chunk retries the
-    /// whole pending prefix in one write. The PTY reader keeps draining
+    /// whole pending prefix in one write. Shared appends also schedule quiet-tail
+    /// retries; EOF and shutdown explicitly flush. The PTY reader keeps draining
     /// (pty.rs), so the child never blocks on a full console pipe; the live
     /// view resumes from the unchanged cursor once storage accepts data again.
     /// The stream lock is held across the write on purpose: two appends for one
     /// session must never compute the same start offset.
     pub fn append(&self, db: &Database, session_id: &str, data: &[u8]) -> Result<i64> {
-        let mut streams = self.streams.lock().expect("output lock poisoned");
-        let stream = streams
-            .entry(session_id.to_owned())
-            .or_insert_with(Stream::new);
+        let stream = self.stream(session_id);
+        let mut stream = stream.lock().expect("stream lock poisoned");
+        let result = self.commit(db, session_id, &mut stream, data);
+        drop(stream);
+        if result.is_ok() {
+            self.notify.notify_waiters();
+        }
+        result
+    }
+
+    /// Production append: supplies the shared DB for the lazily started retry worker.
+    pub fn append_shared(
+        self: &Arc<Self>,
+        db: &Arc<Database>,
+        session_id: &str,
+        data: &[u8],
+    ) -> Result<i64> {
+        let result = self.append(db, session_id, data);
+        let retry = result.is_err() || self.stream(session_id).lock().unwrap().degraded;
+        if retry {
+            self.start_retry_worker(db);
+        }
+        result
+    }
+
+    pub fn flush_pending(&self, db: &Database, session_id: &str) -> Result<FlushOutcome> {
+        let stream = self.stream(session_id);
+        let mut stream = stream.lock().expect("stream lock poisoned");
+        let result = self.commit(db, session_id, &mut stream, &[]);
+        let committed = result.is_ok();
+        let outcome = match result {
+            Ok(_) => FlushOutcome::Clean {
+                durable_end: stream.cursor,
+            },
+            _ => FlushOutcome::Retryable {
+                pending_bytes: stream.pending.len(),
+            },
+        };
+        drop(stream);
+        if committed {
+            self.notify.notify_waiters();
+        }
+        Ok(outcome)
+    }
+
+    fn commit(
+        &self,
+        db: &Database,
+        session_id: &str,
+        stream: &mut Stream,
+        data: &[u8],
+    ) -> Result<i64> {
         let mut batch = std::mem::take(&mut stream.pending);
         batch.extend_from_slice(data);
+        self.pending_bytes.fetch_add(data.len(), Ordering::Relaxed);
         if batch.is_empty() {
+            Self::recover_marker(db, session_id, stream);
             return Ok(stream.cursor);
         }
         // Bounded memory: discarded bytes are skipped by advancing the durable
@@ -61,17 +157,25 @@ impl OutputStore {
         if batch.len() > MAX_PENDING_BYTES {
             let dropped = batch.len() - MAX_PENDING_BYTES;
             batch.drain(..dropped);
+            self.pending_bytes.fetch_sub(dropped, Ordering::Relaxed);
             stream.cursor += dropped as i64;
         }
         let start = stream.cursor;
-        if let Err(error) = db.append_output(session_id, start, &batch) {
+        let written = {
+            let _gate = self.commit_gate.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+            db.append_output(session_id, start, &batch)
+        };
+        if let Err(error) = written {
             stream.pending = batch;
             if !stream.degraded {
                 stream.degraded = true;
+                stream.retry_at = Instant::now() + Duration::from_millis(250);
+                eprintln!("Terminal output for {session_id} could not be saved: {error}");
                 let _ = db.mark_terminal_storage_degraded(session_id, start);
             }
             return Err(error);
         }
+        self.pending_bytes.fetch_sub(batch.len(), Ordering::Relaxed);
         stream.cursor += batch.len() as i64;
         stream.bytes += batch.len();
         stream.chunks.push_back((start, batch));
@@ -80,34 +184,169 @@ impl OutputStore {
                 stream.bytes -= chunk.len()
             }
         }
-        if stream.degraded {
-            stream.degraded = false;
-            let _ = db.clear_terminal_storage_degraded(session_id);
-        }
-        drop(streams);
-        self.notify.notify_waiters();
+        Self::recover_marker(db, session_id, stream);
         Ok(start)
     }
+
+    fn recover_marker(db: &Database, session_id: &str, stream: &mut Stream) {
+        if stream.degraded && db.clear_terminal_storage_degraded(session_id).is_ok() {
+            stream.degraded = false;
+            eprintln!("Terminal output storage recovered for {session_id}");
+        }
+        if !stream.degraded {
+            stream.backoff = Duration::from_millis(250);
+        }
+    }
+    fn snapshot(&self) -> Vec<(String, Arc<Mutex<Stream>>)> {
+        self.streams
+            .lock()
+            .expect("output lock poisoned")
+            .iter()
+            .map(|(id, stream)| (id.clone(), stream.clone()))
+            .collect()
+    }
+
+    fn start_retry_worker(self: &Arc<Self>, db: &Arc<Database>) {
+        let (state, wake) = &*self.retry;
+        let mut state = state.lock().unwrap();
+        state.generation = state.generation.wrapping_add(1);
+        wake.notify_one();
+        if state.started || state.stopped {
+            return;
+        }
+        state.started = true;
+        let store = Arc::downgrade(self);
+        let db = Arc::downgrade(db);
+        let signal = self.retry.clone();
+        if let Err(error) = thread::Builder::new()
+            .name("output-retry".into())
+            .spawn(move || loop {
+                let generation = {
+                    let state = signal.0.lock().unwrap();
+                    if state.stopped {
+                        break;
+                    }
+                    state.generation
+                };
+                let Some(store) = store.upgrade() else {
+                    break;
+                };
+                let Some(db) = db.upgrade() else {
+                    break;
+                };
+                let mut sleep = None;
+                for (id, stream) in store.snapshot() {
+                    if signal.0.lock().unwrap().stopped {
+                        break;
+                    }
+                    let Ok(mut stream) = stream.try_lock() else {
+                        sleep = Some(
+                            sleep
+                                .unwrap_or(Duration::from_millis(250))
+                                .min(Duration::from_millis(250)),
+                        );
+                        continue;
+                    };
+                    if stream.pending.is_empty() && !stream.degraded {
+                        continue;
+                    }
+                    let now = Instant::now();
+                    if now >= stream.retry_at {
+                        let result = store.commit(&db, &id, &mut stream, &[]);
+                        if result.is_err() || stream.degraded {
+                            stream.backoff = (stream.backoff * 2).min(Duration::from_secs(5));
+                            stream.retry_at = Instant::now() + stream.backoff;
+                        }
+                        let committed = result.is_ok();
+                        let next = stream.retry_at.saturating_duration_since(Instant::now());
+                        let pending = !stream.pending.is_empty() || stream.degraded;
+                        drop(stream);
+                        if committed {
+                            store.notify.notify_waiters();
+                        }
+                        if pending {
+                            sleep = Some(sleep.unwrap_or(next).min(next));
+                        }
+                    } else {
+                        let next = stream.retry_at - now;
+                        sleep = Some(sleep.unwrap_or(next).min(next));
+                    }
+                }
+                drop(db);
+                drop(store);
+                let state = signal.0.lock().unwrap();
+                let unchanged = |s: &mut RetryState| !s.stopped && s.generation == generation;
+                if let Some(delay) = sleep {
+                    drop(
+                        signal
+                            .1
+                            .wait_timeout_while(state, delay, unchanged)
+                            .unwrap(),
+                    );
+                } else {
+                    drop(signal.1.wait_while(state, unchanged).unwrap());
+                }
+            })
+        {
+            state.started = false;
+            eprintln!("Could not start terminal output retry worker: {error}");
+        }
+    }
+
+    fn stop_retry_worker(&self) {
+        let mut state = self.retry.0.lock().unwrap();
+        state.stopped = true;
+        self.retry.1.notify_all();
+    }
+
+    /// Bound the caller's wait even if the existing SQLite writer is blocked.
+    /// A fixed two-pass helper may finish its in-flight commit after the deadline.
+    pub fn drain_pending(self: &Arc<Self>, db: &Arc<Database>, deadline: Instant) -> usize {
+        self.stop_retry_worker();
+        if self.pending_bytes.load(Ordering::Relaxed) == 0 {
+            return 0;
+        }
+        let (sent, received) = std::sync::mpsc::sync_channel(1);
+        let store = self.clone();
+        let db = db.clone();
+        let _ = thread::Builder::new()
+            .name("output-shutdown-drain".into())
+            .spawn(move || {
+                for _ in 0..2 {
+                    for (id, _) in store.snapshot() {
+                        if Instant::now() >= deadline {
+                            break;
+                        }
+                        let _ = store.flush_pending(&db, &id);
+                    }
+                    if store.pending_bytes.load(Ordering::Relaxed) == 0 {
+                        break;
+                    }
+                }
+                let _ = sent.send(());
+            });
+        let _ = received.recv_timeout(deadline.saturating_duration_since(Instant::now()));
+        let pending = self.pending_bytes.load(Ordering::Relaxed);
+        eprintln!("Terminal output shutdown drain: {pending} bytes still uncommitted");
+        pending
+    }
+
     pub fn notified(&self) -> impl std::future::Future<Output = ()> + '_ {
         self.notify.notified()
     }
     pub fn cursor(&self, session_id: &str) -> i64 {
-        self.streams
+        self.stream(session_id)
             .lock()
-            .expect("output lock poisoned")
-            .get(session_id)
-            .map(|s| s.cursor)
-            .unwrap_or(0)
+            .expect("stream lock poisoned")
+            .cursor
     }
     /// Moves a session's in-memory write cursor to the persisted end before a
     /// resume relaunches its process. Without this the first chunk after a
     /// daemon restart would reuse cursor 0 and collide with the retained
     /// `output_chunks` primary key, silently ending output recording.
     pub fn seed(&self, session_id: &str, cursor: i64) {
-        let mut streams = self.streams.lock().expect("output lock poisoned");
-        let stream = streams
-            .entry(session_id.to_owned())
-            .or_insert_with(Stream::new);
+        let stream = self.stream(session_id);
+        let mut stream = stream.lock().expect("stream lock poisoned");
         if cursor > stream.cursor {
             stream.cursor = cursor;
         }
@@ -117,8 +356,17 @@ impl Default for OutputStore {
     fn default() -> Self {
         Self {
             streams: Mutex::new(HashMap::new()),
+            commit_gate: Mutex::new(()),
             notify: Notify::new(),
+            retry: Arc::new((Mutex::new(RetryState::default()), Condvar::new())),
+            pending_bytes: AtomicUsize::new(0),
         }
+    }
+}
+
+impl Drop for OutputStore {
+    fn drop(&mut self) {
+        self.stop_retry_worker();
     }
 }
 
@@ -275,12 +523,15 @@ mod tests {
         .unwrap();
         // Simulate the bound being exceeded without allocating 4 MiB of test data.
         {
-            let mut streams = store.streams.lock().unwrap();
-            streams
-                .get_mut(&session.id)
+            store
+                .stream(&session.id)
+                .lock()
                 .unwrap()
                 .pending
                 .resize(MAX_PENDING_BYTES, b'.');
+            store
+                .pending_bytes
+                .store(MAX_PENDING_BYTES, Ordering::Relaxed);
         }
         // Five oldest bytes are dropped to make room, so the durable write starts
         // at byte 5 instead of 0.

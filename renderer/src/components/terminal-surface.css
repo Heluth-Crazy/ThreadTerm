@@ -55,6 +55,8 @@
 .terminal-local-action-row > .surface-local-actions:empty { display:none; }
 .terminal-local-action-row > .surface-local-actions .btn { min-height:26px; padding:3px 8px; white-space:nowrap; }
 .term-legacy-note { flex:0 0 auto; min-width:0; margin:0; padding:6px 12px; border-bottom:1px solid var(--border); color:var(--muted); background:var(--editor); font-size:12px; line-height:1.45; overflow-wrap:anywhere; }
+/* A live output gap leaves a sticky, quiet hint that the screen may be wrong (R3). */
+.term-fidelity-note strong { margin-right:6px; color:var(--text); font-weight:600; }
 /* Durable recording failed but the process and its live view continue (F23). */
 .term-storage-degraded { display:flex; flex:0 0 auto; flex-wrap:wrap; column-gap:8px; min-width:0; margin:0; padding:6px 12px; border-bottom:1px solid color-mix(in srgb, var(--danger) 30%, var(--border)); background:color-mix(in srgb, var(--danger) 7%, var(--editor)); color:var(--danger); font-size:12px; line-height:1.45; overflow-wrap:anywhere; }
 .term-storage-degraded strong { font-weight:600; }
